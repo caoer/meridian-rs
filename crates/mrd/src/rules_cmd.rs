@@ -106,7 +106,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         Some(p) => crate::rooted::enter(p, "rules", "Nothing was reported."),
         None => Ok(None),
     };
-    let ambient = || -> Result<std::path::PathBuf, Fail> {
+    let ambient = || -> Result<PathBuf, Fail> {
         Ok(crate::resolve::resolve_runtime(&cwd)
             .map_err(|e| {
                 Fail::tool(format!(

@@ -62,6 +62,7 @@
 //! least one TRUE LOSS / 2 bad invocation or a tool failure.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 use model::Document;
 use model::selector::Color;
@@ -77,47 +78,7 @@ use crate::{EXIT_FINDINGS, Fail, Format, current_dir, engine};
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let mut parsed = Repair::parse(args)?;
     let cwd = current_dir()?;
-    // The rooted lane (§4.1 colon law): a head-colon PAGE is an agent-plane
-    // address, never a literal path — the scan, the history walk, and the
-    // lock write all bind to the NAMED root's workspace, exactly as if the
-    // caller stood there. The lock write stays in-process, which keeps parity
-    // with the daemon on this door class: the lock door carries no armed gate
-    // on any transport (CAS + flock + stored-form guard only,
-    // `wire_serve::write::lock_write`).
-    let entered = match parsed.page.as_deref() {
-        Some(p) => crate::rooted::enter(p, "repair", "Nothing was scanned and nothing was written."),
-        None => Ok(None),
-    };
-    let workspace = match entered {
-        Ok(Some((rel, rooted))) => {
-            parsed.display = std::mem::replace(&mut parsed.page, Some(rel));
-            parsed.rooted = Some(rooted.name);
-            rooted.workspace
-        }
-        Ok(None) => {
-            crate::resolve::resolve_runtime(&cwd)
-                .map_err(|e| {
-                    Fail::tool(format!(
-                        "cannot resolve workspace for {}: {e}",
-                        cwd.display()
-                    ))
-                })?
-                .workspace
-        }
-        // The refusal frames with the workspace the caller stands in — no
-        // target workspace exists to name.
-        Err(error) => {
-            let ambient = crate::resolve::resolve_runtime(&cwd)
-                .map_err(|e| {
-                    Fail::tool(format!(
-                        "cannot resolve workspace for {}: {e}",
-                        cwd.display()
-                    ))
-                })?
-                .workspace;
-            return Err(engine::json_refusal(parsed.format, &ambient, &error));
-        }
-    };
+    let workspace = rooted_workspace(&mut parsed, &cwd)?;
     let canonical = workspace::canonicalize(&workspace).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace {} ({e})",
@@ -227,6 +188,45 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     Ok(())
 }
 
+/// The rooted lane (§4.1 colon law): a head-colon PAGE is an agent-plane
+/// address, never a literal path — the scan, the history walk, and the lock
+/// write all bind to the NAMED root's workspace, exactly as if the caller
+/// stood there. The lock write stays in-process, which keeps parity with the
+/// daemon on this door class: the lock door carries no armed gate on any
+/// transport (CAS + flock + stored-form guard only,
+/// `wire_serve::write::lock_write`). An ambient (or absent) PAGE answers the
+/// settled resolution ladder unchanged. (Extracted from [`dispatch`] per the
+/// line-cap law.)
+fn rooted_workspace(parsed: &mut Repair, cwd: &std::path::Path) -> Result<PathBuf, Fail> {
+    let ambient = |cwd: &std::path::Path| -> Result<PathBuf, Fail> {
+        Ok(crate::resolve::resolve_runtime(cwd)
+            .map_err(|e| {
+                Fail::tool(format!(
+                    "cannot resolve workspace for {}: {e}",
+                    cwd.display()
+                ))
+            })?
+            .workspace)
+    };
+    let entered = match parsed.page.as_deref() {
+        Some(p) => {
+            crate::rooted::enter(p, "repair", "Nothing was scanned and nothing was written.")
+        }
+        None => Ok(None),
+    };
+    match entered {
+        Ok(Some((rel, rooted))) => {
+            parsed.display = parsed.page.replace(rel);
+            parsed.rooted = Some(rooted.name);
+            Ok(rooted.workspace)
+        }
+        Ok(None) => ambient(cwd),
+        // The refusal frames with the workspace the caller stands in — no
+        // target workspace exists to name.
+        Err(error) => Err(engine::json_refusal(parsed.format, &ambient(cwd)?, &error)),
+    }
+}
+
 // the survey — which pins are even askable
 
 /// Which root a pin's target — and therefore its object store and history —
@@ -238,7 +238,7 @@ enum Owner {
     /// A MOUNTED root's, by its bound canonical path. Read-only jurisdiction
     /// — the history walk and the target read happen there; the lock write
     /// stays home.
-    Mounted { root: std::path::PathBuf },
+    Mounted { root: PathBuf },
 }
 
 impl Owner {
@@ -271,7 +271,7 @@ struct PinSite {
 /// may assess (R14 narrowed by D-G: mounted roots are walked, unmounted stay
 /// skip-and-state). A missing or invalid ~/MERIDIAN.md yields the empty map:
 /// every form-3 row then states, exactly as before the narrowing.
-fn mounted_roots() -> BTreeMap<addr::MountName, std::path::PathBuf> {
+fn mounted_roots() -> BTreeMap<addr::MountName, PathBuf> {
     let mut out = BTreeMap::new();
     let Ok(resolution) = config::resolve(&config::Env::from_process()) else {
         return out;
@@ -310,7 +310,7 @@ struct Survey {
 fn survey(
     docs: &BTreeMap<String, Document>,
     page: Option<&str>,
-    mounted: &BTreeMap<addr::MountName, std::path::PathBuf>,
+    mounted: &BTreeMap<addr::MountName, PathBuf>,
 ) -> Survey {
     let mut out = Survey {
         candidates: Vec::new(),
@@ -394,7 +394,7 @@ fn lost_pins(
         return Ok(Vec::new());
     }
     // Group by owning store, preserving order: one batched ask per store.
-    let mut groups: BTreeMap<std::path::PathBuf, Vec<usize>> = BTreeMap::new();
+    let mut groups: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
     for (at, site) in candidates.iter().enumerate() {
         groups
             .entry(site.owner.store(root).to_path_buf())
@@ -521,7 +521,7 @@ fn repo_prefix(repo: &git::Repo, root: &fs::WorkspaceRoot) -> Result<String, Fai
 /// batching discipline). Outcome order follows the group walk, which `emit`
 /// names per row, so no caller depends on input order.
 fn recover_all(root: &fs::WorkspaceRoot, lost: &[PinSite]) -> Result<Vec<Outcome>, Fail> {
-    let mut groups: BTreeMap<std::path::PathBuf, Vec<PinSite>> = BTreeMap::new();
+    let mut groups: BTreeMap<PathBuf, Vec<PinSite>> = BTreeMap::new();
     for site in lost {
         groups
             .entry(site.owner.store(root).to_path_buf())

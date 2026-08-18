@@ -48,11 +48,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // daemon serves the attached workspace exactly as if the caller stood
     // there: the guarded-remove machinery (referential check, CAS, flock)
     // runs against the TARGET tree.
-    let workspace = match crate::rooted::enter(
-        &parsed.path,
-        "rm",
-        "Nothing was removed.",
-    ) {
+    let workspace = match crate::rooted::enter(&parsed.path, "rm", "Nothing was removed.") {
         Ok(Some((rel, rooted))) => {
             parsed.display = Some(std::mem::replace(&mut parsed.path, rel));
             rooted.workspace

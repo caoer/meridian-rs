@@ -118,7 +118,8 @@ fn rooted_files_workspace(
     };
     // A rooted spelling of the ambient workspace itself is the bare form
     // under another name — normalize (the pin door's same-root posture).
-    let ambient_canonical = workspace::canonicalize(ambient).unwrap_or_else(|_| ambient.to_path_buf());
+    let ambient_canonical =
+        workspace::canonicalize(ambient).unwrap_or_else(|_| ambient.to_path_buf());
     if ws == ambient_canonical {
         return Ok(None);
     }
