@@ -939,7 +939,7 @@ impl MwEmitted {
 /// row (a committed fact, never re-derived). The per-kind fallback is
 /// unreachable while `commit_set` emits one Delta carrying every member;
 /// it exists so a response is still shaped if that invariant ever breaks.
-fn armed_set_members(mw: &MwEmitted, delta: &wire::Delta) -> Vec<wire::ArmedSetMember> {
+fn armed_set_members(mw: &MwEmitted, delta: &Delta) -> Vec<wire::ArmedSetMember> {
     let row_for = |path: &str, fallback: wire::FileChange| {
         let row = delta.files.iter().find(|f| f.path.0 == path);
         wire::ArmedSetMember {
