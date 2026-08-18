@@ -236,6 +236,14 @@ fn eval_check(
             let change_value = alloc_change(heap, change);
 
             let mut eval = Evaluator::new(&module);
+            // GC OFF, load-bearing (mw-splice-engine-eof, 2026-08-18):
+            // `change_value` lives in a Rust local across `eval_module` and is
+            // NOT a GC root — a GC fired at a top-level statement boundary
+            // (heap ≥ starlark's 100KB threshold, which a large doc's change
+            // surface crosses alone) collects it, and `eval_function` then
+            // segfaults on the dangling Value. `set_max_heap_size` still caps
+            // the arena; the temp heap drops whole at scope end.
+            eval.disable_gc();
             if let Err(e) = eval.set_max_tick_count(step_guard) {
                 return Err(runtime(e));
             }
@@ -688,6 +696,54 @@ def check_change(change):
             passing = \"scenarios/reviewer-close.md\",
         )
 ";
+
+    /// Regression (mw-splice-engine-eof, 2026-08-18): a change surface whose
+    /// temp-heap allocation crosses starlark's GC threshold (100KB) must
+    /// survive evaluation. Pre-fix, `eval_module` fired a GC, collected the
+    /// change Value held in a Rust local (not a GC root), and `eval_function`
+    /// SEGFAULTED the process — this test dies with SIGSEGV on the unfixed
+    /// evaluator.
+    #[test]
+    fn a_change_past_the_gc_threshold_survives_evaluation() {
+        use std::fmt::Write as _;
+        let mut md = String::from("---\nowner: alice\nstatus: open\n---\n# Big\n\n");
+        for i in 0..500 {
+            let _ = write!(
+                md,
+                "## Section {i:03}\n\nThe hook plane unifies the four trigger families under \
+                 one armed row shape; each family keeps its own firing clock but shares the \
+                 severity ladder and the receipts contract. Row {i} carries its own receipts \
+                 line.\n\n"
+            );
+        }
+        let before = doc_of("tasks/big.md", &md);
+        let after = doc_of(
+            "tasks/big.md",
+            &md.replace("status: open", "status: review"),
+        );
+        let change = derive_change(
+            &before,
+            &after,
+            &[],
+            Invocation {
+                op: ChangeOp::Splice,
+                actor: Some("agent:770a48c2"),
+                force: false,
+            },
+            &[],
+            &no_edges,
+        );
+        let refusals = run_check_change(
+            "def check_change(change):\n    if change.doc.frontmatter.get(\"status\") == \"review\" and change.actor == change.doc.frontmatter.get(\"owner\"):\n        refuse(message = \"self-review\", passing = \"scenarios/reviewer-close.md\")\n",
+            &change,
+            CheckLimits::default(),
+        )
+        .expect("a big change surface evaluates cleanly");
+        assert!(
+            refusals.is_empty(),
+            "actor is not the owner — the CHECK passes: {refusals:?}"
+        );
+    }
 
     #[test]
     fn ceiling_globals_are_standard_plus_refuse_only() {
