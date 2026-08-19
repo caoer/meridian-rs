@@ -91,7 +91,7 @@ fn request<'a>(
         delta: None,
         fields: &EMPTY_FIELDS,
         birth_seq: None,
-    ambient: None,
+        ambient: None,
     }
 }
 
@@ -312,7 +312,12 @@ fn an_ambient_escaping_join_refuses() {
     let observed = current_root(&root);
     let err = executor::apply(
         &root,
-        &request_with_ambient(&effects, &authority, &observed, "year=2026/month=08/18-00-adhoc"),
+        &request_with_ambient(
+            &effects,
+            &authority,
+            &observed,
+            "year=2026/month=08/18-00-adhoc",
+        ),
     )
     .expect_err("the joined path is unconfined");
     assert!(
@@ -340,7 +345,10 @@ fn a_malformed_ambient_refuses_the_birth() {
             if detail.contains("ambient")),
         "the refusal names the ambient fault: {err:?}"
     );
-    assert!(!tmp.path().join("tasks/card.md").exists(), "nothing was born");
+    assert!(
+        !tmp.path().join("tasks/card.md").exists(),
+        "nothing was born"
+    );
 }
 
 /// The §4.1 grammar walls that refuse BEFORE the mount table is ever read —

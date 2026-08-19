@@ -54,7 +54,7 @@ fn dispatch_of<'a>(
         delta: None,
         fields: &TEST_EMPTY_FIELDS,
         birth_seq: None,
-    ambient: None,
+        ambient: None,
     }
 }
 
