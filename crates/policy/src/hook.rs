@@ -36,6 +36,16 @@ const CORPUS_COUNTERFACTUAL_CAPS: [EffectKind; 3] = [
     EffectKind::Send,
 ];
 
+/// The per-eval budget a `caps: []` declaration gets when it declares none. A
+/// zero-cap predicate still evaluates (and can exhaust fuel), so an absent
+/// `budget:` must not silently become unlimited — it becomes this named ceiling,
+/// the fleet's conventional `{ steps: 10000, mem: 4194304 }`, so an explicit
+/// declaration and an omitted one bound the predicate identically.
+const ZERO_CAP_DEFAULT_BUDGET: EvalBudget = EvalBudget {
+    steps: 10_000,
+    mem: 4_194_304,
+};
+
 /// A loaded `HOOK.md`: its declared scope, severity, caps, per-eval budget, the
 /// verbatim `how:` block, and the parse- and ceiling-validated predicate.
 /// Public construction is sealed to [`load_hook`], so a publicly reachable `Hook`
@@ -518,8 +528,10 @@ fn take_required(
 
 /// Parse and validate a rule page's HOOK leg under `limits`.
 ///
-/// Pipeline: frontmatter grammar (`severity`/`paths`/`caps`/`budget`/`how`) →
-/// `how:` shape → caps against the slice-1 allowlist → the fenced predicate →
+/// Pipeline: frontmatter grammar (`severity`/`paths`/`caps`/`budget`/`how` —
+/// `budget:`/`how:` required only when `caps:` is non-empty; a `caps: []` page
+/// can emit nothing, so both are unreachable and may be omitted) → `how:`
+/// shape → caps against the slice-1 allowlist → the fenced predicate →
 /// `effects::validate` under the full limits → the capability ceiling.
 ///
 /// Crate-private on purpose: the kind seam has ONE enforcement point,
@@ -572,19 +584,37 @@ fn load_hook_with_caps(
         .ok_or_else(|| malformed("frontmatter must declare `caps:`".to_string()))?;
     let caps = resolve_caps(&declared_caps, allowed_caps)?;
 
-    let budget = parsed
-        .budget
-        .ok_or_else(|| malformed("frontmatter must declare `budget: {steps, mem}`".to_string()))?;
+    // `budget:` and `how:` are required exactly when the declaration can DO
+    // something: a `caps: []` page emits no intent, so its delivery config and
+    // per-eval ceiling are unreachable by construction and may be omitted.
+    // When declared anyway, both are honored as before.
+    let budget = match parsed.budget {
+        Some(budget) => budget,
+        None if caps.is_empty() => ZERO_CAP_DEFAULT_BUDGET,
+        None => {
+            return Err(malformed(
+                "frontmatter must declare `budget: {steps, mem}` when `caps:` is non-empty"
+                    .to_string(),
+            ));
+        }
+    };
 
-    let how_value = parsed
-        .how
-        .ok_or_else(|| malformed("frontmatter must declare `how:`".to_string()))?;
-    validate_how(&how_value).map_err(malformed)?;
-    let how = extract_how_block(frontmatter)
-        .ok_or_else(|| {
-            malformed("`how:` is not a block this loader can carry verbatim".to_string())
-        })?
-        .to_string();
+    let how = match parsed.how {
+        Some(how_value) => {
+            validate_how(&how_value).map_err(malformed)?;
+            extract_how_block(frontmatter)
+                .ok_or_else(|| {
+                    malformed("`how:` is not a block this loader can carry verbatim".to_string())
+                })?
+                .to_string()
+        }
+        None if caps.is_empty() => String::new(),
+        None => {
+            return Err(malformed(
+                "frontmatter must declare `how:` when `caps:` is non-empty".to_string(),
+            ));
+        }
+    };
 
     let source = crate::pack::extract_fenced_starlark(hook_md).ok_or_else(|| {
         malformed("no fenced ```starlark block defining the reaction predicate".to_string())
@@ -830,6 +860,87 @@ how:
 
     fn load(md: &str) -> Result<Hook, LoadError> {
         load_hook(md, CheckLimits::default())
+    }
+
+    /// A `caps: []` declaration in the fleet's production shape, with `how:` and
+    /// `budget:` OMITTED — the keys are unreachable by construction on a page
+    /// that can emit nothing, so the loader must not demand them.
+    const ZERO_CAP_HOOK: &str = "\
+---
+kind: hook
+severity: info
+paths: [\"tasks/*.md\"]
+caps: []
+---
+
+# stop-check-probe — observes, emits nothing
+
+```starlark
+def on_change(event):
+    pass
+```
+";
+
+    /// Direction one: a zero-cap page without `how:`/`budget:` LOADS. The absent
+    /// budget becomes the named default ceiling (never unlimited) and the absent
+    /// `how:` is carried as the empty block.
+    #[test]
+    fn a_zero_cap_page_loads_without_how_or_budget() {
+        let hook = load(ZERO_CAP_HOOK).expect("a `caps: []` page loads without `how:`/`budget:`");
+        assert_eq!(hook.caps(), &[] as &[EffectKind]);
+        assert_eq!(
+            hook.budget(),
+            ZERO_CAP_DEFAULT_BUDGET,
+            "an omitted `budget:` on a zero-cap page is the named default, not unlimited"
+        );
+        assert_eq!(hook.how(), "", "no `how:` bytes on the page, none carried");
+    }
+
+    /// A zero-cap page that DOES declare `how:`/`budget:` keeps today's behavior:
+    /// both are honored, and `how:` still round-trips byte-identically.
+    #[test]
+    fn a_zero_cap_page_declaring_the_keys_is_honored_unchanged() {
+        let page = ZERO_CAP_HOOK.replace(
+            "caps: []\n",
+            "caps: []\nbudget: { steps: 77, mem: 4096 }\nhow:\n  batching: 30s\n",
+        );
+        let hook = load(&page).expect("declared keys still load on a zero-cap page");
+        assert_eq!(
+            hook.budget(),
+            EvalBudget {
+                steps: 77,
+                mem: 4096
+            }
+        );
+        assert_eq!(hook.how(), "how:\n  batching: 30s\n");
+    }
+
+    /// Direction two: a page whose caps are NON-empty still refuses loudly when
+    /// `how:` or `budget:` is missing, and the refusal names the field and the
+    /// condition that makes it required.
+    #[test]
+    fn a_page_with_caps_still_refuses_without_how_or_budget() {
+        let missing_how = FOUNDING_HOOK.replace(FOUNDING_HOW, "");
+        let err = load(&missing_how).expect_err("caps non-empty, `how:` absent → refusal");
+        let LoadError::HookMalformed { reason } = &err else {
+            panic!("expected HookMalformed, got {err:?}");
+        };
+        println!("POPULATION refusal (how)    = {reason}");
+        assert!(
+            reason.contains("`how:`") && reason.contains("`caps:` is non-empty"),
+            "the refusal names the field and its condition: {reason}"
+        );
+
+        let missing_budget = FOUNDING_HOOK.replace("budget: { steps: 10000, mem: 4194304 }\n", "");
+        let err = load(&missing_budget).expect_err("caps non-empty, `budget:` absent → refusal");
+        let LoadError::HookMalformed { reason } = &err else {
+            panic!("expected HookMalformed, got {err:?}");
+        };
+        println!("POPULATION refusal (budget) = {reason}");
+        assert!(
+            reason.contains("`budget:") && reason.contains("`caps:` is non-empty"),
+            "the refusal names the field and its condition: {reason}"
+        );
     }
 
     /// The card's first gate: the founding declaration's frontmatter loads —
