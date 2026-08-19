@@ -135,6 +135,9 @@ pub struct BashDispatch<'a> {
     pub fields: &'a BTreeMap<String, String>,
     /// The workspace ring for door-committed births; `None` on the CLI entry.
     pub birth_seq: Option<&'a dyn wire_serve::seq::SeqSink>,
+    /// The caller's ambient directory for bare birth targets
+    /// (md-create-ambient-paths, shape (c)); `None` on the CLI entry.
+    pub ambient: Option<&'a str>,
     /// Where the bracket's corpus observations come from: the CLI drawer memo
     /// or the daemon's resident domain cache.
     pub observations: ObservationSource<'a>,
@@ -446,6 +449,7 @@ fn locked_window(
             delta: d.delta,
             fields: d.fields,
             birth_seq: d.birth_seq,
+            ambient: d.ambient,
         },
     )
     .map_err(BashError::Phase1)?;
@@ -660,6 +664,7 @@ fn completion_receipt(
             delta: d.delta,
             fields: d.fields,
             birth_seq: d.birth_seq,
+            ambient: d.ambient,
         },
     ) {
         Ok(applied) => Phase2::RefusedExecFailed { applied },
@@ -700,6 +705,7 @@ fn apply_phase2(
             delta: d.delta,
             fields: d.fields,
             birth_seq: d.birth_seq,
+            ambient: d.ambient,
         },
     ) {
         Ok(applied) => Phase2::Applied {

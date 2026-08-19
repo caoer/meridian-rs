@@ -74,6 +74,7 @@ fn request<'a>(observed: &'a model::MerkleRoot, effects: &'a [Effect]) -> ApplyR
         delta: None,
         fields: &TEST_EMPTY_FIELDS,
         birth_seq: None,
+    ambient: None,
     }
 }
 

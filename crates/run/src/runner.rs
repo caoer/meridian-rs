@@ -82,6 +82,12 @@ pub struct RunSpec<'a> {
     pub fields: &'a BTreeMap<String, String>,
     /// The workspace ring for door-committed births; `None` on the CLI entry.
     pub birth_seq: Option<&'a dyn wire_serve::seq::SeqSink>,
+    /// The caller's ambient directory, workspace-relative — a bare
+    /// `md.create` path births under it (md-create-ambient-paths, shape (c)).
+    /// `None` on the CLI entry (the documented bare-door law: workspace-
+    /// root-relative); the § A.8 wire arm threads the frame's optional
+    /// `ambient` (hello cap `run.ambient`).
+    pub ambient: Option<&'a str>,
     /// Where the bash bracket's corpus observations come from (card
     /// run-observation-unification): [`ObservationSource::Drawer`] on the CLI
     /// entry (fresh walks + the workspace drawer memo);
@@ -345,6 +351,10 @@ pub struct RehearseSpec<'a> {
     pub limits: EvalLimits,
     /// Caller-supplied identity (§9, § A.8).
     pub actor: Option<&'a str>,
+    /// The caller's ambient directory — same semantics as [`RunSpec`]'s
+    /// field. The rehearsal resolves birth targets through the SAME seam the
+    /// apply does, so a dry effect list shows where bytes WOULD land.
+    pub ambient: Option<&'a str>,
 }
 
 /// What one rehearsal proved: the resolved task facts plus the language leg.
@@ -428,8 +438,21 @@ pub fn rehearse(
                 fields: &EMPTY_FIELDS,
                 // A rehearsal births nothing, so no ring frame can exist.
                 birth_seq: None,
+                // Resolution runs on the REHEARSAL's own seam below, not in
+                // the dispatcher (nothing applies here).
+                ambient: None,
             })
             .map_err(|e| RunnerError::Starlark(DispatchError::Eval(e)))?;
+            // Birth-target resolution, rehearsal tense: the SAME seam the
+            // apply runs before its choke point, so the dry effect list
+            // shows the RESOLVED landing paths and a rehearsed refusal is
+            // byte-identical to the live one (dogfood r2 F2).
+            let effects = match executor::resolve_birth_targets(root, spec.ambient, &effects)
+                .map_err(|e| RunnerError::Starlark(DispatchError::Exec(e)))?
+            {
+                Some(resolved) => resolved,
+                None => effects,
+            };
             // The choke point, rehearsal tense: the SAME admission the apply
             // enforces, over the same md.* partition.
             let md: Vec<Effect> = effects
@@ -493,6 +516,7 @@ fn dispatch(
                         delta: spec.delta,
                         fields: spec.fields,
                         birth_seq: spec.birth_seq,
+                        ambient: spec.ambient,
                     },
                 )
                 .map_err(RunnerError::Starlark)?,
@@ -520,6 +544,7 @@ fn dispatch(
                     observations: spec.observations,
                     fields: spec.fields,
                     birth_seq: spec.birth_seq,
+                    ambient: spec.ambient,
                 },
                 live,
             )
@@ -600,6 +625,7 @@ fn cascade(
                         // adapter refuses the rest): no birth can arrive.
                         fields: &EMPTY_FIELDS,
                         birth_seq: None,
+                        ambient: None,
                     },
                 )
                 .map_err(|error| CascadeError::Apply {

@@ -463,7 +463,14 @@ fn decode_script(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
 /// receipt / capability / timeout / code field by design: receipts are the
 /// plane's own, authority and deadline resolve from the corpus, and the wire
 /// carries names, never code.
-pub(crate) const RUN_FIELDS: [&str; 5] = ["targets", "invocation", "actor", "now", "fields"];
+pub(crate) const RUN_FIELDS: [&str; 6] = [
+    "targets",
+    "invocation",
+    "actor",
+    "now",
+    "fields",
+    "ambient",
+];
 
 /// The § A.8 fan-out ceiling: every face list carries one.
 const RUN_MAX_TARGETS: usize = 64;
@@ -521,12 +528,34 @@ fn decode_run(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
         }
         None => return Err(bad_request("missing `targets` on `run`")),
     };
+    // The caller's ambient directory (cap `run.ambient`): a workspace-
+    // relative DIR path, never a ref — the strict wall holds the path law
+    // here exactly as it holds `now`'s format and `invocation`'s charset,
+    // so a malformed ambient refuses the frame before any target runs.
+    let ambient = opt_str(obj, op, "ambient")?;
+    if let Some(a) = &ambient {
+        if addr::head_carries_root_separator(a) {
+            return Err(bad_request(format!(
+                "`ambient` must be a workspace-relative directory path, not a \
+                 `root:` ref, on `run`: `{a}` — the run executes on the bound \
+                 workspace; a bare birth path resolves under ambient inside it"
+            )));
+        }
+        if a.is_empty() || !addr::confined(a) {
+            return Err(bad_request(format!(
+                "`ambient` must be a confined workspace-relative directory \
+                 path on `run` (no absolute path, no `.`/`..`/empty segment): \
+                 `{a}`"
+            )));
+        }
+    }
     Ok(Op::Run {
         targets,
         invocation,
         actor: opt_str(obj, op, "actor")?,
         now,
         fields: decode_fields(obj, op)?,
+        ambient,
     })
 }
 

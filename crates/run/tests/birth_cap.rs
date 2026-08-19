@@ -1,9 +1,18 @@
 //! The `md.create` birth cap (create-task-page ruling, 2026-08-18 — option 1:
 //! engine birth cap for declared tasks). Births go through the CREATE DOOR:
 //! occupied-path refusal (`cas_mismatch`), workspace confinement, checks —
-//! the door's own guards, never re-implemented in the run plane. Capability
-//! grain: `md.create` untargeted admits any path; `md.create:<dir>` admits
-//! only births whose first path segment is `<dir>`.
+//! the door's own guards, never re-implemented in the run plane.
+//!
+//! Path resolution (md-create-ambient-paths ruling, shape (c), 2026-08-18):
+//! a BARE path resolves under the request's `ambient` (the caller's ambient
+//! directory) when one rides, and stays workspace-root-relative when none
+//! does — the bare-door law every `ambient: None` fixture here pins. A
+//! rooted `root:rel` spelling is EXPLICIT (§4.1; the same-root/foreign table
+//! legs live in `registry/tests/run_ambient.rs`, where the mount table is
+//! controlled). Capability grain: `md.create` untargeted admits any path;
+//! `md.create:<dir>` admits only births whose RESOLVED partition — the born
+//! file's immediate parent directory — is `<dir>`; a root-level birth's
+//! grain is the path itself.
 
 use std::collections::BTreeMap;
 
@@ -82,6 +91,7 @@ fn request<'a>(
         delta: None,
         fields: &EMPTY_FIELDS,
         birth_seq: None,
+    ambient: None,
     }
 }
 
@@ -154,10 +164,11 @@ fn an_ungranted_birth_is_cap_denied_before_io() {
 }
 
 /// The scoped grant: `md.create:tasks` admits a birth under `tasks/` and
-/// refuses one under `notes/` — the capability grain is the first path
-/// segment, with the cap grammar's exact-match semantics.
+/// refuses one under `notes/` — the capability grain is the resolved
+/// partition (the born file's immediate parent directory), with the cap
+/// grammar's exact-match semantics.
 #[test]
-fn a_scoped_grant_binds_the_first_path_segment() {
+fn a_scoped_grant_binds_the_resolved_partition_dir() {
     let (tmp, root) = workspace();
     let authority = granted("md.create:tasks");
 
@@ -229,4 +240,123 @@ fn a_birth_and_a_page_edit_compose_in_one_generation() {
         page.contains("status: done"),
         "the page edit landed: {page}"
     );
+}
+
+/// A fixture request carrying the caller's ambient directory.
+fn request_with_ambient<'a>(
+    effects: &'a [Effect],
+    authority: &'a Authority,
+    observed: &'a MerkleRoot,
+    ambient: &'a str,
+) -> ApplyRequest<'a> {
+    let mut req = request(effects, authority, observed);
+    req.ambient = Some(ambient);
+    req
+}
+
+/// The ambient lane (shape (c)): a bare birth path resolves under the
+/// caller's ambient directory — the card lands on the CALLER's board, the
+/// workspace root's stays empty, and `md.create:tasks` covers the resolved
+/// partition wherever it lands.
+#[test]
+fn a_bare_birth_resolves_under_the_callers_ambient() {
+    let (tmp, root) = workspace();
+    let effects = [create_effect("tasks/card.md", "# A card\n", 0)];
+    let authority = granted("md.create:tasks");
+    let observed = current_root(&root);
+    let ambient = "year=2026/month=08/18-00-adhoc";
+    executor::apply(
+        &root,
+        &request_with_ambient(&effects, &authority, &observed, ambient),
+    )
+    .expect("the ambient birth lands");
+    let born = tmp
+        .path()
+        .join("year=2026/month=08/18-00-adhoc/tasks/card.md");
+    assert!(born.exists(), "the card lands on the caller's board");
+    assert!(
+        !tmp.path().join("tasks/card.md").exists(),
+        "nothing lands at the workspace root — the original failure mode"
+    );
+}
+
+/// Resolution precedes admission: the capability grain is judged on the
+/// RESOLVED target, so the refusal names the resolved partition, never the
+/// ambient's own first segment.
+#[test]
+fn the_capability_grain_is_judged_on_the_resolved_target() {
+    let (tmp, root) = workspace();
+    let effects = [create_effect("notes/card.md", "# A card\n", 0)];
+    let authority = granted("md.create:tasks");
+    let observed = current_root(&root);
+    let ambient = "year=2026/month=08/18-00-adhoc";
+    let err = executor::apply(
+        &root,
+        &request_with_ambient(&effects, &authority, &observed, ambient),
+    )
+    .expect_err("a notes/ partition refuses under md.create:tasks");
+    assert!(
+        matches!(err, ExecError::CapDenied { ref target, .. } if target == "notes"),
+        "the refusal names the resolved partition: {err:?}"
+    );
+    assert!(!tmp.path().join(ambient).exists(), "nothing was born");
+}
+
+/// A bare path escaping THROUGH the ambient join refuses at the resolution
+/// seam — before the capability grain and before any I/O.
+#[test]
+fn an_ambient_escaping_join_refuses() {
+    let (tmp, root) = workspace();
+    let effects = [create_effect("../../escape.md", "# Out\n", 0)];
+    let authority = granted("md.create");
+    let observed = current_root(&root);
+    let err = executor::apply(
+        &root,
+        &request_with_ambient(&effects, &authority, &observed, "year=2026/month=08/18-00-adhoc"),
+    )
+    .expect_err("the joined path is unconfined");
+    assert!(
+        matches!(err, ExecError::BirthRefused { .. }),
+        "the resolution seam refuses the escape: {err:?}"
+    );
+    assert!(!tmp.path().parent().unwrap().join("escape.md").exists());
+}
+
+/// A malformed ambient refuses every birth it would have resolved — a host
+/// defect surfaces loud, never as a silent root-relative landing.
+#[test]
+fn a_malformed_ambient_refuses_the_birth() {
+    let (tmp, root) = workspace();
+    let effects = [create_effect("tasks/card.md", "# A card\n", 0)];
+    let authority = granted("md.create:tasks");
+    let observed = current_root(&root);
+    let err = executor::apply(
+        &root,
+        &request_with_ambient(&effects, &authority, &observed, "../outside"),
+    )
+    .expect_err("an unconfined ambient refuses");
+    assert!(
+        matches!(err, ExecError::BirthRefused { ref detail, .. }
+            if detail.contains("ambient")),
+        "the refusal names the ambient fault: {err:?}"
+    );
+    assert!(!tmp.path().join("tasks/card.md").exists(), "nothing was born");
+}
+
+/// The §4.1 grammar walls that refuse BEFORE the mount table is ever read —
+/// deterministic on any machine: two head colons, and a root with no path.
+#[test]
+fn rooted_grammar_faults_refuse_before_the_table() {
+    let (_tmp, root) = workspace();
+    let authority = granted("md.create");
+    for bad in ["a:b:c.md", "sessions:"] {
+        let effects = [create_effect(bad, "# X\n", 0)];
+        let observed = current_root(&root);
+        let err = executor::apply(&root, &request(&effects, &authority, &observed))
+            .expect_err("a malformed rooted spelling refuses");
+        assert!(
+            matches!(err, ExecError::BirthRefused { .. }),
+            "`{bad}` refuses through the resolution seam: {err:?}"
+        );
+    }
 }

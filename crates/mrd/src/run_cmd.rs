@@ -421,6 +421,10 @@ fn execute(
         // lane (cap `run.fields`). No ring in reach either.
         fields: &EMPTY_RUN_FIELDS,
         birth_seq: None,
+        // The CLI entry is the documented bare door (md-create-ambient-
+        // paths): a bare birth path stays workspace-root-relative here; the
+        // caller-resolved ambient lane is the wire arm's (cap `run.ambient`).
+        ambient: None,
     };
 
     // Bash stdout streams live to our stdout while the record tees it out-of-tree; starlark
@@ -662,6 +666,8 @@ fn dry(
         declaring_root,
         limits: EvalLimits::default(),
         actor: None,
+        // The CLI's dry leg matches its live leg: bare door, no ambient.
+        ambient: None,
     };
     let rehearsal = runner::rehearse(root, &spec).map_err(|e| fail_runner(&e))?;
     match rehearsal.outcome {
