@@ -463,14 +463,8 @@ fn decode_script(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
 /// receipt / capability / timeout / code field by design: receipts are the
 /// plane's own, authority and deadline resolve from the corpus, and the wire
 /// carries names, never code.
-pub(crate) const RUN_FIELDS: [&str; 6] = [
-    "targets",
-    "invocation",
-    "actor",
-    "now",
-    "fields",
-    "ambient",
-];
+pub(crate) const RUN_FIELDS: [&str; 6] =
+    ["targets", "invocation", "actor", "now", "fields", "ambient"];
 
 /// The § A.8 fan-out ceiling: every face list carries one.
 const RUN_MAX_TARGETS: usize = 64;

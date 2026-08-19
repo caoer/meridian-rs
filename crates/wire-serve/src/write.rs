@@ -4070,10 +4070,7 @@ struct RootedSpelling {
 /// `bad_path` — a malformed head (bad name, two colons, empty rel), an
 /// escaping rel, an unreadable mount table, or a root the table does not
 /// bind. Each refusal teaches its own remedy.
-fn resolve_rooted_spelling(
-    target: &Path,
-    what: &str,
-) -> Result<RootedSpelling, Box<ErrorBody>> {
+fn resolve_rooted_spelling(target: &Path, what: &str) -> Result<RootedSpelling, Box<ErrorBody>> {
     let head = target.0.split('/').next().unwrap_or(&target.0);
     let refuse = |message: String| -> Box<ErrorBody> {
         let mut e = ErrorBody::new(ErrorCode::BadPath);

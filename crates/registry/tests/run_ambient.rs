@@ -233,7 +233,11 @@ fn ambient_and_rooted_birth_targets_resolve_on_the_wire_arm() {
     frame["ambient"] = json!(AMBIENT);
     frame["fields"] = json!({"session": "18-00-adhoc", "agent": "0bdfc81e"});
     let rows = rows_of(&conn.call(&frame));
-    assert_eq!(rows[0]["state"], json!("applied"), "the birth lands: {rows:?}");
+    assert_eq!(
+        rows[0]["state"],
+        json!("applied"),
+        "the birth lands: {rows:?}"
+    );
     let born = fs::read_to_string(ws.join(AMBIENT).join("tasks/zz-amb.md")).unwrap();
     assert!(born.contains("# born card"), "born bytes on disk: {born}");
     assert!(
