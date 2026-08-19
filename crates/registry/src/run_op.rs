@@ -87,6 +87,7 @@ pub(crate) fn serve_line(
         actor,
         now,
         fields,
+        ambient,
     } = op
     else {
         // decode() maps the "run" tag to Op::Run only; any other arm here is
@@ -99,6 +100,7 @@ pub(crate) fn serve_line(
         actor,
         now,
         fields,
+        ambient,
     };
     let rows = serve(registry, ws, &request);
     let mut frame = json!({"id": id, "ok": true, "body": {"targets": rows}});
@@ -131,6 +133,10 @@ struct RunArgs {
     /// § A.2.1 passthrough for run-plane births (cap `run.fields`) —
     /// verbatim onto every `md.create` birth's `ctx.fields`.
     fields: std::collections::BTreeMap<String, String>,
+    /// The caller's ambient directory (cap `run.ambient`), workspace-
+    /// relative — bare `md.create` paths birth under it (md-create-ambient-
+    /// paths, shape (c)). Path-law-validated at the strict decode wall.
+    ambient: Option<String>,
 }
 
 /// The attempt: per target in list order, drive the plane and mint one row.
@@ -153,6 +159,7 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
         sink: &sink,
         birth_seq: &*birth_ring,
         fields: &request.fields,
+        ambient: request.ambient.as_deref(),
         cache: &cache,
     };
     let mut rows = Vec::with_capacity(request.targets.len());
@@ -184,6 +191,10 @@ pub(crate) struct RunHost<'a> {
     /// § A.2.1 run-frame `fields` (cap `run.fields`) — verbatim onto every
     /// `md.create` birth's `ctx.fields` this request commits.
     pub(crate) fields: &'a std::collections::BTreeMap<String, String>,
+    /// The run frame's `ambient` (cap `run.ambient`) — the caller's ambient
+    /// directory every bare birth target this request commits resolves
+    /// under. `None` when the host attached none.
+    pub(crate) ambient: Option<&'a str>,
     pub(crate) cache: &'a std::sync::Mutex<fs::DomainCache>,
 }
 
@@ -218,7 +229,7 @@ pub(crate) fn row_for_target(
         None => target,
     };
     if target.dry.unwrap_or(false) {
-        dry_row(root, ws, target, invocation, actor, now)
+        dry_row(root, ws, target, invocation, actor, now, host)
     } else {
         execute_row(root, ws, target, invocation, actor, now, host)
     }
@@ -275,6 +286,7 @@ fn execute_row(
         delta: Some(host.sink),
         fields: host.fields,
         birth_seq: Some(host.birth_seq),
+        ambient: host.ambient,
         // The daemon lane (card run-observation-unification): bracket
         // observations from the resident domain memo; the drawer memo stays
         // the CLI's instrument.
@@ -320,6 +332,7 @@ fn dry_row(
     invocation: &str,
     actor: Option<&str>,
     now: Option<&str>,
+    host: &RunHost<'_>,
 ) -> Value {
     let spec = runner::RehearseSpec {
         page: &target.page,
@@ -331,6 +344,10 @@ fn dry_row(
         declaring_root: Some(ws),
         limits: EvalLimits::default(),
         actor,
+        // Dry/live parity: the rehearsal resolves birth targets under the
+        // SAME ambient the live leg would, so a dry effect list shows the
+        // resolved landing paths (dogfood r2 F2).
+        ambient: host.ambient,
     };
     match runner::rehearse(root, &spec) {
         Ok(rehearsal) => match rehearsal.outcome {

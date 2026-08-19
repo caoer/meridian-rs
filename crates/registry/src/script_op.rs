@@ -646,6 +646,10 @@ impl ScriptHost for LiveHost<'_> {
             sink: &sink,
             birth_seq: &*birth_ring,
             fields: &crate::run_op::EMPTY_RUN_FIELDS,
+            // The script entry carries no ambient today (like `fields`): a
+            // birth an in-script run() commits resolves bare-door until the
+            // script frame grows its own member.
+            ambient: None,
             cache: &cache,
         };
         // The clock stops while the run plane executes: admission was checked
