@@ -4024,6 +4024,53 @@ fn resolve_pin_target(
             mount: None,
         });
     }
+    let rooted = resolve_rooted_spelling(target, "the pin target")?;
+    // A rooted spelling of the PINNING root itself is the same-root pin under
+    // one of its names: normalize to the bare form. This also keeps the flock
+    // plane single — a second LOCK_NB acquire on the already-held pinning
+    // flock would refuse `workspace_busy` against ourselves.
+    let pinning = std::fs::canonicalize(&root.0).unwrap_or_else(|_| root.0.clone());
+    if rooted.workspace == pinning {
+        return Ok(PinTarget {
+            root: root.clone(),
+            rel: Path(rooted.rel),
+            mount: None,
+        });
+    }
+    Ok(PinTarget {
+        root: fs::WorkspaceRoot(rooted.workspace),
+        rel: Path(rooted.rel),
+        mount: Some(rooted.name),
+    })
+}
+
+/// A rooted `root:rel` spelling, resolved through the machine's mount table
+/// — grammar and table only, BEFORE any same-root normalization (that policy
+/// is each door's own).
+struct RootedSpelling {
+    /// The canonical root name the spelling carried.
+    name: addr::MountName,
+    /// The root's canonical bound path.
+    workspace: PathBuf,
+    /// The root-relative half, confined.
+    rel: String,
+}
+
+/// The ONE engine-side reading of a rooted `root:rel` target at a write-door
+/// position — the §4.1 head-colon law minus the fragment arm (a target is a
+/// path position; `#` is an ordinary path byte there). Shared by the pin
+/// door and the run plane's birth lane so two doors cannot hold two opinions
+/// of one spelling. `what` is the caller's own noun for its refusal texts
+/// ("the pin target", "the birth target").
+///
+/// Order is parse → confinement → table, so a malformed spelling refuses
+/// without the mount table ever being read.
+///
+/// # Errors
+/// `bad_path` — a malformed head (bad name, two colons, empty rel), an
+/// escaping rel, an unreadable mount table, or a root the table does not
+/// bind. Each refusal teaches its own remedy.
+fn resolve_rooted_spelling(target: &Path, what: &str) -> Result<RootedSpelling, Box<ErrorBody>> {
     let head = target.0.split('/').next().unwrap_or(&target.0);
     let refuse = |message: String| -> Box<ErrorBody> {
         let mut e = ErrorBody::new(ErrorCode::BadPath);
@@ -4049,17 +4096,17 @@ fn resolve_pin_target(
     }
     if !addr::confined(rel) {
         return Err(refuse(format!(
-            "{rel} is not a root-relative path — the rel half of a rooted pin target obeys \
+            "{rel} is not a root-relative path — the rel half of a rooted target obeys \
              the same §1 path law as any write path (no absolute path, no `.`/`..`/empty \
              segment, no second `root:` prefix). Nothing was written.",
         )));
     }
-    // The table, read fresh per mint (the same currency law the resolver
+    // The table, read fresh per call (the same currency law the resolver
     // holds): a missing or invalid ~/MERIDIAN.md means the name cannot be
     // resolved HERE, which is a loud refusal at a write door — never a grey.
     let Some(table) = machine_mount_table() else {
         return Err(refuse(format!(
-            "the pin target {} names root `{name}`, but this machine's mount table \
+            "{what} {} names root `{name}`, but this machine's mount table \
              (~/MERIDIAN.md) cannot be read, so the name resolves to no workspace. Declare \
              the root's mount there and retry. Nothing was written.",
             target.0
@@ -4077,7 +4124,7 @@ fn resolve_pin_target(
             .map(config::mount::Mount::name)
             .collect();
         return Err(refuse(format!(
-            "the pin target {} names root `{name}`, which this machine does not bind \
+            "{what} {} names root `{name}`, which this machine does not bind \
              (bound roots: {}). A claim on an unbound root could never be walked or \
              checked from here. Declare the name in the target root's own MERIDIAN.md and \
              bind it in ~/MERIDIAN.md, then retry. Nothing was written.",
@@ -4089,24 +4136,80 @@ fn resolve_pin_target(
             }
         )));
     };
-    // A rooted spelling of the PINNING root itself is the same-root pin under
-    // one of its names: normalize to the bare form. This also keeps the flock
-    // plane single — a second LOCK_NB acquire on the already-held pinning
-    // flock would refuse `workspace_busy` against ourselves.
-    let pinning = std::fs::canonicalize(&root.0).unwrap_or_else(|_| root.0.clone());
-    if target_root == pinning {
-        let rel = Path(rel.to_string());
-        return Ok(PinTarget {
-            root: root.clone(),
-            rel,
-            mount: None,
-        });
-    }
-    Ok(PinTarget {
-        root: fs::WorkspaceRoot(target_root.to_path_buf()),
-        rel: Path(rel.to_string()),
-        mount: Some(name),
+    Ok(RootedSpelling {
+        name,
+        workspace: target_root.to_path_buf(),
+        rel: rel.to_string(),
     })
+}
+
+/// Resolve one `md.create` birth target for the run plane (md-create-ambient-
+/// paths ruling, shape (c), 2026-08-18) — the face path law carried onto the
+/// birth lane:
+///
+/// - a BARE path resolves under `ambient` (the caller's ambient directory,
+///   workspace-relative) when one rides the call, and stays workspace-root-
+///   relative when none does (the documented bare-door behavior);
+/// - a rooted `root:rel` spelling is EXPLICIT: it resolves through the one
+///   rooted lane ([`resolve_rooted_spelling`]) and must name the run's own
+///   bound workspace — the run's births ride that workspace's ring, locks,
+///   and armed law, so a foreign-root birth refuses with a teaching rather
+///   than landing outside every guard the run holds.
+///
+/// Returns the workspace-relative path the birth lands at. The create door
+/// still runs its own confinement on it — this seam exists so the capability
+/// grain and the receipt see the RESOLVED target.
+///
+/// # Errors
+/// `bad_path` — a malformed or foreign rooted spelling, an unconfined
+/// ambient, or an unconfined resolved path. Nothing was written.
+pub fn resolve_birth_target(
+    root: &fs::WorkspaceRoot,
+    spelling: &str,
+    ambient: Option<&str>,
+) -> Result<String, Box<ErrorBody>> {
+    let refuse = |message: String| -> Box<ErrorBody> {
+        let mut e = ErrorBody::new(ErrorCode::BadPath);
+        e.path = Some(Path(spelling.to_owned()));
+        e.message = Some(message);
+        Box::new(e)
+    };
+    if addr::head_carries_root_separator(spelling) {
+        let rooted = resolve_rooted_spelling(&Path(spelling.to_owned()), "the birth target")?;
+        let bound = std::fs::canonicalize(&root.0).unwrap_or_else(|_| root.0.clone());
+        if rooted.workspace != bound {
+            return Err(refuse(format!(
+                "the birth target {spelling} names root `{}`, which is not this run's \
+                 bound workspace — a run-plane birth rides the bound workspace's ring, \
+                 locks, and armed law, so it cannot land in a foreign tree. Run the page \
+                 bound to that root instead. Nothing was written.",
+                rooted.name
+            )));
+        }
+        return Ok(rooted.rel);
+    }
+    let resolved = match ambient {
+        Some(dir) => {
+            if dir.is_empty() || !addr::confined(dir) {
+                return Err(refuse(format!(
+                    "ambient `{dir}` is not a confined workspace-relative directory \
+                     path (no absolute path, no `.`/`..`/empty segment), so the bare \
+                     birth target {spelling} cannot resolve under it. Nothing was \
+                     written.",
+                )));
+            }
+            format!("{dir}/{spelling}")
+        }
+        None => spelling.to_owned(),
+    };
+    if !addr::confined(&resolved) {
+        return Err(refuse(format!(
+            "{resolved} is not a confined workspace-relative path (no absolute path, \
+             no `.`/`..`/empty segment, no `root:` prefix past the head). Nothing was \
+             written.",
+        )));
+    }
+    Ok(resolved)
 }
 
 /// The machine's bound mount table, or `None` when no config resolves or the

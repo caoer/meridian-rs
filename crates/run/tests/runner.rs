@@ -89,6 +89,7 @@ fn spec_for(scratch: &tempfile::TempDir, args: Vec<String>) -> RunSpec<'_> {
         observations: run::dispatch_bash::ObservationSource::Drawer,
         fields: &TEST_EMPTY_FIELDS,
         birth_seq: None,
+        ambient: None,
     }
 }
 
