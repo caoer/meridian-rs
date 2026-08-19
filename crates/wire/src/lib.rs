@@ -995,6 +995,17 @@ pub enum Op {
         /// hosts attach it only when hello advertises `run.fields`.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         fields: BTreeMap<String, String>,
+        /// The caller's ambient directory, workspace-relative (md-create-
+        /// ambient-paths ruling, shape (c), 2026-08-18): a BARE `md.create`
+        /// path this run births resolves under it — the face path law ("a
+        /// bare path stays ambient in your session directory") carried onto
+        /// the run plane's birth lane. A rooted `root:path` birth target is
+        /// unaffected (explicit, § 4.1). Optional — #27 freeze adds no
+        /// required field; hosts attach it only when hello advertises
+        /// `run.ambient`, resolved per call from the caller's own identity,
+        /// never a page-hardcoded dir.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ambient: Option<String>,
     },
 }
 

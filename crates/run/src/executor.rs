@@ -111,6 +111,12 @@ pub struct ApplyRequest<'a> {
     /// a daemon-side birth is numbered like any door write. `None` on the
     /// CLI entry — its commits stay external change, exactly as `delta`.
     pub birth_seq: Option<&'a dyn wire_serve::seq::SeqSink>,
+    /// The caller's ambient directory, workspace-relative (md-create-ambient-
+    /// paths ruling, shape (c), 2026-08-18): a BARE `md.create` path resolves
+    /// under it before admission, the door, and the receipt — see
+    /// [`resolve_birth_targets`]. `None` (the CLI entry, hosts predating cap
+    /// `run.ambient`) keeps the bare-door law: workspace-root-relative.
+    pub ambient: Option<&'a str>,
 }
 
 /// The host seam of the run-delta ruling (§ A.8 Delta honesty): the daemon
@@ -298,6 +304,7 @@ impl IntentApply {
             delta: base.delta,
             fields: base.fields,
             birth_seq: base.birth_seq,
+            ambient: base.ambient,
         }
     }
 }
@@ -736,9 +743,10 @@ pub fn admit(effects: &[Effect], authority: &Authority) -> Result<(), ExecError>
 fn realize_births(
     root: &fs::WorkspaceRoot,
     req: &ApplyRequest<'_>,
+    effects: &[Effect],
 ) -> Result<Vec<ReceiptEdit>, ExecError> {
     let mut births = Vec::new();
-    for effect in req.effects.iter().filter(|e| e.kind == EffectKind::Create) {
+    for effect in effects.iter().filter(|e| e.kind == EffectKind::Create) {
         let path = str_arg(effect, "path")?;
         let body = str_arg(effect, "body")?;
         let args = wire_serve::write::CreateArgs {
@@ -774,6 +782,51 @@ fn realize_births(
     Ok(births)
 }
 
+/// Resolve every `md.create` birth target in `effects` to the workspace-
+/// relative path it will LAND at (md-create-ambient-paths ruling, shape (c),
+/// 2026-08-18) — the face path law carried onto the birth lane: a bare path
+/// resolves under the caller's ambient directory when one rides the call
+/// (and stays workspace-root-relative when none does — the bare-door law); a
+/// rooted `root:rel` spelling is EXPLICIT and must name the bound workspace.
+/// The one grammar opinion is [`wire_serve::write::resolve_birth_target`].
+///
+/// Returns `None` when no effect is a birth — the caller keeps its slice —
+/// and the rewritten list otherwise, so the choke point's capability grain,
+/// the birth lane, and the receipt all judge the RESOLVED target. One seam,
+/// both tenses: [`apply_under`] resolves here before admission, and the dry
+/// rehearsal (`runner::rehearse`) resolves through the same call before the
+/// same admission (dogfood r2 F2 — dry-green predicts live-green).
+///
+/// # Errors
+/// [`ExecError::BirthRefused`] — the resolver's typed `bad_path` frame
+/// carried whole, exactly as a door refusal rides. Nothing was applied.
+pub fn resolve_birth_targets(
+    root: &fs::WorkspaceRoot,
+    ambient: Option<&str>,
+    effects: &[Effect],
+) -> Result<Option<Vec<Effect>>, ExecError> {
+    if !effects.iter().any(|e| e.kind == EffectKind::Create) {
+        return Ok(None);
+    }
+    let mut resolved = effects.to_vec();
+    for effect in &mut resolved {
+        if effect.kind != EffectKind::Create {
+            continue;
+        }
+        let path = str_arg(effect, "path")?;
+        let landed =
+            wire_serve::write::resolve_birth_target(root, &path, ambient).map_err(|e| {
+                ExecError::BirthRefused {
+                    path: path.clone(),
+                    // The resolver's typed frame, carried whole (no Display).
+                    detail: serde_json::to_string(e.as_ref()).unwrap_or_else(|_| format!("{e:?}")),
+                }
+            })?;
+        effect.args.insert("path".to_owned(), ArgValue::Str(landed));
+    }
+    Ok(Some(resolved))
+}
+
 /// # Errors
 /// [`ExecError`] — in every case NOTHING was applied.
 pub fn apply_under(
@@ -781,13 +834,18 @@ pub fn apply_under(
     root: &fs::WorkspaceRoot,
     req: &ApplyRequest<'_>,
 ) -> Result<Applied, ExecError> {
+    // 0. THE BIRTH-TARGET RESOLUTION — see [`resolve_birth_targets`]: bare
+    // birth paths resolve under the caller's ambient BEFORE any gate, so the
+    // choke point below, the door, and the receipt judge where bytes land.
+    let resolved = resolve_birth_targets(root, req.ambient, req.effects)?;
+    let effects: &[Effect] = resolved.as_deref().unwrap_or(req.effects);
+
     // 1. THE CHOKE POINT — before any I/O.
-    admit(req.effects, req.authority)?;
+    admit(effects, req.authority)?;
 
     // 1b. THE BIRTH LANE — see [`realize_births`].
-    let births = realize_births(root, req)?;
-    let page_effects: Vec<&Effect> = req
-        .effects
+    let births = realize_births(root, req, effects)?;
+    let page_effects: Vec<&Effect> = effects
         .iter()
         .filter(|e| e.kind != EffectKind::Create)
         .collect();
@@ -1083,15 +1141,20 @@ fn descriptor_surface(effect: &Effect) -> Result<(&'static str, String), ExecErr
     let target = match effect.kind {
         EffectKind::SetField => str_arg(effect, "field")?,
         EffectKind::AppendSection => str_arg(effect, "section")?,
-        // The birth cap's capability grain is the path's FIRST segment
-        // (`tasks/foo.md` → `tasks`), so `md.create:tasks` scopes a
-        // directory with the cap grammar's existing exact-match semantics
-        // (the target charset admits no `/`). A root-level birth's grain is
-        // the path itself.
+        // The birth cap's capability grain is the RESOLVED target's
+        // PARTITION — the born file's immediate parent directory name
+        // (`tasks/foo.md` → `tasks`; `year=…/18-x/tasks/foo.md` → `tasks`)
+        // — so `md.create:tasks` covers a tasks/ board wherever the birth
+        // lands (md-create-ambient-paths, shape (c): the cap grammar covers
+        // the RESOLVED target), with the cap grammar's existing exact-match
+        // semantics (the target charset admits no `/`). A root-level birth's
+        // grain is the path itself. Paths reach here post-resolution
+        // ([`resolve_birth_targets`] runs before [`admit`] in both tenses).
         EffectKind::Create => {
             let path = str_arg(effect, "path")?;
-            path.split_once('/')
-                .map_or(path.clone(), |(d, _)| d.to_owned())
+            path.rsplit_once('/').map_or(path.clone(), |(dirs, _)| {
+                dirs.rsplit('/').next().unwrap_or(dirs).to_owned()
+            })
         }
         _ => unreachable!("md.* kinds are SetField | AppendSection | Create"),
     };

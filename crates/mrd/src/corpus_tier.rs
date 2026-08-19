@@ -1202,6 +1202,7 @@ fn apply_generation(
         // Proof tier drives cascade intents only — no birth can arrive.
         fields: &EMPTY_RUN_FIELDS,
         birth_seq: None,
+        ambient: None,
     });
     let applied = run::executor::apply(&root, &request).map_err(|error| {
         ProofFault::Refused(format!(

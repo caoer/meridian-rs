@@ -2705,7 +2705,25 @@ guard applies exactly as at every other op):
 - `actor`/`now` ride per §9, optional, absent stays absent. The supplied
   actor threads into the run receipt's `actor` fact; the CLI entry, its own
   host, keeps minting its `run:<task>` self-label when no actor exists.
-- **Named absences.** No `receipt` field: run receipts are the plane's own,
+- `fields{}` string→string, optional (cap `run.fields`; birth cap,
+  2026-08-18): § A.2.1 opaque passthrough delivered verbatim as middleware
+  `ctx.fields` on every `md.create` birth this run commits — the stamped
+  lane for born-identity `created`/`session`/`spawned-by`. The engine
+  interprets NO key. A host attaches it only when hello advertises the cap;
+  an older engine's strict wall refuses the unknown field.
+- `ambient` string, optional (cap `run.ambient`; md-create-ambient-paths,
+  shape (c), 2026-08-18): the caller's ambient directory,
+  workspace-relative, path-law-validated at the strict wall (a confined DIR
+  path — never a `root:` ref, never absolute). A BARE `md.create` path this
+  run births resolves under it — the face path law ("a bare path stays
+  ambient in your session directory") on the birth lane; a rooted
+  `root:rel` birth target is explicit and unaffected, and must name the
+  bound workspace (a foreign root refuses with a teaching — a run's births
+  ride the bound workspace's ring, locks, and armed law). The capability
+  grain and the receipt judge the RESOLVED target (`md.create:tasks` covers
+  a `tasks/` partition wherever it lands). No `ambient` = the bare-door
+  law, workspace-root-relative, unchanged. Hosts resolve it per call from
+  the caller's own identity — never a page-hardcoded dir.
   engine-appended to the run receipt file under the per-target invocation
   anchor on BOTH doors — nothing exists for a caller to aim. No capability,
   timeout, or code field: authority resolves from the page + declaring-root

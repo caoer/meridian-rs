@@ -517,6 +517,7 @@ fn run_apply(
         // this lane and no ring is in reach.
         fields: &EMPTY_RUN_FIELDS,
         birth_seq: None,
+        ambient: None,
         // Realise drives the plane wherever it is hosted; it holds no resident
         // cache handle, so its observations keep the drawer instrument.
         observations: run::dispatch_bash::ObservationSource::Drawer,

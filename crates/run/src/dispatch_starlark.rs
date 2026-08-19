@@ -54,6 +54,9 @@ pub struct StarlarkDispatch<'a> {
     pub fields: &'a BTreeMap<String, String>,
     /// The workspace ring for door-committed births; `None` on the CLI entry.
     pub birth_seq: Option<&'a dyn wire_serve::seq::SeqSink>,
+    /// The caller's ambient directory for bare birth targets
+    /// (md-create-ambient-paths, shape (c)); `None` on the CLI entry.
+    pub ambient: Option<&'a str>,
 }
 
 /// What one block dispatch produced: the FULL deterministic effect set (the
@@ -152,6 +155,7 @@ pub fn dispatch(
                     delta: d.delta,
                     fields: d.fields,
                     birth_seq: d.birth_seq,
+                    ambient: d.ambient,
                 },
             )
             .map_err(DispatchError::Exec)?,
