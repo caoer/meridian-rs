@@ -57,7 +57,10 @@ printf 'end:1\\n' >&3
 ";
 
 fn workspace(page: &str) -> (tempfile::TempDir, fs::WorkspaceRoot) {
-    let tmp = tempfile::tempdir().unwrap();
+    // Under target/, not $TMPDIR — the bash e2e here failed
+    // `Detection(Guard(Io(NotADirectory)))` on mac at CLEAN MAIN for the
+    // /var→/private/var reason documented in crates/run/tests/birth_cap.rs.
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     std::fs::write(tmp.path().join("page.md"), page).unwrap();
     let root = fs::WorkspaceRoot(tmp.path().to_owned());
     (tmp, root)
