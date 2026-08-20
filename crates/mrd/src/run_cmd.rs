@@ -17,7 +17,8 @@
 //!   convention, workspace busy, in-window out-of-band delta, timeout, bash nonzero
 //!   exit (the foreign-edit and root-mismatch legs are RETIRED — same amendment).
 //! - **2** — the invocation is wrong (usage, addressing, contract violation) or the tool failed
-//!   pre-run. TASK omitted with several declared tasks lists them and exits 2.
+//!   pre-run. TASK omitted with several declared tasks lists them and exits 2 — unless one is
+//!   named `default`, which runs (the 2026-08-19 default-task amendment, `docs/run-plane.md`).
 //!
 //! # The three legs
 //! `--list` surfaces every declared task with its contract, and its caps where capabilities
@@ -337,7 +338,9 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
         return list_tasks(&root, &parsed.page, &doc, &conventions, parsed.format());
     }
 
-    // TASK omitted: one binding runs; several list themselves and exit 2.
+    // TASK omitted: one binding runs, or among several the one named `default`
+    // (the declared election — address::DEFAULT_TASK); several with no
+    // `default` list themselves and exit 2.
     let resolved = match address::resolve_task(&doc, parsed.task.as_deref()) {
         Ok(resolved) => resolved,
         Err(e @ AddressError::ManyTasks { .. }) => {

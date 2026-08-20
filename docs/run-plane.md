@@ -1659,7 +1659,13 @@ below about `mrd run` is unchanged by it, and `mrd script`'s own human-mode
 face is non-normative (§ The script entry).
 
 No argv JSON. TASK omitted: one declared task runs; several print the list
-and exit 2 — the CLI never guesses. Contract violations exit 2 with the
+and exit 2 — the CLI never guesses. *(Amended 2026-08-19 — the default-task
+election, ZT directive: with several tasks declared, a binding named
+`default` (`task.default`) runs instead of the list-and-refuse. This is not
+a guess — the page's author elected it by name. The list-and-exit-2 leg
+stands wherever no `default` binding exists. One owner:
+`run::address::resolve_task`, so every door — CLI live, `--dry` rehearsal,
+the wire arm — answers the same.)* Contract violations exit 2 with the
 declared contract shown. `--dry` on starlark evaluates hermetically and
 prints the **full** effect set, applying nothing; `--dry` on bash shows the
 block and its resolved caps and **refuses to exec** — running it is the only
