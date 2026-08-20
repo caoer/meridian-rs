@@ -2830,6 +2830,23 @@ pub fn fm_tags(block: &str, key: &str) -> Vec<String> {
         return Vec::new();
     };
 
+    // A quoted scalar that is not a flow list is ONE tag, comma or no comma:
+    // `tags: "a, b"` is a single YAML string, and splitting it would invent a
+    // second tag — and could register a rule page the YAML reading never
+    // offered. `scalar::Scalar`'s own law says the same ("Quoted is a STRING in
+    // every schema").
+    //
+    // A whole-value-quoted FLOW LIST is the exception, and a ruled one: § A.6's
+    // value plane decodes the transport quoting first, and the decoded text is
+    // then read as the list it spells (`view/tests/a6_value_decode.rs ::
+    // quoted_flow_list_yields_clean_tag_rows` — `tags: "[a, b]"` is two clean
+    // items, never one mangled string). Decode, THEN decide.
+    if let scalar::Scalar::Quoted(one) = scalar::decode(remainder)
+        && !is_flow_list(&one)
+    {
+        return tag_item(&one).into_iter().collect();
+    }
+
     // A flow sequence may span lines (`tags: [a,` / `  b]`). Join until the
     // bracket closes — inside the block only; an unclosed sequence serves what
     // it opened rather than swallowing the rest of the frontmatter.
@@ -2899,6 +2916,13 @@ fn tag_item(raw: &str) -> Option<String> {
 /// A `---` fence line.
 fn is_fm_fence(line: &str) -> bool {
     line.trim() == "---"
+}
+
+/// Does this text spell a flow sequence (`[…]`)? The one question that decides
+/// whether decoded quoting hid a LIST or a string (§ A.6 value plane).
+fn is_flow_list(text: &str) -> bool {
+    let t = text.trim();
+    t.starts_with('[') && t.ends_with(']')
 }
 
 /// The first top-level `key:` line in a frontmatter block: its index and the
@@ -3079,6 +3103,29 @@ mod tests {
             fm_tags("tags: ['#foo', \"Bar\"]", "tags"),
             vec!["foo", "Bar"],
             "quotes and the hash go; case stays — a tag is not a resolution key",
+        );
+    }
+
+    /// A QUOTED scalar is one tag whatever it contains. `scalar::Scalar`'s own
+    /// law — "Quoted is a STRING in every schema" — and the YAML reading agree;
+    /// the parser this replaced split it on the comma and invented a tag.
+    #[test]
+    fn a_quoted_scalar_is_one_tag_even_with_a_comma() {
+        assert_eq!(fm_tags("tags: \"a, b\"", "tags"), vec!["a, b"]);
+        assert_eq!(
+            fm_tags("tags: 'rules/hook, x'", "tags"),
+            vec!["rules/hook, x"]
+        );
+        assert_eq!(
+            fm_tags("tags: a, b", "tags"),
+            vec!["a", "b"],
+            "unquoted, the comma still separates",
+        );
+        assert_eq!(
+            fm_tags("tags: \"[type/task, domain/x]\"", "tags"),
+            vec!["type/task", "domain/x"],
+            "a whole-value-quoted FLOW LIST is still a list — § A.6 decodes the \
+             transport quoting first (view a6_value_decode gate)",
         );
     }
 

@@ -1083,6 +1083,11 @@ mod tests {
             "id: a.b",
             "title: no tags here\nid: a.b",
             "tags: [a,\n  b]\nid: a.b",
+            // The arm that used to disagree: a quoted scalar is ONE tag, so
+            // this page offers `rules/hook, x` and registers NOTHING. Splitting
+            // it would have registered a hook the YAML reading never declared.
+            "tags: \"rules/hook, x\"\nid: a.b",
+            "tags: '#rules/check'\nid: a.b",
         ] {
             assert_eq!(
                 model::fm_tags(frontmatter, "tags"),
