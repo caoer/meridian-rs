@@ -78,7 +78,13 @@ pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 ///
 /// `s7`: the body projection — `body` relation on the ephemeral schema,
 /// `hist.body` + `hist.body_text` on the cache (`docs/body-projection.md`).
-pub const SCHEMA_SALT: &str = "s7";
+///
+/// `s8`: block-sequence `tags:` project their items (`model::fm_tags`). No
+/// column moved, but an s7 drawer's rows are WRONG at a fingerprint that will
+/// never advance — an unchanged file is never re-staged, so the append delta
+/// cannot repair it and a fresh drawer is the only route (card
+/// `tag-all-block-form-blindness`).
+pub const SCHEMA_SALT: &str = "s8";
 
 /// Default GC threshold: a drawer whose last-use is older than this is reapable.
 /// 30 days, mirroring Cargo's registry auto-GC horizon. A path-keyed drawer store
