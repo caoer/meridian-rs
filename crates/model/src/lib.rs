@@ -3057,7 +3057,10 @@ mod tests {
             panic!("frontmatter node");
         };
         assert_eq!(
-            map.0.iter().find(|(k, _)| k == "tags").map(|(_, v)| v.as_str()),
+            map.0
+                .iter()
+                .find(|(k, _)| k == "tags")
+                .map(|(_, v)| v.as_str()),
             Some(""),
             "the map's value is empty — the items are on other lines",
         );
