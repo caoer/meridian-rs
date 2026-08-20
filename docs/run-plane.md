@@ -1442,7 +1442,7 @@ would be a legal glob for a rule or hook.
 | Descriptor | Coordinate the glob judges |
 |---|---|
 | `Create` | its `path` argument VERBATIM — the resolution base (descriptor `base` > frame `ambient` > workspace root) is a separate axis, never glued into the matched string |
-| `SetField` · `AppendSection` | the declaring page's path with the frame's `ambient` directory stripped as a LITERAL prefix when the page lies under it; with no `ambient` on the frame, the page's full workspace-relative path unchanged |
+| `SetField` · `AppendSection` | the declaring page's path with the frame's `ambient` directory stripped as a LITERAL prefix when the page lies under it; with no `ambient` on the frame — or a page that does not lie under it — the page's full workspace-relative path unchanged |
 
 ⛔ **A create scope constrains the SHAPE of the declared path, not where the
 bytes land.** `base` is an ordinary argument the block chooses, and the choke
@@ -1489,7 +1489,10 @@ name: field-notes
 run.caps.fix-*: md.edit
 # longest pattern wins — a comment needs its OWN line: the frontmatter
 # scanner takes no YAML crate and does not strip trailing comments, so a
-# `# …` after a value is parsed as a cap and refuses the WHOLE table
+# `# …` after a value is parsed as a cap and refuses the WHOLE table —
+# after which EVERY run on this root refuses, read-only tasks and even bash
+# tasks included (caps never govern bash, but the table is loaded before
+# authority resolution, so a broken table stops them too)
 run.caps.fix-note: md.edit:**/tasks/*.md
 run.timeout_secs: 7
 ---
@@ -1519,13 +1522,23 @@ A present-but-empty `caps` declaration is an EXPLICIT read-only grant, distinct
 from no declaration. Precedence for the grant is explicit > convention > none;
 conventions **narrow only, never widen**, and every cap that did not survive
 intact is reported in `narrowed[]`. **Scopes meet by STRING EQUALITY, not by
-glob containment** (`Cap::meet`, `crates/run/src/caps.rs`): a ceiling scope
-admits the identical scope string or the unscoped verb, and drops every other
-scope — including one that is plainly narrower. Measured 2026-08-19:
-`md.edit:tasks/sub/*.md` under the ceiling `md.edit:tasks/**` is denied, and
-the refusal's "aim the effect inside what it leaves" misreads there, since
-the effect already was inside. Under a scoped ceiling, spell the page's scope
-byte-for-byte or leave the page's verb unscoped. The builtin `check-*` / `verify-*` ceiling
+glob containment** (`Cap::meet`, `crates/run/src/caps.rs`). Under a scoped
+ceiling a page's cap meets it three ways, and only one of them keeps what the
+page asked for:
+
+| Page declares | Result under ceiling `md.edit:tasks/**` |
+|---|---|
+| the identical scope string | survives intact |
+| the bare verb, unscoped | REPLACED by the ceiling's scope (`md.edit:tasks/**`), reported in `narrowed[]` — the page does not keep full reach |
+| any other scope, however narrow | DROPPED — the grant is gone |
+
+Measured 2026-08-19: `md.edit:tasks/sub/*.md` under that ceiling is denied
+though it sits plainly inside it, and the refusal's "aim the effect inside
+what it leaves" misreads there, since the effect already was inside; a page
+declaring bare `md.edit` resolves to `md.edit:tasks/**` with
+`narrowed by ceiling: md.edit`. So under a scoped ceiling, spell the page's
+scope byte-for-byte, or declare the bare verb and accept the ceiling's scope
+as yours. The builtin `check-*` / `verify-*` ceiling
 is absolute, and those names refuse a bash fence loudly at load. Caps bind at
 the executor choke point before any I/O: one violation refuses the whole batch.
 
