@@ -2719,12 +2719,11 @@ guard applies exactly as at every other op):
   ambient in your session directory") on the birth lane; explicit targeting
   rides the descriptor's separate `base` argument (a rooted ref or a
   confined dir; caps-redesign 2026-08-19), with precedence descriptor
-  `base` > frame `ambient` > workspace root. **`base` is a descriptor field,
-  so its availability is per LANE:** the starlark kernel takes it today
-  (`create(path=, body=, base=, message=)`), while the bash effect shim's
-  `md.create` frame accepts exactly `path` + `body` and refuses any other
-  key — until the shim carries it, a bash birth has only `ambient` and the
-  bare door (card `bash-shim-base-targeting`). A rooted `base` must name the
+  `base` > frame `ambient` > workspace root. **Both lanes carry it** (engine
+  `6c960b7c4`): the starlark kernel as `create(path=, body=, base=,
+  message=)`, and the bash effect shim's `md.create` frame as an optional
+  `base` beside the required `path` + `body`, with identical semantics; any
+  OTHER key still refuses the whole batch closed. A rooted `base` must name the
   bound workspace (a foreign root refuses with a teaching — a run's births
   ride the bound workspace's ring, locks, and armed law), and a rooted
   spelling in the `path` argument itself refuses, naming `base` — two axes,
