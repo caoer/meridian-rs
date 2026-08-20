@@ -1367,7 +1367,7 @@ write path. Everything that differs is at the entry.
 | Reads | none — inputs arrive as inert `RunCtx` data | CLI lane: `read()` lowering to `toc`/`cat` — live, as a wire client through the one door. In-process lane (§ A.7): `read()` serving from the entry world plus the program's own armed overlay |
 | Enumeration | page names its own targets | none in-kernel: host resolves selector (sorted) or binds caller `files[]` in call order — inert paths only |
 | Commit | one atomic `if_fingerprint`-pinned batch via the local executor | ONE guarded commit as the caller (`actor`/`now`/`receipt` on the request): the single §4.4 splice for one armed path, the §4.4 SET form for N (§ One COMMIT per attempt) |
-| Concurrency | workspace flock, `LOCK_NB` (decision #9) | stand-still optimistic at touch-set grain (amended 2026-08-15, plan §4.6): entry world pinned for reads (frozen view); commit premise = the engine-computed touch set, verified entry-vs-live — foreign churn outside it never refuses; conflict inside it ⇒ host re-resolves selector and retries (budget 2, `attempts` on the face) |
+| Concurrency | `run.lock` `LOCK_NB` (decision #9); `write.lock` bounded-wait at the door calls (amended 2026-08-20 — Executor laws) | stand-still optimistic at touch-set grain (amended 2026-08-15, plan §4.6): entry world pinned for reads (frozen view); commit premise = the engine-computed touch set, verified entry-vs-live — foreign churn outside it never refuses; conflict inside it ⇒ host re-resolves selector and retries (budget 2, `attempts` on the face) |
 | Failure grain | one violation refuses the whole batch; bash phase-1 may stand committed and reported (decision #22) | one violation refuses the whole script; nothing ever partially lands (the sealed set keeps retry sound: a refusal lands nothing, so a re-run never double-applies) |
 | Output | run record: stdout streamed + content-addressed out-of-tree log; receipt linkage via `ExecRecordSink` | `ScriptTrace` → text face: echo semantics, embedded §4.4 splice response verbatim, telemetry always present |
 | Guarantee label | per block: `hermetic` (starlark) / `detected` (bash, U6b) | recorded-read + stand-still, stated as such; zero-armed outcome is read-class (`Ok(vec![])` precedent) |
@@ -1457,16 +1457,59 @@ point never reads it, so a block granted exactly `md.create:tasks/*.md` can
 land `tasks/<slug>.md` under ANY confined directory in the workspace.
 Measured 2026-08-19, all from that one grant: `conventions/attested/tasks/x.md`,
 `receipts/tasks/x.md`, `meridian/tasks/x.md`, `.meridian/tasks/x.md`, and
-**`.git/tasks/x.md`** — the reach includes the receipt ledger, the attestation
+**`.git/tasks/x.md`** — the reach included the receipt ledger, the attestation
 tree, the engine's own reserved dirs, and the git directory, not just a wrong
-content folder. Only `..`, absolute paths, and foreign roots refuse. The tail
-jail is real (`evil/tasks/x.md` and `tasks/sub/x.md` both fail the glob as
-declared paths); the location is not jailed at all. A root ceiling
+content folder. The last four now refuse at the machinery floor below; `..`,
+absolute paths and foreign roots refuse where they always did, and every other
+confined landing is still reachable. The tail jail is real (`evil/tasks/x.md`
+and `tasks/sub/x.md` both fail the glob as declared paths); the location is
+jailed at the machinery floor and nowhere else. A root ceiling
 like `run.caps.fix-*: md.create:tasks/*.md` reads as *births are confined to
 boards* and does not mean it. That is the boundary-as-data ruling working as
 designed — the engine holds no layout pattern to confine against — so treat
-a create scope as a shape contract, and put containment, if you need it, in
-the block.
+a create scope as a shape contract, and put content containment, if you need
+it, in the block.
+
+🛡 **The machinery floor (2026-08-20).** Four names are engine substrate rather
+than layout, so the CREATE DOOR refuses any birth whose RESOLVED landing
+carries one as a path segment — at any depth, ASCII-case-insensitively,
+whatever the capabilities admit. The refusal is `bad_path`, it names the
+offending segment, and nothing is written.
+
+| Segment | What it is |
+|---|---|
+| `.git` | the git directory — a birth here can corrupt the repository |
+| `.meridian` | engine stable state and run logs (`.meridian/runs/`) |
+| `meridian` | the attestation tree (`meridian/armed-rules.md`, `meridian/attested`) |
+| `receipts` | the receipt ledger (`receipts/run.md`, `receipts/realise.md`) |
+
+**One carve-out: `meridian/domain.md`.** The hash-domain config sits beside the
+attestation artifacts but is not one of them — it is AUTHORED content
+declaring the ignore list, deliberately inside its own hash domain, and the
+resident write path births it through this same door. Exempt at any depth.
+Measured, not reasoned: the floor's first CI run refused it and took down three
+door tests. **Stated limit:** the carve-out is a hole in the floor. A run block
+granted a matching `md.create` scope can reach `meridian/domain.md` through its
+own `base` and reshape which files the workspace attests. The door cannot tell
+that block from a human authoring the same page — `actor` is caller-supplied —
+so closing it needs a policy axis this guard does not have.
+
+**At any depth**, because a nested root's machinery is machinery too:
+`results/ws/.git/x.md` corrupts a repository exactly as `.git/x.md` does.
+Measured over the live sessions corpus before the rule landed — every non-root
+occurrence of these four names was a nested root's OWN machinery, never
+content — so the depth rule refuses no legitimate birth. Case-insensitively,
+because a case-insensitive filesystem lands `.GIT/x.md` inside `.git/` and a
+guard a spelling defeats is not a guard.
+
+This is a DOOR guard on the LANDING — deliberately the one axis capabilities
+do not judge, so caps still read the DECLARED coordinate alone and the two
+grains stay separate. It is also the one owner: both run-plane lanes (starlark
+`create()` and the bash shim's `md.create`) converge on that door, as do the
+wire `create` op, the birth preset and the realise card mint. It costs the
+engine nothing — the armed artifact is written by `wire_serve::armed_disk`,
+the receipt rides the batch commit, and run logs use plain I/O; none of them
+passes this door.
 
 The engine holds no layout pattern (boundary-as-data ruling, 2026-08-19 #2),
 so `md.create:tasks/*.md` covers the ambient board, a based (`--target`)
@@ -1560,16 +1603,20 @@ op grain left to express it with.
 A present-but-empty `caps` declaration is an EXPLICIT read-only grant, distinct
 from no declaration. Precedence for the grant is explicit > convention > none;
 conventions **narrow only, never widen**, and every cap that did not survive
-intact is reported in `narrowed[]`. **Scopes meet by STRING EQUALITY, not by
-glob containment** (`Cap::meet`, `crates/run/src/caps.rs`). Under a scoped
-ceiling a page's cap meets it three ways, and only one of them keeps what the
-page asked for:
+intact is reported in `narrowed[]`. **Scopes meet by GLOB CONTAINMENT**
+(`Cap::meet` → `policy::glob_subsumes`; cap-meet-subsumption ruling
+2026-08-20 — string equality before that): segment-wise `**`/`*`/literal
+subsumption in the one glob grammar, nesting decided conservatively — a
+containment the checker cannot prove segment-wise reads as incomparable and
+drops, so the meet can only drop, never widen. Under a scoped ceiling a
+page's cap meets it five ways:
 
 | Page declares | Result under ceiling `md.edit:tasks/**` |
 |---|---|
-| the identical scope string | survives intact |
+| a scope inside the ceiling — the identical string, or any nested spelling (`md.edit:tasks/foo.md`, `md.edit:tasks/sub/*.md`) | survives intact |
 | the bare verb, unscoped | REPLACED by the ceiling's scope (`md.edit:tasks/**`), reported in `narrowed[]` — the page does not keep full reach |
-| any other scope, however narrow | DROPPED — the grant is gone |
+| a scope CONTAINING the ceiling (`md.edit:**`) | tightened to the ceiling's scope, reported in `narrowed[]` |
+| a scope neither inside nor containing it — disjoint (`md.edit:notes/*.md`) or overlapping without nesting (`md.edit:*/foo.md`) | DROPPED — overlap is not nesting; the grant is gone |
 | a verb the ceiling does not name at all | DROPPED WHOLE — a ceiling is an allowlist of VERBS as well as scopes, so `run.caps.fix-*: md.edit` kills every `md.create` on a `fix-*` task, however the page declares it |
 
 ⛔ **Keep `md.edit` ceilings UNSCOPED; scope `md.create` instead.** Because
@@ -1582,13 +1629,12 @@ page; renaming the task so it falls to an unscoped `fix-*` entry applies
 cleanly. The engine's "aim the effect inside what it leaves" is unfollowable
 there — an edit has no second page to aim at.
 
-Measured 2026-08-19: `md.edit:tasks/sub/*.md` under that ceiling is denied
-though it sits plainly inside it, and the refusal's "aim the effect inside
-what it leaves" misreads there, since the effect already was inside; a page
-declaring bare `md.edit` resolves to `md.edit:tasks/**` with
-`narrowed by ceiling: md.edit`. So under a scoped ceiling, spell the page's
-scope byte-for-byte, or declare the bare verb and accept the ceiling's scope
-as yours. The builtin `check-*` / `verify-*` ceiling
+Measured 2026-08-19 under the retired string-equality meet:
+`md.edit:tasks/sub/*.md` under that ceiling was denied though it sits plainly
+inside it. The subsumption meet closes exactly that case — a nested spelling
+now survives intact, so byte-for-byte spelling is no longer required; NESTING
+is (a page declaring bare `md.edit` still resolves to `md.edit:tasks/**` with
+`narrowed by ceiling: md.edit`). The builtin `check-*` / `verify-*` ceiling
 is absolute, and those names refuse a bash fence loudly at load. Caps bind at
 the executor choke point before any I/O: one violation refuses the whole batch.
 
@@ -1711,8 +1757,31 @@ Executor laws:
 - `live_fingerprint` is the **computed** fingerprint after phase 1, threaded by
  the caller, never re-read around a bash step; a missing live fingerprint at a
  bash choke point refuses — enforcement-off is not a pass (decision #19).
-- Local runs serialize under the workspace flock (decision #9); the CLI leg
- is `LOCK_NB` — a held lock is a fast typed "workspace busy" refusal.
+- Local runs serialize under `.meridian/run.lock` (decision #9); that leg is
+ `LOCK_NB` — a held run lock is a fast typed "workspace busy" refusal, and
+ stays so.
+- **The `write.lock` leg waits, bounded** (amended 2026-08-20, card
+ `mrd-cli-lane-workspace-busy`). The ENGINE is unchanged: every write door
+ still takes `.meridian/write.lock` `LOCK_EX|LOCK_NB` and refuses a
+ competing writer in ≤0.1 ms with no queue and no engine retry, because
+ "waiting is entirely the caller's policy" (wire-contract § the batch
+ bound). The run plane is a CALLER of those doors, and this is its policy:
+ its two in-process acquires — the birth lane's `create` call and the
+ delta-mint bracket — retry a `workspace_busy` refusal every 10 ms until
+ `MERIDIAN_BUSY_WAIT_MS` (default 10 000) is spent, then surface the same
+ typed refusal. A refusal at the flock has read nothing and written nothing
+ (the door takes the lock before any byte), so the retry is not a second
+ write path. Bounded, so a hung holder still cannot make a caller hang
+ (review C4). Lock order stays `run.lock` → `write.lock`; no path takes them
+ the other way, and the wait is inside that order.
+ **Why it was needed, measured** (37 878-file corpus, resident daemon): the
+ daemon's own commits hold `write.lock` in **1.1–1.5 s bursts** — that IS
+ the write (`wall = hold`, wire-contract), not an idle hold to shorten. A
+ single-shot `mrd run` that overlapped one burst lost its whole run to a
+ `workspace_busy` birth refusal; 5 of 7 consecutive probes refused. Every
+ caller was therefore obliged to write its own retry loop or build a
+ hermetic workspace. `run.lock` was measured over the same tree at **zero**
+ contention in 40 s, so it needs no wait and does not get one.
 - **Foreign-edit law** (decision #26, ZT): CAS covers only concurrent races.
  Before a replace-class effect applies to a target with a prior run
  receipt, the executor compares the target's current rev against that

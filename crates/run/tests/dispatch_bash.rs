@@ -1008,3 +1008,43 @@ fn a_rooted_spelling_in_the_bash_birth_path_still_refuses() {
         "nothing may be written on a refusal"
     );
 }
+
+/// The machinery floor reaches the BASH lane end to end (card
+/// create-door-machinery-containment): the shim's `base` key is the exact
+/// argument the measured `.git/` escape rode, so the lane that carries it must
+/// hit the door's floor. Bash runs UNSANDBOXED with no caps at all — the floor
+/// is the only guard standing between a bash block and the git directory.
+#[cfg(unix)]
+#[test]
+fn a_bash_birth_into_a_machinery_dir_refuses() {
+    for dir in [".git", ".meridian", "meridian", "receipts"] {
+        let (_tmp, root) = workspace();
+        let scratch = tempfile::tempdir().unwrap();
+        let mut live: Vec<u8> = Vec::new();
+
+        let src = emit_create("tasks/card.md", &format!(r#","base":"{dir}""#));
+        let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
+
+        let Phase2::RefusedExec { error, .. } = &out.phase2 else {
+            panic!(
+                "expected a birth refusal for base `{dir}`, got {:?}",
+                out.phase2
+            );
+        };
+        let ExecError::BirthRefused { detail, .. } = error else {
+            panic!("expected BirthRefused, got {error:?}");
+        };
+        assert!(
+            detail.contains("bad_path"),
+            "the bash lane hits the machinery floor for `{dir}`: {detail}"
+        );
+        assert!(
+            detail.contains(dir),
+            "the refusal names the offending segment `{dir}`: {detail}"
+        );
+        assert!(
+            !root.0.join(dir).join("tasks/card.md").exists(),
+            "nothing may be born under `{dir}`"
+        );
+    }
+}
