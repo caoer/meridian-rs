@@ -19,6 +19,15 @@ fn frame(payload: &str) -> String {
 const SET: &str = r#"{"op":"md.set_field","field":"status","value":"done"}"#;
 const APPEND: &str = r#"{"op":"md.append_section","section":"Log","content":"- ran"}"#;
 
+/// Parse ONE record, or the refusal it earned.
+fn parse_one(payload: &str) -> Result<ShimDescriptor, ShimError> {
+    let bytes = format!("{}end:1\n", frame(payload));
+    shim::parse(&stream(bytes.as_bytes())).map(|mut d| {
+        assert_eq!(d.len(), 1);
+        d.remove(0)
+    })
+}
+
 #[test]
 fn records_and_trailer_parse_in_emission_order() {
     let bytes = format!("{}{}end:2\n", frame(SET), frame(APPEND));
@@ -264,4 +273,117 @@ fn to_effects_stamps_run_provenance_seq_and_depth() {
         effects[1].args.get("content"),
         Some(&ArgValue::Str("- ran".into()))
     );
+}
+
+// ── The birth lane's targeting axis (`base`) ────────────────────────────────
+// The bash lane's twin of starlark `create(path=, body=, base=)`: the path is
+// the DECLARED relative landing coordinate, targeting rides the separate
+// optional `base` (ZT ruling 2026-08-19 #2 — boundary as data). Regression
+// guard: before this, `md.create` admitted EXACTLY {path, body}, so the bash
+// lane had no way to express targeting at all and every canonical card birth
+// through the page refused.
+
+#[test]
+fn a_create_without_base_parses_baseless() {
+    let got = parse_one(r#"{"op":"md.create","path":"tasks/x.md","body":"hello"}"#).unwrap();
+    assert_eq!(
+        got,
+        ShimDescriptor::Create {
+            path: "tasks/x.md".into(),
+            body: "hello".into(),
+            base: None,
+        }
+    );
+}
+
+#[test]
+fn a_create_carries_its_declared_base() {
+    let got = parse_one(
+        r#"{"op":"md.create","path":"tasks/x.md","body":"hello","base":"field-notes-sessions:year=2026/s"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        got,
+        ShimDescriptor::Create {
+            path: "tasks/x.md".into(),
+            body: "hello".into(),
+            base: Some("field-notes-sessions:year=2026/s".into()),
+        }
+    );
+}
+
+#[test]
+fn a_bare_relative_base_rides_verbatim() {
+    let got =
+        parse_one(r#"{"op":"md.create","path":"tasks/x.md","body":"hello","base":"year=2026/s"}"#)
+            .unwrap();
+    let ShimDescriptor::Create { base, .. } = got else {
+        panic!("expected a birth descriptor");
+    };
+    // The shim judges NOTHING about the base's shape — confinement, rooted
+    // spelling, and foreign-root refusals are the resolver's one opinion.
+    assert_eq!(base, Some("year=2026/s".into()));
+}
+
+#[test]
+fn an_unknown_key_on_create_still_fails_closed() {
+    let err = parse_one(r#"{"op":"md.create","path":"tasks/x.md","body":"h","target":"s"}"#)
+        .expect_err("an extra key refuses the whole batch");
+    let ShimError::Malformed { index: 0, reason } = err else {
+        panic!("expected Malformed, got {err:?}");
+    };
+    assert!(reason.contains("unknown key 'target'"), "{reason}");
+}
+
+#[test]
+fn a_non_string_base_fails_closed() {
+    let err = parse_one(r#"{"op":"md.create","path":"tasks/x.md","body":"h","base":7}"#)
+        .expect_err("a non-string base refuses");
+    assert!(
+        matches!(err, ShimError::Malformed { index: 0, .. }),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn a_create_missing_a_required_key_fails_closed() {
+    let err = parse_one(r#"{"op":"md.create","path":"tasks/x.md","base":"s"}"#)
+        .expect_err("body is required");
+    let ShimError::Malformed { reason, .. } = err else {
+        panic!("expected Malformed");
+    };
+    assert!(reason.contains("missing 'body'"), "{reason}");
+}
+
+#[test]
+fn to_effects_carries_base_only_when_declared() {
+    let effects = shim::to_effects(
+        &[
+            ShimDescriptor::Create {
+                path: "tasks/a.md".into(),
+                body: "a".into(),
+                base: Some("year=2026/s".into()),
+            },
+            ShimDescriptor::Create {
+                path: "tasks/b.md".into(),
+                body: "b".into(),
+                base: None,
+            },
+        ],
+        "fix-x",
+        "inv-1",
+        "root-abc",
+    );
+    assert_eq!(effects[0].kind, EffectKind::Create);
+    assert_eq!(
+        effects[0].args.get("path"),
+        Some(&ArgValue::Str("tasks/a.md".into()))
+    );
+    assert_eq!(
+        effects[0].args.get("base"),
+        Some(&ArgValue::Str("year=2026/s".into()))
+    );
+    // Absent, not empty — the resolver reads an absent base as "fall back to
+    // ambient" and an empty one as a refusal.
+    assert_eq!(effects[1].args.get("base"), None);
 }
