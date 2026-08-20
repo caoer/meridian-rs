@@ -11,10 +11,10 @@ use std::process::{Command, Output};
 const PAGE: &str = "\
 ---
 task.fix-note: \"[[#^note-1]]\"
-task.fix-note.caps: md.set_field
+task.fix-note.caps: md.edit
 task.fix-note.args: value
 task.fix-shim: \"[[#^shim-1]]\"
-task.fix-shim.caps: md.set_field:status
+task.fix-shim.caps: md.edit
 task.fix-uncapped: \"[[#^uncap-1]]\"
 task.fix-cheat: \"[[#^cheat-1]]\"
 task.fix-cheat.env: WS

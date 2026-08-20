@@ -133,7 +133,7 @@ fn every_task_name_in_the_corpora_still_resolves() {
 /// declarations does not trip on its own sub-keys.
 #[test]
 fn reserved_sub_keys_are_skipped_before_the_name_guard() {
-    let page = "---\ntask.fix-drift: \"[[#^t-1]]\"\ntask.fix-drift.caps: md.set_field:status\ntask.fix-drift.args: page\ntask.fix-drift.env: HOME_WIKI\n---\n\n```bash\necho hi\n```\n^t-1\n";
+    let page = "---\ntask.fix-drift: \"[[#^t-1]]\"\ntask.fix-drift.caps: md.edit\ntask.fix-drift.args: page\ntask.fix-drift.env: HOME_WIKI\n---\n\n```bash\necho hi\n```\n^t-1\n";
     let all = address::declared(&doc(page)).expect("declarations are not bindings");
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].name, "fix-drift");

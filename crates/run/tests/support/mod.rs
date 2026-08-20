@@ -16,7 +16,7 @@ pub const PAGE: &str = "\
 ---
 task.check-links: \"[[#^chk-1]]\"
 task.fix-drift: \"[[#^fix-1]]\"
-task.fix-drift.caps: md.set_field:status, md.append_section
+task.fix-drift.caps: md.edit, md.create:tasks/*.md
 task.fix-drift.args: page
 task.fix-drift.env: HOME_WIKI
 task.dangling: \"[[#^gone]]\"

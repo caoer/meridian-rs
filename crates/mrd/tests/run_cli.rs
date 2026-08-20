@@ -14,11 +14,11 @@ const PAGE: &str = "\
 ---
 task.check-links: \"[[#^chk-1]]\"
 task.fix-note: \"[[#^note-1]]\"
-task.fix-note.caps: md.set_field
+task.fix-note.caps: md.edit
 task.fix-note.args: value
 task.fix-note.env: HOME_WIKI
 task.fix-drift: \"[[#^fix-1]]\"
-task.fix-drift.caps: md.set_field:status, md.append_section
+task.fix-drift.caps: md.edit:tasks/*.md, md.create:tasks/*.md
 task.check-sh: \"[[#^sh-1]]\"
 ---
 
@@ -126,7 +126,7 @@ fn list_shows_every_task_with_class_and_caps() {
         "starlark",
         "hermetic",
         "effects: undeclared",
-        "md.set_field",
+        "md.edit",
         "env: HOME_WIKI",
     ] {
         assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
@@ -153,7 +153,7 @@ fn list_json_shape() {
         .expect("fix-note row");
     assert_eq!(fix_note["lang"], "starlark");
     assert_eq!(fix_note["guarantee"], "hermetic");
-    assert_eq!(fix_note["caps"]["effective"][0], "md.set_field");
+    assert_eq!(fix_note["caps"]["effective"][0], "md.edit");
     assert_eq!(fix_note["caps"]["source"], "explicit");
     assert_eq!(fix_note["args"][0], "value");
     assert_eq!(fix_note["env"][0], "HOME_WIKI");
@@ -309,7 +309,7 @@ fn a_variadic_tail_reaches_ctx_args_at_any_count() {
     let ws = Ws::new();
     std::fs::write(
         ws.file("fmt.md"),
-        "---\ntask.fmt: \"[[#^f-1]]\"\ntask.fmt.caps: md.set_field\ntask.fmt.args: title, rows...\n---\n\n# Tasks\n\n```starlark\ndef run(ctx):\n    set_field(field = \"status\", value = \"|\".join(ctx.args))\n```\n^f-1\n",
+        "---\ntask.fmt: \"[[#^f-1]]\"\ntask.fmt.caps: md.edit\ntask.fmt.args: title, rows...\n---\n\n# Tasks\n\n```starlark\ndef run(ctx):\n    set_field(field = \"status\", value = \"|\".join(ctx.args))\n```\n^f-1\n",
     )
     .expect("fmt page");
     for (supplied, expected) in [
@@ -380,7 +380,7 @@ fn dry_rehearses_the_capability_gate() {
     let out = ws.run(&["nocaps.md", "--dry"]);
     assert_eq!(code(&out), 1, "the choke point refuses the rehearsal too");
     assert!(
-        stderr(&out).contains("capability denied: md.set_field on 'status'"),
+        stderr(&out).contains("capability denied: md.edit on 'nocaps.md'"),
         "the executor's own words, both tenses: {}",
         stderr(&out)
     );
@@ -442,7 +442,7 @@ const CANON_PAGE: &str = "\
 ---
 status: todo
 task.mark: \"[[#^mark-1]]\"
-task.mark.caps: md.set_field
+task.mark.caps: md.edit
 task.mark.args: value
 ---
 

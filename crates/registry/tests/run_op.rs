@@ -93,7 +93,7 @@ impl Conn {
 const TASKS: &str = "\
 ---
 task.fix-note: \"[[#^note-1]]\"
-task.fix-note.caps: md.set_field
+task.fix-note.caps: md.edit
 task.fix-note.args: value
 task.sh-note: \"[[#^sh-1]]\"
 task.pwd-check: \"[[#^pwd-1]]\"
@@ -841,12 +841,13 @@ fn an_effects_write_advances_the_folds_other_writers_premises_compare_against() 
 
 // ── The § A.8 birth arm (md.create + run `fields`, cap `run.fields`) ─────────
 
-/// A page declaring a birth task: `md.create:tasks` scopes the grant to the
-/// tasks/ directory; the block births from its args.
+/// A page declaring a birth task: `md.create:tasks/*.md` scopes the grant to
+/// the tasks/ board (declared-path glob, caps-redesign 2026-08-19); the
+/// block births from its args.
 const BIRTHER: &str = "\
 ---
 task.birth-card: \"[[#^birth-1]]\"
-task.birth-card.caps: \"md.create:tasks\"
+task.birth-card.caps: \"md.create:tasks/*.md\"
 task.birth-card.args: slug
 ---
 

@@ -288,7 +288,7 @@ mod scenario {
                 invocation_id: "inv-1",
                 now: Some("2026-07-22T01:00:00Z"),
                 effects: &effects,
-                authority: &Authority::granted(CapSet::parse("md.set_field").unwrap()),
+                authority: &Authority::granted(CapSet::parse("md.edit").unwrap()),
                 observed_root: &now,
                 receipt: Some(ReceiptAddr {
                     path: "receipts/run.md".to_owned(),

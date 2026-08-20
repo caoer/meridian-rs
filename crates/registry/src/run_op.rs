@@ -427,9 +427,11 @@ fn address_refusal_row(target: &wire::RunTarget, invocation: &str, error: &Addre
 fn caps_refusal_row(target: &wire::RunTarget, invocation: &str, error: &CapsError) -> Value {
     let class = match error {
         CapsError::BashFenceRefused { .. } => "run",
-        CapsError::BadCap { .. } | CapsError::BadPattern { .. } | CapsError::Declaration { .. } => {
-            "invocation"
-        }
+        CapsError::BadCap { .. }
+        | CapsError::BadGlob { .. }
+        | CapsError::RetiredTarget { .. }
+        | CapsError::BadPattern { .. }
+        | CapsError::Declaration { .. } => "invocation",
     };
     refusal_row(target, invocation, class, &error.to_string(), None)
 }

@@ -17,7 +17,7 @@ const CONVERGES_PAGE: &str = "\
 ---
 status: todo
 task.fix: \"[[#^fix-1]]\"
-task.fix.caps: md.set_field
+task.fix.caps: md.edit
 ---
 
 # Tasks
@@ -35,7 +35,7 @@ const NEVER_CONVERGES_PAGE: &str = "\
 ---
 resolved: pending
 task.nudge: \"[[#^nudge-1]]\"
-task.nudge.caps: md.append_section
+task.nudge.caps: md.edit
 ---
 
 # Log
@@ -52,7 +52,7 @@ const FLAG_PAGE: &str = "\
 ---
 flag: off
 task.flip: \"[[#^flip-1]]\"
-task.flip.caps: md.set_field
+task.flip.caps: md.edit
 ---
 
 # Tasks
@@ -233,7 +233,7 @@ fn retry_exhausted_renders_non_convergent() {
     // The receipt file carries exactly the applies — no apply landed unrecorded.
     assert_eq!(receipt_run_lines(&root), 3);
     // The apply-capable claim's caps are the verb's authority.
-    assert!(report.caps_union.admits("md.append_section", None));
+    assert!(report.caps_union.admits("md.edit", None));
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +308,7 @@ fn caps_union_is_the_union_of_every_apply_claims_declared_caps() {
             selector: "c1".to_owned(),
             rule: None,
             check: field_check("conv.md", "status", "done"),
-            apply: Some(binding("conv.md", "fix")), // md.set_field
+            apply: Some(binding("conv.md", "fix")), // md.edit
             retry_budget: 1,
             card_template: None,
         },
@@ -316,14 +316,14 @@ fn caps_union_is_the_union_of_every_apply_claims_declared_caps() {
             selector: "c2".to_owned(),
             rule: None,
             check: field_check("flag.md", "flag", "on"),
-            apply: Some(binding("flag.md", "flip")), // md.set_field
+            apply: Some(binding("flag.md", "flip")), // md.edit
             retry_budget: 1,
             card_template: None,
         },
     ];
 
     let report = realise(&root, &claims, &spec(&scratch)).unwrap();
-    assert!(report.caps_union.admits("md.set_field", None));
+    assert!(report.caps_union.admits("md.edit", None));
     // Both converged (each apply sets its own field).
     assert!(
         report
@@ -356,7 +356,7 @@ fn dry_run_uses_zero_caps_projects_blast_radius_and_writes_nothing() {
     assert_eq!(report.claims[0].applies, 0);
     assert!(report.claims[0].receipts.is_empty());
     // The declared caps are still reported (the union), but zero were used.
-    assert!(report.caps_union.admits("md.set_field", None));
+    assert!(report.caps_union.admits("md.edit", None));
     // No apply and no receipt touched the tree.
     let after = std::fs::read_to_string(root.0.join("conv.md")).unwrap();
     assert_eq!(before, after, "dry-run wrote nothing");

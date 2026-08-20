@@ -33,7 +33,7 @@ use model::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::caps::{Authority, Cap};
+use crate::caps::{self, Authority, Cap};
 use crate::record::{ExecRecord, ExecRecordSink};
 
 /// The run plane's receipt file — ONE convention, whichever door invoked the
@@ -112,10 +112,12 @@ pub struct ApplyRequest<'a> {
     /// CLI entry — its commits stay external change, exactly as `delta`.
     pub birth_seq: Option<&'a dyn wire_serve::seq::SeqSink>,
     /// The caller's ambient directory, workspace-relative (md-create-ambient-
-    /// paths ruling, shape (c), 2026-08-18): a BARE `md.create` path resolves
-    /// under it before admission, the door, and the receipt — see
-    /// [`resolve_birth_targets`]. `None` (the CLI entry, hosts predating cap
-    /// `run.ambient`) keeps the bare-door law: workspace-root-relative.
+    /// paths ruling, shape (c), 2026-08-18): the DEFAULT resolution base a
+    /// baseless `md.create` path lands under ([`resolve_birth_targets`]), and
+    /// the coordinate frame [`admit`] judges page edits in (ZT ruling
+    /// 2026-08-19 #2 — the boundary is data). `None` (the CLI entry, hosts
+    /// predating cap `run.ambient`) keeps the bare-door law:
+    /// workspace-root-relative.
     pub ambient: Option<&'a str>,
 }
 
@@ -377,10 +379,17 @@ pub struct Applied {
 pub enum ExecError {
     /// A non-md descriptor reached the executor — a dispatch bug, refused loud.
     NonMdEffect { kind: String },
-    /// A descriptor's kind/target is not admitted by the block's caps.
+    /// A descriptor's verb/path is not admitted by the block's caps.
     CapDenied {
+        /// The cap verb the descriptor authorizes under (`md.create` /
+        /// `md.edit`).
         kind: String,
+        /// The SESSION-ROOT-RELATIVE landing path — the coordinate cap globs
+        /// match (caps-redesign ruling, 2026-08-19).
         target: String,
+        /// The full workspace-relative resolved path, when a session prefix
+        /// was stripped to produce `target` (`None` when they coincide).
+        resolved: Option<String>,
         /// The ceiling that took a cap which WOULD have admitted this
         /// descriptor, when one did. `None` is not "unknown" — it is the
         /// measured absence of a ceiling cause (deny-default, or a grant that
@@ -444,10 +453,22 @@ impl std::fmt::Display for ExecError {
             ExecError::CapDenied {
                 kind,
                 target,
+                resolved,
                 ceiling,
                 declared,
             } => {
                 write!(f, "capability denied: {kind} on '{target}'")?;
+                // The matching coordinate is the ADDRESSED one (ZT ruling
+                // 2026-08-19 #2) — when the page was judged relative to the
+                // caller's ambient, name its workspace path too, so the
+                // refusal reads against the bytes the caller can see.
+                if let Some(resolved) = resolved {
+                    write!(
+                        f,
+                        " (the page's workspace path is {resolved}; cap globs match the \
+                         coordinate it was addressed by)"
+                    )?;
+                }
                 // run-plane § capabilities: a block whose own frontmatter
                 // declares the cap reads this refusal as the engine ignoring a
                 // grant that is plainly on the page, and derives a remedy
@@ -471,14 +492,38 @@ impl std::fmt::Display for ExecError {
                      covers this effect: "
                 )?;
                 if declared.is_empty() {
-                    write!(f, "the task declares no md.* capabilities")?;
+                    write!(f, "the task declares no md.* capabilities.")?;
                 } else {
-                    write!(f, "the task's grants are [{}]", declared.join(", "))?;
+                    write!(f, "the task's grants are [{}].", declared.join(", "))?;
+                }
+                // The migration teach (caps-redesign ruling): a declared
+                // same-verb GLOBLESS scope that would cover this landing as
+                // `<scope>/*.md` is the retired partition spelling — name the
+                // respell exactly, or the caller reads a grant plainly on the
+                // page as ignored.
+                for legacy in declared
+                    .iter()
+                    .filter_map(|cap| cap.strip_prefix(&format!("{kind}:")))
+                    .filter(|scope| !scope.contains('/') && !scope.contains('*'))
+                {
+                    if policy::glob_match(&format!("{legacy}/*.md"), target) {
+                        write!(
+                            f,
+                            " The declared `{kind}:{legacy}` is a literal glob matching \
+                             only the path `{legacy}` — partition grain is retired; spell \
+                             it `{kind}:{legacy}/*.md` to cover this landing."
+                        )?;
+                    }
+                }
+                write!(f, " Fix: add `{kind}:{target}` or a glob covering it")?;
+                if let Some((parent, _)) = target.rsplit_once('/') {
+                    write!(f, " (e.g. `{kind}:{parent}/*.md`)")?;
                 }
                 write!(
                     f,
-                    ". Fix: add `{kind}:{target}` (or an untargeted `{kind}`) to the \
-                     task's `task.<name>.caps` list in the page's frontmatter."
+                    " to the task's `task.<name>.caps` list in the page's frontmatter; \
+                     globs match the block's DECLARED relative paths, wherever a base \
+                     or ambient lands them."
                 )
             }
             ExecError::BadDescriptor { kind, reason } => {
@@ -691,31 +736,63 @@ pub fn apply(root: &fs::WorkspaceRoot, req: &ApplyRequest<'_>) -> Result<Applied
     apply_under(&lock, root, req)
 }
 
+/// The coordinate an EDIT authorizes in (ZT ruling 2026-08-19 #2 — the
+/// boundary is DATA, never a layout pattern): the page path relative to the
+/// caller's ambient directory when the page lies under it — literal prefix
+/// arithmetic on the ambient the frame carried — else the page's
+/// workspace-relative path unchanged (the bare-door degenerate case). This is
+/// what makes one `md.edit:tasks/*.md` grant read identically on every
+/// session's board and on the root board.
+fn edit_coordinate<'a>(page: &'a str, ambient: Option<&str>) -> &'a str {
+    ambient
+        .and_then(|dir| page.strip_prefix(dir))
+        .and_then(|rest| rest.strip_prefix('/'))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(page)
+}
+
 /// THE CHOKE POINT, one owner for both tenses: md.* only, each effect
-/// admitted by the block's authority (kind + target, so target-scoped caps
-/// bind for real). The apply path runs it before any I/O; the dry rehearsal
-/// (`runner::rehearse`) runs the SAME admission over the same md.* partition,
-/// so a rehearsal cannot pass what the apply would refuse (dogfood r2 F2).
-/// An unsandboxed shell passes every descriptor: gating it would only move
-/// the same write to `sed -i`, off the attested path.
+/// admitted by the block's authority (verb + path, so scoped caps bind for
+/// real). It judges DECLARED coordinates (ZT ruling 2026-08-19 #2): an
+/// `md.create` matches the `path` argument exactly as the block declared it —
+/// the resolution base (`base` arg / `ambient`) is a separate axis this gate
+/// never joins in — and an `md.edit` matches the page in the coordinates it
+/// was addressed by ([`edit_coordinate`]). All targeting lanes therefore
+/// present ONE string to one glob: `md.create:tasks/*.md` covers the ambient
+/// board, a `base`-targeted board, and the root board alike. It runs BEFORE
+/// birth-target resolution — admission needs nothing resolved, and a denial
+/// deliberately outranks a resolution fault. The apply path runs it before
+/// any I/O; the dry rehearsal (`runner::rehearse`) runs the SAME admission
+/// over the same md.* partition, so a rehearsal cannot pass what the apply
+/// would refuse (dogfood r2 F2). An unsandboxed shell passes every
+/// descriptor: gating it would only move the same write to `sed -i`, off the
+/// attested path.
 ///
 /// # Errors
 /// [`ExecError`] — the first denied or malformed descriptor, in effect order.
-pub fn admit(effects: &[Effect], authority: &Authority) -> Result<(), ExecError> {
+pub fn admit(
+    page: &str,
+    ambient: Option<&str>,
+    effects: &[Effect],
+    authority: &Authority,
+) -> Result<(), ExecError> {
+    let page_coordinate = edit_coordinate(page, ambient);
     for effect in effects {
-        let (kind, target) = descriptor_surface(effect)?;
-        if !authority.admits(kind, Some(&target)) {
+        let (verb, coordinate) = descriptor_surface(page_coordinate, effect)?;
+        if !authority.admits(verb, Some(&coordinate)) {
             let ceiling = authority
                 .capabilities()
-                .and_then(|caps| caps.ceiling_denying(kind, Some(&target)))
+                .and_then(|caps| caps.ceiling_denying(verb, Some(&coordinate)))
                 .map(ToString::to_string);
             let declared = authority
                 .capabilities()
                 .map(|caps| caps.effective.0.iter().map(Cap::as_string).collect())
                 .unwrap_or_default();
             return Err(ExecError::CapDenied {
-                kind: kind.to_owned(),
-                target,
+                kind: verb.to_owned(),
+                target: coordinate,
+                resolved: (verb == caps::VERB_EDIT && page_coordinate != page)
+                    .then(|| page.to_owned()),
                 ceiling,
                 declared,
             });
@@ -783,19 +860,20 @@ fn realize_births(
 }
 
 /// Resolve every `md.create` birth target in `effects` to the workspace-
-/// relative path it will LAND at (md-create-ambient-paths ruling, shape (c),
-/// 2026-08-18) — the face path law carried onto the birth lane: a bare path
-/// resolves under the caller's ambient directory when one rides the call
-/// (and stays workspace-root-relative when none does — the bare-door law); a
-/// rooted `root:rel` spelling is EXPLICIT and must name the bound workspace.
-/// The one grammar opinion is [`wire_serve::write::resolve_birth_target`].
+/// relative path it will LAND at — the face path law carried onto the birth
+/// lane, with the boundary carried as DATA (ZT ruling 2026-08-19 #2): the
+/// declared `path` composes under the descriptor's own `base` when one rides
+/// it, under the caller's ambient directory otherwise
+/// (md-create-ambient-paths, shape (c)), and stays workspace-root-relative
+/// under neither — the bare-door law. The one grammar opinion is
+/// [`wire_serve::write::resolve_birth_target`].
 ///
 /// Returns `None` when no effect is a birth — the caller keeps its slice —
-/// and the rewritten list otherwise, so the choke point's capability grain,
-/// the birth lane, and the receipt all judge the RESOLVED target. One seam,
-/// both tenses: [`apply_under`] resolves here before admission, and the dry
-/// rehearsal (`runner::rehearse`) resolves through the same call before the
-/// same admission (dogfood r2 F2 — dry-green predicts live-green).
+/// and the rewritten list otherwise, so the birth lane, the receipt, and the
+/// dry row all judge the RESOLVED landing. The capability grain does NOT:
+/// [`admit`] judges the DECLARED path and runs BEFORE this resolution in
+/// both tenses ([`apply_under`] and `runner::rehearse` — dogfood r2 F2:
+/// dry-green predicts live-green).
 ///
 /// # Errors
 /// [`ExecError::BirthRefused`] — the resolver's typed `bad_path` frame
@@ -814,8 +892,9 @@ pub fn resolve_birth_targets(
             continue;
         }
         let path = str_arg(effect, "path")?;
-        let landed =
-            wire_serve::write::resolve_birth_target(root, &path, ambient).map_err(|e| {
+        let base = opt_str_arg(effect, "base")?;
+        let landed = wire_serve::write::resolve_birth_target(root, &path, base.as_deref(), ambient)
+            .map_err(|e| {
                 ExecError::BirthRefused {
                     path: path.clone(),
                     // The resolver's typed frame, carried whole (no Display).
@@ -834,14 +913,17 @@ pub fn apply_under(
     root: &fs::WorkspaceRoot,
     req: &ApplyRequest<'_>,
 ) -> Result<Applied, ExecError> {
-    // 0. THE BIRTH-TARGET RESOLUTION — see [`resolve_birth_targets`]: bare
-    // birth paths resolve under the caller's ambient BEFORE any gate, so the
-    // choke point below, the door, and the receipt judge where bytes land.
+    // 0. THE CHOKE POINT — before any I/O, judging DECLARED coordinates (ZT
+    // ruling 2026-08-19 #2): the cap glob reads the path as the block wrote
+    // it; the base axis never joins in. Deliberately BEFORE resolution — a
+    // denial outranks a resolution fault.
+    admit(req.page, req.ambient, req.effects, req.authority)?;
+
+    // 1. THE BIRTH-TARGET RESOLUTION — see [`resolve_birth_targets`]: the
+    // declared path composes under its base (descriptor `base`, else the
+    // caller's ambient), so the door and the receipt judge where bytes land.
     let resolved = resolve_birth_targets(root, req.ambient, req.effects)?;
     let effects: &[Effect] = resolved.as_deref().unwrap_or(req.effects);
-
-    // 1. THE CHOKE POINT — before any I/O.
-    admit(effects, req.authority)?;
 
     // 1b. THE BIRTH LANE — see [`realize_births`].
     let births = realize_births(root, req, effects)?;
@@ -1130,35 +1212,35 @@ fn guard_lock_artifact(before: &Document, after: &Document, page: &str) -> Resul
     })
 }
 
-/// A descriptor's choke-point surface: its namespaced kind string and its
-/// capability target (the field / section it touches).
-fn descriptor_surface(effect: &Effect) -> Result<(&'static str, String), ExecError> {
+/// A descriptor's choke-point surface: the cap VERB it authorizes under and
+/// the DECLARED coordinate the cap glob judges (caps-redesign ruling,
+/// 2026-08-19).
+///
+/// The verb map is the descriptor→cap fold: `Create` births under
+/// [`caps::VERB_CREATE`] at its declared `path` argument, verbatim — the
+/// resolution base is a separate axis ([`resolve_birth_targets`]) the cap
+/// never reads; `SetField` and `AppendSection` both CHANGE the declaring
+/// page, so they authorize under [`caps::VERB_EDIT`] at `page_coordinate`
+/// (the page in the coordinates it was addressed by — [`edit_coordinate`]).
+/// [`caps::VERB_DELETE`] is reserved: no descriptor maps to it until a retire
+/// descriptor exists. Field/section grain left the cap grammar with the
+/// ruling — a field-grain guard belongs inside the block.
+fn descriptor_surface(
+    page_coordinate: &str,
+    effect: &Effect,
+) -> Result<(&'static str, String), ExecError> {
     if effect.kind.domain() != Domain::Md {
         return Err(ExecError::NonMdEffect {
             kind: effect.kind.as_str().to_owned(),
         });
     }
-    let target = match effect.kind {
-        EffectKind::SetField => str_arg(effect, "field")?,
-        EffectKind::AppendSection => str_arg(effect, "section")?,
-        // The birth cap's capability grain is the RESOLVED target's
-        // PARTITION — the born file's immediate parent directory name
-        // (`tasks/foo.md` → `tasks`; `year=…/18-x/tasks/foo.md` → `tasks`)
-        // — so `md.create:tasks` covers a tasks/ board wherever the birth
-        // lands (md-create-ambient-paths, shape (c): the cap grammar covers
-        // the RESOLVED target), with the cap grammar's existing exact-match
-        // semantics (the target charset admits no `/`). A root-level birth's
-        // grain is the path itself. Paths reach here post-resolution
-        // ([`resolve_birth_targets`] runs before [`admit`] in both tenses).
-        EffectKind::Create => {
-            let path = str_arg(effect, "path")?;
-            path.rsplit_once('/').map_or(path.clone(), |(dirs, _)| {
-                dirs.rsplit('/').next().unwrap_or(dirs).to_owned()
-            })
+    match effect.kind {
+        EffectKind::SetField | EffectKind::AppendSection => {
+            Ok((caps::VERB_EDIT, page_coordinate.to_owned()))
         }
+        EffectKind::Create => Ok((caps::VERB_CREATE, str_arg(effect, "path")?)),
         _ => unreachable!("md.* kinds are SetField | AppendSection | Create"),
-    };
-    Ok((effect.kind.as_str(), target))
+    }
 }
 
 /// A required scalar string argument off a descriptor.
@@ -1168,6 +1250,19 @@ fn str_arg(effect: &Effect, key: &str) -> Result<String, ExecError> {
         _ => Err(ExecError::BadDescriptor {
             kind: effect.kind.as_str().to_owned(),
             reason: format!("missing scalar '{key}'"),
+        }),
+    }
+}
+
+/// An optional scalar string argument off a descriptor: absent is `None`,
+/// present-but-non-scalar is the same loud fault as a missing required arg.
+fn opt_str_arg(effect: &Effect, key: &str) -> Result<Option<String>, ExecError> {
+    match effect.args.get(key) {
+        None => Ok(None),
+        Some(ArgValue::Str(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(ExecError::BadDescriptor {
+            kind: effect.kind.as_str().to_owned(),
+            reason: format!("non-scalar '{key}'"),
         }),
     }
 }

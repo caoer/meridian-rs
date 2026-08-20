@@ -14,20 +14,39 @@
 //! [`resolve_authority`] is the only language-aware entry (bash short-circuit).
 //! [`resolve_caps`] takes no language.
 //!
+//! # Cap grammar (caps-redesign ruling, 2026-08-19)
+//! The cap plane speaks THREE VERBS — [`VERB_CREATE`] / [`VERB_EDIT`] /
+//! [`VERB_DELETE`] — answering one question: may this block touch files
+//! there. HOW it touches them is the descriptor plane's (executor ops),
+//! extensible without growing this grammar. A verb is optionally scoped by a
+//! PATH GLOB in the system's one glob grammar ([`policy::glob_match`] —
+//! caps are its fourth consumer), matched at the choke point against the
+//! block's DECLARED coordinates (ruling #2: the boundary is DATA — a birth's
+//! `path` argument verbatim, its resolution base a separate axis; a page
+//! edit in the coordinates the page was addressed by — the engine holds no
+//! layout pattern). Several scopes = several cap entries; no list syntax.
+//!
+//! Migration (the ruled split): the retired per-op spellings `md.set_field`
+//! and `md.append_section` FOLD into `md.edit` when untargeted; their
+//! targeted forms REFUSE with the retirement teaching ([`CapsError::
+//! RetiredTarget`]) — the old target was a field/section name, the new
+//! target position is a path, and neither silent reinterpretation is legal.
+//! Partition grain (parent-dir-name match) is retired with them.
+//!
 //! # Convention plane (marker-retirement ruling)
 //! Table lives in `<root>/MERIDIAN.md` with `type: meridian-root`. Retired
 //! marker files are not read and have no fallback. Grammar is flat dotted
 //! keys (model's FM scanner skips indented lines):
 //!
 //! ```yaml
-//! run.caps.fix-*: md.set_field, md.append_section
-//! run.caps.fix-note: md.set_field:status
+//! run.caps.fix-*: md.edit
+//! run.caps.fix-note: md.edit:tasks/*.md
 //! ```
 //!
 //! [`ConventionSource`] reports which root situation answered. Present-but-
 //! invalid declaration REFUSES ([`CapsError::Declaration`]) — silent empty
-//! table would delete a ceiling on typo. Target-scoped caps are narrower
-//! than untargeted forms.
+//! table would delete a ceiling on typo. Scoped caps are narrower than
+//! untargeted forms.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -57,45 +76,100 @@ pub const UNDECLARED_EFFECTS: &str = "undeclared";
 /// is deliberately absent (ruling 3: check-*/verify-* only).
 pub const READ_ONLY_PATTERNS: [&str; 2] = ["check-*", "verify-*"];
 
-/// One parsed capability: a namespaced kind (`md.set_field`) with an optional
-/// scope target (`md.set_field:status`).
+/// The birth verb: may this block CREATE files there.
+pub const VERB_CREATE: &str = "md.create";
+/// The edit verb: may this block CHANGE pages there (every page-mutating
+/// descriptor — `md.set_field`, `md.append_section` — authorizes under it).
+pub const VERB_EDIT: &str = "md.edit";
+/// The delete verb — reserved with the grammar (caps-redesign ruling): it
+/// parses and resolves today so grants can be written ahead, but no
+/// descriptor maps to it until a retire descriptor exists.
+pub const VERB_DELETE: &str = "md.delete";
+
+/// One parsed capability: a verb (`md.create`) with an optional path-glob
+/// scope (`md.create:tasks/*.md`).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Cap {
-    /// The namespaced kind string (`md.set_field`).
+    /// The verb string ([`VERB_CREATE`] / [`VERB_EDIT`] / [`VERB_DELETE`]).
     pub kind: String,
-    /// The optional scope target (`status` in `md.set_field:status`).
+    /// The optional path-glob scope (`tasks/*.md` in `md.create:tasks/*.md`),
+    /// in the one glob grammar, matched against declared coordinates.
     pub target: Option<String>,
 }
 
+/// Why `glob` is not a legal cap scope, or `None` when it is. A scope is a
+/// path glob in the system's ONE glob grammar ([`policy::glob_match`]),
+/// shaped like the workspace-relative paths it matches: relative, no
+/// `.`/`..`/empty segment.
+fn bad_glob(glob: &str) -> Option<String> {
+    if glob.is_empty() {
+        return Some("the scope is empty".to_owned());
+    }
+    for segment in glob.split('/') {
+        if segment.is_empty() {
+            return Some("empty segment (a leading, trailing or doubled `/`)".to_owned());
+        }
+        if segment == "." || segment == ".." {
+            return Some(format!(
+                "`{segment}` segment — scopes are workspace-shaped, never navigated"
+            ));
+        }
+        if let Some(c) = segment
+            .chars()
+            .find(|c| !c.is_ascii_alphanumeric() && !matches!(c, '_' | '-' | '.' | '*' | '='))
+        {
+            return Some(format!(
+                "segment `{segment}` carries `{c}` (outside letters, digits, `_ - . * =`)"
+            ));
+        }
+    }
+    None
+}
+
 impl Cap {
-    /// Parse one cap string: `ns.name` or `ns.name:target`.
+    /// Parse one cap string: `verb` or `verb:path/glob`.
+    ///
+    /// The verb fold (caps-redesign ruling, 2026-08-19): the retired per-op
+    /// spellings `md.set_field` / `md.append_section` FOLD into [`VERB_EDIT`]
+    /// when untargeted — live grants keep working across the cutover, and
+    /// every surface reports the canonical verb. Their TARGETED forms refuse
+    /// ([`CapsError::RetiredTarget`]): the old target named a field or
+    /// section, the new target position is a path glob, and both silent
+    /// reinterpretations are wrong — dropping the target widens the grant,
+    /// reading it as a path kills it.
     ///
     /// # Errors
-    /// [`CapsError::BadCap`] when the string is not a namespaced cap.
+    /// [`CapsError::BadCap`] on an unknown verb; [`CapsError::RetiredTarget`]
+    /// on a targeted retired spelling; [`CapsError::BadGlob`] on a malformed
+    /// scope.
     pub fn parse(raw: &str) -> Result<Self, CapsError> {
-        let bad = || CapsError::BadCap {
-            raw: raw.to_owned(),
-        };
         let (kind, target) = match raw.split_once(':') {
             Some((k, t)) => (k, Some(t)),
             None => (raw, None),
         };
-        let (ns, name) = kind.split_once('.').ok_or_else(bad)?;
-        let word_ok = |s: &str| {
-            !s.is_empty()
-                && s.chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-        };
-        if !word_ok(ns) || !word_ok(name) {
-            return Err(bad());
-        }
-        if let Some(t) = target {
-            let target_ok = !t.is_empty()
-                && t.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
-            if !target_ok {
-                return Err(bad());
+        let kind = match kind {
+            VERB_CREATE | VERB_EDIT | VERB_DELETE => kind,
+            "md.set_field" | "md.append_section" => {
+                if target.is_some() {
+                    return Err(CapsError::RetiredTarget {
+                        raw: raw.to_owned(),
+                    });
+                }
+                VERB_EDIT
             }
+            _ => {
+                return Err(CapsError::BadCap {
+                    raw: raw.to_owned(),
+                });
+            }
+        };
+        if let Some(glob) = target
+            && let Some(reason) = bad_glob(glob)
+        {
+            return Err(CapsError::BadGlob {
+                raw: raw.to_owned(),
+                reason,
+            });
         }
         Ok(Self {
             kind: kind.to_owned(),
@@ -112,20 +186,27 @@ impl Cap {
         }
     }
 
-    /// Does this cap admit an effect of `kind` against `target`? An untargeted
-    /// cap admits every target of its kind; a targeted cap admits only its own.
+    /// Does this cap admit an effect of verb `kind` against the path
+    /// `target`? An unscoped cap admits every path of its verb; a scoped cap
+    /// admits the paths its glob matches. The path the choke point asks with
+    /// is the block's DECLARED coordinate (executor `descriptor_surface`) —
+    /// the coordinate is the caller's, matching is [`policy::glob_match`]'s,
+    /// and this method adds no third opinion.
     #[must_use]
     pub fn admits(&self, kind: &str, target: Option<&str>) -> bool {
         self.kind == kind
             && match &self.target {
                 None => true,
-                Some(t) => target == Some(t.as_str()),
+                Some(glob) => target.is_some_and(|path| policy::glob_match(glob, path)),
             }
     }
 
     /// The meet (narrower) of two caps of the same kind, if comparable:
-    /// untargeted ∩ targeted = the targeted one; equal targets = that target;
-    /// different targets = incomparable (`None`).
+    /// unscoped ∩ scoped = the scoped one; equal scopes = that scope;
+    /// different scopes = incomparable (`None`). Scopes compare as STRINGS —
+    /// two different globs are incomparable even where one semantically
+    /// contains the other (glob intersection has no simple normal form), so
+    /// narrowing stays conservative: it can only drop, never widen.
     fn meet(&self, other: &Cap) -> Option<Cap> {
         if self.kind != other.kind {
             return None;
@@ -418,8 +499,13 @@ impl Authority {
 /// Why capability handling refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapsError {
-    /// A cap string is not `ns.name[:target]`.
+    /// A cap string names no known verb.
     BadCap { raw: String },
+    /// A cap scope is not a legal path glob.
+    BadGlob { raw: String, reason: String },
+    /// A retired field-grain spelling (`md.set_field:status`) — the target
+    /// position is a path glob now, and no silent reinterpretation is legal.
+    RetiredTarget { raw: String },
     /// A convention pattern is not a literal or trailing-`*` prefix glob.
     BadPattern { pattern: String },
     /// `<root>/MERIDIAN.md` exists but does not read as a `meridian-root`
@@ -435,7 +521,32 @@ impl std::fmt::Display for CapsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CapsError::BadCap { raw } => {
-                write!(f, "invalid capability '{raw}' (expected ns.name[:target])")
+                write!(
+                    f,
+                    "invalid capability '{raw}' — a cap is one of the verbs `md.create`, \
+                     `md.edit`, `md.delete`, optionally scoped by a path glob \
+                     (`md.create:tasks/*.md`) matched against the block's declared \
+                     relative paths."
+                )
+            }
+            CapsError::BadGlob { raw, reason } => {
+                write!(
+                    f,
+                    "invalid capability '{raw}': {reason}. A scope is a path glob in the \
+                     one glob grammar — segments split on `/`, `**` spans whole segments, \
+                     `*` matches within a segment — shaped workspace-relative (no absolute \
+                     path, no `.`/`..`/empty segment)."
+                )
+            }
+            CapsError::RetiredTarget { raw } => {
+                write!(
+                    f,
+                    "capability '{raw}' uses the retired field-grain form — the cap target \
+                     position is a PATH GLOB matched against the block's declared landing \
+                     path, never a field or section name. Bare `md.set_field` / \
+                     `md.append_section` fold into `md.edit`; a field-grain guard belongs \
+                     inside the block. Scope by path instead, e.g. `md.edit:agents/*/CARD.md`."
+                )
             }
             CapsError::BadPattern { pattern } => write!(
                 f,

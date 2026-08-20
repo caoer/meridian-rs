@@ -62,7 +62,7 @@ fn dispatch_of<'a>(
 fn starlark_set_field_applies_via_the_splice_batch() {
     let (_tmp, root) = workspace();
     let now = fs::domain_snapshot(&root).unwrap().1;
-    let caps = Authority::granted(CapSet::parse("md.set_field").unwrap());
+    let caps = Authority::granted(CapSet::parse("md.edit").unwrap());
     let src = "def run(ctx):\n    set_field(field = \"status\", value = ctx.args[0])\n    notice(message = \"applied\")\n";
 
     let out = dispatch_starlark::dispatch(&root, &dispatch_of(src, &now, &caps)).unwrap();
@@ -136,7 +136,7 @@ fn cap_denied_at_the_choke_propagates_and_applies_nothing() {
 fn evaluate_alone_is_the_dry_seam_full_truth_nothing_applied() {
     let (_tmp, root) = workspace();
     let now = fs::domain_snapshot(&root).unwrap().1;
-    let caps = Authority::granted(CapSet::parse("md.set_field").unwrap());
+    let caps = Authority::granted(CapSet::parse("md.edit").unwrap());
     let src = "def run(ctx):\n    set_field(field = \"status\", value = \"x\")\n";
     let effects = dispatch_starlark::evaluate(&dispatch_of(src, &now, &caps)).unwrap();
     assert_eq!(effects.len(), 1, "all descriptors reported");

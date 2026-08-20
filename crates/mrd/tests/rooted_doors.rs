@@ -341,13 +341,13 @@ fn run_unbound_root_refuses_and_executes_nothing() {
     );
 }
 
-/// A page in the `guarded` root whose task explicitly grants `md.set_field` —
+/// A page in the `guarded` root whose task explicitly grants `md.edit` —
 /// which that root's own convention ceiling narrows to nothing.
 const GUARDED_TASK: &str = "\
 ---
 status: open
 task.fix-status: \"[[#^fx-1]]\"
-task.fix-status.caps: md.set_field
+task.fix-status.caps: md.edit
 ---
 
 # Guarded

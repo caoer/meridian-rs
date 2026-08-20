@@ -21,10 +21,7 @@ fn set(caps: &[&str]) -> CapSet {
 #[test]
 fn conventions_load_from_the_root_declaration() {
     let tmp = tempfile::tempdir().unwrap();
-    declare(
-        tmp.path(),
-        "run.caps.fix-*: md.set_field, md.append_section\n",
-    );
+    declare(tmp.path(), "run.caps.fix-*: md.edit, md.create\n");
 
     let (conv, source) = caps::load_conventions(Some(tmp.path())).unwrap();
     assert_eq!(source, ConventionSource::Declared(tmp.path().to_path_buf()));
@@ -33,7 +30,7 @@ fn conventions_load_from_the_root_declaration() {
         .matching("fix-drift")
         .expect("the root declared a fix-* convention");
     assert_eq!(pattern, "fix-*");
-    assert!(caps.admits("md.set_field", None));
+    assert!(caps.admits("md.edit", None));
 }
 
 /// THE WIDENING DETECTOR. A declared ceiling must narrow an explicit grant; if
@@ -41,19 +38,19 @@ fn conventions_load_from_the_root_declaration() {
 #[test]
 fn a_declared_ceiling_narrows_an_explicit_grant() {
     let tmp = tempfile::tempdir().unwrap();
-    declare(tmp.path(), "run.caps.fix-*: md.set_field\n");
+    declare(tmp.path(), "run.caps.fix-*: md.edit\n");
 
     let (conv, _) = caps::load_conventions(Some(tmp.path())).unwrap();
-    let explicit = set(&["md.set_field", "md.append_section"]);
+    let explicit = set(&["md.edit", "md.create"]);
     let r = caps::resolve_caps("fix-x", Some(&explicit), &conv);
 
     assert_eq!(r.source, CapSource::Explicit);
     assert_eq!(
         r.effective,
-        set(&["md.set_field"]),
-        "the declared ceiling must drop md.append_section — a wider effective set is the widening"
+        set(&["md.edit"]),
+        "the declared ceiling must drop md.create — a wider effective set is the widening"
     );
-    assert_eq!(r.narrowed, vec![Cap::parse("md.append_section").unwrap()]);
+    assert_eq!(r.narrowed, vec![Cap::parse("md.create").unwrap()]);
 }
 
 /// A present-but-invalid declaration REFUSES. Reading it as the empty table
@@ -86,7 +83,7 @@ fn a_declaration_with_an_unimplemented_version_refuses() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(
         tmp.path().join("MERIDIAN.md"),
-        "---\ntype: meridian-root\nversion: 99\nname: fixture-root\nrun.caps.fix-*: md.set_field\n---\n",
+        "---\ntype: meridian-root\nversion: 99\nname: fixture-root\nrun.caps.fix-*: md.edit\n---\n",
     )
     .unwrap();
 
@@ -147,13 +144,13 @@ fn a_declared_root_without_caps_keys_is_declared_and_empty() {
 
 /// THE EXPRESSIVENESS FIXTURE — the four combinations the one real-world
 /// `[run.caps]` table exercised, round-tripped through the new grammar:
-/// glob key, exact key, unscoped verb, colon-scoped target.
+/// glob key, exact key, unscoped verb, colon-scoped path glob.
 #[test]
 fn the_live_fixture_four_combinations_round_trip() {
     let tmp = tempfile::tempdir().unwrap();
     declare(
         tmp.path(),
-        "run.caps.conv-*: md.set_field\nrun.caps.conv-narrow: md.set_field:status\n",
+        "run.caps.conv-*: md.edit\nrun.caps.conv-narrow: md.edit:tasks/*.md\n",
     );
 
     let (conv, _) = caps::load_conventions(Some(tmp.path())).unwrap();
@@ -161,14 +158,14 @@ fn the_live_fixture_four_combinations_round_trip() {
     // Glob key + unscoped verb: admits every target of its kind.
     let (pattern, caps) = conv.matching("conv-other").expect("glob key matches");
     assert_eq!(pattern, "conv-*");
-    assert!(caps.admits("md.set_field", Some("anything")));
+    assert!(caps.admits("md.edit", Some("anything.md")));
 
     // Exact key + colon-scoped target, winning over the glob by length.
     let (pattern, caps) = conv.matching("conv-narrow").expect("exact key matches");
     assert_eq!(pattern, "conv-narrow");
-    assert!(caps.admits("md.set_field", Some("status")));
+    assert!(caps.admits("md.edit", Some("tasks/a.md")));
     assert!(
-        !caps.admits("md.set_field", Some("title")),
+        !caps.admits("md.edit", Some("notes/a.md")),
         "the scoped target must stay strictly narrower than its unscoped form"
     );
 }
@@ -178,7 +175,7 @@ fn the_live_fixture_four_combinations_round_trip() {
 #[test]
 fn a_pattern_may_contain_a_dot() {
     let tmp = tempfile::tempdir().unwrap();
-    declare(tmp.path(), "run.caps.fix.note: md.set_field\n");
+    declare(tmp.path(), "run.caps.fix.note: md.edit\n");
 
     let (conv, _) = caps::load_conventions(Some(tmp.path())).unwrap();
     let (pattern, _) = conv.matching("fix.note").expect("dotted pattern matches");
@@ -190,7 +187,7 @@ fn a_pattern_may_contain_a_dot() {
 #[test]
 fn the_array_spelling_refuses_never_an_empty_ceiling() {
     let tmp = tempfile::tempdir().unwrap();
-    declare(tmp.path(), "run.caps.fix-*: [md.set_field]\n");
+    declare(tmp.path(), "run.caps.fix-*: [md.edit]\n");
 
     assert!(
         matches!(
@@ -222,7 +219,7 @@ fn a_retired_marker_grants_nothing() {
 
     // And it cannot ceiling anything either: an explicit grant passes whole,
     // because a retired file is not a policy plane.
-    let explicit = set(&["md.set_field", "md.append_section"]);
+    let explicit = set(&["md.edit", "md.create"]);
     let r = caps::resolve_caps("fix-x", Some(&explicit), &conv);
     assert_eq!(r.effective, explicit);
 }

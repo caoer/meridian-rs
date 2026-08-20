@@ -379,15 +379,25 @@ fn effect_api(builder: &mut GlobalsBuilder) {
     /// with an optional advisory `message`. Realized through the create door
     /// (occupied path refuses, armed middleware stamps, checks) — the birth
     /// cap for declared tasks (SCHEMA §5, ruled 2026-08-18).
+    ///
+    /// `path` is the RELATIVE landing coordinate as declared — the string
+    /// the `md.create` capability glob judges — and admits no rooted
+    /// spelling. Targeting rides the optional `base` (ZT ruling 2026-08-19
+    /// #2: the boundary is data, never a glued string): a rooted
+    /// `root:<dir>` ref or a confined workspace-relative directory the path
+    /// resolves under. Absent `base`, the caller's ambient directory is the
+    /// default base; absent both, the path lands workspace-root-relative.
     fn create(
         #[starlark(require = named)] path: String,
         #[starlark(require = named)] body: String,
+        #[starlark(require = named)] base: Option<String>,
         #[starlark(require = named)] message: Option<String>,
         eval: &mut Evaluator<'_, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let mut args = BTreeMap::new();
         args.insert("path".to_owned(), ArgValue::Str(path));
         args.insert("body".to_owned(), ArgValue::Str(body));
+        insert_opt(&mut args, "base", base);
         insert_opt(&mut args, "message", message);
         store(eval)?.push(EffectKind::Create, args);
         Ok(NoneType)

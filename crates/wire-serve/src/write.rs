@@ -4143,64 +4143,99 @@ fn resolve_rooted_spelling(target: &Path, what: &str) -> Result<RootedSpelling, 
     })
 }
 
-/// Resolve one `md.create` birth target for the run plane (md-create-ambient-
-/// paths ruling, shape (c), 2026-08-18) — the face path law carried onto the
-/// birth lane:
+/// Resolve one `md.create` birth target for the run plane — the face path
+/// law carried onto the birth lane, with the boundary carried as DATA (ZT
+/// ruling 2026-08-19 #2, superseding both the pre-joined `root:rel` path
+/// spelling and any layout pattern):
 ///
-/// - a BARE path resolves under `ambient` (the caller's ambient directory,
-///   workspace-relative) when one rides the call, and stays workspace-root-
-///   relative when none does (the documented bare-door behavior);
-/// - a rooted `root:rel` spelling is EXPLICIT: it resolves through the one
-///   rooted lane ([`resolve_rooted_spelling`]) and must name the run's own
-///   bound workspace — the run's births ride that workspace's ring, locks,
-///   and armed law, so a foreign-root birth refuses with a teaching rather
-///   than landing outside every guard the run holds.
+/// - `path` is the birth's RELATIVE landing coordinate as the block declared
+///   it — the same string the capability glob judges. It admits no rooted
+///   spelling and no unconfined shape: the base axis exists so the two facts
+///   never ride one glued string.
+/// - `base` is the optional resolution base the descriptor carried (the
+///   block's `--target` lane): a rooted `root:rel` ref resolves through the
+///   one rooted lane ([`resolve_rooted_spelling`]) and must name the run's
+///   own bound workspace — the run's births ride that workspace's ring,
+///   locks, and armed law, so a foreign-root base refuses with a teaching —
+///   or a confined workspace-relative directory.
+/// - absent `base`, the caller's `ambient` directory is the default base
+///   (md-create-ambient-paths, shape (c)); absent both, the path lands
+///   workspace-root-relative (the documented bare-door behavior).
 ///
 /// Returns the workspace-relative path the birth lands at. The create door
-/// still runs its own confinement on it — this seam exists so the capability
-/// grain and the receipt see the RESOLVED target.
+/// still runs its own confinement on it — this seam exists so the birth
+/// lane, the receipt, and the dry row see the RESOLVED landing.
 ///
 /// # Errors
-/// `bad_path` — a malformed or foreign rooted spelling, an unconfined
-/// ambient, or an unconfined resolved path. Nothing was written.
+/// `bad_path` — a rooted or unconfined `path`, a malformed or foreign
+/// `base`/`ambient`, or an unconfined resolved landing. Nothing was written.
 pub fn resolve_birth_target(
     root: &fs::WorkspaceRoot,
-    spelling: &str,
+    path: &str,
+    base: Option<&str>,
     ambient: Option<&str>,
 ) -> Result<String, Box<ErrorBody>> {
     let refuse = |message: String| -> Box<ErrorBody> {
         let mut e = ErrorBody::new(ErrorCode::BadPath);
-        e.path = Some(Path(spelling.to_owned()));
+        e.path = Some(Path(path.to_owned()));
         e.message = Some(message);
         Box::new(e)
     };
-    if addr::head_carries_root_separator(spelling) {
-        let rooted = resolve_rooted_spelling(&Path(spelling.to_owned()), "the birth target")?;
-        let bound = std::fs::canonicalize(&root.0).unwrap_or_else(|_| root.0.clone());
-        if rooted.workspace != bound {
-            return Err(refuse(format!(
-                "the birth target {spelling} names root `{}`, which is not this run's \
-                 bound workspace — a run-plane birth rides the bound workspace's ring, \
-                 locks, and armed law, so it cannot land in a foreign tree. Run the page \
-                 bound to that root instead. Nothing was written.",
-                rooted.name
-            )));
-        }
-        return Ok(rooted.rel);
+    if addr::head_carries_root_separator(path) {
+        return Err(refuse(format!(
+            "the birth path {path} carries a `root:` spelling — the path argument is \
+             the RELATIVE landing coordinate (the string capability globs match), and \
+             targeting rides the separate `base` argument: create(path = \"tasks/x.md\", \
+             base = \"<root>:<session-dir>\"). Nothing was written.",
+        )));
     }
-    let resolved = match ambient {
-        Some(dir) => {
+    if !addr::confined(path) {
+        return Err(refuse(format!(
+            "the birth path {path} is not a confined relative path (no absolute path, \
+             no `.`/`..`/empty segment). Nothing was written.",
+        )));
+    }
+    let base_rel = match (base, ambient) {
+        (Some(dir), _) if addr::head_carries_root_separator(dir) => {
+            let rooted = resolve_rooted_spelling(&Path(dir.to_owned()), "the birth base")?;
+            let bound = std::fs::canonicalize(&root.0).unwrap_or_else(|_| root.0.clone());
+            if rooted.workspace != bound {
+                return Err(refuse(format!(
+                    "the birth base {dir} names root `{}`, which is not this run's \
+                     bound workspace — a run-plane birth rides the bound workspace's \
+                     ring, locks, and armed law, so it cannot land in a foreign tree. \
+                     Run the page bound to that root instead. Nothing was written.",
+                    rooted.name
+                )));
+            }
+            Some(rooted.rel)
+        }
+        (Some(dir), _) => {
+            if dir.is_empty() || !addr::confined(dir) {
+                return Err(refuse(format!(
+                    "the birth base `{dir}` is not a confined workspace-relative \
+                     directory path (no absolute path, no `.`/`..`/empty segment) and \
+                     not a rooted `root:rel` ref, so the birth path {path} cannot \
+                     resolve under it. Nothing was written.",
+                )));
+            }
+            Some(dir.to_owned())
+        }
+        (None, Some(dir)) => {
             if dir.is_empty() || !addr::confined(dir) {
                 return Err(refuse(format!(
                     "ambient `{dir}` is not a confined workspace-relative directory \
                      path (no absolute path, no `.`/`..`/empty segment), so the bare \
-                     birth target {spelling} cannot resolve under it. Nothing was \
-                     written.",
+                     birth path {path} cannot resolve under it. Nothing was written.",
                 )));
             }
-            format!("{dir}/{spelling}")
+            Some(dir.to_owned())
         }
-        None => spelling.to_owned(),
+        (None, None) => None,
+    };
+    let resolved = match base_rel {
+        Some(dir) => format!("{dir}/{path}"),
+        None => path.to_owned(),
     };
     if !addr::confined(&resolved) {
         return Err(refuse(format!(
