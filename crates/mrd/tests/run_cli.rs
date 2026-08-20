@@ -63,6 +63,29 @@ def run(ctx):
 ^solo-1
 ";
 
+/// A many-task page with a `default` binding — the TASK-omitted election leg
+/// (2026-08-19 default-task amendment).
+const DEFAULT_PAGE: &str = "\
+---
+task.default: \"[[#^def-1]]\"
+task.other: \"[[#^oth-1]]\"
+---
+
+# Tasks
+
+```starlark
+def run(ctx):
+    pass
+```
+^def-1
+
+```starlark
+def run(ctx):
+    pass
+```
+^oth-1
+";
+
 struct Ws {
     tmp: tempfile::TempDir,
 }
@@ -72,6 +95,7 @@ impl Ws {
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::write(tmp.path().join("tasks.md"), PAGE).expect("page");
         std::fs::write(tmp.path().join("solo.md"), SOLO_PAGE).expect("solo page");
+        std::fs::write(tmp.path().join("defaulted.md"), DEFAULT_PAGE).expect("default page");
         Self { tmp }
     }
 
@@ -180,6 +204,49 @@ fn task_omitted_single_runs_it() {
     let text = stdout(&out);
     assert!(text.contains("solo"), "{text}");
     assert!(text.contains("hermetic"), "{text}");
+}
+
+/// TASK omitted on a many-task page WITH a `default` binding: the election
+/// runs `default` — no list, exit 0 (2026-08-19 default-task amendment).
+#[test]
+fn task_omitted_many_with_default_runs_default() {
+    let ws = Ws::new();
+    let out = ws.run(&["defaulted.md"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("default"), "{text}");
+    assert!(!text.contains("name one"), "{text}");
+}
+
+/// An explicit TASK on the defaulted page wins over the election.
+#[test]
+fn named_task_wins_over_default_election() {
+    let ws = Ws::new();
+    let out = ws.run(&["defaulted.md", "other"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(stdout(&out).contains("other"), "{}", stdout(&out));
+}
+
+/// `--dry` with TASK omitted rehearses the same election the live run makes
+/// (dogfood r2 F2: a rehearsal must predict the live leg).
+#[test]
+fn dry_task_omitted_rehearses_the_default_election() {
+    let ws = Ws::new();
+    let out = ws.run(&["defaulted.md", "--dry"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(stdout(&out).contains("task 'default'"), "{}", stdout(&out));
+}
+
+/// `--list` on the defaulted page is unchanged by the election: every task
+/// lists, exit 0.
+#[test]
+fn list_on_defaulted_page_lists_every_task() {
+    let ws = Ws::new();
+    let out = ws.run(&["defaulted.md", "--list"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("default"), "{text}");
+    assert!(text.contains("other"), "{text}");
 }
 
 /// Unknown TASK → exit 2 with the declared names.

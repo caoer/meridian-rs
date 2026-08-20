@@ -16,6 +16,13 @@ pub const TASK_PREFIX: &str = "task.";
 /// block's declarations, never a binding of their own.
 pub const RESERVED_SUFFIXES: [&str; 3] = ["caps", "args", "env"];
 
+/// The task name a page elects for paramless execution: with TASK omitted and
+/// several bindings declared, a binding named `default` runs instead of the
+/// list-and-refuse. Election is by NAME, declared by the page's author — the
+/// plane still never guesses (2026-08-19 default-task amendment,
+/// `docs/run-plane.md`).
+pub const DEFAULT_TASK: &str = "default";
+
 /// One task binding as declared: the task `name` (the fm key minus the
 /// `task.` prefix) and the block `anchor` id its value references.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,8 +69,10 @@ pub enum AddressError {
     /// `declaration_keys` carries any `task.<name>.<suffix>` keys found — the
     /// same near-miss fact, measured page-wide.
     NoTasks { declaration_keys: Vec<String> },
-    /// TASK was omitted and the page declares more than one binding — the
-    /// caller lists them and exits 2, it never guesses.
+    /// TASK was omitted, the page declares more than one binding, and none is
+    /// named [`DEFAULT_TASK`] — the caller lists them and exits 2, it never
+    /// guesses. (A binding named `default` is a declared election, not a
+    /// guess: it runs instead of raising this.)
     ManyTasks { available: Vec<String> },
     /// A binding value is not a same-file block linktext (`#^id`).
     InvalidBinding {
@@ -131,7 +140,8 @@ impl std::fmt::Display for AddressError {
             }
             AddressError::ManyTasks { available } => write!(
                 f,
-                "this page declares {} tasks — name one: {}",
+                "this page declares {} tasks — name one: {} (a binding named \
+                 `{TASK_PREFIX}{DEFAULT_TASK}` would run with TASK omitted)",
                 available.len(),
                 available.join(", ")
             ),
@@ -377,7 +387,8 @@ pub fn declared(doc: &Document) -> Result<Vec<DeclaredTask>, AddressError> {
 }
 
 /// Resolve `task` on the page: named → that binding; omitted → the page's ONLY
-/// binding (one runs; many is a loud list-and-refuse, never a guess).
+/// binding, or among several the one named [`DEFAULT_TASK`] (a declared
+/// election); many with no `default` is a loud list-and-refuse, never a guess.
 ///
 /// # Errors
 /// Every [`AddressError`] variant except the page-load class.
@@ -400,7 +411,10 @@ pub fn resolve_task(doc: &Document, task: Option<&str>) -> Result<ResolvedTask, 
                 });
             }
             [only] => only,
-            _ => return Err(AddressError::ManyTasks { available: names() }),
+            many => many
+                .iter()
+                .find(|d| d.name == DEFAULT_TASK)
+                .ok_or_else(|| AddressError::ManyTasks { available: names() })?,
         },
     };
     let binding = row.binding.clone()?;
