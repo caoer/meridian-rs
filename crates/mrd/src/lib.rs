@@ -515,8 +515,9 @@ usage:
 ! mrd run <PAGE> [TASK] [-- ARGS]
                            run a task block from page frontmatter (task.<name>;
                            PAGE workspace-relative). TASK omitted: one declared
-                           task runs, several list and exit 2. Exits: 0 clean /
-                           1 refused|failed / 2 bad invocation.
+                           task runs; several run the one named default, else
+                           list and exit 2. Exits: 0 clean / 1 refused|failed /
+                           2 bad invocation.
 ! mrd script [--files PATH]... [--args JSON] [--dry] [--actor A] [--now T]
           [--if-fingerprint FP] [--expect-armed DIGEST] [--receipt PATH#ANCHOR]
                            evaluate inline Starlark from STDIN as the caller
