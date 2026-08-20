@@ -479,8 +479,11 @@ impl std::fmt::Display for ExecError {
                     return write!(
                         f,
                         " — the grant was narrowed away by {ceiling}. Conventions narrow only, \
-                         never widen, so declaring the cap again cannot lift it. Fix: widen or \
-                         remove that ceiling entry, or aim the effect inside what it leaves."
+                         never widen: a scoped grant survives only where its scope NESTS inside \
+                         the ceiling's (overlap is not nesting), so declaring the cap again \
+                         cannot lift it. Fix: respell the grant's scope inside that ceiling, \
+                         widen or remove the ceiling entry, or aim the effect inside what it \
+                         leaves."
                     );
                 }
                 // Deny-by-default (dogfood r3 gap 6b): name WHY, the grants
@@ -883,7 +886,7 @@ fn realize_births(
             dry: false,
             fields: req.fields.clone(),
         };
-        let out = wire_serve::write::create(root, req.birth_seq, &args, &[]).map_err(|e| {
+        let out = create_waiting_out_busy(root, req.birth_seq, &args).map_err(|e| {
             ExecError::BirthRefused {
                 path: path.clone(),
                 // The door's typed frame, carried whole (it has no Display).
@@ -897,6 +900,33 @@ fn realize_births(
         });
     }
     Ok(births)
+}
+
+/// The birth lane's door call, under the same waiting policy the delta-mint
+/// bracket takes ([`busy_wait_budget`]): a `workspace_busy` frame is retried
+/// every 10 ms until the budget is spent, then carried whole to the caller as
+/// the door minted it.
+///
+/// Retrying the DOOR (not just the flock) is what makes the birth lane wait at
+/// all — `create` owns its own `LOCK_NB` acquire, and it takes that lock
+/// before it reads a byte or writes one, so a busy refusal leaves the corpus
+/// bit-identical and a retry is the same call, never a second write path. No
+/// other refusal code is retried: they are verdicts about the request, and
+/// repeating the request cannot change them.
+fn create_waiting_out_busy(
+    root: &fs::WorkspaceRoot,
+    seq: Option<&dyn wire_serve::seq::SeqSink>,
+    args: &wire_serve::write::CreateArgs,
+) -> Result<wire_serve::write::CreateOutcome, Box<wire::ErrorBody>> {
+    let deadline = Instant::now() + busy_wait_budget();
+    loop {
+        match wire_serve::write::create(root, seq, args, &[]) {
+            Err(e) if e.code == wire::ErrorCode::WorkspaceBusy && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            outcome => return outcome,
+        }
+    }
 }
 
 /// Resolve every `md.create` birth target in `effects` to the workspace-
@@ -1095,14 +1125,31 @@ pub fn apply_under(
     })
 }
 
+/// How long a run-plane acquire of `.meridian/write.lock` waits out a
+/// `workspace_busy` refusal before surfacing it — the CLI lane's own waiting
+/// policy, which the wire contract assigns to the caller ("refused in ≤0.1 ms,
+/// no engine retry and no queue, so waiting is entirely the caller's policy").
+///
+/// Default 10 s, sized off measurement rather than taste: on a 37 878-file
+/// corpus with a resident daemon the competing holds are the daemon's own
+/// commits at 1.1–1.5 s each (`wall = hold`), recurring every few seconds, so
+/// the old 2 s bound was inside the noise. `MERIDIAN_BUSY_WAIT_MS` overrides
+/// it — 0 restores the pure `LOCK_NB` refusal, which is how the tests assert
+/// the refusal still exists without waiting the default out.
+fn busy_wait_budget() -> Duration {
+    match std::env::var("MERIDIAN_BUSY_WAIT_MS") {
+        Ok(raw) => Duration::from_millis(raw.trim().parse().unwrap_or(10_000)),
+        Err(_) => Duration::from_secs(10),
+    }
+}
+
 /// The delta-mint bracket's flock (step 7b): the workspace WRITE lock,
-/// bounded-wait — its holders (a wire splice's critical section, a detect
-/// cycle) are short, so a brief retry converts the NB acquire into a bounded
-/// wait; past the deadline the apply refuses the plane's own typed busy
-/// word. Lock order is run.lock → write.lock on this path and no path takes
-/// them the other way.
+/// bounded-wait — a holder is one wire splice's critical section or a detect
+/// cycle, so the retry converts the NB acquire into a bounded wait; past the
+/// deadline the apply refuses the plane's own typed busy word. Lock order is
+/// run.lock → write.lock on this path and no path takes them the other way.
 fn acquire_write_flock(root: &fs::WorkspaceRoot) -> Result<fs::WriteLock, ExecError> {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + busy_wait_budget();
     loop {
         match fs::WriteLock::acquire(root) {
             Ok(lock) => return Ok(lock),
