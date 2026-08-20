@@ -698,10 +698,12 @@ pub enum Op {
     },
     /// The birth op (v3-only at dispatch): births one file through the same
     /// guarded door every in-process caller uses
-    /// (`wire_serve::write::create`) — path confinement → reserved-journal
-    /// guard → world guard → the four birth guards → the gate seam → the
-    /// `if_absent` CAS at the disk edge → root advance → birth Delta →
-    /// journal row. This op forwards; it does not re-implement.
+    /// (`wire_serve::write::create`) — path confinement → the machinery floor
+    /// (`.git`, `.meridian`, `meridian`, `receipts` refuse `bad_path` at any
+    /// depth) → reserved-journal guard → world guard → the four birth guards
+    /// → the gate seam → the `if_absent` CAS at the disk edge → root advance
+    /// → birth Delta → journal row. This op forwards; it does not
+    /// re-implement.
     ///
     /// `body` is the newborn's full bytes, byte-transparent — the engine mints
     /// no template here. An occupied path refuses `cas_mismatch` (recovery

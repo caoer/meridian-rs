@@ -462,6 +462,143 @@ fn a_malformed_ambient_refuses_the_birth() {
     );
 }
 
+// ── The machinery floor (card create-door-machinery-containment, 2026-08-20) ──
+// A create scope judges the DECLARED path's SHAPE, never the landing, so the
+// grant `md.create:tasks/*.md` reached `.git/tasks/x.md` through the
+// descriptor's own `base` — probed in the round-2 review of caps-redesign-docs.
+// The door now refuses a landing carrying `.git`, `.meridian`, `meridian` or
+// `receipts` as a segment, at any depth, case-insensitively. These tests pin
+// the floor at the shared choke both run-plane lanes converge on; the per-lane
+// end-to-end proofs live in `dispatch_bash.rs` and `dispatch_starlark.rs`.
+
+/// The measured escape, closed: one grant, four machinery landings, reached
+/// through the BASE axis the capability never reads. Each refuses and lands
+/// nothing.
+#[test]
+fn a_based_birth_into_each_machinery_dir_refuses() {
+    for dir in [".git", ".meridian", "meridian", "receipts"] {
+        let (tmp, root) = workspace();
+        let mut based = create_effect("tasks/card.md", "# Escaped\n", 0);
+        based
+            .args
+            .insert("base".to_owned(), ArgValue::Str(dir.to_owned()));
+        let effects = [based];
+        // The narrow grant that MATCHES — the point is that admission passes
+        // and the door still refuses.
+        let authority = granted("md.create:tasks/*.md");
+        let observed = current_root(&root);
+        let err = executor::apply(&root, &request(&effects, &authority, &observed))
+            .expect_err("a machinery landing refuses at the door");
+        let ExecError::BirthRefused { detail, .. } = &err else {
+            panic!("expected BirthRefused for base `{dir}`, got {err:?}");
+        };
+        assert!(
+            detail.contains("bad_path"),
+            "the machinery floor refuses `bad_path` for base `{dir}`: {detail}"
+        );
+        assert!(
+            detail.contains(dir),
+            "the refusal names the offending segment `{dir}`: {detail}"
+        );
+        assert!(
+            !tmp.path().join(dir).join("tasks/card.md").exists(),
+            "nothing was born under `{dir}`"
+        );
+    }
+}
+
+/// The same floor on the DECLARED path, with no base and an untargeted grant —
+/// the lane that needs no `base` argument at all.
+#[test]
+fn a_declared_machinery_path_refuses_without_any_base() {
+    for path in [
+        ".git/tasks/card.md",
+        ".meridian/runs/card.md",
+        "meridian/armed-rules.md",
+        "receipts/run.md",
+    ] {
+        let (tmp, root) = workspace();
+        let effects = [create_effect(path, "# Escaped\n", 0)];
+        let authority = granted("md.create");
+        let observed = current_root(&root);
+        let err = executor::apply(&root, &request(&effects, &authority, &observed))
+            .expect_err("a machinery landing refuses at the door");
+        assert!(
+            matches!(err, ExecError::BirthRefused { ref detail, .. }
+                if detail.contains("bad_path")),
+            "`{path}` refuses at the machinery floor: {err:?}"
+        );
+        assert!(!tmp.path().join(path).exists(), "`{path}` was not born");
+    }
+}
+
+/// **At any depth.** A nested root's machinery is machinery too: a birth into
+/// a probe workspace's own `.git/` corrupts a repository exactly as a
+/// root-level one does, and the live corpus carries 150+ such nested dirs.
+#[test]
+fn a_nested_machinery_dir_refuses_at_any_depth() {
+    for path in [
+        "results/probe/ws/.git/tasks/card.md",
+        "results/probe/ws/.meridian/card.md",
+        "results/probe/ws/meridian/armed-rules.md",
+        "results/probe/ws/receipts/2026-08-20.md",
+    ] {
+        let (tmp, root) = workspace();
+        let effects = [create_effect(path, "# Nested\n", 0)];
+        let authority = granted("md.create");
+        let observed = current_root(&root);
+        let err = executor::apply(&root, &request(&effects, &authority, &observed))
+            .expect_err("a nested machinery landing refuses");
+        assert!(
+            matches!(err, ExecError::BirthRefused { ref detail, .. }
+                if detail.contains("bad_path")),
+            "`{path}` refuses at any depth: {err:?}"
+        );
+        assert!(!tmp.path().join(path).exists(), "`{path}` was not born");
+    }
+}
+
+/// **Case-insensitively.** A case-insensitive filesystem lands `.GIT/x.md`
+/// inside `.git/`, so a guard a spelling defeats is not a guard.
+#[test]
+fn a_case_variant_machinery_dir_still_refuses() {
+    for path in [".GIT/tasks/card.md", "Receipts/run.md", "MERIDIAN/x.md"] {
+        let (tmp, root) = workspace();
+        let effects = [create_effect(path, "# Case\n", 0)];
+        let authority = granted("md.create");
+        let observed = current_root(&root);
+        let err = executor::apply(&root, &request(&effects, &authority, &observed))
+            .expect_err("a case-variant machinery landing refuses");
+        assert!(
+            matches!(err, ExecError::BirthRefused { ref detail, .. }
+                if detail.contains("bad_path")),
+            "`{path}` refuses whatever its case: {err:?}"
+        );
+        assert!(!tmp.path().join(path).exists(), "`{path}` was not born");
+    }
+}
+
+/// The floor is a FLOOR, not a ban on the words: an ordinary content landing
+/// whose segments merely RESEMBLE machinery still births. Without this, the
+/// guard could pass by refusing everything.
+#[test]
+fn look_alike_content_paths_still_birth() {
+    for path in [
+        "tasks/receipts.md",
+        "receipts-archive/card.md",
+        "notes/meridian-notes.md",
+        "docs/gitignore.md",
+    ] {
+        let (tmp, root) = workspace();
+        let effects = [create_effect(path, "# Content\n", 0)];
+        let authority = granted("md.create");
+        let observed = current_root(&root);
+        executor::apply(&root, &request(&effects, &authority, &observed))
+            .unwrap_or_else(|e| panic!("`{path}` is content and must birth: {e:?}"));
+        assert!(tmp.path().join(path).is_file(), "`{path}` was born");
+    }
+}
+
 /// Rooted-looking spellings in the PATH refuse BEFORE the mount table is
 /// ever read — deterministic on any machine: the path argument admits no
 /// `root:` head at all (the base axis owns targeting).
