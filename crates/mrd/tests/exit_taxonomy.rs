@@ -7,7 +7,6 @@
 //! exit 2 — the CLI-misuse leg — so a script could not tell "fix your
 //! invocation" from "read the engine's refusal". These gates hold the split.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -65,12 +64,7 @@ impl Sandbox {
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn mrd");
-        child
-            .stdin
-            .as_mut()
-            .expect("stdin")
-            .write_all(stdin_bytes.as_bytes())
-            .expect("write stdin");
+        common::feed_stdin(&mut child, stdin_bytes.as_bytes());
         child.wait_with_output().expect("wait mrd")
     }
 

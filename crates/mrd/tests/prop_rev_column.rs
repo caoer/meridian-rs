@@ -12,7 +12,6 @@
 //!   only the second token, so a guarded frontmatter write refused
 //!   deterministically and the unguarded path clobbered concurrent writes.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -77,12 +76,7 @@ impl Sandbox {
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn mrd");
-        child
-            .stdin
-            .as_mut()
-            .expect("stdin")
-            .write_all(stdin_bytes.as_bytes())
-            .expect("write stdin");
+        common::feed_stdin(&mut child, stdin_bytes.as_bytes());
         child.wait_with_output().expect("wait mrd")
     }
 

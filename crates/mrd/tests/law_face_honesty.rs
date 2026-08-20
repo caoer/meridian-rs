@@ -15,9 +15,10 @@
 //! when one clearly exists, because **a wrong pointer is worse than none.** Each
 //! pointer test therefore carries a control that must stay silent.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+
+mod common;
 
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
@@ -65,12 +66,7 @@ impl Sandbox {
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn mrd");
-        child
-            .stdin
-            .take()
-            .expect("stdin")
-            .write_all(stdin.as_bytes())
-            .expect("write script");
+        common::feed_stdin(&mut child, stdin.as_bytes());
         child.wait_with_output().expect("wait mrd")
     }
 }

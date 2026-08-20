@@ -35,10 +35,11 @@
 //!   strip-the-root-and-proceed implementation would accept; it must refuse
 //!   on both legs with the disk untouched.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
+
+mod common;
 
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
@@ -171,12 +172,7 @@ fn spawn_with_stdin(cmd: &mut Command, stdin: &str) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn mrd");
-    child
-        .stdin
-        .take()
-        .expect("piped stdin")
-        .write_all(stdin.as_bytes())
-        .expect("write stdin");
+    common::feed_stdin(&mut child, stdin.as_bytes());
     child.wait_with_output().expect("wait mrd")
 }
 

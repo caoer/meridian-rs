@@ -178,13 +178,7 @@ impl Corpus {
             .spawn()
             .expect("spawn mrd");
         {
-            use std::io::Write as _;
-            child
-                .stdin
-                .as_mut()
-                .expect("stdin")
-                .write_all(edits.as_bytes())
-                .expect("write edits");
+            common::feed_stdin(&mut child, edits.as_bytes());
         }
         child.wait_with_output().expect("wait mrd")
     }

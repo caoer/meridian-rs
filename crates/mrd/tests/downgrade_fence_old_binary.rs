@@ -16,7 +16,6 @@
 //! Post-landing assertion: a workspace that took a REAL commit through this
 //! binary reports `NotInstalled` — nothing on any door path activates a fence.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -171,12 +170,7 @@ impl Sandbox {
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn mrd");
-        child
-            .stdin
-            .as_mut()
-            .expect("stdin")
-            .write_all(body.as_bytes())
-            .expect("write stdin");
+        common::feed_stdin(&mut child, body.as_bytes());
         child.wait_with_output().expect("wait mrd")
     }
 }

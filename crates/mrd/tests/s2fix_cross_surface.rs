@@ -27,6 +27,8 @@ use std::collections::BTreeMap;
 use wire::{ErrorCode, Path as WPath, PinSpec};
 use wire_serve::write::{SpliceArgs, splice};
 
+mod common;
+
 // ── the engine under test ───────────────────────────────────────────────────
 
 /// The binary every CLI drive goes through; `MRD_BIN` selects the installed
@@ -120,7 +122,6 @@ impl Sandbox {
 
     /// Run with the `put` edits channel on stdin.
     fn run_stdin(&self, cwd: &Path, args: &[&str], stdin_bytes: &str) -> Output {
-        use std::io::Write as _;
         if args
             .first()
             .is_some_and(|a| matches!(*a, "put" | "pin" | "rm" | "retire"))
@@ -134,12 +135,7 @@ impl Sandbox {
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn mrd");
-        child
-            .stdin
-            .as_mut()
-            .expect("stdin")
-            .write_all(stdin_bytes.as_bytes())
-            .expect("write edits");
+        common::feed_stdin(&mut child, stdin_bytes.as_bytes());
         child.wait_with_output().expect("wait")
     }
 
