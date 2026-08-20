@@ -287,7 +287,7 @@ fn conventions_parse_out_of_a_declaration_document() {
     let d = doc(
         "---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fix-*: md.edit, md.create:tasks/*.md\n---\n",
     );
-    let conv = caps::conventions_from_declaration(&d).unwrap();
+    let conv = caps::conventions_from_declaration(&d, None).unwrap();
     let (pattern, set) = conv.matching("fix-drift").unwrap();
     assert_eq!(pattern, "fix-*");
     assert!(set.admits("md.edit", None));
@@ -298,7 +298,7 @@ fn conventions_parse_out_of_a_declaration_document() {
 fn a_declaration_without_caps_keys_is_the_empty_table() {
     let d = doc("---\ntype: meridian-root\nversion: 1\nname: r\n---\n");
     assert_eq!(
-        caps::conventions_from_declaration(&d).unwrap(),
+        caps::conventions_from_declaration(&d, None).unwrap(),
         Conventions::none()
     );
 }
@@ -308,13 +308,13 @@ fn a_malformed_cap_entry_is_a_loud_error_never_no_policy() {
     let d =
         doc("---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fix-*: not_namespaced\n---\n");
     assert!(matches!(
-        caps::conventions_from_declaration(&d).unwrap_err(),
-        CapsError::BadCap { .. }
+        caps::conventions_from_declaration(&d, None).unwrap_err(),
+        CapsError::TableEntry { ref source, .. } if matches!(**source, CapsError::BadCap { .. })
     ));
 
     let d = doc("---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fi*x: md.edit\n---\n");
     assert!(matches!(
-        caps::conventions_from_declaration(&d).unwrap_err(),
+        caps::conventions_from_declaration(&d, None).unwrap_err(),
         CapsError::BadPattern { .. }
     ));
 
@@ -325,9 +325,69 @@ fn a_malformed_cap_entry_is_a_loud_error_never_no_policy() {
         "---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fix-*: md.set_field:status\n---\n",
     );
     assert!(matches!(
-        caps::conventions_from_declaration(&d).unwrap_err(),
-        CapsError::RetiredTarget { .. }
+        caps::conventions_from_declaration(&d, None).unwrap_err(),
+        CapsError::TableEntry { ref source, .. }
+            if matches!(**source, CapsError::RetiredTarget { .. })
     ));
+}
+
+// ── Refusals must teach legally (card cap-refusals-teach-legally) ──────────
+
+/// DEFECT b, closed: a poisoned convention table refuses with the DECLARATION
+/// PATH and the offending KEY. One bad entry bricks the whole root by design,
+/// so a refusal naming neither left an operator with every task refusing and
+/// nothing to grep for. Probed on `ad547a7c2`: the operator saw
+/// `invalid capability '#'` and no file.
+///
+/// The `#` is not a contrived value — it is what the frontmatter scanner
+/// yields for a TRAILING YAML COMMENT, which it does not strip. Copy-pasting
+/// a documented example carrying `# longest pattern wins` bricks a root
+/// (round-1 finding #1), so this is the exact byte an operator hits.
+#[test]
+fn a_poisoned_convention_table_names_the_file_and_the_key() {
+    let d = doc(
+        "---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fix-*: md.edit # longest wins\n---\n",
+    );
+    let declaration = std::path::Path::new("/ws/MERIDIAN.md");
+    let err = caps::conventions_from_declaration(&d, Some(declaration)).unwrap_err();
+
+    let CapsError::TableEntry { path, key, source } = &err else {
+        panic!("a poisoned table entry must carry its location: {err:?}");
+    };
+    assert_eq!(path.as_deref(), Some(declaration), "the file is named");
+    assert_eq!(key, "run.caps.fix-*", "the offending key is named");
+    assert!(
+        matches!(**source, CapsError::BadCap { ref raw } if raw == "#"),
+        "the inner fault still says WHAT is wrong: {source:?}"
+    );
+
+    // The rendered refusal is what the operator actually reads.
+    let rendered = err.to_string();
+    assert!(rendered.contains("/ws/MERIDIAN.md"), "{rendered}");
+    assert!(rendered.contains("run.caps.fix-*"), "{rendered}");
+    assert!(
+        rendered.contains("WHOLE convention table"),
+        "the blast radius is stated: {rendered}"
+    );
+    assert!(
+        rendered.contains("TRAILING YAML COMMENT"),
+        "the frequent cause is named: {rendered}"
+    );
+}
+
+/// The path is carried, not invented: a caller that parsed a declaration it
+/// never read from disk gets the same fault minus the path, never a fabricated
+/// one.
+#[test]
+fn a_pathless_caller_gets_the_fault_without_a_fabricated_path() {
+    let d = doc("---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fix-*: nope\n---\n");
+    let err = caps::conventions_from_declaration(&d, None).unwrap_err();
+    let CapsError::TableEntry { path, key, .. } = &err else {
+        panic!("expected TableEntry, got {err:?}");
+    };
+    assert!(path.is_none(), "no path is invented");
+    assert_eq!(key, "run.caps.fix-*");
+    assert!(err.to_string().contains("run.caps.fix-*"));
 }
 
 /// A denial names the ceiling that ate the grant, and ONLY where a ceiling is
