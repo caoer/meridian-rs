@@ -1367,7 +1367,7 @@ write path. Everything that differs is at the entry.
 | Reads | none — inputs arrive as inert `RunCtx` data | CLI lane: `read()` lowering to `toc`/`cat` — live, as a wire client through the one door. In-process lane (§ A.7): `read()` serving from the entry world plus the program's own armed overlay |
 | Enumeration | page names its own targets | none in-kernel: host resolves selector (sorted) or binds caller `files[]` in call order — inert paths only |
 | Commit | one atomic `if_fingerprint`-pinned batch via the local executor | ONE guarded commit as the caller (`actor`/`now`/`receipt` on the request): the single §4.4 splice for one armed path, the §4.4 SET form for N (§ One COMMIT per attempt) |
-| Concurrency | workspace flock, `LOCK_NB` (decision #9) | stand-still optimistic at touch-set grain (amended 2026-08-15, plan §4.6): entry world pinned for reads (frozen view); commit premise = the engine-computed touch set, verified entry-vs-live — foreign churn outside it never refuses; conflict inside it ⇒ host re-resolves selector and retries (budget 2, `attempts` on the face) |
+| Concurrency | `run.lock` `LOCK_NB` (decision #9); `write.lock` bounded-wait at the door calls (amended 2026-08-20 — Executor laws) | stand-still optimistic at touch-set grain (amended 2026-08-15, plan §4.6): entry world pinned for reads (frozen view); commit premise = the engine-computed touch set, verified entry-vs-live — foreign churn outside it never refuses; conflict inside it ⇒ host re-resolves selector and retries (budget 2, `attempts` on the face) |
 | Failure grain | one violation refuses the whole batch; bash phase-1 may stand committed and reported (decision #22) | one violation refuses the whole script; nothing ever partially lands (the sealed set keeps retry sound: a refusal lands nothing, so a re-run never double-applies) |
 | Output | run record: stdout streamed + content-addressed out-of-tree log; receipt linkage via `ExecRecordSink` | `ScriptTrace` → text face: echo semantics, embedded §4.4 splice response verbatim, telemetry always present |
 | Guarantee label | per block: `hermetic` (starlark) / `detected` (bash, U6b) | recorded-read + stand-still, stated as such; zero-armed outcome is read-class (`Ok(vec![])` precedent) |
@@ -1700,8 +1700,31 @@ Executor laws:
 - `live_fingerprint` is the **computed** fingerprint after phase 1, threaded by
  the caller, never re-read around a bash step; a missing live fingerprint at a
  bash choke point refuses — enforcement-off is not a pass (decision #19).
-- Local runs serialize under the workspace flock (decision #9); the CLI leg
- is `LOCK_NB` — a held lock is a fast typed "workspace busy" refusal.
+- Local runs serialize under `.meridian/run.lock` (decision #9); that leg is
+ `LOCK_NB` — a held run lock is a fast typed "workspace busy" refusal, and
+ stays so.
+- **The `write.lock` leg waits, bounded** (amended 2026-08-20, card
+ `mrd-cli-lane-workspace-busy`). The ENGINE is unchanged: every write door
+ still takes `.meridian/write.lock` `LOCK_EX|LOCK_NB` and refuses a
+ competing writer in ≤0.1 ms with no queue and no engine retry, because
+ "waiting is entirely the caller's policy" (wire-contract § the batch
+ bound). The run plane is a CALLER of those doors, and this is its policy:
+ its two in-process acquires — the birth lane's `create` call and the
+ delta-mint bracket — retry a `workspace_busy` refusal every 10 ms until
+ `MERIDIAN_BUSY_WAIT_MS` (default 10 000) is spent, then surface the same
+ typed refusal. A refusal at the flock has read nothing and written nothing
+ (the door takes the lock before any byte), so the retry is not a second
+ write path. Bounded, so a hung holder still cannot make a caller hang
+ (review C4). Lock order stays `run.lock` → `write.lock`; no path takes them
+ the other way, and the wait is inside that order.
+ **Why it was needed, measured** (37 878-file corpus, resident daemon): the
+ daemon's own commits hold `write.lock` in **1.1–1.5 s bursts** — that IS
+ the write (`wall = hold`, wire-contract), not an idle hold to shorten. A
+ single-shot `mrd run` that overlapped one burst lost its whole run to a
+ `workspace_busy` birth refusal; 5 of 7 consecutive probes refused. Every
+ caller was therefore obliged to write its own retry loop or build a
+ hermetic workspace. `run.lock` was measured over the same tree at **zero**
+ contention in 40 s, so it needs no wait and does not get one.
 - **Foreign-edit law** (decision #26, ZT): CAS covers only concurrent races.
  Before a replace-class effect applies to a target with a prior run
  receipt, the executor compares the target's current rev against that
