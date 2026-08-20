@@ -64,6 +64,80 @@ fn task_omitted_with_many_bindings_lists_and_refuses() {
     assert_eq!(available.len(), 4, "{available:?}");
 }
 
+/// The 2026-08-19 default-task election: several bindings, one named
+/// `default` — TASK omitted runs it instead of the list-and-refuse.
+#[test]
+fn task_omitted_with_many_bindings_runs_the_default_election() {
+    let page = "\
+---
+task.default: \"[[#^d-1]]\"
+task.other: \"[[#^o-1]]\"
+---
+
+```bash
+true
+```
+^d-1
+
+```bash
+false
+```
+^o-1
+";
+    let t = address::resolve_task(&doc(page), None).unwrap();
+    assert_eq!(t.binding.name, "default");
+    assert_eq!(t.binding.anchor, "d-1");
+}
+
+/// An explicit TASK always wins — the election only fills an omitted TASK.
+#[test]
+fn named_task_wins_over_the_default_election() {
+    let page = "\
+---
+task.default: \"[[#^d-1]]\"
+task.other: \"[[#^o-1]]\"
+---
+
+```bash
+true
+```
+^d-1
+
+```bash
+false
+```
+^o-1
+";
+    let t = address::resolve_task(&doc(page), Some("other")).unwrap();
+    assert_eq!(t.binding.name, "other");
+    assert_eq!(t.binding.anchor, "o-1");
+}
+
+/// A broken `default` binding surfaces its own row-scoped fault when elected —
+/// the election addresses the row exactly as naming it would.
+#[test]
+fn elected_default_with_dangling_block_is_dangling_binding() {
+    let page = "\
+---
+task.default: \"[[#^gone]]\"
+task.other: \"[[#^o-1]]\"
+---
+
+```bash
+false
+```
+^o-1
+";
+    let err = address::resolve_task(&doc(page), None).unwrap_err();
+    assert_eq!(
+        err,
+        AddressError::DanglingBinding {
+            name: "default".to_owned(),
+            anchor: "gone".to_owned(),
+        }
+    );
+}
+
 #[test]
 fn task_omitted_with_one_binding_runs_it() {
     let page = "\
