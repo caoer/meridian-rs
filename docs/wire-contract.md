@@ -2719,7 +2719,12 @@ guard applies exactly as at every other op):
   ambient in your session directory") on the birth lane; explicit targeting
   rides the descriptor's separate `base` argument (a rooted ref or a
   confined dir; caps-redesign 2026-08-19), with precedence descriptor
-  `base` > frame `ambient` > workspace root. A rooted `base` must name the
+  `base` > frame `ambient` > workspace root. **`base` is a descriptor field,
+  so its availability is per LANE:** the starlark kernel takes it today
+  (`create(path=, body=, base=, message=)`), while the bash effect shim's
+  `md.create` frame accepts exactly `path` + `body` and refuses any other
+  key — until the shim carries it, a bash birth has only `ambient` and the
+  bare door (card `bash-shim-base-targeting`). A rooted `base` must name the
   bound workspace (a foreign root refuses with a teaching — a run's births
   ride the bound workspace's ring, locks, and armed law), and a rooted
   spelling in the `path` argument itself refuses, naming `base` — two axes,
@@ -2729,6 +2734,7 @@ guard applies exactly as at every other op):
   board, and the root board alike. No `ambient` = the bare-door
   law, workspace-root-relative, unchanged. Hosts resolve it per call from
   the caller's own identity — never a page-hardcoded dir.
+- **Named absences.** No `receipt` field: run receipts are the plane's own,
   engine-appended to the run receipt file under the per-target invocation
   anchor on BOTH doors — nothing exists for a caller to aim. No capability,
   timeout, or code field: authority resolves from the page + declaring-root
@@ -2751,8 +2757,8 @@ op reached the plane. No aggregate boolean exists anywhere in the body:
  {"page":"rules/escalate.md","invocation":"run-1755100931421-4417-3-t0",
   "receipt":"receipts/run.md §^r-run-1755100931421-4417-3-t0",
   "dry":false, "task":"arm", "task_rev":"…", "guarantee":"hermetic",
-  "state":"applied", "applied":[{"kind":"md.patch","domain":"…"}],
-  "unexecuted":[], "caps":{"effective":["md.patch:rules/*"],
+  "state":"applied", "applied":[{"kind":"md.set_field","domain":"…"}],
+  "unexecuted":[], "caps":{"effective":["md.edit:**/rules/*.md"],
   "source":"explicit","narrowed":[]}, "cap_reached":false,
   "out_of_band_delta":false},
  {"page":"notes/plan.md","invocation":"run-1755100931421-4417-3-t1",

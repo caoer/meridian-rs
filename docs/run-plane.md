@@ -1412,32 +1412,71 @@ bytes it exists to keep out.
 ## Capabilities — deny-by-default (verdict ruling 3, decision #15)
 
 An undeclared block is read-only: it can compute, but no effect of its
-executes. The cap plane speaks THREE VERBS — `md.create` / `md.edit` /
+executes. The cap plane speaks THREE CAP VERBS — `md.create` / `md.edit` /
 `md.delete` — answering one question: may this block touch files there
-(caps-redesign ruling, 2026-08-19). HOW it touches them is the descriptor
-plane's (executor ops), extensible without growing this grammar: `Create`
-needs `md.create`; `SetField` and `AppendSection` need `md.edit`;
-`md.delete` is reserved — it parses and resolves so grants can be written
-ahead, but no descriptor maps to it until a retire descriptor exists.
+(caps-redesign ruling, 2026-08-19; distinct from the birth-preset *three
+verbs* of § 4). HOW it touches them is the descriptor plane's (executor
+ops), extensible without growing this grammar: `Create` needs `md.create`;
+`SetField` and `AppendSection` need `md.edit`; `md.delete` is reserved — it
+parses and resolves so grants can be written ahead, but no descriptor maps
+to it until a retire descriptor exists.
+
+**The two live verbs do not have the same reach, and the difference decides
+your glob.** `Create` births a file the block names, so `md.create` is a
+genuine *where may I write* grant. `SetField` and `AppendSection` change the
+DECLARING PAGE and nothing else (`descriptor_surface`,
+`crates/run/src/executor.rs`) — the run plane holds no way to edit a second
+file — so an `md.edit` scope is a SELF-GUARD narrowing the block against its
+own coordinate, never a reach. An `md.edit:agents/*/CARD.md` declared on a
+page that is not an agent card can admit nothing, ever.
 
 A verb is optionally scoped by a PATH GLOB in the system's one glob grammar
 (`policy::glob_match`, defined in `crates/policy/src/declaration.rs` — caps
 call it, never reimplement it), matched at the choke point against the block's DECLARED
-coordinates: a birth matches its `path` argument verbatim — the resolution
-base (descriptor `base` > frame `ambient` > workspace root) is a separate
-axis, never glued into the matched string — and a page edit matches the
-page in the coordinates it was addressed by. The engine holds no layout
-pattern (boundary-as-data ruling, 2026-08-19 #2), so `md.create:tasks/*.md`
-covers the ambient board, a based (`--target`) board, and the root board
-alike. Several scopes = several entries in the existing comma list; no new
+coordinates. Cap scopes carry one restriction the shared matcher does not:
+every segment must be non-empty, never `.` or `..`, and built from letters,
+digits or `_ - . * =` (`bad_glob`, `crates/run/src/caps.rs`) — a scope
+outside that charset refuses at declare time, even where the same string
+would be a legal glob for a rule or hook.
+
+| Descriptor | Coordinate the glob judges |
+|---|---|
+| `Create` | its `path` argument VERBATIM — the resolution base (descriptor `base` > frame `ambient` > workspace root) is a separate axis, never glued into the matched string |
+| `SetField` · `AppendSection` | the declaring page's path with the frame's `ambient` directory stripped as a LITERAL prefix when the page lies under it; with no `ambient` on the frame, the page's full workspace-relative path unchanged |
+
+⛔ **A create scope constrains the SHAPE of the declared path, not where the
+bytes land.** `base` is an ordinary argument the block chooses, and the choke
+point never reads it, so a block granted exactly `md.create:tasks/*.md` can
+land `tasks/<slug>.md` under ANY confined directory in the workspace —
+measured 2026-08-19: that grant birthed `conventions/attested/tasks/x.md`.
+The tail jail is real (`evil/tasks/x.md` and `tasks/sub/x.md` both fail the
+glob as declared paths); the location is not jailed at all. A root ceiling
+like `run.caps.fix-*: md.create:tasks/*.md` reads as *births are confined to
+boards* and does not mean it. That is the boundary-as-data ruling working as
+designed — the engine holds no layout pattern to confine against — so treat
+a create scope as a shape contract, and put containment, if you need it, in
+the block.
+
+The engine holds no layout pattern (boundary-as-data ruling, 2026-08-19 #2),
+so `md.create:tasks/*.md` covers the ambient board, a based (`--target`)
+board, and the root board alike. **That symmetry does not carry to edits**,
+and the asymmetry is the one that bites: `ambient` is a frame field (cap
+`run.ambient`) the calling host attaches per call, so on any lane whose host
+sends none, an edit is judged by its FULL workspace-relative path — and a
+short `md.edit:tasks/*.md` then denies a card sitting at
+`year=…/<session>/tasks/x.md`. Spell an edit scope to span the depth,
+`md.edit:**/tasks/*.md`, which holds either way: `**` matches zero segments
+as readily as five.
+
+Several scopes = several entries in the existing comma list; no new
 list syntax. A scoped cap is strictly narrower than its bare verb
-(`md.edit:tasks/*.md` < `md.edit`). Declared two ways — beside the binding,
+(`md.edit:**/tasks/*.md` < `md.edit`). Declared two ways — beside the binding,
 or by name convention:
 
 ```markdown
 ---
 task.fix-drift: "[[#^fix-1]]"
-task.fix-drift.caps: md.edit:tasks/*.md, md.create:tasks/*.md
+task.fix-drift.caps: md.edit:**/tasks/*.md, md.create:tasks/*.md
 ---
 ```
 
@@ -1448,25 +1487,45 @@ type: meridian-root
 version: 1
 name: field-notes
 run.caps.fix-*: md.edit
-run.caps.fix-note: md.edit:tasks/*.md # longest pattern wins
+# longest pattern wins — a comment needs its OWN line: the frontmatter
+# scanner takes no YAML crate and does not strip trailing comments, so a
+# `# …` after a value is parsed as a cap and refuses the WHOLE table
+run.caps.fix-note: md.edit:**/tasks/*.md
 run.timeout_secs: 7
 ---
 ```
 
 **Migration (the ruled split, caps-redesign 2026-08-19).** Retired per-op
-spellings fold or refuse, never silently reinterpret: bare `md.set_field` /
-`md.append_section` ALIAS-FOLD into `md.edit` at parse, and the canonical
-form is what every report and refusal then names; their field-grain
-targeted forms (`md.set_field:status`) REFUSE with the retirement teaching
-— the old target named a field or section, the new target position is a
-path glob, and dropping the target would widen the grant. Field-grain
-guards live inside blocks. Partition grain (parent-dir-name match) is
-retired with them.
+spellings fold or refuse, never silently REINTERPRET a target: bare
+`md.set_field` / `md.append_section` ALIAS-FOLD into `md.edit` at parse, and
+the canonical form is what every report and refusal then names; their
+field-grain targeted forms (`md.set_field:status`) REFUSE with the
+retirement teaching — the old target named a field or section, the new
+target position is a path glob, and dropping the target would widen the
+grant. Field-grain guards live inside blocks. Partition grain
+(parent-dir-name match) is retired with them.
+
+⚠️ **The fold preserves execution and WIDENS the op axis** — say this out
+loud, because a page that keeps running looks like a page that did not
+change. `md.set_field` used to authorize field writes alone; folded to
+`md.edit` it authorizes every page-mutating descriptor, `md.append_section`
+included (measured 2026-08-19: a block declaring only bare `md.set_field`
+applies an `append_section` descriptor). Every live bare legacy grant was
+widened this way at the cutover. A page that relied on the OP grain as a
+guard has lost it and must re-guard inside the block; the cap plane has no
+op grain left to express it with.
 
 A present-but-empty `caps` declaration is an EXPLICIT read-only grant, distinct
 from no declaration. Precedence for the grant is explicit > convention > none;
 conventions **narrow only, never widen**, and every cap that did not survive
-intact is reported in `narrowed[]`. The builtin `check-*` / `verify-*` ceiling
+intact is reported in `narrowed[]`. **Scopes meet by STRING EQUALITY, not by
+glob containment** (`Cap::meet`, `crates/run/src/caps.rs`): a ceiling scope
+admits the identical scope string or the unscoped verb, and drops every other
+scope — including one that is plainly narrower. Measured 2026-08-19:
+`md.edit:tasks/sub/*.md` under the ceiling `md.edit:tasks/**` is denied, and
+the refusal's "aim the effect inside what it leaves" misreads there, since
+the effect already was inside. Under a scoped ceiling, spell the page's scope
+byte-for-byte or leave the page's verb unscoped. The builtin `check-*` / `verify-*` ceiling
 is absolute, and those names refuse a bash fence loudly at load. Caps bind at
 the executor choke point before any I/O: one violation refuses the whole batch.
 
@@ -1486,7 +1545,9 @@ measure: a remedy that may misdiagnose is worse than none.
 
 **The one measured remedy the deny arm does teach is the retired-partition
 respell** (caps-redesign 2026-08-19): where a declared GLOBLESS same-verb
-scope `T` would have covered the landing as `T/*.md`, the denial names that
+scope `T` would have covered the DECLARED COORDINATE as `T/*.md` (the same
+string every cap glob judges — the engine's own refusal text says "landing"
+here, which is the coordinate, not the resolved destination), the denial names that
 exact respell — `md.create:tasks` is now a literal glob matching only the
 path `tasks`, and the page that used it under partition grain is told to
 spell it `md.create:tasks/*.md`. It is taught only when the match is
