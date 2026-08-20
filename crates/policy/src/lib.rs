@@ -81,7 +81,7 @@ pub use middleware_eval::{
 /// passing case.
 pub use declaration::{
     CheckOutcome, LoadError, Refusal, expand_globs, first_member_order_fault, glob_match,
-    is_glob_pattern,
+    glob_subsumes, is_glob_pattern,
 };
 
 /// The HOOK capability (U1.3): the emit leg's declaration. A [`Hook`] carries the

@@ -10,7 +10,7 @@ use registry::Client;
 use serde_json::json;
 
 use crate::gc;
-use crate::resolve::resolve_runtime;
+use crate::resolve::resolve_runtime_lenient;
 use crate::{Fail, Format, current_dir};
 
 /// Run `mrd unregister [PATH]`.
@@ -21,7 +21,10 @@ pub(crate) fn run(target_arg: Option<&str>, format: Format) -> Result<(), Fail> 
         Some(p) => cwd.join(p),
         None => cwd,
     };
-    let resolved = resolve_runtime(&base).map_err(|e| {
+    // Lenient on purpose: unregister must run outside a defined root — dropping
+    // a stale drawer/registry entry is legitimate exactly when the markers are
+    // already gone (the strict lane would refuse with OutsideWorkspace).
+    let resolved = resolve_runtime_lenient(&base).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace for {}: {e}",
             base.display()

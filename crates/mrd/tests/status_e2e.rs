@@ -155,8 +155,8 @@ fn status_genesis_is_clean_and_unverified() {
 /// `status` names how it resolved the workspace it judged, never the path
 /// alone. Both cases are asserted in one test because the discriminating fact
 /// is that the word changes with the situation: a git-anchored tree reads
-/// `git-root`, an unanchored one reads `ephemeral` — a hardcoded word would
-/// pass one half and fail the other.
+/// `git-root`, a gitless `mrd init`-declared one reads `declared` — a
+/// hardcoded word would pass one half and fail the other.
 #[test]
 fn status_names_the_tier_that_resolved_the_workspace() {
     let sb = sandbox();
@@ -167,7 +167,7 @@ fn status_names_the_tier_that_resolved_the_workspace() {
     let canon_bare = std::fs::canonicalize(&bare).unwrap();
     assert!(
         so.contains(&format!(
-            "status  {} (ephemeral)",
+            "status  {} (declared)",
             canon_bare.to_string_lossy()
         )),
         "the header names the root AND how it resolved: {so}"

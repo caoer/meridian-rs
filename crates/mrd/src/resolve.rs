@@ -2,6 +2,7 @@
 //! answered rungs are pure filesystem functions ([`workspace::resolve`]); a root opens the
 //! hashed drawer directly.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use cache::CacheDrawer;
@@ -19,8 +20,14 @@ pub(crate) enum Source {
     /// The ladder answered nothing, and a running daemon adopted the cwd from a
     /// registered ancestor.
     DaemonAdopted,
+    /// The ladder answered nothing, but an ancestor holds a valid `MERIDIAN.md`
+    /// root declaration (`type: meridian-root` — `mrd init`'s artifact): that
+    /// declared root is the workspace, drawer opened directly.
+    Declared,
     /// The ladder answered nothing and no daemon did either (or a registry
-    /// miss): ephemeral, per-invocation, writes nothing.
+    /// miss): ephemeral, per-invocation, writes nothing. Only the lenient lane
+    /// ([`resolve_runtime_lenient`]) surfaces this; the strict lane refuses
+    /// instead ([`RuntimeResolveError::OutsideWorkspace`]).
     Ephemeral,
 }
 
@@ -31,7 +38,61 @@ impl Source {
         match self {
             Source::Direct(tier) => tier.word(),
             Source::DaemonAdopted => "daemon-adopted",
+            Source::Declared => "declared",
             Source::Ephemeral => "ephemeral",
+        }
+    }
+}
+
+/// Why the strict resolution lane could not name a workspace.
+pub(crate) enum RuntimeResolveError {
+    /// The ladder itself failed (bad env override, unresolvable cwd).
+    Ladder(ResolveError),
+    /// PATH is outside every defined root: no env override, no `.git`
+    /// ancestor, no ancestor `MERIDIAN.md` root declaration, no registered
+    /// daemon root. The help's exit-2 leg ("PATH outside workspace") — the
+    /// caller gets the refusal in milliseconds instead of a corpus walk of a
+    /// tree that was never a workspace.
+    OutsideWorkspace {
+        /// The canonical path that failed to resolve.
+        path: PathBuf,
+    },
+    /// A daemon answered with a registered ancestor, but that workspace no
+    /// longer passes the defined-root test (no `.git` entry, no valid
+    /// `MERIDIAN.md` root declaration). A leftover registry row is a hint,
+    /// not a root — trusting it re-opened the corpus walk the refusal law
+    /// closed (advisor gate 2026-08-20: a pre-fix walk's row served a
+    /// 75-repo parent for 22.93 s while a fresh unmarked dir refused in
+    /// 0.01 s). Same exit-2 leg, same milliseconds.
+    StaleDaemonRoot {
+        /// The path being resolved.
+        path: PathBuf,
+        /// The registered-but-unmarked workspace the daemon offered.
+        workspace: PathBuf,
+    },
+}
+
+impl fmt::Display for RuntimeResolveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Ladder(e) => e.fmt(f),
+            Self::OutsideWorkspace { path } => write!(
+                f,
+                "{} is outside a declared meridian workspace — no MERIDIAN_WORKSPACE override, \
+                 no .git ancestor, no ancestor MERIDIAN.md root declaration, and no registered \
+                 daemon root. Declare a root with `mrd init`, or address a bound root by name \
+                 (`root:path`).",
+                path.display()
+            ),
+            Self::StaleDaemonRoot { path, workspace } => write!(
+                f,
+                "{} is outside a declared meridian workspace — a daemon holds a leftover \
+                 registration for {ws}, but that tree carries no workspace marker (no .git \
+                 entry, no MERIDIAN.md root declaration), so it is not a defined root. Drop \
+                 the stale row with `mrd unregister {ws}`, or declare the root with `mrd init`.",
+                path.display(),
+                ws = workspace.display()
+            ),
         }
     }
 }
@@ -56,8 +117,39 @@ impl Resolved {
     }
 }
 
-/// Resolve the workspace for `cwd` per the settled ladder.
-pub(crate) fn resolve_runtime(cwd: &Path) -> Result<Resolved, ResolveError> {
+/// Resolve the workspace for `cwd` per the settled ladder — the STRICT lane
+/// every corpus verb takes. A tree outside every defined root refuses
+/// ([`RuntimeResolveError::OutsideWorkspace`], exit 2 at the callers) instead
+/// of adopting the bare cwd and walking a corpus that was never a workspace
+/// (measured 2026-08-20: `mrd rules` in an unmarked 75-repo parent adopted it
+/// and walked 46k files for ~21 s to report nothing).
+pub(crate) fn resolve_runtime(cwd: &Path) -> Result<Resolved, RuntimeResolveError> {
+    let resolved = resolve_runtime_lenient(cwd).map_err(RuntimeResolveError::Ladder)?;
+    match resolved.source {
+        Source::Ephemeral => Err(RuntimeResolveError::OutsideWorkspace {
+            path: resolved.workspace,
+        }),
+        // A daemon adoption is trusted only while the registered workspace
+        // still passes the defined-root test — a leftover row for an
+        // unmarked tree refuses like ephemeral (exit 2 at the callers,
+        // milliseconds). The check stays out of the lenient lane so
+        // `mrd unregister` can still name and drop the stale registration.
+        Source::DaemonAdopted if !config::mount::is_defined_root(&resolved.workspace) => {
+            Err(RuntimeResolveError::StaleDaemonRoot {
+                path: cwd.to_path_buf(),
+                workspace: resolved.workspace,
+            })
+        }
+        _ => Ok(resolved),
+    }
+}
+
+/// The LENIENT lane: the same ladder, but an unanchored tree degrades to an
+/// ephemeral resolution instead of refusing. Only for verbs whose job is
+/// legitimate outside a defined root — `mrd unregister` (dropping a stale
+/// drawer/registry entry must work after the markers are gone). Everything
+/// else takes [`resolve_runtime`].
+pub(crate) fn resolve_runtime_lenient(cwd: &Path) -> Result<Resolved, ResolveError> {
     let answer = workspace::resolve(cwd)?;
     match answer.root() {
         // A rung answered: that root is the workspace, drawer opened directly.
@@ -72,10 +164,11 @@ pub(crate) fn resolve_runtime(cwd: &Path) -> Result<Resolved, ResolveError> {
     }
 }
 
-/// An unanchored tree: ask the daemon, else degrade to ephemeral.
+/// An unanchored tree: ask the daemon, then look for an ancestor root
+/// declaration, else degrade to ephemeral.
 fn resolve_unanchored(cwd: &Path, bare_workspace: PathBuf) -> Resolved {
     // A socket that answers with a registered ancestor wins; any transport
-    // failure (no daemon) or a miss falls through to ephemeral.
+    // failure (no daemon) or a miss falls through.
     if let Ok(client) = Client::from_default()
         && let Ok(Some(entry)) = client.resolve(cwd)
     {
@@ -84,6 +177,19 @@ fn resolve_unanchored(cwd: &Path, bare_workspace: PathBuf) -> Resolved {
             source: Source::DaemonAdopted,
             workspace: entry.workspace,
         };
+    }
+    // A declared-but-gitless root (`mrd init` without a repo): the nearest
+    // ancestor whose MERIDIAN.md reads as a valid root declaration is the
+    // workspace. Bounded like the `.git` rung; a stat per ancestor, one small
+    // file parse on a hit — milliseconds, never a corpus walk.
+    for dir in bare_workspace.ancestors().take(workspace::MAX_WALK_DEPTH) {
+        if config::mount::read_root_declaration(dir).is_ok() {
+            return Resolved {
+                drawer: CacheDrawer::open(dir),
+                source: Source::Declared,
+                workspace: dir.to_path_buf(),
+            };
+        }
     }
     Resolved {
         drawer: CacheDrawer::ephemeral(&bare_workspace),
@@ -169,8 +275,9 @@ fn run_rooted(spelling: &str, cwd: &Path, format: Format) -> Result<(), Fail> {
 
     let refusal = |error: Box<ErrorBody>, format: Format| -> Result<(), Fail> {
         // The refusal frames with the workspace the caller stands in — no
-        // target workspace exists to name.
-        let ambient = resolve_runtime(cwd)
+        // target workspace exists to name. Lenient on purpose: the frame is a
+        // label, and a rooted refusal must still print outside a workspace.
+        let ambient = resolve_runtime_lenient(cwd)
             .map_err(|e| {
                 Fail::tool(format!(
                     "cannot resolve workspace for {}: {e}",
