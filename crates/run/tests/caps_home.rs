@@ -189,13 +189,29 @@ fn the_array_spelling_refuses_never_an_empty_ceiling() {
     let tmp = tempfile::tempdir().unwrap();
     declare(tmp.path(), "run.caps.fix-*: [md.edit]\n");
 
+    let err = caps::load_conventions(Some(tmp.path())).unwrap_err();
     assert!(
-        matches!(
-            caps::load_conventions(Some(tmp.path())).unwrap_err(),
-            CapsError::BadCap { .. }
-        ),
-        "the array spelling must refuse, never yield a silently empty ceiling"
+        matches!(err, CapsError::TableEntry { ref source, .. }
+            if matches!(**source, CapsError::BadCap { .. })),
+        "the array spelling must refuse, never yield a silently empty ceiling: {err:?}"
     );
+
+    // Card cap-refusals-teach-legally, defect b, proven at the entry point that
+    // actually knows the path: `load_conventions` is the only caller holding
+    // the declaration's location, so this is where a bricked root either gets
+    // told which file and key to fix, or does not.
+    let CapsError::TableEntry { path, key, .. } = &err else {
+        unreachable!("asserted above")
+    };
+    assert_eq!(
+        path.as_deref(),
+        Some(tmp.path().join("MERIDIAN.md").as_path()),
+        "the refusal names the declaration it refused"
+    );
+    assert_eq!(key, "run.caps.fix-*", "and the key whose value failed");
+    let rendered = err.to_string();
+    assert!(rendered.contains("MERIDIAN.md"), "{rendered}");
+    assert!(rendered.contains("run.caps.fix-*"), "{rendered}");
 }
 
 /// The retired marker is INERT: a `.meridian.toml` carrying a full `[run.caps]`
