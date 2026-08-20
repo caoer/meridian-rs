@@ -289,10 +289,21 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
             ));
         }
     };
-    // An unanchored tree runs against the cwd (ambient lane only).
+    // The ambient lane takes the strict resolution: a tree outside every
+    // defined root refuses (exit 2) instead of executing against a cwd that
+    // was never a workspace.
     let root = match &rooted {
         Some(r) => fs::WorkspaceRoot(r.workspace.clone()),
-        None => fs::WorkspaceRoot(answer.root_or_cwd().to_path_buf()),
+        None => match answer.root() {
+            Some(root) => fs::WorkspaceRoot(root.to_path_buf()),
+            None => fs::WorkspaceRoot(
+                crate::resolve::resolve_runtime(&cwd)
+                    .map_err(|e| {
+                        Fail::tool(format!("cannot resolve workspace for {}: {e}", cwd.display()))
+                    })?
+                    .workspace,
+            ),
+        },
     };
     // §1 admission, before the page is read: without it `load_page` resolves an
     // absolute spelling verbatim and this door EXECUTED a page from outside the

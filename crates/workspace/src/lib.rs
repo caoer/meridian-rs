@@ -64,7 +64,7 @@ const GIT_ENTRY: &str = ".git";
 /// unbounded. Real workspace paths sit far below 64 path components; a
 /// `.git` above this depth is not found, which degrades to the next rung
 /// rather than hanging.
-const MAX_WALK_DEPTH: usize = 64;
+pub const MAX_WALK_DEPTH: usize = 64;
 
 /// Which rung of the discovery ladder answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
