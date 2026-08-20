@@ -1523,7 +1523,13 @@ short `md.edit:tasks/*.md` then denies a card sitting at
 as readily as five. **Do not take the spelling the denial suggests** — its
 `Fix:` line is built from the denied page's own path, so it hands you a
 session-pinned scope (`md.edit:year=2026/month=08/<session>/tasks/*.md`) that
-works today and denies every card in the next session.
+works today and denies every card in the next session. What the line DOES
+guarantee (2026-08-20) is legality: every cap it prints round-trips through
+`Cap::parse`, so following it can no longer produce a second refusal. Where no
+scope can name the coordinate at all — a rooted spelling, a segment outside
+the scope charset — the line says so and offers the unscoped verb instead of a
+spelling that dies at parse. Legal is not the same as durable: the
+session-pinning warning above still stands.
 
 Several scopes = several entries in the existing comma list; no new
 list syntax. A scoped cap is strictly narrower than its bare verb
@@ -1557,14 +1563,19 @@ run.timeout_secs: 7
 before authority resolution, so an unparseable value refuses EVERY run on that
 root — read-only tasks, `check-*` tasks, **bash** tasks (which caps otherwise
 never govern), and even `mrd run <page> --list`, which is pure discovery. All
-three causes are the same hazard, and none of the refusals names the file or
-the key you broke — you get `invalid capability '#'` and no pointer to
-`MERIDIAN.md`:
+three causes are the same hazard:
 
 - a trailing comment: the frontmatter scanner takes no YAML crate and strips
   none, so `md.edit:… # longest pattern wins` parses `#` as a cap;
 - a bad verb: anything outside the three;
 - a glob outside the cap-scope charset above, e.g. `md.edit:tasks/x!y/*.md`.
+
+**The refusal names the declaration path and the offending key** (2026-08-20).
+It used to name neither — you got `invalid capability '#'` and no pointer to
+`MERIDIAN.md`, with every task on the root refusing at once. It now reads
+`refused: <path>: <key>: <what is wrong>`, states the whole-table blast radius,
+and names the trailing-comment cause, because that is the one an operator hits
+by copy-pasting a documented example.
 
 After editing a ceiling, run `mrd run <any-page> --list` once — it is the
 cheapest possible smoke test, and it fails loudly on a bricked table.

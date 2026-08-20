@@ -519,6 +519,22 @@ pub enum CapsError {
     /// A `check-*` / `verify-*` block carries a bash fence — refused at load
     /// (ruling 3): a read-only-by-convention name gets no exec.
     BashFenceRefused { task: String, pattern: String },
+    /// A `run.caps.<pattern>` entry in a root declaration did not parse. The
+    /// `source` fault says WHAT is wrong; this variant says WHERE — the
+    /// declaration path and the key whose value failed.
+    ///
+    /// It exists because one bad entry refuses the WHOLE table by design
+    /// (a mis-spelled ceiling is never read as an absent one), so the blast
+    /// radius is every task on the root — and the bare inner refusal named
+    /// neither the file nor the key, leaving an operator with a bricked root
+    /// and nothing to grep for (round-2 review of caps-redesign-docs,
+    /// defect b). `path` is `None` only for a caller that parsed a
+    /// declaration it never read from disk.
+    TableEntry {
+        path: Option<PathBuf>,
+        key: String,
+        source: Box<CapsError>,
+    },
 }
 
 impl std::fmt::Display for CapsError {
@@ -566,6 +582,22 @@ impl std::fmt::Display for CapsError {
                 f,
                 "task '{task}' matches read-only convention '{pattern}' but carries a bash fence — refused"
             ),
+            CapsError::TableEntry { path, key, source } => {
+                match path {
+                    Some(path) => write!(f, "refused: {}: `{key}`: ", path.display())?,
+                    None => write!(f, "refused: the root declaration's `{key}`: ")?,
+                }
+                write!(f, "{source}")?;
+                write!(
+                    f,
+                    " One bad entry refuses the WHOLE convention table — a mis-spelled \
+                     ceiling is never read as an absent one — so every task on this root \
+                     refuses until `{key}` is fixed, read-only tasks and `--list` included. \
+                     A frequent cause is a TRAILING YAML COMMENT: the frontmatter scanner \
+                     strips none, so `{key}: md.edit # longest wins` parses `#` as a \
+                     capability."
+                )
+            }
         }
     }
 }
@@ -592,10 +624,23 @@ pub fn explicit_caps(doc: &Document, task: &str) -> Result<Option<CapSet>, CapsE
 /// declaration. Pure: the caller owns the I/O and the validity check, this
 /// owns only what the keys MEAN.
 ///
+/// `source` is the declaration's own path, carried for REFUSALS only — never
+/// read, never opened. A caller parsing a declaration it did not load from
+/// disk (a doc-fence extraction gate) passes `None` and gets the same fault
+/// minus the path. It is a parameter rather than a field on the document
+/// because one bad entry bricks the whole root, and a refusal that cannot
+/// name the file leaves nothing to grep for.
+///
 /// # Errors
-/// [`CapsError::BadCap`] / [`CapsError::BadPattern`] on a malformed entry — a
-/// mis-spelled ceiling is reported, never read as an absent one.
-pub fn conventions_from_declaration(declaration: &Document) -> Result<Conventions, CapsError> {
+/// [`CapsError::TableEntry`] wrapping the entry's own fault — the inner
+/// [`CapsError::BadCap`] / [`CapsError::BadGlob`] / [`CapsError::RetiredTarget`]
+/// says what is wrong, the wrapper says which file and key — or
+/// [`CapsError::BadPattern`] from the pattern grammar. A mis-spelled ceiling is
+/// reported, never read as an absent one.
+pub fn conventions_from_declaration(
+    declaration: &Document,
+    source: Option<&Path>,
+) -> Result<Conventions, CapsError> {
     let Some(map) = frontmatter(declaration) else {
         return Ok(Conventions::none());
     };
@@ -604,7 +649,12 @@ pub fn conventions_from_declaration(declaration: &Document) -> Result<Convention
         let Some(pattern) = key.strip_prefix(CAPS_KEY_PREFIX) else {
             continue;
         };
-        entries.push((pattern.to_owned(), CapSet::parse(value)?));
+        let caps = CapSet::parse(value).map_err(|fault| CapsError::TableEntry {
+            path: source.map(Path::to_path_buf),
+            key: key.clone(),
+            source: Box::new(fault),
+        })?;
+        entries.push((pattern.to_owned(), caps));
     }
     Conventions::new(entries)
 }
@@ -620,14 +670,19 @@ pub fn conventions_from_declaration(declaration: &Document) -> Result<Convention
 /// reading it as empty would silently drop a declared ceiling.
 ///
 /// # Errors
-/// [`CapsError::Declaration`] / [`CapsError::BadPattern`] / [`CapsError::BadCap`].
+/// [`CapsError::Declaration`] / [`CapsError::BadPattern`] /
+/// [`CapsError::TableEntry`] (which names the declaration path and the failing
+/// key — this is the only caller that knows the path).
 pub fn load_conventions(root: Option<&Path>) -> Result<(Conventions, ConventionSource), CapsError> {
     let Some(root) = root else {
         return Ok((Conventions::none(), ConventionSource::NoRoot));
     };
     match config::mount::read_root_declaration(root) {
         Ok(declaration) => Ok((
-            conventions_from_declaration(&declaration.document)?,
+            conventions_from_declaration(
+                &declaration.document,
+                Some(&root.join(DECLARATION_FILENAME)),
+            )?,
             ConventionSource::Declared(root.to_path_buf()),
         )),
         Err(config::mount::DeclarationFault::Absent) => Ok((
