@@ -299,7 +299,10 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
             None => fs::WorkspaceRoot(
                 crate::resolve::resolve_runtime(&cwd)
                     .map_err(|e| {
-                        Fail::tool(format!("cannot resolve workspace for {}: {e}", cwd.display()))
+                        Fail::tool(format!(
+                            "cannot resolve workspace for {}: {e}",
+                            cwd.display()
+                        ))
                     })?
                     .workspace,
             ),

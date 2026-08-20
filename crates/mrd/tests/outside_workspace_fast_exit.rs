@@ -186,7 +186,8 @@ fn a_declared_gitless_root_still_serves() {
         );
         let text = stdout(&out);
         assert!(
-            text.contains(&format!("workspace {}", ws.display())) && text.contains("source: declared"),
+            text.contains(&format!("workspace {}", ws.display()))
+                && text.contains("source: declared"),
             "the declared root must be the workspace — got: {text}",
         );
     }
