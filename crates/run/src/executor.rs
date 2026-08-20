@@ -479,8 +479,11 @@ impl std::fmt::Display for ExecError {
                     return write!(
                         f,
                         " — the grant was narrowed away by {ceiling}. Conventions narrow only, \
-                         never widen, so declaring the cap again cannot lift it. Fix: widen or \
-                         remove that ceiling entry, or aim the effect inside what it leaves."
+                         never widen: a scoped grant survives only where its scope NESTS inside \
+                         the ceiling's (overlap is not nesting), so declaring the cap again \
+                         cannot lift it. Fix: respell the grant's scope inside that ceiling, \
+                         widen or remove the ceiling entry, or aim the effect inside what it \
+                         leaves."
                     );
                 }
                 // Deny-by-default (dogfood r3 gap 6b): name WHY, the grants
