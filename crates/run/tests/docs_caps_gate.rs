@@ -32,7 +32,7 @@
 //!
 //! An intentionally-refusing teaching example carries
 //! `<!-- caps-gate: refuses -->` on its own line-or-the-line-above (for a
-//! fence: the line above the opening ```). Annotated examples are ASSERTED
+//! fence: the line above the opening fence line). Annotated examples are ASSERTED
 //! to refuse — an annotated example that parses fails the gate too, so the
 //! annotations stay honest. Nothing is silently exempted.
 //!
@@ -267,10 +267,10 @@ fn check_inline(
                      example or drop the annotation"
                 ));
             }
-        } else if !is_placeholder(token) {
-            if let Err(e) = CapSet::parse(token) {
-                push(format!("`{token}` does not parse: {e}"));
-            }
+        } else if !is_placeholder(token)
+            && let Err(e) = CapSet::parse(token)
+        {
+            push(format!("`{token}` does not parse: {e}"));
         }
     } else if let Some(entry) = token.strip_prefix("run.caps.") {
         if annotated || is_placeholder(token) {
