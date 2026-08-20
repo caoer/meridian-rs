@@ -192,11 +192,13 @@ fn e2e_m2_spares_a_descendant_that_is_its_own_git_root() {
 }
 
 // ---------------------------------------------------------------------------
-// Gate: cwd-default, no daemon → ephemeral, NOTHING written under the cache root
+// Gate: cwd-default, no daemon → OUTSIDE a workspace: exit 2, NOTHING written
+// under the cache root (2026-08-20: the ephemeral adopt walked a 75-repo
+// parent for ~21 s; strict resolution refuses instead)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn e2e_tier4_no_daemon_is_ephemeral_and_writes_nothing() {
+fn e2e_tier4_no_daemon_refuses_and_writes_nothing() {
     let sb = sandbox();
     let bare = sb.dir("bare");
     assert!(
@@ -205,15 +207,21 @@ fn e2e_tier4_no_daemon_is_ephemeral_and_writes_nothing() {
     );
 
     let out = sb.run(&bare, &["resolve", "--json"]);
-    assert!(out.status.success(), "resolve: {}", stderr(&out));
-    let v = json(&out);
-    assert_eq!(v["source"], "ephemeral");
-    assert_eq!(v["ephemeral"], true);
-    assert_eq!(v["state"], "cold");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an unanchored tree with no daemon is outside a workspace — exit 2: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("outside a declared meridian workspace"),
+        "the refusal names the cause: {}",
+        stderr(&out)
+    );
 
     assert!(
         !sb.cache_root.exists(),
-        "a tier-4 ephemeral resolution must write nothing under the cache root"
+        "a tier-4 refusal must write nothing under the cache root"
     );
 }
 
