@@ -285,7 +285,14 @@ CREATE VIEW tag_all AS                             -- B2: the union — inline +
 /// `8`: the `body` relation — exclusive-content chunks per section plus
 /// preamble (`docs/body-projection.md`); a version-7 projection has no body
 /// rows to serve.
-pub const SCHEMA_VERSION: i32 = 8;
+///
+/// `9`: `frontmatter_tag` reads `model::fm_tags` off the frontmatter BLOCK
+/// instead of the flat map, so a YAML block sequence (`tags:` then indented
+/// `- item` lines) finally projects its items — 98 pages on the fleet corpus
+/// went from zero rows to their real tags. No DDL moved; ROW CONTENT did, for
+/// identical corpora at identical fingerprints, which is the obligation `2`
+/// and `7` were bumped under (card `tag-all-block-form-blindness`).
+pub const SCHEMA_VERSION: i32 = 9;
 
 /// Run the full round-1 DDL against `conn` (8 tables + 4 views).
 ///

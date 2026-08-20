@@ -128,7 +128,13 @@ use crate::{
 /// `8`: `hist.body` + `hist.body_text` + `main.body` — the content-addressed
 /// body projection (`docs/body-projection.md` §4); a v7 file has no chunk
 /// rows to serve.
-pub const CACHE_SCHEMA_VERSION: i64 = 8;
+///
+/// `9`: `hist.frontmatter_tag` rows for block-sequence `tags:` — the parse
+/// moved to `model::fm_tags` and a v8 file holds ZERO rows for every page
+/// written that way, pinned to a fingerprint that has not moved and never
+/// will. The append delta cannot repair it: the files are unchanged, so
+/// nothing re-stages them (card `tag-all-block-form-blindness`).
+pub const CACHE_SCHEMA_VERSION: i64 = 9;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
 pub const SQL_CACHE_FILENAME: &str = "sql.duckdb";
