@@ -1178,7 +1178,7 @@ fn apply_generation(
     // A fixed allowlist of the two `md.*` actions the adapter carries: the executor's ceiling,
     // not the declaration's (`caps.route` already narrowed the emission on the policy side).
     let authority = Authority::granted(
-        CapSet::parse("md.set_field md.append_section")
+        CapSet::parse("md.edit")
             .map_err(|error| ProofFault::Workspace(format!("proof corpus caps: {error}")))?,
     );
     let live: MerkleRoot = fs::domain_snapshot(&root)

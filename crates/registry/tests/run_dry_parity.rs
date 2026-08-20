@@ -83,11 +83,11 @@ impl Conn {
 const F2_TASKS: &str = "\
 ---
 task.grant: \"[[#^g-1]]\"
-task.grant.caps: md.set_field
+task.grant.caps: md.edit
 task.grant.args: value
 task.nocaps: \"[[#^n-1]]\"
 task.check-granted: \"[[#^c-1]]\"
-task.check-granted.caps: md.set_field
+task.check-granted.caps: md.edit
 task.sh: \"[[#^s-1]]\"
 task.dangling: \"[[#^nowhere]]\"
 ---
@@ -267,7 +267,7 @@ fn capability_denial_refuses_identically_dry_and_live() {
         dry["refusal"]["reason"]
             .as_str()
             .unwrap()
-            .contains("capability denied: md.set_field on 'status'"),
+            .contains("capability denied: md.edit on 'tasks.md'"),
         "the choke point's own words: {dry}"
     );
 }
