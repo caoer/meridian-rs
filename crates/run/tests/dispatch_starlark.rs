@@ -145,3 +145,37 @@ fn evaluate_alone_is_the_dry_seam_full_truth_nothing_applied() {
         PAGE
     );
 }
+
+/// The machinery floor reaches the STARLARK lane end to end (card
+/// create-door-machinery-containment). The grant here is the narrow
+/// `md.create:tasks/*.md` that ADMITS the declared path — the capability
+/// passes and the door still refuses, which is the whole point of judging the
+/// landing on an axis the caps do not read.
+#[test]
+fn a_starlark_birth_into_a_machinery_dir_refuses() {
+    for dir in [".git", ".meridian", "meridian", "receipts"] {
+        let (_tmp, root) = workspace();
+        let now = fs::domain_snapshot(&root).unwrap().1;
+        let caps = Authority::granted(CapSet::parse("md.create:tasks/*.md").unwrap());
+        let src = format!(
+            "def run(ctx):\n    create(path = \"tasks/card.md\", base = \"{dir}\", body = \"# Escaped\\n\")\n"
+        );
+        let err = dispatch_starlark::dispatch(&root, &dispatch_of(&src, &now, &caps))
+            .expect_err("a machinery landing refuses at the door");
+        let DispatchError::Exec(ExecError::BirthRefused { detail, .. }) = &err else {
+            panic!("expected BirthRefused for base `{dir}`, got {err:?}");
+        };
+        assert!(
+            detail.contains("bad_path"),
+            "the starlark lane hits the machinery floor for `{dir}`: {detail}"
+        );
+        assert!(
+            detail.contains(dir),
+            "the refusal names the offending segment `{dir}`: {detail}"
+        );
+        assert!(
+            !root.0.join(dir).join("tasks/card.md").exists(),
+            "nothing may be born under `{dir}`"
+        );
+    }
+}

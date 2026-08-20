@@ -1457,16 +1457,59 @@ point never reads it, so a block granted exactly `md.create:tasks/*.md` can
 land `tasks/<slug>.md` under ANY confined directory in the workspace.
 Measured 2026-08-19, all from that one grant: `conventions/attested/tasks/x.md`,
 `receipts/tasks/x.md`, `meridian/tasks/x.md`, `.meridian/tasks/x.md`, and
-**`.git/tasks/x.md`** — the reach includes the receipt ledger, the attestation
+**`.git/tasks/x.md`** — the reach included the receipt ledger, the attestation
 tree, the engine's own reserved dirs, and the git directory, not just a wrong
-content folder. Only `..`, absolute paths, and foreign roots refuse. The tail
-jail is real (`evil/tasks/x.md` and `tasks/sub/x.md` both fail the glob as
-declared paths); the location is not jailed at all. A root ceiling
+content folder. The last four now refuse at the machinery floor below; `..`,
+absolute paths and foreign roots refuse where they always did, and every other
+confined landing is still reachable. The tail jail is real (`evil/tasks/x.md`
+and `tasks/sub/x.md` both fail the glob as declared paths); the location is
+jailed at the machinery floor and nowhere else. A root ceiling
 like `run.caps.fix-*: md.create:tasks/*.md` reads as *births are confined to
 boards* and does not mean it. That is the boundary-as-data ruling working as
 designed — the engine holds no layout pattern to confine against — so treat
-a create scope as a shape contract, and put containment, if you need it, in
-the block.
+a create scope as a shape contract, and put content containment, if you need
+it, in the block.
+
+🛡 **The machinery floor (2026-08-20).** Four names are engine substrate rather
+than layout, so the CREATE DOOR refuses any birth whose RESOLVED landing
+carries one as a path segment — at any depth, ASCII-case-insensitively,
+whatever the capabilities admit. The refusal is `bad_path`, it names the
+offending segment, and nothing is written.
+
+| Segment | What it is |
+|---|---|
+| `.git` | the git directory — a birth here can corrupt the repository |
+| `.meridian` | engine stable state and run logs (`.meridian/runs/`) |
+| `meridian` | the attestation tree (`meridian/armed-rules.md`, `meridian/attested`) |
+| `receipts` | the receipt ledger (`receipts/run.md`, `receipts/realise.md`) |
+
+**One carve-out: `meridian/domain.md`.** The hash-domain config sits beside the
+attestation artifacts but is not one of them — it is AUTHORED content
+declaring the ignore list, deliberately inside its own hash domain, and the
+resident write path births it through this same door. Exempt at any depth.
+Measured, not reasoned: the floor's first CI run refused it and took down three
+door tests. **Stated limit:** the carve-out is a hole in the floor. A run block
+granted a matching `md.create` scope can reach `meridian/domain.md` through its
+own `base` and reshape which files the workspace attests. The door cannot tell
+that block from a human authoring the same page — `actor` is caller-supplied —
+so closing it needs a policy axis this guard does not have.
+
+**At any depth**, because a nested root's machinery is machinery too:
+`results/ws/.git/x.md` corrupts a repository exactly as `.git/x.md` does.
+Measured over the live sessions corpus before the rule landed — every non-root
+occurrence of these four names was a nested root's OWN machinery, never
+content — so the depth rule refuses no legitimate birth. Case-insensitively,
+because a case-insensitive filesystem lands `.GIT/x.md` inside `.git/` and a
+guard a spelling defeats is not a guard.
+
+This is a DOOR guard on the LANDING — deliberately the one axis capabilities
+do not judge, so caps still read the DECLARED coordinate alone and the two
+grains stay separate. It is also the one owner: both run-plane lanes (starlark
+`create()` and the bash shim's `md.create`) converge on that door, as do the
+wire `create` op, the birth preset and the realise card mint. It costs the
+engine nothing — the armed artifact is written by `wire_serve::armed_disk`,
+the receipt rides the batch commit, and run logs use plain I/O; none of them
+passes this door.
 
 The engine holds no layout pattern (boundary-as-data ruling, 2026-08-19 #2),
 so `md.create:tasks/*.md` covers the ambient board, a based (`--target`)
