@@ -518,16 +518,56 @@ impl std::fmt::Display for ExecError {
                         )?;
                     }
                 }
-                write!(f, " Fix: add `{kind}:{target}` or a glob covering it")?;
-                if let Some((parent, _)) = target.rsplit_once('/') {
-                    write!(f, " (e.g. `{kind}:{parent}/*.md`)")?;
+                // THE LEGALITY CHECK (card cap-refusals-teach-legally). Both
+                // suggested spellings are SYNTHESIZED from the denied
+                // coordinate, and a coordinate the cap grammar cannot express
+                // — a rooted `root:rel` spelling, a segment outside the scope
+                // charset — yields a `Fix:` that `Cap::parse` refuses. Probed
+                // on `ad547a7c2`: a rooted denial suggested
+                // `md.create:probe-root:tasks/*.md`, so following the refusal
+                // produced a different refusal. Every printed suggestion
+                // round-trips first; when none is legal the refusal says so
+                // and names the grant that DOES work, rather than a spelling
+                // that dies at parse.
+                //
+                // The retirement teach above needs no check: its `legacy`
+                // scope already parsed, and `{legacy}/*.md` keeps every
+                // segment inside the charset by construction.
+                let legal = |cap: &str| Cap::parse(cap).is_ok();
+                let exact = format!("{kind}:{target}");
+                let parent_glob = target
+                    .rsplit_once('/')
+                    .map(|(parent, _)| format!("{kind}:{parent}/*.md"))
+                    .filter(|glob| legal(glob));
+                let tail = " to the task's `task.<name>.caps` list in the page's \
+                            frontmatter; globs match the block's DECLARED relative paths, \
+                            wherever a base or ambient lands them.";
+                if legal(&exact) {
+                    write!(f, " Fix: add `{exact}` or a glob covering it")?;
+                    if let Some(glob) = &parent_glob {
+                        write!(f, " (e.g. `{glob}`)")?;
+                    }
+                    write!(f, "{tail}")
+                } else if let Some(glob) = &parent_glob {
+                    // The exact coordinate is unnameable but its parent glob
+                    // is legal — the shape when only the leaf carries an
+                    // out-of-charset byte.
+                    write!(f, " Fix: add `{glob}`{tail}")
+                } else {
+                    let why = match Cap::parse(&exact) {
+                        Err(caps::CapsError::BadGlob { reason, .. }) => format!(" ({reason})"),
+                        _ => String::new(),
+                    };
+                    // The unparseable spelling is deliberately NOT printed:
+                    // printing it is the defect this arm exists to close.
+                    write!(
+                        f,
+                        " Fix: no cap SCOPE can name `{target}`{why} — a scope is a \
+                         workspace-relative path glob, so scoping this verb to that \
+                         coordinate refuses at parse and following it would only refuse \
+                         again. Grant the unscoped `{kind}`{tail}"
+                    )
                 }
-                write!(
-                    f,
-                    " to the task's `task.<name>.caps` list in the page's frontmatter; \
-                     globs match the block's DECLARED relative paths, wherever a base \
-                     or ambient lands them."
-                )
             }
             ExecError::BadDescriptor { kind, reason } => {
                 write!(f, "bad {kind} descriptor: {reason}")

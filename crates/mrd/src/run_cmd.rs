@@ -128,7 +128,8 @@ fn fail_caps(e: &CapsError) -> Fail {
         | CapsError::BadGlob { .. }
         | CapsError::RetiredTarget { .. }
         | CapsError::BadPattern { .. }
-        | CapsError::Declaration { .. } => Fail::tool(e.to_string()),
+        | CapsError::Declaration { .. }
+        | CapsError::TableEntry { .. } => Fail::tool(e.to_string()),
     }
 }
 
