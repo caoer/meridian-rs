@@ -1566,9 +1566,9 @@ never govern), and even `mrd run <page> --list`, which is pure discovery. All
 three causes are the same hazard:
 
 - a trailing comment: the frontmatter scanner takes no YAML crate and strips
-  none, so `md.edit:… # longest pattern wins` parses `#` as a cap;
+  none, so `md.edit:… # longest pattern wins` parses `#` as a cap; <!-- caps-gate: refuses -->
 - a bad verb: anything outside the three;
-- a glob outside the cap-scope charset above, e.g. `md.edit:tasks/x!y/*.md`.
+- a glob outside the cap-scope charset above, e.g. `md.edit:tasks/x!y/*.md`. <!-- caps-gate: refuses -->
 
 **The refusal names the declaration path and the offending key** (2026-08-20).
 It used to name neither — you got `invalid capability '#'` and no pointer to
@@ -1584,7 +1584,7 @@ cheapest possible smoke test, and it fails loudly on a bricked table.
 spellings fold or refuse, never silently REINTERPRET a target: bare
 `md.set_field` / `md.append_section` ALIAS-FOLD into `md.edit` at parse, and
 the canonical form is what every report and refusal then names; their
-field-grain targeted forms (`md.set_field:status`) REFUSE with the
+field-grain targeted forms (`md.set_field:status`) REFUSE with the <!-- caps-gate: refuses -->
 retirement teaching — the old target named a field or section, the new
 target position is a path glob, and dropping the target would widen the
 grant. Field-grain guards live inside blocks. Partition grain
