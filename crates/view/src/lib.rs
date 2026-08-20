@@ -687,7 +687,13 @@ fn emit_frontmatter(
             Value::Text(prop_rev),
         ]);
         if key == "tag" || key == "tags" {
-            for (seq, tag) in parse_fm_tags(&value).into_iter().enumerate() {
+            // Off the BLOCK, never off `map`: the flat parse keeps only the key
+            // line's remainder, so a YAML block sequence read as no tags at all
+            // (card `tag-all-block-form-blindness`). `model::fm_tags` is the ONE
+            // parser — `policy`'s rule registration reads tags through it too,
+            // which is what closes the drift that made the two planes disagree.
+            let block = doc.raw.get(node.span.clone()).unwrap_or_default();
+            for (seq, tag) in model::fm_tags(block, key).into_iter().enumerate() {
                 rows.frontmatter_tag.push(vec![
                     Value::Text(path.to_string()),
                     Value::UBigInt(u64c(seq)),
@@ -938,23 +944,10 @@ enum Dest {
     Rooted { root: String, path: String },
 }
 
-/// B2 scalar-parse of `tag`/`tags`: strip `[ ]`, split on `,`, trim/unquote/
-/// strip `#`, drop empties. Empty / block-list ⇒ **0 rows** (fail-closed).
-fn parse_fm_tags(value: &str) -> Vec<String> {
-    let trimmed = value.trim();
-    let inner = trimmed
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(trimmed);
-    inner
-        .split(',')
-        .filter_map(|item| {
-            let s = item.trim().trim_matches(['"', '\'']);
-            let s = s.strip_prefix('#').unwrap_or(s).trim();
-            (!s.is_empty()).then(|| s.to_string())
-        })
-        .collect()
-}
+// B2's `tag`/`tags` parse lives in `model::fm_tags` — one parser for this
+// projection and for `policy`'s rule registration, which used to read the same
+// frontmatter through `serde_yaml` and disagree with it on the block-sequence
+// spelling (card `tag-all-block-form-blindness`).
 
 impl Rows {
     /// Bulk-insert staged rows in FK order through the `DuckDB` Appender API.
@@ -1048,22 +1041,76 @@ fn opt_text(s: Option<&str>) -> Value {
 mod tests {
     use super::*;
 
+    /// `(tag, key)` per `frontmatter_tag` row, in staged order.
+    fn fm_tag_rows(rows: &Rows) -> Vec<(String, String)> {
+        rows.frontmatter_tag
+            .iter()
+            .map(|r| match (&r[2], &r[3]) {
+                (Value::Text(tag), Value::Text(key)) => (tag.clone(), key.clone()),
+                _ => panic!("frontmatter_tag tag/key columns are TEXT"),
+            })
+            .collect()
+    }
+
+    fn staged(raw: &str) -> Rows {
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            "p.md".to_string(),
+            model::build(raw.to_string(), syntax::parse(raw)),
+        );
+        stage(&docs)
+    }
+
+    /// The defect: a page whose `tags:` is a YAML block sequence projected ZERO
+    /// rows, so `tag_all` under-reported by 98 pages on the fleet corpus while
+    /// `mrd rules` — reading the same frontmatter through `policy` — saw the
+    /// tags fine. Both planes now read `model::fm_tags`.
     #[test]
-    fn parse_fm_tags_inline_list_two_rows() {
+    fn a_block_sequence_projects_its_tags() {
+        let rows = staged("---\ntags:\n  - type/decision\n  - topic/doc-system\n---\n\n# H\n");
         assert_eq!(
-            parse_fm_tags("[type/agent, type/task]"),
-            vec!["type/agent", "type/task"]
+            fm_tag_rows(&rows),
+            vec![
+                ("type/decision".to_string(), "tags".to_string()),
+                ("topic/doc-system".to_string(), "tags".to_string()),
+            ],
         );
     }
 
+    /// The flow and scalar spellings project exactly as before — quotes and the
+    /// leading `#` stripped, case kept, `tag` and `tags` in separate seq spaces.
     #[test]
-    fn parse_fm_tags_block_form_empty_is_zero_rows() {
-        assert!(parse_fm_tags("").is_empty());
+    fn flow_scalar_and_both_keys_project_unchanged() {
+        assert_eq!(
+            fm_tag_rows(&staged("---\ntags: [type/agent, type/task]\n---\n")),
+            vec![
+                ("type/agent".to_string(), "tags".to_string()),
+                ("type/task".to_string(), "tags".to_string()),
+            ],
+        );
+        assert_eq!(
+            fm_tag_rows(&staged("---\ntags: ['#foo', \"Bar\"]\n---\n")),
+            vec![
+                ("foo".to_string(), "tags".to_string()),
+                ("Bar".to_string(), "tags".to_string()),
+            ],
+        );
+        assert_eq!(
+            fm_tag_rows(&staged("---\ntag: solo\ntags: [a]\n---\n")),
+            vec![
+                ("solo".to_string(), "tag".to_string()),
+                ("a".to_string(), "tags".to_string()),
+            ],
+        );
     }
 
+    /// No tags is still no rows — an empty value, an empty flow sequence, and a
+    /// page with no `tags:` key at all.
     #[test]
-    fn parse_fm_tags_strips_hash_and_quotes() {
-        assert_eq!(parse_fm_tags("['#foo', \"bar\"]"), vec!["foo", "bar"]);
+    fn empty_and_absent_tag_values_project_no_rows() {
+        assert!(fm_tag_rows(&staged("---\ntags:\ntitle: x\n---\n")).is_empty());
+        assert!(fm_tag_rows(&staged("---\ntags: []\n---\n")).is_empty());
+        assert!(fm_tag_rows(&staged("---\ntitle: x\n---\n")).is_empty());
     }
 
     /// The body-projection worked gate (`docs/body-projection.md` §8) plus its

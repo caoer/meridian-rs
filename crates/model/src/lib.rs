@@ -2796,6 +2796,134 @@ pub fn parse_alias_list(value: &str) -> Vec<String> {
         .collect()
 }
 
+/// The tags one frontmatter `tag`/`tags` key declares, in document order.
+///
+/// Takes the frontmatter BLOCK — fence-to-fence or its interior, both accepted
+/// — rather than a parsed value, because [`YamlMap`] keeps only the key LINE's
+/// remainder and a YAML **block sequence** puts every item on a following line.
+/// Reading tags off the map alone is what made the sql projection blind to
+///
+/// ```yaml
+/// tags:
+///   - type/decision
+///   - topic/doc-system
+/// ```
+///
+/// while `policy`'s independent `serde_yaml` parse saw it — 98 pages in the
+/// fleet corpus projected zero tag rows, and a block-form rule page registered
+/// and armed under `mrd rules` while `mrd sql` reported it did not exist (card
+/// `tag-all-block-form-blindness`).
+///
+/// Public, and the ONE tag parser, for the reason [`parse_alias_list`] is
+/// public: `view`'s projection and `policy`'s rule registration both answer
+/// *what tags does this page claim*, and a second parser drifts. These two
+/// already had.
+///
+/// Three legal spellings, all served: flow sequence (`[a, b]`, including the
+/// multi-line form), bare scalar (`a`), and block sequence. Comment lines
+/// inside a block sequence are skipped; any other non-item line ends it, so an
+/// unrecognized shape yields the tags read so far rather than a guess.
+#[must_use]
+pub fn fm_tags(block: &str, key: &str) -> Vec<String> {
+    let lines: Vec<&str> = block.lines().collect();
+    let Some((at, remainder)) = fm_key_line(&lines, key) else {
+        return Vec::new();
+    };
+
+    // A flow sequence may span lines (`tags: [a,` / `  b]`). Join until the
+    // bracket closes — inside the block only; an unclosed sequence serves what
+    // it opened rather than swallowing the rest of the frontmatter.
+    let mut value = scalar::text(remainder);
+    if value.starts_with('[') && !value.contains(']') {
+        for line in &lines[at + 1..] {
+            // Continuation is indented by construction; a column-0 line is the
+            // next key or the closing fence, and an unclosed sequence must not
+            // swallow it.
+            if !line.starts_with([' ', '\t']) {
+                break;
+            }
+            value.push(' ');
+            value.push_str(line.trim());
+            if value.contains(']') {
+                break;
+            }
+        }
+    }
+
+    if !value.trim().is_empty() {
+        return parse_tag_list(&value);
+    }
+
+    // The key line carries no value: a block sequence, or nothing at all.
+    let mut tags = Vec::new();
+    for line in &lines[at + 1..] {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue; // blank and comment lines do not end a sequence
+        }
+        if !line.starts_with([' ', '\t']) {
+            break; // column 0 — the next key, or the closing fence
+        }
+        let Some(item) = trimmed.strip_prefix('-') else {
+            break; // an indented shape that is not an item — stop, never guess
+        };
+        tags.extend(tag_item(item));
+    }
+    tags
+}
+
+/// Parse a frontmatter tag value written on the key line: `[a, b]`, `a, b`, or
+/// a bare `a`. The item lane of [`fm_tags`], public for a caller that already
+/// holds the value (the sql cache's append delta reads OLD values back out of
+/// its own frontmatter rows, the way [`parse_alias_list`] serves aliases).
+///
+/// Case is PRESERVED — unlike aliases, a tag is not a resolution key.
+#[must_use]
+pub fn parse_tag_list(value: &str) -> Vec<String> {
+    let trimmed = value.trim();
+    let inner = trimmed
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or_else(|| trimmed.trim_start_matches('[').trim_end_matches(']'));
+    inner.split(',').filter_map(tag_item).collect()
+}
+
+/// One tag as written → the stored spelling: trimmed, unquoted, `#` dropped.
+/// Empty is no tag.
+fn tag_item(raw: &str) -> Option<String> {
+    let s = raw.trim().trim_matches(['"', '\'']);
+    let s = s.strip_prefix('#').unwrap_or(s).trim();
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+/// A `---` fence line.
+fn is_fm_fence(line: &str) -> bool {
+    line.trim() == "---"
+}
+
+/// The first top-level `key:` line in a frontmatter block: its index and the
+/// remainder after the colon. Column-0, first-colon, quote-trimmed key,
+/// first occurrence wins — the same rule [`parse_frontmatter`] indexes by, so
+/// the tag lane and the keys lane can never disagree about which line is the
+/// `tags:` line.
+fn fm_key_line<'a>(lines: &[&'a str], key: &str) -> Option<(usize, &'a str)> {
+    lines.iter().enumerate().find_map(|(i, line)| {
+        let trimmed = line.trim();
+        if is_fm_fence(line) || trimmed.is_empty() || line.starts_with([' ', '\t']) {
+            return None;
+        }
+        if trimmed.starts_with('#') {
+            return None;
+        }
+        let colon = line.find(':')?;
+        if line[..colon].trim().trim_matches(['"', '\'']) == key {
+            Some((i, &line[colon + 1..]))
+        } else {
+            None
+        }
+    })
+}
+
 /// Source-relative shortest-unambiguous pick over stage-1 candidates: prefer a
 /// match in the source's own directory, then the shortest path, then the
 /// lexicographically first.
@@ -2906,6 +3034,99 @@ mod tests {
             Some("agents/ef1dc8e4/CARD.md".to_string()),
             "a bare basename still resolves source-relative",
         );
+    }
+
+    /// The defect this parser exists to close: a YAML block sequence carries
+    /// its items on lines the flat parse never reads, so a map-only reading
+    /// answered "no tags" for a page that plainly declares two.
+    #[test]
+    fn a_block_sequence_yields_its_items() {
+        let block = "---\nstatus: approved\ntags:\n  - type/decision\n  \
+                     - topic/doc-system\ntier: golden\n---";
+        assert_eq!(
+            fm_tags(block, "tags"),
+            vec!["type/decision", "topic/doc-system"],
+        );
+        // The same page through the flat parse: the key line's remainder is
+        // empty, which is exactly why the map alone cannot answer this.
+        let doc = build(
+            format!("{block}\n\n# H\n"),
+            syntax::parse(&format!("{block}\n\n# H\n")),
+        );
+        let NodeKind::Frontmatter { map } = &find_frontmatter(&doc.root).unwrap().kind else {
+            panic!("frontmatter node");
+        };
+        assert_eq!(
+            map.0.iter().find(|(k, _)| k == "tags").map(|(_, v)| v.as_str()),
+            Some(""),
+            "the map's value is empty — the items are on other lines",
+        );
+    }
+
+    /// Flow and scalar spellings keep working, and the stored spelling is
+    /// trimmed, unquoted, `#`-stripped, case PRESERVED.
+    #[test]
+    fn flow_and_scalar_spellings_are_unchanged() {
+        assert_eq!(
+            fm_tags("---\ntags: [type/agent, type/task]\n---", "tags"),
+            vec!["type/agent", "type/task"],
+        );
+        assert_eq!(fm_tags("tags: rules/hook", "tags"), vec!["rules/hook"]);
+        assert_eq!(
+            fm_tags("tags: ['#foo', \"Bar\"]", "tags"),
+            vec!["foo", "Bar"],
+            "quotes and the hash go; case stays — a tag is not a resolution key",
+        );
+    }
+
+    /// Empty is empty, and only the named key answers.
+    #[test]
+    fn absent_empty_and_wrong_key_are_no_tags() {
+        assert!(fm_tags("---\ntitle: x\n---", "tags").is_empty());
+        assert!(fm_tags("---\ntags:\n---", "tags").is_empty());
+        assert!(fm_tags("---\ntags: []\n---", "tags").is_empty());
+        assert!(fm_tags("---\ntags: [a]\n---", "tag").is_empty());
+        assert_eq!(fm_tags("---\ntag: a\ntags: [b]\n---", "tag"), vec!["a"]);
+    }
+
+    /// A block sequence ends at the next key, tolerates comments and blank
+    /// lines, and refuses to guess at an indented shape that is not an item.
+    #[test]
+    fn a_block_sequence_ends_where_the_shape_does() {
+        assert_eq!(
+            fm_tags("tags:\n  # a note\n\n  - a\n  - b\nnext: 1\n  - c", "tags"),
+            vec!["a", "b"],
+            "comments and blanks are skipped; the column-0 key ends it",
+        );
+        assert_eq!(
+            fm_tags("tags:\n  - a\n  nested:\n    - b\n", "tags"),
+            vec!["a"],
+            "an indented non-item stops the walk rather than guessing",
+        );
+    }
+
+    /// A flow sequence broken across lines still closes.
+    #[test]
+    fn a_multiline_flow_sequence_joins() {
+        assert_eq!(
+            fm_tags("tags: [a,\n  b]\nnext: 1\n", "tags"),
+            vec!["a", "b"],
+        );
+        assert_eq!(
+            fm_tags("tags: [a,\nnext: 1\n", "tags"),
+            vec!["a"],
+            "an unclosed sequence serves what it opened, never the next key",
+        );
+    }
+
+    /// Both spellings of the block reach the same answer: `view` holds the
+    /// Frontmatter node span (fence-to-fence), `policy` holds the interior.
+    #[test]
+    fn fence_to_fence_and_interior_agree() {
+        let interior = "tags:\n  - a\n  - b\n";
+        let fenced = format!("---\n{interior}---");
+        assert_eq!(fm_tags(interior, "tags"), fm_tags(&fenced, "tags"));
+        assert_eq!(fm_tags(interior, "tags"), vec!["a", "b"]);
     }
 
     /// A slash-bearing frontmatter alias answers by exact full-spelling match

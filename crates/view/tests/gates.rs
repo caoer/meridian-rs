@@ -340,22 +340,46 @@ fn gate17_frontmatter_scalar_to_tag_rows() {
 }
 
 #[test]
-fn gate17_block_form_frontmatter_is_zero_rows_fail_closed() {
-    // a block-list frontmatter stores value '' -> 0 rows (fail-closed, never wrong rows)
+fn gate17_block_form_frontmatter_projects_its_items() {
+    // A YAML block sequence projects its items. This gate used to assert the
+    // opposite — 0 rows, "fail-closed" — which was honest only while the parse
+    // could see nothing but the key LINE, whose remainder a block sequence
+    // leaves empty. `model::fm_tags` reads the block, so the rows are now
+    // RIGHT rather than absent, and the premise of the old assertion is gone
+    // (card `tag-all-block-form-blindness`: 98 fleet pages, zero rows each,
+    // while `mrd rules` read the same frontmatter and saw the tags).
     let mut docs = BTreeMap::new();
     docs.insert(
         "block.md".to_string(),
         doc("---\ntags:\n  - type/agent\n  - type/task\n---\n# H\n"),
     );
     let conn = view::build_memory(&docs, &fold(&docs)).unwrap();
+    let tags: Vec<String> = conn
+        .prepare("SELECT tag FROM frontmatter_tag WHERE path='block.md' ORDER BY seq")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        tags,
+        vec!["type/agent".to_string(), "type/task".to_string()],
+        "a block sequence projects its items, in document order"
+    );
+
+    // Fail-closed still governs the shape the parser cannot read: an indented
+    // non-item stops the walk, serving what it read and never a guess.
+    let mut nested = BTreeMap::new();
+    nested.insert(
+        "nested.md".to_string(),
+        doc("---\ntags:\n  - type/agent\n  nested:\n    - type/task\n---\n# H\n"),
+    );
+    let conn = view::build_memory(&nested, &fold(&nested)).unwrap();
     let n = scalar_i64(
         &conn,
-        "SELECT count(*) FROM frontmatter_tag WHERE path='block.md'",
+        "SELECT count(*) FROM frontmatter_tag WHERE path='nested.md'",
     );
-    assert_eq!(
-        n, 0,
-        "block-list frontmatter projects 0 tag rows (fail-closed)"
-    );
+    assert_eq!(n, 1, "the walk stops at the nested shape, never guesses it");
 }
 
 // ---------------------------------------------------------------------------
