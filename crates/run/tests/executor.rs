@@ -989,13 +989,8 @@ fn fresh_set_field_lands_verbatim_and_is_then_idempotent() {
 
 // ── Refusals must teach legally (card cap-refusals-teach-legally) ──────────
 
-/// Every `md.*` spelling a `CapDenied` prints must ROUND-TRIP through
-/// `Cap::parse` — the property, not one example.
-///
-/// DEFECT a, closed: the `Fix:` line was synthesized from the denied
-/// coordinate with no legality check, so a rooted target yielded
-/// `md.create:probe-root:tasks/*.md`, which `Cap::parse` refuses on the `:`.
-/// Following the refusal produced a different refusal. Probed on `ad547a7c2`.
+/// A deny-by-default `CapDenied` (no ceiling) for the given coordinate and
+/// measured grants — the arm that synthesizes the `Fix:` suggestion.
 fn denial(kind: &str, target: &str, declared: &[&str]) -> ExecError {
     ExecError::CapDenied {
         kind: kind.to_owned(),
@@ -1017,6 +1012,13 @@ fn suggested_caps(message: &str) -> Vec<String> {
         .collect()
 }
 
+/// Every `md.*` spelling a `CapDenied` prints must ROUND-TRIP through
+/// `Cap::parse` — the property, not one example.
+///
+/// DEFECT a, closed: the `Fix:` line was synthesized from the denied
+/// coordinate with no legality check, so a rooted target yielded
+/// `md.create:probe-root:tasks/*.md`, which `Cap::parse` refuses on the `:`.
+/// Following the refusal produced a different refusal. Probed on `ad547a7c2`.
 #[test]
 fn every_cap_a_denial_suggests_parses_back() {
     // Spread over the shapes a real denial carries: an ordinary path, a
