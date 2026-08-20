@@ -50,11 +50,11 @@ use model::Document;
 use run::caps::{self, CapSet, CapsError, Conventions};
 use support::doc;
 
-/// #159 transition shim: `conventions_from_declaration` grows a
-/// `source: Option<&Path>` argument (pass `None` here) on PR #159. ONE call
-/// site so the rebase is a one-line flip.
+/// The declaration parser, one call site. `source` is the file a real root's
+/// declaration was read from — the refusal names it (#159). A doc example has
+/// no file, so `None`: the gate's own report already names the doc and line.
 fn parse_conventions(declaration: &Document) -> Result<Conventions, CapsError> {
-    caps::conventions_from_declaration(declaration)
+    caps::conventions_from_declaration(declaration, None)
 }
 
 /// The annotation that marks a teaching example as refusing on purpose.
