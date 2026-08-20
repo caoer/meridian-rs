@@ -596,32 +596,14 @@ pub fn page_rev(bytes: &str) -> String {
 
 // ── Discovery ─────────────────────────────────────────────────────────────────
 
-/// Only the frontmatter keys registration reads. Every other key is permitted and
-/// ignored — a rule page carries ordinary page frontmatter too. Note what is NOT
-/// here: `kind:`. The engine consults it nowhere.
+/// The frontmatter key registration still reads through `serde_yaml`: `id:`,
+/// whose § 2 grammar check needs a real YAML scalar. Every other key is
+/// permitted and ignored — a rule page carries ordinary page frontmatter too.
+/// Note what is NOT here: `kind:` (the engine consults it nowhere), and
+/// `tags:`, which now comes from `model::fm_tags` — see [`register_page`].
 #[derive(serde::Deserialize)]
 struct RegistrationFrontmatter {
-    tags: Option<Tags>,
     id: Option<serde_yaml::Value>,
-}
-
-/// `tags:` as either a flow/block sequence or a single scalar. Both spellings are
-/// legal Obsidian frontmatter, so a page written the second way must not fail as
-/// unparseable YAML when it is merely terse.
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum Tags {
-    One(String),
-    Many(Vec<String>),
-}
-
-impl Tags {
-    fn iter(&self) -> std::slice::Iter<'_, String> {
-        match self {
-            Tags::One(one) => std::slice::from_ref(one).iter(),
-            Tags::Many(many) => many.iter(),
-        }
-    }
 }
 
 /// One page the caller's walk offers to discovery. `page` is relative to `layer`'s
@@ -666,7 +648,14 @@ pub fn register_page(offered: PageRef<'_>) -> Result<Option<Registration>, Regis
         })
     })?;
 
-    let kinds = registration_kinds(parsed.tags.as_ref()).map_err(&refuse)?;
+    // Tags come from `model::fm_tags`, the ONE tag parser — not from a second
+    // `serde_yaml` reading of the same block. Two parsers over one frontmatter
+    // is what let `mrd rules` register a block-sequence rule page while the sql
+    // projection reported it did not exist (card `tag-all-block-form-blindness`).
+    // The `serde_yaml` parse above stays exactly where it was: it still owns
+    // `id:` and still refuses an unparseable block before anything else is read.
+    let tags = model::fm_tags(frontmatter, "tags");
+    let kinds = registration_kinds(&tags).map_err(&refuse)?;
     if kinds.is_empty() {
         return Ok(None); // tagged, but not in the registration namespace
     }
@@ -693,12 +682,9 @@ pub fn register_page(offered: PageRef<'_>) -> Result<Option<Registration>, Regis
 
 /// The registration kinds `tags:` declares, sorted and deduplicated. A `rules/*`
 /// tag outside this slice's vocabulary is refused by name.
-fn registration_kinds(tags: Option<&Tags>) -> Result<Vec<RuleKind>, RegisterFault> {
-    let Some(tags) = tags else {
-        return Ok(Vec::new());
-    };
+fn registration_kinds(tags: &[String]) -> Result<Vec<RuleKind>, RegisterFault> {
     let mut kinds = Vec::new();
-    for tag in tags.iter() {
+    for tag in tags {
         let Some(suffix) = tag.strip_prefix(REGISTRATION_NAMESPACE) else {
             continue;
         };
@@ -1048,6 +1034,81 @@ mod tests {
 
     fn register(path: &str, bytes: &str) -> Result<Option<Registration>, RegisterError> {
         register_page(offer(ScopeLayer::Workspace, path, bytes))
+    }
+
+    // ── the one tag parser ────────────────────────────────────────────────────
+
+    /// The oracle this crate used to read `tags:` with, kept ONLY as a test
+    /// instrument: `serde_yaml` is the widest reader of the three spellings, so
+    /// it is what `model::fm_tags` must not be narrower than. If this test ever
+    /// fails, a rule page stopped registering — that is the regression class
+    /// this whole seam is guarding.
+    fn serde_yaml_tags(frontmatter: &str) -> Vec<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Tags {
+            One(String),
+            Many(Vec<String>),
+        }
+        #[derive(serde::Deserialize)]
+        struct Fm {
+            tags: Option<Tags>,
+        }
+        let Ok(fm) = serde_yaml::from_str::<Fm>(frontmatter) else {
+            return Vec::new();
+        };
+        match fm.tags {
+            None => Vec::new(),
+            Some(Tags::One(one)) => vec![one],
+            Some(Tags::Many(many)) => many,
+        }
+        .into_iter()
+        .map(|t| t.trim().trim_start_matches('#').to_string())
+        .filter(|t| !t.is_empty())
+        .collect()
+    }
+
+    /// Both readings of `tags:` agree on every spelling that reaches this
+    /// engine — the drift that made `mrd rules` and `mrd sql` disagree about
+    /// block-sequence pages, closed by gate as well as by construction.
+    #[test]
+    fn the_tag_parser_agrees_with_the_yaml_oracle() {
+        for frontmatter in [
+            "tags: [type/rule, rules/hook]\nid: a.b",
+            "tags: rules/check\nid: a.b",
+            "tags:\n  - type/rule\n  - rules/hook\nid: a.b",
+            "tags:\n  - rules/middleware\nid: a.b",
+            "tags: ['#type/rule', \"rules/hook\"]\nid: a.b",
+            "tags: []\nid: a.b",
+            "id: a.b",
+            "title: no tags here\nid: a.b",
+            "tags: [a,\n  b]\nid: a.b",
+            // The arm that used to disagree: a quoted scalar is ONE tag, so
+            // this page offers `rules/hook, x` and registers NOTHING. Splitting
+            // it would have registered a hook the YAML reading never declared.
+            "tags: \"rules/hook, x\"\nid: a.b",
+            "tags: '#rules/check'\nid: a.b",
+        ] {
+            assert_eq!(
+                model::fm_tags(frontmatter, "tags"),
+                serde_yaml_tags(frontmatter),
+                "the two readings disagree on:\n{frontmatter}",
+            );
+        }
+    }
+
+    /// The defect, at this plane: a block-sequence rule page registers, and
+    /// registered the same way BEFORE this change — `policy` was always the
+    /// half that could see it. The gate pins that half so a future
+    /// simplification cannot quietly narrow registration to flow form.
+    #[test]
+    fn a_block_sequence_rule_page_registers() {
+        let body = "---\ntags:\n  - type/rule\n  - rules/hook\nid: block.form\n---\n\n# rule\n";
+        let got = register("rules/block.md", body)
+            .expect("a block-sequence rule page registers")
+            .expect("and it is a rule page");
+        assert_eq!(got.id().as_str(), "block.form");
+        assert_eq!(got.kinds(), &[RuleKind::Hook]);
     }
 
     // ── discovery ─────────────────────────────────────────────────────────────
