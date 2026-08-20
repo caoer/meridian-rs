@@ -101,6 +101,10 @@ fn corpus() -> Corpus {
     for d in [&home, &ws, &notes, &archive, &sessions] {
         std::fs::create_dir_all(d).expect("mkdir");
     }
+    // Anchor the ambient workspace: an unanchored tree now refuses (outside a
+    // declared workspace, exit 2) — these arms test cross-surface stored
+    // forms, not the resolution tier.
+    std::fs::create_dir_all(ws.join(".git")).expect(".git");
     declare(&notes, VAULT_ROOT);
     declare(&archive, FOLDER_ROOT);
     declare(&sessions, "sessions");

@@ -85,11 +85,14 @@ impl Sandbox {
     }
 }
 
-/// A bare workspace (no git, no override) seeded with `files` — resolves as
-/// the cwd default.
+/// A git-anchored workspace (no override) seeded with `files`. Anchored on
+/// purpose: an unanchored tree now refuses (outside a declared workspace,
+/// exit 2), and these arms test the sql lanes, not the resolution tier. The
+/// `.git` entry is a directory, invisible to the markdown corpus.
 fn write_bare_ws(sb: &Sandbox, name: &str, files: &[(&str, &str)]) -> PathBuf {
     let ws = sb.tmp.path().join(name);
     std::fs::create_dir_all(&ws).expect("ws");
+    std::fs::create_dir_all(ws.join(".git")).expect(".git");
     for (rel, content) in files {
         std::fs::write(ws.join(rel), content).expect("write");
     }
