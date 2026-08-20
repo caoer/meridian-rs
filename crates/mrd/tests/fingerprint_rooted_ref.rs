@@ -32,6 +32,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
+mod common;
+
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
 }
@@ -126,10 +128,7 @@ impl Sandbox {
     }
 
     fn daemon_pidfile(&self) -> PathBuf {
-        self.cache_home
-            .join("meridian")
-            .join("registry")
-            .join("daemon.pid")
+        common::child_daemon_pidfile(&self.home, &self.cache_home)
     }
 
     fn wait_daemon_pid(&self, timeout: Duration) -> Option<i32> {

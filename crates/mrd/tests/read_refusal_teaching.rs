@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
+mod common;
+
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
 }
@@ -33,7 +35,6 @@ struct Sandbox {
     tmp: tempfile::TempDir,
     cache_home: PathBuf,
     home: PathBuf,
-    cache_root: PathBuf,
 }
 
 fn sandbox() -> Sandbox {
@@ -41,12 +42,10 @@ fn sandbox() -> Sandbox {
     let cache_home = tmp.path().join("xdg-cache");
     let home = tmp.path().join("home");
     std::fs::create_dir_all(&home).expect("home");
-    let cache_root = cache_home.join("meridian");
     Sandbox {
         tmp,
         cache_home,
         home,
-        cache_root,
     }
 }
 
@@ -105,7 +104,7 @@ impl Sandbox {
     }
 
     fn daemon_pidfile(&self) -> PathBuf {
-        self.cache_root.join("registry").join("daemon.pid")
+        common::child_daemon_pidfile(&self.home, &self.cache_home)
     }
 
     fn wait_daemon_pid(&self, timeout: Duration) -> Option<i32> {

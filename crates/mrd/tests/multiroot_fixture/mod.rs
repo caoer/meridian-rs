@@ -171,12 +171,18 @@ pub fn children_cpu() -> Duration {
 // `XDG_CACHE_HOME` dies with the tempdir; a detached `mrd daemon` does not, and on a
 // long-lived self-hosted runner every leak accumulates.
 
-/// The resident daemon's pidfile under this sandbox's cache root.
+/// The resident daemon's pidfile: hash-keyed beside the short sock
+/// (short-sock law). Mirrors `registry::socket_path_for_cache_root` lane by
+/// lane, same as `common::child_daemon_pidfile` — the Linux `XDG_RUNTIME_DIR`
+/// lane is env the child inherits from this process; the HOME lane must use
+/// the sandbox's `home`.
 pub fn daemon_pidfile(sb: &Sandbox) -> PathBuf {
-    sb.cache_home
-        .join("meridian")
-        .join("registry")
-        .join("daemon.pid")
+    let cache_root = sb.cache_home.join("meridian");
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("XDG_RUNTIME_DIR").is_some_and(|v| !v.is_empty()) {
+        return registry::socket_path_for_cache_root(&cache_root).with_extension("pid");
+    }
+    registry::socket_path_under_home(&sb.home, &cache_root).with_extension("pid")
 }
 
 /// Read the pid the daemon wrote, if the pidfile is present and parseable.

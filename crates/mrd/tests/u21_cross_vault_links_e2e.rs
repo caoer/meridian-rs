@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+mod common;
+
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
 }
@@ -142,12 +144,9 @@ impl Sandbox {
         (out, entry)
     }
 
-    /// The resident daemon's pidfile under this sandbox's cache root.
+    /// The resident daemon's pidfile: hash-keyed beside the short sock.
     fn daemon_pidfile(&self) -> PathBuf {
-        self.cache_home
-            .join("meridian")
-            .join("registry")
-            .join("daemon.pid")
+        common::child_daemon_pidfile(&self.home, &self.cache_home)
     }
 
     /// Best-effort reap: TERM → verify → KILL → verify. Never panics (Drop path).
