@@ -38,8 +38,6 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use std::io::Write;
-
 mod common;
 
 /// A fingerprint no workspace can be standing at, so a guarded write refuses on the world guard.
@@ -94,12 +92,7 @@ fn run_with_stdin(sb: &Sandbox, cwd: &Path, args: &[&str], stdin: &str) -> Outpu
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn mrd");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(stdin.as_bytes())
-        .expect("write stdin");
+    common::feed_stdin(&mut child, stdin.as_bytes());
     child.wait_with_output().expect("wait mrd")
 }
 

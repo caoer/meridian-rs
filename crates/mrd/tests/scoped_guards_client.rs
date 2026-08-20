@@ -38,6 +38,8 @@ use std::time::Duration;
 use registry::{Config, RunningServer};
 use serde_json::{Value, json};
 
+mod common;
+
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
 }
@@ -138,12 +140,7 @@ impl Sandbox {
                 .stderr(Stdio::piped())
                 .spawn()
                 .expect("spawn mrd");
-            child
-                .stdin
-                .as_mut()
-                .expect("stdin")
-                .write_all(bytes.as_bytes())
-                .expect("write stdin");
+            common::feed_stdin(&mut child, bytes.as_bytes());
             child.wait_with_output().expect("wait")
         } else {
             cmd.output().expect("spawn mrd")
