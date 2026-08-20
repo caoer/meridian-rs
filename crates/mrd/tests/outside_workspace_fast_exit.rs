@@ -129,6 +129,20 @@ fn corpus_verbs_refuse_fast_in_an_unmarked_tree() {
 }
 
 #[test]
+fn a_child_git_repo_does_not_anchor_its_parent() {
+    let sb = sandbox();
+    // The production shape: a parent of repos. The `.git` sits in a CHILD;
+    // the marker walk goes up, never down, so the parent stays unmarked.
+    let parent = sb.dir("projects");
+    let child = parent.join("some-repo");
+    std::fs::create_dir_all(child.join(".git")).expect("child .git");
+    std::fs::write(parent.join("note.md"), "# Note\n\nbody\n").expect("page");
+
+    let out = sb.run_in(&parent, &["rules"]);
+    assert_refused(&out, "rules", &parent);
+}
+
+#[test]
 fn a_git_anchored_tree_still_serves() {
     let sb = sandbox();
     let ws = sb.dir("repo");
