@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
+mod common;
+
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
 }
@@ -147,7 +149,6 @@ impl Sandbox {
 
     /// Warm run with bytes on stdin (the put door's edits).
     fn run_warm_stdin(&self, cwd: &Path, args: &[&str], stdin: &str) -> Output {
-        use std::io::Write as _;
         let mut child = self
             .base()
             .args(args)
@@ -157,12 +158,7 @@ impl Sandbox {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("spawn mrd");
-        child
-            .stdin
-            .take()
-            .expect("stdin")
-            .write_all(stdin.as_bytes())
-            .expect("write stdin");
+        common::feed_stdin(&mut child, stdin.as_bytes());
         child.wait_with_output().expect("wait mrd")
     }
 

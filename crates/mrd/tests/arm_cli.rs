@@ -84,7 +84,6 @@ impl Sandbox {
     }
 
     fn run_stdin(&self, args: &[&str], stdin: &str) -> Output {
-        use std::io::Write as _;
         let mut child = Command::new(mrd_bin())
             .args(args)
             .current_dir(&self.ws)
@@ -98,12 +97,7 @@ impl Sandbox {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("spawn mrd");
-        child
-            .stdin
-            .take()
-            .expect("stdin")
-            .write_all(stdin.as_bytes())
-            .expect("feed stdin");
+        common::feed_stdin(&mut child, stdin.as_bytes());
         child.wait_with_output().expect("wait mrd")
     }
 

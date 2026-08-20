@@ -26,6 +26,8 @@ use std::time::Duration;
 
 use registry::{Config, RunningServer};
 
+mod common;
+
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
 }
@@ -277,12 +279,7 @@ fn script_refuses_on_foreign_identity_before_any_entry_work() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .and_then(|mut child| {
-            use std::io::Write as _;
-            child
-                .stdin
-                .take()
-                .expect("piped stdin")
-                .write_all(b"t = read(\"doc.md\")\n")?;
+            common::feed_stdin(&mut child, b"t = read(\"doc.md\")\n");
             child.wait_with_output()
         })
         .expect("spawn mrd script");
