@@ -1412,14 +1412,32 @@ bytes it exists to keep out.
 ## Capabilities — deny-by-default (verdict ruling 3, decision #15)
 
 An undeclared block is read-only: it can compute, but no effect of its
-executes. Caps are namespaced strings, optionally target-scoped
-(`md.set_field` / `md.set_field:status`, the latter strictly narrower).
-Declared two ways — beside the binding, or by name convention:
+executes. The cap plane speaks THREE VERBS — `md.create` / `md.edit` /
+`md.delete` — answering one question: may this block touch files there
+(caps-redesign ruling, 2026-08-19). HOW it touches them is the descriptor
+plane's (executor ops), extensible without growing this grammar: `Create`
+needs `md.create`; `SetField` and `AppendSection` need `md.edit`;
+`md.delete` is reserved — it parses and resolves so grants can be written
+ahead, but no descriptor maps to it until a retire descriptor exists.
+
+A verb is optionally scoped by a PATH GLOB in the system's one glob grammar
+(`policy::glob_match`, defined in `crates/policy/src/declaration.rs` — caps
+call it, never reimplement it), matched at the choke point against the block's DECLARED
+coordinates: a birth matches its `path` argument verbatim — the resolution
+base (descriptor `base` > frame `ambient` > workspace root) is a separate
+axis, never glued into the matched string — and a page edit matches the
+page in the coordinates it was addressed by. The engine holds no layout
+pattern (boundary-as-data ruling, 2026-08-19 #2), so `md.create:tasks/*.md`
+covers the ambient board, a based (`--target`) board, and the root board
+alike. Several scopes = several entries in the existing comma list; no new
+list syntax. A scoped cap is strictly narrower than its bare verb
+(`md.edit:tasks/*.md` < `md.edit`). Declared two ways — beside the binding,
+or by name convention:
 
 ```markdown
 ---
 task.fix-drift: "[[#^fix-1]]"
-task.fix-drift.caps: md.set_field:status, md.append_section
+task.fix-drift.caps: md.edit:tasks/*.md, md.create:tasks/*.md
 ---
 ```
 
@@ -1429,11 +1447,21 @@ task.fix-drift.caps: md.set_field:status, md.append_section
 type: meridian-root
 version: 1
 name: field-notes
-run.caps.fix-*: md.set_field, md.append_section
-run.caps.fix-note: md.set_field:status # longest pattern wins
+run.caps.fix-*: md.edit
+run.caps.fix-note: md.edit:tasks/*.md # longest pattern wins
 run.timeout_secs: 7
 ---
 ```
+
+**Migration (the ruled split, caps-redesign 2026-08-19).** Retired per-op
+spellings fold or refuse, never silently reinterpret: bare `md.set_field` /
+`md.append_section` ALIAS-FOLD into `md.edit` at parse, and the canonical
+form is what every report and refusal then names; their field-grain
+targeted forms (`md.set_field:status`) REFUSE with the retirement teaching
+— the old target named a field or section, the new target position is a
+path glob, and dropping the target would widen the grant. Field-grain
+guards live inside blocks. Partition grain (parent-dir-name match) is
+retired with them.
 
 A present-but-empty `caps` declaration is an EXPLICIT read-only grant, distinct
 from no declaration. Precedence for the grant is explicit > convention > none;
@@ -1445,7 +1473,7 @@ the executor choke point before any I/O: one violation refuses the whole batch.
 **The denial names the ceiling that ate the grant (2026-08-09, dogfood s12-50).**
 `narrowed[]` reports the narrowing on the LISTING face; the refusal itself is a
 second face and must stand alone. A block whose own frontmatter declares
-`md.set_field` and is nevertheless denied `md.set_field` reads, at the denial,
+`md.edit` and is nevertheless denied `md.edit` reads, at the denial,
 as an engine ignoring a grant that is plainly on the page — and the remedy the
 caller derives (declare the cap) is already in place. So a `capability denied`
 refusal names **which ceiling removed the cap**: the winning `run.caps.<pattern>`
@@ -1455,6 +1483,16 @@ convention entry, or the builtin `check-*` / `verify-*` ceiling.
 deny-default, an explicit grant that never held the cap — names the cause and
 STOPS. The engine never attaches a fixed remedy string to a cause it did not
 measure: a remedy that may misdiagnose is worse than none.
+
+**The one measured remedy the deny arm does teach is the retired-partition
+respell** (caps-redesign 2026-08-19): where a declared GLOBLESS same-verb
+scope `T` would have covered the landing as `T/*.md`, the denial names that
+exact respell — `md.create:tasks` is now a literal glob matching only the
+path `tasks`, and the page that used it under partition grain is told to
+spell it `md.create:tasks/*.md`. It is taught only when the match is
+measured, never guessed. Texts: `ExecError::CapDenied`
+(`crates/run/src/executor.rs`); parse-time refusals — unknown verb, bad
+glob, retired field-grain target — are `CapsError` in `crates/run/src/caps.rs`.
 
 ### Where the convention table lives (marker-retirement ruling, 2026-07-26)
 
