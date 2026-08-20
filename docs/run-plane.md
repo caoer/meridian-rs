@@ -1421,14 +1421,21 @@ ops), extensible without growing this grammar: `Create` needs `md.create`;
 parses and resolves so grants can be written ahead, but no descriptor maps
 to it until a retire descriptor exists.
 
+⚠️ **Everything in this section is STARLARK's.** Caps do not apply to bash
+(`laws.md` § Amendment): a bash task resolves `Authority::Unsandboxed`, its
+`task.<name>.caps` is never read, and a present-but-empty declaration grants
+it nothing — a bash fence rewrites any file it likes and the engine DETECTS
+that in the exec-window bracket rather than denying it. Read every rule below
+as governing starlark blocks.
+
 **The two live verbs do not have the same reach, and the difference decides
 your glob.** `Create` births a file the block names, so `md.create` is a
 genuine *where may I write* grant. `SetField` and `AppendSection` change the
 DECLARING PAGE and nothing else (`descriptor_surface`,
-`crates/run/src/executor.rs`) — the run plane holds no way to edit a second
-file — so an `md.edit` scope is a SELF-GUARD narrowing the block against its
-own coordinate, never a reach. An `md.edit:agents/*/CARD.md` declared on a
-page that is not an agent card can admit nothing, ever.
+`crates/run/src/executor.rs`) — a starlark block has no descriptor that edits
+a second file — so an `md.edit` scope is a SELF-GUARD narrowing the block
+against its own coordinate, never a reach. An `md.edit:agents/*/CARD.md`
+declared on a page that is not an agent card can admit nothing, ever.
 
 A verb is optionally scoped by a PATH GLOB in the system's one glob grammar
 (`policy::glob_match`, defined in `crates/policy/src/declaration.rs` — caps
@@ -1442,15 +1449,19 @@ would be a legal glob for a rule or hook.
 | Descriptor | Coordinate the glob judges |
 |---|---|
 | `Create` | its `path` argument VERBATIM — the resolution base (descriptor `base` > frame `ambient` > workspace root) is a separate axis, never glued into the matched string |
-| `SetField` · `AppendSection` | the declaring page's path with the frame's `ambient` directory stripped as a LITERAL prefix when the page lies under it; with no `ambient` on the frame, the page's full workspace-relative path unchanged |
+| `SetField` · `AppendSection` | the declaring page's path with the frame's `ambient` directory stripped as a LITERAL prefix when the page lies under it; with no `ambient` on the frame — or a page that does not lie under it — the page's full workspace-relative path unchanged |
 
 ⛔ **A create scope constrains the SHAPE of the declared path, not where the
 bytes land.** `base` is an ordinary argument the block chooses, and the choke
 point never reads it, so a block granted exactly `md.create:tasks/*.md` can
-land `tasks/<slug>.md` under ANY confined directory in the workspace —
-measured 2026-08-19: that grant birthed `conventions/attested/tasks/x.md`.
-The tail jail is real (`evil/tasks/x.md` and `tasks/sub/x.md` both fail the
-glob as declared paths); the location is not jailed at all. A root ceiling
+land `tasks/<slug>.md` under ANY confined directory in the workspace.
+Measured 2026-08-19, all from that one grant: `conventions/attested/tasks/x.md`,
+`receipts/tasks/x.md`, `meridian/tasks/x.md`, `.meridian/tasks/x.md`, and
+**`.git/tasks/x.md`** — the reach includes the receipt ledger, the attestation
+tree, the engine's own reserved dirs, and the git directory, not just a wrong
+content folder. Only `..`, absolute paths, and foreign roots refuse. The tail
+jail is real (`evil/tasks/x.md` and `tasks/sub/x.md` both fail the glob as
+declared paths); the location is not jailed at all. A root ceiling
 like `run.caps.fix-*: md.create:tasks/*.md` reads as *births are confined to
 boards* and does not mean it. That is the boundary-as-data ruling working as
 designed — the engine holds no layout pattern to confine against — so treat
@@ -1466,12 +1477,17 @@ sends none, an edit is judged by its FULL workspace-relative path — and a
 short `md.edit:tasks/*.md` then denies a card sitting at
 `year=…/<session>/tasks/x.md`. Spell an edit scope to span the depth,
 `md.edit:**/tasks/*.md`, which holds either way: `**` matches zero segments
-as readily as five.
+as readily as five. **Do not take the spelling the denial suggests** — its
+`Fix:` line is built from the denied page's own path, so it hands you a
+session-pinned scope (`md.edit:year=2026/month=08/<session>/tasks/*.md`) that
+works today and denies every card in the next session.
 
 Several scopes = several entries in the existing comma list; no new
 list syntax. A scoped cap is strictly narrower than its bare verb
 (`md.edit:**/tasks/*.md` < `md.edit`). Declared two ways — beside the binding,
-or by name convention:
+or by name convention. **The two examples below are one working pair: the
+ceiling must carry every verb the page declares** (see the verb-allowlist rule
+under Precedence — a ceiling that omits a verb drops it whole):
 
 ```markdown
 ---
@@ -1486,14 +1502,29 @@ task.fix-drift.caps: md.edit:**/tasks/*.md, md.create:tasks/*.md
 type: meridian-root
 version: 1
 name: field-notes
-run.caps.fix-*: md.edit
-# longest pattern wins — a comment needs its OWN line: the frontmatter
-# scanner takes no YAML crate and does not strip trailing comments, so a
-# `# …` after a value is parsed as a cap and refuses the WHOLE table
+run.caps.fix-*: md.edit, md.create:tasks/*.md
+# longest pattern wins — and a comment needs its OWN line (see the
+# bricking hazard below)
 run.caps.fix-note: md.edit:**/tasks/*.md
 run.timeout_secs: 7
 ---
 ```
+
+⛔ **One bad entry in this table bricks the whole root.** The table is loaded
+before authority resolution, so an unparseable value refuses EVERY run on that
+root — read-only tasks, `check-*` tasks, **bash** tasks (which caps otherwise
+never govern), and even `mrd run <page> --list`, which is pure discovery. All
+three causes are the same hazard, and none of the refusals names the file or
+the key you broke — you get `invalid capability '#'` and no pointer to
+`MERIDIAN.md`:
+
+- a trailing comment: the frontmatter scanner takes no YAML crate and strips
+  none, so `md.edit:… # longest pattern wins` parses `#` as a cap;
+- a bad verb: anything outside the three;
+- a glob outside the cap-scope charset above, e.g. `md.edit:tasks/x!y/*.md`.
+
+After editing a ceiling, run `mrd run <any-page> --list` once — it is the
+cheapest possible smoke test, and it fails loudly on a bricked table.
 
 **Migration (the ruled split, caps-redesign 2026-08-19).** Retired per-op
 spellings fold or refuse, never silently REINTERPRET a target: bare
@@ -1519,13 +1550,34 @@ A present-but-empty `caps` declaration is an EXPLICIT read-only grant, distinct
 from no declaration. Precedence for the grant is explicit > convention > none;
 conventions **narrow only, never widen**, and every cap that did not survive
 intact is reported in `narrowed[]`. **Scopes meet by STRING EQUALITY, not by
-glob containment** (`Cap::meet`, `crates/run/src/caps.rs`): a ceiling scope
-admits the identical scope string or the unscoped verb, and drops every other
-scope — including one that is plainly narrower. Measured 2026-08-19:
-`md.edit:tasks/sub/*.md` under the ceiling `md.edit:tasks/**` is denied, and
-the refusal's "aim the effect inside what it leaves" misreads there, since
-the effect already was inside. Under a scoped ceiling, spell the page's scope
-byte-for-byte or leave the page's verb unscoped. The builtin `check-*` / `verify-*` ceiling
+glob containment** (`Cap::meet`, `crates/run/src/caps.rs`). Under a scoped
+ceiling a page's cap meets it three ways, and only one of them keeps what the
+page asked for:
+
+| Page declares | Result under ceiling `md.edit:tasks/**` |
+|---|---|
+| the identical scope string | survives intact |
+| the bare verb, unscoped | REPLACED by the ceiling's scope (`md.edit:tasks/**`), reported in `narrowed[]` — the page does not keep full reach |
+| any other scope, however narrow | DROPPED — the grant is gone |
+| a verb the ceiling does not name at all | DROPPED WHOLE — a ceiling is an allowlist of VERBS as well as scopes, so `run.caps.fix-*: md.edit` kills every `md.create` on a `fix-*` task, however the page declares it |
+
+⛔ **Keep `md.edit` ceilings UNSCOPED; scope `md.create` instead.** Because
+edits are self-guarded to the declaring page, a SCOPED edit ceiling is not a
+narrowing a page can comply with — it is an on/off switch keyed to where the
+page happens to live. Measured: under `run.caps.fix-note: md.edit:**/tasks/*.md`,
+a `fix-note` task on `rules/escalate.md` is denied no matter what it declares,
+including the bare verb, because the ceiling's own glob does not cover that
+page; renaming the task so it falls to an unscoped `fix-*` entry applies
+cleanly. The engine's "aim the effect inside what it leaves" is unfollowable
+there — an edit has no second page to aim at.
+
+Measured 2026-08-19: `md.edit:tasks/sub/*.md` under that ceiling is denied
+though it sits plainly inside it, and the refusal's "aim the effect inside
+what it leaves" misreads there, since the effect already was inside; a page
+declaring bare `md.edit` resolves to `md.edit:tasks/**` with
+`narrowed by ceiling: md.edit`. So under a scoped ceiling, spell the page's
+scope byte-for-byte, or declare the bare verb and accept the ceiling's scope
+as yours. The builtin `check-*` / `verify-*` ceiling
 is absolute, and those names refuse a bash fence loudly at load. Caps bind at
 the executor choke point before any I/O: one violation refuses the whole batch.
 
