@@ -7,7 +7,7 @@
 #![allow(dead_code)]
 
 use std::io::{ErrorKind, Write as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Child;
 
 /// Feed a spawned child's stdin, tolerating a child that has already stopped
@@ -42,12 +42,33 @@ pub(crate) fn feed_stdin(child: &mut Child, bytes: &[u8]) {
     // Dropping `pipe` closes the child's stdin: a child still reading sees EOF.
 }
 
-/// SIGTERM the resident daemon whose pidfile lives under this cache home.
-pub(crate) fn reap_daemon(cache_home: &Path) {
-    let pidfile = cache_home
-        .join("meridian")
-        .join("registry")
-        .join("daemon.pid");
+/// The socket path an `mrd` CHILD spawned with `HOME=<home>` and
+/// `XDG_CACHE_HOME=<cache_home>` will derive (short-sock law: the socket is
+/// hash-keyed under a short per-user base, no longer under the cache root).
+///
+/// Mirrors `registry::socket_path_for_cache_root` lane by lane: the Linux
+/// `XDG_RUNTIME_DIR` lane reads env the child INHERITS from this very test
+/// process, so the production function answers for the child too; the HOME
+/// lane must be computed against the sandbox's `home`, not this process's.
+pub(crate) fn child_socket_path(home: &Path, cache_home: &Path) -> PathBuf {
+    let cache_root = cache_home.join("meridian");
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("XDG_RUNTIME_DIR").is_some_and(|v| !v.is_empty()) {
+        return registry::socket_path_for_cache_root(&cache_root);
+    }
+    registry::socket_path_under_home(home, &cache_root)
+}
+
+/// The pidfile the child's auto-spawned daemon writes: beside the socket,
+/// `<socket-stem>.pid`.
+pub(crate) fn child_daemon_pidfile(home: &Path, cache_home: &Path) -> PathBuf {
+    child_socket_path(home, cache_home).with_extension("pid")
+}
+
+/// SIGTERM the resident daemon whose pidfile belongs to this sandbox
+/// (`HOME=<home>`, `XDG_CACHE_HOME=<cache_home>`).
+pub(crate) fn reap_daemon(home: &Path, cache_home: &Path) {
+    let pidfile = child_daemon_pidfile(home, cache_home);
     let Ok(text) = std::fs::read_to_string(pidfile) else {
         return;
     };

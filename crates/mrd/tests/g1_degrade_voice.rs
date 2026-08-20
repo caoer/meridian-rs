@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
+mod common;
+
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
 }
@@ -83,7 +85,7 @@ impl Sandbox {
     }
 
     fn daemon_pidfile(&self) -> PathBuf {
-        self.cache_root.join("registry").join("daemon.pid")
+        common::child_daemon_pidfile(&self.home, &self.cache_home)
     }
 
     fn wait_daemon_pid(&self, timeout: Duration) -> Option<i32> {
@@ -203,28 +205,131 @@ fn g1_warm_is_silent_and_stdout_is_byte_identical_to_the_degrade() {
 }
 
 // ---------------------------------------------------------------------------
-// Gate 4: the named cause — a socket path no daemon can bind.
+// Gate 4 (rewritten by the short-sock law, 2026-08-20): a DEEP cache root no
+// longer kills the socket — the daemon binds the hash-keyed short path and
+// serves WARM. The exact hazard G1 was found through, closed at the root
+// instead of voiced.
 // ---------------------------------------------------------------------------
 
-/// The exact hazard G1 was found through: an `XDG_CACHE_HOME` long enough that
-/// `<cache>/meridian/registry/daemon.sock` exceeds `sun_path`. No daemon can
-/// bind it and none can be dialled, so starting one is not the fix — and the
-/// voice must say which fix is.
+/// An `XDG_CACHE_HOME` long enough that the OLD in-root socket placement
+/// (`<cache>/meridian/registry/daemon.sock`) would exceed `sun_path`. Under
+/// the short-sock law the socket rides `hash(cache_root)` under a short
+/// per-user base, so the daemon binds, the client dials, and the answer is
+/// daemon-backed — no degrade, no TMPDIR/XDG length requirement.
 #[test]
-fn g1_over_long_socket_path_names_the_sun_path_limit() {
+fn g1_deep_cache_root_still_binds_and_serves_warm() {
     let deep: String = std::iter::repeat_n("averylongcachedirectorysegment", 6)
         .collect::<Vec<_>>()
         .join("/");
     let sb = sandbox_at(&deep);
     let ws = sb.workspace();
-    let socket = sb.cache_root.join("registry").join("daemon.sock");
+    let old_socket = sb.cache_root.join("registry").join("daemon.sock");
     assert!(
-        socket.as_os_str().len() > 104,
-        "the fixture must actually exceed sun_path: {} bytes",
+        old_socket.as_os_str().len() > 104,
+        "the fixture must exceed sun_path under the OLD placement: {} bytes",
+        old_socket.as_os_str().len()
+    );
+    let socket = common::child_socket_path(&sb.home, &sb.cache_home);
+    assert!(
+        socket.as_os_str().len() < 104,
+        "the derived short sock must fit sun_path: {} bytes ({})",
+        socket.as_os_str().len(),
+        socket.display()
+    );
+
+    // Auto-spawn allowed: the cold first use starts the resident daemon at
+    // the short sock. `--json` carries `source`, the warm proof.
+    let out = sb.run(&ws, &["read", "doc.md", "--json"]);
+
+    // Reap BEFORE asserting so a failed assertion never leaks the daemon.
+    let pid = sb.wait_daemon_pid(Duration::from_secs(5));
+    if let Some(pid) = pid {
+        signal(pid, libc::SIGTERM);
+        wait_dead(pid, Duration::from_secs(5));
+    }
+
+    assert_eq!(out.status.code(), Some(0), "read exits 0: {}", stderr(&out));
+    assert!(
+        pid.is_some(),
+        "the daemon wrote its pidfile beside the short sock"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("\"source\": \"daemon\""),
+        "a deep cache root is served WARM under the short-sock law: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+/// A stale socket at the OLD in-root placement is dead to the client: even a
+/// LIVE daemon bound there is never dialled — the client derives only the
+/// short hash-keyed path. If the client still dialled the old path, the
+/// answer would come back warm and this gate would catch the regression.
+#[test]
+fn g1_stale_daemon_at_the_old_path_is_not_dialled() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let old_socket = sb.cache_root.join("registry").join("daemon.sock");
+    std::fs::create_dir_all(old_socket.parent().expect("registry dir")).expect("mkdir");
+    #[allow(clippy::duration_suboptimal_units)]
+    let forever = Duration::from_secs(365 * 24 * 60 * 60);
+    let mut config = registry::Config::for_cache_root(sb.cache_root.clone());
+    config.socket_path = old_socket;
+    config.idle_threshold = forever;
+    config.reap_interval = forever;
+    config.prewarm_interval = forever;
+    config.prewarm_quiet_max = forever;
+    config.idle_exit = None;
+    config.build_sha = Some(env!("MRD_BUILD_SHA").to_owned());
+    let server = registry::RunningServer::start(config).expect("old-path daemon binds");
+
+    let out = sb.run_degraded(&ws, &["read", "doc.md", "--json"]);
+    server.shutdown();
+
+    assert_eq!(out.status.code(), Some(0), "read exits 0: {}", stderr(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("\"source\": \"ephemeral\""),
+        "the old-path daemon must be invisible — the client dials only the short sock: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+/// The overflow voice survives where it still can happen: a HOME so deep that
+/// even the short hash-keyed path exceeds `sun_path` (pathological — the
+/// short path adds ~30 bytes to the base). The degrade names the cause and
+/// the knob that now matters.
+#[test]
+fn g1_pathological_home_still_names_the_sun_path_limit() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let deep: String = std::iter::repeat_n("averylonghomedirectorysegment", 6)
+        .collect::<Vec<_>>()
+        .join("/");
+    let home = tmp.path().join(deep);
+    std::fs::create_dir_all(&home).expect("deep home");
+    let cache_home = tmp.path().join("xdg-cache");
+    let ws = tmp.path().join("project");
+    std::fs::create_dir_all(ws.join(".git")).expect("git anchor");
+    std::fs::write(ws.join("doc.md"), DOC).expect("doc");
+    let ws = std::fs::canonicalize(&ws).expect("canonical ws");
+
+    let socket = registry::socket_path_under_home(&home, &cache_home.join("meridian"));
+    assert!(
+        socket.as_os_str().len() >= 104,
+        "the fixture HOME must push even the short sock past sun_path: {} bytes",
         socket.as_os_str().len()
     );
 
-    let out = sb.run(&ws, &["read", "doc.md"]);
+    let out = Command::new(mrd_bin())
+        .env("XDG_CACHE_HOME", &cache_home)
+        .env("HOME", &home)
+        .env_remove("MERIDIAN_WORKSPACE")
+        // Force the HOME lane so the fixture's depth is the one that counts.
+        .env_remove("XDG_RUNTIME_DIR")
+        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+        .args(["read", "doc.md"])
+        .current_dir(&ws)
+        .output()
+        .expect("spawn mrd");
+
     assert_eq!(out.status.code(), Some(0), "read exits 0: {}", stderr(&out));
     let err = stderr(&out);
     assert!(
@@ -236,7 +341,7 @@ fn g1_over_long_socket_path_names_the_sun_path_limit() {
         "the voice names the cause rather than leaving it to be guessed: {err:?}"
     );
     assert!(
-        err.contains("XDG_CACHE_HOME"),
-        "and it names the knob that fixes it: {err:?}"
+        err.contains("HOME"),
+        "and it names the knob that fixes it now (the short base, not the cache root): {err:?}"
     );
 }

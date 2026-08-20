@@ -65,7 +65,7 @@ fn sandbox() -> Sandbox {
 
 impl Drop for Sandbox {
     fn drop(&mut self) {
-        common::reap_daemon(&self.cache_home);
+        common::reap_daemon(&self.home, &self.cache_home);
     }
 }
 

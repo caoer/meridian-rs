@@ -163,10 +163,7 @@ impl Sandbox {
     }
 
     fn daemon_pidfile(&self) -> PathBuf {
-        self.cache_home
-            .join("meridian")
-            .join("registry")
-            .join("daemon.pid")
+        common::child_daemon_pidfile(&self.home, &self.cache_home)
     }
 
     /// Reap the auto-spawned daemon so a failed assertion never leaks it.

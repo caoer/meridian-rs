@@ -72,7 +72,7 @@ pub(crate) fn hello_identity_skew(body: Option<&Value>, socket: &Path) -> Result
         || "(no identity published — a build predating the identity token)".to_owned(),
         ToOwned::to_owned,
     );
-    let pidfile = socket.with_file_name("daemon.pid");
+    let pidfile = socket.with_extension("pid");
     Err(format!(
         "build  child:{OWN_BUILD}  daemon:{daemon}  SKEW — the resident daemon on this socket \
          answers from a build that is not this client's; refusing to serve across builds \
@@ -138,9 +138,12 @@ pub(crate) fn voice_degrade(source: &EngineSource) {
 }
 
 /// The one degrade cause worth naming beyond "no daemon answered": a socket path that cannot
-/// fit in `sun_path`. It is silent, it is not fixed by starting a daemon, and it is reached by
-/// an ordinary long `XDG_CACHE_HOME`. Every other cause (not running, spawn failed, refused
-/// handshake) is already covered by the first line, so this says nothing rather than guessing.
+/// fit in `sun_path`. It is silent, and it is not fixed by starting a daemon. Since the
+/// short-sock law the socket is hash-keyed under a short per-user base
+/// (`registry::socket_path_for_cache_root`), so a merely long `XDG_CACHE_HOME` no longer
+/// reaches this — only a pathological base (deep `HOME`, or a missing one forcing the in-root
+/// fallback) still can. Every other cause (not running, spawn failed, refused handshake) is
+/// already covered by the first line, so this says nothing rather than guessing.
 pub(crate) fn degrade_reason() -> Option<String> {
     let Ok(client) = Client::from_default() else {
         return Some("No cache root resolves, so there is no socket path to dial.".to_owned());
@@ -152,8 +155,9 @@ pub(crate) fn degrade_reason() -> Option<String> {
     }
     Some(format!(
         "The socket path is {len} bytes, at or over this platform's {SUN_PATH_CAPACITY}-byte \
-         sun_path limit, so NO daemon can bind or dial it. Shorten the cache root \
-         (XDG_CACHE_HOME): {}",
+         sun_path limit, so NO daemon can bind or dial it. The socket rides a short per-user \
+         base ($XDG_RUNTIME_DIR on Linux, else $HOME/.cache/mrd-run); shorten that base \
+         directory: {}",
         socket.display()
     ))
 }

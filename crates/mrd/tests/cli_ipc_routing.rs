@@ -34,24 +34,7 @@ fn sandbox() -> Sandbox {
 
 impl Drop for Sandbox {
     fn drop(&mut self) {
-        reap_daemon(&self.cache_home);
-    }
-}
-
-fn reap_daemon(cache_home: &Path) {
-    let pidfile = cache_home
-        .join("meridian")
-        .join("registry")
-        .join("daemon.pid");
-    let Ok(text) = std::fs::read_to_string(pidfile) else {
-        return;
-    };
-    let Ok(pid) = text.trim().parse::<i32>() else {
-        return;
-    };
-    // SAFETY: pid came from this sandbox's own pidfile.
-    unsafe {
-        libc::kill(pid, libc::SIGTERM);
+        common::reap_daemon(&self.home, &self.cache_home);
     }
 }
 
@@ -102,11 +85,7 @@ impl Sandbox {
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn daemon");
-        let socket = self
-            .cache_home
-            .join("meridian")
-            .join("registry")
-            .join("daemon.sock");
+        let socket = common::child_socket_path(&self.home, &self.cache_home);
         let client = registry::Client::new(socket);
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {

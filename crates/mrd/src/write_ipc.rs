@@ -37,7 +37,8 @@ pub(crate) fn connect(workspace: &Path) -> Result<SocketDoor, Fail> {
         Fail::tool(format!(
             "{DAEMON_DOWN} ({e}). {}",
             engine::degrade_reason().unwrap_or_else(|| {
-                "Start the daemon, or fix the socket path (XDG_CACHE_HOME / sun_path).".to_owned()
+                "Start the daemon, or fix the socket path (XDG_RUNTIME_DIR / HOME / sun_path)."
+                    .to_owned()
             })
         ))
     })?;

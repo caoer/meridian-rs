@@ -132,10 +132,7 @@ impl Sandbox {
     }
 
     fn daemon_pidfile(&self) -> PathBuf {
-        self.cache_home
-            .join("meridian")
-            .join("registry")
-            .join("daemon.pid")
+        common::child_daemon_pidfile(&self.home, &self.cache_home)
     }
 
     fn wait_daemon_pid(&self, timeout: Duration) -> Option<i32> {
