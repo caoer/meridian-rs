@@ -158,6 +158,23 @@ pub fn glob_match(pattern: &str, path: &str) -> bool {
     seg_match(&pat, &txt)
 }
 
+/// Does `outer` match every path that `inner` matches? Subsumption over the
+/// ONE glob grammar, decided segment-wise: `**` in `outer` may absorb any run
+/// of `inner` atoms (its own `**` included), an `inner` `**` is absorbed by
+/// nothing else (it spans arbitrarily many segments, which only `**` covers),
+/// and a plain segment pair delegates to within-segment `*`/literal
+/// containment. CONSERVATIVE, sound but not complete: every `true` is a real
+/// containment, while a containment only provable across segment boundaries
+/// (e.g. `*/**` ⊇ `**/x`) reads as `false` — callers narrowing by this answer
+/// can only drop, never widen. `mrd`'s cap meet (`run::caps::Cap::meet`) is
+/// the consuming contract.
+#[must_use]
+pub fn glob_subsumes(outer: &str, inner: &str) -> bool {
+    let out: Vec<&str> = outer.split('/').collect();
+    let inn: Vec<&str> = inner.split('/').collect();
+    seg_subsumes(&out, &inn)
+}
+
 /// Whether a `files[]` member is a PATTERN: the grammar's only metacharacter
 /// is `*`, so a member containing one is a pattern and anything else is a
 /// literal path (§ A.7 patterns — no second detection grammar).
@@ -272,6 +289,59 @@ fn star_match(pat: &[char], txt: &[char]) -> bool {
     }
 }
 
+/// Segment-list subsumption: does glob `pat` admit every segment list glob
+/// `sub` admits? [`seg_match`]'s shape with the text generalized to a
+/// pattern: `pat`'s `**` absorbs any run of `sub` atoms; `sub`'s `**` is
+/// only ever absorbed that way; plain segments compare by
+/// [`segment_subsumes`], never against a `**` (which admits paths of a
+/// different segment count).
+fn seg_subsumes(pat: &[&str], sub: &[&str]) -> bool {
+    match pat.split_first() {
+        None => sub.is_empty(),
+        Some((&"**", rest)) => {
+            // `**` absorbs zero `sub` atoms here, or one atom then `**` again.
+            if seg_subsumes(rest, sub) {
+                return true;
+            }
+            !sub.is_empty() && seg_subsumes(pat, &sub[1..])
+        }
+        Some((&seg, rest)) => match sub.split_first() {
+            Some((&head, sub_rest)) if head != "**" && segment_subsumes(seg, head) => {
+                seg_subsumes(rest, sub_rest)
+            }
+            _ => false,
+        },
+    }
+}
+
+/// Within-segment subsumption: does star-pattern `pat` match every string
+/// star-pattern `sub` matches? [`star_match`]'s shape with the text
+/// generalized to a pattern: `pat`'s `*` absorbs any run of `sub` atoms
+/// (literals and `*`s alike), a literal covers only its own literal — `sub`'s
+/// `*` admits strings no literal can, so only a `*` may absorb it.
+fn segment_subsumes(pat: &str, sub: &str) -> bool {
+    let p: Vec<char> = pat.chars().collect();
+    let s: Vec<char> = sub.chars().collect();
+    star_subsumes(&p, &s)
+}
+
+/// Char-level arm of [`segment_subsumes`] over `(pattern, pattern)` slices.
+fn star_subsumes(pat: &[char], sub: &[char]) -> bool {
+    match pat.split_first() {
+        None => sub.is_empty(),
+        Some(('*', rest)) => {
+            if star_subsumes(rest, sub) {
+                return true;
+            }
+            !sub.is_empty() && star_subsumes(pat, &sub[1..])
+        }
+        Some((&c, rest)) => match sub.split_first() {
+            Some((&h, sub_rest)) if h == c && h != '*' => star_subsumes(rest, sub_rest),
+            _ => false,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,6 +434,55 @@ mod tests {
         assert!(path_in_scope(&scope, "notes/plan.md"));
         assert!(path_in_scope(&scope, "tasks/x/y.md"));
         assert!(!path_in_scope(&scope, "other/plan.md"));
+    }
+
+    // ── glob subsumption over the same grammar ──────────────────────────────
+
+    #[test]
+    fn subsumption_is_reflexive_and_literal_exact() {
+        assert!(glob_subsumes("tasks/foo.md", "tasks/foo.md"));
+        assert!(glob_subsumes("tasks/*.md", "tasks/*.md"));
+        assert!(glob_subsumes("tasks/**", "tasks/**"));
+        assert!(!glob_subsumes("tasks/foo.md", "tasks/bar.md"));
+    }
+
+    #[test]
+    fn a_within_segment_star_contains_its_literals_not_vice_versa() {
+        assert!(glob_subsumes("tasks/*.md", "tasks/foo.md"));
+        assert!(!glob_subsumes("tasks/foo.md", "tasks/*.md"));
+        assert!(glob_subsumes("tasks/*", "tasks/a*b"), "star absorbs star");
+        assert!(!glob_subsumes("tasks/a*b", "tasks/*"));
+    }
+
+    #[test]
+    fn double_star_contains_single_star_never_the_reverse() {
+        assert!(glob_subsumes("tasks/**", "tasks/*.md"));
+        assert!(glob_subsumes("tasks/**", "tasks/sub/*.md"));
+        assert!(glob_subsumes("**/*.md", "tasks/foo.md"));
+        assert!(glob_subsumes("**", "tasks/**"));
+        assert!(
+            !glob_subsumes("tasks/*", "tasks/**"),
+            "`**` admits other segment counts than `*`"
+        );
+        assert!(!glob_subsumes("tasks/*.md", "tasks/**"));
+    }
+
+    #[test]
+    fn overlap_without_nesting_is_not_subsumption() {
+        // Both match `tasks/foo.md`; neither contains the other.
+        assert!(!glob_subsumes("tasks/*.md", "*/foo.md"));
+        assert!(!glob_subsumes("*/foo.md", "tasks/*.md"));
+        // Disjoint.
+        assert!(!glob_subsumes("tasks/*.md", "notes/*.md"));
+    }
+
+    #[test]
+    fn subsumption_is_conservative_across_segment_boundaries() {
+        // TRUE containment (`*/**` admits every non-empty path, so it admits
+        // everything `**/x` does), unprovable segment-wise: a plain segment
+        // never covers part of a `**`. Documents the deliberate `false` —
+        // callers narrowing by this answer drop, never widen.
+        assert!(!glob_subsumes("*/**", "**/x"));
     }
 
     // ── § A.7 files[] expansion over the same grammar ───────────────────────

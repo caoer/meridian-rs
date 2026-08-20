@@ -1549,16 +1549,20 @@ op grain left to express it with.
 A present-but-empty `caps` declaration is an EXPLICIT read-only grant, distinct
 from no declaration. Precedence for the grant is explicit > convention > none;
 conventions **narrow only, never widen**, and every cap that did not survive
-intact is reported in `narrowed[]`. **Scopes meet by STRING EQUALITY, not by
-glob containment** (`Cap::meet`, `crates/run/src/caps.rs`). Under a scoped
-ceiling a page's cap meets it three ways, and only one of them keeps what the
-page asked for:
+intact is reported in `narrowed[]`. **Scopes meet by GLOB CONTAINMENT**
+(`Cap::meet` → `policy::glob_subsumes`; cap-meet-subsumption ruling
+2026-08-20 — string equality before that): segment-wise `**`/`*`/literal
+subsumption in the one glob grammar, nesting decided conservatively — a
+containment the checker cannot prove segment-wise reads as incomparable and
+drops, so the meet can only drop, never widen. Under a scoped ceiling a
+page's cap meets it five ways:
 
 | Page declares | Result under ceiling `md.edit:tasks/**` |
 |---|---|
-| the identical scope string | survives intact |
+| a scope inside the ceiling — the identical string, or any nested spelling (`md.edit:tasks/foo.md`, `md.edit:tasks/sub/*.md`) | survives intact |
 | the bare verb, unscoped | REPLACED by the ceiling's scope (`md.edit:tasks/**`), reported in `narrowed[]` — the page does not keep full reach |
-| any other scope, however narrow | DROPPED — the grant is gone |
+| a scope CONTAINING the ceiling (`md.edit:**`) | tightened to the ceiling's scope, reported in `narrowed[]` |
+| a scope neither inside nor containing it — disjoint (`md.edit:notes/*.md`) or overlapping without nesting (`md.edit:*/foo.md`) | DROPPED — overlap is not nesting; the grant is gone |
 | a verb the ceiling does not name at all | DROPPED WHOLE — a ceiling is an allowlist of VERBS as well as scopes, so `run.caps.fix-*: md.edit` kills every `md.create` on a `fix-*` task, however the page declares it |
 
 ⛔ **Keep `md.edit` ceilings UNSCOPED; scope `md.create` instead.** Because
@@ -1571,13 +1575,12 @@ page; renaming the task so it falls to an unscoped `fix-*` entry applies
 cleanly. The engine's "aim the effect inside what it leaves" is unfollowable
 there — an edit has no second page to aim at.
 
-Measured 2026-08-19: `md.edit:tasks/sub/*.md` under that ceiling is denied
-though it sits plainly inside it, and the refusal's "aim the effect inside
-what it leaves" misreads there, since the effect already was inside; a page
-declaring bare `md.edit` resolves to `md.edit:tasks/**` with
-`narrowed by ceiling: md.edit`. So under a scoped ceiling, spell the page's
-scope byte-for-byte, or declare the bare verb and accept the ceiling's scope
-as yours. The builtin `check-*` / `verify-*` ceiling
+Measured 2026-08-19 under the retired string-equality meet:
+`md.edit:tasks/sub/*.md` under that ceiling was denied though it sits plainly
+inside it. The subsumption meet closes exactly that case — a nested spelling
+now survives intact, so byte-for-byte spelling is no longer required; NESTING
+is (a page declaring bare `md.edit` still resolves to `md.edit:tasks/**` with
+`narrowed by ceiling: md.edit`). The builtin `check-*` / `verify-*` ceiling
 is absolute, and those names refuse a bash fence loudly at load. Caps bind at
 the executor choke point before any I/O: one violation refuses the whole batch.
 
