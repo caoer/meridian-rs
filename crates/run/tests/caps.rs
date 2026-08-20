@@ -85,6 +85,77 @@ fn scoped_ceiling_tightens_an_unscoped_grant() {
     assert_eq!(r.narrowed, vec![Cap::parse("md.edit").unwrap()]);
 }
 
+// ── the subsumption meet (cap-meet-subsumption ruling, 2026-08-20) ─────────
+// Scopes meet by glob CONTAINMENT (`policy::glob_subsumes`), not string
+// equality: nested survives, wider tightens, non-nested drops.
+
+#[test]
+fn a_strictly_narrower_scope_survives_a_differently_spelled_ceiling() {
+    // The card's case: ceiling `tasks/*.md`, grant `tasks/foo.md` —
+    // semantically inside, spelled differently. Survives INTACT, unreported.
+    let conv = conventions(&[("fix-*", &["md.edit:tasks/*.md"])]);
+    let explicit = set(&["md.edit:tasks/foo.md"]);
+    let r = resolve("fix-x", Some(&explicit), &conv);
+    assert_eq!(r.effective, explicit);
+    assert!(r.narrowed.is_empty());
+    assert!(r.effective.admits("md.edit", Some("tasks/foo.md")));
+    assert!(!r.effective.admits("md.edit", Some("tasks/bar.md")));
+}
+
+#[test]
+fn an_identically_spelled_scope_survives_intact() {
+    let conv = conventions(&[("fix-*", &["md.edit:tasks/*.md"])]);
+    let explicit = set(&["md.edit:tasks/*.md"]);
+    let r = resolve("fix-x", Some(&explicit), &conv);
+    assert_eq!(r.effective, explicit);
+    assert!(r.narrowed.is_empty());
+}
+
+#[test]
+fn a_scope_wider_than_the_ceiling_tightens_to_the_ceiling() {
+    // Grant `tasks/**` under ceiling `tasks/*.md`: the meet is the ceiling's
+    // scope — narrower, and the tightening is reported, never silent.
+    let conv = conventions(&[("fix-*", &["md.edit:tasks/*.md"])]);
+    let explicit = set(&["md.edit:tasks/**"]);
+    let r = resolve("fix-x", Some(&explicit), &conv);
+    assert_eq!(r.effective, set(&["md.edit:tasks/*.md"]));
+    assert_eq!(r.narrowed, vec![Cap::parse("md.edit:tasks/**").unwrap()]);
+    assert!(!r.effective.admits("md.edit", Some("tasks/sub/a.md")));
+}
+
+#[test]
+fn a_disjoint_scope_is_dropped() {
+    let conv = conventions(&[("fix-*", &["md.edit:tasks/*.md"])]);
+    let explicit = set(&["md.edit:notes/*.md"]);
+    let r = resolve("fix-x", Some(&explicit), &conv);
+    assert_eq!(r.effective, CapSet::none());
+    assert_eq!(r.narrowed, vec![Cap::parse("md.edit:notes/*.md").unwrap()]);
+}
+
+#[test]
+fn overlapping_but_non_nested_scopes_drop_because_overlap_is_not_nesting() {
+    // `tasks/*.md` and `*/foo.md` both admit `tasks/foo.md`, but neither
+    // contains the other — the meet has no simple normal form, so the grant
+    // drops (conservative: narrow only, never widen) and the drop is visible.
+    let conv = conventions(&[("fix-*", &["md.edit:tasks/*.md"])]);
+    let explicit = set(&["md.edit:*/foo.md"]);
+    let r = resolve("fix-x", Some(&explicit), &conv);
+    assert_eq!(r.effective, CapSet::none());
+    assert_eq!(r.narrowed, vec![Cap::parse("md.edit:*/foo.md").unwrap()]);
+    assert!(!r.effective.admits("md.edit", Some("tasks/foo.md")));
+}
+
+#[test]
+fn a_deep_scope_survives_a_double_star_ceiling() {
+    // run-plane.md's measured 2026-08-19 miss, now the fixed case:
+    // `tasks/sub/*.md` sits plainly inside `tasks/**` and survives.
+    let conv = conventions(&[("fix-*", &["md.edit:tasks/**"])]);
+    let explicit = set(&["md.edit:tasks/sub/*.md"]);
+    let r = resolve("fix-x", Some(&explicit), &conv);
+    assert_eq!(r.effective, explicit);
+    assert!(r.narrowed.is_empty());
+}
+
 #[test]
 fn check_and_verify_names_refuse_a_bash_fence_loudly() {
     // A NAME law, not a capability: it survives the bash amendment, and it
