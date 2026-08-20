@@ -57,6 +57,19 @@ pub(crate) enum RuntimeResolveError {
         /// The canonical path that failed to resolve.
         path: PathBuf,
     },
+    /// A daemon answered with a registered ancestor, but that workspace no
+    /// longer passes the defined-root test (no `.git` entry, no valid
+    /// `MERIDIAN.md` root declaration). A leftover registry row is a hint,
+    /// not a root — trusting it re-opened the corpus walk the refusal law
+    /// closed (advisor gate 2026-08-20: a pre-fix walk's row served a
+    /// 75-repo parent for 22.93 s while a fresh unmarked dir refused in
+    /// 0.01 s). Same exit-2 leg, same milliseconds.
+    StaleDaemonRoot {
+        /// The path being resolved.
+        path: PathBuf,
+        /// The registered-but-unmarked workspace the daemon offered.
+        workspace: PathBuf,
+    },
 }
 
 impl fmt::Display for RuntimeResolveError {
@@ -70,6 +83,15 @@ impl fmt::Display for RuntimeResolveError {
                  daemon root. Declare a root with `mrd init`, or address a bound root by name \
                  (`root:path`).",
                 path.display()
+            ),
+            Self::StaleDaemonRoot { path, workspace } => write!(
+                f,
+                "{} is outside a declared meridian workspace — a daemon holds a leftover \
+                 registration for {ws}, but that tree carries no workspace marker (no .git \
+                 entry, no MERIDIAN.md root declaration), so it is not a defined root. Drop \
+                 the stale row with `mrd unregister {ws}`, or declare the root with `mrd init`.",
+                path.display(),
+                ws = workspace.display()
             ),
         }
     }
@@ -107,6 +129,17 @@ pub(crate) fn resolve_runtime(cwd: &Path) -> Result<Resolved, RuntimeResolveErro
         Source::Ephemeral => Err(RuntimeResolveError::OutsideWorkspace {
             path: resolved.workspace,
         }),
+        // A daemon adoption is trusted only while the registered workspace
+        // still passes the defined-root test — a leftover row for an
+        // unmarked tree refuses like ephemeral (exit 2 at the callers,
+        // milliseconds). The check stays out of the lenient lane so
+        // `mrd unregister` can still name and drop the stale registration.
+        Source::DaemonAdopted if !config::mount::is_defined_root(&resolved.workspace) => {
+            Err(RuntimeResolveError::StaleDaemonRoot {
+                path: cwd.to_path_buf(),
+                workspace: resolved.workspace,
+            })
+        }
         _ => Ok(resolved),
     }
 }
