@@ -24,7 +24,7 @@
 //! ---
 //! task.check-links: "[[#^chk-1]]"
 //! task.fix-drift: "[[#^fix-1]]"
-//! task.fix-drift.caps: md.set_field, md.append_section
+//! task.fix-drift.caps: md.edit, md.create:tasks/*.md
 //! task.fix-drift.args: page
 //! task.fix-drift.env: HOME_WIKI
 //! ---
@@ -34,12 +34,13 @@
 //! mint plane. Cross-file refs are S1 NON-GOAL (decision #11). Sub-keys
 //! `.caps` / `.args` / `.env` carry capability and input contracts.
 //!
-//! # Capability law (verdict ruling 3, plan decision #15)
+//! # Capability law (verdict ruling 3, plan decision #15; caps-redesign 2026-08-19)
 //! Deny-by-default: undeclared block is read-only. Precedence: explicit
 //! `task.<name>.caps` > root `MERIDIAN.md` `run.caps.<pattern>` > none.
 //! Conventions NARROW only. `check-*` / `verify-*` refuse bash at load.
-//! Caps are namespaced (`md.set_field`), forward-compatible to target-scoped
-//! (`md.set_field:status`). Declaring root and timeout are injected by the
+//! Caps are the three verbs (`md.create` / `md.edit` / `md.delete`),
+//! optionally path-glob-scoped (`md.create:tasks/*.md`), matched against
+//! DECLARED coordinates. Declaring root and timeout are injected by the
 //! caller. Full law: [`caps`].
 
 pub mod address;

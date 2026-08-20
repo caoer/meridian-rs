@@ -80,9 +80,7 @@ fn apply(root: &fs::WorkspaceRoot, effects: &[Effect]) -> Result<executor::Appli
             invocation_id: "inv-1",
             now: Some("2026-07-25T01:00:00Z"),
             effects,
-            authority: &Authority::granted(
-                CapSet::parse("md.set_field md.append_section md.create").unwrap(),
-            ),
+            authority: &Authority::granted(CapSet::parse("md.edit md.create").unwrap()),
             observed_root: &now,
             receipt: None,
             exec: None,

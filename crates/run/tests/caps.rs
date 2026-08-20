@@ -1,5 +1,9 @@
 //! Capability resolution gates — deny-by-default, convention narrowing,
-//! check-*/verify-* bash refusal, and source reporting.
+//! check-*/verify-* bash refusal, and source reporting, in the three-verb
+//! glob-scoped grammar (caps-redesign ruling, 2026-08-19): verbs
+//! `md.create`/`md.edit`/`md.delete`, optional path-glob scope matched
+//! against declared coordinates, legacy per-op spellings folding (bare) or
+//! refusing (targeted).
 
 mod support;
 
@@ -33,13 +37,13 @@ fn undeclared_block_is_read_only_deny_by_default() {
     assert_eq!(r.source, CapSource::DenyDefault);
     assert_eq!(r.effective, CapSet::none());
     assert!(r.narrowed.is_empty());
-    assert!(!r.effective.admits("md.set_field", None));
+    assert!(!r.effective.admits("md.edit", Some("page.md")));
 }
 
 #[test]
 fn explicit_frontmatter_beats_convention_as_grant_source() {
-    let conv = conventions(&[("fix-*", &["md.set_field", "md.append_section"])]);
-    let explicit = set(&["md.set_field:status"]);
+    let conv = conventions(&[("fix-*", &["md.edit", "md.create"])]);
+    let explicit = set(&["md.edit:tasks/*.md"]);
     let r = resolve("fix-drift", Some(&explicit), &conv);
     assert_eq!(r.source, CapSource::Explicit);
     // The explicit grant is inside the convention ceiling — survives intact.
@@ -49,36 +53,36 @@ fn explicit_frontmatter_beats_convention_as_grant_source() {
 
 #[test]
 fn convention_grants_when_no_explicit_declaration() {
-    let conv = conventions(&[("fix-*", &["md.set_field"])]);
+    let conv = conventions(&[("fix-*", &["md.edit"])]);
     let r = resolve("fix-drift", None, &conv);
     assert_eq!(r.source, CapSource::Convention("fix-*".to_owned()));
-    assert!(r.effective.admits("md.set_field", Some("status")));
-    assert!(!r.effective.admits("md.append_section", None));
+    assert!(r.effective.admits("md.edit", Some("page.md")));
+    assert!(!r.effective.admits("md.create", Some("tasks/x.md")));
 }
 
 #[test]
 fn convention_narrows_an_explicit_grant_never_widens() {
     // Explicit grants MORE than the matching convention allows: the ceiling
     // drops the excess and the narrowing is visible, never silent.
-    let conv = conventions(&[("fix-*", &["md.set_field"])]);
-    let explicit = set(&["md.set_field", "md.append_section"]);
+    let conv = conventions(&[("fix-*", &["md.edit"])]);
+    let explicit = set(&["md.edit", "md.create"]);
     let r = resolve("fix-x", Some(&explicit), &conv);
     assert_eq!(r.source, CapSource::Explicit);
-    assert_eq!(r.effective, set(&["md.set_field"]));
-    assert_eq!(r.narrowed, vec![Cap::parse("md.append_section").unwrap()]);
+    assert_eq!(r.effective, set(&["md.edit"]));
+    assert_eq!(r.narrowed, vec![Cap::parse("md.create").unwrap()]);
 }
 
 #[test]
-fn targeted_ceiling_tightens_an_untargeted_grant() {
-    // Grant `md.set_field` (any target) under ceiling `md.set_field:status`:
-    // the effective cap is the TARGETED one — narrower, and reported.
-    let conv = conventions(&[("fix-*", &["md.set_field:status"])]);
-    let explicit = set(&["md.set_field"]);
+fn scoped_ceiling_tightens_an_unscoped_grant() {
+    // Grant `md.edit` (any path) under ceiling `md.edit:tasks/*.md`: the
+    // effective cap is the SCOPED one — narrower, and reported.
+    let conv = conventions(&[("fix-*", &["md.edit:tasks/*.md"])]);
+    let explicit = set(&["md.edit"]);
     let r = resolve("fix-x", Some(&explicit), &conv);
-    assert_eq!(r.effective, set(&["md.set_field:status"]));
-    assert!(r.effective.admits("md.set_field", Some("status")));
-    assert!(!r.effective.admits("md.set_field", Some("title")));
-    assert_eq!(r.narrowed, vec![Cap::parse("md.set_field").unwrap()]);
+    assert_eq!(r.effective, set(&["md.edit:tasks/*.md"]));
+    assert!(r.effective.admits("md.edit", Some("tasks/a.md")));
+    assert!(!r.effective.admits("md.edit", Some("notes/a.md")));
+    assert_eq!(r.narrowed, vec![Cap::parse("md.edit").unwrap()]);
 }
 
 #[test]
@@ -104,19 +108,19 @@ fn a_bash_task_resolves_no_capability_at_all() {
     let d = doc(support::PAGE);
     // `fix-*` blocks DECLARE writes and are exactly where bash is wanted — the
     // load refusal is check-*/verify-* ONLY (ruling 3).
-    let conv = conventions(&[("fix-*", &["md.set_field"])]);
+    let conv = conventions(&[("fix-*", &["md.edit"])]);
     let authority = caps::resolve_authority(&d, "fix-wiki", TaskLanguage::Bash, &conv).unwrap();
     assert_eq!(authority, Authority::Unsandboxed);
     // Not a grant of everything — the absence of a gate. Nothing to report.
     assert_eq!(authority.capabilities(), None);
-    assert!(authority.admits("md.set_field", Some("status")));
+    assert!(authority.admits("md.edit", Some("page.md")));
 }
 
 #[test]
 fn builtin_read_only_ceiling_zeroes_even_explicit_caps() {
     // A check-* block with explicit write caps stays read-only: the builtin
     // ceiling is absolute, and the dropped caps are reported.
-    let explicit = set(&["md.set_field", "md.append_section"]);
+    let explicit = set(&["md.edit", "md.create"]);
     let r = resolve("check-links", Some(&explicit), &Conventions::none());
     assert_eq!(r.effective, CapSet::none());
     assert_eq!(r.narrowed.len(), 2);
@@ -124,10 +128,7 @@ fn builtin_read_only_ceiling_zeroes_even_explicit_caps() {
 
 #[test]
 fn longest_pattern_wins() {
-    let conv = conventions(&[
-        ("fix-*", &["md.set_field"]),
-        ("fix-drift", &["md.append_section"]),
-    ]);
+    let conv = conventions(&[("fix-*", &["md.edit"]), ("fix-drift", &["md.create"])]);
     let (pattern, _) = conv.matching("fix-drift").unwrap();
     assert_eq!(pattern, "fix-drift");
     let (pattern, _) = conv.matching("fix-other").unwrap();
@@ -135,34 +136,134 @@ fn longest_pattern_wins() {
 }
 
 #[test]
-fn cap_strings_are_namespaced_and_target_scoped_forward_compat() {
-    let plain = Cap::parse("md.set_field").unwrap();
-    assert_eq!(plain.kind, "md.set_field");
+fn cap_strings_are_the_three_verbs_optionally_glob_scoped() {
+    let plain = Cap::parse("md.edit").unwrap();
+    assert_eq!(plain.kind, "md.edit");
     assert_eq!(plain.target, None);
 
-    let scoped = Cap::parse("md.set_field:status").unwrap();
-    assert_eq!(scoped.target.as_deref(), Some("status"));
-    assert_eq!(scoped.as_string(), "md.set_field:status");
+    let scoped = Cap::parse("md.create:tasks/*.md").unwrap();
+    assert_eq!(scoped.target.as_deref(), Some("tasks/*.md"));
+    assert_eq!(scoped.as_string(), "md.create:tasks/*.md");
+
+    // The reserved verb parses today — grants can be written ahead of the
+    // retire descriptor.
+    let delete = Cap::parse("md.delete:agents/*/memos/**").unwrap();
+    assert_eq!(delete.kind, "md.delete");
 
     for bad in [
         "md",
-        "set_field",
-        "MD.set_field",
+        "edit",
+        "MD.edit",
         "md.set field",
         "md.:x",
-        "md.set_field:",
+        "md.edit:",
+        "md.rename",           // no such verb
+        "daemon.refresh_view", // descriptor kinds are not cap verbs
     ] {
         assert!(Cap::parse(bad).is_err(), "{bad} must refuse");
     }
+}
+
+/// The migration fold (caps-redesign ruling): BARE legacy per-op spellings
+/// fold into `md.edit` — live grants keep working across the cutover, and
+/// every surface reports the canonical verb. The two spellings land on ONE
+/// cap: a set naming both dedupes to `md.edit`.
+#[test]
+fn bare_legacy_verbs_fold_into_md_edit() {
+    for legacy in ["md.set_field", "md.append_section"] {
+        let cap = Cap::parse(legacy).unwrap();
+        assert_eq!(cap.kind, "md.edit", "{legacy} folds");
+        assert_eq!(cap.target, None);
+        assert_eq!(cap.as_string(), "md.edit", "reported canonically");
+    }
+    let folded = CapSet::parse("md.set_field, md.append_section").unwrap();
+    assert_eq!(folded, set(&["md.edit"]), "one cap after the fold");
+    assert!(folded.admits("md.edit", Some("anything/at/all.md")));
+}
+
+/// The migration refusal (the ruled split): TARGETED legacy spellings refuse
+/// with the retirement teaching — the old target named a field, the new
+/// target position is a path glob, and neither silent reinterpretation
+/// (drop the target: widens; read it as a path: dead grant) is legal.
+#[test]
+fn targeted_legacy_verbs_refuse_with_the_retirement_teaching() {
+    for retired in ["md.set_field:status", "md.append_section:Log"] {
+        let err = Cap::parse(retired).unwrap_err();
+        assert!(
+            matches!(err, CapsError::RetiredTarget { ref raw } if raw == retired),
+            "{retired}: {err:?}"
+        );
+        let m = err.to_string();
+        assert!(m.contains("retired field-grain form"), "{m}");
+        assert!(m.contains("md.edit"), "teaches the fold target: {m}");
+        assert!(m.contains("PATH GLOB"), "teaches the new grammar: {m}");
+    }
+}
+
+/// Bad globs refuse at parse, each naming its fault: caps are workspace-
+/// shaped paths, never navigated, never absolute.
+#[test]
+fn malformed_glob_scopes_refuse_at_parse() {
+    for (bad, why) in [
+        ("md.edit:/abs/x.md", "empty segment"),
+        ("md.edit:a//b.md", "empty segment"),
+        ("md.edit:tasks/", "empty segment"),
+        ("md.edit:../x.md", "`..` segment"),
+        ("md.edit:./x.md", "`.` segment"),
+        ("md.create:tasks/a b.md", "carries ` `"),
+    ] {
+        let err = Cap::parse(bad).unwrap_err();
+        assert!(
+            matches!(err, CapsError::BadGlob { .. }),
+            "{bad} must refuse as a bad glob: {err:?}"
+        );
+        let m = err.to_string();
+        assert!(m.contains(why), "{bad}: fault named — {m}");
+    }
+}
+
+/// Glob semantics ride [`policy::glob_match`] — the one grammar: `*` stays
+/// inside a segment (the jail the ruling names), `**` spans segments, an
+/// unscoped cap admits every path of its verb, and a scoped cap answers no
+/// path-less query.
+#[test]
+fn glob_scopes_match_the_one_grammar() {
+    let scoped = Cap::parse("md.create:tasks/*.md").unwrap();
+    assert!(scoped.admits("md.create", Some("tasks/a.md")));
+    assert!(
+        !scoped.admits("md.create", Some("tasks/sub/a.md")),
+        "* stays in-segment"
+    );
+    assert!(
+        !scoped.admits("md.create", Some("evil/tasks/a.md")),
+        "a declared path under an extra head segment must NOT match (the jail case)"
+    );
+    assert!(
+        !scoped.admits("md.edit", Some("tasks/a.md")),
+        "verbs never cross"
+    );
+    assert!(
+        !scoped.admits("md.create", None),
+        "a scoped cap answers no path-less query"
+    );
+
+    let deep = Cap::parse("md.edit:agents/**/CARD.md").unwrap();
+    assert!(deep.admits("md.edit", Some("agents/ab12/CARD.md")));
+    assert!(deep.admits("md.edit", Some("agents/a/b/CARD.md")));
+    assert!(!deep.admits("md.edit", Some("agents/ab12/PULSE.md")));
+
+    let unscoped = Cap::parse("md.edit").unwrap();
+    assert!(unscoped.admits("md.edit", Some("anywhere/at/all.md")));
+    assert!(unscoped.admits("md.edit", None));
 }
 
 #[test]
 fn explicit_caps_reads_the_task_caps_key() {
     let d = doc(support::PAGE);
     let caps = caps::explicit_caps(&d, "fix-drift").unwrap().unwrap();
-    assert!(caps.admits("md.set_field", Some("status")));
-    assert!(caps.admits("md.append_section", None));
-    assert!(!caps.admits("md.set_field", Some("title")));
+    assert!(caps.admits("md.edit", Some("page.md")));
+    assert!(caps.admits("md.create", Some("tasks/x.md")));
+    assert!(!caps.admits("md.create", Some("notes/x.md")));
 
     assert_eq!(caps::explicit_caps(&d, "check-links").unwrap(), None);
 }
@@ -184,12 +285,13 @@ fn empty_explicit_declaration_is_explicit_read_only() {
 #[test]
 fn conventions_parse_out_of_a_declaration_document() {
     let d = doc(
-        "---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fix-*: md.set_field, md.append_section\n---\n",
+        "---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fix-*: md.edit, md.create:tasks/*.md\n---\n",
     );
     let conv = caps::conventions_from_declaration(&d).unwrap();
     let (pattern, set) = conv.matching("fix-drift").unwrap();
     assert_eq!(pattern, "fix-*");
-    assert!(set.admits("md.set_field", None));
+    assert!(set.admits("md.edit", None));
+    assert!(set.admits("md.create", Some("tasks/x.md")));
 }
 
 #[test]
@@ -210,26 +312,36 @@ fn a_malformed_cap_entry_is_a_loud_error_never_no_policy() {
         CapsError::BadCap { .. }
     ));
 
-    let d =
-        doc("---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fi*x: md.set_field\n---\n");
+    let d = doc("---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fi*x: md.edit\n---\n");
     assert!(matches!(
         caps::conventions_from_declaration(&d).unwrap_err(),
         CapsError::BadPattern { .. }
+    ));
+
+    // A retired field-grain entry in the TABLE is the same loud refusal a
+    // page declaration gets — a mis-spelled ceiling is reported, never read
+    // as an absent one.
+    let d = doc(
+        "---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fix-*: md.set_field:status\n---\n",
+    );
+    assert!(matches!(
+        caps::conventions_from_declaration(&d).unwrap_err(),
+        CapsError::RetiredTarget { .. }
     ));
 }
 
 /// A denial names the ceiling that ate the grant, and ONLY where a ceiling is
 /// what ate it (run-plane § capabilities, dogfood s12-50). A caller whose own
-/// page declares `md.set_field` and is denied `md.set_field` would otherwise
-/// derive the one remedy already in place.
+/// page declares `md.edit` and is denied `md.edit` would otherwise derive the
+/// one remedy already in place.
 #[test]
 fn a_ceiling_narrowed_denial_names_the_ceiling_and_an_unnarrowed_one_does_not() {
-    let conventions = conventions(&[("fix-note", &["md.set_field:status"])]);
-    let explicit = set(&["md.set_field", "md.append_section"]);
+    let conventions = conventions(&[("fix-note", &["md.edit:tasks/*.md"])]);
+    let explicit = set(&["md.edit", "md.create"]);
 
     let narrowed = caps::resolve_caps("fix-note", Some(&explicit), &conventions);
     let ceiling = narrowed
-        .ceiling_denying("md.set_field", Some("owner"))
+        .ceiling_denying("md.edit", Some("notes/owner.md"))
         .expect("the convention ceiling took the wide grant");
     assert!(
         ceiling.to_string().contains("run.caps.fix-note"),
@@ -238,11 +350,11 @@ fn a_ceiling_narrowed_denial_names_the_ceiling_and_an_unnarrowed_one_does_not() 
 
     // Same descriptor, no ceiling in force: the grant simply never held it, so
     // there is no measured cause and the refusal teaches no fix.
-    let scoped = set(&["md.set_field:status"]);
+    let scoped = set(&["md.edit:tasks/*.md"]);
     let unnarrowed = caps::resolve_caps("plain", Some(&scoped), &Conventions::none());
     assert!(
         unnarrowed
-            .ceiling_denying("md.set_field", Some("owner"))
+            .ceiling_denying("md.edit", Some("notes/owner.md"))
             .is_none(),
         "no ceiling is a measured absence, never an unknown"
     );

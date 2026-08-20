@@ -22,7 +22,7 @@ const STARLARK_PAGE: &str = "\
 ---
 status: todo
 task.fix-x: \"[[#^fix-1]]\"
-task.fix-x.caps: md.set_field
+task.fix-x.caps: md.edit
 task.fix-x.args: value
 ---
 
@@ -42,7 +42,7 @@ const BASH_PAGE: &str = "\
 ---
 status: todo
 task.fix-sh: \"[[#^sh-1]]\"
-task.fix-sh.caps: md.set_field
+task.fix-sh.caps: md.edit
 ---
 
 # Tasks
@@ -295,6 +295,6 @@ fn the_caps_resolution_reaches_the_report() {
         .authority
         .capabilities()
         .expect("starlark resolves a real capability grant");
-    assert!(caps.effective.admits("md.set_field", Some("status")));
+    assert!(caps.effective.admits("md.edit", Some("page.md")));
     assert!(caps.narrowed.is_empty());
 }

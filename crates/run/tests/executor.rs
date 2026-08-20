@@ -107,7 +107,7 @@ fn apply(root: &fs::WorkspaceRoot, r: &Req<'_>) -> Result<executor::Applied, Exe
 }
 
 fn write_caps() -> CapSet {
-    CapSet::parse("md.set_field md.append_section").unwrap()
+    CapSet::parse("md.edit").unwrap()
 }
 
 fn page_text(root: &fs::WorkspaceRoot) -> String {
@@ -231,8 +231,11 @@ fn choke_point_denies_undeclared_kind_before_any_io() {
     assert_eq!(
         err,
         ExecError::CapDenied {
-            kind: "md.set_field".to_owned(),
-            target: "status".to_owned(),
+            // The verb fold (caps-redesign ruling): a set_field is an EDIT of
+            // the page, judged at the page's own coordinate.
+            kind: "md.edit".to_owned(),
+            target: "page.md".to_owned(),
+            resolved: None,
             // No ceiling narrowed here: the grant simply never held the cap —
             // the refusal names the measured grants (none) and the
             // `task.<name>.caps` declaration (r3 gap 6b).
@@ -244,46 +247,57 @@ fn choke_point_denies_undeclared_kind_before_any_io() {
     assert!(!root.0.join("receipts").exists(), "no receipt on refusal");
 }
 
+/// A path-scoped `md.edit` binds on the PAGE's coordinate (caps-redesign
+/// ruling): a glob covering the page admits its edits, one aimed elsewhere
+/// denies them naming the page.
 #[test]
-fn target_scoped_cap_binds_at_the_choke() {
+fn path_scoped_edit_cap_binds_at_the_choke() {
     let (_tmp, root) = workspace();
     let now = current_root(&root);
-    let caps = CapSet::parse("md.set_field:status").unwrap();
-    // status admitted…
+    // A scope covering the page admits…
     apply(
         &root,
         &Req {
             effects: &[set_field("status", "done", 0)],
-            caps: caps.clone(),
+            caps: CapSet::parse("md.edit:page.md").unwrap(),
             observed: now,
             receipt: None,
         },
     )
     .unwrap();
-    // …title denied.
+    // …a scope aimed elsewhere denies, naming the page's coordinate.
     let now = current_root(&root);
     let err = apply(
         &root,
         &Req {
             effects: &[set_field("title", "X", 0)],
-            caps,
+            caps: CapSet::parse("md.edit:notes/*.md").unwrap(),
             observed: now,
             receipt: None,
         },
     )
     .unwrap_err();
-    assert!(matches!(err, ExecError::CapDenied { target, .. } if target == "title"));
+    assert!(matches!(err, ExecError::CapDenied { target, .. } if target == "page.md"));
 }
 
 #[test]
 fn one_denied_effect_refuses_the_whole_batch() {
     let (_tmp, root) = workspace();
     let now = current_root(&root);
-    let caps = CapSet::parse("md.set_field").unwrap();
+    // md.edit covers the page edit; the birth needs md.create — denied, and
+    // the WHOLE generation refuses before any I/O.
+    let caps = CapSet::parse("md.edit").unwrap();
     let err = apply(
         &root,
         &Req {
-            effects: &[set_field("status", "done", 0), append("Log", "- x", 1)],
+            effects: &[
+                set_field("status", "done", 0),
+                effect(
+                    EffectKind::Create,
+                    &[("path", "tasks/new.md"), ("body", "# x\n")],
+                    1,
+                ),
+            ],
             caps,
             observed: now,
             receipt: None,
@@ -819,7 +833,7 @@ fn cap_denial_without_a_ceiling_teaches_the_caps_declaration() {
         &root,
         &Req {
             effects: &[append("Log", "- x", 0)],
-            caps: CapSet::parse("md.set_field:status").unwrap(),
+            caps: CapSet::parse("md.edit:notes/*.md").unwrap(),
             observed: now,
             receipt: None,
         },
@@ -831,7 +845,7 @@ fn cap_denial_without_a_ceiling_teaches_the_caps_declaration() {
         "names the deny-by-default reason: {m}"
     );
     assert!(
-        m.contains("md.set_field:status"),
+        m.contains("md.edit:notes/*.md"),
         "lists the grants the resolution measured: {m}"
     );
     assert!(

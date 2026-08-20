@@ -104,15 +104,22 @@ pub enum Domain {
 /// form (`md.set_field`, `proto.send`, …) is the wire/snapshot identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EffectKind {
-    /// `md.set_field` — set a frontmatter field.
+    /// `md.set_field` — set a frontmatter field. Authorizes under the
+    /// `md.edit` cap verb (caps-redesign ruling 2026-08-19: the cap plane
+    /// speaks create/edit/delete; the descriptor plane stays per-op).
     SetField,
-    /// `md.append_section` — append content to a section.
+    /// `md.append_section` — append content to a section. Authorizes under
+    /// the `md.edit` cap verb (caps-redesign ruling 2026-08-19).
     AppendSection,
     /// `md.create` — birth a file through the create door (the declared-task
     /// birth cap, SCHEMA §5 verb-fold map / create-task-page ruling
     /// 2026-08-18: option 1, engine birth cap). Realized by the run executor
     /// via `wire_serve::write::create` — occupied-path refusal, armed
     /// middleware stamps, and checks are the DOOR's, never re-implemented.
+    /// Args: `path` (the declared RELATIVE landing coordinate — the string
+    /// the `md.create` cap glob judges), `body`, optional `base` (the
+    /// resolution base — ZT ruling 2026-08-19 #2: targeting is data, carried
+    /// beside the path, never pre-joined into it), optional `message`.
     Create,
     /// `daemon.refresh_view` — mark a resident view stale.
     RefreshView,
