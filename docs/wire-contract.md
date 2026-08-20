@@ -2716,12 +2716,17 @@ guard applies exactly as at every other op):
   workspace-relative, path-law-validated at the strict wall (a confined DIR
   path — never a `root:` ref, never absolute). A BARE `md.create` path this
   run births resolves under it — the face path law ("a bare path stays
-  ambient in your session directory") on the birth lane; a rooted
-  `root:rel` birth target is explicit and unaffected, and must name the
+  ambient in your session directory") on the birth lane; explicit targeting
+  rides the descriptor's separate `base` argument (a rooted ref or a
+  confined dir; caps-redesign 2026-08-19), with precedence descriptor
+  `base` > frame `ambient` > workspace root. A rooted `base` must name the
   bound workspace (a foreign root refuses with a teaching — a run's births
-  ride the bound workspace's ring, locks, and armed law). The capability
-  grain and the receipt judge the RESOLVED target (`md.create:tasks` covers
-  a `tasks/` partition wherever it lands). No `ambient` = the bare-door
+  ride the bound workspace's ring, locks, and armed law), and a rooted
+  spelling in the `path` argument itself refuses, naming `base` — two axes,
+  two arguments, never one glued string. The door and the receipt judge the
+  RESOLVED landing; the capability glob judges the DECLARED relative
+  `path`, so `md.create:tasks/*.md` covers the ambient board, a based
+  board, and the root board alike. No `ambient` = the bare-door
   law, workspace-root-relative, unchanged. Hosts resolve it per call from
   the caller's own identity — never a page-hardcoded dir.
   engine-appended to the run receipt file under the per-target invocation
