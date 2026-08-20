@@ -25,8 +25,16 @@
 //! un-narrowed index.
 //!
 //! # Read-only
-//! The verb walks the workspace hash domain and the user rung and calls pure
+//! The verb reads PATH's § 3 chain of the workspace hash domain (the walk
+//! pre-filter [`policy::governing_dirs`] enumerates the only directories whose
+//! direct files can mount at-or-above PATH — completeness is that function's
+//! contract, and [`policy::RuleIndex::narrowed_to`] still filters page by
+//! page), the user rung, and the declined enumerations, and calls pure
 //! functions over the bytes: no arm, no receipt, no cap spend, no write path.
+//! It does NOT snapshot the whole domain: a full `fs::domain_snapshot` read and
+//! digested 37k files / 219 MB per invocation (measured 2026-08-19, ~2.5 CPU-s
+//! and 548 MB peak RSS) to answer about a dozen chain pages, and this verb is
+//! hook-adjacent — its cost multiplies by every caller.
 //!
 //! # Registered here vs armed here
 //! The chain columns are what discovery found; the `armed=` cell is what the ARM
@@ -427,7 +435,9 @@ struct RulesReport {
     /// Pages that offered themselves to registration and were refused, narrowed
     /// to this query's path by `policy` exactly as the rules are.
     refused: Vec<String>,
-    /// Files whose bytes are not UTF-8, so their tags cannot be read.
+    /// Chain files whose bytes are not UTF-8, so their tags cannot be read.
+    /// Chain-scoped like the refusals (§ 3): the enumeration only reads the
+    /// pages that could govern this query, so only those can be found broken.
     unreadable: Vec<String>,
     /// Markdown the workspace's CUSTOM-IGNORE rules decline — vault-visible,
     /// operator-declared, so its drop is voiced. Enumerated by
@@ -517,11 +527,63 @@ impl RulesReport {
 
 // ── building it ───────────────────────────────────────────────────────────────
 
-/// The workspace pages, as `(path, bytes)` — the disk edge `policy` may not have.
-fn workspace_pages(workspace: &Path) -> Result<fs::DomainFiles, Fail> {
-    let root = fs::WorkspaceRoot(workspace.to_path_buf());
-    let (files, _root) = fs::domain_snapshot(&root)
-        .map_err(|e| Fail::tool(format!("cannot read the workspace corpus: {e}")))?;
+/// The workspace pages that could govern `at`, as `(path, bytes)` — the § 3
+/// chain, ENUMERATED rather than walked: the direct files of each
+/// [`policy::governing_dirs`] directory, gated by the hash-domain predicate
+/// ([`fs::domain::Domain::contains`] — md-only, dot rule, custom ignore), sorted
+/// by path exactly as `fs::domain_snapshot`'s walk returned them.
+///
+/// Completeness rides `governing_dirs`' contract (every page the narrowing
+/// keeps lives directly in a listed directory); correctness stays with
+/// [`policy::RuleIndex::narrowed_to`], which still filters page by page — an
+/// extra page read here is dropped there, never rendered.
+///
+/// A listed directory that is absent (an ancestor with no `rules/` child) or a
+/// PATH leaf that names a file holds no pages and is skipped; any other read
+/// failure aborts loudly, as the full walk did. A non-UTF-8 file NAME is
+/// skipped exactly as the snapshot skipped it: wire paths are UTF-8, so such a
+/// file is unservable and unnameable alike.
+fn chain_pages(
+    workspace: &Path,
+    domain: &fs::domain::Domain,
+    at: &str,
+) -> Result<fs::DomainFiles, Fail> {
+    let corpus_fail =
+        |e: std::io::Error| Fail::tool(format!("cannot read the workspace corpus: {e}"));
+    let mut files = fs::DomainFiles::new();
+    for dir in policy::governing_dirs(at) {
+        let abs = if dir.is_empty() {
+            workspace.to_path_buf()
+        } else {
+            workspace.join(&dir)
+        };
+        if !abs.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&abs).map_err(corpus_fail)? {
+            let entry = entry.map_err(corpus_fail)?;
+            // `file_type` does not follow symlinks — the walk's own law.
+            if !entry.file_type().map_err(corpus_fail)?.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let rel = if dir.is_empty() {
+                name.to_owned()
+            } else {
+                format!("{dir}/{name}")
+            };
+            if !domain.contains(Path::new(&rel)) {
+                continue;
+            }
+            let bytes = std::fs::read(entry.path()).map_err(corpus_fail)?;
+            files.push((rel, bytes));
+        }
+    }
+    // Path-ascending, as the snapshot's walk returned them — the tuple sort IS
+    // the path sort, since paths are unique. Never scope arithmetic: ordering
+    // by the ladder is `policy`'s resolve, and this layer holds no second copy.
+    files.sort();
     Ok(files)
 }
 
@@ -563,22 +625,52 @@ fn user_pages(pages: &mut Vec<(ScopeLayer, String, Vec<u8>)>) -> UserScope {
     }
 }
 
-/// The corpus as a [`PageSource`], so the armed set's rev check runs against the
-/// same bytes discovery read — one read, one answer.
-struct CorpusPages<'a>(&'a BTreeMap<String, String>);
+/// The domain's pages as a [`PageSource`]: the chain pages discovery already
+/// read (seed — one read, one answer where the bytes are in hand), then a
+/// domain-gated disk read for a page the chain does not carry. An armed row may
+/// pin a page anywhere in the workspace, so the source must reach past the
+/// chain; the gate keeps the answer the snapshot always gave — a path outside
+/// the hash domain (non-md, dot segment, custom-ignored, or not workspace-
+/// relative) is NOT HERE, whatever sits on disk, which is what keeps
+/// [`ArmedOrphan`]'s "on disk, outside the hash domain" cause reachable.
+struct DomainPages<'a> {
+    workspace: &'a Path,
+    domain: &'a fs::domain::Domain,
+    seed: &'a BTreeMap<String, String>,
+}
 
-impl PageSource for CorpusPages<'_> {
-    fn read(&self, page: &str) -> std::io::Result<String> {
-        self.0.get(page).cloned().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, format!("{page} is not here"))
-        })
+impl DomainPages<'_> {
+    fn read_page(&self, page: &str) -> std::io::Result<String> {
+        if let Some(bytes) = self.seed.get(page) {
+            return Ok(bytes.clone());
+        }
+        let rel = Path::new(page);
+        let workspace_relative = rel
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+        if !workspace_relative || !self.domain.contains(rel) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("{page} is not here"),
+            ));
+        }
+        std::fs::read_to_string(self.workspace.join(rel))
     }
 }
 
-/// Walk, discover, narrow, resolve, join the armed set — every judgement from
-/// `policy`, every byte from disk.
+impl PageSource for DomainPages<'_> {
+    fn read(&self, page: &str) -> std::io::Result<String> {
+        self.read_page(page)
+    }
+}
+
+/// Enumerate the chain, discover, narrow, resolve, join the armed set — every
+/// judgement from `policy`, every byte from disk.
 fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
-    let mut raw: Vec<(ScopeLayer, String, Vec<u8>)> = workspace_pages(workspace)?
+    let root = fs::WorkspaceRoot(workspace.to_path_buf());
+    let domain = fs::domain::Domain::load(&root)
+        .map_err(|e| Fail::tool(format!("cannot read the workspace corpus: {e}")))?;
+    let mut raw: Vec<(ScopeLayer, String, Vec<u8>)> = chain_pages(workspace, &domain, at)?
         .into_iter()
         .map(|(page, bytes)| (ScopeLayer::Workspace, page, bytes))
         .collect();
@@ -586,6 +678,8 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
 
     // Non-UTF-8 bytes cannot carry a readable tag. Named, never silently
     // skipped: a file the verb could not read is a hole in its own answer.
+    // Chain-scoped exactly as the refusals are (§ 3): a scoped query reddens
+    // for the unreadable pages on its chain, not for a stranger's.
     let mut unreadable = Vec::new();
     let mut text: Vec<(ScopeLayer, String, String)> = Vec::new();
     let mut corpus: BTreeMap<String, String> = BTreeMap::new();
@@ -613,8 +707,13 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
     let narrowed = index.narrowed_to(at);
     let effective = narrowed.resolve();
 
-    let (armed, artifact) = load_armed(&corpus);
-    let rows = rows(&effective, artifact.as_ref(), at, &CorpusPages(&corpus));
+    let pages = DomainPages {
+        workspace,
+        domain: &domain,
+        seed: &corpus,
+    };
+    let (armed, artifact) = load_armed(&pages);
+    let rows = rows(&effective, artifact.as_ref(), at, &pages);
 
     // ⛔ Only a view that admits the WORKSPACE layer can have orphans. The
     // armed artifact's `page` column is a workspace spelling by construction
@@ -638,7 +737,7 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
     let (armed_orphans, armed_elsewhere) = if view.admits(ScopeLayer::Workspace) {
         (
             orphans(artifact.as_ref(), at, &effective, workspace),
-            armed_elsewhere(artifact.as_ref(), at, &effective, &CorpusPages(&corpus)),
+            armed_elsewhere(artifact.as_ref(), at, &effective, &pages),
         )
     } else {
         (Vec::new(), Vec::new())
@@ -815,13 +914,16 @@ fn orphans(
         .collect()
 }
 
-/// Read the attested armed set out of the corpus bytes already in hand.
-fn load_armed(corpus: &BTreeMap<String, String>) -> (ArmedSource, Option<ArmedArtifact>) {
+/// Read the attested armed set through the domain-gated source. The artifact
+/// page usually sits OFF the queried chain, so this is a disk read; the gate
+/// keeps the snapshot's answer — an artifact outside the hash domain (or not
+/// UTF-8) reads as absent, exactly as it never entered the snapshot.
+fn load_armed(pages: &DomainPages<'_>) -> (ArmedSource, Option<ArmedArtifact>) {
     let path = policy::armed::ARMED_RULES_PATH.to_owned();
-    let Some(page) = corpus.get(&path) else {
+    let Ok(page) = pages.read_page(&path) else {
         return (ArmedSource::Absent { path }, None);
     };
-    match policy::armed::parse_artifact(page) {
+    match policy::armed::parse_artifact(&page) {
         Ok(artifact) => {
             let rows = artifact.rows().len();
             (ArmedSource::Present { path, rows }, Some(artifact))

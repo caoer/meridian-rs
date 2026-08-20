@@ -393,6 +393,53 @@ fn governs(layer: ScopeLayer, mount_dir: &str, path: &str) -> bool {
     }
 }
 
+/// The enumeration dual of [`governs`]: every directory whose DIRECT files could
+/// mount at-or-above `path` on the workspace layer — the path's own ancestor
+/// chain (workspace root `""` included, `path` itself included), plus each
+/// ancestor's `rules` child (the [`mount_dir_of`] lift: a page in `A/rules`
+/// mounts at `A`). Sorted, deduplicated.
+///
+/// This is a WALK PRE-FILTER, never the narrowing law: a consumer that
+/// enumerates only these directories still narrows through
+/// [`RuleIndex::narrowed_to`], which applies [`governs`] page by page — an
+/// over-wide enumeration is filtered there, so the only property this function
+/// owes is COMPLETENESS: for every workspace page P with
+/// `governs(Workspace, mount_dir_of(P), path)`, P's containing directory is in
+/// this list. Proof shape: `mount_dir_of(P)` is either P's own directory D
+/// (then D IS the mount, so D is `path` or an ancestor of it — listed as chain),
+/// or D's parent A when D's basename is `rules` (then A is `path` or an
+/// ancestor — and `A/rules` is listed as that ancestor's lift child).
+///
+/// `path` that names a FILE contributes itself as a candidate directory; the
+/// caller's `read_dir` finds nothing there, which is the correct answer — a
+/// file has no direct children to mount anything.
+#[must_use]
+pub fn governing_dirs(path: &str) -> Vec<String> {
+    let mut dirs = vec![String::new()];
+    let mut prefix = String::new();
+    for segment in path.split('/').filter(|s| !s.is_empty()) {
+        if !prefix.is_empty() {
+            prefix.push('/');
+        }
+        prefix.push_str(segment);
+        dirs.push(prefix.clone());
+    }
+    let lifted: Vec<String> = dirs
+        .iter()
+        .map(|ancestor| {
+            if ancestor.is_empty() {
+                "rules".to_owned()
+            } else {
+                format!("{ancestor}/rules")
+            }
+        })
+        .collect();
+    dirs.extend(lifted);
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
 /// A page that offered itself to registration and was refused: WHICH page, WHERE
 /// it would have governed, and WHY it was refused. A rule that silently failed to
 /// register is a rule that silently stopped being enforced, so every refusal
@@ -1521,6 +1568,53 @@ mod tests {
             index.narrowed_to("a/bc/task.md").registered().is_empty(),
             "`a/bc/` is not inside `a/b/`"
         );
+    }
+
+    // ── the walk pre-filter (governing_dirs) ──────────────────────────────────
+
+    #[test]
+    fn governing_dirs_lists_the_chain_and_each_rules_lift() {
+        assert_eq!(governing_dirs(""), vec!["", "rules"]);
+        assert_eq!(
+            governing_dirs("a/b"),
+            vec!["", "a", "a/b", "a/b/rules", "a/rules", "rules"]
+        );
+    }
+
+    /// COMPLETENESS — the one property [`governing_dirs`] owes: every page the
+    /// narrowing keeps at `at` lives DIRECTLY in one of the listed directories.
+    /// Exercised over every mount shape the mount law has: root pages, chain
+    /// pages, `rules/` lifts at every rung, the deliberate `rules/sub` deep
+    /// filing, and off-chain pages (which need no listing — narrowing drops
+    /// them, listed or not).
+    #[test]
+    fn governing_dirs_covers_everything_the_narrowing_keeps() {
+        let pages = [
+            "root.md",
+            "rules/lifted.md",
+            "rules/sub/deep.md",
+            "a/direct.md",
+            "a/rules/lifted.md",
+            "a/b/direct.md",
+            "a/b/rules/lifted.md",
+            "a/b/rules/sub/deep.md",
+            "other/branch.md",
+            "a/bc/segment-trap.md",
+        ];
+        for at in ["", "a", "a/b", "a/b/task.md", "a/b/rules/sub", "a/bc"] {
+            let dirs = governing_dirs(at);
+            for page in pages {
+                if !governs(ScopeLayer::Workspace, mount_dir_of(page), at) {
+                    continue;
+                }
+                let dir = page.rfind('/').map_or("", |cut| &page[..cut]);
+                assert!(
+                    dirs.iter().any(|d| d == dir),
+                    "at `{at}`: `{page}` governs but its directory `{dir}` \
+                     is not enumerated — the pre-filter would hide a rule"
+                );
+            }
+        }
     }
 
     // ── refusal scoping (§ 3) ─────────────────────────────────────────────────
