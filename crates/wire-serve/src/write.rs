@@ -2207,14 +2207,16 @@ pub struct RemoveOutcome {
 /// **Guarded `create`**: birth one file under CAS `if_absent` +
 /// workspace-root, and emit the `created` change surface.
 ///
-/// Order: path confinement → world guard (§5.1) → the gate seam over the
+/// Order: path confinement → the machinery floor
+/// ([`machinery_contained`]) → world guard (§5.1) → the gate seam over the
 /// birth's after-state → the `if_absent` CAS at the disk edge
 /// ([`fs::create_file`], the single source of the guard) → root advance → birth
 /// Delta. `dry: true` runs everything except disk and still refuses a would-be
 /// clobber.
 ///
 /// # Errors
-/// `bad_path` (escapes the workspace), `root_mismatch` (stale world guard),
+/// `bad_path` (escapes the workspace, or the landing carries an engine
+/// machinery segment — [`MACHINERY_DIRS`]), `root_mismatch` (stale world guard),
 /// `cas_mismatch` (the path is occupied — taxonomy row 13, recovery `refresh`),
 /// or an I/O failure. In every error case nothing was created.
 pub fn create(
@@ -2241,6 +2243,10 @@ pub fn create_with_cache(
 ) -> Result<CreateOutcome, Box<ErrorBody>> {
     let fs_path = FsPath::new(&args.path.0);
     path_confined(root, &args.path)?;
+    // The machinery floor: the landing may be confined and still be substrate
+    // (`.git/`, `.meridian/`, `meridian/`, `receipts/`). Caps judge the
+    // DECLARED coordinate, so this is the only place the landing is judged.
+    machinery_contained(&args.path)?;
 
     // D9: births serialize on the same write flock as every meridian writer —
     // this also closes the `if_absent` check→rename window for cooperators.
@@ -3981,6 +3987,67 @@ fn path_confined(root: &fs::WorkspaceRoot, path: &Path) -> Result<(), Box<ErrorB
         return Err(Box::new(e));
     }
     Ok(())
+}
+
+/// The engine machinery directories a birth may never land under — engine
+/// substrate rather than markdown-record homes (`docs/run-plane.md` § the
+/// machinery floor, 2026-08-20): `.git` is the git directory, `.meridian` the
+/// engine's stable state and run logs, `meridian` the attestation tree
+/// (`meridian/armed-rules.md`, `meridian/attested`), and `receipts` the
+/// receipt ledger.
+///
+/// Public so a cross-crate test can assert the family's membership, not just
+/// each member's spelling — the [`fs::domain::RESERVED_PATHS`] precedent.
+pub const MACHINERY_DIRS: &[&str] = &[".git", ".meridian", "meridian", "receipts"];
+
+/// The machinery floor at the create door: refuse a birth whose landing
+/// carries a [`MACHINERY_DIRS`] name as a path segment.
+///
+/// This is the ONE owner of birth containment, and it judges the RESOLVED
+/// landing — deliberately the axis capabilities do not judge (caps read the
+/// DECLARED coordinate's shape, never where the bytes land), so a grant as
+/// narrow as `md.create:tasks/*.md` could otherwise land `tasks/x.md` under
+/// `.git/` through the descriptor's own `base`. Every birth lane converges
+/// here: both run-plane lanes (starlark `create()`, the bash shim's
+/// `md.create`), the wire `create` op, the birth preset, the realise card
+/// mint.
+///
+/// **At any depth**, not just the head segment: a nested root's machinery is
+/// machinery too, and `results/ws/.git/x.md` corrupts a repository exactly as
+/// `.git/x.md` does. Measured over the live sessions corpus before this
+/// landed — every non-root occurrence of these four names was a nested root's
+/// OWN machinery, never content — so the depth rule refuses no legitimate
+/// birth.
+///
+/// **ASCII-case-insensitively**, because a case-insensitive filesystem
+/// (macOS's default) lands `.GIT/x.md` inside `.git/`, and a guard a spelling
+/// defeats is not a guard. Every occurrence in the live corpus is exactly
+/// lowercase, so the wider match costs nothing.
+///
+/// The engine's own writes to these directories do not pass this door: the
+/// armed artifact is written by [`crate::armed_disk`], the receipt rides the
+/// batch commit ([`commit_set`]), and run logs use plain I/O.
+fn machinery_contained(path: &Path) -> Result<(), Box<ErrorBody>> {
+    let Some(segment) = path.0.split('/').find(|seg| {
+        MACHINERY_DIRS
+            .iter()
+            .any(|dir| seg.eq_ignore_ascii_case(dir))
+    }) else {
+        return Ok(());
+    };
+    let mut e = ErrorBody::new(ErrorCode::BadPath);
+    e.path = Some(path.clone());
+    e.message = Some(format!(
+        "the birth landing {} carries `{segment}` as a path segment — an engine machinery \
+         directory the create door never births into, whatever the capabilities admit: \
+         `.git` is the git directory, `.meridian` the engine's stable state, `meridian` the \
+         attestation tree and `receipts` the receipt ledger, and none of them is a \
+         markdown-record home. A capability scope judges the DECLARED path's shape; this \
+         door judges the RESOLVED landing — re-aim the birth's `base` (or the caller's \
+         ambient directory) at a content directory. Nothing was written.",
+        path.0
+    ));
+    Err(Box::new(e))
 }
 
 /// A pin target resolved to the root that serves it (cross-root design D-A):

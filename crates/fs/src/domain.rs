@@ -48,7 +48,7 @@ pub const DOMAIN_CONFIG_PATH: &str = "meridian/domain.md";
 ///
 /// Mirrors `policy::armed::ARMED_RULES_PATH` — `policy` is I/O-free and `fs`
 /// knows nothing of rules, so neither crate can name the other's constant.
-/// `crates/testsuite/tests/reserved_paths.rs` holds the two spellings together.
+/// `crates/wire-serve/tests/reserved_paths.rs` holds the two spellings together.
 pub const ARMED_RULES_PATH: &str = "meridian/armed-rules.md";
 
 /// The once-armed sentinel: its presence, not its bytes, records that a
