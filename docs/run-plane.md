@@ -1483,6 +1483,17 @@ offending segment, and nothing is written.
 | `meridian` | the attestation tree (`meridian/armed-rules.md`, `meridian/attested`) |
 | `receipts` | the receipt ledger (`receipts/run.md`, `receipts/realise.md`) |
 
+**One carve-out: `meridian/domain.md`.** The hash-domain config sits beside the
+attestation artifacts but is not one of them — it is AUTHORED content
+declaring the ignore list, deliberately inside its own hash domain, and the
+resident write path births it through this same door. Exempt at any depth.
+Measured, not reasoned: the floor's first CI run refused it and took down three
+door tests. **Stated limit:** the carve-out is a hole in the floor. A run block
+granted a matching `md.create` scope can reach `meridian/domain.md` through its
+own `base` and reshape which files the workspace attests. The door cannot tell
+that block from a human authoring the same page — `actor` is caller-supplied —
+so closing it needs a policy axis this guard does not have.
+
 **At any depth**, because a nested root's machinery is machinery too:
 `results/ws/.git/x.md` corrupts a repository exactly as `.git/x.md` does.
 Measured over the live sessions corpus before the rule landed — every non-root

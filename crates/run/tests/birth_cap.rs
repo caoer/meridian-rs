@@ -578,6 +578,45 @@ fn a_case_variant_machinery_dir_still_refuses() {
     }
 }
 
+/// THE CARVE-OUT: `meridian/domain.md` is the hash-domain config — authored
+/// content declaring the ignore list, deliberately inside its own hash domain,
+/// and born through this door by the resident write path. The floor must let
+/// it through at any depth while its SIBLINGS in the same directory still
+/// refuse. Measured, not reasoned: the floor's first CI run refused it and
+/// took down three wire-serve door tests.
+#[test]
+fn the_domain_config_is_the_one_machinery_carve_out() {
+    for path in ["meridian/domain.md", "results/probe/ws/meridian/domain.md"] {
+        let (tmp, root) = workspace();
+        // The body shape the engine's own door test births (write.rs
+        // `domain_config_write_overlays_membership`) — proven to parse.
+        let effects = [create_effect(
+            path,
+            "---\nignore:\n  - \"drafts/**\"\n---\n# Domain\n",
+            0,
+        )];
+        let authority = granted("md.create");
+        let observed = current_root(&root);
+        executor::apply(&root, &request(&effects, &authority, &observed))
+            .unwrap_or_else(|e| panic!("the domain config must birth at `{path}`: {e:?}"));
+        assert!(tmp.path().join(path).is_file(), "`{path}` was born");
+    }
+
+    // The carve-out is exactly one page, not the directory around it.
+    let (tmp, root) = workspace();
+    let effects = [create_effect("meridian/armed-rules.md", "# Forged\n", 0)];
+    let authority = granted("md.create");
+    let observed = current_root(&root);
+    let err = executor::apply(&root, &request(&effects, &authority, &observed))
+        .expect_err("the attestation artifact is not carved out");
+    assert!(
+        matches!(err, ExecError::BirthRefused { ref detail, .. }
+            if detail.contains("bad_path")),
+        "a sibling of the domain config still refuses: {err:?}"
+    );
+    assert!(!tmp.path().join("meridian/armed-rules.md").exists());
+}
+
 /// The floor is a FLOOR, not a ban on the words: an ordinary content landing
 /// whose segments merely RESEMBLE machinery still births. Without this, the
 /// guard could pass by refusing everything.

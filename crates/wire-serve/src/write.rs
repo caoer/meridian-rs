@@ -4026,8 +4026,12 @@ pub const MACHINERY_DIRS: &[&str] = &[".git", ".meridian", "meridian", "receipts
 ///
 /// The engine's own writes to these directories do not pass this door: the
 /// armed artifact is written by [`crate::armed_disk`], the receipt rides the
-/// batch commit ([`commit_set`]), and run logs use plain I/O.
+/// batch commit ([`commit_set`]), and run logs use plain I/O. The ONE
+/// exception is the hash-domain config — see [`is_domain_config`].
 fn machinery_contained(path: &Path) -> Result<(), Box<ErrorBody>> {
+    if is_domain_config(&path.0) {
+        return Ok(());
+    }
     let Some(segment) = path.0.split('/').find(|seg| {
         MACHINERY_DIRS
             .iter()
@@ -4048,6 +4052,37 @@ fn machinery_contained(path: &Path) -> Result<(), Box<ErrorBody>> {
         path.0
     ));
     Err(Box::new(e))
+}
+
+/// Is `path` a workspace's own hash-domain config
+/// ([`fs::domain::DOMAIN_CONFIG_PATH`], `meridian/domain.md`) — the one page
+/// under a machinery directory that the floor must NOT refuse?
+///
+/// It sits beside the attestation artifacts but is not one of them: it is
+/// AUTHORED content that declares the ignore list, and it is deliberately
+/// inside its own hash domain, so it is born through this door like any other
+/// page. Measured, not reasoned: the floor's first CI run refused it and took
+/// down `domain_config_write_overlays_membership`,
+/// `root_after_ignores_a_foreign_racer_on_every_door` and
+/// `a_guarded_write_runs_zero_full_corpus_reads` — the resident write path
+/// births it.
+///
+/// Matched at any depth, mirroring the deny side: a nested root's domain
+/// config is that root's config. The spelling comes from `fs` so the
+/// exemption cannot drift from the constant it exempts.
+///
+/// **Stated limit.** This is a hole in the floor, and a narrow one: a run
+/// block granted a matching `md.create` scope can reach `meridian/domain.md`
+/// through its own `base` and reshape which files the workspace attests. The
+/// door cannot tell that block from a human authoring the same page — the
+/// `actor` is caller-supplied — so closing it needs a policy axis this guard
+/// does not have. Named here rather than left implied.
+fn is_domain_config(path: &str) -> bool {
+    match path.strip_suffix(fs::domain::DOMAIN_CONFIG_PATH) {
+        Some("") => true,
+        Some(prefix) => prefix.ends_with('/'),
+        None => false,
+    }
 }
 
 /// A pin target resolved to the root that serves it (cross-root design D-A):
