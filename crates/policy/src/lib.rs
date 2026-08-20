@@ -113,7 +113,7 @@ pub use reaction::derive_event;
 pub use registration::{
     Collision, Effective, EffectiveSet, ID_KEY, IdFault, MAX_ID_LEN, PageRef,
     REGISTRATION_NAMESPACE, RegisterError, RegisterFault, Registration, RuleId, RuleIndex,
-    RuleKind, Scope, ScopeLayer, page_rev, register_page,
+    RuleKind, Scope, ScopeLayer, governing_dirs, page_rev, register_page,
 };
 
 /// The page-shaped rule load — what a registered page becomes when it is
