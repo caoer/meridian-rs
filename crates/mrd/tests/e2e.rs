@@ -192,11 +192,13 @@ fn e2e_m2_spares_a_descendant_that_is_its_own_git_root() {
 }
 
 // ---------------------------------------------------------------------------
-// Gate: cwd-default, no daemon → ephemeral, NOTHING written under the cache root
+// Gate: cwd-default, no daemon → OUTSIDE a workspace: exit 2, NOTHING written
+// under the cache root (2026-08-20: the ephemeral adopt walked a 75-repo
+// parent for ~21 s; strict resolution refuses instead)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn e2e_tier4_no_daemon_is_ephemeral_and_writes_nothing() {
+fn e2e_tier4_no_daemon_refuses_and_writes_nothing() {
     let sb = sandbox();
     let bare = sb.dir("bare");
     assert!(
@@ -205,15 +207,21 @@ fn e2e_tier4_no_daemon_is_ephemeral_and_writes_nothing() {
     );
 
     let out = sb.run(&bare, &["resolve", "--json"]);
-    assert!(out.status.success(), "resolve: {}", stderr(&out));
-    let v = json(&out);
-    assert_eq!(v["source"], "ephemeral");
-    assert_eq!(v["ephemeral"], true);
-    assert_eq!(v["state"], "cold");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an unanchored tree with no daemon is outside a workspace — exit 2: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("outside a declared meridian workspace"),
+        "the refusal names the cause: {}",
+        stderr(&out)
+    );
 
     assert!(
         !sb.cache_root.exists(),
-        "a tier-4 ephemeral resolution must write nothing under the cache root"
+        "a tier-4 refusal must write nothing under the cache root"
     );
 }
 
@@ -425,6 +433,13 @@ fn e2e_daemon_serves_resolve_adopt_and_shuts_down() {
     let sub = sb.dir("tree/crates/inner");
     let canon_proj = std::fs::canonicalize(&proj).unwrap();
 
+    // The tree must be a DECLARED root for the adoption to serve: a daemon row
+    // for an unmarked tree is a hint that fails the defined-root re-check
+    // (that refusal has its own gate below). init writes the declaration and
+    // never contacts a daemon.
+    let out = sb.run(&proj, &["init"]);
+    assert!(out.status.success(), "init failed: {}", stderr(&out));
+
     let mut daemon = sb
         .base(mrd_bin())
         .arg("daemon")
@@ -462,6 +477,70 @@ fn e2e_daemon_serves_resolve_adopt_and_shuts_down() {
     assert_eq!(v["workspace"], canon_proj.to_string_lossy().as_ref());
     assert!(status.success(), "daemon exits 0 on SIGTERM");
     assert!(!socket.exists(), "graceful shutdown removes the socket");
+}
+
+// ---------------------------------------------------------------------------
+// Gate: a leftover registry row for an UNMARKED tree is not a defined root —
+// strict-lane verbs refuse (exit 2, milliseconds) instead of serving the
+// adoption (advisor gate 2026-08-20: a pre-refusal walk's row served a
+// 75-repo parent for ~23 s, and serving kept refreshing the row).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2e_daemon_row_for_unmarked_tree_refuses_corpus_verbs() {
+    let sb = sandbox();
+    let bare = sb.dir("leftover");
+    let canon = std::fs::canonicalize(&bare).unwrap();
+
+    let mut daemon = sb
+        .base(mrd_bin())
+        .arg("daemon")
+        .spawn()
+        .expect("spawn mrd daemon");
+    let socket = sb.cache_root.join("registry").join("daemon.sock");
+    let client = registry::Client::new(socket);
+    assert!(
+        wait_for_ping(&client, Duration::from_secs(5)),
+        "daemon must answer a ping"
+    );
+
+    // Plant the poison: a registry row for a tree with NO marker (no `.git`,
+    // no `MERIDIAN.md`) — what a pre-refusal walk left behind.
+    let registered = client.register(&bare).expect("register round-trips");
+    assert!(
+        matches!(registered, registry::Response::Registered { .. }),
+        "register succeeds: {registered:?}"
+    );
+
+    // Strict-lane verbs refuse instead of adopting the leftover row.
+    let resolve_out = sb.run(&bare, &["resolve"]);
+    let rules_out = sb.run(&bare, &["rules"]);
+
+    graceful_kill(&mut daemon);
+    let status = daemon.wait().expect("daemon exits");
+
+    assert_eq!(
+        resolve_out.status.code(),
+        Some(2),
+        "resolve refuses: {}",
+        stderr(&resolve_out)
+    );
+    let said = stderr(&resolve_out);
+    assert!(
+        said.contains("mrd unregister"),
+        "the refusal teaches the recovery: {said}"
+    );
+    assert!(
+        said.contains(canon.to_string_lossy().as_ref()),
+        "the refusal names the stale workspace: {said}"
+    );
+    assert_eq!(
+        rules_out.status.code(),
+        Some(2),
+        "rules refuses: {}",
+        stderr(&rules_out)
+    );
+    assert!(status.success(), "daemon exits 0 on SIGTERM");
 }
 
 fn wait_for_ping(client: &registry::Client, timeout: Duration) -> bool {

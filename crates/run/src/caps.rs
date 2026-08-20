@@ -202,11 +202,14 @@ impl Cap {
     }
 
     /// The meet (narrower) of two caps of the same kind, if comparable:
-    /// unscoped ∩ scoped = the scoped one; equal scopes = that scope;
-    /// different scopes = incomparable (`None`). Scopes compare as STRINGS —
-    /// two different globs are incomparable even where one semantically
-    /// contains the other (glob intersection has no simple normal form), so
-    /// narrowing stays conservative: it can only drop, never widen.
+    /// unscoped ∩ scoped = the scoped one; NESTED scopes = the inner one,
+    /// decided by [`policy::glob_subsumes`] — segment-wise `**`/`*`/literal
+    /// containment in the one glob grammar (cap-meet-subsumption ruling,
+    /// 2026-08-20; string equality before that). Scopes neither containing
+    /// the other are incomparable (`None`): overlap is not nesting (glob
+    /// intersection has no simple normal form), and the subsumption check is
+    /// itself conservative (a containment it cannot prove segment-wise reads
+    /// as incomparable), so narrowing can only drop, never widen.
     fn meet(&self, other: &Cap) -> Option<Cap> {
         if self.kind != other.kind {
             return None;
@@ -216,7 +219,8 @@ impl Cap {
                 kind: self.kind.clone(),
                 target: t.clone(),
             }),
-            (Some(a), Some(b)) if a == b => Some(self.clone()),
+            (Some(a), Some(b)) if policy::glob_subsumes(b, a) => Some(self.clone()),
+            (Some(a), Some(b)) if policy::glob_subsumes(a, b) => Some(other.clone()),
             _ => None,
         }
     }

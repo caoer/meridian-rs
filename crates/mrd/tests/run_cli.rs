@@ -589,11 +589,11 @@ fn receipt_page_key_is_canonical_across_argv_spellings() {
     );
 }
 
-/// A `cwd-default` miss stays bare: `Answer::root` is `None` there — a
-/// defaulted cwd is not a workspace, and the refusal does not promote it to
-/// one.
+/// A `cwd-default` cwd is outside every defined root: the run refuses (exit
+/// 2) before any page lookup, and the refusal never promotes the bare cwd to
+/// a workspace.
 #[test]
-fn page_miss_on_cwd_default_stays_bare() {
+fn an_unanchored_cwd_refuses_before_the_page_miss() {
     let dir = tempfile::tempdir().expect("dir");
     let out = Command::new(env!("CARGO_BIN_EXE_mrd"))
         .args(["run", "missing.md"])
@@ -603,6 +603,9 @@ fn page_miss_on_cwd_default_stays_bare() {
         .expect("spawn mrd");
     assert_eq!(code(&out), 2);
     let err = stderr(&out);
-    assert!(err.contains("page not found: missing.md"), "{err}");
+    assert!(
+        err.contains("outside a declared meridian workspace"),
+        "{err}"
+    );
     assert!(!err.contains("(workspace"), "{err}");
 }

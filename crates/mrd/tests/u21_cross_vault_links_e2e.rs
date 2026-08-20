@@ -64,6 +64,10 @@ fn sandbox() -> Sandbox {
     for d in [&home, &ws, &sessions] {
         std::fs::create_dir_all(d).expect("mkdir");
     }
+    // Anchor the ambient workspace: an unanchored tree now refuses (outside a
+    // declared workspace, exit 2) — these arms test cross-root behavior, not
+    // the resolution tier.
+    std::fs::create_dir_all(ws.join(".git")).expect(".git");
 
     // The mounted root declares its own canonical name (INV-5) — without this
     // the bind renders grey(undeclared) and every acceptance below is vacuous.
