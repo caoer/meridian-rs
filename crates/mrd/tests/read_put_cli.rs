@@ -1,7 +1,6 @@
 //! U1 end-to-end gates for `mrd read` / `mrd put` — the ratified read/put naming at the CLI
 //! face, driving the real binary over its process boundary.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -75,11 +74,7 @@ impl Sandbox {
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn mrd");
-        {
-            let mut pipe = child.stdin.take().expect("stdin");
-            pipe.write_all(stdin_bytes.as_bytes()).expect("write stdin");
-            pipe.flush().expect("flush stdin");
-        }
+        common::feed_stdin(&mut child, stdin_bytes.as_bytes());
         child.wait_with_output().expect("wait mrd")
     }
 

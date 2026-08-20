@@ -38,6 +38,8 @@ struct Sandbox {
 mod system_path;
 use system_path::system_path;
 
+mod common;
+
 fn sandbox() -> Sandbox {
     let tmp = tempfile::tempdir().expect("tempdir");
     let home = tmp.path().join("home");
@@ -106,7 +108,6 @@ impl Sandbox {
     }
 
     fn run_stdin(&self, cwd: &Path, args: &[&str], stdin_bytes: &str) -> Output {
-        use std::io::Write as _;
         use std::process::Stdio;
         let mut child = self
             .command(cwd)
@@ -116,12 +117,7 @@ impl Sandbox {
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn mrd");
-        child
-            .stdin
-            .as_mut()
-            .expect("stdin")
-            .write_all(stdin_bytes.as_bytes())
-            .expect("write stdin");
+        common::feed_stdin(&mut child, stdin_bytes.as_bytes());
         child.wait_with_output().expect("wait mrd")
     }
 

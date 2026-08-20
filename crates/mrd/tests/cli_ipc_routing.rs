@@ -1,10 +1,11 @@
 //! Quality gates for card `cli-ipc-routing`: routine CLI writes are IPC; the
 //! direct-publication lane is gone; a down daemon is taught, never a local write.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
+
+mod common;
 
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
@@ -83,12 +84,7 @@ impl Sandbox {
                 .stderr(Stdio::piped())
                 .spawn()
                 .expect("spawn mrd");
-            child
-                .stdin
-                .as_mut()
-                .expect("stdin")
-                .write_all(bytes.as_bytes())
-                .expect("write stdin");
+            common::feed_stdin(&mut child, bytes.as_bytes());
             child.wait_with_output().expect("wait")
         } else {
             cmd.output().expect("spawn mrd")
