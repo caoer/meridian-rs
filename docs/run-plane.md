@@ -1562,9 +1562,9 @@ the key you broke — you get `invalid capability '#'` and no pointer to
 `MERIDIAN.md`:
 
 - a trailing comment: the frontmatter scanner takes no YAML crate and strips
-  none, so `md.edit:… # longest pattern wins` parses `#` as a cap;
+  none, so `md.edit:… # longest pattern wins` parses `#` as a cap; <!-- caps-gate: refuses -->
 - a bad verb: anything outside the three;
-- a glob outside the cap-scope charset above, e.g. `md.edit:tasks/x!y/*.md`.
+- a glob outside the cap-scope charset above, e.g. `md.edit:tasks/x!y/*.md`. <!-- caps-gate: refuses -->
 
 After editing a ceiling, run `mrd run <any-page> --list` once — it is the
 cheapest possible smoke test, and it fails loudly on a bricked table.
@@ -1573,7 +1573,7 @@ cheapest possible smoke test, and it fails loudly on a bricked table.
 spellings fold or refuse, never silently REINTERPRET a target: bare
 `md.set_field` / `md.append_section` ALIAS-FOLD into `md.edit` at parse, and
 the canonical form is what every report and refusal then names; their
-field-grain targeted forms (`md.set_field:status`) REFUSE with the
+field-grain targeted forms (`md.set_field:status`) REFUSE with the <!-- caps-gate: refuses -->
 retirement teaching — the old target named a field or section, the new
 target position is a path glob, and dropping the target would widen the
 grant. Field-grain guards live inside blocks. Partition grain
