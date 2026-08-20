@@ -986,3 +986,114 @@ fn fresh_set_field_lands_verbatim_and_is_then_idempotent() {
     );
     assert_eq!(current_root(&root), root_after_first);
 }
+
+// ── Refusals must teach legally (card cap-refusals-teach-legally) ──────────
+
+/// Every `md.*` spelling a `CapDenied` prints must ROUND-TRIP through
+/// `Cap::parse` — the property, not one example.
+///
+/// DEFECT a, closed: the `Fix:` line was synthesized from the denied
+/// coordinate with no legality check, so a rooted target yielded
+/// `md.create:probe-root:tasks/*.md`, which `Cap::parse` refuses on the `:`.
+/// Following the refusal produced a different refusal. Probed on `ad547a7c2`.
+fn denial(kind: &str, target: &str, declared: &[&str]) -> ExecError {
+    ExecError::CapDenied {
+        kind: kind.to_owned(),
+        target: target.to_owned(),
+        resolved: None,
+        ceiling: None,
+        declared: declared.iter().map(|s| (*s).to_owned()).collect(),
+    }
+}
+
+/// Pull every backtick-quoted `md.*` token out of a rendered refusal.
+fn suggested_caps(message: &str) -> Vec<String> {
+    message
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|token| token.starts_with("md."))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn every_cap_a_denial_suggests_parses_back() {
+    // Spread over the shapes a real denial carries: an ordinary path, a
+    // rooted spelling (the measured defect), an out-of-charset leaf, a
+    // bare leaf with no parent, and a target that is legal but deep.
+    for target in [
+        "notes/out-of-scope.md",
+        "probe-root:tasks/x.md",
+        "probe-root:card.md",
+        "tasks/a b.md",
+        "card.md",
+        "year=2026/month=08/19-20-x/tasks/card.md",
+    ] {
+        for declared in [
+            &[][..],
+            &["md.edit:notes/*.md"][..],
+            &["md.create:tasks"][..],
+        ] {
+            let message = denial("md.create", target, declared).to_string();
+            let suggested = suggested_caps(&message);
+            assert!(
+                !suggested.is_empty(),
+                "a denial must always suggest SOMETHING actionable for `{target}`: {message}"
+            );
+            for cap in &suggested {
+                assert!(
+                    run::caps::Cap::parse(cap).is_ok(),
+                    "the refusal printed `{cap}`, which Cap::parse refuses — following this \
+                     Fix: would only produce a second refusal. Target `{target}`, message: \
+                     {message}"
+                );
+            }
+        }
+    }
+}
+
+/// When NO scope can name the coordinate, the refusal says so and offers the
+/// unscoped verb — a grant that actually works — instead of a spelling that
+/// dies at parse.
+#[test]
+fn an_unnameable_coordinate_is_told_it_is_unnameable() {
+    let message = denial("md.create", "probe-root:card.md", &[]).to_string();
+    assert!(
+        message.contains("no cap SCOPE can name"),
+        "the refusal states the coordinate is unnameable: {message}"
+    );
+    assert!(
+        message.contains("`md.create`"),
+        "and offers the unscoped verb that does work: {message}"
+    );
+    assert!(
+        !message.contains("md.create:probe-root"),
+        "the unparseable spelling must never be printed: {message}"
+    );
+}
+
+/// The ordinary case is unchanged: a legal coordinate still gets both the
+/// exact spelling and the parent-glob example.
+#[test]
+fn a_nameable_coordinate_still_gets_both_spellings() {
+    let message = denial("md.create", "notes/out-of-scope.md", &[]).to_string();
+    assert!(
+        message.contains("`md.create:notes/out-of-scope.md`"),
+        "{message}"
+    );
+    assert!(message.contains("`md.create:notes/*.md`"), "{message}");
+}
+
+/// A leaf carrying an out-of-charset byte: the exact spelling is unnameable
+/// but the parent glob is legal, so the refusal offers the glob alone rather
+/// than dropping to the unscoped fallback.
+#[test]
+fn an_unnameable_leaf_falls_back_to_a_legal_parent_glob() {
+    let message = denial("md.create", "tasks/a b.md", &[]).to_string();
+    assert!(message.contains("`md.create:tasks/*.md`"), "{message}");
+    assert!(
+        !message.contains("`md.create:tasks/a b.md`"),
+        "the unparseable exact spelling must not be printed: {message}"
+    );
+}

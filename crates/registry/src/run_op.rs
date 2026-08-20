@@ -431,7 +431,8 @@ fn caps_refusal_row(target: &wire::RunTarget, invocation: &str, error: &CapsErro
         | CapsError::BadGlob { .. }
         | CapsError::RetiredTarget { .. }
         | CapsError::BadPattern { .. }
-        | CapsError::Declaration { .. } => "invocation",
+        | CapsError::Declaration { .. }
+        | CapsError::TableEntry { .. } => "invocation",
     };
     refusal_row(target, invocation, class, &error.to_string(), None)
 }
