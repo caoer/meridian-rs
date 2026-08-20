@@ -53,6 +53,24 @@ pub fn drawer_key(workspace: &Path) -> String {
     to_hex(&digest[..8]) // first 8 bytes → 16 lowercase hex chars
 }
 
+/// The socket key for a canonical cache root: `sha256(path-bytes)[:12]` in
+/// lowercase hex — the hash half of the registry's short-socket mapping
+/// (`hash(cache_root) → sock path`, injective per root; the socket itself no
+/// longer lives under the cache root, so a deep root cannot push it past
+/// `sun_path`).
+///
+/// Same convention as [`drawer_key`]: the hash is over the raw path bytes
+/// exactly as given, never canonicalized here — two spellings of one cache
+/// root key differently, and callers on one machine agree because they all
+/// resolve the root from the same environment ([`cache_root`]).
+#[must_use]
+pub fn sock_key(cache_root: &Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(cache_root.as_os_str().as_bytes());
+    let digest = hasher.finalize();
+    to_hex(&digest[..6]) // first 6 bytes → 12 lowercase hex chars
+}
+
 /// Lowercase-hex encode `bytes` (no `hex` crate in the dep graph).
 fn to_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;

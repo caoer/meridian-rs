@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
+mod common;
+
 struct Sandbox {
     tmp: tempfile::TempDir,
     cache_home: PathBuf,
@@ -42,10 +44,7 @@ fn run(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
 }
 
 fn daemon_pidfile(sb: &Sandbox) -> PathBuf {
-    sb.cache_home
-        .join("meridian")
-        .join("registry")
-        .join("daemon.pid")
+    common::child_daemon_pidfile(&sb.home, &sb.cache_home)
 }
 
 fn wait_daemon_pid(sb: &Sandbox, timeout: Duration) -> Option<i32> {

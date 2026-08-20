@@ -25,6 +25,8 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 
+mod common;
+
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
 }
@@ -539,7 +541,7 @@ fn sql_routes_through_a_resident_daemon() {
     #[allow(clippy::duration_suboptimal_units)]
     let forever = Duration::from_secs(365 * 24 * 60 * 60);
     let mut config = registry::Config::for_cache_root(cache_root);
-    config.socket_path = registry_dir.join("daemon.sock");
+    config.socket_path = common::child_socket_path(&sb.home, &sb.cache_home);
     config.state_path = registry_dir.join("state.json");
     config.idle_threshold = forever;
     config.reap_interval = forever;

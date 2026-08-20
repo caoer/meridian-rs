@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
+mod common;
+
 struct Sandbox {
     tmp: tempfile::TempDir,
     cache_home: PathBuf,
@@ -47,11 +49,7 @@ fn run(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
 /// (no panic) so Drop can call it; the control target `perf_daemon_teardown` is the asserted
 /// path.
 fn try_teardown_daemon(sb: &Sandbox) {
-    let pidfile = sb
-        .cache_home
-        .join("meridian")
-        .join("registry")
-        .join("daemon.pid");
+    let pidfile = common::child_daemon_pidfile(&sb.home, &sb.cache_home);
     let Ok(text) = std::fs::read_to_string(pidfile) else {
         return;
     };

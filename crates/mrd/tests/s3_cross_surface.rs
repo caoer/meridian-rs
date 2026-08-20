@@ -56,7 +56,7 @@ struct Corpus {
 
 impl Drop for Corpus {
     fn drop(&mut self) {
-        common::reap_daemon(&self.cache_home);
+        common::reap_daemon(&self.home, &self.cache_home);
     }
 }
 

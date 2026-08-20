@@ -16,7 +16,8 @@
 //! the single dial already parsed.
 //!
 //! Harness: an in-process `RunningServer` bound at the sandbox's DERIVED socket
-//! path (`$XDG_CACHE_HOME/meridian/registry/daemon.sock`), with `build_sha`
+//! path (the short hash-keyed sock — `registry::socket_path_for_cache_root`),
+//! with `build_sha`
 //! injected per case — foreign, equal (the test and the binary carry the same
 //! crate stamp), or absent.
 
@@ -73,6 +74,9 @@ impl Sandbox {
     fn daemon(&self, build_sha: Option<&str>) -> RunningServer {
         let forever = Duration::from_secs(365 * 24 * 60 * 60);
         let mut config = Config::for_cache_root(self.cache_root());
+        // Bind exactly where the sandboxed child will dial: the test process's
+        // own env (HOME) is not the sandbox's.
+        config.socket_path = common::child_socket_path(&self.home, &self.cache_home);
         config.idle_threshold = forever;
         config.reap_interval = forever;
         config.prewarm_interval = forever;
@@ -182,7 +186,7 @@ fn teaching_explains_why_and_offers_fitted_suggestions_never_one_imperative() {
         "own-the-resident case, applicability phrasing: {err}"
     );
     assert!(
-        err.contains("daemon.pid"),
+        err.contains(".pid"),
         "the owner's restart suggestion still names the pidfile: {err}"
     );
     assert!(

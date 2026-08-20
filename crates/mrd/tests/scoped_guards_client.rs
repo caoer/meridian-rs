@@ -59,10 +59,9 @@ struct Sandbox {
 
 fn sandbox() -> Sandbox {
     let tmp = tempfile::tempdir().expect("tempdir");
-    // One-letter segments on purpose: the derived socket path must fit
-    // `sun_path` (104 bytes on macOS) under the canonical non-symlinked
-    // TMPDIR (`/private/var/folders/…`, 57 bytes) — `xdg-cache/` pushes
-    // `…/meridian/registry/daemon.sock` to 107 and the bind refuses SUN_LEN.
+    // Short segments kept from the pre-short-sock era (the socket is now
+    // hash-keyed under the sandbox HOME and no longer inherits the cache
+    // root's length, so TMPDIR depth is no longer load-bearing here).
     let cache_home = tmp.path().join("c");
     let home = tmp.path().join("h");
     std::fs::create_dir_all(&home).expect("home");
@@ -78,9 +77,11 @@ impl Sandbox {
         self.cache_home.join("meridian")
     }
 
-    /// The derived socket path every client under this sandbox dials.
+    /// The derived socket path every client under this sandbox dials
+    /// (short-sock law: hash-keyed under the sandbox HOME, never under the
+    /// cache root).
     fn socket(&self) -> PathBuf {
-        self.cache_root().join("registry").join("daemon.sock")
+        common::child_socket_path(&self.home, &self.cache_home)
     }
 
     /// An anchored workspace holding the fixture doc.
@@ -96,6 +97,9 @@ impl Sandbox {
     fn real_daemon(&self) -> RunningServer {
         let forever = Duration::from_secs(365 * 24 * 60 * 60);
         let mut config = Config::for_cache_root(self.cache_root());
+        // Bind exactly where the sandboxed child will dial: the test process's
+        // own env (HOME) is not the sandbox's.
+        config.socket_path = self.socket();
         config.idle_threshold = forever;
         config.reap_interval = forever;
         config.prewarm_interval = forever;
