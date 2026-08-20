@@ -2,12 +2,20 @@
 //! accept loop, the reaper thread, and request dispatch.
 //!
 //! # Socket placement
-//! The socket, state file, and singleton lock all live in a fixed per-user
-//! directory outside any workspace: `<cache-root>/registry/` (the `cache`
-//! crate's root, which the deny ceiling already refuses as a workspace, so the
-//! socket can never sit inside a registerable tree). The directory is created
-//! mode 0700; a **world-writable** registry directory is refused (a hostile
-//! peer must not be able to swap the socket or state file).
+//! The state file and singleton lock live in a fixed per-user directory
+//! outside any workspace: `<cache-root>/registry/` (the `cache` crate's root,
+//! which the deny ceiling already refuses as a workspace). The **socket** does
+//! NOT live there (short-sock law, 2026-08-20): a socket path must fit
+//! `sockaddr_un.sun_path` (104 bytes on macOS, 108 on Linux), and a merely
+//! long `XDG_CACHE_HOME` used to make the socket unbindable and undialable.
+//! The socket rides a short hash-keyed path instead —
+//! `$XDG_RUNTIME_DIR/mrd/<12hex>.sock` on Linux, else
+//! `$HOME/.cache/mrd-run/<12hex>.sock`, where `<12hex>` is
+//! `sha256(cache_root bytes)[:12]` ([`socket_path_for_cache_root`]). The
+//! mapping is injective per cache root, so the wire law holds unchanged: one
+//! cache root, one socket, one resident daemon. Both directories are created
+//! mode 0700; a **world-writable** one is refused (a hostile peer must not be
+//! able to swap the socket or state file).
 //!
 //! # Singleton
 //! The daemon takes an exclusive `flock` on the registry directory (reusing
@@ -55,25 +63,23 @@ const REAP_TICK: Duration = Duration::from_millis(200);
 /// stays prompt even when the pre-warm interval is configured long.
 const PREWARM_TICK: Duration = Duration::from_millis(100);
 
-/// The fixed subdirectory under the cache root that holds the socket, state
-/// file, and singleton lock.
+/// The fixed subdirectory under the cache root that holds the state file and
+/// singleton lock (and, on the no-HOME fallback lane only, the socket).
 const REGISTRY_DIR: &str = "registry";
-/// The RPC socket filename.
+/// The RPC socket filename on the fallback lane (see
+/// [`socket_path_for_cache_root`]); the normal lane names the socket by hash.
 const SOCKET_NAME: &str = "daemon.sock";
 /// The state file name.
 const STATE_NAME: &str = "state.json";
-/// The pidfile name, beside the socket. The singleton-winning daemon writes it
-/// so an operator, the 0025 install pipeline (`pkill -TERM -F`), or a client's
-/// kill attestation can signal the resident daemon without hunting the process
-/// table; removed on graceful shutdown.
-const PID_NAME: &str = "daemon.pid";
 
 /// Where and how a daemon runs. Construct with [`Config::resolve`] for the
 /// production layout, or build the fields directly to place everything under a
 /// test directory.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// The unix socket path (its parent directory is the registry directory).
+    /// The unix socket path. NOT under the registry directory on the normal
+    /// lane (short-sock law — see [`socket_path_for_cache_root`]); the pidfile
+    /// lives beside it as `<socket-stem>.pid`.
     pub socket_path: PathBuf,
     /// The state file path.
     pub state_path: PathBuf,
@@ -111,14 +117,15 @@ pub struct Config {
 }
 
 impl Config {
-    /// The production layout: socket, state, and lock under
-    /// `<cache-root>/registry/`, drawers under `<cache-root>/`, with the
-    /// default reap horizon and interval.
+    /// The production layout: state and lock under `<cache-root>/registry/`,
+    /// drawers under `<cache-root>/`, the socket at the short hash-keyed path
+    /// ([`socket_path_for_cache_root`] — env-dependent), with the default reap
+    /// horizon and interval.
     #[must_use]
     pub fn for_cache_root(cache_root: PathBuf) -> Self {
         let dir = cache_root.join(REGISTRY_DIR);
         Config {
-            socket_path: dir.join(SOCKET_NAME),
+            socket_path: socket_path_for_cache_root(&cache_root),
             state_path: dir.join(STATE_NAME),
             cache_root,
             idle_threshold: DEFAULT_IDLE_REAP,
@@ -146,22 +153,68 @@ impl Config {
         Ok(Self::for_cache_root(cache::cache_root()?))
     }
 
-    /// The registry directory (parent of the socket): where the state file,
-    /// socket, and singleton lock live.
+    /// The registry directory (parent of the STATE file, not of the socket):
+    /// where the state file and singleton lock live.
     fn registry_dir(&self) -> &Path {
-        self.socket_path
+        self.state_path
             .parent()
             .unwrap_or_else(|| Path::new(REGISTRY_DIR))
     }
 }
 
-/// The default per-user RPC socket path, for a client that has no [`Config`].
+/// The socket path for `cache_root` (short-sock law, 2026-08-20):
+/// `$XDG_RUNTIME_DIR/mrd/<12hex>.sock` on Linux when `XDG_RUNTIME_DIR` is set,
+/// else `$HOME/.cache/mrd-run/<12hex>.sock`, where `<12hex>` is
+/// [`cache::sock_key`] — `sha256(cache_root bytes)[:12]`. Injective per cache
+/// root, and SHORT however deep the cache root itself is, so a long
+/// `XDG_CACHE_HOME` can no longer push the socket past `sun_path`. Client and
+/// daemon both derive through this one function, so they always agree.
+///
+/// When no base resolves (no `HOME`, and no `XDG_RUNTIME_DIR` on Linux) the
+/// legacy in-root placement `<cache-root>/registry/daemon.sock` is the
+/// fallback — the mapping stays total, and the overflow degrade still names
+/// the cause (the `sun_path` voice in `mrd`).
+#[must_use]
+pub fn socket_path_for_cache_root(cache_root: &Path) -> PathBuf {
+    #[cfg(target_os = "linux")]
+    if let Some(dir) = non_empty_env("XDG_RUNTIME_DIR") {
+        return PathBuf::from(dir)
+            .join("mrd")
+            .join(format!("{}.sock", cache::sock_key(cache_root)));
+    }
+    match non_empty_env("HOME") {
+        Some(home) => socket_path_under_home(Path::new(&home), cache_root),
+        None => cache_root.join(REGISTRY_DIR).join(SOCKET_NAME),
+    }
+}
+
+/// The short socket path under an explicit `home` — the non-Linux (and
+/// no-`XDG_RUNTIME_DIR`) lane of [`socket_path_for_cache_root`], exported so a
+/// test harness that sandboxes `HOME` can compute exactly where the client
+/// under test will dial.
+#[must_use]
+pub fn socket_path_under_home(home: &Path, cache_root: &Path) -> PathBuf {
+    home.join(".cache")
+        .join("mrd-run")
+        .join(format!("{}.sock", cache::sock_key(cache_root)))
+}
+
+/// A non-empty environment value, or `None` (unset and empty are the same).
+fn non_empty_env(key: &str) -> Option<String> {
+    std::env::var_os(key)
+        .map(|v| v.to_string_lossy().into_owned())
+        .filter(|v| !v.is_empty())
+}
+
+/// The default per-user RPC socket path, for a client that has no [`Config`]:
+/// [`socket_path_for_cache_root`] of the env-resolved cache root — the same
+/// mapping the daemon binds.
 ///
 /// # Errors
 ///
 /// Returns [`io::ErrorKind::NotFound`] when no cache root resolves.
 pub fn default_socket_path() -> io::Result<PathBuf> {
-    Ok(cache::cache_root()?.join(REGISTRY_DIR).join(SOCKET_NAME))
+    Ok(socket_path_for_cache_root(&cache::cache_root()?))
 }
 
 /// A running daemon: the accept loop and reaper thread, the shared registry,
@@ -195,6 +248,14 @@ impl RunningServer {
     pub fn start(config: Config) -> io::Result<Self> {
         let dir = config.registry_dir().to_path_buf();
         prepare_dir(&dir)?;
+        // The socket no longer lives in the registry directory (short-sock
+        // law): its parent gets the same 0700 + world-writable refusal before
+        // the bind.
+        if let Some(sock_dir) = config.socket_path.parent()
+            && sock_dir != dir
+        {
+            prepare_dir(sock_dir)?;
+        }
 
         // Singleton: an exclusive flock on the registry directory. A held lock
         // means another daemon owns this socket — refuse rather than race the
@@ -230,8 +291,11 @@ impl RunningServer {
         // (no pong can precede the write, so a client holding a pong always
         // reads the serving daemon's pid). The write itself stays advisory —
         // a daemon that cannot write its pidfile still serves (the socket is
-        // the real liveness handle); log and carry on.
-        let pid_file = config.socket_path.with_file_name(PID_NAME);
+        // the real liveness handle); log and carry on. The pidfile lives
+        // BESIDE the socket as `<socket-stem>.pid` — hash-keyed like the
+        // socket, so `pkill -TERM -F` per resident keeps working and two
+        // cache roots sharing one socket directory never share a pidfile.
+        let pid_file = config.socket_path.with_extension("pid");
         if let Err(e) = write_pidfile(&pid_file) {
             eprintln!(
                 "registry: cannot write pidfile {} ({e})",
@@ -332,7 +396,7 @@ impl RunningServer {
         // pong (the boot order's mirror), so no reader holding a fresh pong
         // finds the file already gone.
         let _ = std::fs::remove_file(&self.socket_path);
-        let _ = std::fs::remove_file(self.socket_path.with_file_name(PID_NAME));
+        let _ = std::fs::remove_file(self.socket_path.with_extension("pid"));
     }
 }
 
@@ -2531,5 +2595,64 @@ mod cold_read_door_tests {
             err.cause.as_deref().is_some_and(|cause| !cause.is_empty()),
             "the refusal carries the rebuild's own cause"
         );
+    }
+}
+
+/// Short-sock derivation gates (sun-path card, 2026-08-20): the hash-keyed
+/// mapping is injective per cache root, deterministic across processes, and
+/// short however deep the cache root is.
+#[cfg(test)]
+mod socket_placement_tests {
+    use super::{SOCKET_NAME, socket_path_under_home};
+    use std::path::Path;
+
+    #[test]
+    fn same_cache_root_derives_the_same_socket() {
+        let home = Path::new("/u/h");
+        let root = Path::new("/very/deep/cache/meridian");
+        assert_eq!(
+            socket_path_under_home(home, root),
+            socket_path_under_home(home, root),
+            "the mapping is a pure function — two processes agree"
+        );
+    }
+
+    #[test]
+    fn different_cache_roots_derive_different_sockets() {
+        let home = Path::new("/u/h");
+        assert_ne!(
+            socket_path_under_home(home, Path::new("/a/meridian")),
+            socket_path_under_home(home, Path::new("/b/meridian")),
+            "injective per cache root — one root, one socket"
+        );
+    }
+
+    #[test]
+    fn socket_stays_short_however_deep_the_cache_root_is() {
+        let home = Path::new("/u/h");
+        let deep: String = std::iter::repeat_n("averylongcachedirectorysegment", 8)
+            .collect::<Vec<_>>()
+            .join("/");
+        let sock = socket_path_under_home(home, Path::new(&deep));
+        // `<home>/.cache/mrd-run/<12hex>.sock` — the cache root contributes
+        // exactly 17 bytes (name + extension), never its own length.
+        let len = sock.as_os_str().len();
+        assert!(
+            len < 104,
+            "a deep cache root must not lengthen the socket path: {len} bytes ({})",
+            sock.display()
+        );
+        assert!(sock.to_string_lossy().starts_with("/u/h/.cache/mrd-run/"));
+    }
+
+    #[test]
+    fn socket_name_is_twelve_hex_plus_sock() {
+        let sock = socket_path_under_home(Path::new("/u/h"), Path::new("/c/meridian"));
+        let name = sock.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(sock.extension().and_then(|e| e.to_str()), Some("sock"));
+        let stem = name.trim_end_matches(".sock");
+        assert_eq!(stem.len(), 12, "first 12 hex of sha256: {name}");
+        assert!(stem.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(name, SOCKET_NAME, "the hash name is never the legacy name");
     }
 }

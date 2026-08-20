@@ -394,7 +394,7 @@ Node spans (wire laws — block spans exclude the final line terminator):
 > ```
 > $ printf '%s\n' '{"id":1,"op":"hello","proto":1,"client":"p2-regen/0.1","workspace":"/private/tmp/p2-spec-regen.YfNM"}' \
 >                 '{"id":2,"op":"toc","path":"tasks/x.md"}' \
->   | nc -U ~/.cache/meridian/registry/daemon.sock
+>   | nc -U "$SOCKET"   # the daemon's short hash-keyed sock — `hash(cache_root)` under $XDG_RUNTIME_DIR/mrd (Linux) or ~/.cache/mrd-run (short-sock law, 2026-08-20; was ~/.cache/meridian/registry/daemon.sock)
 > {"id":2,"ok":true,"body":{"path":"tasks/x.md","file_rev":"1e56548abcd43053",
 >  "root":"b3:807b69c693ad2c65e290422a1123198f22be6161c2caa43d71fab029fa4763cd","nodes":[
 >  {"kind":"frontmatter","span":[0,20],"node_rev":"c93f2c5ca47ac0a0","text_prefix_16b":"---\ntitle: demo\n","keys":["title"]},

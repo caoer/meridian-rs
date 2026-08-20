@@ -87,7 +87,7 @@ impl Sandbox {
         std::fs::create_dir_all(&reg_dir).expect("registry dir");
         let never = Duration::from_secs(365 * 24 * 60 * 60);
         let mut config = registry::Config::for_cache_root(self.cache_root());
-        config.socket_path = reg_dir.join("daemon.sock");
+        config.socket_path = common::child_socket_path(&self.home, &self.cache_home);
         config.state_path = reg_dir.join("state.json");
         config.idle_threshold = never;
         config.reap_interval = never;

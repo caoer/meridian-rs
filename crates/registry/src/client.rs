@@ -27,7 +27,9 @@ impl Client {
         Client { socket_path }
     }
 
-    /// A client for the default per-user socket (`<cache-root>/registry/`).
+    /// A client for the default per-user socket — the short hash-keyed path
+    /// derived from the env-resolved cache root
+    /// ([`crate::socket_path_for_cache_root`]).
     ///
     /// # Errors
     ///

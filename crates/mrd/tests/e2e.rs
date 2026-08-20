@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+mod common;
+
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
 }
@@ -446,7 +448,7 @@ fn e2e_daemon_serves_resolve_adopt_and_shuts_down() {
         .spawn()
         .expect("spawn mrd daemon");
 
-    let socket = sb.cache_root.join("registry").join("daemon.sock");
+    let socket = common::child_socket_path(&sb.home, &sb.cache_home);
     let client = registry::Client::new(socket.clone());
     assert!(
         wait_for_ping(&client, Duration::from_secs(5)),
@@ -497,7 +499,7 @@ fn e2e_daemon_row_for_unmarked_tree_refuses_corpus_verbs() {
         .arg("daemon")
         .spawn()
         .expect("spawn mrd daemon");
-    let socket = sb.cache_root.join("registry").join("daemon.sock");
+    let socket = common::child_socket_path(&sb.home, &sb.cache_home);
     let client = registry::Client::new(socket);
     assert!(
         wait_for_ping(&client, Duration::from_secs(5)),
@@ -580,7 +582,7 @@ impl Sandbox {
 
     /// The resident daemon's pidfile path (written by the singleton winner).
     fn daemon_pidfile(&self) -> PathBuf {
-        self.cache_root.join("registry").join("daemon.pid")
+        common::child_daemon_pidfile(&self.home, &self.cache_home)
     }
 
     /// Read the resident daemon's pid, polling until the pidfile appears (the

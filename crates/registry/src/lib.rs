@@ -49,6 +49,7 @@ pub use protocol::{DenyKind, Request, Response, WorkspaceEntry};
 pub use registry::{RegisterOutcome, Registry, ResolveOutcome};
 pub use server::{
     Config, RunningServer, ServeOutcome, default_socket_path, in_process_registry, serve_lines,
+    socket_path_for_cache_root, socket_path_under_home,
 };
 
 /// Idle-reap horizon: an unused workspace's warm serving state (engine, ring,
