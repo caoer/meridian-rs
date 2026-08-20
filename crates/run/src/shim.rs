@@ -4,8 +4,10 @@
 //! them to the executor. Truncation or malformation fails the whole batch (S6).
 //!
 //! # Wire grammar
-//! One JSON object per line. Required keys depend on `op` (the effect kind).
-//! Unknown ops refuse. Empty stream is a valid zero-effect batch.
+//! One JSON object per line. Required keys depend on `op` (the effect kind);
+//! `md.create` also admits the optional `base` (the targeting axis — ZT ruling
+//! 2026-08-19 #2, boundary as data). Unknown ops and unknown keys refuse.
+//! Empty stream is a valid zero-effect batch.
 //!
 //! # Authority
 //! Descriptors carry no capability of their own — the executor validates
@@ -54,10 +56,19 @@ pub enum ShimDescriptor {
     /// `md.create` — birth a file through the create door (the declared-task
     /// birth cap).
     Create {
-        /// The workspace-relative path to birth.
+        /// The RELATIVE landing coordinate as the block declared it — the
+        /// string a capability glob judges. It admits no rooted spelling;
+        /// targeting rides `base`.
         path: String,
         /// The new file's whole bytes.
         body: String,
+        /// The optional resolution base the birth lands under — a rooted
+        /// `root:rel` ref naming this run's own workspace, or a confined
+        /// workspace-relative directory. Absent, the caller's ambient
+        /// directory is the default base; absent both, the path lands
+        /// workspace-root-relative. Identical semantics to starlark
+        /// `create(base = …)`.
+        base: Option<String>,
     },
 }
 
@@ -92,7 +103,8 @@ pub enum ShimError {
         reason: String,
     },
     /// A payload names an op the shim does not admit (the shim surface is
-    /// `md.set_field` | `md.append_section` — ruling 1).
+    /// `md.set_field` | `md.append_section` | `md.create` — ruling 1, plus the
+    /// birth lane).
     UnknownOp {
         /// Zero-based record index.
         index: usize,
@@ -135,7 +147,7 @@ impl std::fmt::Display for ShimError {
             }
             ShimError::UnknownOp { index, op } => write!(
                 f,
-                "shim record {index} names op '{op}' (the shim admits md.set_field | md.append_section)"
+                "shim record {index} names op '{op}' (the shim admits md.set_field | md.append_section | md.create)"
             ),
             ShimError::MissingTrailer => {
                 write!(f, "shim stream ended without the end:<count> trailer")
@@ -255,13 +267,19 @@ pub fn to_effects(
                         ("content".to_owned(), ArgValue::Str(content.clone())),
                     ]),
                 ),
-                ShimDescriptor::Create { path, body } => (
-                    EffectKind::Create,
-                    BTreeMap::from([
+                ShimDescriptor::Create { path, body, base } => {
+                    let mut args = BTreeMap::from([
                         ("path".to_owned(), ArgValue::Str(path.clone())),
                         ("body".to_owned(), ArgValue::Str(body.clone())),
-                    ]),
-                ),
+                    ]);
+                    // Present ONLY when the block declared it — an absent key
+                    // and an empty base are different facts to the resolver
+                    // (absent = fall back to ambient; empty = refuse).
+                    if let Some(base) = base {
+                        args.insert("base".to_owned(), ArgValue::Str(base.clone()));
+                    }
+                    (EffectKind::Create, args)
+                }
             };
             let effect = Effect {
                 kind,
@@ -288,13 +306,11 @@ fn parse_decimal(bytes: &[u8]) -> Option<usize> {
     std::str::from_utf8(bytes).ok()?.parse().ok()
 }
 
-/// Build one descriptor from an op's two required string arguments, in
-/// declaration order.
-type DescriptorBuilder = fn(&str, &str) -> ShimDescriptor;
-
-/// Parse one record payload: a JSON object with an `op` tag and EXACTLY that
+/// Parse one record payload: a JSON object with an `op` tag and ONLY that
 /// op's keys — an extra key is a refusal, not a warning (strict by hand:
-/// serde's internally-tagged enums cannot deny unknown fields).
+/// serde's internally-tagged enums cannot deny unknown fields). A required key
+/// must be present and a string; an optional key must be a string when
+/// present.
 fn parse_payload(index: usize, payload: &[u8]) -> Result<ShimDescriptor, ShimError> {
     let malformed = |reason: String| ShimError::Malformed { index, reason };
     let text =
@@ -309,35 +325,56 @@ fn parse_payload(index: usize, payload: &[u8]) -> Result<ShimDescriptor, ShimErr
         Some(_) => return Err(malformed("'op' is not a string".to_owned())),
         None => return Err(malformed("missing 'op'".to_owned())),
     };
-    let (required, build): (&[&str], DescriptorBuilder) = match op.as_str() {
-        "md.set_field" => (&["field", "value"], |a, b| ShimDescriptor::SetField {
-            field: a.to_owned(),
-            value: b.to_owned(),
-        }),
-        "md.append_section" => (&["section", "content"], |a, b| {
-            ShimDescriptor::AppendSection {
-                section: a.to_owned(),
-                content: b.to_owned(),
-            }
-        }),
-        "md.create" => (&["path", "body"], |a, b| ShimDescriptor::Create {
-            path: a.to_owned(),
-            body: b.to_owned(),
-        }),
+    // The op's whole key surface: required first, then optional.
+    let (required, optional): (&[&str], &[&str]) = match op.as_str() {
+        "md.set_field" => (&["field", "value"], &[]),
+        "md.append_section" => (&["section", "content"], &[]),
+        // `base` is the targeting axis, optional exactly as in starlark
+        // `create(base = …)` — the two facts never ride one glued string.
+        "md.create" => (&["path", "body"], &["base"]),
         _ => return Err(ShimError::UnknownOp { index, op }),
     };
     for key in obj.keys() {
-        if key != "op" && !required.contains(&key.as_str()) {
+        if key != "op" && !required.contains(&key.as_str()) && !optional.contains(&key.as_str()) {
             return Err(malformed(format!("unknown key '{key}' for {op}")));
         }
     }
-    let mut fields = [const { String::new() }; 2];
-    for (slot, key) in fields.iter_mut().zip(required) {
-        match obj.get(*key) {
-            Some(serde_json::Value::String(s)) => slot.clone_from(s),
-            Some(_) => return Err(malformed(format!("'{key}' is not a string"))),
-            None => return Err(malformed(format!("missing '{key}'"))),
+    let req = |key: &str| -> Result<String, ShimError> {
+        match obj.get(key) {
+            Some(serde_json::Value::String(s)) => Ok(s.clone()),
+            Some(_) => Err(malformed(format!("'{key}' is not a string"))),
+            None => Err(malformed(format!("missing '{key}'"))),
         }
-    }
-    Ok(build(&fields[0], &fields[1]))
+    };
+    let opt = |key: &str| -> Result<Option<String>, ShimError> {
+        match obj.get(key) {
+            Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
+            Some(_) => Err(malformed(format!("'{key}' is not a string"))),
+            None => Ok(None),
+        }
+    };
+    Ok(match op.as_str() {
+        "md.set_field" => ShimDescriptor::SetField {
+            field: req("field")?,
+            value: req("value")?,
+        },
+        "md.append_section" => ShimDescriptor::AppendSection {
+            section: req("section")?,
+            content: req("content")?,
+        },
+        "md.create" => ShimDescriptor::Create {
+            path: req("path")?,
+            body: req("body")?,
+            base: opt("base")?,
+        },
+        // Unreachable — the key-surface match above refused every other op.
+        // Spelled out so a new op added there but not here fails CLOSED
+        // instead of silently building a birth.
+        _ => {
+            return Err(ShimError::UnknownOp {
+                index,
+                op: op.clone(),
+            });
+        }
+    })
 }

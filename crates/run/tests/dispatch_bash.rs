@@ -26,7 +26,12 @@ status: todo
 ";
 
 fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
-    let tmp = tempfile::tempdir().unwrap();
+    // Under target/, not $TMPDIR: macOS's /var→/private/var symlink makes the
+    // window guard's canonicalization disagree with the fixture root, so on
+    // mac every dispatch here refused `Detection(Guard(Io(NotADirectory)))` at
+    // CLEAN MAIN — measured 2026-08-19, 24 of this file's 26 tests. Same fix,
+    // same reason as crates/run/tests/birth_cap.rs. Linux CI never sees it.
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     std::fs::write(tmp.path().join("page.md"), PAGE).unwrap();
     let root = fs::WorkspaceRoot(tmp.path().to_owned());
     (tmp, root)
@@ -907,5 +912,99 @@ fn a_resident_lane_dispatch_leaves_the_shared_cache_warm() {
         after_run,
         fs::domain_snapshot(&root).unwrap().1,
         "and the fold still agrees with the byte-derived root"
+    );
+}
+
+// ── The birth lane's targeting axis, end to end through bash ───────────────
+// REGRESSION GUARD (2026-08-19): the shim admitted EXACTLY {path, body} for
+// `md.create`, so a bash block had NO way to express targeting — the
+// canonical card-birth page composed a rooted path instead and every birth
+// through it refused `bad_path` host-wide. These three cases are the bash
+// twin of starlark `create(path=, body=, base=)`.
+
+/// A block birthing one card, with the `base` line the caller supplies.
+fn emit_create(path: &str, base_line: &str) -> String {
+    format!(
+        r#"
+p='{{"op":"md.create","path":"{path}","body":"born"{base_line}}}'
+printf '%s:%s\n' "${{#p}}" "$p" >&"$MD_EFFECT_FD"
+printf 'end:1\n' >&3
+"#
+    )
+}
+
+#[cfg(unix)]
+#[test]
+fn a_bash_birth_lands_under_its_declared_base() {
+    let (_tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let mut live: Vec<u8> = Vec::new();
+
+    let src = emit_create("tasks/card.md", r#","base":"year=2026/s1""#);
+    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
+
+    assert!(
+        matches!(out.phase2, Phase2::Applied { .. }),
+        "{:?}",
+        out.phase2
+    );
+    let born = root.0.join("year=2026/s1/tasks/card.md");
+    assert!(
+        born.is_file(),
+        "the birth did not land at {}",
+        born.display()
+    );
+    assert!(!root.0.join("tasks/card.md").exists(), "it landed baseless");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_baseless_bash_birth_lands_under_the_callers_ambient() {
+    let (_tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let mut live: Vec<u8> = Vec::new();
+
+    let src = emit_create("tasks/card.md", "");
+    let mut d = dispatch_of(&src, &scratch);
+    d.ambient = Some("year=2026/s2");
+    let out = dispatch_bash::run(&root, &d, &mut live).unwrap();
+
+    assert!(
+        matches!(out.phase2, Phase2::Applied { .. }),
+        "{:?}",
+        out.phase2
+    );
+    assert!(
+        root.0.join("year=2026/s2/tasks/card.md").is_file(),
+        "a baseless birth must fall back to the caller's ambient directory"
+    );
+}
+
+/// The break this card fixes, kept broken on purpose: targeting glued INTO
+/// the path still refuses, and the refusal teaches `base`.
+#[cfg(unix)]
+#[test]
+fn a_rooted_spelling_in_the_bash_birth_path_still_refuses() {
+    let (_tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let mut live: Vec<u8> = Vec::new();
+
+    let src = emit_create("field-notes-sessions:year=2026/s3/tasks/card.md", "");
+    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
+
+    let Phase2::RefusedExec { error, .. } = &out.phase2 else {
+        panic!("expected a birth refusal, got {:?}", out.phase2);
+    };
+    let ExecError::BirthRefused { detail, .. } = error else {
+        panic!("expected BirthRefused, got {error:?}");
+    };
+    assert!(detail.contains("bad_path"), "{detail}");
+    assert!(
+        detail.contains("base"),
+        "the refusal must name the targeting argument: {detail}"
+    );
+    assert!(
+        !root.0.join("year=2026/s3/tasks/card.md").exists(),
+        "nothing may be written on a refusal"
     );
 }
