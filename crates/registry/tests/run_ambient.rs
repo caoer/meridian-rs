@@ -1,10 +1,12 @@
-//! E2E gates for § A.8 birth-target resolution (md-create-ambient-paths,
-//! shape (c), ruled 2026-08-18): the face path law on the run plane's birth
-//! lane — a BARE `md.create` path births under the frame's `ambient` (the
-//! caller's ambient session directory, statusd-resolved per call); a rooted
-//! `root:rel` spelling is EXPLICIT and lands as named when it names the
-//! bound workspace, and refuses with a teaching when it names a foreign
-//! root. `hello` advertises cap `run.ambient`.
+//! E2E gates for § A.8 birth-target resolution (md-create-ambient-paths
+//! shape (c) 2026-08-18, boundary-as-data amendment 2026-08-19 #2): the face
+//! path law on the run plane's birth lane — a baseless `md.create` path
+//! births under the frame's `ambient` (the caller's ambient session
+//! directory, statusd-resolved per call); an EXPLICIT target rides the
+//! descriptor's `base` argument as a rooted `root:rel` ref, landing as named
+//! when it names the bound workspace and refusing with a teaching when it
+//! names a foreign root. The declared `path` stays the capability glob's
+//! matching coordinate on every lane. `hello` advertises cap `run.ambient`.
 //!
 //! The mount-table lifecycle rides ONE test fn by design (edition 2024: env
 //! mutation is unsafe, and `MERIDIAN_CONFIG` is process-global — the
@@ -67,13 +69,13 @@ impl Conn {
     }
 }
 
-/// The birth fixtures. `birther.md` composes a BARE path (the ambient lane);
-/// `elsewhere.md` composes a rooted same-root path (the explicit lane);
-/// `foreign.md` names a root that is not the bound workspace.
+/// The birth fixtures. `birther.md` declares a bare path (the ambient lane);
+/// `elsewhere.md` passes a rooted same-root BASE (the explicit lane);
+/// `foreign.md` passes a base naming a root that is not the bound workspace.
 const BIRTHER: &str = "\
 ---
 task.birth-card: \"[[#^birth-1]]\"
-task.birth-card.caps: \"md.create:tasks\"
+task.birth-card.caps: \"md.create:tasks/*.md\"
 task.birth-card.args: slug
 ---
 
@@ -89,15 +91,17 @@ def run(ctx):
 const ELSEWHERE: &str = "\
 ---
 task.birth-there: \"[[#^there-1]]\"
-task.birth-there.caps: \"md.create:tasks\"
+task.birth-there.caps: \"md.create:tasks/*.md\"
 task.birth-there.args: slug
 ---
 
-# Explicit rooted target on the bound root
+# Explicit rooted base on the bound root — a session-shaped target dir, the
+# create-task `--target` lane. The declared path is the SAME string the
+# ambient lane declares: one cap glob covers both.
 
 ```starlark
 def run(ctx):
-    create(path = \"sessions:elsewhere/tasks/\" + ctx.args[0] + \".md\", body = \"# there\\n\")
+    create(path = \"tasks/\" + ctx.args[0] + \".md\", base = \"sessions:year=2026/month=08/19-01-elsewhere\", body = \"# there\\n\")
 ```
 ^there-1
 ";
@@ -105,14 +109,14 @@ def run(ctx):
 const FOREIGN: &str = "\
 ---
 task.birth-foreign: \"[[#^foreign-1]]\"
-task.birth-foreign.caps: \"md.create:tasks\"
+task.birth-foreign.caps: \"md.create:tasks/*.md\"
 ---
 
-# Foreign-root target
+# Foreign-root base
 
 ```starlark
 def run(ctx):
-    create(path = \"assets:tasks/escapee.md\", body = \"# nope\\n\")
+    create(path = \"tasks/escapee.md\", base = \"assets:drop\", body = \"# nope\\n\")
 ```
 ^foreign-1
 ";
@@ -259,8 +263,9 @@ fn ambient_and_rooted_birth_targets_resolve_on_the_wire_arm() {
         "an occupied path never lands twice: {rows:?}"
     );
 
-    // The explicit lane: a rooted spelling of the BOUND root lands as named,
-    // ambient contributing nothing.
+    // The explicit lane (the create-task --target shape): a rooted BASE on
+    // the BOUND root lands as named, ambient contributing nothing — and the
+    // same `md.create:tasks/*.md` grant admits it (three-lane equivalence).
     let mut frame = run_frame(
         33,
         "rooted-live",
@@ -273,11 +278,12 @@ fn ambient_and_rooted_birth_targets_resolve_on_the_wire_arm() {
         json!("applied"),
         "the rooted same-root birth lands: {rows:?}"
     );
-    let there = fs::read_to_string(ws.join("elsewhere/tasks/zz-there.md")).unwrap();
+    let there = fs::read_to_string(ws.join("year=2026/month=08/19-01-elsewhere/tasks/zz-there.md"))
+        .unwrap();
     assert!(there.contains("# there"), "explicit target bytes: {there}");
     assert!(
-        !ws.join(AMBIENT).join("elsewhere").exists(),
-        "a rooted target never resolves under ambient"
+        !ws.join(AMBIENT).join("year=2026").exists(),
+        "a based target never resolves under ambient"
     );
 
     // The foreign-root refusal: the run's births ride the bound workspace's
@@ -294,7 +300,7 @@ fn ambient_and_rooted_birth_targets_resolve_on_the_wire_arm() {
         "the foreign-root teaching rides the row: {rows:?}"
     );
     assert!(
-        !tmp.path().join("assets/tasks/escapee.md").exists(),
+        !tmp.path().join("assets/drop/tasks/escapee.md").exists(),
         "nothing landed in the foreign tree"
     );
 

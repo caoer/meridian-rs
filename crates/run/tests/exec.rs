@@ -227,7 +227,7 @@ fn configured_timeout_reads_the_root_declaration_and_defaults() {
         DEFAULT_TIMEOUT
     );
     // A declaration without the key → the default.
-    declare("run.caps.fix-*: md.set_field\n");
+    declare("run.caps.fix-*: md.edit\n");
     assert_eq!(
         exec::configured_timeout(Some(tmp.path())).unwrap(),
         DEFAULT_TIMEOUT

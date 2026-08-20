@@ -115,7 +115,7 @@ fn bash(phase2: Phase2, status: ExecStatus, pre_receipt: Option<&str>) -> RunRep
 fn applied_md_and_surfaced_proto_are_partitioned() {
     let r = report::render(&starlark(
         vec![md(), proto()],
-        caps("md.set_field", CapSource::Explicit, &[]),
+        caps("md.edit", CapSource::Explicit, &[]),
         false,
     ));
     assert_eq!(r.state, ReportState::Applied);
@@ -147,7 +147,7 @@ fn a_run_with_only_non_md_effects_is_unexecuted_no_capability() {
 fn the_depth_cap_is_a_generic_withheld_state() {
     let r = report::render(&starlark(
         vec![md()],
-        caps("md.set_field", CapSource::Explicit, &[]),
+        caps("md.edit", CapSource::Explicit, &[]),
         true,
     ));
     assert_eq!(r.state, ReportState::WithheldDepthCap);
@@ -182,7 +182,7 @@ fn a_guarantee_word_renders_only_where_positive() {
 
     let s = report::render(&starlark(
         vec![md()],
-        caps("md.set_field", CapSource::Explicit, &[]),
+        caps("md.edit", CapSource::Explicit, &[]),
         false,
     ));
     assert!(s.to_text().contains("task: fix-x (hermetic)"), "positive");
@@ -194,25 +194,22 @@ fn narrowed_caps_are_rendered_in_text_and_json() {
     let r = report::render(&starlark(
         vec![md()],
         caps(
-            "md.set_field",
+            "md.edit",
             CapSource::Convention("fix-*".to_owned()),
-            &["md.append_section"],
+            &["md.create"],
         ),
         false,
     ));
     let caps = r.caps.as_ref().expect("starlark renders its caps");
-    assert_eq!(caps.narrowed, vec!["md.append_section".to_owned()]);
+    assert_eq!(caps.narrowed, vec!["md.create".to_owned()]);
     assert_eq!(caps.source, "convention:fix-*");
-    assert!(
-        r.to_text()
-            .contains("narrowed by ceiling: md.append_section")
-    );
+    assert!(r.to_text().contains("narrowed by ceiling: md.create"));
 
     // --json is ONE object carrying the same narrowed facts.
     let json = r.to_json().unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert!(value.is_object(), "one object: {json}");
-    assert_eq!(value["caps"]["narrowed"][0], "md.append_section");
+    assert_eq!(value["caps"]["narrowed"][0], "md.create");
     assert_eq!(value["state"], "applied");
     assert_eq!(value["task_rev"], "b3:proc-abc");
 }
@@ -317,7 +314,7 @@ fn pre_exec_delta_rides_both_report_faces() {
     // starlark → no pre-exec line on either face
     let s = report::render(&starlark(
         vec![],
-        caps("md.set_field", CapSource::Explicit, &[]),
+        caps("md.edit", CapSource::Explicit, &[]),
         false,
     ));
     assert!(!s.to_text().contains("pre-exec delta"));

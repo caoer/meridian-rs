@@ -123,9 +123,11 @@ fn fail_address_rooted(
 fn fail_caps(e: &CapsError) -> Fail {
     match e {
         CapsError::BashFenceRefused { .. } => fail_run(e.to_string()),
-        CapsError::BadCap { .. } | CapsError::BadPattern { .. } | CapsError::Declaration { .. } => {
-            Fail::tool(e.to_string())
-        }
+        CapsError::BadCap { .. }
+        | CapsError::BadGlob { .. }
+        | CapsError::RetiredTarget { .. }
+        | CapsError::BadPattern { .. }
+        | CapsError::Declaration { .. } => Fail::tool(e.to_string()),
     }
 }
 
@@ -145,11 +147,14 @@ fn fail_runner(e: &RunnerError) -> Fail {
         RunnerError::Caps(e) => fail_caps(e),
         RunnerError::Starlark(DispatchError::Exec(err))
         | RunnerError::Bash(BashError::Phase1(err)) => fail_exec(err),
-        RunnerError::Cascade(CascadeError::Apply { error, .. }) => {
-            let mut fail = fail_exec(error);
-            fail.message = format!("cascade: {}", fail.message);
-            fail
-        }
+        RunnerError::Cascade(e) => match &**e {
+            CascadeError::Apply { error, .. } => {
+                let mut fail = fail_exec(error);
+                fail.message = format!("cascade: {}", fail.message);
+                fail
+            }
+            other => fail_run(format!("cascade: {other}")),
+        },
         other => fail_run(other.to_string()),
     }
 }

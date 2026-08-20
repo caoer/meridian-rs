@@ -212,7 +212,7 @@ pub enum RunnerError {
     Bash(BashError),
     /// A cascade generation faulted; generation 0 (and any prior cascade
     /// generation) stands committed.
-    Cascade(CascadeError),
+    Cascade(Box<CascadeError>),
 }
 
 impl std::fmt::Display for RunnerError {
@@ -288,7 +288,7 @@ pub fn run(
         &authority,
         first_event,
     )
-    .map_err(RunnerError::Cascade)?;
+    .map_err(|e| RunnerError::Cascade(Box::new(e)))?;
 
     Ok(RunReport {
         task: name,
@@ -443,8 +443,19 @@ pub fn rehearse(
                 ambient: None,
             })
             .map_err(|e| RunnerError::Starlark(DispatchError::Eval(e)))?;
+            // The choke point, rehearsal tense: the SAME admission the apply
+            // enforces, over the same md.* partition — judging DECLARED
+            // coordinates, BEFORE resolution, exactly as the live order (ZT
+            // ruling 2026-08-19 #2).
+            let md: Vec<Effect> = effects
+                .iter()
+                .filter(|e| e.kind.domain() == Domain::Md)
+                .cloned()
+                .collect();
+            executor::admit(spec.page, spec.ambient, &md, &authority)
+                .map_err(|e| RunnerError::Starlark(DispatchError::Exec(e)))?;
             // Birth-target resolution, rehearsal tense: the SAME seam the
-            // apply runs before its choke point, so the dry effect list
+            // apply runs after its choke point, so the dry effect list
             // shows the RESOLVED landing paths and a rehearsed refusal is
             // byte-identical to the live one (dogfood r2 F2).
             let effects = match executor::resolve_birth_targets(root, spec.ambient, &effects)
@@ -453,15 +464,6 @@ pub fn rehearse(
                 Some(resolved) => resolved,
                 None => effects,
             };
-            // The choke point, rehearsal tense: the SAME admission the apply
-            // enforces, over the same md.* partition.
-            let md: Vec<Effect> = effects
-                .iter()
-                .filter(|e| e.kind.domain() == Domain::Md)
-                .cloned()
-                .collect();
-            executor::admit(&md, &authority)
-                .map_err(|e| RunnerError::Starlark(DispatchError::Exec(e)))?;
             Ok(Rehearsal {
                 task: name,
                 task_rev: task.task_rev,

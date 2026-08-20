@@ -3,16 +3,18 @@
 //! occupied-path refusal (`cas_mismatch`), workspace confinement, checks —
 //! the door's own guards, never re-implemented in the run plane.
 //!
-//! Path resolution (md-create-ambient-paths ruling, shape (c), 2026-08-18):
-//! a BARE path resolves under the request's `ambient` (the caller's ambient
-//! directory) when one rides, and stays workspace-root-relative when none
-//! does — the bare-door law every `ambient: None` fixture here pins. A
-//! rooted `root:rel` spelling is EXPLICIT (§4.1; the same-root/foreign table
-//! legs live in `registry/tests/run_ambient.rs`, where the mount table is
-//! controlled). Capability grain: `md.create` untargeted admits any path;
-//! `md.create:<dir>` admits only births whose RESOLVED partition — the born
-//! file's immediate parent directory — is `<dir>`; a root-level birth's
-//! grain is the path itself.
+//! Path resolution (md-create-ambient-paths shape (c) 2026-08-18, boundary-
+//! as-data amendment 2026-08-19 #2): the descriptor's `path` is the RELATIVE
+//! landing coordinate as declared; it composes under the descriptor's own
+//! `base` when one rides it, under the request's `ambient` otherwise, and
+//! stays workspace-root-relative under neither — the bare-door law every
+//! `ambient: None` fixture here pins. A rooted spelling belongs in `base`
+//! ONLY (the same-root/foreign table legs live in
+//! `registry/tests/run_ambient.rs`, where the mount table is controlled); a
+//! rooted `path` refuses with the base teaching. Capability grain
+//! (caps-redesign ruling, 2026-08-19): `md.create` untargeted admits any
+//! path; `md.create:<glob>` matches the DECLARED path — never the composed
+//! landing — so every targeting lane presents one string to one glob.
 
 use std::collections::BTreeMap;
 
@@ -149,7 +151,7 @@ fn an_occupied_path_refuses_the_second_birth() {
 fn an_ungranted_birth_is_cap_denied_before_io() {
     let (tmp, root) = workspace();
     let effects = [create_effect("tasks/new-card.md", "# A card\n", 0)];
-    let authority = granted("md.set_field");
+    let authority = granted("md.edit");
     let observed = current_root(&root);
     let err = executor::apply(&root, &request(&effects, &authority, &observed))
         .expect_err("deny-by-default holds");
@@ -163,14 +165,13 @@ fn an_ungranted_birth_is_cap_denied_before_io() {
     );
 }
 
-/// The scoped grant: `md.create:tasks` admits a birth under `tasks/` and
-/// refuses one under `notes/` — the capability grain is the resolved
-/// partition (the born file's immediate parent directory), with the cap
-/// grammar's exact-match semantics.
+/// The scoped grant: `md.create:tasks/*.md` admits a birth declared under
+/// `tasks/` and refuses one declared under `notes/` — the capability grain
+/// is the DECLARED path through the one glob grammar.
 #[test]
-fn a_scoped_grant_binds_the_resolved_partition_dir() {
+fn a_scoped_grant_binds_the_declared_path() {
     let (tmp, root) = workspace();
-    let authority = granted("md.create:tasks");
+    let authority = granted("md.create:tasks/*.md");
 
     let inside = [create_effect("tasks/in-scope.md", "# In\n", 0)];
     let observed = current_root(&root);
@@ -183,10 +184,36 @@ fn a_scoped_grant_binds_the_resolved_partition_dir() {
     let err = executor::apply(&root, &request(&outside, &authority, &observed))
         .expect_err("a notes/ birth is refused");
     assert!(
-        matches!(err, ExecError::CapDenied { ref target, .. } if target == "notes"),
-        "the refusal names the out-of-scope segment: {err:?}"
+        matches!(err, ExecError::CapDenied { ref target, .. } if target == "notes/out-of-scope.md"),
+        "the refusal names the declared path: {err:?}"
     );
     assert!(!tmp.path().join("notes/out-of-scope.md").exists());
+}
+
+/// THE JAIL CASE (caps-redesign ruling): a declared path that buries the
+/// granted board under an extra head segment must NOT match — `*` stays
+/// inside a segment, and the glob reads the whole declared string.
+#[test]
+fn an_extra_head_segment_never_matches_the_board_glob() {
+    let (tmp, root) = workspace();
+    let authority = granted("md.create:tasks/*.md");
+    let effects = [create_effect("evil/tasks/x.md", "# Evil\n", 0)];
+    let observed = current_root(&root);
+    let err = executor::apply(
+        &root,
+        &request_with_ambient(
+            &effects,
+            &authority,
+            &observed,
+            "year=2026/month=08/18-00-adhoc",
+        ),
+    )
+    .expect_err("evil/tasks/x.md must not match tasks/*.md");
+    assert!(
+        matches!(err, ExecError::CapDenied { ref target, .. } if target == "evil/tasks/x.md"),
+        "the refusal names the declared path: {err:?}"
+    );
+    assert!(!tmp.path().join("year=2026").exists(), "nothing was born");
 }
 
 /// A birth escaping the workspace refuses through the door's confinement.
@@ -262,7 +289,7 @@ fn request_with_ambient<'a>(
 fn a_bare_birth_resolves_under_the_callers_ambient() {
     let (tmp, root) = workspace();
     let effects = [create_effect("tasks/card.md", "# A card\n", 0)];
-    let authority = granted("md.create:tasks");
+    let authority = granted("md.create:tasks/*.md");
     let observed = current_root(&root);
     let ambient = "year=2026/month=08/18-00-adhoc";
     executor::apply(
@@ -280,26 +307,110 @@ fn a_bare_birth_resolves_under_the_callers_ambient() {
     );
 }
 
-/// Resolution precedes admission: the capability grain is judged on the
-/// RESOLVED target, so the refusal names the resolved partition, never the
-/// ambient's own first segment.
+/// Admission judges the DECLARED path (ZT ruling 2026-08-19 #2) — the
+/// ambient never joins the matched string, so the refusal names exactly what
+/// the block wrote, on whichever board it would have landed.
 #[test]
-fn the_capability_grain_is_judged_on_the_resolved_target() {
+fn the_capability_grain_is_judged_on_the_declared_path() {
     let (tmp, root) = workspace();
     let effects = [create_effect("notes/card.md", "# A card\n", 0)];
-    let authority = granted("md.create:tasks");
+    let authority = granted("md.create:tasks/*.md");
     let observed = current_root(&root);
     let ambient = "year=2026/month=08/18-00-adhoc";
     let err = executor::apply(
         &root,
         &request_with_ambient(&effects, &authority, &observed, ambient),
     )
-    .expect_err("a notes/ partition refuses under md.create:tasks");
+    .expect_err("a notes/ path refuses under md.create:tasks/*.md");
     assert!(
-        matches!(err, ExecError::CapDenied { ref target, .. } if target == "notes"),
-        "the refusal names the resolved partition: {err:?}"
+        matches!(err, ExecError::CapDenied { ref target, .. } if target == "notes/card.md"),
+        "the refusal names the declared path: {err:?}"
     );
     assert!(!tmp.path().join(ambient).exists(), "nothing was born");
+}
+
+/// THREE-LANE EQUIVALENCE (the core guarantee of the redesign): one cap, one
+/// declared path — the ambient lane, the base lane, and the bare lane all
+/// ADMIT identically; only the landings differ. The rooted-base lane runs in
+/// `registry/tests/run_ambient.rs`, where the mount table is controlled.
+#[test]
+fn one_declared_path_admits_identically_on_every_lane() {
+    let authority = granted("md.create:tasks/*.md");
+
+    // Ambient lane: lands on the caller board.
+    let (tmp, root) = workspace();
+    let effects = [create_effect("tasks/same.md", "# X\n", 0)];
+    let observed = current_root(&root);
+    executor::apply(
+        &root,
+        &request_with_ambient(
+            &effects,
+            &authority,
+            &observed,
+            "year=2026/month=08/18-00-adhoc",
+        ),
+    )
+    .expect("the ambient lane admits");
+    assert!(
+        tmp.path()
+            .join("year=2026/month=08/18-00-adhoc/tasks/same.md")
+            .exists()
+    );
+
+    // Base lane (a confined directory base riding the descriptor): the base
+    // OVERRIDES the ambient, and admission still reads only the declared path.
+    let (tmp, root) = workspace();
+    let mut based = create_effect("tasks/same.md", "# X\n", 0);
+    based.args.insert(
+        "base".to_owned(),
+        ArgValue::Str("year=2026/month=08/19-01-elsewhere".to_owned()),
+    );
+    let effects = [based];
+    let observed = current_root(&root);
+    executor::apply(
+        &root,
+        &request_with_ambient(
+            &effects,
+            &authority,
+            &observed,
+            "year=2026/month=08/18-00-adhoc",
+        ),
+    )
+    .expect("the base lane admits");
+    assert!(
+        tmp.path()
+            .join("year=2026/month=08/19-01-elsewhere/tasks/same.md")
+            .exists(),
+        "the descriptor base wins over the ambient"
+    );
+
+    // Bare lane: no base, no ambient — the root board.
+    let (tmp, root) = workspace();
+    let effects = [create_effect("tasks/same.md", "# X\n", 0)];
+    let observed = current_root(&root);
+    executor::apply(&root, &request(&effects, &authority, &observed))
+        .expect("the bare lane admits");
+    assert!(tmp.path().join("tasks/same.md").exists());
+}
+
+/// A rooted spelling in the PATH refuses with the base teaching: the path is
+/// the relative landing coordinate the cap glob judges, and targeting is the
+/// base axis — two facts, two arguments, never one glued string.
+#[test]
+fn a_rooted_path_spelling_refuses_toward_the_base_argument() {
+    let (_tmp, root) = workspace();
+    let effects = [create_effect("sessions:elsewhere/tasks/x.md", "# X\n", 0)];
+    let authority = granted("md.create");
+    let observed = current_root(&root);
+    let err = executor::apply(&root, &request(&effects, &authority, &observed))
+        .expect_err("a rooted path spelling refuses");
+    let ExecError::BirthRefused { detail, .. } = err else {
+        panic!("expected BirthRefused, got {err:?}");
+    };
+    assert!(
+        detail.contains("base"),
+        "the refusal teaches the base argument: {detail}"
+    );
 }
 
 /// A bare path escaping THROUGH the ambient join refuses at the resolution
@@ -333,7 +444,7 @@ fn an_ambient_escaping_join_refuses() {
 fn a_malformed_ambient_refuses_the_birth() {
     let (tmp, root) = workspace();
     let effects = [create_effect("tasks/card.md", "# A card\n", 0)];
-    let authority = granted("md.create:tasks");
+    let authority = granted("md.create:tasks/*.md");
     let observed = current_root(&root);
     let err = executor::apply(
         &root,
@@ -351,8 +462,9 @@ fn a_malformed_ambient_refuses_the_birth() {
     );
 }
 
-/// The §4.1 grammar walls that refuse BEFORE the mount table is ever read —
-/// deterministic on any machine: two head colons, and a root with no path.
+/// Rooted-looking spellings in the PATH refuse BEFORE the mount table is
+/// ever read — deterministic on any machine: the path argument admits no
+/// `root:` head at all (the base axis owns targeting).
 #[test]
 fn rooted_grammar_faults_refuse_before_the_table() {
     let (_tmp, root) = workspace();
