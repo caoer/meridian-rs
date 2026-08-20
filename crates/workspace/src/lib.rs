@@ -296,6 +296,16 @@ fn has_git(dir: &Path) -> bool {
     dir.join(GIT_ENTRY).exists()
 }
 
+/// The rung-2 marker test, exposed for callers that must re-verify a RECORDED
+/// root: a daemon registry row is a hint, not a marker, and a leftover
+/// registration of an unmarked tree must not read as a defined root
+/// (measured 2026-08-20: a pre-refusal walk registered a 75-repo projects
+/// parent, and every later invocation served it).
+#[must_use]
+pub fn is_git_root(dir: &Path) -> bool {
+    has_git(dir)
+}
+
 /// Why a path is refused as a workspace ceiling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DenyReason {
