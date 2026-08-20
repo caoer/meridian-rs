@@ -362,10 +362,19 @@ fn parse_payload(index: usize, payload: &[u8]) -> Result<ShimDescriptor, ShimErr
             section: req("section")?,
             content: req("content")?,
         },
-        _ => ShimDescriptor::Create {
+        "md.create" => ShimDescriptor::Create {
             path: req("path")?,
             body: req("body")?,
             base: opt("base")?,
         },
+        // Unreachable — the key-surface match above refused every other op.
+        // Spelled out so a new op added there but not here fails CLOSED
+        // instead of silently building a birth.
+        _ => {
+            return Err(ShimError::UnknownOp {
+                index,
+                op: op.clone(),
+            });
+        }
     })
 }
