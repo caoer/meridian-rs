@@ -133,7 +133,13 @@ use crate::{
 /// written that way, pinned to a fingerprint that has not moved and never
 /// will. The append delta cannot repair it: the files are unchanged, so
 /// nothing re-stages them (card `tag-all-block-form-blindness`).
-pub const CACHE_SCHEMA_VERSION: i64 = 9;
+///
+/// `10`: `hist.frontmatter.value` for a block-sequence value under ANY key —
+/// `model::fm_value` renders it as flow-style text, and a v9 file holds `''`
+/// for every such row (50 of 50 `agents` rows on the fleet corpus), pinned
+/// to fingerprints that will not move. Same repair-by-rebuild reasoning as
+/// `9` (card `fm-block-list-sql-empty`).
+pub const CACHE_SCHEMA_VERSION: i64 = 10;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
 pub const SQL_CACHE_FILENAME: &str = "sql.duckdb";

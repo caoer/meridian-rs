@@ -644,8 +644,11 @@ fn descend(
 /// Emit `frontmatter` rows (first-occurrence-wins via `YamlMap`) and B2
 /// `frontmatter_tag` for `tag`/`tags`. All share the Frontmatter C1 locator.
 /// The `value` column is a published value plane: the stored scalar decodes
-/// through § A.6.1 (`model::scalar`); the locator/rev columns stay
-/// raw-computed (§ A.6.2).
+/// through § A.6.1 (`model::scalar`), and a YAML block sequence renders as
+/// the flow-style text it spells through § A.6.1′ (`model::fm_value`, read
+/// off the BLOCK — the flat map keeps only the key line's remainder, which is
+/// why 50 of 50 `agents:` rows were `''`; card `fm-block-list-sql-empty`).
+/// The locator/rev columns stay raw-computed (§ A.6.2).
 ///
 /// `prop_rev` is the per-key CAS token (`node-rev-merkle-spec.md` §2.1), taken
 /// off `model::resolve` — the same owner the write door compares `if_node_rev`
@@ -661,7 +664,11 @@ fn emit_frontmatter(
 ) {
     let (span_start, span_end) = (u64c(node.span.start), u64c(node.span.end));
     let node_rev = node.node_rev.0.clone();
-    for (ord, (key, value)) in map.0.iter().enumerate() {
+    // The BLOCK, never `map` alone: both list lanes below read it, because
+    // the flat parse keeps only each key line's remainder and a block
+    // sequence puts every item on the lines after it.
+    let block = doc.raw.get(node.span.clone()).unwrap_or_default();
+    for (ord, (key, _)) in map.0.iter().enumerate() {
         // A map key resolves by construction — `model::parse_frontmatter` and
         // the `fm_key` resolver scan the same block with the same column-0,
         // first-colon, quote-trimmed key rule, first occurrence wins. A miss is
@@ -672,7 +679,10 @@ fn emit_frontmatter(
             .expect("frontmatter map key resolves against its own document")
             .node_rev
             .0;
-        let value = model::scalar::text(value);
+        // Same by-construction argument as `prop_rev`: `model::fm_value` finds
+        // the key line by the rule `parse_frontmatter` indexed it under.
+        let value =
+            model::fm_value(block, key).expect("frontmatter map key is found in its own block");
         rows.frontmatter.push(vec![
             Value::Text(path.to_string()),
             Value::UBigInt(u64c(ord)),
@@ -684,12 +694,11 @@ fn emit_frontmatter(
             Value::Text(prop_rev),
         ]);
         if key == "tag" || key == "tags" {
-            // Off the BLOCK, never off `map`: the flat parse keeps only the key
-            // line's remainder, so a YAML block sequence read as no tags at all
-            // (card `tag-all-block-form-blindness`). `model::fm_tags` is the ONE
-            // parser — `policy`'s rule registration reads tags through it too,
-            // which is what closes the drift that made the two planes disagree.
-            let block = doc.raw.get(node.span.clone()).unwrap_or_default();
+            // `model::fm_tags` is the ONE tag parser — `policy`'s rule
+            // registration reads tags through it too, which is what closes the
+            // drift that made the two planes disagree (card
+            // `tag-all-block-form-blindness`). It walks the same block
+            // sequence `fm_value` just rendered.
             for (seq, tag) in model::fm_tags(block, key).into_iter().enumerate() {
                 rows.frontmatter_tag.push(vec![
                     Value::Text(path.to_string()),

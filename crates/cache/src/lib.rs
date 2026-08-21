@@ -84,7 +84,13 @@ pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 /// never advance — an unchanged file is never re-staged, so the append delta
 /// cannot repair it and a fresh drawer is the only route (card
 /// `tag-all-block-form-blindness`).
-pub const SCHEMA_SALT: &str = "s8";
+///
+/// `s9`: `frontmatter.value` for a block-sequence value under ANY key renders
+/// as flow-style text (`model::fm_value`) — an s8 drawer holds `''` for every
+/// such row (50 of 50 `agents` rows on the fleet corpus) at fingerprints that
+/// will never advance; same fresh-drawer route as `s8` (card
+/// `fm-block-list-sql-empty`).
+pub const SCHEMA_SALT: &str = "s9";
 
 /// Default GC threshold: a drawer whose last-use is older than this is reapable.
 /// 30 days, mirroring Cargo's registry auto-GC horizon. A path-keyed drawer store
