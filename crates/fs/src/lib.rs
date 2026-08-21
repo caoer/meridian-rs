@@ -937,7 +937,7 @@ impl DomainCache {
         root: &WorkspaceRoot,
         domain: &domain::Domain,
         law: ObserveLaw,
-    ) -> Result<(BTreeMap<Vec<u8>, [u8; 32]>, Vec<String>), ObserveRefusal> {
+    ) -> Result<ObservedDomain, ObserveRefusal> {
         // Losses counted before the pass are re-derived by the pass (a
         // completed observation IS the full sweep the rescan ladder floors
         // at); losses landing mid-pass stay unabsorbed. Counted at entry so
@@ -1722,6 +1722,14 @@ pub(crate) enum ObserveLaw {
     /// racing the walk refusing typed ([`guard::StepGuard`]'s law).
     Guarded,
 }
+
+/// One guarded observation of the domain, as the walk saw it: every member's
+/// §12.2 leaf digest keyed by raw name bytes, plus the symlinked paths the
+/// walk RECORDED (sorted, §9 display form). Links are reported to the caller
+/// rather than refused at the observation (guard module docs § Symlinks):
+/// [`guard::StepGuard`] records the open's links as the world's shape and
+/// refuses only what appeared inside the window at close.
+pub(crate) type ObservedDomain = (BTreeMap<Vec<u8>, [u8; 32]>, Vec<String>);
 
 /// Why a cached observation refused — the crate-internal shape
 /// [`guard::StepGuard`] maps onto [`guard::GuardError`]. The plain law only
