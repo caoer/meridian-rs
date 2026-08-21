@@ -214,6 +214,72 @@ fn narrowed_caps_are_rendered_in_text_and_json() {
     assert_eq!(value["task_rev"], "b3:proc-abc");
 }
 
+/// Card cli-run-birth-silent-loss: a phase-2 executor refusal (busy tree,
+/// door refusal) must never render its withheld effects as applied. Measured
+/// 2026-08-20: `mrd run … create-task` printed `applied: 1 md descriptor(s) —
+/// md.create` with `state: partial` and NO file existed — a success-shaped
+/// silent loss. The applied count and the landing must not be separable: the
+/// withheld batch rides `refused:` with the executor's error, on BOTH faces.
+#[test]
+fn a_refused_batch_is_never_rendered_as_applied() {
+    let birth = effect(
+        EffectKind::Create,
+        &[("path", "tasks/x.md"), ("body", "# x")],
+    );
+    let r = report::render(&bash(
+        Phase2::RefusedExec {
+            effects: vec![birth],
+            error: run::executor::ExecError::WorkspaceBusy,
+        },
+        ExecStatus::Exited { code: 0 },
+        Some("- run {} ^p-000001"),
+    ));
+    // Phase 1 committed, phase 2 refused → partial (unchanged).
+    assert_eq!(r.state, ReportState::Partial);
+    // The withheld birth never enters the applied list — text or json.
+    assert!(r.applied.is_empty(), "withheld effects rendered as applied");
+    let text = r.to_text();
+    assert!(text.contains("applied: 0 md descriptor(s)"), "{text}");
+    // The refusal is named, with the withheld descriptor and the error.
+    assert!(
+        text.contains("refused: 1 descriptor(s) — workspace busy"),
+        "{text}"
+    );
+    assert!(text.contains("  - md.create"), "{text}");
+
+    // --json carries the same refusal facts.
+    let value: serde_json::Value = serde_json::from_str(&r.to_json().unwrap()).unwrap();
+    assert_eq!(value["applied"], serde_json::json!([]));
+    assert_eq!(value["refused"]["effects"][0]["kind"], "md.create");
+    assert!(
+        value["refused"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("workspace busy"),
+        "{value}"
+    );
+}
+
+/// The green path is untouched: a fully-applied run's receipt keeps its
+/// wording, and no `refused` line or field appears.
+#[test]
+fn an_applied_run_reports_no_refusal() {
+    let r = report::render(&bash(
+        Phase2::Applied {
+            effects: vec![md()],
+            applied: Some(completion_applied()),
+        },
+        ExecStatus::Exited { code: 0 },
+        Some("- run {} ^p-000001"),
+    ));
+    assert_eq!(r.state, ReportState::Applied);
+    assert_eq!(r.applied.len(), 1);
+    let text = r.to_text();
+    assert!(text.contains("applied: 1 md descriptor(s)"), "{text}");
+    assert!(!text.contains("refused"), "{text}");
+    assert!(!r.to_json().unwrap().contains("refused"));
+}
+
 #[test]
 fn bash_phase1_committed_phase2_refused_is_partial() {
     let r = report::render(&bash(
