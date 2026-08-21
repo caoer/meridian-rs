@@ -272,10 +272,10 @@ pub fn run(
     // 4. The cascade loop over generation 0's event.
     let first_event = match &outcome {
         TaskOutcome::Starlark(o) => o.applied.as_ref().and_then(|a| a.event.clone()),
+        // Bash has no effect channel: its completion commit is an empty
+        // batch, which synthesizes no change event — no cascade can start.
         TaskOutcome::Bash(o) => match &o.phase2 {
-            dispatch_bash::Phase2::Applied { applied, .. } => {
-                applied.as_ref().and_then(|a| a.event.clone())
-            }
+            dispatch_bash::Phase2::Applied { applied } => applied.event.clone(),
             _ => None,
         },
     };

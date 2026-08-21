@@ -15,7 +15,6 @@ use run::fence::GuaranteeClass;
 use run::record::StdoutRecord;
 use run::report::{self, ReportState};
 use run::runner::{RunReport, TaskOutcome};
-use run::shim::ShimStream;
 use run::snapshot::Detection;
 
 fn effect(kind: EffectKind, args: &[(&str, &str)]) -> Effect {
@@ -94,10 +93,6 @@ fn bash(phase2: Phase2, status: ExecStatus, pre_receipt: Option<&str>) -> RunRep
                 bytes: 0,
             }),
             stderr: Vec::new(),
-            shim: ShimStream {
-                bytes: Vec::new(),
-                overflowed: false,
-            },
             pre_exec: None,
             // A clean window: these failures are exec-fail/timeout, not
             // detection — the delta line reads "none".
@@ -168,8 +163,7 @@ fn the_depth_cap_is_a_generic_withheld_state() {
 fn a_guarantee_word_renders_only_where_positive() {
     let b = report::render(&bash(
         Phase2::Applied {
-            effects: vec![],
-            applied: None,
+            applied: completion_applied(),
         },
         ExecStatus::Exited { code: 0 },
         Some("^p-1"),
@@ -215,20 +209,12 @@ fn narrowed_caps_are_rendered_in_text_and_json() {
 }
 
 /// Card cli-run-birth-silent-loss: a phase-2 executor refusal (busy tree,
-/// door refusal) must never render its withheld effects as applied. Measured
-/// 2026-08-20: `mrd run … create-task` printed `applied: 1 md descriptor(s) —
-/// md.create` with `state: partial` and NO file existed — a success-shaped
-/// silent loss. The applied count and the landing must not be separable: the
-/// withheld batch rides `refused:` with the executor's error, on BOTH faces.
+/// door refusal) must never render success-shaped. The refusal rides
+/// `refused:` with the executor's error, on BOTH faces.
 #[test]
-fn a_refused_batch_is_never_rendered_as_applied() {
-    let birth = effect(
-        EffectKind::Create,
-        &[("path", "tasks/x.md"), ("body", "# x")],
-    );
+fn a_refused_commit_is_never_rendered_as_applied() {
     let r = report::render(&bash(
         Phase2::RefusedExec {
-            effects: vec![birth],
             error: run::executor::ExecError::WorkspaceBusy,
         },
         ExecStatus::Exited { code: 0 },
@@ -236,21 +222,15 @@ fn a_refused_batch_is_never_rendered_as_applied() {
     ));
     // Phase 1 committed, phase 2 refused → partial (unchanged).
     assert_eq!(r.state, ReportState::Partial);
-    // The withheld birth never enters the applied list — text or json.
-    assert!(r.applied.is_empty(), "withheld effects rendered as applied");
+    assert!(r.applied.is_empty());
     let text = r.to_text();
     assert!(text.contains("applied: 0 md descriptor(s)"), "{text}");
-    // The refusal is named, with the withheld descriptor and the error.
-    assert!(
-        text.contains("refused: 1 descriptor(s) — workspace busy"),
-        "{text}"
-    );
-    assert!(text.contains("  - md.create"), "{text}");
+    // The refusal is named, with the executor's error.
+    assert!(text.contains("refused: workspace busy"), "{text}");
 
     // --json carries the same refusal facts.
     let value: serde_json::Value = serde_json::from_str(&r.to_json().unwrap()).unwrap();
     assert_eq!(value["applied"], serde_json::json!([]));
-    assert_eq!(value["refused"]["effects"][0]["kind"], "md.create");
     assert!(
         value["refused"]["error"]
             .as_str()
@@ -260,22 +240,21 @@ fn a_refused_batch_is_never_rendered_as_applied() {
     );
 }
 
-/// The green path is untouched: a fully-applied run's receipt keeps its
-/// wording, and no `refused` line or field appears.
+/// The green path is untouched: an applied run's report keeps its wording,
+/// and no `refused` line or field appears.
 #[test]
 fn an_applied_run_reports_no_refusal() {
     let r = report::render(&bash(
         Phase2::Applied {
-            effects: vec![md()],
-            applied: Some(completion_applied()),
+            applied: completion_applied(),
         },
         ExecStatus::Exited { code: 0 },
         Some("- run {} ^p-000001"),
     ));
     assert_eq!(r.state, ReportState::Applied);
-    assert_eq!(r.applied.len(), 1);
+    assert!(r.applied.is_empty(), "bash has no effect channel");
     let text = r.to_text();
-    assert!(text.contains("applied: 1 md descriptor(s)"), "{text}");
+    assert!(text.contains("applied: 0 md descriptor(s)"), "{text}");
     assert!(!text.contains("refused"), "{text}");
     assert!(!r.to_json().unwrap().contains("refused"));
 }
@@ -304,7 +283,7 @@ fn a_signaled_step_is_interrupted_not_partial() {
     assert_eq!(r.state, ReportState::Interrupted);
 }
 
-/// The completion receipt an exited-nonzero run commits: an EMPTY batch under a
+/// The completion receipt an exited run commits: an EMPTY batch under a
 /// real receipt line.
 fn completion_applied() -> run::executor::Applied {
     run::executor::Applied {
@@ -334,8 +313,7 @@ fn pre_exec_delta_rides_both_report_faces() {
     // clean bash → explicit none
     let clean = report::render(&bash(
         Phase2::Applied {
-            effects: vec![],
-            applied: None,
+            applied: completion_applied(),
         },
         ExecStatus::Exited { code: 0 },
         Some("^p-1"),
@@ -351,8 +329,7 @@ fn pre_exec_delta_rides_both_report_faces() {
     // divergent bash → the reason-first line, run still Applied
     let mut divergent_report = bash(
         Phase2::Applied {
-            effects: vec![],
-            applied: None,
+            applied: completion_applied(),
         },
         ExecStatus::Exited { code: 0 },
         Some("^p-1"),

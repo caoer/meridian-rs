@@ -1,14 +1,12 @@
 //! U6a gates — bash process supervision (#21/S3): the invocation cwd (U16),
 //! own process group, wall-clock timeout → group SIGKILL, step-end
-//! background-child reaping, env passthrough + overlay, and the shim-fd
-//! capture.
+//! background-child reaping, and env passthrough + overlay.
 
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::time::{Duration, Instant};
 
 use run::exec::{self, DEFAULT_TIMEOUT, ExecSpec, ExecStatus};
-use run::shim::{self, ShimError};
 
 fn spec_in<'a>(
     scratch: &'a tempfile::TempDir,
@@ -35,7 +33,6 @@ fn exit_code_and_stdout_and_stderr_are_captured() {
     assert!(!r.status.success());
     assert_eq!(r.stdout, b"out");
     assert_eq!(r.stderr, b"err");
-    assert!(r.shim.bytes.is_empty());
 }
 
 /// U16: the block runs WHERE `mrd` RUNS ("DO NOT CHANGE THE RUNNING PATH") —
@@ -106,23 +103,6 @@ fn declared_env_overlays_the_inherited_value() {
 }
 
 #[test]
-fn the_shim_fd_captures_a_framed_stream() {
-    // The documented emitter idiom: LC_ALL=C makes ${#p} count BYTES, and
-    // $MD_EFFECT_FD names the fd.
-    let tmp = tempfile::tempdir().unwrap();
-    let env = BTreeMap::new();
-    let src = r#"
-p='{"op":"md.set_field","field":"status","value":"done"}'
-printf '%s:%s\n' "${#p}" "$p" >&"$MD_EFFECT_FD"
-printf 'end:1\n' >&3
-"#;
-    let r = exec::exec(&spec_in(&tmp, src, &env)).unwrap();
-    assert!(r.status.success());
-    let descriptors = shim::parse(&r.shim).unwrap();
-    assert_eq!(descriptors.len(), 1);
-}
-
-#[test]
 fn timeout_sigkills_the_group_and_is_a_distinct_state() {
     let tmp = tempfile::tempdir().unwrap();
     let env = BTreeMap::new();
@@ -151,9 +131,9 @@ fn timeout_sigkills_the_group_and_is_a_distinct_state() {
 
 #[test]
 fn a_background_child_is_reaped_at_step_end() {
-    // S3: the child spawns a background writer holding stdout AND the shim
-    // fd, then exits. Without the group SIGKILL the readers would wait 15s
-    // for the inherited pipe fds; with it the step ends now and the writer
+    // S3: the child spawns a background writer holding stdout, then exits.
+    // Without the group SIGKILL the readers would wait 15s for the inherited
+    // pipe fds; with it the step ends now and the writer
     // never lands its post-step write. Correctness is the EVENT (no leak file
     // after step end); the wall-clock budget lives in `exec_walltime.rs`.
     let tmp = tempfile::tempdir().unwrap();
@@ -180,18 +160,6 @@ fn an_external_signal_is_the_signaled_state() {
     let env = BTreeMap::new();
     let r = exec::exec(&spec_in(&tmp, "kill -KILL $$", &env)).unwrap();
     assert_eq!(r.status, ExecStatus::Signaled { signal: 9 });
-}
-
-#[test]
-fn a_shim_flood_past_the_cap_flags_overflow_and_fails_closed() {
-    // 9 MB > the 8 MiB store cap; the reader keeps draining (the child is
-    // never deadlocked) but the stream fails closed at parse.
-    let tmp = tempfile::tempdir().unwrap();
-    let env = BTreeMap::new();
-    let r = exec::exec(&spec_in(&tmp, "head -c 9000000 /dev/zero >&3", &env)).unwrap();
-    assert!(r.status.success());
-    assert!(r.shim.overflowed);
-    assert!(matches!(shim::parse(&r.shim), Err(ShimError::Overflow)));
 }
 
 #[test]

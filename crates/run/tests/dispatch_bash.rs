@@ -1,17 +1,17 @@
 //! U6a gates — the two-phase bash dispatch: pre-exec receipt + locked-window
-//! `root_after_phase1` (#19 addendum), the S2/S6/#21 failure matrix, the
-//! executor choke point, and the U8 stdout record riding the exec — plus the
-//! U6b detection gates (the wired `ExecBracket`: #14 cheat detection, the
-//! phase-2 gate, ruling-2 never-roll-back).
+//! `root_after_phase1` (#19 addendum), the S2/#21 failure matrix, the
+//! completion receipt through the executor choke point, and the U8 stdout
+//! record riding the exec — plus the U6b detection gates (the wired
+//! `ExecBracket`: #14 cheat detection, the phase-2 gate, ruling-2
+//! never-roll-back). Bash has NO effect channel (the effect-shim fd is
+//! deleted — ZT ruling 2026-08-21): every phase-2 commit is an empty batch.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use effects::Provenance;
 use run::dispatch_bash::{self, BashDispatch, BashError, Phase2};
 use run::exec::ExecStatus;
 use run::executor::{ExecError, ReceiptAddr, WorkspaceLock};
-use run::shim::ShimError;
 
 /// Empty run-birth fields for these fixtures.
 static TEST_EMPTY_FIELDS: BTreeMap<String, String> = BTreeMap::new();
@@ -36,13 +36,6 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     let root = fs::WorkspaceRoot(tmp.path().to_owned());
     (tmp, root)
 }
-
-/// The documented emitter: one `md.set_field status=done` record + trailer.
-const EMIT_SET_FIELD: &str = r#"
-p='{"op":"md.set_field","field":"status","value":"done"}'
-printf '%s:%s\n' "${#p}" "$p" >&"$MD_EFFECT_FD"
-printf 'end:1\n' >&3
-"#;
 
 fn dispatch_of<'a>(source: &'a str, scratch: &'a tempfile::TempDir) -> BashDispatch<'a> {
     BashDispatch {
@@ -90,12 +83,8 @@ fn a_preflight_refusal_writes_nothing_to_the_attested_domain() {
     std::os::unix::fs::symlink(&evil, root.0.join("mdfs_config.yaml")).unwrap();
 
     let before = domain_digest(&root);
-    let err = dispatch_bash::run(
-        &root,
-        &dispatch_of("echo hi\nprintf 'end:1\\n' >&3\n", &scratch),
-        &mut Vec::new(),
-    )
-    .expect_err("the guarded walk must refuse this workspace");
+    let err = dispatch_bash::run(&root, &dispatch_of("echo hi\n", &scratch), &mut Vec::new())
+        .expect_err("the guarded walk must refuse this workspace");
     assert!(matches!(err, BashError::Detection(_)), "got {err:?}");
 
     assert_eq!(
@@ -157,37 +146,34 @@ fn domain_digest(root: &fs::WorkspaceRoot) -> Vec<(String, Vec<u8>)> {
         .collect()
 }
 
+/// The two-phase happy path: a clean exit commits the completion receipt (an
+/// empty batch — bash has no effect channel), both receipt anchors land, the
+/// page stays byte-identical, and the U8 record ran (live tee + sealed
+/// out-of-tree log, ruling 7).
 #[test]
-fn a_clean_run_applies_the_shim_batch_two_phase() {
+fn a_clean_run_commits_the_completion_receipt_two_phase() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let root_before = fs::domain_snapshot(&root).unwrap().1;
     let mut live: Vec<u8> = Vec::new();
 
-    let src = format!("echo running{EMIT_SET_FIELD}");
-    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
+    let out = dispatch_bash::run(&root, &dispatch_of("echo running", &scratch), &mut live).unwrap();
 
-    // The page changed through the ONE phase-2 batch.
-    let text = std::fs::read_to_string(root.0.join("page.md")).unwrap();
-    assert!(text.contains("status: done"), "{text}");
     assert!(out.status.success());
-    let Phase2::Applied { effects, applied } = &out.phase2 else {
+    let Phase2::Applied { applied } = &out.phase2 else {
         panic!("expected Applied, got {:?}", out.phase2);
     };
-    assert_eq!(effects.len(), 1);
-    let applied = applied.as_ref().expect("md.* applied");
-    assert_eq!(applied.applied, 1);
-    assert!(applied.event.is_some());
-
-    // #19: the effects were pinned to the COMPUTED root_after_phase1 — the
-    // phase-1 receipt commit changed the corpus, so the pin is NOT the
-    // pre-run root.
-    let Provenance::Run { root_at_eval, .. } = &effects[0].provenance else {
-        panic!("run-plane provenance expected");
-    };
-    assert_ne!(
-        *root_at_eval, root_before.0,
-        "the pin must be the post-phase-1 root, never a stale pre-run root"
+    assert_eq!(
+        applied.applied, 0,
+        "a completion receipt for an empty batch applies zero effects"
+    );
+    assert!(
+        applied.event.is_none(),
+        "an empty batch synthesizes no change event"
+    );
+    // The page the task did not touch stays byte-identical.
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("page.md")).unwrap(),
+        PAGE
     );
 
     // Both receipt lines landed: the pre-exec anchor (S2) and the completion.
@@ -195,10 +181,6 @@ fn a_clean_run_applies_the_shim_batch_two_phase() {
     let receipts = std::fs::read_to_string(root.0.join("receipts/2026-07-22.md")).unwrap();
     assert!(receipts.contains("^p-000001"), "{receipts}");
     assert!(receipts.contains("^r-000001"), "{receipts}");
-    assert!(
-        receipts.contains(root_at_eval.as_str()),
-        "the completion receipt records the phase-2 pin"
-    );
 
     // The U8 record ran: live tee + sealed out-of-tree log (ruling 7).
     assert_eq!(live, b"running\n");
@@ -209,31 +191,26 @@ fn a_clean_run_applies_the_shim_batch_two_phase() {
 }
 
 /// G3b, the pair's first half — COMPLETION IS NOT SUCCESS. A block that ran to
-/// a nonzero exit gets its effects refused AND its completion recorded: a
-/// check page exiting nonzero on a finding must not leave the same bytes as a
-/// crash.
+/// a nonzero exit gets its completion recorded as a refusal: a check page
+/// exiting nonzero on a finding must not leave the same bytes as a crash.
 #[test]
 fn a_nonzero_exit_refuses_phase2_and_phase1_stands() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
     let mut live: Vec<u8> = Vec::new();
 
-    // A VALID stream, then a failing exit — S2: exec-fail refuses phase 2.
-    let src = format!("{EMIT_SET_FIELD}\nexit 7");
-    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
+    let out = dispatch_bash::run(&root, &dispatch_of("exit 7", &scratch), &mut live).unwrap();
 
     assert_eq!(out.status, ExecStatus::Exited { code: 7 });
     let Phase2::RefusedExecFailed { applied } = &out.phase2 else {
         panic!("expected a recorded exec failure, got {:?}", out.phase2);
     };
-    // The refusal half, unchanged and still the law: the block emitted a
-    // set_field descriptor and NOTHING of it applied.
     assert_eq!(applied.applied, 0);
     assert_eq!(
         std::fs::read_to_string(root.0.join("page.md")).unwrap(),
         PAGE
     );
-    // The record half, new: the pre-exec receipt is JOINED by a completion
+    // The record half: the pre-exec receipt is JOINED by a completion
     // receipt carrying the exit code, so this run is no longer an orphan.
     let receipts = std::fs::read_to_string(root.0.join("receipts/2026-07-22.md")).unwrap();
     assert!(receipts.contains("^p-000001"));
@@ -244,10 +221,6 @@ fn a_nonzero_exit_refuses_phase2_and_phase1_stands() {
     assert!(
         receipts.contains("\"exit_code\":7"),
         "the completion receipt carries the exit code: {receipts}"
-    );
-    assert!(
-        !receipts.contains("set_field"),
-        "the refused effects are NOT recorded as applied: {receipts}"
     );
 }
 
@@ -262,11 +235,15 @@ fn a_signaled_step_records_no_completion_and_stays_an_orphan() {
     let scratch = tempfile::tempdir().unwrap();
     let mut live: Vec<u8> = Vec::new();
 
-    // A valid stream, then the step kills ITSELF — the supervisor's own
-    // step-end SIGKILL would be indistinguishable from a timeout, so the
-    // signal has to come from inside the block.
-    let src = format!("{EMIT_SET_FIELD}\nkill -TERM $$\nsleep 5");
-    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
+    // The step kills ITSELF — the supervisor's own step-end SIGKILL would be
+    // indistinguishable from a timeout, so the signal has to come from inside
+    // the block.
+    let out = dispatch_bash::run(
+        &root,
+        &dispatch_of("kill -TERM $$\nsleep 5", &scratch),
+        &mut live,
+    )
+    .unwrap();
 
     assert!(
         matches!(out.status, ExecStatus::Signaled { .. }),
@@ -283,30 +260,6 @@ fn a_signaled_step_records_no_completion_and_stays_an_orphan() {
     assert!(
         !receipts.contains("^r-000001"),
         "a crash leaves the orphan anchor alone: {receipts}"
-    );
-}
-
-#[test]
-fn a_truncated_stream_fails_the_whole_batch_closed() {
-    let (_tmp, root) = workspace();
-    let scratch = tempfile::tempdir().unwrap();
-    let mut live: Vec<u8> = Vec::new();
-
-    // A record with NO trailer and a clean exit — S6: fails closed.
-    let src = r#"
-p='{"op":"md.set_field","field":"status","value":"done"}'
-printf '%s:%s\n' "${#p}" "$p" >&3
-"#;
-    let out = dispatch_bash::run(&root, &dispatch_of(src, &scratch), &mut live).unwrap();
-
-    assert!(out.status.success());
-    assert!(matches!(
-        out.phase2,
-        Phase2::RefusedShim(ShimError::MissingTrailer)
-    ));
-    assert_eq!(
-        std::fs::read_to_string(root.0.join("page.md")).unwrap(),
-        PAGE
     );
 }
 
@@ -330,50 +283,13 @@ fn a_timeout_is_distinct_and_refuses_phase2() {
     assert!(out.stdout.is_ok());
 }
 
-/// Zero descriptors on a clean exit is not a fault — and it is not silence
-/// either: the run happened, so it gets a completion receipt. Without one,
-/// "authorised and never started" and "ran and changed nothing" would be the
-/// same bytes. The page stays untouched.
-#[test]
-fn zero_descriptors_on_a_clean_exit_is_not_a_fault() {
-    let (_tmp, root) = workspace();
-    let scratch = tempfile::tempdir().unwrap();
-    let mut live: Vec<u8> = Vec::new();
-
-    let out = dispatch_bash::run(&root, &dispatch_of("echo ok", &scratch), &mut live).unwrap();
-
-    assert!(out.status.success());
-    // Not a fault: the empty batch applied, and it applied NOTHING.
-    let Phase2::Applied { effects, applied } = &out.phase2 else {
-        panic!(
-            "an empty batch on a clean exit is not a fault, got {:?}",
-            out.phase2
-        );
-    };
-    assert!(effects.is_empty(), "no descriptors were emitted");
-    assert!(
-        applied.is_some(),
-        "the run happened, so it must leave a completion receipt — without one \
-         it is indistinguishable from a run that never started"
-    );
-    assert_eq!(
-        applied.as_ref().unwrap().applied,
-        0,
-        "a completion receipt for an empty batch applies zero effects"
-    );
-    // Unchanged intent: the page the task did not touch stays byte-identical.
-    assert_eq!(
-        std::fs::read_to_string(root.0.join("page.md")).unwrap(),
-        PAGE
-    );
-}
-
 /// The join the orphan lint needs: a completed run leaves BOTH receipts — the
-/// phase-1 pre-exec anchor and a phase-2 completion — at distinct anchors, even
-/// when it emitted no effects. A pre-exec receipt with no completion is then a
-/// readable state rather than an indistinguishable one.
+/// phase-1 pre-exec anchor and a phase-2 completion — at distinct anchors.
+/// A pre-exec receipt with no completion is then a readable state rather than
+/// an indistinguishable one: without the completion, "authorised and never
+/// started" and "ran and changed nothing" would be the same bytes.
 #[test]
-fn a_completed_zero_effect_run_leaves_both_receipts() {
+fn a_completed_run_leaves_both_receipts() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
 
@@ -387,31 +303,6 @@ fn a_completed_zero_effect_run_leaves_both_receipts() {
     assert!(
         receipts.contains("^r-000001"),
         "the phase-2 completion anchor is present: {receipts}"
-    );
-}
-
-/// Capabilities do not apply to bash (`docs/laws.md` § Amendment): the
-/// dispatcher passes `Authority::Unsandboxed` and the descriptor APPLIES.
-/// Denying the shim would only push the same write to `sed -i`, off the
-/// attested path; `law_no_caps_on_bash.rs` holds both halves.
-#[test]
-fn an_undeclared_bash_descriptor_applies_ungoverned() {
-    let (_tmp, root) = workspace();
-    let scratch = tempfile::tempdir().unwrap();
-    let mut live: Vec<u8> = Vec::new();
-
-    let out = dispatch_bash::run(&root, &dispatch_of(EMIT_SET_FIELD, &scratch), &mut live).unwrap();
-
-    assert!(
-        matches!(out.phase2, Phase2::Applied { .. }),
-        "{:?}",
-        out.phase2
-    );
-    assert!(
-        std::fs::read_to_string(root.0.join("page.md"))
-            .unwrap()
-            .contains("status: done"),
-        "the descriptor did not apply"
     );
 }
 
@@ -439,10 +330,9 @@ fn an_unsafe_invocation_id_refuses_before_anything_commits() {
     assert!(!root.0.join("receipts").exists(), "nothing committed");
 }
 
-/// U6b #14, the zero-descriptor cheat end-to-end: bash writes an md file
-/// into the TREE, emits nothing on the shim fd, exits 0. Phase 2 refuses, the
-/// delta names the file (S4 wording), and the write is NEVER rolled back
-/// (ruling 2).
+/// U6b #14, the tree-write cheat end-to-end: bash writes an md file into the
+/// TREE and exits 0. Phase 2 refuses (no completion receipt), the delta names
+/// the file (S4 wording), and the write is NEVER rolled back (ruling 2).
 #[test]
 fn an_ungoverned_tree_write_refuses_phase2_with_the_delta_named() {
     let (_tmp, root) = workspace();
@@ -463,6 +353,10 @@ fn an_ungoverned_tree_write_refuses_phase2_with_the_delta_named() {
         msg.contains("out-of-band change during exec window"),
         "S4 wording: {msg}"
     );
+    // No completion receipt joined the pre-exec anchor.
+    let receipts = std::fs::read_to_string(root.0.join("receipts/2026-07-22.md")).unwrap();
+    assert!(receipts.contains("^p-000001"));
+    assert!(!receipts.contains("^r-000001"));
     // Ruling 2: the ungoverned write persists — never rolled back.
     assert_eq!(
         std::fs::read_to_string(root.0.join("rogue.md")).unwrap(),
@@ -470,50 +364,19 @@ fn an_ungoverned_tree_write_refuses_phase2_with_the_delta_named() {
     );
 }
 
-/// U6b #19, the cheat a naive root-compare passes: one HONEST descriptor AND
-/// a rogue tree write. The residual names exactly the rogue path, and the
-/// WHOLE phase 2 refuses — even the honest effect does not apply.
-#[test]
-fn an_honest_descriptor_plus_rogue_write_refuses_everything() {
-    let (_tmp, root) = workspace();
-    let scratch = tempfile::tempdir().unwrap();
-    let mut live: Vec<u8> = Vec::new();
-
-    let src = format!(
-        "echo sneaky > '{}/rogue.md'\n{EMIT_SET_FIELD}",
-        root.0.display()
-    );
-    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
-
-    assert!(matches!(out.phase2, Phase2::RefusedDetection));
-    let Detection::OutOfBand(delta) = &out.detection else {
-        panic!("expected OutOfBand, got {:?}", out.detection);
-    };
-    assert_eq!(delta.unexpected, vec!["rogue.md".to_string()]);
-    // The honest descriptor did NOT apply — the page is untouched.
-    assert_eq!(
-        std::fs::read_to_string(root.0.join("page.md")).unwrap(),
-        PAGE
-    );
-    // No completion receipt joined the pre-exec anchor.
-    let receipts = std::fs::read_to_string(root.0.join("receipts/2026-07-22.md")).unwrap();
-    assert!(receipts.contains("^p-000001"));
-    assert!(!receipts.contains("^r-000001"));
-}
-
-/// U16 honest semantics: the step now runs in the invocation cwd and is handed
+/// U16 honest semantics: the step runs in the invocation cwd and is handed
 /// `$MERIDIAN_PROJECT_ROOT`, so reaching the tree is EASY. Reaching it is not
 /// tolerating it — a stray write through that very variable is detected as
-/// `OutOfBand` and REFUSES convergence: nothing applies, no completion receipt,
-/// and (ruling 2) the write is never rolled back.
+/// `OutOfBand` and REFUSES convergence: no completion receipt, and (ruling 2)
+/// the write is never rolled back.
 #[test]
 fn a_project_root_relative_stray_write_refuses_convergence() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
     let mut live: Vec<u8> = Vec::new();
 
-    let src = format!("echo stray > \"$MERIDIAN_PROJECT_ROOT/stray.md\"\n{EMIT_SET_FIELD}");
-    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
+    let src = "echo stray > \"$MERIDIAN_PROJECT_ROOT/stray.md\"";
+    let out = dispatch_bash::run(&root, &dispatch_of(src, &scratch), &mut live).unwrap();
 
     assert!(out.status.success(), "the step itself exited 0");
     assert!(matches!(out.phase2, Phase2::RefusedDetection));
@@ -521,11 +384,6 @@ fn a_project_root_relative_stray_write_refuses_convergence() {
         panic!("expected OutOfBand, got {:?}", out.detection);
     };
     assert_eq!(delta.unexpected, vec!["stray.md".to_string()]);
-    // Refused, not merely reported: the honest descriptor did not apply.
-    assert_eq!(
-        std::fs::read_to_string(root.0.join("page.md")).unwrap(),
-        PAGE
-    );
     let receipts = std::fs::read_to_string(root.0.join("receipts/2026-07-22.md")).unwrap();
     assert!(!receipts.contains("^r-000001"), "no completion receipt");
     // Ruling 2: never rolled back.
@@ -568,8 +426,7 @@ fn the_completion_receipt_carries_the_sealed_exec_facts() {
     let scratch = tempfile::tempdir().unwrap();
     let mut live: Vec<u8> = Vec::new();
 
-    let src = format!("echo running{EMIT_SET_FIELD}");
-    let mut d = dispatch_of(&src, &scratch);
+    let mut d = dispatch_of("echo running", &scratch);
     d.env = BTreeMap::from([("HOME_WIKI".to_string(), "secret-value".to_string())]);
     let out = dispatch_bash::run(&root, &d, &mut live).unwrap();
 
@@ -600,31 +457,30 @@ fn the_completion_receipt_carries_the_sealed_exec_facts() {
     assert!(!pre.contains("\"exec\""), "{pre}");
 }
 
-/// U6b happy path: a clean window's verdict is `Clean`, phase 2 proceeds,
-/// and the verified root IS the phase-2 pin (`root_after_phase1`) — the
-/// bracket and the #19 computed-root discipline agree end-to-end.
+/// U6b happy path: a clean window's verdict is `Clean`, phase 2 proceeds, and
+/// the completion receipt attests the verified window root — the bracket and
+/// the #19 computed-root discipline agree end-to-end.
 #[test]
 fn a_clean_window_verdict_rides_the_outcome() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
     let mut live: Vec<u8> = Vec::new();
 
-    let out = dispatch_bash::run(&root, &dispatch_of(EMIT_SET_FIELD, &scratch), &mut live).unwrap();
+    let out = dispatch_bash::run(&root, &dispatch_of("echo ok", &scratch), &mut live).unwrap();
 
     assert!(out.detection.is_clean());
-    let Phase2::Applied { effects, applied } = &out.phase2 else {
-        panic!("expected Applied, got {:?}", out.phase2);
-    };
-    assert!(applied.is_some());
+    assert!(matches!(out.phase2, Phase2::Applied { .. }));
     let Detection::Clean { root: verified } = &out.detection else {
         unreachable!();
     };
-    let Provenance::Run { root_at_eval, .. } = &effects[0].provenance else {
-        panic!("run-plane provenance expected");
-    };
-    assert_eq!(
-        verified.0, *root_at_eval,
-        "the bracket-verified root is the phase-2 pin"
+    let receipts = std::fs::read_to_string(root.0.join("receipts/2026-07-22.md")).unwrap();
+    let completion = receipts
+        .lines()
+        .find(|l| l.contains("^r-000001"))
+        .expect("completion line committed");
+    assert!(
+        completion.contains(verified.0.as_str()),
+        "the completion receipt attests the bracket-verified root: {completion}"
     );
 }
 
@@ -645,6 +501,8 @@ fn a_timeout_still_renders_the_detection_verdict() {
     assert!(out.detection.is_clean(), "untouched tree ⇒ clean verdict");
 }
 
+/// Without a pre-exec receipt there is no phase-1 commit, so the locked-window
+/// root0 IS the window baseline the completion receipt attests.
 #[test]
 fn without_a_pre_receipt_the_run_still_pins_a_locked_window_root() {
     let (_tmp, root) = workspace();
@@ -652,20 +510,21 @@ fn without_a_pre_receipt_the_run_still_pins_a_locked_window_root() {
     let root_before = fs::domain_snapshot(&root).unwrap().1;
     let mut live: Vec<u8> = Vec::new();
 
-    let mut d = dispatch_of(EMIT_SET_FIELD, &scratch);
+    let mut d = dispatch_of("echo ok", &scratch);
     d.pre_receipt = None;
     let out = dispatch_bash::run(&root, &d, &mut live).unwrap();
 
     assert!(out.pre_receipt_line.is_none());
-    let Phase2::Applied { effects, applied } = &out.phase2 else {
-        panic!("expected Applied, got {:?}", out.phase2);
-    };
-    assert!(applied.is_some());
-    // No phase-1 commit → root_after_phase1 IS the locked-window root0.
-    let Provenance::Run { root_at_eval, .. } = &effects[0].provenance else {
-        panic!("run-plane provenance expected");
-    };
-    assert_eq!(*root_at_eval, root_before.0);
+    assert!(matches!(out.phase2, Phase2::Applied { .. }));
+    let receipts = std::fs::read_to_string(root.0.join("receipts/2026-07-22.md")).unwrap();
+    let completion = receipts
+        .lines()
+        .find(|l| l.contains("^r-000001"))
+        .expect("completion line committed");
+    assert!(
+        completion.contains(root_before.0.as_str()),
+        "no phase-1 commit → the receipt attests the pre-run root: {completion}"
+    );
 }
 
 // ---- run-walk-real-roots (dogfood r2 D-USER F2): the run plane on a ----
@@ -714,7 +573,7 @@ fn bash_runs_on_a_sessions_shaped_root_under_the_declared_domain_shape() {
 
     let outcome = dispatch_bash::run(
         &root,
-        &dispatch_of("echo alive\nprintf 'end:0\\n' >&3\n", &scratch),
+        &dispatch_of("echo alive\n", &scratch),
         &mut Vec::new(),
     )
     .expect("under the declared domain shape the walk must not refuse");
@@ -766,7 +625,7 @@ fn pre_existing_stranger_links_no_longer_close_the_run_door() {
 
     let outcome = dispatch_bash::run(
         &root,
-        &dispatch_of("echo alive\nprintf 'end:0\\n' >&3\n", &scratch),
+        &dispatch_of("echo alive\n", &scratch),
         &mut Vec::new(),
     )
     .expect("pre-existing stranger links must not refuse the walk");
@@ -801,8 +660,7 @@ fn the_dispatch_refusal_names_the_count_and_the_first_offender() {
     let src = format!(
         "ln -s '{target}' \"$MERIDIAN_PROJECT_ROOT/zz-late.md\"\n\
          ln -s '{target}' \"$MERIDIAN_PROJECT_ROOT/aa-early.md\"\n\
-         ln -s '{target}' \"$MERIDIAN_PROJECT_ROOT/mm-mid.md\"\n\
-         printf 'end:0\\n' >&3\n"
+         ln -s '{target}' \"$MERIDIAN_PROJECT_ROOT/mm-mid.md\"\n"
     );
     let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut Vec::new()).unwrap();
 
@@ -827,12 +685,7 @@ fn the_dispatch_refusal_names_the_count_and_the_first_offender() {
 fn a_quiet_pre_exec_gap_reports_no_divergence() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let out = dispatch_bash::run(
-        &root,
-        &dispatch_of("printf 'end:0\\n' >&3\n", &scratch),
-        &mut Vec::new(),
-    )
-    .unwrap();
+    let out = dispatch_bash::run(&root, &dispatch_of("true\n", &scratch), &mut Vec::new()).unwrap();
     assert!(out.pre_exec.is_none(), "got {:?}", out.pre_exec);
     assert!(matches!(out.phase2, Phase2::Applied { .. }));
 }
@@ -846,20 +699,23 @@ fn a_quiet_pre_exec_gap_reports_no_divergence() {
 // these gates pin the dispatch seam itself.
 
 /// A clean two-phase run is byte-identical across lanes: same verdict, same
-/// pin, same attested tree afterwards (two identical trees fold to identical
-/// roots — the merkle is path-relative).
+/// receipts, same attested tree afterwards (two identical trees fold to
+/// identical roots — the merkle is path-relative).
 #[test]
 fn the_resident_lane_runs_the_same_clean_dispatch_as_the_drawer_lane() {
     let (_tmp_a, drawer_root) = workspace();
     let (_tmp_b, resident_root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let src = format!("echo running{EMIT_SET_FIELD}");
 
-    let drawer_out =
-        dispatch_bash::run(&drawer_root, &dispatch_of(&src, &scratch), &mut Vec::new()).unwrap();
+    let drawer_out = dispatch_bash::run(
+        &drawer_root,
+        &dispatch_of("echo running", &scratch),
+        &mut Vec::new(),
+    )
+    .unwrap();
 
     let cache = std::sync::Mutex::new(fs::DomainCache::new());
-    let mut resident = dispatch_of(&src, &scratch);
+    let mut resident = dispatch_of("echo running", &scratch);
     resident.observations = dispatch_bash::ObservationSource::Resident(&cache);
     let resident_out = dispatch_bash::run(&resident_root, &resident, &mut Vec::new()).unwrap();
 
@@ -930,23 +786,22 @@ fn the_resident_lane_names_the_same_out_of_band_delta() {
 fn a_resident_lane_dispatch_leaves_the_shared_cache_warm() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let src = format!("echo running{EMIT_SET_FIELD}");
 
     let cache = std::sync::Mutex::new(fs::DomainCache::new());
-    let mut d = dispatch_of(&src, &scratch);
+    let mut d = dispatch_of("echo running", &scratch);
     d.observations = dispatch_bash::ObservationSource::Resident(&cache);
     let out = dispatch_bash::run(&root, &d, &mut Vec::new()).unwrap();
     assert!(out.detection.is_clean(), "{:?}", out.detection);
 
     let mut memo = cache.lock().unwrap();
-    // Phase 2 committed AFTER the bracket-close observation (the page splice
-    // and the completion receipt), so the first pass pays exactly that delta —
-    // never the corpus — and the pass after it pays nothing at all.
+    // Phase 2 committed AFTER the bracket-close observation (the completion
+    // receipt), so the first pass pays exactly that delta — never the corpus —
+    // and the pass after it pays nothing at all.
     let reads = memo.leaves_read();
     let after_run = memo.root(&root).unwrap();
     assert!(
         memo.leaves_read() - reads <= 2,
-        "the first pass re-reads at most the two phase-2 movers, got {}",
+        "the first pass re-reads at most the phase-2 movers, got {}",
         memo.leaves_read() - reads
     );
     let warm = (memo.listings(), memo.leaves_read());
@@ -962,138 +817,4 @@ fn a_resident_lane_dispatch_leaves_the_shared_cache_warm() {
         fs::domain_snapshot(&root).unwrap().1,
         "and the fold still agrees with the byte-derived root"
     );
-}
-
-// ── The birth lane's targeting axis, end to end through bash ───────────────
-// REGRESSION GUARD (2026-08-19): the shim admitted EXACTLY {path, body} for
-// `md.create`, so a bash block had NO way to express targeting — the
-// canonical card-birth page composed a rooted path instead and every birth
-// through it refused `bad_path` host-wide. These three cases are the bash
-// twin of starlark `create(path=, body=, base=)`.
-
-/// A block birthing one card, with the `base` line the caller supplies.
-fn emit_create(path: &str, base_line: &str) -> String {
-    format!(
-        r#"
-p='{{"op":"md.create","path":"{path}","body":"born"{base_line}}}'
-printf '%s:%s\n' "${{#p}}" "$p" >&"$MD_EFFECT_FD"
-printf 'end:1\n' >&3
-"#
-    )
-}
-
-#[cfg(unix)]
-#[test]
-fn a_bash_birth_lands_under_its_declared_base() {
-    let (_tmp, root) = workspace();
-    let scratch = tempfile::tempdir().unwrap();
-    let mut live: Vec<u8> = Vec::new();
-
-    let src = emit_create("tasks/card.md", r#","base":"year=2026/s1""#);
-    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
-
-    assert!(
-        matches!(out.phase2, Phase2::Applied { .. }),
-        "{:?}",
-        out.phase2
-    );
-    let born = root.0.join("year=2026/s1/tasks/card.md");
-    assert!(
-        born.is_file(),
-        "the birth did not land at {}",
-        born.display()
-    );
-    assert!(!root.0.join("tasks/card.md").exists(), "it landed baseless");
-}
-
-#[cfg(unix)]
-#[test]
-fn a_baseless_bash_birth_lands_under_the_callers_ambient() {
-    let (_tmp, root) = workspace();
-    let scratch = tempfile::tempdir().unwrap();
-    let mut live: Vec<u8> = Vec::new();
-
-    let src = emit_create("tasks/card.md", "");
-    let mut d = dispatch_of(&src, &scratch);
-    d.ambient = Some("year=2026/s2");
-    let out = dispatch_bash::run(&root, &d, &mut live).unwrap();
-
-    assert!(
-        matches!(out.phase2, Phase2::Applied { .. }),
-        "{:?}",
-        out.phase2
-    );
-    assert!(
-        root.0.join("year=2026/s2/tasks/card.md").is_file(),
-        "a baseless birth must fall back to the caller's ambient directory"
-    );
-}
-
-/// The break this card fixes, kept broken on purpose: targeting glued INTO
-/// the path still refuses, and the refusal teaches `base`.
-#[cfg(unix)]
-#[test]
-fn a_rooted_spelling_in_the_bash_birth_path_still_refuses() {
-    let (_tmp, root) = workspace();
-    let scratch = tempfile::tempdir().unwrap();
-    let mut live: Vec<u8> = Vec::new();
-
-    let src = emit_create("field-notes-sessions:year=2026/s3/tasks/card.md", "");
-    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
-
-    let Phase2::RefusedExec { error, .. } = &out.phase2 else {
-        panic!("expected a birth refusal, got {:?}", out.phase2);
-    };
-    let ExecError::BirthRefused { detail, .. } = error else {
-        panic!("expected BirthRefused, got {error:?}");
-    };
-    assert!(detail.contains("bad_path"), "{detail}");
-    assert!(
-        detail.contains("base"),
-        "the refusal must name the targeting argument: {detail}"
-    );
-    assert!(
-        !root.0.join("year=2026/s3/tasks/card.md").exists(),
-        "nothing may be written on a refusal"
-    );
-}
-
-/// The machinery floor reaches the BASH lane end to end (card
-/// create-door-machinery-containment): the shim's `base` key is the exact
-/// argument the measured `.git/` escape rode, so the lane that carries it must
-/// hit the door's floor. Bash runs UNSANDBOXED with no caps at all — the floor
-/// is the only guard standing between a bash block and the git directory.
-#[cfg(unix)]
-#[test]
-fn a_bash_birth_into_a_machinery_dir_refuses() {
-    for dir in [".git", ".meridian", "meridian", "receipts"] {
-        let (_tmp, root) = workspace();
-        let scratch = tempfile::tempdir().unwrap();
-        let mut live: Vec<u8> = Vec::new();
-
-        let src = emit_create("tasks/card.md", &format!(r#","base":"{dir}""#));
-        let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
-
-        let Phase2::RefusedExec { error, .. } = &out.phase2 else {
-            panic!(
-                "expected a birth refusal for base `{dir}`, got {:?}",
-                out.phase2
-            );
-        };
-        let ExecError::BirthRefused { detail, .. } = error else {
-            panic!("expected BirthRefused, got {error:?}");
-        };
-        assert!(
-            detail.contains("bad_path"),
-            "the bash lane hits the machinery floor for `{dir}`: {detail}"
-        );
-        assert!(
-            detail.contains(dir),
-            "the refusal names the offending segment `{dir}`: {detail}"
-        );
-        assert!(
-            !root.0.join(dir).join("tasks/card.md").exists(),
-            "nothing may be born under `{dir}`"
-        );
-    }
 }

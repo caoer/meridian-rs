@@ -8,10 +8,10 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 
-/// The fixture: a bash block that declares nothing, a bash block whose declaration admits a
-/// DIFFERENT target than the one it writes, a starlark block that declares nothing, and a bash
-/// block under the `check-*` name convention (whose refusal is a NAME law, not a capability,
-/// and must survive).
+/// The fixture: a bash block that declares nothing, a bash block whose frontmatter names a
+/// capability anyway, a starlark block that declares nothing, and a bash block under the
+/// `check-*` name convention (whose refusal is a NAME law, not a capability, and must
+/// survive).
 const PAGE: &str = "\
 ---
 task.undeclared-bash: \"[[#^ub-1]]\"
@@ -24,16 +24,12 @@ task.check-sh: \"[[#^chk-1]]\"
 # Tasks
 
 ```bash
-p='{\"op\":\"md.set_field\",\"field\":\"status\",\"value\":\"applied-undeclared\"}'
-printf '%s:%s\\n' \"${#p}\" \"$p\" >&\"$MD_EFFECT_FD\"
-printf 'end:1\\n' >&\"$MD_EFFECT_FD\"
+true
 ```
 ^ub-1
 
 ```bash
-p='{\"op\":\"md.set_field\",\"field\":\"status\",\"value\":\"applied-off-claim\"}'
-printf '%s:%s\\n' \"${#p}\" \"$p\" >&\"$MD_EFFECT_FD\"
-printf 'end:1\\n' >&\"$MD_EFFECT_FD\"
+true
 ```
 ^cb-1
 
@@ -206,34 +202,28 @@ fn dry_bash_claims_no_capability() {
 
 // ── Half 2: no resolution runs underneath the silence ───────────────────────
 
-/// The gate that cannot be faked by deleting print statements: a bash block that declares
-/// nothing emits a descriptor, and it applies. Under a surviving deny-by-default resolution
-/// this refuses at the choke point with `capability denied`.
+/// A bash block has no effect channel at all (the effect-shim fd is deleted —
+/// ZT ruling 2026-08-21): the run completes, and the governed tree is
+/// byte-identical. There is nothing for a capability to govern.
 #[test]
-fn undeclared_bash_descriptor_applies_ungoverned() {
+fn a_bash_block_has_no_effect_channel() {
     let ws = Ws::new();
     let out = ws.run(&["tasks.md", "undeclared-bash"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let page = std::fs::read_to_string(ws.file("tasks.md")).expect("page");
-    assert!(
-        page.contains("status: applied-undeclared"),
-        "an undeclared bash descriptor was governed:\n{page}"
-    );
+    assert_eq!(page, PAGE, "a bash run must not change the governed page");
 }
 
-/// A bash block whose frontmatter names a cap that admits a DIFFERENT target writes `status`
-/// anyway. The declaration governs nothing — it is not a narrower grant, it is not a grant at
-/// all.
+/// A bash block whose frontmatter names a cap still runs exactly like any
+/// other bash block. The declaration governs nothing and grants nothing — it
+/// is not a narrower grant, it is not a grant at all.
 #[test]
 fn bash_frontmatter_cap_declaration_governs_nothing() {
     let ws = Ws::new();
     let out = ws.run(&["tasks.md", "claiming-bash"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let page = std::fs::read_to_string(ws.file("tasks.md")).expect("page");
-    assert!(
-        page.contains("status: applied-off-claim"),
-        "a bash frontmatter cap declaration was enforced:\n{page}"
-    );
+    assert_eq!(page, PAGE, "a bash cap declaration must change nothing");
 }
 
 // ── The contract that stays real ────────────────────────────────────────────

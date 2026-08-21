@@ -4,18 +4,16 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-/// Lifecycle fixture workspace: a starlark fix task, a bash fix task that emits one governed
-/// descriptor over the effect-shim fd, a bash task with NO caps that still tries to emit, a
-/// bash task that writes an md file directly (zero descriptors), and a bash task that rewrites
-/// `mdfs_config.yaml` mid-run (the widening attack).
+/// Lifecycle fixture workspace: a starlark fix task, a plain bash task (bash has no effect
+/// channel — the effect-shim fd is deleted, ZT ruling 2026-08-21), a bash task that writes an
+/// md file directly, and a bash task that rewrites `mdfs_config.yaml` mid-run (the widening
+/// attack).
 const PAGE: &str = "\
 ---
 task.fix-note: \"[[#^note-1]]\"
 task.fix-note.caps: md.edit
 task.fix-note.args: value
-task.fix-shim: \"[[#^shim-1]]\"
-task.fix-shim.caps: md.edit
-task.fix-uncapped: \"[[#^uncap-1]]\"
+task.fix-sh: \"[[#^sh-1]]\"
 task.fix-cheat: \"[[#^cheat-1]]\"
 task.fix-cheat.env: WS
 task.fix-widen: \"[[#^widen-1]]\"
@@ -31,18 +29,9 @@ def run(ctx):
 ^note-1
 
 ```bash
-p='{\"op\":\"md.set_field\",\"field\":\"status\",\"value\":\"shimmed\"}'
-printf '%s:%s\\n' \"${#p}\" \"$p\" >&\"$MD_EFFECT_FD\"
-printf 'end:1\\n' >&\"$MD_EFFECT_FD\"
+true
 ```
-^shim-1
-
-```bash
-p='{\"op\":\"md.set_field\",\"field\":\"status\",\"value\":\"denied\"}'
-printf '%s:%s\\n' \"${#p}\" \"$p\" >&\"$MD_EFFECT_FD\"
-printf 'end:1\\n' >&\"$MD_EFFECT_FD\"
-```
-^uncap-1
+^sh-1
 
 ```bash
 printf 'smuggled\\n' > \"$WS/cheat.md\"
@@ -127,16 +116,17 @@ fn starlark_task_applies_one_batch_with_receipt() {
     assert!(stdout(&out).contains("hermetic"), "{}", stdout(&out));
 }
 
-/// Bash lifecycle: the shim descriptor applies through the SAME choke point and splice batch;
-/// the receipt carries the exec record (invocation id, exit code, stdout sha256 + size, log
-/// address — ruling 7/S8); the stdout log exists under `.meridian/runs/`.
+/// Bash lifecycle: no effect channel, so the run changes nothing on the page;
+/// the completion receipt carries the exec record (invocation id, exit code,
+/// stdout sha256 + size, log address — ruling 7/S8); the stdout log exists
+/// under `.meridian/runs/`.
 #[test]
-fn bash_task_applies_via_shim_with_run_record() {
+fn bash_task_records_the_run_and_changes_nothing() {
     let ws = Ws::new();
-    let out = ws.run(&["tasks.md", "fix-shim"]);
+    let out = ws.run(&["tasks.md", "fix-sh"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let page = std::fs::read_to_string(ws.file("tasks.md")).expect("page");
-    assert!(page.contains("status: shimmed"), "{page}");
+    assert_eq!(page, PAGE, "a bash run must not change the governed page");
     // The out-of-tree record exists and the receipt names it.
     let runs = std::fs::read_dir(ws.file(".meridian/runs")).expect("runs dir");
     assert!(runs.count() >= 1, "no run log written");
@@ -154,23 +144,9 @@ fn bash_task_applies_via_shim_with_run_record() {
     );
 }
 
-/// Capabilities do not apply to bash (`docs/laws.md` § Amendment), so `fix-uncapped` applies
-/// ungoverned.
-#[test]
-fn an_undeclared_bash_descriptor_applies_ungoverned() {
-    let ws = Ws::new();
-    let out = ws.run(&["tasks.md", "fix-uncapped"]);
-    assert_eq!(code(&out), 0, "{}", stderr(&out));
-    let after = std::fs::read_to_string(ws.file("tasks.md")).expect("page");
-    assert!(
-        after.contains("status: denied"),
-        "the undeclared descriptor was governed:\n{after}"
-    );
-}
-
-/// The zero-descriptor cheat: bash writes an md file directly. The snapshot bracket DETECTS it
-/// (exit 1, delta named as an exec-window change) and the write PERSISTS — never rolled back
-/// (14: rollback would be a second write path with invented authority).
+/// The direct-write cheat: bash writes an md file into the tree. The snapshot bracket DETECTS
+/// it (exit 1, delta named as an exec-window change) and the write PERSISTS — never rolled
+/// back (14: rollback would be a second write path with invented authority).
 #[test]
 fn ungoverned_md_write_is_detected_named_never_rolled_back() {
     let ws = Ws::new();
@@ -209,10 +185,10 @@ fn config_widening_attack_is_refused() {
 #[test]
 fn dry_and_run_agree_that_bash_has_no_capability() {
     let ws = Ws::new();
-    let dry = ws.run(&["tasks.md", "fix-shim", "--dry", "--json"]);
+    let dry = ws.run(&["tasks.md", "fix-sh", "--dry", "--json"]);
     assert_eq!(code(&dry), 0, "{}", stderr(&dry));
     let dry_json: serde_json::Value = serde_json::from_str(&stdout(&dry)).expect("dry json");
-    let run = ws.run(&["tasks.md", "fix-shim", "--json"]);
+    let run = ws.run(&["tasks.md", "fix-sh", "--json"]);
     assert_eq!(code(&run), 0, "{}", stderr(&run));
     let run_json: serde_json::Value = serde_json::from_str(&stdout(&run)).expect("run json");
 
