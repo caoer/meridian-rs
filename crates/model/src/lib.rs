@@ -2850,15 +2850,67 @@ pub fn fm_tags(block: &str, key: &str) -> Vec<String> {
         return tag_item(&one).into_iter().collect();
     }
 
-    // A flow sequence may span lines (`tags: [a,` / `  b]`). Join until the
-    // bracket closes — inside the block only; an unclosed sequence serves what
-    // it opened rather than swallowing the rest of the frontmatter.
-    let mut value = scalar::text(remainder);
+    let value = fm_flow_join(&lines, at, scalar::text(remainder));
+    if !value.trim().is_empty() {
+        return parse_tag_list(&value);
+    }
+
+    // The key line carries no value: a block sequence, or nothing at all.
+    fm_block_items(&lines, at)
+        .iter()
+        .filter_map(|item| tag_item(item))
+        .collect()
+}
+
+/// The value one frontmatter key PUBLISHES, read off the BLOCK — § A.6.1′.
+///
+/// A key line that carries a scalar serves it decoded (§ A.6.1, through
+/// [`scalar::decode`]). A key line that carries nothing, followed by a YAML
+/// **block sequence**, serves that sequence rendered as the flow-style text it
+/// spells: `[a, b]`, items verbatim, spelling kept — `- "[[x]]"` renders
+/// `["[[x]]"]`, exactly what the same list on the key line is served as. A
+/// multi-line flow sequence joins ([`fm_flow_join`]). `None` when the key is
+/// absent; `Some("")` when the key line is bare and no sequence follows — the
+/// engine never invents `[]`.
+///
+/// Why this exists: [`YamlMap`] keeps only the key LINE's remainder, so every
+/// block-sequence value read off the map alone is the empty string. On the
+/// fleet corpus 50 of 50 `agents:` rows projected `''` while every one named
+/// its ids on the following lines, and a sql absence claim over a list-valued
+/// key read clean while proving nothing (card `fm-block-list-sql-empty`).
+/// [`fm_tags`] had closed that for `tag`/`tags` only; this is the same walk
+/// for EVERY key, and the two share it ([`fm_block_items`], [`fm_flow_join`])
+/// so there is one block-sequence reader, never a third.
+///
+/// The rendering is TEXT, never a YAML node: a consumer that wants the items
+/// splits it the way [`parse_alias_list`] / [`parse_tag_list`] already split a
+/// flow list.
+#[must_use]
+pub fn fm_value(block: &str, key: &str) -> Option<String> {
+    let lines: Vec<&str> = block.lines().collect();
+    let (at, remainder) = fm_key_line(&lines, key)?;
+    let value = match scalar::decode(remainder) {
+        scalar::Scalar::Quoted(one) => return Some(one),
+        scalar::Scalar::Plain(plain) => fm_flow_join(&lines, at, plain.to_string()),
+    };
+    if !value.is_empty() {
+        return Some(value);
+    }
+    let items = fm_block_items(&lines, at);
+    if items.is_empty() {
+        return Some(String::new());
+    }
+    Some(format!("[{}]", items.join(", ")))
+}
+
+/// Join a flow sequence that spans lines (`key: [a,` / `  b]`): continue
+/// until the bracket closes — inside the block only. Continuation is indented
+/// by construction; a column-0 line is the next key or the closing fence, and
+/// an unclosed sequence serves what it opened rather than swallowing the rest
+/// of the frontmatter. A value that is not an unclosed `[` passes through.
+fn fm_flow_join(lines: &[&str], at: usize, mut value: String) -> String {
     if value.starts_with('[') && !value.contains(']') {
         for line in &lines[at + 1..] {
-            // Continuation is indented by construction; a column-0 line is the
-            // next key or the closing fence, and an unclosed sequence must not
-            // swallow it.
             if !line.starts_with([' ', '\t']) {
                 break;
             }
@@ -2869,27 +2921,30 @@ pub fn fm_tags(block: &str, key: &str) -> Vec<String> {
             }
         }
     }
+    value
+}
 
-    if !value.trim().is_empty() {
-        return parse_tag_list(&value);
-    }
-
-    // The key line carries no value: a block sequence, or nothing at all.
-    let mut tags = Vec::new();
+/// The items of the YAML block sequence that follows the key line at `at`,
+/// each the text after its `-` marker, trimmed, spelling kept (quotes and all
+/// — the item lanes decide what to strip). Blank and comment lines do not end
+/// a sequence; a column-0 line (the next key, or the closing fence) does, and
+/// so does an indented shape that is not an item — stop, never guess.
+fn fm_block_items(lines: &[&str], at: usize) -> Vec<String> {
+    let mut items = Vec::new();
     for line in &lines[at + 1..] {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue; // blank and comment lines do not end a sequence
+            continue;
         }
         if !line.starts_with([' ', '\t']) {
-            break; // column 0 — the next key, or the closing fence
+            break;
         }
         let Some(item) = trimmed.strip_prefix('-') else {
-            break; // an indented shape that is not an item — stop, never guess
+            break;
         };
-        tags.extend(tag_item(item));
+        items.push(item.trim().to_string());
     }
-    tags
+    items
 }
 
 /// Parse a frontmatter tag value written on the key line: `[a, b]`, `a, b`, or
@@ -3170,6 +3225,57 @@ mod tests {
             vec!["a"],
             "an unclosed sequence serves what it opened, never the next key",
         );
+    }
+
+    /// The generic value lane (§ A.6.1′): a block sequence under ANY key
+    /// renders as the flow-style text it spells, items verbatim — the 50/50
+    /// `agents:` rows on the fleet corpus (card `fm-block-list-sql-empty`).
+    #[test]
+    fn fm_value_renders_a_block_sequence_as_flow_text() {
+        let block = "---\nrole: worker\nagents:\n  - 75fbab63\n  - 98cd905e\n  \
+                     - d6e4a57a\ncreated: 2026-08-21\n---";
+        assert_eq!(
+            fm_value(block, "agents").as_deref(),
+            Some("[75fbab63, 98cd905e, d6e4a57a]"),
+        );
+        assert_eq!(fm_value(block, "role").as_deref(), Some("worker"));
+        assert_eq!(fm_value(block, "created").as_deref(), Some("2026-08-21"));
+        assert_eq!(fm_value(block, "missing"), None, "an absent key is None");
+        // Spelling is kept: the item lanes decide what to strip, the value
+        // lane serves what the flow form would have carried verbatim.
+        assert_eq!(
+            fm_value("handoff-to:\n  - \"[[a]]\"\n  - '[[b]]'\n", "handoff-to").as_deref(),
+            Some("[\"[[a]]\", '[[b]]']"),
+        );
+    }
+
+    /// The shapes beside the block list are unchanged: flow, empty flow,
+    /// scalar, quoted, multi-line flow — and a bare key is `""`, never `[]`.
+    #[test]
+    fn fm_value_leaves_every_other_shape_as_it_was() {
+        let block = "flow: [a, b]\nempty: []\nscalar: a\nbare:\nquoted: \"[a, b]\"\n\
+                     q: 'it''s'\nsplit: [a,\n  b]\nnext: 1\n";
+        assert_eq!(fm_value(block, "flow").as_deref(), Some("[a, b]"));
+        assert_eq!(fm_value(block, "empty").as_deref(), Some("[]"));
+        assert_eq!(fm_value(block, "scalar").as_deref(), Some("a"));
+        assert_eq!(fm_value(block, "bare").as_deref(), Some(""));
+        assert_eq!(fm_value(block, "quoted").as_deref(), Some("[a, b]"));
+        assert_eq!(fm_value(block, "q").as_deref(), Some("it's"));
+        assert_eq!(fm_value(block, "split").as_deref(), Some("[a, b]"));
+        assert_eq!(fm_value(block, "next").as_deref(), Some("1"));
+    }
+
+    /// The value lane and the tag lane share one block walk, so they agree on
+    /// where a sequence ends: comments and blanks skipped, an indented
+    /// non-item stops it, the next key stops it.
+    #[test]
+    fn fm_value_and_fm_tags_end_a_sequence_at_the_same_line() {
+        let block = "tags:\n  # a note\n\n  - a\n  - b\nnext: 1\n  - c";
+        assert_eq!(fm_value(block, "tags").as_deref(), Some("[a, b]"));
+        assert_eq!(fm_tags(block, "tags"), vec!["a", "b"]);
+        let nested = "agents:\n  - a\n  nested:\n    - b\n";
+        assert_eq!(fm_value(nested, "agents").as_deref(), Some("[a]"));
+        assert_eq!(fm_tags(nested, "agents"), vec!["a"]);
     }
 
     /// Both spellings of the block reach the same answer: `view` holds the

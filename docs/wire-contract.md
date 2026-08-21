@@ -2059,6 +2059,35 @@ answer live in its locator and rev columns (`span_start`/`span_end`,
 The `value` column was the only column serving bytes where its own schema
 comment says value.
 
+**A.6.1′ A list value is read off the BLOCK, for every key (2026-08-21, card
+`fm-block-list-sql-empty`).** The flat map behind the value seams keeps only
+the key LINE's remainder, and a YAML **block sequence** puts every item on a
+following line — so `agents:` followed by indented `- <id>` lines published
+the empty string. Measured on the fleet corpus at engine `39dd8ccc8`: 50 of 50
+`agents` rows were `''`, and a sql absence claim over any list-valued key read
+clean while proving nothing. `model::fm_tags` had closed exactly this for
+`tag`/`tags` (card `tag-all-block-form-blindness`) and no other key.
+
+The rule, universal and not an `agents:` carve-out: the view projection's
+`frontmatter.value` for a key whose line carries no scalar and whose block
+sequence follows is that sequence **rendered as the flow-style text it
+spells** — `[a, b]`, items verbatim, spelling kept (`- "[[x]]"` renders
+`["[[x]]"]`, exactly what the same list on the key line would have been served
+as under A.6.1's "flow collections are plain"). A multi-line flow sequence
+(`[a,` / `  b]`) joins the same way. Comment and blank lines inside a sequence
+are skipped; an indented non-item ends the walk (fail-closed, never a guess). A
+bare key line with no sequence below stays `''` — the engine never invents
+`[]`. The rendering is TEXT, never a YAML node: a consumer splits it the way
+`parse_alias_list` / `parse_tag_list` already split a flow list. One reader
+owns it (`model::fm_value`), and `fm_tags` rides the same block walk, so the
+tag lane and the value lane cannot disagree about where a sequence ends.
+
+Named residual, not silently left: the OTHER published-value seams in the
+table above (`props[].value`, a script's `fm`, the run plane's bindings) still
+read the flat map and still serve `''` for a block sequence. This amendment
+binds the view row only — ZT's GO was scoped to the projection — and the
+residual is recorded here so the next reader finds it named.
+
 **What stays raw, and why it is not an omission** (§ A.6.2's reasoning, the
 same stance `cat` takes): `lock` (guard tokens) and `policy::change`'s
 `diff_fields` answer questions ABOUT THE STORED BYTES.
