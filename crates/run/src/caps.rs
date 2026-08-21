@@ -488,8 +488,8 @@ impl Authority {
 
     /// Does this authority admit an effect of `kind` against `target`?
     ///
-    /// `Unsandboxed` admits every descriptor — the absence of a gate, not a
-    /// grant: denying the shim would only push the same write off the attested
+    /// `Unsandboxed` admits everything — the absence of a gate, not a
+    /// grant: denying it would only push the same write off the attested
     /// path.
     #[must_use]
     pub fn admits(&self, kind: &str, target: Option<&str>) -> bool {

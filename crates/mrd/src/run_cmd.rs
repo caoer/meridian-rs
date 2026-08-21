@@ -504,9 +504,6 @@ fn exit_leg(report: &runner::RunReport) -> Result<(), Fail> {
         Phase2::RefusedTimeout => {
             "bash timed out — process group killed, no effect applied".to_owned()
         }
-        Phase2::RefusedShim(e) => {
-            format!("the run's effects could not be read back: {e} — no effect applied")
-        }
         Phase2::RefusedDetection => outcome.detection.to_string(),
         Phase2::RefusedExec { error, .. } => return Err(fail_exec(error)),
     };

@@ -12,8 +12,8 @@ use model::{ByteSpan, Document, NodeKind};
 pub enum TaskLanguage {
     /// Hermetic Starlark — evaluated in the sealed rules kernel.
     Starlark,
-    /// Bash — executed in the invocation cwd (U16); GOVERNED tree change
-    /// travels only over the effect shim, and a stray write refuses (U6b).
+    /// Bash — executed in the invocation cwd (U16); NO governed-tree effect
+    /// channel, and a stray write refuses (U6b).
     Bash,
 }
 

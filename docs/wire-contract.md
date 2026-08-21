@@ -2719,11 +2719,10 @@ guard applies exactly as at every other op):
   ambient in your session directory") on the birth lane; explicit targeting
   rides the descriptor's separate `base` argument (a rooted ref or a
   confined dir; caps-redesign 2026-08-19), with precedence descriptor
-  `base` > frame `ambient` > workspace root. **Both lanes carry it** (engine
-  `6c960b7c4`): the starlark kernel as `create(path=, body=, base=,
-  message=)`, and the bash effect shim's `md.create` frame as an optional
-  `base` beside the required `path` + `body`, with identical semantics; any
-  OTHER key still refuses the whole batch closed. A rooted `base` must name the
+  `base` > frame `ambient` > workspace root. The birth lane carries it (engine
+  `6c960b7c4`) as the starlark kernel's `create(path=, body=, base=,
+  message=)` — the bash effect-shim lane is DELETED (2026-08-21): bash has no
+  effect channel. A rooted `base` must name the
   bound workspace (a foreign root refuses with a teaching — a run's births
   ride the bound workspace's ring, locks, and armed law), and a rooted
   spelling in the `path` argument itself refuses, naming `base` — two axes,
@@ -2814,7 +2813,8 @@ not this page: a task whose `^env` gate needs a daemon-held variable, e.g.
 `CCC_LLM_WIKI_PATH`, could never pass through the run face. The step now
 inherits the daemon's environment; declared contract pairs and the plane's
 own variables overlay it — declared pairs shadow inherited values, and the
-plane's own `MD_EFFECT_FD` / `MERIDIAN_PROJECT_ROOT` shadow everything)*.
+plane's own `MERIDIAN_PROJECT_ROOT` shadows everything. `MD_EFFECT_FD` is
+retired with the bash effect shim, 2026-08-21)*.
 One stated amendment to U16: the CLI's
 "the step runs where `mrd` runs" was written for a local entry whose cwd is
 the caller's context; a daemon has no meaningful cwd, so ON THIS OP the task

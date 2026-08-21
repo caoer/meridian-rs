@@ -6,8 +6,10 @@
 //! validate arg/env ([`contracts`]), resolve caps deny-by-default ([`caps`]).
 //! Dispatch: `starlark` → hermetic kernel ([`dispatch_starlark`]); `bash` →
 //! `setsid` child under wall-clock timeout ([`exec`], [`dispatch_bash`]) with
-//! tree mutation only via the effect-shim fd ([`shim`]). Both converge on the
-//! shared executor ([`executor`]): caps at the choke point, one unguarded
+//! NO governed-tree effect channel — bash observes and reports; governed
+//! writes ride the wire faces (MCP `put`) or a starlark task. Starlark
+//! converges on the shared executor ([`executor`]): caps at the choke point,
+//! one unguarded
 //! splice batch (no world pin — no-guard-on-effects ruling, 2026-08-15),
 //! receipt in the same commit. [`gate`] refuses armed changes
 //! before commit; [`snapshot`] names residual delta around bash; [`record`]
@@ -56,7 +58,6 @@ pub mod gate;
 pub mod record;
 pub mod report;
 pub mod runner;
-pub mod shim;
 pub mod snapshot;
 
 pub use address::{AddressError, ResolvedTask, TaskBinding};
@@ -72,5 +73,4 @@ pub use fence::{FenceError, GuaranteeClass, TaskBlock, TaskLanguage};
 pub use record::{ExecRecord, ExecRecordSink, RecordError, RunLog, StdoutRecord};
 pub use report::{CapsReport, EffectLine, ExecReport, Report, ReportState};
 pub use runner::{Generation, RunReport, RunSpec, RunnerError, TaskOutcome};
-pub use shim::{ShimDescriptor, ShimError, ShimStream};
 pub use snapshot::{Detection, ExecBracket, OpenRefusal};
