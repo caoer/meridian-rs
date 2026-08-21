@@ -29,7 +29,7 @@ def run(ctx):
 ^note-1
 
 ```bash
-echo observed
+true
 ```
 ^sh-1
 
