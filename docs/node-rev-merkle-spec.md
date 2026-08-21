@@ -881,6 +881,76 @@ stamped with a root its own fold did not derive from content digests. The
 run-plane bracket observations (guard grade, locked-window law) are out of
 scope and keep their live floors.
 
+### 6.8 The absorb path — deriving the answer at the cost of the change
+
+**Docs-first (2026-08-21).** Like §6.7 this closes a code-lags-doc gap:
+§6.1 already rules the maintenance law ("folds recompute lazily on demand —
+maintenance cost follows change, never corpus size") and §4.2 puts the cost
+law in the data structure. What was never stated is that the law binds
+DERIVING the served answer, not only deciding whether it may serve. In the
+unstated gap the served fold rebuilt a FRESH radix tree over the whole leaf
+memo on every recompute — §4.2's per-change bound honored inside an
+instrument reconstructed at O(corpus) per question — and the incremental
+corpus pass deep-cloned every carried document. Measured (37.8k members,
+2026-08-21, mrd 1.0.0 @ 149cf428d, 15 s sample under 2 foreign writes/s):
+~0.25 CPU-s of pure memory work per absorbed change, ~26.6 CPU-s per 60 s —
+attributed to the two flat rebuilds (the overlay fold and the rebuild's
+tail fold) and the carried-document clones.
+
+> **The law.** The resident tree IS the serving instrument. The served
+> workspace root derives from the ONE memo's incrementally maintained fold
+> (§6.1) — never from a second tree rebuilt over the leaf set the memo
+> already carries. An incremental corpus pass carries an unmoved member's
+> parsed document by shared reference, never by copy. And such a pass folds
+> nothing when the leaf set it built is byte-equal to the set its snapshot
+> served — its stamp is then the snapshot's own root, taken with the
+> snapshot under one lock. On the serve path the flat build over a leaf set
+> survives in exactly three roles: the cold observation (no resident state
+> yet), the divergence tail of an incremental pass (a mover vanished or
+> changed between snapshot and read — the built set differs, and the pass
+> folds what it actually built), and the equivalence gate's oracle. The
+> run-plane bracket observations stay out of scope with their own
+> instrument, exactly as §6.7 left them.
+
+Why this is lawful, stated as the gates that hold it:
+
+- **§4.2.1 purity is the equivalence.** The canonical trie shape is a pure
+  function of the current entry set — insertion, deletion, and refold
+  history never affect the result — so the incrementally maintained fold
+  and a fresh build over the same leaves cannot differ. The resident
+  structure's own property gate (any op history vs fresh build, §4.4
+  collision keys included) is the standing proof.
+- **Lockstep is the invariant, gated at the memo grain.** The leaf memo and
+  the resident tree advance in the same guarded act at every mutation
+  site — the observation generation, the own-write overlay (leaf, remove,
+  membership), the §6.5 restore (which verifies the rebuilt tree against
+  the stored `tree-root` before adopting any row). The absorb-path gate
+  asserts served fold == flat oracle after each mutation class, so no
+  future path can advance one half alone.
+- **One instrument, one truth.** The floor pass keeps its §6.2 walk, stat,
+  and read semantics unchanged; its FOLD is the same resident fold — the
+  §6.7 consumers and the floor can never disagree about the root of one
+  memo state (card run-observation-unification, extended to the fold).
+- **The §6.3 audit edge is untouched.** Stamps are maintained by the same
+  guarded write path that maintains digests; this section moves only where
+  the served value is READ from. No write path changes.
+- **The stamp law holds.** Nothing served is stamped with a root its own
+  fold did not derive from content digests (§6.7): the resident fold IS
+  the fold of the memo's content digests, and the fold-free rebuild stamp
+  rides input-equality — a fold of byte-equal inputs is the same value by
+  purity, so the pass's own leaf set is still exactly what its stamp
+  folds.
+- **Sharing changes ownership, never content.** A parsed document is
+  immutable once built (`model` law: derived, disposable); carrying it by
+  shared reference changes who frees it, not what it says. The resident
+  engine is already shared whole across concurrent readers — per-document
+  sharing extends the same posture one level down, so a rebuild allocates
+  movers only.
+
+The memo's fold counter keeps its semantics — zero on a quiet vouched
+pass, one per advance — counting served-fold recomputes; the instrument
+behind the count is now O(dirty vertices), never O(corpus).
+
 ## 7. Integrity surface + CAS — the grain ladder
 
 The premise grains, one instrument: the resident tree (§6) serves every row.
