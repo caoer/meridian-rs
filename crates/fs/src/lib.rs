@@ -3615,13 +3615,15 @@ fn rollback_error(
 /// snapshot. The watcher detects; root folding is `model`'s, Delta emission
 /// is the serving host's, and hook *dispatch* (running agent work on change)
 /// stays Go — Rust never executes agent work.
+/// One retained baseline member: its bytes at the baseline plus their §12.2
+/// leaf digest — the digest is what a memo-served leaf set diffs against
+/// ([`Watcher::diff_leaves`]), computed ONCE when the entry lands.
+type BaselineEntry = (Vec<u8>, [u8; 32]);
+
 #[derive(Debug)]
 pub struct Watcher {
     _root: WorkspaceRoot,
-    /// Each retained entry: the member's bytes at the baseline plus their
-    /// §12.2 leaf digest — the digest is what a memo-served leaf set diffs
-    /// against ([`Self::diff_leaves`]), computed ONCE when the entry lands.
-    baseline: Option<BTreeMap<String, (Vec<u8>, [u8; 32])>>,
+    baseline: Option<BTreeMap<String, BaselineEntry>>,
 }
 
 /// One detection cycle's byte-level classification: paths gone from the
