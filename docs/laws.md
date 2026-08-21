@@ -550,12 +550,21 @@ file, so the bash half cannot be bought by weakening the starlark half:
 → `state: unexecuted-no-capability`, exit 0. The `check-*` / `verify-*` bash
 fence refusal also survives — that is a NAME law, not a capability.
 
-**Behaviour changed, not just wording.** Bash reaches the tree through the
+**Behaviour changed, not just wording.** Bash reached the tree through the
 effect-shim fd and those descriptors were gated at the choke point, so an
-undeclared bash block used to exit 1 with `capability denied` and now applies.
-That gate never bounded the block: a denied block writes with `sed -i` instead,
-where the bracket at most detects the change and never rolls it back. It only
-pushed the write off the attested path.
+undeclared bash block used to exit 1 with `capability denied` and then applied
+ungoverned. That gate never bounded the block: a denied block writes with
+`sed -i` instead, where the bracket at most detects the change and never rolls
+it back. It only pushed the write off the attested path.
+
+**The channel itself is deleted** (2026-08-21, ZT: the bash effect-shim is a
+meaningless mechanism — remove it, do not fix it). `MD_EFFECT_FD`, the frame
+grammar, and the phase-2 descriptor apply are gone: bash has NO governed-tree
+effect channel at all. A bash block observes and reports; governed writes ride
+the wire faces (MCP `put`) or a starlark task. The law above stands unchanged —
+there is nothing left for a bash capability to govern — and the gate file's
+second half now asserts the governed page stays byte-identical after any bash
+run.
 
 ## Amendment — the face-honesty law
 

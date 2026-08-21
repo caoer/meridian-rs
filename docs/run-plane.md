@@ -1509,8 +1509,8 @@ guard a spelling defeats is not a guard.
 
 This is a DOOR guard on the LANDING — deliberately the one axis capabilities
 do not judge, so caps still read the DECLARED coordinate alone and the two
-grains stay separate. It is also the one owner: both run-plane lanes (starlark
-`create()` and the bash shim's `md.create`) converge on that door, as do the
+grains stay separate. It is also the one owner: the run-plane lane (starlark
+`create()`) converges on that door, as do the
 wire `create` op, the birth preset and the realise card mint. It costs the
 engine nothing — the armed artifact is written by `wire_serve::armed_disk`,
 the receipt rides the batch commit, and run logs use plain I/O; none of them
@@ -1735,9 +1735,10 @@ the CLI. The CLI entry is unchanged.*
 
 Say the consequence plainly: a step CAN write into the tree, and such a write is
 neither tolerated nor merely reported. The U6b exec bracket detects it as
-`OutOfBand` and **phase 2 refuses to converge** — nothing the step emitted
-applies, no completion receipt is written, and the ungoverned write is never
-rolled back (ruling 2). Governed change reaches the tree only over the shim fd.
+`OutOfBand` and **phase 2 refuses to converge** — no completion receipt is
+written, and the ungoverned write is never rolled back (ruling 2). Governed
+change never comes from bash at all (the effect-shim fd is deleted, 2026-08-21):
+governed writes ride the wire faces (MCP `put`) or a starlark task.
 Gates: `crates/run/tests/dispatch_bash.rs`
 (`an_ungoverned_tree_write_refuses_phase2_with_the_delta_named`,
 `a_project_root_relative_stray_write_refuses_convergence`).
@@ -1799,18 +1800,19 @@ Executor laws:
  receipt's rev, and the takeover flag gates nothing. The bullet stays as
  the record of the superseded law.)*
 
-## Bash: two-phase apply inside the enforcement bracket
+## Bash: two-phase receipts inside the enforcement bracket
 
-A bash step runs as: md.* batch (phase 1) → exec → shim batch (phase 2),
-with the detection bracket around it:
+A bash step runs as: pre-exec receipt (phase 1) → exec → completion receipt
+(phase 2), with the detection bracket around it:
 
 - The child runs in its own process group (`setsid`) under a wall-clock
  timeout; timeout SIGKILLs the group and is a distinct typed state
  (decision #21). Background children die with the group at step end.
-- Bash mutates the tree **only** through the effect-shim fd (fd 3, named to
- the child as `MD_EFFECT_FD`): length-prefixed NDJSON `md.*` descriptor
- records. A truncated or malformed stream **fails closed** — the whole
- phase-2 batch refuses (S6).
+- Bash has **no governed-tree effect channel** (the effect-shim fd — fd 3,
+ `MD_EFFECT_FD`, length-prefixed NDJSON `md.*` descriptor records — is
+ DELETED, 2026-08-21): a bash block observes and reports; governed writes
+ ride the wire faces (MCP `put`) or a starlark task. Phase 2 commits the
+ completion receipt only, always an empty batch.
 - `domain_snapshot` residual-compare runs around **every** bash step: the
  expected post-step root is the pre-step files plus this step's governed
  edits; any residual delta refuses and is named (decision #19).
@@ -1977,7 +1979,7 @@ S1 — ship the scoped claim, never the unqualified one."*
 |---|---|
 | addressing / fence / contracts / caps | `crates/run` (`address`, `fence`, `contracts`, `caps`) |
 | hermetic eval | `effects::eval_run` via `crates/run::dispatch_starlark` |
-| bash exec + shim + two-phase | `crates/run` (`exec`, `shim`, `dispatch_bash`) |
+| bash exec + two-phase receipts | `crates/run` (`exec`, `dispatch_bash`) |
 | detection bracket | `fs::guard` (+ `crates/run` snapshot integration) |
 | the one write path | `crates/run::executor` → `model::validate_batch` → `fs::apply_batch` |
 | stdout record | `crates/run::record` |

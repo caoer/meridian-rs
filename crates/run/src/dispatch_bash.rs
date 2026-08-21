@@ -1,4 +1,4 @@
-//! Bash dispatch (U6a) — two-phase apply around supervised exec
+//! Bash dispatch (U6a) — two-phase receipts around supervised exec
 //! (plan §2, decisions #13/#19/#21/#22; verdict rulings 1/2):
 //!
 //! ```text
@@ -12,26 +12,27 @@
 //!     wire writers; no refusal on this door is a premise refusal —
 //!     no-guard ruling, 2026-08-15).
 //!   → exec (invocation cwd — U16, `setsid`, timeout→group SIGKILL;
-//!     stdout teed; md.* descriptors on the shim fd)
+//!     stdout teed)
 //!   → U6b bracket CLOSES after group kill (residual-compare #19 +
 //!     config #20 + symlink #25) — verdict on EVERY path
-//!   → phase 2 (clean window only): shim batch through executor choke
-//!     point; the window baseline — the computed `root_after_phase1`,
-//!     or the observed pre-exec root when it diverged — is the
-//!     receipt's OBSERVATION, captured BEFORE bash, never re-read
-//!     after (#19) and never compared (no world pin).
+//!   → phase 2 (clean window only): the completion receipt through the
+//!     executor choke point; the window baseline — the computed
+//!     `root_after_phase1`, or the observed pre-exec root when it
+//!     diverged — is the receipt's OBSERVATION, captured BEFORE bash,
+//!     never re-read after (#19) and never compared (no world pin).
 //! ```
 //!
-//! **No `Exec` `EffectKind`** (ruling 1): only md.* descriptors on the shim
-//! are effects.
+//! **Bash has NO governed-tree effect channel** (the effect-shim fd is
+//! deleted — ZT ruling 2026-08-21): a bash block observes and reports;
+//! governed writes ride the wire faces (MCP `put`) or a starlark task. Phase
+//! 2 commits the completion receipt only — an empty batch, always.
 //!
-//! # Failure matrix (S2/S6/#21)
+//! # Failure matrix (S2/#21)
 //! - phase-1 refusal → nothing ran, nothing committed ([`BashError::Phase1`]).
-//! - exec nonzero → effect batch REFUSES; run still RECORDED (G3b: completion
-//!   is not success). Completion receipt carries exit code.
+//! - exec nonzero → run still RECORDED (G3b: completion is not success).
+//!   Completion receipt carries exit code.
 //! - signaled → no completion receipt; phase-1 pre-exec receipt stands (S2).
 //! - timeout → group SIGKILL; distinct state; phase 2 refuses; no completion.
-//! - truncated/malformed shim → fails closed; whole phase-2 batch refuses (S6).
 //! - executor refusal in phase 2 → typed; nothing applied.
 //! - window not clean (U6b) → phase 2 refuses ([`Phase2::RefusedDetection`]);
 //!   verdict on [`BashOutcome::detection`]; NEVER rolled back (ruling 2).
@@ -50,7 +51,6 @@ use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use effects::Effect;
 use model::MerkleRoot;
 
 use fs::digestmemo::DigestMemo;
@@ -59,7 +59,6 @@ use crate::caps::Authority;
 use crate::exec::{self, ExecSpec, ExecStatus};
 use crate::executor::{self, Applied, ApplyRequest, ExecError, ReceiptAddr, WorkspaceLock};
 use crate::record::{self, RecordError, RunLog, StdoutRecord};
-use crate::shim::{self, ShimError, ShimStream};
 use crate::snapshot::{Detection, ExecBracket, OpenRefusal, PreExecDivergence};
 
 /// The authority every apply on this path rides: bash is an unsandboxed shell
@@ -115,7 +114,7 @@ pub struct BashDispatch<'a> {
     /// Phase-1 pre-exec receipt address (S2: the orphan-lint anchor —
     /// records the invocation and the root phase 1 committed against).
     pub pre_receipt: Option<ReceiptAddr>,
-    /// Phase-2 completion receipt address (rides the shim batch commit).
+    /// Phase-2 completion receipt address (rides the completion commit).
     pub receipt: Option<ReceiptAddr>,
     /// The caller-created out-of-tree scratch directory (artifacts; NOT the
     /// cwd — U16 runs the step in the invocation cwd).
@@ -131,7 +130,8 @@ pub struct BashDispatch<'a> {
     /// the phase-1 pre-exec receipt commit and every phase-2 commit each
     /// offer their facts. `None` on the CLI entry.
     pub delta: Option<&'a dyn executor::DeltaSink>,
-    /// § A.2.1 passthrough for `md.create` births (`ctx.fields`, verbatim).
+    /// § A.2.1 invocation-metadata passthrough (`ctx.fields`, verbatim) —
+    /// rides the receipt commits; no birth can arrive on this path.
     pub fields: &'a BTreeMap<String, String>,
     /// The workspace ring for door-committed births; `None` on the CLI entry.
     pub birth_seq: Option<&'a dyn wire_serve::seq::SeqSink>,
@@ -158,9 +158,6 @@ pub struct BashOutcome {
     pub stdout: Result<StdoutRecord, RecordError>,
     /// Captured stderr (report diagnostics).
     pub stderr: Vec<u8>,
-    /// The raw captured shim stream (report diagnostics; the parsed truth is
-    /// in [`BashOutcome::phase2`]).
-    pub shim: ShimStream,
     /// The exec-window detection verdict (U6b) — rendered on EVERY outcome,
     /// orthogonal to how the exec ended (a delta is named even when the step
     /// also timed out or failed). The U7 labeler consumes this as the
@@ -178,23 +175,19 @@ pub struct BashOutcome {
     pub phase2: Phase2,
 }
 
-/// The phase-2 verdict — the S2/S6 failure matrix, typed.
+/// The phase-2 verdict — the S2/#21 failure matrix, typed.
 #[derive(Debug)]
 pub enum Phase2 {
-    /// The step exited 0 with a whole stream; the md.* batch committed (or
-    /// there was nothing to apply — `applied` is `None` on zero descriptors).
+    /// The step exited 0 under a clean window; the completion receipt
+    /// committed (an empty batch — bash has no effect channel).
     Applied {
-        /// The effects the block emitted, in emission order.
-        effects: Vec<Effect>,
-        /// The executor's commit result (`None` when the block emitted no
-        /// descriptor — nothing to apply is not a fault).
-        applied: Option<Applied>,
+        /// The completion receipt commit.
+        applied: Applied,
     },
-    /// The step exited NONZERO — the effect batch refuses (nothing the block
-    /// emitted applies), and the run is recorded anyway: **completion is not
-    /// success** (G3b). The completion receipt carries the exit code, so a check
-    /// that merely found something is no longer the same bytes as a crash.
-    /// The code is in [`BashOutcome::status`].
+    /// The step exited NONZERO — the run is recorded anyway: **completion is
+    /// not success** (G3b). The completion receipt carries the exit code, so a
+    /// check that merely found something is no longer the same bytes as a
+    /// crash. The code is in [`BashOutcome::status`].
     RefusedExecFailed {
         /// The completion receipt commit — an EMPTY batch under a real receipt.
         applied: Applied,
@@ -207,19 +200,16 @@ pub enum Phase2 {
     /// The wall-clock ceiling passed (#21) — the group was `SIGKILL`ed and
     /// phase 2 refuses.
     RefusedTimeout,
-    /// The shim stream failed closed (S6) — NOTHING from it applies.
-    RefusedShim(ShimError),
     /// The exec window did not verify clean (U6b: out-of-band delta,
     /// mid-window config change, symlink, or no verdict — fail closed) —
-    /// phase 2 refuses outright; NOTHING from the shim applies. The verdict
+    /// phase 2 refuses outright; no completion receipt is written. The verdict
     /// with the named delta is [`BashOutcome::detection`]; the ungoverned
     /// change is NEVER rolled back (ruling 2 — rollback would be a second
     /// write path with invented authority).
     RefusedDetection,
-    /// The executor refused the batch — typed, nothing applied.
+    /// The executor refused the completion-receipt commit — typed, nothing
+    /// applied.
     RefusedExec {
-        /// The effects that were refused (the report names them).
-        effects: Vec<Effect>,
         /// The executor's refusal.
         error: ExecError,
     },
@@ -348,42 +338,26 @@ pub fn run(
 
     // 4. U6b: close the bracket now the group is dead (S3) — UNCONDITIONAL,
     // so the delta is named on every exit path (timeout / nonzero /
-    // shim-fail included). The verdict rides the outcome.
+    // included). The verdict rides the outcome.
     let detection = lane.close_bracket(bracket);
 
-    // 5. The failure matrix (S2/S6/#21) behind the detection gate (#14): a
-    // window that did not verify clean refuses phase 2 outright — nothing
-    // from the shim applies, and the named delta is NEVER rolled back
-    // (ruling 2). Otherwise phase 2 runs ONLY off a clean exit and a whole
-    // stream.
+    // 5. The failure matrix (S2/#21) behind the detection gate (#14): a
+    // window that did not verify clean refuses phase 2 outright — no
+    // completion receipt, and the named delta is NEVER rolled back
+    // (ruling 2). Otherwise phase 2 commits the completion receipt: a run
+    // that exited still HAPPENED — without a completion receipt,
+    // "authorised and never started" and "ran and changed nothing" would be
+    // the same bytes. A completion IS an event, so it enters the attested
+    // record (a refusal, asserting a non-event, is logged outside it). U13:
+    // the sealed exec facts ride the completion receipt.
     let phase2 = if detection.is_clean() {
         match &result.status {
             ExecStatus::TimedOut { .. } => Phase2::RefusedTimeout,
             ExecStatus::Signaled { .. } => Phase2::RefusedSignaled,
-            ExecStatus::Exited { code } => match shim::parse(&result.shim) {
-                Err(e) => Phase2::RefusedShim(e),
-                // A zero-descriptor run still HAPPENED: without a completion
-                // receipt, "authorised and never started" and "ran and changed
-                // nothing" would be the same bytes. A completion IS an event,
-                // so it enters the attested record (a refusal, asserting a
-                // non-event, is logged outside it). U13: the sealed exec facts
-                // ride the completion receipt.
-                Ok(descriptors) => {
-                    let exec = exec_record(&result.status, &stdout, &d.env);
-                    if *code == 0 {
-                        let effects =
-                            shim::to_effects(&descriptors, d.task, d.invocation_id, &window_root.0);
-                        apply_phase2(root, d, window_root, effects, exec.as_ref())
-                    } else {
-                        // G3b: completion is not success. The descriptors are
-                        // discarded (a failed block's effects never apply) but
-                        // the run is still recorded with its exit code — a
-                        // check exiting nonzero on a finding must not leave
-                        // the same bytes as a crash.
-                        completion_receipt(root, d, window_root, exec.as_ref())
-                    }
-                }
-            },
+            ExecStatus::Exited { code } => {
+                let exec = exec_record(&result.status, &stdout, &d.env);
+                completion_receipt(root, d, window_root, exec.as_ref(), *code == 0)
+            }
         }
     } else {
         Phase2::RefusedDetection
@@ -396,7 +370,6 @@ pub fn run(
         status: result.status,
         stdout,
         stderr: result.stderr,
-        shim: result.shim,
         detection,
         pre_exec,
         phase2,
@@ -635,17 +608,22 @@ fn preflight(
     Err(BashError::Detection(OpenRefusal::Guard(e)))
 }
 
-/// G3b — the completion receipt for a failed run: nonzero exit under a clean
-/// window, so the batch is empty by policy and the receipt records the
-/// completion with its exit code (a fact the engine SEALED, not inferred).
-/// Routing through `apply` with `effects: &[]` reuses the one choke point's
-/// commit discipline rather than inventing a second write path. A commit
-/// failure leaves the pre-exec receipt alone — the orphan lint finds it.
+/// Phase 2 — the completion receipt, always an EMPTY batch (bash has no
+/// effect channel): the receipt records the completion with its exit code (a
+/// fact the engine SEALED, not inferred) and attests the COMPUTED window
+/// baseline (#19 — never a re-read around the bash step; out-of-band
+/// detection is U6b's bracket); nothing compares it (no world pin on this
+/// door). Routing through `apply` with `effects: &[]` reuses the one choke
+/// point's commit discipline rather than inventing a second write path. A
+/// commit failure leaves the pre-exec receipt alone — the orphan lint finds
+/// it. `success` splits G3b's two states: exit 0 → [`Phase2::Applied`],
+/// nonzero → [`Phase2::RefusedExecFailed`] (completion is not success).
 fn completion_receipt(
     root: &fs::WorkspaceRoot,
     d: &BashDispatch<'_>,
     root_after_phase1: &MerkleRoot,
     exec: Option<&record::ExecRecord>,
+    success: bool,
 ) -> Phase2 {
     match executor::apply(
         root,
@@ -668,52 +646,9 @@ fn completion_receipt(
             ambient: d.ambient,
         },
     ) {
+        Ok(applied) if success => Phase2::Applied { applied },
         Ok(applied) => Phase2::RefusedExecFailed { applied },
-        Err(error) => Phase2::RefusedExec {
-            effects: Vec::new(),
-            error,
-        },
-    }
-}
-
-/// Phase 2: the shim batch through the executor's one choke point. The
-/// receipt attests the COMPUTED window baseline (#19 — never a re-read
-/// around the bash step; out-of-band detection is U6b's bracket); nothing
-/// compares it (no world pin on this door). `exec` (U13) rides into the
-/// committed completion receipt.
-fn apply_phase2(
-    root: &fs::WorkspaceRoot,
-    d: &BashDispatch<'_>,
-    root_after_phase1: &MerkleRoot,
-    effects: Vec<Effect>,
-    exec: Option<&record::ExecRecord>,
-) -> Phase2 {
-    match executor::apply(
-        root,
-        &ApplyRequest {
-            page: d.page,
-            task: d.task,
-            task_rev: d.task_rev,
-            invocation_id: d.invocation_id,
-            now: d.now,
-            effects: &effects,
-            authority: &BASH_AUTHORITY,
-            observed_root: root_after_phase1,
-            receipt: d.receipt.clone(),
-            exec,
-            actor: d.actor,
-            depth: 0,
-            delta: d.delta,
-            fields: d.fields,
-            birth_seq: d.birth_seq,
-            ambient: d.ambient,
-        },
-    ) {
-        Ok(applied) => Phase2::Applied {
-            effects,
-            applied: Some(applied),
-        },
-        Err(error) => Phase2::RefusedExec { effects, error },
+        Err(error) => Phase2::RefusedExec { error },
     }
 }
 

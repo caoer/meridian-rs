@@ -13,27 +13,15 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, Read};
-use std::os::fd::AsRawFd;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdout, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::shim::ShimStream;
-
-/// The shim descriptor fd number in the child (also exported as
-/// `$MD_EFFECT_FD`).
-pub const SHIM_FD: i32 = 3;
-
 /// The default wall-clock timeout when the root's declaration configures none
 /// (`run.timeout_secs`). The safe value: a root raises it, never lowers into it.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_mins(5);
-
-/// Storage cap for the captured shim stream. The reader keeps DRAINING past
-/// the cap (the child is never deadlocked on a full pipe) but stops storing
-/// and flags the overflow — the stream then fails closed at parse.
-pub const MAX_SHIM_STREAM_BYTES: usize = 8 * 1024 * 1024;
 
 /// One bash step to supervise. Identity-free: the invocation id, receipts,
 /// and roots are the dispatcher's business.
@@ -101,8 +89,6 @@ pub struct ExecResult {
     pub stdout: Vec<u8>,
     /// Captured stderr (diagnostics for the report).
     pub stderr: Vec<u8>,
-    /// The captured shim-fd stream for [`crate::shim::parse`].
-    pub shim: ShimStream,
 }
 
 /// Run one bash step, capturing stdout in memory — the plain seam.
@@ -137,8 +123,6 @@ where
     F: FnOnce(ChildStdout) -> T + Send,
     T: Send,
 {
-    let (shim_read, shim_write) = io::pipe()?;
-
     let mut cmd = Command::new("bash");
     cmd.arg("-c")
         .arg(spec.source)
@@ -147,11 +131,7 @@ where
         // Run-env ruling (2026-08-16): the child INHERITS the daemon's
         // environment — no `env_clear`. A task whose `^env` gate needs a
         // daemon-held variable must see it without redeclaring it.
-        // LC_ALL=C is a framing default (the shim emitter idiom counts
-        // BYTES via `${#p}`); before `envs`, so a declared pair overrides.
-        .env("LC_ALL", "C")
         .envs(spec.env)
-        .env("MD_EFFECT_FD", SHIM_FD.to_string())
         // After `envs`, so a declared key cannot shadow the plane's own.
         .env("MERIDIAN_PROJECT_ROOT", spec.project_root)
         .stdin(Stdio::null())
@@ -164,16 +144,11 @@ where
         cmd.current_dir(cwd);
     }
 
-    let write_fd = shim_write.as_raw_fd();
-    // SAFETY: pre_exec runs post-fork pre-exec in the child; setsid and dup2
-    // are async-signal-safe. `write_fd` stays open in the parent until after
-    // spawn (dup2 clears CLOEXEC on the duplicate, so fd 3 survives exec).
+    // SAFETY: pre_exec runs post-fork pre-exec in the child; setsid is
+    // async-signal-safe.
     unsafe {
         cmd.pre_exec(move || {
             if libc::setsid() < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            if libc::dup2(write_fd, SHIM_FD) < 0 {
                 return Err(io::Error::last_os_error());
             }
             Ok(())
@@ -181,18 +156,14 @@ where
     }
 
     let mut child = cmd.spawn()?;
-    // Close the parent's write end — EOF on the shim pipe then tracks the
-    // GROUP's last holder, not the parent.
-    drop(shim_write);
 
     let pid = i32::try_from(child.id()).map_err(|_| io::Error::other("pid out of range"))?;
     let stdout_pipe = child.stdout.take().expect("stdout piped");
     let stderr_pipe = child.stderr.take().expect("stderr piped");
 
-    let (status, stderr, shim, consumed) = thread::scope(|s| {
+    let (status, stderr, consumed) = thread::scope(|s| {
         let stdout_h = s.spawn(move || stdout(stdout_pipe));
         let stderr_h = s.spawn(move || read_all(stderr_pipe));
-        let shim_h = s.spawn(move || read_shim(shim_read));
 
         // Wall-clock supervision loop (#21): poll, and past the deadline
         // SIGKILL the whole group, then reap the leader.
@@ -225,8 +196,7 @@ where
 
         let consumed = stdout_h.join().expect("stdout consumer");
         let stderr = stderr_h.join().expect("stderr reader");
-        let shim = shim_h.join().expect("shim reader");
-        status.map(|st| (st, stderr, shim, consumed))
+        status.map(|st| (st, stderr, consumed))
     })?;
 
     Ok((
@@ -234,7 +204,6 @@ where
             status,
             stdout: Vec::new(),
             stderr,
-            shim,
         },
         consumed,
     ))
@@ -327,29 +296,4 @@ fn read_all<R: Read>(mut r: R) -> Vec<u8> {
     let mut out = Vec::new();
     let _ = r.read_to_end(&mut out);
     out
-}
-
-/// Drain the shim pipe until EOF: store up to [`MAX_SHIM_STREAM_BYTES`], keep
-/// DRAINING past the cap (never deadlock the child on a full pipe), and flag
-/// the overflow so the stream fails closed at parse.
-fn read_shim<R: Read>(mut r: R) -> ShimStream {
-    let mut stream = ShimStream::default();
-    let mut buf = [0u8; 8192];
-    loop {
-        match r.read(&mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => {
-                if stream.overflowed {
-                    continue;
-                }
-                if stream.bytes.len() + n > MAX_SHIM_STREAM_BYTES {
-                    stream.overflowed = true;
-                    stream.bytes.clear();
-                } else {
-                    stream.bytes.extend_from_slice(&buf[..n]);
-                }
-            }
-        }
-    }
-    stream
 }
