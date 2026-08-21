@@ -159,6 +159,131 @@ pub fn reconcile(
     }
 }
 
+/// One reconcile step OFF THE RESIDENT MEMO (merkle-spec §6.7, the watch
+/// plane): the caller — the registry's detector, under the workspace write
+/// flock — supplies the current leaf view and its fold, taken from the
+/// SHARED memo by a §6.1 door-grade observation. No corpus snapshot is
+/// taken: the diff is at digest grain and bytes are read for MOVERS only.
+/// Frames are the same mint (`classify_to_wire` over the same
+/// [`fs::WatchChanges`] shape), so what a subscriber sees is unchanged.
+///
+/// An unprimed watch falls to [`reconcile`] — the subscribe-time baseline
+/// keeps its one full snapshot.
+///
+/// A mover whose re-read digest disagrees with the observed leaf — or that
+/// vanished before the read — is a MID-CYCLE RACE: the racing write's own
+/// event re-fires detection, so this cycle emits nothing, holds its
+/// baseline, and the next cadence tells the whole truth once. Emitting the
+/// observed root over bytes it does not describe would stamp a frame no
+/// corpus state ever had.
+///
+/// `leaves` carries only UTF-8-spellable members — the same floor the byte
+/// snapshot always had (`domain_snapshot` drops non-UTF-8 NAMES from its
+/// `files` while their leaves keep folding; a `wire::Path` cannot spell
+/// them). §52 non-UTF-8 CONTENT classifies normally.
+///
+/// # Errors
+/// Reading a mover fails with anything but absence, or the scope cannot be
+/// loaded. Loop drivers log and retry next cycle.
+pub fn reconcile_delta(
+    ws_root: &fs::WorkspaceRoot,
+    ring: &mut RootRing,
+    watch: &mut WatchState,
+    leaves: &std::collections::BTreeMap<String, [u8; 32]>,
+    disk_root: &Root,
+) -> Result<Option<DeltaFrame>, Box<ErrorBody>> {
+    let Some(watch_root) = watch.root.clone() else {
+        return reconcile(ws_root, ring, watch);
+    };
+    if watch_root == *disk_root {
+        return Ok(None);
+    }
+    let diff = watch
+        .watcher
+        .diff_leaves(leaves)
+        .expect("primed: watch.root is Some");
+    // Read movers, each verified against the observed leaf (the race arm).
+    let mut changes = fs::WatchChanges::default();
+    let mut upserts: Vec<(String, Vec<u8>)> = Vec::new();
+    for path in &diff.added {
+        let Some(bytes) = read_verified(ws_root, path, leaves)? else {
+            return Ok(None);
+        };
+        upserts.push((path.clone(), bytes.clone()));
+        changes.added.push((path.clone(), bytes));
+    }
+    for path in &diff.changed {
+        let before = watch
+            .watcher
+            .baseline_bytes(path)
+            .expect("a changed path is a baseline entry")
+            .to_vec();
+        let Some(after) = read_verified(ws_root, path, leaves)? else {
+            return Ok(None);
+        };
+        upserts.push((path.clone(), after.clone()));
+        changes.modified.push((path.clone(), before, after));
+    }
+    for path in &diff.removed {
+        let before = watch
+            .watcher
+            .baseline_bytes(path)
+            .expect("a removed path is a baseline entry")
+            .to_vec();
+        changes.removed.push((path.clone(), before));
+    }
+    // An internal commit moved the world — already emitted; sync silent.
+    // Scope refreshes with the baseline, exactly as the snapshot arm.
+    if ring.tip_root() == Some(disk_root) {
+        watch.watcher.rebase_entries(&upserts, &diff.removed);
+        watch.root = Some(disk_root.clone());
+        watch.scope = Some(load_scope(ws_root)?);
+        return Ok(None);
+    }
+    let scope_now = load_scope(ws_root)?;
+    let cause = rescope_cause(watch.scope.as_ref(), &scope_now);
+    let classified = classify_to_wire(ws_root, &changes, cause.as_deref());
+    let mut frame = crate::write::assemble_delta(
+        ring.allocate_seq(),
+        watch_root,
+        disk_root.clone(),
+        None, // §7.1: actor ABSENT — never invented
+        None, // §7.1: now ABSENT — never invented
+        classified.files,
+    );
+    frame.rescope = classified.rescope;
+    frame.overflow = classified.overflow;
+    frame.effects = external_effects(ws_root, &changes);
+    ring.advance(frame.clone());
+    watch.watcher.rebase_entries(&upserts, &diff.removed);
+    watch.root = Some(disk_root.clone());
+    watch.scope = Some(scope_now);
+    Ok(Some(frame))
+}
+
+/// One mover's bytes, verified against the observed leaf. `Ok(None)` is the
+/// mid-cycle race (vanished, or bytes past the observed digest); an error is
+/// any other read failure.
+fn read_verified(
+    ws_root: &fs::WorkspaceRoot,
+    path: &str,
+    leaves: &std::collections::BTreeMap<String, [u8; 32]>,
+) -> Result<Option<Vec<u8>>, Box<ErrorBody>> {
+    let bytes = match std::fs::read(ws_root.0.join(path)) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            let mut err = ErrorBody::new(wire::ErrorCode::IoError);
+            err.cause = Some(format!("cannot read mover {path}: {e}"));
+            return Err(Box::new(err));
+        }
+    };
+    if leaves.get(path) != Some(&model::leaf_digest(&bytes)) {
+        return Ok(None);
+    }
+    Ok(Some(bytes))
+}
+
 /// The effective scope as a wire-shaped result — `io_error{cause}`, the
 /// same envelope [`crate::domain_snapshot`] answers with (the snapshot this
 /// cycle already took proves the config was readable an instant ago, so a

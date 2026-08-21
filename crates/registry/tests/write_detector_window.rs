@@ -12,10 +12,22 @@
 //! executor's flock); this test pins the write paths to the same law.
 
 use registry::ring::WorkspaceRing;
+use registry::{Config, Registry, in_process_registry};
 use std::collections::BTreeMap;
 use wire::{Edit, EditShape, SecRef};
 use wire_serve::guard::Origin;
 use wire_serve::write::{SpliceArgs, splice};
+
+/// An in-process registry rooted under `tmp` — the §6.7 cycle observes
+/// through its shared memo (the door-grade observation).
+fn registry_in(tmp: &std::path::Path) -> Registry {
+    let dir = tmp.join("registry");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut config = Config::for_cache_root(tmp.join("cache"));
+    config.socket_path = dir.join("daemon.sock");
+    config.state_path = dir.join("state.json");
+    in_process_registry(&config).expect("in-process registry")
+}
 
 fn workspace(tmp: &std::path::Path, files: &[(&str, &str)]) -> std::path::PathBuf {
     let ws = tmp.join("ws");
@@ -39,8 +51,9 @@ fn a_detect_cycle_racing_a_splice_re_tells_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = workspace(tmp.path(), &[("plan.md", "# Plan\n\n- [ ] item one ^t1\n")]);
     let ws_root = fs::WorkspaceRoot(ws);
+    let reg = registry_in(tmp.path());
     let ring = WorkspaceRing::new(&ws_root);
-    ring.prime(&ws_root).expect("baseline prime");
+    ring.prime(&ws_root, &reg).expect("baseline prime");
 
     // The registry's own splice shape (server arm / script `put_live`): wire
     // door, forced guard, the workspace ring as the seq sink.
@@ -89,7 +102,7 @@ fn a_detect_cycle_racing_a_splice_re_tells_nothing() {
 
     // The racing detector: a full cycle now (`prime` runs the same cycle as
     // `detect`, cadence ignored). tip_root == disk_root ⇒ silent sync.
-    ring.prime(&ws_root).expect("racing cycle");
+    ring.prime(&ws_root, &reg).expect("racing cycle");
     let drained = ring.frames_after(0);
     assert_eq!(
         drained.len(),
@@ -109,7 +122,7 @@ fn a_detect_cycle_racing_a_splice_re_tells_nothing() {
     );
 
     // And the cycle after the race stays quiet too.
-    ring.prime(&ws_root).expect("settled cycle");
+    ring.prime(&ws_root, &reg).expect("settled cycle");
     assert_eq!(
         ring.frames_after(0).len(),
         1,

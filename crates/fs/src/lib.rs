@@ -3618,7 +3618,10 @@ fn rollback_error(
 #[derive(Debug)]
 pub struct Watcher {
     _root: WorkspaceRoot,
-    baseline: Option<BTreeMap<String, Vec<u8>>>,
+    /// Each retained entry: the member's bytes at the baseline plus their
+    /// §12.2 leaf digest — the digest is what a memo-served leaf set diffs
+    /// against ([`Self::diff_leaves`]), computed ONCE when the entry lands.
+    baseline: Option<BTreeMap<String, (Vec<u8>, [u8; 32])>>,
 }
 
 /// One detection cycle's byte-level classification: paths gone from the
@@ -3635,6 +3638,29 @@ pub struct WatchChanges {
     pub modified: Vec<(String, Vec<u8>, Vec<u8>)>,
 }
 
+/// A digest-grain diff of the current leaf view against the watcher's
+/// baseline ([`Watcher::diff_leaves`]): which paths must be READ to tell
+/// the change, and which departed. Movers only — an unmoved digest proves
+/// unmoved bytes, so nothing else is touched (merkle-spec §6.7, the watch
+/// plane off the resident memo).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct LeafDiff {
+    /// In the baseline, absent from the leaf view.
+    pub removed: Vec<String>,
+    /// In the leaf view, absent from the baseline.
+    pub added: Vec<String>,
+    /// Present in both, digest moved.
+    pub changed: Vec<String>,
+}
+
+impl LeafDiff {
+    /// Nothing moved at the digest grain.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.removed.is_empty() && self.added.is_empty() && self.changed.is_empty()
+    }
+}
+
 impl Watcher {
     #[must_use]
     pub fn new(root: WorkspaceRoot) -> Self {
@@ -3647,7 +3673,61 @@ impl Watcher {
     /// Adopt a snapshot as the new baseline (priming, post-emission, or the
     /// silent internal-commit sync — the caller's disposition).
     pub fn rebase(&mut self, snapshot: &[(String, Vec<u8>)]) {
-        self.baseline = Some(snapshot.iter().cloned().collect());
+        self.baseline = Some(
+            snapshot
+                .iter()
+                .map(|(p, b)| (p.clone(), (b.clone(), model::leaf_digest(b))))
+                .collect(),
+        );
+    }
+
+    /// Advance the baseline by exactly the movers a cycle told: upserts land
+    /// with their digest, removals leave. O(changed) — the incremental form
+    /// of [`Self::rebase`] for a cycle that never snapshotted. No-op until
+    /// primed (an unprimed baseline has nothing to advance).
+    pub fn rebase_entries(&mut self, upserts: &[(String, Vec<u8>)], removals: &[String]) {
+        let Some(baseline) = self.baseline.as_mut() else {
+            return;
+        };
+        for path in removals {
+            baseline.remove(path);
+        }
+        for (path, bytes) in upserts {
+            baseline.insert(path.clone(), (bytes.clone(), model::leaf_digest(bytes)));
+        }
+    }
+
+    /// The retained baseline bytes at `path`, when primed and held.
+    #[must_use]
+    pub fn baseline_bytes(&self, path: &str) -> Option<&[u8]> {
+        self.baseline
+            .as_ref()?
+            .get(path)
+            .map(|(bytes, _)| bytes.as_slice())
+    }
+
+    /// Diff a CURRENT leaf view (the resident memo's, String-spelled) against
+    /// the baseline at digest grain. `None` until primed. The caller supplies
+    /// only UTF-8-spellable members — the same floor the byte snapshot always
+    /// had (`domain_snapshot` drops non-UTF-8 NAMES from `files` while their
+    /// leaves keep folding).
+    #[must_use]
+    pub fn diff_leaves(&self, leaves: &BTreeMap<String, [u8; 32]>) -> Option<LeafDiff> {
+        let baseline = self.baseline.as_ref()?;
+        let mut diff = LeafDiff::default();
+        for (path, (_, digest)) in baseline {
+            match leaves.get(path) {
+                None => diff.removed.push(path.clone()),
+                Some(fresh) if fresh != digest => diff.changed.push(path.clone()),
+                Some(_) => {}
+            }
+        }
+        for path in leaves.keys() {
+            if !baseline.contains_key(path) {
+                diff.added.push(path.clone());
+            }
+        }
+        Some(diff)
     }
 
     /// Classify a snapshot against the baseline. `None` until primed — the
@@ -3661,7 +3741,7 @@ impl Watcher {
             .map(|(p, b)| (p.as_str(), b.as_slice()))
             .collect();
         let mut changes = WatchChanges::default();
-        for (path, before) in baseline {
+        for (path, (before, _)) in baseline {
             match disk.get(path.as_str()) {
                 None => changes.removed.push((path.clone(), before.clone())),
                 Some(after) if *after != before.as_slice() => {
