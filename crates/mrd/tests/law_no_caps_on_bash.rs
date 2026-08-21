@@ -24,12 +24,12 @@ task.check-sh: \"[[#^chk-1]]\"
 # Tasks
 
 ```bash
-echo undeclared
+true
 ```
 ^ub-1
 
 ```bash
-echo off-claim
+true
 ```
 ^cb-1
 
