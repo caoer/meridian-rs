@@ -477,7 +477,7 @@ fn a_write_through_an_ignored_link_is_caught_at_its_attested_target() {
 
 /// At open: a pre-existing symlink (file or directory) is the WORLD's shape,
 /// not this window's act — recorded as outside detection, tolerated at open
-/// and subtracted at close (no-guard posture; the run-door DoS fix: one
+/// and subtracted at close (no-guard posture; the run-door denial-of-service fix: one
 /// stranger's link must not close the door for every unrelated run). The
 /// link never enters the hash domain, so the served baseline is the fold
 /// without it.
