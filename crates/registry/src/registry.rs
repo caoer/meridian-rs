@@ -801,11 +801,15 @@ impl Registry {
     }
 
     /// The workspace's current corpus root through the §12.2 leaf memo — one
-    /// `stat` per member, byte-reads only movers. The § A.11 post-result
-    /// currency pass.
+    /// `stat` per member, byte-reads only movers: the extent-refresh FLOOR,
+    /// taken unconditionally. Test instrument only since §6.7 — every
+    /// production currency consumer rides
+    /// [`currency_refresh`](Self::currency_refresh), which serves the vouched
+    /// grade and falls to this same floor on a named miss.
     ///
     /// # Errors
     /// I/O failure walking or reading the domain.
+    #[cfg(test)]
     pub(crate) fn currency_root(&self, workspace: &Path) -> io::Result<model::MerkleRoot> {
         self.domain_cache(workspace)
             .lock()
