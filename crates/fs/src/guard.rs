@@ -569,7 +569,7 @@ fn strict_domain_digests(
     root: &WorkspaceRoot,
     domain: &Domain,
     memo: &mut DigestMemo,
-) -> Result<(BTreeMap<Vec<u8>, [u8; 32]>, Vec<String>), GuardError> {
+) -> Result<crate::ObservedDomain, GuardError> {
     let (members, links) = walk_strict(root, domain)?;
     let rels: Vec<PathBuf> = members
         .into_iter()
