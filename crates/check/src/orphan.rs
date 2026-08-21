@@ -14,9 +14,7 @@
 //! first completion receipt proves the writer could emit one — no build id, no
 //! date, no external state.
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use model::Document;
+use std::collections::BTreeSet;
 
 /// One run receipt recording an authorisation whose completion never landed.
 #[derive(Debug, Clone, PartialEq, Eq)]

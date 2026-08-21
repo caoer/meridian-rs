@@ -10,7 +10,7 @@
 //! walkvault corpus.
 
 use model::walk::{Location, Miss, Stage, walk};
-use model::{BadAnchorId, CorpusIndex, Document, Ref, ResolveError, build};
+use model::{BadAnchorId, CorpusIndex, Ref, ResolveError, build};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;

@@ -14,7 +14,7 @@
 
 use duckdb::Connection;
 use duckdb::types::Value;
-use model::{Document, Node, NodeKind};
+use model::{Node, NodeKind};
 
 /// d2 §2.1 fact-table DDL (`node` · `edge` · `claim`). Additive over the frozen
 /// round-1 view schema ([`crate::schema`]); never an edit to what ships.
@@ -144,6 +144,8 @@ fn u64c(x: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+
+    use model::Document;
 
     use super::*;
 

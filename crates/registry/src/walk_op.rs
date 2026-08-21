@@ -12,7 +12,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use model::Document;
 use view::walk::{self, Direction, WalkError};
 use wire::{ErrorBody, ErrorCode, ResponseBody, WalkCite, WalkRow};
 

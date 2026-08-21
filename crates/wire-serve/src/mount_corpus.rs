@@ -13,8 +13,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use model::Document;
-
 /// One mounted root's corpus, owned — the backing store the
 /// [`model::RootedCorpus`] borrows — plus the members it could not serve.
 pub struct MountedCorpus {

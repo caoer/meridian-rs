@@ -152,9 +152,15 @@ fn rebuild_stamp_rides_input_equality() {
     );
     assert_eq!(update.root, prior_root, "…which is the tree's true fold");
 
-    // Arm 2 — divergence: a member vanishes AFTER the snapshot; the built
-    // set differs, and the stamp folds what was actually built.
-    stdfs::remove_file(root.0.join("b.md")).expect("rm b.md");
+    // Arm 2 — divergence: a MOVER vanishes between the leaf pass and the
+    // read. (A vanished member whose digest never moved is CARRIED on the
+    // snapshot's evidence — the memo's §6.2 grade, unchanged here; only a
+    // mover is read now, so only a mover can diverge the built set.)
+    write(&root.0, "b.md", b"# B v2\n");
+    cache.root(&root).expect("observe the move");
+    let fresh = cache.leaf_digests();
+    let fresh_root = cache.overlay_root().expect("moved snapshot root");
+    stdfs::remove_file(root.0.join("b.md")).expect("rm the mover");
     let update = fs::update_corpus(
         &root,
         &prior_docs,

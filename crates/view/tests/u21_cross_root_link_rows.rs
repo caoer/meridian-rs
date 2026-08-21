@@ -4,8 +4,6 @@
 
 use std::collections::BTreeMap;
 
-use model::Document;
-
 fn doc(raw: &str) -> std::sync::Arc<model::Document> {
     std::sync::Arc::new(model::build(raw.to_string(), syntax::parse(raw)))
 }

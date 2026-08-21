@@ -6,7 +6,6 @@
 
 use std::collections::BTreeMap;
 
-use model::Document;
 use view::read_face::open_board;
 use view::walk::{color_detail, color_reason, color_tone, lock_pin_colors};
 

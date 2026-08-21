@@ -17,10 +17,9 @@
 //! - **2** — bad invocation, or a structural failure (root absent from the
 //!   corpus, or an in-snapshot cycle).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
-use model::Document;
 use serde_json::{Value, json};
 use view::walk::{self, Direction, WalkError, WalkReport};
 

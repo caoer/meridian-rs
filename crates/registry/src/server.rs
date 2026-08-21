@@ -1767,7 +1767,7 @@ fn resolve_cold(
         let rel_str = rel.to_string_lossy().replace('\\', "/");
         if let Ok(doc) = fs::load(&root, &rel) {
             index.insert(&rel_str, &doc);
-            docs.insert(rel_str, std::sync::Arc::new(doc));
+            docs.insert(rel_str, Arc::new(doc));
         }
     }
     wire_serve::read::resolve(&index, &docs, from, link, want_content)

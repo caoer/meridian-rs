@@ -5,8 +5,6 @@
 
 use std::collections::BTreeMap;
 
-use model::Document;
-
 /// The corpus: `a/b.md` carries the pinned section; `b.md` is a decoy with the same basename
 /// and a same-titled section of different bytes, so resolving to it is measurably wrong. The
 /// ref is a heading (`a/bSection`), which is what a pin fingerprint covers.

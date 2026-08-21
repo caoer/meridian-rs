@@ -17,7 +17,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use fs::WorkspaceRoot;
-use model::Document;
 use model::selector::Color;
 use realise::{CheckOutcome, Claim};
 use receipt::anchor::{ObjectAnchor, ObjectAnchorFacts};

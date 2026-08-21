@@ -38,7 +38,6 @@
 //! post-result fold sets `stale = true|false`; a SQL error yields no rows to
 //! certify, so it reports `live_source=none, stale=null` (`state=UNVERIFIED`).
 
-use std::collections::BTreeMap;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};

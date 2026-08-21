@@ -8,7 +8,6 @@
 use std::collections::BTreeMap;
 
 use duckdb::Connection;
-use model::Document;
 use view::read_face::{LockItem, open_board};
 
 fn doc(raw: &str) -> std::sync::Arc<model::Document> {

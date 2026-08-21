@@ -88,7 +88,6 @@ use std::path::{Path, PathBuf};
 
 use duckdb::Connection;
 use duckdb::types::Value;
-use model::Document;
 use serde_json::Value as Json;
 
 use crate::sqltext;

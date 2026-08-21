@@ -57,11 +57,10 @@
 //!   faulted.
 //! - **2** — bad invocation, or an unresolvable / unreadable workspace.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use model::Document;
 use model::selector::{Color, RedReason};
 use policy::armed::{Mode, parse_artifact};
 use policy::page_rev;
