@@ -109,6 +109,31 @@ fn in_window_symlink_is_detected() {
     }
 }
 
+/// The fleet incident (card run-door-foreign-symlink-refusal): a FOREIGN
+/// pre-existing symlink — an unrelated session's fixture pointing out of
+/// tree — must not refuse the open. It is the world's shape, outside
+/// detection: the observed root equals the computed root (the plain fold
+/// never held the link), and an untouched window closes Clean.
+#[cfg(unix)]
+#[test]
+fn a_pre_existing_foreign_symlink_does_not_refuse_the_open() {
+    let (tmp, root) = workspace();
+    std::fs::write(tmp.path().join("secret.md"), "out of tree\n").unwrap();
+    std::fs::create_dir_all(root.0.join("year=2026/stranger/fixture")).unwrap();
+    std::os::unix::fs::symlink(
+        tmp.path().join("secret.md"),
+        root.0.join("year=2026/stranger/fixture/LLM_WIKI.md"),
+    )
+    .unwrap();
+
+    let after_phase1 = computed_root(&root);
+    let (bracket, observed) = ExecBracket::open_observing(&root, &mut DigestMemo::new())
+        .expect("a stranger's pre-existing link must not close the run door");
+    assert_eq!(observed, after_phase1, "the link is in neither fold");
+    let detection = bracket.close();
+    assert!(detection.is_clean(), "got {detection:?}");
+}
+
 /// S3 escape window — WHERE it lands (gate F1): a write after close escapes
 /// THAT bracket, and surfaces at the NEXT bracket's open as a divergence
 /// between the observed root and the previously verified one — the caller's

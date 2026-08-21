@@ -248,9 +248,10 @@ pub enum BashError {
         reason: String,
     },
     /// The U6b detection bracket refused to open: a guarded-snapshot
-    /// refusal (symlink #25 / I/O) — about the OBSERVATION itself, never a
-    /// premise. The exec never started; a committed phase-1 pre-exec
-    /// receipt stands (the orphan lint finds it).
+    /// refusal (symlinked domain config #25 / I/O; a pre-existing corpus
+    /// link never refuses — [`OpenRefusal`]'s law) — about the OBSERVATION
+    /// itself, never a premise. The exec never started; a committed phase-1
+    /// pre-exec receipt stands (the orphan lint finds it).
     Detection(OpenRefusal),
 }
 

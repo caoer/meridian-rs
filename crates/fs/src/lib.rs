@@ -907,7 +907,7 @@ impl DomainCache {
     /// a member, or reading a member whose identity moved.
     pub fn domain_leaves(&mut self, root: &WorkspaceRoot) -> io::Result<DomainLeaves> {
         let domain = domain::Domain::load(root)?;
-        let leaves = self
+        let (leaves, _links) = self
             .observe(root, &domain, ObserveLaw::Plain)
             .map_err(plain_refusal)?;
         Ok(DomainLeaves { leaves, domain })
@@ -937,7 +937,7 @@ impl DomainCache {
         root: &WorkspaceRoot,
         domain: &domain::Domain,
         law: ObserveLaw,
-    ) -> Result<BTreeMap<Vec<u8>, [u8; 32]>, ObserveRefusal> {
+    ) -> Result<(BTreeMap<Vec<u8>, [u8; 32]>, Vec<String>), ObserveRefusal> {
         // Losses counted before the pass are re-derived by the pass (a
         // completed observation IS the full sweep the rescan ladder floors
         // at); losses landing mid-pass stay unabsorbed. Counted at entry so
@@ -952,15 +952,10 @@ impl DomainCache {
         // enumeration cost is paid before its verdict.
         self.dirs = fresh_dirs;
         self.listings += listings;
-        if !offenders.is_empty() {
-            // The walk completed; the refusal is a count plus the first
-            // offender in sorted order (the strict walk's discipline).
-            offenders.sort();
-            return Err(ObserveRefusal::Symlink {
-                count: offenders.len(),
-                first: offenders.remove(0),
-            });
-        }
+        // The walk completed; offenders ride back to the caller sorted (the
+        // strict walk's discipline). The guard judges pre-existing vs
+        // appeared — this cache only observes.
+        offenders.sort();
         rels.sort();
         let identities = member_identities(&root.0, &rels, PARALLEL_STAT_FLOOR)?;
         self.member_stats += identities.len() as u64;
@@ -1013,7 +1008,7 @@ impl DomainCache {
         // restored rows are no longer taking anything on a previous process's
         // word (§6.5).
         self.restored_unobserved = false;
-        Ok(rows)
+        Ok((rows, offenders))
     }
 
     /// One member's leaf under the §6.2 trust decision: a memoized digest
@@ -1134,8 +1129,9 @@ impl DomainCache {
     ///
     /// Returns `(member files, symlink offenders, fresh dir memo, enumerations
     /// run)`. Offenders are non-empty only under [`ObserveLaw::Guarded`]; the
-    /// walk COMPLETES before the caller refuses on them, matching the strict
-    /// walk's count-plus-first-offender discipline.
+    /// walk COMPLETES and hands them back for [`guard::StepGuard`] to judge
+    /// (pre-existing recorded, in-window appearance refused), matching the
+    /// strict walk's sorted-list discipline.
     fn walk_tree(
         prior: &DirMemo,
         root: &Path,
@@ -1719,9 +1715,11 @@ pub(crate) enum ObserveLaw {
     /// The plain domain walk: symlinks are silently outside the domain, byte
     /// reads follow the ordinary read path ([`hash_domain`] semantics).
     Plain,
-    /// The guarded walk: any symlink on a non-dot, non-ignored path refuses
-    /// the whole observation (count + sorted first offender), and moved
-    /// members are read `O_NOFOLLOW` — [`guard::StepGuard`]'s law.
+    /// The guarded walk: symlinks on non-dot, non-ignored paths are
+    /// COLLECTED and handed back sorted for [`guard::StepGuard`] to judge —
+    /// open records them as the world's shape, close refuses what appeared
+    /// inside the window — and moved members are read `O_NOFOLLOW`, a link
+    /// racing the walk refusing typed ([`guard::StepGuard`]'s law).
     Guarded,
 }
 
@@ -1731,8 +1729,9 @@ pub(crate) enum ObserveLaw {
 pub(crate) enum ObserveRefusal {
     /// Underlying I/O failure (config, listing, stat, or member read).
     Io(io::Error),
-    /// Guarded law only: symlinked non-dot paths in the walk, refused as a
-    /// count plus the first offender in sorted order.
+    /// Guarded law only: a link racing the walk's member reads (the
+    /// walk→read race) — walk-listed links ride back in the observation's
+    /// offender list instead, for [`guard::StepGuard`] to judge.
     Symlink {
         /// How many symlinked paths the walk met (≥ 1).
         count: usize,
