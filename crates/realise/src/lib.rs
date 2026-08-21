@@ -556,7 +556,7 @@ fn applied_of(outcome: TaskOutcome) -> Option<Applied> {
     match outcome {
         TaskOutcome::Starlark(o) => o.applied,
         TaskOutcome::Bash(o) => match o.phase2 {
-            run::dispatch_bash::Phase2::Applied { applied, .. } => applied,
+            run::dispatch_bash::Phase2::Applied { applied } => Some(applied),
             _ => None,
         },
     }

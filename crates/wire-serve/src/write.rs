@@ -4008,9 +4008,8 @@ pub const MACHINERY_DIRS: &[&str] = &[".git", ".meridian", "meridian", "receipts
 /// DECLARED coordinate's shape, never where the bytes land), so a grant as
 /// narrow as `md.create:tasks/*.md` could otherwise land `tasks/x.md` under
 /// `.git/` through the descriptor's own `base`. Every birth lane converges
-/// here: both run-plane lanes (starlark `create()`, the bash shim's
-/// `md.create`), the wire `create` op, the birth preset, the realise card
-/// mint.
+/// here: the run-plane lane (starlark `create()`), the wire `create` op, the
+/// birth preset, the realise card mint.
 ///
 /// **At any depth**, not just the head segment: a nested root's machinery is
 /// machinery too, and `results/ws/.git/x.md` corrupts a repository exactly as

@@ -36,8 +36,8 @@ def run(ctx):
 ^fix-1
 ";
 
-/// A one-task bash page: the block emits one framed `md.set_field` via the
-/// shim fd (the documented emitter idiom) and streams a line of stdout.
+/// A one-task bash page: the block streams a line of stdout (bash has no
+/// effect channel).
 const BASH_PAGE: &str = "\
 ---
 status: todo
@@ -49,9 +49,6 @@ task.fix-sh.caps: md.edit
 
 ```bash
 echo running
-p='{\"op\":\"md.set_field\",\"field\":\"status\",\"value\":\"done\"}'
-printf '%s:%s\\n' \"${#p}\" \"$p\" >&\"$MD_EFFECT_FD\"
-printf 'end:1\\n' >&3
 ```
 ^sh-1
 ";
@@ -242,13 +239,18 @@ fn a_bash_block_runs_end_to_end_and_labels_unsandboxed() {
         "the bracket still renders its verdict: {:?}",
         out.detection
     );
-    let Phase2::Applied { effects, applied } = &out.phase2 else {
+    let Phase2::Applied { applied } = &out.phase2 else {
         panic!("expected Applied, got {:?}", out.phase2);
     };
-    assert_eq!(effects.len(), 1);
-    assert!(applied.is_some());
-    let text = std::fs::read_to_string(root.0.join("page.md")).unwrap();
-    assert!(text.contains("status: done"), "{text}");
+    assert_eq!(
+        applied.applied, 0,
+        "bash has no effect channel — the completion commit is an empty batch"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("page.md")).unwrap(),
+        BASH_PAGE,
+        "the page stays byte-identical"
+    );
     assert_eq!(live, b"running\n", "stdout streamed live");
     assert!(report.cascade.is_empty());
 }
