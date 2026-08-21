@@ -76,16 +76,18 @@ fn dispatch_of<'a>(source: &'a str, scratch: &'a tempfile::TempDir) -> BashDispa
 
 /// G3 gate 1: a run the guard would refuse writes NOTHING to the attested
 /// domain — no pre-exec receipt, no journal row, every domain file
-/// byte-identical.
+/// byte-identical. (A pre-existing corpus link no longer refuses — the
+/// probe's remaining symlink refusal is the bracket's own instrument, a
+/// symlinked domain config.)
 #[cfg(unix)]
 #[test]
 fn a_preflight_refusal_writes_nothing_to_the_attested_domain() {
     let (tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
 
-    let secret = tmp.path().join("secret.md"); // OUT of tree, beside the ws
-    std::fs::write(&secret, "out-of-tree\n").unwrap();
-    std::os::unix::fs::symlink(&secret, root.0.join("linked.md")).unwrap();
+    let evil = tmp.path().join("evil-config.yaml"); // OUT of tree, beside the ws
+    std::fs::write(&evil, "version: 1\n").unwrap();
+    std::os::unix::fs::symlink(&evil, root.0.join("mdfs_config.yaml")).unwrap();
 
     let before = domain_digest(&root);
     let err = dispatch_bash::run(
@@ -115,8 +117,12 @@ fn a_preflight_refusal_writes_nothing_to_the_attested_domain() {
 fn a_preflight_refusal_is_findable_in_the_run_log() {
     let (tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    std::fs::write(tmp.path().join("secret.md"), "out-of-tree\n").unwrap();
-    std::os::unix::fs::symlink(tmp.path().join("secret.md"), root.0.join("linked.md")).unwrap();
+    std::fs::write(tmp.path().join("evil-config.yaml"), "ignore:\n  - \"**\"\n").unwrap();
+    std::os::unix::fs::symlink(
+        tmp.path().join("evil-config.yaml"),
+        root.0.join("mdfs_config.yaml"),
+    )
+    .unwrap();
 
     let _ = dispatch_bash::run(&root, &dispatch_of("echo hi\n", &scratch), &mut Vec::new());
 
@@ -126,7 +132,10 @@ fn a_preflight_refusal_is_findable_in_the_run_log() {
         .filter_map(|e| std::fs::read_to_string(e.unwrap().path()).ok())
         .collect();
     assert!(logged.contains("pre-flight refused"), "got: {logged}");
-    assert!(logged.contains("linked.md"), "the refused path is named");
+    assert!(
+        logged.contains("mdfs_config.yaml"),
+        "the refused path is named"
+    );
     assert!(logged.contains("inv-1"), "the would-be invocation is named");
     assert!(
         logged.contains("never started"),
@@ -726,12 +735,14 @@ fn bash_runs_on_a_sessions_shaped_root_under_the_declared_domain_shape() {
     );
 }
 
-/// The same root WITHOUT the declared shape refuses — and the refusal is a
-/// count plus the first offender, not one mine per attempt: a caller can size
-/// the cleanup (or the missing domain shape) from one answer.
+/// The same root WITHOUT the declared shape now RUNS (card
+/// run-door-foreign-symlink-refusal): the strangers' links pre-date the
+/// window, so they are the world's shape — outside detection, subtracted,
+/// never a door-closer for an unrelated run. The declared domain shape stays
+/// the corpus-hygiene instrument, not the door key.
 #[cfg(unix)]
 #[test]
-fn the_dispatch_refusal_names_the_count_and_the_first_offender() {
+fn pre_existing_stranger_links_no_longer_close_the_run_door() {
     let (tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
 
@@ -753,19 +764,57 @@ fn the_dispatch_refusal_names_the_count_and_the_first_offender() {
     )
     .unwrap();
 
-    let err = dispatch_bash::run(
+    let outcome = dispatch_bash::run(
         &root,
         &dispatch_of("echo alive\nprintf 'end:0\\n' >&3\n", &scratch),
         &mut Vec::new(),
     )
-    .expect_err("without the domain shape the strangers refuse the walk");
-    let text = err.to_string();
+    .expect("pre-existing stranger links must not refuse the walk");
+    assert!(
+        outcome.detection.is_clean(),
+        "the window verifies clean over the strangers: {:?}",
+        outcome.detection
+    );
+    assert!(
+        matches!(outcome.status, ExecStatus::Exited { code: 0 }),
+        "the block really ran: {:?}",
+        outcome.status
+    );
+}
+
+/// Links minted by the BLOCK ITSELF still refuse — and the refusal is a
+/// count plus the sorted first offender, not one mine per attempt: a caller
+/// can size the cleanup from one answer. The in-window half of #25, at the
+/// dispatch seam.
+#[cfg(unix)]
+#[test]
+fn the_dispatch_refusal_names_the_count_and_the_first_offender() {
+    let (tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+
+    let out_of_tree = tmp.path().join("stranger-target");
+    std::fs::create_dir_all(&out_of_tree).unwrap();
+    std::fs::write(out_of_tree.join("t.md"), "elsewhere\n").unwrap();
+    let target = out_of_tree.join("t.md");
+    let target = target.to_str().unwrap();
+
+    let src = format!(
+        "ln -s '{target}' \"$MERIDIAN_PROJECT_ROOT/zz-late.md\"\n\
+         ln -s '{target}' \"$MERIDIAN_PROJECT_ROOT/aa-early.md\"\n\
+         ln -s '{target}' \"$MERIDIAN_PROJECT_ROOT/mm-mid.md\"\n\
+         printf 'end:0\\n' >&3\n"
+    );
+    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut Vec::new()).unwrap();
+
+    assert!(out.status.success(), "the step itself exited 0");
+    assert!(matches!(out.phase2, Phase2::RefusedDetection));
+    let text = out.detection.to_string();
     assert!(
         text.contains("3 symlinked paths refused in exec-window snapshot"),
         "the count is the claim; got: {text}"
     );
     assert!(
-        text.contains("first: results/u16-experiment/run-e1-h1/bin"),
+        text.contains("first: aa-early.md"),
         "the first offender (sorted) is named; got: {text}"
     );
 }

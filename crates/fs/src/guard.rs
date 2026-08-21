@@ -34,15 +34,29 @@
 //! # Symlinks
 //! `ln -s <out-of-tree secret> notes/x.md` would make out-of-tree bytes
 //! addressable while the plain [`crate::walk`] silently skips the link. The
-//! guarded walk refuses any symlink on a non-dot path (file or directory, md or
-//! not), at open (no trustworthy baseline over links) and at close (laundering
-//! during the window); on unix, file reads are `O_NOFOLLOW` so a link racing the
-//! walk cannot be read through either.
+//! guarded walk refuses any symlink that APPEARED inside the bracket on a
+//! non-dot, non-ignored path (file or directory, md or not) — laundering
+//! during the window. A link that already existed at open is the WORLD's
+//! shape, not this window's act: it is recorded at open and tolerated at
+//! close (the no-guard posture, 2026-08-15 — pre-existing state is never
+//! accused; one stranger's link must not close the run door for every
+//! unrelated run). Soundness is the ignored-directory argument: links never
+//! enter the hash domain (both walks exclude them), so nothing behind a
+//! pre-existing link can reach a hash, attest or receipt surface. On unix,
+//! file reads are `O_NOFOLLOW` so a link racing the walk cannot be read
+//! through either, and a symlinked domain CONFIG or RESERVED path (the
+//! armed-rules artifact, the attested marker) still refuses at open — the
+//! bracket's own instruments must be vouched for, pre-existing or not.
 //!
 //! # Accepted gaps
 //! - Non-md / `.meridian/` / dot-path writes are undetected: the §12 hash domain
 //!   is md-only and dot-excluded.
 //! - Dot-path symlinks sit in the same gap: not walked, not refused.
+//! - A PRE-EXISTING symlink on a walked path is outside detection: recorded
+//!   at open, subtracted at close, never hashed. Its in-window removal, or a
+//!   change of what it points at, is undetected — the same class as any
+//!   out-of-tree write (the honor-system row). Only a link that APPEARED
+//!   inside the window refuses.
 //! - Ignored directories are not walked and their links are not refused, and a
 //!   symlink AT a custom-ignored path is skipped the same way
 //!   ([`Domain::skips_symlink`] — the sessions-root shape, where the venv `bin`
@@ -55,7 +69,7 @@
 //!   step end; a write landing between that kill and the close-snapshot read —
 //!   or after close — is outside the bracket.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Read};
@@ -63,7 +77,7 @@ use std::path::{Path, PathBuf};
 
 use crate::WorkspaceRoot;
 use crate::digestmemo::DigestMemo;
-use crate::domain::{CONFIG_FILE_NAME, DOMAIN_CONFIG_PATH, Domain};
+use crate::domain::{CONFIG_FILE_NAME, DOMAIN_CONFIG_PATH, Domain, RESERVED_PATHS};
 
 /// The detection bracket around one exec window: pre-step domain snapshot +
 /// captured config state, consumed by [`StepGuard::close`] (one bracket, one
@@ -86,6 +100,10 @@ pub struct StepGuard {
     /// merge under a lossy decode stay two entries, so the residual compare
     /// cannot be blinded by a hostile name. Values are §12.2 leaf digests.
     pre: BTreeMap<Vec<u8>, [u8; 32]>,
+    /// Symlinked paths (§9 display form) present at open: the world's
+    /// pre-existing links, outside detection. The close subtracts them —
+    /// only a link that APPEARED inside the window refuses.
+    pre_links: BTreeSet<String>,
 }
 
 /// The captured domain-config state: the raw bytes of both declaration
@@ -160,13 +178,16 @@ impl fmt::Display for ResidualDelta {
 pub enum GuardError {
     /// Underlying I/O failure taking a snapshot — not a detection verdict.
     Io(io::Error),
-    /// Symlinked paths in the guarded walk: refused at open (untrusted
-    /// baseline) and at close (laundering during the window). The walk
-    /// completes before refusing, so the refusal is a COUNT plus the first
-    /// offender (sorted) — a claim a caller can size a cleanup or a missing
-    /// domain shape by, never one mine per attempt.
+    /// Symlinked paths that APPEARED inside the bracket (laundering during
+    /// the window), a link racing a guarded read, or a symlinked domain
+    /// config. Pre-existing corpus links are recorded at open and tolerated
+    /// (module docs § Symlinks). The walk completes before refusing, so the
+    /// refusal is a COUNT plus the first offender (sorted) — a claim a
+    /// caller can size a cleanup or a missing domain shape by, never one
+    /// mine per attempt.
     Symlink {
-        /// How many symlinked paths the walk met (≥ 1).
+        /// How many offending symlinked paths the bracket met (≥ 1) — at
+        /// close, only links that appeared inside the window count.
         count: usize,
         /// Workspace-relative forward-slash path of the first offender, in
         /// sorted order — deterministic whatever order the walk visits.
@@ -236,12 +257,15 @@ impl StepGuard {
     /// probe and `open` still refuses after the commit.
     ///
     /// # Errors
-    /// The same refusals [`open`](Self::open) would raise from its walk:
-    /// [`GuardError::Symlink`], or [`GuardError::Io`].
+    /// The same refusals [`open`](Self::open) would raise:
+    /// [`GuardError::Symlink`] on a symlinked domain config (never on a
+    /// pre-existing corpus link — those are outside detection), or
+    /// [`GuardError::Io`].
     pub fn probe(root: &WorkspaceRoot) -> Result<(), GuardError> {
         let config = read_config(root)?;
         let domain = config.parse_domain()?;
-        walk_strict(root, &domain)?;
+        let (_members, links) = walk_strict(root, &domain)?;
+        refuse_reserved_links(&links)?;
         Ok(())
     }
 
@@ -249,9 +273,10 @@ impl StepGuard {
     /// snapshot through the guarded (symlink-refusing) walk.
     ///
     /// # Errors
-    /// [`GuardError::Symlink`] on any symlinked non-dot path — a trustworthy
-    /// baseline cannot be established over links; [`GuardError::Io`] on any
-    /// read failure (a non-UTF-8 config included, refused as `InvalidData`).
+    /// [`GuardError::Symlink`] on a symlinked domain config or a link racing
+    /// the walk's reads — never on a pre-existing corpus link, which is
+    /// recorded as outside detection; [`GuardError::Io`] on any read failure
+    /// (a non-UTF-8 config included, refused as `InvalidData`).
     pub fn open(root: &WorkspaceRoot) -> Result<StepGuard, GuardError> {
         Self::open_memoized(root, &mut DigestMemo::new())
     }
@@ -270,12 +295,14 @@ impl StepGuard {
     ) -> Result<StepGuard, GuardError> {
         let config = read_config(root)?;
         let domain = config.parse_domain()?;
-        let pre = strict_domain_digests(root, &domain, memo)?;
+        let (pre, links) = strict_domain_digests(root, &domain, memo)?;
+        refuse_reserved_links(&links)?;
         Ok(StepGuard {
             root: root.clone(),
             domain,
             config,
             pre,
+            pre_links: links.into_iter().collect(),
         })
     }
 
@@ -294,14 +321,16 @@ impl StepGuard {
     ) -> Result<StepGuard, GuardError> {
         let config = read_config(root)?;
         let domain = config.parse_domain()?;
-        let pre = cache
+        let (pre, links) = cache
             .observe(root, &domain, crate::ObserveLaw::Guarded)
             .map_err(observe_refusal)?;
+        refuse_reserved_links(&links)?;
         Ok(StepGuard {
             root: root.clone(),
             domain,
             config,
             pre,
+            pre_links: links.into_iter().collect(),
         })
     }
 
@@ -348,7 +377,8 @@ impl StepGuard {
     ///
     /// # Errors
     /// [`GuardError::ConfigChanged`] on a mid-bracket config change;
-    /// [`GuardError::Symlink`] on a symlinked non-dot path;
+    /// [`GuardError::Symlink`] on a symlinked non-dot path that APPEARED
+    /// inside the window (pre-existing links are subtracted, not refused);
     /// [`GuardError::OutOfBand`] naming the residual delta;
     /// [`GuardError::Io`] on snapshot read failure.
     pub fn close(self, edits: &[GovernedEdit]) -> Result<model::MerkleRoot, GuardError> {
@@ -368,8 +398,8 @@ impl StepGuard {
         if read_config(&self.root)? != self.config {
             return Err(GuardError::ConfigChanged);
         }
-        let actual = strict_domain_digests(&self.root, &self.domain, memo)?;
-        self.verdict(edits, &actual)
+        let (actual, links) = strict_domain_digests(&self.root, &self.domain, memo)?;
+        self.verdict(edits, &actual, links)
     }
 
     /// [`StepGuard::close`] with the observation served from a resident
@@ -387,21 +417,36 @@ impl StepGuard {
         if read_config(&self.root)? != self.config {
             return Err(GuardError::ConfigChanged);
         }
-        let actual = cache
+        let (actual, links) = cache
             .observe(&self.root, &self.domain, crate::ObserveLaw::Guarded)
             .map_err(observe_refusal)?;
-        self.verdict(edits, &actual)
+        self.verdict(edits, &actual, links)
     }
 
-    /// The close verdict, one owner for both observation sources: overlay the
-    /// governed edits onto the captured baseline, residual-compare, and fold
-    /// the verified post-step root. Order above (config bracket before the
-    /// observation) is the callers' to hold.
+    /// The close verdict, one owner for both observation sources: refuse any
+    /// link that APPEARED inside the window (#25, delta-scoped), then overlay
+    /// the governed edits onto the captured baseline, residual-compare, and
+    /// fold the verified post-step root. Order above (config bracket before
+    /// the observation) is the callers' to hold.
     fn verdict(
         self,
         edits: &[GovernedEdit],
         actual: &BTreeMap<Vec<u8>, [u8; 32]>,
+        post_links: Vec<String>,
     ) -> Result<model::MerkleRoot, GuardError> {
+        // Pre-existing links are the world's shape, outside detection
+        // (module docs § Symlinks) — subtracted, never refused. `post_links`
+        // arrives sorted, so the first survivor is the sorted first offender.
+        let mut new_links: Vec<String> = post_links
+            .into_iter()
+            .filter(|link| !self.pre_links.contains(link))
+            .collect();
+        if !new_links.is_empty() {
+            return Err(GuardError::Symlink {
+                count: new_links.len(),
+                first: new_links.remove(0),
+            });
+        }
         let mut expected = self.pre;
         for edit in edits {
             if self.domain.contains(Path::new(&edit.path)) {
@@ -421,6 +466,25 @@ impl StepGuard {
         let refs: Vec<(&[u8], [u8; 32])> = actual.iter().map(|(p, d)| (p.as_slice(), *d)).collect();
         Ok(crate::served_root(&refs, self.domain.version()))
     }
+}
+
+/// Reserved paths are engine substrate (the armed-rules artifact, the
+/// attested marker): a symlink there is never the world's tolerable shape —
+/// like the domain config, the bracket's own instrument must be vouched for.
+/// Open and probe refuse them even pre-existing; an in-window appearance is
+/// caught by the close's new-link check like any other link.
+fn refuse_reserved_links(links: &[String]) -> Result<(), GuardError> {
+    let mut reserved: Vec<&String> = links
+        .iter()
+        .filter(|link| RESERVED_PATHS.contains(&link.as_str()))
+        .collect();
+    if reserved.is_empty() {
+        return Ok(());
+    }
+    Err(GuardError::Symlink {
+        count: reserved.len(),
+        first: reserved.remove(0).clone(),
+    })
 }
 
 /// A cached observation's refusal in the guard's vocabulary: I/O stays I/O,
@@ -494,7 +558,8 @@ fn read_config_file(root: &WorkspaceRoot, rel: &str) -> Result<Option<Vec<u8>>, 
 /// member's §12.2 leaf digest served from `memo` when its stat identity is
 /// unmoved, else read via [`read_nofollow`] (bytes dropped after hashing —
 /// the corpus never rides in memory) and recorded back. Returned as a sorted
-/// path→digest map (the residual compare's working shape).
+/// path→digest map (the residual compare's working shape) plus the walk's
+/// symlink list (sorted §9 display paths) for the caller's pre/post compare.
 ///
 /// Misses are read in parallel above [`crate::PARALLEL_READ_FLOOR`], the
 /// order-preserving contiguous-chunk pattern of the domain snapshot's sweep:
@@ -504,8 +569,9 @@ fn strict_domain_digests(
     root: &WorkspaceRoot,
     domain: &Domain,
     memo: &mut DigestMemo,
-) -> Result<BTreeMap<Vec<u8>, [u8; 32]>, GuardError> {
-    let rels: Vec<PathBuf> = walk_strict(root, domain)?
+) -> Result<crate::ObservedDomain, GuardError> {
+    let (members, links) = walk_strict(root, domain)?;
+    let rels: Vec<PathBuf> = members
         .into_iter()
         .filter(|rel| domain.contains(rel))
         .collect();
@@ -526,7 +592,7 @@ fn strict_domain_digests(
         files.insert(crate::hash_name(&rel).to_vec(), digest);
         memo.record(rel, key, digest);
     }
-    Ok(files)
+    Ok((files, links))
 }
 
 /// One member's digest row: its rel path and §12.2 leaf digest.
@@ -573,26 +639,24 @@ fn read_and_digest_nofollow(
     Ok(out)
 }
 
-/// The guarded walk: like [`crate::walk`] but (a) refuses any symlink on a
-/// non-dot path instead of silently skipping it, and (b) does not
-/// descend into dot-prefixed entries — those are structurally outside the
-/// detection domain (the named dot-path gap), and refusing links there would
-/// false-positive on `.git` internals.
-fn walk_strict(root: &WorkspaceRoot, domain: &Domain) -> Result<Vec<PathBuf>, GuardError> {
+/// The guarded walk: like [`crate::walk`] but (a) COLLECTS every symlink on
+/// a non-dot, non-ignored path instead of silently skipping it — the caller
+/// judges the list (open records it as the world's shape; close refuses what
+/// appeared inside the window) — and (b) does not descend into dot-prefixed
+/// entries — those are structurally outside the detection domain (the named
+/// dot-path gap), and collecting links there would false-positive on `.git`
+/// internals. Both lists come back sorted — deterministic whatever order
+/// `read_dir` served.
+fn walk_strict(
+    root: &WorkspaceRoot,
+    domain: &Domain,
+) -> Result<(Vec<PathBuf>, Vec<String>), GuardError> {
     let mut out = Vec::new();
     let mut links = Vec::new();
     walk_strict_dir(&root.0, &PathBuf::new(), domain, &mut out, &mut links)?;
-    // The walk COMPLETES before refusing, so the refusal is a count plus the
-    // first offender (sorted — deterministic whatever order read_dir served).
-    if !links.is_empty() {
-        links.sort();
-        return Err(GuardError::Symlink {
-            count: links.len(),
-            first: links.remove(0),
-        });
-    }
+    links.sort();
     out.sort();
-    Ok(out)
+    Ok((out, links))
 }
 
 fn walk_strict_dir(
@@ -625,7 +689,7 @@ fn walk_strict_dir(
                 continue;
             }
             links.push(crate::display_name(crate::hash_name(&rel)));
-            continue; // keep walking: the refusal is a count, not one mine
+            continue; // keep walking: collected for the caller's pre/post compare
         }
         if file_type.is_dir() {
             walk_strict_dir(&entry.path(), &rel, domain, out, links)?;
