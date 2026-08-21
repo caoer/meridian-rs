@@ -7549,7 +7549,7 @@ mod resident_write_path {
         let cache = write_cache(&root);
         let (reads_before, folds_before) = {
             let c = cache.lock().unwrap();
-            (c.leaves_read(), c.flat_folds())
+            (c.leaves_read(), c.served_folds())
         };
 
         // Warm guarded write on a DIFFERENT member.
@@ -7564,7 +7564,7 @@ mod resident_write_path {
 
         let (reads_after, folds_after) = {
             let c = cache.lock().unwrap();
-            (c.leaves_read(), c.flat_folds())
+            (c.leaves_read(), c.served_folds())
         };
         assert_eq!(
             reads_after - reads_before,
@@ -8016,7 +8016,7 @@ mod resident_write_path {
         splice(&root, None, &settle, &[], None).expect("settling dry splice");
         let (reads_before, folds_before) = {
             let c = cache.lock().unwrap();
-            (c.leaves_read(), c.flat_folds())
+            (c.leaves_read(), c.served_folds())
         };
 
         let mut dry = splice_args("notes/plan.md", "w1", "w2");
@@ -8026,7 +8026,7 @@ mod resident_write_path {
 
         let (reads_after, folds_after) = {
             let c = cache.lock().unwrap();
-            (c.leaves_read(), c.flat_folds())
+            (c.leaves_read(), c.served_folds())
         };
         assert_eq!(reads_after - reads_before, 0, "a dry run reads no member");
         assert_eq!(folds_after - folds_before, 0, "a dry run refolds nothing");

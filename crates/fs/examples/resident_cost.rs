@@ -101,9 +101,9 @@ fn main() {
         let t = Instant::now();
         cache.root(&root).expect("warm pass");
         println!(
-            "warm_currency  pass={pass} {:>10.1?}  flat_folds={}",
+            "warm_currency  pass={pass} {:>10.1?}  served_folds={}",
             t.elapsed(),
-            cache.flat_folds()
+            cache.served_folds()
         );
     }
 

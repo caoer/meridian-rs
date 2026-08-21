@@ -511,11 +511,7 @@ fn frontmatter_map(node: &model::Node) -> Option<&model::YamlMap> {
 /// - A pin it cannot honestly color is left undecorated — an unresolvable
 ///   target page, a refused lock, a `Malformed` token with no digest to show.
 #[must_use]
-pub fn page_decorations(
-    index: &model::CorpusIndex,
-    docs: &BTreeMap<String, model::Document>,
-    path: &str,
-) -> Decorations {
+pub fn page_decorations(index: &model::CorpusIndex, docs: &model::Docs, path: &str) -> Decorations {
     let mut out = Decorations::new();
     let Some(doc) = docs.get(path) else {
         return out;
@@ -578,8 +574,11 @@ pub fn page_decorations(
         let Some(handle) = handle else {
             continue;
         };
-        let color =
-            model::selector::classify_pin(&selector, &pin.fingerprint, docs.get(&target_path));
+        let color = model::selector::classify_pin(
+            &selector,
+            &pin.fingerprint,
+            docs.get(&target_path).map(|d| &**d),
+        );
         let Some(digest) =
             model::fingerprint::parse_fingerprint(&pin.fingerprint).map(|p| p.digest)
         else {
@@ -617,7 +616,7 @@ pub fn page_decorations(
 /// grey is rendered with its reason.
 fn resolve_page(
     index: &model::CorpusIndex,
-    docs: &BTreeMap<String, model::Document>,
+    docs: &model::Docs,
     spelling: &str,
     from: &str,
 ) -> Option<String> {
@@ -1304,7 +1303,7 @@ pub fn unserved_refusal(path: &Path, condition: &str) -> Box<ErrorBody> {
 /// is `file_not_found`.
 fn links_nonmember(
     root: &fs::WorkspaceRoot,
-    docs: &BTreeMap<String, model::Document>,
+    docs: &model::Docs,
     unserved: &BTreeMap<String, String>,
     path: Option<&Path>,
 ) -> Result<Option<model::Document>, Box<ErrorBody>> {
@@ -1334,7 +1333,7 @@ fn links_nonmember(
 pub fn links(
     root: &fs::WorkspaceRoot,
     index: &model::CorpusIndex,
-    docs: &BTreeMap<String, model::Document>,
+    docs: &model::Docs,
     unserved: &BTreeMap<String, String>,
     path: Option<&Path>,
     as_of_root: Root,
@@ -1375,7 +1374,7 @@ pub fn links(
 /// for the NAMED form — a named path is served, so nothing was left out.
 fn excluded_members(
     root: &fs::WorkspaceRoot,
-    docs: &BTreeMap<String, model::Document>,
+    docs: &model::Docs,
     unserved: &BTreeMap<String, String>,
     path: Option<&Path>,
 ) -> Vec<String> {
@@ -1413,7 +1412,7 @@ fn one_file_map(edges: &query::FileLinks, path: &Path) -> BTreeMap<String, query
 pub fn links_rooted(
     root: &fs::WorkspaceRoot,
     index: &model::CorpusIndex,
-    docs: &BTreeMap<String, model::Document>,
+    docs: &model::Docs,
     unserved: &BTreeMap<String, String>,
     corpus: &model::RootedCorpus<'_>,
     mounts: &addr::MountSet,
@@ -1582,7 +1581,7 @@ fn render_refused_edge(link: &str, edge: &query::RefusedEdge) -> wire::RefusedEd
 /// found but the subpath is not (`ref_not_found` stage 2, with `dest`).
 pub fn resolve(
     index: &model::CorpusIndex,
-    docs: &BTreeMap<String, model::Document>,
+    docs: &model::Docs,
     from: &Path,
     link: &str,
     want_content: bool,

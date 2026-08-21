@@ -639,7 +639,7 @@ impl SqlStore {
     /// Any `DuckDB` failure (the transaction is rolled back first).
     pub fn sync(
         &mut self,
-        docs: &BTreeMap<String, Document>,
+        docs: &model::Docs,
         corpus: &model::RootedCorpus<'_>,
         mounts: Option<&addr::MountSet>,
         exclusion: Option<ExclusionProbe<'_>>,
@@ -815,7 +815,7 @@ impl SqlStore {
     /// exactly the case-folding §3 and §5.1 forbid.
     fn base_affected(
         &self,
-        docs: &BTreeMap<String, Document>,
+        docs: &model::Docs,
         delta: &BaseDelta,
     ) -> Result<BTreeSet<String>, ViewError> {
         if delta.moved_keys.is_empty() {
@@ -863,7 +863,7 @@ impl SqlStore {
     /// grain — a superset of the resolver's keys, never a subset).
     fn resolution_affected(
         &self,
-        docs: &BTreeMap<String, Document>,
+        docs: &model::Docs,
         added: &BTreeSet<&str>,
         changed: &BTreeSet<&str>,
         removed: &[&str],
@@ -1360,13 +1360,13 @@ pub(crate) mod tests {
     use model::RootedCorpus;
 
     /// Parse a fixture corpus.
-    pub(crate) fn corpus(files: &[(&str, &str)]) -> BTreeMap<String, Document> {
+    pub(crate) fn corpus(files: &[(&str, &str)]) -> model::Docs {
         files
             .iter()
             .map(|(p, raw)| {
                 (
                     (*p).to_string(),
-                    model::build((*raw).to_string(), syntax::parse(raw)),
+                    std::sync::Arc::new(model::build((*raw).to_string(), syntax::parse(raw))),
                 )
             })
             .collect()
@@ -1376,7 +1376,7 @@ pub(crate) mod tests {
     /// mirrors the [`crate::build_memory`] reference build).
     pub(crate) fn sync_ambient(
         store: &mut SqlStore,
-        docs: &BTreeMap<String, Document>,
+        docs: &model::Docs,
         fingerprint: &str,
     ) -> Option<AppendCounts> {
         let ambient = RootedCorpus::ambient(docs);
@@ -1453,7 +1453,7 @@ pub(crate) mod tests {
 
     /// Assert the cache's caller surface equals a fresh ephemeral build of the
     /// same docs — the card-1/-2 acceptance, per surface.
-    fn assert_surface_matches_fresh(store: &SqlStore, docs: &BTreeMap<String, Document>) {
+    fn assert_surface_matches_fresh(store: &SqlStore, docs: &model::Docs) {
         let fresh = crate::build_memory(docs, "b3b:reference").expect("fresh build");
         assert_eq!(
             surface_digests(store.connection()),
@@ -1469,7 +1469,7 @@ pub(crate) mod tests {
     /// The dogfood-shaped fixture: frontmatter tags + alias, links (resolved,
     /// dangling, embed), tasks (document-level and governed), the `['']`
     /// heading hazard, and a card-shaped doc.
-    pub(crate) fn fixture_v1() -> BTreeMap<String, Document> {
+    pub(crate) fn fixture_v1() -> model::Docs {
         corpus(&[
             (
                 "a.md",

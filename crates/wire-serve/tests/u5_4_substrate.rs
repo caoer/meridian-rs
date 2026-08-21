@@ -39,13 +39,13 @@ fn build_doc(raw: &str) -> Document {
 }
 
 /// Borrowed corpus for `plan_rename`.
-fn corpus(root: &fs::WorkspaceRoot, files: &[&str]) -> (CorpusIndex, BTreeMap<String, Document>) {
+fn corpus(root: &fs::WorkspaceRoot, files: &[&str]) -> (CorpusIndex, model::Docs) {
     let mut index = CorpusIndex::new();
     let mut docs = BTreeMap::new();
     for path in files {
         let doc = build_doc(&read(root, path));
         index.insert(path, &doc);
-        docs.insert((*path).to_string(), doc);
+        docs.insert((*path).to_string(), std::sync::Arc::new(doc));
     }
     (index, docs)
 }

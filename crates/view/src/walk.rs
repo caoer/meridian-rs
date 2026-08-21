@@ -93,7 +93,7 @@ pub enum WalkError {
 /// # Errors
 /// [`WalkError::RootNotFound`] / [`WalkError::Cycle`].
 pub fn walk(
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     root: &str,
     direction: Direction,
     depth_bound: Option<u32>,
@@ -212,10 +212,7 @@ pub fn walk_rooted(
 /// Shared owner for the CLI verbs (`mrd sql`, `mrd links`) and the § A.11
 /// wire serve path — two assemblies would hand two corpora to one resolver.
 #[must_use]
-pub fn link_addressed_roots(
-    docs: &BTreeMap<String, Document>,
-    path: Option<&str>,
-) -> BTreeSet<addr::MountName> {
+pub fn link_addressed_roots(docs: &model::Docs, path: Option<&str>) -> BTreeSet<addr::MountName> {
     let mut roots = BTreeSet::new();
     for (source, doc) in docs {
         if path.is_some_and(|p| p != source.as_str()) {
@@ -243,7 +240,7 @@ fn collect_link_roots(node: &model::Node, roots: &mut BTreeSet<addr::MountName>)
 }
 
 #[must_use]
-pub fn lock_addressed_roots(docs: &BTreeMap<String, Document>) -> BTreeSet<addr::MountName> {
+pub fn lock_addressed_roots(docs: &model::Docs) -> BTreeSet<addr::MountName> {
     let mut roots = BTreeSet::new();
     for doc in docs.values() {
         for item in crate::read_face::page_lock_items(doc) {
@@ -269,7 +266,7 @@ pub struct PinColor {
 /// Every `meridian-lock` row with colour — same [`edge_color`] as walk. Refused
 /// lock contributes one grey `lock-refused` (never silent absence).
 #[must_use]
-pub fn lock_pin_colors(docs: &BTreeMap<String, Document>) -> Vec<PinColor> {
+pub fn lock_pin_colors(docs: &model::Docs) -> Vec<PinColor> {
     lock_pin_colors_rooted(
         &model::RootedCorpus::ambient(docs),
         &addr::MountSet::default(),
@@ -305,7 +302,7 @@ pub fn lock_pin_colors_rooted(
 pub fn lock_pin_colors_rooted_with_sources(
     corpus: &model::RootedCorpus<'_>,
     mounts: &addr::MountSet,
-    extra_sources: &BTreeMap<String, Document>,
+    extra_sources: &model::Docs,
 ) -> Vec<PinColor> {
     let docs = corpus.ambient_docs();
     let index = corpus_index(docs);
@@ -342,7 +339,7 @@ pub struct LockObject {
 /// Refused lock contributes nothing (damage named by grey lock-refused).
 /// Deduped by `(src_path, object, hash)` — whole-file lock pins same blob twice.
 #[must_use]
-pub fn lock_objects(docs: &BTreeMap<String, Document>) -> Vec<LockObject> {
+pub fn lock_objects(docs: &model::Docs) -> Vec<LockObject> {
     let mut out = Vec::new();
     let mut seen: BTreeSet<(String, String, String)> = BTreeSet::new();
     for (path, doc) in docs {
@@ -573,7 +570,7 @@ fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
         None => Selector::parse(&canonical_ref(&edge.to_path, &edge.to_sel)),
     };
     if let Some(token) = &edge.fingerprint {
-        return classify_pin(&selector, token, target);
+        return classify_pin(&selector, token, target.map(|d| &**d));
     }
     // FAIL-CLOSED TAIL. Live population zero under R4 (parser refuses missing
     // fields) but structurally reachable — callers do not all filter. Deleting
@@ -635,7 +632,7 @@ fn heading_segments(segments: &[String]) -> Vec<model::HpathSeg> {
 /// never close a cycle).
 fn page_adjacency(
     forward: &BTreeMap<String, Vec<LockItem>>,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     direction: Direction,
 ) -> BTreeMap<String, Vec<String>> {
     let mut adj: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -726,12 +723,12 @@ fn display_ref(to_path: &str, to_sel: &str) -> String {
 mod tests {
     use super::*;
 
-    fn doc(raw: &str) -> Document {
-        model::build(raw.to_string(), syntax::parse(raw))
+    fn doc(raw: &str) -> std::sync::Arc<Document> {
+        std::sync::Arc::new(model::build(raw.to_string(), syntax::parse(raw)))
     }
 
     /// `a.md → b.md → c.md` chain, every pin green via live fingerprint tokens.
-    fn three_doc_chain() -> (BTreeMap<String, Document>, String, String, String) {
+    fn three_doc_chain() -> (model::Docs, String, String, String) {
         let c_raw = "# C\n\nleaf body\n".to_string();
         let c_token = live_token(&c_raw);
 
@@ -994,16 +991,12 @@ mod tests {
     }
 
     /// Effect page pins `sources/target.md` at `token`.
-    fn pinned_corpus(token: &str, target_raw: &str) -> BTreeMap<String, Document> {
+    fn pinned_corpus(token: &str, target_raw: &str) -> model::Docs {
         pinned_corpus_ref("sources/target.md", token, target_raw)
     }
 
     /// [`pinned_corpus`] with explicit declared ref.
-    fn pinned_corpus_ref(
-        declared_ref: &str,
-        token: &str,
-        target_raw: &str,
-    ) -> BTreeMap<String, Document> {
+    fn pinned_corpus_ref(declared_ref: &str, token: &str, target_raw: &str) -> model::Docs {
         let mut lock_block = lock::Lock::new();
         lock_block.upsert_pin(pin_from_spelling(declared_ref, token));
         let effect = format!(
@@ -1031,7 +1024,7 @@ mod tests {
         lock::PinEntry::new(object, "9ae3f1deadbeef", selector, token)
     }
 
-    fn only_entry(docs: &BTreeMap<String, Document>) -> WalkEntry {
+    fn only_entry(docs: &model::Docs) -> WalkEntry {
         let report = walk(docs, "effect.md", Direction::Up, None).expect("walk up");
         assert_eq!(report.entries.len(), 1, "one pin, one entry");
         report.entries[0].clone()
@@ -1476,7 +1469,7 @@ mod tests {
     /// the map cannot tell those two apart is the whole reason the disk is
     /// asked** — and it is why the fixture below supplies a disk rather than
     /// trusting the corpus.
-    fn absence_family_corpus() -> BTreeMap<String, Document> {
+    fn absence_family_corpus() -> model::Docs {
         let live_raw = "# Task\n\nbody v1\n";
         let token = live_token(live_raw);
         let mut docs = BTreeMap::new();

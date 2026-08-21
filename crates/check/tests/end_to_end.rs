@@ -152,7 +152,7 @@ fn a_drifted_pin_still_reddens_after_the_journal_died() {
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = WorkspaceRoot(tmp.path().to_path_buf());
-    let docs: BTreeMap<String, model::Document> = BTreeMap::new();
+    let docs: model::Docs = BTreeMap::new();
     let drifted = check::PinRow {
         src_path: "claim.md".to_string(),
         declared_ref: "source.md#S".to_string(),
@@ -192,7 +192,7 @@ fn an_unaskable_object_store_is_still_grey_and_never_a_clean_reading() {
     ));
     let page = format!("# P\n\n{}\n", lock::render(&lock));
     let doc = model::build(page.clone(), syntax::parse(&page));
-    let docs = BTreeMap::from([("claim.md".to_string(), doc)]);
+    let docs = BTreeMap::from([("claim.md".to_string(), std::sync::Arc::new(doc))]);
 
     let plane = check::pin_plane(&root, &docs, &[], &BTreeMap::new());
     assert!(

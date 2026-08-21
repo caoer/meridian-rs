@@ -28,10 +28,10 @@ const PRODUCTION_RECEIPTS: &str = "\
 - run {\"page\":\"LLM_WIKI.md\",\"task\":\"load-skill\"} ^r-run-1785273287426-33159
 ";
 
-fn corpus() -> BTreeMap<String, Document> {
+fn corpus() -> model::Docs {
     let raw = PRODUCTION_RECEIPTS.to_owned();
     let doc = model::build(raw.clone(), syntax::parse(&raw));
-    BTreeMap::from([("receipts/run.md".to_owned(), doc)])
+    BTreeMap::from([("receipts/run.md".to_owned(), std::sync::Arc::new(doc))])
 }
 
 /// The gate: every pre-marker invocation is flagged, the post-marker one is
@@ -111,7 +111,7 @@ fn the_whole_defect_era_renders_as_unauditable_not_as_live_incidents() {
 fn an_orphan_after_the_boundary_is_a_live_incident() {
     let raw = format!("{PRODUCTION_RECEIPTS}- run {{}} ^p-run-1785299999999-00001\n");
     let doc = model::build(raw.clone(), syntax::parse(&raw));
-    let docs = BTreeMap::from([("receipts/run.md".to_owned(), doc)]);
+    let docs = BTreeMap::from([("receipts/run.md".to_owned(), std::sync::Arc::new(doc))]);
 
     let found = orphaned_runs(&docs);
     let live: Vec<&str> = found

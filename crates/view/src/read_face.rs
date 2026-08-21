@@ -163,7 +163,7 @@ pub fn create_read_face_schema(conn: &Connection) -> duckdb::Result<()> {
 ///
 /// # Errors
 /// [`ViewError::Duckdb`] on schema or projection failure.
-pub fn open_board(docs: &BTreeMap<String, Document>) -> Result<Connection, ViewError> {
+pub fn open_board(docs: &model::Docs) -> Result<Connection, ViewError> {
     let conn = Connection::open_in_memory()?;
     facts::create_facts_schema(&conn)?;
     facts::project_nodes(&conn, docs)?;
@@ -178,10 +178,7 @@ pub fn open_board(docs: &BTreeMap<String, Document>) -> Result<Connection, ViewE
 ///
 /// # Errors
 /// Propagates any `DuckDB` error reading recorded revs.
-pub fn stale_paths(
-    conn: &Connection,
-    docs: &BTreeMap<String, Document>,
-) -> duckdb::Result<Vec<String>> {
+pub fn stale_paths(conn: &Connection, docs: &model::Docs) -> duckdb::Result<Vec<String>> {
     let mut recorded: BTreeMap<String, String> = BTreeMap::new();
     let mut stmt = conn.prepare("SELECT DISTINCT path, doc_rev FROM node")?;
     let mut rows = stmt.query([])?;
@@ -205,7 +202,7 @@ type PinKey = (String, String, Option<String>);
 /// Colour of every `meridian-lock` row, keyed by [`PinKey`]. Asks
 /// [`crate::walk::lock_pin_colors`] (same `edge_color` as walk) — this face
 /// computes no colour of its own.
-fn pin_verdicts(docs: &BTreeMap<String, Document>) -> BTreeMap<PinKey, Color> {
+fn pin_verdicts(docs: &model::Docs) -> BTreeMap<PinKey, Color> {
     walk::lock_pin_colors(docs)
         .into_iter()
         .map(|pin| ((pin.src_path, pin.declared_ref, pin.fingerprint), pin.color))
@@ -214,7 +211,7 @@ fn pin_verdicts(docs: &BTreeMap<String, Document>) -> BTreeMap<PinKey, Color> {
 
 /// Project lock pins into `input_lock` (source-1 parse + colour-plane verdict).
 /// Lock-refusal rows project too: grey `lock-refused`, empty `to_path` (leaf).
-fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> duckdb::Result<()> {
+fn project_input_locks(conn: &Connection, docs: &model::Docs) -> duckdb::Result<()> {
     let index = corpus_index(docs);
     let verdicts = pin_verdicts(docs);
     let mut stmt = conn.prepare(
@@ -336,7 +333,7 @@ pub fn page_lock_items(doc: &Document) -> Vec<LockItem> {
 
 /// Corpus [`CorpusIndex`] over `docs` — shared by board and walk.
 #[must_use]
-pub fn corpus_index(docs: &BTreeMap<String, Document>) -> CorpusIndex {
+pub fn corpus_index(docs: &model::Docs) -> CorpusIndex {
     let mut index = CorpusIndex::new();
     for (path, doc) in docs {
         index.insert(path, doc);
@@ -351,7 +348,7 @@ pub fn page_lock_items_in_corpus(
     src_path: &str,
     doc: &Document,
     index: &CorpusIndex,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
 ) -> Vec<LockItem> {
     page_lock_items_in_rooted_corpus(
         src_path,
@@ -417,7 +414,7 @@ pub fn resolve_to_path(
     to_path: &str,
     src_path: &str,
     index: &CorpusIndex,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
 ) -> String {
     resolve_to_path_rooted(
         to_path,
@@ -532,8 +529,8 @@ fn u64c(x: usize) -> u64 {
 mod tests {
     use super::*;
 
-    fn doc(raw: &str) -> Document {
-        model::build(raw.to_string(), syntax::parse(raw))
+    fn doc(raw: &str) -> std::sync::Arc<Document> {
+        std::sync::Arc::new(model::build(raw.to_string(), syntax::parse(raw)))
     }
 
     /// R4 blob hash — mandatory on every fixture pin.

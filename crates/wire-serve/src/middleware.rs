@@ -15,8 +15,7 @@ use std::sync::OnceLock;
 /// One SQL projection call: the overlay world's parsed documents and one
 /// SELECT, answered as [`policy::SqlRow`]s. Pure per call — the backend holds
 /// no state between calls.
-pub type SqlBackend =
-    fn(&BTreeMap<String, model::Document>, &str) -> Result<Vec<policy::SqlRow>, String>;
+pub type SqlBackend = fn(&model::Docs, &str) -> Result<Vec<policy::SqlRow>, String>;
 
 static SQL_BACKEND: OnceLock<SqlBackend> = OnceLock::new();
 
@@ -75,7 +74,7 @@ impl policy::MwWorld for DoorWorld<'_> {
 fn overlay_docs(
     root: &fs::WorkspaceRoot,
     overlay: &BTreeMap<String, String>,
-) -> Result<BTreeMap<String, model::Document>, String> {
+) -> Result<model::Docs, String> {
     let domain = fs::domain::Domain::load(root).map_err(|e| format!("domain load: {e}"))?;
     let rels = fs::hash_domain(root, &domain).map_err(|e| format!("domain walk: {e}"))?;
     let mut docs = BTreeMap::new();
@@ -89,10 +88,13 @@ fn overlay_docs(
         let Ok(bytes) = std::fs::read_to_string(root.0.join(&rel)) else {
             continue;
         };
-        docs.insert(rel_str.to_owned(), doc_of(rel_str, &bytes));
+        docs.insert(
+            rel_str.to_owned(),
+            std::sync::Arc::new(doc_of(rel_str, &bytes)),
+        );
     }
     for (rel, bytes) in overlay {
-        docs.insert(rel.clone(), doc_of(rel, bytes));
+        docs.insert(rel.clone(), std::sync::Arc::new(doc_of(rel, bytes)));
     }
     Ok(docs)
 }
