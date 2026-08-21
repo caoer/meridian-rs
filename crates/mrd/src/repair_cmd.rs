@@ -64,7 +64,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use model::Document;
 use model::selector::Color;
 use serde_json::json;
 use wire::{NodeRev, Path as WirePath};

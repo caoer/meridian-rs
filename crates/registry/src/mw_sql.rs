@@ -9,8 +9,6 @@
 //! crate). Snapshot-scoped by construction: the projection is built from the
 //! given docs and discarded; no later writer is visible.
 
-use std::collections::BTreeMap;
-
 use policy::{SqlRow, SqlValue};
 
 /// Install the backend into the write door. Idempotent; call at startup.

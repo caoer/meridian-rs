@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 
 use duckdb::Connection;
-use model::Document;
 use view::create_schema;
 
 fn doc(raw: &str) -> std::sync::Arc<model::Document> {

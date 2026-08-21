@@ -19,7 +19,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use model::Document;
 use model::selector::{Color, GreyReason, RedReason, Selector, classify_pin};
 
 use crate::read_face::{LockItem, corpus_index, page_lock_items_in_rooted_corpus};
@@ -721,6 +720,8 @@ fn display_ref(to_path: &str, to_sel: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use model::Document;
+
     use super::*;
 
     fn doc(raw: &str) -> std::sync::Arc<Document> {

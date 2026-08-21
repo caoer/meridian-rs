@@ -29,7 +29,7 @@ mod sqltext;
 pub mod store;
 pub mod walk;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use duckdb::Connection;
@@ -1036,6 +1036,8 @@ fn opt_text(s: Option<&str>) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     /// `(tag, key)` per `frontmatter_tag` row, in staged order.

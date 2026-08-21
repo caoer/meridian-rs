@@ -64,7 +64,6 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use check::{CoreReport, GREY_CANNOT_ASSESS, PinPlane, PinRow, WRITE_HISTORY_NOT_ASSESSED};
-use model::Document;
 use receipt::anchor::{ObjectAnchor, PENDING_ANCHOR_TTL};
 use serde_json::{Value, json};
 

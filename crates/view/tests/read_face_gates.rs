@@ -3,7 +3,6 @@
 
 use std::collections::BTreeMap;
 
-use model::Document;
 use view::{open_board, stale_paths};
 
 fn doc(raw: &str) -> std::sync::Arc<model::Document> {

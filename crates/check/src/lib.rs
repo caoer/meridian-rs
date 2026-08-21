@@ -26,7 +26,6 @@ pub mod orphan;
 use std::collections::BTreeMap;
 
 use fs::WorkspaceRoot;
-use model::Document;
 
 pub use layer0::{
     ClaimFinding, GREY_CANNOT_ASSESS, OrphanedBlob, PinPlane, PinRow, WRITE_HISTORY_NOT_ASSESSED,

@@ -14,7 +14,6 @@
 //! because the lint joins on the anchor and must not depend on payload shape.
 
 use check::orphan::{orphaned_runs, render};
-use model::Document;
 use std::collections::BTreeMap;
 
 /// The real sequence, in page order, from field-notes 2026-07-28.
