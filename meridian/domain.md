@@ -2,6 +2,7 @@
 ignore:
   - "crates/testsuite/data/meridian-md/refusals/**"
   - "crates/testsuite/data/parity/**"
+  - "target/**"
 ---
 
 # The hash domain of meridian-rs
@@ -84,6 +85,30 @@ bite with a second lock-bearing fixture.
 **vacuous** — this repository then declares no pin at all, and the engine says
 so under `--require-pins` (`no-pin-coverage`). A green here is not evidence the
 doc corpus is attested; it is evidence there is nothing to attest yet.
+
+## `target/**`
+
+Cargo's build tree. On a working machine it is enormous — measured 2026-08-20
+on the primary mac checkout: **99 GB, ~477,000 files**, of which exactly 2 are
+`.md` (dependency fixtures, not this repository's corpus). The ground is the
+parity-pack one, stronger still: **build output is not corpus.** Attesting it
+would couple the workspace root to compiler cadence — every `cargo build` a
+fingerprint move for a reason that has nothing to do with the documents.
+
+The cost of leaving it in was not hypothetical. The hash domain is what every
+corpus-wide walk sweeps, and that includes the registry daemon's G11 pre-warm
+stat-signature (`fs::domain_stat_signature`), which re-walks the domain on a
+1-second base cadence whenever client traffic keeps resetting the quiet
+backoff. Un-pruned, one sweep traversed the full ~477k entries (~2 s of
+`readdir`/`lstat` syscalls) — the sweep could never finish inside its own
+interval, so `mrd daemon` held **more than one core pinned continuously**
+(measured 2026-08-20: 116 CPU-minutes in 89 wall-minutes, the sample pinned on
+`walk_domain_dir` under `Registry::prewarm`), and the per-sweep allocation
+churn left ~4 GB of freed-but-unreclaimed allocator pages in RSS.
+
+The rule prunes the traversal, not just the two files: `Domain::prunes_dir`
+matches `target/**` against the directory itself (`**` binds zero segments)
+and no `!` rule reaches beneath, so the walk never descends.
 
 No `version:` key, so the § 12.3 merkle prefix stays `b3:`. The version counter
 exists to stop a stale cursor matching a re-scoped world; this workspace keeps no
