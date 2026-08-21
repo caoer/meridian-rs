@@ -6,12 +6,11 @@
 
 use std::collections::BTreeMap;
 
-use model::Document;
 use view::read_face::open_board;
 use view::walk::{color_detail, color_reason, color_tone, lock_pin_colors};
 
-fn doc(raw: &str) -> Document {
-    model::build(raw.to_string(), syntax::parse(raw))
+fn doc(raw: &str) -> std::sync::Arc<model::Document> {
+    std::sync::Arc::new(model::build(raw.to_string(), syntax::parse(raw)))
 }
 
 /// Live fingerprint of a page root (correct pin).
@@ -45,7 +44,7 @@ fn effect_page(declared_ref: &str, token: &str) -> String {
 }
 
 /// Six outcomes, one lock row each — `src_path` keys both planes.
-fn six_state_corpus() -> BTreeMap<String, Document> {
+fn six_state_corpus() -> model::Docs {
     let body = "# Target\n\nbody v1\n";
     let hex64 = "0".repeat(64);
     let mut docs = BTreeMap::new();

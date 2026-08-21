@@ -3,15 +3,14 @@
 use std::collections::BTreeMap;
 
 use duckdb::Connection;
-use model::Document;
 use view::create_schema;
 
-fn doc(raw: &str) -> Document {
-    model::build(raw.to_string(), syntax::parse(raw))
+fn doc(raw: &str) -> std::sync::Arc<model::Document> {
+    std::sync::Arc::new(model::build(raw.to_string(), syntax::parse(raw)))
 }
 
 /// Corpus fold stamp (version 0 — fixtures declare no domain).
-fn fold(docs: &BTreeMap<String, Document>) -> String {
+fn fold(docs: &model::Docs) -> String {
     let files: Vec<(&str, &[u8])> = docs
         .iter()
         .map(|(path, d)| (path.as_str(), d.raw.as_bytes()))
@@ -38,7 +37,7 @@ fn scalar_i64(conn: &Connection, sql: &str) -> i64 {
 }
 
 /// Two-doc fixture (gate 18): dup hpath, doc-level task, link shapes.
-fn fixture() -> BTreeMap<String, Document> {
+fn fixture() -> model::Docs {
     let a = "\
 ---
 type: task

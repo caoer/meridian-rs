@@ -17,7 +17,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use fs::WorkspaceRoot;
-use model::Document;
 use model::selector::Color;
 use realise::{CheckOutcome, Claim};
 use receipt::anchor::{ObjectAnchor, ObjectAnchorFacts};
@@ -252,7 +251,7 @@ impl PinPlane {
 #[must_use]
 pub fn pin_plane(
     root: &WorkspaceRoot,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     pins: &[PinRow],
     mounted: &BTreeMap<addr::MountName, PathBuf>,
 ) -> PinPlane {
@@ -338,7 +337,7 @@ struct GroupedObjects {
 /// two rows would ask git one question twice and report one orphan as two
 /// findings.
 fn objects_in(
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     mounted: &BTreeMap<addr::MountName, PathBuf>,
 ) -> Result<GroupedObjects, String> {
     let mut out = GroupedObjects::default();
@@ -508,9 +507,9 @@ mod tests {
     // ── U14: the pin plane ──────────────────────────────────────────────────
 
     /// A corpus of one page, built the way `fs::build_corpus` builds one.
-    fn corpus(path: &str, text: &str) -> BTreeMap<String, Document> {
+    fn corpus(path: &str, text: &str) -> model::Docs {
         let doc = model::build(text.to_string(), syntax::parse(text));
-        BTreeMap::from([(path.to_string(), doc)])
+        BTreeMap::from([(path.to_string(), std::sync::Arc::new(doc))])
     }
 
     /// A `meridian-lock` block carrying one R4 pin, in the canonical bytes the

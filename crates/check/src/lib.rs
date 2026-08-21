@@ -26,7 +26,6 @@ pub mod orphan;
 use std::collections::BTreeMap;
 
 use fs::WorkspaceRoot;
-use model::Document;
 
 pub use layer0::{
     ClaimFinding, GREY_CANNOT_ASSESS, OrphanedBlob, PinPlane, PinRow, WRITE_HISTORY_NOT_ASSESSED,
@@ -157,7 +156,7 @@ fn render_pin(pin: &PinRow) -> String {
 /// to run is a worse answer than saying what could not be asked.
 pub fn core(
     root: &WorkspaceRoot,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     claims: &[realise::Claim],
     pins: &[PinRow],
     mounted: &BTreeMap<addr::MountName, std::path::PathBuf>,
@@ -188,7 +187,7 @@ pub fn core(
 #[must_use]
 pub fn core_of(
     root: &WorkspaceRoot,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     pins: &[PinRow],
     mounted: &BTreeMap<addr::MountName, std::path::PathBuf>,
 ) -> CoreReport {

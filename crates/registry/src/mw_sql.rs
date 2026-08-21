@@ -9,8 +9,6 @@
 //! crate). Snapshot-scoped by construction: the projection is built from the
 //! given docs and discarded; no later writer is visible.
 
-use std::collections::BTreeMap;
-
 use policy::{SqlRow, SqlValue};
 
 /// Install the backend into the write door. Idempotent; call at startup.
@@ -19,7 +17,7 @@ pub fn install() {
 }
 
 /// One `ctx.sql` call: project `docs`, run `query`, convert rows.
-fn backend(docs: &BTreeMap<String, model::Document>, query: &str) -> Result<Vec<SqlRow>, String> {
+fn backend(docs: &model::Docs, query: &str) -> Result<Vec<SqlRow>, String> {
     let conn = view::build_memory(docs, "middleware-overlay").map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(query).map_err(|e| e.to_string())?;
     let mut rows = stmt.query([]).map_err(|e| e.to_string())?;

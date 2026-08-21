@@ -10,14 +10,13 @@
 use std::collections::BTreeMap;
 
 use duckdb::Connection;
-use model::Document;
 
-fn doc(raw: &str) -> Document {
-    model::build(raw.to_string(), syntax::parse(raw))
+fn doc(raw: &str) -> std::sync::Arc<model::Document> {
+    std::sync::Arc::new(model::build(raw.to_string(), syntax::parse(raw)))
 }
 
 /// Corpus fold stamp (version 0 — fixtures declare no domain).
-fn fold(docs: &BTreeMap<String, Document>) -> String {
+fn fold(docs: &model::Docs) -> String {
     let files: Vec<(&str, &[u8])> = docs
         .iter()
         .map(|(path, d)| (path.as_str(), d.raw.as_bytes()))
@@ -25,7 +24,7 @@ fn fold(docs: &BTreeMap<String, Document>) -> String {
     model::merkle_root(&files, 0).0
 }
 
-fn build(docs: &BTreeMap<String, Document>) -> Connection {
+fn build(docs: &model::Docs) -> Connection {
     view::build_memory(docs, &fold(docs)).expect("build :memory: view")
 }
 

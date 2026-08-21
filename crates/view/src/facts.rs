@@ -14,7 +14,7 @@
 
 use duckdb::Connection;
 use duckdb::types::Value;
-use model::{Document, Node, NodeKind};
+use model::{Node, NodeKind};
 
 /// d2 §2.1 fact-table DDL (`node` · `edge` · `claim`). Additive over the frozen
 /// round-1 view schema ([`crate::schema`]); never an edit to what ships.
@@ -80,9 +80,7 @@ pub fn create_facts_schema(conn: &Connection) -> duckdb::Result<()> {
 ///
 /// # Errors
 /// Propagates any `DuckDB` error from open, schema, or insert.
-pub fn build_facts_memory(
-    docs: &std::collections::BTreeMap<String, Document>,
-) -> duckdb::Result<Connection> {
+pub fn build_facts_memory(docs: &model::Docs) -> duckdb::Result<Connection> {
     let conn = Connection::open_in_memory()?;
     create_facts_schema(&conn)?;
     project_nodes(&conn, docs)?;
@@ -95,10 +93,7 @@ pub fn build_facts_memory(
 ///
 /// `pub(crate)` so the read face projects `node` into the same connection as
 /// lock-pin/board projections (never a second store).
-pub(crate) fn project_nodes(
-    conn: &Connection,
-    docs: &std::collections::BTreeMap<String, Document>,
-) -> duckdb::Result<()> {
+pub(crate) fn project_nodes(conn: &Connection, docs: &model::Docs) -> duckdb::Result<()> {
     let mut stmt = conn.prepare(
         "INSERT INTO node (path, selector, kind, span_start, span_end, node_rev, doc_rev) \
          VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -150,10 +145,12 @@ fn u64c(x: usize) -> u64 {
 mod tests {
     use std::collections::BTreeMap;
 
+    use model::Document;
+
     use super::*;
 
-    fn doc(raw: &str) -> Document {
-        model::build(raw.to_string(), syntax::parse(raw))
+    fn doc(raw: &str) -> std::sync::Arc<Document> {
+        std::sync::Arc::new(model::build(raw.to_string(), syntax::parse(raw)))
     }
 
     /// Fact tables exist; `node` has one row per addressable span.

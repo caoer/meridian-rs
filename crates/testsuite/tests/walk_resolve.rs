@@ -10,14 +10,14 @@
 //! walkvault corpus.
 
 use model::walk::{Location, Miss, Stage, walk};
-use model::{BadAnchorId, CorpusIndex, Document, Ref, ResolveError, build};
+use model::{BadAnchorId, CorpusIndex, Ref, ResolveError, build};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 
 /// Build the walkvault corpus (walk.md + blocks.md) into documents + a stage-1
 /// name index — byte-identical to the GT pack and the adversarial harness.
-fn walkvault() -> (CorpusIndex, BTreeMap<String, Document>) {
+fn walkvault() -> (CorpusIndex, model::Docs) {
     let dir = testsuite::gt_pack_dir().join("obsidian-compat/walkvault");
     let mut index = CorpusIndex::new();
     let mut docs = BTreeMap::new();
@@ -25,7 +25,7 @@ fn walkvault() -> (CorpusIndex, BTreeMap<String, Document>) {
         let raw = fs::read_to_string(dir.join(name)).unwrap_or_else(|e| panic!("read {name}: {e}"));
         let doc = build(raw.clone(), syntax::parse(&raw));
         index.insert(name, &doc);
-        docs.insert(name.to_string(), doc);
+        docs.insert(name.to_string(), std::sync::Arc::new(doc));
     }
     (index, docs)
 }

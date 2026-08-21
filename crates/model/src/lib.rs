@@ -153,6 +153,14 @@ pub struct Document {
     pub root: Node,
 }
 
+/// The parsed corpus: workspace-relative path → shared parsed document.
+///
+/// Documents are immutable once built (`model` law: derived, disposable), so
+/// the corpus carries them by shared reference — an incremental rebuild
+/// clones pointers for unmoved members, never document bodies
+/// (node-rev-merkle-spec §6.8: sharing changes ownership, never content).
+pub type Docs = BTreeMap<String, std::sync::Arc<Document>>;
+
 /// Build the governed tree from `syntax`'s dialect stream — the syntax→model
 /// seam.
 ///
@@ -2463,12 +2471,7 @@ impl CorpusIndex {
 
     /// Three rules over one root's corpus (key / key+`.md` / linkpath), shared
     /// by the ambient and mounted arms of [`resolve_ref`].
-    fn three_rules(
-        &self,
-        spelling: &str,
-        from: &str,
-        docs: &BTreeMap<String, Document>,
-    ) -> Option<String> {
+    fn three_rules(&self, spelling: &str, from: &str, docs: &Docs) -> Option<String> {
         if docs.contains_key(spelling) {
             return Some(spelling.to_owned());
         }
@@ -2487,13 +2490,13 @@ impl CorpusIndex {
 #[derive(Debug)]
 pub struct MountedRoot<'a> {
     index: CorpusIndex,
-    docs: &'a BTreeMap<String, Document>,
+    docs: &'a Docs,
 }
 
 impl MountedRoot<'_> {
     /// This root's documents.
     #[must_use]
-    pub fn docs(&self) -> &BTreeMap<String, Document> {
+    pub fn docs(&self) -> &Docs {
         self.docs
     }
 }
@@ -2506,7 +2509,7 @@ impl MountedRoot<'_> {
 /// owning — a corpus is large and already lives in the caller's hands.
 #[derive(Debug)]
 pub struct RootedCorpus<'a> {
-    ambient: &'a BTreeMap<String, Document>,
+    ambient: &'a Docs,
     mounted: BTreeMap<MountName, MountedRoot<'a>>,
     /// The filter that decided which ambient paths are in this map, when the
     /// builder supplied it. `None` = this corpus cannot say, never "everything
@@ -2563,7 +2566,7 @@ pub trait AmbientDisk: std::fmt::Debug {
 impl<'a> RootedCorpus<'a> {
     /// The single-root world: an ambient corpus and no mounts.
     #[must_use]
-    pub fn ambient(docs: &'a BTreeMap<String, Document>) -> Self {
+    pub fn ambient(docs: &'a Docs) -> Self {
         RootedCorpus {
             ambient: docs,
             mounted: BTreeMap::new(),
@@ -2643,7 +2646,7 @@ impl<'a> RootedCorpus<'a> {
     /// Bind one mounted root's corpus under its canonical name, building that
     /// root's own name index. Chainable.
     #[must_use]
-    pub fn with_root(mut self, name: MountName, docs: &'a BTreeMap<String, Document>) -> Self {
+    pub fn with_root(mut self, name: MountName, docs: &'a Docs) -> Self {
         let mut index = CorpusIndex::new();
         for (path, doc) in docs {
             index.insert(path, doc);
@@ -2654,7 +2657,7 @@ impl<'a> RootedCorpus<'a> {
 
     /// The ambient root's documents.
     #[must_use]
-    pub fn ambient_docs(&self) -> &BTreeMap<String, Document> {
+    pub fn ambient_docs(&self) -> &Docs {
         self.ambient
     }
 

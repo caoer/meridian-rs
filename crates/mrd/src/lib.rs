@@ -119,10 +119,7 @@ pub(crate) fn voice_unserved(unserved: &std::collections::BTreeMap<String, Strin
 /// the complete machine-readable list; it never required prose to be unbounded.
 /// Cap convention borrowed from [`model::selector::NEAREST_SHOWN`], which this
 /// site should have followed from the start.
-pub(crate) fn voice_excluded(
-    root: &fs::WorkspaceRoot,
-    docs: &std::collections::BTreeMap<String, model::Document>,
-) {
+pub(crate) fn voice_excluded(root: &fs::WorkspaceRoot, docs: &model::Docs) {
     let Ok(declined) = fs::declined_markdown(root) else {
         return;
     };

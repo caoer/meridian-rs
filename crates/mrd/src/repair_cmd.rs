@@ -64,7 +64,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use model::Document;
 use model::selector::Color;
 use serde_json::json;
 use wire::{NodeRev, Path as WirePath};
@@ -308,7 +307,7 @@ struct Survey {
 /// two populations that are not. `mounted` decides jurisdiction for form-3 rows: a bound root's
 /// rows are candidates in that root; an unmounted root's are stated.
 fn survey(
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     page: Option<&str>,
     mounted: &BTreeMap<addr::MountName, PathBuf>,
 ) -> Survey {
@@ -387,7 +386,7 @@ fn survey(
 /// fails only one of the two is not this verb's business.
 fn lost_pins(
     root: &fs::WorkspaceRoot,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     candidates: Vec<PinSite>,
 ) -> Result<Vec<PinSite>, Fail> {
     if candidates.is_empty() {
@@ -444,11 +443,7 @@ fn lost_pins(
 /// therefore READ FROM DISK here rather than answered as absent — otherwise an intact pin reads
 /// as lost purely because its target is out of domain, and `repair` moves its `hash` off live
 /// content. `pin` already obeyed this law when the caller named such a target.
-fn live_color(
-    root: &fs::WorkspaceRoot,
-    docs: &BTreeMap<String, Document>,
-    site: &PinSite,
-) -> Color {
+fn live_color(root: &fs::WorkspaceRoot, docs: &model::Docs, site: &PinSite) -> Color {
     let selector = view::walk::model_selector(&site.entry.object, &site.entry.selector);
     match &site.owner {
         Owner::Ambient => {
@@ -691,7 +686,7 @@ fn floor(root: &fs::WorkspaceRoot, outcomes: &[Outcome]) -> Result<(), Fail> {
 /// and artifact guard whole.
 fn apply(
     root: &fs::WorkspaceRoot,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     outcomes: &[Outcome],
     dry: bool,
     format: Format,

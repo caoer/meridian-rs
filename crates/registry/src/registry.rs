@@ -668,14 +668,23 @@ impl Registry {
             // whole-corpus parse site. Leaf-set clones happen on this rebuild
             // path only, never per currency pass.
             let engine = if let Some(prior) = prior {
-                let fresh = {
-                    cache
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .leaf_digests()
+                // Snapshot the leaf set AND the root minted for exactly that
+                // set under ONE lock hold (merkle-spec §6.8): when the
+                // incremental pass builds the very set, its stamp is this
+                // root and no tree is rebuilt.
+                let (fresh, fresh_root) = {
+                    let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+                    let minted = memo.overlay_root().ok();
+                    (memo.leaf_digests(), minted)
                 };
-                let update =
-                    fs::update_corpus(&root, &prior.docs, &prior.unserved, &prior.leaves, &fresh)?;
+                let update = fs::update_corpus(
+                    &root,
+                    &prior.docs,
+                    &prior.unserved,
+                    &prior.leaves,
+                    &fresh,
+                    fresh_root.as_ref(),
+                )?;
                 parsed = Some(update.parsed);
                 WorkspaceEngine {
                     index: update.index,
@@ -2011,7 +2020,7 @@ mod engine_tests {
         let counters = |reg: &Registry| {
             let cache = reg.domain_cache(&canonical);
             let memo = cache.lock().unwrap();
-            (memo.listings(), memo.leaves_read(), memo.flat_folds())
+            (memo.listings(), memo.leaves_read(), memo.served_folds())
         };
 
         // Quiet corpus, vouched refresh: O(1) — every instrument frozen.

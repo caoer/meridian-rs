@@ -670,7 +670,7 @@ fn the_cached_base_surface_equals_a_fresh_build() {
 /// "measured empty" (§6.2/§6.3). The one state silence would erase.
 #[test]
 fn a_build_with_no_walk_stamps_the_fold_null() {
-    let docs: BTreeMap<String, model::Document> = BTreeMap::new();
+    let docs: model::Docs = BTreeMap::new();
     let conn = view::build_memory(&docs, "b3:empty").expect("build");
     assert_eq!(
         one(

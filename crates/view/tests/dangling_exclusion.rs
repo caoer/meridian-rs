@@ -12,16 +12,14 @@
 
 use std::collections::BTreeMap;
 
-use model::Document;
-
-fn doc(raw: &str) -> Document {
-    model::build(raw.to_string(), syntax::parse(raw))
+fn doc(raw: &str) -> std::sync::Arc<model::Document> {
+    std::sync::Arc::new(model::build(raw.to_string(), syntax::parse(raw)))
 }
 
 /// One doc, two broken refs: `TAG-FILES.base` (a real out-of-domain file —
 /// the injected probe stamps it `non-md`) and `nowhere` (a genuine typo — the
 /// probe answers `None`, the row keeps NULL).
-fn fixture() -> BTreeMap<String, Document> {
+fn fixture() -> model::Docs {
     let mut docs = BTreeMap::new();
     docs.insert(
         "notes.md".to_owned(),
@@ -30,7 +28,7 @@ fn fixture() -> BTreeMap<String, Document> {
     docs
 }
 
-fn fold(docs: &BTreeMap<String, Document>) -> String {
+fn fold(docs: &model::Docs) -> String {
     let files: Vec<(&str, &[u8])> = docs
         .iter()
         .map(|(path, d)| (path.as_str(), d.raw.as_bytes()))

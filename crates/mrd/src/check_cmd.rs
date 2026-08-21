@@ -64,7 +64,6 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use check::{CoreReport, GREY_CANNOT_ASSESS, PinPlane, PinRow, WRITE_HISTORY_NOT_ASSESSED};
-use model::Document;
 use receipt::anchor::{ObjectAnchor, PENDING_ANCHOR_TTL};
 use serde_json::{Value, json};
 
@@ -618,9 +617,9 @@ struct StagedBytes {
 fn assess(
     root: &fs::WorkspaceRoot,
     mounts: &crate::walk_cmd::Mounts,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     domain: &fs::domain::Domain,
-    excluded_holders: &BTreeMap<String, Document>,
+    excluded_holders: &model::Docs,
 ) -> Assessed {
     // The same domain the snapshot was taken under — the colour plane must be
     // filtered by the filter that built its corpus, never by a second reading.
@@ -660,10 +659,7 @@ fn assess(
 /// widens a population the caller already gets nothing from, so a failure to
 /// read one leaves the assessment exactly where it stands today. It is never
 /// counted as an absence of pins.
-fn excluded_holders(
-    root: &fs::WorkspaceRoot,
-    domain: &fs::domain::Domain,
-) -> BTreeMap<String, Document> {
+fn excluded_holders(root: &fs::WorkspaceRoot, domain: &fs::domain::Domain) -> model::Docs {
     let Ok(all) = fs::walk(root) else {
         return BTreeMap::new();
     };
@@ -689,7 +685,7 @@ fn excluded_holders(
 /// table exists. The unserved map is voiced right here and never leaves: the
 /// domain-excluded census enumerates the declined class from the root
 /// ([`crate::voice_excluded`]), which is structurally disjoint from it.
-fn build_corpus(files: fs::DomainFiles) -> BTreeMap<String, Document> {
+fn build_corpus(files: fs::DomainFiles) -> model::Docs {
     let (_index, docs, unserved) = fs::build_corpus(files);
     crate::voice_unserved(&unserved);
     docs
@@ -741,7 +737,7 @@ fn staged_interval(
 fn pin_rows(
     corpus: &model::RootedCorpus<'_>,
     mounts: &addr::MountSet,
-    excluded_holders: &BTreeMap<String, Document>,
+    excluded_holders: &model::Docs,
 ) -> Vec<PinRow> {
     view::walk::lock_pin_colors_rooted_with_sources(corpus, mounts, excluded_holders)
         .into_iter()

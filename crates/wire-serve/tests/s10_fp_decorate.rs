@@ -67,7 +67,7 @@ fn mint_pin(root: &fs::WorkspaceRoot) {
 }
 
 /// Corpus the decoration builder reads (registry shape: every page + linkpath index).
-fn corpus(root: &fs::WorkspaceRoot) -> (model::CorpusIndex, BTreeMap<String, model::Document>) {
+fn corpus(root: &fs::WorkspaceRoot) -> (model::CorpusIndex, model::Docs) {
     let mut docs = BTreeMap::new();
     let mut index = model::CorpusIndex::new();
     for rel in ["plan.md", "guide.md", "notes.md"] {
@@ -75,7 +75,7 @@ fn corpus(root: &fs::WorkspaceRoot) -> (model::CorpusIndex, BTreeMap<String, mod
             continue;
         };
         index.insert(rel, &doc);
-        docs.insert(rel.to_string(), doc);
+        docs.insert(rel.to_string(), std::sync::Arc::new(doc));
     }
     (index, docs)
 }
