@@ -844,17 +844,33 @@ config). The governed write path is untouched — its own-config commit imposes
 `overlay_membership` synchronously (§6.1) and never pays this rung. Config
 edits are ruling-class rare; one floor pass each is the honest price.
 
-**Named residue — the watch plane's classification floor.** When the detect
-pre-check finds the root moved, `wire_serve::watch::reconcile` still takes a
-FULL `domain_snapshot` — every member's bytes — to classify the change and
-rebase its byte baseline, per emitted external batch. Under this section's
-pre-check that cost now follows CHANGE, never cadence, but it is still
-O(corpus) per change. The successor is the §6.6 direction finished:
-classification off the shared memo's leaf delta — read bytes only for
-movers, removed served from the retained baseline, rebase touched entries
-only — frames byte-identical on the wire. It is its own unit with its own
-gate (frame-parity tests), deliberately not a rider here; a degrade with a
-named successor is a decision (laws.md § Named residues).
+**The watch plane classifies off the resident memo (the §6.6 direction,
+finished — landed as its own unit with frame-parity gates; measured live
+before it: one full corpus snapshot — every member's BYTES — per emitted
+external batch, ~1/s under fleet writes with a subscriber).** When the
+detect pre-check finds the root moved, the cycle takes the workspace flock
+and makes the §6.1 door-grade observation through the SHARED memo — the same
+cookie-barrier → take-and-apply → overlay observation the write doors make,
+the extent-refresh floor on any named miss — then hands the classifier the
+memo's leaf set and root. The classifier diffs those digests against the
+watcher's retained baseline (each entry now carries its leaf digest beside
+its bytes), reads bytes ONLY for movers, and mints the same frames: rename
+pairing compares digests (byte-equality's exact proxy), removed and
+`unattested` rows parse retained baseline bytes, modified rows diff
+retained-old against read-new. A mover whose re-read digest disagrees with
+the observed leaf is a mid-cycle race: the cycle emits nothing and holds its
+baseline — the racing write's own event re-fires detection and the next
+cadence tells the whole truth once. The frame's `root_after` is the memo's
+root — the very value the read plane stamps, so the push and read planes
+cannot disagree about the current world. Priming (the subscribe-time
+baseline) keeps its one full snapshot. The ring's private fold memo is
+DELETED — the shared memo is the one instrument on the watch plane too
+(card run-observation-unification), a plain mutex keeps the single-flight
+gate, and the `DETECT_FLOOR_CADENCE` backstop forces a true floor pass
+through that shared memo once per window. Non-UTF-8-NAMED members stay
+baseline-invisible exactly as the snapshot kept them (their leaves still
+fold; a `wire::Path` cannot spell them) — §52 covers non-UTF-8 CONTENT,
+which classifies normally.
 
 **What does NOT change.** The floor pass itself (walk semantics, §6.2 trust
 close, refusal shapes) is untouched — every consumer keeps falling to it on
