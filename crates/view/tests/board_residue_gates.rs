@@ -8,11 +8,10 @@
 use std::collections::BTreeMap;
 
 use duckdb::Connection;
-use model::Document;
 use view::read_face::{LockItem, open_board};
 
-fn doc(raw: &str) -> Document {
-    model::build(raw.to_string(), syntax::parse(raw))
+fn doc(raw: &str) -> std::sync::Arc<model::Document> {
+    std::sync::Arc::new(model::build(raw.to_string(), syntax::parse(raw)))
 }
 
 fn scalar_i64(conn: &Connection, sql: &str) -> i64 {
@@ -33,7 +32,7 @@ fn pinned_page(object: &str) -> String {
 }
 
 /// Two pinned pages bracketing a mid-fixture synthetic residue row.
-fn fixture() -> BTreeMap<String, Document> {
+fn fixture() -> model::Docs {
     let mut docs = BTreeMap::new();
     docs.insert("subject.md".to_string(), doc("# Subject\n\nbody. ^claim\n"));
     docs.insert("effect_a.md".to_string(), doc(&pinned_page("subject")));

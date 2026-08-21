@@ -5,16 +5,14 @@
 
 use std::collections::BTreeMap;
 
-use model::Document;
-
 /// The corpus: `a/b.md` carries the pinned section; `b.md` is a decoy with the same basename
 /// and a same-titled section of different bytes, so resolving to it is measurably wrong. The
 /// ref is a heading (`a/bSection`), which is what a pin fingerprint covers.
-fn corpus() -> (BTreeMap<String, Document>, String) {
+fn corpus() -> (model::Docs, String) {
     let target = "# Page\n\n## Section\n\nthe pinned body\n";
     let decoy = "# Page\n\n## Section\n\nDIFFERENT bytes entirely\n";
 
-    let mut docs: BTreeMap<String, Document> = BTreeMap::new();
+    let mut docs: model::Docs = BTreeMap::new();
     docs.insert("a/b.md".to_string(), doc(target));
     docs.insert("b.md".to_string(), doc(decoy));
 
@@ -41,8 +39,8 @@ fn the_fixture_can_tell_the_two_documents_apart() {
     );
 }
 
-fn doc(raw: &str) -> Document {
-    model::build(raw.to_string(), syntax::parse(raw))
+fn doc(raw: &str) -> std::sync::Arc<model::Document> {
+    std::sync::Arc::new(model::build(raw.to_string(), syntax::parse(raw)))
 }
 
 /// One R4 (`version: 2`) pin, hand-written in the exact bytes `lock::render` emits, so this
@@ -72,10 +70,10 @@ fn lock_block(declared_ref: &str, fingerprint: &str) -> String {
 /// The live fingerprint of one selector in one corpus page — the same resolve + span + removals
 /// the pin minter runs (`wire-serve/src/write.rs`), so the fixture cannot pin a token the
 /// readers would not recompute.
-fn live_fingerprint(docs: &BTreeMap<String, Document>, path: &str, selector: &str) -> String {
+fn live_fingerprint(docs: &model::Docs, path: &str, selector: &str) -> String {
     let sel = model::selector::Selector::parse(&format!("{path}#{selector}"));
-    let (doc, target) =
-        model::selector::resolve_selector(&sel, docs.get(path)).expect("the selector resolves");
+    let (doc, target) = model::selector::resolve_selector(&sel, docs.get(path).map(|d| &**d))
+        .expect("the selector resolves");
     let removals = syntax::anchor_removals(&doc.raw);
     model::fingerprint::fingerprint_span(doc, &target.span, &removals)
         .expect("the fixture target has content")

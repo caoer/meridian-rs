@@ -38,7 +38,6 @@
 //! post-result fold sets `stale = true|false`; a SQL error yields no rows to
 //! certify, so it reports `live_source=none, stale=null` (`state=UNVERIFIED`).
 
-use std::collections::BTreeMap;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -471,7 +470,7 @@ fn daemon_sql_frame(response: &Value) -> Option<Frame> {
 struct Loaded {
     root: fs::WorkspaceRoot,
     f0: String,
-    docs: BTreeMap<String, model::Document>,
+    docs: model::Docs,
     mounts: crate::walk_cmd::Mounts,
     domain: fs::domain::Domain,
     /// The `.base` walk this attempt was taken under (`base-projection.md`

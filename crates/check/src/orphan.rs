@@ -14,9 +14,7 @@
 //! first completion receipt proves the writer could emit one — no build id, no
 //! date, no external state.
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use model::Document;
+use std::collections::BTreeSet;
 
 /// One run receipt recording an authorisation whose completion never landed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,7 +40,7 @@ const COMPLETION: &str = "^r-run-";
 /// re-read them could disagree with the bytes every other plane was computed
 /// from.
 #[must_use]
-pub fn orphaned_runs(docs: &BTreeMap<String, Document>) -> Vec<OrphanedRun> {
+pub fn orphaned_runs(docs: &model::Docs) -> Vec<OrphanedRun> {
     let mut out = Vec::new();
     for (page, doc) in docs {
         out.extend(orphans_on_page(page, &doc.raw));

@@ -689,9 +689,9 @@ pub struct DomainCache {
     /// the content-fold compare). Bound by the cache's owner
     /// ([`Self::bind_stamps`]); the write paths below stamp through it.
     stamps: Option<StampSource>,
-    /// The served law-1 root under the interim law (merged plan §6 step 3):
-    /// recomputed only when the tree advances or the domain version moves —
-    /// `(domain version, root)`.
+    /// The served root — the resident fold's memoized law-2 spelling
+    /// (merkle-spec §6.8): recomputed only when the tree advances or the
+    /// domain version moves — `(domain version, root)`.
     served: Option<(u32, model::MerkleRoot)>,
     /// The domain as of the last observation or the last
     /// [`overlay_membership`](Self::overlay_membership) — the overlay's
@@ -724,7 +724,7 @@ pub struct DomainCache {
     restored_unobserved: bool,
     reads: u64,
     listings: u64,
-    flat_folds: u64,
+    served_folds: u64,
     watermark_rereads: u64,
     suspect_reads: u64,
     fenced_reads: u64,
@@ -864,31 +864,35 @@ impl DomainCache {
     /// every member's identity is checked now. Vanished members are dropped, so
     /// the memo cannot outlive its corpus.
     ///
-    /// The root is byte-identical to [`domain_snapshot`]'s over the same tree —
-    /// both mint through [`served_root`] (hash-law 2, the only served law).
+    /// The root is the resident fold (merkle-spec §6.8) — value-identical to
+    /// [`domain_snapshot`]'s flat build over the same tree state (§4.2.1:
+    /// the canonical shape is a pure function of the entry set; the
+    /// absorb-path gate holds the two instruments equal).
     ///
     /// # Errors
     /// I/O failure loading the domain config, traversing the root, `stat`ing a
     /// member, or reading a member whose identity moved.
     pub fn root(&mut self, root: &WorkspaceRoot) -> io::Result<model::MerkleRoot> {
         let domain = domain::Domain::load(root)?;
-        let rows = self
-            .observe(root, &domain, ObserveLaw::Plain)
+        self.observe(root, &domain, ObserveLaw::Plain)
             .map_err(plain_refusal)?;
-        let version = domain.version();
+        Ok(self.served_fold(domain.version()))
+    }
+
+    /// The served fold of the current resident state (merkle-spec §6.8): the
+    /// ONE tree's incrementally maintained fold, spelled under the serving
+    /// law. O(dirty vertices) on a recompute; a quiet cache serves the
+    /// memoized value. The flat build ([`served_root`]) is never paid here.
+    fn served_fold(&mut self, version: u32) -> model::MerkleRoot {
         if let Some((v, cached)) = &self.served
             && *v == version
         {
-            return Ok(cached.clone());
+            return cached.clone();
         }
-        self.flat_folds += 1;
-        let leaves: Vec<(&[u8], [u8; 32])> = rows
-            .iter()
-            .map(|(name, digest)| (name.as_slice(), *digest))
-            .collect();
-        let folded = served_root(&leaves, version);
+        self.served_folds += 1;
+        let folded = model::RootVersion::law2(version).token(self.tree.fingerprint());
         self.served = Some((version, folded.clone()));
-        Ok(folded)
+        folded
     }
 
     /// The locked-window observation of the run plane, served from this memo:
@@ -1366,27 +1370,15 @@ impl DomainCache {
         Ok(changed)
     }
 
-    /// The served root over the current overlay state — hash-law 2, folded
-    /// from the resident leaves with no walk, no stat, no byte read.
+    /// The served root over the current overlay state — the resident tree's
+    /// incremental fold (merkle-spec §6.8), spelled under hash-law 2: no
+    /// walk, no stat, no byte read, O(dirty vertices).
     ///
     /// # Errors
     /// No observation has landed yet (as [`Self::overlay_leaf`]).
     pub fn overlay_root(&mut self) -> io::Result<model::MerkleRoot> {
         let version = self.overlay_domain()?.version();
-        if let Some((v, cached)) = &self.served
-            && *v == version
-        {
-            return Ok(cached.clone());
-        }
-        self.flat_folds += 1;
-        let leaves: Vec<(&[u8], [u8; 32])> = self
-            .leaves
-            .iter()
-            .map(|(rel, entry)| (hash_name(rel), entry.digest))
-            .collect();
-        let folded = served_root(&leaves, version);
-        self.served = Some((version, folded.clone()));
-        Ok(folded)
+        Ok(self.served_fold(version))
     }
 
     /// The cached served root, if the last fold is still current — a pure
@@ -1439,8 +1431,9 @@ impl DomainCache {
     }
 
     /// The law-2 workspace fingerprint of the resident tree (merkle-spec
-    /// §4.2.3). Engine-internal until the cutover — the interim SERVED value
-    /// is [`Self::root`] / [`Self::overlay_root`]'s law-1 token.
+    /// §4.2.3) — the raw 32 bytes behind the SERVED value: [`Self::root`] /
+    /// [`Self::overlay_root`] spell exactly this fold as their law-2 token
+    /// (§6.8, the one serving instrument).
     pub fn law2_fingerprint(&mut self) -> [u8; 32] {
         self.tree.fingerprint()
     }
@@ -1529,12 +1522,13 @@ impl DomainCache {
         self.tree.stamp_chain(rel, seq);
     }
 
-    /// How many law-1 flat folds ([`model::merkle_root_of_leaves`]) this
-    /// cache has run for its served root — the interim law's own instrument:
-    /// under it, this advances only when the root advances, never per pass.
+    /// How many served-fold recomputes ([`Self::served_fold`], merkle-spec
+    /// §6.8: the resident tree's incremental fold) this cache has run for
+    /// its served root — advances only when the root advances, never per
+    /// pass; each recompute costs the dirty vertices, never the corpus.
     #[must_use]
-    pub fn flat_folds(&self) -> u64 {
-        self.flat_folds
+    pub fn served_folds(&self) -> u64 {
+        self.served_folds
     }
 
     /// The §6.2 timestamp-granularity calibration this cache runs under —
@@ -2035,8 +2029,13 @@ pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::
     Ok((files, folded))
 }
 
-/// The only served workspace root: hash-law 2 (radix-256) over these
-/// already-hashed leaves. There is no dual-law window.
+/// The flat build of the workspace root: hash-law 2 (radix-256) over these
+/// already-hashed leaves, from scratch. There is no dual-law window. Since
+/// merkle-spec §6.8 the SERVE path derives from the resident fold instead
+/// ([`DomainCache::overlay_root`]); this build survives in the serve path's
+/// three flat-build roles — the cold observation, an incremental pass's
+/// divergence tail, and the equivalence gate's oracle — plus the run-plane
+/// bracket instrument ([`DomainLeaves::root`]), out of §6.7 scope.
 #[must_use]
 pub fn served_root(leaves: &[(&[u8], [u8; 32])], domain: u32) -> model::MerkleRoot {
     let mut tree = resident::ResidentTree::new();
@@ -2421,18 +2420,14 @@ pub fn corpus_member_error(e: &io::Error) -> Option<&CorpusMemberError> {
 #[must_use]
 pub fn build_corpus(
     files: DomainFiles,
-) -> (
-    model::CorpusIndex,
-    BTreeMap<String, model::Document>,
-    BTreeMap<String, String>,
-) {
-    let mut docs = BTreeMap::new();
+) -> (model::CorpusIndex, model::Docs, BTreeMap<String, String>) {
+    let mut docs = model::Docs::new();
     let mut unserved = BTreeMap::new();
     for (rel, bytes) in files {
         match String::from_utf8(bytes) {
             Ok(text) => {
                 let doc = model::build(text.clone(), syntax::parse(&text));
-                docs.insert(rel, doc);
+                docs.insert(rel, std::sync::Arc::new(doc));
             }
             Err(e) => {
                 unserved.insert(rel, format!("is not UTF-8 ({})", e.utf8_error()));
@@ -2446,7 +2441,7 @@ pub fn build_corpus(
 /// the ONE index constructor, shared by [`build_corpus`] and
 /// [`update_corpus`] so the two build paths cannot disagree on multi-candidate
 /// order.
-fn corpus_index_of(docs: &BTreeMap<String, model::Document>) -> model::CorpusIndex {
+fn corpus_index_of(docs: &model::Docs) -> model::CorpusIndex {
     let mut index = model::CorpusIndex::new();
     for (rel, doc) in docs {
         index.insert(rel, doc);
@@ -2463,7 +2458,7 @@ pub struct CorpusUpdate {
     /// cannot drift from a from-scratch build over the same tree.
     pub index: model::CorpusIndex,
     /// The updated documents, keyed by workspace-relative path.
-    pub docs: BTreeMap<String, model::Document>,
+    pub docs: model::Docs,
     /// The updated unserved map (non-UTF-8 CONTENT members).
     pub unserved: BTreeMap<String, String>,
     /// The leaf set the fold describes — the next pass's delta baseline.
@@ -2480,30 +2475,37 @@ pub struct CorpusUpdate {
 /// are the parts and leaf set of the build being updated.
 ///
 /// Per member of `fresh`: an unmoved leaf (digest equal to `prior_leaves`)
-/// carries its parsed document — or its unserved condition — forward, bytes
-/// untouched; a moved, added, or unaccounted-for member is read NOW, its
-/// digest re-derived from the very bytes parsed, so the per-member
+/// carries its parsed document by shared reference (merkle-spec §6.8 —
+/// pointer clone, never a document copy) — or its unserved condition —
+/// bytes untouched; a moved, added, or unaccounted-for member is read NOW,
+/// its digest re-derived from the very bytes parsed, so the per-member
 /// stamp==bytes atomicity of [`domain_snapshot`] is preserved for everything
 /// this pass parses. A member absent from `fresh` is vanished and drops. A
 /// mover that vanishes between the leaf pass and the read drops the same way
 /// (the fold describes what was actually built); any other read failure
 /// refuses the pass whole — the Law A-3c posture, unchanged.
 ///
-/// The returned root folds the resulting leaf set through
-/// [`model::merkle_root_of_leaves`] — byte-identical to what
-/// [`domain_snapshot`] folds over the same tree state.
+/// The returned root folds the resulting leaf set. `fresh_root` is the
+/// served root the caller's memo minted for exactly `fresh` (taken with it
+/// under one lock): when the built set is byte-equal to `fresh`, the fold
+/// of equal inputs is that same value by §4.2.1 purity and no tree is
+/// rebuilt (§6.8's fold-free rebuild stamp). A divergent set — a mover
+/// vanished or changed between snapshot and read — or `None` folds fresh
+/// through [`served_root`], byte-identical to what [`domain_snapshot`]
+/// folds over the same tree state.
 ///
 /// # Errors
 /// I/O failure loading the domain config or reading a moved member.
 pub fn update_corpus(
     root: &WorkspaceRoot,
-    prior_docs: &BTreeMap<String, model::Document>,
+    prior_docs: &model::Docs,
     prior_unserved: &BTreeMap<String, String>,
     prior_leaves: &BTreeMap<PathBuf, [u8; 32]>,
     fresh: &BTreeMap<PathBuf, [u8; 32]>,
+    fresh_root: Option<&model::MerkleRoot>,
 ) -> io::Result<CorpusUpdate> {
     let domain = domain::Domain::load(root)?;
-    let mut docs: BTreeMap<String, model::Document> = BTreeMap::new();
+    let mut docs: model::Docs = BTreeMap::new();
     let mut unserved: BTreeMap<String, String> = BTreeMap::new();
     let mut leaves: BTreeMap<PathBuf, [u8; 32]> = BTreeMap::new();
     let mut parsed = 0usize;
@@ -2549,7 +2551,7 @@ pub fn update_corpus(
             match String::from_utf8(bytes) {
                 Ok(text) => {
                     let doc = model::build(text.clone(), syntax::parse(&text));
-                    docs.insert(rel_str.to_owned(), doc);
+                    docs.insert(rel_str.to_owned(), std::sync::Arc::new(doc));
                     parsed += 1;
                 }
                 Err(e) => {
@@ -2561,9 +2563,19 @@ pub fn update_corpus(
             }
         }
     }
-    let leaf_refs: Vec<(&[u8], [u8; 32])> =
-        leaves.iter().map(|(rel, d)| (hash_name(rel), *d)).collect();
-    let folded = served_root(&leaf_refs, domain.version());
+    // §6.8 fold-free rebuild stamp: the pass still folds its OWN leaf set —
+    // when that set is byte-equal to the snapshot it planned against, the
+    // fold of equal inputs IS the snapshot's minted root (§4.2.1 purity),
+    // so no tree is rebuilt. Divergence (or no snapshot root) pays the flat
+    // build over what was actually built — the honest rare price.
+    let folded = match fresh_root {
+        Some(root) if leaves == *fresh => root.clone(),
+        _ => {
+            let leaf_refs: Vec<(&[u8], [u8; 32])> =
+                leaves.iter().map(|(rel, d)| (hash_name(rel), *d)).collect();
+            served_root(&leaf_refs, domain.version())
+        }
+    };
     Ok(CorpusUpdate {
         index: corpus_index_of(&docs),
         docs,

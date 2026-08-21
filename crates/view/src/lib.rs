@@ -29,7 +29,7 @@ mod sqltext;
 pub mod store;
 pub mod walk;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use duckdb::Connection;
@@ -118,10 +118,7 @@ impl From<duckdb::Error> for ViewError {
 ///
 /// # Errors
 /// Propagates any `DuckDB` error from open, schema, or insert.
-pub fn build_memory(
-    docs: &BTreeMap<String, Document>,
-    as_of: &str,
-) -> Result<Connection, ViewError> {
+pub fn build_memory(docs: &model::Docs, as_of: &str) -> Result<Connection, ViewError> {
     let conn = Connection::open_in_memory()?;
     create_schema(&conn)?;
     project(
@@ -160,7 +157,7 @@ pub fn build_memory(
 /// # Errors
 /// As [`build_memory`].
 pub fn build_memory_rooted(
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     corpus: &model::RootedCorpus<'_>,
     mounts: &addr::MountSet,
     as_of: &str,
@@ -188,7 +185,7 @@ pub fn build_memory_rooted(
 /// vault ref ⇒ `dest_path = NULL` (first-class dangling).
 fn project(
     conn: &Connection,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     corpus: &model::RootedCorpus<'_>,
     mounts: Option<&addr::MountSet>,
     exclusion: Option<ExclusionProbe<'_>>,
@@ -299,7 +296,7 @@ pub(crate) fn fill_exclusions(rows: &mut Rows, exclusion: Option<ExclusionProbe<
 
 /// Corpus name index (basename + frontmatter-alias) — same stage-1 resolver
 /// the engine uses, so link resolution matches.
-pub(crate) fn corpus_index(docs: &BTreeMap<String, Document>) -> CorpusIndex {
+pub(crate) fn corpus_index(docs: &model::Docs) -> CorpusIndex {
     let mut index = CorpusIndex::new();
     for (path, doc) in docs {
         index.insert(path, doc);
@@ -1039,6 +1036,8 @@ fn opt_text(s: Option<&str>) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     /// `(tag, key)` per `frontmatter_tag` row, in staged order.
@@ -1056,7 +1055,7 @@ mod tests {
         let mut docs = BTreeMap::new();
         docs.insert(
             "p.md".to_string(),
-            model::build(raw.to_string(), syntax::parse(raw)),
+            std::sync::Arc::new(model::build(raw.to_string(), syntax::parse(raw))),
         );
         stage(&docs)
     }
@@ -1120,7 +1119,7 @@ mod tests {
     fn body_chunks_follow_the_exclusive_content_law() {
         /// One asserted chunk row: (`path`, `seq`, `section_seq`, `hpath`, `text`).
         type BodyRow = (String, u64, Option<u64>, Option<String>, String);
-        let docs: BTreeMap<String, Document> = [
+        let docs: model::Docs = [
             (
                 "a.md",
                 "---\ntitle: Alpha\n---\npreamble line\n\n# Top\nintro\n\n## Sub\nsub body\n",
@@ -1137,7 +1136,7 @@ mod tests {
         .map(|(p, raw)| {
             (
                 p.to_string(),
-                model::build(raw.to_string(), syntax::parse(raw)),
+                std::sync::Arc::new(model::build(raw.to_string(), syntax::parse(raw))),
             )
         })
         .collect();
@@ -1380,7 +1379,7 @@ mod tests {
     }
 
     /// Stage `docs` the way [`project`] does (ambient corpus, no mounts).
-    fn stage(docs: &BTreeMap<String, Document>) -> Rows {
+    fn stage(docs: &model::Docs) -> Rows {
         let index = corpus_index(docs);
         let mut rows = Rows::default();
         let corpus = model::RootedCorpus::ambient(docs);
@@ -1525,11 +1524,11 @@ mod tests {
         let mut docs = BTreeMap::new();
         docs.insert(
             "a.md".to_string(),
-            model::build(a.to_string(), syntax::parse(a)),
+            std::sync::Arc::new(model::build(a.to_string(), syntax::parse(a))),
         );
         docs.insert(
             "b.md".to_string(),
-            model::build(b.to_string(), syntax::parse(b)),
+            std::sync::Arc::new(model::build(b.to_string(), syntax::parse(b))),
         );
         let rows = stage(&docs);
 
@@ -1579,7 +1578,7 @@ mod tests {
         let mut docs = BTreeMap::new();
         docs.insert(
             "f.md".to_string(),
-            model::build(raw.to_string(), syntax::parse(raw)),
+            std::sync::Arc::new(model::build(raw.to_string(), syntax::parse(raw))),
         );
         let conn = build_memory(&docs, "b3:fixture").expect("build");
 
@@ -1620,7 +1619,7 @@ mod tests {
         let raw = "# T\n\n## Dup\n\nfirst body\n\n## Dup\n\nsecond body\n";
         let doc = model::build(raw.to_string(), syntax::parse(raw));
         let mut docs = BTreeMap::new();
-        docs.insert("t.md".to_string(), doc);
+        docs.insert("t.md".to_string(), std::sync::Arc::new(doc));
         let conn = build_memory(&docs, "b3:roundtrip").expect("build");
         let cell: String = conn
             .query_row(
@@ -1700,7 +1699,7 @@ mod tests {
         }
 
         let mut docs = BTreeMap::new();
-        docs.insert("p.md".to_string(), doc);
+        docs.insert("p.md".to_string(), std::sync::Arc::new(doc));
         let conn = build_memory(&docs, "b3:parity").expect("build");
         let mut stmt = conn
             .prepare("SELECT hpath, span_start, span_end FROM section ORDER BY node_seq")
@@ -1728,7 +1727,7 @@ mod tests {
         let mut docs = BTreeMap::new();
         docs.insert(
             "a.md".to_owned(),
-            model::build("# A\n".to_owned(), syntax::parse("# A\n")),
+            std::sync::Arc::new(model::build("# A\n".to_owned(), syntax::parse("# A\n"))),
         );
         // Version-2 fold (`b3b:`), as `fs::domain_snapshot` would hand over.
         let files = [("a.md", "# A\n".as_bytes())];

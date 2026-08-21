@@ -482,14 +482,14 @@ fn s44_armed_transitions_and_fm_key_grain() {
 fn s45_worked_resolve_frames_id72_closure() {
     let s = states();
     let mut index = CorpusIndex::new();
-    let mut docs: BTreeMap<String, Document> = BTreeMap::new();
+    let mut docs: model::Docs = BTreeMap::new();
     for (path, raw) in [
         ("notes/plan.md", s.plan[2].as_str()),
         ("receipts/2026-07-18.md", s.receipts[2].as_str()),
     ] {
         let d = doc(raw);
         index.insert(path, &d);
-        docs.insert(path.to_string(), d);
+        docs.insert(path.to_string(), std::sync::Arc::new(d));
     }
     let from = "notes/plan.md";
 

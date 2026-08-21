@@ -57,11 +57,10 @@
 //!   faulted.
 //! - **2** — bad invocation, or an unresolvable / unreadable workspace.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use model::Document;
 use model::selector::{Color, RedReason};
 use policy::armed::{Mode, parse_artifact};
 use policy::page_rev;
@@ -506,7 +505,7 @@ type StoreKey = Option<addr::MountName>;
 /// that root's repository ([`StoreKey`]). A value that is not an object id, or a
 /// key that names no store, is unknown, never skipped — a dropped entry would
 /// read a corrupt retrieval plane as a true zero.
-fn vibe_debt(workspace: &Path, docs: &BTreeMap<String, Document>) -> VibeDebt {
+fn vibe_debt(workspace: &Path, docs: &model::Docs) -> VibeDebt {
     // Dedupe is keyed by store, never globally: the same oid under two roots is
     // two objects in two databases.
     let mut seen: HashSet<(StoreKey, String)> = HashSet::new();

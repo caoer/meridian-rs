@@ -12,7 +12,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use model::Document;
 use view::walk::{self, Direction, WalkError};
 use wire::{ErrorBody, ErrorCode, ResponseBody, WalkCite, WalkRow};
 
@@ -41,7 +40,7 @@ pub(crate) fn serve(
     // — the hash domain gates enumerations, never what a named path is
     // entitled to. The warm engine holds the served projection; a named page
     // outside it is admitted by the same single-file load the read doors run.
-    let mut owned: Option<BTreeMap<String, Document>> = None;
+    let mut owned: Option<model::Docs> = None;
     if !engine.docs.contains_key(page) {
         if let Some(condition) = engine.unserved.get(page) {
             let mut e = ErrorBody::new(ErrorCode::InvalidUtf8);
@@ -55,7 +54,7 @@ pub(crate) fn serve(
             return Err(file_not_found(path));
         };
         let mut admitted = engine.docs.clone();
-        admitted.insert(page.to_owned(), doc);
+        admitted.insert(page.to_owned(), std::sync::Arc::new(doc));
         owned = Some(admitted);
     }
     let docs = owned.as_ref().unwrap_or(&engine.docs);
@@ -131,7 +130,7 @@ pub(crate) fn serve(
 /// rides `docs`, so a door's own subject never reads as an exclusion.
 fn excluded_population(
     root: &fs::WorkspaceRoot,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     unserved: &BTreeMap<String, String>,
 ) -> Vec<String> {
     let Ok(all) = fs::walk(root) else {

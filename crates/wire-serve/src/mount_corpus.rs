@@ -13,8 +13,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use model::Document;
-
 /// One mounted root's corpus, owned — the backing store the
 /// [`model::RootedCorpus`] borrows — plus the members it could not serve.
 pub struct MountedCorpus {
@@ -22,7 +20,7 @@ pub struct MountedCorpus {
     /// The root's canonical bound path (canonicalize-at-bind) — the handle
     /// the per-root durability read (`check`) opens that root's git through.
     pub root: std::path::PathBuf,
-    pub docs: BTreeMap<String, Document>,
+    pub docs: model::Docs,
     /// Hash-domain members under this root that serve no spans/nodes
     /// (per-file UTF-8 degradation), path → condition. The caller voices.
     pub unserved: BTreeMap<String, String>,
@@ -50,7 +48,7 @@ impl MountCorpora {
     #[must_use]
     pub fn rooted<'a>(
         &'a self,
-        docs: &'a BTreeMap<String, Document>,
+        docs: &'a model::Docs,
         domain: &'a fs::domain::Domain,
         root: &'a fs::WorkspaceRoot,
     ) -> model::RootedCorpus<'a> {
@@ -154,9 +152,7 @@ pub fn load_mounts_where(wanted: &dyn Fn(&addr::MountName) -> bool) -> MountCorp
 /// so re-resolving it would ask a second owner an answered question. Returns
 /// the docs plus the unserved members for the caller to voice.
 #[allow(clippy::type_complexity)] // the two corpus maps, verbatim from fs::build_corpus
-fn build_docs_at(
-    root: &Path,
-) -> Result<(BTreeMap<String, Document>, BTreeMap<String, String>), String> {
+fn build_docs_at(root: &Path) -> Result<(model::Docs, BTreeMap<String, String>), String> {
     let root = fs::WorkspaceRoot(root.to_path_buf());
     let (files, _fingerprint) =
         fs::domain_snapshot(&root).map_err(|e| format!("cannot read the mounted corpus: {e}"))?;

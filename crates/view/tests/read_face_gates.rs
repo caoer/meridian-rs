@@ -3,11 +3,10 @@
 
 use std::collections::BTreeMap;
 
-use model::Document;
 use view::{open_board, stale_paths};
 
-fn doc(raw: &str) -> Document {
-    model::build(raw.to_string(), syntax::parse(raw))
+fn doc(raw: &str) -> std::sync::Arc<model::Document> {
+    std::sync::Arc::new(model::build(raw.to_string(), syntax::parse(raw)))
 }
 
 /// Projection keyed on `doc_rev` — rev change is stale; rebuild refreshes (§2.1/§8).

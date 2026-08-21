@@ -13,8 +13,8 @@ use view::walk::model_selector;
 /// never verify over the other, so a green here proves the address chose.
 const DUP: &str = "# Guide\n\n## Dup\n\nfirst dup body.\n\n## Dup\n\nsecond dup body.\n";
 
-fn doc(raw: &str) -> model::Document {
-    model::build(raw.to_string(), syntax::parse(raw))
+fn doc(raw: &str) -> std::sync::Arc<model::Document> {
+    std::sync::Arc::new(model::build(raw.to_string(), syntax::parse(raw)))
 }
 
 /// Live fingerprint of the n-th `Guide/Dup` occurrence — the token a correct

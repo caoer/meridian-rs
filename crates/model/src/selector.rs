@@ -1302,7 +1302,7 @@ mod u21_file_not_found {
     #[test]
     fn resolve_ref_reports_which_root_the_miss_happened_inside() {
         use std::collections::BTreeMap;
-        let docs: BTreeMap<String, Document> = BTreeMap::new();
+        let docs: crate::Docs = BTreeMap::new();
         let index = crate::CorpusIndex::new();
         let corpus = crate::RootedCorpus::ambient(&docs);
         let mounts = addr::MountSet::default();
@@ -1323,7 +1323,7 @@ mod u21_file_not_found {
         // and selector separately, so `file_not_found` never re-splits a joined
         // string address (R1.6).
         let sessions = addr::MountName::parse("sessions").expect("a name");
-        let empty: BTreeMap<String, Document> = BTreeMap::new();
+        let empty: crate::Docs = BTreeMap::new();
         let corpus = crate::RootedCorpus::ambient(&docs).with_root(sessions.clone(), &empty);
         let mounts = addr::MountSet::new([sessions.clone()]);
         assert_eq!(
