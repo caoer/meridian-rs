@@ -1599,7 +1599,7 @@ fn dispatch_read(
             // ack-then-prime would swallow interim edits. The (root, seq)
             // pair is one instant's — a live sub anchors at exactly the tip
             // the acked baseline carries.
-            let (root, seq) = ring.prime(&fs::WorkspaceRoot(ws.to_path_buf()))?;
+            let (root, seq) = ring.prime(&fs::WorkspaceRoot(ws.to_path_buf()), registry)?;
             // A live subscribe anchors at the acked tip; a resumption at its
             // cursor — frames landed during prime are past it and deliver.
             let from_seq = cursor.map_or(seq, |c| c.seq);

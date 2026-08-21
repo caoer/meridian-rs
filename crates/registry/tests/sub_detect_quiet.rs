@@ -18,7 +18,7 @@ use std::sync::{Arc, Barrier, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use registry::ring::{DETECT_CADENCE, WorkspaceRing};
-use registry::{Config, Registry, in_process_registry};
+use registry::{Config, Registry, WarmOutcome, in_process_registry};
 
 /// Serializes the tests in this binary: `fold_count` is process-global, so a
 /// difference assertion is only sound while nothing else in the process folds.
@@ -30,10 +30,8 @@ fn fold_guard() -> MutexGuard<'static, ()> {
 }
 
 /// An in-process registry rooted under `tmp` (no socket, no threads) — the
-/// §6.7 detect pre-check consults its shared memo; in these tests that memo
-/// is deliberately COLD, so every detect exercises the fallback (private
-/// fold) path these gates have always guarded. The vouched skip has its own
-/// gate in `registry`'s internal tests.
+/// §6.7 cycle observes through its SHARED memo (door-grade observation);
+/// the ring holds no private currency instrument any more.
 fn registry_in(tmp: &Path) -> Registry {
     let dir = tmp.join("registry");
     std::fs::create_dir_all(&dir).unwrap();
@@ -64,12 +62,13 @@ fn a_second_prime_on_a_quiet_workspace_folds_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = workspace(tmp.path(), &[("a.md", "# A\n"), ("sub/b.md", "# B\n")]);
     let ws_root = fs::WorkspaceRoot(ws);
+    let reg = registry_in(tmp.path());
     let ring = WorkspaceRing::new(&ws_root);
 
-    let first = ring.prime(&ws_root).expect("baseline prime");
+    let first = ring.prime(&ws_root, &reg).expect("baseline prime");
     let folds_before = fs::fold_count();
     for _ in 0..20 {
-        let again = ring.prime(&ws_root).expect("quiet prime");
+        let again = ring.prime(&ws_root, &reg).expect("quiet prime");
         assert_eq!(again, first, "a quiet tree keeps its root");
     }
     assert_eq!(
@@ -91,7 +90,7 @@ fn a_quiet_detect_cycle_folds_nothing() {
     let ws_root = fs::WorkspaceRoot(ws);
     let reg = registry_in(tmp.path());
     let ring = WorkspaceRing::new(&ws_root);
-    ring.prime(&ws_root).expect("baseline prime");
+    ring.prime(&ws_root, &reg).expect("baseline prime");
 
     let folds_before = fs::fold_count();
     for _ in 0..3 {
@@ -121,10 +120,17 @@ fn concurrent_detects_on_one_change_fold_once_and_emit_one_frame() {
     let ws_root = fs::WorkspaceRoot(ws.clone());
     let reg = Arc::new(registry_in(tmp.path()));
     let ring = Arc::new(WorkspaceRing::new(&ws_root));
-    ring.prime(&ws_root).expect("baseline prime");
+    ring.prime(&ws_root, &reg).expect("baseline prime");
 
     std::thread::sleep(DETECT_CADENCE + Duration::from_millis(50));
     std::fs::write(ws.join("plan.md"), "# Goals\n\nship by September\n").unwrap();
+    // Deterministic event sync: the warm pass's §6.4 cookie barrier proves
+    // the write's event is folded into the shared memo before any detect
+    // runs — the vouch then reports movement instead of racing delivery.
+    assert!(matches!(
+        reg.warm_or_build(&ws).expect("absorb the edit"),
+        WarmOutcome::Built { .. }
+    ));
 
     let folds_before = fs::fold_count();
     let threads = 8;
@@ -156,8 +162,9 @@ fn concurrent_detects_on_one_change_fold_once_and_emit_one_frame() {
     );
     assert_eq!(
         fs::fold_count(),
-        folds_before + 1,
-        "one shared cycle: reconcile's own snapshot is the only fold — the \
-         incident shape was one full-tree fold PER subscriber thread"
+        folds_before,
+        "§6.7: a changed cycle classifies off the resident memo — ZERO \
+         snapshots; the incident shape was one full-tree fold PER subscriber \
+         thread, and the interim shape was one fold per change"
     );
 }
