@@ -94,6 +94,16 @@ pub(crate) const COOKIE_REL: &str = ".meridian/cookie";
 /// oldest-first past it (the lifetime total stays in [`FeedStats::rescans`]).
 const RESCAN_RECORD_CAP: usize = 64;
 
+/// The §6.7 cookie holdoff: after a barrier times out, further barriers
+/// answer `Unproven` immediately for this long — callers take the
+/// extent-refresh floor (the pre-feed cost) without stalling — and one probe
+/// per window re-tests the stream. Bounds the stall a dead-but-running
+/// watcher can add to one timeout per window per workspace; a `Seen` clears
+/// it, so a transient stall self-heals on the first probe that lands.
+// `Duration::from_mins` not const-stable at MSRV 1.96 (the lib.rs precedent).
+#[allow(clippy::duration_suboptimal_units)]
+const COOKIE_HOLDOFF: Duration = Duration::from_secs(60);
+
 /// Why a rescan was marked — every rescan carries its cause into the log and
 /// the record; an anonymous rescan is unconstructible (merkle-spec §6.4,
 /// pre-merge ruling 3's suspicious-only trigger set).
@@ -115,6 +125,12 @@ pub enum RescanCause {
     /// A currency cookie did not return through the event stream in time
     /// (the §6.4 barrier's trigger).
     CookieTimeout,
+    /// A FOREIGN edit of the domain config arrived as a dirty path
+    /// (merkle-spec §6.7): the config governs membership and version, so it
+    /// cannot be folded as an ordinary leaf — the overlay would serve the
+    /// new config's leaf under the SUPERSEDED membership. Apply-born only;
+    /// the intake never mints it.
+    DomainConfig,
 }
 
 /// Which rung of the ladder a cause climbs.
@@ -136,6 +152,7 @@ impl RescanCause {
             Self::InstanceChange => "instance-change",
             Self::VouchFailure => "vouch-failure",
             Self::CookieTimeout => "cookie-timeout",
+            Self::DomainConfig => "domain-config",
         }
     }
 
@@ -144,9 +161,11 @@ impl RescanCause {
     const fn rung(self) -> Rung {
         match self {
             Self::InstanceChange => Rung::Rebaseline,
-            Self::MissedEvent | Self::Overflow | Self::VouchFailure | Self::CookieTimeout => {
-                Rung::Sweep
-            }
+            Self::MissedEvent
+            | Self::Overflow
+            | Self::VouchFailure
+            | Self::CookieTimeout
+            | Self::DomainConfig => Rung::Sweep,
         }
     }
 }
@@ -217,6 +236,16 @@ struct FeedState {
     /// Serials only grow, so a later sighting vouches for every earlier
     /// barrier too.
     cookie_seen: u64,
+    /// When a cookie barrier last timed out (merkle-spec §6.7 holdoff).
+    /// While within [`Self::cookie_holdoff`] of it, further barriers answer
+    /// `Unproven` immediately — callers take the floor without re-paying the
+    /// timeout — and one probe per window re-tests the stream. Cleared by
+    /// the next `Seen`.
+    cookie_timeout_at: Option<Instant>,
+    /// The holdoff width. [`COOKIE_HOLDOFF`] in production ([`WorkspaceFeed::start`]);
+    /// `Default` is zero (no holdoff) so unit fixtures stay deterministic
+    /// unless they opt in.
+    cookie_holdoff: Duration,
 }
 
 /// Published feed counters (the card's "counter published" receipt, probe
@@ -302,6 +331,7 @@ impl WorkspaceFeed {
         let sync = Arc::new(FeedSync {
             state: Mutex::new(FeedState {
                 feed,
+                cookie_holdoff: COOKIE_HOLDOFF,
                 ..FeedState::default()
             }),
             cookie: Condvar::new(),
@@ -413,6 +443,14 @@ impl WorkspaceFeed {
             if s.doubt.is_some() {
                 return CookieOutcome::Unproven;
             }
+            // §6.7 holdoff: a recent timeout already taught the stream is
+            // stalled — answer immediately so the caller floors without
+            // re-paying the timeout; one probe per window re-tests.
+            if s.cookie_timeout_at
+                .is_some_and(|at| at.elapsed() < s.cookie_holdoff)
+            {
+                return CookieOutcome::Unproven;
+            }
         }
         let serial = self.cookie_serial.fetch_add(1, Ordering::Relaxed) + 1;
         let abs = workspace.join(rel);
@@ -434,10 +472,13 @@ impl WorkspaceFeed {
                 return CookieOutcome::Unproven;
             }
             if s.cookie_seen >= serial {
+                // The stream is live — a standing holdoff was transient.
+                s.cookie_timeout_at = None;
                 return CookieOutcome::Seen;
             }
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
                 s.collapse(RescanCause::CookieTimeout);
+                s.cookie_timeout_at = Some(Instant::now());
                 return CookieOutcome::Unproven;
             };
             s = self
@@ -484,6 +525,37 @@ impl WorkspaceFeed {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         s.take()
+    }
+
+    /// Record an APPLY-BORN rescan (today only [`RescanCause::DomainConfig`])
+    /// in the counters and the cause record. The loss itself was already
+    /// noted on the generation cell inside the apply, under the memo lock —
+    /// this is the probe surface's bookkeeping, not the trust signal. No
+    /// doubt is opened: the borrower already holds the `Sweep` outcome, and
+    /// the noted loss keeps every vouch refused until a full observation
+    /// absorbs it.
+    pub(crate) fn note_rescan(&self, cause: RescanCause) {
+        let mut s = self
+            .sync
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        s.overflows += 1;
+        s.rescans_total += 1;
+        if s.rescans.len() == RESCAN_RECORD_CAP {
+            s.rescans.remove(0);
+        }
+        s.rescans.push(cause);
+    }
+
+    /// Test seam: rewrite the §6.7 cookie holdoff width.
+    #[cfg(test)]
+    fn set_cookie_holdoff(&self, width: Duration) {
+        self.sync
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .cookie_holdoff = width;
     }
 
     /// Record members applied into the resident memo (the published counter).
@@ -710,6 +782,25 @@ pub(crate) fn apply(
         },
         Pending::Paths(paths) => paths,
     };
+    // §6.7: the domain config governs membership and version, so a FOREIGN
+    // edit of it cannot be folded as an ordinary leaf — the overlay would
+    // serve the new config's leaf under the superseded membership, a root no
+    // true corpus state ever had. The governed write's own echo (digest
+    // already imposed through `overlay_membership`) passes; anything else
+    // escalates to the Sweep rung, loss noted HERE so the very next borrower
+    // reads untrusted until a full observation absorbs it. The dropped dirty
+    // paths are covered by that same observation.
+    let config_rel = Path::new(fs::domain::DOMAIN_CONFIG_PATH);
+    if paths.iter().any(|rel| rel == config_rel) {
+        let echo = std::fs::read(root.0.join(config_rel)).is_ok_and(|bytes| {
+            cache.fold_at(config_rel)
+                == Ok(fs::resident::ScopeFold::Value(model::leaf_digest(&bytes)))
+        });
+        if !echo {
+            cache.feed_gen().note_loss(RescanCause::DomainConfig.name());
+            return Applied::Sweep(RescanCause::DomainConfig);
+        }
+    }
     let mut applied = 0u64;
     for rel in paths {
         match std::fs::read(root.0.join(&rel)) {
@@ -933,6 +1024,7 @@ mod tests {
             RescanCause::InstanceChange,
             RescanCause::VouchFailure,
             RescanCause::CookieTimeout,
+            RescanCause::DomainConfig,
         ];
         let mut names = BTreeSet::new();
         for cause in all {
@@ -943,16 +1035,13 @@ mod tests {
                 cause.name()
             );
         }
-        assert_eq!(
-            all.len(),
-            5,
-            "the suspicious-only set is exactly these five"
-        );
+        assert_eq!(all.len(), 6, "the suspicious-only set is exactly these six");
         assert_eq!(RescanCause::InstanceChange.rung(), Rung::Rebaseline);
         assert_eq!(RescanCause::Overflow.rung(), Rung::Sweep);
         assert_eq!(RescanCause::MissedEvent.rung(), Rung::Sweep);
         assert_eq!(RescanCause::VouchFailure.rung(), Rung::Sweep);
         assert_eq!(RescanCause::CookieTimeout.rung(), Rung::Sweep);
+        assert_eq!(RescanCause::DomainConfig.rung(), Rung::Sweep);
     }
 
     /// Cap breach collapses to all-dirty under the named overflow cause; the
@@ -1046,6 +1135,99 @@ mod tests {
         // The applied state equals a fresh derivation of the same disk.
         let fresh = fs::DomainCache::new().root(&root).unwrap();
         assert_eq!(after, fresh);
+    }
+
+    /// §6.7: a FOREIGN domain-config dirty path escalates to the Sweep rung
+    /// with the loss noted — never folded as an ordinary leaf under the
+    /// superseded membership — while the governed write's own echo (digest
+    /// already imposed on the overlay) applies as the ordinary no-op.
+    #[test]
+    fn a_foreign_domain_config_dirty_path_sweeps_instead_of_folding() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::WorkspaceRoot(dir.path().to_path_buf());
+        let config_abs = dir.path().join(fs::domain::DOMAIN_CONFIG_PATH);
+        std::fs::create_dir_all(config_abs.parent().unwrap()).unwrap();
+        std::fs::write(&config_abs, "---\nignore:\n  - \"drafts/**\"\n---\n").unwrap();
+        std::fs::write(dir.path().join("a.md"), "# A\n").unwrap();
+        std::fs::write(dir.path().join("b.md"), "# B\n").unwrap();
+        let mut cache = fs::DomainCache::new();
+        cache.root(&root).unwrap();
+
+        // Echo: the config's bytes match the overlay's leaf — ordinary skip.
+        let config_rel = PathBuf::from(fs::domain::DOMAIN_CONFIG_PATH);
+        let losses_before = cache.feed_gen().losses();
+        assert_eq!(
+            apply(&root, &mut cache, Pending::Paths(vec![config_rel.clone()])),
+            Applied::Members(0),
+            "an echo of the governed write applies as the ordinary no-op"
+        );
+        assert_eq!(cache.feed_gen().losses(), losses_before);
+
+        // Foreign edit: membership changed on disk — the overlay may not
+        // serve it; the Sweep rung with a LOUD loss is the honest answer.
+        std::fs::write(&config_abs, "---\nignore:\n  - \"b.md\"\n---\n").unwrap();
+        assert_eq!(
+            apply(&root, &mut cache, Pending::Paths(vec![config_rel])),
+            Applied::Sweep(RescanCause::DomainConfig),
+            "a foreign config edit sweeps — folding it would stamp a root no \
+             true corpus state ever had"
+        );
+        assert_eq!(
+            cache.feed_gen().losses(),
+            losses_before + 1,
+            "the escalation is loud: guard currency is untrusted until the \
+             floor observation absorbs it"
+        );
+        // The floor under the fresh config equals a from-scratch derivation.
+        let after = cache.root(&root).unwrap();
+        let fresh = fs::DomainCache::new().root(&root).unwrap();
+        assert_eq!(after, fresh);
+    }
+
+    /// §6.7 holdoff: after a timed-out barrier, further barriers answer
+    /// `Unproven` immediately (no second timeout is paid) until the holdoff
+    /// lapses; with the holdoff zeroed the stream is re-probed and a live
+    /// watcher earns `Seen` again.
+    #[test]
+    fn a_timed_out_barrier_holds_off_the_next_probe() {
+        let watched = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let root = watched.path().canonicalize().unwrap();
+        let feed = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("watcher");
+
+        // Force a deterministic timeout: the sentinel lands under a root the
+        // stream never carries.
+        assert_eq!(
+            feed.cookie_barrier(
+                &elsewhere.path().canonicalize().unwrap(),
+                Duration::from_millis(50)
+            ),
+            CookieOutcome::Unproven
+        );
+        // Drain the CookieTimeout doubt so the next verdict is the holdoff's.
+        assert!(matches!(
+            feed.take(),
+            Pending::All(RescanCause::CookieTimeout)
+        ));
+
+        let asked = Instant::now();
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(10)),
+            CookieOutcome::Unproven,
+            "inside the holdoff the barrier answers immediately"
+        );
+        assert!(
+            asked.elapsed() < Duration::from_secs(2),
+            "the holdoff never re-pays the timeout"
+        );
+
+        feed.set_cookie_holdoff(Duration::ZERO);
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(10)),
+            CookieOutcome::Seen,
+            "past the holdoff one probe re-tests the stream, and a live \
+             watcher clears the mark"
+        );
     }
 
     /// Apply, sweep rung: the memo is KEPT — the next observation re-verifies
