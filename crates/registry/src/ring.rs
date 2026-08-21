@@ -26,12 +26,23 @@ use wire::{DeltaFrame, ErrorBody, ErrorCode, Root};
 use wire_serve::ring::RootRing;
 use wire_serve::watch::WatchState;
 
-/// How often a subscribed workspace folds looking for external change.
+/// How often a subscribed workspace looks for external change.
 ///
-/// Sets the push-latency floor for an edit made outside the engine. Folds run
-/// only while someone is subscribed, and are coalesced across subscribers
-/// ([`WorkspaceRing::detect`]) so N watchers fold once per cadence, not N times.
+/// Sets the push-latency floor for an edit made outside the engine. Checks
+/// run only while someone is subscribed, and are coalesced across subscribers
+/// ([`WorkspaceRing::detect`]) so N watchers check once per cadence, not N
+/// times. Since §6.7 the per-cadence check is O(1) while the workspace's
+/// event feed vouches quiet; the fold pass runs on change, on any named
+/// miss, and on the [`DETECT_FLOOR_CADENCE`] backstop.
 pub const DETECT_CADENCE: Duration = Duration::from_millis(250);
+
+/// §6.6's surviving poll — the fallback clock. Even under a continuously
+/// quiet vouch the detector still runs its floor pass this often: the push
+/// plane has no guard to touch a silently-lost event's scope (merkle-spec
+/// §6.4 accepts that loss class on the memo plane BECAUSE guards catch it;
+/// no guard reads a subscriber's frames), so the poll is its bounded
+/// backstop — the staleness bound a silent capture loss can put on frames.
+pub const DETECT_FLOOR_CADENCE: Duration = Duration::from_secs(30);
 
 /// One workspace's delta plane: retained ring, watcher baseline, multi-thread bookkeeping.
 #[derive(Debug)]
@@ -57,6 +68,10 @@ struct RingState {
     /// When a detection cycle last completed (coalescing window). `None` until
     /// first cycle so the first subscriber detects immediately.
     last_detect: Option<Instant>,
+    /// When a FLOOR pass (the fold through the detector's memo) last ran —
+    /// the [`DETECT_FLOOR_CADENCE`] fallback clock's anchor. `None` until
+    /// the first cycle, so the backstop never pre-empts priming.
+    last_floor: Option<Instant>,
 }
 
 /// Live subscription claim. Decrements on drop so EOF, broken pipe, or panic
@@ -93,6 +108,7 @@ impl WorkspaceRing {
                 ring: RootRing::new(),
                 watch: WatchState::new(root),
                 last_detect: None,
+                last_floor: None,
             }),
             fold: Mutex::new(fs::DomainCache::new()),
             subscribers: AtomicUsize::new(0),
@@ -174,8 +190,15 @@ impl WorkspaceRing {
     ///
     /// # Errors
     /// Snapshot or classification failure. Callers log and continue.
-    pub fn detect(&self, ws_root: &fs::WorkspaceRoot) -> Result<bool, Box<ErrorBody>> {
-        {
+    pub fn detect(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        registry: &crate::Registry,
+    ) -> Result<bool, Box<ErrorBody>> {
+        // §6.7 pre-check inputs, read and RELEASED before any registry
+        // borrow: no path may hold this state lock while acquiring a memo
+        // (the sanctioned order is memo → ring state, never the reverse).
+        let baseline = {
             let state = self.state();
             if state
                 .last_detect
@@ -183,6 +206,25 @@ impl WorkspaceRing {
             {
                 return Ok(false);
             }
+            if state
+                .last_floor
+                .is_none_or(|at| at.elapsed() >= DETECT_FLOOR_CADENCE)
+            {
+                // Backstop due (or never primed): the floor pass answers.
+                None
+            } else {
+                state.watch.root().cloned()
+            }
+        };
+        // O(1) quiet check through the SHARED memo (§6.7): the feed vouches
+        // nothing moved past this epoch's baseline — no walk, no stat, no
+        // fold. A stale skip is latency-only: the next cadence re-asks, and
+        // the fallback clock floors regardless.
+        if let Some(baseline) = baseline
+            && registry.vouched_quiet(&ws_root.0, &model::MerkleRoot(baseline.0))
+        {
+            self.state().last_detect = Some(Instant::now());
+            return Ok(false);
         }
         // Gate 2: the winner's cycle IS this cadence's detection; frames it
         // emits land on the shared ring, which every push loop drains.
@@ -237,6 +279,8 @@ impl WorkspaceRing {
         let disk_root = Root(fold.root(ws_root).map_err(|e| io_error_body(&e))?.0);
         {
             let mut state = self.state();
+            // The floor ran — anchor the §6.6 fallback clock.
+            state.last_floor = Some(Instant::now());
             if state.watch.root() == Some(&disk_root) {
                 state.last_detect = Some(Instant::now());
                 return Ok(false);

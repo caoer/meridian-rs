@@ -110,11 +110,13 @@ pub(crate) fn serve(
             error: Some(message),
         }),
         Ok((columns, rows)) => {
-            // Post-result currency: the leaf memo's stat sweep (O(corpus)
-            // stats, O(changed) bytes) — the fold post-dates the rows.
+            // Post-result currency at the §6.7 vouched grade (cookie proof →
+            // overlay fold, O(dirty); the leaf memo's stat sweep is the
+            // floor on a named miss) — the fold post-dates the rows.
             let live = registry
-                .currency_root(ws)
+                .currency_refresh(ws, crate::registry::DOOR_COOKIE_TIMEOUT)
                 .map_err(|e| io_error(format!("cannot fold the corpus for live: {e}")))?
+                .0
                 .0;
             let state = if live == as_of {
                 "FRESH_AT_SAMPLE"

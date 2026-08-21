@@ -269,6 +269,12 @@ fn apply_pending(
             );
         }
         feed::Applied::Sweep(cause) => {
+            // Apply-born sweeps (§6.7 domain-config) get their probe-surface
+            // record here — a taken `Pending::All` was already recorded by
+            // its own collapse.
+            if matches!(cause, feed::RescanCause::DomainConfig) {
+                feed.note_rescan(*cause);
+            }
             eprintln!(
                 "feed: rescan {} for {} — memo kept, next observation is the full \
                  stat sweep",
@@ -571,6 +577,13 @@ impl Registry {
     /// compares fingerprints and inserts — no I/O, no parse) so workspaces
     /// do not block each other.
     ///
+    /// The cheap half is the §6.7 vouched currency pass
+    /// ([`currency_refresh`](Self::currency_refresh)): O(dirty) through the
+    /// event feed's cookie proof when the vouch holds, the §6.2
+    /// extent-refresh floor on any named miss. Grade and stamp are unchanged
+    /// — the served fingerprint is always a fold of content digests — only
+    /// the instrument answering "did the root move" got cheaper.
+    ///
     /// A rebuild against a RESIDENT engine is INCREMENTAL
     /// ([`fs::update_corpus`]): it re-reads and re-parses exactly the members
     /// whose §12.2 leaf digest moved against the engine's recorded leaf set —
@@ -617,13 +630,15 @@ impl Registry {
         let cache = self.domain_cache(&canonical);
         loop {
             // Cheap half (no parse, and no re-read of anything that did not
-            // move): content hash from disk through the leaf memo.
-            let fingerprint = {
-                cache
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .root(&root)?
-            };
+            // move): the workspace's current content hash at the §6.7 vouched
+            // grade — cookie proof + take-and-apply + trusted memo serve the
+            // overlay fold, O(dirty), NO walk and NO member stats; any named
+            // miss (no live feed, unproven cookie, doubt collapse, untrusted
+            // memo, no baseline) falls to the extent-refresh floor, which is
+            // exactly the pass this half always was. Same root law either
+            // way: content digests folded by `served_root` — a stat signature
+            // never stands in for the content root.
+            let (fingerprint, _vouched) = self.currency_refresh(&canonical, DOOR_COOKIE_TIMEOUT)?;
 
             // Warm + unchanged → done. Nothing is copied out of the memo on
             // this path: it is the hot one, and a 20k-entry clone per currency
@@ -971,6 +986,28 @@ impl Registry {
         Ok((root, false))
     }
 
+    /// The §6.7 LATENCY-ONLY quiet check: `true` iff the workspace's feed is
+    /// live and reports nothing pending after take-and-apply, the memo's
+    /// guard currency is trusted, and the memo's cached served fold equals
+    /// `at` — all O(1): no cookie, no walk, no stat, no fold. `true` licenses
+    /// SKIPPING work that is pure latency (the G11 prewarm sweep, the §4.7
+    /// detect pre-check); it is never what a served answer is stamped with.
+    /// `false` is not a fact about the corpus — it only means "do the real
+    /// pass".
+    pub(crate) fn vouched_quiet(&self, workspace: &Path, at: &model::MerkleRoot) -> bool {
+        {
+            let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+            if !matches!(feeds.get(workspace), Some(FeedSlot::Live(_))) {
+                return false;
+            }
+        }
+        let (cache, applied) = self.patched_cache(workspace);
+        let memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        matches!(applied, None | Some(feed::Applied::Members(0)))
+            && matches!(memo.guard_currency(), fs::stable::GuardCurrency::Trusted)
+            && memo.served_cached() == Some(at)
+    }
+
     /// The write door's §6.1 door-entry observation, made inside the door's
     /// flock on the DOOR'S OWN memo handle (card
     /// bug-trusted-overlay-unvouched): §6.4 cookie barrier first,
@@ -1196,14 +1233,33 @@ impl Registry {
     /// when content hash changed — latency only; correctness is fingerprint.
     /// Cold daemon: no-op. Snapshot warm keys under read lock, then release
     /// before any rebuild. Returns workspaces that rebuilt; best-effort on errors.
+    ///
+    /// Quiet gate at the §6.7 grade ladder: a workspace with a LIVE feed
+    /// answers O(1) ([`vouched_quiet`](Self::vouched_quiet) against the
+    /// engine's stamp — no walk, no stat); only a workspace with no live
+    /// feed still pays the `domain_stat_signature` walk. Both gates skip
+    /// pure latency; a skipped change is absorbed by the next sweep or by
+    /// the next request's own vouched pass.
     pub fn prewarm(&self) -> Vec<PathBuf> {
-        let warm: Vec<PathBuf> = {
+        let warm: Vec<(PathBuf, model::MerkleRoot)> = {
             let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
-            engines.keys().cloned().collect()
+            engines
+                .iter()
+                .map(|(ws, engine)| (ws.clone(), engine.at_fingerprint.clone()))
+                .collect()
         };
         let mut rebuilt = Vec::new();
-        for workspace in warm {
-            if self.stat_signature_unchanged(&workspace) {
+        for (workspace, stamped) in warm {
+            let live = {
+                let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+                matches!(feeds.get(&workspace), Some(FeedSlot::Live(_)))
+            };
+            let quiet = if live {
+                self.vouched_quiet(&workspace, &stamped)
+            } else {
+                self.stat_signature_unchanged(&workspace)
+            };
+            if quiet {
                 continue;
             }
             // Only `Built` counts; `Reused`/`Err` are best-effort no-ops.
@@ -1216,7 +1272,8 @@ impl Registry {
 
     /// G11: has `workspace` looked untouched since the last sweep? Records the
     /// observed signature (`false` once per change). Unreadable ⇒ `false`
-    /// (never skip on error).
+    /// (never skip on error). §6.7 narrowed this walk to the NO-FEED fallback
+    /// — a live feed's quiet check is [`vouched_quiet`](Self::vouched_quiet).
     fn stat_signature_unchanged(&self, workspace: &Path) -> bool {
         let Ok(signature) = fs::domain_stat_signature(&fs::WorkspaceRoot(workspace.to_path_buf()))
         else {
@@ -2402,6 +2459,11 @@ mod engine_tests {
     }
 
     /// P2 latency: change pre-warms on the watch event; next query pays zero parse.
+    ///
+    /// The rebuild assertion POLLS: the §6.7 quiet gate is the feed's own
+    /// pending state, and kernel delivery is asynchronous — a sweep landing
+    /// before the event is a lawful skip (latency-only), so the guarantee is
+    /// eventual absorption within delivery + cadence, not same-tick.
     #[test]
     fn prewarm_absorbs_the_change_so_the_next_query_parses_nothing() {
         let home = tempfile::tempdir().unwrap();
@@ -2420,9 +2482,20 @@ mod engine_tests {
 
         fs::write(ws.join("a.md"), "# A changed\n\nnew body\n").unwrap();
 
-        assert_eq!(
-            reg.prewarm(),
-            vec![canonical],
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let absorbed = loop {
+            let rebuilt = reg.prewarm();
+            if rebuilt == vec![canonical.clone()] {
+                break true;
+            }
+            assert!(rebuilt.is_empty(), "only this workspace may rebuild");
+            if std::time::Instant::now() > deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(
+            absorbed,
             "the edit rebuilds on the watch event, not lazily on the query"
         );
 
@@ -2430,6 +2503,215 @@ mod engine_tests {
             reg.warm_or_build(&ws).unwrap(),
             WarmOutcome::Reused,
             "the query after a pre-warm parses nothing — latency moved to the watch event"
+        );
+    }
+
+    /// Poll until the workspace's §6.7 vouch is engaged against `at` — the
+    /// deterministic form of waiting out kernel-event delivery.
+    fn wait_vouched(reg: &Registry, canonical: &Path, at: &model::MerkleRoot) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !reg.vouched_quiet(canonical, at) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the vouch never engaged: feed dead or memo untrusted"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// §6.7 cost gate, warm read pass: once the vouch is engaged, a quiet
+    /// `warm_or_build` stats ZERO members and runs ZERO observation sweeps —
+    /// the pre-§6.7 posture was one full member-stat sweep per call, per
+    /// request, forever.
+    #[test]
+    fn a_quiet_vouched_warm_pass_stats_no_members() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n"), ("sub/b.md", "# B\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 2 }
+        );
+        let stamped = reg
+            .engine_snapshot(&canonical)
+            .expect("resident engine")
+            .at_fingerprint
+            .clone();
+        wait_vouched(&reg, &canonical, &stamped);
+
+        let cache = reg.domain_cache(&canonical);
+        let (sweeps, stats) = {
+            let memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+            (memo.sweeps(), memo.member_stats())
+        };
+        for _ in 0..5 {
+            assert_eq!(reg.warm_or_build(&ws).unwrap(), WarmOutcome::Reused);
+        }
+        let memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(
+            (memo.sweeps(), memo.member_stats()),
+            (sweeps, stats),
+            "five quiet vouched warm passes must walk and stat NOTHING"
+        );
+    }
+
+    /// §6.7 stamp gate, warm read pass: a foreign write reaches the served
+    /// stamp THROUGH the vouch — the cookie barrier orders the write's event
+    /// before its own sighting, so the very next warm pass absorbs it and
+    /// stamps exactly what a from-scratch derivation stamps.
+    #[test]
+    fn a_foreign_write_is_absorbed_through_the_vouch_and_stamped_exactly() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n"), ("b.md", "# B\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 2 }
+        );
+        let stamped = reg
+            .engine_snapshot(&canonical)
+            .expect("resident engine")
+            .at_fingerprint
+            .clone();
+        wait_vouched(&reg, &canonical, &stamped);
+
+        fs::write(ws.join("b.md"), "# B moved\n\nnew body\n").unwrap();
+
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 1 },
+            "the barrier proves the write's event is folded in — the pass \
+             that follows it may not serve the old corpus"
+        );
+        let served = reg
+            .engine_snapshot(&canonical)
+            .expect("resident engine")
+            .at_fingerprint
+            .clone();
+        let oracle = ::fs::DomainCache::new()
+            .root(&::fs::WorkspaceRoot(canonical.clone()))
+            .unwrap();
+        assert_eq!(
+            served, oracle,
+            "the vouched stamp equals a from-scratch derivation — nothing \
+             served is stamped with a root its own fold did not derive"
+        );
+    }
+
+    /// §6.7 correctness gate: a FOREIGN domain-config edit may not be folded
+    /// as an ordinary leaf — the overlay would carry the new config's bytes
+    /// under the superseded membership. The feed apply escalates it to the
+    /// Sweep rung, so the next pass is the floor under the freshly loaded
+    /// config, and the stamp equals a from-scratch derivation (the departed
+    /// member excluded).
+    #[test]
+    fn a_foreign_domain_config_edit_collapses_the_vouch_to_the_floor() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(
+            home.path(),
+            &[
+                ("a.md", "# A\n"),
+                ("b.md", "# B\n"),
+                (
+                    ::fs::domain::DOMAIN_CONFIG_PATH,
+                    "---\nignore:\n  - \"drafts/**\"\n---\n# Domain\n",
+                ),
+            ],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 3 }
+        );
+        let stamped = reg
+            .engine_snapshot(&canonical)
+            .expect("resident engine")
+            .at_fingerprint
+            .clone();
+        wait_vouched(&reg, &canonical, &stamped);
+
+        fs::write(
+            ws.join(::fs::domain::DOMAIN_CONFIG_PATH),
+            "---\nignore:\n  - \"drafts/**\"\n  - \"b.md\"\n---\n# Domain\n",
+        )
+        .unwrap();
+
+        assert!(
+            matches!(reg.warm_or_build(&ws).unwrap(), WarmOutcome::Built { .. }),
+            "a config change moves the root — the pass may not reuse"
+        );
+        let served = reg
+            .engine_snapshot(&canonical)
+            .expect("resident engine")
+            .at_fingerprint
+            .clone();
+        let oracle = ::fs::DomainCache::new()
+            .root(&::fs::WorkspaceRoot(canonical.clone()))
+            .unwrap();
+        assert_eq!(
+            served, oracle,
+            "the new config's membership governs the served stamp — b.md \
+             left the fold, which only the floor under the fresh config sees"
+        );
+        reg.with_engine(&canonical, |engine| {
+            let engine = engine.expect("resident engine");
+            assert!(
+                !engine.docs.contains_key("b.md"),
+                "a member the new config excludes leaves the corpus"
+            );
+        });
+    }
+
+    /// §6.7 cost gate, detect pre-check: with the vouch engaged and the
+    /// floor clock fresh, a quiet detect neither folds nor observes — the
+    /// pre-§6.7 posture was one private-memo stat sweep per 250 ms per
+    /// subscribed workspace, forever.
+    #[test]
+    fn a_vouched_quiet_detect_skips_the_private_floor() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        let ws_root = ::fs::WorkspaceRoot(canonical.clone());
+
+        assert!(matches!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { .. }
+        ));
+        let stamped = reg
+            .engine_snapshot(&canonical)
+            .expect("resident engine")
+            .at_fingerprint
+            .clone();
+        wait_vouched(&reg, &canonical, &stamped);
+
+        let ring = reg.ring(&canonical);
+        ring.prime(&ws_root).expect("baseline prime");
+        std::thread::sleep(crate::ring::DETECT_CADENCE + Duration::from_millis(50));
+
+        // The vouch is engaged and the floor clock is fresh from the prime:
+        // the pre-check answers, and the shared memo neither walks nor stats.
+        assert!(reg.vouched_quiet(&canonical, &stamped), "vouch engaged");
+        let cache = reg.domain_cache(&canonical);
+        let (sweeps, stats) = {
+            let memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+            (memo.sweeps(), memo.member_stats())
+        };
+        assert!(
+            !ring.detect(&ws_root, &reg).expect("quiet detect"),
+            "a quiet cycle emits nothing"
+        );
+        let memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(
+            (memo.sweeps(), memo.member_stats()),
+            (sweeps, stats),
+            "a vouched quiet detect observes nothing through the shared memo"
         );
     }
 
