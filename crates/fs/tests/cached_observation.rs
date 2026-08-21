@@ -149,27 +149,35 @@ fn cached_bracket_names_the_same_out_of_band_delta() {
     }
 }
 
-/// The symlink refusal keeps its count-plus-sorted-first shape from the
-/// cache — including from a WARM cache whose dir memo predates the links
-/// (their creation moved the directory's own timestamps, so the unmoved
-/// listing law re-enumerates and sees them).
+/// The in-window symlink refusal keeps its count-plus-sorted-first shape
+/// from the cache — including from a WARM cache whose dir memo predates the
+/// links (their creation moved the directory's own timestamps, so the
+/// unmoved listing law re-enumerates and sees them) — and a PRE-EXISTING
+/// link is tolerated identically from both sources, subtracted from the
+/// count and never named.
 #[cfg(unix)]
 #[test]
 fn cached_bracket_refuses_symlinks_like_the_fresh_walk() {
     let (tmp, root) = workspace();
     let mut cache = DomainCache::new();
-
-    // Warm the cache before any link exists.
-    let _ = StepGuard::open_cached(&root, &mut cache).unwrap();
-
     let secret = tmp.path().join("secret.md");
     std::fs::write(&secret, "out-of-tree\n").unwrap();
+
+    // The world's shape before the window: sorts before every in-window
+    // link, so a failed subtraction would surface as first offender.
+    std::os::unix::fs::symlink(&secret, root.0.join("aa-pre.md")).unwrap();
+
+    // Warm the cache before the in-window links exist.
+    let fresh = StepGuard::open(&root).expect("fresh open tolerates the pre-existing link");
+    let cached = StepGuard::open_cached(&root, &mut cache)
+        .expect("cached open tolerates the pre-existing link identically");
+
     std::thread::sleep(std::time::Duration::from_millis(10));
     std::os::unix::fs::symlink(&secret, root.0.join("notes/zz-linked.md")).unwrap();
     std::os::unix::fs::symlink(&secret, root.0.join("linked.md")).unwrap();
 
-    let fresh_err = StepGuard::open(&root).unwrap_err();
-    let cached_err = StepGuard::open_cached(&root, &mut cache).unwrap_err();
+    let fresh_err = fresh.close(&[]).unwrap_err();
+    let cached_err = cached.close_cached(&[], &mut cache).unwrap_err();
     match (&fresh_err, &cached_err) {
         (
             GuardError::Symlink {
@@ -182,8 +190,11 @@ fn cached_bracket_refuses_symlinks_like_the_fresh_walk() {
             },
         ) => {
             assert_eq!((fc, ff), (cc, cf), "symlink refusals diverge");
-            assert_eq!(*cc, 2);
-            assert_eq!(cf, "linked.md", "first offender is sorted, not walk-order");
+            assert_eq!(*cc, 2, "the pre-existing link is not counted");
+            assert_eq!(
+                cf, "linked.md",
+                "first offender is the sorted first NEW link, not the pre-existing one"
+            );
         }
         other => panic!("expected matching symlink refusals, got {other:?}"),
     }

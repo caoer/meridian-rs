@@ -57,7 +57,12 @@ pub struct ExecBracket {
 /// fact by [`ExecBracket::open_observing`] instead.
 #[derive(Debug)]
 pub enum OpenRefusal {
-    /// The guarded snapshot refused (symlink, #25) or failed (I/O).
+    /// The guarded snapshot refused (symlinked domain config or a link
+    /// racing the walk's reads, #25) or failed (I/O). A PRE-EXISTING corpus
+    /// link never refuses the open: it is recorded as outside detection
+    /// (same posture as [`PreExecDivergence`] — the world's shape is
+    /// reported, never accused) and only a link APPEARING inside the window
+    /// refuses at close.
     Guard(GuardError),
 }
 
@@ -91,10 +96,12 @@ pub enum Detection {
     /// config-widening attack) — the detection domain itself moved, so no
     /// residual verdict is possible.
     ConfigChanged,
-    /// Symlinked non-dot paths appeared (#25 laundering) — named as a count
-    /// plus the first offender (sorted), mirroring [`GuardError::Symlink`].
+    /// Symlinked non-dot paths APPEARED during the window (#25 laundering) —
+    /// named as a count plus the first offender (sorted), mirroring
+    /// [`GuardError::Symlink`]. Links that already existed at open are
+    /// outside detection and never counted.
     Symlink {
-        /// How many symlinked paths the close walk met (≥ 1).
+        /// How many symlinked paths appeared during the window (≥ 1).
         count: usize,
         /// Workspace-relative forward-slash path of the first offender.
         first: String,
@@ -160,9 +167,10 @@ impl ExecBracket {
     /// Byte reads are served through `memo` (see [`fs::digestmemo`]).
     ///
     /// # Errors
-    /// [`OpenRefusal::Guard`] when the guarded snapshot refuses (symlink) or
-    /// fails (I/O) — those refusals are about the OBSERVATION itself and no
-    /// severity policy softens them.
+    /// [`OpenRefusal::Guard`] when the guarded snapshot refuses (symlinked
+    /// domain config, a link racing the walk) or fails (I/O) — those
+    /// refusals are about the OBSERVATION itself and no severity policy
+    /// softens them. A pre-existing corpus link is not one of them.
     pub fn open_observing(
         root: &fs::WorkspaceRoot,
         memo: &mut DigestMemo,

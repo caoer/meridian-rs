@@ -423,11 +423,12 @@ fn links_under_an_ignored_dir_do_not_refuse_but_others_still_do() {
         "and must not refuse at close either"
     );
 
-    // The same link on a path the workspace DID NOT ignore still refuses —
-    // the ignore set narrows the detection domain, it does not disarm the
-    // symlink refusal.
+    // A link APPEARING inside a window on a path the workspace DID NOT
+    // ignore still refuses — the ignore set narrows the detection domain, it
+    // does not disarm the in-window symlink refusal.
+    let guard = StepGuard::open(&root).unwrap();
     std::os::unix::fs::symlink(&secret, root.0.join("notes/x.md")).unwrap();
-    match StepGuard::open(&root) {
+    match guard.close(&[]) {
         Err(GuardError::Symlink { count, first }) => {
             assert_eq!((count, first.as_str()), (1, "notes/x.md"));
         }
@@ -474,28 +475,92 @@ fn a_write_through_an_ignored_link_is_caught_at_its_attested_target() {
     }
 }
 
-/// At open: a pre-existing symlink (file or directory) means no
-/// trustworthy baseline — open itself refuses.
+/// At open: a pre-existing symlink (file or directory) is the WORLD's shape,
+/// not this window's act — recorded as outside detection, tolerated at open
+/// and subtracted at close (no-guard posture; the run-door DoS fix: one
+/// stranger's link must not close the door for every unrelated run). The
+/// link never enters the hash domain, so the served baseline is the fold
+/// without it.
 #[cfg(unix)]
 #[test]
-fn symlink_refused_at_open() {
+fn a_pre_existing_symlink_is_outside_detection() {
     // file link
     let (tmp, root) = workspace();
     std::fs::write(tmp.path().join("secret.md"), "s\n").unwrap();
     std::os::unix::fs::symlink(tmp.path().join("secret.md"), root.0.join("notes/x.md")).unwrap();
-    assert!(matches!(
-        StepGuard::open(&root),
-        Err(GuardError::Symlink { .. })
-    ));
+    let guard = StepGuard::open(&root).expect("a pre-existing link must not refuse the open");
+    guard
+        .close(&[])
+        .expect("an unchanged pre-existing link must not refuse the close");
 
-    // directory link — laundering a whole subtree is refused the same way
+    // directory link — the world's shape the same way
     let (tmp2, root2) = workspace();
     std::fs::create_dir(tmp2.path().join("elsewhere")).unwrap();
     std::os::unix::fs::symlink(tmp2.path().join("elsewhere"), root2.0.join("notes/sub")).unwrap();
-    assert!(matches!(
-        StepGuard::open(&root2),
-        Err(GuardError::Symlink { .. })
-    ));
+    let guard = StepGuard::open(&root2).expect("a pre-existing dir link must not refuse the open");
+    guard.close(&[]).unwrap();
+}
+
+/// THE fleet incident (card run-door-foreign-symlink-refusal, 2026-08-21): a
+/// stranger session's fixture symlink — an md path pointing out of tree,
+/// unrelated to this run — refused EVERY bash-block run through the door.
+/// Now: the foreign link is outside detection, the window's own governed
+/// work proceeds and verifies clean.
+#[cfg(unix)]
+#[test]
+fn a_pre_existing_foreign_symlink_does_not_close_the_run_door() {
+    let (tmp, root) = workspace();
+    let secret = tmp.path().join("secret.md"); // OUT of tree, beside ws/
+    std::fs::write(&secret, "out-of-tree secret\n").unwrap();
+    std::fs::create_dir_all(root.0.join("year=2026/stranger/fixture")).unwrap();
+    std::os::unix::fs::symlink(
+        &secret,
+        root.0.join("year=2026/stranger/fixture/LLM_WIKI.md"),
+    )
+    .unwrap();
+
+    let guard = StepGuard::open(&root).expect("a foreign pre-existing link must not refuse open");
+    write(&root.0, "notes/plan.md", "# Plan v2\n"); // this window's own work
+    let post = guard
+        .close(&[edit("notes/plan.md", "# Plan v2\n")])
+        .expect("the unrelated run must verify clean over its own edits");
+
+    // The link never entered the hash domain: the verified root is the fold
+    // of exactly the real members.
+    let independent = fs::served_root(
+        &[
+            (
+                b"notes/plan.md".as_slice(),
+                model::leaf_digest(b"# Plan v2\n"),
+            ),
+            (
+                b"receipts/log.md".as_slice(),
+                model::leaf_digest(b"# Receipts\n"),
+            ),
+        ],
+        0,
+    );
+    assert_eq!(post, independent, "the foreign link is not in the root");
+}
+
+/// A tracked file REPLACED by a symlink inside the window is a new link —
+/// refused with the symlink vocabulary, not misfiled as a residual delta.
+#[cfg(unix)]
+#[test]
+fn a_tracked_file_replaced_by_a_link_refuses_as_a_new_link() {
+    let (tmp, root) = workspace();
+    std::fs::write(tmp.path().join("secret.md"), "s\n").unwrap();
+    let guard = StepGuard::open(&root).unwrap();
+
+    std::fs::remove_file(root.0.join("notes/plan.md")).unwrap();
+    std::os::unix::fs::symlink(tmp.path().join("secret.md"), root.0.join("notes/plan.md")).unwrap();
+
+    match guard.close(&[]) {
+        Err(GuardError::Symlink { count, first }) => {
+            assert_eq!((count, first.as_str()), (1, "notes/plan.md"));
+        }
+        other => panic!("expected Symlink refusal, got {other:?}"),
+    }
 }
 
 /// A non-md symlink on a non-dot path is refused too: the refusal is
@@ -591,13 +656,20 @@ fn a_symlink_at_an_ignored_path_is_outside_detection() {
 }
 
 /// The veto refusal is a count and a first offender — a claim a caller can
-/// size a cleanup by — never one mine per attempt.
+/// size a cleanup by — never one mine per attempt. Only links that APPEARED
+/// inside the window count: a pre-existing link sorting before all of them
+/// is neither counted nor named.
 #[cfg(unix)]
 #[test]
 fn the_refusal_names_the_count_and_the_first_offender() {
     let (tmp, root) = workspace();
     let secret = tmp.path().join("secret.md");
     std::fs::write(&secret, "s\n").unwrap();
+    // The world's shape before the window: sorts before every new link.
+    std::fs::create_dir_all(root.0.join("alpha")).unwrap();
+    std::os::unix::fs::symlink(&secret, root.0.join("alpha/pre.md")).unwrap();
+
+    let guard = StepGuard::open(&root).expect("the pre-existing link must not refuse");
     for rel in [
         "year=2026/venv/x.md",
         "results/run-1/bin.md",
@@ -610,15 +682,17 @@ fn the_refusal_names_the_count_and_the_first_offender() {
     std::fs::create_dir_all(root.0.join(".obsidian")).unwrap();
     std::os::unix::fs::symlink(&secret, root.0.join(".obsidian/link.md")).unwrap();
 
-    let err = StepGuard::open(&root).expect_err("three stranger links must refuse");
+    let err = guard
+        .close(&[])
+        .expect_err("three in-window links must refuse");
     let text = err.to_string();
     assert!(
         text.contains("3 symlinked paths refused in exec-window snapshot"),
-        "the count is the claim; got: {text}"
+        "the count is the in-window claim (the pre-existing link is not counted); got: {text}"
     );
     assert!(
         text.contains("first: results/run-1/bin.md"),
-        "the first offender (sorted) is named; got: {text}"
+        "the first offender is the sorted first NEW link, not the pre-existing one; got: {text}"
     );
 }
 
@@ -630,19 +704,22 @@ fn a_single_symlink_keeps_the_established_wording() {
     let (tmp, root) = workspace();
     let secret = tmp.path().join("secret.md");
     std::fs::write(&secret, "s\n").unwrap();
+    let guard = StepGuard::open(&root).unwrap();
     std::os::unix::fs::symlink(&secret, root.0.join("notes/x.md")).unwrap();
 
-    let err = StepGuard::open(&root).expect_err("one link still refuses");
+    let err = guard.close(&[]).expect_err("one in-window link refuses");
     assert_eq!(
         err.to_string(),
         "symlinked path refused in exec-window snapshot: notes/x.md",
     );
 }
 
-/// A `!` re-include lifts the ignore for the path it names, so a symlink AT a
-/// re-included path is back inside the domain — refused, exactly as if the
-/// ignore never covered it. The exclusion narrows detection; it cannot be
-/// aimed to disarm the refusal for an attested file.
+/// A `!` re-include lifts the ignore for the path it names, so a symlink
+/// APPEARING at a re-included path inside the window is back inside
+/// detection — refused, exactly as if the ignore never covered it — while an
+/// in-window link at a still-ignored path stays outside detection. The
+/// exclusion narrows detection; it cannot be aimed to disarm the refusal for
+/// an attested file.
 #[cfg(unix)]
 #[test]
 fn a_symlink_at_a_reincluded_path_still_refuses() {
@@ -655,12 +732,21 @@ fn a_symlink_at_a_reincluded_path_still_refuses() {
     let secret = tmp.path().join("secret.md");
     std::fs::write(&secret, "s\n").unwrap();
     std::fs::create_dir_all(root.0.join("scratch")).unwrap();
-    std::os::unix::fs::symlink(&secret, root.0.join("scratch/keep.md")).unwrap();
 
-    assert!(
-        matches!(StepGuard::open(&root), Err(GuardError::Symlink { .. })),
-        "a re-included path is attested — its symlink must refuse"
-    );
+    let guard = StepGuard::open(&root).unwrap();
+    std::os::unix::fs::symlink(&secret, root.0.join("scratch/keep.md")).unwrap();
+    std::os::unix::fs::symlink(&secret, root.0.join("scratch/stray.md")).unwrap();
+
+    match guard.close(&[]) {
+        Err(GuardError::Symlink { count, first }) => {
+            assert_eq!(
+                (count, first.as_str()),
+                (1, "scratch/keep.md"),
+                "the re-included link refuses; the still-ignored one is outside detection"
+            );
+        }
+        other => panic!("expected Symlink refusal on the re-included path, got {other:?}"),
+    }
 }
 
 /// Reserved paths are engine substrate: an ignore list covering `meridian/**`
