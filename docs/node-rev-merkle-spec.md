@@ -778,6 +778,93 @@ fallback clock); frames are unchanged on the wire and the ring keeps its
 bound. At the §4.2.5 cutover the ring re-baselines at a labeled epoch
 boundary, never a silent chain break.
 
+### 6.7 The serve-path currency consumers — one instrument, vouch first
+
+**Docs-first (2026-08-20).** This section closes a code-lags-doc gap, not a
+new direction: §6.1/§6.4 already rule the vouched currency answer ("O(dirty),
+zero when quiet — never O(corpus)") and the write door already rides it
+(`Registry::door_observation`). What was never stated is WHICH standing
+consumers the law binds — and in the unstated gap every one of them kept the
+§6.2 extent-refresh floor unconditionally. Measured on the live fleet corpus
+(37.8k members, 2026-08-20, mrd 1.0.0 @ d9035428): the daemon burned ~66–85
+CPU-seconds per 60 wall-seconds at steady state, nearly all of it floor
+passes — the domain walk + one `lstat` per member — on request threads and
+timers, while the feed, the cookie, and the overlay sat landed and unused on
+the read side.
+
+> **The law.** Every standing currency question in the daemon is answered by
+> the workspace's ONE resident memo (§6.1, card run-observation-unification)
+> through the §6.4 vouch, at the grade the question needs; the §6.2
+> extent-refresh floor answers only a NAMED miss — no live feed, cookie
+> `Unproven`/`Refused`, a doubt collapse, an untrusted memo, no baseline. The
+> floor never runs on a timer against a healthy feed. A stat signature or any
+> other evidence-grade instrument may still gate work that is pure latency
+> (G11's standing license), and may never stand in for the content root: what
+> a served answer is stamped with is always a root folded from content
+> digests — the overlay's own read-and-hashed leaves, or the floor's.
+
+Two grades, both already ruled, now bound to their consumers:
+
+| Consumer | Question | Grade | Instrument |
+|---|---|---|---|
+| warm read pass — the read family, `sql`, the `script` entry (`Registry::warm_or_build`, cheap half) | is the resident engine current NOW? | current-as-of-the-question | cookie barrier → take-and-apply → `Trusted` → overlay fold (`Registry::currency_refresh`); floor on any named miss |
+| § A.11 post-result `live` | did the corpus move past the rows? | current-as-of-the-question | same call, same vouch |
+| write door `root_before` | §6.1 door-entry observation | guard | `Registry::door_observation` — unchanged, was already lawful |
+| G11 prewarm quiet check | may this sweep be SKIPPED? | latency-only | O(1), no cookie: nothing pending after take-and-apply, memo `Trusted`, cached served fold == the engine's stamp. The `domain_stat_signature` walk survives ONLY where no live feed exists (`FeedSlot::Failed`), under the existing quiet backoff |
+| §4.7 detect pre-check (`WorkspaceRing::detect`) | did the root move since baseline? | latency-only + fallback clock | the same O(1) quiet check through the SHARED memo; the private fold memo serves `prime` and the miss path only. §6.6's surviving poll: even under a continuously quiet vouch the floor pre-check still runs once per `DETECT_FLOOR_CADENCE` (30 s) — the push plane has no guard to catch a silent capture loss, so the poll is its bounded backstop |
+
+**Why the read pass carries the cookie.** A read's answer mints ambient
+premise tokens (§5.4; wire-contract §2 mint law) — `fingerprint`, revs — that
+the caller's next write spends. A vouch without the barrier proves only "the
+memo folded everything DELIVERED", and a silent-dead watcher is
+indistinguishable from a quiet corpus (§6.1's own sentence). The barrier is
+what makes the served stamp current-as-of-the-question — the same grade the
+floor gave it, at O(dirty) instead of O(corpus). Latency: the sentinel write
+plus delivery, bounded by the door cookie budget; against the floor's
+~160 ms-class sweep this is a strict improvement on both axes.
+
+**The cookie holdoff (posture, both doors).** A `CookieTimeout` collapse is
+sticky doubt until the next take; the take converts it to a full sweep and
+clears it — so under a dead-but-running watcher every OTHER question re-paid
+the full timeout. Ruled posture: after a `CookieTimeout`, the barrier answers
+`Unproven` immediately for `COOKIE_HOLDOFF` (60 s) — callers take the floor
+without stalling, exactly the pre-feed cost — and one probe per holdoff
+window re-tests the stream. Self-healing, and the stall a dead watcher can
+add is bounded at one timeout per window per workspace.
+
+**Foreign domain-config edits collapse the vouch (correctness, closed in the
+same act).** `meridian/domain.md` governs membership and version, and the
+overlay fold serves BOTH from the last observation (`domain_seen`). A foreign
+edit of the config arriving as an ordinary dirty path would move the config's
+own leaf but fold it under the SUPERSEDED membership — a root no true corpus
+state ever had. The feed apply therefore escalates a dirty path equal to
+`fs::domain::DOMAIN_CONFIG_PATH` to the Sweep rung (§6.4 ladder: memo kept,
+loss noted, the next observation is the full walk under the freshly loaded
+config). The governed write path is untouched — its own-config commit imposes
+`overlay_membership` synchronously (§6.1) and never pays this rung. Config
+edits are ruling-class rare; one floor pass each is the honest price.
+
+**Named residue — the watch plane's classification floor.** When the detect
+pre-check finds the root moved, `wire_serve::watch::reconcile` still takes a
+FULL `domain_snapshot` — every member's bytes — to classify the change and
+rebase its byte baseline, per emitted external batch. Under this section's
+pre-check that cost now follows CHANGE, never cadence, but it is still
+O(corpus) per change. The successor is the §6.6 direction finished:
+classification off the shared memo's leaf delta — read bytes only for
+movers, removed served from the retained baseline, rebase touched entries
+only — frames byte-identical on the wire. It is its own unit with its own
+gate (frame-parity tests), deliberately not a rider here; a degrade with a
+named successor is a decision (laws.md § Named residues).
+
+**What does NOT change.** The floor pass itself (walk semantics, §6.2 trust
+close, refusal shapes) is untouched — every consumer keeps falling to it on
+its named misses, and the cold path (no baseline) is the floor by
+construction. `Reused` keeps its zero-parse proof; a rebuild is still
+`fs::update_corpus` against the memo's leaf set; nothing served is ever
+stamped with a root its own fold did not derive from content digests. The
+run-plane bracket observations (guard grade, locked-window law) are out of
+scope and keep their live floors.
+
 ## 7. Integrity surface + CAS — the grain ladder
 
 The premise grains, one instrument: the resident tree (§6) serves every row.

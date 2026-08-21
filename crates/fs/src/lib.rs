@@ -1389,6 +1389,18 @@ impl DomainCache {
         Ok(folded)
     }
 
+    /// The cached served root, if the last fold is still current — a pure
+    /// peek: no walk, no stat, no fold. `None` whenever any overlay or
+    /// observation advanced the tree since the last fold (the advance clears
+    /// the cache), so an equal answer proves the fold and the compared stamp
+    /// describe one tree state. Evidence for LATENCY-ONLY skips (merkle-spec
+    /// §6.7: the G11 quiet check, the §4.7 detect pre-check) — never what a
+    /// served answer is stamped with.
+    #[must_use]
+    pub fn served_cached(&self) -> Option<&model::MerkleRoot> {
+        self.served.as_ref().map(|(_, root)| root)
+    }
+
     /// Resolve one scope against the resident tree (merkle-spec §7 scope
     /// rows): root, folder, file leaf, `absent` — or the tree's two
     /// `scope_unresolved` refusals (§4.4 collision, kind conflict).

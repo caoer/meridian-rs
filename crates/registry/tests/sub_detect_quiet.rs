@@ -18,6 +18,7 @@ use std::sync::{Arc, Barrier, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use registry::ring::{DETECT_CADENCE, WorkspaceRing};
+use registry::{Config, Registry, in_process_registry};
 
 /// Serializes the tests in this binary: `fold_count` is process-global, so a
 /// difference assertion is only sound while nothing else in the process folds.
@@ -26,6 +27,20 @@ static FOLDS: Mutex<()> = Mutex::new(());
 fn fold_guard() -> MutexGuard<'static, ()> {
     // A failed sibling test poisons the guard; the count discipline survives.
     FOLDS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// An in-process registry rooted under `tmp` (no socket, no threads) — the
+/// §6.7 detect pre-check consults its shared memo; in these tests that memo
+/// is deliberately COLD, so every detect exercises the fallback (private
+/// fold) path these gates have always guarded. The vouched skip has its own
+/// gate in `registry`'s internal tests.
+fn registry_in(tmp: &Path) -> Registry {
+    let dir = tmp.join("registry");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut config = Config::for_cache_root(tmp.join("cache"));
+    config.socket_path = dir.join("daemon.sock");
+    config.state_path = dir.join("state.json");
+    in_process_registry(&config).expect("in-process registry")
 }
 
 fn workspace(tmp: &Path, files: &[(&str, &str)]) -> PathBuf {
@@ -74,6 +89,7 @@ fn a_quiet_detect_cycle_folds_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = workspace(tmp.path(), &[("a.md", "# A\n")]);
     let ws_root = fs::WorkspaceRoot(ws);
+    let reg = registry_in(tmp.path());
     let ring = WorkspaceRing::new(&ws_root);
     ring.prime(&ws_root).expect("baseline prime");
 
@@ -81,7 +97,7 @@ fn a_quiet_detect_cycle_folds_nothing() {
     for _ in 0..3 {
         std::thread::sleep(DETECT_CADENCE + Duration::from_millis(50));
         assert!(
-            !ring.detect(&ws_root).expect("quiet detect"),
+            !ring.detect(&ws_root, &reg).expect("quiet detect"),
             "a quiet cycle emits nothing"
         );
     }
@@ -103,6 +119,7 @@ fn concurrent_detects_on_one_change_fold_once_and_emit_one_frame() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = workspace(tmp.path(), &[("plan.md", "# Goals\n\nship by August\n")]);
     let ws_root = fs::WorkspaceRoot(ws.clone());
+    let reg = Arc::new(registry_in(tmp.path()));
     let ring = Arc::new(WorkspaceRing::new(&ws_root));
     ring.prime(&ws_root).expect("baseline prime");
 
@@ -116,11 +133,12 @@ fn concurrent_detects_on_one_change_fold_once_and_emit_one_frame() {
         let handles: Vec<_> = (0..threads)
             .map(|_| {
                 let ring = Arc::clone(&ring);
+                let reg = Arc::clone(&reg);
                 let ws_root = fs::WorkspaceRoot(ws.clone());
                 let barrier = Arc::clone(&barrier);
                 scope.spawn(move || {
                     barrier.wait();
-                    usize::from(ring.detect(&ws_root).expect("detect"))
+                    usize::from(ring.detect(&ws_root, &reg).expect("detect"))
                 })
             })
             .collect();
