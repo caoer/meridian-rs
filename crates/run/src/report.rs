@@ -71,6 +71,19 @@ impl EffectLine {
     }
 }
 
+/// The phase-2 refusal facts (card cli-run-birth-silent-loss): the effects
+/// the executor WITHHELD and the typed refusal, named on both faces. These
+/// effects never enter `applied` — the `applied:` count and the landing must
+/// not be separable; a refused batch rendering as `applied: N` was a
+/// success-shaped silent loss.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RefusedReport {
+    /// The effects the refusal withheld (kind + domain), in emission order.
+    pub effects: Vec<EffectLine>,
+    /// The executor's refusal, in its own words.
+    pub error: String,
+}
+
 /// The resolved-capability facts the report renders: the effective set, where
 /// the grant came from, and every cap a ceiling narrowed away (#23 gate b).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -121,8 +134,14 @@ pub struct Report {
     pub guarantee: String,
     /// The overall report state.
     pub state: ReportState,
-    /// md.* effects the choke point applied (kind + domain).
+    /// md.* effects the choke point APPLIED (kind + domain). A refused
+    /// batch's effects are never listed here — they ride [`Report::refused`].
     pub applied: Vec<EffectLine>,
+    /// Bash phase 2: the executor refused the batch — the withheld effects
+    /// and the refusal, named (card cli-run-birth-silent-loss). Absent when
+    /// nothing was refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refused: Option<RefusedReport>,
     /// `daemon.*`/`proto.*` effects with no local executor — surfaced,
     /// never run (`unexecuted-no-capability`).
     pub unexecuted: Vec<EffectLine>,
@@ -215,6 +234,7 @@ pub fn render(report: &RunReport) -> Report {
         guarantee: report.guarantee.as_str().to_owned(),
         state: classify(report, &applied, &unexecuted),
         applied,
+        refused: refused_report(report),
         unexecuted,
         caps: report.authority.capabilities().map(CapsReport::of),
         effects: match report.authority {
@@ -257,6 +277,17 @@ impl Report {
         let _ = writeln!(s, "applied: {} md descriptor(s)", self.applied.len());
         for e in &self.applied {
             let _ = writeln!(s, "  - {}", e.kind);
+        }
+        if let Some(refused) = &self.refused {
+            let _ = writeln!(
+                s,
+                "refused: {} descriptor(s) — {}",
+                refused.effects.len(),
+                refused.error
+            );
+            for e in &refused.effects {
+                let _ = writeln!(s, "  - {}", e.kind);
+            }
         }
         if !self.unexecuted.is_empty() {
             let _ = writeln!(
@@ -338,21 +369,41 @@ fn partition_effects(report: &RunReport) -> (Vec<EffectLine>, Vec<EffectLine>) {
     (applied, unexecuted)
 }
 
-/// Generation 0's emitted effects, whole. A bash run that refused before it
+/// Generation 0's LANDED effects, whole. A bash run that refused before it
 /// parsed a shim stream (timeout / exec-fail / shim-fail) has no effect list —
-/// the empty slice, and the report state carries the refusal.
+/// the empty slice, and the report state carries the refusal. A
+/// [`Phase2::RefusedExec`] batch is the empty slice too: those effects were
+/// WITHHELD, and rendering them as applied was the success-shaped silent loss
+/// (card cli-run-birth-silent-loss) — they ride [`refused_report`] instead.
 fn outcome_effects(outcome: &TaskOutcome) -> &[Effect] {
     match outcome {
         TaskOutcome::Starlark(o) => &o.effects,
         TaskOutcome::Bash(o) => match &o.phase2 {
-            Phase2::Applied { effects, .. } | Phase2::RefusedExec { effects, .. } => effects,
-            Phase2::RefusedExecFailed { .. }
+            Phase2::Applied { effects, .. } => effects,
+            Phase2::RefusedExec { .. }
+            | Phase2::RefusedExecFailed { .. }
             | Phase2::RefusedSignaled
             | Phase2::RefusedTimeout
             | Phase2::RefusedShim(_)
             | Phase2::RefusedDetection => &[],
         },
     }
+}
+
+/// The phase-2 refusal half of the split: the withheld effects and the
+/// executor's refusal, for [`Report::refused`]. `None` everywhere except
+/// [`Phase2::RefusedExec`].
+fn refused_report(report: &RunReport) -> Option<RefusedReport> {
+    let TaskOutcome::Bash(o) = &report.outcome else {
+        return None;
+    };
+    let Phase2::RefusedExec { effects, error } = &o.phase2 else {
+        return None;
+    };
+    Some(RefusedReport {
+        effects: effects.iter().map(EffectLine::of).collect(),
+        error: error.to_string(),
+    })
 }
 
 /// Classify the run into its single [`ReportState`] — the bash failure matrix
