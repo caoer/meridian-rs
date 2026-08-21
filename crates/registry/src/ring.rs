@@ -48,15 +48,15 @@ pub const DETECT_FLOOR_CADENCE: Duration = Duration::from_secs(30);
 #[derive(Debug)]
 pub struct WorkspaceRing {
     state: Mutex<RingState>,
-    /// The detector's currency instrument AND its single-flight token: the
-    /// leaf memo ([`fs::DomainCache`]) a cycle stats the corpus through, held
-    /// for the whole cycle. `detect` try-locks it — a fold in flight means
-    /// this cadence's work is already being done, so the caller skips instead
-    /// of starting a duplicate (the incident shape: N subscriber threads ×
-    /// one full-tree re-digest each, continuously, because the cadence gate
-    /// only sees COMPLETED cycles). `prime` blocks on it — a subscribe must
-    /// observe a baseline, not skip.
-    fold: Mutex<fs::DomainCache>,
+    /// The cycle's single-flight token. `detect` try-locks it — a cycle in
+    /// flight means this cadence's work is already being done, so the caller
+    /// skips instead of starting a duplicate (the incident shape: N
+    /// subscriber threads × one full-tree re-digest each, continuously).
+    /// `prime` blocks on it — a subscribe must observe a baseline, not skip.
+    /// The private fold memo that used to double as this token is DELETED
+    /// (§6.7): the SHARED registry memo is the one currency instrument on
+    /// the watch plane too (card run-observation-unification).
+    cycle_gate: Mutex<()>,
     /// Live subscriptions — drives detection and reaper exemption.
     subscribers: AtomicUsize,
 }
@@ -110,7 +110,7 @@ impl WorkspaceRing {
                 last_detect: None,
                 last_floor: None,
             }),
-            fold: Mutex::new(fs::DomainCache::new()),
+            cycle_gate: Mutex::new(()),
             subscribers: AtomicUsize::new(0),
         }
     }
@@ -198,7 +198,7 @@ impl WorkspaceRing {
         // §6.7 pre-check inputs, read and RELEASED before any registry
         // borrow: no path may hold this state lock while acquiring a memo
         // (the sanctioned order is memo → ring state, never the reverse).
-        let baseline = {
+        let (floor_due, baseline) = {
             let state = self.state();
             if state
                 .last_detect
@@ -206,15 +206,18 @@ impl WorkspaceRing {
             {
                 return Ok(false);
             }
-            if state
+            let due = state
                 .last_floor
-                .is_none_or(|at| at.elapsed() >= DETECT_FLOOR_CADENCE)
-            {
-                // Backstop due (or never primed): the floor pass answers.
-                None
-            } else {
-                state.watch.root().cloned()
-            }
+                .is_none_or(|at| at.elapsed() >= DETECT_FLOOR_CADENCE);
+            // Backstop due (or never primed): the floor cycle answers.
+            (
+                due,
+                if due {
+                    None
+                } else {
+                    state.watch.root().cloned()
+                },
+            )
         };
         // O(1) quiet check through the SHARED memo (§6.7): the feed vouches
         // nothing moved past this epoch's baseline — no walk, no stat, no
@@ -228,10 +231,10 @@ impl WorkspaceRing {
         }
         // Gate 2: the winner's cycle IS this cadence's detection; frames it
         // emits land on the shared ring, which every push loop drains.
-        let Ok(mut fold) = self.fold.try_lock() else {
+        let Ok(_flight) = self.cycle_gate.try_lock() else {
             return Ok(false);
         };
-        self.cycle(ws_root, &mut fold)
+        self.cycle(ws_root, registry, floor_due)
     }
 
     /// Establish baseline and return the settled `(root, tip seq)` — at
@@ -248,12 +251,19 @@ impl WorkspaceRing {
     ///
     /// # Errors
     /// Snapshot or classification failure — refuse rather than ack an unanchorable stream.
-    pub fn prime(&self, ws_root: &fs::WorkspaceRoot) -> Result<(Root, u64), Box<ErrorBody>> {
+    pub fn prime(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        registry: &crate::Registry,
+    ) -> Result<(Root, u64), Box<ErrorBody>> {
         // Blocking, not try: a subscribe must observe a baseline. Bounded by
         // one in-flight cycle; before single-flight it would have run its own
         // concurrent fold instead.
-        let mut fold = self.fold.lock().unwrap_or_else(PoisonError::into_inner);
-        self.cycle(ws_root, &mut fold)?;
+        let _flight = self
+            .cycle_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.cycle(ws_root, registry, false)?;
         let state = self.state();
         let seq = state.ring.seq();
         match state.watch.root() {
@@ -265,36 +275,81 @@ impl WorkspaceRing {
     }
 
     /// One detection cycle, cadence ignored. Gates described on [`Self::detect`].
+    ///
+    /// The cycle takes the workspace write flock FIRST — reconcile must never
+    /// observe a mid-batch state — then makes the §6.1 door-grade observation
+    /// through the SHARED memo (`Registry::door_observation`: cookie barrier →
+    /// take-and-apply → overlay; the extent-refresh floor on any named miss),
+    /// and hands the classifier that memo's leaf view and root
+    /// (`wire_serve::watch::reconcile_delta` — bytes read for MOVERS only).
+    /// `force_floor` is the §6.6 fallback clock: once per
+    /// [`DETECT_FLOOR_CADENCE`] the observation is the true floor pass, so a
+    /// silent capture loss is bounded, not forever.
     fn cycle(
         &self,
         ws_root: &fs::WorkspaceRoot,
-        fold: &mut fs::DomainCache,
+        registry: &crate::Registry,
+        force_floor: bool,
     ) -> Result<bool, Box<ErrorBody>> {
-        // Unlocked currency pass — gate 3 on `detect`. One `stat` per member,
-        // bytes only for members whose identity moved: the same leaf memo (and
-        // the same evidence standing) the registry's `warm_or_build` currency
-        // pass serves reads by, byte-identical to `domain_snapshot`'s fold.
-        // The old pre-check re-read and re-digested every member on every
-        // cycle — G11's defect on the watch plane.
-        let disk_root = Root(fold.root(ws_root).map_err(|e| io_error_body(&e))?.0);
+        let was_unprimed = self.state().watch.root().is_none();
+        let cache = registry.domain_cache(&ws_root.0);
+        // Unlocked pre-observation — quiet cycles stay OFF the flock so
+        // writers are never spuriously `workspace_busy` (the module's
+        // standing law). The floor-forced form IS the §6.6 backstop pass.
+        let pre = if force_floor {
+            cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .root(ws_root)
+                .map_err(|e| io_error_body(&e))?
+        } else {
+            registry
+                .door_observation(&ws_root.0, &cache, crate::registry::DOOR_COOKIE_TIMEOUT)
+                .map_err(|e| io_error_body(&e))?
+        };
         {
             let mut state = self.state();
-            // The floor ran — anchor the §6.6 fallback clock.
-            state.last_floor = Some(Instant::now());
-            if state.watch.root() == Some(&disk_root) {
+            if force_floor {
+                // A true floor pass ran — anchor the §6.6 fallback clock.
+                state.last_floor = Some(Instant::now());
+            }
+            if !was_unprimed && state.watch.root() == Some(&Root(pre.0.clone())) {
                 state.last_detect = Some(Instant::now());
                 return Ok(false);
             }
         }
-        // Root moved — take write flock so reconcile cannot observe mid-batch.
+        // Root moved (or priming) — take the write flock so reconcile cannot
+        // observe mid-batch, and RE-observe under it: the flock-held
+        // observation is the one the frame folds.
         let Ok(_write_lock) = fs::WriteLock::acquire(ws_root) else {
             return Ok(false); // a write is in flight; its change keeps
         };
+        let observed = registry
+            .door_observation(&ws_root.0, &cache, crate::registry::DOOR_COOKIE_TIMEOUT)
+            .map_err(|e| io_error_body(&e))?;
+        let disk_root = Root(observed.0);
+        // The memo's leaf view, String-spelled: non-UTF-8 NAMES stay
+        // baseline-invisible exactly as the snapshot kept them (their leaves
+        // still fold into the root; a `wire::Path` cannot spell them).
+        let leaves: std::collections::BTreeMap<String, [u8; 32]> = {
+            let memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+            memo.leaf_digests()
+                .into_iter()
+                .filter_map(|(rel, digest)| rel.to_str().map(|s| (s.to_owned(), digest)))
+                .collect()
+        };
         let mut state = self.state();
         let RingState { ring, watch, .. } = &mut *state;
-        wire_serve::watch::reconcile(ws_root, ring, watch)?;
+        let emitted =
+            wire_serve::watch::reconcile_delta(ws_root, ring, watch, &leaves, &disk_root)?
+                .is_some();
         state.last_detect = Some(Instant::now());
-        Ok(true)
+        if was_unprimed {
+            // The priming snapshot re-read everything — strictly stronger
+            // than the stat floor; anchor the clock here too.
+            state.last_floor = Some(Instant::now());
+        }
+        Ok(emitted)
     }
 }
 

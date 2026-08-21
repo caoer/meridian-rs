@@ -2674,10 +2674,10 @@ mod engine_tests {
 
     /// §6.7 cost gate, detect pre-check: with the vouch engaged and the
     /// floor clock fresh, a quiet detect neither folds nor observes — the
-    /// pre-§6.7 posture was one private-memo stat sweep per 250 ms per
-    /// subscribed workspace, forever.
+    /// pre-§6.7 posture was one full stat sweep per 250 ms per subscribed
+    /// workspace, forever.
     #[test]
-    fn a_vouched_quiet_detect_skips_the_private_floor() {
+    fn a_vouched_quiet_detect_observes_nothing() {
         let home = tempfile::tempdir().unwrap();
         let reg = registry_in(home.path());
         let ws = write_ws(home.path(), &[("a.md", "# A\n")]);
@@ -2696,7 +2696,7 @@ mod engine_tests {
         wait_vouched(&reg, &canonical, &stamped);
 
         let ring = reg.ring(&canonical);
-        ring.prime(&ws_root).expect("baseline prime");
+        ring.prime(&ws_root, &reg).expect("baseline prime");
         std::thread::sleep(crate::ring::DETECT_CADENCE + Duration::from_millis(50));
 
         // The vouch is engaged and the floor clock is fresh from the prime:
