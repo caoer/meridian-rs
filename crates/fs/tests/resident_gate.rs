@@ -1,15 +1,17 @@
 //! The resident-tree gates (merkle-spec §6.1; merged plan §6 step 3, card
 //! `resident-tree`):
 //!
-//! - **Byte identity, law 1** — the served root through the resident
-//!   structure equals `model::merkle_root_of_leaves` / `domain_snapshot` /
-//!   `DomainLeaves::overlay` over the same tree (the fable-bench assertion,
-//!   re-run against this implementation).
-//! - **Byte identity, law 2** — the resident fingerprint equals the spec §5.1
-//!   pinned values on the spec's own workspace, through the whole tree end to
+//! - **Byte identity** — the served root through the resident structure
+//!   equals `domain_snapshot` / `DomainLeaves::overlay` over the same tree
+//!   (the fable-bench assertion, re-run against this implementation). Since
+//!   §6.8 the serve derives from the resident fold, so this is also the
+//!   observation-path half of the absorb-path equivalence gate (the
+//!   overlay-path half lives in `absorb_gate`).
+//! - **Byte identity, pinned** — the resident fingerprint equals the spec §5.1
+//!   pinned values on the spec own workspace, through the whole tree end to
 //!   end, including the incremental splice.
-//! - **The interim served-token law** — the law-1 serve recomputes only when
-//!   the root advances (`flat_folds` counts serves, not passes).
+//! - **The served-token law** — the serve recomputes only when
+//!   the root advances (`served_folds` counts serves, not passes).
 //! - **§4.4 collisions** — composition lints, the fold keeps both kinds, the
 //!   key and paths through it refuse, and clearing one kind recovers.
 //! - **§7 scope rows** — folder/file/`absent`/kind-conflict answers.
@@ -94,16 +96,24 @@ fn served_root_recomputes_only_when_the_root_advances() {
     let mut cache = DomainCache::new();
 
     cache.root(&root).expect("cold");
-    assert_eq!(cache.flat_folds(), 1, "cold serve folds once");
+    assert_eq!(cache.served_folds(), 1, "cold serve folds once");
     cache.root(&root).expect("quiet pass");
     cache.root(&root).expect("quiet pass");
-    assert_eq!(cache.flat_folds(), 1, "a quiet corpus re-serves the cache");
+    assert_eq!(
+        cache.served_folds(),
+        1,
+        "a quiet corpus re-serves the cache"
+    );
 
     write(&root.0, "notes.md", b"# Notes\n\nmoved\n");
     cache.root(&root).expect("advanced");
-    assert_eq!(cache.flat_folds(), 2, "an advance folds exactly once more");
+    assert_eq!(
+        cache.served_folds(),
+        2,
+        "an advance folds exactly once more"
+    );
     cache.root(&root).expect("quiet again");
-    assert_eq!(cache.flat_folds(), 2);
+    assert_eq!(cache.served_folds(), 2);
 }
 
 /// The own-write overlay against the correctness law: `DomainLeaves::overlay`
@@ -142,11 +152,11 @@ fn overlay_root_matches_the_domain_leaves_overlay_law() {
     );
 
     // ...and an idempotent re-serve pays no fold.
-    let folds = cache.flat_folds();
+    let folds = cache.served_folds();
     let again = cache.overlay_root().expect("re-serve");
     assert_eq!(again, overlay_root);
     assert_eq!(
-        cache.flat_folds(),
+        cache.served_folds(),
         folds,
         "an unadvanced serve is a cache hit"
     );

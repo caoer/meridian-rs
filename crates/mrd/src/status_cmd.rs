@@ -506,7 +506,7 @@ type StoreKey = Option<addr::MountName>;
 /// that root's repository ([`StoreKey`]). A value that is not an object id, or a
 /// key that names no store, is unknown, never skipped — a dropped entry would
 /// read a corrupt retrieval plane as a true zero.
-fn vibe_debt(workspace: &Path, docs: &BTreeMap<String, Document>) -> VibeDebt {
+fn vibe_debt(workspace: &Path, docs: &model::Docs) -> VibeDebt {
     // Dedupe is keyed by store, never globally: the same oid under two roots is
     // two objects in two databases.
     let mut seen: HashSet<(StoreKey, String)> = HashSet::new();

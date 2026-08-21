@@ -175,7 +175,7 @@ fn voiced(mounts: Mounts) -> Mounts {
 /// the walk plane ([`view::walk::lock_addressed_roots`]) so the CLI verbs and
 /// the wire serve path read ONE owner; this spelling stays for the in-crate
 /// callers (`check`/`status`).
-pub(crate) fn lock_addressed_roots(docs: &BTreeMap<String, Document>) -> BTreeSet<addr::MountName> {
+pub(crate) fn lock_addressed_roots(docs: &model::Docs) -> BTreeSet<addr::MountName> {
     walk::lock_addressed_roots(docs)
 }
 
@@ -184,7 +184,7 @@ pub(crate) fn lock_addressed_roots(docs: &BTreeMap<String, Document>) -> BTreeSe
 /// sibling, so the CLI verbs and the § A.11 wire serve path read ONE owner;
 /// this spelling stays for the in-crate callers.
 pub(crate) fn link_addressed_roots(
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     path: Option<&str>,
 ) -> BTreeSet<addr::MountName> {
     walk::link_addressed_roots(docs, path)
@@ -302,7 +302,7 @@ pub(crate) fn workspace_root(workspace: &Path) -> Result<fs::WorkspaceRoot, Fail
     Ok(fs::WorkspaceRoot(canonical))
 }
 
-pub(crate) fn build_docs(workspace: &Path) -> Result<BTreeMap<String, Document>, Fail> {
+pub(crate) fn build_docs(workspace: &Path) -> Result<model::Docs, Fail> {
     build_corpus_in_process(workspace).map(|corpus| corpus.docs)
 }
 
@@ -315,7 +315,7 @@ struct InProcessCorpus {
     /// The canonical workspace root the snapshot was taken at.
     root: fs::WorkspaceRoot,
     /// The served projection — the corpus the walk reads.
-    docs: BTreeMap<String, Document>,
+    docs: model::Docs,
 }
 
 /// Build [`InProcessCorpus`] from the workspace on disk. [`build_docs`] is this with the
@@ -347,16 +347,12 @@ fn build_corpus_in_process(workspace: &Path) -> Result<InProcessCorpus, Fail> {
 ///
 /// A path with no file, or one whose bytes are not UTF-8, is left absent: the
 /// caller's own miss diagnostic then says so, as it does for any other miss.
-pub(crate) fn admit_named_page(
-    root: &fs::WorkspaceRoot,
-    docs: &mut BTreeMap<String, Document>,
-    page: &str,
-) {
+pub(crate) fn admit_named_page(root: &fs::WorkspaceRoot, docs: &mut model::Docs, page: &str) {
     if docs.contains_key(page) {
         return;
     }
     if let Ok(doc) = fs::load(root, Path::new(page)) {
-        docs.insert(page.to_owned(), doc);
+        docs.insert(page.to_owned(), std::sync::Arc::new(doc));
     }
 }
 

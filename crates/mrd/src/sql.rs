@@ -471,7 +471,7 @@ fn daemon_sql_frame(response: &Value) -> Option<Frame> {
 struct Loaded {
     root: fs::WorkspaceRoot,
     f0: String,
-    docs: BTreeMap<String, model::Document>,
+    docs: model::Docs,
     mounts: crate::walk_cmd::Mounts,
     domain: fs::domain::Domain,
     /// The `.base` walk this attempt was taken under (`base-projection.md`

@@ -157,7 +157,7 @@ fn render_pin(pin: &PinRow) -> String {
 /// to run is a worse answer than saying what could not be asked.
 pub fn core(
     root: &WorkspaceRoot,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     claims: &[realise::Claim],
     pins: &[PinRow],
     mounted: &BTreeMap<addr::MountName, std::path::PathBuf>,
@@ -188,7 +188,7 @@ pub fn core(
 #[must_use]
 pub fn core_of(
     root: &WorkspaceRoot,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     pins: &[PinRow],
     mounted: &BTreeMap<addr::MountName, std::path::PathBuf>,
 ) -> CoreReport {

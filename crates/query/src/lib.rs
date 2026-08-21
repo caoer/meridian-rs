@@ -95,7 +95,7 @@ pub struct RefusedEdge {
 #[must_use]
 pub fn links(
     index: &CorpusIndex,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     path: Option<&str>,
 ) -> BTreeMap<String, FileLinks> {
     links_with(index, docs, &RootedCorpus::ambient(docs), None, path)
@@ -110,7 +110,7 @@ pub fn links(
 #[must_use]
 pub fn links_rooted(
     index: &CorpusIndex,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     corpus: &RootedCorpus<'_>,
     mounts: &MountSet,
     path: Option<&str>,
@@ -128,7 +128,7 @@ pub fn links_rooted(
 /// `mrd::engine::answer_links`).
 fn links_with(
     index: &CorpusIndex,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     corpus: &RootedCorpus<'_>,
     mounts: Option<&MountSet>,
     path: Option<&str>,
@@ -207,11 +207,7 @@ pub fn file_links(
 /// wire-contract § A.3 stated limit). Self-edges are returned; excluding them
 /// is the consumer's semantics.
 #[must_use]
-pub fn lock_pin_referrers(
-    index: &CorpusIndex,
-    docs: &BTreeMap<String, Document>,
-    target: &str,
-) -> Vec<String> {
+pub fn lock_pin_referrers(index: &CorpusIndex, docs: &model::Docs, target: &str) -> Vec<String> {
     let corpus = RootedCorpus::ambient(docs);
     let mut out = Vec::new();
     for (src, doc) in docs {
@@ -235,11 +231,7 @@ pub fn lock_pin_referrers(
 /// (a corpus path), in deterministic order — path-lexicographic, then span
 /// order within a file.
 #[must_use]
-pub fn backlinks(
-    index: &CorpusIndex,
-    docs: &BTreeMap<String, Document>,
-    target: &str,
-) -> Vec<Backlink> {
+pub fn backlinks(index: &CorpusIndex, docs: &model::Docs, target: &str) -> Vec<Backlink> {
     backlinks_with(index, docs, &RootedCorpus::ambient(docs), None, target)
 }
 
@@ -252,7 +244,7 @@ pub fn backlinks(
 #[must_use]
 pub fn backlinks_rooted(
     index: &CorpusIndex,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     corpus: &RootedCorpus<'_>,
     mounts: &MountSet,
     target: &str,
@@ -265,7 +257,7 @@ pub fn backlinks_rooted(
 /// empty table.
 fn backlinks_with(
     index: &CorpusIndex,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     corpus: &RootedCorpus<'_>,
     mounts: Option<&MountSet>,
     target: &str,
@@ -411,7 +403,7 @@ pub struct RenamePlan {
 #[must_use]
 pub fn plan_rename(
     index: &CorpusIndex,
-    docs: &BTreeMap<String, Document>,
+    docs: &model::Docs,
     from_path: &str,
     from: &Ref,
     to: &str,
@@ -622,13 +614,13 @@ fn hpath_ref(hpath: &[String]) -> Ref {
 mod tests {
     use super::*;
 
-    fn corpus(files: &[(&str, &str)]) -> (CorpusIndex, BTreeMap<String, Document>) {
+    fn corpus(files: &[(&str, &str)]) -> (CorpusIndex, model::Docs) {
         let mut index = CorpusIndex::new();
         let mut docs = BTreeMap::new();
         for (path, raw) in files {
             let doc = model::build((*raw).to_string(), syntax::parse(raw));
             index.insert(path, &doc);
-            docs.insert((*path).to_string(), doc);
+            docs.insert((*path).to_string(), std::sync::Arc::new(doc));
         }
         (index, docs)
     }

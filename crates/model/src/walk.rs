@@ -17,7 +17,6 @@
 //! `NodeRev` — type-level mint partition (`no_rev_field` compile test).
 
 use crate::{ByteSpan, CorpusIndex, Document, Node, NodeKind};
-use std::collections::BTreeMap;
 
 /// A resolved walk location — **location facts only** (D-C2: no rev field, ever).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +66,7 @@ pub struct Miss {
 /// `stage: Two` (with `dest`) when the file is found but the subpath is not.
 pub fn walk(
     index: &CorpusIndex,
-    docs: &BTreeMap<String, Document>,
+    docs: &crate::Docs,
     from: &str,
     link: &str,
 ) -> Result<Location, Miss> {
@@ -212,13 +211,13 @@ mod tests {
         let _: fn(String) -> NodeRev = NodeRev;
     }
 
-    fn corpus(files: &[(&str, &str)]) -> (CorpusIndex, BTreeMap<String, Document>) {
+    fn corpus(files: &[(&str, &str)]) -> (CorpusIndex, crate::Docs) {
         let mut index = CorpusIndex::new();
-        let mut docs = BTreeMap::new();
+        let mut docs = crate::Docs::new();
         for (path, raw) in files {
             let doc = build((*raw).to_string(), syntax::parse(raw));
             index.insert(path, &doc);
-            docs.insert((*path).to_string(), doc);
+            docs.insert((*path).to_string(), std::sync::Arc::new(doc));
         }
         (index, docs)
     }
@@ -290,9 +289,12 @@ mod tests {
         let raw = receipts_s1();
         let doc = build(raw.clone(), syntax::parse(&raw));
         let mut index = CorpusIndex::new();
-        let mut docs = BTreeMap::new();
+        let mut docs = crate::Docs::new();
         index.insert("receipts/2026-07-18.md", &doc);
-        docs.insert("receipts/2026-07-18.md".to_string(), doc);
+        docs.insert(
+            "receipts/2026-07-18.md".to_string(),
+            std::sync::Arc::new(doc),
+        );
         let loc = walk(&index, &docs, "receipts/2026-07-18.md", "#^r-000042")
             .expect("walk resolves the ^r-000042 block anchor");
         assert_eq!(loc.dest, "receipts/2026-07-18.md");

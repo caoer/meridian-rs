@@ -10,19 +10,19 @@
 //! here first.
 
 use addr::{MountName, MountSet};
-use model::{CorpusIndex, Document, RefResolution, RootedCorpus};
+use model::{CorpusIndex, RefResolution, RootedCorpus};
 use std::collections::BTreeMap;
 
 fn name(n: &str) -> MountName {
     MountName::parse(n).expect("a canonical root name")
 }
 
-fn corpus_with(paths: &[&str]) -> BTreeMap<String, Document> {
+fn corpus_with(paths: &[&str]) -> model::Docs {
     let mut docs = BTreeMap::new();
     for p in paths {
         docs.insert(
             (*p).to_owned(),
-            model::build(String::new(), syntax::parse("")),
+            std::sync::Arc::new(model::build(String::new(), syntax::parse(""))),
         );
     }
     docs
