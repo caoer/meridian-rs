@@ -185,6 +185,11 @@ pub fn reconcile(
 /// # Errors
 /// Reading a mover fails with anything but absence, or the scope cannot be
 /// loaded. Loop drivers log and retry next cycle.
+///
+/// # Panics
+/// If the watcher's baseline is unset past the priming arm — unreachable by
+/// construction: the arm that diffs is guarded by `watch.root` being `Some`,
+/// and the two are set in the same act.
 pub fn reconcile_delta(
     ws_root: &fs::WorkspaceRoot,
     ring: &mut RootRing,
