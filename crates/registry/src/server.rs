@@ -796,6 +796,9 @@ const PUSH_TICK: Duration = Duration::from_millis(50);
     reason = "ownership is the mechanism: the push plane HOLDS the subscription \
               claim, and returning from this function is what releases it"
 )]
+// One §6.7 seam (the shared currency instrument) rides beside the seven the
+// push plane always took — the retire_cmd/view precedent.
+#[allow(clippy::too_many_arguments)]
 fn push_loop(
     ws: &Path,
     registry: &Registry,

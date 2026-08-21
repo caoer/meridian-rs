@@ -100,6 +100,8 @@ const RESCAN_RECORD_CAP: usize = 64;
 /// per window re-tests the stream. Bounds the stall a dead-but-running
 /// watcher can add to one timeout per window per workspace; a `Seen` clears
 /// it, so a transient stall self-heals on the first probe that lands.
+// `Duration::from_mins` not const-stable at MSRV 1.96 (the lib.rs precedent).
+#[allow(clippy::duration_suboptimal_units)]
 const COOKIE_HOLDOFF: Duration = Duration::from_secs(60);
 
 /// Why a rescan was marked — every rescan carries its cause into the log and
