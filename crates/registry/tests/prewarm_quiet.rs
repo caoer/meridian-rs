@@ -54,8 +54,9 @@ fn a_quiet_sweep_does_not_fold_the_corpus_at_all() {
         WarmOutcome::Built { .. }
     ));
 
-    // The first sweep after a warm still folds once: it has no recorded
-    // signature for this workspace yet, so it cannot know the corpus is quiet.
+    // §6.7: with a live feed the quiet gate is the feed's own state, so even
+    // the first sweep is O(1); on the no-feed fallback it would pay one
+    // signature walk here. Either way it folds nothing.
     let _ = registry.prewarm();
 
     let before = fs::metadata(ws.join("a.md")).unwrap().len();

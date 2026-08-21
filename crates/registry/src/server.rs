@@ -646,6 +646,7 @@ fn serve_conn(
             guard,
         } => push_loop(
             &workspace,
+            registry,
             &mut writer,
             rev,
             from_seq,
@@ -797,6 +798,7 @@ const PUSH_TICK: Duration = Duration::from_millis(50);
 )]
 fn push_loop(
     ws: &Path,
+    registry: &Registry,
     writer: &mut UnixStream,
     rev: Rev,
     from_seq: u64,
@@ -821,7 +823,7 @@ fn push_loop(
     let mut last_write = Instant::now();
     while !shutdown.load(Ordering::SeqCst) {
         // Detection failure never ends the sub; log and retry next cycle.
-        if let Err(e) = ring.detect(&ws_root) {
+        if let Err(e) = ring.detect(&ws_root, registry) {
             eprintln!("registry: watch reconcile ({}): {e:?}", ws.display());
         }
         for frame in ring.frames_after(delivered) {
