@@ -503,22 +503,27 @@ wall clock  ≥  trips(R) × pass(C)
 trips(R) = 3 + Σ per read: (2) whole-file
                            (1) sectioned
 
-pass(C)  = O(C) in `stat`s, O(changed) in bytes      <- the linear term
+pass(C)  = O(dirty) vouched; floor O(C) in `stat`s,     <- the linear term,
+           O(changed) in bytes                             floor only
 ```
 
-**Both arguments matter, and the second one is linear.** `pass(C)` is not a
-constant: a currency pass `stat`s every domain member, so it grows with the
-corpus even though it no longer reads it. Measured on this engine, doubling the
-corpus (23,758 → 47,477 members) multiplies the pass by **1.84×**, and with
-trips minimised a program's per-read cost converges on the pass and moves with
-it — **1.91×** measured end to end.
+**Both arguments matter, and the second one is linear only on the floor.**
+The vouched pass (`node-rev-merkle-spec.md` §6.7: the event feed's cookie
+proof over the resident memo) costs O(dirty) — constant on a quiet corpus,
+whatever `C`. Any named miss — no live feed, an unproven cookie, a doubt
+collapse, an untrusted memo — falls to the extent-refresh floor, which
+`stat`s every domain member and stays linear: measured on this engine,
+doubling the corpus (23,758 → 47,477 members) multiplies the floor pass by
+**1.84×**, and with trips minimised a program's per-read cost converges on
+the pass and moves with it — **1.91×** measured end to end.
 
-So a program that fits today does not automatically fit on a corpus twice the
-size. What the trip collapse removed is the *amplification*: cost no longer
-scales with reads × frontmatter × corpus, only with reads × corpus. Making
-`pass(C)` itself constant would need the root maintained incrementally rather
-than re-derived — an OS event watcher or a persistent index — which v1 does not
-have and this contract does not promise.
+So a program that fits today keeps fitting on a corpus twice the size only
+while the feed vouches; sizing against the FLOOR is what stays honest, since
+any named miss re-prices the pass at O(C). What the trip collapse removed is
+the *amplification*: cost no longer scales with reads × frontmatter × corpus,
+only with reads × pass. (The sentence that stood here — "an OS event watcher
+… which v1 does not have" — described the pre-§6.4 engine and is superseded:
+the watcher exists and the vouched pass rides it.)
 
 `3` is the fixed frame — `hello`, `fingerprint`, and the commit. A whole-file
 `read(path)` is **two** trips: the `toc` op, and the composed `read` (§4.1, toc
