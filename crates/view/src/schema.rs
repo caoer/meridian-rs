@@ -292,7 +292,13 @@ CREATE VIEW tag_all AS                             -- B2: the union — inline +
 /// went from zero rows to their real tags. No DDL moved; ROW CONTENT did, for
 /// identical corpora at identical fingerprints, which is the obligation `2`
 /// and `7` were bumped under (card `tag-all-block-form-blindness`).
-pub const SCHEMA_VERSION: i32 = 9;
+///
+/// `10`: `frontmatter.value` reads `model::fm_value` off the BLOCK for every
+/// key, so a block sequence under ANY key (`agents:`, `handoff-to:`, …)
+/// renders as its flow-style text instead of `''` — 50 of 50 `agents` rows on
+/// the fleet corpus. Same obligation as `9`: no DDL moved, ROW CONTENT did for
+/// identical corpora at identical fingerprints (card `fm-block-list-sql-empty`).
+pub const SCHEMA_VERSION: i32 = 10;
 
 /// Run the full round-1 DDL against `conn` (8 tables + 4 views).
 ///
