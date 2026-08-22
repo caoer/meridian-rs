@@ -268,6 +268,26 @@ fn create_with_empty_body_mints_no_stray_blank() {
     assert_eq!(out, "# Page\n\ncontent\n\n## Born\n");
 }
 
+/// Top-level create on the live empty-tail + blank-line shape: one blank
+/// between the last heading and the born h1, no extra blank minted, file
+/// ends on a single terminator.
+#[test]
+fn create_top_level_on_empty_tail_plus_blank_is_canonical() {
+    let out = apply(
+        "# Notes\n\n",
+        vec![PlanEdit::Create {
+            parent_hpath: vec![],
+            title: "Edges".into(),
+            body: "- [[dac01b16]]".into(),
+            rev: None,
+        }],
+    );
+    assert_eq!(
+        out, "# Notes\n\n# Edges\n\n- [[dac01b16]]\n",
+        "empty tail + blank line still births a top-level sibling"
+    );
+}
+
 /// Ordered-list payloads join a trailing ordered list flush too.
 #[test]
 fn ordered_list_item_joins_flush() {
