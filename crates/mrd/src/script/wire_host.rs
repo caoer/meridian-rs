@@ -69,6 +69,13 @@ impl SocketDoor {
     /// One round trip may therefore not exceed the entry's WHOLE wall clock,
     /// which is the loosest bound that is still a bound.
     ///
+    /// **That bound is the SCRIPT entry's, and the write verbs share only the
+    /// hello.** They dial this door too and carry no budget, so their round
+    /// trips go through [`Self::call_until_answered`], where a timeout tick is
+    /// a notice rather than a verdict — the timeouts set here still bound the
+    /// handshake below (a daemon that will not greet is down; nothing was
+    /// sent).
+    ///
     /// # Errors
     /// The socket refuses the connection, the transport fails, or the daemon
     /// refuses the handshake.
@@ -130,6 +137,71 @@ impl SocketDoor {
     #[must_use]
     pub fn has_cap(&self, cap: &str) -> bool {
         self.caps.iter().any(|c| c == cap)
+    }
+}
+
+impl SocketDoor {
+    /// One round trip whose answer is WAITED FOR: the write-verb door (card
+    /// `cli-face-put-false-negative`).
+    ///
+    /// The socket's read timeout is the script host's wall clock
+    /// ([`super::cmd::WALL_CLOCK`]), and for a script that is the right bound —
+    /// the entry has a budget, a round trip that outlives it is refused. A
+    /// write verb has no budget: once its frame is on the wire the daemon is
+    /// committing, and the only honest result is the daemon's own answer.
+    /// Measured 2026-08-21 (seat 547853b4, sessions root): a splice behind a
+    /// slow middleware returned `os error 35` (`EAGAIN` — the read timeout) at
+    /// 7 s and exited 1 while the bytes landed seconds later. A caller that
+    /// believed it re-sent bytes the engine already held, or reported a landed
+    /// write as failed.
+    ///
+    /// So the timeout ticks are not a verdict here. The first tick prints
+    /// `notice` — the caller watching a terminal learns the write is in
+    /// flight, not dead — and the read resumes. Bytes of a partial line read
+    /// before a tick stay in `line`; `read_line` appends. The wait ends only
+    /// with the daemon's answer or a transport loss (EOF, a torn stream), and
+    /// THAT is the caller's to render as an unknown outcome.
+    ///
+    /// # Errors
+    /// The write failed, or the connection died before an answer arrived.
+    pub(crate) fn call_until_answered(
+        &mut self,
+        request: &Value,
+        notice: &str,
+    ) -> io::Result<String> {
+        use std::io::{BufRead as _, Write as _};
+
+        let mut frame = serde_json::to_string(request).map_err(io::Error::other)?;
+        frame.push('\n');
+        self.writer.write_all(frame.as_bytes())?;
+        self.writer.flush()?;
+
+        let mut line = String::new();
+        let mut noticed = false;
+        loop {
+            match self.reader.read_line(&mut line) {
+                Ok(0) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "daemon closed the connection without a response",
+                    ));
+                }
+                Ok(_) => return Ok(line),
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    if !noticed {
+                        eprintln!("{notice}");
+                        noticed = true;
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
     }
 }
 

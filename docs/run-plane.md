@@ -459,6 +459,19 @@ Layers 1–3 refuse in the entry's own vocabulary and answer a trace; layer 4 is
 the backstop and answers a host refusal, never a face. A hung child that reached
 none of them would hang the tool with nothing bounding it.
 
+*(Amended 2026-08-22, the write verbs.)* Layer 2 is the SOCKET's, and the write
+verbs (`put`, `pin`, `rm`, `retire`) dial the same `SocketDoor` — but they carry
+no budget, so for them a read timeout is **not** a verdict. Their door waits for
+the daemon's answer (`write_ipc::call` → `SocketDoor::call_until_answered`),
+printing one notice at the first tick and reading on. The wall clock still
+bounds their HELLO: a daemon that will not greet is down, and nothing was sent.
+Measured 2026-08-21 on the sessions root: a splice behind a slow armed
+middleware returned `os error 35` (the layer-2 `EAGAIN`) at 7 s and exited 1
+while the bytes landed seconds later — the write door had no budget to enforce,
+so the timeout could only produce a false negative. A transport loss AFTER the
+frame goes out is reported as an unknown outcome (read before any re-send),
+never as a failed write.
+
 *(Amended 2026-08-12, the in-process lane.)* The four layers above price a
 lane whose reads are round trips. On the in-process lane (wire `script`,
 wire-contract § A.7) there are no round trips and no child, so the wall
