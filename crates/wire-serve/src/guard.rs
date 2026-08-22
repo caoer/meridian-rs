@@ -629,7 +629,7 @@ fn plan_demands(doc: &model::Document, plan_edits: &[PlanEdit], out: &mut Vec<De
                     });
                 }
                 let full = if parent_hpath.is_empty() {
-                    title.to_string()
+                    title.clone()
                 } else {
                     format!("{}/{title}", crate::display_hpath(parent_hpath))
                 };
