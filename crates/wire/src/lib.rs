@@ -464,10 +464,12 @@ pub enum PlanEdit {
         rev: Option<String>,
     },
     /// Create a new section — parent-append placement. An empty
-    /// `parent_hpath` (top-level create) refuses. `rev` is the PARENT
-    /// section's node-grain token, threaded to the lowered append's
-    /// `if_node_rev`: the birth changes the parent's bytes, so the parent's
-    /// rev is the honest grain (Law A-1 at the create door).
+    /// `parent_hpath` births a level-1 heading at document end (the
+    /// document is the parent; §2.1 zero-segment hpath). `rev` is the
+    /// PARENT's node-grain token (the document's, when `parent_hpath` is
+    /// empty), threaded to the lowered append's `if_node_rev`: the birth
+    /// changes the parent's bytes, so the parent's rev is the honest grain
+    /// (Law A-1 at the create door).
     Create {
         parent_hpath: Vec<HpathSeg>,
         title: String,

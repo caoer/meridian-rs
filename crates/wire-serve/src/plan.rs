@@ -886,10 +886,12 @@ fn lower_replace_block(
 
 /// Create: parent-append with § A.3 hygiene boundaries (one blank line before
 /// the born heading, one between it and its body, one before whatever
-/// follows); top-level / parent-miss refuse. `rev` is the PARENT's node-grain
-/// token, threaded to the lowered edit's `if_node_rev` — one rev derivation,
-/// no second comparison rule (§ A.3). Returns the edit plus the born
-/// heading's byte offset within its text (see [`Born`]).
+/// follows). An empty `parent_hpath` births a level-1 heading at document
+/// end (the document is the parent). A named parent that is not in the
+/// document refuses. `rev` is the PARENT's node-grain token (the document's
+/// when the parent is empty), threaded to the lowered edit's `if_node_rev` —
+/// one rev derivation, no second comparison rule (§ A.3). Returns the edit
+/// plus the born heading's byte offset within its text (see [`Born`]).
 ///
 /// The parent target is the LOWERING's mechanism only: the armed fact for
 /// this row names the BORN section (the § A.3 create-door law; A.6.3a′ is
@@ -914,28 +916,36 @@ fn lower_create(
             policy::defs::go_quote(&full)
         ))
     };
-    if parent_hpath.is_empty() {
-        return Err(cannot_place());
-    }
-    // An ambiguous parent says so by name: `cannot_place` would claim the
-    // parent is absent when the document holds several of it.
-    let parent = idx.get(parent_hpath).map_err(|m| match m {
-        Miss::NotFound => cannot_place(),
-        m @ Miss::Ambiguous(_) => section_miss(parent_hpath, &m),
-    })?;
-    let level = (parent.level + 1) as usize;
+    // Empty parent = the document (wire-contract §2.1 / A-1 top-level birth
+    // door). A named parent that misses still refuses; an ambiguous parent
+    // says so by name rather than claiming absence.
+    let (content_span, target, level) = if parent_hpath.is_empty() {
+        ((0, doc.raw.len()), Vec::new(), 1usize)
+    } else {
+        let parent = idx.get(parent_hpath).map_err(|m| match m {
+            Miss::NotFound => cannot_place(),
+            m @ Miss::Ambiguous(_) => section_miss(parent_hpath, &m),
+        })?;
+        (
+            content_span_of(parent),
+            parent.raw_hpath.clone(),
+            (parent.level + 1) as usize,
+        )
+    };
     let body = normalize_payload(body);
     let payload = if body.is_empty() {
         format!("{} {title}\n", "#".repeat(level))
     } else {
         format!("{} {title}\n\n{body}", "#".repeat(level))
     };
-    let (at, text, heading_offset) = compose_at_subtree_end(doc, content_span_of(parent), &payload);
+    let (at, text, heading_offset) = if doc.raw.is_empty() {
+        (PutAt::End, payload, 0)
+    } else {
+        compose_at_subtree_end(doc, content_span, &payload)
+    };
     Ok((
         Edit {
-            target: SecRef::Hpath {
-                hpath: parent.raw_hpath.clone(),
-            },
+            target: SecRef::Hpath { hpath: target },
             edit: EditShape::Put { at, text },
             if_node_rev: rev
                 .filter(|r| !r.is_empty())
@@ -1205,10 +1215,10 @@ mod tests {
         );
     }
 
-    /// Top-level create refuses.
+    /// Top-level create lowers to a document-end put of a level-1 heading.
     #[test]
-    fn create_top_level_refuses() {
-        let err = lower1(
+    fn create_top_level_lowers_to_document_end() {
+        let e = lower1(
             "# A\n\nx\n",
             PlanEdit::Create {
                 parent_hpath: vec![],
@@ -1217,11 +1227,38 @@ mod tests {
                 rev: None,
             },
         )
-        .expect_err("top-level create refuses");
-        assert_eq!(
-            err.message.as_deref(),
-            Some(r#"cannot place new section "Brand" — its parent is not in the document"#)
-        );
+        .expect("top-level create lowers");
+        let (at, text) = put_text(&e);
+        assert_eq!(*at, PutAt::End);
+        assert_eq!(text, "\n# Brand\n\nb\n");
+        let SecRef::Hpath { hpath } = &e.target else {
+            panic!("hpath target")
+        };
+        assert!(hpath.is_empty(), "native target is the document");
+    }
+
+    /// Empty last section + trailing blank: composition is still a pure
+    /// EOF insert (the document receives the bytes). This is the live
+    /// shape whose last-section append refused `would_corrupt`.
+    #[test]
+    fn create_top_level_on_empty_tail_plus_blank_is_eof_insert() {
+        let e = lower1(
+            "# Notes\n\n",
+            PlanEdit::Create {
+                parent_hpath: vec![],
+                title: "Edges".into(),
+                body: "- [[dac01b16]]".into(),
+                rev: None,
+            },
+        )
+        .expect("lowers");
+        let (at, text) = put_text(&e);
+        assert_eq!(*at, PutAt::End);
+        assert_eq!(text, "# Edges\n\n- [[dac01b16]]\n");
+        let SecRef::Hpath { hpath } = &e.target else {
+            panic!("hpath target")
+        };
+        assert!(hpath.is_empty(), "native target is the document");
     }
 
     /// Create parent-append shape: `Put{end}` on parent, child depth = parent+1.

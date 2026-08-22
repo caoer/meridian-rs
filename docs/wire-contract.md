@@ -159,7 +159,7 @@ Write targets and strict reads name nodes by **exact name only** — three forms
 
 | Form | Shape | Semantics |
 |---|---|---|
-| hpath | `{"hpath":[{"h":"Goals"},{"h":"Q3"}]}` | per-segment **byte-equality** against the real containment tree; optional occurrence `{"h":"Beta","n":2}` (1-based, document order among identical raw texts at that position). No join string exists — the `#A#a/b` vs `#A#a#b` ambiguity is unrepresentable |
+| hpath | `{"hpath":[{"h":"Goals"},{"h":"Q3"}]}` | per-segment **byte-equality** against the real containment tree; optional occurrence `{"h":"Beta","n":2}` (1-based, document order among identical raw texts at that position). No join string exists — the `#A#a/b` vs `#A#a#b` ambiguity is unrepresentable. **Zero segments (`[]`) address the document node** (file span `0..len`) — the parent of every top-level heading; the create door's empty `parent_hpath` is this address |
 | anchor | `{"anchor":"r-000042"}` | block id, exact match; the resolved node is the id's HOST BLOCK under the Obsidian attachment law (F-R4, `model::anchor_host_span`: a tail id keys its enclosing block — the whole paragraph run, callout or table, a list ITEM line, a heading line; an own-line id attaches to the nearest preceding block through blanks, or joins a directly-adjacent paragraph/list item; a document-start orphan and a frontmatter caret keep the marker's own line). Duplicate id in one file → the mint plane refuses `ambiguous_ref` (loud), while the walk plane follows the app (last wins, silent) — the silent-last-wins mint death mode is closed |
 | fm_key | `{"fm_key":"title"}` | top-level frontmatter key; the node is the full key line (frontmatter plane is nodes, never ref grammar — `#:key` is dead) |
 
@@ -1521,13 +1521,14 @@ team-e multi-root contract, L3 end state):**
 
 - The `create` plan-edit shape becomes
   `{"create":{"parent_hpath":[…],"title":…,"body":…,"rev":…?}}`. `rev` is the
-  **parent section's** node-grain token — the `node_rev` the caller read for
-  the section its birth appends under. A section create lowers to a
-  parent-append (the parent's bytes change; the parent's rev is the honest
-  grain), and `rev` threads to the lowered edit's `if_node_rev`, compared per
-  §5.1 — re-derived at execution from the pre-batch state, one rev derivation,
-  no second comparison rule. The child-absence guard stays beside it,
-  unchanged (an already-born subject refuses `cas_mismatch`).
+  **parent's** node-grain token — the `node_rev` the caller read for the
+  section its birth appends under, or the document's when `parent_hpath` is
+  empty (§2.1 zero-segment hpath). A section create lowers to a parent-append
+  (the parent's bytes change; the parent's rev is the honest grain), and `rev`
+  threads to the lowered edit's `if_node_rev`, compared per §5.1 — re-derived
+  at execution from the pre-batch state, one rev derivation, no second
+  comparison rule. The child-absence guard stays beside it, unchanged (an
+  already-born subject refuses `cas_mismatch`).
 - **Schema-optional, like every guard field (§ A.1):** a rev-less `create`
   frame still decodes, forever. The demand below is a semantic refusal after
   decode, never a frame rejection.
@@ -1570,6 +1571,27 @@ team-e multi-root contract, L3 end state):**
   the §4.4 family for armed facts that cannot be represented. The native
   `put:end` door is untouched: a native append addressed the parent, and its
   fact keeps naming the parent.
+
+- **Empty `parent_hpath` is the top-level birth door (docs-first, 2026-08-22,
+  card `put-no-top-level-section-birth`):** `create` with `parent_hpath: []`
+  births a level-1 heading at document end. Lowering runs the § A.3 hygiene
+  composition over the document's full span — `put{at:"end"}` when that is a
+  pure extension (insert at EOF), `put{at:"content"}` when trailing whitespace
+  at EOF must collapse — and the native target is the document (`hpath: []`).
+  The armed fact still names the BORN section. `rev`, when offered, is the
+  document's node-grain token (the file span; equal to `file_rev`); do not
+  pass a section rev, it CAS-mismatches against the document. Schema-optional;
+  the occurrence demand does not apply (no `n` on an empty parent). Absence
+  guard: a same-title top-level heading already present refuses
+  `cas_mismatch`, same as nested create.
+- **Why not parent-append on the last heading.** A last section whose span
+  already includes its trailing blank does not receive the sibling's bytes, so
+  its `node_rev` does not move and `would_corrupt{transition_unrepresentable}`
+  refuses (measured: `# Notes\n\n` then append `# Edges…`; `# Notes\n` with no
+  extra blank writes because hygiene grows the last section by the separator).
+  The document receives the bytes. The regression is that empty-tail + blank
+  line shape. Opening a heading via `append` at a non-final section remains
+  `would_corrupt{containment_lost}` — that is not this door; use `create`.
 
 **The remove door — guarded file death (docs-first, 2026-08-15, card
 `engine-delete-door`; shape ZT-ruled, four selections recorded verbatim on the
