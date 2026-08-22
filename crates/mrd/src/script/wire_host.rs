@@ -198,7 +198,8 @@ impl SocketDoor {
                         noticed = true;
                     }
                 }
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                // No `Interrupted` arm: `read_until` (which `read_line` calls)
+                // absorbs EINTR itself, so it cannot surface here.
                 Err(e) => return Err(e),
             }
         }
