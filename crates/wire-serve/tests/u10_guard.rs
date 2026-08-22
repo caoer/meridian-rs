@@ -441,6 +441,47 @@ fn plan_create_is_guarded_by_absence() {
         .expect("an absent section is born without a fingerprint");
 }
 
+/// Top-level create is the same absence grain: an already-present h1
+/// refuses, an absent one is born without a fingerprint.
+#[test]
+fn plan_create_top_level_is_guarded_by_absence() {
+    let (_d, root) = ws();
+    let already = SpliceArgs {
+        premises: Vec::new(),
+        plan_edits: vec![PlanEdit::Create {
+            parent_hpath: vec![],
+            title: "Memo".into(),
+            body: "x\n".into(),
+            rev: None,
+        }],
+        ..args(Origin::Wire)
+    };
+    let err = splice(&root, None, &already, &[], None).expect_err("Memo already exists");
+    assert_eq!(err.code, ErrorCode::CasMismatch);
+    let message = err.message.as_deref().expect("a message");
+    assert!(
+        message.contains("guarded by ABSENCE") && message.contains("Fix:"),
+        "the birth refusal teaches: {message}"
+    );
+    assert!(
+        message.contains("\"Memo\"") && !message.contains("/Memo"),
+        "the subject is the top-level title, not a slash-prefixed path: {message}"
+    );
+
+    let fresh = SpliceArgs {
+        premises: Vec::new(),
+        plan_edits: vec![PlanEdit::Create {
+            parent_hpath: vec![],
+            title: "Edges".into(),
+            body: "x\n".into(),
+            rev: None,
+        }],
+        ..args(Origin::Wire)
+    };
+    splice(&root, None, &fresh, &[], None)
+        .expect("an absent top-level section is born without a fingerprint");
+}
+
 #[test]
 fn set_properties_demands_the_doc_root_token() {
     let (_d, root) = ws();

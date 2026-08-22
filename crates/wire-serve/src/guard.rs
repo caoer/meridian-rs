@@ -628,7 +628,11 @@ fn plan_demands(doc: &model::Document, plan_edits: &[PlanEdit], out: &mut Vec<De
                         },
                     });
                 }
-                let full = format!("{}/{title}", crate::display_hpath(parent_hpath));
+                let full = if parent_hpath.is_empty() {
+                    title.to_string()
+                } else {
+                    format!("{}/{title}", crate::display_hpath(parent_hpath))
+                };
                 if section_exists(doc, parent_hpath, title) {
                     out.push(Demand {
                         subject: format!("section \"{full}\""),
@@ -667,14 +671,12 @@ fn plan_demands(doc: &model::Document, plan_edits: &[PlanEdit], out: &mut Vec<De
 }
 
 /// Does `parent_hpath` + `title` already address a section? The birth's absence
-/// guard — an ambiguous resolve counts as existing.
+/// guard — an ambiguous resolve counts as existing. An empty parent is a
+/// top-level heading (the document is the parent).
 ///
 /// The parent arrives as segments and the child chain is a concat — never a
 /// split on `/`, which would mis-parse a parent heading containing `/`.
 fn section_exists(doc: &model::Document, parent_hpath: &[wire::HpathSeg], title: &str) -> bool {
-    if parent_hpath.is_empty() {
-        return false;
-    }
     let segs: Vec<model::HpathSeg> = parent_hpath
         .iter()
         .map(|s| model::HpathSeg {
