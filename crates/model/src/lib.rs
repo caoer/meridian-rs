@@ -1599,7 +1599,10 @@ pub fn validate_batch(
 
     // Mint the sealed batch — edits in pre-batch offset order, each stamped
     // with its batch-order origin (the sort is stable, so same-point inserts
-    // keep request order and the stamp survives it).
+    // keep request order and the stamp survives it). The key is (start, end) —
+    // the same order [`first_overlap`] judged disjointness under — so a
+    // zero-width insert at a replaced region's start byte applies BEFORE that
+    // region; `fs::apply_spans` is a single cursor pass and trusts this order.
     let mut edits: Vec<ValidatedEdit> = planned
         .into_iter()
         .enumerate()
@@ -1609,7 +1612,7 @@ pub fn validate_batch(
             index,
         })
         .collect();
-    edits.sort_by_key(|e| e.span.start);
+    edits.sort_by_key(|e| (e.span.start, e.span.end));
     SpliceVerdict::Validated(ValidatedBatch {
         edits,
         receipt,
@@ -1843,9 +1846,15 @@ fn region_disjoint(a: &ByteSpan, b: &ByteSpan) -> bool {
 
 /// Rebuild the raw string with each planned region replaced by its text
 /// (regions are disjoint — validated), copying the unedited gaps verbatim.
+///
+/// Sorted by (start, end), the order [`first_overlap`] validated under: a
+/// zero-width insert at a replaced region's start byte is disjoint from it but
+/// must apply first — sorted by start alone the replace could come first and
+/// move the cursor past the insert (`raw[16..4]`, the 2026-08-22 exit-101 on a
+/// run-plane `set_field` of an existing key then a new key).
 fn apply_regions(raw: &str, planned: &[PlannedEdit]) -> String {
     let mut regions: Vec<&PlannedEdit> = planned.iter().collect();
-    regions.sort_by_key(|p| p.region.start);
+    regions.sort_by_key(|p| (p.region.start, p.region.end));
     let mut out = String::with_capacity(raw.len());
     let mut cursor = 0;
     for p in regions {
@@ -3830,7 +3839,7 @@ mod tests {
     /// pass `fs` will make.
     fn apply_validated(raw: &str, vb: &ValidatedBatch) -> String {
         let mut edits = vb.edits.clone();
-        edits.sort_by_key(|e| e.span.start);
+        edits.sort_by_key(|e| (e.span.start, e.span.end));
         let mut out = String::new();
         let mut cursor = 0;
         for e in &edits {
@@ -4301,6 +4310,50 @@ mod tests {
             format!("{}x\n", doc.raw.replace("September", "October")),
             "match landed in Q3, append landed at Goals span-end"
         );
+    }
+
+    /// Regression (2026-08-22, run-plane `set_field` of an existing key then a
+    /// NEW key): the first-key replace region `4..16` and the new key's
+    /// zero-width insert `4..4` share a start byte. `first_overlap` reads them
+    /// disjoint under (start, end) order; the apply pass must use the SAME
+    /// order, or the replace applies first and the cursor runs past the insert
+    /// (`raw[16..4]` — exit 101, no receipt). Both fields land, in one batch,
+    /// whichever order the caller names them.
+    #[test]
+    fn gate4_replace_first_key_plus_insert_at_its_start_lands_both() {
+        let raw = "---\nstatus: todo\n---\n# c3\n";
+        let doc = build(raw.to_string(), syntax::parse(raw));
+        for (edits, name) in [
+            (
+                vec![
+                    put_edit(Ref::FmKey("status".to_string()), PutAt::Upsert, "one"),
+                    put_edit(Ref::FmKey("nope".to_string()), PutAt::Upsert, "two"),
+                ],
+                "existing then new",
+            ),
+            (
+                vec![
+                    put_edit(Ref::FmKey("nope".to_string()), PutAt::Upsert, "two"),
+                    put_edit(Ref::FmKey("status".to_string()), PutAt::Upsert, "one"),
+                ],
+                "new then existing",
+            ),
+        ] {
+            let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &batch(edits), None)
+            else {
+                panic!("{name}: a first-key replace plus a boundary insert must validate");
+            };
+            assert_eq!(
+                vb.edits.iter().map(|e| e.span.clone()).collect::<Vec<_>>(),
+                vec![4..4, 4..16],
+                "{name}: the sealed order puts the insert before the region it touches"
+            );
+            assert_eq!(
+                apply_validated(&doc.raw, &vb),
+                "---\nnope: two\nstatus: one\n---\n# c3\n",
+                "{name}"
+            );
+        }
     }
 
     /// The F2 mixed-batch shape at model grain: append to a section plus a
