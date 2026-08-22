@@ -471,3 +471,87 @@ fn a_native_end_append_still_arms_the_parent() {
     assert_eq!(fact.node_rev_after, parent_rev_after);
     assert_eq!(fact.span_after, parent_span);
 }
+
+fn create_top(title: &str, body: &str) -> PlanEdit {
+    PlanEdit::Create {
+        parent_hpath: vec![],
+        title: title.into(),
+        body: body.into(),
+        rev: None,
+    }
+}
+
+/// Empty `parent_hpath` births a level-1 heading; the armed fact names the
+/// born h1, not the document the lowering appends under.
+#[test]
+fn a_top_level_create_arms_the_born_h1() {
+    let (dir, root) = ws(&[("card.md", CARD)]);
+
+    let outcome = splice(
+        &root,
+        None,
+        &args(vec![create_top("Edges", "- [[alice]]")], false),
+        &[],
+        None,
+    )
+    .expect("the top-level birth commits");
+    let ResponseBody::Splice { armed, .. } = &outcome.body else {
+        panic!("a splice returns a Splice body");
+    };
+
+    assert_eq!(armed.edits.len(), 1);
+    let fact = &armed.edits[0];
+    assert_eq!(
+        hseq(&fact.target),
+        owned(&[("Edges", None)]),
+        "the armed fact names the born h1, not the document"
+    );
+    let empty = empty_rev(&root);
+    assert_eq!(fact.node_rev_before, empty);
+
+    let (born_rev, born_span, born_raw) = read_back(&root, &[("Edges", None)]);
+    assert_eq!(fact.node_rev_after, born_rev);
+    assert_eq!(fact.span_after, born_span);
+    assert!(born_raw.contains("- [[alice]]"), "{born_raw}");
+    assert!(
+        born_raw.starts_with("# Edges\n"),
+        "level-1 heading:\n{born_raw}"
+    );
+
+    let after = std::fs::read_to_string(dir.path().join("card.md")).expect("reads back");
+    assert!(
+        after.contains("# Archive\n") && after.contains("# Edges\n"),
+        "the born h1 is a sibling of the existing top-level headings:\n{after}"
+    );
+}
+
+/// The live defect: last section is an empty heading plus a trailing blank
+/// (`# Notes\n\n`). A last-section append of `# Edges` refused
+/// `would_corrupt{transition_unrepresentable}` because Notes' bytes did not
+/// move. The create door targets the document, so the birth lands.
+#[test]
+fn a_top_level_create_on_empty_tail_plus_blank_line() {
+    let seeded = "---\ntitle: Plan\n---\n# Notes\n\n";
+    let (dir, root) = ws(&[("card.md", seeded)]);
+
+    let outcome = splice(
+        &root,
+        None,
+        &args(vec![create_top("Edges", "- [[dac01b16]]")], false),
+        &[],
+        None,
+    )
+    .expect("empty-tail + blank line still births");
+    let ResponseBody::Splice { armed, .. } = &outcome.body else {
+        panic!("a splice returns a Splice body");
+    };
+
+    assert_eq!(hseq(&armed.edits[0].target), owned(&[("Edges", None)]));
+    let after = std::fs::read_to_string(dir.path().join("card.md")).expect("reads back");
+    assert_eq!(
+        after, "---\ntitle: Plan\n---\n# Notes\n\n# Edges\n\n- [[dac01b16]]\n",
+        "one blank between Notes and Edges, file ends on a terminator:\n{after}"
+    );
+    let (_, _, notes) = read_back(&root, &[("Notes", None)]);
+    assert_eq!(notes, "# Notes\n\n", "Notes stays an empty h1");
+}

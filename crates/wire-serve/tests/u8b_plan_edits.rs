@@ -572,9 +572,10 @@ fn plan_set_property_writes_the_task_grammars_dotted_keys() {
     );
 }
 
-/// Golden MUST-CARRY refusals: p-replace-on-block (now the frontmatter twin
-/// — F-R4 made every body host writeable, so the host-excluded class lives
-/// on the one remaining excluded host) + p-create-top (engine, no write).
+/// Golden MUST-CARRY: p-replace-on-block (now the frontmatter twin — F-R4
+/// made every body host writeable, so the host-excluded class lives on the
+/// one remaining excluded host) plus the top-level create door (empty
+/// `parent_hpath` births an h1).
 #[test]
 fn golden_target_class_refusals_fire_engine_side() {
     let (dir, root) = ws(&[(
@@ -635,7 +636,7 @@ fn golden_target_class_refusals_fire_engine_side() {
         )
     );
 
-    let err = splice(
+    splice(
         &root,
         None,
         &plan_args(
@@ -650,16 +651,15 @@ fn golden_target_class_refusals_fire_engine_side() {
         &[],
         None,
     )
-    .expect_err("top-level create refuses");
-    assert_eq!(
-        err.message.as_deref(),
-        Some(r#"cannot place new section "Brand" — its parent is not in the document"#)
-    );
+    .expect("top-level create is the birth door");
 
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("card.md")).expect("read"),
-        "---\ntitle: x ^fm-c\n---\n# Tasks\n\n- [ ] two ^task1\n",
-        "the one committed edit (the F-R4 task write) is all that landed — \
-         both refusals moved no bytes"
+    let after = std::fs::read_to_string(dir.path().join("card.md")).expect("read");
+    assert!(
+        after.contains("# Brand\n") && after.contains("- [ ] two ^task1\n"),
+        "the F-R4 task write and the top-level birth both landed:\n{after}"
+    );
+    assert!(
+        !after.contains("title: y"),
+        "the frontmatter caret refusal moved no bytes:\n{after}"
     );
 }

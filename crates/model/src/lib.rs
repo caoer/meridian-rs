@@ -807,9 +807,10 @@ pub enum ResolveError {
 /// plane's job.
 ///
 /// # Errors
-/// [`ResolveError::NotFound`] for a missing (or empty) ref; [`ResolveError::Ambiguous`]
+/// [`ResolveError::NotFound`] for a missing ref; [`ResolveError::Ambiguous`]
 /// with the candidate list when a duplicate is not disambiguated (an `hpath`
 /// segment with no occurrence index, or a duplicate anchor id) → `ambiguous_ref`.
+/// An empty hpath addresses the document node (file span), never `NotFound`.
 pub fn resolve(doc: &Document, r#ref: &Ref) -> Result<Target, ResolveError> {
     resolve_full(doc, r#ref).map(|r| Target {
         span: r.span,
@@ -881,8 +882,11 @@ fn target_of(node: &Node) -> Target {
 /// heading text. A segment matching multiple sibling sections resolves by its
 /// 1-based occurrence `n`; without `n`, a duplicate is `Ambiguous` (loud).
 fn resolve_hpath_node<'a>(root: &'a Node, segs: &[HpathSeg]) -> Result<&'a Node, ResolveError> {
+    // Zero segments = the document node (wire-contract §2.1). The create
+    // door's empty `parent_hpath` is this address: a top-level birth appends
+    // under the file span, whose rev moves.
     if segs.is_empty() {
-        return Err(ResolveError::NotFound);
+        return Ok(root);
     }
     let mut current = root;
     for seg in segs {
@@ -3420,10 +3424,9 @@ mod tests {
             resolve(&doc, &Ref::Hpath(vec![seg("Goals"), seg("Q9")])),
             Err(ResolveError::NotFound)
         );
-        assert_eq!(
-            resolve(&doc, &Ref::Hpath(vec![])),
-            Err(ResolveError::NotFound)
-        );
+        let file = resolve(&doc, &Ref::Hpath(vec![])).expect("empty hpath is the document");
+        assert_eq!(file.span, 0..doc.raw.len(), "document span is the file");
+        assert_eq!(file.node_rev, doc.root.node_rev);
     }
 
     #[test]
