@@ -46,18 +46,46 @@ pub(crate) fn connect(workspace: &Path) -> Result<SocketDoor, Fail> {
         .map_err(|e| Fail::tool(format!("{DAEMON_DOWN} (cannot dial the daemon: {e})")))
 }
 
+/// Printed to stderr once when the daemon has held a write past the socket's
+/// read timeout (the script host's 7 s wall clock, which this door shares).
+/// The wait goes on: a write on the wire is a write the daemon is committing,
+/// and the only honest result is its answer (card
+/// `cli-face-put-false-negative`: before this, the tick returned `os error
+/// 35` and exit 1 while the bytes landed).
+pub(crate) const STILL_WAITING: &str = "\
+mrd: the daemon has not answered this write yet — it is in flight (an armed \
+middleware may be running) and may already be committed; still waiting for \
+the daemon's answer. Do not interrupt and re-send: a re-send of landed bytes \
+is a second write. If you must stop, read the file back before any retry.";
+
 /// One write op on an open door. Success is the projected body; a daemon
 /// refusal is the engine's [`ErrorBody`] so the verb's `--json` face stays
 /// one envelope.
+///
+/// The answer is waited for — never abandoned at the wall clock. A transport
+/// loss after the frame went out (the daemon closed the connection, the
+/// stream tore) is reported as what it is: the outcome is UNKNOWN, the write
+/// may have committed, read before any re-send. It is never rendered as a
+/// failed write — that was the false negative.
 pub(crate) fn call(door: &mut SocketDoor, request: &Value) -> Result<Value, Box<ErrorBody>> {
-    use crate::script::wire_host::Door as _;
-
-    let line = door.call(request).map_err(|e| {
-        let mut err = ErrorBody::new(wire::ErrorCode::IoError);
-        err.message = Some(format!("the daemon did not answer the write: {e}"));
-        err.cause = Some(e.to_string());
-        Box::new(err)
-    })?;
+    let line = door
+        .call_until_answered(request, STILL_WAITING)
+        .map_err(|e| {
+            let mut err = ErrorBody::new(wire::ErrorCode::IoError);
+            let target = request
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or("the target");
+            err.message = Some(format!(
+                "the answer to the write on {target} was lost ({e}) — the frame had reached the \
+             daemon, so the write may have committed before the loss: whether the file \
+             carries it is UNKNOWN. Read the file back and check for your edit BEFORE any \
+             re-send; a re-send of landed bytes is a second write, and a lost answer is not \
+             a failed write."
+            ));
+            err.cause = Some(e.to_string());
+            Box::new(err)
+        })?;
     let frame = Frame::parse(&line).map_err(|e| {
         let mut err = ErrorBody::new(wire::ErrorCode::IoError);
         err.message = Some(format!("the daemon's write answer would not parse: {e}"));
