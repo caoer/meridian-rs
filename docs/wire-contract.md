@@ -3123,8 +3123,10 @@ one refuses `not_declared` at the door.
   target. This is the RECORDING law made concrete — **recording follows the
   declaration kind, never a caller switch.** A `task.<name>` row is a task
   run: receipts under `<invocation>-t<index>`, and the plane's lock. A
-  `declare()` row is a fire: **no receipt row, no lock**. There is no flag;
-  the engine reads the declaration.
+  `declare()` row is a fire: **no receipt row, no task-path lock** (the
+  applier's workspace lock still applies when the fire realizes md effects —
+  run-plane.md § Recording by declaration kind). There is no flag; the
+  engine reads the declaration.
 - **`invocation` is unchanged and still required** — on a fire it only
   LABELS: no receipt row exists, so `<invocation>-t<index>` mints no receipt
   anchor; it names the exec log and correlates the caller's journal.
