@@ -217,10 +217,9 @@ impl Config {
              \x20 · construct the Config yourself: `config.drain_cold_builds = \
              Duration::from_secs(30);`\n\
              \x20 · a daemon you only SPAWN (its Config comes from `Config::resolve`): set \
-             `{}=30` in its environment.",
+             `{DRAIN_COLD_BUILDS_ENV}=30` in its environment.",
             self.cache_root.display(),
             crate::DEFAULT_DRAIN_COLD_BUILDS.as_secs(),
-            DRAIN_COLD_BUILDS_ENV,
         ))
     }
 
