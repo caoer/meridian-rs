@@ -1997,6 +1997,11 @@ phase it prefixes, but `dispatch` contains three undotted phases and `total`
 contains everything — so the `us` column does not sum. Read the "inside" column
 before adding anything up.
 
+The "inside" column is the LIVE run's shape. **`--dry` has no `dispatch` span at
+all** — [`rehearse`] composes the chain itself instead of calling `dispatch` —
+so on a rehearsal `snapshot` and `eval` sit directly inside `total`, and
+`dispatch`, `apply`, `cascade` and `report.render` do not appear.
+
 | Phase | Inside | Emitted in | Covers |
 |---|---|---|---|
 | `total` | — | `mrd::run` | the whole process — every verb has it, not just `run` |
@@ -2026,9 +2031,14 @@ because the process is what it measures.
 #### The `snapshot` set can repeat, and which lane you are on decides
 
 `snapshot.*` is emitted by `fs`, not by this plane: **every** caller of
-`domain_snapshot*` lights it up, the daemon's resident rebuild included. The
-corpus fold is the cost that does not care which door asked for it. There are
-four call sites, and they do not all fire on one lane:
+`domain_snapshot*` lights it up. The corpus fold is the cost that does not care
+which door asked for it — which also means **a `phase=snapshot` line does not
+imply a run.** `mrd sql`, `mrd check`, `mrd walk`, `mrd repair`, the daemon's
+resident rebuild and its watch loop all fold and all report it, under their own
+`cmd=`. Read `cmd=` before attributing a fold.
+
+Within the run plane there are FOUR fold sites, and they do not all fire on one
+lane:
 
 | Fold | Fires when |
 |---|---|

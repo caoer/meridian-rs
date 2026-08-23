@@ -170,6 +170,13 @@ fn diagnostics(raw: &str) -> Vec<String> {
 /// not today (`run::report::render` sources `exec` from the bash path alone).
 /// A time or id field added to that report breaks this test, and the fix is to
 /// compare modulo that field, never to delete the assertion.
+///
+/// SECOND ASSUMPTION: the off case asserts the WHOLE stderr stream is empty,
+/// not merely that it carries no `mrd-timing` line. That is deliberate — "off
+/// costs nothing observable" is the claim — but it means an unrelated stderr
+/// byte added to `mrd run` elsewhere would fail this test and blame the timing
+/// mode. If that happens, narrow the assertion to
+/// `timing_lines(..).is_empty() && diagnostics(..).is_empty()`; do not delete it.
 #[test]
 fn off_and_on_agree_on_stdout_and_exit_code() {
     let ws = Ws::new();
@@ -384,6 +391,10 @@ fn a_phase_that_failed_emits_no_line() {
 /// `run-plane.md` is the executor's pre-commit fold, which is gated on a
 /// `DeltaSink`; the CLI passes `delta: None`, and the cascade fold needs a
 /// non-empty ruleset the CLI never hands it.
+///
+/// **The `count == 1` below is as exposed to the lazy-snapshot work (seat
+/// `8ed22d72`) as `an_effect_free_run_folds_today` is** — if the fold moves,
+/// this count moves with it. Same rebase, same two lines.
 #[test]
 fn an_effectful_run_reports_apply_and_folds_once_on_the_cli() {
     let ws = Ws::new();
