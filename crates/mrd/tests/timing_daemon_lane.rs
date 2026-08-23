@@ -130,10 +130,20 @@ impl Sandbox {
     /// Measured on workstation-nyc-2, 2026-08-23: three `links` calls on three
     /// fresh workspaces produced three complete folds (`who=…t1/t2/t3`), while
     /// three `script` calls on three fresh workspaces produced exactly ONE.
-    /// The `script` asymmetry is UNEXPLAINED. A pattern-less `mrd script`
-    /// evaluates CLIENT-SIDE (`script/cmd.rs`), and the wire `read` its program
-    /// issues takes `cold_gate_wire` exactly as `links` does — so by code it
-    /// should fold per fresh workspace too. Recorded, not accounted for.
+    /// The `script` asymmetry is UNEXPLAINED, and this note keeps only the
+    /// measurement.
+    ///
+    /// **Its stated cause is void.** The sentence here read "a pattern-less
+    /// `mrd script` evaluates CLIENT-SIDE (`script/cmd.rs`), and the wire
+    /// `read` its program issues takes `cold_gate_wire` exactly as `links`
+    /// does". Card `script-door-commit-premise-world-grain-vs-touch-set`
+    /// deleted that lane: EVERY `mrd script` attempt is now the wire `script`
+    /// op, which takes `cold_gate_wire` once, in
+    /// `registry::script_op::serve`, and issues no client-side `read` at all.
+    /// So the reasoning that made the asymmetry surprising no longer describes
+    /// the code, and whether the asymmetry itself survives is UNMEASURED — the
+    /// measurement above predates the change. These gates drive `links`, so
+    /// nothing here depends on the answer.
     fn links(&self, ws: &Path, timing: &str) -> Child {
         Command::new(mrd_bin())
             .args(["links", "--json"])

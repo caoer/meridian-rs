@@ -459,6 +459,38 @@ fn forward(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<ScriptT
         // DETERMINATE, and the daemon said so itself: a refusal frame that never
         // reached an entry means nothing was attempted, so there is no
         // indeterminacy to state and none is invented.
+        //
+        // RULING (afe34e1a, identical to e57663f7's, 2026-08-23): *a readable §8
+        // refusal speaks as `CommitLeg::Refused` IFF every trace fact is
+        // daemon-supplied — the refusal frame's own premise token, code, and
+        // words, nothing minted.* The instruction that came with it was to check
+        // whether a premise token is there before writing that branch.
+        //
+        // CHECKED, and the branch is unreachable, so this arm correctly stays
+        // `Err`. Two independent reasons:
+        //
+        // 1. `registry::script_op` emits a §8 error frame for the `script` op
+        //    ONLY from above the entry pin. `serve()` has exactly three
+        //    `Err(ErrorBody)` exits and all three stand before
+        //    `let entry = world.at_fingerprint.0.clone()` — the cold gate
+        //    (`corpus_warming`), the entry pass (`io_error`), and the warm→pin
+        //    race (`corpus_race`); `serve_line()` adds four further above still
+        //    (a decode refusal, `unknown_op` on a non-v3 session, `bad_request`
+        //    for an unbound workspace, and the internal routing arm). Every
+        //    other terminal — including a moved touch set and an
+        //    `expect_armed` mismatch — comes back `ok: true` INSIDE a trace.
+        // 2. `wire::ErrorBody` has no slot that could carry an entry premise for
+        //    those codes: `expected`/`actual` are the §8 `cas_mismatch` /
+        //    `root_mismatch` node tokens, `new_fingerprint` is the
+        //    `cas_mismatch` resend token, and `scope` is the scoped-premise
+        //    spelling. A trace built here would therefore have to fabricate
+        //    `entry_fingerprint`, which is exactly what the ruling forbids.
+        //
+        // Aperture: read at this head, on the daemon in THIS tree. The CLI dials
+        // whatever daemon is resident, so a future engine that answered `script`
+        // with a premise-bearing refusal frame would make the branch reachable —
+        // and would then need this arm to grow one. That is the trigger, stated
+        // rather than left to be rediscovered.
         (false, _, Some(error)) => Err(Fail::tool(format!(
             "`script` refused before any entry existed, so nothing was evaluated and nothing \
              landed: {}",
