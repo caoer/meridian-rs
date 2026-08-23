@@ -439,6 +439,16 @@ fn read_anchor(f: &wire_map::facts::ReadFact) -> Option<wire::ReadAnchor> {
 ///
 /// `value` is the § A.6.1 DECODED scalar, not the stored bytes: this plane is
 /// typed `string`, and a reader comparing `owner` against an id must not be
+/// handed quote bytes it never asked about. `span`/`prop_rev` stay over the
+/// stored form (§ A.6.2) — they answer a guard question, not a value one.
+///
+/// **A block scalar is the one shape this decode must NOT touch** (§ A.6.1a):
+/// the model map already holds its folded/literal text, and `scalar::decode`
+/// opens with `value.trim()`, which would eat the trailing newline clip
+/// chomping produced, the leading newline a leading blank produced, and the
+/// leading spaces an explicit indent indicator preserved. `model::fm_publish`
+/// owns that branch for every seam that publishes a value.
+///
 /// The § A.3 props plane of one document — `read_props` published for the
 /// § A.7 in-process serve, which builds the script toc face from the same
 /// arms the composed read serves (one § A.6 decode, one spelling per lane).
@@ -455,12 +465,16 @@ pub fn words_of(doc: &model::Document) -> usize {
     usize::try_from(wire_map::facts::words_total(doc.raw.as_bytes())).unwrap_or(usize::MAX)
 }
 
-/// handed quote bytes it never asked about. `span`/`prop_rev` stay over the
-/// stored form (§ A.6.2) — they answer a guard question, not a value one.
+/// The rows themselves — see `props_of` above for the plane's contract.
 fn read_props(doc: &model::Document) -> Vec<wire::ReadProp> {
     let Some(map) = frontmatter_map(&doc.root) else {
         return Vec::new();
     };
+    // The frontmatter BLOCK, not just the map: a block scalar's shape is a
+    // fact about the key LINE, and only the block still carries it.
+    let block = frontmatter_span(&doc.root)
+        .and_then(|span| doc.raw.get(span))
+        .unwrap_or_default();
     map.0
         .iter()
         .map(|(key, value)| {
@@ -471,12 +485,22 @@ fn read_props(doc: &model::Document) -> Vec<wire::ReadProp> {
                 .expect("frontmatter map key resolves against its own document");
             wire::ReadProp {
                 key: key.clone(),
-                value: model::scalar::text(value),
+                // One owner for "decode, or already decoded" (§ A.6.1a).
+                value: model::fm_publish(block, key, value),
                 span: Span(target.span.start as u64, target.span.end as u64),
                 prop_rev: NodeRev(target.node_rev.0),
             }
         })
         .collect()
+}
+
+/// The document's frontmatter node's raw span, if any — the bytes a value seam
+/// needs to tell a block scalar from a colon remainder.
+fn frontmatter_span(node: &model::Node) -> Option<std::ops::Range<usize>> {
+    if matches!(node.kind, model::NodeKind::Frontmatter { .. }) {
+        return Some(node.span.clone());
+    }
+    node.children.iter().find_map(frontmatter_span)
 }
 
 /// The document's frontmatter node's parsed map, if any.
