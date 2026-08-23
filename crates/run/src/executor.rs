@@ -1494,6 +1494,23 @@ fn seal_stripped_candidate(
 /// batch" is how the bytes middleware judges would come to differ from the
 /// bytes the gate judges.
 ///
+/// **This refusal became reachable in a NEW way when the middleware door was
+/// mounted, and its text is not yet equal to that.** Measured by reviewer
+/// `36637e1a` on PR 214 (finding 2): when a middleware stamps a frontmatter
+/// key the caller's own effect already targets, validation refuses the whole
+/// apply with the raw verdict Debug — e.g.
+/// `Overlap { edits: [0, 1], spans: [23..35, 23..35] }`. Fail-closed and
+/// byte-clean, but "edit 1" is the MIDDLEWARE's, which the caller never sent
+/// and cannot see, and nothing in the string says "middleware" or names the
+/// rule. The caller is handed an index into a batch that is not theirs.
+///
+/// Not repaired here (engine grain, follow-up card): the sibling arm of the
+/// same collision — the key being NEW rather than existing — does not refuse
+/// at all but lands the key TWICE, and the reviewer reproduced that with two
+/// caller effects and no middleware, so it is a `validate_batch` span-overlap
+/// hole that predates this mount and is shared with the wire door's own
+/// `mw_upsert` path. One law, both lanes, or neither.
+///
 /// # Errors
 /// [`ExecError::Refused`] from validation. Nothing has been applied.
 fn seal_candidate(
@@ -1633,8 +1650,20 @@ fn mount_middleware(
 /// the same way), so both carry load-time self-guards.
 ///
 /// The provenance is the run's own — this edit happened inside this
-/// invocation — and `rule_id` names the middleware, so the receipt row the
-/// edit produces is attributable to the rule that asked for it.
+/// invocation — and `rule_id` names the middleware **on the descriptor**.
+///
+/// **It does NOT reach the receipt, and this doc used to claim it did.**
+/// Measured by reviewer `36637e1a` on PR 214 (finding 3): the row that lands
+/// is `{"target":{"fm":"<key>"},"before":…,"after":…}` and nothing else —
+/// [`render_receipt`] renders target/before/after per planned edit and never
+/// looks at `rule_id`, which rides only this transient [`Effect`]. So a
+/// middleware stamp is presently **indistinguishable in the receipt from a
+/// caller edit**.
+///
+/// Left as-is rather than fixed here: threading the id would change the
+/// receipt's committed line shape, which is a receipt-grain decision and one
+/// the wire door's own armed-edit rows share. Recorded here so the next
+/// reader inherits the fact rather than the wish.
 fn mw_set_field(
     req: &ApplyRequest<'_>,
     row: &policy::ArmedRule,
