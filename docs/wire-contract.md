@@ -1436,7 +1436,7 @@ Part A2. This section is the wire shape only.)*
 | `splice.pin` | Pin rides the write choke-point; selector is segments/anchor. |
 | `pin-cross-root` | `splice.pin.target` admits the ruled `name:rel` rooted spelling (address-grammar A-4/P5): the target is loaded, gated, promoted and blob-written in the NAMED mounted root under that root's own `LOCK_NB` write flock; the lock row's `object` carries `name:rel` minus `.md` verbatim; the proof compare (`splice.pin.proof`) runs against the TARGET root's live bytes under that same flock. A face keeps its own cross-root refusal until this cap is present, so an old engine refuses with its taught message instead of `pin_target_missing` on a spelling it cannot parse. |
 | `splice.pin.proof` | Pin proof rides the request (the proof law, below): `splice.pin` carries `fingerprint` (required for a session actor) and optional `sec_rev`, both from the caller's own sections read; the composed read serves a `fingerprint` per section row; a session-actor pin without proof refuses `pin_proof_required`. No server-side read state exists behind this cap. |
-| `create` | File birth through the guarded door; full body bytes. Refuses `bad_path` when the landing carries an engine machinery segment — `.git`, `.meridian`, `meridian`, `receipts` — at any depth, ASCII-case-insensitively, whatever the caps admit; the hash-domain config `meridian/domain.md` is the one carve-out (`run-plane.md` § the machinery floor). |
+| `create` | File birth through the guarded door; full body bytes (this op carries no `props` field — the starlark birth lane's `props=` dict is serialized by this same door, § A.8). Refuses `bad_path` when the landing carries an engine machinery segment — `.git`, `.meridian`, `meridian`, `receipts` — at any depth, ASCII-case-insensitively, whatever the caps admit; the hash-domain config `meridian/domain.md` is the one carve-out (`run-plane.md` § the machinery floor). |
 | `remove` | File death through the guarded door; refuses `remove_refused` while anything in the corpus still references the record (the remove-door law, below). |
 | `hello.identity` | Optional `{build: sha \| sha-dirty \| unknown}` for deploy identity. The `-dirty` marker rides the sha TOKEN (git-describe convention), so this stays one field: `sha` = built from a whole commit, `sha-dirty` = built from a worktree diverging from that commit, `unknown` = no attributable identity was readable. A caller matching a declared sha matches the WHOLE token, never a substring — a decorated sha is a different build and must refuse (`docs/release.md` §5.1). *(2026-08-09: the marker is new; the field, its optionality, and its v3-only rule are unchanged.)* |
 
@@ -2772,8 +2772,20 @@ guard applies exactly as at every other op):
   confined dir; caps-redesign 2026-08-19), with precedence descriptor
   `base` > frame `ambient` > workspace root. The birth lane carries it (engine
   `6c960b7c4`) as the starlark kernel's `create(path=, body=, base=,
-  message=)` — the bash effect-shim lane is DELETED (2026-08-21): bash has no
-  effect channel. A rooted `base` must name the
+  message=, props=)` — the bash effect-shim lane is DELETED (2026-08-21): bash has no
+  effect channel. **`props=` (D6, card 17) is the newborn's frontmatter as a
+  DICT — string keys to strings or lists of strings — and THE DOOR serializes
+  it**: key grammar, value quoting and the one-line flow spelling of a list are
+  the door's, sharing the § A.6.3 value-plane encoders with the patch face, so
+  no record-birthing block hand-rolls a YAML escaper and no value can forge a
+  key. Two refusals, both `bad_request` with nothing landed: a value carrying a
+  newline (D11, the § A.6.3a law verbatim) and a `body` that already opens its
+  own frontmatter fence while `props` is inhabited — two spellings of one
+  block, so the door refuses instead of choosing. Keys land sorted; a props
+  scalar that would read back as a COLLECTION is quoted, while the value
+  plane's typed-scalar carve-out is unchanged (`"7"` lands `7`), exactly as at
+  every other door. The wire `create` op carries **no** `props` field: there,
+  `body` is the whole document, frontmatter included. A rooted `base` must name the
   bound workspace (a foreign root refuses with a teaching — a run's births
   ride the bound workspace's ring, locks, and armed law), and a rooted
   spelling in the `path` argument itself refuses, naming `base` — two axes,

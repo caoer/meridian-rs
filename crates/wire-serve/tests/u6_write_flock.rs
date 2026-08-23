@@ -93,6 +93,7 @@ fn held_lock_refuses_all_write_ops_then_retry_succeeds() {
                 if_root: None,
                 dry: false,
                 fields: BTreeMap::default(),
+                props: BTreeMap::default(),
             },
             &[],
         )

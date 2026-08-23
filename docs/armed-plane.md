@@ -299,6 +299,8 @@ and batch validation, before bytes land. Its outputs:
 | `create(path=, body=)` | birth in the same sealed set | engine |
 | `send(to=, body=)` | never disk — an **intent** on the response | **host realizes** (ccc-statusd) |
 
+The middleware `create` is **its own constructor** and takes no `props=`: its births ride this put's sealed set, not the create door, so the door-side frontmatter serializer (D6, `run-plane.md` § the machinery floor) is not reachable from here. Middleware frontmatter is `set_field` on the born path, or body bytes.
+
 One caller put may become many disk edits: that is middleware compiling a
 batch, not the caller folding payloads. The set is **validate-all-then-apply**
 — the caller's write, every middleware edit, and every birth land together or
