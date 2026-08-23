@@ -17,8 +17,11 @@ The shape is copied, never read from the live root: that page is being
 rewritten (session `22-18-hook-support-design`, card
 `rules-010-middleware-wrong-entry-point`), and a test bound to the live bytes
 would flip with the rewrite instead of holding the wiring it exists to hold.
-Only the `id:` differs from the live page — a `fixture-` segment so this copy
-can never collide with the rule it models.
+
+What is copied is what the LOADER judges: the frontmatter keys are the live
+page's, except `id:`, which carries a `fixture-` segment so this copy can never
+collide with the rule it models. The fence's `refuse(message = …)` text is
+shortened — the loader reads the entry point, never the body.
 
 ```starlark
 def check_change(change):
