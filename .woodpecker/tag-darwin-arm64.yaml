@@ -23,6 +23,22 @@ when:
   # publishes under the commit key like every other route.
   - event: manual
 
+# THE GATE. No release binary for a commit whose suite never ran or ran red.
+# `ci.yaml` runs on `refs/tags/v*` too, and Woodpecker does not start a workflow
+# until every named dependency SUCCEEDED — a red `ci` leaves this workflow
+# skipped and `publish` never-run (measured: pipeline 1195).
+#
+# NOT `optional: true`. Optional means "enforced only if `ci` is part of the
+# pipeline", so a `ci` filtered out by its own `when` would silently let a
+# release publish ungated — the exact hole this card exists to close.
+#
+# It is landable only because PR 200 replaced the parse-time OAuth netrc with a
+# non-rotating PAT (the `clone:` block below): `depends_on` is precisely what
+# makes this workflow start ~18 min late, and a late clone used to die at
+# exit 128. Card: 22-18/tasks/meridian-rs-tag-lanes-not-gated.
+depends_on:
+  - ci
+
 labels:
   platform: darwin/arm64
 
@@ -97,18 +113,40 @@ steps:
       # d3accfbe4e28…-dirty for a tree that matched HEAD exactly. A supplied
       # MRD_BUILD_SHA rides verbatim — the supplier owns the claim — so a
       # sloppy probe here is a lie the binary then tells forever.
+      #
+      # IT REFUSES, IT DOES NOT WARN — and it is TRI-STATE. Both halves came
+      # from ci.yaml (PR 199) and belong here MORE than there, because what
+      # this lane publishes is a RELEASE:
+      #   - a WARNING that never fails is ceremony. ci.yaml's warned on TEN
+      #     consecutive main heads and stopped nothing.
+      #   - `if [ -n "$(git …)" ]` FAILS OPEN: a git exiting non-zero with
+      #     EMPTY stdout yields the empty string, the test is false, and the
+      #     lane publishes a release stamped with a sha it never measured.
+      #     `set -eu` does not catch it — the failure is inside a command
+      #     substitution in an `if` condition. Reproduced with a stub git
+      #     exiting 128. On THIS backend the risk is not hypothetical: steps
+      #     run as a real user on a real workstation, so a git that is missing,
+      #     shadowed, or parked mid-exec is a live shape here — zmax's nix
+      #     `git` sat unrunnable under Gatekeeper for ~24 min on 2026-08-23.
+      # The engine is deliberately tri-state for the same reason: build_git.rs
+      # returns None on a non-zero exit, build.rs collapses that to `unknown`,
+      # under its own rule that "I could not tell" and "it was clean" are
+      # opposite answers. Card: 22-18/tasks/tag-lanes-still-publish-dirty-releases.
       - |
         set -eu
         . "$${CI_WORKSPACE}/.ci/lane.env"
         [ "$${SKIP_BUILD}" = "0" ] || exit 0
         rev="$(cat "$${CI_WORKSPACE}/.ci/rev")"
-        if [ -n "$(git --no-optional-locks status --porcelain --untracked-files=no)" ]; then
-          echo "MRD_BUILD_SHA=$${rev}-dirty" > "$${CI_WORKSPACE}/.ci/stamp.env"
-          echo "WARNING tracked content diverges from $${rev} — stamping -dirty"
-          git --no-optional-locks status --porcelain --untracked-files=no
-        else
-          echo "MRD_BUILD_SHA=$${rev}" > "$${CI_WORKSPACE}/.ci/stamp.env"
+        if ! porcelain="$(git --no-optional-locks status --porcelain --untracked-files=no)"; then
+          echo "the tree probe FAILED — cannot attest, and 'could not tell' is not 'clean'"
+          exit 1
         fi
+        if [ -n "$porcelain" ]; then
+          echo "tracked content diverges from $${rev} — refusing to publish a RELEASE no sha can recover"
+          printf '%s\n' "$porcelain"
+          exit 1
+        fi
+        echo "MRD_BUILD_SHA=$${rev}" > "$${CI_WORKSPACE}/.ci/stamp.env"
         cat "$${CI_WORKSPACE}/.ci/stamp.env"
         env $(cat "$${CI_WORKSPACE}/.ci/stamp.env") cargo build --locked --release -p mrd
       # ASK THE ARTIFACT what it is. A binary that cannot name its tree, or
