@@ -36,6 +36,8 @@ use run::executor::{RECEIPT_FILE, ReceiptAddr};
 use run::fence::TaskLanguage;
 use run::runner::{self, RunSpec, RunnerError};
 use serde_json::{Map, Value, json};
+
+use crate::run_mode;
 use wire::{ErrorBody, ErrorCode};
 
 use crate::registry::Registry;
@@ -104,6 +106,17 @@ pub(crate) fn serve_line(
         fields,
         ambient,
     };
+    // A mode-bearing target reads the PINNED corpus, so the submission takes
+    // the same § 3.2 cold gate the script op takes: on a cold workspace the
+    // drawer rebuilds in the background and the attempt never begins
+    // (`corpus_warming`, retry). A fire is not the read door, so § 3.2's
+    // never-blocked promise does not cover it — it refuses, it does not wait,
+    // and it does not bypass.
+    if request.targets.iter().any(run_mode::is_mode_target)
+        && let Err(error) = crate::server::cold_gate_wire(registry, ws)
+    {
+        return error_line(id, *error, rev);
+    }
     let rows = serve(registry, ws, &request);
     let mut frame = json!({"id": id, "ok": true, "body": {"targets": rows}});
     let duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
@@ -169,9 +182,53 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
         ambient: request.ambient.as_deref(),
         cache: &cache,
     };
+    // The mode-bearing rows pin the RESIDENT snapshot — an `Arc` clone, the
+    // script op's entry (`script_op.rs`) — and never run the
+    // `domain_snapshot` fold the task path takes. Pinned once per submission,
+    // so every row of one call reads one corpus.
+    let pinned = request
+        .targets
+        .iter()
+        .any(run_mode::is_mode_target)
+        .then(|| {
+            registry.warm_or_build(ws).ok();
+            registry.engine_snapshot(ws)
+        })
+        .flatten();
     let mut rows = Vec::with_capacity(request.targets.len());
     for (index, target) in request.targets.iter().enumerate() {
         let invocation = format!("{}-t{index}", request.invocation);
+        if run_mode::is_mode_target(target) {
+            rows.push(match &pinned {
+                Some(world) => run_mode::mode_row(
+                    &run_mode::ModeWorld {
+                        world,
+                        root: &root,
+                        ws,
+                        prelude: request.prelude.as_deref(),
+                    },
+                    target,
+                    &invocation,
+                    request.actor.as_deref(),
+                    request.now.as_deref(),
+                    &host,
+                ),
+                // The reaper won the warm→pin race — the same transient the
+                // read path names, answered on the row so its siblings still
+                // report for themselves.
+                None => json!({
+                    "page": target.page,
+                    "invocation": invocation,
+                    "result": "refused",
+                    "fault": {
+                        "class": "corpus_race",
+                        "reason": "the warm engine was reaped between the entry pass and \
+                                   the pin — transient; retry",
+                    },
+                }),
+            });
+            continue;
+        }
         rows.push(row_for_target(
             &root,
             ws,
