@@ -447,19 +447,25 @@ note may create one.
 
 ## §7 What the 7 s script wall bounds
 
-The script entry carries one wall-clock budget — `WALL_CLOCK = 7 s`
-(`crates/mrd/src/script/cmd.rs`). **It is an ENGINE budget, never the
+The script entry carries one wall-clock budget of **7 s**, spelled once on each
+side of the socket — `mrd::script::cmd::WALL_CLOCK` in the CLI and
+`effects::DEFAULT_WALL_CLOCK` in the daemon. **It is an ENGINE budget, never the
 operator's process wall**, and a reader who confuses the two will infer headroom
 that does not exist and pressure that is not there.
 
-The budget binds at **three layers inside the engine process**, each named in
-the constant's own doc comment and in `run-plane.md` § Where the budgets bind:
+The budget binds at **three layers inside the engine**, each named in the
+constants' own doc comments and in `run-plane.md` § Where the budgets bind.
+*(Amended 2026-08-23, card `script-door-commit-premise-world-grain-vs-touch-set`:
+the whole attempt became one § A.7 `script` frame, so two of the three layers
+moved out of the CLI process and into the daemon. The rows below name what each
+one replaced — a table that still named `WireHost::ask` would name a function
+this repo no longer contains.)*
 
-| Layer | Where it binds |
-|---|---|
-| ask | before every round trip (`WireHost::ask`) |
-| connect | on the socket itself (`SocketDoor::connect`) |
-| run | before the commit is issued (`run`) |
+| Layer | Where it binds | Process | Replaced |
+|---|---|---|---|
+| read | before every read the program makes, against the pinned entry world (`registry::script_op`) | daemon | `ask` — before every round trip (`WireHost::ask`) |
+| connect | on the socket itself (`SocketDoor::connect`) | `mrd` | unchanged; it now bounds the single `script` round trip |
+| commit | before the commit is issued (`registry::script_op`) | daemon | `run` — the same check, on the CLI side of the deleted local transaction |
 
 **Startup and teardown sit outside all three.** The MCP host's bound on the
 child process is a **fourth** layer, and it lives in the other repo — it is not
