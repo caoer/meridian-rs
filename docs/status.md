@@ -1460,29 +1460,36 @@ A **relative** sink path resolves against the process's working directory at the
 first phase. That matters for the daemon: it is auto-spawned with the client's
 cwd (`crates/mrd/src/daemon.rs`) and holds the fd for its lifetime, so a
 relative path lands wherever the FIRST spawning client happened to stand. Give
-the daemon an absolute path. Nothing tags a line with a pid, either — a client,
-the daemon, and concurrent clients all appending to one file are not
-demultiplexable afterwards. One process per file if you want to tell them apart.
+the daemon an absolute path. One file shared by a client, the daemon and
+concurrent clients IS demultiplexable — every line names its emitter in `who=`
+(below) — but the lines interleave, so read them by `who=`, never in order.
 
 The value is read **once per process**, at the first phase; changing it
 mid-process changes nothing, and each refusal above is said exactly once.
 
 #### Two line shapes, and the space that tells them apart
 
-A **measurement** opens `mrd-timing` + a SPACE and carries exactly three
+A **measurement** opens `mrd-timing` + a SPACE and carries exactly four
 `key=value` fields in a fixed order, `\n`-terminated, written in a single
 `write_all` so concurrent threads interleave whole lines, never halves:
 
 ```text
-mrd-timing cmd=run phase=snapshot.read us=402118
+mrd-timing cmd=run who=p41273.t1 phase=snapshot.read us=402118
 ```
 
 - `cmd=` — the verb this PROCESS was entered with (`mrd run` ⇒ `run`, the
   daemon ⇒ `daemon`). It names the process, never one request. A verb carrying
   whitespace or a control character is refused and the label stays `mrd`: the
   field rides a space-separated line, so `mrd "run p.md"` must not be allowed to
-  mint a fourth field, and a newline must not be allowed to inject a line. (A
-  sink path on a diagnostic gets the same treatment, for the same reason.)
+  mint a fifth field, and a newline must not be allowed to inject a line. (A
+  diagnostic's text gets the same treatment, for the same reason.)
+- `who=` — the EMITTER inside that process: `p<pid>.t<n>`, where `n` is a
+  per-process thread ordinal minted on that thread's first line. Both halves are
+  digits. The daemon serves one connection per thread, so ops in flight at the
+  same moment carry different `t` and separate; several processes appending to
+  one file separate by `p`. **It is not a request id**: a thread reused for a
+  later request keeps its ordinal, so `who=` separates concurrent work, never
+  successive work on one thread.
 - `phase=` — a name whose dot marks a PART of the phase it prefixes
   (`snapshot.read` is inside `snapshot`). That is not the whole containment
   rule — `dispatch` contains `snapshot`, `eval` and `apply` with no dot in
@@ -1535,27 +1542,40 @@ already has for a daemon-served call is the frame's `meta.duration_us` (the
 server-side total) to set against its own round-trip.
 
 So timing a daemon-served call means setting `MRD_TIMING` **in the daemon's
-environment**, and there the stderr form is invisible: the auto-spawned daemon
-inherits the client's environment but nulls its stderr
-(`crates/mrd/src/daemon.rs`, `Stdio::null()`). Give the daemon a **file path**,
-or start it in the foreground (`mrd daemon`) with `MRD_TIMING=1`. A daemon
-already resident when the variable is set emits nothing — it kept the
-environment it started with.
+environment**. The auto-spawned daemon inherits the client's environment, and a
+daemon already resident when the variable is set emits nothing — it kept the
+environment it started with, so restart it (or let the idle horizon do it).
 
-Two gaps on that lane, both named rather than fixed here (card
-`mrd-timing-daemon-lane-sink`):
+#### The daemon's own lane — `<socket-stem>.log`
 
-- **A refused or unopenable file sink is SILENT on the daemon.** Both refusals
-  speak on stderr, and the daemon has none — so the one caller the file sink
-  exists for is the one that cannot hear the complaint. Choose a sink that is
-  outside the corpus AND will open, then **confirm the file grows**. The absence
-  of a complaint from a daemon is not evidence of anything.
-- **No line carries a request discriminator.** Two concurrent wire ops emit
-  byte-identical `phase=snapshot` lines; nothing says which op, thread, or
-  process wrote one. On a busy daemon the output is a POPULATION, not a trace —
-  read it as a distribution, and do not try to reconstruct a single request from
-  it. For one request's server-side total, the frame's `meta.duration_us` is
-  still the honest number.
+A detached daemon has no terminal, so `spawn_detached` gave it null stdio — and
+that null made the mode deaf on the one lane the file sink exists for. Both
+refusals above speak on stderr, and `MRD_TIMING=1` IS stderr, so an operator who
+pointed a daemon at `ws/x.md` or at an unwritable path got no complaint AND no
+measurements: the "the code never ran there" answer this instrument must never
+fake (card `mrd-timing-daemon-lane-sink`, from PR #176 round-2 finding N1).
+
+**While the mode is on, the auto-spawn gives the daemon a voice**: its stderr is
+`<socket-stem>.log`, opened append beside the socket and the pidfile that
+already key off the same stem — `$XDG_RUNTIME_DIR/mrd/<12hex>.log` on Linux,
+else `$HOME/.cache/mrd-run/<12hex>.log`. Into it go every `mrd-timing:`
+diagnostic, every measurement that degraded to stderr, the `MRD_TIMING=1` form,
+and the registry's own startup and error lines.
+
+- **Off, nothing changes** — the daemon is spawned with a null stderr and no
+  file is created. The gate is your own switch.
+- A voice that will not open is said on the **spawning client's** stderr, which
+  is a lane somebody hears; the daemon then starts mute and the diagnostic says
+  so.
+- The file grows for as long as the mode is on and nothing rotates it. It is
+  yours to read and to remove.
+- A daemon started by hand in the foreground (`mrd daemon`) keeps the terminal's
+  stderr, unchanged. One someone else's supervisor started with a null stderr
+  is still deaf — this covers the auto-spawn, which is how the daemon actually
+  starts.
+
+For a single request's server-side total the frame's `meta.duration_us` remains
+the honest number: `who=` names the thread, not the request (§ Two line shapes).
 
 Which phases `mrd run` emits: `run-plane.md` § Timing phases. The instrument is
 `crates/timing` (`laws.md` § Crate charters).
