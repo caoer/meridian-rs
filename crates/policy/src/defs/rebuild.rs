@@ -1075,6 +1075,9 @@ fn needs_quoting(val: &str) -> bool {
 /// string must read back as that string whichever parser opens the file.
 fn reads_typed_in_yaml_1_1(val: &str) -> bool {
     // `y`/`yes`/`on` and friends are booleans in 1.1, plain strings in 1.2.
+    // (`PyYAML` itself types `yes`/`no`/`on`/`off` but not the one-letter
+    // `y`/`n`; the 1.1 SPEC types those too, so they quote rather than depend
+    // on which reader is right.)
     if matches!(
         val,
         "y" | "Y"
@@ -1095,7 +1098,33 @@ fn reads_typed_in_yaml_1_1(val: &str) -> bool {
     ) {
         return true;
     }
+    // The two 1.1 resolver TAGS that are not types at all: `<<` resolves to
+    // `tag:yaml.org,2002:merge` and `=` to `…:value`, and a plain emit of
+    // either makes `PyYAML` refuse the whole block ("could not determine a
+    // constructor for the tag") — the block dies, not one key. Measured
+    // 2026-08-23; `serde_yaml` reads both back as strings, so the oracle above
+    // never flags them. Quoted, `PyYAML` reads both as the caller's string.
+    if matches!(val, "<<" | "=") {
+        return true;
+    }
     let body = val.strip_prefix(['+', '-']).unwrap_or(val);
+    // The radix-prefixed integers. `0x1f` and `0o17` are 1.2 integers the
+    // oracle above already catches, but the UNDERSCORE forms are 1.1-only:
+    // `0x1_f` is 31 and `0b1_010` is 10 to `PyYAML`, plain strings to
+    // `serde_yaml`. `0b…` is 1.1-only in every spelling. One arm covers all
+    // three radices, underscores included.
+    if let Some(rest) = body
+        .strip_prefix("0x")
+        .or_else(|| body.strip_prefix("0X"))
+        .or_else(|| body.strip_prefix("0o"))
+        .or_else(|| body.strip_prefix("0O"))
+        .or_else(|| body.strip_prefix("0b"))
+        .or_else(|| body.strip_prefix("0B"))
+        && rest.bytes().any(|b| b.is_ascii_hexdigit())
+        && rest.bytes().all(|b| b.is_ascii_hexdigit() || b == b'_')
+    {
+        return true;
+    }
     // A digit run — decimal in both schemas, OCTAL in 1.1 when it leads with a
     // zero, and `1_000` is a number in 1.1 only. The whole class quotes: an id
     // is digits, and which integer it becomes must not depend on the reader.

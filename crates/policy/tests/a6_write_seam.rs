@@ -454,6 +454,28 @@ fn the_yaml_1_1_only_typed_spellings_are_quoted_too() {
         // one-letter value quotes rather than depend on which reader is right.
         "y",
         "N",
+        // The radix ints. `0x1f`/`0o17` are 1.2 integers the parser oracle
+        // already catches; the UNDERSCORE spellings and every `0b…` are
+        // 1.1-only — `0x1_f` is 31 and `0b1_010` is 10 to `PyYAML`, and plain
+        // strings to `serde_yaml` (measured 2026-08-23).
+        "0b1010",
+        "0b1_010",
+        "0x1f",
+        "0x1_f",
+        "0o17",
+        "011",
+        // The two 1.1 resolver TAGS, which are not types at all: emitted plain,
+        // `PyYAML` refuses the WHOLE block — "could not determine a constructor
+        // for the tag …:merge / …:value" — while `serde_yaml` reads both back
+        // as strings, so only this arm catches them.
+        "<<",
+        "=",
+        // the 1.1 sexagesimal FLOAT, and the float specials
+        "1:30.5",
+        ".inf",
+        "-.inf",
+        ".nan",
+        ".NaN",
     ] {
         let emitted = yaml_safe_value(value).expect("single-line values encode");
         assert_eq!(emitted, format!("\"{value}\""), "emit for {value:?}");
