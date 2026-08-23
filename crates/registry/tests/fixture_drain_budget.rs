@@ -111,12 +111,23 @@ fn code(line: &str) -> &str {
     }
 }
 
+/// True when any line of `text`, comment stripped, contains `needle`.
+///
+/// BOTH needles go through this. An earlier revision matched `BUDGET` against
+/// the raw text, and the asymmetry was a hole with a name: comment out the
+/// assignment (`// TODO: config.drain_cold_builds = …`) and the file still
+/// "contained" the knob, so a fixture back on the 2 s production default
+/// passed — measured, `.scratch/guard-hole.log`.
+fn code_contains(text: &str, needle: &str) -> bool {
+    text.lines().any(|l| code(l).contains(needle))
+}
+
 /// **Half 1.** A fixture file that starts a daemon raises the drain budget.
 #[test]
 fn every_fixture_that_starts_a_daemon_raises_the_drain_budget() {
     let offenders: Vec<String> = sources()
         .into_iter()
-        .filter(|(_, text)| text.lines().any(|l| code(l).contains(START)) && !text.contains(BUDGET))
+        .filter(|(_, text)| code_contains(text, START) && !code_contains(text, BUDGET))
         .map(|(path, _)| path)
         .collect();
 
