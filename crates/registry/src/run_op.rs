@@ -189,6 +189,11 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
     let any_mode = request.targets.iter().any(modes::is_mode_target);
     let pinned = any_mode
         .then(|| {
+            // Deliberately discarded: `cold_gate_wire` above has already
+            // refused the cold case with `corpus_warming`, so reaching here
+            // means a warm (or warming) workspace and this call is the nudge,
+            // not the gate. A bare `.ok()` otherwise reads as a swallowed
+            // failure. (PR 195 review, e9f1ae35, N1.)
             registry.warm_or_build(ws).ok();
             registry.engine_snapshot(ws)
         })

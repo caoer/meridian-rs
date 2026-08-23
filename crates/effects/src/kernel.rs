@@ -420,6 +420,35 @@ impl std::fmt::Display for DeclareAtFire {
 
 impl std::error::Error for DeclareAtFire {}
 
+/// `declare(impl = …)` was handed something that is not an entry — A1's
+/// third typed refusal, and for the same reason as the other two: the fault
+/// class a caller matches on must come from a DOWNCAST, never from reading
+/// the prose.
+///
+/// It used to be a bare `anyhow!`, which reaches starlark as an untyped
+/// `ErrorKind::Native` and classified as `runtime`. Both `wire-contract.md`
+/// and `run-plane.md` published `impl_type` in the union a caller matches on,
+/// and it could never be emitted; the one test asserted the reason STRING, so
+/// CI could not see it. (PR 195 review, e9f1ae35, F7.)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImplType {
+    /// The starlark type the author actually passed, e.g. `int`.
+    pub got: String,
+}
+
+impl std::fmt::Display for ImplType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "declare: `impl` is {} — it must be a function defined in this block, or an \
+             `exec(...)` value; nothing else is an entry",
+            self.got
+        )
+    }
+}
+
+impl std::error::Error for ImplType {}
+
 /// What one `declare()` call published, as the load phase collected it.
 ///
 /// `data` is the **uninterpreted** dict the author passed, verbatim (design
@@ -557,6 +586,9 @@ pub enum FaultClass {
     EffectAtLoad,
     /// A load-phase builtin (`declare`, `exec`) was called at fire.
     DeclareAtFire,
+    /// `declare(impl = …)` named something that is not an entry — neither a
+    /// callable nor an `exec(...)` value.
+    ImplType,
     /// The entry ran and returned something outside the admitted set — the
     /// PROGRAM is fine, its answer is not, and saying `runtime` would send
     /// the author looking for a bug that is not there.
@@ -577,6 +609,7 @@ impl FaultClass {
             FaultClass::NameError => "name_error",
             FaultClass::EffectAtLoad => "effect_at_load",
             FaultClass::DeclareAtFire => "declare_at_fire",
+            FaultClass::ImplType => "impl_type",
             FaultClass::ReplyShape => "reply_shape",
             FaultClass::Budget => "budget",
             FaultClass::Runtime => "runtime",
@@ -607,6 +640,8 @@ pub fn classify_starlark_fault(error: &starlark::Error) -> FaultClass {
                 FaultClass::EffectAtLoad
             } else if inner.downcast_ref::<DeclareAtFire>().is_some() {
                 FaultClass::DeclareAtFire
+            } else if inner.downcast_ref::<ImplType>().is_some() {
+                FaultClass::ImplType
             } else {
                 FaultClass::Runtime
             }
@@ -1131,11 +1166,9 @@ fn declared_entry(value: Value<'_>) -> anyhow::Result<DeclaredEntry> {
     if let Some(spec) = ExecSpec::from_value(value) {
         return Ok(DeclaredEntry::Exec(spec));
     }
-    Err(anyhow::anyhow!(
-        "declare: `impl` is {} — it must be a function defined in this block, or an \
-         `exec(...)` value; nothing else is an entry",
-        value.get_type()
-    ))
+    Err(anyhow::Error::new(ImplType {
+        got: value.get_type().to_string(),
+    }))
 }
 
 /// The conventional entry name when `declare()` names none (§ 1.3).
@@ -3616,6 +3649,16 @@ declare(on = \"Stop\", impl = check_stop)
             EvalLimits::default(),
         );
         let fault = loaded.fault.expect("an int is not an entry");
+        // The CLASS, not the prose. Asserting the reason string alone is what
+        // let `impl_type` sit in two published fault unions while the engine
+        // could only ever emit `runtime` — the exact shape A1's
+        // "typed, never classified by string" argument warns against.
+        assert_eq!(
+            fault.class,
+            FaultClass::ImplType,
+            "the fault a caller matches on must be `impl_type`: {fault:?}"
+        );
+        assert_eq!(fault.class.as_str(), "impl_type");
         assert!(
             fault.reason.contains("`impl` is int"),
             "the refusal must name what the author actually passed: {}",
@@ -3947,12 +3990,12 @@ def run(event):
         );
     }
 
-    /// The three entries hold their surfaces separately, and the script
+    /// Every entry holds its surface separately, and the script
     /// builtins never join the hooked planes' — otherwise `on_change` rules
     /// would gain live reads and the change plane would stop being hermetic by
     /// construction.
     #[test]
-    fn the_three_entries_have_separate_global_surfaces() {
+    fn every_entry_has_its_own_global_surface() {
         let hooked = plane_surface(&effect_globals());
         let script = plane_surface(&script_globals(&[]));
         println!("POPULATION hooked-plane surface = {hooked:?}");
