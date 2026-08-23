@@ -1582,6 +1582,38 @@ mod tests {
         }
     }
 
+    /// A page that really binds a task AND really declares — so a test naming
+    /// the task guard exercises the task guard, and a test naming a declaring
+    /// page has one. `empty_doc()`'s `# probe\n` has neither, which is what
+    /// made two of my fixtures the undeclared-page case wearing other names.
+    /// (PR 195 pass 2, `fa5da9ec`, P2-4/P2-5.)
+    fn task_bound_doc() -> Document {
+        let raw = "\
+---
+task.arm: \"[[#^armer]]\"
+---
+
+# Page
+
+```starlark
+def run(ctx):
+    pass
+```
+^armer
+
+```starlark
+def run(event):
+    return {\"saw\": event[\"name\"]}
+
+declare(on = \"Stop\")
+```
+^hook
+"
+        .to_owned();
+        let nodes = syntax::parse(&raw);
+        model::build(raw, nodes)
+    }
+
     fn empty_doc() -> Document {
         let raw = "# probe\n".to_owned();
         let nodes = syntax::parse(&raw);
@@ -1639,7 +1671,12 @@ mod tests {
     /// page is consulted at all, and nothing fires.
     #[test]
     fn a_declaring_prelude_cannot_hijack_a_task_bound_block() {
-        let doc = empty_doc();
+        let doc = task_bound_doc();
+        // The premise the test rests on: ^armer really IS task-bound. Without
+        // this the page has no binding and the test silently becomes the
+        // undeclared-page case, which cannot catch the narrow guard.
+        let bound = blocks::block(&doc, "armer").expect("^armer is on the page");
+        assert_eq!(bound.task.as_deref(), Some("arm"), "the premise");
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = fs::WorkspaceRoot(tmp.path().to_path_buf());
         let fp = MerkleRoot(String::new());
@@ -1672,6 +1709,48 @@ mod tests {
             "the reason names which invalidity it was: {row:#}"
         );
         assert!(row["applied"].is_null(), "nothing fired: {row:#}");
+    }
+
+    /// **P2-5** — a declaring page with a PURE prelude still fires, asserted
+    /// where a prelude can actually be passed.
+    ///
+    /// This lived in the CLI suite, where `prelude` is `None` by construction
+    /// (the argv has no spelling for caller source), so it was a plain fire
+    /// wearing the name. Here the prelude is real: helpers only, no
+    /// declaration — and the fire answers.
+    #[test]
+    fn a_declaring_page_with_a_pure_prelude_still_fires() {
+        let doc = task_bound_doc();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = fs::WorkspaceRoot(tmp.path().to_path_buf());
+        let fp = MerkleRoot(String::new());
+        let world = probe_world(
+            &doc,
+            &root,
+            &fp,
+            Some("def helper(x):\n    return x\n"),
+            None,
+        );
+        let target = wire::RunTarget {
+            page: "probe.md".to_owned(),
+            block: Some("hook".to_owned()),
+            mode: Some(wire::RunMode::Fire),
+            input: Some(json!({"name": "Stop"})),
+            ..wire::RunTarget::task_target(
+                "probe.md".to_owned(),
+                None,
+                Vec::new(),
+                BTreeMap::new(),
+                None,
+            )
+        };
+
+        let row = mode_row(&world, &target, "probe-pure", None, None);
+        assert_eq!(
+            row["result"], "ok",
+            "a pure prelude is what a prelude is FOR: {row:#}"
+        );
+        assert_eq!(row["value"]["saw"], "Stop", "{row:#}");
     }
 
     /// The second load of an unchanged block is SERVED, not re-evaluated —
