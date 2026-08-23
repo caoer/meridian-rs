@@ -112,7 +112,23 @@ not join their globals.
 
 `RunCtx` is inert data: page, task, args, env, invocation id, root-at-eval.
 Identity and time are **caller-supplied** (§9) — the kernel never reads a
-clock and never mints an id. Starlark-invokes-bash is a **permanent no**
+clock and never mints an id.
+
+**The fold behind root-at-eval is LAZY on the `mrd run` starlark leg
+(2026-08-22): it is taken when, and only when, a produced effect will carry
+it.** Eval runs first, against no token. Emitted nothing ⇒ nothing to stamp,
+no md.\* batch, no receipt — so no fold is taken and the corpus is never
+walked. Emitted something ⇒ one `fs::domain_snapshot` AFTER the eval, its root
+stamped onto every emitted effect's `Provenance::Run.root_at_eval` and handed
+to the apply as `observed_root`. After-eval observes the same domain as
+before-eval would have: this entry is hermetic by construction, so the eval
+cannot write. It is the shape the cascade already had (its per-generation fold
+sits behind `md.is_empty()`), and observation honesty is unchanged — the token
+still names the world the effects were produced against, and it is still never
+compared (no-guard ruling, above). The saving is the whole cost: on a
+37 800-member root the fold was **99.5%** of an effect-free run, ~0.9 s → ~20 ms.
+
+Starlark-invokes-bash is a **permanent no**
 (decision #17, test-gated): the sandbox exposes no `exec` / `subprocess` /
 `os` name. The composition layer IS bash.
 
@@ -2010,8 +2026,8 @@ so on a rehearsal `snapshot` and `eval` sit directly inside `total`, and
 | `conventions.load` | `total` | `mrd::run_cmd` | `caps::load_conventions` — the root's `MERIDIAN.md` |
 | `task.gate` | `total` | `mrd::run_cmd` | the door's pre-check: `resolve_task` + `contract_for` + `validate` + `resolve_authority` |
 | `pre_eval` | `total` | `run::runner::pre_eval` | the plane's OWN address → contract → caps chain, which repeats the door's work. Measured on the chain, so `--dry` reports it too |
-| `dispatch` | `total` | `run::runner` | `snapshot` + `eval` + `apply`, whole |
-| `snapshot` | `dispatch` | `fs::domain_snapshot_with_leaves` | the three below, whole |
+| `dispatch` | `total` | `run::runner` | `eval` + `snapshot` + `apply`, whole — in that ORDER: the fold follows the eval that decides whether it is needed (§ The run plane) |
+| `snapshot` | `dispatch` | `fs::domain_snapshot_with_leaves` | the three below, whole — absent whenever this tense's lazy gate did not fire (§ The run plane) |
 | `snapshot.walk` | `snapshot` | same | `Domain::load` + `hash_domain` — the hash-domain walk |
 | `snapshot.read` | `snapshot` | same | `read_and_digest_members` — read + blake3 of every member |
 | `snapshot.fold` | `snapshot` | same | leaf assembly + `served_root` |
@@ -2028,6 +2044,13 @@ Neither does a phase that FAILED: the span is abandoned on the error path, so
 no `page.load`, because there was no page load. `total` reports on a refusal
 because the process is what it measures.
 
+**And a phase whose GATE did not fire never ran.** The `snapshot` set is the
+one with a gate: the fold is lazy, and its trigger differs by tense (§ The run
+plane) — any effect under `--dry`, an md.\* effect live. So an effect-free run
+reaches no `snapshot` in either tense, and a live `notice`-only run reaches none
+either. That absence is the reading: a `snapshot` line on a live `notice`-only
+run is the lazy gate broken.
+
 #### The `snapshot` set can repeat, and which lane you are on decides
 
 `snapshot.*` is emitted by `fs`, not by this plane: **every** caller of
@@ -2042,13 +2065,16 @@ lane:
 
 | Fold | Fires when |
 |---|---|
-| `runner.rs` `dispatch` | every live run — the one every lane pays |
-| `runner.rs` `rehearse` | `--dry` instead of the above, not as well |
+| `dispatch_starlark.rs` `observe_if_emitted`, live tense (reached from `runner.rs` `dispatch`) | a live run whose block emitted an **md.\*** effect. A live `notice`-only or effect-free run folds NOTHING (§ The run plane) — so this is no longer "the one every lane pays" |
+| `dispatch_starlark.rs` `observe_if_emitted`, rehearsal tense (reached from `runner.rs` `rehearse`) | `--dry` instead of the above, not as well — and only when the block emitted SOMETHING; a wider gate than live, because the dry report shows provenance |
 | `runner.rs` `cascade` | a generation that applies md.\* — needs a NON-EMPTY ruleset, and both doors hand `S1_RULES` (empty), so today: never |
 | `executor.rs` pre-commit | only when a `DeltaSink` is in reach, i.e. the WIRE arm. The CLI passes `delta: None` and returns before the fold |
 
-So on the **CLI** an effectful `mrd run` emits exactly ONE `snapshot` set
-(measured on the release binary, 2026-08-22: `grep -c 'phase=snapshot '` = 1).
+So on the **CLI** an md.\*-committing `mrd run` emits exactly ONE `snapshot` set
+(measured on the release binary, 2026-08-22: `grep -c 'phase=snapshot '` = 1),
+and a run that commits nothing emits **zero** — the lazy gate, measured on a
+37 800-member root the same day: 20/20 samples folded before the change, 0/20
+after.
 On the **wire/daemon** arm a run that commits folds a second time inside the
 executor, and the two sets are identical in name with no discriminator — count
 them, do not assume the first is the only one.
@@ -2073,6 +2099,7 @@ tenses).
 | in-process script serve (§ A.7) | `crates/registry` (the op arm: entry world, host, threading, commit) over `crates/effects` (kernel, trace, digest) — added 2026-08-12 |
 | wire run serve (§ A.8) + script effects mode | `crates/registry` (`run_op`: per-target loop, §9 threading; `script_op`: the live host) over `crates/run` (the plane, unchanged) — added 2026-08-13 |
 | per-phase timing (`MRD_TIMING`) | `crates/timing` (the switch, the sink, the span) — the phase call sites are `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`; § Timing phases — added 2026-08-22 |
+| root-at-eval observation (the lazy fold) | `crates/run::dispatch_starlark::observe_if_emitted` — ONE owner, called by `runner` in both tenses (rehearse and live); § The run plane (`RunCtx`) — added 2026-08-22 |
 
 ---
 
