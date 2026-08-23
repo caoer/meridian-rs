@@ -373,12 +373,38 @@ pub struct Applied {
     pub file_rev_after: String,
 }
 
-/// Why the executor refused. Every variant applied NOTHING — the batch is
-/// atomic and there is no partial state and no rollback.
+/// Why the executor refused.
+///
+/// **The batch is atomic on the PAGE, and sequential on the BIRTH lane** —
+/// and this doc used to claim the first about both. It read *"every variant
+/// applied NOTHING"*, while [`realize_births`] calls the create door once per
+/// birth in emission order and `?`-propagates on the first refusal, so births
+/// realized EARLIER are on disk and stay there (decision #14, no rollback —
+/// [`ExecError::BirthRefused`]'s own doc said so, three hundred lines below a
+/// header that denied it). Two doc comments contradicting each other is how
+/// PR 195's first review reached the wrong conclusion about `applied[]`.
+///
+/// What is true, and what a row builder may rely on:
+///
+/// - births realize FIRST, in emission order, and stop at the first refusal;
+/// - the page splice (load → plan → seal → armed gate → commit) runs AFTER
+///   them, so any refusal from step 2 onward — including an armed-middleware
+///   veto — means NO edit landed, while births before it did;
+/// - therefore [`ExecError::descriptor_index`] is enough to say which
+///   descriptors landed: creates before it did, the one at it did not, and
+///   nothing after it ran.
+///
+/// No variant carries partial PAGE state: an edit either committed with the
+/// whole splice or did not happen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecError {
     /// A non-md descriptor reached the executor — a dispatch bug, refused loud.
-    NonMdEffect { kind: String },
+    NonMdEffect {
+        /// The descriptor kind that should never have arrived.
+        kind: String,
+        /// WHICH descriptor, by index into the batch (see [`ExecError::at`]).
+        index: Option<u32>,
+    },
     /// A descriptor's verb/path is not admitted by the block's caps.
     CapDenied {
         /// The cap verb the descriptor authorizes under (`md.create` /
@@ -399,21 +425,49 @@ pub enum ExecError {
         /// The effective grants the resolution measured — the deny-default
         /// arm's teachable facts (dogfood r3 gap 6b). Empty for a task that
         /// declares no caps.
-        declared: Vec<String>,
+        declared: Box<[String]>,
+        /// WHICH descriptor, by index into the batch.
+        index: Option<u32>,
     },
     /// A descriptor argument is missing or wrongly shaped (kernel constructors
     /// make this unreachable; hand-built descriptors fault here).
-    BadDescriptor { kind: String, reason: String },
+    BadDescriptor {
+        /// The descriptor kind.
+        kind: String,
+        /// What is wrong with it.
+        reason: String,
+        /// WHICH descriptor, by index into the batch.
+        index: Option<u32>,
+    },
     /// `md.append_section` names a section absent from the page.
-    SectionNotFound { section: String },
+    SectionNotFound {
+        /// The heading nobody could find.
+        section: String,
+        /// WHICH descriptor, by index into the batch.
+        index: Option<u32>,
+    },
     /// `md.append_section` names a heading appearing more than once.
-    SectionAmbiguous { section: String, count: usize },
+    SectionAmbiguous {
+        /// The heading that appears more than once.
+        section: String,
+        /// How many times.
+        count: usize,
+        /// WHICH descriptor, by index into the batch.
+        index: Option<u32>,
+    },
     /// The create door refused an `md.create` birth (occupied path, armed
     /// refusal, bad path, …) — the door's own error, carried verbatim. The
     /// whole generation refuses; births realized EARLIER in the same
     /// generation stay landed (no-rollback, decision #14) and are attested
     /// by the door's own frames.
-    BirthRefused { path: String, detail: String },
+    BirthRefused {
+        /// The landing path the door refused.
+        path: String,
+        /// The door's typed frame, carried whole.
+        detail: String,
+        /// WHICH descriptor, by index into the batch.
+        index: Option<u32>,
+    },
     /// Another run holds the workspace lock (decision #9: `LOCK_NB` — a fast
     /// typed refusal, never a wait; a hung holder can never make callers hang).
     WorkspaceBusy,
@@ -444,10 +498,102 @@ pub enum ExecError {
     LockArtifact { page: String },
 }
 
+impl ExecError {
+    /// Stamp WHICH descriptor of the batch this refusal is about.
+    ///
+    /// The advisor's ruling on A8 (2026-08-23): *"the refusal must say WHICH
+    /// descriptor the door refused (index + reason token) … adding the index
+    /// to the refusal variant is the whole executor change and the atomicity
+    /// story is unchanged verbatim."* It is a LOCATOR, not new state: it
+    /// records WHICH descriptor a refusal is about and changes nothing about
+    /// what landed. It does **not** say "nothing landed" — the enum header
+    /// above states what actually holds (no EDIT landed; births before the
+    /// refused index did, and stay).
+    /// It exists so a row builder names the refused descriptor by identity
+    /// rather than by matching coordinates, which cannot tell two descriptors
+    /// sharing a path and a verb apart.
+    #[must_use]
+    pub fn at(self, at: usize) -> Self {
+        let at = u32::try_from(at).unwrap_or(u32::MAX);
+        let stamp = |index: Option<u32>| index.or(Some(at));
+        match self {
+            ExecError::NonMdEffect { kind, index } => ExecError::NonMdEffect {
+                kind,
+                index: stamp(index),
+            },
+            ExecError::BadDescriptor {
+                kind,
+                reason,
+                index,
+            } => ExecError::BadDescriptor {
+                kind,
+                reason,
+                index: stamp(index),
+            },
+            ExecError::SectionNotFound { section, index } => ExecError::SectionNotFound {
+                section,
+                index: stamp(index),
+            },
+            ExecError::SectionAmbiguous {
+                section,
+                count,
+                index,
+            } => ExecError::SectionAmbiguous {
+                section,
+                count,
+                index: stamp(index),
+            },
+            ExecError::BirthRefused {
+                path,
+                detail,
+                index,
+            } => ExecError::BirthRefused {
+                path,
+                detail,
+                index: stamp(index),
+            },
+            ExecError::CapDenied {
+                kind,
+                target,
+                resolved,
+                ceiling,
+                declared,
+                index,
+            } => ExecError::CapDenied {
+                kind,
+                target,
+                resolved,
+                ceiling,
+                declared,
+                index: stamp(index),
+            },
+            other => other,
+        }
+    }
+
+    /// WHICH descriptor this refusal is about, when it is about one.
+    ///
+    /// `None` is not "unknown": it is a refusal that names no single
+    /// descriptor — the workspace lock, I/O, a page that will not load — and a
+    /// caller must then treat the whole batch as refused rather than guess.
+    #[must_use]
+    pub fn descriptor_index(&self) -> Option<usize> {
+        match self {
+            ExecError::NonMdEffect { index, .. }
+            | ExecError::BadDescriptor { index, .. }
+            | ExecError::SectionNotFound { index, .. }
+            | ExecError::SectionAmbiguous { index, .. }
+            | ExecError::BirthRefused { index, .. }
+            | ExecError::CapDenied { index, .. } => index.map(|i| i as usize),
+            _ => None,
+        }
+    }
+}
+
 impl std::fmt::Display for ExecError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ExecError::NonMdEffect { kind } => {
+            ExecError::NonMdEffect { kind, .. } => {
                 write!(f, "executor applies md.* only, got '{kind}'")
             }
             ExecError::CapDenied {
@@ -456,6 +602,7 @@ impl std::fmt::Display for ExecError {
                 resolved,
                 ceiling,
                 declared,
+                ..
             } => {
                 write!(f, "capability denied: {kind} on '{target}'")?;
                 // The matching coordinate is the ADDRESSED one (ZT ruling
@@ -569,14 +716,14 @@ impl std::fmt::Display for ExecError {
                     )
                 }
             }
-            ExecError::BadDescriptor { kind, reason } => {
+            ExecError::BadDescriptor { kind, reason, .. } => {
                 write!(f, "bad {kind} descriptor: {reason}")
             }
-            ExecError::SectionNotFound { section } => write!(f, "no section '{section}'"),
-            ExecError::SectionAmbiguous { section, count } => {
+            ExecError::SectionNotFound { section, .. } => write!(f, "no section '{section}'"),
+            ExecError::SectionAmbiguous { section, count, .. } => {
                 write!(f, "section '{section}' appears {count} times (ambiguous)")
             }
-            ExecError::BirthRefused { path, detail } => {
+            ExecError::BirthRefused { path, detail, .. } => {
                 write!(f, "birth refused at {path}: {detail}")
             }
             ExecError::WorkspaceBusy => write!(
@@ -763,7 +910,11 @@ struct PlannedEdit {
 /// `fs::apply_batch` commit → apply→event synthesis.
 ///
 /// # Errors
-/// [`ExecError`] — in every case NOTHING was applied.
+/// [`ExecError`] — no EDIT was applied in any case (the page splice is one
+/// atomic batch). Births are the exception the enum's own header now states:
+/// they realize first, one door call each in emission order, so a refusal at
+/// descriptor `i` leaves every birth before `i` committed.
+/// [`ExecError::descriptor_index`] names `i`.
 pub fn apply(root: &fs::WorkspaceRoot, req: &ApplyRequest<'_>) -> Result<Applied, ExecError> {
     // Serialize local runs (decision #9: LOCK_NB — busy is a fast typed
     // refusal, never a wait).
@@ -820,14 +971,14 @@ pub fn admit(
     authority: &Authority,
 ) -> Result<(), ExecError> {
     let page_coordinate = edit_coordinate(page, ambient);
-    for effect in effects {
+    for (index, effect) in effects.iter().enumerate() {
         let (verb, coordinate) = descriptor_surface(page_coordinate, effect)?;
         if !authority.admits(verb, Some(&coordinate)) {
             let ceiling = authority
                 .capabilities()
                 .and_then(|caps| caps.ceiling_denying(verb, Some(&coordinate)))
                 .map(ToString::to_string);
-            let declared = authority
+            let declared: Box<[String]> = authority
                 .capabilities()
                 .map(|caps| caps.effective.0.iter().map(Cap::as_string).collect())
                 .unwrap_or_default();
@@ -838,6 +989,7 @@ pub fn admit(
                     .then(|| page.to_owned()),
                 ceiling,
                 declared,
+                index: Some(u32::try_from(index).unwrap_or(u32::MAX)),
             });
         }
     }
@@ -866,10 +1018,19 @@ fn realize_births(
     effects: &[Effect],
 ) -> Result<Vec<ReceiptEdit>, ExecError> {
     let mut births = Vec::new();
-    for effect in effects.iter().filter(|e| e.kind == EffectKind::Create) {
-        let path = str_arg(effect, "path")?;
-        let body = str_arg(effect, "body")?;
-        let props = props_arg(effect)?;
+    for (index, effect) in effects
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.kind == EffectKind::Create)
+    {
+        // The index is the descriptor's position in the WHOLE batch, not
+        // among the births, because that is what an `applied[]` row is keyed
+        // by. Births realize in emission order and stop at the first refusal,
+        // so this index alone tells a row builder which births are already on
+        // disk (decision #14: no rollback) and which never ran.
+        let path = str_arg(effect, "path").map_err(|e| e.at(index))?;
+        let body = str_arg(effect, "body").map_err(|e| e.at(index))?;
+        let props = props_arg(effect).map_err(|e| e.at(index))?;
         let args = wire_serve::write::CreateArgs {
             id: None,
             path: wire::Path(path.clone()),
@@ -892,6 +1053,7 @@ fn realize_births(
         let out = create_waiting_out_busy(root, req.birth_seq, &args).map_err(|e| {
             ExecError::BirthRefused {
                 path: path.clone(),
+                index: Some(u32::try_from(index).unwrap_or(u32::MAX)),
                 // The door's typed frame, carried whole (it has no Display).
                 detail: serde_json::to_string(e.as_ref()).unwrap_or_else(|_| format!("{e:?}")),
             }
@@ -960,16 +1122,17 @@ pub fn resolve_birth_targets(
         return Ok(None);
     }
     let mut resolved = effects.to_vec();
-    for effect in &mut resolved {
+    for (index, effect) in resolved.iter_mut().enumerate() {
         if effect.kind != EffectKind::Create {
             continue;
         }
-        let path = str_arg(effect, "path")?;
-        let base = opt_str_arg(effect, "base")?;
+        let path = str_arg(effect, "path").map_err(|e| e.at(index))?;
+        let base = opt_str_arg(effect, "base").map_err(|e| e.at(index))?;
         let landed = wire_serve::write::resolve_birth_target(root, &path, base.as_deref(), ambient)
             .map_err(|e| {
                 ExecError::BirthRefused {
                     path: path.clone(),
+                    index: Some(u32::try_from(index).unwrap_or(u32::MAX)),
                     // The resolver's typed frame, carried whole (no Display).
                     detail: serde_json::to_string(e.as_ref()).unwrap_or_else(|_| format!("{e:?}")),
                 }
@@ -980,7 +1143,11 @@ pub fn resolve_birth_targets(
 }
 
 /// # Errors
-/// [`ExecError`] — in every case NOTHING was applied.
+/// [`ExecError`] — no EDIT was applied in any case (the page splice is one
+/// atomic batch). Births are the exception the enum's own header now states:
+/// they realize first, one door call each in emission order, so a refusal at
+/// descriptor `i` leaves every birth before `i` committed.
+/// [`ExecError::descriptor_index`] names `i`.
 pub fn apply_under(
     _lock: &WorkspaceLock,
     root: &fs::WorkspaceRoot,
@@ -1014,7 +1181,13 @@ pub fn apply_under(
     // 3. Plan edits, self-guarded with load-time revs.
     let mut planned = Vec::with_capacity(page_effects.len());
     for effect in &page_effects {
-        planned.push(plan_edit(&doc, effect)?);
+        // The descriptor's index in the WHOLE batch, so a `section_not_found`
+        // names the same row a caller sees.
+        let index = effects
+            .iter()
+            .position(|e| std::ptr::eq(e, *effect))
+            .unwrap_or(0);
+        planned.push(plan_edit(&doc, effect).map_err(|e| e.at(index))?);
     }
 
     // 4-6. Seal the batch and the bytes it will write, `@fp`-stripped.
@@ -1322,6 +1495,7 @@ fn descriptor_surface(
     if effect.kind.domain() != Domain::Md {
         return Err(ExecError::NonMdEffect {
             kind: effect.kind.as_str().to_owned(),
+            index: None,
         });
     }
     match effect.kind {
@@ -1340,6 +1514,7 @@ fn str_arg(effect: &Effect, key: &str) -> Result<String, ExecError> {
         _ => Err(ExecError::BadDescriptor {
             kind: effect.kind.as_str().to_owned(),
             reason: format!("missing scalar '{key}'"),
+            index: None,
         }),
     }
 }
@@ -1354,6 +1529,7 @@ fn props_arg(effect: &Effect) -> Result<BTreeMap<String, wire_serve::write::Prop
     let bad = |reason: String| ExecError::BadDescriptor {
         kind: effect.kind.as_str().to_owned(),
         reason,
+        index: None,
     };
     let map = match effect.args.get("props") {
         None => return Ok(BTreeMap::new()),
@@ -1386,6 +1562,7 @@ fn opt_str_arg(effect: &Effect, key: &str) -> Result<Option<String>, ExecError> 
         Some(_) => Err(ExecError::BadDescriptor {
             kind: effect.kind.as_str().to_owned(),
             reason: format!("non-scalar '{key}'"),
+            index: None,
         }),
     }
 }
@@ -1478,6 +1655,7 @@ fn plan_edit(doc: &Document, effect: &Effect) -> Result<PlannedEdit, ExecError> 
         }
         _ => Err(ExecError::NonMdEffect {
             kind: effect.kind.as_str().to_owned(),
+            index: None,
         }),
     }
 }
@@ -1503,6 +1681,7 @@ fn find_section(
     match hits.as_slice() {
         [] => Err(ExecError::SectionNotFound {
             section: heading.to_owned(),
+            index: None,
         }),
         [only] => {
             let segs = only
@@ -1526,6 +1705,7 @@ fn find_section(
         many => Err(ExecError::SectionAmbiguous {
             section: heading.to_owned(),
             count: many.len(),
+            index: None,
         }),
     }
 }

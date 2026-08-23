@@ -93,7 +93,7 @@ immediately below):
 | Plane | Entry | Trigger |
 |---|---|---|
 | change | `on_change(event)` | a governed change event (the effect kernel) |
-| run | `def run(ctx)` | `mrd run` addressing a task block |
+| run | `def run(ctx)` | `mrd run` addressing a task block — or, in the amended op's fire mode, the block's declared entry (§ The run entry, amended) |
 | run | script — module top level | `mrd script` / the wire `script` op (wire-contract § A.7) / MCP `script` carrying caller-supplied inline source |
 
 **Amendment to decision #3 (the script entry).** Decision #3 read: *exactly
@@ -1449,6 +1449,293 @@ one write path, and neither may grow a private executor.
 A task's authority comes from where it lives; a script's authority comes from
 who sent it. Every row above is that sentence applied to one axis.
 
+## The run entry, amended — load, freeze, fire
+
+*(hook-support design § 2.2, as amended by its § Amendments / A1. Wire face:
+`docs/wire-contract.md` § A.8. Code: `run::modes`, `effects::kernel`,
+`run::blocks`, `run::caps`, `registry::run_op`, `mrd::run_cmd`.)*
+
+The `run` op gains **`mode`**, and nothing existing changes behavior: a target
+with no `mode` is the shipped task target, decoded and answered as before. Two
+modes join it, behind the dotted caps **`run.mode`** and **`run.input`** — a
+client that does not negotiate them gets the closed set's refusal by name
+(`` unknown field `mode` on `targets[0]` of `run` ``), which is the whole
+point of a closed set.
+
+| Mode | Question it answers | Row it adds to `body.targets[]` |
+|---|---|---|
+| `load` | *what does this page declare?* | one row per anchored starlark block — `entry_kind` + its `declarations` |
+| `fire` | *run the one block I name, with this input* | the entry's return as `value`, plus `applied[]` for the md effects it realized |
+
+### Three phases, one globals set
+
+**load → freeze → fire.** The block's top level is evaluated in the load
+phase; the module is then frozen; a fire calls the frozen entry from a fresh
+evaluator.
+
+The load/fire boundary is a **phase gate at the emission accessor**, never a
+difference in which names exist: `effects::kernel::hook_globals()` is ONE
+closed set for compile, freeze and fire. That is forced, not chosen —
+starlark-rust resolves globals at module-compile time, so a load environment
+with `bash` unbound makes a block whose `def run(event)` merely *mentions*
+`bash()` fail to load, and a frozen `def` keeps the globals it compiled
+against (measured; design § Amendments / A1).
+
+| Phase | `declare()` · `exec()` | `bash()` · the md constructors |
+|---|---|---|
+| load | act — the declaration is the load's whole answer | bound, and **refuse**: `fault.class: effect_at_load`, carrying `fault.line` |
+| fire | refuse: `fault.class: declare_at_fire` | act, under the page's `caps:` ceiling |
+
+Both refusals are typed faults downcast out of starlark's `ErrorKind::Native`
+(`EffectAtLoad` / `DeclareAtFire`), so `name_error` keeps its own meaning —
+an identifier bound nowhere, a typo — and a phase violation is never absorbed
+into it. **Load purity is behavioral here, not structural**, and that is
+stated rather than glossed: nothing effectful *happens* at load, but the
+names are in scope. The structural version costs the freeze and the module
+cache, i.e. the § 2.2 price gate.
+
+### The consent gate — `run` executes what the page declares
+
+> **`run` executes what the page declares: `task.<name>` in frontmatter or
+> `declare()` in the block, never an undeclared block.**
+
+A fire naming a bare anchored fence refuses `not_declared` at the door
+(`run::modes`), and the refusal names the other addressing when the block is
+task-bound — the two addressings are exclusive, so a `task.<name>` block is
+fired as a task, never as a block. A non-starlark fence addressed directly
+refuses `not_a_module` and is told how it is reached: through the starlark
+block that declares it with `exec(...)`.
+
+**A prelude may not carry consent.** The `prelude` is CALLER source and it
+evaluates into the block's own module, in the load phase, before the block's
+top level — and `declare()`/`exec()` are load-phase builtins. A caller
+shipping `declare(impl = exec("bash", cmd = "…"))` as its prelude would
+therefore make every anchored starlark fence on every addressed page a fire
+target running caller-authored bytes, including a fence that declares
+nothing. So a prelude that produces ANY declaration (or an `exec` value)
+refuses **`prelude_invalid`** — the existing class, broadened, no new
+vocabulary — at the mode door (`check_prelude` in `mode_row`, above the
+load/fire dispatch), before any block of the page is loaded, for load and fire
+alike, regardless of what the page itself declares; a prelude declaration
+never reaches the declaration list; `not_declared` stays reachable.
+
+*Regardless* is load-bearing rather than cautious: a task-bound block has no
+`declare()` of its own, so a guard that fired only when the page declared
+would leave exactly that block hijackable. A prelude carries shared helpers,
+not entries.
+*(Amendment A10; advisor `ea317a27`, 2026-08-23.)* `prelude_invalid` is ONE
+class broadened, not a new one: a prelude is invalid when its code faults **or
+when it carries consent material — a declaration or an `exec` value — because
+consent is page-authored**. The caller's remedy is the same either way, and
+the reason string names which invalidity it was.
+
+The consent gate is why a page-wide *block enumerator* was new machinery
+rather than a lifted function — discovery until now ran off frontmatter
+`task.*` bindings alone. `run::blocks` walks from the page's live anchors to
+their fences; nothing re-implements addressing.
+
+### Recording by declaration kind
+
+A **fire row writes no receipt** and takes no lock beyond the batch's own; a
+task row is unchanged. There is no caller flag for this — the engine reads
+the page. 100 declared-block fires add **zero** rows to `receipts/run.md`
+(gate row 6 of card `hook-01-mrd-run-load-fire`; the receipt anchors counted
+are `^r-<invocation>` and `^p-<invocation>`).
+
+### Caps — the page's own ceiling
+
+A declaring page's blocks have no task names, so `task.<name>.caps` cannot
+express their ceiling. `run::caps` reads a **page-level `caps:`** key for
+them — new grammar, deliberately not a task binding — over the three md verbs
+`md.create` · `md.edit` · `md.delete`. It is judged at the lifted `admit`
+choke point, so a denial is `cap_denied` at the door and nothing reaches
+disk; absence of a cap is never a silent no-op. The declaring root's
+conventions ceiling narrows a page's caps and never widens them, exactly as
+for tasks. An exec'd entry's process is inert to it, by law.
+
+### The world a mode-bearing row runs against
+
+`load` and `fire` take the **pinned resident snapshot** (an `Arc` clone, the
+one the script op takes) and never run the `domain_snapshot` fold. The world
+is a parameter (`run::modes::ModeWorld`), so ONE implementation serves the
+daemon and the CLI, and the two lanes cannot answer differently.
+
+On a **cold workspace** the answer is per LANE, and there are two of them:
+
+- **the daemon lane** takes the same § 3.2 cold gate the script op takes and
+  **refuses `corpus_warming` (retry)** — it does not block and does not
+  bypass;
+- **the CLI / in-process lane** has no background substrate to warm on, so it
+  **builds the drawer inline** and the caller waits.
+
+That is not A7 breaking: one implementation still serves both, and what
+differs is the SUBSTRATE each lane runs on — a daemon has a background
+builder to refuse in favour of, and a one-shot process does not. Wire-contract
+§ 3.2's promise is about the read door; a fire is not the read door, so the
+answer is stated here rather than implied.
+
+`prelude` (one per call, cap `run.mode`) is evaluated into each block's
+module before its top level; when it is invalid it refuses `prelude_invalid`
+— defined once under § The consent gate above, and broadened there to cover a
+prelude that carries consent material. Declarations and frozen modules are
+cached per block rev, keyed with the prelude's blake3 — an unchanged block is
+served from cache rather than re-evaluated, which is what the fire p95 rests
+on.
+
+### Amendments this implementation carries (A7, A8)
+
+Two departures from the accepted design text, both deliberate, both stated
+here rather than discovered in the diff. They are written for the fold into
+`final-design.md` § Amendments beside A1 and A2.
+
+**A7 — the world is a parameter, not a second implementation.** § 2.5's file
+table gives the daemon and the CLI their own paths into the run rows, which
+would make two implementations that can answer differently about the same
+page — the failure mode that table exists to prevent, one layer up. What the
+code does instead: `run::modes::ModeWorld` carries the page, the workspace
+root, the declaring root, the observed corpus root, the caller's `prelude`,
+the door-side facilities and the module cache as **borrows**, and ONE
+implementation of `load_row`/`fire_row` serves both lanes. The daemon hands
+the page out of its pinned resident snapshot (an `Arc` clone — never the
+`domain_snapshot` fold) with a resident cache; the CLI hands the page it just
+loaded, with `cache: None`, because a cache built once per process is a cost
+with no benefit. It touches § 2.5's file table only: the laws (pinned world,
+no fold, one write path) are unchanged, and it makes "the two lanes cannot
+disagree" a property of the type rather than of two authors' discipline.
+
+**A8 — the `applied[]` row vocabulary.** § 2.2 spells the triple
+`born|exists|refused`. The wire emits `born|edited|refused|not_applied`.
+`edited` exists because a `set_field` is not a birth and calling it `born` was
+the defect (the same row already published the page's rev for it, so the word
+and the rev disagreed inside one row). `exists` is never emitted because this
+door has no such arm — an occupied path REFUSES at the create door, as
+`cas_mismatch` with `expected` = `absent_rev` (the `node_rev` of the empty
+document — not a nil hash, and not "the empty hash"). `not_applied` exists
+because the PAGE SPLICE is atomic: an edit either committed with the whole
+batch or did not happen, so a sibling edit that read `born` would be claiming
+a record that is not on disk. Births are the positional case above. It touches
+§ 2.2's row shape and the § A.8 response block; the refusal semantics beside
+it (a door refusal is the effect's row, the fire row keeps `ok` and its
+`value`) are § 2.2's own words, implemented rather than amended.
+
+> **A8's touch set reaches past the engine** (doc editor `4a68c823`; token
+> ruled by leader `f16d266a` with advisor `1161daf7`, 2026-08-23): `exists` is
+> load-bearing in the daemon's born-card idempotency (§ 1.5, § 3.1, § 3.3),
+> where "already there" must be benign rather than an error. The engine no
+> longer says that word, so the mapping is the caller's — and the token it
+> keys on, character for character, is **`cas_mismatch`**.
+>
+> Stated as it actually is, not as it would be convenient: an occupied path
+> refuses `cas_mismatch` with `expected` = **`absent_rev`, the `node_rev` of
+> the EMPTY DOCUMENT** (`wire-serve/src/write.rs`: `AlreadyExists` →
+> `cas_mismatch(&absent_rev(), &occupant)`; `absent_rev()` is
+> `model::build(String::new(), syntax::parse(""))`'s root rev — a computed
+> blake3 value, not a nil hash and not an empty string). **`cas_mismatch` is
+> not unique to occupancy**: the same code spells the create-CAS, the
+> drift/remove-CAS and the splice verdict. **Only `expected == absent_rev()`
+> would discriminate, and no code performs that check today** — `preset`
+> keys on `err.code` alone and the daemon's `engineface.go` matches
+> `Code == "cas_mismatch"` on a create call. Both are safe *because their call
+> site is the create door*, which mints no other variety. So the discriminator
+> a caller may rely on is **the call site, not the `expected` field**, and this
+> paragraph promises no check that does not exist.
+
+### A door refusal is that effect's row — never the fire's
+
+**The rule.** A **door** refusing one descriptor is that descriptor's own
+`applied[]` row: `result: "refused"` with the door's class and reason. The
+**fire row keeps `result: "ok"` and keeps its `value`.** The page splice stays
+atomic, and the sibling rows are POSITIONAL on the refusal's own descriptor
+index — the table below states them; a create BEFORE the refused index reads
+`born`, because births realize sequentially ahead of the splice and stay
+(decision #14).
+
+That is the never-veto law made operational. A `PreToolUse` hook that answers
+`{"deny": "…"}` and also appends to a page the armed plane refuses must still
+deliver its verdict; a daemon that checks `result == "ok"` before reading
+`value` would otherwise discard a deny because an unrelated write was
+refused.
+
+**Where the line sits**, because "refusal" names two different situations:
+
+| A door said no → the EFFECT's row, fire row stays `ok` | The engine could not carry the batch → the FIRE row refuses |
+|---|---|
+| `cap_denied` · a birth the create door refused (occupied path, bad path) · an **armed-middleware veto** · a section that is not there or is there twice · an fp-claim · a verdict refusal | the workspace lock is held · I/O · a page that will not load · a non-md descriptor reaching the executor · a malformed descriptor |
+
+The refusal names WHICH descriptor it is about —
+`ExecError::descriptor_index` — and the rows are positional on it. (An
+earlier draft of this section attributed by matching the door's own
+coordinates against the descriptor list; that cannot tell two descriptors
+sharing a path and a verb apart, and the locator replaced it.)
+
+A refusal that names **no** descriptor renders **by stage**, because the
+splice runs after the birth lane and "nothing landed" would be false again:
+
+| stage | creates | edits |
+|---|---|---|
+| pre-birth (the workspace lock — taken before anything runs) | `not_applied` | `not_applied` |
+| post-birth, no descriptor named (page load, splice I/O) | `born` — the birth lane completed, or its refusal would carry that birth's index | `not_applied` |
+
+`refused` is **reserved for the descriptor a door judged**. The fire row
+refuses in both of those engine-failure cases; a door refusal keeps it `ok`
+and keeps its `value`.
+
+**Result words** (§ 2.2's row vocabulary, amended — A8): `born` for a birth,
+`edited` for an edit, `refused` for the descriptor a door judged,
+`not_applied` for its siblings. § 2.2 spells the triple `born|exists|refused`;
+this door has no `exists` arm — an occupied path REFUSES at the create door —
+and `edited` exists because the alternative is calling an edit a birth.
+
+### Ceilings, and what a caller can narrow
+
+`timeout_ms` and `budget {steps, mem}` on a mode-bearing target are the
+caller's **ceilings**: **effective = min(declared, ceiling)** in every axis.
+A caller narrows; nothing a caller sends raises the engine's own limit, and an
+absent field leaves the engine ceiling standing. `budget` reaches the
+evaluator as its fuel and memory limits; `timeout_ms` reaches every process
+the fire starts — the exec'd entry and each `bash()` call.
+
+`env` on a fire is an **exec'd entry's process overlay**: the target's `env`
+is the base — where a daemon's `CCC_HOOK_*` scalars ride, carried opaque — and
+the declared `exec(env=)` pairs overlay it. On an **evaluated**-entry fire it
+**refuses** (`bad_request`), because no process exists to receive it. That
+refusal is a row, not a wall: whether a block's entry is evaluated or exec'd
+is a fact about the page, which the decode wall does not read.
+
+The engine's own facts reach an exec'd entry as `MRD_RUN_PAGE` (the page),
+`MRD_RUN_BLOCK` (**the declaring block's anchor** — the one the caller
+addressed, not the fence `exec(block=)` points at) and `MRD_RUN_INVOCATION`.
+Its working directory is `input["cwd"]` when the input names one, else the
+page's root.
+
+**`exec(block=)` resolves at LOAD**, not at the call: the declaration IS the
+program, so a declaration naming a fence that is not there is broken when it
+is read — `no_block`, carrying the anchor's own words.
+
+**Recording has a ceiling.** An `exec[]` row publishes `stdout_sha256` +
+`bytes` + a `log` path under `.meridian/runs/`, never the stream inline: a
+chatty hook would otherwise put its whole stdout on the wire, in the daemon's
+journal and in an agent's context on every fire. The dict the PROGRAM sees
+still carries `stdout`/`stderr` inline — a program branching on its own
+command's output is why `bash()` returns a value at all. Nothing is logged
+under `dry`.
+
+### Input and answer
+
+**Which def a fire calls.** `declare(impl = f)` names it; with no `impl` the
+conventional entry is **`run`** (`effects::kernel::DEFAULT_HOOK_ENTRY`), and
+whether the module defines it is the freeze's business — `missing_entry`,
+loud, at the right layer — because a block may legitimately declare before it
+defines. `impl` is resolved at the `declare()` call while the value is still
+live: a callable is the evaluated entry, an `exec(...)` value is a process
+entry, anything else is the `impl_type` fault.
+
+`input` (cap `run.input`) is JSON, converted to starlark at the call;
+the entry's return converts back to JSON as `value`. **`None` is no answer** —
+it collapses to no `value`, never to `"value": null` (§ 1.3: *the entry's
+return is the answer*). A birth row's `file_rev` names **the born file's**
+rev, not the page's, and carries the born `path`.
+
 ## Addressing (§2.1 grammar, no new syntax)
 
 A page declares tasks in frontmatter: `task.<name>: "[[#^block-id]]"` binds a
@@ -1589,7 +1876,8 @@ every record-birthing block. Now no block carries one.
 |---|---|---|
 | `props = {"status": "owner: [[x]] \" #now"}` | `status: "owner: [[x]] \" #now"` | a value that would read back as a key, a comment or a quoted scalar is quoted |
 | `props = {"tags": ["type/agent"]}` | `tags: [type/agent]` | a list is one line of flow, the spelling the corpus carries; a member carrying `,` or `]` quotes |
-| `props = {"n": "7"}` | `n: 7` | the value plane's typed-scalar carve-out, unchanged at every door |
+| `props = {"n": "7"}` | `n: "7"` | `props` is a STRING plane: a value a YAML parser reads back as a number or a bool quotes, at every door (§ A.6.3; card `all-digit-short-ids-read-as-int`, 2026-08-23 — the same carve-out emitted the all-digit short id `19895504` as an integer). The integer 7 has no spelling here: `PropValue::List` is the one typed arm |
+| `props = {"owner": "02146210"}` | `owner: "02146210"` | an all-digit 8-hex short id is a STRING — plain, PyYAML reads it as OCTAL 576 648 and the join key is gone |
 | `props = {"x": "[a, b]"}` | `x: "[a, b]"` | this door HAS a list arm, so a scalar never becomes a collection — **the one asymmetry with the patch face**, where the same string lands plain (`yaml_safe_scalar` here vs `yaml_safe_value` there, wire-contract § A.6.3) |
 | `props = {"bad": "a\nb"}` | REFUSED, nothing born | D11: a v1 frontmatter value is single-line — refused, never sanitized |
 | `props=` plus a `body` opening `---` | REFUSED, nothing born | two spellings of one block; pass one |
@@ -1971,8 +2259,18 @@ Record ↔ receipt linkage:
 
 ```
 mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json
+mrd run <PAGE>#^<id> [--input-json FILE|-] [--dry] [--json]   # fire one declared block
+mrd run --load <PAGE>... [--json]                             # what the pages declare
 mrd script [--json]                      # source on stdin (heredoc)
 ```
+
+**Amendment to decision #12 (the locked surface gains the two modes).** The
+same verb, two more shapes — `mrd run <PAGE>#^<id>` fires one declared block
+and `mrd run --load` reads declarations off one or more pages (§ The run
+entry, amended). Every meaningless combination refuses BY NAME with exit 2
+rather than being ignored: `--load` with `#^<id>`, `--load` with `TASK` /
+`-- ARGS` / `--list`, `--input-json` without a block address, and `TASK` /
+`-- ARGS` / `--env` on a fire (a fire's one input channel is `--input-json`).
 
 **Amendment to decision #12 (the locked surface gains `mrd script`).**
 Decision #12 locked the CLI surface at `mrd run` and its flags. It is

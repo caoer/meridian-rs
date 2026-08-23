@@ -34,7 +34,23 @@ mod script_edit;
 pub mod trace;
 
 pub use kernel::validate;
+/// The two-phase (`load` → freeze → `fire`) surface of the amended `run`
+/// entry (hook-support design § 2.2, as amended by § Amendments / A1). The
+/// phase itself is enforced INSIDE the kernel, at the one accessor every
+/// effect builtin passes to reach its channel; what the serve layer needs
+/// out here is the vocabulary to classify what came back — by downcast,
+/// never by matching a message.
+pub use kernel::{
+    BashCall, BlockFault, BlockFire, BlockLoad, DEFAULT_HOOK_ENTRY, Declaration, DeclareAtFire,
+    DeclaredEntry, EffectAtLoad, EffectPhase, ExecProgram, ExecSpec, FaultClass, FireHost,
+    ImplType, check_prelude, classify_starlark_fault, fire_entry, hook_globals, json_of_value,
+    load_block, starlark_fault_line,
+};
 pub use script_edit::{ArmedEdit, hpath_addresses, segs_address, sel_addresses};
+/// starlark's own frozen module, re-exported so a caller can hold what a load
+/// produced without depending on starlark directly — the module cache lives
+/// outside this crate and the freeze is the whole point of it.
+pub use starlark::environment::FrozenModule;
 
 /// One rule's metered outcome: typed result plus exact fuel (Starlark ticks)
 /// and peak-heap bytes. Never-reached eval → `0`/`0` + authoring fault; bomb
@@ -435,7 +451,7 @@ impl ChangeEvent {
 /// `page`/`task`/`args`/`env` only. `invocation_id`/`root_at_eval` stamp
 /// [`Provenance::Run`] but are not injected — task output must not depend on
 /// invocation identity (same inputs → byte-identical payloads).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RunCtx {
     /// The addressed page's workspace path.
     pub page: String,

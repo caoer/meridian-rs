@@ -36,6 +36,8 @@ use run::executor::{RECEIPT_FILE, ReceiptAddr};
 use run::fence::TaskLanguage;
 use run::runner::{self, RunSpec, RunnerError};
 use serde_json::{Map, Value, json};
+
+use run::modes;
 use wire::{ErrorBody, ErrorCode};
 
 use crate::registry::Registry;
@@ -84,6 +86,7 @@ pub(crate) fn serve_line(
     let wire::Op::Run {
         targets,
         invocation,
+        prelude,
         actor,
         now,
         fields,
@@ -97,11 +100,23 @@ pub(crate) fn serve_line(
     let request = RunArgs {
         targets,
         invocation,
+        prelude,
         actor,
         now,
         fields,
         ambient,
     };
+    // A mode-bearing target reads the PINNED corpus, so the submission takes
+    // the same § 3.2 cold gate the script op takes: on a cold workspace the
+    // drawer rebuilds in the background and the attempt never begins
+    // (`corpus_warming`, retry). A fire is not the read door, so § 3.2's
+    // never-blocked promise does not cover it — it refuses, it does not wait,
+    // and it does not bypass.
+    if request.targets.iter().any(modes::is_mode_target)
+        && let Err(error) = crate::server::cold_gate_wire(registry, ws)
+    {
+        return error_line(id, *error, rev);
+    }
     let rows = serve(registry, ws, &request);
     let mut frame = json!({"id": id, "ok": true, "body": {"targets": rows}});
     let duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
@@ -128,6 +143,11 @@ fn error_line(id: Option<u64>, error: ErrorBody, rev: Rev) -> String {
 struct RunArgs {
     targets: Vec<wire::RunTarget>,
     invocation: String,
+    /// Load-phase source (cap `run.mode`), one per call, shared by every
+    /// mode-bearing target. Inert on a task target — the shipped path never
+    /// reads it, which is what keeps "byte-identical for existing callers"
+    /// a fact rather than a hope.
+    prelude: Option<String>,
     actor: Option<String>,
     now: Option<String>,
     /// § A.2.1 passthrough for run-plane births (cap `run.fields`) —
@@ -162,9 +182,83 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
         ambient: request.ambient.as_deref(),
         cache: &cache,
     };
+    // The mode-bearing rows pin the RESIDENT snapshot — an `Arc` clone, the
+    // script op's entry (`script_op.rs`) — and never run the
+    // `domain_snapshot` fold the task path takes. Pinned once per submission,
+    // so every row of one call reads one corpus.
+    let any_mode = request.targets.iter().any(modes::is_mode_target);
+    let pinned = any_mode
+        .then(|| {
+            // Deliberately discarded: `cold_gate_wire` above has already
+            // refused the cold case with `corpus_warming`, so reaching here
+            // means a warm (or warming) workspace and this call is the nudge,
+            // not the gate. A bare `.ok()` otherwise reads as a swallowed
+            // failure. (PR 195 review, e9f1ae35, N1.)
+            registry.warm_or_build(ws).ok();
+            registry.engine_snapshot(ws)
+        })
+        .flatten();
+    // The § 2.2 module cache, resident per workspace: a block is evaluated
+    // once per rev, so a warm fire is one function call. The CLI has no
+    // equivalent and passes `None` — a fresh process per invocation has
+    // nowhere to keep one.
+    let modules = any_mode.then(|| registry.modules(ws));
     let mut rows = Vec::with_capacity(request.targets.len());
     for (index, target) in request.targets.iter().enumerate() {
         let invocation = format!("{}-t{index}", request.invocation);
+        if modes::is_mode_target(target) {
+            rows.push(match &pinned {
+                Some(world) => match world.docs.get(&target.page) {
+                    Some(doc) => modes::mode_row(
+                        &modes::ModeWorld {
+                            doc,
+                            root: &root,
+                            declaring_root: Some(ws),
+                            observed_root: &world.at_fingerprint,
+                            prelude: request.prelude.as_deref(),
+                            doors: modes::Doors {
+                                delta: Some(host.sink),
+                                birth_seq: Some(host.birth_seq),
+                                fields: Some(host.fields),
+                                ambient: host.ambient,
+                            },
+                            cache: modules.as_deref().map(|m| m as &dyn modes::ModuleCache),
+                        },
+                        target,
+                        &invocation,
+                        request.actor.as_deref(),
+                        request.now.as_deref(),
+                    ),
+                    // The pinned corpus does not carry this page. Answered on
+                    // the row so its siblings still report for themselves.
+                    None => json!({
+                        "page": target.page,
+                        "invocation": invocation,
+                        "result": "refused",
+                        "fault": {
+                            "class": "bad_path",
+                            "reason": format!(
+                                "no such page in the pinned corpus: {}", target.page
+                            ),
+                        },
+                    }),
+                },
+                // The reaper won the warm→pin race — the same transient the
+                // read path names, answered on the row so its siblings still
+                // report for themselves.
+                None => json!({
+                    "page": target.page,
+                    "invocation": invocation,
+                    "result": "refused",
+                    "fault": {
+                        "class": "corpus_race",
+                        "reason": "the warm engine was reaped between the entry pass and \
+                                   the pin — transient; retry",
+                    },
+                }),
+            });
+            continue;
+        }
         rows.push(row_for_target(
             &root,
             ws,
