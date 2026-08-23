@@ -139,9 +139,27 @@ pub fn project_response(frame: &mut Value) {
                 // In-process script submission at op grain (§ A.7, the same
                 // precedent — no dotted script.<field> at birth).
                 caps.push(Value::String("script".to_string()));
-                // Page-task execution at op grain (§ A.8, the same
-                // precedent — no dotted run.<field> at birth).
+                // Page-task execution at op grain (§ A.8). The birth
+                // posture was "no dotted run.<field>" — OUTGROWN, and by
+                // this op first: `run.fields` and `run.ambient` ship dotted
+                // in the base list today, so the convention (§ A.2 /
+                // wire-contract §3.2: "Field-only amendments ship as dotted
+                // `op.field` strings") has already absorbed `run` field
+                // amendments as routine.
                 caps.push(Value::String("run".to_string()));
+                // § A.8 mode amendment (hook-support design § 2.2): `load`
+                // and `fire` behind `run.mode` — the field itself plus the
+                // five that only mean anything with it (`prelude`, `block`,
+                // `timeout_ms`, `budget`, `source`). One cap, because they
+                // are one feature: a host that has the mode has all of it,
+                // and a host that lacks it sends none of them.
+                caps.push(Value::String("run.mode".to_string()));
+                // …and `run.input` separately, because it is the one field
+                // carrying arbitrary CALLER JSON into the evaluator. A host
+                // may reasonably want the load half (declaration discovery,
+                // no input crosses) without granting the fire's input
+                // channel, so the two are negotiated apart.
+                caps.push(Value::String("run.input".to_string()));
                 // Pin-graph context assembly at op grain (§ A.10, the same
                 // precedent — no dotted walk.<field> at birth).
                 caps.push(Value::String("walk".to_string()));
@@ -426,11 +444,55 @@ mod tests {
                 "hello.identity",
                 "script",
                 "run",
+                "run.mode",
+                "run.input",
                 "walk",
                 "sql",
                 "scoped-guards"
             ])
         );
+    }
+
+    /// The § A.8 mode amendment is a v3 push and NOTHING else: a frozen v2
+    /// session never sees `run.mode`/`run.input`, so an un-negotiated `mode`
+    /// field meets the closed set's by-name refusal instead of a mode it was
+    /// never offered. The dotted spelling is the point — it is the §3.2
+    /// convention for a field-only amendment, and `run` already ships two
+    /// (`run.fields`, `run.ambient`), so this is precedent, not a new class.
+    #[test]
+    fn v3_advertises_the_run_modes_dotted_and_v2_never_does() {
+        let hello = || {
+            json!({"id":1,"ok":true,"body":{
+                "proto":1,"server":"meridian-sidecar/2.0",
+                "caps":["toc","splice"],"root":"b3:a"}})
+        };
+        let caps_of = |frame: &Value| -> Vec<String> {
+            frame["body"]["caps"]
+                .as_array()
+                .expect("caps array")
+                .iter()
+                .map(|c| c.as_str().expect("cap is a string").to_owned())
+                .collect()
+        };
+
+        let mut v3 = hello();
+        project_response(&mut v3);
+        let v3_caps = caps_of(&v3);
+        for cap in ["run", "run.mode", "run.input"] {
+            assert!(
+                v3_caps.contains(&cap.to_owned()),
+                "v3 advertises `{cap}`: {v3_caps:?}"
+            );
+        }
+
+        let v2 = hello();
+        let v2_caps = caps_of(&v2);
+        for cap in ["run.mode", "run.input"] {
+            assert!(
+                !v2_caps.contains(&cap.to_owned()),
+                "a frozen v2 session is never pushed `{cap}`: {v2_caps:?}"
+            );
+        }
     }
 
     /// Birth op advertised at OP grain only — no dotted `create.<field>` (no v2 twin).

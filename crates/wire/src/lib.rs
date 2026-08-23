@@ -980,11 +980,29 @@ pub enum Op {
     /// engine-appended under the plane's own convention, authority and
     /// deadline resolve from the corpus, and the wire carries names, never
     /// code.
+    ///
+    /// *Amended 2026-08-23 (hook-support design § 2.2; caps `run.mode` and
+    /// `run.input`).* A target may carry a [`RunMode`], selecting the LOAD
+    /// or FIRE path instead of the shipped task path. Two of the absences
+    /// above are amended FOR MODE-BEARING TARGETS ONLY: `timeout_ms` and
+    /// `budget` ride as caller CEILINGS (effective limit = `min(declared,
+    /// ceiling)`), and `source` carries draft page bytes that FORCE `dry`,
+    /// so nothing ever runs live from wire bytes — "the wire carries names,
+    /// never code THAT RUNS". A task target keeps every absence verbatim.
     Run {
         /// The targets, 1..=64, run sequentially in list order.
         targets: Vec<RunTarget>,
         /// The host-minted, path-safe identity base for this call.
         invocation: String,
+        /// Load-phase source evaluated before each block's own top level
+        /// (cap `run.mode`) — ONE per call, shared by every mode-bearing
+        /// target. Keyed by its blake3 in the module cache; a prelude that
+        /// faults refuses `prelude_invalid` before ANY block runs. It needs
+        /// no `load()`: it is source evaluated ahead of the module, not a
+        /// loadable unit (`load()` is a parse error in this dialect), and it
+        /// buys a `NameError` on a typo at load instead of at fire.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prelude: Option<String>,
         /// The caller's identity, threaded into the run receipt's actor
         /// fact per §9. Absent stays absent (the CLI's self-label rules).
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1013,25 +1031,153 @@ pub enum Op {
     },
 }
 
+/// Which path one § A.8 target takes. ABSENT is the shipped task path — the
+/// enum names only the two added modes, so "no mode" cannot be spelled two
+/// ways (hook-support design § 2.2, § 2.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunMode {
+    /// Evaluate the page's starlark blocks' top levels in the PURE load
+    /// environment and answer each block's `declare()` dict. Applies
+    /// nothing: `bash` and the md constructors are unbound at load, so a
+    /// top-level effect is a `NameError`, loud.
+    Load,
+    /// Call ONE declared block's frozen entry with a JSON `input` and answer
+    /// its return value as JSON plus the md effects it applied through the
+    /// ordinary write doors.
+    Fire,
+}
+
+impl RunMode {
+    /// The wire spelling, for refusal texts that must name what they read.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RunMode::Load => "load",
+            RunMode::Fire => "fire",
+        }
+    }
+}
+
+/// Caller CEILINGS on one mode-bearing target's evaluation (cap `run.mode`).
+/// Never a grant: the effective limit is `min(declared, ceiling)`, so a
+/// ceiling can only narrow what the page already allows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvalBudget {
+    /// Interpreter step ceiling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u64>,
+    /// Heap ceiling in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mem: Option<u64>,
+}
+
 /// One § A.8 run target: an addressed task block plus its contract inputs.
 /// Names only — no code rides the wire.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// *Amended 2026-08-23:* six optional, cap-gated fields join the closed set
+/// for the load/fire modes. Every shipped field keeps its meaning; the
+/// additions are refused by NAME on an engine that has not negotiated the
+/// caps, which is what makes client/server skew loud instead of silent.
+///
+/// `Eq` is NOT derived: `input` is arbitrary JSON, and `serde_json::Value`
+/// is only `PartialEq` (a float cell has no total equality). The enclosing
+/// [`Op`] is `PartialEq`-only for the same reason, so nothing is lost here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunTarget {
-    /// Workspace-relative page path.
+    /// Workspace-relative page path. Required on every target except a
+    /// `source` target, which carries its bytes instead.
     pub page: String,
     /// Task name; absent means the plane's single-task default applies
-    /// (several declared tasks answer the listing refusal row).
+    /// (several declared tasks answer the listing refusal row). Exclusive
+    /// with `mode` — a fire addresses a BLOCK, a task run addresses a NAME.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
-    /// Positional task args, contract-validated by the plane.
+    /// Positional task args, contract-validated by the plane. Refused on a
+    /// mode-bearing target: a fire's one input channel is `input`, and argv
+    /// belongs to the task contract.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
-    /// Declared env pairs, contract-validated by the plane.
+    /// Declared env pairs, contract-validated by the plane. On a fire this
+    /// is the EXEC'D entry's process overlay; a non-empty `env` on an
+    /// evaluated-entry fire refuses, because no process exists to receive
+    /// it and this door does not ignore silently.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
     /// The plane's dry leg: effects listed / bash shown, nothing applied.
+    /// Unchanged on a fire (it rehearses effects, not recording); inert on a
+    /// load, which applies nothing anyway.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dry: Option<bool>,
+    /// Cap `run.mode`. Absent = the shipped task path, byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<RunMode>,
+    /// Cap `run.mode`. The `^id` anchor of a declared block (§2.4's
+    /// `[A-Za-z0-9-]` charset, carried WITHOUT the `^`). Required with
+    /// `mode: fire`; refused with `task` and on a `mode: load` target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block: Option<String>,
+    /// Cap `run.input`. The fire's input, bound as a REAL starlark value —
+    /// dict / list / str / int / float / bool / None — not a dict of
+    /// strings. Refused on a `mode: load` target and on a task target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<serde_json::Value>,
+    /// Cap `run.mode`. Wall-clock ceiling in milliseconds for ONE
+    /// mode-bearing target. Refused on a task target, where the declaring
+    /// root's config owns the deadline (§ A.8's named absence).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    /// Cap `run.mode`. Interpreter ceilings for one mode-bearing target.
+    /// Refused on a task target, for the same reason as `timeout_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<EvalBudget>,
+    /// Cap `run.mode`. A draft's page bytes instead of `page` — the one
+    /// place this amendment relaxes a shipped requirement. FORCES `dry`:
+    /// nothing runs live from wire bytes and no write door is reachable, so
+    /// § A.8's "the wire carries names, never code" survives as "never code
+    /// THAT RUNS".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+impl RunTarget {
+    /// A SHIPPED task target: the `mode`-less row, addressed by task NAME.
+    ///
+    /// Named rather than `..Default::default()` on purpose — the call site
+    /// then states which of the two contracts it means, and a reader does
+    /// not have to count six `None`s to find out. Every mode-bearing field
+    /// is absent here by construction, so this constructor cannot
+    /// accidentally build a fire.
+    #[must_use]
+    pub fn task_target(
+        page: String,
+        task: Option<String>,
+        args: Vec<String>,
+        env: BTreeMap<String, String>,
+        dry: Option<bool>,
+    ) -> Self {
+        Self {
+            page,
+            task,
+            args,
+            env,
+            dry,
+            mode: None,
+            block: None,
+            input: None,
+            timeout_ms: None,
+            budget: None,
+            source: None,
+        }
+    }
+
+    /// Which path this target takes. `None` is the shipped task path — the
+    /// one place that fact is spelled, so no arm re-derives it from
+    /// `mode.is_some()` and drifts.
+    #[must_use]
+    pub fn mode(&self) -> Option<RunMode> {
+        self.mode
+    }
 }
 
 // ---------------------------------------------------------------------------

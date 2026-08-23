@@ -2789,6 +2789,100 @@ guard applies exactly as at every other op):
   timeout, or code field: authority resolves from the page + declaring-root
   conventions, the timeout from the declaring root's config, and only
   corpus-declared task blocks run — the wire carries names, never code.
+  *(Two of these are AMENDED for mode-bearing targets only — see "The
+  amendment" below: `timeout_ms`/`budget` ride as caller CEILINGS, and
+  `source` carries draft bytes that force `dry`. A task target keeps every
+  absence exactly as written here.)*
+
+**The amendment — `mode: load|fire` (hook-support design, ratified
+2026-08-23; caps `run.mode`, `run.input`).** No new op enters the wire: this
+one gains two modes. The law the amendment carries, stated because amending
+a shipped authority surface widens it silently otherwise:
+
+> **`run` executes what the page declares: `task.<name>` in frontmatter or
+> `declare()` in the block, never an undeclared block.**
+
+The declared-task binding was always this op's consent gate — the author
+names what is invocable. A `declare()` block is *equally declared*; a bare
+anchored fence with neither declaration is not a target, and a fire naming
+one refuses `not_declared` at the door.
+
+- **`load`** evaluates a page's starlark blocks' top levels in a PURE
+  environment and answers each block's declarations. **`fire`** calls one
+  declared block's frozen entry with a JSON `input` and answers its return
+  value as JSON plus the md effects it applied through the ordinary doors.
+  Absent `mode` is the shipped task path, untouched.
+- **One addition to the top-level field set, six to the per-target set** —
+  every one optional and cap-gated, appended to the closed sets so a client
+  that skipped negotiation is refused BY NAME (`` unknown field `mode` on
+  `targets[0]` of `run` ``), never silently downgraded:
+
+  | Addition | Where | Cap | Carries |
+  |---|---|---|---|
+  | `prelude` string | top level, one per call | `run.mode` | load-phase source evaluated before each block's own top level; blake3-cached; a source that faults refuses `prelude_invalid` before any block runs |
+  | `mode` `"load"\|"fire"` | per target | `run.mode` | absent = the shipped task path |
+  | `block` string | per target | `run.mode` | the `^id` anchor of a declared block (§2.4's charset); REQUIRED with `mode:"fire"`, refused with `task` |
+  | `input` any JSON | per target | `run.input` | the fire's one input channel, bound as a real starlark value (dict/list/str/int/float/bool/None) |
+  | `timeout_ms` u64, `budget` `{steps,mem}` | per target | `run.mode` | caller CEILINGS for one mode-bearing target: effective limit = min(declared, ceiling) |
+  | `source` string | per target | `run.mode` | a draft's page bytes instead of `page`; **forces `dry`** — the rehearsal lane |
+
+- **Exclusion rules, each refusing `bad_request` by name at the strict
+  wall.** `task` with `mode` (the two addressings are exclusive); `args` on
+  a mode-bearing target (argv is the task contract's — a fire's one input
+  channel is `input`); `env` on an EVALUATED-entry fire (no process exists
+  to receive it, and this op does not ignore silently — an exec'd entry's
+  fire takes `env` as its process overlay); `block`, `input` or `task` on a
+  `mode:"load"` target; `timeout_ms`/`budget` on a task target (the named
+  absence stands there); `block` absent on a `mode:"fire"` target. `source`
+  replaces `page` — `page` stays required on every other target.
+- **Mixed batches are legal by construction**: rows are independent and
+  answered in request order, so one call may carry a task target and a fire
+  target. This is the RECORDING law made concrete — **recording follows the
+  declaration kind, never a caller switch.** A `task.<name>` row is a task
+  run: receipts under `<invocation>-t<index>`, and the plane's lock. A
+  `declare()` row is a fire: **no receipt row, no lock**. There is no flag;
+  the engine reads the declaration.
+- **`invocation` is unchanged and still required** — on a fire it only
+  LABELS: no receipt row exists, so `<invocation>-t<index>` mints no receipt
+  anchor; it names the exec log and correlates the caller's journal.
+  Collisions are therefore harmless. A host deriving one from an id outside
+  the path-safe set maps every other byte to `.` on its own side; the engine
+  validates, never rewrites.
+- **`fields{}` extends its reach on a mode-bearing target** (a named
+  widening of § A.2.1's birth-lane scope): a fire's splice-door writes
+  (`set_field`/`append_section`) carry it as middleware `ctx.fields` too,
+  not only its `md.create` births.
+- **Response — `body.targets[]` gains two row kinds** beside the untouched
+  task row. A **fire row**:
+
+  ```json
+  {"result":"ok|fault|timeout|refused",
+   "page":"HOOKS.md","block":"no-stash","rev":{"file":"5c7347b8…","block":"75692e87…"},
+   "value":{"deny":"…"},
+   "applied":[{"kind":"md.create","path":"…","result":"born|exists|refused","file_rev":"…","reason":"…"}],
+   "exec":[{"block":"check","command":"…","exit":1,"stdout_sha256":"…","bytes":412,
+            "log":".meridian/runs/…-t0.log","timed_out":false,"dry":false}],
+   "process":{"interpreter":"bash","exit":0,"stdout_tail":"…","stderr_tail":"…","timed_out":false},
+   "fault":{"class":"parse|name_error|budget|reply_shape|no_block|not_declared|ambiguous_anchor|not_a_module|missing_entry|impl_type|prelude_invalid","reason":"…","line":7},
+   "telemetry":{"steps":812,"mem":20480,"wall_ms":3}}
+  ```
+
+  A **load row**: `{page, rev:{file}, loaded:[{block, rev, result,
+  declarations, entry_kind, fault?}]}`. `result` on a fire row is an
+  EVALUATION word, not a state word — the two vocabularies share one row
+  shape, and that is the amendment's named cost. `value` is the program's
+  return verbatim; for an exec'd entry it is absent and `process` carries
+  the interpreter, RAW exit code (1 and 2 distinct) and tails. `rev` is
+  provenance — the page's `file_rev` and the block's `rev` — so a caller can
+  print WHICH BYTES RAN. A `fault` carries no `applied` (all-or-nothing per
+  row); a `bash()` that ran before a fault stays in `exec[]` because it
+  happened. `declarations` is the uninterpreted dict `declare()` collected,
+  published verbatim — the engine interprets no key of it. A door refusal
+  during realization is that effect row's `result:"refused"` with the door's
+  reason; the fire row's own `result` stays `ok`.
+- **What the modes do NOT gain, on purpose:** no `rev` to attest
+  (provenance is echoed, not demanded), no vocabulary list, no event shape,
+  no armed check, and no `entry` parameter — the block self-describes.
 
 **Execution.** Targets run SEQUENTIALLY in list order, each an independent
 run-plane invocation: its own `run.lock` window, its own receipt, its own
@@ -2849,8 +2943,17 @@ op reached the plane. No aggregate boolean exists anywhere in the body:
 
 **Dispatch:** v3-only; op-grain cap `run` (the `create`/`mounts`/`script`
 precedent — no dotted fields at birth). A v2 session answers `unknown_op`;
-the frozen v2 caps stay byte-identical. §3.2's v3 push is eleven caps,
-twenty-seven in all.
+the frozen v2 caps stay byte-identical.
+
+*Amended 2026-08-23:* "no dotted fields at birth" was the BIRTH posture, and
+this op has outgrown it — `run.fields` and `run.ambient` ship dotted today,
+and the mode amendment adds **`run.mode`** and **`run.input`** to the v3
+push, per §3.2's own convention ("Field-only amendments ship as dotted
+`op.field` strings"). Discovery stays whole and unsniffed: a client that has
+not seen `run.mode` in the hello does not send it, and an old server
+receiving it anyway refuses by name at this section's strict wall. The
+complete served set and its count are §3.2's; this section names only its
+own four.
 
 **Containment (what this door inherits, all of it the plane's own).** The
 wire arm drives the same runner seam as the CLI: capability resolution
