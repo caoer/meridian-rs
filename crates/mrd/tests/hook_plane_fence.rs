@@ -115,11 +115,9 @@ impl Fixture {
     }
 
     fn mrd(&self, args: &[&str]) -> Output {
-        Command::new(mrd_bin())
+        common::mrd_command(&self.home, &self.cache_home)
             .args(args)
             .current_dir(&self.ws)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env_remove("MERIDIAN_WORKSPACE")
             .env_remove("MRD_HOOK_FORCE")
             .output()

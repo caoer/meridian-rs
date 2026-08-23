@@ -9,7 +9,7 @@
 //! the rule.
 
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Output;
 
 mod common;
 
@@ -106,11 +106,9 @@ impl Sandbox {
     }
 
     fn run_stdin(&self, args: &[&str], stdin: &str) -> Output {
-        let mut child = Command::new(mrd_bin())
+        let mut child = common::mrd_command(&self.home, &self.cache_home)
             .args(args)
             .current_dir(&self.ws)
-            .env("HOME", &self.home)
-            .env("XDG_CACHE_HOME", &self.cache_home)
             .env_remove("MERIDIAN_CONFIG")
             .env_remove("MERIDIAN_WORKSPACE")
             .env("MERIDIAN_DAEMON_BIN", mrd_bin())

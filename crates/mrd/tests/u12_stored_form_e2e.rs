@@ -89,11 +89,9 @@ fn sandbox(bind_sessions: bool) -> Sandbox {
 
 impl Sandbox {
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(mrd_bin());
+        let mut cmd = common::mrd_command(&self.home, &self.cache_home);
         cmd.args(args)
             .current_dir(&self.ws)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env("MERIDIAN_CONFIG", &self.config)
             .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .env_remove("MERIDIAN_WORKSPACE");

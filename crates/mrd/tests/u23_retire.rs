@@ -5,7 +5,7 @@
 //! changes. `tools/u23-mutation-proof.py` executes the mutations.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 use serde_json::Value;
 
@@ -41,11 +41,9 @@ fn sandbox() -> Sandbox {
 
 impl Sandbox {
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
-        let mut cmd = Command::new(mrd_bin());
+        let mut cmd = common::mrd_command(&self.home, &self.cache_home);
         cmd.args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             // Spawn-impossible: deterministic in-process answers, no resident
             // daemon ever starts.
             .env("MERIDIAN_DAEMON_BIN", mrd_bin())
