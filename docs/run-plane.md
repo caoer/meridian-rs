@@ -2439,14 +2439,26 @@ link-addressed on `links`/`sql`/`sql_op` (`build_docs_at` calls
 at all.** The write doors observe through `fs::DomainCache`
 (`wire_serve::write::observed_root` → `DomainCache::root`), which walks the
 domain, `stat`s every member and reads every mover WITHOUT opening a `snapshot`
-span. On the CLI the door's cache is always cold, so an `md.create` pays a
-second full-corpus observation on top of the run plane's own fold — measured
-2026-08-23 on a 37 800-member root: run-plane `snapshot` 446 ms, the door
-620 ms inside `apply`, one `phase=snapshot` line for the pair. A `grep -c
-phase=snapshot` of that run answers 1 and under-reports the corpus work by more
-than half; the same run at 8 002 members answers 1 for 27 ms + 58 ms. To price
-the effectful path, compare `apply` against the sum of the phases nested under
-it — an unexplained remainder is a fold nobody named.
+span. That cache is the process-global `wire_serve::write::WRITE_CACHES`, keyed
+by canonicalised root: the FIRST door call in a process observes cold and later
+ones in the SAME process are warm. The CLI does one birth per process, so on the
+CLI it is always the cold one — a property of the process model, not of
+`md.create`; a caller that batches births into one process pays it once.
+
+An `md.create` therefore pays a second full-corpus observation on top of the run
+plane's own fold — measured 2026-08-23 on a 37 800-member root: run-plane
+`snapshot` 446 ms, the door 620 ms inside `apply`, one `phase=snapshot` line for
+the pair. A `grep -c phase=snapshot` of that run answers 1 and under-reports the
+corpus work by more than half; the same run at 8 002 members answers 1 for
+27 ms + 58 ms. (Both pairs, the instrumented breakdown and the raw samples:
+`22-18-hook-support-design/results/mrd-run-perf/residual-cost-receipt.md` § 2,
+and the wire-serve create-door card.)
+
+**How to see it, since subtraction will not:** `apply` has NO nested phases —
+nothing under `crates/run/src/executor.rs` opens a span — so its whole span is
+un-itemised and there is no remainder to compute. Read the magnitude instead: on
+an effectful run a large `apply` beside a `snapshot` of the same order is the
+door's own corpus observation, and only an instrumented build splits it further.
 
 `corpus.build` is the same class: it is emitted by `fs::build_corpus`, and the
 callers that light it up include `mrd sql`, `mrd check`, `mrd walk`,
