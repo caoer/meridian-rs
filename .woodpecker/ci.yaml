@@ -46,16 +46,27 @@
 # what runs, not the answer to "on which events does step X run".
 when:
   - event: [push, pull_request, manual]
-  # NOT `tag`: the v* tag lanes (`tag-linux-amd64.yaml`, `tag-darwin-arm64.yaml`)
-  # are still UNGATED — they publish a release with no test verdict anywhere in
-  # the pipeline. Gating them needs this workflow to run on tags so they have a
-  # verdict to depend on, and that was withdrawn from this change on evidence:
-  # a tag workflow that starts ~18 min after `ci` (pipeline 1204) failed its
-  # CLONE with `could not read Username`, on both a docker and a local agent,
-  # while the same workflows cloned fine when they started beside `ci`
-  # (pipeline 845). Gating the tag lanes without settling that would trade
-  # "publishes ahead of the verdict" for "cannot publish at all".
-  # Follow-up card: 22-18/tasks/meridian-rs-tag-lanes-not-gated.
+  # `tag` is here so the RELEASE route has a verdict to depend on: both v* tag
+  # lanes (`tag-linux-amd64.yaml`, `tag-darwin-arm64.yaml`) now declare
+  # `depends_on: [ci]`, and a workflow cannot depend on one that never ran.
+  # Nothing in THIS file publishes on a tag — `publish mrd` narrows to
+  # push/main + manual, and the tag lanes own the release artifacts.
+  #
+  # The same `v*` filter as the tag lanes, for the same reason: the repo also
+  # carries component and snapshot tags (`sidecar-v0.1.0`, `stage2-pin`), and a
+  # bare `event: tag` would run the whole suite for every one of them.
+  #
+  # THIS WAS WITHDRAWN ONCE, ON EVIDENCE, AND IT IS BACK BECAUSE THE EVIDENCE
+  # CHANGED. Gating makes the tag workflows start ~18 min after `ci`, and a late
+  # workflow used to lose its clone credential (pipeline 1204: `could not read
+  # Username`, exit 128, on BOTH a docker and a local agent). That was never a
+  # property of `depends_on` — the netrc was the repo user's OAuth access token
+  # stamped once at pipeline parse, and it died on its own clock. PR 200 gave
+  # every workflow here a non-rotating PAT (see the `clone:` block below), which
+  # is what makes a late workflow safe and therefore what makes this gate
+  # landable. Card: 22-18/tasks/meridian-rs-tag-lanes-not-gated.
+  - event: tag
+    ref: refs/tags/v*
 
 labels:
   hostname: workstation-nyc-2

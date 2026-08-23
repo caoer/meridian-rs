@@ -25,6 +25,22 @@ when:
   # only ever ADD the artifact this commit was always going to have.
   - event: manual
 
+# THE GATE. No release binary for a commit whose suite never ran or ran red.
+# `ci.yaml` runs on `refs/tags/v*` too, and Woodpecker does not start a workflow
+# until every named dependency SUCCEEDED — a red `ci` leaves this workflow
+# skipped and `publish` never-run (measured: pipeline 1195).
+#
+# NOT `optional: true`. Optional means "enforced only if `ci` is part of the
+# pipeline", so a `ci` filtered out by its own `when` would silently let a
+# release publish ungated — the exact hole this card exists to close.
+#
+# It is landable only because PR 200 replaced the parse-time OAuth netrc with a
+# non-rotating PAT (the `clone:` block below): `depends_on` is precisely what
+# makes this workflow start ~18 min late, and a late clone used to die at
+# exit 128 (pipeline 1204). Card: 22-18/tasks/meridian-rs-tag-lanes-not-gated.
+depends_on:
+  - ci
+
 labels:
   hostname: workstation-nyc-2
 
