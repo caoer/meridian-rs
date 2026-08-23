@@ -343,6 +343,26 @@ at (§5.2) — never by the tag name, and there is **no `latest`**.
 | Files | `mrd-linux-amd64`, `mrd-darwin-arm64`, and a `.sha256` beside each |
 | The pin a consumer records | `(COMMIT, SHA256)` |
 | Re-publish of the same commit | HTTP **409**; the FIRST published bytes stay authoritative |
+| Precondition | the `ci` workflow SUCCEEDED for that tag pipeline — all six verdict lanes |
+
+**A tag cannot publish ahead of its verdict.** `ci.yaml` runs on `refs/tags/v*`
+and both tag workflows declare `depends_on: [ci]`, so Woodpecker will not start
+them until every lane in `ci` has succeeded: a red suite leaves both tag
+workflows **skipped** and `publish` never-run, and the release simply does not
+exist. The dependency is deliberately **not** `optional: true` — optional means
+"enforced only if `ci` is part of the pipeline", which would let a `ci` filtered
+out by its own `when` wave a release through ungated.
+
+Two consequences worth knowing before you cut one:
+
+- **A tag pipeline is slow by construction.** The tag lanes start after the
+  whole suite, ~18 minutes in. That lateness is safe only because every
+  workflow here clones with a non-rotating PAT rather than the server's
+  parse-time OAuth netrc; before that fix, a late clone died at `exit 128`.
+- **The lane refuses a tree it cannot attest.** If the probe fails, or tracked
+  content diverges from the commit, the lane exits 1 rather than stamping
+  `-dirty` and publishing — §5.1's stamp is a claim, and an unverifiable clean
+  claim is not published.
 
 **The tag NAMES the point; the commit KEYS the bytes.** A tag is a movable ref
 and a name is not a hash, so nothing a consumer pins may derive from it: a
