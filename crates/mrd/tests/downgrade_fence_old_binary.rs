@@ -154,11 +154,9 @@ impl Sandbox {
     }
 
     fn run(&self, cwd: &Path, args: &[&str], stdin_bytes: Option<&str>) -> Output {
-        let mut cmd = Command::new(mrd_bin());
+        let mut cmd = common::mrd_command(&self.home, &self.cache_home);
         cmd.args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .env_remove("MERIDIAN_WORKSPACE");
         let Some(body) = stdin_bytes else {

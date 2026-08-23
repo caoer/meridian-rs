@@ -14,10 +14,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 mod common;
 
-fn mrd_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_mrd")
-}
-
 struct Sandbox {
     tmp: tempfile::TempDir,
     cache_home: PathBuf,
@@ -38,11 +34,9 @@ fn sandbox() -> Sandbox {
 
 impl Sandbox {
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
-        let mut cmd = Command::new(mrd_bin());
+        let mut cmd = common::mrd_command(&self.home, &self.cache_home);
         cmd.args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             // Spawn-impossible: every face answers in-process, which is the
             // plane under test.
             .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")

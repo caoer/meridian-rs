@@ -12,9 +12,8 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use registry::{Config, RunningServer};
+use registry::{Config, TestServer};
 use serde_json::{Value, json};
-use tempfile::TempDir;
 
 mod common;
 
@@ -26,9 +25,9 @@ mod common;
 /// background reaper never evicts a warm engine mid-test. Built by mutating the
 /// production default so a new `Config` field cannot break this suite's compile.
 #[allow(clippy::duration_suboptimal_units)]
-fn test_config(tmp: &TempDir) -> Config {
+fn test_config(root: &Path) -> Config {
     let forever = Duration::from_secs(365 * 24 * 60 * 60);
-    let mut config = Config::for_cache_root(tmp.path().join("cache"));
+    let mut config = Config::for_cache_root(root.join("cache"));
     config.idle_threshold = forever;
     config.reap_interval = forever;
     config.prewarm_interval = forever;
@@ -44,8 +43,8 @@ fn test_config(tmp: &TempDir) -> Config {
 
 /// A workspace `tmp/ws` seeded with `files` — a sibling of the cache root, so the
 /// corpus walk never sees the drawer.
-fn write_ws(tmp: &TempDir, files: &[(&str, &str)]) -> PathBuf {
-    let ws = tmp.path().join("ws");
+fn write_ws(root: &Path, files: &[(&str, &str)]) -> PathBuf {
+    let ws = root.join("ws");
     for (rel, content) in files {
         let path = ws.join(rel);
         if let Some(parent) = path.parent() {
@@ -114,34 +113,33 @@ fn corpus() -> [(&'static str, &'static str); 3] {
 }
 
 /// A live daemon bound to a fresh corpus, plus its first connection.
-/// Fields drop in declaration order: `server` (stop → drain) before `_tmp`.
+///
+/// `daemon` owns BOTH the server and the temporary tree, and orders their
+/// teardown itself ([`TestServer`]), so this fixture has no drop order of its
+/// own to get wrong — `ws` is a `PathBuf` and has no teardown at all.
 struct Fixture {
-    server: RunningServer,
+    daemon: TestServer,
     ws: PathBuf,
-    _tmp: TempDir,
 }
 
 impl Fixture {
     fn start() -> (Self, Conn) {
-        let tmp = TempDir::new().unwrap();
-        let ws = write_ws(&tmp, &corpus());
-        let server = RunningServer::start(test_config(&tmp)).unwrap();
-        let mut conn = Conn::open(server.socket_path());
+        // Seed the corpus BEFORE the daemon starts, as this fixture always
+        // has: `idle` + `ensure_live` is that order, `start` would invert it.
+        let daemon = TestServer::idle().unwrap();
+        let ws = write_ws(daemon.path(), &corpus());
+        daemon.ensure_live(test_config).unwrap();
+        let mut conn = Conn::open(&daemon.socket_path());
         assert_eq!(conn.hello(&ws)["ok"], json!(true), "the fixture binds");
-        let fixture = Fixture {
-            server,
-            ws,
-            _tmp: tmp,
-        };
-        (fixture, conn)
+        (Fixture { daemon, ws }, conn)
     }
 
     fn conn(&self) -> Conn {
-        Conn::open(self.server.socket_path())
+        Conn::open(&self.daemon.socket_path())
     }
 
     fn shutdown(self) {
-        self.server.shutdown();
+        self.daemon.shutdown();
     }
 }
 

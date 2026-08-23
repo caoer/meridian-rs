@@ -49,11 +49,9 @@ impl Sandbox {
     }
 
     fn run(&self, cwd: &Path, args: &[&str], stdin: Option<&str>, live: bool) -> Output {
-        let mut cmd = Command::new(mrd_bin());
+        let mut cmd = common::mrd_command(&self.home, &self.cache_home);
         cmd.args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env_remove("MERIDIAN_WORKSPACE");
         if live {
             cmd.env("MERIDIAN_DAEMON_BIN", mrd_bin());
@@ -75,10 +73,8 @@ impl Sandbox {
     }
 
     fn start_daemon(&self) -> Child {
-        let mut child = Command::new(mrd_bin())
+        let mut child = common::mrd_command(&self.home, &self.cache_home)
             .arg("daemon")
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env_remove("MERIDIAN_WORKSPACE")
             .stdin(Stdio::null())
             .stdout(Stdio::null())

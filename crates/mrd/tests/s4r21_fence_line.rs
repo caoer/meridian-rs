@@ -23,12 +23,6 @@ use std::process::{Command, Output, Stdio};
 use mrd::hook::FENCE_VERSION;
 mod common;
 
-/// The binary every drive goes through — the real CLI, never a library call.
-fn mrd_bin() -> PathBuf {
-    std::env::var_os("MRD_BIN")
-        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
-}
-
 /// A sandbox whose caches are its own: a non-deployed `mrd` that registered in the
 /// shared `~/.cache/meridian` would become the host's resident daemon.
 struct Sandbox {
@@ -51,11 +45,9 @@ fn sandbox() -> Sandbox {
 
 impl Sandbox {
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
-        Command::new(mrd_bin())
+        common::mrd_command(&self.home, &self.cache_home)
             .args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env_remove("MERIDIAN_WORKSPACE")
             .output()
             .expect("spawn mrd")
@@ -65,11 +57,9 @@ impl Sandbox {
     /// tier 1 of the discovery ladder, the only rung that can seat a
     /// workspace root below the worktree top-level.
     fn run_at(&self, cwd: &Path, workspace: &Path, args: &[&str]) -> Output {
-        Command::new(mrd_bin())
+        common::mrd_command(&self.home, &self.cache_home)
             .args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env("MERIDIAN_WORKSPACE", workspace)
             .output()
             .expect("spawn mrd")
