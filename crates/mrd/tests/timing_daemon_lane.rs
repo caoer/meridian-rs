@@ -329,7 +329,8 @@ fn an_unopenable_voice_is_said_on_the_spawning_clients_stderr() {
     assert_eq!(complaint.len(), 1, "expected exactly one: {said:?}");
     assert!(
         complaint[0].trim_end().ends_with("are LOST."),
-        "the error text split the diagnostic — the tail lost its prefix: {}",
+        "the complaint line does not end with `are LOST.` — split by the error text, or the tail \
+         in daemon.rs changed: {}",
         complaint[0]
     );
 
@@ -357,9 +358,20 @@ fn an_unopenable_voice_is_said_on_the_spawning_clients_stderr() {
         .links(&ws, "1")
         .wait_with_output()
         .expect("mrd links exits");
+    // Parsed, not substring-matched: `source` is a TOP-LEVEL key of the
+    // `links --json` frame (`engine.rs` § `Format::Json`), so reading it is
+    // independent of the serializer's spacing and of anything the fixture's own
+    // link bodies might happen to spell.
     let stdout = String::from_utf8_lossy(&second.stdout);
-    assert!(
-        stdout.contains("\"source\": \"daemon\"") || stdout.contains("\"source\":\"daemon\""),
+    let answer: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "`links --json` did not serve JSON ({e}): {stdout}\nstderr: {}",
+            String::from_utf8_lossy(&second.stderr)
+        )
+    });
+    assert_eq!(
+        answer["source"].as_str(),
+        Some("daemon"),
         "a mute daemon must still ANSWER, not be degraded past: {stdout}\nstderr: {}",
         String::from_utf8_lossy(&second.stderr)
     );
