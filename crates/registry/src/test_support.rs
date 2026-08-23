@@ -246,6 +246,10 @@ mod tests {
         /// `daemon`, so the witness runs while the daemon is still live.
         struct Inverted {
             first: DropWitness,
+            /// Never read, and that is the point: this field exists for its
+            /// DROP, which is the entire subject of the test. Reading it would
+            /// prove nothing about teardown order.
+            #[allow(dead_code)]
             daemon: TestServer,
         }
 
