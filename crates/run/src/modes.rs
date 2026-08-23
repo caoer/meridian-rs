@@ -101,7 +101,9 @@ const STAGED_TMP_EXT: &str = "tmp";
 static STAGE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// How many staged programs a workspace keeps. Same ceiling as the logs, same
-/// reason: a cache keyed by every rev ever fired grows without bound.
+/// reason: a cache keyed by every rev ever fired grows without bound. The
+/// prune runs at the START of a staging call, so at rest the directory holds
+/// at most one file over this — the one the last call staged and returned.
 const STAGED_RETENTION: usize = 50;
 
 /// How many bytes of each stream the `process` object publishes.
@@ -116,8 +118,8 @@ const STAGED_RETENTION: usize = 50;
 /// was cut.
 const TAIL_BYTES: usize = 4096;
 
-/// The last [`TAIL_BYTES`] of a stream, on a char boundary, plus its true
-/// length.
+/// The last [`TAIL_BYTES`] of a stream, lossily decoded (a codepoint split at
+/// the cut becomes `U+FFFD`, never a panic), plus the stream's true length.
 fn tail(bytes: &[u8]) -> (String, usize) {
     let len = bytes.len();
     let from = len.saturating_sub(TAIL_BYTES);
@@ -1291,11 +1293,21 @@ impl ProcessSeam<'_> {
             None => key.to_owned(),
         };
         let path = dir.join(&name);
+        // Prune BEFORE resolving the key, never after: a prune that ran after
+        // could evict the very file this call is about to hand the bracket
+        // (PR 205 review, N1). `.tmp` files are excluded from the count on
+        // purpose: a racer's in-flight write is not a cache member, and
+        // pruning one would delete the bytes a live fire is about to run.
+        Self::prune(&dir, None, STAGED_RETENTION);
         // Write only when it is not already there: the key is the content's
         // own identity, so an existing file has the bytes we were about to
         // write. This is the cache — it removes the write, and (with the
         // pinned page in memory) the read; § 1.4 is explicit that it never
-        // removes the spawn.
+        // removes the spawn. A hit refreshes the file's mtime so the prune's
+        // order is last-USED, not first-created — otherwise the hottest,
+        // most stable block is exactly the one at the tail of the eviction
+        // list, and a sibling's prune could take it out from under a fire
+        // that just resolved it.
         //
         // **Write elsewhere, then rename.** Two fires of one block race here
         // by construction — the daemon serves connections in parallel and the
@@ -1309,27 +1321,30 @@ impl ProcessSeam<'_> {
         // `accept_loop`) and they would fill one temp file and race on its
         // rename — the loser's rename answering ENOENT as a spurious
         // `runtime` fault on bytes that were staged correctly.
-        if !path.exists() {
-            let tmp = dir.join(format!(
-                "{name}.{}.{}.{STAGED_TMP_EXT}",
-                std::process::id(),
-                STAGE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            ));
-            std::fs::write(&tmp, source).map_err(|e| format!("stage {name}: {e}"))?;
-            if let Err(e) = std::fs::rename(&tmp, &path) {
-                let _ = std::fs::remove_file(&tmp);
-                // A racer that lost the rename still staged the right bytes
-                // if a sibling landed the same key first: the key IS the
-                // content, so the file that won is the file we wanted.
-                if !path.exists() {
-                    return Err(format!("stage {name}: {e}"));
-                }
+        if path.exists() {
+            // Best effort: a touch that fails costs eviction order, nothing
+            // else, and the bytes are already there.
+            let _ = std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .and_then(|f| f.set_modified(std::time::SystemTime::now()));
+            return Ok(path);
+        }
+        let tmp = dir.join(format!(
+            "{name}.{}.{}.{STAGED_TMP_EXT}",
+            std::process::id(),
+            STAGE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::write(&tmp, source).map_err(|e| format!("stage {name}: {e}"))?;
+        if let Err(e) = std::fs::rename(&tmp, &path) {
+            let _ = std::fs::remove_file(&tmp);
+            // A racer that lost the rename still staged the right bytes if a
+            // sibling landed the same key first: the key IS the content, so
+            // the file that won is the file we wanted.
+            if !path.exists() {
+                return Err(format!("stage {name}: {e}"));
             }
         }
-        // `.tmp` files are excluded from the count on purpose: a racer's
-        // in-flight write is not a cache member, and pruning one would delete
-        // the bytes a live fire is about to run.
-        Self::prune(&dir, None, STAGED_RETENTION);
         Ok(path)
     }
 
@@ -2271,6 +2286,60 @@ printf '%s|%s' \"$BASE\" \"$OVER\"
         assert_eq!(
             leftover, 0,
             "a loser's temp file must not outlive its rename"
+        );
+    }
+
+    /// PR 205 review N1: the prune used to run AFTER the key resolved, so at
+    /// the ceiling it could evict the very file the call was returning, and
+    /// it evicted by creation time — the hottest block first. Now the prune
+    /// runs first and a hit refreshes mtime: the file a call returns is on
+    /// disk when the bracket opens it, and the key fired most recently is the
+    /// last to go.
+    #[test]
+    fn a_hit_refreshes_the_key_and_a_call_never_prunes_what_it_returns() {
+        let raw = "# Hot\n```bash\necho hot\n```\n^p\n".to_owned();
+        let doc = model::build(raw.clone(), syntax::parse(&raw));
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let seam = ProcessSeam {
+            doc: &doc,
+            root: tmp.path(),
+            page: "hot.md",
+            invocation: "hot-t0",
+            calls: std::sync::Mutex::new(Vec::new()),
+            timeout: std::time::Duration::from_secs(5),
+            dry: false,
+        };
+        let hot = seam
+            .stage("echo hot\n", "hot", Some("bash"))
+            .expect("stage hot");
+        // Fill the cache to its ceiling behind the hot key, oldest first.
+        for i in 0..(STAGED_RETENTION - 1) {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            seam.stage("echo cold\n", &format!("cold-{i}"), Some("bash"))
+                .expect("stage cold");
+        }
+        // A hit: the bytes are already there, and the key becomes the newest.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let again = seam
+            .stage("echo hot\n", "hot", Some("bash"))
+            .expect("hit hot");
+        assert_eq!(again, hot, "a hit resolves the same file");
+        // Two more stagings push the cache over the ceiling twice; each call
+        // prunes before it writes, so the file it returns is always on disk.
+        for i in 0..2 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let fresh = seam
+                .stage("echo new\n", &format!("new-{i}"), Some("bash"))
+                .expect("stage new");
+            assert!(fresh.exists(), "a call must never prune what it returns");
+        }
+        assert!(
+            hot.exists(),
+            "the key fired most recently was evicted — the prune orders by creation, not use"
+        );
+        assert!(
+            !tmp.path().join(STAGED_DIR).join("cold-0.bash").exists(),
+            "the coldest key must be the one that went"
         );
     }
 

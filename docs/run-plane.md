@@ -2138,18 +2138,23 @@ is closed. There is **no `Exec` EffectKind** — a replayed exec would re-run
 arbitrary code, so exec never enters the effect surface.
 
 **This whole section is the TASK path.** Everything below — the two-phase
-receipts, the `run.lock`, phase-2 convergence, the `OutOfBand` refusal — is
-what a `task.<name>` row does, and a fire does none of it. A `declare()` row
-whose entry is **exec'd** runs its process through **the same bracket**
-(`run::exec::exec` over `ExecSpec` — the `exec_bracket()` the hook-support
-design names) and then parts company. An **evaluated** entry spawns nothing at
-all unless the program calls `bash()`, so the process rows below are the
-exec'd entry's:
+receipts, phase-2 convergence, the `OutOfBand` refusal — is what a
+`task.<name>` row does, and a fire's **process** does none of it. The
+`run.lock` splits: a fire's process runs outside it, but a fire that
+**realizes md effects** takes the same workspace lock the task path does
+(`executor::apply` acquires it first, unconditionally) and can refuse
+`runtime` / *workspace busy*; a fire that applies nothing — an exec'd entry,
+an evaluated entry whose program returns no effect — and any `dry` fire take
+none. A `declare()` row whose entry is **exec'd** runs its process through
+**the same bracket** (`run::exec::exec` over `ExecSpec` — the `exec_bracket()`
+the hook-support design names) and then parts company. An **evaluated** entry
+spawns nothing at all unless the program calls `bash()`, so the process rows
+below are the exec'd entry's:
 
 | | task row (`task.<name>`) | fire row (`declare()`) |
 |---|---|---|
 | receipts | phase-1 + phase-2 rows in `receipts/run.md` | **none** — 100 declared-block fires add zero rows |
-| `.meridian/run.lock` | taken | **not taken** |
+| `.meridian/run.lock` | taken | **not taken by the process**; taken by `executor::apply` only when the fire realizes md effects (`workspace busy` is then a `runtime` fault on the row) |
 | program | `bash -c <source> mrd-task <args…>`, `$0` = `mrd-task` | `<interpreter> <staged-file> <args…>`, `$0` = the staged path |
 | stdin | `Stdio::null()` | the fire's `input`, compact JSON |
 | exit | collapsed to `state: applied\|partial` | the **raw** code, 1 and 2 distinct |
