@@ -1577,18 +1577,18 @@ and the registry's own startup and error lines.
 
 ##### What `t` names here, and what it does not
 
-Read a daemon sink as **folds, not requests**. Every phase the daemon can emit
-comes from the corpus fold in `Registry::warm_or_build`, and the cold gate does
-not run that on the thread that took your request: it kicks a background
-`drawer-rebuild` thread, SINGLE-FLIGHT per workspace, and the connection thread
-waits for it (`crates/registry/src/registry.rs` § `cold_gate`). So on this lane
-`t` is *which fold*, and the three consequences are the ones an operator will
-actually meet:
+Read a daemon sink as **folds, not requests**. Every phase the daemon emits
+*while serving* comes from the corpus fold in `Registry::warm_or_build`, and the
+cold gate does not run that on the thread that took your request: it kicks a
+background `drawer-rebuild` thread, SINGLE-FLIGHT per workspace
+(`crates/registry/src/registry.rs` § `cold_gate`). The one line that is not a
+fold is `phase=total`, on the daemon's main thread as the process exits. So on
+this lane `t` is *which fold*, and these are the cases an operator will meet:
 
 | What you run | What the sink shows |
 |---|---|
 | Concurrent ops on DIFFERENT cold workspaces | one `who=` per workspace — they separate |
-| Concurrent ops on the SAME cold workspace | **one** `who=`. There is one fold; the second op waits on it or is refused `corpus_warming`. Two ops, one emitter, and nothing was lost |
+| Concurrent ops on the SAME cold workspace | **one** `who=`. There is one fold: the op that KICKED it waits for it (bounded), and a later op is refused `corpus_warming` in milliseconds rather than waiting. Two ops, one emitter, and nothing was lost |
 | Any op on a WARM workspace | **no daemon line at all** — nothing was folded, so nothing is measured |
 | The prewarm sweep | its own `who=`, with no connection behind it at all |
 
