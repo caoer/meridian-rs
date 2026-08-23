@@ -629,7 +629,7 @@ fn exec_row(
             return refused_row(target, invocation, class, &reason, None);
         }
     };
-    let mut row = json!({
+    let row = json!({
         "page": target.page,
         "invocation": invocation,
         "block": block.anchor,
@@ -1139,7 +1139,7 @@ const LOG_RETENTION: usize = 50;
             format!("{stdout}\n--- stderr ---\n{stderr}")
         };
         std::fs::write(dir.join(&name), body).ok()?;
-        prune_logs(&dir);
+        Self::prune_logs(&dir);
         Some(format!(".meridian/runs/{name}"))
     }
 
@@ -1283,7 +1283,7 @@ const LOG_RETENTION: usize = 50;
             .input
             .as_ref()
             .and_then(|input| input.get("cwd"))
-            .and_then(serde_json::Value::as_str)
+            .and_then(Value::as_str)
             .map_or_else(|| self.root.to_path_buf(), |c| self.root.join(c));
         let exec_spec = crate::exec::ExecSpec {
             source: &source,
