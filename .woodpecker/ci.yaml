@@ -29,8 +29,18 @@
 #     read). sccache wraps COMPILES only; linking is mold's job (RUSTFLAGS).
 #   - The workspace is SHARED: any lane that writes a TRACKED file races
 #     every lane that reads the tree (build_identity asserts tree state —
-#     pipeline #25). Lanes may write only untracked paths: target dirs,
-#     /tmp, the /ci-cache mount.
+#     pipeline #25). Lanes write untracked paths — target dirs, /tmp, the
+#     /ci-cache mount — WITH ONE EXCEPTION THAT IS NOW LOAD-BEARING: the test
+#     lane rewrites 11 TRACKED files every run. crates/fs/src/stable.rs
+#     touch() does File::create + write_all(b"stable-read probe\n"), and
+#     calibrate()/watermark() fire on every workspace open, so each
+#     crates/testsuite/data/parity/corpus/*/.meridian/stable-read.probe is
+#     truncated and rewritten. `git status` stays silent ONLY because the
+#     bytes are constant (all 11 hash to 46abd039e5ab386deb24247141a5978e).
+#     Since `publish mrd` now REFUSES a tracked divergence instead of warning,
+#     changing that probe string reds main immediately — and the symptom
+#     points at the publish step and 11 fixtures, not at the crate that
+#     changed. Found by reviewer 0af9c1b3 on PR 199; verified by md5 here.
 #   - The deny lane keeps NO shared state: cargo-deny's advisory DB is a git
 #     working copy, which a killed run leaves half-written and unrepairable by
 #     any lock, so that lane runs on a container-local CARGO_HOME and clones
@@ -46,19 +56,70 @@
 # what runs, not the answer to "on which events does step X run".
 when:
   - event: [push, pull_request, manual]
-  # NOT `tag`: the v* tag lanes (`tag-linux-amd64.yaml`, `tag-darwin-arm64.yaml`)
-  # are still UNGATED — they publish a release with no test verdict anywhere in
-  # the pipeline. Gating them needs this workflow to run on tags so they have a
-  # verdict to depend on, and that was withdrawn from this change on evidence:
-  # a tag workflow that starts ~18 min after `ci` (pipeline 1204) failed its
-  # CLONE with `could not read Username`, on both a docker and a local agent,
-  # while the same workflows cloned fine when they started beside `ci`
-  # (pipeline 845). Gating the tag lanes without settling that would trade
-  # "publishes ahead of the verdict" for "cannot publish at all".
-  # Follow-up card: 22-18/tasks/meridian-rs-tag-lanes-not-gated.
+  # `tag` is here so the RELEASE route has a verdict to depend on: both v* tag
+  # lanes (`tag-linux-amd64.yaml`, `tag-darwin-arm64.yaml`) now declare
+  # `depends_on: [ci]`, and a workflow cannot depend on one that never ran.
+  # Nothing in THIS file publishes on a tag — `publish mrd` narrows to
+  # push/main + manual, and the tag lanes own the release artifacts.
+  #
+  # The same `v*` filter as the tag lanes, for the same reason: the repo also
+  # carries component and snapshot tags (`sidecar-v0.1.0`, `stage2-pin`), and a
+  # bare `event: tag` would run the whole suite for every one of them.
+  #
+  # THIS WAS WITHDRAWN ONCE, ON EVIDENCE, AND IT IS BACK BECAUSE THE EVIDENCE
+  # CHANGED. Gating makes the tag workflows start ~18 min after `ci`, and a late
+  # workflow used to lose its clone credential (pipeline 1204: `could not read
+  # Username`, exit 128, on BOTH a docker and a local agent). That was never a
+  # property of `depends_on` — the netrc was the repo user's OAuth access token
+  # stamped once at pipeline parse, and it died on its own clock. PR 200 gave
+  # every workflow here a non-rotating PAT (see the `clone:` block below), which
+  # is what makes this gate landable. Landable, not proven safe: one tag-lane
+  # clone has run late and survived (1328, +1171 s from parse) and it was
+  # pre-gate, while under the gate none has cloned at all — 1330 was refused red
+  # and both tag workflows skipped, `started=null`. The first real `v*` release
+  # is the proof. Card: 22-18/tasks/meridian-rs-tag-lanes-not-gated.
+  - event: tag
+    ref: refs/tags/v*
 
 labels:
   hostname: workstation-nyc-2
+
+# Clone with OUR credential, not the server-stamped one. The default clone's
+# netrc password is the repo user's OAuth access token, stamped into the
+# workflow ONCE at pipeline parse (v3.17.0 server/pipeline/items.go); Forgejo
+# expires it hourly, so a workflow whose clone starts late presents a dead
+# credential and dies with "could not read Username" / exit 128 (pipelines
+# 810, 1204 — both backends). This step pins a non-rotating read:repository
+# PAT instead (woodpecker secret `forgejo_clone_token`, PAT `woodpecker-clone`,
+# sops copy: field-notes-secrets infra/svc/common.sops.yaml).
+#
+# LOAD-BEARING, do not "clean up":
+#   - `environment:` is the whole mechanism: a clone step with any
+#     environment: is not a plugin (yaml types container.go IsPlugin), so the
+#     compiler does NOT copy the server netrc over these values
+#     (compiler.go:252). Delete environment: and the rotating token returns.
+#   - no `settings:` here — the schema forbids it beside environment: on
+#     clone; PLUGIN_* env is byte-identical (convert.go ParamsToEnv).
+#   - the secret must NOT carry an image filter: image-filtered secrets are
+#     served only to IsPlugin() steps, which this step deliberately is not.
+#   - if the repo's trusted.security flag is EVER enabled, the compiler
+#     copies the server netrc over EVERY step's env regardless and this fix
+#     silently stops working (compiler.go securityTrustedPipeline arm).
+clone:
+  - name: git
+    image: docker.io/woodpeckerci/plugin-git:2.9.2
+    environment:
+      PLUGIN_DEPTH: "0" # the server default clone's own setting — same fetch shape
+      # ci now runs on tag events too (the v* gate); the default clone only fetched tags there, so
+      # fetch them always — the mirror is local, cost ~nil. (Hunk authored by e860ada5, who owns
+      # this block, and handed to this PR so the lanes are touched once: without it, a `ci` running
+      # on a v* tag clones WITHOUT the tag object, and anything that peels or describes the tag
+      # breaks silently — compiler.go set cloneSettings["tags"] only on tag events.)
+      PLUGIN_TAGS: "true"
+      CI_NETRC_MACHINE: git.0xdao.app
+      CI_NETRC_USERNAME: caoer115
+      CI_NETRC_PASSWORD:
+        from_secret: forgejo_clone_token
 
 variables:
   # Local image, built from Dockerfile.ci on the runner and referenced with
@@ -345,8 +406,25 @@ steps:
   # Forgejo's generic registry is APPEND-ONLY per (name, version, file): a
   # re-run of the same commit gets 409 and the FIRST published bytes stay
   # authoritative. That is the property the pin needs — a rebuild that differs
-  # byte-wise (Rust builds are not bit-reproducible here) must never silently
-  # invalidate a digest a consumer already recorded.
+  # byte-wise must never silently invalidate a digest a consumer already
+  # recorded.
+  #
+  # THIS BUILD REPRODUCED BIT-FOR-BIT ONCE, WITH EVERY INPUT HELD — one commit,
+  # linux-amd64, this image tag, a warm shard. That is what was measured and all
+  # that is claimed; the previous revision of this comment asserted the opposite
+  # in general, which was also more than it knew. Measured 2026-08-23: a `git
+  # archive` of 4640044e0, built in
+  # this image on this runner with the same sccache shard, the same
+  # MRD_BUILD_SHA and the same target-dir PATH, reproduced the published
+  # mrd-linux-amd64 byte for byte — sha256
+  # 0098356f0f9ac63af221128459595138f1600eb7aabf4f15a7e04f4306129ce0, 54151480
+  # bytes. So the 409 is NOT protection against inherent nondeterminism. It is
+  # protection against an INPUT drifting, and the inputs are not pinned: the
+  # same source built into a different target-dir path came out 64 bytes
+  # smaller (OUT_DIR strings reach the binary through build scripts), and the
+  # image tag, toolchain and RUSTFLAGS can all move. That is the honest reason
+  # the FIRST bytes must win, and it is a better reason than the one it
+  # replaces. Card: 19-20/tasks/main-publish-stamps-dirty-on-every-head.
   #
   # main + manual only: a PR's engine is not a thing anyone should pin.
   #
@@ -401,16 +479,65 @@ steps:
       # So CI supplies the claim and OWNS it: the sha Woodpecker checked out,
       # plus `-dirty` if this workspace actually diverges from it. Both halves
       # are read here, so the stamp asserts exactly what was measured.
+      #
+      # THE PROBE IS THE ENGINE'S OWN, FLAG FOR FLAG (crates/mrd/build_git.rs
+      # worktree_dirty): --untracked-files=no, --no-optional-locks. A supplied
+      # MRD_BUILD_SHA rides verbatim into the binary, so this probe must ask the
+      # question the engine asks — "does TRACKED content diverge from HEAD" —
+      # and not a stricter one. Measured, and it is why this hunk exists: with a
+      # bare `git status --porcelain` the test lane's `target-ci/` (its
+      # CARGO_TARGET_DIR, untracked, sharing this workspace) read as divergence
+      # and every main head shipped a `-dirty` pin. TEN of them — every main
+      # push from the gating commit to the fix, each log carrying exactly one
+      # porcelain line, `?? target-ci/`: 1228 `171280b46`, 1234 `40fad579b`,
+      # 1244 `3259343e1`, 1258 `612a4550e`, 1259 `0d60d29be`, 1262 `ed15def72`,
+      # 1275 `4640044e0`, 1284 `f249db4b9`, 1294 `165ba87a8`, 1311 `f3b586aec`.
+      # (This comment said NINE when it was written and the run was still open:
+      # 1311 landed after it. First CLEAN main stamp: 1335, `4ac5acbc6`.)
+      #
+      # It is DETERMINISTIC, not flaky, and `db71afc11` is where it starts —
+      # the commit that gated this step on all six lanes. Before that gate the
+      # step had `depends_on: []`, started beside the lanes and probed the tree
+      # BEFORE the test lane had created `target-ci/`; it won that race (1220,
+      # at a descendant of the commit that introduced `target-ci`, published
+      # clean). Gating it made it wait, so now it loses the race every time.
+      # The tag lanes already probe this way after the same defect bit them
+      # (d3accfbe4e28…-dirty). --no-optional-locks keeps the probe from writing
+      # the index under a concurrent git in the shared workspace.
+      #
+      # AND IT FAILS, it does not warn. `-dirty` here means a lane wrote a
+      # TRACKED file mid-pipeline — the pin would name bytes no sha can recover
+      # (crates/mrd/tests/rules_cli.rs:1407 refuses a dirty tree for that
+      # reason), and a WARNING that never fails is ceremony: it printed on all
+      # TEN and stopped nothing.
+      #
+      # THE PROBE IS TRI-STATE AND SO IS THIS GATE. `if [ -n "$(git …)" ]` is
+      # the wrong shape: a git that exits non-zero with empty stdout — dubious
+      # ownership, an unreadable .git, no git at all — yields the empty string,
+      # the test is false, and the step stamps a CLEAN sha it never measured.
+      # `set -eu` does not catch it: the failure is inside a command
+      # substitution in an `if` condition. That is live here, not theoretical —
+      # the test lane chowns this workspace to `ci:ci` (the find walk matches
+      # `.git`), so a root probe depends entirely on the `safe.directory` line
+      # above landing exactly. The engine is deliberately tri-state for the same
+      # reason (build_git.rs returns None on a non-zero exit; build.rs collapses
+      # that to `unknown`): "I could not tell" and "it was clean" are opposite
+      # answers. Matching the FLAGS without matching that is how a gate fails
+      # open. Found by reviewer 0af9c1b3 with a stub git exiting 128.
+      # Card: 19-20/tasks/main-publish-stamps-dirty-on-every-head.
       - |
         set -eu
         git config --global --add safe.directory "$CI_WORKSPACE"
-        if [ -n "$(git status --porcelain)" ]; then
-          echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}-dirty" > /tmp/stamp.env
-          echo "WARNING workspace diverges from $${CI_COMMIT_SHA} — stamping -dirty"
-          git status --porcelain
-        else
-          echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}" > /tmp/stamp.env
+        if ! porcelain="$(git --no-optional-locks status --porcelain --untracked-files=no)"; then
+          echo "the tree probe FAILED — cannot attest, and 'could not tell' is not 'clean'"
+          exit 1
         fi
+        if [ -n "$porcelain" ]; then
+          echo "tracked content diverges from $${CI_COMMIT_SHA} — refusing to publish a pin no sha can recover"
+          printf '%s\n' "$porcelain"
+          exit 1
+        fi
+        echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}" > /tmp/stamp.env
         cat /tmp/stamp.env
       # Shared ./target with the bench lane on purpose: bench inherits the
       # release profile, so the release dep tree is already compiled there and
