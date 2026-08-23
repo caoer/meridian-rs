@@ -190,11 +190,22 @@ Four properties the runbook depends on:
   `policy` still performs no I/O: the winner's bytes arrive through the injected
   `PageSource`, under the caller's `CheckLimits`.
 
-The load gate runs on the modes that FIRE, never on `off`, which mirrors the fire
-path exactly (`resolve_armed_law` loads `verdict.firing()` only). Attesting a page
-`off` is the reviewer's record that they read it at this rev and chose not to
-activate it — including a page too broken to load, which is precisely a state
-worth attesting.
+The load gate runs on the modes that FIRE, never on `off`. Attesting a page `off`
+is the reviewer's record that they read it at this rev and chose not to activate
+it — including a page too broken to load, which is precisely a state worth
+attesting. That set is a SUPERSET of what the fire path loads, not a mirror of
+it: `resolve_armed_law` loads `verdict.firing()`, which is additionally narrowed
+to the write's own path and excludes reddened rows. The divergence is on the safe
+side — arming demands loadability of every non-`off` winner, whatever path it
+will later govern.
+
+A page edited between the corpus walk and the act is **drift, not a broken
+declaration.** `mrd arm` builds its index before it takes the write flock, so the
+drift gate compares the request against a rev that may already be stale; the
+loader's own rev law (`RuleLoadError::RevMismatch`) is what catches the race, and
+the act re-labels it `ArmFault::Drift` at the rev the loader actually read. Those
+bytes are precisely NOT the ones attested, and reporting them as unloadable would
+send an operator hunting a declaration bug in a healthy page.
 
 #### The disk edge (wired), and what is still deferred
 

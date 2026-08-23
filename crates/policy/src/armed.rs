@@ -532,11 +532,16 @@ pub enum ArmFault {
 /// call for different repairs: restore a page, or fix a declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArmLoadFault {
-    /// The winner's bytes could not be read at all — the page vanished between
-    /// discovery and the act.
+    /// The winner's bytes could not be read at all.
     Unreadable {
         /// The reader's own message.
         detail: String,
+        /// The kind the reader reported. `NotFound` is a page that moved or
+        /// vanished between discovery and the act; every other kind
+        /// (permission, a directory in a page's place, a symlink loop,
+        /// undecodable bytes) is a page still WHERE the resolver found it and
+        /// unreadable anyway — a different repair, so a different sentence.
+        kind: std::io::ErrorKind,
     },
     /// The bytes read, and did not become the rule they register as.
     Refused(RuleLoadError),
@@ -545,11 +550,21 @@ pub enum ArmLoadFault {
 impl std::fmt::Display for ArmLoadFault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ArmLoadFault::Unreadable { detail } => write!(
-                f,
-                "its bytes cannot be read ({detail}) — the page moved or vanished between \
-                 discovery and this act"
-            ),
+            ArmLoadFault::Unreadable { detail, kind } => {
+                if *kind == std::io::ErrorKind::NotFound {
+                    write!(
+                        f,
+                        "its bytes cannot be read ({detail}) — the page moved or vanished between \
+                         discovery and this act"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "its bytes cannot be read ({detail}) — the page is still where the \
+                         resolver found it, so this is the reader failing, not the page moving"
+                    )
+                }
+            }
             ArmLoadFault::Refused(error) => error.fmt(f),
         }
     }
@@ -675,10 +690,15 @@ impl std::error::Error for ArmFault {}
 /// `pages` reads the winner's live bytes and `limits` bound its load — injected
 /// because `policy` performs no I/O, and the same pair the fire path
 /// ([`crate::resolve_armed_law`]) is handed, so what arms is what would load.
-/// The load gate runs on the modes that FIRE and never on [`Mode::Off`], which
-/// is also exactly what the fire path loads: attesting a page `off` is the
-/// reviewer's record that they read it at this rev and did not activate it —
-/// worth recording even for a page too broken to load.
+///
+/// The load gate runs on the modes that FIRE and never on [`Mode::Off`]:
+/// attesting a page `off` is the reviewer's record that they read it at this rev
+/// and did not activate it — worth recording even for a page too broken to load.
+/// That is a SUPERSET of what the fire path loads, not a mirror of it: the fire
+/// path loads `verdict.firing()`, which is additionally narrowed to the write's
+/// own path and excludes reddened rows. The divergence is on the safe side —
+/// arming demands loadability of every non-`off` winner, whatever path it will
+/// later govern.
 ///
 /// All-or-nothing, reporting every fault: a partially-landed artifact would
 /// silently drop a rule the reviewer meant to arm.
@@ -764,17 +784,32 @@ pub fn arm(
         }
 
         // The load gate, last: every cheaper refusal has been spent, and the
-        // winner is known to be the page the reviewer read at the rev they
-        // read. `load_rule` re-verifies the bytes against the registered rev,
-        // so a page edited between discovery and this act refuses here as a
-        // `RevMismatch` rather than arming bytes nobody approved.
+        // winner is the page the reviewer read at the rev they read.
         if mode.fires()
             && let Err(fault) = load_winner(winner, pages, limits)
         {
-            faults.push(ArmFault::Unloadable {
-                id,
-                page: winner.page().to_string(),
-                fault,
+            faults.push(match fault {
+                // The page moved between the walk that built the index and
+                // this act's read. The `Drift` gate above could not see it —
+                // it compares the request against the index's FROZEN rev, and
+                // that rev is the stale one. The loader's own rev law catches
+                // it, and what it caught is DRIFT: these bytes are precisely
+                // not the ones the reviewer attested. Calling it `Unloadable`
+                // would send the operator hunting a declaration bug in a
+                // healthy page.
+                ArmLoadFault::Refused(RuleLoadError::RevMismatch { supplied, .. }) => {
+                    ArmFault::Drift {
+                        id,
+                        page: winner.page().to_string(),
+                        attested_rev,
+                        resolved_rev: supplied,
+                    }
+                }
+                fault => ArmFault::Unloadable {
+                    id,
+                    page: winner.page().to_string(),
+                    fault,
+                },
             });
             continue;
         }
@@ -815,6 +850,7 @@ fn load_winner(
         .read(winner.page())
         .map_err(|e| ArmLoadFault::Unreadable {
             detail: e.to_string(),
+            kind: e.kind(),
         })?;
     load_rule(winner, &bytes, limits)
         .map(|_| ())
@@ -1077,7 +1113,10 @@ pub trait PageSource {
 impl PageSource for BTreeMap<String, String> {
     fn read(&self, page: &str) -> std::io::Result<String> {
         self.get(page).cloned().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, format!("no such page: {page}"))
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("no such page: {page}"),
+            )
         })
     }
 }
@@ -1403,6 +1442,33 @@ mod tests {
         format!(
             "---\ntags: [type/rule, rules/check]\nid: {id}\npaths:\n  - tasks/**\n---\n\n\
              # {id}\n\n```starlark\ndef check_change(change):\n    pass\n```\n"
+        )
+    }
+
+    /// **A production shape.** A `caps: []` HOOK, modelled on
+    /// `rules/050-hook-idle-default.md` on the sessions root — every one of
+    /// that corpus's seven hook pages declares `caps: []`. It takes its own
+    /// loader branch (`hook::load_hook_with_caps`: with no caps the page emits
+    /// no intent, so `budget:` and `how:` are unreachable and may be omitted),
+    /// which the `caps: [proto.send]` fixture above never exercises.
+    fn zero_cap_hook_page(id: &str) -> String {
+        format!(
+            "---\ntags: [type/rule, rules/hook]\nid: {id}\nseverity: info\n\
+             paths: [\"**\"]\non: \"idle>42m*3\"\naction: |\n  message(\"idle check\")\n\
+             caps: []\n---\n\n```starlark\ndef on_change(event):\n    pass\n```\n"
+        )
+    }
+
+    /// **A production shape.** A `rules/middleware` page, modelled on
+    /// `rules/025-middleware-task-card.md` — eight of the fifteen rows armed on
+    /// the sessions root are middleware. It loads through `parse_check` against
+    /// a `def middleware` entry point, a third path neither hook nor check
+    /// covers, and it arms `block`.
+    fn middleware_page(id: &str) -> String {
+        format!(
+            "---\ntags: [type/rule, rules/middleware]\nid: {id}\n\
+             paths: [\"**/tasks/*.md\"]\n---\n\n\
+             # {id}\n\n```starlark\ndef middleware(ctx):\n    pass\n```\n"
         )
     }
 
@@ -2445,9 +2511,11 @@ mod tests {
     /// drift gates already have.
     #[test]
     fn a_load_fault_refuses_the_whole_act_beside_a_good_request() {
-        let ws = Workspace::default()
-            .hook("good.md", "good")
-            .page(ScopeLayer::Workspace, "bad.md", &bare_page("rules/hook", "bad"));
+        let ws = Workspace::default().hook("good.md", "good").page(
+            ScopeLayer::Workspace,
+            "bad.md",
+            &bare_page("rules/hook", "bad"),
+        );
         let faults = arm(
             &ws.index(),
             &ArmRoot::workspace(),
@@ -2463,16 +2531,74 @@ mod tests {
         assert_eq!(faults[0].id().as_str(), "bad");
     }
 
-    /// A page edited between discovery and the act loads its NEW bytes against
-    /// the OLD registration, so the loader's own rev law catches it — the act
-    /// never attests bytes the reviewer did not read.
+    /// **The two production shapes.** The sessions root's fifteen armed rows
+    /// are eight `rules/middleware` and seven `caps: []` hooks — neither is the
+    /// shape the fixtures above use. Both take their own loader branch, so a
+    /// gate that passed only the fixture shapes would break `mrd arm` for the
+    /// entire live corpus while these tests stayed green.
     #[test]
-    fn a_page_edited_under_the_act_refuses_at_the_loader_rev_law() {
+    fn the_shapes_the_live_corpus_actually_arms_pass_the_load_gate() {
+        for (body, id, mode) in [
+            (zero_cap_hook_page("zero.hook"), "zero.hook", Mode::Armed),
+            (middleware_page("mw.door"), "mw.door", Mode::Block),
+        ] {
+            let ws = Workspace::default().page(ScopeLayer::Workspace, "p.md", &body);
+            let artifact =
+                arm_one(&ws, id, mode).unwrap_or_else(|faults| panic!("{id} must arm: {faults:?}"));
+            assert_eq!(artifact.rows()[0].rev(), ws.rev("p.md"));
+            assert_eq!(
+                artifact.verify(&ws).firing().len(),
+                1,
+                "{id}: and it fires — the gate admitted a page the fire path loads"
+            );
+        }
+    }
+
+    /// The other direction on the same two shapes: each is broken in the way
+    /// its OWN loader branch refuses, and the gate catches it. Without this the
+    /// pair above could pass on a gate that never ran.
+    #[test]
+    fn each_production_shape_is_refused_when_its_own_loader_branch_faults() {
+        // A `caps: []` hook may omit `budget:`/`how:`, but never `paths:`.
+        let hook = zero_cap_hook_page("zero.hook").replace("paths: [\"**\"]\n", "");
+        // A middleware page whose block defines no `def middleware` entry.
+        let mw =
+            middleware_page("mw.door").replace("def middleware(ctx)", "def not_the_entry(ctx)");
+
+        for (body, id, mode, expect) in [
+            (hook, "zero.hook", Mode::Armed, "paths:"),
+            (mw, "mw.door", Mode::Block, "middleware"),
+        ] {
+            let ws = Workspace::default().page(ScopeLayer::Workspace, "p.md", &body);
+            let faults =
+                arm_one(&ws, id, mode).expect_err("a broken production shape does not arm");
+            assert!(
+                matches!(faults[0], ArmFault::Unloadable { .. }),
+                "{id}: {faults:?}"
+            );
+            let rendered = faults[0].to_string();
+            assert!(
+                rendered.contains(expect),
+                "{id}: the loader's own words survive into the refusal: {rendered}"
+            );
+        }
+    }
+
+    /// A page edited between discovery and the act is DRIFT, not a broken
+    /// declaration. The drift gate above cannot see it — it compares the
+    /// request against the index's frozen rev, and that rev is the stale one —
+    /// so the loader's rev law catches it and the act must re-label what it
+    /// caught. Naming it `Unloadable` would send an operator hunting a
+    /// declaration bug in a perfectly healthy page; on a 19-agent working tree
+    /// this is a routine race, not a corner.
+    #[test]
+    fn a_page_edited_under_the_act_is_drift_not_a_broken_declaration() {
         let ws = Workspace::default().hook("h.md", "h");
         let index = ws.index();
         let rev = ws.rev("h.md");
 
-        // The index froze the winner; the page source now serves other bytes.
+        // The index froze the winner; the page source now serves other bytes —
+        // still a perfectly loadable hook page.
         let mut moved = ws.clone();
         moved.edit("h.md", &format!("{}\n<!-- moved -->\n", hook_page("h")));
 
@@ -2484,12 +2610,32 @@ mod tests {
             CheckLimits::default(),
         )
         .expect_err("the bytes under the act are not the bytes that resolved");
-        let [ArmFault::Unloadable { fault, .. }] = faults.as_slice() else {
-            panic!("expected Unloadable, got {faults:?}");
+        let [
+            ArmFault::Drift {
+                attested_rev,
+                resolved_rev,
+                ..
+            },
+        ] = faults.as_slice()
+        else {
+            panic!("expected Drift, got {faults:?}");
         };
+        assert_eq!(attested_rev, &rev, "the rev the reviewer read");
+        assert_eq!(
+            *resolved_rev,
+            moved.rev("h.md"),
+            "and the rev the page reads NOW — the loader's `supplied`, not the \
+             index's stale one"
+        );
+        let rendered = faults[0].to_string();
         assert!(
-            matches!(fault, ArmLoadFault::Refused(RuleLoadError::RevMismatch { .. })),
-            "{fault:?}"
+            rendered.contains("drifted between approval and arming")
+                && rendered.contains("arm at the live rev"),
+            "the operator is sent to re-read the page, not to debug a declaration: {rendered}"
+        );
+        assert!(
+            !rendered.contains("do not LOAD"),
+            "and never told the page is broken: {rendered}"
         );
     }
 
@@ -2515,7 +2661,10 @@ mod tests {
         let [ArmFault::Unloadable { fault, .. }] = faults.as_slice() else {
             panic!("expected Unloadable, got {faults:?}");
         };
-        assert!(matches!(fault, ArmLoadFault::Unreadable { .. }), "{fault:?}");
+        assert!(
+            matches!(fault, ArmLoadFault::Unreadable { .. }),
+            "{fault:?}"
+        );
         assert!(
             faults[0].to_string().contains("vanished"),
             "the teaching says the page moved: {}",
