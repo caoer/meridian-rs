@@ -338,17 +338,18 @@ pub(crate) struct SettledRead {
     pub(crate) settled: bool,
 }
 
-/// Read `abs` under the stable-read law: `O_NOFOLLOW` open, fstat before and
-/// after the bytes, retry while identity moves mid-read, SUSPECT past the
-/// retry budget. Symlink refusal (`ELOOP`, classified via `symlink_metadata`)
-/// is the caller's to spell per observation law.
+/// Read `rel` under `root` under the stable-read law: `O_NOFOLLOW` open
+/// from the root down ([`crate::open_nofollow`]), fstat before and after the
+/// bytes, retry while identity moves mid-read, SUSPECT past the retry
+/// budget. Symlink refusal (`ELOOP`, classified via `symlink_metadata`) is
+/// the caller's to spell per observation law.
 ///
 /// # Errors
 /// Any open/read/fstat failure; the caller maps refusal shapes.
-pub(crate) fn read_settled(abs: &Path) -> io::Result<SettledRead> {
+pub(crate) fn read_settled(root: &Path, rel: &Path) -> io::Result<SettledRead> {
     let mut last: Option<(Vec<u8>, StatKey)> = None;
     for _ in 0..=SETTLE_RETRIES {
-        let mut f = crate::open_nofollow(abs)?;
+        let mut f = crate::open_nofollow(root, rel)?;
         let before = StatKey::of(&f.metadata()?);
         let mut bytes = Vec::new();
         io::Read::read_to_end(&mut f, &mut bytes)?;
@@ -541,7 +542,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let p = tmp.path().join("x.md");
         std::fs::write(&p, b"stable\n").expect("write");
-        let read = read_settled(&p).expect("read");
+        let read = read_settled(tmp.path(), Path::new("x.md")).expect("read");
         assert!(read.settled);
         assert_eq!(read.bytes, b"stable\n");
         let disk = StatKey::of_path(&p).expect("stat").expect("present");
