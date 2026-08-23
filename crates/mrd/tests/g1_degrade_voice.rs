@@ -11,10 +11,6 @@ use std::time::{Duration, Instant};
 
 mod common;
 
-fn mrd_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_mrd")
-}
-
 const DOC: &str = "# Alpha\n\none two three\n\n## Beta\n\nfour five\n";
 
 /// The two phrases the voice owes a reader: WHICH path served the answer, and
@@ -49,10 +45,8 @@ fn sandbox() -> Sandbox {
 
 impl Sandbox {
     fn base(&self) -> Command {
-        let mut cmd = Command::new(mrd_bin());
-        cmd.env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
-            .env_remove("MERIDIAN_WORKSPACE");
+        let mut cmd = common::mrd_command(&self.home, &self.cache_home);
+        cmd.env_remove("MERIDIAN_WORKSPACE");
         cmd
     }
 
@@ -319,9 +313,7 @@ fn g1_pathological_home_still_names_the_sun_path_limit() {
         socket.as_os_str().len()
     );
 
-    let out = Command::new(mrd_bin())
-        .env("XDG_CACHE_HOME", &cache_home)
-        .env("HOME", &home)
+    let out = common::mrd_command(&home, &cache_home)
         .env_remove("MERIDIAN_WORKSPACE")
         // Force the HOME lane so the fixture's depth is the one that counts.
         .env_remove("XDG_RUNTIME_DIR")

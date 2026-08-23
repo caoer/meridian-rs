@@ -26,14 +26,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Output, Stdio};
 use std::time::{Duration, Instant};
 
 mod common;
-
-fn mrd_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_mrd")
-}
 
 /// A one-read starlark program: enough to reach the daemon and be served.
 const PROGRAM: &str = "t = read(\"doc.md\")\n";
@@ -101,10 +97,8 @@ impl Sandbox {
     /// `mrd script --json` against `ws`, with `MRD_TIMING` set to `timing`.
     /// Spawned rather than `output()`ed so two of them can be in flight at once.
     fn script(&self, ws: &Path, timing: &str) -> Child {
-        let mut child = Command::new(mrd_bin())
+        let mut child = common::mrd_command(&self.home, &self.cache_home)
             .args(["script", "--json"])
-            .env("HOME", &self.home)
-            .env("XDG_CACHE_HOME", &self.cache_home)
             .env("MRD_TIMING", timing)
             .env_remove("MERIDIAN_WORKSPACE")
             .current_dir(ws)
@@ -130,15 +124,23 @@ impl Sandbox {
     /// Measured on workstation-nyc-2, 2026-08-23: three `links` calls on three
     /// fresh workspaces produced three complete folds (`who=…t1/t2/t3`), while
     /// three `script` calls on three fresh workspaces produced exactly ONE.
-    /// The `script` asymmetry is UNEXPLAINED. A pattern-less `mrd script`
-    /// evaluates CLIENT-SIDE (`script/cmd.rs`), and the wire `read` its program
-    /// issues takes `cold_gate_wire` exactly as `links` does — so by code it
-    /// should fold per fresh workspace too. Recorded, not accounted for.
+    /// The `script` asymmetry is UNEXPLAINED, and this note keeps only the
+    /// measurement.
+    ///
+    /// **Its stated cause is void.** The sentence here read "a pattern-less
+    /// `mrd script` evaluates CLIENT-SIDE (`script/cmd.rs`), and the wire
+    /// `read` its program issues takes `cold_gate_wire` exactly as `links`
+    /// does". Card `script-door-commit-premise-world-grain-vs-touch-set`
+    /// deleted that lane: EVERY `mrd script` attempt is now the wire `script`
+    /// op, which takes `cold_gate_wire` once, in
+    /// `registry::script_op::serve`, and issues no client-side `read` at all.
+    /// So the reasoning that made the asymmetry surprising no longer describes
+    /// the code, and whether the asymmetry itself survives is UNMEASURED — the
+    /// measurement above predates the change. These gates drive `links`, so
+    /// nothing here depends on the answer.
     fn links(&self, ws: &Path, timing: &str) -> Child {
-        Command::new(mrd_bin())
+        common::mrd_command(&self.home, &self.cache_home)
             .args(["links", "--json"])
-            .env("HOME", &self.home)
-            .env("XDG_CACHE_HOME", &self.cache_home)
             .env("MRD_TIMING", timing)
             .env_remove("MERIDIAN_WORKSPACE")
             .current_dir(ws)
@@ -385,10 +387,8 @@ fn the_mode_off_creates_no_lane() {
     let sb = Sandbox::new();
     let ws = sb.workspace();
 
-    let out = Command::new(mrd_bin())
+    let out = common::mrd_command(&sb.home, &sb.cache_home)
         .args(["script", "--json"])
-        .env("HOME", &sb.home)
-        .env("XDG_CACHE_HOME", &sb.cache_home)
         .env_remove("MRD_TIMING")
         .env_remove("MERIDIAN_WORKSPACE")
         .current_dir(&ws)

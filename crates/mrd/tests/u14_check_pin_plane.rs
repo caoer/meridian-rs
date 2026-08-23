@@ -16,13 +16,6 @@ mod common;
 
 // ── harness ──────────────────────────────────────────────────────────────────
 
-/// The binary under test. `MRD_BIN` names another artifact, so the same
-/// asserts can be pointed at a pre-change build to show them redden.
-fn mrd_bin() -> PathBuf {
-    std::env::var_os("MRD_BIN")
-        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
-}
-
 struct Sandbox {
     tmp: tempfile::TempDir,
     cache_home: PathBuf,
@@ -43,11 +36,9 @@ fn sandbox() -> Sandbox {
 
 impl Sandbox {
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
-        Command::new(mrd_bin())
+        common::mrd_command(&self.home, &self.cache_home)
             .args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
             .env_remove("MERIDIAN_WORKSPACE")

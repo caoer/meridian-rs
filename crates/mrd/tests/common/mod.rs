@@ -7,20 +7,73 @@
 //!
 //! # Fixture rule: a fixture that starts a daemon owns its teardown
 //!
-//! A fixture in this tree that starts an in-process
-//! `registry::RunningServer` sets `config.drain_cold_builds =
-//! Duration::from_secs(30)` (the 2 s production default is a CLIENT flock
-//! budget), and — when it keeps the server and its `TempDir` in a struct —
-//! declares the **server field first**, because struct fields drop in
-//! declaration order while locals drop in reverse. Full statement and the
-//! measured cause: `crates/registry/tests/common/mod.rs` § Fixture rule.
-//! Enforced for both trees by `crates/registry/tests/fixture_drain_budget.rs`.
+//! Full statement and the measured cause: `crates/registry/tests/common/mod.rs`
+//! § Fixture rule. In THIS tree the rule has two shapes, because a fixture here
+//! may start a daemon either way:
+//!
+//! 1. **In-process** (`registry::RunningServer` inside the test binary): hold a
+//!    `registry::TestServer`, which owns the server and its `TempDir` together
+//!    and stops the server in its own `Drop::drop`. One field, so there is no
+//!    teardown order left to get wrong.
+//! 2. **As a subprocess** (`mrd` auto-spawning its own daemon): build the
+//!    command with [`mrd_command`], the one site in this tree that sets
+//!    `MRD_DRAIN_COLD_BUILDS`. Such a test holds no `Config` at all, so the
+//!    environment is the only lever it has.
+//!
+//! Enforced at runtime, in both directions, by a `debug_assert` on
+//! `registry::Config::drain_budget_hazard` — in `RunningServer::start`, and in
+//! the `mrd` client before it auto-spawns a daemon, because that daemon's
+//! stderr is `Stdio::null()` and its own panic reaches nobody.
 #![allow(dead_code)]
 
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::Child;
+use std::process::{Child, Command};
 use std::time::{Duration, Instant};
+
+/// The fixture drain budget, in whole seconds — the unit
+/// [`registry::DRAIN_COLD_BUILDS_ENV`] is read in.
+const FIXTURE_DRAIN_SECS: &str = "30";
+
+/// An `mrd` command for a sandbox at `home`/`cache_home`, carrying the fixture
+/// drain budget.
+///
+/// **This is the ONE place `MRD_DRAIN_COLD_BUILDS` is set in this tree.**
+///
+/// Why it has to exist. A test here drives `mrd` as a subprocess, and that
+/// `mrd` AUTO-SPAWNS its daemon — so the test never constructs a
+/// `registry::Config` and cannot set `drain_cold_builds` on it. The daemon
+/// resolves its own layout through `Config::resolve`, whose only lever from
+/// outside is the environment. Without it the daemon runs the 2 s PRODUCTION
+/// budget against a `TempDir` cache root, which is the class-2 flake, and it
+/// fails **silently**: an auto-spawned daemon's stderr is `Stdio::null()`, so
+/// it dies unheard and the client degrades to the ephemeral engine ~5 s later
+/// with exit 0. Measured: 5.02 s and an ephemeral answer without this, 0.12 s
+/// and a live daemon with it (card `fixture-drain-guard-followups`).
+///
+/// **What it does NOT do, stated because the opposite is the tempting claim.**
+/// This helper CREATES a chokepoint; it does not retrofit one. Files in this
+/// tree build their `mrd` command at ~73 independent `Command::new` sites, and
+/// a file that does not call this function gains nothing from its existence.
+/// Adopted so far: the population measured to trip the assert. Every other
+/// candidate stays exposed until it adopts this, and that residue is tracked on
+/// its own card — not implied by this helper's presence.
+///
+/// The binary honours an `MRD_BIN` override, because 14 of the adopting files
+/// had their own `mrd_bin()` that did — adopting the helper without it would
+/// have deleted a capability while the commit claimed to be mechanical. The
+/// other adopters gain the override; that is the point of one chokepoint.
+///
+/// Callers chain their own `.args()`, `.current_dir()` and any further `.env()`.
+pub(crate) fn mrd_command(home: &Path, cache_home: &Path) -> Command {
+    let bin = std::env::var_os("MRD_BIN")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from);
+    let mut cmd = Command::new(bin);
+    cmd.env("HOME", home)
+        .env("XDG_CACHE_HOME", cache_home)
+        .env(registry::DRAIN_COLD_BUILDS_ENV, FIXTURE_DRAIN_SECS);
+    cmd
+}
 
 /// Feed a spawned child's stdin, tolerating a child that has already stopped
 /// reading, then close the pipe so the child sees EOF.
