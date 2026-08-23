@@ -176,6 +176,17 @@ struct RunArgs {
     dry: bool,
     list: bool,
     json: bool,
+    /// `--load`: the load mode (hook-support design § 2.2). Every positional
+    /// is a PAGE, and each becomes its own target in one call.
+    load: bool,
+    /// The `^id` a `<PAGE>#^<id>` spelling addressed — the fire mode's block.
+    block: Option<String>,
+    /// `--input-json FILE|-`: the fire's input, read here and carried as
+    /// JSON. Absent is `null` (starlark `None`), which is a VALUE the entry
+    /// receives, not a missing argument.
+    input: Option<serde_json::Value>,
+    /// Extra pages, for `--load` over several at once.
+    pages: Vec<String>,
 }
 
 impl RunArgs {
@@ -189,6 +200,9 @@ impl RunArgs {
         let mut dry = false;
         let mut list = false;
         let mut json = false;
+        let mut load = false;
+        let mut input_json: Option<String> = None;
+        let mut pages: Vec<String> = Vec::new();
         let mut i = 0;
         while i < tail.len() {
             match tail[i].as_str() {
@@ -199,6 +213,18 @@ impl RunArgs {
                 "--dry" => dry = true,
                 "--list" => list = true,
                 "--json" => json = true,
+                "--load" => load = true,
+                "--input-json" => {
+                    i += 1;
+                    let Some(source) = tail.get(i) else {
+                        return Err(Fail::tool(
+                            "--input-json needs FILE or `-` for stdin".to_owned(),
+                        ));
+                    };
+                    if input_json.replace(source.clone()).is_some() {
+                        return Err(Fail::tool("--input-json given twice".to_owned()));
+                    }
+                }
                 "--env" => {
                     i += 1;
                     let Some(pair) = tail.get(i) else {
@@ -218,6 +244,10 @@ impl RunArgs {
                     return Err(Fail::tool(format!("unknown flag: {flag}")));
                 }
                 value if page.is_none() => page = Some(value.to_owned()),
+                // Under `--load` every positional is another PAGE — several
+                // pages are several targets in ONE call, which is what makes
+                // a resolver's cold pass one exchange (§ 1.6).
+                value if load => pages.push(value.to_owned()),
                 value if task.is_none() => task = Some(value.to_owned()),
                 value => return Err(Fail::tool(format!("unexpected argument: {value}"))),
             }
@@ -225,16 +255,30 @@ impl RunArgs {
         }
         let Some(page) = page else {
             return Err(Fail::tool(
-                "usage: mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json".to_owned(),
-            ));
-        };
-        if list && (task.is_some() || dry || !args.is_empty() || !env.is_empty()) {
-            return Err(Fail::tool(
-                "--list takes only <PAGE> (and --json) — it lists every task; \
-                 name a TASK with --dry to inspect one"
+                "usage: mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json\n   \
+                 or: mrd run <PAGE>#^<id> [--input-json FILE|-] [--dry] [--json]\n   \
+                 or: mrd run --load <PAGE>... [--json]"
                     .to_owned(),
             ));
-        }
+        };
+        // `<PAGE>#^<id>` is the fire spelling: the block travels in the ref,
+        // not in a flag, because it addresses the same thing `[[#^id]]` does
+        // everywhere else in the corpus.
+        let (page, block) = match page.split_once("#^") {
+            Some((page, block)) => (page.to_owned(), Some(block.to_owned())),
+            None => (page, None),
+        };
+        exclusions(&Shape {
+            task: task.as_deref(),
+            args: &args,
+            env: &env,
+            dry,
+            list,
+            load,
+            block: block.as_deref(),
+            input_json: input_json.as_deref(),
+        })?;
+        let input = input_json.map(|source| read_input(&source)).transpose()?;
         Ok(Self {
             page,
             task,
@@ -243,6 +287,10 @@ impl RunArgs {
             dry,
             list,
             json,
+            load,
+            block,
+            input,
+            pages,
         })
     }
 
@@ -253,6 +301,85 @@ impl RunArgs {
             Format::Human
         }
     }
+
+    /// Whether this invocation takes the mode path at all.
+    fn is_mode(&self) -> bool {
+        self.load || self.block.is_some()
+    }
+}
+
+/// The argv shape one invocation presented, for the exclusion pass.
+struct Shape<'a> {
+    task: Option<&'a str>,
+    args: &'a [String],
+    env: &'a BTreeMap<String, String>,
+    dry: bool,
+    list: bool,
+    load: bool,
+    block: Option<&'a str>,
+    input_json: Option<&'a str>,
+}
+
+/// Every argv combination that is meaningless, refused BY NAME.
+///
+/// A flag that has no meaning where it was written must refuse, never be
+/// ignored: silently dropping `--env` on a fire would be the
+/// guard-you-believe-is-armed trap in argv costume.
+fn exclusions(shape: &Shape<'_>) -> Result<(), Fail> {
+    let task_args = shape.task.is_some() || !shape.args.is_empty() || !shape.env.is_empty();
+    if shape.list && (task_args || shape.dry) {
+        return Err(Fail::tool(
+            "--list takes only <PAGE> (and --json) — it lists every task; \
+             name a TASK with --dry to inspect one"
+                .to_owned(),
+        ));
+    }
+    if shape.load && shape.block.is_some() {
+        return Err(Fail::tool(
+            "--load reads a page's declarations; `#^<id>` addresses one block to fire. \
+             Drop one"
+                .to_owned(),
+        ));
+    }
+    if shape.load && (task_args || shape.list) {
+        return Err(Fail::tool(
+            "--load takes only pages (and --json): it evaluates every declaring block's \
+             top level and applies nothing"
+                .to_owned(),
+        ));
+    }
+    if shape.input_json.is_some() && shape.block.is_none() {
+        return Err(Fail::tool(
+            "--input-json is a fire's input: address a block as `<PAGE>#^<id>`. \
+             A task's inputs are `-- ARGS` and `--env K=V`"
+                .to_owned(),
+        ));
+    }
+    if shape.block.is_some() && task_args {
+        return Err(Fail::tool(
+            "a fire's one input channel is `--input-json`: `TASK`, `-- ARGS` and \
+             `--env K=V` are the task contract's"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// Read `--input-json FILE|-` into the value a fire's entry receives.
+///
+/// Read HERE, at the argv boundary, so a malformed input refuses with exit 2
+/// (the invocation was wrong) rather than reaching the plane and being
+/// reported as the page's fault.
+fn read_input(source: &str) -> Result<serde_json::Value, Fail> {
+    let bytes = if source == "-" {
+        std::io::read_to_string(std::io::stdin())
+            .map_err(|e| Fail::tool(format!("--input-json -: cannot read stdin: {e}")))?
+    } else {
+        std::fs::read_to_string(source)
+            .map_err(|e| Fail::tool(format!("--input-json {source}: {e}")))?
+    };
+    serde_json::from_str(&bytes)
+        .map_err(|e| Fail::tool(format!("--input-json {source}: not JSON: {e}")))
 }
 
 /// Run `mrd run <tail>`. Errors [`Fail`] on the triad's 1/2 legs — see the module docs for the
@@ -364,6 +491,14 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
         return list_tasks(&root, &parsed.page, &doc, &conventions, parsed.format());
     }
 
+    // The mode legs (hook-support design § 2.2). They fork here — after the
+    // page is admitted, resolved and loaded, so they inherit every §1 / §2.1
+    // door law the task legs take — and before the TASK gate, which is the
+    // task contract's and has nothing to say about a declared block.
+    if parsed.is_mode() {
+        return mode_legs(&root, declaring_root, &parsed, &doc);
+    }
+
     // The door's own pre-check, whole: it resolves and validates so a bad
     // invocation refuses BEFORE the plane opens, and the plane then resolves
     // again as its own gate (`pre_eval` — one owner, both tenses). Both costs
@@ -405,6 +540,108 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
     }
 
     execute(&root, declaring_root, &parsed, task)
+}
+
+/// The load and fire legs (hook-support design § 2.2), CLI tense.
+///
+/// The rows are built by the ONE implementation the wire arm uses
+/// ([`run::modes`]) — the two lanes differ only in where the page comes from
+/// and which door facilities are in reach, and both differences are
+/// parameters. A second implementation here would be a second set of laws
+/// wearing the first's names.
+fn mode_legs(
+    root: &fs::WorkspaceRoot,
+    declaring_root: Option<&Path>,
+    parsed: &RunArgs,
+    doc: &model::Document,
+) -> Result<(), Fail> {
+    let (invocation, _now) = mint_identity()?;
+    // The CLI has no resident engine and no ring: it reads the page it was
+    // pointed at, and its commits stay external change exactly as on the task
+    // path (the flock ruling). `Doors::default()` is that fact, spelled.
+    let observed = model::MerkleRoot(String::new());
+    let mut rows = Vec::new();
+    let mut pages = vec![parsed.page.clone()];
+    pages.extend(parsed.pages.iter().cloned());
+    for (index, page) in pages.iter().enumerate() {
+        // The first page is already loaded; the rest are loaded here, so a
+        // multi-page `--load` is still one process and one pass.
+        let loaded;
+        let page_doc = if index == 0 {
+            doc
+        } else {
+            loaded = address::load_page(root, Path::new(page)).map_err(|e| fail_address(&e))?;
+            &loaded
+        };
+        let target = wire::RunTarget {
+            page: page.clone(),
+            task: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            dry: parsed.dry.then_some(true),
+            mode: Some(if parsed.load {
+                wire::RunMode::Load
+            } else {
+                wire::RunMode::Fire
+            }),
+            block: parsed.block.clone(),
+            input: parsed.input.clone(),
+            timeout_ms: None,
+            budget: None,
+            source: None,
+        };
+        rows.push(run::modes::mode_row(
+            &run::modes::ModeWorld {
+                doc: page_doc,
+                root,
+                declaring_root,
+                observed_root: &observed,
+                // The CLI takes no `prelude`: it is the daemon's channel for
+                // the reply constructors, and there is no argv spelling for
+                // caller source (§ A.8's "the wire carries names, never code"
+                // has no CLI counterpart to relax).
+                prelude: None,
+                doors: run::modes::Doors::default(),
+                // No resident cache on the CLI: this process evaluates each
+                // block once and exits, so a cache would be built, used once
+                // and dropped.
+                cache: None,
+            },
+            &target,
+            &format!("{invocation}-t{index}"),
+            None,
+            None,
+        ));
+    }
+    let refused = rows.iter().any(|row| {
+        matches!(
+            row.get("result").and_then(|r| r.as_str()),
+            Some("refused" | "fault")
+        )
+    }) || rows.iter().any(|row| {
+        row.get("loaded")
+            .and_then(|l| l.as_array())
+            .is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|b| b.get("result").and_then(|r| r.as_str()) == Some("fault"))
+            })
+    });
+    // One JSON document either way: these rows are machine surfaces (a
+    // resolver reads them), so there is no human rendering to invent.
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({"targets": rows})).expect("mode rows serialize")
+    );
+    if refused {
+        // The plane refused or a block faulted — the exit-1 leg of the triad,
+        // same as any other run-plane refusal.
+        return Err(fail_run(
+            "a row refused or a block faulted — the rows above carry the class and the line"
+                .to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// The execute leg: compose the run through the U7 runner (empty ruleset — see [`S1_RULES`]),

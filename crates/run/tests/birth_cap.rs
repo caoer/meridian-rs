@@ -133,7 +133,7 @@ fn an_occupied_path_refuses_the_second_birth() {
     let observed = current_root(&root);
     let err = executor::apply(&root, &request(&again, &authority, &observed))
         .expect_err("an occupied path refuses");
-    let ExecError::BirthRefused { path, detail } = err else {
+    let ExecError::BirthRefused { path, detail, .. } = err else {
         panic!("expected BirthRefused, got {err:?}");
     };
     assert_eq!(path, "tasks/new-card.md");

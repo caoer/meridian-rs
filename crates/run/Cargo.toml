@@ -78,6 +78,10 @@ config = { workspace = true }
 # foreign-edit check parses prior receipts back).
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+# The § 2.2 module cache keys on the block rev PLUS a digest of the prelude:
+# the prelude's bindings are frozen with the module, so two preludes make two
+# modules from identical block bytes. Same dev-edge precedent as `registry`.
+blake3 = "1"
 # The per-workspace cache drawer, where the run plane's digest memo lives
 # beside `sql.duckdb` (F8, card run-preexec-severity): run's corpus
 # observations amortise across invocations the way sql's projection does.
