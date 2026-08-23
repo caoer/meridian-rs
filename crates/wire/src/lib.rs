@@ -47,6 +47,23 @@ pub struct Span(pub u64, pub u64);
 #[serde(transparent)]
 pub struct NodeRev(pub String);
 
+/// The `expected` a CREATE-door CAS refusal carries: the [`NodeRev`] of the
+/// EMPTY DOCUMENT — `blake3-256("")[:16]`, because an absent file is bytewise
+/// nothing. Not a nil hash, not the empty string, not a `b3:`-prefixed corpus
+/// token.
+///
+/// Published here because `wire` is the only Go-visible surface and the daemon
+/// needs the same token to tell "the path is occupied" from every other
+/// `cas_mismatch` (the drift/remove-CAS and the splice verdict spell the same
+/// code with a real rev in `expected`). [`ErrorBody::is_path_occupied`] is the
+/// comparison; nobody should re-spell it.
+///
+/// The engine still COMPUTES its `absent_rev()` from the model rather than
+/// reading this constant, and `wire_serve::write` carries the test that the two
+/// agree — so a domain-rule change that moves the empty-document rev fails the
+/// build loudly instead of leaving this constant quietly lying.
+pub const ABSENT_REV: &str = "af1349b9f5f9a1a6";
+
 /// Opaque Merkle root cursor: `"b3:" + 64 hex`, full width, never truncated
 /// (v2 §1). Algorithm+domain prefixed; the prefix bumps on domain-rule change
 /// (v2 §12.3). Equality comparison only.
@@ -3042,6 +3059,29 @@ impl ErrorBody {
             scope: None,
             uncovered: None,
         }
+    }
+
+    /// Whether this refusal is the create door's CAS — the path a birth named
+    /// is already occupied, which a fill-if-absent caller treats as an outcome
+    /// rather than a fault.
+    ///
+    /// `cas_mismatch` is NOT unique to occupancy: the same code spells the
+    /// create-CAS (`expected` = [`ABSENT_REV`]), the drift/remove-CAS
+    /// (`expected` = the caller's own read rev) and the splice verdict. Keying
+    /// on the code alone reads a drift refusal — "the file moved under your
+    /// plan", the genuinely dangerous one — as a benign already-exists. So the
+    /// discriminator is the `expected` field, and it lives here once because
+    /// three consumers plus the Go daemon need the same answer.
+    ///
+    /// Deliberately narrow: the guard plane's `AlreadyBorn` is a benign
+    /// already-exists too, but it is a splice-path refusal carrying NO
+    /// `expected`, so it reads false here. That is fail-closed on a frame the
+    /// create door never mints — an error, never a silent "it was already
+    /// there".
+    #[must_use]
+    pub fn is_path_occupied(&self) -> bool {
+        self.code == ErrorCode::CasMismatch
+            && self.expected.as_ref().is_some_and(|r| r.0 == ABSENT_REV)
     }
 
     /// The `fingerprint_version_retired` refusal with its re-mint teaching

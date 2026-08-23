@@ -77,7 +77,7 @@ const MINT_CONSEQUENCE: &str = "Nothing was sent and no token was minted.";
 /// lane every mint took before the rooted lane existed (byte-identical to the
 /// read door's helper, the two doors sharing the lane).
 fn ambient_workspace(cwd: &std::path::Path) -> Result<std::path::PathBuf, Fail> {
-    let resolved = crate::resolve::resolve_runtime(cwd).map_err(|e| {
+    let resolved = crate::resolve::resolve_runtime(workspace::Base::Cwd(cwd)).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace for {}: {e}",
             cwd.display()

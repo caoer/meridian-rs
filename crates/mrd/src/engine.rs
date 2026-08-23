@@ -185,7 +185,7 @@ pub(crate) fn run_command(path_arg: Option<&str>, format: Format) -> Result<(), 
         None => Ok(None),
     };
     let ambient = || -> Result<std::path::PathBuf, Fail> {
-        Ok(crate::resolve::resolve_runtime(&cwd)
+        Ok(crate::resolve::resolve_runtime(workspace::Base::Cwd(&cwd))
             .map_err(|e| {
                 Fail::tool(format!(
                     "cannot resolve workspace for {}: {e}",

@@ -8,10 +8,14 @@
 //! bytes, then reads them back through `config` and reports the name `config` read.
 //!
 //! # What init does not do
-//! It does not anchor the resolution ladder. The ladder answers `MERIDIAN_WORKSPACE` → nearest
-//! `.git` → the cwd default and never reads a declaration, so a tree declared below a git root
-//! still resolves to the git root. Init therefore reports the ladder's answer for the target,
-//! tier and root, and names the fix when the two differ.
+//! It does not anchor the resolution ladder. The ladder answers a NAMED argument → the
+//! `MERIDIAN_WORKSPACE` override → nearest `.git` → the cwd default, and never reads a
+//! declaration, so a tree declared below a git root still resolves to the git root. Init
+//! therefore reports the ladder's answer for the target, tier and root, and names the fix when
+//! the two differ. `mrd init PATH` names its target, so that report describes PATH's own
+//! resolution and not a live override's tree (ruling 2026-08-23,
+//! `unregister-env-override-vs-explicit-path`); with no PATH the cwd is ambient and the
+//! override still answers.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -130,8 +134,15 @@ pub(crate) fn run(
         gc::maybe_auto_gc(&cache_root);
     }
 
-    // What the ladder says about this directory — the declaration does not anchor it.
-    let answer = workspace::resolve(&target)
+    // What the ladder says about THIS directory — the declaration does not
+    // anchor it. A named PATH outranks `MERIDIAN_WORKSPACE`, so the note below
+    // describes the tree just initialised instead of whatever the override
+    // points at; with no PATH the cwd is ambient and the override answers.
+    let ladder_base = match target_arg {
+        Some(_) => workspace::Base::Named(&target),
+        None => workspace::Base::Cwd(&target),
+    };
+    let answer = workspace::resolve(ladder_base)
         .map_err(|e| Fail::tool(format!("cannot resolve {}: {e}", target.display())))?;
 
     report(
@@ -233,7 +244,7 @@ fn reconcile_descendants(cache_root: &Path, target: &Path) -> Result<Vec<String>
 /// Whether the ladder anchors `ws` at `ws` itself, with no environment
 /// override in play. An unreadable or vanished path anchors nothing.
 fn anchors_itself(ws: &Path) -> bool {
-    workspace::resolve_with_override(ws, None)
+    workspace::resolve_with_override(workspace::Base::Named(ws), None)
         .ok()
         .and_then(|answer| answer.root().map(|root| root == ws))
         .unwrap_or(false)

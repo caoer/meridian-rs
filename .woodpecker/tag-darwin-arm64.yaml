@@ -146,6 +146,16 @@ steps:
           printf '%s\n' "$porcelain"
           exit 1
         fi
+        # THE FOURTH STATE (F7): the probe above measures divergence from HEAD;
+        # the stamp names $rev. Assert they are the same tree, tri-state.
+        if ! head="$(git rev-parse HEAD)"; then
+          echo "rev-parse FAILED — cannot attest which tree was built"
+          exit 1
+        fi
+        if [ "$head" != "$${rev}" ]; then
+          echo "HEAD is $head, not $${rev} — the probe answered for a tree the stamp does not name; refusing"
+          exit 1
+        fi
         echo "MRD_BUILD_SHA=$${rev}" > "$${CI_WORKSPACE}/.ci/stamp.env"
         cat "$${CI_WORKSPACE}/.ci/stamp.env"
         env $(cat "$${CI_WORKSPACE}/.ci/stamp.env") cargo build --locked --release -p mrd
