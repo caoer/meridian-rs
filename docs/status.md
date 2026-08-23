@@ -1423,6 +1423,64 @@ cost. Run the benches to refresh:
 cargo bench -p perfsuite
 ```
 
+### The timing mode — `MRD_TIMING`
+
+`perfsuite` measures a tree you built. `MRD_TIMING` measures the binary you
+already shipped: it turns on a **timing-only** log — one line per completed
+phase and nothing else — on a release binary, with no profiler, no debug build
+and no rebuild. stdout, `--json` bodies and exit codes are byte-identical with
+it on and off; the mode writes to stderr or to a file, never to stdout.
+
+| `MRD_TIMING` | Sink |
+|---|---|
+| unset, empty, `0` | **off** — no clock is read and nothing is written |
+| `1`, `on`, `true`, `yes` | stderr |
+| any other value | that path, opened append (created if absent); an unopenable path degrades to stderr |
+
+The value is read **once per process**, at the first phase; changing it
+mid-process changes nothing. One line per phase, `\n`-terminated, written in a
+single `write_all` so concurrent threads interleave whole lines:
+
+```text
+mrd-timing cmd=run phase=snapshot.read us=402118
+```
+
+- `cmd=` — the verb this PROCESS was entered with (`mrd run` ⇒ `run`, the
+  daemon ⇒ `daemon`). It names the process, never one request.
+- `phase=` — a dotted name; the dot is nesting (`snapshot.read` is inside
+  `snapshot`).
+- `us=` — elapsed wall clock in microseconds, integer. The same noun as the
+  wire frame's `meta.duration_us`; there is no second time unit and no float.
+
+Fields are `key=value`, space-separated, in that fixed order, after the fixed
+`mrd-timing` prefix — so `grep '^mrd-timing '` separates the mode from every
+other line on the stream. Lines print in **completion order**: a nested phase
+prints before the phase containing it, and `total` prints last.
+
+**Off costs nothing.** A phase whose sink is off holds no `Instant`, so the off
+path reads no clock, allocates nothing, formats nothing and writes nothing —
+the whole cost is one atomic load of the resolved sink.
+
+**Two lanes, and only one of them is the caller's.** `mrd run` executes in the
+calling process, so its phases land on the caller's sink. `mrd script` and the
+MCP face hand the work to the resident daemon: those phases happen in the
+DAEMON's process and land on the DAEMON's sink. Nothing rides back on the wire
+— a timing array in a response frame would be a new host-facing type, and Law 2
+puts those in `wire` and `wire-contract.md`, not in an instrument. What a client
+already has for a daemon-served call is the frame's `meta.duration_us` (the
+server-side total) to set against its own round-trip.
+
+So timing a daemon-served call means setting `MRD_TIMING` **in the daemon's
+environment**, and there the stderr form is invisible: the auto-spawned daemon
+inherits the client's environment but nulls its stderr
+(`crates/mrd/src/daemon.rs`, `Stdio::null()`). Give the daemon a **file path**,
+or start it in the foreground (`mrd daemon`) with `MRD_TIMING=1`. A daemon
+already resident when the variable is set emits nothing — it kept the
+environment it started with.
+
+Which phases `mrd run` emits: `run-plane.md` § Timing phases. The instrument is
+`crates/timing` (`laws.md` § Crate charters).
+
 ## Known gaps
 
 - Perf rungs are largely UNTESTED pending baselines (see the tally above).
