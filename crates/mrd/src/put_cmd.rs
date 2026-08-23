@@ -285,7 +285,13 @@ fn rooted_write_target(
     }
     match crate::rooted::resolve(&parsed.path, "put", PUT_CONSEQUENCE) {
         Ok((rel, rooted)) => {
-            parsed.display = Some(std::mem::replace(&mut parsed.path, rel));
+            // The CANONICAL rooted spelling, not the caller's bytes: an alias is
+            // a lookup spelling (§ 4.6a), and a receipt echoing one names a root
+            // that means nothing — or something else — to the next reader of that
+            // line. Rooted where the caller wrote rooted; only the root half is
+            // canonicalized, and an ambient spelling is untouched below.
+            parsed.display = Some(rooted.canonical_ref(&rel));
+            parsed.path = rel;
             Ok(rooted.workspace)
         }
         // The refusal frames with the workspace the caller stands in — no
@@ -476,8 +482,12 @@ impl Put {
         self.dry || self.validate
     }
 
-    /// The spelling the faces echo: the caller's own — rooted where the
-    /// caller wrote rooted, the bare path otherwise (the read door's law).
+    /// The spelling the faces echo: rooted where the caller wrote rooted, the
+    /// bare path otherwise (the read door's law) — with the root half CANONICAL.
+    ///
+    /// The caller's own bytes were echoed verbatim while a rooted spelling could
+    /// only ever BE the mount's name; aliases (§ 4.6a) ended that, and a receipt
+    /// is a line a reader acts on later, possibly on another machine.
     fn display(&self) -> &str {
         self.display.as_deref().unwrap_or(&self.path)
     }

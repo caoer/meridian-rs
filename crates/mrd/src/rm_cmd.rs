@@ -50,7 +50,12 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // runs against the TARGET tree.
     let workspace = match crate::rooted::enter(&parsed.path, "rm", "Nothing was removed.") {
         Ok(Some((rel, rooted))) => {
-            parsed.display = Some(std::mem::replace(&mut parsed.path, rel));
+            // The CANONICAL spelling, not the caller's bytes (§ 4.6a). This is a
+            // DELETION receipt: the line saying what is gone is the only record
+            // of it, and a root named by this machine's private lookup spelling
+            // is not a place anyone else can go and look.
+            parsed.display = Some(rooted.canonical_ref(&rel));
+            parsed.path = rel;
             rooted.workspace
         }
         Ok(None) => resolved.workspace,

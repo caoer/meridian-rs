@@ -130,7 +130,12 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     };
     let workspace = match entered {
         Ok(Some((rel, rooted))) => {
-            parsed.display = parsed.path.replace(rel);
+            // The CANONICAL spelling, not the caller's bytes: this display is
+            // what overwrites the answered `scope` field below, and a minted
+            // scope naming an alias (§ 4.6a) is a premise the next machine
+            // cannot re-derive.
+            parsed.display = Some(rooted.canonical_ref(&rel));
+            parsed.path = Some(rel);
             rooted.workspace
         }
         Ok(None) => ambient_workspace(&cwd)?,
