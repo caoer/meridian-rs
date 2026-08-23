@@ -1710,15 +1710,45 @@ page's root.
 
 **`exec(block=)` resolves at LOAD**, not at the call: the declaration IS the
 program, so a declaration naming a fence that is not there is broken when it
-is read — `no_block`, carrying the anchor's own words.
+is read — `no_block`, carrying the anchor's own words; an anchor minted twice
+is the typed `ambiguous_anchor`. Both are faults on the **load row**, so a
+resolver deciding what to arm learns it from `--load` rather than from the
+first fire, and both are judged again at the fire door, because a page can
+change between the two.
 
-**Recording has a ceiling.** An `exec[]` row publishes `stdout_sha256` +
-`bytes` + a `log` path under `.meridian/runs/`, never the stream inline: a
-chatty hook would otherwise put its whole stdout on the wire, in the daemon's
-journal and in an agent's context on every fire. The dict the PROGRAM sees
-still carries `stdout`/`stderr` inline — a program branching on its own
-command's output is why `bash()` returns a value at all. Nothing is logged
-under `dry`.
+**An exec'd entry's program is a STAGED FILE.** The bytes are written once per
+block rev under `.meridian/staged/<rev>[.<token>]` and the process is
+`<interpreter> <staged-file> <args…>`. `-c` is a **shell** convention and
+cannot be the contract for a plane whose law is *a new language is `argv[0]`,
+not a concept*: measured 2026-08-23, `node -c '<source>'` reads `-c` as
+`--check` and answers `MODULE_NOT_FOUND` exit 1, `bun -c` answers `File not
+found`, `deno`'s `-c` is its config-file flag — so under `-c` every non-shell
+entry fails while looking like a script that ran and said no. The extension is
+the fence's own info-string token (`fence.rs` is untouched: that is the FIRST
+token, the classifier that already exists) because bun and deno pick a loader
+from the file name. The staged file IS the cache the design names — *staged
+bytes cached by block rev*: a rev names one immutable set of bytes, so a
+second fire of an unchanged block finds it there and writes nothing; the cache
+removes the read and the write, never the spawn. `$0` is therefore the staged
+path, not `mrd-task`; stdin, env, cwd and the exit contract are unchanged, so
+*the script's bytes run unchanged* holds. **The shipped task path keeps `-c`
+and `$0 = mrd-task`, byte for byte** (`run::exec::ExecSpec::task`).
+
+**Recording has a ceiling.** Logs live at
+`.meridian/runs/<page-path>/<invocation>-t<index>.log` for an exec'd entry and
+at `…-t<index>-b<n>.log` for the n-th `bash()` call of that target — a
+directory **per page**, which is what makes the stated retention (the last 50
+per page) implementable at all, and what keeps the fire path out of
+`.meridian/runs/`'s top level, where `run::record` writes the TASK path's logs
+and a run receipt points at them. An `exec[]` row publishes `stdout_sha256` +
+`bytes` + that `log` path, never the stream inline: a chatty hook would
+otherwise put its whole stdout on the wire, in the daemon's journal and in an
+agent's context on every fire. A `process` object is bounded the same way —
+`stdout_tail`/`stderr_tail` are the **last 4096 bytes** of each stream, with
+`stdout_bytes`/`stderr_bytes` saying how much there was and the `log` carrying
+all of it. The dict the PROGRAM sees still carries `stdout`/`stderr` inline —
+a program branching on its own command's output is why `bash()` returns a
+value at all. Nothing is staged and nothing is logged under `dry`.
 
 ### Input and answer
 
@@ -2097,6 +2127,30 @@ The runner dispatches on the fence language (decision #13): `starlark` →
 hermetic kernel eval; `bash` → exec in the **invocation cwd**. The language set
 is closed. There is **no `Exec` EffectKind** — a replayed exec would re-run
 arbitrary code, so exec never enters the effect surface.
+
+**This whole section is the TASK path.** Everything below — the two-phase
+receipts, the `run.lock`, phase-2 convergence, the `OutOfBand` refusal — is
+what a `task.<name>` row does, and a fire does none of it. A `declare()` row
+runs its process through **the same bracket** (`run::exec::exec` over
+[`ExecSpec`](#the-run-entry-amended--load-freeze-fire), the `exec_bracket()`
+the hook-support design names) and then parts company:
+
+| | task row (`task.<name>`) | fire row (`declare()`) |
+|---|---|---|
+| receipts | phase-1 + phase-2 rows in `receipts/run.md` | **none** — 100 declared-block fires add zero rows |
+| `.meridian/run.lock` | taken | **not taken** |
+| program | `bash -c <source> mrd-task <args…>`, `$0` = `mrd-task` | `<interpreter> <staged-file> <args…>`, `$0` = the staged path |
+| stdin | `Stdio::null()` | the fire's `input`, compact JSON |
+| exit | collapsed to `state: applied\|partial` | the **raw** code, 1 and 2 distinct |
+| stderr | captured, read by nothing | `stderr_tail` on the row |
+| record | the receipt + `.meridian/runs/<invocation>-t<index>.log` | `.meridian/runs/<page-path>/<invocation>-t<index>.log`, and the row |
+| language set | closed (`starlark`, `bash`) | `argv[0]` — any interpreter |
+
+**There is no flag for that split, and no caller can ask for it**: the engine
+reads the page, and recording follows the **declaration kind** (§ Recording by
+declaration kind). The one thing a fire's process is not is *unrecorded* — it
+is logged out of tree and answered on the row; what it is not is *receipted*.
+The laws it runs under are § The run entry, amended.
 
 A bash step runs where `mrd` runs (U16, requirements row E1 — *"DO NOT CHANGE
 THE RUNNING PATH"*). The supervisor does not relocate the process; the
