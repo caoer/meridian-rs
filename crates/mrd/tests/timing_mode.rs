@@ -86,6 +86,16 @@ def run(ctx):
 ^stamp-1
 ";
 
+struct Ws {
+    tmp: tempfile::TempDir,
+}
+
+impl Ws {
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(tmp.path().join("solo.md"), SOLO_PAGE).expect("page");
+        std::fs::write(tmp.path().join("emit.md"), EMIT_PAGE).expect("emit page");
+        std::fs::write(tmp.path().join("stamp.md"), EFFECTFUL_PAGE).expect("effectful page");
         Self { tmp }
     }
 
