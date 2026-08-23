@@ -566,7 +566,16 @@ a sentence (fable F-11, adopted by merged plan §4.1):
    assumed.
 3. Reads **open without following links**; an identity check (fstat) runs
    BEFORE and AFTER the byte read — identity moved mid-read ⇒ discard and
-   re-read.
+   re-read. *(Anchored, 2026-08-22, card mac-devhost-snapshot-canonicalization:
+   the no-follow walk is a directory-fd `openat(O_NOFOLLOW)` per component
+   **from the workspace root down** — every component BELOW the root refuses
+   a symlink; the root itself opens as the caller named it, symlinks in its
+   own prefix followed. The root is the trust anchor, not a member: every
+   production root is canonical at bind (`workspace::canonicalize`), so the
+   prefix-follow is a no-op there, while a fixture root under macOS's
+   `/var` → `/private/var` `$TMPDIR` stops refusing its own tree. Before
+   this the walk began at `/` and a default-`$TMPDIR` mac was red across the
+   workspace.)*
 4. An **event-generation fence** brackets the read: a feed event landing
    during the read re-classifies it rather than letting a torn observation
    into the memo.
