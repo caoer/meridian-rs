@@ -50,9 +50,16 @@ const FIXTURE_DRAIN_SECS: &str = "30";
 /// candidate stays exposed until it adopts this, and that residue is tracked on
 /// its own card — not implied by this helper's presence.
 ///
+/// The binary honours an `MRD_BIN` override, because 14 of the adopting files
+/// had their own `mrd_bin()` that did — adopting the helper without it would
+/// have deleted a capability while the commit claimed to be mechanical. The
+/// other adopters gain the override; that is the point of one chokepoint.
+///
 /// Callers chain their own `.args()`, `.current_dir()` and any further `.env()`.
 pub(crate) fn mrd_command(home: &Path, cache_home: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mrd"));
+    let bin = std::env::var_os("MRD_BIN")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from);
+    let mut cmd = Command::new(bin);
     cmd.env("HOME", home)
         .env("XDG_CACHE_HOME", cache_home)
         .env(registry::DRAIN_COLD_BUILDS_ENV, FIXTURE_DRAIN_SECS);

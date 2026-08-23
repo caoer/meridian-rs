@@ -94,10 +94,8 @@ fn sandbox() -> Sandbox {
 
 impl Sandbox {
     fn command(&self, cwd: &Path) -> Command {
-        let mut c = Command::new(mrd_bin());
+        let mut c = common::mrd_command(&self.home, &self.cache_home);
         c.current_dir(cwd)
-            .env("HOME", &self.home)
-            .env("XDG_CACHE_HOME", &self.cache_home)
             .env("MERIDIAN_CONFIG", &self.config)
             .env_remove("MERIDIAN_WORKSPACE");
         c
