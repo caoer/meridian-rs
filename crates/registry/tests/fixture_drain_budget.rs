@@ -117,7 +117,8 @@ fn code(line: &str) -> &str {
 /// the raw text, and the asymmetry was a hole with a name: comment out the
 /// assignment (`// TODO: config.drain_cold_builds = …`) and the file still
 /// "contained" the knob, so a fixture back on the 2 s production default
-/// passed — measured, `.scratch/guard-hole.log`.
+/// passed the guard clean. Reproduce it by commenting that one line out in a
+/// fixture and running this test: half 1 must redden, half 2 must stay green.
 fn code_contains(text: &str, needle: &str) -> bool {
     text.lines().any(|l| code(l).contains(needle))
 }
