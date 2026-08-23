@@ -178,7 +178,9 @@ impl TestServer {
     /// daemon down, and refusing to would bury the real failure under a
     /// second one.
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<RunningServer>> {
-        self.server.lock().unwrap_or_else(|e| e.into_inner())
+        self.server
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -216,20 +218,32 @@ mod tests {
         cfg
     }
 
-    /// **The invariant, proved against the hostile field order.**
+    /// **What the type guarantees, and the one shape it does NOT — both
+    /// asserted, because the second is the tempting claim and it is false.**
     ///
-    /// The whole point of this type is that the teardown order survives a
-    /// field order nobody checked. So this asserts it on a struct whose fields
-    /// are declared BACKWARDS — the exact shape the deleted source-text guard
-    /// existed to reject — and shows the stop still happens first.
+    /// Guaranteed: `TestServer::drop` runs `stop()` to completion before
+    /// EITHER of its own fields drops, so the temporary tree is still there
+    /// while the daemon drains. That is a language guarantee — a `Drop::drop`
+    /// body runs before the value's own field drop glue — and it is the whole
+    /// reason a fixture no longer has a teardown order to remember.
     ///
-    /// The witness is the socket: a stopped daemon has removed it, and the
-    /// temporary tree still exists at that moment. If the tree had gone first,
-    /// the socket would be gone with it and the observation impossible.
+    /// NOT guaranteed: beating a SIBLING field of an ENCLOSING struct. Sibling
+    /// fields drop in declaration order, and `TestServer::drop` only runs when
+    /// its own field is reached — so a witness declared before it observes a
+    /// LIVE daemon. This test asserts that, measured, rather than its
+    /// flattering opposite.
+    ///
+    /// Why the gap is harmless, and why it is not the old hazard wearing a new
+    /// hat: a fixture can no longer hold the temporary tree as a sibling at
+    /// all. `TestServer` owns the `TempDir` and lends only `&Path`
+    /// ([`TestServer::path`]), so the shape the deleted source-text guard
+    /// existed to reject — a `TempDir` declared before the server, removing the
+    /// tree under a live drain — cannot be written any more. What a sibling
+    /// dropping early can still do is observe; what it cannot do is delete.
     #[test]
-    fn a_reversed_field_order_still_stops_the_server_first() {
-        /// Fields in the WRONG order on purpose: `first` is dropped before
-        /// `daemon`. Only `TestServer`'s own `Drop` keeps this correct.
+    fn a_sibling_declared_before_the_daemon_drops_while_it_is_still_live() {
+        /// Fields in the hostile order on purpose: `first` is dropped before
+        /// `daemon`, so the witness runs while the daemon is still live.
         struct Inverted {
             first: DropWitness,
             daemon: TestServer,
@@ -255,13 +269,17 @@ mod tests {
 
         let socket_gone = Arc::new(AtomicBool::new(false));
         let root_alive = Arc::new(AtomicBool::new(false));
+        let socket;
+        let root;
 
         {
             let daemon = TestServer::start(fixture_config).expect("the daemon starts");
+            socket = daemon.socket_path();
+            root = daemon.path().to_path_buf();
             let inverted = Inverted {
                 first: DropWitness {
-                    socket: daemon.socket_path(),
-                    root: daemon.path().to_path_buf(),
+                    socket: socket.clone(),
+                    root: root.clone(),
                     socket_gone_at_drop: Arc::clone(&socket_gone),
                     root_alive_at_drop: Arc::clone(&root_alive),
                 },
@@ -273,16 +291,32 @@ mod tests {
             );
         }
 
+        // The half the type does NOT give you, stated as an assertion so it
+        // cannot quietly become the opposite belief again.
         assert!(
-            socket_gone.load(Ordering::SeqCst),
-            "the daemon must be STOPPED before the first field drops — \
-             TestServer::drop runs before any field's drop glue, so a reversed \
-             field order cannot invert the teardown"
+            !socket_gone.load(Ordering::SeqCst),
+            "a sibling field declared BEFORE the daemon drops before it, i.e. \
+             before TestServer::drop has run at all — the type orders its own \
+             two fields, not the enclosing struct's. If this ever passes, \
+             sibling drop order has changed and this test's doc is stale."
         );
         assert!(
             root_alive.load(Ordering::SeqCst),
-            "the temporary tree must still exist at that moment: the stop \
-             drains in-flight drawer rebuilds, and they need their workspace"
+            "and the temporary tree is untouched at that moment, because the \
+             tree belongs to the TestServer and not to the sibling: an early \
+             sibling can observe, it cannot delete"
+        );
+
+        // The half the type DOES give you, at the only point it is observable
+        // from outside: once the TestServer's own field drops, `stop()` has run
+        // to completion and only THEN did its `TempDir` field drop.
+        assert!(
+            !socket.exists(),
+            "the daemon is stopped once the TestServer field drops: its socket is gone"
+        );
+        assert!(
+            !root.exists(),
+            "and its temporary tree is removed after that stop, not before it"
         );
     }
 

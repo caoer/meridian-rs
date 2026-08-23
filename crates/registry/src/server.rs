@@ -244,6 +244,12 @@ pub const DRAIN_COLD_BUILDS_ENV: &str = "MRD_DRAIN_COLD_BUILDS";
 /// Refuses loudly, naming the variable and echoing the bytes it saw: this
 /// value exists to escape a hazard, so guessing on its behalf is the one
 /// behaviour that must not happen.
+// `{:?}` on the `OsStr` is deliberate, which is why the lint is silenced rather
+// than obeyed: this message exists to show a value the parser could NOT read.
+// `Display` drops the quotes and unescapes, so an empty value prints as
+// nothing, `" 30 "` prints as `30`, and a stray newline breaks the line — the
+// three shapes a reader most needs to SEE. Debug renders all three visibly.
+#[allow(clippy::unnecessary_debug_formatting)]
 fn parse_drain_cold_builds(raw: &std::ffi::OsStr) -> io::Result<Duration> {
     raw.to_str()
         .and_then(|s| s.trim().parse::<u64>().ok())
