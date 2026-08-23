@@ -997,7 +997,10 @@ pub enum Op {
         /// Load-phase source evaluated before each block's own top level
         /// (cap `run.mode`) — ONE per call, shared by every mode-bearing
         /// target. Keyed by its blake3 in the module cache; a prelude that
-        /// faults refuses `prelude_invalid` before ANY block runs. It needs
+        /// faults — or that carries CONSENT MATERIAL, a declaration or an
+        /// `exec` value, since consent is page-authored — refuses
+        /// `prelude_invalid` at the mode door, before any block of the page
+        /// is loaded, for load and fire alike. It needs
         /// no `load()`: it is source evaluated ahead of the module, not a
         /// loadable unit (`load()` is a parse error in this dialect), and it
         /// buys a `NameError` on a typo at load instead of at fire.

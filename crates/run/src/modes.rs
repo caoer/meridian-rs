@@ -1085,8 +1085,12 @@ fn prune_logs(dir: &Path) {
         .filter(|e| {
             e.file_name()
                 .to_str()
-                .is_some_and(|n| n.starts_with("exec-") && std::path::Path::new(n).extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("log")))
+                .is_some_and(|n| {
+                    n.starts_with("exec-")
+                        && Path::new(n)
+                            .extension()
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("log"))
+                })
         })
         .filter_map(|e| {
             let modified = e.metadata().ok()?.modified().ok()?;
@@ -1135,7 +1139,7 @@ fn prune_logs(dir: &Path) {
             row["block"] = json!(anchor);
         }
         if !dry
-            && !(stdout.is_empty() && stderr.is_empty())
+            && (!stdout.is_empty() || !stderr.is_empty())
             && let Some(path) = self.write_log(stdout, stderr)
         {
             row["log"] = json!(path);
