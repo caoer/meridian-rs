@@ -3,7 +3,7 @@
 //! underlying cause).
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 mod common;
 
@@ -39,11 +39,9 @@ fn sandbox() -> (Sandbox, PathBuf) {
 }
 
 fn run(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_mrd"))
+    common::mrd_command(&sb.home, &sb.cache_home)
         .args(args)
         .current_dir(cwd)
-        .env("XDG_CACHE_HOME", &sb.cache_home)
-        .env("HOME", &sb.home)
         // Spawn-impossible: no resident daemon ever starts.
         .env("MERIDIAN_DAEMON_BIN", env!("CARGO_BIN_EXE_mrd"))
         // The explicit anchor: this tree is the workspace, and it is not git.

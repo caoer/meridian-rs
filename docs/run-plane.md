@@ -148,7 +148,7 @@ it is the case the gate exists for, not an edge. Such a run leaves
 `root_at_eval` empty in the in-memory effect set: that is what "not observed"
 looks like, and nothing renders it.
 
-When a gate does fire: one `fs::domain_snapshot` AFTER the eval, its root
+When a gate does fire: one `fs::domain_fold` AFTER the eval, its root
 stamped onto every emitted effect's `Provenance::Run.root_at_eval` and, on the
 live leg, handed to the apply as `observed_root`. After-eval observes the same
 domain as before-eval would have: this entry is hermetic by construction, so
@@ -2459,10 +2459,10 @@ so on a rehearsal `snapshot` and `eval` sit directly inside `total`, and
 | `conventions.load` | `total` | `mrd::run_cmd` | `caps::load_conventions` — the root's `MERIDIAN.md` |
 | `task.gate` | `total` | `mrd::run_cmd` | the door's pre-check: `resolve_task` + `contract_for` + `validate` + `resolve_authority` |
 | `pre_eval` | `total` | `run::runner::pre_eval` | the plane's OWN address → contract → caps chain, which repeats the door's work. Measured on the chain, so `--dry` reports it too |
-| `dispatch` | `total` | `run::runner` | On the STARLARK leg: `eval` + `snapshot` + `apply`, whole — in that ORDER, the fold FOLLOWING the eval that decides whether it is needed (§ The run plane). **Bash is not that shape**: it opens no `eval` span, emits no `snapshot*` line at all (it observes through `fs::domain_leaves_memoized`, which carries no phase — the phases live in `fs::domain_snapshot_with_leaves`), and takes its observation FIRST, under the flock, before the block runs. The lazy rule is the starlark leg's |
-| `snapshot` | `dispatch` | `fs::domain_snapshot_with_leaves` | the three below, whole — absent whenever this tense's lazy gate did not fire (§ The run plane) |
+| `dispatch` | `total` | `run::runner` | On the STARLARK leg: `eval` + `snapshot` + `apply`, whole — in that ORDER, the fold FOLLOWING the eval that decides whether it is needed (§ The run plane). **Bash is not that shape**: it opens no `eval` span, emits no `snapshot*` line at all (it observes through `fs::domain_leaves_memoized`, which carries no phase — the phases live in `fs::domain_snapshot_with_leaves` and its fold-only twin `fs::domain_fold`), and takes its observation FIRST, under the flock, before the block runs. The lazy rule is the starlark leg's |
+| `snapshot` | `dispatch` | `fs::domain_fold` on the run plane; `fs::domain_snapshot_with_leaves` for callers that want the bytes | the three below, whole — absent whenever this tense's lazy gate did not fire (§ The run plane). Both emit the same four names: the run plane takes the fold-only twin because it drops the `DomainFiles`, and a reader must be able to compare the two without the phase names moving |
 | `snapshot.walk` | `snapshot` | same | `Domain::load` + `hash_domain` — the hash-domain walk |
-| `snapshot.read` | `snapshot` | same | `read_and_digest_members` — read + blake3 of every member |
+| `snapshot.read` | `snapshot` | same | `read_and_digest_members`, or `digest_members` on the fold-only path — read + blake3 of every member. The fold-only sweep releases each member's bytes with its digest, so this phase is where dropping them shows up |
 | `snapshot.fold` | `snapshot` | same | leaf assembly + `served_root` |
 | `eval` | `dispatch` | `run::dispatch_starlark` | hermetic evaluation of the block |
 | `apply` | `dispatch` | `run::dispatch_starlark` | the executor's one md.\* batch (absent when the block emitted none) |
@@ -2502,6 +2502,31 @@ the verb addresses — lock-addressed on `walk`/`check`/`status`/`walk_op`,
 link-addressed on `links`/`sql`/`sql_op` (`build_docs_at` calls
 `fs::domain_snapshot`). Count the `phase=snapshot` lines the same way as
 `corpus.build`.
+
+**But do not price a run by that count — some full-corpus folds emit no phase
+at all.** The write doors observe through `fs::DomainCache`
+(`wire_serve::write::observed_root` → `DomainCache::root`), which walks the
+domain, `stat`s every member and reads every mover WITHOUT opening a `snapshot`
+span. That cache is the process-global `wire_serve::write::WRITE_CACHES`, keyed
+by canonicalised root: the FIRST door call in a process observes cold and later
+ones in the SAME process are warm. The CLI does one birth per process, so on the
+CLI it is always the cold one — a property of the process model, not of
+`md.create`; a caller that batches births into one process pays it once.
+
+An `md.create` therefore pays a second full-corpus observation on top of the run
+plane's own fold — measured 2026-08-23 on a 37 800-member root: run-plane
+`snapshot` 446 ms, the door 620 ms inside `apply`, one `phase=snapshot` line for
+the pair. A `grep -c phase=snapshot` of that run answers 1 and under-reports the
+corpus work by more than half; the same run at 8 002 members answers 1 for
+27 ms + 58 ms. (Both pairs, the instrumented breakdown and the raw samples:
+`22-18-hook-support-design/results/mrd-run-perf/residual-cost-receipt.md` § 2,
+and the wire-serve create-door card.)
+
+**How to see it, since subtraction will not:** `apply` has NO nested phases —
+nothing under `crates/run/src/executor.rs` opens a span — so its whole span is
+un-itemised and there is no remainder to compute. Read the magnitude instead: on
+an effectful run a large `apply` beside a `snapshot` of the same order is the
+door's own corpus observation, and only an instrumented build splits it further.
 
 `corpus.build` is the same class: it is emitted by `fs::build_corpus`, and the
 callers that light it up include `mrd sql`, `mrd check`, `mrd walk`,
@@ -2552,7 +2577,7 @@ tenses).
 | CLI mount — script entry | `crates/mrd::script::cmd` — the same client edge; its human-mode face is non-normative |
 | in-process script serve (§ A.7) | `crates/registry` (the op arm: entry world, host, threading, commit) over `crates/effects` (kernel, trace, digest) — added 2026-08-12 |
 | wire run serve (§ A.8) + script effects mode | `crates/registry` (`run_op`: per-target loop, §9 threading; `script_op`: the live host) over `crates/run` (the plane, unchanged) — added 2026-08-13 |
-| per-phase timing (`MRD_TIMING`) | `crates/timing` (the switch, the sink, the span) — the phase call sites are `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`; § Timing phases — added 2026-08-22 |
+| per-phase timing (`MRD_TIMING`) | `crates/timing` (the switch, the sink, the span) — the phase call sites are `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`, `fs::domain_fold`; § Timing phases — added 2026-08-22 |
 | root-at-eval observation (the lazy fold) | `crates/run::dispatch_starlark::observe_if_emitted` — ONE owner of the per-tense gate; `runner::rehearse` calls it directly, the live leg calls it inside `dispatch_starlark::dispatch`. `evaluate` returns `Unobserved`, so neither can skip it and still compile; § The run plane (`RunCtx`) — added 2026-08-22 |
 
 ---

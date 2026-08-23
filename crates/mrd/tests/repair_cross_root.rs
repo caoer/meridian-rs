@@ -8,15 +8,10 @@
 //! One env-dependent test fn by design (`MERIDIAN_CONFIG` is process-global;
 //! the `walk_op.rs` precedent).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 
 mod common;
-
-fn mrd_bin() -> PathBuf {
-    std::env::var_os("MRD_BIN")
-        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
-}
 
 /// The pinned page at mint time — the section this test attests sits BETWEEN
 /// two others, so its span is bounded identically in every version (the
@@ -113,10 +108,8 @@ fn repair_recovers_a_lost_cross_root_pin_from_the_target_roots_own_history() {
     // mac dev host, card mac-devhost-snapshot-canonicalization).
     let cache_home = tmp.path().join("xdg-cache");
     let run = |cwd: &Path, args: &[&str]| -> Output {
-        Command::new(mrd_bin())
+        common::mrd_command(&home, &cache_home)
             .current_dir(cwd)
-            .env("HOME", &home)
-            .env("XDG_CACHE_HOME", &cache_home)
             .env("MERIDIAN_CONFIG", &config)
             .env_remove("MERIDIAN_WORKSPACE")
             .args(args)

@@ -46,11 +46,9 @@ fn sandbox() -> Sandbox {
 
 impl Sandbox {
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
-        Command::new(mrd_bin())
+        common::mrd_command(&self.home, &self.cache_home)
             .args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env_remove("MERIDIAN_WORKSPACE")
             .output()
             .expect("spawn mrd")
