@@ -241,6 +241,59 @@ fn every_refusal_teaches_line_no_partial_load_and_a_fix() {
     }
 }
 
+/// A CLOSED but EMPTY frontmatter block refuses on the missing key, not on the
+/// fence.
+///
+/// Schema §4's malformed-frontmatter table gives `no-frontmatter` exactly two
+/// conditions — the file does not open with `---\n`, or the fence never closes.
+/// An empty closed block is neither: it opens and it closes. What it does is
+/// declare no `type:`, which §4's key table sends to `missing-required-key`.
+/// The markdown parser mints no frontmatter node for `---\n---`, so before this
+/// gate the door refused it as `no-frontmatter` and told the author their file
+/// "does not open with a closed `---` frontmatter block" — a false statement
+/// about bytes they are looking at, on the one door whose whole job is to
+/// teach.
+#[test]
+fn a_closed_empty_frontmatter_refuses_on_the_missing_key_not_the_fence() {
+    for raw in [
+        "---\n---\n\n# a mount table\n",
+        "---\n\n---\n\n# a mount table\n",
+        "---\n   \n---\n\n# a mount table\n",
+    ] {
+        let err = refuse(raw);
+        assert_eq!(
+            err.reason,
+            Reason::MissingRequiredKey,
+            "an empty closed frontmatter declares no `type:`: {err}"
+        );
+        assert_eq!(err.line, Some(1), "§8.1a puts a frontmatter key on line 1");
+        let text = err.to_string();
+        assert!(
+            text.contains("`type:`"),
+            "the refusal must name the missing key: {text}"
+        );
+        assert!(
+            !text.contains("does not open with a closed"),
+            "the file DOES open with a closed fence — the refusal may not say otherwise: {text}"
+        );
+    }
+}
+
+/// The two conditions schema §4 does give `no-frontmatter` still reach it.
+#[test]
+fn no_frontmatter_still_covers_its_own_two_conditions() {
+    // Does not open with `---\n`.
+    assert_eq!(refuse("# no frontmatter\n").reason, Reason::NoFrontmatter);
+    // Opens, but the fence never closes.
+    assert_eq!(
+        refuse("---\ntype: meridian-config\nversion: 1\n\n# unterminated\n").reason,
+        Reason::NoFrontmatter
+    );
+    // A fence that opens and never closes with nothing but blank lines after
+    // it is still an unclosed fence, not an empty block.
+    assert_eq!(refuse("---\n\n\n").reason, Reason::NoFrontmatter);
+}
+
 /// The closed reason set is exactly schema §8.2's, and every word is
 /// reachable.
 #[test]
