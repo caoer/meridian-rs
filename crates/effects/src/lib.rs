@@ -972,9 +972,21 @@ pub struct EffectFault {
     pub reason: String,
 }
 
-/// The script entry's default wall clock — §5.3-class host policy with ONE
-/// spelling: the CLI lane and the § A.7 in-process serve both derive their
-/// deadline from here, so "7 seconds" cannot drift into two values.
+/// The script entry's default wall clock — §5.3-class host policy. **The § A.7
+/// in-process serve derives its deadline from here** (`registry::script_op`:
+/// the read builtin and the pre-commit wall).
+///
+/// **It is not the only spelling, and this comment used to claim it was**
+/// (review `dc6d9ca9` finding 5, PR 213). The CLI holds an INDEPENDENT
+/// `Duration::from_secs(7)` — `WALL_CLOCK` in `crates/mrd/src/script/cmd.rs` —
+/// bounding the socket the one `script` frame rides. Nothing links the two
+/// constants and no test asserts they are equal: they are two values kept equal
+/// by hand, one per side of the socket. A reader who believes one derives from
+/// the other will change this one and expect the other to follow, which is why
+/// the claim is corrected rather than left as an aspiration. Whether that
+/// equality earns a pin test is carded, not decided here — making the CLI
+/// derive from this constant is behavior-adjacent and does not belong in the
+/// deletion PR that found the false claim.
 pub const DEFAULT_WALL_CLOCK: std::time::Duration = std::time::Duration::from_secs(7);
 
 /// Why a host could not serve a read. Rendered by the consumer plane; the

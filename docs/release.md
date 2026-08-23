@@ -448,8 +448,9 @@ note may create one.
 ## §7 What the 7 s script wall bounds
 
 The script entry carries one wall-clock budget of **7 s**, spelled once on each
-side of the socket — `mrd::script::cmd::WALL_CLOCK` in the CLI and
-`effects::DEFAULT_WALL_CLOCK` in the daemon. **It is an ENGINE budget, never the
+side of the socket — `WALL_CLOCK` (`crates/mrd/src/script/cmd.rs`) in the CLI
+and `effects::DEFAULT_WALL_CLOCK` in the daemon. They are two independent
+literals kept equal by hand, not one derived from the other. **It is an ENGINE budget, never the
 operator's process wall**, and a reader who confuses the two will infer headroom
 that does not exist and pressure that is not there.
 

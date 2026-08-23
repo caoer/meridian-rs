@@ -518,7 +518,8 @@ Layers 1–3 refuse in the entry's own vocabulary and answer a trace; layer 4 is
 the backstop and answers a host refusal, never a face. A hung child that reached
 none of them would hang the tool with nothing bounding it. The budget is the
 same 7 s on both sides of the socket: `effects::DEFAULT_WALL_CLOCK` for layers 1
-and 3, `mrd::script::cmd::WALL_CLOCK` for layer 2.
+and 3, `WALL_CLOCK` (`crates/mrd/src/script/cmd.rs`) for layer 2 — two
+independent literals kept equal by hand, not one derived from the other.
 
 *(Amended 2026-08-22, the write verbs.)* Layer 2 is the SOCKET's, and the write
 verbs (`put`, `pin`, `rm`, `retire`) dial the same `SocketDoor` — but they carry
