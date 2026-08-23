@@ -26,6 +26,24 @@ when:
 labels:
   platform: darwin/arm64
 
+# Non-rotating clone credential; mechanism + traps: ci.yaml's clone block.
+# BACKEND NOTE: this lane runs the LOCAL backend (zmax), which IGNORES a
+# clone step's image/commands and runs its own plugin-git binary — but it
+# writes $HOME/.netrc from THIS step's environment (backend/local/clone.go
+# writeNetRC), because isolated-home defaults ON and zmax does not disable
+# it. So the env below is the whole delivery path on this backend; the image
+# line satisfies the schema and is not pulled.
+clone:
+  - name: git
+    image: docker.io/woodpeckerci/plugin-git:2.9.2
+    environment:
+      PLUGIN_DEPTH: "0"
+      PLUGIN_TAGS: "true"
+      CI_NETRC_MACHINE: git.0xdao.app
+      CI_NETRC_USERNAME: caoer115
+      CI_NETRC_PASSWORD:
+        from_secret: forgejo_clone_token
+
 steps:
   - name: publish mrd (darwin-arm64, keyed by commit)
     image: bash

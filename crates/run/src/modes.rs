@@ -92,8 +92,10 @@ static NO_FIELDS: std::sync::LazyLock<BTreeMap<String, String>> =
 /// Cached by the block's own rev (§ 2.2 step 3), which is what makes a warm
 /// fire ONE function call instead of a parse, an evaluation and a freeze.
 pub struct LoadedBlock {
-    /// What `declare()` published, in call order.
-    pub declarations: Vec<effects::Declaration>,
+    /// What `declare()` published — ONE dict, or `None` when the block
+    /// declares nothing (`wire-contract.md` § A.8; a second `declare()` in one
+    /// block never reaches here — it faults `declared_twice` at load).
+    pub declaration: Option<effects::Declaration>,
     /// The frozen module. `Send + Sync` — asserted at compile time in the
     /// kernel, because a resident cache is reached from every connection
     /// thread and discovering otherwise at integration time would arrive as
@@ -160,7 +162,7 @@ fn load_cached(
         });
     };
     let entry = std::sync::Arc::new(LoadedBlock {
-        declarations: loaded.declarations,
+        declaration: loaded.declaration,
         module,
     });
     if let Some(cache) = world.cache {
@@ -322,7 +324,12 @@ fn loaded_row(
     block: &AnchoredBlock,
 ) -> Option<Value> {
     // A task-bound block is the RUN plane's: reported with `entry_kind: task`
-    // and no declarations, never evaluated here (§ 2.2 step 2).
+    // and no declaration, never evaluated here (§ 2.2 step 2).
+    //
+    // `null`, not `{}`: an empty dict is what `declare(impl = run)` publishes —
+    // a real declaration carrying no data — so spelling "declared nothing" as
+    // `{}` would make the two indistinguishable to the one caller that reads
+    // this field.
     if let Some(task) = &block.task {
         return Some(json!({
             "block": block.anchor,
@@ -330,7 +337,7 @@ fn loaded_row(
             "result": "ok",
             "entry_kind": "task",
             "task": task,
-            "declarations": [],
+            "declarations": Value::Null,
         }));
     }
     if !block.is_starlark() {
@@ -354,11 +361,17 @@ fn loaded_row(
     };
     // A starlark block that declares nothing is not a target. It is not a
     // fault either — a page may carry a helper module — so it is reported
-    // with no declarations and the consent gate refuses a fire on it.
-    let declarations: Vec<Value> = loaded.declarations.iter().map(|d| d.data.clone()).collect();
+    // with `declarations: null` and the consent gate refuses a fire on it.
+    //
+    // § A.8: `declarations` is *the uninterpreted dict `declare()` collected,
+    // published verbatim*. ONE dict, because a block declares one thing.
+    let declarations = loaded
+        .declaration
+        .as_ref()
+        .map_or(Value::Null, |d| d.data.clone());
     let entry_kind = loaded
-        .declarations
-        .first()
+        .declaration
+        .as_ref()
         .map_or("evaluated", |d| d.entry.kind());
     Some(json!({
         "block": block.anchor,
@@ -559,7 +572,7 @@ fn addressed_entry(
     let ctx = ctx_for(target, invocation);
     let loaded = load_cached(world, &block, &ctx, eval_limits(target))
         .map_err(|fault| fault_row(target, invocation, &block, &fault))?;
-    let Some(declaration) = loaded.declarations.first() else {
+    let Some(declaration) = loaded.declaration.as_ref() else {
         return Err(refused_row(
             target,
             invocation,
@@ -1627,7 +1640,7 @@ declare(on = \"Stop\")
     /// This is the bypass itself. It is closed by the F9 hoist — the prelude
     /// is checked in `mode_row`, which BOTH modes go through, not in
     /// `load_row` where it used to sit — so the fire refuses before
-    /// `addressed_entry` ever reads `declarations.first()`, and no process is
+    /// `addressed_entry` ever reads the block's declaration, and no process is
     /// started. S3 and F9 are one change.
     #[test]
     fn a_declaring_prelude_cannot_hijack_a_fire_on_an_undeclared_page() {
@@ -1780,7 +1793,7 @@ declare(on = \"Stop\")
             std::sync::Arc::ptr_eq(&first, &second),
             "the second load returned a different module, so it was re-evaluated"
         );
-        assert_eq!(first.declarations.len(), 1);
+        assert!(first.declaration.is_some());
     }
 
     /// A faulted load is NEVER cached: the fault is about the attempt, and a
