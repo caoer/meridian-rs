@@ -56,7 +56,12 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // `name:rel` target resolves through the mount table.
     let workspace = match crate::rooted::enter(&parsed.page, "pin", "Nothing was written.") {
         Ok(Some((rel, rooted))) => {
-            parsed.display = Some(std::mem::replace(&mut parsed.page, rel));
+            // The CANONICAL spelling, not the caller's bytes (§ 4.6a). The
+            // "into <page>" half of the receipt whose target half is already
+            // canonical: one line answering "what drew from what" must not name
+            // its two ends in two different vocabularies.
+            parsed.display = Some(rooted.canonical_ref(&rel));
+            parsed.page = rel;
             rooted.workspace
         }
         Ok(None) => resolved.workspace,
