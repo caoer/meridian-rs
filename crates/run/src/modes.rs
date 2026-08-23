@@ -336,7 +336,12 @@ fn loaded_row(
     if !block.is_starlark() {
         return None;
     }
-    let loaded = match load_cached(world, block, &ctx_for(target, invocation), eval_limits(target)) {
+    let loaded = match load_cached(
+        world,
+        block,
+        &ctx_for(target, invocation),
+        eval_limits(target),
+    ) {
         Ok(loaded) => loaded,
         Err(fault) => {
             return Some(json!({
@@ -929,8 +934,7 @@ fn refused_rows(effects: &[Effect], e: &ExecError, class: &str, reason: &str) ->
                     // refusal would carry that birth's index — so every create
                     // landed.
                     row["result"] = json!("born");
-                    row["reason"] =
-                        json!("the birth lane completed; the failure is after it");
+                    row["reason"] = json!("the birth lane completed; the failure is after it");
                 } else if is_door_refusal(e) {
                     // A door judged the SPLICE as a whole (an armed veto, a
                     // verdict): the edits are what it judged.
@@ -1070,43 +1074,41 @@ impl ProcessSeam<'_> {
     }
 
     /// Keep the newest [`LOG_RETENTION`] exec logs and drop the rest.
-///
-/// § 2.2 names the ceiling — *"retention is the last 50 per page, none under
-/// `dry`, named so that tool-call cadence has a ceiling"* — and a log
-/// directory that only ever grows is the unbounded cost with a longer fuse.
-/// Best-effort by construction: a log that cannot be removed is not a reason
-/// to fail a fire that already ran.
-fn prune_logs(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut logs: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
-        .filter_map(Result::ok)
-        .filter(|e| {
-            e.file_name()
-                .to_str()
-                .is_some_and(|n| {
+    ///
+    /// § 2.2 names the ceiling — *"retention is the last 50 per page, none under
+    /// `dry`, named so that tool-call cadence has a ceiling"* — and a log
+    /// directory that only ever grows is the unbounded cost with a longer fuse.
+    /// Best-effort by construction: a log that cannot be removed is not a reason
+    /// to fail a fire that already ran.
+    fn prune_logs(dir: &Path) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut logs: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.file_name().to_str().is_some_and(|n| {
                     n.starts_with("exec-")
                         && Path::new(n)
                             .extension()
                             .is_some_and(|ext| ext.eq_ignore_ascii_case("log"))
                 })
-        })
-        .filter_map(|e| {
-            let modified = e.metadata().ok()?.modified().ok()?;
-            Some((modified, e.path()))
-        })
-        .collect();
-    if logs.len() <= LOG_RETENTION {
-        return;
+            })
+            .filter_map(|e| {
+                let modified = e.metadata().ok()?.modified().ok()?;
+                Some((modified, e.path()))
+            })
+            .collect();
+        if logs.len() <= LOG_RETENTION {
+            return;
+        }
+        logs.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+        for (_, path) in logs.drain(LOG_RETENTION..) {
+            let _ = std::fs::remove_file(path);
+        }
     }
-    logs.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
-    for (_, path) in logs.drain(LOG_RETENTION..) {
-        let _ = std::fs::remove_file(path);
-    }
-}
 
-/// The PUBLISHED row for one `bash()` call — deliberately **not** the dict
+    /// The PUBLISHED row for one `bash()` call — deliberately **not** the dict
     /// the program saw.
     ///
     /// The program's dict carries `stdout`/`stderr` inline, because a program
@@ -1685,8 +1687,10 @@ mod tests {
         let block = probe_block();
         let ctx = RunCtx::default();
 
-        let first = load_cached(&world, &block, &ctx, EvalLimits::default()).expect("the block loads");
-        let second = load_cached(&world, &block, &ctx, EvalLimits::default()).expect("and loads again");
+        let first =
+            load_cached(&world, &block, &ctx, EvalLimits::default()).expect("the block loads");
+        let second =
+            load_cached(&world, &block, &ctx, EvalLimits::default()).expect("and loads again");
 
         assert_eq!(
             cache.misses.load(std::sync::atomic::Ordering::Relaxed),
