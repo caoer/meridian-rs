@@ -345,12 +345,3 @@ fn g1_pathological_home_still_names_the_sun_path_limit() {
         "and it names the knob that fixes it now (the short base, not the cache root): {err:?}"
     );
 }
-
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
-        // the fixture daemon strategy). Runs before the TempDir fields drop, so
-        // the pidfile is still on disk; never panics.
-        let _ = common::reap_daemon(&self.home, &self.cache_home);
-    }
-}
