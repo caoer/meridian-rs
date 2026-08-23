@@ -71,7 +71,18 @@ impl Sandbox {
 
     /// An anchored workspace holding the fixture doc.
     fn workspace(&self) -> PathBuf {
-        let ws = self.tmp.path().join("project");
+        self.workspace_named("project")
+    }
+
+    /// A SECOND (third, …) workspace under the same home and cache root, so the
+    /// one resident daemon has to bind and fold each of them separately.
+    ///
+    /// This is what makes the concurrency gate deterministic: a repeat call on
+    /// an already-warm workspace can be served with no fold at all, and so with
+    /// no phase to emit — one workspace per caller guarantees each connection
+    /// thread has something to measure.
+    fn workspace_named(&self, name: &str) -> PathBuf {
+        let ws = self.tmp.path().join(name);
         std::fs::create_dir_all(ws.join(".git")).expect("git anchor");
         std::fs::write(ws.join("doc.md"), DOC).expect("doc");
         std::fs::canonicalize(&ws).expect("canonical ws")
@@ -109,15 +120,17 @@ impl Sandbox {
     }
 }
 
-/// One parsed MEASUREMENT: the four `key=value` fields, in the fixed order the
-/// grammar promises. A line that opens `mrd-timing ` and does not parse is a
-/// failure, not a skip — the grammar is the contract.
+/// One parsed MEASUREMENT. This lane's question is ATTRIBUTION, so `us=` is
+/// parsed — the grammar's fourth field must be an integer or the line is
+/// malformed — and then dropped: no assertion here is about a duration.
+///
+/// A line that opens `mrd-timing ` and does not parse is a failure, not a skip:
+/// the grammar is the contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Measurement {
     cmd: String,
     who: String,
     phase: String,
-    us: u128,
 }
 
 fn measurements(raw: &str) -> Vec<Measurement> {
@@ -134,16 +147,11 @@ fn measurements(raw: &str) -> Vec<Measurement> {
                     .to_owned()
             };
             let (cmd, who, phase) = (field("cmd="), field("who="), field("phase="));
-            let us = field("us=")
-                .parse()
+            field("us=")
+                .parse::<u128>()
                 .unwrap_or_else(|e| panic!("us= is not an integer ({e}): {line}"));
             assert!(fields.next().is_none(), "extra field: {line}");
-            Measurement {
-                cmd,
-                who,
-                phase,
-                us,
-            }
+            Measurement { cmd, who, phase }
         })
         .collect()
 }
@@ -206,7 +214,9 @@ fn a_refused_daemon_sink_is_audible_in_the_daemons_own_lane() {
 
     let complaints = diagnostics(&said);
     assert!(
-        complaints.iter().any(|line| line.contains("corpus extension")),
+        complaints
+            .iter()
+            .any(|line| line.contains("corpus extension")),
         "the daemon's lane {} carries no refusal.\nlane: {said}\nclient stderr: {}",
         voice.display(),
         String::from_utf8_lossy(&out.stderr)
@@ -291,10 +301,14 @@ fn the_mode_off_creates_no_lane() {
     );
 }
 
-/// The N4 receipt: two `script` calls served by ONE daemon are separable
-/// afterwards. Same `p` (one process), different `t` (one thread per
-/// connection) — which is exactly what "byte-identical `phase=snapshot` lines"
-/// lacked.
+/// The N4 receipt: `script` calls served by ONE daemon are separable afterwards.
+/// Same `p` (one process), different `t` (one thread per connection) — which is
+/// exactly what "byte-identical `phase=snapshot` lines" lacked.
+///
+/// Three clients and the daemon all append to ONE sink file here, which is the
+/// arrangement `status.md` used to say was not demultiplexable. Each caller gets
+/// its own workspace so every connection has a fold to measure
+/// ([`Sandbox::workspace_named`]).
 ///
 /// What this does NOT claim: that `who=` is a request id. A thread reused for a
 /// later request keeps its ordinal — the field separates concurrent work, never
@@ -302,14 +316,13 @@ fn the_mode_off_creates_no_lane() {
 #[test]
 fn two_script_calls_on_one_daemon_are_attributable() {
     let sb = Sandbox::new();
-    let ws = sb.workspace();
     let sink_dir = tempfile::tempdir().expect("sink dir");
     let sink = sink_dir.path().join("timing.log");
     let arg = sink.to_str().expect("utf-8 sink").to_owned();
 
-    // Warm the daemon first, so both calls below are served by one resident
+    // Warm the daemon first, so the two calls below are served by one resident
     // process rather than racing to spawn it.
-    let warm = sb.script_now(&ws, &arg);
+    let warm = sb.script_now(&sb.workspace_named("first"), &arg);
     assert_eq!(
         warm.status.code(),
         Some(0),
@@ -317,7 +330,8 @@ fn two_script_calls_on_one_daemon_are_attributable() {
         String::from_utf8_lossy(&warm.stderr)
     );
 
-    let (left, right) = (sb.script(&ws, &arg), sb.script(&ws, &arg));
+    let (second, third) = (sb.workspace_named("second"), sb.workspace_named("third"));
+    let (left, right) = (sb.script(&second, &arg), sb.script(&third, &arg));
     for child in [left, right] {
         let out = child.wait_with_output().expect("mrd script exits");
         assert_eq!(

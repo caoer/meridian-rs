@@ -767,10 +767,14 @@ fn every_line_of_one_run_names_one_emitter_and_two_runs_differ() {
     let who_of = |out: &Output| {
         let lines = timing_lines(&stderr(out));
         assert!(!lines.is_empty(), "no lines: {}", stderr(out));
-        let mut seen: Vec<String> = lines.into_iter().map(|(_, who, _, _)| who).collect();
-        seen.dedup();
-        assert_eq!(seen.len(), 1, "one process reported several emitters: {seen:?}");
-        let who = seen.remove(0);
+        let seen: std::collections::BTreeSet<String> =
+            lines.into_iter().map(|(_, who, _, _)| who).collect();
+        assert_eq!(
+            seen.len(),
+            1,
+            "one single-threaded process reported several emitters: {seen:?}"
+        );
+        let who = seen.into_iter().next().expect("one emitter");
         let (pid, thread) = who
             .strip_prefix('p')
             .and_then(|rest| rest.split_once(".t"))
