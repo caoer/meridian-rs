@@ -1431,39 +1431,98 @@ phase and nothing else — on a release binary, with no profiler, no debug build
 and no rebuild. stdout, `--json` bodies and exit codes are byte-identical with
 it on and off; the mode writes to stderr or to a file, never to stdout.
 
+The VALUE is the sink. It is **trimmed and matched case-insensitively**, so
+`OFF`, `" off "` and `off` are one answer:
+
 | `MRD_TIMING` | Sink |
 |---|---|
-| unset, empty, `0`, `off`, `false`, `no` | **off** — no clock is read and nothing is written |
+| unset, empty or all whitespace, `0`, `off`, `false`, `no` | **off** — no clock is read and nothing is written |
 | `1`, `on`, `true`, `yes` | stderr |
-| any other value | that path, opened append (created if absent); an unopenable path degrades to stderr |
+| any other value | that path (trimmed), opened append, created if absent |
 
-The off words are spelled out rather than inferred, because the fallback arm
-CREATES A FILE: without them `MRD_TIMING=off` would write a file named `off`
-into the caller's working directory.
+The off words are spelled out, and the case/whitespace folding exists, because
+the fallback arm CREATES A FILE. Measured on the release binary before this was
+fixed: `MRD_TIMING=OFF` wrote a file named `OFF` into the working directory, and
+`MRD_TIMING="1 "` — a trailing space from a `.env` line or a `docker -e` — wrote
+one named `1 `. In a multi-agent tree that file gets committed.
+
+Two paths are **refused, loudly, and degrade to stderr**:
+
+- a sink whose extension is `.md` or `.base`. Those are what the engine's hash
+  domain walks, so the sink would be a corpus member: every line it gained would
+  change the corpus, and the next fold would report more lines to append. A loop
+  with an appetite.
+- a path that will not open. The caller asked for the mode; silence would read
+  as "the code never ran there", which is the one answer this instrument must
+  never fake.
+
+A **relative** sink path resolves against the process's working directory at the
+first phase. That matters for the daemon: it is auto-spawned with the client's
+cwd (`crates/mrd/src/daemon.rs`) and holds the fd for its lifetime, so a
+relative path lands wherever the FIRST spawning client happened to stand. Give
+the daemon an absolute path. Nothing tags a line with a pid, either — a client,
+the daemon, and concurrent clients all appending to one file are not
+demultiplexable afterwards. One process per file if you want to tell them apart.
 
 The value is read **once per process**, at the first phase; changing it
-mid-process changes nothing. One line per phase, `\n`-terminated, written in a
-single `write_all` so concurrent threads interleave whole lines:
+mid-process changes nothing, and each refusal above is said exactly once.
+
+#### Two line shapes, and the space that tells them apart
+
+A **measurement** opens `mrd-timing` + a SPACE and carries exactly three
+`key=value` fields in a fixed order, `\n`-terminated, written in a single
+`write_all` so concurrent threads interleave whole lines, never halves:
 
 ```text
 mrd-timing cmd=run phase=snapshot.read us=402118
 ```
 
 - `cmd=` — the verb this PROCESS was entered with (`mrd run` ⇒ `run`, the
-  daemon ⇒ `daemon`). It names the process, never one request.
-- `phase=` — a dotted name; the dot is nesting (`snapshot.read` is inside
-  `snapshot`).
+  daemon ⇒ `daemon`). It names the process, never one request. A verb carrying
+  whitespace or a control character is refused and the label stays `mrd`: the
+  field rides a space-separated line, so `mrd "run p.md"` must not be allowed to
+  mint a fourth field, and a newline must not be allowed to inject a line.
+- `phase=` — a name whose dot marks a PART of the phase it prefixes
+  (`snapshot.read` is inside `snapshot`). That is not the whole containment
+  rule — `dispatch` contains `snapshot`, `eval` and `apply` with no dot in
+  sight, and `total` contains everything. **Do not sum the lines.** Which phase
+  contains which is a table: `run-plane.md` § Timing phases.
 - `us=` — elapsed wall clock in microseconds, integer. The same noun as the
   wire frame's `meta.duration_us`; there is no second time unit and no float.
 
-Fields are `key=value`, space-separated, in that fixed order, after the fixed
-`mrd-timing` prefix — so `grep '^mrd-timing '` separates the mode from every
-other line on the stream. Lines print in **completion order**: a nested phase
-prints before the phase containing it, and `total` prints last.
+A **diagnostic** about the mode itself opens `mrd-timing` + a COLON:
+
+```text
+mrd-timing: cannot open `/nope/t.log` (No such file or directory) — writing to stderr instead.
+```
+
+So the documented `grep '^mrd-timing '` — with the space — is exactly the
+measurements and nothing else.
+
+#### A line means the phase COMPLETED
+
+There is no line for a phase that failed. A span abandoned on an error path —
+the `?` on a page that does not exist, an early refusal — reports nothing,
+because a failed page load costing 312 us and a successful one costing 312 us
+are not the same fact, and printing both identically invites the reader to add
+them up. `mrd run missing.md` under the switch reports `workspace.resolve`, then
+the refusal, then `total`: no `page.load` line, because there was no page load.
+
+`total` is the one phase that reports on a refusal, and for the same reason
+rather than an exception to it: what `total` measures is the PROCESS, and the
+process completed either way.
+
+Lines print in **completion order**, so a contained phase prints before the
+phase containing it and `total` prints last.
 
 **Off costs nothing.** A phase whose sink is off holds no `Instant`, so the off
-path reads no clock, allocates nothing, formats nothing and writes nothing —
-the whole cost is one atomic load of the resolved sink.
+path reads no clock, allocates nothing, formats nothing and writes nothing. What
+remains is one atomic load of the resolved sink, through `#[inline]` entry
+points (the release profile does not enable LTO, so the attribute is what makes
+that a load rather than a cross-crate call). This is a claim about code shape,
+plus the stdout byte-identity gate in `crates/mrd/tests/timing_mode.rs` — it is
+**not** a measured wall-clock claim, and gated wall-clock numbers are
+`perf.yml`'s lane, never the PR lane.
 
 **Two lanes, and only one of them is the caller's.** `mrd run` executes in the
 calling process, so its phases land on the caller's sink. `mrd script` and the

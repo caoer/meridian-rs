@@ -247,8 +247,8 @@ pub fn run(
     rules: &[Rule],
     live: &mut (dyn Write + Send),
 ) -> Result<RunReport, RunnerError> {
-    // 1. Pre-eval resolution (U2): address → contract → caps.
-    let pre = timing::phase("pre_eval");
+    // 1. Pre-eval resolution (U2): address → contract → caps. Its `pre_eval`
+    // phase is measured inside the chain itself, so a rehearsal reports it too.
     let (task, authority) = pre_eval(
         root,
         spec.page,
@@ -257,7 +257,6 @@ pub fn run(
         &spec.env,
         spec.declaring_root,
     )?;
-    pre.stop();
     let name = task.binding.name.clone();
 
     // 2. Dispatch by fence language (decision #13).
@@ -319,6 +318,11 @@ fn pre_eval(
     env: &BTreeMap<String, String>,
     declaring_root: Option<&Path>,
 ) -> Result<(address::ResolvedTask, Authority), RunnerError> {
+    // Measured on the CHAIN, not at either caller, so `--dry` reports the same
+    // `pre_eval` phase the live run does — the same one-owner-both-tenses rule
+    // this function exists for. A refused chain reports nothing: every `?`
+    // below abandons the span (`timing` has no `Drop`).
+    let phase = timing::phase("pre_eval");
     let doc = address::load_page(root, Path::new(page)).map_err(RunnerError::Address)?;
     let task = address::resolve_task(&doc, task).map_err(RunnerError::Address)?;
     let name = task.binding.name.clone();
@@ -330,6 +334,7 @@ fn pre_eval(
         caps::load_conventions(declaring_root).map_err(RunnerError::Caps)?;
     let authority = caps::resolve_authority(&doc, &name, task.block.lang, &conventions)
         .map_err(RunnerError::Caps)?;
+    phase.stop();
     Ok((task, authority))
 }
 
