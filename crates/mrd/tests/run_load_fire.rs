@@ -789,3 +789,20 @@ fn a_caller_budget_narrows_the_evaluator() {
     let out = ws.run(&["probe.md#^h", "--input-json", &input]);
     assert_eq!(row(&out)["result"], "ok", "the same fire without a budget");
 }
+
+/// **A10 / S3, the other half**: a declaring page with a PURE prelude still
+/// fires. The consent guard refuses consent MATERIAL in caller source; it does
+/// not refuse a prelude, which is what a prelude is for.
+///
+/// (The refusing half is `effects::kernel`'s
+/// `a_prelude_that_declares_is_refused_before_any_block`, which asserts the
+/// CLASS — `consent_in_prelude` — rather than a reason substring.)
+#[test]
+fn a_declaring_page_with_a_pure_prelude_still_fires() {
+    let ws = Ws::new();
+    let input = ws.input("e.json", r#"{"name":"PreToolUse"}"#);
+    let out = ws.run(&["probe.md#^h", "--input-json", &input]);
+    let row = row(&out);
+    assert_eq!(row["result"], "ok", "{row:#}");
+    assert_eq!(row["value"]["saw"], "PreToolUse", "{row:#}");
+}

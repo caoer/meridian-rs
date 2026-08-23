@@ -1506,6 +1506,20 @@ fired as a task, never as a block. A non-starlark fence addressed directly
 refuses `not_a_module` and is told how it is reached: through the starlark
 block that declares it with `exec(...)`.
 
+**A prelude may not carry consent.** The `prelude` is CALLER source and it
+evaluates into the block's own module, in the load phase, before the block's
+top level — and `declare()`/`exec()` are load-phase builtins. A caller
+shipping `declare(impl = exec("bash", cmd = "…"))` as its prelude would
+therefore make every anchored starlark fence on every addressed page a fire
+target running caller-authored bytes, including a fence that declares
+nothing. So a prelude that produces ANY declaration (or an `exec` value)
+refuses **`consent_in_prelude`** before a single block is looked at —
+regardless of whether the page declares, because silently dropping a caller's
+declaration is its own defect. A prelude carries shared helpers, not entries.
+*(Amendment A10; advisor `ea317a27`, 2026-08-23. The row still renders
+`prelude_invalid` at the target level; `consent_in_prelude` is the fault's own
+class.)*
+
 The consent gate is why a page-wide *block enumerator* was new machinery
 rather than a lifted function — discovery until now ran off frontmatter
 `task.*` bindings alone. `run::blocks` walks from the page's live anchors to

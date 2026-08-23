@@ -205,7 +205,7 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
         "create" => decode_create(obj),
         "remove" => decode_remove(obj),
         "script" => decode_script(obj),
-        "run" => decode_run(obj),
+        "run" => decode_run(obj, rev),
         // §3.2: only genuinely unknown names land here.
         _ => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
     }
@@ -480,13 +480,40 @@ pub(crate) const RUN_FIELDS: [&str; 7] = [
     "prelude",
 ];
 
+/// The `run` op's fields as SHIPPED, before the hook-support amendment — the
+/// set a non-v3 session is judged against, so `prelude` refuses by name there
+/// instead of being accepted by a server the client never negotiated with.
+pub(crate) const SHIPPED_RUN_FIELDS: [&str; 6] = [
+    "targets",
+    "invocation",
+    "actor",
+    "now",
+    "fields",
+    "ambient",
+];
+
 /// The § A.8 fan-out ceiling: every face list carries one.
 const RUN_MAX_TARGETS: usize = 64;
 
 /// § A.8 page-task execution (v3-only at dispatch; decode is rev-agnostic).
-fn decode_run(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
+fn decode_run(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> {
     let op = "run";
-    check_fields(obj, op, &RUN_FIELDS)?;
+    // The amendment's additions leave the closed set on a NON-v3 session, so
+    // an unnegotiated field meets the by-name wall HERE — before the op-grain
+    // v3 gate answers `unknown_op` for the whole request. Same shape as the
+    // root op's mint arm (`refuse_unnegotiated_family` + a rev-conditional
+    // `check_fields`), which is the shipped precedent.
+    //
+    // Without this the published mechanism was unconstructible: `prelude` and
+    // the six target additions sat in the unconditional sets, so a v2 client
+    // could never see the refusal the docs promise and a v3 client always has
+    // the caps. The acceptance gate tests for those exact bytes.
+    // (PR 195 review, fa5da9ec; advisor ea317a27, design conformance.)
+    if rev == Rev::V3 {
+        check_fields(obj, op, &RUN_FIELDS)?;
+    } else {
+        check_fields(obj, op, &SHIPPED_RUN_FIELDS)?;
+    }
     let now = opt_str(obj, op, "now")?;
     if let Some(n) = &now
         && !wire::now_is_rfc3339(n)
@@ -527,7 +554,7 @@ fn decode_run(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
                         "`targets[{i}]` must be an object on `run`"
                     )));
                 };
-                out.push(decode_run_target(t, i)?);
+                out.push(decode_run_target(t, i, rev)?);
             }
             out
         }
@@ -595,7 +622,14 @@ fn decode_run(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
 /// field that is meaningless on a target must refuse rather than be ignored
 /// — silently dropping `env` on an evaluated fire would be the
 /// guard-you-believe-is-armed trap in a second costume.
-fn decode_run_target(t: &Map<String, Value>, i: usize) -> Result<wire::RunTarget, Box<ErrorBody>> {
+fn decode_run_target(
+    t: &Map<String, Value>,
+    i: usize,
+    rev: Rev,
+) -> Result<wire::RunTarget, Box<ErrorBody>> {
+    /// The set as SHIPPED — what a non-v3 session is judged against.
+    const SHIPPED_TARGET_FIELDS: [&str; 5] = ["page", "task", "args", "env", "dry"];
+    /// The amended set: the shipped five plus the six this design adds.
     const TARGET_FIELDS: [&str; 11] = [
         "page",
         "task",
@@ -609,8 +643,13 @@ fn decode_run_target(t: &Map<String, Value>, i: usize) -> Result<wire::RunTarget
         "budget",
         "source",
     ];
+    let admitted: &[&str] = if rev == Rev::V3 {
+        &TARGET_FIELDS
+    } else {
+        &SHIPPED_TARGET_FIELDS
+    };
     for key in t.keys() {
-        if !TARGET_FIELDS.contains(&key.as_str()) {
+        if !admitted.contains(&key.as_str()) {
             return Err(bad_request(format!(
                 "unknown field `{key}` on `targets[{i}]` of `run`"
             )));
