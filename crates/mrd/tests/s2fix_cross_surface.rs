@@ -1274,6 +1274,7 @@ fn path_d_create_position_exclusions() {
             if_root: None,
             dry: false,
             fields: BTreeMap::default(),
+            props: BTreeMap::default(),
         },
         &[],
     )

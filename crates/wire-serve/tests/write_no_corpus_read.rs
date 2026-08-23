@@ -90,6 +90,7 @@ fn create_args(path: &str, body: &str) -> CreateArgs {
         if_root: None,
         dry: false,
         fields: BTreeMap::default(),
+        props: BTreeMap::default(),
     }
 }
 
