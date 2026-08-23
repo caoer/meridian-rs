@@ -10,7 +10,7 @@
 //!
 //! That last clause read *"the commit's entry fingerprint is the enforcement
 //! point"* until card `script-door-commit-premise-world-grain-vs-touch-set`.
-//! That was the whole-corpus premise `run-plane.md`:918-931 records as amended
+//! That was the whole-corpus premise `run-plane.md`:929-942 records as amended
 //! and DELETED, and it stopped being true of these tests the moment `mrd script`
 //! became one lane over the wire `script` op — so it is rewritten in the PR that
 //! made it false, not in the later one that deletes the code it described.
