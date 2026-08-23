@@ -148,7 +148,7 @@ fn the_birth_lane_waits_out_a_transient_holder_and_still_refuses_past_the_bound(
     // SAFETY: same single-threaded window.
     unsafe { std::env::remove_var("MERIDIAN_BUSY_WAIT_MS") };
 
-    let ExecError::BirthRefused { path, detail } = err else {
+    let ExecError::BirthRefused { path, detail, .. } = err else {
         panic!("expected BirthRefused, got {err:?}");
     };
     assert_eq!(path, "tasks/refused.md");

@@ -620,6 +620,54 @@ pub fn explicit_caps(doc: &Document, task: &str) -> Result<Option<CapSet>, CapsE
     }
 }
 
+/// The frontmatter key a declaring page's own capability ceiling lives under.
+///
+/// New grammar (hook-support design § 2.2, § 2.5). It is deliberately NOT
+/// `task.<name>.caps`: that key scopes to one task, and a declaring page's
+/// blocks have no task names — the ceiling is the PAGE's, one for every block
+/// it declares, which is what makes a page's authority readable in one line
+/// by whoever reviews the page.
+pub const PAGE_CAPS_KEY: &str = "caps";
+
+/// The page-level `caps:` declaration, if present (§ 2.2 *Evaluation — fire*,
+/// step 2).
+///
+/// A present-but-empty declaration is an EXPLICIT read-only grant, exactly as
+/// on the task plane — the distinction between "declared nothing" and "did not
+/// declare" is preserved because they are different statements by the author.
+/// Absent is deny-by-default: a fire on a page with no `caps:` may call any
+/// constructor and every one of them is refused at [`crate::executor::admit`]
+/// with `cap_denied`, which is A1's shape — callable and refused, never absent
+/// and mysterious.
+///
+/// # Errors
+/// [`CapsError::BadCap`] on a malformed cap in the declaration.
+pub fn page_caps(doc: &Document) -> Result<Option<CapSet>, CapsError> {
+    let Some(map) = frontmatter(doc) else {
+        return Ok(None);
+    };
+    match map.0.iter().find(|(k, _)| k == PAGE_CAPS_KEY) {
+        Some((_, value)) => CapSet::parse(value).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// The authority one declared block fires under: the page's `caps:`, narrowed
+/// by the declaring root's conventions exactly as the task ladder narrows an
+/// explicit grant.
+///
+/// Takes no language axis, unlike [`resolve_authority`]: caps do not apply to
+/// a process (law, § 1.4), so an exec'd entry never reaches here — the caller
+/// dispatches on the entry kind before asking about authority.
+#[must_use]
+pub fn resolve_page_authority(page_caps: Option<&CapSet>, conventions: &Conventions) -> Authority {
+    // The conventions table is keyed by TASK NAME patterns. A declaring block
+    // has no task name, so only a table entry that matches everything can
+    // bind it; `resolve_caps` handles that through the same matcher, with the
+    // page's grant standing in for the explicit one.
+    Authority::Capabilities(resolve_caps(PAGE_CAPS_KEY, page_caps, conventions))
+}
+
 /// Read the `run.caps.<pattern>` conventions out of an already-read root
 /// declaration. Pure: the caller owns the I/O and the validity check, this
 /// owns only what the keys MEAN.

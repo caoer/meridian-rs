@@ -314,15 +314,9 @@ pub fn run(
     // 3. Exec under the supervision bracket (#21/S3), stdout teed into the
     // record (U8) live. seal() runs inside the consumer — the record is
     // durable BEFORE any phase-2 receipt batch (S8 order).
-    let spec = ExecSpec {
-        source: d.source,
-        args: &d.args,
-        env: &d.env,
-        scratch: d.scratch,
-        project_root: &root.0,
-        timeout: d.timeout,
-        step_cwd: d.step_cwd,
-    };
+    let spec = ExecSpec::task(
+        d.source, &d.args, &d.env, d.scratch, &root.0, d.timeout, d.step_cwd,
+    );
     let (result, stdout) = exec::exec_streaming(&spec, move |mut out| {
         let mut streamed = record::stream(&mut out, &mut log, live);
         if matches!(streamed, Err(RecordError::Live { .. })) {
