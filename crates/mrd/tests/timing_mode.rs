@@ -49,10 +49,11 @@ impl Ws {
             .args(args)
             .env("MERIDIAN_WORKSPACE", self.path())
             .current_dir(self.path());
-        match timing {
-            Some(value) => command.env("MRD_TIMING", value),
-            None => command.env_remove("MRD_TIMING"),
-        };
+        if let Some(value) = timing {
+            command.env("MRD_TIMING", value);
+        } else {
+            command.env_remove("MRD_TIMING");
+        }
         command.output().expect("spawn mrd")
     }
 }
