@@ -2150,10 +2150,29 @@ fleet writes are the same bytes. Concretely, a value is quoted when it:
 
 Unchanged, deliberately: a **typed scalar** (`true`, `7`, `2026-08-07`) and a
 **one-level flow list** (`[a, b]`) still emit verbatim. Those spellings are the
-only way this string plane can author a non-string value, and no reported
-defect touches them. A newline in a value is still REFUSED, never sanitized: a
-single-line frontmatter value cannot carry one, and an escaped-scalar workaround
-leaks.
+only way this string plane can author a non-string value. A newline in a value
+is still REFUSED, never sanitized: a single-line frontmatter value cannot carry
+one, and an escaped-scalar workaround leaks.
+
+**The trigger list above is NOT closed** (amended 2026-08-23, card
+`hook-17-mrd-create-props`). It enumerates the fast, teachable cases; the LAW is
+the sentence in bold, and the last trigger asks a real YAML parser
+(`serde_yaml`) whether the plain line reads back as exactly the caller's string.
+It was closed until measurement said otherwise: the engine's own classifier is
+more permissive than YAML, so a value opening `- `, `? `, `,`, `*`, `&`, `%`,
+`@`, `` ` ``, `]`, `}`, or carrying an unterminated `[[a]] and [[b]]`, emitted
+PLAIN from every door and produced bytes **no YAML parser can read** — the whole
+frontmatter block dies, not one key (measured with PyYAML over the live sessions
+root: 47 unreadable blocks, 6 of them in a spelling this encoder emits). `!t`,
+`>` and `|` parsed to something the caller never wrote. A door adds no trigger
+of its own: the parser is the trigger, and the list is documentation of what it
+catches. The two carve-outs above survive it explicitly — a plain form that
+parses as a NON-string is legal exactly when the checker's classifier blesses it
+as a typed scalar or a one-level flow list. Measured churn across the live root
+at the amendment: **14 of 29 377 distinct plain-spelled values change spelling
+(0.048 %), all plain→quoted, none quoted→plain**, and a same-value write-back
+stays byte-identical (§ A.6.3c preservation), so no record is rewritten by the
+change alone.
 
 **A.6.3′ The KEY half of the composed line (2026-08-14, dogfood r3 f6).** The
 emitted line is `{key}: {encoded}`, so an unvalidated KEY forges frontmatter
@@ -2784,7 +2803,11 @@ guard applies exactly as at every other op):
   block, so the door refuses instead of choosing. Keys land sorted; a props
   scalar that would read back as a COLLECTION is quoted, while the value
   plane's typed-scalar carve-out is unchanged (`"7"` lands `7`), exactly as at
-  every other door. The wire `create` op carries **no** `props` field: there,
+  every other door. **The one deliberate asymmetry with the patch face**
+  (§ A.6.3): the flow-list carve-out does NOT apply here, because this door has
+  a typed list arm and that one does not — so the string `[a, b]` lands quoted
+  when born through `props=` and plain when written through `properties`. A
+  caller that means the list spells it as a list. The wire `create` op carries **no** `props` field: there,
   `body` is the whole document, frontmatter included. A rooted `base` must name the
   bound workspace (a foreign root refuses with a teaching — a run's births
   ride the bound workspace's ring, locks, and armed law), and a rooted
