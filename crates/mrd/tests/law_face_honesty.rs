@@ -319,7 +319,16 @@ fn the_script_help_states_the_budget_before_it_can_refuse() {
     let sb = sandbox();
     let ws = corpus(&sb);
 
-    let said = stdout(&sb.run(&ws, &["script", "--help"]));
+    // Whitespace-collapsed, because a claim about a SENTENCE must not become a
+    // claim about where the description column wrapped it. Measured 2026-08-23:
+    // `REFUSES, never truncates` broke across a line the moment the paragraph
+    // above it changed length (card
+    // `script-door-commit-premise-world-grain-vs-touch-set`), reddening a clause
+    // the help still stated in full.
+    let said = stdout(&sb.run(&ws, &["script", "--help"]))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
 
     assert!(
         said.contains("mrd script"),
@@ -343,11 +352,27 @@ fn the_script_help_states_the_budget_before_it_can_refuse() {
          rows are never an answer: {said}"
     );
     // The guarantee names its own domain and the protocol that survives it.
+    //
+    // ⭐ THE RULE IS THE SAME CLAUSE; ITS WORDS CHANGED WITH THE LAW. This read
+    // `EQUAL entry fingerprints` — the composition rule of the WORLD-GRAIN
+    // premise: equal entry fingerprints across runs meant one snapshot, unequal
+    // meant re-run. Card `script-door-commit-premise-world-grain-vs-touch-set`
+    // deleted that premise, so a help text still teaching it would send a reader
+    // to build retry loops around corpus churn that no longer refuses them —
+    // which is the failure this clause exists to prevent, not an instance of
+    // obeying it. The composition rule the help must now state is the touch
+    // set's, and it is stated: each run answers for its own.
     assert!(
-        said.contains("EQUAL entry fingerprints"),
+        said.contains("each run's commit answers for its OWN touch set"),
         "a guarantee bounded by the budget must state its composition rule, or \
          it stops holding silently above a boundary the caller cannot learn: \
          {said}"
+    );
+    assert!(
+        !said.contains("EQUAL entry fingerprints"),
+        "and it must not state the RETIRED rule beside the live one: a reader \
+         cannot obey both, and the retired one is premised on a guard the engine \
+         no longer applies: {said}"
     );
 }
 
