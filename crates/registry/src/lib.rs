@@ -99,6 +99,17 @@ pub const DEFAULT_PREWARM_INTERVAL: Duration = Duration::from_secs(1);
 #[allow(clippy::duration_suboptimal_units)]
 pub const DEFAULT_PREWARM_QUIET_MAX: Duration = Duration::from_secs(60);
 
+/// How long [`RunningServer`] shutdown waits for in-flight drawer rebuilds
+/// before releasing the singleton flock. Must stay **under** the tightest client
+/// SIGTERM/respawn budget so a successor is not refused:
+/// - mrd CLI `SPAWN_READY_TIMEOUT` = 5 s (`crates/mrd/src/engine.rs`)
+/// - ccc-statusd `DefaultSpawnTimeout` = 15 s (`internal/registryclient/lifecycle.go`)
+/// - engine kicker wait (`COLD_BUILD_WAIT`) = 2 s (unpublished)
+///
+/// Default is 2 s. Test fixtures that must keep a `TempDir` under a parked
+/// builder raise [`Config::drain_cold_builds`] (30 s).
+pub const DEFAULT_DRAIN_COLD_BUILDS: Duration = Duration::from_secs(2);
+
 /// Current unix time in whole seconds. Returns `0` if the clock predates the
 /// epoch; never panics (mirrors `cache::now_secs`).
 #[must_use]

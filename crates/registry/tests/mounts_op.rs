@@ -17,6 +17,8 @@ use registry::{Config, RunningServer};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+mod common;
+
 /// A daemon config rooted under `tmp`, with reap horizons large enough that
 /// the background reaper never evicts state mid-test.
 // `Duration::from_hours` is not const-stable at MSRV 1.96; the seconds form is
@@ -33,6 +35,7 @@ fn test_config(tmp: &TempDir) -> Config {
     config.prewarm_interval = forever;
     config.prewarm_quiet_max = forever;
     config.idle_exit = None;
+    config.drain_cold_builds = Duration::from_secs(30);
     config
 }
 
@@ -52,13 +55,15 @@ impl Conn {
     }
 
     fn call(&mut self, request: &Value) -> Value {
-        let mut line = serde_json::to_string(request).unwrap();
-        line.push('\n');
-        self.writer.write_all(line.as_bytes()).unwrap();
-        self.writer.flush().unwrap();
-        let mut response = String::new();
-        self.reader.read_line(&mut response).unwrap();
-        serde_json::from_str(&response).unwrap()
+        common::honour_retry(|| {
+            let mut line = serde_json::to_string(request).unwrap();
+            line.push('\n');
+            self.writer.write_all(line.as_bytes()).unwrap();
+            self.writer.flush().unwrap();
+            let mut response = String::new();
+            self.reader.read_line(&mut response).unwrap();
+            serde_json::from_str(&response).unwrap()
+        })
     }
 
     /// A WORKSPACE-LESS v3 hello — the § A.5 caller: discovery exists for
@@ -280,9 +285,9 @@ fn mounts_lifecycle_freshness_and_changed_invalid_refusal() {
 
 /// v3 advertises `mounts` at op grain (the `create` precedent — no dotted
 /// `mounts.<field>` at birth) plus exactly the field-only amendments § A.2
-/// ships as dotted caps — today `mounts.primary` and nothing else; the frozen
-/// v2 caps stay byte-identical, and a v2 session's `mounts` answers
-/// `unknown_op`.
+/// ships as dotted caps — today `mounts.primary` and `mounts.alias`, in that
+/// order and nothing else; the frozen v2 caps stay byte-identical, and a v2
+/// session's `mounts` answers `unknown_op`.
 #[test]
 fn v3_advertises_mounts_and_v2_answers_unknown_op() {
     let tmp = TempDir::new().unwrap();
@@ -300,8 +305,8 @@ fn v3_advertises_mounts_and_v2_answers_unknown_op() {
     let dotted: Vec<&&str> = caps.iter().filter(|c| c.starts_with("mounts.")).collect();
     assert_eq!(
         dotted,
-        vec![&"mounts.primary"],
-        "dotted mounts.<field> caps are exactly the § A.2 field-only amendments — today the declared-primary designation, nothing else: {hi}"
+        vec![&"mounts.primary", &"mounts.alias"],
+        "dotted mounts.<field> caps are exactly the § A.2 field-only amendments — today the declared-primary designation and the root alias, nothing else: {hi}"
     );
 
     let mut v2 = Conn::open(server.socket_path());

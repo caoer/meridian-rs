@@ -27,6 +27,7 @@ fn quiet_server(tmp: &Path, idle_exit: Option<Duration>, reap_interval: Duration
     config.prewarm_interval = NEVER;
     config.prewarm_quiet_max = NEVER;
     config.idle_exit = idle_exit;
+    config.drain_cold_builds = Duration::from_secs(30);
     RunningServer::start(config).unwrap()
 }
 
@@ -54,8 +55,20 @@ fn a_changed_corpus_is_still_rebuilt_on_the_sweep() {
 
     fs::write(ws.join("a.md"), "# A changed\n\nnew body\n").unwrap();
 
+    // Kernel delivery is asynchronous: a sweep landing before the event is a
+    // lawful skip (latency-only). Poll — the same posture as
+    // `prewarm_absorbs_the_change_so_the_next_query_parses_nothing`. Under
+    // load this is the class-1 flake at daemon_idle_exit.rs:57 (pipeline 1101).
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let rebuilt = loop {
+        let got = registry.prewarm();
+        if !got.is_empty() || Instant::now() > deadline {
+            break got;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
     assert_eq!(
-        registry.prewarm(),
+        rebuilt,
         vec![ws.clone()],
         "the edit must rebuild on the sweep, not lazily on the next query"
     );
