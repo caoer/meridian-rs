@@ -281,6 +281,7 @@ the rest of the line with trailing whitespace trimmed.
 | 3 | `primary` | literal `true` (§5.1a) | no | present and not `true` → `bad-value`, naming the one legal value — absence is the only "not primary" spelling |
 | 4 | `vault` | Obsidian vault name, non-empty string | no | present and empty → `bad-value`. Presence IS vault-ness: a block carrying `vault:` names its Obsidian vault; a block without one is not a vault, and no second field restates that fact |
 | 5 | `pin` | fingerprint CID-token (§5.3) | no | present and not a well-formed token → `bad-value` |
+| 6 | `alias` | canonical root name (§5.2) — the second lookup spelling (§5.1b) | no | present and empty → `bad-value`. Charset violation → `bad-value`, naming the offending character. Equal to any mount's `name`, or to another mount's `alias` → `alias-shadows-name`, refusing the whole table |
 
 > **`kind` is RETIRED (kind-sweep, ZT 2026-08-13).** The field paired with
 > `vault:` (`kind: vault` required it, `git-folder` forbade it), gated
@@ -305,6 +306,7 @@ Structural refusals over the block as a whole:
 | The block body is empty | `missing-required-field` naming `name` |
 | Two blocks in the file declaring the same `name` | `duplicate-mount-name`, naming both blocks' lines |
 | Two blocks in the file carrying `primary: true` | `duplicate-primary-designation`, naming both blocks' lines — the designation is a role exactly one mount may hold, and the parser never picks between two (§5.1a) |
+| An `alias` equal to any block's `name`, or to another block's `alias` | `alias-shadows-name`, naming both lines — lookup is name-first-then-alias, so a shadowed alias is a spelling that can never reach the mount declaring it (§5.1b) |
 
 **Blank lines and comment lines are refused** as `malformed-line`. Prose about a mount belongs beside
 the block, not inside it — that is what §3's scoping law buys, and it keeps the block grammar with one
@@ -337,6 +339,52 @@ never derived, so the parser never picks between two claimants — and no consum
 This is the v1-additive amendment §12 boundary 2 anticipates ("the field would be optional and
 new"): mount blocks are closed-schema, so `primry: true` refuses as `unknown-field` at parse — the
 silent-typo hazard §4 names is closed by construction.
+
+### 5.1b `alias:` — the second lookup spelling (v1-additive, 2026-08-23)
+
+An optional `alias:` line gives its mount a **second name callers may spell**. It exists for one
+problem: a skill, a doc or a daemon wants to hard-code ONE constant — `sessions:` — but every
+machine is free to call that tree whatever it likes, and the engine bakes in no root names (the
+no-baked-names law, `laws.md`). One optional field maps the constant, per machine, in one line.
+
+```meridian-mount
+name: field-notes-sessions
+path: «local-path»
+vault: field-notes-sessions
+alias: sessions
+```
+
+> **The lookup order is `name` first, then `alias`.** A root whose `name` already IS the constant
+> needs **no alias line** — a name is its own alias, and that is the whole rule; there is no
+> "default", no fallback, and no special case. The order is not a tie-break between two candidates:
+> `alias-shadows-name` means a table where both could answer cannot load.
+
+**`primary:` is NOT consulted** (ZT, 2026-08-23). The designation stays exactly what §5.1a says it
+is — a role parsed, reported, and never acted on. A table with no mount named or aliased `sessions`
+refuses `sessions:` as an unbound root, and the refusal teaches the one line that would fix it:
+
+```text
+declare `alias: sessions` on the mount that holds that tree
+```
+
+The cost is one line per machine, written once; the gain is that `primary` means nothing it did not
+mean before, and that a refusal never sends a reader to declare a mount for a tree they already have.
+
+**An alias is a LOOKUP spelling and never a STORED one.** Receipts, pins, `mint {…}` paths, `sub`
+rows and every canonical `root:path` a door echoes carry the mount's `name`. `mrd resolve sessions:x`
+answers `root: field-notes-sessions (alias sessions)` and `ref: field-notes-sessions:x` — the alias
+appears where it explains the resolution and nowhere that anything is written down. Address law and
+the resolution order live in `address-grammar.md` §4.6a.
+
+**Uniqueness is table-level, and it refuses the whole file.** An alias equal to any mount's `name` —
+including the name declared LATER in the file, and including its own mount's — or to another mount's
+alias is `alias-shadows-name`, carrying §8.3's no-partial-load clause like every other table-level
+refusal. The parser never picks between two claimants; a shadowed alias is either unreachable (the
+name wins) or ambiguous (two mounts claim it), and neither is a state a mount table may be in.
+
+This is a second v1-additive amendment in the shape §12 boundary 2 anticipates, and it inherits the
+closed-schema guarantee with it: `alais: sessions` refuses as `unknown-field` at parse, so the
+silent-typo hazard §4 names is closed by construction here too.
 
 ### 5.2 The canonical root-name charset
 
@@ -548,6 +596,7 @@ State C and `home-unresolvable` carry the config path and no line: there are no 
 | `duplicate-mount-name` | two `meridian-mount` blocks declare the same `name` |
 | `duplicate-tool-name` | two `meridian-tool` blocks declare the same `name` |
 | `duplicate-primary-designation` | two `meridian-mount` blocks carry `primary: true` (§5.1a) |
+| `alias-shadows-name` | a `meridian-mount` block's `alias` equals some block's `name` or another block's `alias` (§5.1b) |
 
 ### 8.3 The teaching content
 
