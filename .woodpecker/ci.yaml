@@ -49,10 +49,16 @@ when:
   # v* TAGS TOO — not so this file publishes anything on a tag (its publish step
   # stays main+manual), but so the tag lanes have a test verdict to depend on.
   # `tag-linux-amd64.yaml` / `tag-darwin-arm64.yaml` are separate WORKFLOWS
-  # (`labels` selects the agent per workflow) and each now carries
-  # `depends_on: [{name: ci, optional: true}]`; a dependency that never runs
-  # gates nothing, so this clause is half of that gate. Before 2026-08-23 a v*
-  # tag published a release with no test run anywhere in the pipeline.
+  # (`labels` selects the agent per workflow) and each carries
+  # `depends_on: [{name: ci, optional: true}]`.
+  #
+  # DO NOT REMOVE THIS CLAUSE. THE TAG LANES ARE GATED ONLY THROUGH IT. Their
+  # dependency is `optional: true`, which means a dependency that is not part of
+  # the pipeline is SILENTLY IGNORED — so the moment `ci` stops running on tags,
+  # both tag lanes go back to publishing a release with no test verdict anywhere
+  # in the pipeline, exactly as they did before 2026-08-23, and nothing reports
+  # it. The subset argument that makes `optional: true` safe (their event sets
+  # are subsets of this workflow's) is true only while this clause is here.
   - event: tag
     ref: refs/tags/v*
 
