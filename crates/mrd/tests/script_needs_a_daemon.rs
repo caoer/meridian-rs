@@ -59,12 +59,14 @@ impl Sandbox {
     }
 
     fn command(&self, cwd: &Path, args: &[&str]) -> Command {
-        let mut command = Command::new(mrd_bin());
+        // common::mrd_command is the ONE site that sets MRD_DRAIN_COLD_BUILDS —
+        // without it the auto-spawned daemon runs the 2 s production drain
+        // budget against this TempDir cache root, trips the drain-budget guard
+        // and dies unheard behind Stdio::null (class-2 flake family).
+        let mut command = common::mrd_command(&self.home, &self.cache_home);
         command
             .args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env_remove("MERIDIAN_WORKSPACE");
         command
     }
