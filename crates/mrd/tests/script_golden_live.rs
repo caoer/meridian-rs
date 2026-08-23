@@ -3,16 +3,35 @@
 //! 2026-08-13):
 //!
 //! > **Every write row reaches the wire door carrying a CAS token** — threaded
-//! > from the script's own reads when they cover the target, minted by the
-//! > lane's own commit-time `toc` trip when they do not. The author performs
-//! > no read ritual; the commit's entry fingerprint is the enforcement point.
+//! > from the script's own reads when they cover the target, minted at commit
+//! > time when they do not. The author performs no read ritual; the enforcement
+//! > point is the §4.6 TOUCH SET — entry-vs-live at exactly the nodes the
+//! > attempt touched.
+//!
+//! That last clause read *"the commit's entry fingerprint is the enforcement
+//! point"* until card `script-door-commit-premise-world-grain-vs-touch-set`.
+//! That was the whole-corpus premise `run-plane.md`:918-931 records as amended
+//! and DELETED, and it stopped being true of these tests the moment `mrd script`
+//! became one lane over the wire `script` op — so it is rewritten in the PR that
+//! made it false, not in the later one that deletes the code it described.
 //!
 //! Why a live daemon and not the `Door` fake (`script_cmd.rs`). The guard that
 //! demands the token is scoped by ORIGIN (`wire-serve::guard`): `Origin::Wire` —
 //! the daemon socket — demands a per-row fingerprint, and `Origin::InProcess` is
 //! exempt. A fake door can assert what the client SAID; only a real socket can
 //! assert that the engine ACCEPTED it. Both halves are needed, so this suite
-//! records the requests on their way through a real `RunningServer`.
+//! runs every scenario through a real `RunningServer`.
+//!
+//! **Where the rows are read from moved with the lane.** `mrd script` is one
+//! lane now — the whole attempt is the wire `script` op — so the plan rows no
+//! longer pass through this process on their way to a `splice`. They arrive in
+//! the TRACE's armed block, which is the same rows the daemon committed
+//! (`registry::script_op::thread_entry` threads them, the commit sends them, the
+//! trace publishes them). Reading them there asserts the same law over the same
+//! bytes; what it no longer asserts is a socket dialogue this lane does not
+//! have. The live seam gains a stronger pin instead: § the census inside the law
+//! below checks that each scenario spends exactly ONE `script` trip and puts no
+//! world-grain premise on it.
 //!
 //! The table below is the whole point: every golden scenario, its write rows, and
 //! where each row's token came from.
@@ -303,8 +322,39 @@ fn every_golden_write_row_finds_its_token_in_the_scripts_own_reads() {
         let (trace, door) = fixture.run(scenario);
         writeln!(report, "\n{}", scenario.id).expect("a String never fails");
 
+        // 0. ONE LANE, at the live seam. The attempt is exactly one `script`
+        //    trip, and — unless the CALLER pinned one — it carries no
+        //    world-grain premise. That premise is what card
+        //    `script-door-commit-premise-world-grain-vs-touch-set` deleted: it
+        //    refused a slice on churn that touched none of its targets.
+        let script_trips = door.ops().iter().filter(|op| *op == "script").count();
+        assert_eq!(
+            script_trips,
+            1,
+            "{}: one attempt, one trip. census: {:?}",
+            scenario.id,
+            door.ops()
+        );
+        for retired in ["splice", "toc", "cat", "read"] {
+            assert!(
+                !door.ops().iter().any(|op| op == retired),
+                "{}: `{retired}` is the daemon's in-process business now — a trip \
+                 here means the local transaction is alive again. census: {:?}",
+                scenario.id,
+                door.ops()
+            );
+        }
+        let sent = door.script_request();
+        assert_eq!(
+            sent.get("if_fingerprint").is_some(),
+            scenario.pin_entry,
+            "{}: a world-grain premise rides EXACTLY when the caller asked for \
+             one (D-04 widening); this lane mints none of its own: {sent}",
+            scenario.id
+        );
+
         // 1. The outcome the golden page depicts.
-        let ends = ends_of(&trace, &door);
+        let ends = ends_of(&trace);
         if ends != scenario.ends {
             broken.push(format!(
                 "{}: ends {ends:?}, the golden page depicts {:?}{}",
@@ -333,7 +383,7 @@ fn every_golden_write_row_finds_its_token_in_the_scripts_own_reads() {
         // 3. THE LAW. Every plan row that reached the socket carries a token,
         //    and the token is one this run's own reads published.
         let read_revs = revs_read(&trace);
-        for row in plan_rows(&door) {
+        for row in plan_rows(&trace) {
             let (grain, rev) = grain_and_rev(&row);
             let Some(rev) = rev else {
                 broken.push(format!(
@@ -379,14 +429,14 @@ fn scenario_3b_reads_the_board_before_it_claims_the_round() {
         .iter()
         .find(|s| s.id.starts_with("3B"))
         .expect("3B is in the table");
-    let (trace, door) = fixture.run(scenario);
+    let (trace, _door) = fixture.run(scenario);
 
     assert!(
         read_paths(&trace).contains(&BOARD),
         "3B claims {BOARD} but never read it. reads: {:?}",
         read_paths(&trace)
     );
-    let rows = plan_rows(&door);
+    let rows = plan_rows(&trace);
     let property = rows
         .iter()
         .find(|row| row.get("set_property").is_some())
@@ -437,13 +487,13 @@ fn an_append_to_a_target_the_script_never_read_mints_and_commits() {
         writes: &[ROUND],
     };
     let fixture = Fixture::start();
-    let (trace, door) = fixture.run(&UNREAD_APPEND);
+    let (trace, _door) = fixture.run(&UNREAD_APPEND);
 
     assert!(
         !read_paths(&trace).contains(&ROUND),
         "the script itself must not read {ROUND} — that is the whole premise"
     );
-    let append = plan_rows(&door)
+    let append = plan_rows(&trace)
         .into_iter()
         .find(|row| row.get("append").is_some())
         .expect("the scenario arms the append");
@@ -491,10 +541,10 @@ if card["fm"]["owner"] == "3f9a1c07":
         ends: Ends::Committed,
         writes: &[QUOTED_CARD],
     };
-    let (trace, door) = fixture.run(&scenario);
+    let (trace, _door) = fixture.run(&scenario);
 
     assert_eq!(
-        ends_of(&trace, &door),
+        ends_of(&trace),
         Ends::Committed,
         "a quoted fleet-canonical owner must compare equal and arm — the \
          season-1 failure was a silent zero-armed run. trace: {:?}",
@@ -519,11 +569,18 @@ if card["fm"]["owner"] == "3f9a1c07":
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /// What this run actually amounted to, at the grain the golden page depicts —
-/// the outcome word plus whether a splice was issued at all, which is what
+/// the outcome word plus whether a commit was issued at all, which is what
 /// separates a zero-armed run from a rehearsal.
+///
+/// The "was a commit issued" fact used to be read from the socket census (a
+/// `splice` frame this process sent). One lane later the commit is the daemon's,
+/// and the fact rides the trace: `commit` carries the §4.4 response — the
+/// rehearsal's included — and is ABSENT exactly when `CommitLeg::NotIssued`,
+/// which is the zero-armed exit. Same discrimination, read from the contract
+/// instead of from a dialogue this lane no longer holds.
 #[allow(clippy::match_same_arms)] // the Effects arm is spelled for exhaustiveness, not merged away
-fn ends_of(trace: &ScriptTrace, door: &LiveDoor) -> Ends {
-    let spliced = door.ops().iter().any(|op| op == "splice");
+fn ends_of(trace: &ScriptTrace) -> Ends {
+    let spliced = trace.commit.is_some();
     match (trace.outcome, spliced) {
         (ScriptOutcome::Committed, _) => Ends::Committed,
         (ScriptOutcome::NoEffect, true) => Ends::Rehearsed,
@@ -552,14 +609,30 @@ fn read_paths(trace: &ScriptTrace) -> Vec<&str> {
         .collect()
 }
 
-/// Every `plan_edits[]` row this run put on the socket.
-fn plan_rows(door: &LiveDoor) -> Vec<Value> {
-    door.requests()
-        .iter()
-        .filter(|request| request["op"] == json!("splice"))
-        .filter_map(|request| request["plan_edits"].as_array())
-        .flatten()
-        .cloned()
+/// Every plan row this run PUT ON THE WIRE, read from the trace's armed block.
+///
+/// These ARE the rows the wire door saw: the daemon threads them
+/// (`registry::script_op::thread_entry`), sends them as `plan_edits[]`, and
+/// publishes the same rows here — the trace shows what went on the wire, which
+/// is the property `script_cmd.rs` pinned when this process still sent them.
+///
+/// **The commit leg is what scopes it, and that is load-bearing.** A run that
+/// faulted or armed nothing issues no commit (`CommitLeg::NotIssued`, absent
+/// leg) and its armed rows are UNTHREADED — the daemon returns at the failed-eval
+/// exit, before `thread_entry` runs, exactly as the retired CLI lane returned
+/// before `guarded`. Those rows never reached a door, so the write-follows-read
+/// law has nothing to say about them; measured on golden scenario 4, whose two
+/// `set_property` rows publish `rev: null` and formerly were invisible here
+/// because the census read the SOCKET, where scenario 4 sent nothing.
+fn plan_rows(trace: &ScriptTrace) -> Vec<Value> {
+    if trace.commit.is_none() {
+        return Vec::new();
+    }
+    trace
+        .armed_entries()
+        .map(|entry| {
+            serde_json::to_value(entry).expect("an armed entry serializes")["edit"].clone()
+        })
         .collect()
 }
 
@@ -718,8 +791,12 @@ impl LiveDoor {
             .to_owned()
     }
 
-    fn requests(&self) -> &[Value] {
-        &self.requests
+    /// The one `script` request this attempt put on the socket.
+    fn script_request(&self) -> &Value {
+        self.requests
+            .iter()
+            .find(|request| request["op"] == json!("script"))
+            .expect("one lane: the attempt is a `script` op")
     }
 
     fn ops(&self) -> Vec<String> {
@@ -759,92 +836,30 @@ impl Door for LiveDoor {
     }
 }
 
-// ── the composed read's bracket, against the LIVE wire ────────────────────────
-
-/// A door that lets a real writer in between the `toc` and the closing `read` of
-/// one composed read — the exact interleaving the fake `Door` sequences of
-/// `script_cmd.rs` cannot represent, and therefore the one a fixture alone
-/// could never show REACHABLE.
-///
-/// It writes the file itself, once, immediately after the `toc` response comes
-/// back. Nothing here simulates a moved world: the bytes change on disk and the
-/// daemon answers whatever it then computes.
-struct MidReadWriter {
-    inner: LiveDoor,
-    page: PathBuf,
-    wrote: bool,
-}
-
-impl Door for MidReadWriter {
-    fn call(&mut self, request: &Value) -> io::Result<String> {
-        let is_toc = request["op"] == json!("toc");
-        let answer = self.inner.call(request)?;
-        if is_toc && !self.wrote {
-            self.wrote = true;
-            let mut body = std::fs::read_to_string(&self.page).expect("read the page");
-            body.push_str("\na foreign line\n");
-            std::fs::write(&self.page, body).expect("a foreign write lands");
-        }
-        Ok(answer)
-    }
-}
-
-/// **The production wire really does answer two revisions across one composed
-/// read — measured, not reasoned.** `read(path)` is `toc` + one `cat` per
-/// frontmatter key + the closing `read`, and `wire-serve` computes `file_rev`
-/// when it answers each one. So a writer landing between them makes the two
-/// observations disagree, and the composition would otherwise hand the script a
-/// map from one revision and a count from another: a state that never existed.
-///
-/// This is the reachability half of the gate that
-/// `wire_host::tests::a_composition_spanning_two_revisions_refuses_instead_of_being_assembled`
-/// states. That one proves the refusal; this one proves the frame it refuses is
-/// one the live engine produces. The production call site is `WireHost::toc`,
-/// reached by every whole-file `read(path)` in every script.
-///
-/// The control is scenario 1 in the table above: the identical script, the same
-/// daemon, no interleaved writer — it commits.
-#[test]
-fn a_live_writer_between_the_toc_and_the_closing_read_is_caught_by_the_bracket() {
-    let fixture = Fixture::start();
-    let claim = "\ncard = read(\"tasks/0011-token-audit.md\")\nif card[\"fm\"][\"owner\"] == \"\":\n    put(\"tasks/0011-token-audit.md\", props={\"owner\": me(), \"status\": \"doing\"})\n";
-
-    let mut door = MidReadWriter {
-        inner: LiveDoor::open(&fixture.daemon.socket_path(), &fixture.ws),
-        page: fixture.ws.join(CARD),
-        wrote: false,
-    };
-    let argv = ["--actor".to_owned(), ME.to_owned()];
-    let trace = attempt(&argv, claim, &mut door).expect("the attempt answers a trace");
-
-    assert!(
-        door.wrote,
-        "the foreign write has to have happened, or this proves nothing"
-    );
-    assert_eq!(
-        trace.outcome,
-        ScriptOutcome::Fault,
-        "a composition spanning two revisions refuses: {:?}",
-        trace.outcome
-    );
-    let reason = &trace
-        .fault
-        .as_ref()
-        .expect("a fault carries its reason")
-        .reason;
-    assert!(
-        reason.contains("moved while this read was being composed"),
-        "the live refusal is the bracket's own: {reason}"
-    );
-    assert!(
-        !door.inner.ops().iter().any(|op| op == "splice"),
-        "nothing was issued: {:?}",
-        door.inner.ops()
-    );
-    // And the world is untouched by the SCRIPT — only the foreign line is there.
-    let on_disk = std::fs::read_to_string(fixture.ws.join(CARD)).expect("read the card");
-    assert!(
-        on_disk.contains("owner:\n") && on_disk.contains("a foreign line"),
-        "the script armed nothing and committed nothing:\n{on_disk}"
-    );
-}
+// ── the composed read's bracket: the hazard is GONE, not re-homed ────────────
+//
+// `a_live_writer_between_the_toc_and_the_closing_read_is_caught_by_the_bracket`
+// stood here, with its `MidReadWriter` door. It proved that the production wire
+// really does answer two revisions across one composed `read(path)` — `toc` +
+// one `cat` per frontmatter key + the closing `read`, each computing `file_rev`
+// when it answers — so the reachability of `WireHost::toc`'s refusal was a
+// measurement rather than an argument.
+//
+// **That composition does not exist on the surviving lane.** The daemon
+// evaluates against a PINNED entry world (`registry::script_op::EntryWorldHost`
+// over `world: Arc<WorkspaceEngine>`): every read in one attempt is served from
+// one snapshot, so two observations of one attempt cannot disagree, and no
+// writer can land between them. The failure class is eliminated by the lane
+// change, not moved — which is a stronger outcome than a re-homed test, and is
+// stated here rather than left as a test that quietly stopped existing.
+//
+// What still holds it:
+// * `crates/mrd/src/script/wire_host.rs`
+//   § `a_composition_spanning_two_revisions_refuses_instead_of_being_assembled`
+//   — the refusal itself, for as long as `WireHost` stands (PR 2 deletes it with
+//   the local lane it serves).
+// * `crates/registry/src/script_op.rs:1454`
+//   § `a_foreign_edit_after_entry_is_invisible_to_reads_and_refuses_the_commit`
+//   — the daemon-side statement of the same property, and the sharper one: a
+//   foreign edit after entry is INVISIBLE to the reads (one snapshot) and is
+//   caught at the commit by the touch set.
