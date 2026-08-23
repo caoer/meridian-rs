@@ -9,7 +9,7 @@
 //! `script` op, and everything else drove a LOCAL transaction here — reads
 //! lowered to `toc`/`cat`, the commit went out as a `splice`, and that splice
 //! carried `if_fingerprint` = the whole-corpus entry fingerprint. That
-//! world-grain premise is the law `run-plane.md`:918-931 records as amended and
+//! world-grain premise is the law `run-plane.md`:930-943 records as amended and
 //! DELETED: it refused a 64-file slice on fleet churn that never touched one of
 //! its 64 targets.
 //!
@@ -198,7 +198,7 @@ fn the_ops_on_the_socket_are_only_the_ones_the_contract_already_declares() {
 /// It asserted that the CLI minted a whole-corpus entry fingerprint and put it
 /// on its own `splice` as `if_fingerprint` — the world-grain premise that
 /// refused a 64-file slice because a memo landed somewhere else in the corpus.
-/// `run-plane.md`:918-931 records that law as amended and DELETED, and :919
+/// `run-plane.md`:930-943 records that law as amended and DELETED, and :931
 /// names this lane: *"the touch-set law covers ALL script lanes (S1), same
 /// product as MCP `script`"*.
 ///
@@ -542,18 +542,23 @@ fn the_typed_class_is_additive_to_every_consumer_that_reads_the_prose() {
 /// joins the list deliberately — the same discipline `scriptexecgate_test.go`
 /// applies to exec sites in the host.
 ///
-/// **PR 2 note.** `src/script/cmd.rs` is on this list because `section_rev_of`
-/// still stands there, unreachable, until the deletion PR. When that lands, the
-/// row leaves with the function — the file will no longer handle a section
-/// spelling at all, and a list naming a file that does not is the drift this
-/// test exists to catch.
+/// **PR 2 note, discharged.** `src/script/cmd.rs` (`section_rev_of`) and
+/// `src/script/wire_host.rs` (`sec_ref`) were on this list while the local
+/// transaction stood. PR 2 deleted both functions with the lane, so neither file
+/// handles a section spelling any more and both rows left with them — a list
+/// naming a file that does not parse sections is the drift this test exists to
+/// catch, in the other direction.
+///
+/// The population moved rather than shrank: the surviving script path parses a
+/// section spelling in exactly two places, and `../effects/src/kernel.rs` — the
+/// `read(path, section=…)` boundary — JOINS the list here, having been reachable
+/// on this path all along behind the CLI lane's own copy.
 #[test]
 fn read_sel_parse_is_the_only_section_parser_on_the_script_path() {
     // Relative to crates/mrd/, which is CARGO_MANIFEST_DIR for this target.
-    const SECTION_PARSING_SOURCES: [&str; 3] = [
-        "src/script/cmd.rs",             // section_rev_of — the recorded read side
-        "src/script/wire_host.rs",       // sec_ref — the read face's own lowering
+    const SECTION_PARSING_SOURCES: [&str; 2] = [
         "../effects/src/script_edit.rs", // section_segments — the arm side
+        "../effects/src/kernel.rs",      // the read builtin's `section=` boundary
     ];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     for rel in SECTION_PARSING_SOURCES {
@@ -597,16 +602,16 @@ fn read_sel_parse_is_the_only_section_parser_on_the_script_path() {
 //   than left to be discovered.
 // * `a_property_row_carries_the_file_rev_the_script_read`,
 //   `an_append_row_carries_the_section_rev_from_the_same_read` — per-row CAS
-//   threading at both grains. Twin: `crates/registry/src/script_op.rs:1515`
+//   threading at both grains. Twin: `crates/registry/src/script_op.rs:1526`
 //   § `threading_values_from_the_entry_world_without_a_license` (the entry-rev
 //   law, both grains, license-free).
 // * `a_write_to_an_unread_page_mints_its_token_at_commit_and_lands` — the CAS
 //   relaxation for an unread target. Twins:
-//   `crates/registry/tests/script_op.rs:267` § `a_props_write_with_no_read_commits_on_an_unmoved_world`
-//   and `:296` § `an_append_with_no_read_commits_on_an_unmoved_world`.
+//   `crates/registry/tests/script_op.rs:277` § `a_props_write_with_no_read_commits_on_an_unmoved_world`
+//   and `:306` § `an_append_with_no_read_commits_on_an_unmoved_world`.
 // * `a_section_read_threads_its_rev_in_every_legal_spelling_of_one_address` —
 //   spelling-independent threading. Twins: the threading twin above, plus
-//   `crates/registry/tests/script_op.rs:996` § `a_slash_bearing_section_is_readable_through_the_segment_form`
+//   `crates/registry/tests/script_op.rs:1006` § `a_slash_bearing_section_is_readable_through_the_segment_form`
 //   for the spelling half.
 // * `a_zero_armed_run_issues_no_splice_at_all` — the read-class exit. Twin:
 //   `crates/registry/tests/script_op.rs:149`
@@ -620,26 +625,26 @@ fn read_sel_parse_is_the_only_section_parser_on_the_script_path() {
 //
 // THE CALLER GUARD
 // * `a_stale_caller_guard_performs_zero_reads_and_zero_splices` — Twin:
-//   `crates/registry/tests/script_op.rs:454`
+//   `crates/registry/tests/script_op.rs:464`
 //   § `a_stale_caller_guard_refuses_pre_eval_with_zero_reads`.
 // * `a_malformed_caller_pin_refuses_as_input_never_as_a_moved_world`,
 //   `only_a_pre_eval_guard_refusal_carries_the_pinned_expected_token` — Twin:
-//   `crates/registry/tests/script_op.rs:486`
+//   `crates/registry/tests/script_op.rs:496`
 //   § `a_malformed_caller_pin_refuses_as_input_on_the_wire_lane`, which asserts
-//   `fault.recovery == fix` (`:508`) and the ABSENCE of `guard_expected`
-//   (`:515`) — the same discriminator, on the lane that now owns it.
+//   `fault.recovery == fix` (`:518`) and the ABSENCE of `guard_expected`
+//   (`:525`) — the same discriminator, on the lane that now owns it.
 //
 // THE REHEARSAL AND THE CLOCK
 // * `a_dry_run_returns_the_full_effect_set_with_no_fingerprint_after` — the
 //   rehearsal's effect set. `--dry` still rides the wire (asserted above by
 //   § `every_parsed_input_rides_the_one_request_and_nothing_is_invented`); what
-//   it PRODUCES is the daemon's. Twin: `crates/registry/tests/script_op.rs:820`
+//   it PRODUCES is the daemon's. Twin: `crates/registry/tests/script_op.rs:830`
 //   § `a_dry_run_rehearses_and_lands_nothing`.
 // * `a_run_whose_clock_elapses_during_evaluation_refuses_before_the_commit`,
 //   `an_engine_minted_refusal_names_its_own_class_and_no_code` (its clock half),
 //   and the `StallingFake` harness — the entry wall clock. It binds in the
 //   daemon now, at the same three layers. Twin:
-//   `crates/registry/src/script_op.rs:1945`
+//   `crates/registry/src/script_op.rs:2053`
 //   § `the_wall_clock_binds_at_the_read_builtin`, plus the pre-commit wall site
 //   at `crates/registry/src/script_op.rs:358`.
 //
@@ -647,6 +652,103 @@ fn read_sel_parse_is_the_only_section_parser_on_the_script_path() {
 // * `files_bind_in_call_order_and_args_is_a_json_object` — split. The REQUEST
 //   half is pinned above (§ `every_parsed_input_rides_the_one_request_and_nothing_is_invented`);
 //   the BINDING half is the daemon's. Twins:
-//   `crates/registry/tests/script_op.rs:745`
+//   `crates/registry/tests/script_op.rs:755`
 //   § `files_bind_in_call_order_so_the_edit_lands_on_the_typed_first_member`
-//   and `:784` § `the_trace_opens_with_one_bound_row_per_files_member`.
+//   and `:794` § `the_trace_opens_with_one_bound_row_per_files_member`.
+
+// ── Retired against named twins — PR 2, the deletion ─────────────────────────
+//
+// PR 1 made the local transaction unreachable; PR 2 deleted it. Gone from
+// `src/script/cmd.rs`: `run_local`, `guarded`, `mint_for`, `mint_toc`,
+// `file_rev_of`, `section_rev_of`, `fingerprint`, `commit`, `lost_answer`,
+// `is_mismatch`, `refusal_of`, `refusal_reason`. Gone from
+// `src/script/wire_host.rs`: `WireHost` (the `effects::ScriptHost` read
+// lowering), `sec_ref`, `toc_entry`. `Door`, `SocketDoor` and `Frame` stay —
+// the write verbs dial the same door.
+//
+// **The POPULATION, counted before the cut** (PR 1's verdict, correction 1: a
+// census published at the grain the author happens to notice is a floor, not a
+// population). `grep -c` for `#[test]` on the two modules at the base commit:
+// **4 in `cmd.rs` + 8 in `wire_host.rs` = 12**. Nine are deleted and every one
+// is named below; three survive, and the count closes — 9 + 3 = 12, re-derive
+// with the same `grep -c` if it ever stops closing.
+//
+// The three survivors, with the subject that kept them:
+// * `a_files_pattern_forwards_the_attempt_to_the_daemon` — `forward()`, the
+//   lane that stayed.
+// * `a_socket_that_never_answers_fails_the_round_trip_instead_of_parking` and
+//   `a_foreign_build_daemon_is_refused_at_connect_and_both_builds_are_named` —
+//   the DIAL, which every write verb shares.
+//
+// Line numbers below are `grep -n` at THIS PR's head, re-verified after its own
+// edits moved them.
+//
+// `src/script/cmd.rs` — the CAS-threading trio, all three subjects deleted
+// * `a_rows_rev_is_looked_up_by_its_own_path_not_by_read_order` — **RE-HOMED,
+//   not retired.** It made an accident law: `guarded()` looked a token up BY
+//   `arm.path`, so a program touching two files threads each row from the file
+//   THAT ROW targets. `thread_entry` keys the same way and nothing pinned it on
+//   this side — the nearest twin arms two rows on ONE file, where a path-blind
+//   lookup passes. Written in this PR: `crates/registry/src/script_op.rs:1608`
+//   § `a_rows_entry_rev_is_looked_up_by_its_own_path_not_by_arm_order`.
+// * `a_row_targeting_an_unread_path_mints_its_own_token` — the CAS relaxation
+//   for an unread target. The mint is gone with the lane (the daemon threads
+//   from the pinned entry world, so there is no trip to spend). Twins:
+//   `crates/registry/src/script_op.rs:1526`
+//   § `threading_values_from_the_entry_world_without_a_license` (license-free,
+//   both grains) and `crates/registry/tests/script_op.rs:277` / `:306`
+//   § `a_props_write_with_no_read_commits_on_an_unmoved_world` /
+//   § `an_append_with_no_read_commits_on_an_unmoved_world` (end to end).
+// * `a_refused_mint_leaves_the_row_untokened` — **class eliminated, not moved.**
+//   It pinned degrade-loud on a REFUSED mint trip; in-process there is no mint
+//   and no trip, so no refusal of one exists to test. The property it protected
+//   — a row with no entry facts is never given a guessed token — is now
+//   structural (`thread_entry` maps over `entry_toc(..) -> Option`) and the
+//   commit says it out loud: an armed path absent at entry premises ABSENCE
+//   (§5.6). Pinned by `crates/registry/src/script_op.rs:1731`
+//   § `touch_premises_cover_reads_expansions_and_arms_at_entry_values`.
+//
+// `src/script/wire_host.rs` — the read lowering's six
+// * `a_whole_file_read_is_two_trips_whatever_the_frontmatter_costs` — the
+//   fm-costs-no-round-trips law. Round trips do not exist in-process, so the
+//   law's SUBJECT is gone; its two delivered facts survive on the face and are
+//   pinned together at `crates/registry/tests/script_op.rs:149`
+//   § `a_read_only_program_answers_a_no_effect_trace_at_the_entry_fingerprint`
+//   — decoded `fm` off the face, and `words` (**PR 1's NAMED GAP 1, closed by
+//   this PR**: the count is now asserted as a number, not merely carried).
+// * `a_composition_spanning_two_revisions_refuses_instead_of_being_assembled` —
+//   the `file_rev` bracket. Same elimination, one layer stronger: the daemon
+//   serves every read of one attempt from ONE pinned entry world, so two
+//   observations cannot disagree. Twin: `crates/registry/src/script_op.rs:1465`
+//   § `a_foreign_edit_after_entry_is_invisible_to_reads_and_refuses_the_commit`
+//   (invisible to the reads, caught at the commit by the touch set). The
+//   tombstone in `script_golden_live.rs` § the composed read's bracket says the
+//   same thing about this test's live sibling.
+// * `the_wall_clock_is_checked_before_every_round_trip_not_once_per_read` — the
+//   per-TRIP-not-per-READ distinction. It is a statement ABOUT round trips and
+//   dies with them. What survives is that the clock binds at the read site at
+//   all: `crates/registry/src/script_op.rs:2053`
+//   § `the_wall_clock_binds_at_the_read_builtin`, plus the pre-commit wall at
+//   `crates/registry/src/script_op.rs:358`.
+// * `the_deadline_refusal_is_pinned_and_claims_nothing_the_host_cannot_see` —
+//   the refusal wording, pinned verbatim. The wording was `WireHost`'s own and
+//   goes with it; the daemon mints its own text and names its own budget, which
+//   § `the_wall_clock_binds_at_the_read_builtin` asserts. **Named gap:** no
+//   daemon-side row pins that refusal string VERBATIM the way this one did — it
+//   asserts the refusal names the clock, not its exact bytes.
+// * `an_armed_run_that_meets_the_clock_answers_a_face_that_does_not_deny_the_arm`
+//   — the honesty law: a refusal rendered under an armed row must not deny the
+//   arm. The law is the TRACE's, not the host's, and it is pinned doorless at
+//   `crates/mrd/tests/script_trace.rs:177`
+//   § `a_fault_keeps_its_armed_entries_flagged_not_committed` (armed rows render
+//   `[not committed]` under a fault, and the fault's own reason is asserted).
+// * `a_runtime_fault_face_is_labelled_and_names_its_line` — exact twin, same
+//   three assertions (the `runtime fault at line N — ` opener, the kernel's own
+//   message after it, and the ABSENCE of the rules-plane `rule 'script'`
+//   framing), doorless, in the same test:
+//   `crates/mrd/tests/script_trace.rs:177`
+//   § `a_fault_keeps_its_armed_entries_flagged_not_committed`.
+//
+// **Successor-less rows: one, named** — the verbatim deadline-refusal string
+// above. Everything else lands on a daemon-side or trace-side row named here by
+// file, line and § name.

@@ -12,8 +12,9 @@
 //! parses argv, sends the program, and renders the trace that comes back. It
 //! fills no commit leg of its own — `registry::script_op` is the only driver —
 //! which is what keeps exactly ONE commit-premise implementation in the system.
-//! ([`wire_host`]'s read lowering and [`cmd`]'s local transaction are the
-//! retired lane, unreachable and deleted in that card's PR 2.)
+//! ([`wire_host`]'s read lowering and [`cmd`]'s local transaction were the
+//! retired lane; that card's PR 2 DELETED both, and the census of what their
+//! tests pinned is `tests/script_cmd.rs` § Retired against named twins.)
 //!
 //! The ops this lane emits — `hello` and `script`, and nothing else — are
 //! observable without a daemon through the [`Door`] seam.

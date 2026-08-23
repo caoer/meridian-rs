@@ -1585,6 +1585,87 @@ mod tests {
         );
     }
 
+    /// **The accident, made law — re-homed from the deleted CLI lane** (card
+    /// `script-door-commit-premise-world-grain-vs-touch-set`, PR 2). The row it
+    /// replaces was `mrd/src/script/cmd.rs`
+    /// § `a_rows_rev_is_looked_up_by_its_own_path_not_by_read_order`, which
+    /// pinned that `guarded()` looked a token up BY `arm.path` — so a program
+    /// touching two files threads each row from the file THAT ROW targets.
+    /// [`thread_entry`] keys the same way (`entry_toc(.., &arm.path)`), and
+    /// nothing pinned it on this side: the surviving twin above arms two rows
+    /// on ONE file, where a path-blind implementation passes.
+    ///
+    /// The fixture points ARM ORDER the other way on purpose — `other.md` is
+    /// armed FIRST, `doc.md` second — so an implementation that took "the last
+    /// file seen" would thread `doc.md`'s revs onto the row armed at
+    /// `other.md`, and both assertions below would fail. Arm order is the whole
+    /// discriminator here, as the fn name says: this row drives `thread_entry`
+    /// over a constructed armed list and performs no read through the
+    /// implementation, because threading never consults reads (review
+    /// `dc6d9ca9` finding 4 — the CLI row this replaces was named
+    /// `..._not_by_read_order`, and the prose lagged the rename).
+    #[test]
+    fn a_rows_entry_rev_is_looked_up_by_its_own_path_not_by_arm_order() {
+        const OTHER: &str = "---\nstatus: parked\n---\n# Beta\n\nfour five\n";
+
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = registry_in(tmp.path());
+        let ws = seeded_ws(tmp.path());
+        write(ws.join("other.md"), OTHER).unwrap();
+        let (world, root) = pinned_world(&registry, &ws);
+        let ws_root = ws_root_of(&ws);
+
+        let other = entry_toc(&world, &ws_root, &root, "other.md").expect("other in world");
+        let here = entry_toc(&world, &ws_root, &root, "doc.md").expect("doc in world");
+        assert_ne!(
+            other.rev, here.rev,
+            "the fixture is only a test if the two files carry different revs"
+        );
+
+        let armed = vec![
+            ArmedEdit {
+                path: "other.md".to_owned(),
+                edit: PlanEdit::SetProperty {
+                    key: "status".to_owned(),
+                    value: "done".to_owned(),
+                    rev: None,
+                },
+                line: 2,
+                depth: 0,
+            },
+            ArmedEdit {
+                path: "doc.md".to_owned(),
+                edit: PlanEdit::SetProperty {
+                    key: "status".to_owned(),
+                    value: "done".to_owned(),
+                    rev: None,
+                },
+                line: 3,
+                depth: 0,
+            },
+        ];
+
+        let threaded = thread_entry(&armed, &world, &ws_root, &root);
+        let PlanEdit::SetProperty { rev, .. } = &threaded[0].edit else {
+            panic!("shape preserved");
+        };
+        assert_eq!(
+            rev.as_deref(),
+            Some(other.rev.as_str()),
+            "a row threads the entry rev of ITS OWN target, not of the file \
+             armed after it"
+        );
+        let PlanEdit::SetProperty { rev, .. } = &threaded[1].edit else {
+            panic!("shape preserved");
+        };
+        assert_eq!(
+            rev.as_deref(),
+            Some(here.rev.as_str()),
+            "and the other target threads its own — the lookup is keyed, not \
+             disabled"
+        );
+    }
+
     fn ws_root_of(ws: &Path) -> fs::WorkspaceRoot {
         fs::WorkspaceRoot(ws.to_path_buf())
     }
@@ -1951,7 +2032,23 @@ mod tests {
     }
 
     /// Wall site 2: the read builtin refuses on a lapsed clock — typed, in
-    /// the entry's own vocabulary, before any serve.
+    /// the entry's own vocabulary, **before any serve**.
+    ///
+    /// The second half of that sentence is now ASSERTED, not merely claimed
+    /// (review `dc6d9ca9` finding 1, PR 213): a budget exists to stop WORK, so
+    /// a row that pins only the refusal stays green while the wall moves below
+    /// the serve and every lapsed read spends a document build first.
+    ///
+    /// The observable is this host's own `overlay`. Each read is handed ONE
+    /// armed row for its target, so a serve would reach `doc_for`, build the
+    /// entry document, apply the overlay and cache it — `overlay: None` after
+    /// the refusal is the direct successor of the deleted CLI row's
+    /// `door.calls == 0` ("the refusal fires before the trip is spent").
+    ///
+    /// **Aperture.** This pins `EntryWorldHost`, the § A.7 read builtin, which
+    /// is the host the deleted lane's reads became. The effects-mode `LiveHost`
+    /// carries its own wall and its own `reads_seen` counter (the observable
+    /// the review named); it is a different site and not this row's subject.
     #[test]
     fn the_wall_clock_binds_at_the_read_builtin() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1959,15 +2056,49 @@ mod tests {
         let ws = seeded_ws(tmp.path());
         let (world, root) = pinned_world(&registry, &ws);
 
+        let armed = vec![ArmedEdit {
+            path: "doc.md".to_owned(),
+            edit: PlanEdit::SetProperty {
+                key: "status".to_owned(),
+                value: "done".to_owned(),
+                rev: None,
+            },
+            line: 1,
+            depth: 0,
+        }];
         let lapsed = Instant::now()
             .checked_sub(Duration::from_millis(1))
             .expect("the clock is past its first millisecond");
+
         let mut host = host_of(&world, &root, &ws, lapsed);
-        let fault = host.toc("doc.md", &[]).expect_err("lapsed clock refuses");
+        let fault = host
+            .toc("doc.md", &armed)
+            .expect_err("lapsed clock refuses the toc read");
         assert!(
             fault.reason.contains("wall clock elapsed"),
             "the refusal names the budget: {}",
             fault.reason
+        );
+        assert!(
+            host.overlay.is_none(),
+            "the wall fires BEFORE any serve: a served read would have built and \
+             cached the overlay document for its one armed row"
+        );
+
+        // The other read builtin, same law, same observable — `cat` carries a
+        // second ordering hazard (selector resolution) and gets its own row.
+        let mut host = host_of(&world, &root, &ws, lapsed);
+        let fault = host
+            .cat("doc.md", &ReadSel::parse("Alpha"), &armed)
+            .expect_err("lapsed clock refuses the cat read");
+        assert!(
+            fault.reason.contains("wall clock elapsed"),
+            "the refusal names the budget: {}",
+            fault.reason
+        );
+        assert!(
+            host.overlay.is_none(),
+            "the wall fires before `cat` serves anything either"
         );
     }
 

@@ -10,7 +10,7 @@
 //!
 //! That last clause read *"the commit's entry fingerprint is the enforcement
 //! point"* until card `script-door-commit-premise-world-grain-vs-touch-set`.
-//! That was the whole-corpus premise `run-plane.md`:918-931 records as amended
+//! That was the whole-corpus premise `run-plane.md`:930-943 records as amended
 //! and DELETED, and it stopped being true of these tests the moment `mrd script`
 //! became one lane over the wire `script` op — so it is rewritten in the PR that
 //! made it false, not in the later one that deletes the code it described.
@@ -853,12 +853,14 @@ impl Door for LiveDoor {
 // change, not moved — which is a stronger outcome than a re-homed test, and is
 // stated here rather than left as a test that quietly stopped existing.
 //
-// What still holds it:
-// * `crates/mrd/src/script/wire_host.rs`
-//   § `a_composition_spanning_two_revisions_refuses_instead_of_being_assembled`
-//   — the refusal itself, for as long as `WireHost` stands (PR 2 deletes it with
-//   the local lane it serves).
-// * `crates/registry/src/script_op.rs:1454`
+// What still holds it — ONE row now, not two. The other was
+// `crates/mrd/src/script/wire_host.rs`
+// § `a_composition_spanning_two_revisions_refuses_instead_of_being_assembled`,
+// the refusal itself; PR 2 deleted `WireHost` with the local lane it served, so
+// that refusal has no subject left to fire in — there is no composition to span
+// two revisions (census: `crates/mrd/tests/script_cmd.rs` § Retired against
+// named twins — PR 2, the deletion).
+// * `crates/registry/src/script_op.rs:1465`
 //   § `a_foreign_edit_after_entry_is_invisible_to_reads_and_refuses_the_commit`
 //   — the daemon-side statement of the same property, and the sharper one: a
 //   foreign edit after entry is INVISIBLE to the reads (one snapshot) and is
