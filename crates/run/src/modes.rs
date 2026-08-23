@@ -1208,7 +1208,8 @@ impl ProcessSeam<'_> {
         }
         if !dry
             && (!stdout.is_empty() || !stderr.is_empty())
-            && let Some(path) = self.write_log(&format!("{}-b{index}", self.invocation), stdout, stderr)
+            && let Some(path) =
+                self.write_log(&format!("{}-b{index}", self.invocation), stdout, stderr)
         {
             row["log"] = json!(path);
         }
@@ -1253,7 +1254,12 @@ impl ProcessSeam<'_> {
     /// # Errors
     /// The staging write failed — reported as the engine's own failure, never
     /// as an exit code the program did not produce.
-    fn stage(&self, source: &str, key: &str, ext: Option<&str>) -> Result<std::path::PathBuf, String> {
+    fn stage(
+        &self,
+        source: &str,
+        key: &str,
+        ext: Option<&str>,
+    ) -> Result<std::path::PathBuf, String> {
         let dir = self.root.join(STAGED_DIR);
         std::fs::create_dir_all(&dir).map_err(|e| format!("stage {STAGED_DIR}: {e}"))?;
         let name = match ext {
