@@ -19,8 +19,45 @@
 
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::Child;
+use std::process::{Child, Command};
 use std::time::{Duration, Instant};
+
+/// The fixture drain budget, in whole seconds — the unit
+/// [`registry::DRAIN_COLD_BUILDS_ENV`] is read in.
+const FIXTURE_DRAIN_SECS: &str = "30";
+
+/// An `mrd` command for a sandbox at `home`/`cache_home`, carrying the fixture
+/// drain budget.
+///
+/// **This is the ONE place `MRD_DRAIN_COLD_BUILDS` is set in this tree.**
+///
+/// Why it has to exist. A test here drives `mrd` as a subprocess, and that
+/// `mrd` AUTO-SPAWNS its daemon — so the test never constructs a
+/// `registry::Config` and cannot set `drain_cold_builds` on it. The daemon
+/// resolves its own layout through `Config::resolve`, whose only lever from
+/// outside is the environment. Without it the daemon runs the 2 s PRODUCTION
+/// budget against a `TempDir` cache root, which is the class-2 flake, and it
+/// fails **silently**: an auto-spawned daemon's stderr is `Stdio::null()`, so
+/// it dies unheard and the client degrades to the ephemeral engine ~5 s later
+/// with exit 0. Measured: 5.02 s and an ephemeral answer without this, 0.12 s
+/// and a live daemon with it (card `fixture-drain-guard-followups`).
+///
+/// **What it does NOT do, stated because the opposite is the tempting claim.**
+/// This helper CREATES a chokepoint; it does not retrofit one. Files in this
+/// tree build their `mrd` command at ~73 independent `Command::new` sites, and
+/// a file that does not call this function gains nothing from its existence.
+/// Adopted so far: the population measured to trip the assert. Every other
+/// candidate stays exposed until it adopts this, and that residue is tracked on
+/// its own card — not implied by this helper's presence.
+///
+/// Callers chain their own `.args()`, `.current_dir()` and any further `.env()`.
+pub(crate) fn mrd_command(home: &Path, cache_home: &Path) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mrd"));
+    cmd.env("HOME", home)
+        .env("XDG_CACHE_HOME", cache_home)
+        .env(registry::DRAIN_COLD_BUILDS_ENV, FIXTURE_DRAIN_SECS);
+    cmd
+}
 
 /// Feed a spawned child's stdin, tolerating a child that has already stopped
 /// reading, then close the pipe so the child sees EOF.
