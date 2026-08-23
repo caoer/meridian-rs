@@ -38,6 +38,11 @@ fn test_config(tmp: &TempDir) -> Config {
     config.prewarm_interval = forever;
     config.prewarm_quiet_max = forever;
     config.idle_exit = None;
+    // The fixture rule (`crates/registry/tests/common/mod.rs` § Fixture rule,
+    // guarded by `fixture_drain_budget.rs`): the 2 s production default is a
+    // CLIENT's flock budget, not a fixture's — a cold build on a loaded CI box
+    // outlives it and the test flakes on drain rather than on its own subject.
+    config.drain_cold_builds = Duration::from_secs(30);
     config
 }
 
