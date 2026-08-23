@@ -10,7 +10,7 @@
 //!
 //! This mirrors the BIRTH door's own V1 limit verbatim in shape
 //! (`wire-serve/src/write.rs`, `run_birth_middleware`: *"the birth door admits
-//! refuse, this-file set_field, and send only (V1 limit); route cross-file
+//! refuse, this-file `set_field`, and send only (V1 limit); route cross-file
 //! work through a put on an existing record"*) — one plane, one V1 story, two
 //! doors that differ only in which classes each can actually carry.
 //!
