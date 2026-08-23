@@ -4,6 +4,17 @@
 //! different subset of it, so an unused helper here is the normal case, not
 //! debt — hence the module-wide allow. (Without it, adding a helper reddens
 //! `-D warnings` in every test file that does not happen to call it.)
+//!
+//! # Fixture rule: a fixture that starts a daemon owns its teardown
+//!
+//! A fixture in this tree that starts an in-process
+//! `registry::RunningServer` sets `config.drain_cold_builds =
+//! Duration::from_secs(30)` (the 2 s production default is a CLIENT flock
+//! budget), and — when it keeps the server and its `TempDir` in a struct —
+//! declares the **server field first**, because struct fields drop in
+//! declaration order while locals drop in reverse. Full statement and the
+//! measured cause: `crates/registry/tests/common/mod.rs` § Fixture rule.
+//! Enforced for both trees by `crates/registry/tests/fixture_drain_budget.rs`.
 #![allow(dead_code)]
 
 use std::io::{ErrorKind, Write as _};
