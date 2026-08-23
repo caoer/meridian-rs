@@ -1589,7 +1589,8 @@ every record-birthing block. Now no block carries one.
 |---|---|---|
 | `props = {"status": "owner: [[x]] \" #now"}` | `status: "owner: [[x]] \" #now"` | a value that would read back as a key, a comment or a quoted scalar is quoted |
 | `props = {"tags": ["type/agent"]}` | `tags: [type/agent]` | a list is one line of flow, the spelling the corpus carries; a member carrying `,` or `]` quotes |
-| `props = {"n": "7"}` | `n: 7` | the value plane's typed-scalar carve-out, unchanged at every door |
+| `props = {"n": "7"}` | `n: "7"` | `props` is a STRING plane: a value a YAML parser reads back as a number or a bool quotes, at every door (§ A.6.3; card `all-digit-short-ids-read-as-int`, 2026-08-23 — the same carve-out emitted the all-digit short id `19895504` as an integer). The integer 7 has no spelling here: `PropValue::List` is the one typed arm |
+| `props = {"owner": "02146210"}` | `owner: "02146210"` | an all-digit 8-hex short id is a STRING — plain, PyYAML reads it as OCTAL 576 648 and the join key is gone |
 | `props = {"x": "[a, b]"}` | `x: "[a, b]"` | this door HAS a list arm, so a scalar never becomes a collection — **the one asymmetry with the patch face**, where the same string lands plain (`yaml_safe_scalar` here vs `yaml_safe_value` there, wire-contract § A.6.3) |
 | `props = {"bad": "a\nb"}` | REFUSED, nothing born | D11: a v1 frontmatter value is single-line — refused, never sanitized |
 | `props=` plus a `body` opening `---` | REFUSED, nothing born | two spellings of one block; pass one |
