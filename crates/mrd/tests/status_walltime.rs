@@ -194,3 +194,12 @@ fn status_wall_time_under_1s_on_3k_corpus() {
     // `status` is pure-local today (no spawn); Drop still covers a future probe.
     try_teardown_daemon(&sb);
 }
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
+    }
+}

@@ -1705,3 +1705,12 @@ fn f26_a_malformed_objects_sha_reports_unknown_never_a_clean_zero() {
         "and the human render leads with the unknown, not with a zero: {gauge}"
     );
 }
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
+    }
+}
