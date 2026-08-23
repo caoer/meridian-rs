@@ -41,8 +41,13 @@
 //! printed both identically would be inviting the reader to add them up.
 //!
 //! `cmd=` names the PROCESS's entry verb (set once by [`label`]), never one
-//! request — a daemon serving many ops reports `cmd=daemon` and distinguishes
-//! its work in the phase name.
+//! request — a daemon serving many ops reports `cmd=daemon` for all of them.
+//!
+//! **KNOWN GAP — there is no request discriminator.** Two concurrent wire ops
+//! emit byte-identical `phase=snapshot` lines, and nothing on the line says
+//! which op, thread or process produced it. On a busy daemon the lines are a
+//! population, not a trace: read them as a distribution, and do not try to
+//! reconstruct one request from them. Card `mrd-timing-daemon-lane-sink`.
 //!
 //! **A dotted name marks a PART of the phase it prefixes** (`snapshot.walk` is
 //! inside `snapshot`). It is not the whole containment rule: `dispatch`
@@ -121,8 +126,28 @@ static LABEL: OnceLock<String> = OnceLock::new();
 
 /// One diagnostic about the mode itself — the COLON shape, so it can never be
 /// read as a measurement.
+///
+/// **It goes to stderr, which the daemon does not have** (`daemon.rs` spawns it
+/// with `Stdio::null()`), so on the daemon lane every refusal below is
+/// INAUDIBLE. That is the gap named in `docs/status.md` § The timing mode and
+/// carded as `mrd-timing-daemon-lane-sink`; until it closes, an operator
+/// pointing a daemon at a file sink confirms the mode by checking that the file
+/// GROWS, never by the absence of a complaint.
 fn diagnostic(text: &str) {
     let _ = std::io::stderr().write_all(format!("{PREFIX}: {text}\n").as_bytes());
+}
+
+/// A path as it may appear on a diagnostic LINE: control characters — a newline
+/// above all — are replaced, because a raw one would split the diagnostic in
+/// two and the tail would carry no prefix at all. The same defence [`label`]
+/// applies to `cmd=`, for the same reason: a value from outside must not be
+/// able to mint a line.
+fn one_line(path: &Path) -> String {
+    path.display()
+        .to_string()
+        .chars()
+        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+        .collect()
 }
 
 /// Classify a raw switch value.
@@ -184,7 +209,7 @@ fn open_file_sink(path: &Path) -> Sink {
              line the sink gained would change the corpus and the fold would \
              report more lines to append. Writing to stderr instead; name a \
              sink that is not .md or .base.",
-            path.display()
+            one_line(path)
         ));
         return Sink::Stderr;
     }
@@ -193,7 +218,7 @@ fn open_file_sink(path: &Path) -> Sink {
         Err(error) => {
             diagnostic(&format!(
                 "cannot open `{}` ({error}) — writing to stderr instead.",
-                path.display()
+                one_line(path)
             ));
             Sink::Stderr
         }
@@ -296,7 +321,7 @@ pub fn phase(name: &'static str) -> Phase {
 mod tests {
     use super::{
         Chosen, DEFAULT_LABEL, OFF_WORDS, ON_WORDS, PREFIX, Phase, choose, is_corpus_extension,
-        line,
+        line, one_line,
     };
     use std::ffi::OsStr;
     use std::path::Path;
@@ -406,6 +431,18 @@ mod tests {
         for path in ["t.log", "t.txt", "timing", "t.md.log", "a.markdown"] {
             assert!(!is_corpus_extension(Path::new(path)), "{path}");
         }
+    }
+
+    /// A sink path is attacker-adjacent text on a machine-read stream: a
+    /// newline in it would split the diagnostic and leave the tail carrying no
+    /// prefix at all. Same defence as `label`'s on `cmd=`.
+    #[test]
+    fn a_control_character_in_a_sink_path_cannot_split_the_line() {
+        let rendered = one_line(Path::new("a\nmrd-timing cmd=x phase=y us=1"));
+        assert!(!rendered.contains('\n'), "{rendered}");
+        assert_eq!(rendered.lines().count(), 1);
+        // And an ordinary path is untouched.
+        assert_eq!(one_line(Path::new("/tmp/t.log")), "/tmp/t.log");
     }
 
     /// The off path holds no `Instant`: the switch is read at construction, and

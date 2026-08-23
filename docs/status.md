@@ -1481,7 +1481,8 @@ mrd-timing cmd=run phase=snapshot.read us=402118
   daemon ⇒ `daemon`). It names the process, never one request. A verb carrying
   whitespace or a control character is refused and the label stays `mrd`: the
   field rides a space-separated line, so `mrd "run p.md"` must not be allowed to
-  mint a fourth field, and a newline must not be allowed to inject a line.
+  mint a fourth field, and a newline must not be allowed to inject a line. (A
+  sink path on a diagnostic gets the same treatment, for the same reason.)
 - `phase=` — a name whose dot marks a PART of the phase it prefixes
   (`snapshot.read` is inside `snapshot`). That is not the whole containment
   rule — `dispatch` contains `snapshot`, `eval` and `apply` with no dot in
@@ -1540,6 +1541,21 @@ inherits the client's environment but nulls its stderr
 or start it in the foreground (`mrd daemon`) with `MRD_TIMING=1`. A daemon
 already resident when the variable is set emits nothing — it kept the
 environment it started with.
+
+Two gaps on that lane, both named rather than fixed here (card
+`mrd-timing-daemon-lane-sink`):
+
+- **A refused or unopenable file sink is SILENT on the daemon.** Both refusals
+  speak on stderr, and the daemon has none — so the one caller the file sink
+  exists for is the one that cannot hear the complaint. Choose a sink that is
+  outside the corpus AND will open, then **confirm the file grows**. The absence
+  of a complaint from a daemon is not evidence of anything.
+- **No line carries a request discriminator.** Two concurrent wire ops emit
+  byte-identical `phase=snapshot` lines; nothing says which op, thread, or
+  process wrote one. On a busy daemon the output is a POPULATION, not a trace —
+  read it as a distribution, and do not try to reconstruct a single request from
+  it. For one request's server-side total, the frame's `meta.duration_us` is
+  still the honest number.
 
 Which phases `mrd run` emits: `run-plane.md` § Timing phases. The instrument is
 `crates/timing` (`laws.md` § Crate charters).
