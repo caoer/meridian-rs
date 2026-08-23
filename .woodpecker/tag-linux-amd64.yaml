@@ -114,16 +114,26 @@ steps:
       # out plus `-dirty` if the tree actually diverges (docs/release.md §5.1).
       #
       # The probe is the ENGINE'S OWN, flag for flag (crates/mrd/build_git.rs
-      # worktree_dirty): --untracked-files=no, --no-optional-locks. This lane
-      # shares one workspace with ci.yaml's lanes, which write untracked paths
-      # (`.ci` scratch and build dirs; `/target` and `/target-ci` are both
-      # ignored) — a bare probe would read those as a divergence and stamp a
-      # lie that a supplied MRD_BUILD_SHA then carries verbatim into the pin.
+      # worktree_dirty): --untracked-files=no, --no-optional-locks. A bare probe
+      # would read this step's own `.ci` scratch dir as a divergence and stamp a
+      # lie that a supplied MRD_BUILD_SHA then carries verbatim into the pin —
+      # it did exactly that once, publishing d3accfbe4e28…-dirty for a tree that
+      # matched HEAD.
+      #
+      # THIS LANE DOES NOT SHARE A WORKSPACE WITH ci.yaml's LANES. Two earlier
+      # revisions of this comment said it did, and PR 199 edited the sentence
+      # without noticing the claim. Woodpecker workflows share no files by
+      # design, and it is measured: in pipeline 1328 this lane's clone printed
+      # `Initialized empty Git repository in /woodpecker/src/…/meridian-rs/.git/`
+      # at the SAME PATH ci had cloned into 392 s earlier — same path, different
+      # volume. So `target-ci` was never visible here; the untracked path this
+      # lane must not trip over is its own `.ci`. Found by binding reviewer
+      # 26340fc2 on PR 199.
       #
       # IT REFUSES, IT DOES NOT WARN — and it is TRI-STATE. Both halves came
       # from ci.yaml (PR 199) and belong here MORE than there, because what
       # this lane publishes is a RELEASE:
-      #   - a WARNING that never fails is ceremony. ci.yaml's warned on nine
+      #   - a WARNING that never fails is ceremony. ci.yaml's warned on TEN
       #     consecutive main heads and stopped nothing. `-dirty` means a lane
       #     wrote a TRACKED file mid-pipeline, and the pin would then name
       #     bytes no sha can recover.

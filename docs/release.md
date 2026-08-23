@@ -379,10 +379,26 @@ checks anything — a no-op on a commit sha, so push, manual and tag events all
 agree. That is the same pin the main-push publish already
 hands out, so a tag adds a platform — it does not add a second pin vocabulary.
 
-**Append-only is the property, not an accident of the store.** Rust builds here
-are not bit-reproducible, so a rebuild of the same commit differs byte-wise; the
-409 is what keeps that rebuild from silently invalidating a digest a consumer
-already recorded. The lanes exploit it directly: each **asks the registry first**
+**Append-only is the property, not an accident of the store.** A rebuild of the
+same commit can differ byte-wise, and the 409 is what keeps it from silently
+invalidating a digest a consumer already recorded.
+
+*And not because the build is inherently nondeterministic — held every input, it
+reproduced exactly.* The measurement is one commit on one platform with one image
+tag and a warm sccache shard; it does not license a general claim in either
+direction, and an earlier revision of this paragraph made the opposite general
+claim on no measurement at all. Measured 2026-08-23: a
+`git archive` of `4640044e0`, rebuilt in the CI image on `workstation-nyc-2`
+with the same sccache shard, the same `MRD_BUILD_SHA` and the same target-dir
+**path**, reproduced the published `mrd-linux-amd64` byte for byte (sha256
+`0098356f0f9ac63af221128459595138f1600eb7aabf4f15a7e04f4306129ce0`, 54151480
+bytes). An earlier revision of this paragraph claimed the opposite. What makes a
+rebuild differ is an **input** drifting, and none of them is pinned: the same
+source built into a different target-dir path came out 64 bytes smaller —
+`OUT_DIR` strings reach the binary through build scripts — and the image tag,
+toolchain and `RUSTFLAGS` can all move independently.
+
+The lanes exploit append-only directly: each **asks the registry first**
 and builds only when the artifact for this commit is absent, so a tag on a
 commit main already published is a fast no-op that re-prints the pin.
 

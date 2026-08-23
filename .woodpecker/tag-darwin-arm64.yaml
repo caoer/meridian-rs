@@ -117,7 +117,7 @@ steps:
       # IT REFUSES, IT DOES NOT WARN — and it is TRI-STATE. Both halves came
       # from ci.yaml (PR 199) and belong here MORE than there, because what
       # this lane publishes is a RELEASE:
-      #   - a WARNING that never fails is ceremony. ci.yaml's warned on nine
+      #   - a WARNING that never fails is ceremony. ci.yaml's warned on TEN
       #     consecutive main heads and stopped nothing.
       #   - `if [ -n "$(git …)" ]` FAILS OPEN: a git exiting non-zero with
       #     EMPTY stdout yields the empty string, the test is false, and the
