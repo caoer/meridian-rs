@@ -9,7 +9,7 @@
 //! `script` op, and everything else drove a LOCAL transaction here — reads
 //! lowered to `toc`/`cat`, the commit went out as a `splice`, and that splice
 //! carried `if_fingerprint` = the whole-corpus entry fingerprint. That
-//! world-grain premise is the law `run-plane.md`:918-931 records as amended and
+//! world-grain premise is the law `run-plane.md`:929-942 records as amended and
 //! DELETED: it refused a 64-file slice on fleet churn that never touched one of
 //! its 64 targets.
 //!
@@ -198,7 +198,7 @@ fn the_ops_on_the_socket_are_only_the_ones_the_contract_already_declares() {
 /// It asserted that the CLI minted a whole-corpus entry fingerprint and put it
 /// on its own `splice` as `if_fingerprint` — the world-grain premise that
 /// refused a 64-file slice because a memo landed somewhere else in the corpus.
-/// `run-plane.md`:918-931 records that law as amended and DELETED, and :919
+/// `run-plane.md`:929-942 records that law as amended and DELETED, and :930
 /// names this lane: *"the touch-set law covers ALL script lanes (S1), same
 /// product as MCP `script`"*.
 ///
