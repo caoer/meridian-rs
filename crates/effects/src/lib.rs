@@ -34,6 +34,16 @@ mod script_edit;
 pub mod trace;
 
 pub use kernel::validate;
+/// The two-phase (`load` → freeze → `fire`) surface of the amended `run`
+/// entry (hook-support design § 2.2, as amended by § Amendments / A1). The
+/// phase itself is enforced INSIDE the kernel, at the one accessor every
+/// effect builtin passes to reach its channel; what the serve layer needs
+/// out here is the vocabulary to classify what came back — by downcast,
+/// never by matching a message.
+pub use kernel::{
+    BlockFault, BlockLoad, DeclareAtFire, EffectAtLoad, EffectPhase, FaultClass,
+    classify_starlark_fault, load_block, starlark_fault_line,
+};
 pub use script_edit::{ArmedEdit, hpath_addresses, segs_address, sel_addresses};
 
 /// One rule's metered outcome: typed result plus exact fuel (Starlark ticks)

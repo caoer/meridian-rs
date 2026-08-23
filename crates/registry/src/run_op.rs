@@ -84,6 +84,7 @@ pub(crate) fn serve_line(
     let wire::Op::Run {
         targets,
         invocation,
+        prelude,
         actor,
         now,
         fields,
@@ -97,6 +98,7 @@ pub(crate) fn serve_line(
     let request = RunArgs {
         targets,
         invocation,
+        prelude,
         actor,
         now,
         fields,
@@ -128,6 +130,11 @@ fn error_line(id: Option<u64>, error: ErrorBody, rev: Rev) -> String {
 struct RunArgs {
     targets: Vec<wire::RunTarget>,
     invocation: String,
+    /// Load-phase source (cap `run.mode`), one per call, shared by every
+    /// mode-bearing target. Inert on a task target — the shipped path never
+    /// reads it, which is what keeps "byte-identical for existing callers"
+    /// a fact rather than a hope.
+    prelude: Option<String>,
     actor: Option<String>,
     now: Option<String>,
     /// § A.2.1 passthrough for run-plane births (cap `run.fields`) —

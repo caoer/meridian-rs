@@ -463,8 +463,22 @@ fn decode_script(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
 /// receipt / capability / timeout / code field by design: receipts are the
 /// plane's own, authority and deadline resolve from the corpus, and the wire
 /// carries names, never code.
-pub(crate) const RUN_FIELDS: [&str; 6] =
-    ["targets", "invocation", "actor", "now", "fields", "ambient"];
+///
+/// *Amended 2026-08-23 (hook-support design § 2.2): `prelude` joins the set
+/// behind cap `run.mode`.* It is load-phase SOURCE, one per call, shared by
+/// every mode-bearing target — the `script` op already takes caller `source`,
+/// so this is the shipped precedent, not a new class of field. The set stays
+/// CLOSED: that is what refuses an unnegotiated field by name instead of
+/// silently ignoring it.
+pub(crate) const RUN_FIELDS: [&str; 7] = [
+    "targets",
+    "invocation",
+    "actor",
+    "now",
+    "fields",
+    "ambient",
+    "prelude",
+];
 
 /// The § A.8 fan-out ceiling: every face list carries one.
 const RUN_MAX_TARGETS: usize = 64;
@@ -543,9 +557,23 @@ fn decode_run(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
             )));
         }
     }
+    // Load-phase source (cap `run.mode`), one per call. Shape only at this
+    // wall — a prelude that PARSES wrong is a `prelude_invalid` fault on the
+    // rows, not a frame refusal, because it is code the engine evaluates,
+    // not a field it validates.
+    let prelude = opt_str(obj, op, "prelude")?;
+    if let Some(p) = &prelude
+        && p.is_empty()
+    {
+        return Err(bad_request(
+            "`prelude` must be non-empty when present on `run` — an empty \
+             prelude is the absent one spelled a second way; omit the field",
+        ));
+    }
     Ok(Op::Run {
         targets,
         invocation,
+        prelude,
         actor: opt_str(obj, op, "actor")?,
         now,
         fields: decode_fields(obj, op)?,
@@ -557,8 +585,30 @@ fn decode_run(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
 /// `args` is POSITIONAL here (the run plane's contract shape), unlike the
 /// script entry's inert dict — two entries, each speaking its own plane's
 /// grammar verbatim.
+///
+/// *Amended 2026-08-23 (hook-support design § 2.2).* Six optional fields
+/// join the closed set for the load/fire modes — `mode`, `block`, `input`,
+/// `timeout_ms`, `budget`, `source`. The set stays closed and the wall stays
+/// loud: an unnegotiated `mode` is refused BY NAME here (`` unknown field
+/// `mode` on `targets[0]` of `run` ``), which is the shipped refusal, not a
+/// new mechanism. Every EXCLUSION § 2.2 states is enforced below, because a
+/// field that is meaningless on a target must refuse rather than be ignored
+/// — silently dropping `env` on an evaluated fire would be the
+/// guard-you-believe-is-armed trap in a second costume.
 fn decode_run_target(t: &Map<String, Value>, i: usize) -> Result<wire::RunTarget, Box<ErrorBody>> {
-    const TARGET_FIELDS: [&str; 5] = ["page", "task", "args", "env", "dry"];
+    const TARGET_FIELDS: [&str; 11] = [
+        "page",
+        "task",
+        "args",
+        "env",
+        "dry",
+        "mode",
+        "block",
+        "input",
+        "timeout_ms",
+        "budget",
+        "source",
+    ];
     for key in t.keys() {
         if !TARGET_FIELDS.contains(&key.as_str()) {
             return Err(bad_request(format!(
@@ -566,16 +616,28 @@ fn decode_run_target(t: &Map<String, Value>, i: usize) -> Result<wire::RunTarget
             )));
         }
     }
-    let Some(Value::String(page)) = t.get("page") else {
-        return Err(bad_request(format!(
-            "`targets[{i}].page` must be a non-empty string on `run`"
-        )));
+    // The mode is read FIRST: it decides which of the two contracts the rest
+    // of this row is judged against.
+    let mode = decode_run_mode(t, i)?;
+    // A draft's bytes stand in for `page` — the ONE place this amendment
+    // relaxes a shipped requirement, and only on a mode-bearing target.
+    let source = match t.get("source") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(_) => {
+            return Err(bad_request(format!(
+                "`targets[{i}].source` must be a string on `run`"
+            )));
+        }
     };
-    if page.is_empty() {
+    if source.is_some() && mode.is_none() {
         return Err(bad_request(format!(
-            "`targets[{i}].page` must be a non-empty string on `run`"
+            "`targets[{i}].source` needs `mode` on `run` — draft bytes are a \
+             load/fire rehearsal; a task target runs corpus-declared blocks \
+             only (§ A.8's named absence: the wire carries names, never code)"
         )));
     }
+    let page = decode_run_page(t, i, source.is_some())?;
     let task = match t.get("task") {
         None => None,
         Some(Value::String(s)) => Some(s.clone()),
@@ -585,7 +647,112 @@ fn decode_run_target(t: &Map<String, Value>, i: usize) -> Result<wire::RunTarget
             )));
         }
     };
-    let args = match t.get("args") {
+    let args = decode_run_args(t, i)?;
+    let env = decode_run_env(t, i)?;
+    let dry = match t.get("dry") {
+        None => None,
+        Some(Value::Bool(b)) => Some(*b),
+        Some(_) => {
+            return Err(bad_request(format!(
+                "`targets[{i}].dry` must be a boolean on `run`"
+            )));
+        }
+    };
+    let block = decode_run_block(t, i)?;
+    // `input` is arbitrary JSON by design — the fire binds it as a REAL
+    // starlark value, so there is no shape to check here beyond presence.
+    // `null` is a VALUE (starlark `None`), not an absence, so it is kept.
+    let input = t.get("input").cloned();
+    let timeout_ms = match t.get("timeout_ms") {
+        None | Some(Value::Null) => None,
+        Some(v) => match v.as_u64() {
+            Some(ms) if ms > 0 => Some(ms),
+            _ => {
+                return Err(bad_request(format!(
+                    "`targets[{i}].timeout_ms` must be a positive integer on \
+                     `run` — it is a CEILING (effective limit = min(declared, \
+                     ceiling)); zero would name a target that cannot run"
+                )));
+            }
+        },
+    };
+    let budget = decode_run_budget(t, i)?;
+
+    exclusions(i, &Target { mode, task: &task, args: &args, env: &env, block: &block, input: &input, timeout_ms, budget, source: &source })?;
+
+    Ok(wire::RunTarget {
+        page,
+        task,
+        args,
+        env,
+        // A `source` target FORCES `dry`: nothing runs live from wire bytes,
+        // so no write door is reachable and § A.8's "the wire carries names,
+        // never code" survives as "never code THAT RUNS". Forced here, at the
+        // decode wall, so no downstream arm can forget it.
+        dry: if source.is_some() { Some(true) } else { dry },
+        mode,
+        block,
+        input,
+        timeout_ms,
+        budget,
+        source,
+    })
+}
+
+/// One target's `page`. Required everywhere except on a `source` target,
+/// which carries the bytes instead — the ONE place this amendment relaxes a
+/// shipped requirement.
+fn decode_run_page(
+    t: &Map<String, Value>,
+    i: usize,
+    has_source: bool,
+) -> Result<String, Box<ErrorBody>> {
+    Ok(match t.get("page") {
+        Some(Value::String(p)) if !p.is_empty() => p.clone(),
+        Some(_) => {
+            return Err(bad_request(format!(
+                "`targets[{i}].page` must be a non-empty string on `run`"
+            )));
+        }
+        // `source` replaces `page`, and only there.
+        None if has_source => String::new(),
+        None => {
+            return Err(bad_request(format!(
+                "`targets[{i}].page` must be a non-empty string on `run`"
+            )));
+        }
+    })
+}
+
+/// One target's `mode`. Read FIRST at the call site: it decides which of the
+/// two contracts the rest of the row is judged against.
+fn decode_run_mode(
+    t: &Map<String, Value>,
+    i: usize,
+) -> Result<Option<wire::RunMode>, Box<ErrorBody>> {
+    Ok(match t.get("mode") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => match s.as_str() {
+            "load" => Some(wire::RunMode::Load),
+            "fire" => Some(wire::RunMode::Fire),
+            other => {
+                return Err(bad_request(format!(
+                    "`targets[{i}].mode` must be `load` or `fire` on `run`: `{other}`"
+                )));
+            }
+        },
+        Some(_) => {
+            return Err(bad_request(format!(
+                "`targets[{i}].mode` must be a string on `run`"
+            )));
+        }
+    })
+}
+
+/// One target's positional `args` — the run plane's contract shape (a LIST
+/// of strings), unlike the script entry's inert dict.
+fn decode_run_args(t: &Map<String, Value>, i: usize) -> Result<Vec<String>, Box<ErrorBody>> {
+    Ok(match t.get("args") {
         None => Vec::new(),
         Some(Value::Array(items)) => {
             let mut out = Vec::with_capacity(items.len());
@@ -605,8 +772,15 @@ fn decode_run_target(t: &Map<String, Value>, i: usize) -> Result<wire::RunTarget
                 "`targets[{i}].args` must be an array of strings on `run`"
             )));
         }
-    };
-    let env = match t.get("env") {
+    })
+}
+
+/// One target's declared `env` pairs, contract-validated by the plane.
+fn decode_run_env(
+    t: &Map<String, Value>,
+    i: usize,
+) -> Result<std::collections::BTreeMap<String, String>, Box<ErrorBody>> {
+    Ok(match t.get("env") {
         None => std::collections::BTreeMap::new(),
         Some(Value::Object(map)) => {
             let mut out = std::collections::BTreeMap::new();
@@ -625,23 +799,188 @@ fn decode_run_target(t: &Map<String, Value>, i: usize) -> Result<wire::RunTarget
                 "`targets[{i}].env` must be an object of string values on `run`"
             )));
         }
-    };
-    let dry = match t.get("dry") {
-        None => None,
-        Some(Value::Bool(b)) => Some(*b),
+    })
+}
+
+/// One target's `block` — the `^id` anchor of a declared block.
+fn decode_run_block(t: &Map<String, Value>, i: usize) -> Result<Option<String>, Box<ErrorBody>> {
+    Ok(match t.get("block") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => {
+            // §2.4's ONE charset, both planes. The `^` is the address
+            // grammar's sigil, not part of the id — a caller that sends it
+            // is told so rather than silently trimmed.
+            if let Some(rest) = s.strip_prefix('^') {
+                return Err(bad_request(format!(
+                    "`targets[{i}].block` carries the `^` sigil on `run`: \
+                     `{s}` — send the bare block id (`{rest}`); the anchor \
+                     grammar's `^` belongs to the address, not the field"
+                )));
+            }
+            if s.is_empty() || !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+                return Err(bad_request(format!(
+                    "`targets[{i}].block` must be a non-empty block id in the \
+                     [A-Za-z0-9-] charset on `run` (§2.4, one charset both \
+                     planes): `{s}`"
+                )));
+            }
+            Some(s.clone())
+        }
         Some(_) => {
             return Err(bad_request(format!(
-                "`targets[{i}].dry` must be a boolean on `run`"
+                "`targets[{i}].block` must be a string on `run`"
             )));
         }
-    };
-    Ok(wire::RunTarget {
-        page: page.clone(),
-        task,
-        args,
-        env,
-        dry,
     })
+}
+
+/// One decoded target's fields, for the exclusion pass. A struct rather than
+/// nine positional arguments: most are `Option`s of the same shape, and two
+/// swapped at a call site would compile and refuse the wrong field.
+struct Target<'a> {
+    mode: Option<wire::RunMode>,
+    task: &'a Option<String>,
+    args: &'a [String],
+    env: &'a std::collections::BTreeMap<String, String>,
+    block: &'a Option<String>,
+    input: &'a Option<Value>,
+    timeout_ms: Option<u64>,
+    budget: Option<wire::EvalBudget>,
+    source: &'a Option<String>,
+}
+
+/// § 2.2's exclusion rules, all of them, in one place.
+///
+/// Each refuses BY NAME; none is ignored. A field that is meaningless on a
+/// target must refuse rather than be silently dropped — quietly ignoring
+/// `env` on an evaluated fire would be the guard-you-believe-is-armed trap
+/// (§3.2's strict-wall rationale) wearing a second costume: the caller
+/// believes it set something, and nothing says otherwise.
+fn exclusions(i: usize, t: &Target<'_>) -> Result<(), Box<ErrorBody>> {
+    match t.mode {
+        None => {
+            // A task target keeps § A.8's named absences verbatim.
+            if t.block.is_some() || t.input.is_some() {
+                let named = if t.block.is_some() { "block" } else { "input" };
+                return Err(bad_request(format!(
+                    "`targets[{i}].{named}` needs `mode` on `run` — it \
+                     addresses a declared BLOCK, and a target with no `mode` \
+                     is the shipped task path, which addresses a task NAME"
+                )));
+            }
+            if t.timeout_ms.is_some() || t.budget.is_some() {
+                let named = if t.timeout_ms.is_some() {
+                    "timeout_ms"
+                } else {
+                    "budget"
+                };
+                return Err(bad_request(format!(
+                    "`targets[{i}].{named}` is refused on a task target of \
+                     `run` (§ A.8's named absence): a task's limits come from \
+                     the declaring root's config — the page side declares, \
+                     the caller does not tune. Caller ceilings ride \
+                     mode-bearing targets only"
+                )));
+            }
+        }
+        Some(m) => {
+            if t.task.is_some() {
+                return Err(bad_request(format!(
+                    "`targets[{i}]` carries both `task` and `mode` on `run` — \
+                     the two addressings are exclusive: `task` names a \
+                     frontmatter-declared task, `mode` addresses a \
+                     `declare()` block"
+                )));
+            }
+            if !t.args.is_empty() {
+                return Err(bad_request(format!(
+                    "`targets[{i}].args` is refused on a `mode: {}` target of \
+                     `run` — argv is the task contract's channel; a fire's one \
+                     input channel is `input`",
+                    m.as_str()
+                )));
+            }
+            if m == wire::RunMode::Load {
+                if t.block.is_some() || t.input.is_some() {
+                    let named = if t.block.is_some() { "block" } else { "input" };
+                    return Err(bad_request(format!(
+                        "`targets[{i}].{named}` is refused on a `mode: load` \
+                         target of `run` — a load evaluates EVERY block's top \
+                         level on the page and answers their declarations; it \
+                         addresses no single block and calls no entry"
+                    )));
+                }
+                if !t.env.is_empty() {
+                    return Err(bad_request(format!(
+                        "`targets[{i}].env` is refused on a `mode: load` \
+                         target of `run` — a load starts no process and calls \
+                         no entry, so nothing exists to receive it"
+                    )));
+                }
+            }
+            if m == wire::RunMode::Fire && t.block.is_none() && t.source.is_none() {
+                return Err(bad_request(format!(
+                    "`targets[{i}].block` is required with `mode: fire` on \
+                     `run` — a fire calls ONE declared block's entry, named by \
+                     its `^id` anchor"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One mode-bearing target's caller ceilings (cap `run.mode`). A closed
+/// two-field object: a ceiling that names a field the kernel has no knob for
+/// is a caller believing it bounded something, so it refuses by name.
+fn decode_run_budget(
+    t: &Map<String, Value>,
+    i: usize,
+) -> Result<Option<wire::EvalBudget>, Box<ErrorBody>> {
+    let Some(v) = t.get("budget") else {
+        return Ok(None);
+    };
+    if v.is_null() {
+        return Ok(None);
+    }
+    let Value::Object(map) = v else {
+        return Err(bad_request(format!(
+            "`targets[{i}].budget` must be an object of `steps`/`mem` on `run`"
+        )));
+    };
+    for key in map.keys() {
+        if !matches!(key.as_str(), "steps" | "mem") {
+            return Err(bad_request(format!(
+                "unknown field `{key}` on `targets[{i}].budget` of `run` — \
+                 the ceilings are `steps` and `mem`"
+            )));
+        }
+    }
+    let field = |name: &str| -> Result<Option<u64>, Box<ErrorBody>> {
+        match map.get(name) {
+            None | Some(Value::Null) => Ok(None),
+            Some(v) => match v.as_u64() {
+                Some(n) if n > 0 => Ok(Some(n)),
+                _ => Err(bad_request(format!(
+                    "`targets[{i}].budget.{name}` must be a positive integer \
+                     on `run` — it is a CEILING, and zero would name a target \
+                     that cannot run"
+                ))),
+            },
+        }
+    };
+    let budget = wire::EvalBudget {
+        steps: field("steps")?,
+        mem: field("mem")?,
+    };
+    if budget.steps.is_none() && budget.mem.is_none() {
+        return Err(bad_request(format!(
+            "`targets[{i}].budget` names no ceiling on `run` — give `steps`, \
+             `mem`, or both; an empty budget is the absent one spelled a \
+             second way"
+        )));
+    }
+    Ok(Some(budget))
 }
 
 /// Composed `read` (v3-only at dispatch; decode is rev-agnostic).

@@ -266,12 +266,39 @@ enum PlaneStore<'h> {
 /// Emit store via `Evaluator::extra`: rule id, plane-typed [`Provenance`],
 /// depth, per-rule `seq`. Change path stamps fingerprints; run path stamps
 /// [`Provenance::Run`].
+/// Which phase of a two-phase (`load` → freeze → `fire`) evaluation is
+/// running (hook-support design § 2.2, as amended 2026-08-23).
+///
+/// **Why this exists as a runtime phase rather than as two globals sets.**
+/// § 2.2 specified the load environment as the fire environment MINUS the
+/// effect builtins, so that a top-level effect would be an unbound-name
+/// fault. starlark-rust `=0.14.2` resolves global names at MODULE-COMPILE
+/// time (`starlark-0.14.2/src/eval.rs:82-89` — the `Globals` handed to
+/// `eval_module` go straight into `ScopeResolverGlobals`), so a block whose
+/// `def run(event)` body merely MENTIONS `create()` would fail to compile
+/// under such a globals set — every effectful hook would be unloadable and
+/// its declarations unreadable. Freezing does not rebind globals either, so
+/// "frozen module ∪ the effect builtins" is not constructible. Measured;
+/// probe kept with the card. The boundary therefore lives HERE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectPhase {
+    /// The load phase: the module's top level runs to publish its
+    /// `declare()` data. Recording an effect is refused.
+    Load,
+    /// The fire phase (and every shipped single-phase plane): effects
+    /// record normally.
+    Fire,
+}
+
 struct EmitStore {
     rule_id: String,
     provenance: Provenance,
     depth: u32,
     effects: RefCell<Vec<Effect>>,
     next_seq: Cell<u32>,
+    /// The phase gate. [`Fire`](EffectPhase::Fire) for every shipped plane,
+    /// so nothing existing changes behavior.
+    phase: EffectPhase,
 }
 
 impl EmitStore {
@@ -282,11 +309,27 @@ impl EmitStore {
             depth,
             effects: RefCell::new(Vec::new()),
             next_seq: Cell::new(0),
+            // The shipped planes are single-phase and effectful throughout.
+            phase: EffectPhase::Fire,
         }
+    }
+
+    /// The same store, gated to a phase — the load half of the run entry's
+    /// two-phase evaluation.
+    fn in_phase(mut self, phase: EffectPhase) -> Self {
+        self.phase = phase;
+        self
     }
 
     /// Record one descriptor, stamping the rule id, plane-typed provenance,
     /// depth, and the next per-rule `seq`.
+    ///
+    /// Infallible: the phase gate lives one step earlier, at the ACCESSOR
+    /// ([`store`]) every effect builtin must call to reach this store at all
+    /// (design § Amendments / A1). Gating there rather than here is what
+    /// makes the law hold for builtins that are effectful WITHOUT recording
+    /// an [`Effect`] — `bash` executes a process and pushes no descriptor,
+    /// so a gate on this method alone would miss it.
     fn push(&self, kind: EffectKind, args: BTreeMap<String, ArgValue>) {
         let seq = self.next_seq.get();
         self.next_seq.set(seq + 1);
@@ -301,6 +344,139 @@ impl EmitStore {
     }
 }
 
+/// An effect builtin was called during the LOAD phase (design § Amendments /
+/// A1). Typed on purpose: it travels as `ErrorKind::Native` and is
+/// classified by DOWNCAST, never by matching the message string — a class
+/// read off prose breaks the first time the prose is improved.
+///
+/// Distinct from `name_error`, which is `ErrorKind::Scope`: an identifier
+/// bound nowhere (`dney`, `declare(impl = chck_stop)`). Here the name IS
+/// bound — that is precisely what makes an effectful block loadable — and
+/// the refusal is about the phase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectAtLoad {
+    /// The builtin as the author spelled it, e.g. `create`, `bash`.
+    pub builtin: &'static str,
+}
+
+impl std::fmt::Display for EffectAtLoad {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "`{}` does not act at load: the load phase evaluates a block's top \
+             level to publish what it declares, and applies nothing. Move the \
+             call inside the entry the block declares — effects are the fire \
+             phase's.",
+            self.builtin
+        )
+    }
+}
+
+impl std::error::Error for EffectAtLoad {}
+
+/// A load-phase builtin (`declare`, `exec`) was called during the FIRE phase
+/// — A1's mirror of [`EffectAtLoad`], same typed treatment. Declaring at
+/// fire is not a harmless no-op: it is a block asserting its shape after the
+/// shape was already published and cached, so it refuses rather than
+/// silently doing nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclareAtFire {
+    /// The builtin as the author spelled it, e.g. `declare`, `exec`.
+    pub builtin: &'static str,
+}
+
+impl std::fmt::Display for DeclareAtFire {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "`{}` only runs at load: a block declares its shape once, when the \
+             page is loaded, and the declaration is cached at that block's rev. \
+             Calling it from the entry would assert a shape nobody reads.",
+            self.builtin
+        )
+    }
+}
+
+impl std::error::Error for DeclareAtFire {}
+
+/// How a two-phase evaluation fault is classified on a `run` row (design
+/// § 2.2 Response, as amended by A1). Only the classes THIS layer can decide
+/// live here — the addressing and shape classes (`no_block`, `not_declared`,
+/// `reply_shape`, …) belong to the layers that own those facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaultClass {
+    /// The block did not parse.
+    Parse,
+    /// An identifier bound nowhere — a typo (`dney`,
+    /// `declare(impl = chck_stop)`). starlark's `ErrorKind::Scope`.
+    NameError,
+    /// An effect builtin was called during the load phase.
+    EffectAtLoad,
+    /// A load-phase builtin (`declare`, `exec`) was called at fire.
+    DeclareAtFire,
+    /// Fuel, memory, or call depth exhausted.
+    Budget,
+    /// Anything else the evaluator raised.
+    Runtime,
+}
+
+impl FaultClass {
+    /// The wire spelling — ONE owner, so a row's `fault.class`, the docs and
+    /// the tests cannot drift apart.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FaultClass::Parse => "parse",
+            FaultClass::NameError => "name_error",
+            FaultClass::EffectAtLoad => "effect_at_load",
+            FaultClass::DeclareAtFire => "declare_at_fire",
+            FaultClass::Budget => "budget",
+            FaultClass::Runtime => "runtime",
+        }
+    }
+}
+
+/// Classify one starlark error for a `run` row.
+///
+/// **By downcast, never by message** (A1: *"`effect_at_load` is
+/// `ErrorKind::Native` carrying `EffectAtLoad`; never classified by
+/// string"*). A class read off prose gets reclassified by the next prose
+/// edit, silently — and these classes are what a caller branches on.
+///
+/// The split that matters: `ErrorKind::Scope` is an identifier bound NOWHERE
+/// (`name_error`); a phase refusal arrives as `ErrorKind::Native` carrying
+/// one of this module's typed errors. They describe opposite situations — a
+/// typo versus a correct name called in the wrong phase — and collapsing
+/// them would send an author hunting a misspelling that is not there.
+#[must_use]
+pub fn classify_starlark_fault(error: &starlark::Error) -> FaultClass {
+    match error.kind() {
+        starlark::ErrorKind::Parser(_) => FaultClass::Parse,
+        starlark::ErrorKind::Scope(_) => FaultClass::NameError,
+        starlark::ErrorKind::StackOverflow(_) => FaultClass::Budget,
+        starlark::ErrorKind::Native(inner) => {
+            if inner.downcast_ref::<EffectAtLoad>().is_some() {
+                FaultClass::EffectAtLoad
+            } else if inner.downcast_ref::<DeclareAtFire>().is_some() {
+                FaultClass::DeclareAtFire
+            } else {
+                FaultClass::Runtime
+            }
+        }
+        _ => FaultClass::Runtime,
+    }
+}
+
+/// The 1-based source line a starlark error points at, when it carried a
+/// span — the `fault.line` a row publishes so an author goes straight to the
+/// call. 1-based for a reader; the resolver is 0-based.
+#[must_use]
+pub fn starlark_fault_line(error: &starlark::Error) -> Option<u32> {
+    error
+        .span()
+        .map(|span| u32::try_from(span.resolve_span().begin.line + 1).unwrap_or(u32::MAX))
+}
+
 /// Downcast the plane store out of `Evaluator::extra`. Absent only if a builtin
 /// is somehow reached outside a metered run — a loud fault, never a silent drop.
 fn plane<'a, 'e>(eval: &'a Evaluator<'_, '_, 'e>) -> anyhow::Result<&'a PlaneStore<'e>> {
@@ -311,9 +487,31 @@ fn plane<'a, 'e>(eval: &'a Evaluator<'_, '_, 'e>) -> anyhow::Result<&'a PlaneSto
 
 /// The emit store, or a loud fault if a descriptor constructor ran on the
 /// script plane (where it is not registered — the surfaces are separate).
-fn store<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a EmitStore> {
+///
+/// **This is the phase gate** (design § Amendments / A1). It is the ONE
+/// accessor every effect builtin passes to reach its channel, so gating here
+/// makes an ungated effect builtin unconstructible: a builtin that never
+/// calls this cannot emit, execute, or touch the corpus, and one that does
+/// call it is gated whether or not its author remembered to be. A
+/// per-builtin check would be a convention each new constructor could
+/// forget; this is a choke point.
+///
+/// `builtin` is the name as the AUTHOR spelled it, because it is what the
+/// reader of the fault has to go find in their source.
+///
+/// # Errors
+/// [`EffectAtLoad`] on a `Load`-phase store; the script-plane fault as before.
+fn store<'a>(
+    eval: &'a Evaluator<'_, '_, '_>,
+    builtin: &'static str,
+) -> anyhow::Result<&'a EmitStore> {
     match plane(eval)? {
-        PlaneStore::Emit(store) => Ok(store),
+        PlaneStore::Emit(store) => {
+            if store.phase == EffectPhase::Load {
+                return Err(anyhow::Error::new(EffectAtLoad { builtin }));
+            }
+            Ok(store)
+        }
         PlaneStore::Script(_) => Err(anyhow::anyhow!(
             "effect-api: constructor invoked on the script plane, which registers none"
         )),
@@ -355,7 +553,7 @@ fn effect_api(builder: &mut GlobalsBuilder) {
         args.insert("field".to_owned(), ArgValue::Str(field));
         args.insert("value".to_owned(), ArgValue::Str(value));
         insert_opt(&mut args, "message", message);
-        store(eval)?.push(EffectKind::SetField, args);
+        store(eval, "set_field")?.push(EffectKind::SetField, args);
         Ok(NoneType)
     }
 
@@ -371,7 +569,7 @@ fn effect_api(builder: &mut GlobalsBuilder) {
         args.insert("section".to_owned(), ArgValue::Str(section));
         args.insert("content".to_owned(), ArgValue::Str(content));
         insert_opt(&mut args, "message", message);
-        store(eval)?.push(EffectKind::AppendSection, args);
+        store(eval, "append_section")?.push(EffectKind::AppendSection, args);
         Ok(NoneType)
     }
 
@@ -399,7 +597,7 @@ fn effect_api(builder: &mut GlobalsBuilder) {
         args.insert("body".to_owned(), ArgValue::Str(body));
         insert_opt(&mut args, "base", base);
         insert_opt(&mut args, "message", message);
-        store(eval)?.push(EffectKind::Create, args);
+        store(eval, "create")?.push(EffectKind::Create, args);
         Ok(NoneType)
     }
 
@@ -410,7 +608,7 @@ fn effect_api(builder: &mut GlobalsBuilder) {
     ) -> anyhow::Result<NoneType> {
         let mut args = BTreeMap::new();
         args.insert("view".to_owned(), ArgValue::Str(view));
-        store(eval)?.push(EffectKind::RefreshView, args);
+        store(eval, "refresh_view")?.push(EffectKind::RefreshView, args);
         Ok(NoneType)
     }
 
@@ -423,7 +621,7 @@ fn effect_api(builder: &mut GlobalsBuilder) {
         let mut args = BTreeMap::new();
         args.insert("to".to_owned(), ArgValue::List(to.items));
         args.insert("message".to_owned(), ArgValue::Str(message));
-        store(eval)?.push(EffectKind::Send, args);
+        store(eval, "send")?.push(EffectKind::Send, args);
         Ok(NoneType)
     }
 
@@ -437,7 +635,7 @@ fn effect_api(builder: &mut GlobalsBuilder) {
         let mut args = BTreeMap::new();
         args.insert("message".to_owned(), ArgValue::Str(message));
         insert_opt(&mut args, "at", at);
-        store(eval)?.push(EffectKind::Remind, args);
+        store(eval, "remind")?.push(EffectKind::Remind, args);
         Ok(NoneType)
     }
 
@@ -452,7 +650,7 @@ fn effect_api(builder: &mut GlobalsBuilder) {
         if let Some(options) = options {
             args.insert("options".to_owned(), ArgValue::List(options.items));
         }
-        store(eval)?.push(EffectKind::Ask, args);
+        store(eval, "ask")?.push(EffectKind::Ask, args);
         Ok(NoneType)
     }
 
@@ -485,7 +683,7 @@ fn effect_api(builder: &mut GlobalsBuilder) {
         insert_opt(&mut args, "severity", severity);
         insert_opt(&mut args, "payload", payload);
         insert_opt(&mut args, "receipt", receipt);
-        store(eval)?.push(kind, args);
+        store(eval, "intent")?.push(kind, args);
         Ok(NoneType)
     }
 
@@ -513,7 +711,7 @@ fn effect_api(builder: &mut GlobalsBuilder) {
     ) -> anyhow::Result<NoneType> {
         let mut args = BTreeMap::new();
         args.insert("message".to_owned(), ArgValue::Str(message));
-        store(eval)?.push(EffectKind::Notice, args);
+        store(eval, "notice")?.push(EffectKind::Notice, args);
         Ok(NoneType)
     }
 }
@@ -1271,6 +1469,17 @@ pub(crate) struct RuleRun {
     pub(crate) fuel_used: u64,
     pub(crate) mem_used: u64,
     pub(crate) outcome: Result<Vec<Effect>, EvalError>,
+    /// The starlark-level class of the fault, captured WHERE THE STARLARK
+    /// ERROR STILL EXISTS.
+    ///
+    /// [`EvalError`] cannot carry it: by the time an error becomes one, the
+    /// `ErrorKind` is gone and only a message string survives — so a
+    /// downstream classifier would have to match prose, which is exactly
+    /// what design § Amendments / A1 forbids ("never classified by string").
+    /// Captured here instead, the phase classes (`effect_at_load`,
+    /// `declare_at_fire`) reach a row intact and a misclassification becomes
+    /// impossible rather than unlikely.
+    pub(crate) fault_class: Option<FaultClass>,
 }
 
 impl RuleRun {
@@ -1281,6 +1490,8 @@ impl RuleRun {
             fuel_used: 0,
             mem_used: 0,
             outcome: Err(outcome),
+            // Nothing was evaluated, so no starlark error exists to class.
+            fault_class: None,
         }
     }
 }
@@ -1307,6 +1518,92 @@ pub(crate) fn run_task(
     metered_eval(globals, task, &EvalEntry::Run(ctx), limits).outcome
 }
 
+/// What one block's LOAD phase produced (design § 2.2, as amended by A1).
+///
+/// The load phase evaluates a block's module top level to publish what the
+/// block declares, and applies nothing. `effects` is therefore empty on
+/// success — returned rather than asserted away, so a caller can PROVE
+/// purity from the outcome instead of trusting a comment.
+#[derive(Debug)]
+pub struct BlockLoad {
+    /// Empty on success. Anything here would mean the phase gate let
+    /// something through — a defect to surface, not a state to handle.
+    pub effects: Vec<Effect>,
+    /// The classified fault, when the top level refused. `effect_at_load`
+    /// here is an authoring fault: the block tried to ACT while declaring.
+    pub fault: Option<BlockFault>,
+    /// Interpreter steps spent.
+    pub fuel_used: u64,
+    /// Peak heap bytes.
+    pub mem_used: u64,
+}
+
+/// One classified evaluation fault, ready for a `run` row's `fault` object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockFault {
+    /// The wire class (`effect_at_load`, `name_error`, `parse`, …), decided
+    /// by downcast while the starlark error still existed.
+    pub class: FaultClass,
+    /// The evaluator's own text, verbatim — never reworded, because the
+    /// author has to match it against their own source.
+    pub reason: String,
+    /// 1-based call-site line, when the error carried a span.
+    pub line: Option<u32>,
+}
+
+/// Evaluate one starlark block's TOP LEVEL in the load phase.
+///
+/// No hook is looked up and none is called: publishing what a block declares
+/// IS evaluating its top level, exactly as on the script plane. Every effect
+/// builtin the top level reaches refuses `effect_at_load` at the accessor
+/// gate, so a block that tries to act while declaring says so at its own
+/// line rather than acting.
+#[must_use]
+pub fn load_block(source: &str, ctx: &RunCtx, limits: EvalLimits) -> BlockLoad {
+    let block = Rule::new(&ctx.task, source.to_owned());
+    let globals = effect_globals();
+    // Same large stack as every other entry: pathological nesting must fault,
+    // never abort the process.
+    let run = on_eval_stack(|| metered_eval(&globals, &block, &EvalEntry::RunLoad(ctx), limits));
+    let (effects, fault) = match run.outcome {
+        Ok(effects) => (effects, None),
+        Err(e) => (
+            Vec::new(),
+            Some(BlockFault {
+                // The class was taken by downcast at the starlark boundary;
+                // `EvalError` no longer carries the kind, so falling back to
+                // a guess here would be the string-matching A1 forbids.
+                class: run.fault_class.unwrap_or(FaultClass::Runtime),
+                reason: eval_error_reason(&e),
+                line: eval_error_line(&e),
+            }),
+        ),
+    };
+    BlockLoad {
+        effects,
+        fault,
+        fuel_used: run.fuel_used,
+        mem_used: run.mem_used,
+    }
+}
+
+/// The evaluator's own words for one fault — verbatim where the error kept
+/// them, its `Display` otherwise.
+fn eval_error_reason(error: &EvalError) -> String {
+    match error {
+        EvalError::Parse { reason, .. } | EvalError::Runtime { reason, .. } => reason.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// The 1-based source line, where the fault carried one.
+fn eval_error_line(error: &EvalError) -> Option<u32> {
+    match error {
+        EvalError::Runtime { line, .. } => *line,
+        _ => None,
+    }
+}
+
 /// Eval plane: entry point, injected value, stamped provenance. The two hooked
 /// planes take one hook each and never cross (wrong-plane source →
 /// [`EvalError::MissingEntry`]); the script plane takes no hook at all — its
@@ -1316,6 +1613,12 @@ pub(crate) enum EvalEntry<'a> {
     Change(&'a ChangeEvent),
     /// `run(ctx)` — Run-plane provenance from the caller-supplied facts.
     Run(&'a RunCtx),
+    /// The amended `run` entry's LOAD phase (design § 2.2 / A1): evaluate a
+    /// block's module top level to publish what it declares, and call NO
+    /// hook — the module top level is the whole of this phase, exactly as on
+    /// the script plane. The store it builds is phase-gated, so any effect
+    /// builtin reached from that top level refuses `effect_at_load`.
+    RunLoad(&'a RunCtx),
     /// Inline source, kernel entry #3 — no hook, live `read()` through the
     /// injected host, every response recorded.
     Script(&'a ScriptEntry<'a>),
@@ -1328,7 +1631,9 @@ impl<'a> EvalEntry<'a> {
         match self {
             EvalEntry::Change(_) => Some("on_change"),
             EvalEntry::Run(_) => Some("run"),
-            EvalEntry::Script(_) => None,
+            // The load phase calls nothing: publishing declarations IS
+            // evaluating the top level, so there is no hook to look up.
+            EvalEntry::RunLoad(_) | EvalEntry::Script(_) => None,
         }
     }
 
@@ -1337,7 +1642,7 @@ impl<'a> EvalEntry<'a> {
         match self {
             EvalEntry::Change(_) => Some("run"),
             EvalEntry::Run(_) => Some("on_change"),
-            EvalEntry::Script(_) => None,
+            EvalEntry::RunLoad(_) | EvalEntry::Script(_) => None,
         }
     }
 
@@ -1360,6 +1665,19 @@ impl<'a> EvalEntry<'a> {
                 },
                 0,
             )),
+            // The load phase's store carries the same run provenance and
+            // the phase gate — one store type, one gate, no second surface.
+            EvalEntry::RunLoad(ctx) => PlaneStore::Emit(
+                EmitStore::new(
+                    &ctx.task,
+                    Provenance::Run {
+                        invocation_id: ctx.invocation_id.clone(),
+                        root_at_eval: ctx.root_at_eval.clone(),
+                    },
+                    0,
+                )
+                .in_phase(EffectPhase::Load),
+            ),
             EvalEntry::Script(entry) => PlaneStore::Script(entry),
         }
     }
@@ -1370,7 +1688,8 @@ impl<'a> EvalEntry<'a> {
         match self {
             EvalEntry::Change(event) => alloc_event(heap, event),
             EvalEntry::Run(ctx) => alloc_ctx(heap, ctx),
-            EvalEntry::Script(_) => Value::new_none(),
+            // No hook is called, so nothing is passed.
+            EvalEntry::RunLoad(_) | EvalEntry::Script(_) => Value::new_none(),
         }
     }
 
@@ -1378,7 +1697,10 @@ impl<'a> EvalEntry<'a> {
     fn dialect(&self) -> Dialect {
         match self {
             EvalEntry::Change(_) | EvalEntry::Run(_) => rule_dialect(),
-            EvalEntry::Script(_) => script_dialect(),
+            // A declaring block's top level is a program (`declare(...)`,
+            // helper defs), so it needs the top-level-statement grammar the
+            // script plane uses. `load` stays disabled on every entry.
+            EvalEntry::RunLoad(_) | EvalEntry::Script(_) => script_dialect(),
         }
     }
 
@@ -1519,16 +1841,8 @@ fn metered_eval(
             let arg_value = entry.alloc(heap);
 
             let mut eval = Evaluator::new(&module);
-            if let Err(e) = eval.set_max_tick_count(step_guard) {
-                return RuleRun::failed(runtime(rule, e));
-            }
-            if let Err(e) = eval.set_max_heap_size(mem_guard) {
-                return RuleRun::failed(runtime(rule, e));
-            }
-            // Bound call depth: unbounded recursion overflows native frames
-            // before the tick guard; StackOverflow → budget below.
-            if let Err(e) = eval.set_max_callstack_size(limits.max_call_depth.max(1)) {
-                return RuleRun::failed(runtime(rule, e));
+            if let Err(e) = arm_guards(&mut eval, rule, step_guard, mem_guard, limits) {
+                return e;
             }
             eval.extra = Some(&store);
             entry.bind(&module);
@@ -1564,6 +1878,7 @@ fn metered_eval(
 
             let EntryRun {
                 aborted,
+                fault_class,
                 depth_overflow,
                 fault,
                 fault_line,
@@ -1581,33 +1896,31 @@ fn metered_eval(
             };
 
             let over_budget = used_steps > limits.fuel || used_mem > limits.mem;
-            let outcome = if missing {
-                Err(EvalError::MissingEntry {
-                    rule_id: rule.id.clone(),
-                    expected: entry.hook().unwrap_or_default(),
+            let outcome = classify_outcome(
+                rule,
+                entry,
+                effects,
+                &Aborted {
+                    aborted,
+                    depth_overflow,
+                    over_budget,
+                    missing,
                     wrong_plane,
-                })
-            } else if aborted {
-                // over_budget / StackOverflow → budget; else genuine fault.
-                if over_budget || depth_overflow {
-                    Err(budget(limits))
-                } else {
-                    Err(EvalError::Runtime {
-                        rule_id: rule.id.clone(),
-                        reason: fault.unwrap_or_default(),
-                        line: fault_line,
-                    })
-                }
-            } else if over_budget {
-                // Completed without abort but exact mem still over — budget.
-                Err(budget(limits))
-            } else {
-                Ok(effects)
-            };
+                    fault,
+                    fault_line,
+                },
+                limits,
+            );
             RuleRun {
                 fuel_used: used_steps,
                 mem_used: used_mem,
                 outcome,
+                // Budget is the kernel's OWN accounting, not starlark's word.
+                fault_class: if over_budget || depth_overflow {
+                    Some(FaultClass::Budget)
+                } else {
+                    fault_class
+                },
             }
         })
     }));
@@ -1619,8 +1932,80 @@ fn metered_eval(
             fuel_used: limits.fuel,
             mem_used: limits.mem,
             outcome: Err(budget(limits)),
+            fault_class: Some(FaultClass::Budget),
         },
     }
+}
+
+/// Arm the evaluator's three ceilings: ticks, heap, and call depth.
+///
+/// Call depth is bounded because unbounded recursion overflows NATIVE frames
+/// before the tick guard can fire; the resulting `StackOverflow` is then
+/// classed as budget, not as a rule fault.
+fn arm_guards(
+    eval: &mut Evaluator<'_, '_, '_>,
+    rule: &Rule,
+    step_guard: u64,
+    mem_guard: usize,
+    limits: EvalLimits,
+) -> Result<(), RuleRun> {
+    eval.set_max_tick_count(step_guard)
+        .map_err(|e| RuleRun::failed(runtime(rule, e)))?;
+    eval.set_max_heap_size(mem_guard)
+        .map_err(|e| RuleRun::failed(runtime(rule, e)))?;
+    eval.set_max_callstack_size(limits.max_call_depth.max(1))
+        .map_err(|e| RuleRun::failed(runtime(rule, e)))?;
+    Ok(())
+}
+
+/// How one entry's evaluation ended, before it is turned into an outcome.
+/// A struct rather than seven positional arguments — the booleans are all
+/// the same type and swapping two of them would compile.
+struct Aborted {
+    aborted: bool,
+    depth_overflow: bool,
+    over_budget: bool,
+    missing: bool,
+    wrong_plane: Option<&'static str>,
+    fault: Option<String>,
+    fault_line: Option<u32>,
+}
+
+/// The typed outcome of one metered evaluation. Extracted from
+/// [`metered_eval`] so the eval body stays readable; the precedence is the
+/// shipped one, unchanged: a missing entry first, then abort (budget before
+/// genuine fault), then an over-budget completion.
+fn classify_outcome(
+    rule: &Rule,
+    entry: &EvalEntry<'_>,
+    effects: Vec<Effect>,
+    end: &Aborted,
+    limits: EvalLimits,
+) -> Result<Vec<Effect>, EvalError> {
+    if end.missing {
+        return Err(EvalError::MissingEntry {
+            rule_id: rule.id.clone(),
+            expected: entry.hook().unwrap_or_default(),
+            wrong_plane: end.wrong_plane,
+        });
+    }
+    if end.aborted {
+        // over_budget / StackOverflow → budget; else genuine fault.
+        return if end.over_budget || end.depth_overflow {
+            Err(budget(limits))
+        } else {
+            Err(EvalError::Runtime {
+                rule_id: rule.id.clone(),
+                reason: end.fault.clone().unwrap_or_default(),
+                line: end.fault_line,
+            })
+        };
+    }
+    if end.over_budget {
+        // Completed without abort but exact mem still over — budget.
+        return Err(budget(limits));
+    }
+    Ok(effects)
 }
 
 /// How one plane's entry point finished: aborted with a fault, or (hooked
@@ -1628,6 +2013,9 @@ fn metered_eval(
 /// what the source defines.
 struct EntryRun {
     aborted: bool,
+    /// The starlark class of the abort, taken by DOWNCAST off the live
+    /// `starlark::Error` before it degrades to a string (A1).
+    fault_class: Option<FaultClass>,
     depth_overflow: bool,
     fault: Option<String>,
     /// 1-based source line of the fault, when the Starlark error carried a
@@ -1653,6 +2041,7 @@ fn dispatch_entry<'v>(
 ) -> EntryRun {
     let aborted = |e: &starlark::Error| EntryRun {
         aborted: true,
+        fault_class: Some(classify_starlark_fault(e)),
         depth_overflow: is_depth_overflow(e),
         fault: Some(e.to_string()),
         // 1-based for a reader; the resolver is 0-based (the read-record
@@ -1665,6 +2054,7 @@ fn dispatch_entry<'v>(
     };
     let finished = EntryRun {
         aborted: false,
+        fault_class: None,
         depth_overflow: false,
         fault: None,
         fault_line: None,
@@ -1814,6 +2204,306 @@ mod tests {
             .map(|n| n.as_str().to_owned())
             .filter(|n| !standard.contains(n))
             .collect()
+    }
+
+    /// Load purity, structurally — the run entry's load phase can record NO
+    /// effect, for every effect that exists and every effect that will.
+    ///
+    /// § 2.2 stated this law as a set difference over the load globals
+    /// (`surface ∩ {bash, md constructors} = ∅`). That mechanism is not
+    /// available: starlark-rust resolves global names at MODULE-COMPILE time
+    /// (`starlark-0.14.2/src/eval.rs:82-89`), so withholding the builtins
+    /// would make every effectful block UNLOADABLE — a `def run(event)` body
+    /// merely mentioning `create()` is enough to fail the compile — and the
+    /// declarations a load exists to publish would be unreachable for exactly
+    /// the blocks that matter. Measured; the probe is kept with card
+    /// `hook-01-mrd-run-load-fire`.
+    ///
+    /// So the law is enforced at the ONE funnel every effect must pass to
+    /// exist — [`EmitStore::push`] — and asserted here over the closed
+    /// [`EffectKind::ALL`] table rather than a hand-written list. That is
+    /// what makes it structural: a new effect kind cannot be added without
+    /// appearing in `ALL`, and cannot record without `push`, so it can
+    /// escape neither the gate nor this assertion.
+    /// A probe store for the phase tests.
+    fn probe_store(phase: EffectPhase) -> EmitStore {
+        EmitStore::new(
+            "probe",
+            Provenance::Run {
+                invocation_id: "i".to_owned(),
+                root_at_eval: "r".to_owned(),
+            },
+            0,
+        )
+        .in_phase(phase)
+    }
+
+    /// Parse + evaluate one hook-plane module against a store, freeze it, and
+    /// hand back the frozen module — the load half, in miniature.
+    fn load_module(
+        source: &str,
+        store: &PlaneStore<'_>,
+    ) -> Result<starlark::environment::FrozenModule, String> {
+        Module::with_temp_heap(|module| {
+            let ast = AstModule::parse("probe", source.to_owned(), &rule_dialect())
+                .map_err(|e| format!("parse: {e}"))?;
+            let mut eval = Evaluator::new(&module);
+            eval.extra = Some(store);
+            let outcome = eval.eval_module(ast, &effect_globals());
+            drop(eval);
+            outcome.map_err(|e| format!("{e}"))?;
+            module.freeze().map_err(|e| format!("freeze: {e:?}"))
+        })
+    }
+
+    /// **THE load-bearing assumption of the whole phase-gate shape**, and it
+    /// was asserted only from API types until this test existed (deciding
+    /// seat `dd1bb68f`, 2026-08-23: "FIRST TEST you write, before anything
+    /// else").
+    ///
+    /// The shape is: compile and FREEZE a block's module once under a `Load`
+    /// store, then later call its frozen entry from a FRESH evaluator whose
+    /// `Evaluator::extra` carries a `Fire` store. That only works if a frozen
+    /// `def` reads the store DYNAMICALLY at call time — off the evaluator
+    /// running it — rather than capturing the one it was compiled under. If
+    /// starlark inlined the store the way it inlines a global's value, the
+    /// fire would silently emit into the dead load store and every effect a
+    /// hook applied would vanish. Nothing about the API types says which it
+    /// is; only running it does.
+    #[test]
+    fn a_frozen_def_sees_the_fire_store_not_the_load_store() {
+        let source = "\
+def run(event):
+    set_field(field = \"status\", value = event)
+    return 1
+";
+        // Load phase: the module compiles and freezes. The def MENTIONS an
+        // effect builtin, which is exactly the case A1 exists for — under the
+        // superseded design this would not even have loaded.
+        let load = PlaneStore::Emit(probe_store(EffectPhase::Load));
+        let frozen = load_module(source, &load).expect("the block loads under a Load store");
+        let PlaneStore::Emit(load_store) = &load else {
+            unreachable!("probe store is an emit store")
+        };
+        assert!(
+            load_store.effects.borrow().is_empty(),
+            "the LOAD phase recorded an effect: {:?}",
+            load_store.effects.borrow()
+        );
+
+        // Fire phase: a fresh evaluator, a fresh store, the SAME frozen def.
+        let fire = PlaneStore::Emit(probe_store(EffectPhase::Fire));
+        let entry = frozen.get("run").expect("`run` is defined");
+        let returned = Module::with_temp_heap(|module| {
+            // `Heap::access_owned_frozen_value` is the seam that lets a
+            // frozen value cross into a fresh evaluator's lifetime.
+            // (`import_public_symbols` does NOT work here: it imports under
+            // `Visibility::Private`, and `Module::get` returns `None` for a
+            // private name — measured, it cost a red test.)
+            module.frozen_heap().add_reference(entry.owner());
+            let entry = module.heap().access_owned_frozen_value(&entry);
+            let arg = module.heap().alloc("Done");
+            let mut eval = Evaluator::new(&module);
+            eval.extra = Some(&fire);
+            let called = eval.eval_function(entry, &[arg], &[]);
+            let rendered = called.map(|v| v.to_string()).map_err(|e| e.to_string());
+            drop(eval);
+            rendered
+        })
+        .expect("the frozen entry calls under a Fire store");
+        assert_eq!(returned, "1", "the entry's return value crosses back");
+
+        let PlaneStore::Emit(fire_store) = &fire else {
+            unreachable!("probe store is an emit store")
+        };
+        let recorded = fire_store.effects.borrow();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "the frozen def emitted into the FIRE store — got {recorded:?}"
+        );
+        assert_eq!(recorded[0].kind, EffectKind::SetField);
+        assert_eq!(
+            recorded[0].args.get("value"),
+            Some(&ArgValue::Str("Done".to_owned())),
+            "the fire's argument reached the effect, so the call really ran"
+        );
+        // …and the load store stayed empty throughout, so nothing leaked back.
+        assert!(
+            load_store.effects.borrow().is_empty(),
+            "the frozen def emitted into the store it was COMPILED under — the \
+             phase-gate shape does not hold"
+        );
+    }
+
+    /// Load purity, structurally — the load phase can perform NO effect, for
+    /// every effect that exists and every effect that will.
+    ///
+    /// § 2.2 stated this law as a set difference over the load globals
+    /// (`surface ∩ {bash, md constructors} = ∅`). That mechanism is not
+    /// available: starlark-rust resolves identifiers at MODULE-COMPILE time
+    /// and inlines a bound global's value into the def, so withholding the
+    /// builtins would make every effectful block UNLOADABLE — a `def
+    /// run(event)` body merely mentioning `create()` is enough to fail the
+    /// compile — and the declarations a load exists to publish would be
+    /// unreachable for exactly the blocks that matter. Measured; design
+    /// § Amendments / A1.
+    ///
+    /// So the law is enforced at the ONE accessor every effect builtin calls
+    /// to reach its channel ([`store`]), and asserted here over the closed
+    /// [`EffectKind::ALL`] table rather than a hand-written list. That is
+    /// what makes it structural: a new effect kind cannot be added without
+    /// appearing in `ALL`, and cannot act without the accessor, so it can
+    /// escape neither the gate nor this assertion.
+    #[test]
+    fn no_effect_builtin_acts_during_the_load_phase() {
+        for (kind, call) in WELL_FORMED_CALLS {
+            let builtin = kind.constructor();
+            assert!(
+                call.starts_with(builtin),
+                "the call table row for `{builtin}` does not call it: {call}"
+            );
+            let load = PlaneStore::Emit(probe_store(EffectPhase::Load));
+            // The call is WELL-FORMED on purpose. starlark validates named
+            // parameters before it enters a builtin's body (measured: an
+            // arg-less `set_field()` refuses `Missing named-only parameter
+            // `field``, an `ErrorKind::Function` fault that never reaches the
+            // gate). A malformed call would therefore "pass" this test
+            // while proving nothing about the phase.
+            let Err(message) = load_module(&format!("{call}\n"), &load) else {
+                panic!("`{builtin}` did not refuse at load")
+            };
+            assert!(
+                message.contains("does not act at load"),
+                "`{builtin}` refused at load for the WRONG reason: {message}"
+            );
+            let PlaneStore::Emit(store) = &load else {
+                unreachable!()
+            };
+            assert!(
+                store.effects.borrow().is_empty(),
+                "`{builtin}` recorded an effect during the load phase"
+            );
+        }
+        println!(
+            "POPULATION load-gated effect builtins = {:?}",
+            EffectKind::ALL.map(EffectKind::constructor)
+        );
+    }
+
+    /// One well-formed call per effect kind — the table the load-purity test
+    /// drives. Kept beside `EffectKind::ALL` and checked against it, so a new
+    /// effect kind fails this module rather than silently going untested.
+    const WELL_FORMED_CALLS: [(EffectKind, &str); 8] = [
+        (EffectKind::SetField, r#"set_field(field = "s", value = "v")"#),
+        (
+            EffectKind::AppendSection,
+            r#"append_section(section = "S", content = "c")"#,
+        ),
+        (EffectKind::Create, r#"create(path = "p.md", body = "b")"#),
+        (EffectKind::RefreshView, r#"refresh_view(view = "v")"#),
+        (EffectKind::Send, r#"send(to = ["a"], message = "m")"#),
+        (EffectKind::Remind, r#"remind(message = "m")"#),
+        (EffectKind::Ask, r#"ask(message = "m")"#),
+        (EffectKind::Notice, r#"notice(message = "m")"#),
+    ];
+
+    /// The call table covers the closed kind table, in order — the guard that
+    /// keeps the load-purity test honest as effects are added.
+    #[test]
+    fn the_well_formed_call_table_covers_every_effect_kind() {
+        let covered: Vec<EffectKind> = WELL_FORMED_CALLS.iter().map(|(k, _)| *k).collect();
+        assert_eq!(
+            covered,
+            EffectKind::ALL.to_vec(),
+            "WELL_FORMED_CALLS must mirror EffectKind::ALL — a new effect kind \
+             needs a row here or load purity goes untested for it"
+        );
+    }
+
+    /// The typed class, not the prose. A1: *"`effect_at_load` is
+    /// `ErrorKind::Native` carrying `EffectAtLoad`; never classified by
+    /// string."* If a class ever has to be matched off the message, it has
+    /// stopped being typed, and the next prose edit reclassifies the fault
+    /// without anyone noticing.
+    #[test]
+    fn phase_faults_classify_by_downcast_and_never_absorb_name_error() {
+        let classify = |source: &str, phase: EffectPhase| -> (FaultClass, Option<u32>) {
+            let store = PlaneStore::Emit(probe_store(phase));
+            Module::with_temp_heap(|module| {
+                let ast = AstModule::parse("probe", source.to_owned(), &rule_dialect())
+                    .expect("the probe parses");
+                let mut eval = Evaluator::new(&module);
+                eval.extra = Some(&store);
+                let outcome = eval.eval_module(ast, &effect_globals());
+                let classified = outcome
+                    .err()
+                    .map(|e| (classify_starlark_fault(&e), starlark_fault_line(&e)));
+                drop(eval);
+                classified
+            })
+            .expect("the probe refuses")
+        };
+
+        // A well-formed effect call at load: the phase class, by downcast.
+        let (class, line) = classify("\ncreate(path = \"p.md\", body = \"b\")\n", EffectPhase::Load);
+        assert_eq!(class, FaultClass::EffectAtLoad);
+        assert_eq!(
+            class.as_str(),
+            "effect_at_load",
+            "the wire spelling is the one the design names"
+        );
+        assert_eq!(
+            line,
+            Some(2),
+            "the fault carries the CALL-SITE line, 1-based — row 8 publishes it"
+        );
+
+        // A misspelled constructor is still `name_error`, at either phase.
+        // Without this, the new class would quietly swallow the old one and
+        // an author with a typo would be told to move their code.
+        for phase in [EffectPhase::Load, EffectPhase::Fire] {
+            let (class, _) = classify("dney()\n", phase);
+            assert_eq!(
+                class,
+                FaultClass::NameError,
+                "a name bound nowhere stays `name_error` at {phase:?} — it is \
+                 ErrorKind::Scope, a different situation entirely"
+            );
+        }
+
+        // And the same effect call at FIRE does not fault at all.
+        let store = PlaneStore::Emit(probe_store(EffectPhase::Fire));
+        let ok = Module::with_temp_heap(|module| {
+            let ast = AstModule::parse(
+                "probe",
+                "create(path = \"p.md\", body = \"b\")\n".to_owned(),
+                &rule_dialect(),
+            )
+            .expect("parses");
+            let mut eval = Evaluator::new(&module);
+            eval.extra = Some(&store);
+            let outcome = eval.eval_module(ast, &effect_globals());
+            let is_ok = outcome.is_ok();
+            drop(eval);
+            is_ok
+        });
+        assert!(ok, "the gate refuses a PHASE, not the call");
+    }
+
+    /// The same table, FIRE tense: the gate refuses a PHASE, never an effect.
+    /// Without this, a gate that refused everything would pass the test above.
+    #[test]
+    fn every_effect_kind_records_during_the_fire_phase() {
+        let fire = probe_store(EffectPhase::Fire);
+        for kind in EffectKind::ALL {
+            fire.push(kind, BTreeMap::new());
+        }
+        assert_eq!(
+            fire.effects.borrow().len(),
+            EffectKind::ALL.len(),
+            "the fire phase records every kind, once each"
+        );
     }
 
     /// The three entries hold their surfaces separately, and the script

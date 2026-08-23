@@ -626,13 +626,17 @@ impl ScriptHost for LiveHost<'_> {
         let seq = self.run_seq.get();
         self.run_seq.set(seq + 1);
         let invocation = format!("{}-r{seq}", self.invocation);
-        let target = wire::RunTarget {
-            page: page.to_owned(),
-            task: task.map(str::to_owned),
+        // The in-script `run()` builtin drives the SHIPPED task path only —
+        // it addresses a task by NAME and takes no mode. The load/fire modes
+        // are a wire-target shape; a script that wants one composes the
+        // `run` op, it does not gain a second spelling here.
+        let target = wire::RunTarget::task_target(
+            page.to_owned(),
+            task.map(str::to_owned),
             args,
             env,
-            dry: Some(dry),
-        };
+            Some(dry),
+        );
         // Delta honesty (§ A.7 effects paragraph): a live run() mints per
         // committed batch through the same sink seam as the § A.8 op arm.
         let sink = crate::delta_sink::RingSink::new(self.registry.ring(&self.ws_path));
