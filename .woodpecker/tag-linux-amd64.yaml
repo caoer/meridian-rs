@@ -25,6 +25,20 @@ when:
   # only ever ADD the artifact this commit was always going to have.
   - event: manual
 
+# GATE ON THE TEST LANES. Workflows in one pipeline run in parallel and share
+# no ordering, and before 2026-08-23 this one depended on nothing while `ci`
+# did not run on tags at all — so a v* tag published a release binary with no
+# test having run anywhere in the pipeline. `ci` now runs on v* tags (ci.yaml
+# `when`) and this workflow waits for it: a workflow "doesn't execute until all
+# of its dependencies finished successfully" (Woodpecker >= 3.x workflows doc),
+# so a red `ci` leaves this whole workflow skipped and the registry untouched.
+# `optional: true` because `ci` is not part of every pipeline this lane runs in
+# — when `ci` is absent the dependency is ignored, when present it is enforced.
+# Card: 22-18/tasks/meridian-rs-publish-not-gated.
+depends_on:
+  - name: ci
+    optional: true
+
 labels:
   hostname: workstation-nyc-2
 
