@@ -2076,7 +2076,11 @@ line — `--dry` never reaches `apply` or `cascade`, `--list` reaches neither
 Neither does a phase that FAILED: the span is abandoned on the error path, so
 `mrd run missing.md` prints `workspace.resolve`, the refusal, and `total` — and
 no `page.load`, because there was no page load. `total` reports on a refusal
-because the process is what it measures.
+because the process is what it measures. One completed-degrade exception:
+`daemon.dial` `stop()`s on the degrade path (`mrd::engine::answer_links`) — the
+dial finished with a verdict (no usable daemon answer), which is not a failed
+phase. The line means the decision completed, not that a daemon answered
+(`status.md` `daemon.dial` Covers).
 
 **And a phase whose GATE did not fire never ran.** The `snapshot` set is the
 one with a gate: the fold is lazy, and its trigger differs by tense (§ The run
@@ -2090,9 +2094,26 @@ run is the lazy gate broken.
 `snapshot.*` is emitted by `fs`, not by this plane: **every** caller of
 `domain_snapshot*` lights it up. The corpus fold is the cost that does not care
 which door asked for it — which also means **a `phase=snapshot` line does not
-imply a run.** `mrd sql`, `mrd check`, `mrd walk`, `mrd repair`, the daemon's
-resident rebuild and its watch loop all fold and all report it, under their own
-`cmd=`. Read `cmd=` before attributing a fold.
+imply a run.** `mrd sql`, `mrd check`, `mrd walk`, `mrd repair`, `mrd retire`,
+`mrd links`, the daemon's resident rebuild and its watch loop all fold and all
+report it, under their own `cmd=`. Read `cmd=` before attributing a fold. The
+snapshot set also repeats wherever a verb loads mount corpora (`load_mounts_for`
+→ `build_docs_at`): once for the workspace corpus and once per mounted root
+the verb addresses — lock-addressed on `walk`/`check`/`status`/`walk_op`,
+link-addressed on `links`/`sql`/`sql_op` (`build_docs_at` calls
+`fs::domain_snapshot`). Count the `phase=snapshot` lines the same way as
+`corpus.build`.
+
+`corpus.build` is the same class: it is emitted by `fs::build_corpus`, and the
+callers that light it up include `mrd sql`, `mrd check`, `mrd walk`,
+`mrd repair`, `mrd retire`, `mrd links`, the daemon's resident rebuild, and the
+write-door referrer scan (`wire_serve::write::inbound_referrers`). **A
+`phase=corpus.build` line does not imply a links call.** Read `cmd=` first. It
+also repeats wherever a verb loads mount corpora (`load_mounts_for` →
+`build_docs_at`): once for the workspace corpus and once per mounted root the
+verb addresses — lock-addressed on `walk`/`check`/`status`/`walk_op`,
+link-addressed on `links`/`sql`/`sql_op`. Count the lines; the name does not
+distinguish workspace from mount.
 
 Within the run plane there are FOUR fold sites, and they do not all fire on one
 lane:

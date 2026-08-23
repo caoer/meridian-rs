@@ -237,7 +237,12 @@ pub(crate) fn run_command(path_arg: Option<&str>, format: Format) -> Result<(), 
                 "source": answer.source.label(),
                 "links": answer.body,
             });
-            println!("{}", serde_json::to_string_pretty(&value).expect("json"));
+            let rendering = timing::phase("json.render");
+            let text = serde_json::to_string_pretty(&value).expect("json");
+            rendering.stop();
+            let writing = timing::phase("json.write");
+            println!("{text}");
+            writing.stop();
         }
         Format::Human => {
             println!("workspace {}", workspace.display());
@@ -434,14 +439,17 @@ pub(crate) fn answer_links(
     path: Option<&str>,
     format: Format,
 ) -> Result<Answer, Fail> {
+    let dialing = timing::phase("daemon.dial");
     if let Some(body) = try_daemon_links(workspace, path)?
         && !daemon_answer_needs_the_address_plane(&body)
     {
+        dialing.stop();
         return Ok(Answer {
             source: EngineSource::Daemon,
             body,
         });
     }
+    dialing.stop();
     let body = in_process_links(workspace, cwd, path, format)?;
     Ok(Answer {
         source: EngineSource::Ephemeral,
@@ -893,6 +901,7 @@ fn in_process_links(
     // so a cross-root address resolves through the same `resolve_ref` on both planes. Corpora
     // narrow to the roots this answer's link targets name; the table itself is never narrowed.
     // A full-table eager load cost ~27 s CPU on a workspace naming zero roots.
+    let reading = timing::phase("links.read");
     let mounts =
         crate::walk_cmd::load_mounts_for(&crate::walk_cmd::link_addressed_roots(&docs, path));
     // Carried with the corpus for the same reason `walk` carries it: a face that
@@ -934,10 +943,12 @@ fn in_process_links(
     // `body`, so wrap, project, and unwrap.
     let mut frame = json!({ "body": body });
     wire_serve::rev::project_response(&mut frame);
-    Ok(frame
+    let body = frame
         .as_object_mut()
         .and_then(|obj| obj.remove("body"))
-        .unwrap_or(Value::Null))
+        .unwrap_or(Value::Null);
+    reading.stop();
+    Ok(body)
 }
 
 /// Render a wire error body as a one-line diagnostic (the code plus its message
