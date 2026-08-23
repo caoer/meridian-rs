@@ -115,33 +115,41 @@ impl Ws {
     /// host would otherwise answer, and the client's sink would then miss
     /// `snapshot.*` / `corpus.build` (those fire in the daemon, stderr nulled).
     fn links_json(&self, timing: Option<&str>) -> Output {
+        // home / rt / cache are siblings of the workspace, not members of it
+        // (a non-dot `.md` under the workspace root is a corpus file).
+        let side = tempfile::tempdir().expect("sidecar");
+        let home = side.path().join("home");
+        let rt = side.path().join("rt");
+        let cache = side.path().join("cache");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::create_dir_all(&rt).expect("runtime dir");
+        std::fs::create_dir_all(&cache).expect("cache dir");
+        std::fs::write(
+            home.join("MERIDIAN.md"),
+            "---\ntype: meridian-config\nversion: 1\n---\n\n# empty table\n",
+        )
+        .expect("empty mount table");
         let mut command = Command::new(env!("CARGO_BIN_EXE_mrd"));
         command
             .args(["links", "--json"])
-            .env("HOME", self.path().join("home"))
-            .env("MERIDIAN_CONFIG", self.path().join("home/MERIDIAN.md"))
+            .env("HOME", &home)
+            .env("MERIDIAN_CONFIG", home.join("MERIDIAN.md"))
             .env("MERIDIAN_WORKSPACE", self.path())
             .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
             // Linux-only: `registry::socket_path_for_cache_root` reads
             // `XDG_RUNTIME_DIR` under `#[cfg(target_os = "linux")]`. On macOS
             // it is inert; `XDG_CACHE_HOME` is the load-bearing sock-key override.
-            .env("XDG_RUNTIME_DIR", self.path().join(".rt"))
-            .env("XDG_CACHE_HOME", self.path().join(".cache"))
+            .env("XDG_RUNTIME_DIR", &rt)
+            .env("XDG_CACHE_HOME", &cache)
             .current_dir(self.path());
-        std::fs::create_dir_all(self.path().join("home")).expect("home");
-        std::fs::write(
-            self.path().join("home/MERIDIAN.md"),
-            "---\ntype: meridian-config\nversion: 1\n---\n\n# empty table\n",
-        )
-        .expect("empty mount table");
-        std::fs::create_dir_all(self.path().join(".rt")).expect("runtime dir");
-        std::fs::create_dir_all(self.path().join(".cache")).expect("cache dir");
         if let Some(value) = timing {
             command.env("MRD_TIMING", value);
         } else {
             command.env_remove("MRD_TIMING");
         }
-        command.output().expect("spawn mrd")
+        let out = command.output().expect("spawn mrd");
+        drop(side);
+        out
     }
 }
 

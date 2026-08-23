@@ -1575,7 +1575,7 @@ on every other caller of those functions (`run-plane.md` § Timing phases — re
 | `corpus.build` | `total` OR `links.read` | `fs::build_corpus` | UTF-8 + `syntax::parse` of every member. Repeats once per mounted root: the workspace build sits in `total`; each mount build sits inside `links.read`. Not links-only — `sql` / `check` / `walk` / `repair` / `retire` / daemon emit it under their own `cmd=` |
 | `links.read` | `total` | `mrd::engine::in_process_links` | everything from the mount narrow to the v3 re-key |
 | `json.render` | `total` | `mrd::engine::run_command` | `serde_json::to_string_pretty` of the envelope |
-| `json.write` | `total` | same | the `println!` buffer (the OS drain is at process exit, after `total`) |
+| `json.write` | `total` | same | `println!("{text}")` — stdout is a `LineWriter`, so the trailing newline flushes the envelope inside this span |
 
 ## Known gaps
 
