@@ -7,6 +7,7 @@ mod base_projection;
 mod charset_guard;
 mod daemon_door;
 mod delta_e3e4;
+mod fm_block_scalar;
 mod fm_scalar_normalization;
 mod g12_declared_bytes;
 mod gt_pack_smoke;

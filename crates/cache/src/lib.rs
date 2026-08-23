@@ -90,7 +90,15 @@ pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 /// such row (50 of 50 `agents` rows on the fleet corpus) at fingerprints that
 /// will never advance; same fresh-drawer route as `s8` (card
 /// `fm-block-list-sql-empty`).
-pub const SCHEMA_SALT: &str = "s9";
+///
+/// `s10`: `frontmatter.value` for a BLOCK SCALAR (`>`/`|`) renders the folded
+/// or literal TEXT (`model::fm_block_scalar`) instead of the indicator byte —
+/// an s9 drawer holds `">"` for 37 live pages (14 `description`, 7 `action`,
+/// 5 `manifest`, 5 `status`, …) at fingerprints that will never advance, so
+/// the append delta cannot repair them and only a fresh drawer can (card
+/// `mrd-frontmatter-block-scalar-decoder-gap`). Same class as `s8`/`s9`: no
+/// column moved, the ROWS were wrong.
+pub const SCHEMA_SALT: &str = "s10";
 
 /// Default GC threshold: a drawer whose last-use is older than this is reapable.
 /// 30 days, mirroring Cargo's registry auto-GC horizon. A path-keyed drawer store
