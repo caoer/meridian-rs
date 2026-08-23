@@ -4,10 +4,15 @@
 //! real process can prove it.
 //!
 //! The claims under gate: the line grammar parses and a diagnostic can never be
-//! read as a measurement; a line means the phase COMPLETED; the mode is time
-//! cost and nothing else; stdout and the exit code are byte-identical with it
-//! on and off; the two file-sink refusals degrade loudly to stderr; and no
-//! switch value spelled by a human creates a stray file.
+//! read as a measurement; every line names its emitter (`who=`); a line means
+//! the phase COMPLETED; the mode is time cost and nothing else; stdout and the
+//! exit code are byte-identical with it on and off; the two file-sink refusals
+//! degrade loudly to stderr; and no switch value spelled by a human creates a
+//! stray file.
+//!
+//! This file is the CLI lane. The DAEMON lane — where a refused sink used to be
+//! silent, and where `who=` separates connection threads — is
+//! `timing_daemon_lane.rs`.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -120,7 +125,8 @@ impl Ws {
 
     /// `links --json` forced onto the ephemeral path: a resident daemon on the
     /// host would otherwise answer, and the client's sink would then miss
-    /// `snapshot.*` / `corpus.build` (those fire in the daemon, stderr nulled).
+    /// `snapshot.*` / `corpus.build` — those fire in the DAEMON, whose sink is
+    /// its own (`status.md` § The daemon's own lane), never this client's.
     fn links_json(&self, timing: Option<&str>) -> Output {
         // home / rt / cache are siblings of the workspace, not members of it
         // (a non-dot `.md` under the workspace root is a corpus file).
@@ -164,40 +170,40 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// Every MEASUREMENT on a stream, parsed into `(cmd, phase, us)`.
+/// Every MEASUREMENT on a stream, parsed into `(cmd, who, phase, us)`.
 ///
 /// The filter is the documented `mrd-timing ` — WITH the space — which is what
 /// separates a measurement from a `mrd-timing:` diagnostic. A line that opens
 /// with the space and does not parse is a failure, not a skip: the grammar is
 /// the contract.
-fn timing_lines(raw: &str) -> Vec<(String, String, u128)> {
+fn timing_lines(raw: &str) -> Vec<(String, String, String, u128)> {
     raw.lines()
         .filter(|line| line.starts_with("mrd-timing "))
         .map(|line| {
             let mut fields = line.split(' ');
             assert_eq!(fields.next(), Some("mrd-timing"), "{line}");
-            let cmd = fields
-                .next()
-                .and_then(|f| f.strip_prefix("cmd="))
-                .unwrap_or_else(|| panic!("no cmd= field: {line}"));
-            let phase = fields
-                .next()
-                .and_then(|f| f.strip_prefix("phase="))
-                .unwrap_or_else(|| panic!("no phase= field: {line}"));
-            let us: u128 = fields
-                .next()
-                .and_then(|f| f.strip_prefix("us="))
-                .unwrap_or_else(|| panic!("no us= field: {line}"))
+            let mut field = |key: &str| {
+                fields
+                    .next()
+                    .and_then(|f| f.strip_prefix(key))
+                    .unwrap_or_else(|| panic!("no {key} field: {line}"))
+                    .to_owned()
+            };
+            let (cmd, who, phase) = (field("cmd="), field("who="), field("phase="));
+            let us: u128 = field("us=")
                 .parse()
                 .unwrap_or_else(|e| panic!("us= is not an integer ({e}): {line}"));
             assert!(fields.next().is_none(), "extra field: {line}");
-            (cmd.to_owned(), phase.to_owned(), us)
+            (cmd, who, phase, us)
         })
         .collect()
 }
 
 fn phases(raw: &str) -> Vec<String> {
-    timing_lines(raw).into_iter().map(|(_, p, _)| p).collect()
+    timing_lines(raw)
+        .into_iter()
+        .map(|(_, _, phase, _)| phase)
+        .collect()
 }
 
 /// The mode's own diagnostics — the COLON shape.
@@ -295,7 +301,7 @@ fn links_json_off_and_on_agree_and_reports_its_phases() {
             stderr(&on)
         );
     }
-    for (cmd, phase, _) in &lines {
+    for (cmd, _, phase, _) in &lines {
         assert_eq!(cmd, "links", "wrong cmd on `{phase}`");
     }
     assert_eq!(
@@ -309,8 +315,8 @@ fn links_json_off_and_on_agree_and_reports_its_phases() {
     let of = |want: &str| {
         lines
             .iter()
-            .find(|(_, p, _)| p == want)
-            .map_or_else(|| panic!("no {want}"), |(_, _, us)| *us)
+            .find(|(_, _, p, _)| p == want)
+            .map_or_else(|| panic!("no {want}"), |(_, _, _, us)| *us)
     };
     assert!(of("total") >= of("links.read"));
     assert!(of("total") >= of("json.render"));
@@ -394,8 +400,8 @@ fn links_json_repeats_corpus_build_per_mounted_root() {
     let of = |want: &str| {
         lines
             .iter()
-            .find(|(_, p, _)| p == want)
-            .map_or_else(|| panic!("no {want} in {names:?}"), |(_, _, us)| *us)
+            .find(|(_, _, p, _)| p == want)
+            .map_or_else(|| panic!("no {want} in {names:?}"), |(_, _, _, us)| *us)
     };
     assert!(of("total") >= of("links.read"));
 }
@@ -488,7 +494,7 @@ fn a_run_reports_its_phases_and_total_is_last() {
         );
     }
     // Every line names the process's entry verb, not a request.
-    for (cmd, phase, _) in &lines {
+    for (cmd, _, phase, _) in &lines {
         assert_eq!(cmd, "run", "wrong cmd on `{phase}`");
     }
     assert_eq!(
@@ -501,8 +507,8 @@ fn a_run_reports_its_phases_and_total_is_last() {
     let of = |want: &str| {
         lines
             .iter()
-            .find(|(_, p, _)| p == want)
-            .map_or_else(|| panic!("no {want}"), |(_, _, us)| *us)
+            .find(|(_, _, p, _)| p == want)
+            .map_or_else(|| panic!("no {want}"), |(_, _, _, us)| *us)
     };
     assert!(of("snapshot") >= of("snapshot.read"));
     assert!(of("dispatch") >= of("snapshot"));
@@ -741,9 +747,50 @@ fn every_verb_reports_a_total_under_its_own_name() {
     assert!(
         timing_lines(&stderr(&out))
             .iter()
-            .any(|(cmd, phase, _)| cmd == "version" && phase == "total"),
+            .any(|(cmd, _, phase, _)| cmd == "version" && phase == "total"),
         "no `cmd=version phase=total` line: {}",
         stderr(&out)
+    );
+}
+
+/// `who=` names the EMITTER: one process, one thread, one value — so a
+/// single-threaded `mrd run` reports every phase under one `who=`, and a second
+/// run reports them under a different one. That is what makes several processes
+/// appending to ONE sink file separable (`timing_daemon_lane.rs` drives the
+/// same field across a daemon's connection threads).
+#[test]
+fn every_line_of_one_run_names_one_emitter_and_two_runs_differ() {
+    let ws = Ws::new();
+    let first = ws.mrd(Some("1"), &["run", "solo.md", "--json"]);
+    let second = ws.mrd(Some("1"), &["run", "solo.md", "--json"]);
+
+    let who_of = |out: &Output| {
+        let lines = timing_lines(&stderr(out));
+        assert!(!lines.is_empty(), "no lines: {}", stderr(out));
+        let seen: std::collections::BTreeSet<String> =
+            lines.into_iter().map(|(_, who, _, _)| who).collect();
+        assert_eq!(
+            seen.len(),
+            1,
+            "one single-threaded process reported several emitters: {seen:?}"
+        );
+        let who = seen.into_iter().next().expect("one emitter");
+        let (pid, thread) = who
+            .strip_prefix('p')
+            .and_then(|rest| rest.split_once(".t"))
+            .unwrap_or_else(|| panic!("who= is not p<pid>.t<n>: {who}"));
+        assert!(pid.parse::<u32>().is_ok(), "pid half is not digits: {who}");
+        assert!(
+            thread.parse::<u64>().is_ok(),
+            "thread half is not digits: {who}"
+        );
+        who
+    };
+
+    assert_ne!(
+        who_of(&first),
+        who_of(&second),
+        "two processes reported the same emitter, so one sink file cannot separate them"
     );
 }
 
@@ -761,7 +808,7 @@ fn an_argv_that_would_break_the_grammar_does_not_become_the_label() {
         assert!(
             lines
                 .iter()
-                .any(|(cmd, phase, _)| cmd == "mrd" && phase == "total"),
+                .any(|(cmd, _, phase, _)| cmd == "mrd" && phase == "total"),
             "the label was not defended for {argv:?}: {}",
             stderr(&out)
         );
