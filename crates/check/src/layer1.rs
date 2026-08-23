@@ -195,6 +195,12 @@ def on_change(event):
             page: path,
             bytes,
         }));
+        let source = MemPages(
+            pages
+                .iter()
+                .map(|(path, bytes, ..)| ((*path).to_string(), (*bytes).to_string()))
+                .collect(),
+        );
         let artifact = arm(
             &index,
             &ArmRoot::workspace(),
@@ -203,14 +209,10 @@ def on_change(event):
                 mode: *mode,
                 attested_rev: page_rev(bytes),
             }),
+            &source,
+            CheckLimits::default(),
         )
         .expect("the fixture arms");
-        let source = MemPages(
-            pages
-                .iter()
-                .map(|(path, bytes, ..)| ((*path).to_string(), (*bytes).to_string()))
-                .collect(),
-        );
         resolve_armed_law(
             Some(&artifact.render()),
             true,

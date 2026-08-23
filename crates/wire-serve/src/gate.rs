@@ -314,6 +314,12 @@ mod scenarios {
                 page: path,
                 bytes,
             }));
+        // The act loads every firing winner, so it needs the bytes the index
+        // was discovered from — a `path → bytes` map IS a `PageSource`.
+        let source: BTreeMap<String, String> = pages
+            .iter()
+            .map(|(path, bytes, ..)| ((*path).to_string(), (*bytes).to_string()))
+            .collect();
         policy::armed::arm(
             &index,
             &policy::armed::ArmRoot::workspace(),
@@ -324,6 +330,8 @@ mod scenarios {
                     mode: *mode,
                     attested_rev: policy::page_rev(bytes),
                 }),
+            &source,
+            policy::CheckLimits::default(),
         )
         .expect("the fixture arms")
         .render()
