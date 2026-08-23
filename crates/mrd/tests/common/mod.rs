@@ -7,14 +7,23 @@
 //!
 //! # Fixture rule: a fixture that starts a daemon owns its teardown
 //!
-//! A fixture in this tree that starts an in-process
-//! `registry::RunningServer` sets `config.drain_cold_builds =
-//! Duration::from_secs(30)` (the 2 s production default is a CLIENT flock
-//! budget), and — when it keeps the server and its `TempDir` in a struct —
-//! declares the **server field first**, because struct fields drop in
-//! declaration order while locals drop in reverse. Full statement and the
-//! measured cause: `crates/registry/tests/common/mod.rs` § Fixture rule.
-//! Enforced for both trees by `crates/registry/tests/fixture_drain_budget.rs`.
+//! Full statement and the measured cause: `crates/registry/tests/common/mod.rs`
+//! § Fixture rule. In THIS tree the rule has two shapes, because a fixture here
+//! may start a daemon either way:
+//!
+//! 1. **In-process** (`registry::RunningServer` inside the test binary): hold a
+//!    `registry::TestServer`, which owns the server and its `TempDir` together
+//!    and stops the server in its own `Drop::drop`. One field, so there is no
+//!    teardown order left to get wrong.
+//! 2. **As a subprocess** (`mrd` auto-spawning its own daemon): build the
+//!    command with [`mrd_command`], the one site in this tree that sets
+//!    `MRD_DRAIN_COLD_BUILDS`. Such a test holds no `Config` at all, so the
+//!    environment is the only lever it has.
+//!
+//! Enforced at runtime, in both directions, by a `debug_assert` on
+//! `registry::Config::drain_budget_hazard` — in `RunningServer::start`, and in
+//! the `mrd` client before it auto-spawns a daemon, because that daemon's
+//! stderr is `Stdio::null()` and its own panic reaches nobody.
 #![allow(dead_code)]
 
 use std::io::{ErrorKind, Write as _};
