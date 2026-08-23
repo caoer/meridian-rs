@@ -1,12 +1,19 @@
 # Correctness lane on the fleet runner. Steps are named so a red pipeline
 # names its own defect instead of saying "test failed".
 #
-# DAG, NOT SERIAL: every step declares `depends_on: []`, so all lanes start
-# together and each always produces its own verdict. The previous revision
+# DAG, NOT SERIAL: every VERDICT lane declares `depends_on: []`, so all lanes
+# start together and each always produces its own verdict. The previous revision
 # ordered tests first because a serial pipeline aborts the remaining steps on
 # the first failure — a lint nit converted the test verdict into SKIPPED. The
 # DAG removes that coupling structurally: no verdict can mask another, and a
 # new lane cannot reintroduce the problem by being inserted in the wrong slot.
+#
+# THE ONE EXCEPTION, and it is not a verdict lane: `publish mrd` (bottom of this
+# file) declares a dependency on ALL SIX verdict lanes, because it produces the
+# artifact downstream repos pin rather than a verdict of its own. ADDING A LANE
+# MEANS ADDING IT TO THAT LIST TOO — copy `depends_on: []` for the lane itself,
+# then extend the publish step's list, or the artifact ships on a tree your new
+# lane failed.
 #
 # What makes the parallelism safe:
 #   - CARGO_HOME shares ONLY the registry/git cache (host /var/cache/ci via
@@ -34,9 +41,21 @@
 #     root-owned artifacts and the ci user's builds never collide.
 #
 # Event filter is workflow-level: every step inherits it, so a new step cannot
-# be added without one.
+# be added without one. A step may NARROW it with its own `when:` — `publish mrd`
+# does, and is the only step here that does — so this block is the ceiling on
+# what runs, not the answer to "on which events does step X run".
 when:
   - event: [push, pull_request, manual]
+  # NOT `tag`: the v* tag lanes (`tag-linux-amd64.yaml`, `tag-darwin-arm64.yaml`)
+  # are still UNGATED — they publish a release with no test verdict anywhere in
+  # the pipeline. Gating them needs this workflow to run on tags so they have a
+  # verdict to depend on, and that was withdrawn from this change on evidence:
+  # a tag workflow that starts ~18 min after `ci` (pipeline 1204) failed its
+  # CLONE with `could not read Username`, on both a docker and a local agent,
+  # while the same workflows cloned fine when they started beside `ci`
+  # (pipeline 845). Gating the tag lanes without settling that would trade
+  # "publishes ahead of the verdict" for "cannot publish at all".
+  # Follow-up card: 22-18/tasks/meridian-rs-tag-lanes-not-gated.
 
 labels:
   hostname: workstation-nyc-2
@@ -330,8 +349,27 @@ steps:
   # invalidate a digest a consumer already recorded.
   #
   # main + manual only: a PR's engine is not a thing anyone should pin.
+  #
+  # GATED, and the only step in this file that is. The DAG header above is about
+  # VERDICT lanes: they must not mask each other, so none of them waits. This
+  # step produces no verdict — it produces the artifact downstream repos PIN —
+  # and with `depends_on: []` it started alongside the verdict lanes and often
+  # finished first, so a red main push published its bytes anyway. Same class as
+  # ccc-statusd pipeline 821 (2026-08-23: go-test FAILURE / deploy SUCCESS),
+  # fixed there by a workflow-level `depends_on: [{name: ci, optional: true}]`;
+  # here the lanes live in this same workflow, so the dependency is step-level.
+  # Woodpecker skips a step whose dependency failed, so a red lane now leaves
+  # this step never-run. EVERY lane is named on purpose: the artifact must not
+  # ship on a tree that failed any check we run, and a lane added tomorrow has
+  # to be added here too. Card: 22-18/tasks/meridian-rs-publish-not-gated.
   - name: publish mrd (forgejo generic package, keyed by commit)
-    depends_on: []
+    depends_on:
+      - test (cargo test --workspace --locked)
+      - fmt (cargo fmt --all --check)
+      - clippy (workspace lint policy, escalated)
+      - clippy the perf-gated targets (compiled here, never run)
+      - "deny (cargo-deny: bans, licenses, sources, advisories)"
+      - bench smoke + claim verdicts (perfsuite harness)
     when:
       - event: push
         branch: main

@@ -408,6 +408,49 @@ plane's arm root (a workspace-relative DIRECTORY — `armed-plane.md`) keeps its
 refusal, and `sql` names no page at all — its cwd-independence (an explicit `--root` selector,
 ZT's conditional directive) is CLI surface owned by the decision page, not address law.
 
+### 4.6a The root a spelling names — name first, then alias (root-alias, 2026-08-23)
+
+The colon law (§ 4.1) says a head colon names a root. This says **which** root — the one question
+the mount table answers, and the answer is an order:
+
+> **The law.** A `root:` spelling resolves to the mount whose `name` it equals; if no mount is named
+> that, to the mount whose `alias` it equals (`meridian-md-schema.md` § 5.1b); otherwise it refuses
+> as an unbound root. One order, at every door of the § 4.6 family, through the one seam
+> (`mrd::rooted::resolve_name` at the CLI, `addr::MountSet::canonical` on the link plane) — so two
+> doors cannot hold two opinions of one spelling.
+
+**The motive is a constant a consumer can spell.** The engine knows no root names — the no-baked-names
+law (`laws.md`) — so a skill or daemon wanting to address "the sessions tree" has had nothing to
+write. `alias:` maps ONE agreed constant, `sessions:`, onto whatever each machine calls that tree,
+without the engine learning the name and without `primary:` acquiring a meaning it never had (ZT,
+2026-08-23: `primary` is not consulted for `sessions`, or for anything else).
+
+**Name-first is what removes the special case.** A machine whose root is already NAMED `sessions`
+declares no alias and resolves `sessions:` anyway — a name is its own alias. The order is never a
+tie-break, because a table where a name and an alias both answer one spelling does not load
+(`alias-shadows-name`, whole-table refusal).
+
+**The canonical spelling is the NAME, and this half is load-bearing.** An alias is a lookup spelling
+only; nothing the engine writes down or echoes back carries one:
+
+| Surface | Spelled with |
+|---|---|
+| receipts, pins, `mint {…}` paths, `sub` rows | the mount `name` |
+| a door's canonical `root:path` echo (`mrd resolve`'s `ref:` row) | the mount `name` |
+| the stored form's `vault=` (§ 3's three-way map) | the mount's vault, reached by canonicalizing the alias FIRST |
+| `mrd resolve`'s `root:` row; the `alias` column of `mounts` and `mrd config` | the alias, where it EXPLAINS a resolution |
+
+So `mrd resolve sessions:x` answers `root: field-notes-sessions (alias sessions)` and
+`ref: field-notes-sessions:x`. Were an alias to reach stored bytes, one machine's private mapping would
+travel into shared content and mean nothing — or, worse, something else — on the next machine to read
+it. That is the same defect § 3's three-way translation exists to prevent, arriving by a new door.
+
+**Declared, not bound, picks the refusal.** An alias onto a root this machine declares but cannot
+read reaches THAT root's state (`grey(path-unseeable)` and its detail), never the undeclared
+refusal — § 6's two causes with two remedies, unchanged: the unreadable root's prescribed fix is
+already done. Pinned by `crates/mrd/tests/root_alias.rs` (the four acceptance arms end-to-end) and
+`addr`'s own `an_alias_onto_an_unreachable_root_carries_that_roots_state`.
+
 ---
 
 ## 5. The basename fallback — (c), the cross-root misresolve defect, and no unit owned it

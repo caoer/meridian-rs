@@ -17,6 +17,8 @@ use registry::{Config, RunningServer};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+mod common;
+
 /// Wait for a pushed frame before calling it absent. Covers 250ms detect
 /// cadence + 50ms push tick with margin against flakes.
 const PUSH_WAIT: Duration = Duration::from_secs(10);
@@ -35,6 +37,7 @@ fn test_config(tmp: &TempDir) -> Config {
     config.prewarm_quiet_max = forever;
     // Lifetime is the test's; idle-exit would flake mid-assertion.
     config.idle_exit = None;
+    config.drain_cold_builds = Duration::from_secs(30);
     config.push_write_timeout = PUSH_WRITE_TIMEOUT;
     // Parked far ahead for every gate that is not about the idle-write
     // horizon; the two that are set it themselves.
@@ -82,13 +85,15 @@ impl Conn {
     }
 
     fn call(&mut self, request: &Value) -> Value {
-        let mut line = serde_json::to_string(request).unwrap();
-        line.push('\n');
-        self.writer.write_all(line.as_bytes()).unwrap();
-        self.writer.flush().unwrap();
-        let mut response = String::new();
-        self.reader.read_line(&mut response).unwrap();
-        serde_json::from_str(&response).unwrap_or_else(|e| panic!("frame {response:?}: {e}"))
+        common::honour_retry(|| {
+            let mut line = serde_json::to_string(request).unwrap();
+            line.push('\n');
+            self.writer.write_all(line.as_bytes()).unwrap();
+            self.writer.flush().unwrap();
+            let mut response = String::new();
+            self.reader.read_line(&mut response).unwrap();
+            serde_json::from_str(&response).unwrap_or_else(|e| panic!("frame {response:?}: {e}"))
+        })
     }
 
     fn hello(&mut self, ws: &Path) -> Value {

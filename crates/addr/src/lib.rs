@@ -364,11 +364,21 @@ pub fn confined(path: &str) -> bool {
 /// in vault names. Partial by construction: a mount without a `vault:` leg has no
 /// Obsidian vault, so [`MountSet::vault_of`] is `None` there and the stored
 /// form refuses rather than inventing one.
+///
+/// The ALIAS axis maps a second lookup spelling onto a declared name
+/// (`meridian-md-schema.md` § 5.1b), so a skill can spell ONE constant —
+/// `sessions:` — that any machine's table maps to whatever it calls that root.
+/// Lookup is **name first, then alias** ([`MountSet::canonical`]), which is what
+/// makes "a name is its own alias" true with no special case. An alias is never a
+/// STORED spelling: [`MountSet::vault_of`] and every canonical echo stay keyed by
+/// name, so a caller canonicalizes through [`MountSet::canonical`] before asking
+/// for one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MountSet {
     bound: Vec<MountName>,
     unreachable: Vec<UnreachableRoot>,
     vaults: Vec<(MountName, String)>,
+    aliases: Vec<(MountName, MountName)>,
 }
 
 /// A root the mount table DECLARES but this machine cannot read — the path is
@@ -397,6 +407,7 @@ impl MountSet {
         MountSet {
             bound: names,
             unreachable: Vec::new(),
+            aliases: Vec::new(),
             vaults: Vec::new(),
         }
     }
@@ -459,10 +470,60 @@ impl MountSet {
         self
     }
 
-    /// Does this machine bind `name`?
+    /// Record the second spelling a declared root answers to. Chainable.
+    ///
+    /// A later record for the same alias REPLACES the earlier one — an alias is
+    /// a key. The config plane refuses a table where one is ambiguous
+    /// (`alias-shadows-name`) before this is ever reached, so the replacement is
+    /// a type-level invariant, never a tie-break.
+    #[must_use]
+    pub fn with_alias(mut self, alias: MountName, name: MountName) -> Self {
+        self.aliases.retain(|(a, _)| a != &alias);
+        self.aliases.push((alias, name));
+        self
+    }
+
+    /// The DECLARED name a lookup spelling reaches: **the spelling itself when
+    /// some mount is named that, else the name an alias points at** (§ 5.1b).
+    ///
+    /// `None` when neither — which is what "this machine does not know that
+    /// root" means, and the answer every refusal is built on. Name-first is not
+    /// a preference between two candidates: `alias-shadows-name` means a table
+    /// where both could answer cannot load.
+    ///
+    /// Declared, not bound: an alias onto an unreadable root answers here, so
+    /// the refusal that follows can carry THAT root's state instead of claiming
+    /// nobody declares the name. [`MountSet::is_bound`] is the readable half.
+    #[must_use]
+    pub fn canonical<'a>(&'a self, spelling: &'a MountName) -> Option<&'a MountName> {
+        if self.bound.contains(spelling) || self.unreachable.iter().any(|u| &u.name == spelling) {
+            return Some(spelling);
+        }
+        self.aliases
+            .iter()
+            .find(|(a, _)| a == spelling)
+            .map(|(_, name)| name)
+    }
+
+    /// The alias bound to a canonical name — the reverse of the alias leg, for
+    /// the faces that RENDER the table (`mounts` rows, `mrd config`).
+    #[must_use]
+    pub fn alias_of(&self, name: &MountName) -> Option<&MountName> {
+        self.aliases.iter().find(|(_, n)| n == name).map(|(a, _)| a)
+    }
+
+    /// Does this machine bind `name` — under that name or an alias for it?
+    ///
+    /// Alias-aware by the § 5.1b lookup order. With no alias declared the
+    /// answer is the plain membership test it has always been: the alias leg is
+    /// empty, so nothing can be reached through it.
     #[must_use]
     pub fn is_bound(&self, name: &MountName) -> bool {
         self.bound.contains(name)
+            || self
+                .aliases
+                .iter()
+                .any(|(a, n)| a == name && self.bound.contains(n))
     }
 
     /// Every bound name, so a refusal can name what IS available.
@@ -473,9 +534,22 @@ impl MountSet {
 
     /// Is `name` DECLARED but unreadable here? `None` when it is bound, or when
     /// nothing declares it at all.
+    ///
+    /// Alias-aware, like [`MountSet::is_bound`]: a `sessions:` whose alias
+    /// points at a root this machine cannot read must reach that root's own
+    /// state, whose prescribed fix is already done — not the undeclared refusal,
+    /// which would prescribe declaring a mount that is already declared.
     #[must_use]
     pub fn unreachable(&self, name: &MountName) -> Option<&UnreachableRoot> {
-        self.unreachable.iter().find(|u| &u.name == name)
+        if let Some(direct) = self.unreachable.iter().find(|u| &u.name == name) {
+            return Some(direct);
+        }
+        let target = self
+            .aliases
+            .iter()
+            .find(|(a, _)| a == name)
+            .map(|(_, n)| n)?;
+        self.unreachable.iter().find(|u| &u.name == target)
     }
 
     /// Every declared-but-unreadable root.
@@ -925,5 +999,76 @@ mod tests {
                 "{spelling}: every refusal points at the law it enforces",
             );
         }
+    }
+
+    fn name(s: &str) -> MountName {
+        MountName::parse(s).expect("a canonical name")
+    }
+
+    /// § 5.1b's lookup order, both halves: a bound name answers under its own
+    /// spelling AND under an alias declared for it, and the canonical answer is
+    /// the NAME whichever spelling asked — which is what keeps aliases out of
+    /// every stored form.
+    #[test]
+    fn a_root_answers_under_its_name_and_under_its_alias() {
+        let real = name("field-notes-sessions");
+        let spelled = name("sessions");
+        let set = MountSet::new([real.clone()])
+            .with_alias(spelled.clone(), real.clone())
+            .with_vault(real.clone(), "field-notes-sessions");
+
+        assert!(set.is_bound(&real), "the name binds");
+        assert!(set.is_bound(&spelled), "the alias binds the same root");
+        assert_eq!(
+            set.canonical(&spelled),
+            Some(&real),
+            "the alias canonicalizes to the name"
+        );
+        assert_eq!(set.canonical(&real), Some(&real), "a name is its own alias");
+        assert_eq!(set.alias_of(&real), Some(&spelled));
+
+        // The stored plane is keyed by NAME: asking with the alias directly
+        // finds nothing, which is why callers canonicalize first.
+        assert_eq!(set.vault_of(&real), Some("field-notes-sessions"));
+        assert_eq!(set.vault_of(&spelled), None);
+    }
+
+    /// A name is its own alias with NO special case: a root actually NAMED
+    /// `sessions` answers `sessions:` on a table that declares no aliases at
+    /// all, and the alias leg being empty leaves every answer as it was.
+    #[test]
+    fn a_name_needs_no_alias_line() {
+        let set = MountSet::new([name("sessions")]);
+        assert!(set.is_bound(&name("sessions")));
+        assert_eq!(set.canonical(&name("sessions")), Some(&name("sessions")));
+        assert_eq!(set.alias_of(&name("sessions")), None);
+        assert_eq!(
+            set.canonical(&name("nothing")),
+            None,
+            "an undeclared name is undeclared"
+        );
+        assert!(!set.is_bound(&name("nothing")));
+    }
+
+    /// An alias onto a DECLARED-but-unreadable root reaches that root's own
+    /// state, not the undeclared answer — the two causes take opposite remedies,
+    /// and the unreachable one's prescribed fix ("declare the mount") is already
+    /// done.
+    #[test]
+    fn an_alias_onto_an_unreachable_root_carries_that_roots_state() {
+        let real = name("field-notes-sessions");
+        let spelled = name("sessions");
+        let set = MountSet::new([])
+            .with_alias(spelled.clone(), real.clone())
+            .with_unreachable(real.clone(), "/gone", "the path is absent");
+
+        assert!(!set.is_bound(&spelled), "unreadable is not bound");
+        assert!(set.is_declared(&spelled), "but it IS declared");
+        assert_eq!(
+            set.unreachable(&spelled).map(|u| u.path.as_str()),
+            Some("/gone"),
+            "the alias reaches the declaring root's own state",
+        );
+        assert_eq!(set.canonical(&spelled), Some(&real));
     }
 }

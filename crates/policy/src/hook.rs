@@ -504,7 +504,9 @@ fn take_string(
 ) -> Result<Option<String>, HookEvalError> {
     match args.remove(name) {
         Some(ArgValue::Str(value)) => Ok(Some(value)),
-        Some(ArgValue::List(_)) => Err(HookEvalError::MalformedIntent {
+        // A list or a `create(props=)` map in a scalar position is the same
+        // fault, and it reads as one sentence to the author.
+        Some(ArgValue::List(_) | ArgValue::Map(_)) => Err(HookEvalError::MalformedIntent {
             rule_id: rule_id.to_string(),
             reason: format!("argument {name:?} must be a string"),
         }),

@@ -615,7 +615,10 @@ fn applied_row(world: &ModeWorld<'_>, effect: &Effect, applied: &Applied) -> Val
         .flatten()
         .and_then(|p| match p {
             effects::ArgValue::Str(path) => Some(path.clone()),
-            effects::ArgValue::List(_) => None,
+            // A birth's `path` is a scalar by the constructor's own contract;
+            // the other shapes are not a landing coordinate, and an absent
+            // rev is the honest answer for a row we cannot read back.
+            effects::ArgValue::List(_) | effects::ArgValue::Map(_) => None,
         });
     match born_path {
         Some(path) => {

@@ -711,6 +711,60 @@ fn insert_opt(args: &mut BTreeMap<String, ArgValue>, key: &str, value: Option<St
     }
 }
 
+/// `create(props = {…})` → the descriptor's map argument (D6). A dict of
+/// string keys to strings or lists of strings, carried INERT: the constructor
+/// judges only the SHAPE — the create door owns key grammar, quoting and the
+/// list spelling, so the whole escaping law lives at one door instead of in
+/// every record-birthing block.
+///
+/// Absent, `None`, or empty is `Ok(None)` — a birth with no frontmatter of its
+/// own, exactly as before this argument existed.
+fn props_arg(value: Option<Value<'_>>) -> anyhow::Result<Option<BTreeMap<String, ArgValue>>> {
+    let Some(value) = value else { return Ok(None) };
+    if value.is_none() {
+        return Ok(None);
+    }
+    let Some(dict) = starlark::values::dict::DictRef::from_value(value) else {
+        anyhow::bail!(
+            "create(props=…) takes a frontmatter dict — string keys to strings or lists of \
+             strings; got {}",
+            value.to_repr()
+        );
+    };
+    let mut props: BTreeMap<String, ArgValue> = BTreeMap::new();
+    for (key, val) in dict.iter() {
+        let Some(key) = key.unpack_str() else {
+            anyhow::bail!(
+                "create(props=…) keys are frontmatter keys (strings); got {}",
+                key.to_repr()
+            );
+        };
+        if let Some(text) = val.unpack_str() {
+            props.insert(key.to_owned(), ArgValue::Str(text.to_owned()));
+            continue;
+        }
+        let Some(list) = starlark::values::list::ListRef::from_value(val) else {
+            anyhow::bail!(
+                "create(props=…) value for {key:?} is a string or a list of strings — a \
+                 frontmatter value is a scalar or a one-level list; got {}",
+                val.to_repr()
+            );
+        };
+        let mut items = Vec::with_capacity(list.len());
+        for item in list.iter() {
+            let Some(text) = item.unpack_str() else {
+                anyhow::bail!(
+                    "create(props=…) list member for {key:?} is a string; got {}",
+                    item.to_repr()
+                );
+            };
+            items.push(text.to_owned());
+        }
+        props.insert(key.to_owned(), ArgValue::List(items));
+    }
+    Ok((!props.is_empty()).then_some(props))
+}
+
 /// Effect-descriptor constructors — entire rule-language builtin surface.
 /// Named args only; each returns `None` (effect is the recorded descriptor).
 /// No constructor performs or exposes I/O.
@@ -760,18 +814,28 @@ fn effect_api(builder: &mut GlobalsBuilder) {
     /// `root:<dir>` ref or a confined workspace-relative directory the path
     /// resolves under. Absent `base`, the caller's ambient directory is the
     /// default base; absent both, the path lands workspace-root-relative.
-    fn create(
+    /// `props` (optional, D6) is the newborn's FRONTMATTER as a dict — keys to
+    /// strings or lists of strings. **The create door serializes it**: quoting,
+    /// escaping and list spelling are the door's, so no record-birthing block
+    /// hand-rolls a YAML escaper and no caller value can forge a key. A body
+    /// that already opens its own frontmatter fence refuses at the door rather
+    /// than land two spellings of one block.
+    fn create<'v>(
         #[starlark(require = named)] path: String,
         #[starlark(require = named)] body: String,
         #[starlark(require = named)] base: Option<String>,
         #[starlark(require = named)] message: Option<String>,
-        eval: &mut Evaluator<'_, '_, '_>,
+        #[starlark(require = named)] props: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let mut args = BTreeMap::new();
         args.insert("path".to_owned(), ArgValue::Str(path));
         args.insert("body".to_owned(), ArgValue::Str(body));
         insert_opt(&mut args, "base", base);
         insert_opt(&mut args, "message", message);
+        if let Some(props) = props_arg(props)? {
+            args.insert("props".to_owned(), ArgValue::Map(props));
+        }
         store(eval, "create")?.push(EffectKind::Create, args);
         Ok(NoneType)
     }

@@ -213,7 +213,7 @@ Correlation: one response per request, id echoed by value; in-flight uniqueness 
   "fingerprint":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9"}}
 ```
 
-`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed eighteen more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `pin-cross-root`, `splice.pin.proof`, `splice.set`, `splice.create_rev`, `create`, `remove`, `mounts`, `mounts.primary`, `hello.identity`, `script`, `run`, `walk`, `sql`, `scoped-guards` (§A.3/§A.5/§A.7/§A.8/§A.10/§A.11/§5.4) — thirty-four caps in all. Field-only amendments ship as dotted `op.field` strings (`mounts.primary` is one: the mounts row's declared-primary designation, §A.5); `pin-cross-root` is a behavior cap on the existing `splice.pin` field (§A.3). `scoped-guards` is a behavior cap in the `pin-cross-root` pattern covering the whole scoped-premise family at once — the `guards[]` list (each entry's `scope`/`scope_bytes` premise pair), the singular `scope` field on `splice` (single and set form) and `script`, and the `fingerprint` op's mint arm with its own `scope`/`scope_bytes` pair (§4.7, §5.4–§5.7; `scope_bytes` is a top-level field on no door — §5.4's field matrix): one family, one flag. A frozen v2 session is never pushed it, and un-negotiated use of any guard-family field refuses `bad_request` loudly at this section's strict wall — never silence. `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
+`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed twenty more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `pin-cross-root`, `splice.pin.proof`, `splice.set`, `splice.fields`, `splice.create_rev`, `create`, `remove`, `mounts`, `mounts.primary`, `mounts.alias`, `hello.identity`, `script`, `run`, `walk`, `sql`, `scoped-guards` (§A.3/§A.5/§A.7/§A.8/§A.10/§A.11/§5.4) — thirty-six caps in all. The engine's push list (`wire-serve/src/rev.rs`) is the authority and its own test pins the full ordered enumeration; this sentence is a reader's copy, so a count here that disagrees with that test is this sentence's defect. Field-only amendments ship as dotted `op.field` strings (`mounts.primary` and `mounts.alias` are two: the mounts row's declared-primary designation and its root alias, §A.5; `splice.fields` is the §A.2.1 opaque middleware passthrough); `pin-cross-root` is a behavior cap on the existing `splice.pin` field (§A.3). `scoped-guards` is a behavior cap in the `pin-cross-root` pattern covering the whole scoped-premise family at once — the `guards[]` list (each entry's `scope`/`scope_bytes` premise pair), the singular `scope` field on `splice` (single and set form) and `script`, and the `fingerprint` op's mint arm with its own `scope`/`scope_bytes` pair (§4.7, §5.4–§5.7; `scope_bytes` is a top-level field on no door — §5.4's field matrix): one family, one flag. A frozen v2 session is never pushed it, and un-negotiated use of any guard-family field refuses `bad_request` loudly at this section's strict wall — never silence. `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
 
 **Hello is config-grade (ruled 2026-08-16, roots-hello-starved).** A workspace `hello` pins storage, validates the domain CONFIG (an ambiguous or unreadable config still refuses `io_error{cause}` at the handshake), and binds the connection — it never walks the corpus, never builds the engine, and never queues behind corpus-scoped work (the resident fold is read without waiting; under lock contention the field is absent, the same honest answer as cold). `fingerprint` is therefore present exactly when a resident engine holds a fold that is readable this instant; a cold workspace answers without it, and the first corpus read *starts* the warm (next paragraph). Why ruled: `hello`'s former inline warm let one client's cold whole-corpus build hold every other client's `hello` — and `mounts` behind it, the op § A.5 defines precisely for the caller that knows no root yet — past the face's own deadline (dogfood 2026-08-16: `roots` timed out while one cold `links` scan ran). A discovery op answers at config cost.
 
@@ -1436,7 +1436,7 @@ Part A2. This section is the wire shape only.)*
 | `splice.pin` | Pin rides the write choke-point; selector is segments/anchor. |
 | `pin-cross-root` | `splice.pin.target` admits the ruled `name:rel` rooted spelling (address-grammar A-4/P5): the target is loaded, gated, promoted and blob-written in the NAMED mounted root under that root's own `LOCK_NB` write flock; the lock row's `object` carries `name:rel` minus `.md` verbatim; the proof compare (`splice.pin.proof`) runs against the TARGET root's live bytes under that same flock. A face keeps its own cross-root refusal until this cap is present, so an old engine refuses with its taught message instead of `pin_target_missing` on a spelling it cannot parse. |
 | `splice.pin.proof` | Pin proof rides the request (the proof law, below): `splice.pin` carries `fingerprint` (required for a session actor) and optional `sec_rev`, both from the caller's own sections read; the composed read serves a `fingerprint` per section row; a session-actor pin without proof refuses `pin_proof_required`. No server-side read state exists behind this cap. |
-| `create` | File birth through the guarded door; full body bytes. Refuses `bad_path` when the landing carries an engine machinery segment — `.git`, `.meridian`, `meridian`, `receipts` — at any depth, ASCII-case-insensitively, whatever the caps admit; the hash-domain config `meridian/domain.md` is the one carve-out (`run-plane.md` § the machinery floor). |
+| `create` | File birth through the guarded door; full body bytes (this op carries no `props` field — the starlark birth lane's `props=` dict is serialized by this same door, § A.8). Refuses `bad_path` when the landing carries an engine machinery segment — `.git`, `.meridian`, `meridian`, `receipts` — at any depth, ASCII-case-insensitively, whatever the caps admit; the hash-domain config `meridian/domain.md` is the one carve-out (`run-plane.md` § the machinery floor). |
 | `remove` | File death through the guarded door; refuses `remove_refused` while anything in the corpus still references the record (the remove-door law, below). |
 | `hello.identity` | Optional `{build: sha \| sha-dirty \| unknown}` for deploy identity. The `-dirty` marker rides the sha TOKEN (git-describe convention), so this stays one field: `sha` = built from a whole commit, `sha-dirty` = built from a worktree diverging from that commit, `unknown` = no attributable identity was readable. A caller matching a declared sha matches the WHOLE token, never a substring — a decorated sha is a different build and must refuse (`docs/release.md` §5.1). *(2026-08-09: the marker is new; the field, its optionality, and its v3-only rule are unchanged.)* |
 
@@ -1946,12 +1946,13 @@ call it.
  "mounts":[
   {"name":"field-notes","state":"bound",
    "workspace":"/Users/Shared/repos/field-notes"},
-  {"name":"sessions","state":"bound",
-   "workspace":"/Users/Shared/projects/field-notes-sessions","primary":true},
+  {"name":"field-notes-sessions","state":"bound",
+   "workspace":"/Users/Shared/projects/field-notes-sessions","primary":true,
+   "alias":"sessions"},
   {"name":"assets","state":"grey(path-unseeable)"}]}}
 ```
 
-Row shape `{name, state, workspace?, primary?}` — the `kind` field is RETIRED
+Row shape `{name, state, workspace?, primary?, alias?}` — the `kind` field is RETIRED
 (kind-sweep, ZT 2026-08-13): the taxonomy left the config schema
 (`meridian-md-schema.md` §5.1), nothing on the serve path ever branched on it,
 and a row field nobody can act on is a field the wire does not carry. A client
@@ -1964,6 +1965,7 @@ law.
 | `state` | the `MountState` reason word verbatim, ONE spelling across the human line, `--json`, and this wire: `bound` · `grey(path-unseeable)` · `grey(undeclared)` · `grey(declaration-unreadable)` · `grey(claim-unverifiable)` · `red(content-drifted)`. Every word but `bound` refuses: a client gates on `state == "bound"` and treats an unrecognized word as not-bound — the tolerant-client law applied to an open-for-amendment word set |
 | `workspace` | the canonical bound path, post-canonicalization — the same handle `hello` returns as `workspace`. Present exactly when the binding canonicalized; absent at least on `grey(path-unseeable)` |
 | `primary` | the declared-primary designation, verbatim from the binding file (`meridian-md-schema.md` §5.1a): literal `true` exactly on the designated row, ABSENT everywhere else — absence is the only "not primary" spelling, mirroring the config grammar. At most one row carries it (two designations refuse the whole table, `duplicate-primary-designation` inside `mount_table_invalid`). A binding ROLE for fleet hosts (the primary-root rule set: ccc-statusd `docs/mcp-face.md` §8.1); the engine reports it and never acts on it. Field-only amendment, cap `mounts.primary`; a client that has not read the cap sees an unread key — inert by the tolerant-client law |
+| `alias` | the second spelling this root answers to, verbatim from the binding file (`meridian-md-schema.md` §5.1b): present exactly on a row whose block declares `alias:`, ABSENT everywhere else, mirroring the config grammar. A LOOKUP spelling — a `root:path` resolves by **name first, then alias** (`address-grammar.md` §4.6a), and every canonical echo a client receives back (`name` here, receipts, pins, `mint {…}` paths, `sub` rows) carries `name`, never this. It exists so a client can hard-code ONE constant — `sessions:` — that each machine's table maps; `primary` is NOT consulted for that and means nothing it did not mean before (ZT 2026-08-23). An alias colliding with any `name` or another `alias` refuses the whole table (`alias-shadows-name` inside `mount_table_invalid`), so no two rows can answer one spelling. Field-only amendment, cap `mounts.alias`; a client that has not read the cap sees an unread key — inert by the tolerant-client law |
 
 **Freshness — the config-hash rebind law.** Every `mounts` call fingerprints
 `~/MERIDIAN.md` (blake3 over the file bytes) before answering: unchanged hash
@@ -2042,6 +2044,31 @@ escape verbatim. Everything else is served verbatim after the whitespace trim:
 plain scalars, flow collections (`[a, b]`), and **malformed quoting, which no
 reader may guess at**. A quoted scalar is a STRING in every schema — the
 decode is the quoting layer only, never type inference.
+
+**A.6.1a Block scalars (amended 2026-08-23, card
+`mrd-frontmatter-block-scalar-decoder-gap`).** A key line may carry a YAML
+**block-scalar header** instead of a value — `>` or `|`, an optional chomping
+indicator (`-` strip, `+` keep, default clip) and an optional indentation
+digit — with the value on the following indented lines. Both published faces
+(`read`'s `props[]`, `sql`'s `frontmatter`) decode it through ONE reader,
+`model::fm_block_scalar`: folded breaks become spaces, a run of *k* blank lines
+becomes *k* newlines, a break adjacent to a more-indented line is kept, and
+chomping owns the trailing breaks. Until this amendment both faces published
+the INDICATOR BYTE (`">"`), mis-serving **71 key rows across 63 live pages on
+four bound roots** (sessions 37/45, ccc-statusd 15/15, mrd-experiments 8/8,
+field-notes 3/3) that were valid YAML throughout — a decoder gap, never corpus
+damage. Each of those roots rebuilds its own drawer at the accompanying
+`SCHEMA_SALT` bump.
+
+**Consequence, ruled by ZT: `props[].value` may now carry `\n`.** It is the
+first value on that plane that can, and it is true of BOTH indicators — clip
+chomping leaves one trailing newline on a FOLDED scalar too, so there is no
+single-line case to carve out. A face that renders values on one line escapes
+them; the JSON plane carries them verbatim. **The write plane does not widen:**
+§ A.6.3 still REFUSES a newline in a value (D11), so a block-scalar value read
+from a page cannot be written back through `properties`/`set_property`
+unchanged. YAML can express what this engine's single-line value plane cannot
+author — stated here rather than discovered on a round trip.
 
 The law binds the VALUE seams — every seam that publishes a frontmatter value
 to a consumer, or compares one against a caller-supplied string. One owner
@@ -2150,10 +2177,29 @@ fleet writes are the same bytes. Concretely, a value is quoted when it:
 
 Unchanged, deliberately: a **typed scalar** (`true`, `7`, `2026-08-07`) and a
 **one-level flow list** (`[a, b]`) still emit verbatim. Those spellings are the
-only way this string plane can author a non-string value, and no reported
-defect touches them. A newline in a value is still REFUSED, never sanitized: a
-single-line frontmatter value cannot carry one, and an escaped-scalar workaround
-leaks.
+only way this string plane can author a non-string value. A newline in a value
+is still REFUSED, never sanitized: a single-line frontmatter value cannot carry
+one, and an escaped-scalar workaround leaks.
+
+**The trigger list above is NOT closed** (amended 2026-08-23, card
+`hook-17-mrd-create-props`). It enumerates the fast, teachable cases; the LAW is
+the sentence in bold, and the last trigger asks a real YAML parser
+(`serde_yaml`) whether the plain line reads back as exactly the caller's string.
+It was closed until measurement said otherwise: the engine's own classifier is
+more permissive than YAML, so a value opening `- `, `? `, `,`, `*`, `&`, `%`,
+`@`, `` ` ``, `]`, `}`, or carrying an unterminated `[[a]] and [[b]]`, emitted
+PLAIN from every door and produced bytes **no YAML parser can read** — the whole
+frontmatter block dies, not one key (measured with PyYAML over the live sessions
+root: 47 unreadable blocks, 6 of them in a spelling this encoder emits). `!t`,
+`>` and `|` parsed to something the caller never wrote. A door adds no trigger
+of its own: the parser is the trigger, and the list is documentation of what it
+catches. The two carve-outs above survive it explicitly — a plain form that
+parses as a NON-string is legal exactly when the checker's classifier blesses it
+as a typed scalar or a one-level flow list. Measured churn across the live root
+at the amendment: **14 of 29 377 distinct plain-spelled values change spelling
+(0.048 %), all plain→quoted, none quoted→plain**, and a same-value write-back
+stays byte-identical (§ A.6.3c preservation), so no record is rewritten by the
+change alone.
 
 **A.6.3′ The KEY half of the composed line (2026-08-14, dogfood r3 f6).** The
 emitted line is `{key}: {encoded}`, so an unvalidated KEY forges frontmatter
@@ -2772,8 +2818,24 @@ guard applies exactly as at every other op):
   confined dir; caps-redesign 2026-08-19), with precedence descriptor
   `base` > frame `ambient` > workspace root. The birth lane carries it (engine
   `6c960b7c4`) as the starlark kernel's `create(path=, body=, base=,
-  message=)` — the bash effect-shim lane is DELETED (2026-08-21): bash has no
-  effect channel. A rooted `base` must name the
+  message=, props=)` — the bash effect-shim lane is DELETED (2026-08-21): bash has no
+  effect channel. **`props=` (D6, card 17) is the newborn's frontmatter as a
+  DICT — string keys to strings or lists of strings — and THE DOOR serializes
+  it**: key grammar, value quoting and the one-line flow spelling of a list are
+  the door's, sharing the § A.6.3 value-plane encoders with the patch face, so
+  no record-birthing block hand-rolls a YAML escaper and no value can forge a
+  key. Two refusals, both `bad_request` with nothing landed: a value carrying a
+  newline (D11, the § A.6.3a law verbatim) and a `body` that already opens its
+  own frontmatter fence while `props` is inhabited — two spellings of one
+  block, so the door refuses instead of choosing. Keys land sorted; a props
+  scalar that would read back as a COLLECTION is quoted, while the value
+  plane's typed-scalar carve-out is unchanged (`"7"` lands `7`), exactly as at
+  every other door. **The one deliberate asymmetry with the patch face**
+  (§ A.6.3): the flow-list carve-out does NOT apply here, because this door has
+  a typed list arm and that one does not — so the string `[a, b]` lands quoted
+  when born through `props=` and plain when written through `properties`. A
+  caller that means the list spells it as a list. The wire `create` op carries **no** `props` field: there,
+  `body` is the whole document, frontmatter included. A rooted `base` must name the
   bound workspace (a foreign root refuses with a teaching — a run's births
   ride the bound workspace's ring, locks, and armed law), and a rooted
   spelling in the `path` argument itself refuses, naming `base` — two axes,

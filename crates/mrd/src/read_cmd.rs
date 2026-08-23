@@ -56,7 +56,11 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // resolves from cwd exactly as before.
     let workspace = match crate::rooted::enter(&parsed.path, "read", READ_CONSEQUENCE) {
         Ok(Some((rel, rooted))) => {
-            parsed.display = Some(std::mem::replace(&mut parsed.path, rel));
+            // The CANONICAL spelling, not the caller's bytes: an alias is a
+            // lookup spelling (§ 4.6a), and a header echoing one names a root
+            // that means nothing to the next reader of that line.
+            parsed.display = Some(rooted.canonical_ref(&rel));
+            parsed.path = rel;
             let workspace = rooted.workspace.clone();
             parsed.rooted = Some(rooted);
             workspace

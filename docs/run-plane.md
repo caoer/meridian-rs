@@ -1574,7 +1574,31 @@ This is a DOOR guard on the LANDING — deliberately the one axis capabilities
 do not judge, so caps still read the DECLARED coordinate alone and the two
 grains stay separate. It is also the one owner: the run-plane lane (starlark
 `create()`) converges on that door, as do the
-wire `create` op, the birth preset and the realise card mint. It costs the
+wire `create` op, the birth preset and the realise card mint.
+
+**The door also serializes the newborn's frontmatter** (D6, card 17):
+`create(path=, body=, props=)` takes `props` as a DICT — string keys to
+strings or lists of strings — and the door composes the block, sharing the
+value-plane encoders every other write door uses (`yaml_safe_key`,
+`yaml_safe_scalar`, `yaml_safe_flow`). The point is what the block no longer
+does: a program that composes its own frontmatter string must escape every
+value or forge a key with one `:`, and that escaper was being copied into
+every record-birthing block. Now no block carries one.
+
+| The block writes | Lands | Because |
+|---|---|---|
+| `props = {"status": "owner: [[x]] \" #now"}` | `status: "owner: [[x]] \" #now"` | a value that would read back as a key, a comment or a quoted scalar is quoted |
+| `props = {"tags": ["type/agent"]}` | `tags: [type/agent]` | a list is one line of flow, the spelling the corpus carries; a member carrying `,` or `]` quotes |
+| `props = {"n": "7"}` | `n: 7` | the value plane's typed-scalar carve-out, unchanged at every door |
+| `props = {"x": "[a, b]"}` | `x: "[a, b]"` | this door HAS a list arm, so a scalar never becomes a collection — **the one asymmetry with the patch face**, where the same string lands plain (`yaml_safe_scalar` here vs `yaml_safe_value` there, wire-contract § A.6.3) |
+| `props = {"bad": "a\nb"}` | REFUSED, nothing born | D11: a v1 frontmatter value is single-line — refused, never sanitized |
+| `props=` plus a `body` opening `---` | REFUSED, nothing born | two spellings of one block; pass one |
+
+Keys land sorted (the map carries no order, and a birth must replay byte for
+byte). Born-identity is unaffected: `created`/`session` are still stamped by
+armed middleware at this door from the put frame's `fields`, and `props` never
+reaches them — it is composed into the body BEFORE the middleware runs, so a
+fill-if-absent rule sees the caller's keys and composes with them. It costs the
 engine nothing — the armed artifact is written by `wire_serve::armed_disk`,
 the receipt rides the batch commit, and run logs use plain I/O; none of them
 passes this door.

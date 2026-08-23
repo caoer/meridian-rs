@@ -38,11 +38,15 @@ fn mrd_bin() -> PathBuf {
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
 }
 
+/// Struct fields drop in DECLARATION order (locals drop the other way), so
+/// `daemon` MUST precede `tmp`: the daemon's stop drains in-flight drawer
+/// rebuilds, and a `tmp` dropped first deletes the workspace under a live
+/// builder. See `crates/registry/tests/common/mod.rs` § Fixture rule.
 struct Sandbox {
+    daemon: std::sync::Mutex<Option<registry::RunningServer>>,
     tmp: tempfile::TempDir,
     cache_home: PathBuf,
     home: PathBuf,
-    daemon: std::sync::Mutex<Option<registry::RunningServer>>,
 }
 
 fn sandbox() -> Sandbox {
@@ -51,10 +55,10 @@ fn sandbox() -> Sandbox {
     let home = tmp.path().join("home");
     std::fs::create_dir_all(&home).expect("home");
     Sandbox {
+        daemon: std::sync::Mutex::new(None),
         tmp,
         cache_home,
         home,
-        daemon: std::sync::Mutex::new(None),
     }
 }
 
@@ -100,6 +104,7 @@ impl Sandbox {
         // law refuses an identity-less local hello, and these tests measure
         // the token surfaces, not the law.
         config.build_sha = Some(env!("MRD_BUILD_SHA").to_owned());
+        config.drain_cold_builds = Duration::from_secs(30);
         registry::RunningServer::start(config).expect("the resident daemon starts")
     }
 
@@ -1274,6 +1279,7 @@ fn path_d_create_position_exclusions() {
             if_root: None,
             dry: false,
             fields: BTreeMap::default(),
+            props: BTreeMap::default(),
         },
         &[],
     )

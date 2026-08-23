@@ -578,6 +578,26 @@ impl Registry {
         Ok(ColdGate::Serve)
     }
 
+    /// Block until no background drawer rebuild is in flight, or `timeout`.
+    ///
+    /// Does **not** kick a rebuild. Daemon shutdown and the e2e fixtures call
+    /// this so a `TempDir` cannot vanish under a builder still running (the
+    /// class-2 flake: `registry: background drawer rebuild failed for
+    /// /tmp/.tmp…/ws (No such file or directory)` — pipelines 1098/1101).
+    /// Empty `in_flight` returns immediately.
+    #[must_use]
+    pub fn drain_cold_builds(&self, timeout: Duration) -> bool {
+        let builds = self
+            .cold_builds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let (_builds, timed) = self
+            .cold_builds_done
+            .wait_timeout_while(builds, timeout, |builds| !builds.in_flight.is_empty())
+            .unwrap_or_else(PoisonError::into_inner);
+        !timed.timed_out()
+    }
+
     /// Warm the resident engine for `workspace`; rebuild only when the corpus
     /// content hash changed (U1). Reuse key is the content hash (R5), not
     /// workspace-identity Merkle. `Reused` ⇒ zero parses. Fingerprint read
@@ -1672,14 +1692,27 @@ mod engine_tests {
     /// Bounded spin until the cold gate reports `Serve` (the drawer landed).
     /// The builder runs on its own thread, so completion needs a poll; the
     /// bound keeps a wedged builder loud instead of hung.
+    ///
+    /// 30s, not the kicker's unpublished 2s: under load a small drawer lands
+    /// well past `COLD_BUILD_WAIT` (pipelines 1098/1101). The client contract
+    /// is `recovery: retry` until the drawer is warm.
     fn wait_serve(reg: &Registry, ws: &Path) {
-        for _ in 0..400 {
-            if reg.cold_gate(ws).unwrap() == ColdGate::Serve {
-                return;
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            match reg.cold_gate(ws).unwrap() {
+                ColdGate::Serve => return,
+                ColdGate::Failed(cause) => {
+                    panic!("drawer rebuild failed while waiting for Serve: {cause}")
+                }
+                ColdGate::Warming => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "drawer rebuild did not land within 30s"
+                    );
+                    std::thread::sleep(Duration::from_millis(20));
+                }
             }
-            std::thread::sleep(Duration::from_millis(5));
         }
-        panic!("drawer rebuild did not land within 2s");
     }
 
     /// §3.2 cold gate: the first ask kicks ONE background rebuild and
