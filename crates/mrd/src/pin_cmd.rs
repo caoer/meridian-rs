@@ -40,7 +40,7 @@ use crate::{Fail, Format, current_dir, engine, write_ipc};
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let mut parsed = Pin::parse(args)?;
     let cwd = current_dir()?;
-    let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
+    let resolved = crate::resolve::resolve_runtime(workspace::Base::Cwd(&cwd)).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace for {}: {e}",
             cwd.display()
