@@ -531,6 +531,26 @@ fn addressed_entry(
             None,
         ));
     }
+    // A TASK-BOUND block is the task path's, and that is a fact about the
+    // PAGE — so it is judged here, before the block is even loaded, mirroring
+    // the load path's own early return. It used to be judged only inside the
+    // `else` of "the block declared nothing", which made it reachable only
+    // when no declaration existed: a prelude-supplied declaration would have
+    // hijacked a task-bound block into a fire, and a task-bound block has no
+    // `declare()` of its own to refuse with. (PR 195 review, `fa5da9ec`, S3
+    // B2 — the narrow fix would have left exactly this open.)
+    if let Some(task) = block.task.as_deref() {
+        return Err(refused_row(
+            target,
+            invocation,
+            "not_declared",
+            &format!(
+                "^{anchor} is bound to task `{task}`: address it as a task target \
+                 (`task`), not as a fire — the two addressings are exclusive"
+            ),
+            None,
+        ));
+    }
     let ctx = ctx_for(target, invocation);
     let loaded = load_cached(world, &block, &ctx, eval_limits(target))
         .map_err(|fault| fault_row(target, invocation, &block, &fault))?;
@@ -539,16 +559,13 @@ fn addressed_entry(
             target,
             invocation,
             "not_declared",
-            &match &block.task {
-                Some(task) => format!(
-                    "^{anchor} is bound to task `{task}`: address it as a task target \
-                     (`task`), not as a fire — the two addressings are exclusive"
-                ),
-                None => format!(
-                    "^{anchor} declares nothing: `run` executes what the page declares — a \
-                     `task.<name>` binding in frontmatter, or `declare(...)` in the block"
-                ),
-            },
+            // A task-bound block never reaches here — the guard above judges
+            // that before the load — so this arm is the one case left: an
+            // anchored starlark fence that declares nothing.
+            &format!(
+                "^{anchor} declares nothing: `run` executes what the page declares — a \
+                 `task.<name>` binding in frontmatter, or `declare(...)` in the block"
+            ),
             None,
         ));
     };
@@ -1563,6 +1580,80 @@ mod tests {
         let raw = "# probe\n".to_owned();
         let nodes = syntax::parse(&raw);
         model::build(raw, nodes)
+    }
+
+    /// **S3's FIRE-path fixture** (reviewer `fa5da9ec`, semantic (c)): a fire
+    /// on a page that declares NOTHING, with a prelude carrying a process
+    /// declaration.
+    ///
+    /// This is the bypass itself. It is closed by the F9 hoist — the prelude
+    /// is checked in `mode_row`, which BOTH modes go through, not in
+    /// `load_row` where it used to sit — so the fire refuses before
+    /// `addressed_entry` ever reads `declarations.first()`, and no process is
+    /// started. S3 and F9 are one change.
+    #[test]
+    fn a_declaring_prelude_cannot_hijack_a_fire_on_an_undeclared_page() {
+        let doc = empty_doc();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = fs::WorkspaceRoot(tmp.path().to_path_buf());
+        let fp = MerkleRoot::default();
+        // The reviewer's own one-liner.
+        let prelude = "declare(impl = exec(\"bash\", cmd = \"id\"))\n";
+        let world = probe_world(&doc, &root, &fp, Some(prelude), None);
+        let target = wire::RunTarget {
+            page: "probe.md".to_owned(),
+            block: Some("bare".to_owned()),
+            mode: Some(wire::RunMode::Fire),
+            ..wire::RunTarget::task_target("probe.md".to_owned())
+        };
+
+        let row = mode_row(&world, &target, "probe-fire", None, None);
+        assert_eq!(row["result"], "refused", "{row:#}");
+        assert_eq!(row["fault"]["class"], "prelude_invalid", "{row:#}");
+        // Nothing ran: no process row, no effect row, no value.
+        assert!(row["process"].is_null(), "a process was started: {row:#}");
+        assert!(row["exec"].is_null(), "{row:#}");
+        assert!(row["value"].is_null(), "{row:#}");
+    }
+
+    /// **S3's third fixture** (reviewer `fa5da9ec` B2): a TASK-BOUND block
+    /// plus a DECLARING prelude.
+    ///
+    /// This is why the prelude guard refuses regardless of what the page
+    /// declares. A task-bound block has no `declare()` of its own, so a
+    /// narrow guard ("refuse the prelude's declaration only when the page
+    /// declares one") would leave a caller free to hijack it into a fire with
+    /// a prelude-supplied declaration. Here the prelude is refused before the
+    /// page is consulted at all, and nothing fires.
+    #[test]
+    fn a_declaring_prelude_cannot_hijack_a_task_bound_block() {
+        let doc = empty_doc();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = fs::WorkspaceRoot(tmp.path().to_path_buf());
+        let fp = MerkleRoot::default();
+        let prelude = "declare(impl = exec(\"bash\", cmd = \"id\"))\n";
+        let world = probe_world(&doc, &root, &fp, Some(prelude), None);
+        let target = wire::RunTarget {
+            page: "probe.md".to_owned(),
+            block: Some("armer".to_owned()),
+            mode: Some(wire::RunMode::Fire),
+            ..wire::RunTarget::task_target("probe.md".to_owned())
+        };
+
+        let row = mode_row(&world, &target, "probe-1", None, None);
+        assert_eq!(row["result"], "refused", "{row:#}");
+        assert_eq!(
+            row["fault"]["class"], "prelude_invalid",
+            "the prelude is judged BEFORE the page: {row:#}"
+        );
+        assert!(
+            row["fault"]["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("consent material"),
+            "the reason names which invalidity it was: {row:#}"
+        );
+        assert!(row["applied"].is_null(), "nothing fired: {row:#}");
     }
 
     /// The second load of an unchanged block is SERVED, not re-evaluated —
