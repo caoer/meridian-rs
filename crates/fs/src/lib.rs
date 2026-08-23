@@ -2543,8 +2543,14 @@ pub fn build_corpus(
     for (rel, bytes) in files {
         match String::from_utf8(bytes) {
             Ok(text) => {
-                let doc = model::build(text.clone(), syntax::parse(&text));
-                docs.insert(rel, std::sync::Arc::new(doc));
+                // Parse borrowing, then MOVE the text into the document. The
+                // obvious spelling — `model::build(text.clone(), parse(&text))`
+                // — copies every member's whole text, because Rust evaluates
+                // the clone before the borrow that made it look necessary. On
+                // the 37 800-member / 212 MiB root that is a second copy of the
+                // entire corpus, allocated and dropped, inside `corpus.build`.
+                let nodes = syntax::parse(&text);
+                docs.insert(rel, std::sync::Arc::new(model::build(text, nodes)));
             }
             Err(e) => {
                 unserved.insert(rel, format!("is not UTF-8 ({})", e.utf8_error()));
