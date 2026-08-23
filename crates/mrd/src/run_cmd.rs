@@ -260,8 +260,10 @@ impl RunArgs {
 pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
     let mut parsed = RunArgs::parse(tail)?;
     let cwd = current_dir()?;
+    let resolving = timing::phase("workspace.resolve");
     let answer = workspace::resolve(&cwd)
         .map_err(|e| Fail::tool(format!("workspace resolution failed: {e:?}")))?;
+    resolving.stop();
     // The rooted lane (§4.1 colon law), under the 2026-08-18 authority ruling
     // (rooted-refs-everywhere): a head-colon PAGE runs exactly as if the
     // caller had cd'd into the named root — the page load, the convention
@@ -347,16 +349,26 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
         Some(r) => Some(r.workspace.as_path()),
         None => answer.root(),
     };
+    let loading = timing::phase("page.load");
     let doc = address::load_page(&root, Path::new(&parsed.page)).map_err(|e| match &rooted {
         Some(r) => fail_address_rooted(&e, r, &root),
         None => fail_address_in(&e, &answer, &cwd),
     })?;
+    loading.stop();
+    let conventions_phase = timing::phase("conventions.load");
     let (conventions, _source) =
         caps::load_conventions(declaring_root).map_err(|e| fail_caps(&e))?;
+    conventions_phase.stop();
 
     if parsed.list {
         return list_tasks(&root, &parsed.page, &doc, &conventions, parsed.format());
     }
+
+    // The door's own pre-check, whole: it resolves and validates so a bad
+    // invocation refuses BEFORE the plane opens, and the plane then resolves
+    // again as its own gate (`pre_eval` — one owner, both tenses). Both costs
+    // are real, so both are named.
+    let gate = timing::phase("task.gate");
 
     // TASK omitted: one binding runs, or among several the one named `default`
     // (the declared election — address::DEFAULT_TASK); several with no
@@ -386,6 +398,7 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
     // the plane); the call stands for its refusal, so both legs teach caps faults pre-run.
     caps::resolve_authority(&doc, task, resolved.block.lang, &conventions)
         .map_err(|e| fail_caps(&e))?;
+    gate.stop();
 
     if parsed.dry {
         return dry(&root, declaring_root, &parsed);
@@ -458,7 +471,9 @@ fn execute(
     let report = result.map_err(|e| fail_runner(&e))?;
 
     // One object, text and json off the same struct, with RunReport-sourced exec facts.
+    let rendering = timing::phase("report.render");
     let rendered = run::report::render(&report);
+    rendering.stop();
     match parsed.format() {
         Format::Json => println!(
             "{}",

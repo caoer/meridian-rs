@@ -12,6 +12,7 @@ use receipt::anchor::ObjectAnchor;
 use std::collections::BTreeMap;
 use wire::Path as WirePath;
 use wire_serve::write::{CreateArgs, create};
+mod common;
 
 // ── harness ──────────────────────────────────────────────────────────────────
 
@@ -695,4 +696,13 @@ fn a_cross_root_pin_is_skipped_and_disclosed_and_does_not_refuse_the_fence() {
             .is_some_and(|r| r.contains("alpha") && r.contains("claim.md")),
         "count alone cannot be acted on — the refs name WHICH pins: {doc}"
     );
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
+    }
 }

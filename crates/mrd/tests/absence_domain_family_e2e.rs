@@ -84,6 +84,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+mod common;
 
 /// The binary every drive here goes through. `MRD_BIN` names another artifact —
 /// the fixv convention (`crates/mrd/tests/s2fix_cross_surface.rs`), reused here
@@ -521,4 +522,13 @@ fn face_commit_gate_refuses_over_the_measured_absence() {
         "and it refuses with the measured absence, not a resolution red: {}",
         said(&out)
     );
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
+    }
 }

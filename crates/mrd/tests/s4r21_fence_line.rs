@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use mrd::hook::FENCE_VERSION;
+mod common;
 
 /// The binary every drive goes through — the real CLI, never a library call.
 fn mrd_bin() -> PathBuf {
@@ -1210,5 +1211,14 @@ fn the_json_fence_block_carries_the_doors_and_omits_them_when_there_are_none() {
             "`{key}` must be ABSENT, never null — a null says the door plane was \
              read and came back as nothing, and there is no door plane here: {block}"
         );
+    }
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
     }
 }
