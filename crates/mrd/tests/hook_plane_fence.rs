@@ -35,6 +35,7 @@ fn mrd_bin() -> PathBuf {
 /// shadows any deployed one — the ordering is the isolation.
 mod system_path;
 use system_path::system_path;
+mod common;
 
 /// A scratch repository that is also a meridian workspace, with an `mrd` of our
 /// own on the hook's `PATH` and caches inside the sandbox.
@@ -666,4 +667,13 @@ fn said(out: &Output) -> String {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     )
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
+    }
 }

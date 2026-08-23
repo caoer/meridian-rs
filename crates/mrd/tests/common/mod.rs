@@ -9,6 +9,7 @@
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Child;
+use std::time::{Duration, Instant};
 
 /// Feed a spawned child's stdin, tolerating a child that has already stopped
 /// reading, then close the pipe so the child sees EOF.
@@ -65,18 +66,83 @@ pub(crate) fn child_daemon_pidfile(home: &Path, cache_home: &Path) -> PathBuf {
     child_socket_path(home, cache_home).with_extension("pid")
 }
 
-/// SIGTERM the resident daemon whose pidfile belongs to this sandbox
-/// (`HOME=<home>`, `XDG_CACHE_HOME=<cache_home>`).
-pub(crate) fn reap_daemon(home: &Path, cache_home: &Path) {
+/// How long [`reap_daemon`] waits for a terminated (SIGTERM) daemon to exit before
+/// escalating to SIGKILL, and again after the kill. A daemon shuts down in
+/// milliseconds; this only bounds a wedged one.
+const REAP_WAIT: Duration = Duration::from_secs(2);
+
+/// Reap the resident daemon whose pidfile belongs to this sandbox
+/// (`HOME=<home>`, `XDG_CACHE_HOME=<cache_home>`): SIGTERM, wait for the pid to
+/// vanish, SIGKILL if it will not. Returns the pid it reaped, `None` when no
+/// daemon was ever spawned (no pidfile, or one that no longer names a live
+/// process). Never panics — it runs from `Drop`, on the panic path too.
+///
+/// **Daemon strategy for the e2e fixtures (card e2e-daemon-leak-fixture,
+/// 2026-08-22).** Every sandbox that can auto-spawn a detached daemon owns its
+/// lifetime and reaps it on `Drop`. Measured 2026-08-19/20: a full `-p mrd`
+/// test run left ~55 idle daemons behind — one per tempdir `XDG_CACHE_HOME`,
+/// each parked for `registry::DEFAULT_IDLE_EXIT` (15 min) because the
+/// daemon is detached (`setsid`) and outlives the test that spawned it.
+/// The alternative — a no-daemon env knob — was rejected: writes are IPC-only
+/// (`write_ipc.rs`), so a suite without a daemon cannot exercise `put` at all.
+/// Reaping at sandbox drop keeps every suite exercising exactly what it did
+/// (auto-spawn, warm reuse across calls, IPC writes); what the suite no
+/// longer exercises is the daemon's 15-minute idle self-exit, which
+/// `perf_daemon_teardown` and the registry's own tests cover directly.
+pub(crate) fn reap_daemon(home: &Path, cache_home: &Path) -> Option<i32> {
     let pidfile = child_daemon_pidfile(home, cache_home);
-    let Ok(text) = std::fs::read_to_string(pidfile) else {
-        return;
-    };
-    let Ok(pid) = text.trim().parse::<i32>() else {
-        return;
-    };
-    // SAFETY: pid came from this sandbox's own pidfile.
-    unsafe {
-        libc::kill(pid, libc::SIGTERM);
+    let text = std::fs::read_to_string(pidfile).ok()?;
+    let pid = text.trim().parse::<i32>().ok()?;
+    // A suite that runs the daemon IN-PROCESS (`registry::RunningServer::start`
+    // inside the test binary) writes its own pid here — reaping that would
+    // SIGTERM the test (measured 2026-08-22 on `s2fix_cross_surface`).
+    if pid <= 0 || pid == std::process::id().cast_signed() || !pid_alive(pid) {
+        return None;
     }
+    signal_pid(pid, libc::SIGTERM);
+    if !wait_dead(pid, REAP_WAIT) {
+        signal_pid(pid, libc::SIGKILL);
+        let _ = wait_dead(pid, REAP_WAIT);
+    }
+    Some(pid)
+}
+
+/// Holds a sandbox's daemon lifetime for tests that keep `home`/`cache_home`
+/// as loose locals instead of a `Sandbox` struct: reaps on `Drop`.
+pub(crate) struct DaemonReaper {
+    pub(crate) home: PathBuf,
+    pub(crate) cache_home: PathBuf,
+}
+
+impl Drop for DaemonReaper {
+    fn drop(&mut self) {
+        let _ = reap_daemon(&self.home, &self.cache_home);
+    }
+}
+
+/// Send `signal` to a detached daemon this process does not own as a child.
+fn signal_pid(pid: i32, signal: libc::c_int) {
+    // SAFETY: plain kill(2) to a pid the daemon wrote to its own pidfile.
+    unsafe {
+        libc::kill(pid, signal);
+    }
+}
+
+/// `kill(pid, 0)` liveness probe. A zombie still answers alive; the daemon is
+/// reparented to init, which reaps it, so that window is brief.
+fn pid_alive(pid: i32) -> bool {
+    // SAFETY: signal 0 delivers nothing; it only checks for the pid.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Poll until `pid` is gone or `timeout` elapses.
+fn wait_dead(pid: i32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !pid_alive(pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    !pid_alive(pid)
 }

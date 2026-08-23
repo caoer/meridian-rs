@@ -22,6 +22,7 @@ use mrd::hook::FENCE_VERSION;
 use std::collections::BTreeMap;
 use wire::Path as WirePath;
 use wire_serve::write::{CreateArgs, create};
+mod common;
 
 /// The binary every drive here goes through. `MRD_BIN` names another artifact — the fixv
 /// convention (`crates/mrd/tests/s2fix_cross_surface.rs`), reused here so the SAME asserts can
@@ -638,4 +639,13 @@ fn check_is_blind_to_a_forged_journal_page() {
         serde_json::json!(check::WRITE_HISTORY_NOT_ASSESSED),
         "which is the disclosure doing the only job left to do: {value}"
     );
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
+    }
 }
