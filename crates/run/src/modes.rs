@@ -58,6 +58,9 @@ pub struct ModeWorld<'a> {
     pub prelude: Option<&'a str>,
     /// The door-side facilities a realized effect rides.
     pub doors: Doors<'a>,
+    /// The per-block-rev module cache, when the caller keeps one. `None` on
+    /// the CLI: a fresh process per invocation has nothing to keep it in.
+    pub cache: Option<&'a dyn ModuleCache>,
 }
 
 /// The door-side facilities one fire's md effects ride — the same four the
@@ -79,6 +82,88 @@ pub struct Doors<'a> {
 /// Empty fields for a caller with no frame passthrough in reach.
 static NO_FIELDS: std::sync::LazyLock<BTreeMap<String, String>> =
     std::sync::LazyLock::new(BTreeMap::new);
+
+/// One block as the load phase left it: what it declares, and the frozen
+/// module a fire calls.
+///
+/// Cached by the block's own rev (§ 2.2 step 3), which is what makes a warm
+/// fire ONE function call instead of a parse, an evaluation and a freeze.
+pub struct LoadedBlock {
+    /// What `declare()` published, in call order.
+    pub declarations: Vec<effects::Declaration>,
+    /// The frozen module. `Send + Sync` — asserted at compile time in the
+    /// kernel, because a resident cache is reached from every connection
+    /// thread and discovering otherwise at integration time would arrive as
+    /// an unexplainable borrow error three layers away.
+    pub module: effects::FrozenModule,
+}
+
+/// The per-block-rev module cache (§ 2.2 step 3).
+///
+/// A trait, not a concrete map, because only ONE caller has anywhere to keep
+/// it: the daemon, whose registry is resident. The CLI is a fresh process per
+/// invocation and passes `None` — a cache there would be built, used once and
+/// dropped, which is a cost with no benefit rather than a small one.
+pub trait ModuleCache: Sync {
+    /// The block at this key, if it is still the same bytes under the same
+    /// prelude.
+    fn get(&self, key: &str) -> Option<std::sync::Arc<LoadedBlock>>;
+    /// Keep this block under this key.
+    fn put(&self, key: String, loaded: std::sync::Arc<LoadedBlock>);
+}
+
+/// The cache key: the block's own rev, plus a digest of the prelude.
+///
+/// The prelude is part of the key because it is part of the MODULE — its
+/// bindings are frozen with the block's (§ 2.2). Two calls with different
+/// preludes produce different modules from identical block bytes, and keying
+/// on the rev alone would serve one caller the other's environment.
+fn cache_key(block_rev: &str, prelude: Option<&str>) -> String {
+    match prelude {
+        None => format!("{block_rev}:-"),
+        Some(prelude) => format!(
+            "{block_rev}:{}",
+            &blake3::hash(prelude.as_bytes()).to_hex()[..16]
+        ),
+    }
+}
+
+/// Load one block, through the cache when the caller brought one.
+///
+/// A FAULTED load is never cached: a fault is about the attempt, and the next
+/// caller deserves to see it happen rather than be handed a stored refusal
+/// whose cause may already be fixed.
+fn load_cached(
+    world: &ModeWorld<'_>,
+    block: &AnchoredBlock,
+    ctx: &RunCtx,
+) -> Result<std::sync::Arc<LoadedBlock>, BlockFault> {
+    let key = cache_key(&block.rev, world.prelude);
+    if let Some(cache) = world.cache
+        && let Some(hit) = cache.get(&key)
+    {
+        return Ok(hit);
+    }
+    let loaded = load_block(&block.source, world.prelude, ctx, EvalLimits::default());
+    if let Some(fault) = loaded.fault {
+        return Err(fault);
+    }
+    let Some(module) = loaded.module else {
+        return Err(BlockFault {
+            class: effects::FaultClass::Runtime,
+            reason: "the block loaded but did not freeze".to_owned(),
+            line: None,
+        });
+    };
+    let entry = std::sync::Arc::new(LoadedBlock {
+        declarations: loaded.declarations,
+        module,
+    });
+    if let Some(cache) = world.cache {
+        cache.put(key, std::sync::Arc::clone(&entry));
+    }
+    Ok(entry)
+}
 
 /// One mode-bearing target → one row.
 #[must_use]
@@ -167,20 +252,17 @@ fn loaded_row(
     if !block.is_starlark() {
         return None;
     }
-    let loaded = load_block(
-        &block.source,
-        world.prelude,
-        &ctx_for(target, invocation),
-        EvalLimits::default(),
-    );
-    if let Some(fault) = loaded.fault {
-        return Some(json!({
-            "block": block.anchor,
-            "rev": block.rev,
-            "result": "fault",
-            "fault": fault_object(&fault),
-        }));
-    }
+    let loaded = match load_cached(world, block, &ctx_for(target, invocation)) {
+        Ok(loaded) => loaded,
+        Err(fault) => {
+            return Some(json!({
+                "block": block.anchor,
+                "rev": block.rev,
+                "result": "fault",
+                "fault": fault_object(&fault),
+            }));
+        }
+    };
     // A starlark block that declares nothing is not a target. It is not a
     // fault either — a page may carry a helper module — so it is reported
     // with no declarations and the consent gate refuses a fire on it.
@@ -222,12 +304,12 @@ fn fire_row(
             .unwrap_or(crate::exec::DEFAULT_TIMEOUT),
         dry: target.dry.unwrap_or(false),
     };
-    let (block, entry, module) = match addressed {
+    let (block, entry, loaded) = match addressed {
         Addressed::Evaluated {
             block,
             entry,
-            module,
-        } => (block, entry, module),
+            loaded,
+        } => (block, entry, loaded),
         // An exec'd entry never reaches the evaluator: one process through
         // the bracket, its stdin the input, its raw exit and stderr surfaced
         // (§ 1.4). Caps do not apply to a process, by law — what bounds it is
@@ -237,7 +319,7 @@ fn fire_row(
         }
     };
     let fired = match fire_entry(
-        &module,
+        &loaded.module,
         &entry,
         target.input.as_ref().unwrap_or(&Value::Null),
         &ctx,
@@ -327,10 +409,8 @@ fn addressed_entry(
         ));
     }
     let ctx = ctx_for(target, invocation);
-    let loaded = load_block(&block.source, world.prelude, &ctx, EvalLimits::default());
-    if let Some(fault) = loaded.fault {
-        return Err(fault_row(target, invocation, &block, &fault));
-    }
+    let loaded = load_cached(world, &block, &ctx)
+        .map_err(|fault| fault_row(target, invocation, &block, &fault))?;
     let Some(declaration) = loaded.declarations.first() else {
         return Err(refused_row(
             target,
@@ -361,19 +441,10 @@ fn addressed_entry(
             });
         }
     };
-    let Some(module) = loaded.module else {
-        return Err(refused_row(
-            target,
-            invocation,
-            "missing_entry",
-            "the block loaded but did not freeze",
-            None,
-        ));
-    };
     Ok(Addressed::Evaluated {
         block,
         entry,
-        module,
+        loaded,
     })
 }
 
@@ -429,7 +500,7 @@ enum Addressed {
     Evaluated {
         block: AnchoredBlock,
         entry: String,
-        module: effects::FrozenModule,
+        loaded: std::sync::Arc<LoadedBlock>,
     },
     /// A process entry, declared by `exec(...)`.
     Exec {
@@ -870,4 +941,146 @@ fn ctx_for(target: &wire::RunTarget, invocation: &str) -> RunCtx {
 #[must_use]
 pub fn is_mode_target(target: &wire::RunTarget) -> bool {
     target.mode.is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A probe cache that counts what it was asked to keep.
+    #[derive(Default)]
+    struct ProbeCache {
+        blocks: std::sync::Mutex<BTreeMap<String, std::sync::Arc<LoadedBlock>>>,
+        misses: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ModuleCache for ProbeCache {
+        fn get(&self, key: &str) -> Option<std::sync::Arc<LoadedBlock>> {
+            let hit = self
+                .blocks
+                .lock()
+                .expect("probe cache")
+                .get(key)
+                .map(std::sync::Arc::clone);
+            if hit.is_none() {
+                self.misses
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            hit
+        }
+
+        fn put(&self, key: String, loaded: std::sync::Arc<LoadedBlock>) {
+            self.blocks.lock().expect("probe cache").insert(key, loaded);
+        }
+    }
+
+    fn probe_block() -> AnchoredBlock {
+        AnchoredBlock {
+            anchor: "h".to_owned(),
+            rev: "rev-1".to_owned(),
+            lang: Ok(crate::fence::TaskLanguage::Starlark),
+            source: "def run(event):\n    return 1\n\ndeclare(on = \"Stop\")\n".to_owned(),
+            task: None,
+        }
+    }
+
+    fn probe_world<'a>(
+        doc: &'a Document,
+        root: &'a fs::WorkspaceRoot,
+        fp: &'a MerkleRoot,
+        prelude: Option<&'a str>,
+        cache: Option<&'a dyn ModuleCache>,
+    ) -> ModeWorld<'a> {
+        ModeWorld {
+            doc,
+            root,
+            declaring_root: None,
+            observed_root: fp,
+            prelude,
+            doors: Doors::default(),
+            cache,
+        }
+    }
+
+    fn empty_doc() -> Document {
+        let raw = "# probe\n".to_owned();
+        let nodes = syntax::parse(&raw);
+        model::build(raw, nodes)
+    }
+
+    /// The second load of an unchanged block is SERVED, not re-evaluated —
+    /// § 2.2's "an unchanged block is served from cache, never re-evaluated",
+    /// which is the whole reason a warm fire is one function call.
+    #[test]
+    fn an_unchanged_block_is_served_from_cache() {
+        let doc = empty_doc();
+        let root = fs::WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
+        let fp = MerkleRoot(String::new());
+        let cache = ProbeCache::default();
+        let world = probe_world(&doc, &root, &fp, None, Some(&cache));
+        let block = probe_block();
+        let ctx = RunCtx::default();
+
+        let first = load_cached(&world, &block, &ctx).expect("the block loads");
+        let second = load_cached(&world, &block, &ctx).expect("and loads again");
+
+        assert_eq!(
+            cache.misses.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the second load must be a HIT — a miss means nothing was cached"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "the second load returned a different module, so it was re-evaluated"
+        );
+        assert_eq!(first.declarations.len(), 1);
+    }
+
+    /// A faulted load is NEVER cached: the fault is about the attempt, and a
+    /// stored refusal would outlive the cause the author has since fixed.
+    #[test]
+    fn a_faulted_load_is_not_cached() {
+        let doc = empty_doc();
+        let root = fs::WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
+        let fp = MerkleRoot(String::new());
+        let cache = ProbeCache::default();
+        let world = probe_world(&doc, &root, &fp, None, Some(&cache));
+        let mut block = probe_block();
+        block.source = "bash(cmd = \"true\")\n".to_owned();
+        let ctx = RunCtx::default();
+
+        assert!(load_cached(&world, &block, &ctx).is_err());
+        assert!(load_cached(&world, &block, &ctx).is_err());
+        assert_eq!(
+            cache.misses.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "a fault was cached and served back"
+        );
+        assert!(cache.blocks.lock().expect("probe").is_empty());
+    }
+
+    /// The key is the block's rev PLUS the prelude's digest. Both halves
+    /// matter: edited bytes are a different block, and the same bytes under a
+    /// different prelude are a different MODULE, because the prelude's
+    /// bindings are frozen with it. Keying on the rev alone would serve one
+    /// caller the other's environment.
+    #[test]
+    fn the_key_separates_edited_bytes_and_different_preludes() {
+        assert_ne!(
+            cache_key("rev-1", None),
+            cache_key("rev-2", None),
+            "an edited block must be a different key"
+        );
+        assert_ne!(
+            cache_key("rev-1", Some("def deny(r):\n    return r\n")),
+            cache_key("rev-1", Some("def allow(r):\n    return r\n")),
+            "the same bytes under a different prelude are a different module"
+        );
+        assert_eq!(
+            cache_key("rev-1", Some("x = 1\n")),
+            cache_key("rev-1", Some("x = 1\n")),
+            "the key must be stable for the same inputs"
+        );
+        assert_ne!(cache_key("rev-1", None), cache_key("rev-1", Some("")));
+    }
 }

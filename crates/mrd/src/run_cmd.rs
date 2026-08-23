@@ -602,6 +602,10 @@ fn mode_legs(
                 // has no CLI counterpart to relax).
                 prelude: None,
                 doors: run::modes::Doors::default(),
+                // No resident cache on the CLI: this process evaluates each
+                // block once and exits, so a cache would be built, used once
+                // and dropped.
+                cache: None,
             },
             &target,
             &format!("{invocation}-t{index}"),

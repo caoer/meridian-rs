@@ -186,15 +186,18 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
     // script op's entry (`script_op.rs`) — and never run the
     // `domain_snapshot` fold the task path takes. Pinned once per submission,
     // so every row of one call reads one corpus.
-    let pinned = request
-        .targets
-        .iter()
-        .any(modes::is_mode_target)
+    let any_mode = request.targets.iter().any(modes::is_mode_target);
+    let pinned = any_mode
         .then(|| {
             registry.warm_or_build(ws).ok();
             registry.engine_snapshot(ws)
         })
         .flatten();
+    // The § 2.2 module cache, resident per workspace: a block is evaluated
+    // once per rev, so a warm fire is one function call. The CLI has no
+    // equivalent and passes `None` — a fresh process per invocation has
+    // nowhere to keep one.
+    let modules = any_mode.then(|| registry.modules(ws));
     let mut rows = Vec::with_capacity(request.targets.len());
     for (index, target) in request.targets.iter().enumerate() {
         let invocation = format!("{}-t{index}", request.invocation);
@@ -214,6 +217,7 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
                                 fields: Some(host.fields),
                                 ambient: host.ambient,
                             },
+                            cache: modules.as_deref().map(|m| m as &dyn modes::ModuleCache),
                         },
                         target,
                         &invocation,
