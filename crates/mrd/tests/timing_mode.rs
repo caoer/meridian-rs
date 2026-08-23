@@ -3,9 +3,11 @@
 //! over its process boundary — the switch is a process-global read, so only a
 //! real process can prove it.
 //!
-//! The claims under gate: the line grammar parses; the mode is time cost and
-//! nothing else; stdout and the exit code are byte-identical with it on and
-//! off; the file sink keeps stderr clean; an off word never creates a file.
+//! The claims under gate: the line grammar parses and a diagnostic can never be
+//! read as a measurement; a line means the phase COMPLETED; the mode is time
+//! cost and nothing else; stdout and the exit code are byte-identical with it
+//! on and off; the two file-sink refusals degrade loudly to stderr; and no
+//! switch value spelled by a human creates a stray file.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -26,6 +28,24 @@ def run(ctx):
 ^solo-1
 ";
 
+/// A page whose task COMMITS: the md.\* batch makes `apply` real, and the run
+/// is the one `run-plane.md` § The `snapshot` set can repeat is about.
+const EFFECTFUL_PAGE: &str = "\
+---
+status: draft
+task.stamp: \"[[#^stamp-1]]\"
+task.stamp.caps: md.edit
+---
+
+# Tasks
+
+```starlark
+def run(ctx):
+    set_field(field = \"status\", value = \"live\")
+```
+^stamp-1
+";
+
 struct Ws {
     tmp: tempfile::TempDir,
 }
@@ -34,6 +54,7 @@ impl Ws {
     fn new() -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::write(tmp.path().join("solo.md"), SOLO_PAGE).expect("page");
+        std::fs::write(tmp.path().join("stamp.md"), EFFECTFUL_PAGE).expect("effectful page");
         Self { tmp }
     }
 
@@ -62,12 +83,15 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// Every `mrd-timing` line on a stream, parsed into `(cmd, phase, us)`. A line
-/// carrying the prefix that does NOT parse is a failure, not a skip: the
-/// grammar is the contract.
+/// Every MEASUREMENT on a stream, parsed into `(cmd, phase, us)`.
+///
+/// The filter is the documented `mrd-timing ` — WITH the space — which is what
+/// separates a measurement from a `mrd-timing:` diagnostic. A line that opens
+/// with the space and does not parse is a failure, not a skip: the grammar is
+/// the contract.
 fn timing_lines(raw: &str) -> Vec<(String, String, u128)> {
     raw.lines()
-        .filter(|line| line.starts_with("mrd-timing"))
+        .filter(|line| line.starts_with("mrd-timing "))
         .map(|line| {
             let mut fields = line.split(' ');
             assert_eq!(fields.next(), Some("mrd-timing"), "{line}");
@@ -95,9 +119,24 @@ fn phases(raw: &str) -> Vec<String> {
     timing_lines(raw).into_iter().map(|(_, p, _)| p).collect()
 }
 
+/// The mode's own diagnostics — the COLON shape.
+fn diagnostics(raw: &str) -> Vec<String> {
+    raw.lines()
+        .filter(|line| line.starts_with("mrd-timing:"))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// The mode changes nothing a consumer reads: `--json` stdout is byte-for-byte
 /// the same with the switch on and off, and so is the exit code. Off, stderr
 /// carries no timing line at all.
+///
+/// ASSUMPTION, named because it is load-bearing: this compares two SEPARATE
+/// runs, which is a valid identity test only while the report of an
+/// effect-free starlark task carries no clock, pid or invocation id. It does
+/// not today (`run::report::render` sources `exec` from the bash path alone).
+/// A time or id field added to that report breaks this test, and the fix is to
+/// compare modulo that field, never to delete the assertion.
 #[test]
 fn off_and_on_agree_on_stdout_and_exit_code() {
     let ws = Ws::new();
@@ -114,8 +153,8 @@ fn off_and_on_agree_on_stdout_and_exit_code() {
         String::from_utf8_lossy(&on.stdout)
     );
     assert!(
-        timing_lines(&stderr(&off)).is_empty(),
-        "off wrote timing lines: {}",
+        off.stderr.is_empty(),
+        "off wrote to stderr: {}",
         stderr(&off)
     );
     assert!(
@@ -125,23 +164,49 @@ fn off_and_on_agree_on_stdout_and_exit_code() {
     );
 }
 
-/// `0` and the spelled-out off words are OFF — and an off word must not be
-/// taken for a file path, which would create a file named `off` in the
-/// caller's working directory.
+/// Off words are off — trimmed, in any case — and an off word must never be
+/// taken for a file path. Measured on the release binary before the fix:
+/// `MRD_TIMING=OFF` created a file named `OFF`, and `MRD_TIMING="1 "` created
+/// one named `1 `, in the caller's working directory.
 #[test]
-fn off_words_are_off_and_create_no_file() {
+fn off_words_are_off_in_any_case_and_create_no_file() {
     let ws = Ws::new();
-    for word in ["0", "off", "false", "no", ""] {
+    for word in ["0", "off", "OFF", "Off", "FALSE", "no", " off ", "  ", ""] {
         let out = ws.mrd(Some(word), &["run", "solo.md", "--json"]);
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         assert!(
-            timing_lines(&stderr(&out)).is_empty(),
-            "MRD_TIMING={word} emitted: {}",
+            out.stderr.is_empty(),
+            "MRD_TIMING={word:?} wrote to stderr: {}",
+            stderr(&out)
+        );
+    }
+    let strays: Vec<String> = std::fs::read_dir(ws.path())
+        .expect("read workspace")
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|name| !name.ends_with(".md") && !name.starts_with('.'))
+        .collect();
+    assert!(
+        strays.is_empty(),
+        "an off word created a file in the workspace: {strays:?}"
+    );
+}
+
+/// On words are on in any case and with stray whitespace — the same folding,
+/// so `MRD_TIMING="1 "` measures instead of writing a file named `1 `.
+#[test]
+fn on_words_are_on_in_any_case_and_with_whitespace() {
+    let ws = Ws::new();
+    for word in ["1", "ON", "True", " 1 ", "yes"] {
+        let out = ws.mrd(Some(word), &["run", "solo.md", "--json"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert!(
+            !timing_lines(&stderr(&out)).is_empty(),
+            "MRD_TIMING={word:?} measured nothing: {}",
             stderr(&out)
         );
         assert!(
-            word.is_empty() || !ws.path().join(word).exists(),
-            "MRD_TIMING={word} created a file named {word}"
+            !ws.path().join(word).exists(),
+            "MRD_TIMING={word:?} created a file"
         );
     }
 }
@@ -187,8 +252,8 @@ fn a_run_reports_its_phases_and_total_is_last() {
         Some("total"),
         "total is not last: {names:?}"
     );
-    // Nesting is real, not decorative: the whole snapshot never measures less
-    // than the read inside it.
+    // Containment is real, not decorative: `run-plane.md` § Timing phases
+    // states the "inside" column, and these are three of its rows.
     let of = |want: &str| {
         lines
             .iter()
@@ -196,7 +261,8 @@ fn a_run_reports_its_phases_and_total_is_last() {
             .map_or_else(|| panic!("no {want}"), |(_, _, us)| *us)
     };
     assert!(of("snapshot") >= of("snapshot.read"));
-    assert!(of("total") >= of("snapshot"));
+    assert!(of("dispatch") >= of("snapshot"));
+    assert!(of("total") >= of("dispatch"));
 }
 
 /// The `solo` block emits no md.* effect, so there is no batch — and no
@@ -212,6 +278,69 @@ fn a_phase_that_did_not_run_emits_no_line() {
     );
 }
 
+/// A phase that FAILED emits no line either — a failed page load costing 312 us
+/// and a successful one costing 312 us are not the same fact, and the mode
+/// reports COMPLETED phases only. `total` still reports: the process finished.
+#[test]
+fn a_phase_that_failed_emits_no_line() {
+    let ws = Ws::new();
+    let out = ws.mrd(Some("1"), &["run", "no-such-page.md", "--json"]);
+    assert_ne!(out.status.code(), Some(0), "the run must refuse");
+    let names = phases(&stderr(&out));
+
+    assert!(
+        !names.iter().any(|p| p == "page.load"),
+        "a FAILED page load reported as completed: {names:?}"
+    );
+    // The phase before it completed, so it reports; and the process completed,
+    // so `total` reports.
+    assert!(
+        names.iter().any(|p| p == "workspace.resolve"),
+        "the completed phase before the failure is missing: {names:?}"
+    );
+    assert!(
+        names.iter().any(|p| p == "total"),
+        "total must report on a refusal — the process is what it measures: {names:?}"
+    );
+    // And nothing downstream of the failure invented itself.
+    for never in ["snapshot", "eval", "dispatch", "report.render"] {
+        assert!(
+            !names.iter().any(|p| p == never),
+            "`{never}` reported after the run refused: {names:?}"
+        );
+    }
+}
+
+/// An effectful run: `apply` becomes real, and — on the CLI lane — the
+/// `snapshot` set appears exactly ONCE. The second fold documented in
+/// `run-plane.md` is the executor's pre-commit fold, which is gated on a
+/// `DeltaSink`; the CLI passes `delta: None`, and the cascade fold needs a
+/// non-empty ruleset the CLI never hands it.
+#[test]
+fn an_effectful_run_reports_apply_and_folds_once_on_the_cli() {
+    let ws = Ws::new();
+    let out = ws.mrd(Some("1"), &["run", "stamp.md", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let names = phases(&stderr(&out));
+
+    assert!(
+        names.iter().any(|p| p == "apply"),
+        "a committing run reported no apply: {names:?}"
+    );
+    assert_eq!(
+        names.iter().filter(|p| *p == "snapshot").count(),
+        1,
+        "the CLI lane folds once per run: {names:?}"
+    );
+    for part in ["snapshot.walk", "snapshot.read", "snapshot.fold"] {
+        assert_eq!(
+            names.iter().filter(|p| *p == part).count(),
+            1,
+            "`{part}` should appear once per fold: {names:?}"
+        );
+    }
+}
+
 /// A value that is not a word is a sink FILE: the lines land there and stderr
 /// stays clean, which is what makes the mode usable on a process whose stderr
 /// is not the caller's (the daemon nulls its own — `daemon.rs`).
@@ -220,14 +349,12 @@ fn a_path_value_sinks_to_that_file_and_leaves_stderr_clean() {
     let ws = Ws::new();
     let sink_dir = tempfile::tempdir().expect("sink dir");
     let sink = sink_dir.path().join("timing.log");
+    let sink_arg = sink.to_str().expect("utf-8 sink path");
 
-    let out = ws.mrd(
-        Some(sink.to_str().expect("utf-8 sink path")),
-        &["run", "solo.md", "--json"],
-    );
+    let out = ws.mrd(Some(sink_arg), &["run", "solo.md", "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert!(
-        timing_lines(&stderr(&out)).is_empty(),
+        out.stderr.is_empty(),
         "the file sink still wrote to stderr: {}",
         stderr(&out)
     );
@@ -240,14 +367,78 @@ fn a_path_value_sinks_to_that_file_and_leaves_stderr_clean() {
 
     // Append, never truncate: a second run's lines join the first's.
     let first = timing_lines(&written).len();
-    let _ = ws.mrd(
-        Some(sink.to_str().expect("utf-8 sink path")),
-        &["run", "solo.md", "--json"],
-    );
+    let _ = ws.mrd(Some(sink_arg), &["run", "solo.md", "--json"]);
     let both = std::fs::read_to_string(&sink).expect("sink file");
     assert!(
         timing_lines(&both).len() > first,
         "the second run truncated the sink instead of appending"
+    );
+}
+
+/// A sink the engine would FOLD is a loop: the file is a corpus member, so
+/// every line it gains changes the corpus and the next fold reports more lines
+/// to append. Refused by extension, before the file is opened — and said out
+/// loud, because a silent degrade reads as "the code never ran there".
+#[test]
+fn a_corpus_extension_sink_is_refused_and_says_why() {
+    let ws = Ws::new();
+    let sink_dir = tempfile::tempdir().expect("sink dir");
+    for name in ["timing.md", "timing.base", "TIMING.MD"] {
+        let sink = sink_dir.path().join(name);
+        let out = ws.mrd(
+            Some(sink.to_str().expect("utf-8 sink path")),
+            &["run", "solo.md", "--json"],
+        );
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert!(!sink.exists(), "`{name}` was opened as a sink");
+
+        let said = diagnostics(&stderr(&out));
+        assert_eq!(
+            said.len(),
+            1,
+            "expected one diagnostic for {name}: {said:?}"
+        );
+        assert!(
+            said[0].contains("stderr"),
+            "the diagnostic must name where the lines went instead: {}",
+            said[0]
+        );
+        // Degrade, never silence: the measurements are on stderr.
+        assert!(
+            phases(&stderr(&out)).iter().any(|p| p == "total"),
+            "refusing the sink also lost the measurements: {}",
+            stderr(&out)
+        );
+    }
+}
+
+/// A sink that will not open degrades the same way, loudly.
+#[test]
+fn an_unopenable_sink_degrades_to_stderr_and_says_why() {
+    let ws = Ws::new();
+    let sink_dir = tempfile::tempdir().expect("sink dir");
+    let sink = sink_dir.path().join("no-such-dir").join("timing.log");
+
+    let out = ws.mrd(
+        Some(sink.to_str().expect("utf-8 sink path")),
+        &["run", "solo.md", "--json"],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a bad sink never fails the verb"
+    );
+    let said = diagnostics(&stderr(&out));
+    assert_eq!(said.len(), 1, "expected one diagnostic: {said:?}");
+    assert!(
+        said[0].contains("cannot open"),
+        "the diagnostic must name the failure: {}",
+        said[0]
+    );
+    assert!(
+        phases(&stderr(&out)).iter().any(|p| p == "total"),
+        "the degrade lost the measurements: {}",
+        stderr(&out)
     );
 }
 
@@ -265,6 +456,27 @@ fn every_verb_reports_a_total_under_its_own_name() {
         "no `cmd=version phase=total` line: {}",
         stderr(&out)
     );
+}
+
+/// `cmd=` is raw argv, and argv can carry anything. A verb with whitespace
+/// would mint a fourth field and a newline would inject a line into a
+/// machine-read stream, so the label is refused and the default stands — the
+/// grammar survives an invocation that does not.
+#[test]
+fn an_argv_that_would_break_the_grammar_does_not_become_the_label() {
+    let ws = Ws::new();
+    for argv in ["run solo.md", "a\nb"] {
+        let out = ws.mrd(Some("1"), &[argv]);
+        assert_eq!(out.status.code(), Some(2), "an unknown verb refuses");
+        let lines = timing_lines(&stderr(&out));
+        assert!(
+            lines
+                .iter()
+                .any(|(cmd, phase, _)| cmd == "mrd" && phase == "total"),
+            "the label was not defended for {argv:?}: {}",
+            stderr(&out)
+        );
+    }
 }
 
 /// Discoverability: the switch is on the help surface of every verb, because

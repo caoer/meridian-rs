@@ -738,11 +738,13 @@ pub fn run(args: &[String]) -> ExitCode {
     // process can host an in-process write, so the projection seam is
     // installed unconditionally at entry (idempotent).
     registry::mw_sql::install();
-    // The one phase every verb has: the whole process. It drops before this
-    // function returns, so the line is written while the process still owns
-    // its streams (docs/status.md § The timing mode).
-    let _total = timing::phase("total");
-    match dispatch(args) {
+    // The one phase every verb has: the whole process. It is stopped on BOTH
+    // arms, and deliberately AFTER the refusal is printed — unlike every phase
+    // below it, `total` completes whether the verb succeeded or refused,
+    // because the thing it measures is the process, and the process finished
+    // either way (docs/status.md § The timing mode).
+    let total = timing::phase("total");
+    let exit = match dispatch(args) {
         Ok(()) => ExitCode::from(EXIT_OK),
         Err(fail) => {
             // The diagnostic leads, so a refusal is never buried under the help listing.
@@ -752,7 +754,9 @@ pub fn run(args: &[String]) -> ExitCode {
             }
             ExitCode::from(fail.code)
         }
-    }
+    };
+    total.stop();
+    exit
 }
 
 fn dispatch(args: &[String]) -> Result<(), Fail> {

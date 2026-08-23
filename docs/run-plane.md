@@ -1992,35 +1992,61 @@ Under `MRD_TIMING` (the switch, sink, line grammar and the two lanes:
 `status.md` § The timing mode) a run answers where its wall clock went. The
 phases, at the grain a reader can act on:
 
-| Phase | Emitted in | Covers |
-|---|---|---|
-| `total` | `mrd::run` | the whole process — every verb has it, not just `run` |
-| `workspace.resolve` | `mrd::run_cmd` | `workspace::resolve` — the discovery ladder |
-| `page.load` | `mrd::run_cmd` | the door's `address::load_page` (parse of the addressed page) |
-| `conventions.load` | `mrd::run_cmd` | `caps::load_conventions` — the root's `MERIDIAN.md` |
-| `task.gate` | `mrd::run_cmd` | the door's pre-check: `resolve_task` + `contract_for` + `validate` + `resolve_authority` |
-| `pre_eval` | `run::runner` | the plane's OWN address → contract → caps chain, which repeats the door's work |
-| `snapshot.walk` | `fs::domain_snapshot_with_leaves` | `Domain::load` + `hash_domain` — the hash-domain walk |
-| `snapshot.read` | same | `read_and_digest_members` — read + blake3 of every member |
-| `snapshot.fold` | same | leaf assembly + `served_root` |
-| `snapshot` | same | the three above, whole |
-| `eval` | `run::dispatch_starlark` | hermetic evaluation of the block |
-| `apply` | `run::dispatch_starlark` | the executor's one md.\* batch (absent when the block emitted none) |
-| `dispatch` | `run::runner` | `snapshot` + `eval` + `apply`, whole |
-| `cascade` | `run::runner` | the cascade loop — vacuous under the empty S1 ruleset, so a near-zero `us` here is the expected reading, not a missing measurement |
-| `report.render` | `mrd::run_cmd` | the U9 report render |
+**Containment is this table, not the dot.** A dotted name marks a part of the
+phase it prefixes, but `dispatch` contains three undotted phases and `total`
+contains everything — so the `us` column does not sum. Read the "inside" column
+before adding anything up.
+
+| Phase | Inside | Emitted in | Covers |
+|---|---|---|---|
+| `total` | — | `mrd::run` | the whole process — every verb has it, not just `run` |
+| `workspace.resolve` | `total` | `mrd::run_cmd` | `workspace::resolve` — the discovery ladder |
+| `page.load` | `total` | `mrd::run_cmd` | the door's `address::load_page` (parse of the addressed page) |
+| `conventions.load` | `total` | `mrd::run_cmd` | `caps::load_conventions` — the root's `MERIDIAN.md` |
+| `task.gate` | `total` | `mrd::run_cmd` | the door's pre-check: `resolve_task` + `contract_for` + `validate` + `resolve_authority` |
+| `pre_eval` | `total` | `run::runner::pre_eval` | the plane's OWN address → contract → caps chain, which repeats the door's work. Measured on the chain, so `--dry` reports it too |
+| `dispatch` | `total` | `run::runner` | `snapshot` + `eval` + `apply`, whole |
+| `snapshot` | `dispatch` | `fs::domain_snapshot_with_leaves` | the three below, whole |
+| `snapshot.walk` | `snapshot` | same | `Domain::load` + `hash_domain` — the hash-domain walk |
+| `snapshot.read` | `snapshot` | same | `read_and_digest_members` — read + blake3 of every member |
+| `snapshot.fold` | `snapshot` | same | leaf assembly + `served_root` |
+| `eval` | `dispatch` | `run::dispatch_starlark` | hermetic evaluation of the block |
+| `apply` | `dispatch` | `run::dispatch_starlark` | the executor's one md.\* batch (absent when the block emitted none) |
+| `cascade` | `total` | `run::runner` | the cascade loop — vacuous under the empty S1 ruleset, so a near-zero `us` here is the expected reading, not a missing measurement |
+| `report.render` | `total` | `mrd::run_cmd` | the U9 report render |
+
+**A phase reports only where it COMPLETED.** A phase that never ran emits no
+line — `--dry` never reaches `apply` or `cascade`, `--list` reaches neither
+`snapshot` nor anything below it, `--dry` on bash reaches no `snapshot` at all.
+Neither does a phase that FAILED: the span is abandoned on the error path, so
+`mrd run missing.md` prints `workspace.resolve`, the refusal, and `total` — and
+no `page.load`, because there was no page load. `total` reports on a refusal
+because the process is what it measures.
+
+#### The `snapshot` set can repeat, and which lane you are on decides
 
 `snapshot.*` is emitted by `fs`, not by this plane: **every** caller of
-`domain_snapshot*` lights it up, the daemon's resident rebuild included. That is
-the point — the corpus fold is the cost that does not care which door asked for
-it. `pre_eval` repeating `page.load` and `conventions.load` is likewise a fact
-of the shape, not an artifact of the instrument: the door resolves to refuse
-early, then the plane resolves again as its own gate ([`pre_eval`], ONE owner
-for both tenses).
+`domain_snapshot*` lights it up, the daemon's resident rebuild included. The
+corpus fold is the cost that does not care which door asked for it. There are
+four call sites, and they do not all fire on one lane:
 
-A phase that does not run emits no line. `--dry` never reaches `apply` or
-`cascade`, `--list` reaches neither `snapshot` nor anything below it, and
-`--dry` on bash reaches no `snapshot` at all.
+| Fold | Fires when |
+|---|---|
+| `runner.rs` `dispatch` | every live run — the one every lane pays |
+| `runner.rs` `rehearse` | `--dry` instead of the above, not as well |
+| `runner.rs` `cascade` | a generation that applies md.\* — needs a NON-EMPTY ruleset, and both doors hand `S1_RULES` (empty), so today: never |
+| `executor.rs` pre-commit | only when a `DeltaSink` is in reach, i.e. the WIRE arm. The CLI passes `delta: None` and returns before the fold |
+
+So on the **CLI** an effectful `mrd run` emits exactly ONE `snapshot` set
+(measured on the release binary, 2026-08-22: `grep -c 'phase=snapshot '` = 1).
+On the **wire/daemon** arm a run that commits folds a second time inside the
+executor, and the two sets are identical in name with no discriminator — count
+them, do not assume the first is the only one.
+
+`pre_eval` repeating `page.load` and `conventions.load` is likewise a fact of
+the shape, not an artifact of the instrument: the door resolves to refuse early,
+then the plane resolves again as its own gate ([`pre_eval`], ONE owner for both
+tenses).
 
 ## Seam map (for reviewers)
 
