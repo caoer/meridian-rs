@@ -207,12 +207,35 @@ fn fire_row(
     now: Option<&str>,
 ) -> Value {
     let doc = world.doc;
-    let (block, entry, module) = match addressed_entry(world, target, invocation, doc) {
+    let addressed = match addressed_entry(world, target, invocation, doc) {
         Ok(resolved) => resolved,
         Err(row) => return row,
     };
     let ctx = ctx_for(target, invocation);
-    let seam = NoProcessSeam;
+    let seam = ProcessSeam {
+        doc: world.doc,
+        root: &world.root.0,
+        calls: std::sync::Mutex::new(Vec::new()),
+        // The root's ceiling, resolved once. A caller `timeout_ms` narrows it
+        // per call; nothing raises it.
+        timeout: crate::exec::configured_timeout(world.declaring_root)
+            .unwrap_or(crate::exec::DEFAULT_TIMEOUT),
+        dry: target.dry.unwrap_or(false),
+    };
+    let (block, entry, module) = match addressed {
+        Addressed::Evaluated {
+            block,
+            entry,
+            module,
+        } => (block, entry, module),
+        // An exec'd entry never reaches the evaluator: one process through
+        // the bracket, its stdin the input, its raw exit and stderr surfaced
+        // (§ 1.4). Caps do not apply to a process, by law — what bounds it is
+        // the timeout and the loud result.
+        Addressed::Exec { block, spec } => {
+            return exec_row(&seam, target, invocation, &block, &spec, doc);
+        }
+    };
     let fired = match fire_entry(
         &module,
         &entry,
@@ -249,7 +272,7 @@ fn fire_row(
         "rev": {"file": doc.root.node_rev.0, "block": block.rev},
         "result": if refusal.is_some() { "refused" } else { "ok" },
         "applied": applied,
-        "exec": [],
+        "exec": seam.rows(),
         "telemetry": {"steps": fired.fuel_used, "mem": fired.mem_used},
     });
     if let Some(value) = fired.value {
@@ -273,7 +296,7 @@ fn addressed_entry(
     target: &wire::RunTarget,
     invocation: &str,
     doc: &Document,
-) -> Result<(AnchoredBlock, String, effects::FrozenModule), Value> {
+) -> Result<Addressed, Value> {
     let Some(anchor) = target.block.as_deref() else {
         return Err(refused_row(
             target,
@@ -286,16 +309,19 @@ fn addressed_entry(
     let block = blocks::block(doc, anchor)
         .map_err(|e| refused_row(target, invocation, e.class(), &e.to_string(), None))?;
     if !block.is_starlark() {
-        // A non-starlark block is an exec'd entry's bytes, not a module. The
-        // exec bracket that runs one is the next increment; until it lands
-        // this refuses by NAME rather than pretending the block is a module.
+        // A non-starlark block is an exec'd entry's BYTES, never a module of
+        // its own. It runs when a starlark block DECLARES it — `declare(impl
+        // = exec("bash", block = "..."))` — which is the consent gate again:
+        // an anchored fence nobody declared is not a target, whatever its
+        // language.
         return Err(refused_row(
             target,
             invocation,
             "not_a_module",
             &format!(
                 "^{anchor} is not a starlark block, so it is not a module: a non-starlark \
-                 block runs as an exec'd entry, declared with `exec(...)`"
+                 block runs as an exec'd entry, addressed through the starlark block that \
+                 declares it with `exec(...)`"
             ),
             None,
         ));
@@ -325,15 +351,14 @@ fn addressed_entry(
     };
     let entry = match &declaration.entry {
         DeclaredEntry::Evaluated { name } => name.clone(),
-        DeclaredEntry::Exec(_) => {
-            return Err(refused_row(
-                target,
-                invocation,
-                "impl_type",
-                "this block declares an exec'd entry; the process bracket that runs one \
-                 is not built yet",
-                None,
-            ));
+        // An exec'd entry needs no frozen module: the declaration IS the
+        // program (§ 1.4). Every other language runs this way — one generic
+        // process contract, never a peer evaluator.
+        DeclaredEntry::Exec(spec) => {
+            return Ok(Addressed::Exec {
+                block,
+                spec: spec.clone(),
+            });
         }
     };
     let Some(module) = loaded.module else {
@@ -345,7 +370,72 @@ fn addressed_entry(
             None,
         ));
     };
-    Ok((block, entry, module))
+    Ok(Addressed::Evaluated {
+        block,
+        entry,
+        module,
+    })
+}
+
+/// One exec'd entry's row: the process, through the same bracket `bash()`
+/// uses (§ 1.4 — *one generic execution contract, and a new language is
+/// `argv[0]`*).
+///
+/// **Caps are inert here, by law.** What bounds an exec'd entry is the
+/// timeout, the out-of-tree log, and the loud result — never a capability,
+/// because a capability cannot gate a process that could `sed -i` its way
+/// around it.
+fn exec_row(
+    seam: &ProcessSeam<'_>,
+    target: &wire::RunTarget,
+    invocation: &str,
+    block: &AnchoredBlock,
+    spec: &effects::ExecSpec,
+    doc: &Document,
+) -> Value {
+    // The input is stdin, verbatim compact JSON — that is what makes a
+    // `settings.json` script's bytes run unchanged.
+    let stdin = target
+        .input
+        .as_ref()
+        .map(|v| serde_json::to_string(v).unwrap_or_default());
+    let process = seam.exec(spec, stdin.as_deref(), invocation, &target.page);
+    let mut row = json!({
+        "page": target.page,
+        "invocation": invocation,
+        "block": block.anchor,
+        "rev": {"file": doc.root.node_rev.0, "block": block.rev},
+        // The row's `result` is an EVALUATION word about the fire, not about
+        // the process's exit: a script that exits 1 ran fine and said no.
+        // `process.exit` carries what the script said.
+        "result": "ok",
+        "applied": [],
+        "exec": [],
+        "process": process,
+    });
+    if row["process"]["exit"] == 127 {
+        row["result"] = json!("fault");
+        row["fault"] = json!({
+            "class": "no_block",
+            "reason": row["process"]["stderr"].clone(),
+        });
+    }
+    row
+}
+
+/// What a fire's addressing resolved to — the two entry kinds § 1.4 admits.
+enum Addressed {
+    /// A starlark entry on the block's own frozen module.
+    Evaluated {
+        block: AnchoredBlock,
+        entry: String,
+        module: effects::FrozenModule,
+    },
+    /// A process entry, declared by `exec(...)`.
+    Exec {
+        block: AnchoredBlock,
+        spec: effects::ExecSpec,
+    },
 }
 
 /// Realize one fire's md effects. Returns the `applied[]` rows and, when the
@@ -484,23 +574,209 @@ fn page_authority(world: &ModeWorld<'_>) -> Result<Authority, caps::CapsError> {
     ))
 }
 
-/// The fire phase's process seam, before the exec bracket exists.
+/// The fire phase's process seam: `bash()` through the run plane's own
+/// bracket (§ 1.3, § 2.2 step 5).
 ///
-/// `bash()` is BOUND on the hook-plane globals at every phase — that is A1's
-/// whole shape — so a program may call it and the call must answer something.
-/// Until the bracket is factored, it answers a loud fault rather than a
-/// plausible row: a stub returning `exit: 0` would let a hook decide on a
-/// command that never ran.
-struct NoProcessSeam;
+/// **`bash` never raises for the process's sake** — § 1.3's law. An
+/// unstartable process is `exit: 127`, a timeout is `timed_out: True` with
+/// `exit: 137`, a dangling `block=` anchor is `exit: 127` with `stderr`
+/// naming it. The program branches on a row; it does not handle an exception
+/// it has no syntax for.
+struct ProcessSeam<'a> {
+    /// The page — for `bash(block=)`, which resolves an anchor on THIS page.
+    doc: &'a Document,
+    /// The workspace root: the default cwd, the scratch dir, and
+    /// `$MERIDIAN_PROJECT_ROOT`.
+    root: &'a Path,
+    /// Every call this fire made, in call order — the fire row's `exec[]`.
+    /// A `Mutex` rather than a `RefCell` because [`FireHost`] is `Sync`: the
+    /// kernel holds the seam across its evaluation thread. It is never
+    /// contended — the evaluator is single-threaded — so the lock costs
+    /// nothing and satisfies the bound honestly.
+    calls: std::sync::Mutex<Vec<Value>>,
+    /// The wall-clock ceiling, resolved once from the declaring root.
+    timeout: std::time::Duration,
+    /// Where a `dry` fire stops: the stub says so on its own row, and § 1.3
+    /// is explicit that a decision reached under `dry` is a rehearsal.
+    dry: bool,
+}
 
-impl FireHost for NoProcessSeam {
+impl FireHost for ProcessSeam<'_> {
     fn bash(&self, call: &effects::BashCall) -> Result<Value, String> {
-        Err(format!(
-            "`bash` is not yet served on this lane (line {}): the process bracket the \
-             fire phase runs it through is the next increment. The call is legal and the \
-             refusal is the engine's, not the page's.",
-            call.line
-        ))
+        let row = self.run(call);
+        if let Ok(mut calls) = self.calls.lock() {
+            calls.push(row.clone());
+        }
+        Ok(row)
+    }
+}
+
+impl ProcessSeam<'_> {
+    /// The `exec[]` rows this fire produced, in call order.
+    fn rows(&self) -> Vec<Value> {
+        self.calls.lock().map(|c| c.clone()).unwrap_or_default()
+    }
+
+    /// One `bash()` call → its row. Never `Err`: every failure mode of a
+    /// process is a value the program can read.
+    fn run(&self, call: &effects::BashCall) -> Value {
+        // Under `dry` nothing is spawned and the row SAYS so, so a program
+        // that branched on it cannot be mistaken for one that decided.
+        if self.dry {
+            return json!({
+                "command": self.command_of(call).unwrap_or_default(),
+                "exit": 0, "stdout": "", "stderr": "",
+                "timed_out": false, "dry": true,
+            });
+        }
+        let source = match self.command_of(call) {
+            Ok(source) => source,
+            // A dangling `block=` anchor is the "could not start" class, by
+            // § 1.3's own words — not a fault, not a silent skip.
+            Err(reason) => {
+                return json!({
+                    "command": "", "exit": 127, "stdout": "", "stderr": reason,
+                    "timed_out": false, "dry": false,
+                });
+            }
+        };
+        let scratch = self.root.join(".meridian/scratch");
+        let _ = std::fs::create_dir_all(&scratch);
+        // § 2.2's cwd rule: the call's own `cwd` when it named one, else the
+        // page's root — the official contract runs a hook in the project dir.
+        let cwd = call
+            .cwd
+            .as_ref()
+            .map_or_else(|| self.root.to_path_buf(), |c| self.root.join(c));
+        let timeout = call
+            .timeout_s
+            // A caller ceiling NARROWS; it never raises the root's.
+            .map_or(self.timeout, |s| {
+                self.timeout.min(std::time::Duration::from_secs(s))
+            });
+        let spec = crate::exec::ExecSpec {
+            source: &source,
+            args: &[],
+            env: &call.env,
+            scratch: &scratch,
+            project_root: self.root,
+            timeout,
+            step_cwd: Some(&cwd),
+            interpreter: crate::exec::BASH,
+            stdin: call.stdin.as_deref(),
+        };
+        match crate::exec::exec(&spec) {
+            Ok(result) => {
+                let (exit, timed_out) = match result.status {
+                    crate::exec::ExecStatus::Exited { code } => (code, false),
+                    // A signal is not an exit code; 128+n is the shell's own
+                    // convention and the one a script author reads.
+                    crate::exec::ExecStatus::Signaled { signal } => (128 + signal, false),
+                    crate::exec::ExecStatus::TimedOut { .. } => (137, true),
+                };
+                json!({
+                    "command": source,
+                    "exit": exit,
+                    "stdout": String::from_utf8_lossy(&result.stdout),
+                    "stderr": String::from_utf8_lossy(&result.stderr),
+                    "timed_out": timed_out,
+                    "dry": false,
+                })
+            }
+            // Unstartable is 127 — the "could not start" class, never a raise.
+            Err(e) => json!({
+                "command": source, "exit": 127, "stdout": "",
+                "stderr": e.to_string(), "timed_out": false, "dry": false,
+            }),
+        }
+    }
+
+    /// One declared exec'd entry → its `process` object (§ 1.4).
+    ///
+    /// The `interpreter` is `argv[0]`, the `args` follow the program, and the
+    /// **raw exit** is surfaced: the run plane collapses 1 and 2 into `state:
+    /// partial`, and the official hook contract needs them apart — *exit 2 →
+    /// stderr's first line is the reason* is unconstructible otherwise.
+    fn exec(
+        &self,
+        spec: &effects::ExecSpec,
+        stdin: Option<&str>,
+        invocation: &str,
+        page: &str,
+    ) -> Value {
+        let source = match &spec.program {
+            effects::ExecProgram::Cmd(cmd) => Ok(cmd.clone()),
+            effects::ExecProgram::Block(anchor) => blocks::block(self.doc, anchor)
+                .map(|block| block.source)
+                .map_err(|e| e.to_string()),
+        };
+        let source = match source {
+            Ok(source) => source,
+            Err(reason) => {
+                return json!({
+                    "interpreter": spec.interpreter, "exit": 127,
+                    "stdout_tail": "", "stderr_tail": reason, "timed_out": false,
+                });
+            }
+        };
+        if self.dry {
+            return json!({
+                "interpreter": spec.interpreter, "exit": 0,
+                "stdout_tail": "", "stderr_tail": "", "timed_out": false, "dry": true,
+            });
+        }
+        let scratch = self.root.join(".meridian/scratch").join(invocation);
+        let _ = std::fs::create_dir_all(&scratch);
+        // The engine's own two facts, plus the declaration's env pairs. The
+        // daemon's `CCC_HOOK_*` scalars ride the target's `env`, which the
+        // caller overlays; the engine carries them opaque.
+        let mut env = spec.env.clone();
+        env.insert("MRD_RUN_PAGE".to_owned(), page.to_owned());
+        env.insert("MRD_RUN_BLOCK".to_owned(), invocation.to_owned());
+        let exec_spec = crate::exec::ExecSpec {
+            source: &source,
+            args: &spec.args,
+            env: &env,
+            scratch: &scratch,
+            project_root: self.root,
+            timeout: self.timeout,
+            step_cwd: Some(self.root),
+            interpreter: &spec.interpreter,
+            stdin,
+        };
+        let answer = match crate::exec::exec(&exec_spec) {
+            Ok(result) => {
+                let (exit, timed_out) = match result.status {
+                    crate::exec::ExecStatus::Exited { code } => (code, false),
+                    crate::exec::ExecStatus::Signaled { signal } => (128 + signal, false),
+                    crate::exec::ExecStatus::TimedOut { .. } => (137, true),
+                };
+                json!({
+                    "interpreter": spec.interpreter,
+                    "exit": exit,
+                    "stdout_tail": String::from_utf8_lossy(&result.stdout),
+                    "stderr_tail": String::from_utf8_lossy(&result.stderr),
+                    "timed_out": timed_out,
+                })
+            }
+            Err(e) => json!({
+                "interpreter": spec.interpreter, "exit": 127,
+                "stdout_tail": "", "stderr_tail": e.to_string(), "timed_out": false,
+            }),
+        };
+        let _ = std::fs::remove_dir_all(&scratch);
+        answer
+    }
+
+    /// The bytes to run: inline `cmd`, or the source of the `^id` block on
+    /// this page.
+    fn command_of(&self, call: &effects::BashCall) -> Result<String, String> {
+        match &call.program {
+            effects::ExecProgram::Cmd(cmd) => Ok(cmd.clone()),
+            effects::ExecProgram::Block(anchor) => blocks::block(self.doc, anchor)
+                .map(|block| block.source)
+                .map_err(|e| e.to_string()),
+        }
     }
 }
 

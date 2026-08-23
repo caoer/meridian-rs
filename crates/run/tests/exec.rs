@@ -21,6 +21,8 @@ fn spec_in<'a>(
         project_root: scratch.path(),
         timeout: Duration::from_secs(30),
         step_cwd: None,
+        interpreter: exec::BASH,
+        stdin: None,
     }
 }
 
@@ -70,6 +72,8 @@ fn the_project_root_is_exported_to_the_step() {
         project_root: project.path(),
         timeout: Duration::from_secs(30),
         step_cwd: None,
+        interpreter: exec::BASH,
+        stdin: None,
     })
     .unwrap();
     assert_eq!(r.stdout, project.path().as_os_str().as_encoded_bytes());
@@ -115,6 +119,8 @@ fn timeout_sigkills_the_group_and_is_a_distinct_state() {
         project_root: tmp.path(),
         timeout: Duration::from_millis(300),
         step_cwd: None,
+        interpreter: exec::BASH,
+        stdin: None,
     })
     .unwrap();
     assert!(
