@@ -28,6 +28,24 @@ when:
 labels:
   hostname: workstation-nyc-2
 
+# Non-rotating clone credential — the fix for exactly this lane's recorded
+# failure (pipeline 1204: clone 18 min after `ci`, "could not read Username",
+# exit 128). Mechanism + traps: the long comment in ci.yaml's clone block.
+# PLUGIN_TAGS replicates what the server's default clone sets ONLY on tag
+# events (compiler.go cloneSettings["tags"]) — without it the tag object is
+# absent and the `git rev-parse "$CI_COMMIT_SHA^{commit}"` peel breaks
+# (measured, pipeline 848).
+clone:
+  - name: git
+    image: docker.io/woodpeckerci/plugin-git:2.9.2
+    environment:
+      PLUGIN_DEPTH: "0"
+      PLUGIN_TAGS: "true"
+      CI_NETRC_MACHINE: git.0xdao.app
+      CI_NETRC_USERNAME: caoer115
+      CI_NETRC_PASSWORD:
+        from_secret: forgejo_clone_token
+
 steps:
   - name: publish mrd (linux-amd64, keyed by commit)
     image: "meridian-ci:2026-08-10"
