@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+mod common;
 
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
@@ -730,4 +731,13 @@ fn status_json_always_emits_the_lock_axis_even_with_no_pins() {
     assert!(human.contains("lock none"), "{human}");
     eprintln!("S9 composed (no pins): {}", composed_line(&human));
     eprintln!("S9 json     (no pins): {j}");
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
+    }
 }

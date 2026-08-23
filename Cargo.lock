@@ -1277,6 +1277,7 @@ dependencies = [
  "proptest",
  "syntax",
  "tempfile",
+ "timing",
 ]
 
 [[package]]
@@ -2196,6 +2197,7 @@ dependencies = [
  "starlark",
  "syntax",
  "tempfile",
+ "timing",
  "view",
  "wire",
  "wire-serve",
@@ -3013,6 +3015,7 @@ dependencies = [
  "sha2",
  "syntax",
  "tempfile",
+ "timing",
  "wire",
  "wire-serve",
 ]
@@ -3715,6 +3718,10 @@ dependencies = [
  "quote",
  "syn 3.0.2",
 ]
+
+[[package]]
+name = "timing"
+version = "1.0.0"
 
 [[package]]
 name = "tiny-keccak"

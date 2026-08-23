@@ -8,6 +8,7 @@ resolver = "2"
 members = ["crates/*"]
 # perfsuite is out of default-members (criterion stays off the everyday build path)
 default-members = [
+    "crates/timing",
     "crates/addr",
     "crates/syntax",
     "crates/model",
@@ -45,6 +46,10 @@ publish = false
 
 [workspace.dependencies]
 # internal crates: path + the workspace version — mechanical publish retrofit later
+# The timing instrument (docs/status.md § The timing mode): `std`-only, ZERO
+# deps, under every layer — `fs`, `run` and `mrd` take it, and an instrument
+# that knows nothing about them can sit beneath all three without a cycle.
+timing = { path = "crates/timing", version = "1.0.0" }
 # The agent-plane address leaf (stage 3, D4): `std`-only, zero deps, UPSTREAM of
 # `syntax` — an address becomes a value here, so nothing downstream re-splits a
 # string (docs/address-grammar.md § 7.1).

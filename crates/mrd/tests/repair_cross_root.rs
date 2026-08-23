@@ -11,6 +11,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+mod common;
+
 fn mrd_bin() -> PathBuf {
     std::env::var_os("MRD_BIN")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
@@ -55,6 +57,13 @@ fn said(out: &Output) -> String {
 fn repair_recovers_a_lost_cross_root_pin_from_the_target_roots_own_history() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let home = tmp.path().join("home");
+    // No XDG_CACHE_HOME here, so the daemon the pin/repair drives auto-spawn
+    // keys itself under `$HOME/.cache`; reap it on the way out (common::reap_daemon
+    // documents the fixture daemon strategy). Declared after `tmp`, drops first.
+    let _reaper = common::DaemonReaper {
+        home: home.clone(),
+        cache_home: home.join(".cache"),
+    };
     let ws = tmp.path().join("ws");
     let other = tmp.path().join("other");
     for dir in [&home, &ws, &other] {
@@ -96,10 +105,18 @@ fn repair_recovers_a_lost_cross_root_pin_from_the_target_roots_own_history() {
     // before any subprocess below reads it.
     unsafe { std::env::set_var("MERIDIAN_CONFIG", &config) };
 
+    // An isolated cache home beside the isolated HOME: the registry drawer
+    // and daemon socket derive from XDG_CACHE_HOME when it is set, and a
+    // fleet shell exports it — inherited, the auto-spawned daemon refuses
+    // ("another meridian registry daemon is already running for
+    // ~/.cache/meridian/registry") and the pin never lands (measured on the
+    // mac dev host, card mac-devhost-snapshot-canonicalization).
+    let cache_home = tmp.path().join("xdg-cache");
     let run = |cwd: &Path, args: &[&str]| -> Output {
         Command::new(mrd_bin())
             .current_dir(cwd)
             .env("HOME", &home)
+            .env("XDG_CACHE_HOME", &cache_home)
             .env("MERIDIAN_CONFIG", &config)
             .env_remove("MERIDIAN_WORKSPACE")
             .args(args)
