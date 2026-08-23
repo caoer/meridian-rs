@@ -16,6 +16,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+mod common;
 
 /// The binary every drive goes through — the shipped CLI, never a library call.
 fn mrd_bin() -> PathBuf {
@@ -640,4 +641,13 @@ fn the_shipped_json_face_gains_nothing_until_the_gate_is_asked() {
         "the coverage count is the GATE's reading, not a new key on the pin plane: \
          {plain}"
     );
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
+    }
 }

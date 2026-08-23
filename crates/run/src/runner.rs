@@ -247,7 +247,8 @@ pub fn run(
     rules: &[Rule],
     live: &mut (dyn Write + Send),
 ) -> Result<RunReport, RunnerError> {
-    // 1. Pre-eval resolution (U2): address → contract → caps.
+    // 1. Pre-eval resolution (U2): address → contract → caps. Its `pre_eval`
+    // phase is measured inside the chain itself, so a rehearsal reports it too.
     let (task, authority) = pre_eval(
         root,
         spec.page,
@@ -259,7 +260,9 @@ pub fn run(
     let name = task.binding.name.clone();
 
     // 2. Dispatch by fence language (decision #13).
+    let dispatching = timing::phase("dispatch");
     let outcome = dispatch(root, spec, &task, &name, &authority, live)?;
+    dispatching.stop();
 
     // 3. The guarantee label: `hermetic` is the sealed kernel's proof by
     // construction; bash is `unsandboxed` (`docs/laws.md` § Amendment) — the
@@ -279,6 +282,7 @@ pub fn run(
             _ => None,
         },
     };
+    let cascading = timing::phase("cascade");
     let (cascade, cap_reached) = cascade(
         root,
         spec,
@@ -289,6 +293,7 @@ pub fn run(
         first_event,
     )
     .map_err(|e| RunnerError::Cascade(Box::new(e)))?;
+    cascading.stop();
 
     Ok(RunReport {
         task: name,
@@ -313,6 +318,11 @@ fn pre_eval(
     env: &BTreeMap<String, String>,
     declaring_root: Option<&Path>,
 ) -> Result<(address::ResolvedTask, Authority), RunnerError> {
+    // Measured on the CHAIN, not at either caller, so `--dry` reports the same
+    // `pre_eval` phase the live run does — the same one-owner-both-tenses rule
+    // this function exists for. A refused chain reports nothing: every `?`
+    // below abandons the span (`timing` has no `Drop`).
+    let phase = timing::phase("pre_eval");
     let doc = address::load_page(root, Path::new(page)).map_err(RunnerError::Address)?;
     let task = address::resolve_task(&doc, task).map_err(RunnerError::Address)?;
     let name = task.binding.name.clone();
@@ -324,6 +334,7 @@ fn pre_eval(
         caps::load_conventions(declaring_root).map_err(RunnerError::Caps)?;
     let authority = caps::resolve_authority(&doc, &name, task.block.lang, &conventions)
         .map_err(RunnerError::Caps)?;
+    phase.stop();
     Ok((task, authority))
 }
 

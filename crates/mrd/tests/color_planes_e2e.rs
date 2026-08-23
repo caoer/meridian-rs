@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+mod common;
 
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
@@ -351,5 +352,14 @@ fn a_hand_authored_empty_span_pin_never_reads_green() {
         )
         .expect("rewrite ownline");
         std::fs::write(ws.join("sources/anchors.md"), "^a\n^b\n").expect("rewrite anchors");
+    }
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
     }
 }

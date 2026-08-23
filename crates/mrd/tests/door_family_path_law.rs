@@ -19,6 +19,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+mod common;
 
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
@@ -301,4 +302,13 @@ fn a_ref_that_exists_nowhere_is_suggested_nothing_and_leaks_no_errno() {
         err.contains("no file at gone.md under the workspace root"),
         "the realise miss states the door's own fact: {err:?}"
     );
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
+    }
 }

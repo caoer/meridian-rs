@@ -365,3 +365,12 @@ fn warm_read_of_a_missing_file_names_the_path() {
         "the refusal names its code and the path it echoes: {err:?}"
     );
 }
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
+    }
+}

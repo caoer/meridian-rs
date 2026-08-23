@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+mod common;
 
 /// The binary every drive goes through — the real CLI, never a library call.
 fn mrd_bin() -> PathBuf {
@@ -1993,4 +1994,13 @@ fn a_small_undecidable_population_is_named_in_full_with_no_remainder() {
         !line.contains(" more"),
         "nothing was withheld, so the line must claim no remainder: {line}"
     );
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
+    }
 }

@@ -1423,6 +1423,143 @@ cost. Run the benches to refresh:
 cargo bench -p perfsuite
 ```
 
+### The timing mode — `MRD_TIMING`
+
+`perfsuite` measures a tree you built. `MRD_TIMING` measures the binary you
+already shipped: it turns on a **timing-only** log — one line per completed
+phase and nothing else — on a release binary, with no profiler, no debug build
+and no rebuild. stdout, `--json` bodies and exit codes are byte-identical with
+it on and off; the mode writes to stderr or to a file, never to stdout.
+
+The VALUE is the sink. It is **trimmed and matched case-insensitively**, so
+`OFF`, `" off "` and `off` are one answer:
+
+| `MRD_TIMING` | Sink |
+|---|---|
+| unset, empty or all whitespace, `0`, `off`, `false`, `no` | **off** — no clock is read and nothing is written |
+| `1`, `on`, `true`, `yes` | stderr |
+| any other value | that path (trimmed), opened append, created if absent |
+
+The off words are spelled out, and the case/whitespace folding exists, because
+the fallback arm CREATES A FILE. Measured on the release binary before this was
+fixed: `MRD_TIMING=OFF` wrote a file named `OFF` into the working directory, and
+`MRD_TIMING="1 "` — a trailing space from a `.env` line or a `docker -e` — wrote
+one named `1 `. In a multi-agent tree that file gets committed.
+
+Two paths are **refused, loudly, and degrade to stderr**:
+
+- a sink whose extension is `.md` or `.base`. Those are what the engine's hash
+  domain walks, so the sink would be a corpus member: every line it gained would
+  change the corpus, and the next fold would report more lines to append. A loop
+  with an appetite.
+- a path that will not open. The caller asked for the mode; silence would read
+  as "the code never ran there", which is the one answer this instrument must
+  never fake.
+
+A **relative** sink path resolves against the process's working directory at the
+first phase. That matters for the daemon: it is auto-spawned with the client's
+cwd (`crates/mrd/src/daemon.rs`) and holds the fd for its lifetime, so a
+relative path lands wherever the FIRST spawning client happened to stand. Give
+the daemon an absolute path. Nothing tags a line with a pid, either — a client,
+the daemon, and concurrent clients all appending to one file are not
+demultiplexable afterwards. One process per file if you want to tell them apart.
+
+The value is read **once per process**, at the first phase; changing it
+mid-process changes nothing, and each refusal above is said exactly once.
+
+#### Two line shapes, and the space that tells them apart
+
+A **measurement** opens `mrd-timing` + a SPACE and carries exactly three
+`key=value` fields in a fixed order, `\n`-terminated, written in a single
+`write_all` so concurrent threads interleave whole lines, never halves:
+
+```text
+mrd-timing cmd=run phase=snapshot.read us=402118
+```
+
+- `cmd=` — the verb this PROCESS was entered with (`mrd run` ⇒ `run`, the
+  daemon ⇒ `daemon`). It names the process, never one request. A verb carrying
+  whitespace or a control character is refused and the label stays `mrd`: the
+  field rides a space-separated line, so `mrd "run p.md"` must not be allowed to
+  mint a fourth field, and a newline must not be allowed to inject a line. (A
+  sink path on a diagnostic gets the same treatment, for the same reason.)
+- `phase=` — a name whose dot marks a PART of the phase it prefixes
+  (`snapshot.read` is inside `snapshot`). That is not the whole containment
+  rule — `dispatch` contains `snapshot`, `eval` and `apply` with no dot in
+  sight, and `total` contains everything. **Do not sum the lines.** Which phase
+  contains which is a table: `run-plane.md` § Timing phases.
+- `us=` — elapsed wall clock in microseconds, integer. The same noun as the
+  wire frame's `meta.duration_us`; there is no second time unit and no float.
+
+A **diagnostic** about the mode itself opens `mrd-timing` + a COLON:
+
+```text
+mrd-timing: cannot open `/nope/t.log` (No such file or directory) — writing to stderr instead.
+```
+
+So the documented `grep '^mrd-timing '` — with the space — is exactly the
+measurements and nothing else.
+
+#### A line means the phase COMPLETED
+
+There is no line for a phase that failed. A span abandoned on an error path —
+the `?` on a page that does not exist, an early refusal — reports nothing,
+because a failed page load costing 312 us and a successful one costing 312 us
+are not the same fact, and printing both identically invites the reader to add
+them up. `mrd run missing.md` under the switch reports `workspace.resolve`, then
+the refusal, then `total`: no `page.load` line, because there was no page load.
+
+`total` is the one phase that reports on a refusal, and for the same reason
+rather than an exception to it: what `total` measures is the PROCESS, and the
+process completed either way.
+
+Lines print in **completion order**, so a contained phase prints before the
+phase containing it and `total` prints last.
+
+**Off costs nothing.** A phase whose sink is off holds no `Instant`, so the off
+path reads no clock, allocates nothing, formats nothing and writes nothing. What
+remains is one atomic load of the resolved sink, through `#[inline]` entry
+points (the release profile does not enable LTO, so the attribute is what makes
+that a load rather than a cross-crate call). This is a claim about code shape,
+plus the stdout byte-identity gate in `crates/mrd/tests/timing_mode.rs` — it is
+**not** a measured wall-clock claim, and gated wall-clock numbers are
+`perf.yml`'s lane, never the PR lane.
+
+**Two lanes, and only one of them is the caller's.** `mrd run` executes in the
+calling process, so its phases land on the caller's sink. `mrd script` and the
+MCP face hand the work to the resident daemon: those phases happen in the
+DAEMON's process and land on the DAEMON's sink. Nothing rides back on the wire
+— a timing array in a response frame would be a new host-facing type, and Law 2
+puts those in `wire` and `wire-contract.md`, not in an instrument. What a client
+already has for a daemon-served call is the frame's `meta.duration_us` (the
+server-side total) to set against its own round-trip.
+
+So timing a daemon-served call means setting `MRD_TIMING` **in the daemon's
+environment**, and there the stderr form is invisible: the auto-spawned daemon
+inherits the client's environment but nulls its stderr
+(`crates/mrd/src/daemon.rs`, `Stdio::null()`). Give the daemon a **file path**,
+or start it in the foreground (`mrd daemon`) with `MRD_TIMING=1`. A daemon
+already resident when the variable is set emits nothing — it kept the
+environment it started with.
+
+Two gaps on that lane, both named rather than fixed here (card
+`mrd-timing-daemon-lane-sink`):
+
+- **A refused or unopenable file sink is SILENT on the daemon.** Both refusals
+  speak on stderr, and the daemon has none — so the one caller the file sink
+  exists for is the one that cannot hear the complaint. Choose a sink that is
+  outside the corpus AND will open, then **confirm the file grows**. The absence
+  of a complaint from a daemon is not evidence of anything.
+- **No line carries a request discriminator.** Two concurrent wire ops emit
+  byte-identical `phase=snapshot` lines; nothing says which op, thread, or
+  process wrote one. On a busy daemon the output is a POPULATION, not a trace —
+  read it as a distribution, and do not try to reconstruct a single request from
+  it. For one request's server-side total, the frame's `meta.duration_us` is
+  still the honest number.
+
+Which phases `mrd run` emits: `run-plane.md` § Timing phases. The instrument is
+`crates/timing` (`laws.md` § Crate charters).
+
 ## Known gaps
 
 - Perf rungs are largely UNTESTED pending baselines (see the tally above).

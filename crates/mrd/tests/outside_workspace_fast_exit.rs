@@ -22,6 +22,12 @@ struct Sandbox {
     /// Load-bearing: the tree is deleted when this drops.
     #[allow(dead_code)]
     tmp: tempfile::TempDir,
+    /// The tempdir's canonical path — the resolver answers canonical
+    /// (`workspace::canonicalize`), so a fixture that compares `workspace
+    /// <path>` must spell the path the way the engine will: on macOS
+    /// `$TMPDIR` is `/var/folders/…` and `/var` → `/private/var` (card
+    /// mac-devhost-snapshot-canonicalization).
+    root: PathBuf,
     cache_home: PathBuf,
     home: PathBuf,
 }
@@ -36,11 +42,13 @@ impl Drop for Sandbox {
 /// rungs in play are the ones each arm constructs.
 fn sandbox() -> Sandbox {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let home = tmp.path().join("home");
-    let cache_home = tmp.path().join("xdg-cache");
+    let root = tmp.path().canonicalize().expect("canonical tempdir");
+    let home = root.join("home");
+    let cache_home = root.join("xdg-cache");
     std::fs::create_dir_all(&home).expect("mkdir home");
     Sandbox {
         tmp,
+        root,
         cache_home,
         home,
     }
@@ -48,7 +56,7 @@ fn sandbox() -> Sandbox {
 
 impl Sandbox {
     fn dir(&self, name: &str) -> PathBuf {
-        let d = self.tmp.path().join(name);
+        let d = self.root.join(name);
         std::fs::create_dir_all(&d).expect("mkdir");
         d
     }
