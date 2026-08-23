@@ -307,7 +307,15 @@ struct EmitStore<'h> {
     /// block declares one thing and a second call is the `declared_twice`
     /// fault. `None` on every shipped plane: `declare` is a hook-plane builtin
     /// and is not registered on [`effect_globals`].
-    declaration: RefCell<Option<Declaration>>,
+    ///
+    /// **Boxed**, and that is not decoration: a [`Declaration`] carries a
+    /// `serde_json::Value` and an [`ExecSpec`], which inline would make this
+    /// store ~200 bytes wider than the [`PlaneStore::Script`] arm beside it
+    /// (`clippy::large_enum_variant`, denied in CI) — and one is built for
+    /// every evaluation on every plane while this field stays `None` on all
+    /// but the hook plane's load phase. The indirection is paid only by the
+    /// blocks that actually declare.
+    declaration: RefCell<Option<Box<Declaration>>>,
     /// The seam `bash()` reaches during the FIRE phase. `None` on every
     /// shipped plane and on the load phase, where the phase gate refuses
     /// first — so an absent seam is only ever reached by a fire the caller
@@ -1078,10 +1086,10 @@ fn hook_api(builder: &mut GlobalsBuilder) {
         for (key, value) in rest {
             data.insert(key, json_of_value(value)?);
         }
-        *store.declaration.borrow_mut() = Some(Declaration {
+        *store.declaration.borrow_mut() = Some(Box::new(Declaration {
             data: serde_json::Value::Object(data),
             entry,
-        });
+        }));
         Ok(NoneType)
     }
 
@@ -2382,7 +2390,9 @@ fn eval_and_freeze(
     // the closure — a bomb that dies mid-block still says what it declared
     // before it died, which is data a caller can act on.
     let declaration = match &store {
-        PlaneStore::Emit(store) => store.declaration.take(),
+        // Unboxed on the way out: the box is the store's own size discipline,
+        // not a fact about what a load produced.
+        PlaneStore::Emit(store) => store.declaration.take().map(|d| *d),
         PlaneStore::Script(_) => None,
     };
     match evaluated {
