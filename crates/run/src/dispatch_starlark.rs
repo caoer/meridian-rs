@@ -198,6 +198,15 @@ fn restamp_run_root(effects: &mut [Effect], token: &MerkleRoot) {
     }
 }
 
+/// Does this effect set carry an md.\* batch? ONE spelling, because two places
+/// depend on the answer being the same one: the live fold's gate below, and
+/// the partition in [`dispatch`] that decides whether to apply. Spelled twice,
+/// editing one of them turns [`dispatch`]'s "the gate and the partition
+/// disagreed" refusal from unreachable into reachable.
+fn emits_md(effects: &[Effect]) -> bool {
+    effects.iter().any(|e| e.kind.domain() == Domain::Md)
+}
+
 /// The lazy observation, and the ONE owner of the rule: fold the hash domain
 /// and stamp the emitted effects with its root — **only when this tense's
 /// output will put the token in front of a reader.**
@@ -228,7 +237,7 @@ pub fn observe_if_emitted(
     let mut effects = effects.0;
     let observable = match tense {
         Observation::Rehearsal => !effects.is_empty(),
-        Observation::Live => effects.iter().any(|e| e.kind.domain() == Domain::Md),
+        Observation::Live => emits_md(&effects),
     };
     if !observable {
         return Ok((effects, None));
@@ -260,10 +269,17 @@ pub fn dispatch(
                 reason: e.to_string(),
             }
         })?;
+    // Same predicate as the gate above, by construction: `emits_md` is the one
+    // spelling, and this partition is its per-effect form.
     let (md, unexecuted): (Vec<Effect>, Vec<Effect>) = effects
         .iter()
         .cloned()
         .partition(|e| e.kind.domain() == Domain::Md);
+    debug_assert_eq!(
+        !md.is_empty(),
+        observed.is_some(),
+        "the live gate folds exactly when there is an md.* batch"
+    );
 
     let applied = if md.is_empty() {
         None

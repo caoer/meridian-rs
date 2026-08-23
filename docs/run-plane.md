@@ -126,8 +126,17 @@ difference is the point:
 
 | tense | folds when | the token's reader |
 |---|---|---|
-| **rehearsal** (`--dry`) | ANY effect was emitted | the report, which serializes whole effects — provenance included |
+| **rehearsal** (`--dry`) | ANY effect was emitted | the `--dry --json` report and the wire rehearse row, which serialize whole effects — provenance included |
 | **live** | an **md.\*** effect was emitted | the receipt's `root_pin`, written from `observed_root` |
+
+**Named residual on the rehearsal side:** the HUMAN `--dry` renders `kind` plus
+args and no provenance (`mrd::run_cmd` `dry_starlark`, `Format::Human`), so
+that one format pays the fold for a token it never prints. The gate is not
+conditioned on it, deliberately: output format is the caller's, the run plane
+does not know it, and a plane that folded differently per render format would
+make `--dry` and `--dry --json` two different observations of the world. The
+cost lands only on a human-format dry run that emitted something — never on
+the effect-free case, and never live.
 
 The live gate is narrower because the live report renders `kind` + `domain`
 only (`run::report::EffectLine`): a live block that emitted nothing but
