@@ -153,7 +153,7 @@ impl Read {
 /// The ambient workspace for `cwd`, per the settled resolution ladder — the
 /// lane every read took before the rooted lane existed.
 fn ambient_workspace(cwd: &Path) -> Result<std::path::PathBuf, Fail> {
-    let resolved = crate::resolve::resolve_runtime(cwd).map_err(|e| {
+    let resolved = crate::resolve::resolve_runtime(workspace::Base::Cwd(cwd)).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace for {}: {e}",
             cwd.display()

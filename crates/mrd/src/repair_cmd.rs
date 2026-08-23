@@ -198,7 +198,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 /// line-cap law.)
 fn rooted_workspace(parsed: &mut Repair, cwd: &std::path::Path) -> Result<PathBuf, Fail> {
     let ambient = |cwd: &std::path::Path| -> Result<PathBuf, Fail> {
-        Ok(crate::resolve::resolve_runtime(cwd)
+        Ok(crate::resolve::resolve_runtime(workspace::Base::Cwd(cwd))
             .map_err(|e| {
                 Fail::tool(format!(
                     "cannot resolve workspace for {}: {e}",
