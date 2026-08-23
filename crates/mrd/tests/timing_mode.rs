@@ -370,7 +370,6 @@ fn links_json_repeats_corpus_build_per_mounted_root() {
 }
 
 /// Off words are off — trimmed, in any case — and an off word must never be
-}
 /// taken for a file path. Measured on the release binary before the fix:
 /// `MRD_TIMING=OFF` created a file named `OFF`, and `MRD_TIMING="1 "` created
 /// one named `1 `, in the caller's working directory.
