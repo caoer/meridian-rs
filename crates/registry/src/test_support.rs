@@ -301,8 +301,9 @@ mod tests {
             !socket_gone.load(Ordering::SeqCst),
             "a sibling field declared BEFORE the daemon drops before it, i.e. \
              before TestServer::drop has run at all — the type orders its own \
-             two fields, not the enclosing struct's. If this ever passes, \
-             sibling drop order has changed and this test's doc is stale."
+             two fields, not the enclosing struct's. Reaching this message \
+             means the socket WAS already gone at the sibling's drop: sibling \
+             drop order has changed and this test's doc is stale."
         );
         assert!(
             root_alive.load(Ordering::SeqCst),
@@ -320,7 +321,7 @@ mod tests {
         );
         assert!(
             !root.exists(),
-            "and its temporary tree is removed after that stop, not before it"
+            "and its temporary tree is gone once the stop has completed"
         );
     }
 
