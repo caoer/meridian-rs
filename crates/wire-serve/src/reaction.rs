@@ -223,6 +223,12 @@ def on_change(event):
             page: path,
             bytes: body,
         }));
+        // The act loads every firing winner, so it needs the bytes the index
+        // was discovered from — a `path → bytes` map IS a `PageSource`.
+        let source: std::collections::BTreeMap<String, String> = pages
+            .iter()
+            .map(|(path, body, ..)| ((*path).to_string(), (*body).to_string()))
+            .collect();
         let artifact = policy::armed::arm(
             &index,
             &ArmRoot::parse(arm_root).expect("a legal arm root"),
@@ -231,6 +237,8 @@ def on_change(event):
                 mode: *mode,
                 attested_rev: page_rev(body),
             }),
+            &source,
+            policy::CheckLimits::default(),
         )
         .expect("the fixture arms");
 

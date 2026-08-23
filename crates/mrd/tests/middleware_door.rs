@@ -49,6 +49,11 @@ fn arm(root: &fs::WorkspaceRoot, pages: &[(&str, &str, &str, Mode)]) {
             page: path,
             bytes,
         }));
+    // The act loads every firing winner — a `path → bytes` map IS a `PageSource`.
+    let source: BTreeMap<String, String> = pages
+        .iter()
+        .map(|(path, bytes, ..)| ((*path).to_string(), (*bytes).to_string()))
+        .collect();
     let artifact = policy::armed::arm(
         &index,
         &policy::armed::ArmRoot::workspace(),
@@ -59,6 +64,8 @@ fn arm(root: &fs::WorkspaceRoot, pages: &[(&str, &str, &str, Mode)]) {
                 mode: *mode,
                 attested_rev: policy::page_rev(bytes),
             }),
+        &source,
+        policy::CheckLimits::default(),
     )
     .expect("the fixture arms")
     .render();

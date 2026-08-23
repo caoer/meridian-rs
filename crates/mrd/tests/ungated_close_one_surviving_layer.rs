@@ -57,6 +57,7 @@ fn armed_law(id: &str, mode: Mode, at_path: &str) -> ArmedLaw {
         page: &page,
         bytes: &bytes,
     }]);
+    let pages = MemPages(BTreeMap::from([(page, bytes.clone())]));
     let artifact = arm(
         &index,
         &ArmRoot::workspace(),
@@ -65,9 +66,10 @@ fn armed_law(id: &str, mode: Mode, at_path: &str) -> ArmedLaw {
             mode,
             attested_rev: page_rev(&bytes),
         }],
+        &pages,
+        CheckLimits::default(),
     )
     .expect("the floor arms at its live rev");
-    let pages = MemPages(BTreeMap::from([(page, bytes)]));
     resolve_armed_law(
         Some(&artifact.render()),
         // The once-armed marker: without it every leg below is a never-armed

@@ -695,6 +695,10 @@ fn arm(s: &Sandbox, requests: &[(&str, &str, &str)]) {
         bytes,
     }));
 
+    // The act loads every firing winner — hand it the snapshot's own bytes, so
+    // the loader reads exactly what the resolver resolved.
+    let source: BTreeMap<String, String> = text.iter().cloned().collect();
+
     let mut artifact: Option<policy::armed::ArmedArtifact> = None;
     for (arm_root, id, mode) in requests {
         let root = policy::armed::ArmRoot::parse(arm_root).expect("a legal root");
@@ -715,6 +719,8 @@ fn arm(s: &Sandbox, requests: &[(&str, &str, &str)]) {
                 mode: policy::armed::Mode::parse(mode).expect("a legal mode"),
                 attested_rev,
             }],
+            &source,
+            policy::CheckLimits::default(),
         )
         .expect("the arm act");
         match artifact.as_mut() {
@@ -1769,6 +1775,9 @@ fn a_user_layer_winner_cannot_be_armed_and_the_act_says_why() {
     );
     let attested_rev = winner.rev().to_owned();
 
+    // The user-layer deferral is decided before the load gate, so the page
+    // source never gets asked — an empty one keeps that visible.
+    let source = BTreeMap::new();
     let faults = policy::armed::arm(
         &index,
         &armroot,
@@ -1777,6 +1786,8 @@ fn a_user_layer_winner_cannot_be_armed_and_the_act_says_why() {
             mode: policy::armed::Mode::parse("armed").expect("a legal mode"),
             attested_rev,
         }],
+        &source,
+        policy::CheckLimits::default(),
     )
     .expect_err("the arm act refuses a user-layer winner");
     let rendered = faults
