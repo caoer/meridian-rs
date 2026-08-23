@@ -358,7 +358,14 @@ steps:
       # nothing. -s keeps the per-check tallies, so the warning COUNT still
       # prints — the number survives, its 2340-line graph does not. Any real
       # error still prints in full, and the exit code is untouched.
-      - cargo deny --log-level error check -s
+      # --locked: cargo-deny shells out to `cargo metadata`, the ONE cargo call
+      # in this pipeline that could rewrite the tracked Cargo.lock on a stale
+      # resolve (deny.toml sets all-features=true, which widens it). Every other
+      # lane is --locked; without this flag the deny lane could refresh the lock
+      # early enough that the --locked lanes then find it current — and the tree
+      # gate would red main from the publish step with the symptom naming the
+      # wrong lane. Card: 22-18/tasks/ci-tree-gate-blind-spots.
+      - cargo deny --locked --log-level error check -s
 
   # Harness bit-rot catches, not perf gates: one iteration per bench target,
   # then render the live claims table into the CI log. Wall-time numbers are
@@ -535,6 +542,21 @@ steps:
         if [ -n "$porcelain" ]; then
           echo "tracked content diverges from $${CI_COMMIT_SHA} — refusing to publish a pin no sha can recover"
           printf '%s\n' "$porcelain"
+          exit 1
+        fi
+        # THE FOURTH STATE (F7, binding review of PR 199): the probe above answers
+        # "does TRACKED content diverge from HEAD" — but the stamp names
+        # CI_COMMIT_SHA, which came from the environment and was never read from
+        # the tree. Nothing else compares them: a lane that moves HEAD (none does
+        # today; `git checkout` added tomorrow is the failing input) would stamp
+        # a sha whose tree was not built, with a clean probe. Same tri-state
+        # shape: a rev-parse that cannot answer refuses, it does not warn.
+        if ! head="$(git rev-parse HEAD)"; then
+          echo "rev-parse FAILED — cannot attest which tree was built"
+          exit 1
+        fi
+        if [ "$head" != "$${CI_COMMIT_SHA}" ]; then
+          echo "HEAD is $head, not $${CI_COMMIT_SHA} — the probe answered for a tree the stamp does not name; refusing"
           exit 1
         fi
         echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}" > /tmp/stamp.env

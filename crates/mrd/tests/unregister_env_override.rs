@@ -1,0 +1,192 @@
+//! `mrd unregister PATH` under a live `MERIDIAN_WORKSPACE` override.
+//!
+//! # The divergence
+//!
+//! `workspace::resolve_with_override` returns at rung 1 — the env override —
+//! BEFORE it ever looks at the argument (`crates/workspace/src/lib.rs`: the
+//! override branch returns `Answer::EnvOverride` at ~:270; the argument's
+//! `canonicalize` is at ~:275). `mrd unregister` takes the LENIENT lane of that
+//! same ladder (`resolve::resolve_runtime_lenient`), so the PATH the operator
+//! typed is discarded and the env root is unregistered instead.
+//!
+//! Measured at main `7612b7e58` with the real binary — two registered git
+//! roots, `victim` and `target`:
+//!
+//! ```text
+//! $ MERIDIAN_WORKSPACE=…/victim  mrd unregister …/target
+//! unregistered workspace …/victim
+//!   drawer:  removed
+//! $ mrd cache ls        # …/target still listed, …/victim gone
+//! ```
+//!
+//! The operator named one tree and a different one was removed. It is not
+//! literally silent — the report line names `victim` — but nothing tells the
+//! caller that the argument was overruled, which is the half that turns a typo
+//! into data loss.
+//!
+//! # Why no existing test sees it
+//!
+//! Not because the harness cannot: 14 files in this tree DO set
+//! `MERIDIAN_WORKSPACE` on a child (`run_cli.rs`, `timing_mode.rs`,
+//! `pin_cause.rs`, …). The gap is narrower and entirely accidental — every
+//! fixture that exercises `unregister` (`e2e.rs`,
+//! `outside_workspace_fast_exit.rs`) calls `env_remove("MERIDIAN_WORKSPACE")`,
+//! and no fixture that sets the override ever reaches `unregister`. The two
+//! halves have simply never met. This file is where they meet.
+//!
+//! # Status: ignored pending a ruling, not pending a fix
+//!
+//! Card `19-20-mrd-statusd-integration/tasks/unregister-env-override-present-path-wrong-removal`
+//! asks for the shape to be carded, NOT prescribed: should `unregister` REFUSE
+//! when an explicit PATH disagrees with the override, or WARN and name the
+//! divergence? (Same divergence family as PR 207's `answered-by` line.) Until
+//! that lands, this test is `#[ignore]`d — it is a live description of a defect
+//! nobody has yet ruled on, and turning it into a gate would prescribe the
+//! answer. Un-`ignore` it when the ruling lands; the invariant it asserts
+//! (§ "the one assertion") holds under EITHER ruling.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+mod common;
+
+fn mrd_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_mrd")
+}
+
+struct Sandbox {
+    tmp: tempfile::TempDir,
+    cache_home: PathBuf,
+    home: PathBuf,
+    cache_root: PathBuf,
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        common::reap_daemon(&self.home, &self.cache_home);
+    }
+}
+
+fn sandbox() -> Sandbox {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cache_home = tmp.path().join("xdg-cache");
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).expect("home");
+    let cache_root = cache_home.join("meridian");
+    Sandbox {
+        tmp,
+        cache_home,
+        home,
+        cache_root,
+    }
+}
+
+impl Sandbox {
+    /// Run `mrd` with the override UNSET — the rest of the suite's default, used
+    /// here for the setup and read-back legs so they cannot be confounded.
+    fn run(&self, cwd: &Path, args: &[&str]) -> Output {
+        self.base()
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("spawn mrd")
+    }
+
+    /// Run `mrd` with `MERIDIAN_WORKSPACE` SET. This is the rung the rest of the
+    /// suite removes; setting it is the entire point of this file.
+    fn run_with_override(&self, cwd: &Path, override_root: &Path, args: &[&str]) -> Output {
+        self.base()
+            .env("MERIDIAN_WORKSPACE", override_root)
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("spawn mrd")
+    }
+
+    fn base(&self) -> Command {
+        let mut cmd = Command::new(mrd_bin());
+        cmd.env("XDG_CACHE_HOME", &self.cache_home)
+            .env("HOME", &self.home)
+            .env("MERIDIAN_DAEMON_BIN", mrd_bin())
+            .env_remove("MERIDIAN_WORKSPACE")
+            .env_remove("MERIDIAN_CONFIG");
+        cmd
+    }
+
+    /// A registered git root: `.git` makes it a rung-2 root, `mrd init` gives it
+    /// a drawer.
+    fn registered_root(&self, rel: &str) -> PathBuf {
+        let dir = self.tmp.path().join(rel);
+        std::fs::create_dir_all(dir.join(".git")).expect("mkdir .git");
+        let canonical = std::fs::canonicalize(&dir).expect("canonical");
+        let out = self.run(&canonical, &["init"]);
+        assert!(
+            out.status.success(),
+            "init {rel} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        canonical
+    }
+
+    /// Whether this workspace still holds a live drawer — the on-disk fact
+    /// `unregister` removes.
+    fn is_registered(&self, workspace: &Path) -> bool {
+        let drawer = cache::drawer_dir(&self.cache_root, workspace);
+        matches!(cache::probe(&drawer), cache::Probe::Hit(_))
+    }
+}
+
+/// `mrd unregister TARGET` under `MERIDIAN_WORKSPACE=VICTIM` must not unregister
+/// VICTIM.
+///
+/// # The one assertion
+///
+/// The hard assertion is that the tree the operator did NOT name survives. That
+/// invariant is ruling-agnostic: it holds whether the ruling makes the explicit
+/// argument win, or makes the command refuse the disagreement outright. What
+/// the command does to TARGET is exactly the open question, so this test only
+/// requires the outcome to be one of the two defensible shapes — never the
+/// third, which is what ships today.
+#[test]
+#[ignore = "describes an unruled defect (card unregister-env-override-present-path-wrong-removal); \
+            un-ignore when the refuse-vs-warn ruling lands"]
+fn unregister_with_an_explicit_path_must_not_remove_the_env_override_root() {
+    let sb = sandbox();
+    let victim = sb.registered_root("victim");
+    let target = sb.registered_root("target");
+    let elsewhere = sb.tmp.path().join("cwd-is-irrelevant");
+    std::fs::create_dir_all(&elsewhere).expect("mkdir");
+
+    assert!(sb.is_registered(&victim), "setup: victim is registered");
+    assert!(sb.is_registered(&target), "setup: target is registered");
+
+    // The operator names TARGET explicitly, with the override pointing at VICTIM.
+    let out = sb.run_with_override(
+        &elsewhere,
+        &victim,
+        &["unregister", &target.to_string_lossy()],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+
+    // --- the invariant, true under either ruling ---------------------------
+    assert!(
+        sb.is_registered(&victim),
+        "`mrd unregister {}` must NOT unregister {} — the caller named one tree \
+         and the env override named another. Today the override wins at rung 1 \
+         and the named path is discarded.\nstdout: {stdout}\nstderr: {stderr}",
+        target.display(),
+        victim.display(),
+    );
+
+    // --- the outcome shape: argument-wins OR refusal, never a wrong removal --
+    let argument_won = !sb.is_registered(&target);
+    let refused = !out.status.success()
+        && (stderr.contains("MERIDIAN_WORKSPACE") || stderr.contains("override"));
+    assert!(
+        argument_won || refused,
+        "with the invariant held, the command must either act on the path it was \
+         given or refuse and name the divergence — got exit {:?}\nstdout: {stdout}\nstderr: {stderr}",
+        out.status.code(),
+    );
+}
