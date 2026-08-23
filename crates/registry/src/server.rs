@@ -2475,7 +2475,7 @@ mod hello_config_grade_tests {
         server.shutdown();
     }
 
-    /// Class 2: drain the in-flight builder while the TempDir still exists, so
+    /// Class 2: drain the in-flight builder while the `TempDir` still exists, so
     /// the rebuild reads the workspace instead of ENOENT after Drop.
     #[test]
     fn drain_cold_builds_lands_the_drawer_while_the_tempdir_still_exists() {
