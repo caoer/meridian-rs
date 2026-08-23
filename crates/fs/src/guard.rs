@@ -547,7 +547,7 @@ fn read_config(root: &WorkspaceRoot) -> Result<ConfigState, GuardError> {
 /// like every other guarded read: a symlinked config is a domain declaration
 /// whose bytes live somewhere the bracket cannot vouch for.
 fn read_config_file(root: &WorkspaceRoot, rel: &str) -> Result<Option<Vec<u8>>, GuardError> {
-    match read_nofollow(&root.0.join(rel), rel) {
+    match read_nofollow(root, Path::new(rel), rel) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(GuardError::Io(e)) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
@@ -608,10 +608,7 @@ fn read_and_digest_nofollow(
     misses: &[(PathBuf, crate::StatKey)],
 ) -> Result<Vec<DigestRow>, GuardError> {
     let digest_of = |(rel, _key): &(PathBuf, crate::StatKey)| -> Result<DigestRow, GuardError> {
-        let bytes = read_nofollow(
-            &root.0.join(rel),
-            &crate::display_name(crate::hash_name(rel)),
-        )?;
+        let bytes = read_nofollow(root, rel, &crate::display_name(crate::hash_name(rel)))?;
         Ok((rel.clone(), model::leaf_digest(&bytes)))
     };
     if misses.len() < crate::PARALLEL_READ_FLOOR {
@@ -708,19 +705,20 @@ fn walk_strict_dir(
 /// the walk classified this path (the walk→read race). A link surfaces as
 /// [`GuardError::Symlink`], classified via `symlink_metadata` so the refusal
 /// is typed, not an opaque errno.
-fn read_nofollow(abs: &Path, rel: &str) -> Result<Vec<u8>, GuardError> {
-    match open_nofollow(abs) {
+fn read_nofollow(root: &WorkspaceRoot, rel: &Path, display: &str) -> Result<Vec<u8>, GuardError> {
+    match open_nofollow(&root.0, rel) {
         Ok(mut f) => {
             let mut buf = Vec::new();
             f.read_to_end(&mut buf)?;
             Ok(buf)
         }
         Err(e) => {
-            if std::fs::symlink_metadata(abs).is_ok_and(|m| m.file_type().is_symlink()) {
+            if std::fs::symlink_metadata(root.0.join(rel)).is_ok_and(|m| m.file_type().is_symlink())
+            {
                 // The walk→read race mints for the ONE path it caught.
                 Err(GuardError::Symlink {
                     count: 1,
-                    first: rel.to_string(),
+                    first: display.to_string(),
                 })
             } else {
                 Err(GuardError::Io(e))
@@ -729,10 +727,11 @@ fn read_nofollow(abs: &Path, rel: &str) -> Result<Vec<u8>, GuardError> {
     }
 }
 
-/// `O_NOFOLLOW` open — the crate-shared primitive ([`crate::open_nofollow`]),
-/// re-spelled locally so the read sites here keep their name.
-fn open_nofollow(path: &Path) -> io::Result<File> {
-    crate::open_nofollow(path)
+/// `O_NOFOLLOW` open from the root down — the crate-shared primitive
+/// ([`crate::open_nofollow`]), re-spelled locally so the read sites here keep
+/// their name.
+fn open_nofollow(root: &Path, rel: &Path) -> io::Result<File> {
+    crate::open_nofollow(root, rel)
 }
 
 /// The residual compare: diff the actual post-step snapshot against the
