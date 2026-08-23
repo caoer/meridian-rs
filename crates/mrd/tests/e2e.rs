@@ -810,3 +810,12 @@ fn e2e_links_respawns_after_daemon_sigkill() {
         "the respawned daemon answers correctly via fingerprint recovery: {second}"
     );
 }
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
+    }
+}

@@ -11,6 +11,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+mod common;
+
 fn mrd_bin() -> PathBuf {
     std::env::var_os("MRD_BIN")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
@@ -55,6 +57,13 @@ fn said(out: &Output) -> String {
 fn repair_recovers_a_lost_cross_root_pin_from_the_target_roots_own_history() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let home = tmp.path().join("home");
+    // No XDG_CACHE_HOME here, so the daemon the pin/repair drives auto-spawn
+    // keys itself under `$HOME/.cache`; reap it on the way out (common::reap_daemon
+    // documents the fixture daemon strategy). Declared after `tmp`, drops first.
+    let _reaper = common::DaemonReaper {
+        home: home.clone(),
+        cache_home: home.join(".cache"),
+    };
     let ws = tmp.path().join("ws");
     let other = tmp.path().join("other");
     for dir in [&home, &ws, &other] {

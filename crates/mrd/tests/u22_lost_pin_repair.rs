@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+mod common;
 
 // ── harness (the u14 pin-plane harness, same env isolation) ──────────────────
 
@@ -824,4 +825,13 @@ fn repair_serves_the_envelope_when_the_lock_door_refuses() {
         "the human face says nothing on stdout; the envelope is the `--json` face's: {}",
         said(&human)
     );
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
+    }
 }

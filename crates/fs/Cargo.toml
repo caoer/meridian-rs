@@ -13,6 +13,10 @@ workspace = true
 [dependencies]
 model = { workspace = true }
 syntax = { workspace = true }
+# The corpus fold's three phases under `MRD_TIMING` (docs/status.md § The
+# timing mode). A std-only, zero-dependency leaf: it brings no member into this
+# crate's graph, and it is silent and clock-free when the switch is off.
+timing = { workspace = true }
 # Law-2 interior hashing (merkle-spec §4.2): the radix child map mints
 # `mrk2.vtx`/`mrk2.dir` values here — the same §1 hash family the rev/leaf
 # laws use. Already in the graph via `model`; the edge becomes direct.
