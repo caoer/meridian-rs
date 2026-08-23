@@ -32,23 +32,31 @@ def run(ctx):
 /// parameter.
 ///
 /// It has to be a page whose run REACHES every phase in the list — the corpus
-/// fold included — while leaving the corpus byte-identical, so the gate is
-/// about phases and never about writes. `emit.md` is that page: one `notice`,
-/// which is `proto.*` and not md.\*, so there is a fold and an eval but no
-/// batch, no receipt and no byte moved (measured on the release binary
-/// 2026-08-22: `emit.md` sha256 identical before and after, no `receipts/`).
+/// fold included.
 ///
-/// Why not the `pass` page: under the lazy-snapshot work (seat `8ed22d72`) a
-/// run with nothing to apply skips the fold, and a phase-list gate driven by
-/// `pass` would then be asserting the absence of the thing it exists to check.
-/// Driving it from `emit.md` makes that change a rebase, not a rewrite.
-const PHASE_LIST_PAGE: &str = "emit.md";
+/// **`stamp.md`, since the lazy fold landed (seat `8ed22d72`).** This constant
+/// was authored as `emit.md` precisely so the change would be a rebase and not
+/// a rewrite, and the rebase is this line. `emit.md` is one `notice`, and the
+/// live gate for the fold is md.\*-only: the live report renders `kind` +
+/// `domain` (`run::report::EffectLine`), so a `notice`'s `root_at_eval` has no
+/// reader and folding for it would buy nothing (`run-plane.md` § The run
+/// plane). A live `notice` therefore reaches no `snapshot` any more, and
+/// neither does `solo.md`'s `pass` — so the one page that still reaches every
+/// phase LIVE is the one that commits.
+///
+/// The cost of the swap, stated because it is real: this gate now writes.
+/// `stamp.md` sets a field and lands a receipt, so it is no longer "about
+/// phases and never about writes" — but each test gets a fresh `Ws`, and the
+/// alternative is a gate that asserts the presence of a phase the plane no
+/// longer emits.
+const PHASE_LIST_PAGE: &str = "stamp.md";
 
 /// One `notice` — a `proto.*` effect with no local executor. See
 /// [`PHASE_LIST_PAGE`].
 const EMIT_PAGE: &str = "\
 ---
-task.emit: \"[[#^emit-1]]\"
+task.editor: \"[[#^edit-1]]\"
+task.editor.caps: md.edit
 ---
 
 # Tasks
@@ -57,7 +65,7 @@ task.emit: \"[[#^emit-1]]\"
 def run(ctx):
     notice(message = \"advisory\")
 ```
-^emit-1
+^edit-1
 ";
 
 /// A page whose task COMMITS: the md.\* batch makes `apply` real, and the run
