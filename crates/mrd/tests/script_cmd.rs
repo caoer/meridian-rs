@@ -1,6 +1,24 @@
 //! `mrd script` — the wire client, held to the laws that make it safe to run as
-//! the caller: **zero wire delta**, a guard that refuses before it reads, a
-//! read-class exit that touches nothing, and a commit that never retries.
+//! the caller: **zero wire delta**, **one lane**, a request that carries exactly
+//! the caller's own inputs and invents no premise, and a trace it renders
+//! without re-typing a single daemon fact.
+//!
+//! ⭐ **THE SUBJECT MOVED** (card
+//! `script-door-commit-premise-world-grain-vs-touch-set`). Until this card the
+//! verb had TWO lanes: a `files[]` carrying a glob forwarded to the wire
+//! `script` op, and everything else drove a LOCAL transaction here — reads
+//! lowered to `toc`/`cat`, the commit went out as a `splice`, and that splice
+//! carried `if_fingerprint` = the whole-corpus entry fingerprint. That
+//! world-grain premise is the law `run-plane.md`:918-931 records as amended and
+//! DELETED: it refused a 64-file slice on fleet churn that never touched one of
+//! its 64 targets.
+//!
+//! So the fork is gone and the whole attempt is ONE wire `script` op. What this
+//! file can still assert is therefore exactly what the CLI still does: which ops
+//! it speaks, what rides the request, and what it does with the answer. The
+//! behaviors that moved into the daemon are not dropped silently — § Retired
+//! against named twins, at the bottom, names the daemon-side test that owns each
+//! one.
 //!
 //! The tests drive the verb through its `Door` seam rather than a live daemon,
 //! which is what makes the ops it puts on the socket assertable at all: a test
@@ -8,41 +26,90 @@
 
 use std::io;
 
-use effects::ReadFace;
 use mrd::script::cmd::attempt;
-use mrd::script::{Door, FaultClass, ScriptOutcome, TraceEntry};
+use mrd::script::{Door, FaultClass, ScriptOutcome, ScriptTrace};
 use serde_json::{Value, json};
 use wire::Recovery;
 
-/// The entry fingerprint the fake daemon reports (§4.7).
+/// The entry fingerprint the fake daemon reports inside its trace (§4.7).
+/// **It is the DAEMON's value**: this lane no longer mints one.
 const ENTRY: &str = "b3:a90f13c7ba0e1d4f5c6b7a8990112233445566778899aabbccddeeff00112233";
-/// Where the world had moved to, for the conflict leg.
+/// Where the world had moved to, for the conflict leg and the caller's guard.
 const MOVED: &str = "b3:88aa1f4700112233445566778899aabbccddeeff00112233445566778899aabb";
 
-/// The one page the fake daemon serves: an unowned card, exactly golden
-/// scenario 1's premise.
+/// The one page the scripts here name: an unowned card, golden scenario 1's
+/// premise.
 const CARD: &str = "tasks/0011-token-audit.md";
 
-/// The card's whole-file word count, as the wire toc face reports it.
-const WORDS: usize = 41;
-
 /// The golden scenario 1 script, verbatim in shape: read the card, claim it if
-/// nobody holds it.
+/// nobody holds it. Under one lane it is evaluated by the DAEMON — this process
+/// only puts it on the wire.
 const CLAIM: &str = r#"
 card = read("tasks/0011-token-audit.md")
 if card["fm"]["owner"] == "":
     put("tasks/0011-token-audit.md", props={"owner": me(), "status": "doing"})
 "#;
 
-/// A fake daemon behind the one door: it records every op it is asked for, and
-/// answers the five this verb is allowed to speak.
+/// A whole `ScriptTrace` as the daemon serves a committed run. `forward()`
+/// deserializes the body as one, so a fake answering `script` produces a
+/// complete trace, never a fragment.
+fn committed() -> Value {
+    json!({
+        "entry_fingerprint": ENTRY,
+        "outcome": "committed",
+        "trace": [],
+        "commit": {"armed": {"edits": 2}, "fingerprint_before": ENTRY,
+                   "fingerprint_after": "b3:c4e91d02", "seq": 3, "verdicts": [],
+                   "receipt": {"path": "receipts/2026-08-07.md", "anchor": "r-000118"}},
+        "armed_digest": "armed-set-path-edit:sha256:11223344556677889900aabbccddeeff\
+                         11223344556677889900aabbccddeeff",
+        "telemetry": {"fuel_used": 812, "mem_used": 4096, "reads_used": 1, "wall_ms": 3},
+    })
+}
+
+/// The daemon's own `conflict`: the §4.6 touch-set guard refusing, with the
+/// mismatch extras — `scope` included — riding the commit leg verbatim.
+fn touch_set_conflict() -> Value {
+    json!({
+        "entry_fingerprint": ENTRY,
+        "outcome": "conflict",
+        "trace": [],
+        "commit": {"code": "fingerprint_mismatch", "recovery": "resync",
+                   "expected": ENTRY, "actual": MOVED, "scope": CARD},
+        "telemetry": {"fuel_used": 812, "mem_used": 4096, "reads_used": 1, "wall_ms": 3},
+    })
+}
+
+/// A refused trace carrying the §8 triple the daemon derived
+/// (`registry::script_op::refusal_of`). `recovery` is `None` to spell a frame
+/// that carried no class this engine could type.
+fn refused(code: Option<&str>, recovery: Option<&str>, reason: &str) -> Value {
+    let mut fault = json!({"class": "refused", "reason": reason});
+    if let Some(code) = code {
+        fault["code"] = json!(code);
+    }
+    if let Some(recovery) = recovery {
+        fault["recovery"] = json!(recovery);
+    }
+    json!({
+        "entry_fingerprint": ENTRY,
+        "outcome": "refused",
+        "trace": [],
+        "fault": fault,
+        "telemetry": {"fuel_used": 812, "mem_used": 4096, "reads_used": 1, "wall_ms": 3},
+    })
+}
+
+/// A fake daemon behind the one door. It records every op it is asked for — the
+/// socket census the zero-delta and one-lane laws need — and answers the ONE op
+/// this verb is allowed to speak.
 struct Fake {
-    /// Every `op` in call order — the socket census the zero-delta law needs.
+    /// Every `op` in call order.
     ops: Vec<String>,
     /// Every request in call order, for the shape assertions.
     requests: Vec<Value>,
-    /// What the `splice` op answers. `None` = the ordinary commit frame.
-    splice: Option<String>,
+    /// The trace body to answer with. `None` = the ordinary committed trace.
+    body: Option<Value>,
 }
 
 impl Fake {
@@ -50,13 +117,13 @@ impl Fake {
         Self {
             ops: Vec::new(),
             requests: Vec::new(),
-            splice: None,
+            body: None,
         }
     }
 
-    /// Answer `splice` with `line` instead of the ordinary commit frame.
-    fn answering_splice(mut self, line: &str) -> Self {
-        self.splice = Some(line.to_owned());
+    /// Answer `script` with `body` instead of the ordinary committed trace.
+    fn answering(mut self, body: Value) -> Self {
+        self.body = Some(body);
         self
     }
 
@@ -78,81 +145,37 @@ impl Door for Fake {
         let op = request["op"].as_str().expect("every request names an op");
         self.ops.push(op.to_owned());
         self.requests.push(request.clone());
-        Ok(match op {
-            "fingerprint" => format!(r#"{{"ok":true,"body":{{"fingerprint":"{ENTRY}","seq":2}}}}"#),
-            "toc" => json!({"ok": true, "body": {
-                "path": CARD,
-                "file_rev": "7c40e1a8b2f9d356",
-                "fingerprint": ENTRY,
-                "nodes": [
-                    {"kind": "frontmatter", "span": [0, 32], "node_rev": "26796ebec5d0bf1a",
-                     "text_prefix_16b": "---\nowner:\n", "keys": ["owner", "status"]},
-                    {"kind": "heading", "level": 1, "hpath": [{"h": "Goals"}],
-                     "span": [32, 140], "content_span": [40, 140],
-                     "node_rev": "a6665baff294bd04", "text_prefix_16b": "# Goals\n\nship th"},
-                ],
-            }})
-            .to_string(),
-            // The composed read, toc mode: the op that carries `words_total`.
-            "read" => json!({"ok": true, "body": {
-                "path": CARD,
-                "file_rev": "7c40e1a8b2f9d356",
-                "root": ENTRY,
-                "words_total": WORDS,
-                "toc": [],
-                "anchors": [],
-                "rendered_text": "",
-                // § A.6-decoded frontmatter, as the real composed read serves it.
-                "props": [
-                    {"key": "owner", "value": "", "span": [4, 11], "prop_rev": "33d5b0e1"},
-                    {"key": "status", "value": "todo", "span": [12, 25], "prop_rev": "41f643f0"},
-                ],
-            }})
-            .to_string(),
-            "cat" => {
-                let content = match request["sec"]["fm_key"].as_str() {
-                    Some("owner") => "owner:\n",
-                    Some("status") => "status: todo\n",
-                    _ => "## Goals\n\nship the script entry\n",
-                };
-                json!({"ok": true, "body": {
-                    "span": [4, 12], "node_rev": "33d5b0e1b27cb48b", "content": content
-                }})
-                .to_string()
-            }
-            "splice" => self.splice.clone().unwrap_or_else(|| {
-                format!(
-                    r#"{{"ok":true,"body":{{"armed":{{"edits":2}},"fingerprint_before":"{ENTRY}",
-                     "fingerprint_after":"b3:c4e91d02","seq":3,"verdicts":[],
-                     "receipt":{{"path":"receipts/2026-08-07.md","anchor":"r-000118"}}}}}}"#
-                )
-                .replace('\n', "")
-            }),
-            other => panic!("the script entry asked for an op it must not know: {other}"),
-        })
+        assert_eq!(
+            op, "script",
+            "ONE LANE: the whole attempt is the wire `script` op. A `{op}` trip \
+             means the local transaction is alive again: {request}"
+        );
+        let body = self.body.clone().unwrap_or_else(committed);
+        Ok(json!({"id": null, "ok": true, "body": body}).to_string())
     }
 }
 
 /// Run the claim script with `args`, against `door`.
-fn claim(door: &mut Fake, flags: &[&str]) -> mrd::script::ScriptTrace {
+fn claim(door: &mut Fake, flags: &[&str]) -> ScriptTrace {
     let argv: Vec<String> = flags.iter().map(|flag| (*flag).to_owned()).collect();
     attempt(&argv, CLAIM, door).expect("the attempt runs")
 }
 
-// ── 1. zero wire delta ────────────────────────────────────────────────────────
+// ── 1. zero wire delta, and ONE lane ─────────────────────────────────────────
 
-/// **The invariant this whole feature is sold on.** A script does all its I/O as
-/// an ordinary wire client, so the ops it puts on the socket must be ops the
-/// contract already declares. A new op name here is a schema delta however
-/// harmless it looks — asserted as a closed set, so an addition fails rather
-/// than passing unnoticed.
+/// **The invariant this whole feature is sold on, now at its sharpest.** A
+/// script does all its I/O as an ordinary wire client, so the ops it puts on the
+/// socket must be ops the contract already declares. Asserted as a closed set,
+/// so an addition fails rather than passing unnoticed.
 ///
-/// `hello` (§3.2) is issued by the door itself when it dials; the five this
-/// attempt speaks are `fingerprint` (§4.7), `toc` (§4.1), `read` (§4.1, the
-/// composed read that carries `words_total`), `cat` (§4.2) and `splice` (§4.4).
+/// The set SHRANK with this card: `hello` (§3.2) is issued by the door itself
+/// when it dials, and the attempt speaks exactly one op — `script` (§ A.7). The
+/// five the local transaction used to speak (`fingerprint`, `toc`, `cat`,
+/// `read`, `splice`) are the daemon's now, spoken in-process where they cost no
+/// round trip.
 #[test]
 fn the_ops_on_the_socket_are_only_the_ones_the_contract_already_declares() {
-    const DECLARED: [&str; 6] = ["hello", "fingerprint", "toc", "cat", "read", "splice"];
+    const DECLARED: [&str; 2] = ["hello", "script"];
 
     let mut door = Fake::new();
     let trace = claim(&mut door, &["--actor", "8ab41c02"]);
@@ -163,324 +186,215 @@ fn the_ops_on_the_socket_are_only_the_ones_the_contract_already_declares() {
             door.ops
         );
     }
-    // And the census is not vacuous: this run really did read and really did
-    // commit through the one write op.
-    assert!(door.asked("fingerprint") && door.asked("toc") && door.asked("splice"));
+    // And the census is not vacuous: this run really did forward, exactly once.
+    assert_eq!(door.ops, ["script"], "one attempt, one trip");
     assert_eq!(trace.outcome, ScriptOutcome::Committed);
 }
 
-/// `read(path)` IS the wire toc face 1:1, so the wire's own `words_total` rides
-/// the recorded face — a delivered fact the host carries, never one it computes
-/// (ruling 2026-08-07). The count comes from the composed `read` op: the `toc`
-/// op's body is `{path, file_rev, root, nodes}` and carries none. Answering 0
-/// instead renders `words:0` on a live face while the goldens render the true
-/// count, and nothing in a passing suite says so.
+/// ⭐ **THE FLIP. This test used to be named
+/// `the_one_splice_carries_plan_edits_guarded_on_the_entry_fingerprint`, and it
+/// pinned the defect.**
+///
+/// It asserted that the CLI minted a whole-corpus entry fingerprint and put it
+/// on its own `splice` as `if_fingerprint` — the world-grain premise that
+/// refused a 64-file slice because a memo landed somewhere else in the corpus.
+/// `run-plane.md`:918-931 records that law as amended and DELETED, and :919
+/// names this lane: *"the touch-set law covers ALL script lanes (S1), same
+/// product as MCP `script`"*.
+///
+/// So the fixture is inverted rather than deleted. What must now be true is that
+/// this lane pins NOTHING of its own: no `fingerprint` trip, no `splice`, and no
+/// `if_fingerprint` on the one request it does send. The commit's authority is
+/// the daemon's touch set, and the only way a world-grain premise can ride again
+/// is if the CALLER asks for one (§ D-04, pinned below).
 #[test]
-fn the_recorded_toc_face_carries_the_wire_word_count() {
-    let mut door = Fake::new();
-    let trace = claim(&mut door, &["--actor", "8ab41c02"]);
-
-    let TraceEntry::Echo(read) = &trace.trace[0] else {
-        panic!(
-            "the first traced entry is the echoed read: {:?}",
-            trace.trace
-        );
-    };
-    let ReadFace::Toc(facts) = &read.face else {
-        panic!("read(path) records the toc face");
-    };
-    assert_eq!(
-        facts.words, WORDS,
-        "the composed read's words_total rides the face"
-    );
-}
-
-/// The commit is ONE splice, and it speaks the wire's second edit dialect: the
-/// armed list IS `plan_edits[]` (ruling B′), mutually exclusive with `edits[]`.
-/// Its guard is the ENTRY fingerprint — the premise the reads were consistent
-/// with, never a value re-sampled at commit time, which would guard on nothing.
-#[test]
-fn the_one_splice_carries_plan_edits_guarded_on_the_entry_fingerprint() {
+fn the_attempt_pins_no_world_grain_premise_of_its_own() {
     let mut door = Fake::new();
     claim(
         &mut door,
         &["--actor", "8ab41c02", "--now", "2026-08-07T12:00:00Z"],
     );
 
-    assert_eq!(
-        door.ops.iter().filter(|op| *op == "splice").count(),
-        1,
-        "one script, one commit"
-    );
-    let splice = door.request("splice");
-    assert_eq!(splice["if_fingerprint"], json!(ENTRY));
-    assert_eq!(splice["path"], json!(CARD));
-    assert_eq!(splice["actor"], json!("8ab41c02"));
-    assert_eq!(splice["now"], json!("2026-08-07T12:00:00Z"));
     assert!(
-        splice["edits"].is_null(),
-        "plan_edits and edits are mutually exclusive: {splice}"
+        !door.asked("fingerprint"),
+        "no entry is minted HERE — the daemon pins it: {:?}",
+        door.ops
     );
-    let plan = splice["plan_edits"].as_array().expect("plan_edits[]");
-    assert_eq!(plan.len(), 2, "one set_property per key, sorted: {splice}");
-    assert_eq!(plan[0]["set_property"]["key"], json!("owner"));
-    assert_eq!(plan[0]["set_property"]["value"], json!("8ab41c02"));
-    assert_eq!(plan[1]["set_property"]["key"], json!("status"));
+    assert!(
+        !door.asked("splice"),
+        "no second commit path exists: {:?}",
+        door.ops
+    );
+    let sent = door.request("script");
+    assert!(
+        sent.get("if_fingerprint").is_none(),
+        "THE DEFECT, INVERTED: a caller who pinned nothing gets no world-grain \
+         premise. A token here refuses every run that fleet churn overtakes, \
+         wherever in the corpus it lands: {sent}"
+    );
+    // The caller's own inputs still ride, unchanged — the flip removes a premise
+    // this lane invented, never an input the caller gave.
+    assert_eq!(sent["source"], json!(CLAIM));
+    assert_eq!(sent["actor"], json!("8ab41c02"));
+    assert_eq!(sent["now"], json!("2026-08-07T12:00:00Z"));
 }
 
-// ── 1b. the per-row CAS token ─────────────────────────────────────────────────
+/// The request-surface census: every field the parsed invocation holds reaches
+/// the wire, and nothing else does. A field silently dropped here is a flag that
+/// stops working with no diagnostic — the failure mode a one-lane forward makes
+/// possible, so it gets its own row.
+#[test]
+fn every_parsed_input_rides_the_one_request_and_nothing_is_invented() {
+    let mut door = Fake::new();
+    claim(
+        &mut door,
+        &[
+            "--actor",
+            "8ab41c02",
+            "--now",
+            "2026-08-07T12:00:00Z",
+            "--receipt",
+            "receipts/2026-08-07.md#r-000118",
+            "--if-fingerprint",
+            ENTRY,
+            "--expect-armed",
+            "armed-set-path-edit:sha256:00",
+            "--files",
+            "tasks/z.md",
+            "--files",
+            "tasks/a.md",
+            "--args",
+            r#"{"who":"one"}"#,
+            "--dry",
+        ],
+    );
 
-/// Every wire door demands a fingerprint for an edit that changes existing
-/// content, at the grain the row writes: `set_property` takes the FILE rev,
-/// because frontmatter semantics are file-scoped.
+    let sent = door.request("script");
+    assert_eq!(sent["op"], json!("script"));
+    assert_eq!(sent["source"], json!(CLAIM));
+    assert_eq!(sent["actor"], json!("8ab41c02"));
+    assert_eq!(sent["now"], json!("2026-08-07T12:00:00Z"));
+    assert_eq!(
+        sent["receipt"],
+        json!({"path": "receipts/2026-08-07.md", "anchor": "r-000118"})
+    );
+    assert_eq!(sent["if_fingerprint"], json!(ENTRY));
+    assert_eq!(sent["expect_armed"], json!("armed-set-path-edit:sha256:00"));
+    assert_eq!(
+        sent["files"],
+        json!(["tasks/z.md", "tasks/a.md"]),
+        "files[i] is the i-th --files the caller typed, not the lexical first \
+         (order-bind ruling): {sent}"
+    );
+    assert_eq!(
+        sent["args"],
+        json!({"who": "one"}),
+        "--args is a JSON OBJECT bound as a dict — callers name their inputs, \
+         they do not count them: {sent}"
+    );
+    assert_eq!(sent["dry"], json!(true));
+}
+
+// ── 2. the caller's own guard — D-04, preserved ──────────────────────────────
+
+/// **D-04 preserved.** Deleting the lane's own world-grain premise does not
+/// delete the caller's. `--if-fingerprint` still rides the wire verbatim, as the
+/// §A.7 request's own declared field, and the daemon applies it as a WIDENING
+/// premise on top of the touch set — strictest wins.
 ///
-/// The token is the one the script ITSELF read — the read-then-write CAS,
-/// carried from the recording rather than minted at commit time. The trace shows
-/// the same row that went on the wire, so a reader can see what the write was
-/// guarded on.
+/// The pair matters: absent flag ⇒ absent field (the flip above), present flag ⇒
+/// the caller's exact bytes. A lane that dropped the field would silently ungate
+/// every guarded call, which is worse than the defect this card fixes.
 #[test]
-fn a_property_row_carries_the_file_rev_the_script_read() {
-    let mut door = Fake::new();
-    let trace = claim(&mut door, &["--actor", "8ab41c02"]);
-
-    let plan = door.request("splice")["plan_edits"]
-        .as_array()
-        .expect("plan_edits[]")
-        .clone();
-    for row in &plan {
-        assert_eq!(
-            row["set_property"]["rev"],
-            json!("7c40e1a8b2f9d356"),
-            "the file rev the toc read published: {row}"
-        );
-    }
-    let traced = serde_json::to_value(trace.armed_entries().next().expect("an armed row"))
-        .expect("the trace serializes");
-    assert_eq!(
-        traced["edit"], plan[0],
-        "the trace shows what went on the wire, token included"
-    );
-}
-
-/// An `append` is guarded at NODE grain — the rev of the section it lands in,
-/// which the same toc read already published in its section map.
-#[test]
-fn an_append_row_carries_the_section_rev_from_the_same_read() {
-    let mut door = Fake::new();
-    let argv = ["--actor".to_owned(), "8ab41c02".to_owned()];
-    let source = "board = read(\"tasks/0011-token-audit.md\")\n\
-                  put(\"tasks/0011-token-audit.md\", section=\"Goals\", append=\"- done\\n\")\n";
-    attempt(&argv, source, &mut door).expect("the attempt runs");
-
-    let row = &door.request("splice")["plan_edits"][0]["append"];
-    assert_eq!(
-        row["hpath"],
-        json!([{"h": "Goals"}]),
-        "addresses are segments"
-    );
-    assert_eq!(
-        row["rev"],
-        json!("a6665baff294bd04"),
-        "the Goals row's node rev, from the script's own toc read"
-    );
-}
-
-/// A write to a page the script never read mints its own token at commit
-/// time (CAS relaxation, ruling 2026-08-13 — put parity: the host's rev
-/// autofill, spoken by this lane as one bare `toc` trip per armed path). The
-/// author performs no read ritual; the entry fingerprint on the splice is
-/// what enforces consistency, and a moved world refuses there.
-#[test]
-fn a_write_to_an_unread_page_mints_its_token_at_commit_and_lands() {
-    let mut door = Fake::new();
-    let argv = ["--actor".to_owned(), "8ab41c02".to_owned()];
-    let trace = attempt(
-        &argv,
-        "put(\"tasks/0011-token-audit.md\", props={\"owner\": me()})\n",
-        &mut door,
-    )
-    .expect("the attempt runs");
-
-    assert!(
-        trace
-            .trace
-            .iter()
-            .all(|entry| !matches!(entry, TraceEntry::Read(_) | TraceEntry::Echo(_))),
-        "the script itself read nothing — that is the premise"
-    );
-    assert_eq!(
-        door.ops,
-        ["fingerprint", "toc", "splice"],
-        "ONE bare toc trip mints the token; no composed-read bracket, no cat"
-    );
-    assert_eq!(
-        door.request("splice")["plan_edits"][0]["set_property"]["rev"],
-        json!("7c40e1a8b2f9d356"),
-        "the minted doc-root token rides the row"
-    );
-    assert_eq!(trace.outcome, ScriptOutcome::Committed);
-}
-
-// ── 2. the guard refuses before it reads ──────────────────────────────────────
-
-/// A caller guard that does not match the entry fingerprint refuses at the door:
-/// **zero evaluation** — no read reaches the socket, nothing is armed, and no
-/// splice is issued. The recorded census is the proof; a test that only checked
-/// the outcome could not tell a pre-eval refusal from a post-eval one.
-#[test]
-fn a_stale_caller_guard_performs_zero_reads_and_zero_splices() {
-    let mut door = Fake::new();
-    let trace = claim(&mut door, &["--if-fingerprint", MOVED]);
-
-    assert_eq!(
-        door.ops,
-        ["fingerprint"],
-        "the guard refuses on the fingerprint alone"
-    );
-    assert_eq!(trace.outcome, ScriptOutcome::Conflict);
-    assert!(trace.trace.is_empty(), "nothing was read and nothing armed");
-    assert!(trace.commit.is_none(), "no splice, so no commit leg");
-    assert_eq!(trace.telemetry.reads_used, 0);
-
-    // The face's extras line needs BOTH tokens, and it renders from this trace
-    // and nothing else: `actual` IS the entry fingerprint, and `expected` is the
-    // caller's pinned value carried in band — the same pair the commit-time
-    // mismatch embeds, so one family renders one way.
-    assert_eq!(trace.entry_fingerprint, ENTRY, "actual");
-    assert_eq!(trace.guard_expected.as_deref(), Some(MOVED), "expected");
-    let json: Value = serde_json::to_value(&trace).expect("the contract serializes");
-    assert_eq!(json["guard_expected"], json!(MOVED));
-}
-
-/// § A.7's malformed arm (§5.7 family; dogfood break #7, script door): a pin
-/// that is not a `Root`-family token — one leading space on the entry's own
-/// value (the measured case), a short digest, prose, a bare prefix, or the
-/// reserved `absent` — refuses as INPUT: `refused`, recovery `fix`, the raw
-/// bytes debug-quoted, zero reads, no splice. Never `conflict`, and
-/// `guard_expected` stays absent, because the world was NOT compared.
-#[test]
-fn a_malformed_caller_pin_refuses_as_input_never_as_a_moved_world() {
-    let spaced = format!(" {ENTRY}");
-    for pin in [spaced.as_str(), "b3c:abcd", "not-a-token", "b3c:", "absent"] {
-        let mut door = Fake::new();
-        let trace = claim(&mut door, &["--if-fingerprint", pin]);
-
-        assert_eq!(door.ops, ["fingerprint"], "refused pre-eval: {pin:?}");
-        assert_eq!(trace.outcome, ScriptOutcome::Refused, "{pin:?}");
-        assert!(
-            trace.guard_expected.is_none(),
-            "the world was not compared: {pin:?}"
-        );
-        let fault = trace
-            .fault
-            .as_ref()
-            .expect("the refusal rides the fault triple");
-        assert_eq!(fault.class, FaultClass::Refused, "{pin:?}");
-        assert_eq!(fault.recovery, Some(Recovery::Fix), "{pin:?}");
-        assert!(
-            fault.reason.contains(&format!("{pin:?}")),
-            "the teaching debug-quotes the bytes: {}",
-            fault.reason
-        );
-        assert!(trace.commit.is_none(), "no splice was issued: {pin:?}");
-        assert_eq!(trace.telemetry.reads_used, 0, "zero evaluation: {pin:?}");
-    }
-}
-
-/// `guard_expected` is present EXACTLY on a pre-eval guard refusal — it is the
-/// discriminator U7/U8 render "guard refused" from, so a run that reached the
-/// commit must not carry it or the two conflict terminals stop grepping apart.
-#[test]
-fn only_a_pre_eval_guard_refusal_carries_the_pinned_expected_token() {
-    let mut door = Fake::new();
-    let committed = claim(
-        &mut door,
-        &["--actor", "8ab41c02", "--if-fingerprint", ENTRY],
-    );
-    assert_eq!(committed.outcome, ScriptOutcome::Committed);
-    assert!(
-        committed.guard_expected.is_none(),
-        "the guard passed, so there is no refused premise to name"
-    );
-    assert!(
-        serde_json::to_value(&committed).expect("json")["guard_expected"].is_null(),
-        "absence stays absence on the wire-facing contract too"
-    );
-}
-
-/// The same guard, matching, is a courtesy check and nothing more: the run
-/// proceeds and the commit still carries the value, so a world that moves DURING
-/// evaluation is still caught. Two checks, one value.
-#[test]
-fn a_matching_caller_guard_still_rides_the_commit() {
+fn a_caller_pin_still_rides_the_wire_as_the_declared_if_fingerprint_field() {
     let mut door = Fake::new();
     let trace = claim(
         &mut door,
         &["--actor", "8ab41c02", "--if-fingerprint", ENTRY],
     );
 
-    assert_eq!(trace.outcome, ScriptOutcome::Committed);
-    assert_eq!(door.request("splice")["if_fingerprint"], json!(ENTRY));
-}
-
-// ── 3. the read-class exit ────────────────────────────────────────────────────
-
-/// A script that arms nothing is a READ. It issues no splice at all — no
-/// receipt, no fingerprint advance, nothing on disk — and `no_effect` is a
-/// first-class success, not a failure with a nicer word.
-#[test]
-fn a_zero_armed_run_issues_no_splice_at_all() {
-    let mut door = Fake::new();
-    let argv = ["--actor".to_owned(), "8ab41c02".to_owned()];
-    let trace = attempt(
-        &argv,
-        "card = read(\"tasks/0011-token-audit.md\")\n",
-        &mut door,
-    )
-    .expect("the attempt runs");
-
-    assert!(!door.asked("splice"), "census: {:?}", door.ops);
-    assert_eq!(trace.outcome, ScriptOutcome::NoEffect);
-    assert!(trace.commit.is_none());
     assert_eq!(
-        trace.trace.len(),
-        1,
-        "the read is still traced — reading is not nothing"
+        door.request("script")["if_fingerprint"],
+        json!(ENTRY),
+        "the caller's own token, byte for byte — never re-minted here"
     );
-    assert!(matches!(trace.trace[0], TraceEntry::Echo(_)));
+    assert_eq!(trace.outcome, ScriptOutcome::Committed);
 }
 
-// ── 4. the world moved ────────────────────────────────────────────────────────
-
-/// A write that lands between the entry fingerprint and the commit makes the
-/// splice refuse `fingerprint_mismatch`, and the ENTIRE batch fails: the
-/// workspace is untouched. The mismatch extras reach the trace as the daemon's
-/// own bytes — no re-typing, so `{expected, actual}` cannot drift.
-///
-/// The entry does not retry. It answers `conflict` once and hands the decision
-/// up, because a retry loop inside the entry would re-run reads against a world
-/// the caller has not seen.
+/// A malformed pin is the DAEMON's to refuse — it owns the §A.7 malformed arm
+/// now — and this lane must not pre-judge it: the bytes ride verbatim, however
+/// hostile, so the refusal a caller reads is the engine's own teaching rather
+/// than a second opinion minted here.
 #[test]
-fn a_world_that_moved_yields_conflict_with_the_mismatch_extras_verbatim() {
-    const MISMATCH: &str = r#"{"ok":false,"error":{"code":"fingerprint_mismatch","recovery":"resync","expected":"ENTRY_FP","actual":"MOVED_FP"}}"#;
-    let mut door = Fake::new().answering_splice(
-        &MISMATCH
-            .replace("ENTRY_FP", ENTRY)
-            .replace("MOVED_FP", MOVED),
-    );
+fn a_malformed_caller_pin_rides_verbatim_rather_than_being_judged_here() {
+    let spaced = format!(" {ENTRY}");
+    for pin in [spaced.as_str(), "b3c:abcd", "not-a-token", "b3c:", "absent"] {
+        let mut door = Fake::new().answering(refused(
+            None,
+            Some("fix"),
+            &format!("the entry pin {pin:?} is not a Root-family token"),
+        ));
+        let trace = claim(&mut door, &["--if-fingerprint", pin]);
+
+        assert_eq!(
+            door.request("script")["if_fingerprint"],
+            json!(pin),
+            "carried verbatim, not normalized: {pin:?}"
+        );
+        assert_eq!(trace.outcome, ScriptOutcome::Refused, "{pin:?}");
+        assert!(
+            trace
+                .fault
+                .as_ref()
+                .expect("a refusal names itself")
+                .reason
+                .contains(&format!("{pin:?}")),
+            "the daemon's teaching debug-quotes the bytes and this lane carries \
+             it: {pin:?}"
+        );
+    }
+}
+
+// ── 3. the world moved ───────────────────────────────────────────────────────
+
+/// ⭐ **THE SECOND FLIP. This test used to be named
+/// `a_world_that_moved_yields_conflict_with_the_mismatch_extras_verbatim`, and
+/// its fixture was a `splice` answering `fingerprint_mismatch` on the
+/// WHOLE-CORPUS guard.**
+///
+/// The conflict survives; its grain does not. A moved world no longer refuses
+/// this run — a foreign write OUTSIDE the touch set never reaches the guard at
+/// all. What refuses is a move INSIDE the set the attempt actually touched, and
+/// the §5.7 refusal names that premise's SCOPE. The old fixture could not carry
+/// `scope`, because a root-grain premise has none: that missing field is the
+/// measured signature of the deleted law (card § Context — the production
+/// refusal "did not name the moved premise's SCOPE, which run-plane.md says a
+/// due refusal does").
+///
+/// The lane's own duty is unchanged and still asserted: carry the daemon's bytes
+/// verbatim, and NEVER retry.
+#[test]
+fn a_moved_touch_set_yields_conflict_with_the_scope_bearing_extras_verbatim() {
+    let mut door = Fake::new().answering(touch_set_conflict());
     let trace = claim(&mut door, &["--actor", "8ab41c02"]);
 
     assert_eq!(trace.outcome, ScriptOutcome::Conflict);
     assert_eq!(
-        door.ops.iter().filter(|op| *op == "splice").count(),
+        door.ops.iter().filter(|op| *op == "script").count(),
         1,
-        "the entry NEVER retries"
+        "the entry NEVER retries — the retry loop is the host's"
     );
     let commit: Value = serde_json::from_str(trace.commit.as_ref().expect("the leg").get())
         .expect("the leg is the daemon's own JSON");
     assert_eq!(commit["code"], json!("fingerprint_mismatch"));
     assert_eq!(commit["expected"], json!(ENTRY));
     assert_eq!(commit["actual"], json!(MOVED));
+    assert_eq!(
+        commit["scope"],
+        json!(CARD),
+        "the touch-set refusal names the moved premise's scope (§5.7). A refusal \
+         with no scope is the world-grain guard this card deleted: {commit}"
+    );
     // `changed` is STRUCK (§18 row 2, ruled 2026-08-10): no producer ever
     // minted it, so the old assertion here passed forever over a shape no
     // daemon can emit. Asserting its ABSENCE is what a re-introduction would
@@ -490,108 +404,21 @@ fn a_world_that_moved_yields_conflict_with_the_mismatch_extras_verbatim() {
         "`changed` was struck because nothing mints it; a fixture that carries \
          it again is imagination, not a record: {commit}"
     );
-    // The armed edit is still rendered, flagged as never applied — the honesty
-    // law: a reader sees what the script wanted, and that it did not happen.
-    let armed: Vec<_> = trace.armed_entries().collect();
-    assert_eq!(armed.len(), 2);
-    assert!(armed.iter().all(|entry| !entry.committed));
-}
-
-/// A commit-time refusal that is NOT the world moving — `would_corrupt`,
-/// `foreign_edit`, an overlap — is a refusal, not a fault, and the two grep
-/// apart. The engine's own wording rides verbatim rather than being re-phrased
-/// here, which would fork the text into two places.
-#[test]
-fn a_commit_time_refusal_is_refused_and_carries_the_engines_own_words() {
-    const REFUSAL: &str = r#"{"ok":false,"error":{"code":"would_corrupt","message":"the candidate loses containment of \"Goals\""}}"#;
-    let mut door = Fake::new().answering_splice(REFUSAL);
-    let trace = claim(&mut door, &["--actor", "8ab41c02"]);
-
-    assert_eq!(trace.outcome, ScriptOutcome::Refused);
     assert!(
-        trace.commit.is_none(),
-        "nothing was applied, so no commit leg"
-    );
-    let fault = trace.fault.as_ref().expect("a refusal names itself");
-    assert!(
-        fault.reason.contains("would_corrupt") && fault.reason.contains("loses containment"),
-        "the engine's own wording, verbatim: {}",
-        fault.reason
+        trace.fault.is_none(),
+        "a moved world is an ANSWER, not a fault — a consumer greps the two apart"
     );
 }
 
-// ── 5. the rehearsal ──────────────────────────────────────────────────────────
-
-/// `--dry` runs everything except disk: the daemon builds the whole effect set
-/// and applies none of it. The trace therefore carries the full commit leg with
-/// `fingerprint_after: null`, and every armed entry stays `[not committed]` —
-/// the workspace is unchanged, which is the promise `--dry` exists to make.
-#[test]
-fn a_dry_run_returns_the_full_effect_set_with_no_fingerprint_after() {
-    let mut door = Fake::new().answering_splice(&format!(
-        r#"{{"ok":true,"body":{{"armed":{{"edits":2}},"fingerprint_before":"{ENTRY}","fingerprint_after":null,"dry":true,"verdicts":[]}}}}"#
-    ));
-    let trace = claim(&mut door, &["--actor", "8ab41c02", "--dry"]);
-
-    assert_eq!(door.request("splice")["dry"], json!(true));
-    assert_eq!(
-        trace.outcome,
-        ScriptOutcome::NoEffect,
-        "a rehearsal changes nothing, so it landed no effect"
-    );
-    let commit: Value = serde_json::from_str(trace.commit.as_ref().expect("the leg").get())
-        .expect("the effect set is still returned");
-    assert_eq!(commit["fingerprint_after"], Value::Null);
-    assert_eq!(commit["armed"]["edits"], json!(2));
-    assert_eq!(commit["dry"], json!(true));
-    let armed: Vec<_> = trace.armed_entries().collect();
-    assert_eq!(armed.len(), 2);
-    assert!(
-        armed.iter().all(|entry| !entry.committed),
-        "a rehearsal commits nothing"
-    );
-}
-
-// ── 6. the inert inputs ───────────────────────────────────────────────────────
-
-/// `files[]` is paths only, bound in CALL ORDER — `files[0]` is the first
-/// `--files` the caller typed, whatever the paths' lexical order (order-bind
-/// ruling) — and `args` is a JSON **object** bound as a dict — callers name
-/// their inputs, they do not count them. Both are inert bindings: a script
-/// reaches content only through `read()`, which is what keeps a run replayable.
-#[test]
-fn files_bind_in_call_order_and_args_is_a_json_object() {
-    let mut door = Fake::new();
-    let argv: Vec<String> = [
-        "--files",
-        "tasks/z.md",
-        "--files",
-        "tasks/a.md",
-        "--args",
-        r#"{"who":"one","what":"two"}"#,
-    ]
-    .iter()
-    .map(|a| (*a).to_owned())
-    .collect();
-    let trace = attempt(
-        &argv,
-        "seen = [files[0], files[1], args[\"who\"], sorted(args.keys())]\n",
-        &mut door,
-    )
-    .expect("the attempt runs");
-
-    assert_eq!(trace.outcome, ScriptOutcome::NoEffect);
-    assert_eq!(
-        trace.bindings["seen"], r#"["tasks/z.md", "tasks/a.md", "one", ["what", "who"]]"#,
-        "files[0] is the first --files the caller typed, not the lexical first"
-    );
-    assert!(!door.asked("toc"), "no read() call, so no read op");
-}
+// ── 4. the inert inputs, at the seam that still owns them ────────────────────
 
 /// `--args` that is not a JSON object of strings refuses BEFORE anything is
 /// evaluated — a bad invocation, not a fault, and the socket is never dialled.
 /// A JSON **array** is the shape this entry used to take, so it must refuse by
 /// name rather than decode into something adjacent.
+///
+/// This law stayed here through the lane change: argv parsing is the CLI's, and
+/// a refusal that never touches the wire is the CLI's to prove.
 #[test]
 fn a_malformed_args_json_refuses_before_evaluation() {
     for bad in [r#"["one","two"]"#, r#"{"n":3}"#, "not json"] {
@@ -607,129 +434,102 @@ fn a_malformed_args_json_refuses_before_evaluation() {
     }
 }
 
-// ── 7. the wall clock, at the leg nothing checked ─────────────────────────────
+// ── 5. the refusal triple crosses the boundary TYPED ─────────────────────────
 
-/// A door that spends `stall` on the CLOSING `read` of the first composition and
-/// answers everything else exactly as [`Fake`] does
-/// — so the ONLY difference between the two runs below is time.
+/// The only thing a class-reading consumer is allowed to look at.
 ///
-/// The stall sits on the LAST wire call of the last read deliberately: after it
-/// there is no further read to check the clock, so layers 1 and 2 have both had
-/// their turn and only the pre-commit check can catch this run. Stall an EARLIER
-/// call and layer 1 refuses the next read instead — a fault, not this leg.
-struct StallingFake {
-    inner: Fake,
-    stall: std::time::Duration,
-    stalled: bool,
-}
-
-impl StallingFake {
-    fn new(stall: std::time::Duration) -> Self {
-        Self {
-            inner: Fake::new(),
-            stall,
-            stalled: false,
-        }
-    }
-}
-
-impl Door for StallingFake {
-    fn call(&mut self, request: &Value) -> io::Result<String> {
-        if request["op"] == json!("read") && !self.stalled {
-            self.stalled = true;
-            std::thread::sleep(self.stall);
-        }
-        self.inner.call(request)
-    }
-}
-
-/// **The commit leg is checked like every other wire call.** Evaluation is
-/// fuel-bounded and reads are clock-bounded per round trip, but the commit used
-/// to be the one leg no clock touched: a run whose whole budget went into a slow
-/// read still issued its splice, however late.
-///
-/// Measured against a control that differs in ONE thing — how long the CLOSING
-/// `read` of that composition takes. The proof is not the outcome word alone but the SOCKET CENSUS:
-/// the refused run never asked `splice`, so nothing was issued and nothing could
-/// have landed.
-///
-/// No wall-clock budget is asserted; the run sleeps past the entry's own clock
-/// on purpose, and only what the entry then DID is checked.
-#[test]
-fn a_run_whose_clock_elapses_during_evaluation_refuses_before_the_commit() {
-    // Control: the same script, the same door shape, no stall. It commits.
-    let mut prompt = StallingFake::new(std::time::Duration::ZERO);
-    let argv = ["--actor".to_owned(), "8ab41c02".to_owned()];
-    let committed = attempt(&argv, CLAIM, &mut prompt).expect("the control attempt runs");
-    assert_eq!(committed.outcome, ScriptOutcome::Committed);
-    assert!(
-        prompt.inner.asked("splice"),
-        "the control run really did commit: {:?}",
-        prompt.inner.ops
-    );
-
-    // Measured: the last wire call of the read spends the entry's whole wall clock.
-    let mut slow = StallingFake::new(std::time::Duration::from_millis(7_100));
-    let trace =
-        attempt(&argv, CLAIM, &mut slow).expect("the stalled attempt still answers a trace");
-
-    assert_eq!(
-        trace.outcome,
-        ScriptOutcome::Refused,
-        "an elapsed clock is a refusal, never a commit: {:?}",
-        trace.outcome
-    );
-    assert!(
-        !slow.inner.asked("splice"),
-        "NOTHING was issued — the refusal is pre-commit. census: {:?}",
-        slow.inner.ops
-    );
-    let reason = &trace
+/// It reads the TYPED field and nothing else — no prose, no code spelling. A
+/// consumer written this way cannot be broken by a re-worded engine message,
+/// which is the whole point of carrying the class instead of rendering it.
+fn transient(trace: &ScriptTrace) -> bool {
+    trace
         .fault
         .as_ref()
-        .expect("a refusal carries its reason")
-        .reason;
-    assert!(
-        reason.contains("wall clock elapsed") && reason.contains("nothing landed"),
-        "the refusal names the clock and what did not happen: {reason}"
-    );
+        .and_then(|fault| fault.recovery)
+        .is_some_and(|recovery| recovery == Recovery::Retry)
 }
 
-// ── 8. one address grammar, one parser, on the whole script path ──────────────
-
-/// **A section read threads its rev whichever legal spelling of the address the
-/// caller wrote.** `read(section=…)` records the caller's own string; the armed
-/// row carries §2.1 segments. Comparing a normalized JOIN against the raw
-/// recorded string made the two disagree on a leading slash, so a script that
-/// READ the section it appends to still met `guard_required` — the engine's own
-/// teaching refusal, delivered for a read that happened. Both sides now go
-/// through `ReadSel::parse` (finding #18, folded into U12).
+/// **The boundary crossing, which is the half that stayed here.** The daemon
+/// DERIVES the triple (`registry::script_op::refusal_of` — frame's own class
+/// first, then the §8 frozen table via the code, then absence); this lane's duty
+/// is to carry all three across the trace boundary without flattening any of
+/// them into prose. That was destroyed before the boundary until the triple
+/// existed: the frame carried the class, the script path rendered it away, and
+/// no host-side change could recover it.
 ///
-/// The control is the same script in the plain spelling, which threaded its rev
-/// before this fix and still does.
+/// Three rows in one table, because the property is one property and the
+/// distinctions are inputs: a transient class reads transient, a permanent one
+/// reads permanent, and an absent one stays ABSENT — never a guess and never a
+/// default. A defaulted class would read as the daemon's word when nothing said
+/// it.
 #[test]
-fn a_section_read_threads_its_rev_in_every_legal_spelling_of_one_address() {
-    for spelling in ["Goals", "/Goals"] {
-        let source = format!(
-            "sec = read(\"{CARD}\", section=\"{spelling}\")\nput(\"{CARD}\", section=\"{spelling}\", append=\"- a line\\n\")\n"
-        );
-        let mut door = Fake::new();
-        let argv = ["--actor".to_owned(), "8ab41c02".to_owned()];
-        attempt(&argv, &source, &mut door).expect("the attempt runs");
+fn the_typed_triple_crosses_the_trace_boundary_and_absence_stays_absence() {
+    const CASES: [(&str, Option<&str>, Option<Recovery>, bool); 3] = [
+        // the daemon's own `workspace_busy` — the contention a cooperating
+        // writer causes, and the one class a host may retry on
+        ("workspace_busy", Some("retry"), Some(Recovery::Retry), true),
+        // permanent: the caller's to fix, and it must not read as transient
+        ("would_corrupt", Some("fix"), Some(Recovery::Fix), false),
+        // a code from a later engine, with no class beside it
+        ("a_code_from_a_later_engine", None, None, false),
+    ];
 
-        let rows = door.request("splice")["plan_edits"]
-            .as_array()
-            .expect("plan_edits[]")
-            .clone();
-        let rev = rows[0]["append"]["rev"].as_str();
+    for (code, class, expected, is_transient) in CASES {
+        let mut door = Fake::new().answering(refused(
+            Some(code),
+            class,
+            "the engine's own wording, verbatim",
+        ));
+        let trace = claim(&mut door, &["--actor", "8ab41c02"]);
+
+        assert_eq!(trace.outcome, ScriptOutcome::Refused, "for {code}");
+        let fault = trace.fault.as_ref().expect("a refusal names itself");
+        assert_eq!(fault.class, FaultClass::Refused, "for {code}");
         assert_eq!(
-            rev,
-            Some("33d5b0e1b27cb48b"),
-            "section={spelling:?}: the append row carries the rev THIS script's own read \
-             recorded; without it the wire refuses guard_required for a read that happened"
+            fault.code.as_deref(),
+            Some(code),
+            "the code is carried verbatim even when this engine cannot type it"
+        );
+        assert_eq!(
+            fault.recovery, expected,
+            "{code}: the class crosses typed, and absence stays absence"
+        );
+        assert_eq!(
+            transient(&trace),
+            is_transient,
+            "{code}: a consumer that reads only the type sees the class"
+        );
+        assert_eq!(
+            fault.reason, "the engine's own wording, verbatim",
+            "the rendering is unchanged to the byte — the class rides beside it, \
+             never inside it"
         );
     }
 }
+
+/// **The migration is additive, measured rather than argued.** A trace
+/// serialized before `code` and `recovery` existed still deserializes, with both
+/// new fields absent.
+#[test]
+fn the_typed_class_is_additive_to_every_consumer_that_reads_the_prose() {
+    // A trace serialized by the engine BEFORE the two fields existed.
+    const PRE_CHANGE: &str = r#"{
+      "entry_fingerprint": "b3:a90f13c7",
+      "outcome": "refused",
+      "trace": [],
+      "fault": {"class": "refused", "reason": "would_corrupt: an older engine's words"},
+      "telemetry": {"fuel_used": 0, "mem_used": 0, "reads_used": 0, "wall_ms": 0}
+    }"#;
+
+    let old: ScriptTrace =
+        serde_json::from_str(PRE_CHANGE).expect("a pre-change trace still deserializes");
+    let fault = old.fault.expect("its fault survives the round trip");
+    assert_eq!(fault.code, None);
+    assert_eq!(fault.recovery, None);
+    assert_eq!(fault.reason, "would_corrupt: an older engine's words");
+}
+
+// ── 6. one address grammar, one parser, on the whole script path ─────────────
 
 /// **`ReadSel::parse` is the SINGLE entry for a section spelling on the script
 /// path.** Two parsers for one token is how `^r-000118` became a heading named
@@ -741,6 +541,12 @@ fn a_section_read_threads_its_rev_in_every_legal_spelling_of_one_address() {
 /// It names its files rather than scanning a tree, so a new file on this path
 /// joins the list deliberately — the same discipline `scriptexecgate_test.go`
 /// applies to exec sites in the host.
+///
+/// **PR 2 note.** `src/script/cmd.rs` is on this list because `section_rev_of`
+/// still stands there, unreachable, until the deletion PR. When that lands, the
+/// row leaves with the function — the file will no longer handle a section
+/// spelling at all, and a list naming a file that does not is the drift this
+/// test exists to catch.
 #[test]
 fn read_sel_parse_is_the_only_section_parser_on_the_script_path() {
     // Relative to crates/mrd/, which is CARGO_MANIFEST_DIR for this target.
@@ -772,187 +578,75 @@ fn read_sel_parse_is_the_only_section_parser_on_the_script_path() {
     }
 }
 
-// ── 9. the refusal triple crosses the boundary TYPED ──────────────────────────
-
-/// The only thing a class-reading consumer is allowed to look at.
-///
-/// It reads the TYPED field and nothing else — no prose, no code spelling. A
-/// consumer written this way cannot be broken by a re-worded engine message,
-/// which is the whole point of carrying the class instead of rendering it.
-fn transient(trace: &mrd::script::ScriptTrace) -> bool {
-    trace
-        .fault
-        .as_ref()
-        .and_then(|fault| fault.recovery)
-        .is_some_and(|recovery| recovery == Recovery::Retry)
-}
-
-/// **The planted positive.** A refusal that IS transient — the daemon's own
-/// `workspace_busy`, retry class, the contention a cooperating writer causes —
-/// crosses the script boundary typed, and a consumer reading only the type sees
-/// it. This class was destroyed before the boundary until now: the frame carried
-/// it, the script path flattened it into prose, and no host-side change could
-/// recover it.
-#[test]
-fn a_transient_refusal_crosses_typed_and_a_consumer_reads_it_as_transient() {
-    const BUSY: &str = r#"{"ok":false,"error":{"code":"workspace_busy","recovery":"retry","message":"another meridian writer holds .meridian/write.lock"}}"#;
-    let mut door = Fake::new().answering_splice(BUSY);
-    let trace = claim(&mut door, &["--actor", "8ab41c02"]);
-
-    assert_eq!(trace.outcome, ScriptOutcome::Refused);
-    let fault = trace.fault.as_ref().expect("a refusal names itself");
-    assert_eq!(
-        fault.recovery,
-        Some(Recovery::Retry),
-        "the daemon's own class, carried — not re-derived, not re-worded"
-    );
-    assert_eq!(fault.code.as_deref(), Some("workspace_busy"));
-    assert!(
-        transient(&trace),
-        "a consumer that reads only the type sees the transient class"
-    );
-}
-
-/// **The control arm.** A refusal that is NOT transient still reads permanent.
-/// Without this the lane could gain a declare-transient-for-everything path,
-/// which declares nothing: a class every refusal carries is not a class.
-///
-/// Both fixtures are the frames the pre-existing tests already use — neither
-/// carries a `recovery` field — so this also measures the precedence: absent on
-/// the frame, the class comes from the §8 frozen table via the code, and it
-/// comes out `fix`, never `retry`.
-#[test]
-fn a_permanent_refusal_still_reads_permanent() {
-    const PERMANENT: [(&str, &str); 2] = [
-        (
-            "would_corrupt",
-            r#"{"ok":false,"error":{"code":"would_corrupt","message":"the candidate loses containment of \"Goals\""}}"#,
-        ),
-        (
-            "guard_required",
-            r#"{"ok":false,"error":{"code":"guard_required","message":"frontmatter key \"owner\" changes existing content with no fingerprint"}}"#,
-        ),
-    ];
-    for (code, frame) in PERMANENT {
-        let mut door = Fake::new().answering_splice(frame);
-        let trace = claim(&mut door, &["--actor", "8ab41c02"]);
-
-        assert_eq!(trace.outcome, ScriptOutcome::Refused, "for {code}");
-        let fault = trace.fault.as_ref().expect("a refusal names itself");
-        assert_eq!(
-            fault.recovery,
-            Some(Recovery::Fix),
-            "{code} is the caller's to fix, and the §8 table is what says so"
-        );
-        assert!(!transient(&trace), "{code} must not read as transient");
-    }
-}
-
-/// A code this engine cannot parse, with no `recovery` beside it, yields
-/// ABSENCE — never a guess and never a default. A defaulted class would be the
-/// declare-something-for-everything shape one level down, and it would read as
-/// the daemon's word when nothing said it.
-#[test]
-fn an_unrecognized_code_with_no_class_beside_it_carries_no_class() {
-    const UNKNOWN: &str = r#"{"ok":false,"error":{"code":"a_code_from_a_later_engine","message":"whatever it means"}}"#;
-    let mut door = Fake::new().answering_splice(UNKNOWN);
-    let trace = claim(&mut door, &["--actor", "8ab41c02"]);
-
-    let fault = trace.fault.as_ref().expect("a refusal names itself");
-    assert_eq!(fault.recovery, None, "absence stays absence");
-    assert_eq!(
-        fault.code.as_deref(),
-        Some("a_code_from_a_later_engine"),
-        "the code is carried verbatim even when this engine cannot type it"
-    );
-    assert!(!transient(&trace));
-}
-
-/// A frame's OWN class wins over the table: the daemon is the authority on the
-/// refusal it minted, and a client that preferred its own table would overrule
-/// the sender. Planted with a deliberately disagreeing pair — the §8 table binds
-/// `would_corrupt` to `fix`, and this frame says `retry`.
-#[test]
-fn the_frames_own_class_wins_over_the_table() {
-    const DISAGREEING: &str = r#"{"ok":false,"error":{"code":"would_corrupt","recovery":"retry","message":"whatever this engine meant"}}"#;
-    let mut door = Fake::new().answering_splice(DISAGREEING);
-    let trace = claim(&mut door, &["--actor", "8ab41c02"]);
-
-    assert_eq!(
-        trace.fault.as_ref().and_then(|fault| fault.recovery),
-        Some(Recovery::Retry),
-        "the sender's own word, not this client's table"
-    );
-}
-
-/// The engine's OWN refusals name their class, because no frame named one for
-/// them — and they name two DIFFERENT classes, which is what proves the naming
-/// is a judgment per site rather than a constant. An elapsed clock sent nothing,
-/// so the same request may succeed (`retry`); a mismatched armed set will arm
-/// the same set on every re-run, so only the caller can change it (`fix`).
-///
-/// Neither carries a `code`: no wire code was minted, and inventing one would
-/// put a value on the §8 surface no daemon can answer with.
-#[test]
-fn an_engine_minted_refusal_names_its_own_class_and_no_code() {
-    let mut slow = StallingFake::new(std::time::Duration::from_millis(7_100));
-    let argv = ["--actor".to_owned(), "8ab41c02".to_owned()];
-    let elapsed = attempt(&argv, CLAIM, &mut slow).expect("the stalled attempt answers a trace");
-    let fault = elapsed.fault.as_ref().expect("a refusal names itself");
-    assert_eq!(fault.recovery, Some(Recovery::Retry));
-    assert_eq!(fault.code, None, "nothing crossed the wire, so no §8 code");
-    assert!(transient(&elapsed));
-
-    let mut door = Fake::new();
-    let mismatch = claim(
-        &mut door,
-        &[
-            "--actor",
-            "8ab41c02",
-            "--expect-armed",
-            "b3-armed:v1:deadbeef",
-        ],
-    );
-    let fault = mismatch.fault.as_ref().expect("a refusal names itself");
-    assert_eq!(mismatch.outcome, ScriptOutcome::Refused);
-    assert_eq!(fault.recovery, Some(Recovery::Fix));
-    assert_eq!(fault.code, None);
-    assert!(
-        !transient(&mismatch),
-        "a set the caller did not authorize is not fixed by running it again"
-    );
-}
-
-/// **The migration is additive, measured rather than argued.** The prose a
-/// consumer has always read is byte-identical, and the trace it deserializes
-/// from — captured BEFORE this change, with no `code` and no `recovery` in the
-/// fault — still parses, with both new fields absent.
-#[test]
-fn the_typed_class_is_additive_to_every_consumer_that_reads_the_prose() {
-    const REFUSAL: &str = r#"{"ok":false,"error":{"code":"would_corrupt","recovery":"fix","message":"the candidate loses containment of \"Goals\""}}"#;
-    // A trace serialized by the engine BEFORE the two fields existed.
-    const PRE_CHANGE: &str = r#"{
-      "entry_fingerprint": "b3:a90f13c7",
-      "outcome": "refused",
-      "trace": [],
-      "fault": {"class": "refused", "reason": "would_corrupt: an older engine\u0027s words"},
-      "telemetry": {"fuel_used": 0, "mem_used": 0, "reads_used": 0, "wall_ms": 0}
-    }"#;
-
-    let mut door = Fake::new().answering_splice(REFUSAL);
-    let trace = claim(&mut door, &["--actor", "8ab41c02"]);
-
-    assert_eq!(
-        trace.fault.as_ref().expect("a refusal names itself").reason,
-        "would_corrupt: the candidate loses containment of \"Goals\"",
-        "the rendering is unchanged to the byte — the class rides beside it, \
-         never inside it"
-    );
-
-    let old: mrd::script::ScriptTrace =
-        serde_json::from_str(PRE_CHANGE).expect("a pre-change trace still deserializes");
-    let fault = old.fault.expect("its fault survives the round trip");
-    assert_eq!(fault.code, None);
-    assert_eq!(fault.recovery, None);
-    assert_eq!(fault.reason, "would_corrupt: an older engine's words");
-}
+// ── Retired against named twins ──────────────────────────────────────────────
+//
+// These rows instrumented the LOCAL transaction's own dialogue — the reads it
+// lowered, the tokens it threaded, the splice it issued. That dialogue is the
+// daemon's now, so the rows have no subject on this side. None is dropped
+// silently; each names the daemon-side test that owns the behavior today. Line
+// numbers are `grep -n` at the head this PR branches from.
+//
+// THE SEQUENCE (reads, threading, commit)
+// * `the_recorded_toc_face_carries_the_wire_word_count` — the read face and its
+//   `words_total`. Served in-process by `registry::script_op::EntryWorldHost`
+//   now. Twin: `crates/registry/tests/script_op.rs:149`
+//   § `a_read_only_program_answers_a_no_effect_trace_at_the_entry_fingerprint`
+//   (the trace's read block over a live daemon). **Named gap:** no daemon-side
+//   row asserts `words_total` specifically — the count is carried by the same
+//   face the twin renders, but nothing pins the number. Recorded here rather
+//   than left to be discovered.
+// * `a_property_row_carries_the_file_rev_the_script_read`,
+//   `an_append_row_carries_the_section_rev_from_the_same_read` — per-row CAS
+//   threading at both grains. Twin: `crates/registry/src/script_op.rs:1515`
+//   § `threading_values_from_the_entry_world_without_a_license` (the entry-rev
+//   law, both grains, license-free).
+// * `a_write_to_an_unread_page_mints_its_token_at_commit_and_lands` — the CAS
+//   relaxation for an unread target. Twins:
+//   `crates/registry/tests/script_op.rs:267` § `a_props_write_with_no_read_commits_on_an_unmoved_world`
+//   and `:296` § `an_append_with_no_read_commits_on_an_unmoved_world`.
+// * `a_section_read_threads_its_rev_in_every_legal_spelling_of_one_address` —
+//   spelling-independent threading. Twins: the threading twin above, plus
+//   `crates/registry/tests/script_op.rs:996` § `a_slash_bearing_section_is_readable_through_the_segment_form`
+//   for the spelling half.
+// * `a_zero_armed_run_issues_no_splice_at_all` — the read-class exit. Twin:
+//   `crates/registry/tests/script_op.rs:149`
+//   § `a_read_only_program_answers_a_no_effect_trace_at_the_entry_fingerprint`.
+// * `a_commit_time_refusal_is_refused_and_carries_the_engines_own_words` — the
+//   commit refusal's wording. The derivation is `registry::script_op::refusal_of`
+//   (`crates/registry/src/script_op.rs:1059`); the crossing is pinned above by
+//   § `the_typed_triple_crosses_the_trace_boundary_and_absence_stays_absence`.
+//   **Named gap:** the daemon's `refusal_of` has no dedicated precedence test of
+//   its own (frame class over table class), which the deleted CLI rows did carry.
+//
+// THE CALLER GUARD
+// * `a_stale_caller_guard_performs_zero_reads_and_zero_splices` — Twin:
+//   `crates/registry/tests/script_op.rs:454`
+//   § `a_stale_caller_guard_refuses_pre_eval_with_zero_reads`.
+// * `a_malformed_caller_pin_refuses_as_input_never_as_a_moved_world`,
+//   `only_a_pre_eval_guard_refusal_carries_the_pinned_expected_token` — Twin:
+//   `crates/registry/tests/script_op.rs:486`
+//   § `a_malformed_caller_pin_refuses_as_input_on_the_wire_lane`, which asserts
+//   `fault.recovery == fix` (`:508`) and the ABSENCE of `guard_expected`
+//   (`:515`) — the same discriminator, on the lane that now owns it.
+//
+// THE REHEARSAL AND THE CLOCK
+// * `a_dry_run_returns_the_full_effect_set_with_no_fingerprint_after` — the
+//   rehearsal's effect set. `--dry` still rides the wire (asserted above by
+//   § `every_parsed_input_rides_the_one_request_and_nothing_is_invented`); what
+//   it PRODUCES is the daemon's. Twin: `crates/registry/tests/script_op.rs:820`
+//   § `a_dry_run_rehearses_and_lands_nothing`.
+// * `a_run_whose_clock_elapses_during_evaluation_refuses_before_the_commit`,
+//   `an_engine_minted_refusal_names_its_own_class_and_no_code` (its clock half),
+//   and the `StallingFake` harness — the entry wall clock. It binds in the
+//   daemon now, at the same three layers. Twin:
+//   `crates/registry/src/script_op.rs:1945`
+//   § `the_wall_clock_binds_at_the_read_builtin`, plus the pre-commit wall site
+//   at `crates/registry/src/script_op.rs:358`.
+//
+// THE INERT INPUTS
+// * `files_bind_in_call_order_and_args_is_a_json_object` — split. The REQUEST
+//   half is pinned above (§ `every_parsed_input_rides_the_one_request_and_nothing_is_invented`);
+//   the BINDING half is the daemon's. Twins:
+//   `crates/registry/tests/script_op.rs:745`
+//   § `files_bind_in_call_order_so_the_edit_lands_on_the_typed_first_member`
+//   and `:784` § `the_trace_opens_with_one_bound_row_per_files_member`.
