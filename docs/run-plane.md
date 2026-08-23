@@ -93,7 +93,7 @@ immediately below):
 | Plane | Entry | Trigger |
 |---|---|---|
 | change | `on_change(event)` | a governed change event (the effect kernel) |
-| run | `def run(ctx)` | `mrd run` addressing a task block |
+| run | `def run(ctx)` | `mrd run` addressing a task block — or, in the amended op's fire mode, the block's declared entry (§ The run entry, amended) |
 | run | script — module top level | `mrd script` / the wire `script` op (wire-contract § A.7) / MCP `script` carrying caller-supplied inline source |
 
 **Amendment to decision #3 (the script entry).** Decision #3 read: *exactly
@@ -1449,6 +1449,122 @@ one write path, and neither may grow a private executor.
 A task's authority comes from where it lives; a script's authority comes from
 who sent it. Every row above is that sentence applied to one axis.
 
+## The run entry, amended — load, freeze, fire
+
+*(hook-support design § 2.2, as amended by its § Amendments / A1. Wire face:
+`docs/wire-contract.md` § A.8. Code: `run::modes`, `effects::kernel`,
+`run::blocks`, `run::caps`, `registry::run_op`, `mrd::run_cmd`.)*
+
+The `run` op gains **`mode`**, and nothing existing changes behavior: a target
+with no `mode` is the shipped task target, decoded and answered as before. Two
+modes join it, behind the dotted caps **`run.mode`** and **`run.input`** — a
+client that does not negotiate them gets the closed set's refusal by name
+(`` unknown field `mode` on `targets[0]` of `run` ``), which is the whole
+point of a closed set.
+
+| Mode | Question it answers | Row it adds to `body.targets[]` |
+|---|---|---|
+| `load` | *what does this page declare?* | one row per anchored starlark block — `entry_kind` + its `declarations` |
+| `fire` | *run the one block I name, with this input* | the entry's return as `value`, plus `applied[]` for the md effects it realized |
+
+### Three phases, one globals set
+
+**load → freeze → fire.** The block's top level is evaluated in the load
+phase; the module is then frozen; a fire calls the frozen entry from a fresh
+evaluator.
+
+The load/fire boundary is a **phase gate at the emission accessor**, never a
+difference in which names exist: `effects::kernel::hook_globals()` is ONE
+closed set for compile, freeze and fire. That is forced, not chosen —
+starlark-rust resolves globals at module-compile time, so a load environment
+with `bash` unbound makes a block whose `def run(event)` merely *mentions*
+`bash()` fail to load, and a frozen `def` keeps the globals it compiled
+against (measured; design § Amendments / A1).
+
+| Phase | `declare()` · `exec()` | `bash()` · the md constructors |
+|---|---|---|
+| load | act — the declaration is the load's whole answer | bound, and **refuse**: `fault.class: effect_at_load`, carrying `fault.line` |
+| fire | refuse: `fault.class: declare_at_fire` | act, under the page's `caps:` ceiling |
+
+Both refusals are typed faults downcast out of starlark's `ErrorKind::Native`
+(`EffectAtLoad` / `DeclareAtFire`), so `name_error` keeps its own meaning —
+an identifier bound nowhere, a typo — and a phase violation is never absorbed
+into it. **Load purity is behavioral here, not structural**, and that is
+stated rather than glossed: nothing effectful *happens* at load, but the
+names are in scope. The structural version costs the freeze and the module
+cache, i.e. the § 2.2 price gate.
+
+### The consent gate — `run` executes what the page declares
+
+> **`run` executes what the page declares: `task.<name>` in frontmatter or
+> `declare()` in the block, never an undeclared block.**
+
+A fire naming a bare anchored fence refuses `not_declared` at the door
+(`run::modes`), and the refusal names the other addressing when the block is
+task-bound — the two addressings are exclusive, so a `task.<name>` block is
+fired as a task, never as a block. A non-starlark fence addressed directly
+refuses `not_a_module` and is told how it is reached: through the starlark
+block that declares it with `exec(...)`.
+
+The consent gate is why a page-wide *block enumerator* was new machinery
+rather than a lifted function — discovery until now ran off frontmatter
+`task.*` bindings alone. `run::blocks` walks from the page's live anchors to
+their fences; nothing re-implements addressing.
+
+### Recording by declaration kind
+
+A **fire row writes no receipt** and takes no lock beyond the batch's own; a
+task row is unchanged. There is no caller flag for this — the engine reads
+the page. 100 declared-block fires add **zero** rows to `receipts/run.md`
+(gate row 6 of card `hook-01-mrd-run-load-fire`; the receipt anchors counted
+are `^r-<invocation>` and `^p-<invocation>`).
+
+### Caps — the page's own ceiling
+
+A declaring page's blocks have no task names, so `task.<name>.caps` cannot
+express their ceiling. `run::caps` reads a **page-level `caps:`** key for
+them — new grammar, deliberately not a task binding — over the three md verbs
+`md.create` · `md.edit` · `md.delete`. It is judged at the lifted `admit`
+choke point, so a denial is `cap_denied` at the door and nothing reaches
+disk; absence of a cap is never a silent no-op. The declaring root's
+conventions ceiling narrows a page's caps and never widens them, exactly as
+for tasks. An exec'd entry's process is inert to it, by law.
+
+### The world a mode-bearing row runs against
+
+`load` and `fire` take the **pinned resident snapshot** (an `Arc` clone, the
+one the script op takes) and never run the `domain_snapshot` fold. The world
+is a parameter (`run::modes::ModeWorld`), so ONE implementation serves the
+daemon and the CLI, and the two lanes cannot answer differently.
+
+On a **cold workspace** a mode-bearing row takes the same § 3.2 cold gate the
+script op takes: it **refuses `corpus_warming` (retry)** — it does not block
+and does not bypass. Wire-contract § 3.2's promise is about the read door; a
+fire is not the read door, so the answer is stated here rather than implied.
+
+`prelude` (one per call, cap `run.mode`) is evaluated into each block's
+module before its top level; a prelude that does not evaluate refuses
+`prelude_invalid` before any block runs. Declarations and frozen modules are
+cached per block rev, keyed with the prelude's blake3 — an unchanged block is
+served from cache rather than re-evaluated, which is what the fire p95 rests
+on.
+
+### Input and answer
+
+**Which def a fire calls.** `declare(impl = f)` names it; with no `impl` the
+conventional entry is **`run`** (`effects::kernel::DEFAULT_HOOK_ENTRY`), and
+whether the module defines it is the freeze's business — `missing_entry`,
+loud, at the right layer — because a block may legitimately declare before it
+defines. `impl` is resolved at the `declare()` call while the value is still
+live: a callable is the evaluated entry, an `exec(...)` value is a process
+entry, anything else is the `impl_type` fault.
+
+`input` (cap `run.input`) is JSON, converted to starlark at the call;
+the entry's return converts back to JSON as `value`. **`None` is no answer** —
+it collapses to no `value`, never to `"value": null` (§ 1.3: *the entry's
+return is the answer*). A birth row's `file_rev` names **the born file's**
+rev, not the page's, and carries the born `path`.
+
 ## Addressing (§2.1 grammar, no new syntax)
 
 A page declares tasks in frontmatter: `task.<name>: "[[#^block-id]]"` binds a
@@ -1971,8 +2087,18 @@ Record ↔ receipt linkage:
 
 ```
 mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json
+mrd run <PAGE>#^<id> [--input-json FILE|-] [--dry] [--json]   # fire one declared block
+mrd run --load <PAGE>... [--json]                             # what the pages declare
 mrd script [--json]                      # source on stdin (heredoc)
 ```
+
+**Amendment to decision #12 (the locked surface gains the two modes).** The
+same verb, two more shapes — `mrd run <PAGE>#^<id>` fires one declared block
+and `mrd run --load` reads declarations off one or more pages (§ The run
+entry, amended). Every meaningless combination refuses BY NAME with exit 2
+rather than being ignored: `--load` with `#^<id>`, `--load` with `TASK` /
+`-- ARGS` / `--list`, `--input-json` without a block address, and `TASK` /
+`-- ARGS` / `--env` on a fire (a fire's one input channel is `--input-json`).
 
 **Amendment to decision #12 (the locked surface gains `mrd script`).**
 Decision #12 locked the CLI surface at `mrd run` and its flags. It is
