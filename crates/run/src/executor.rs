@@ -869,6 +869,7 @@ fn realize_births(
     for effect in effects.iter().filter(|e| e.kind == EffectKind::Create) {
         let path = str_arg(effect, "path")?;
         let body = str_arg(effect, "body")?;
+        let props = props_arg(effect)?;
         let args = wire_serve::write::CreateArgs {
             id: None,
             path: wire::Path(path.clone()),
@@ -885,6 +886,8 @@ fn realize_births(
             if_root: None,
             dry: false,
             fields: req.fields.clone(),
+            // D6: carried as DATA to the door, which serializes it.
+            props,
         };
         let out = create_waiting_out_busy(root, req.birth_seq, &args).map_err(|e| {
             ExecError::BirthRefused {
@@ -1339,6 +1342,41 @@ fn str_arg(effect: &Effect, key: &str) -> Result<String, ExecError> {
             reason: format!("missing scalar '{key}'"),
         }),
     }
+}
+
+/// The `create(props = {…})` map off a descriptor, lowered to the door's own
+/// shape (D6, card 17). Absent is an empty map — the shipped birth, where
+/// `body` is the whole document. Present-but-not-a-map, or a map value that is
+/// neither scalar nor list, is the same loud fault as a missing required arg:
+/// the kernel constructor already refused those shapes, so reaching here means
+/// a descriptor was built by hand out of contract.
+fn props_arg(
+    effect: &Effect,
+) -> Result<BTreeMap<String, wire_serve::write::PropValue>, ExecError> {
+    let bad = |reason: String| ExecError::BadDescriptor {
+        kind: effect.kind.as_str().to_owned(),
+        reason,
+    };
+    let map = match effect.args.get("props") {
+        None => return Ok(BTreeMap::new()),
+        Some(ArgValue::Map(map)) => map,
+        Some(_) => return Err(bad("non-map 'props'".to_owned())),
+    };
+    let mut props = BTreeMap::new();
+    for (key, value) in map {
+        let value = match value {
+            ArgValue::Str(s) => wire_serve::write::PropValue::Scalar(s.clone()),
+            ArgValue::List(items) => wire_serve::write::PropValue::List(items.clone()),
+            ArgValue::Map(_) => {
+                return Err(bad(format!(
+                    "props value for '{key}' is a map — frontmatter values are scalars or \
+                     one-level lists"
+                )));
+            }
+        };
+        props.insert(key.clone(), value);
+    }
+    Ok(props)
 }
 
 /// An optional scalar string argument off a descriptor: absent is `None`,

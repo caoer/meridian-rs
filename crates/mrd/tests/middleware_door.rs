@@ -504,6 +504,7 @@ fn create_door_transforms_the_born_bytes_and_carries_intents() {
             if_root: None,
             dry: false,
             fields,
+            props: Default::default(),
         },
         &[],
     )
@@ -552,6 +553,7 @@ fn create_door_stamps_a_frontmatterless_birth_with_one_block() {
         if_root: None,
         dry: false,
         fields: BTreeMap::new(),
+        props: Default::default(),
     };
     create(
         &root,
@@ -617,4 +619,95 @@ fn an_unevaluable_middleware_fails_closed() {
         "{err:?}"
     );
     assert_eq!(read(&root, "tasks/fix.md"), before, "nothing landed");
+}
+
+/// **D6 × born identity** (card 17): a birth through `props=` still meets the
+/// armed door — the door composes the caller's frontmatter FIRST, so a
+/// fill-if-absent middleware reads the caller's keys and stamps beside them,
+/// one block, one receipt. This is the born-card shape end to end: the program
+/// hands over a dict, the door quotes it, `000` adds `created`/`session`.
+#[test]
+fn a_birth_through_props_is_composed_before_middleware_and_still_stamped() {
+    let (_dir, root) = tmp_ws();
+    // The born-card scope is `agents/**`, not the shared helper's `tasks/**`.
+    let page = format!(
+        "---\ntags: [type/rule, rules/middleware]\nid: 000-born-identity\npaths:\n  - agents/**\n---\n\n# 000-born-identity\n\n```starlark\n{}```\n",
+        "def middleware(ctx):\n    if ctx.op != \"create\":\n        return\n    if ctx.after.frontmatter.get(\"type\") != \"agent\":\n        return\n    created = ctx.fields.get(\"created\")\n    if created != None:\n        set_field(path = ctx.after.path, key = \"created\", value = created)\n    session = ctx.fields.get(\"session\")\n    if session != None:\n        set_field(path = ctx.after.path, key = \"session\", value = session)\n",
+    );
+    write_page(&root, "rules/born-identity.md", &page);
+    arm(
+        &root,
+        &[(
+            "rules/born-identity.md",
+            &page,
+            "000-born-identity",
+            Mode::Block,
+        )],
+    );
+
+    let mut fields = BTreeMap::new();
+    fields.insert("created".to_string(), "2026-08-23T01:09:34-04:00".to_string());
+    fields.insert("session".to_string(), "19-20-mrd-statusd-integration".to_string());
+    let mut props = BTreeMap::new();
+    props.insert(
+        "type".to_string(),
+        wire_serve::write::PropValue::Scalar("agent".to_string()),
+    );
+    props.insert(
+        "manifest".to_string(),
+        // The hostile half rides the same birth: a manifest a hand-rolled
+        // escaper would have leaked a key through.
+        wire_serve::write::PropValue::Scalar("worker: card 17 — \"props\" at the door".to_string()),
+    );
+    props.insert(
+        "tags".to_string(),
+        wire_serve::write::PropValue::List(vec!["type/agent".to_string()]),
+    );
+    create(
+        &root,
+        None,
+        &CreateArgs {
+            id: None,
+            path: Path("agents/f6656ff1/f6656ff1.md".into()),
+            body: "# Memo\n\n# Todo\n".into(),
+            actor: Some("agent:f6656ff1".into()),
+            now: None,
+            if_root: None,
+            dry: false,
+            fields,
+            props,
+        },
+        &[],
+    )
+    .expect("the props birth lands");
+
+    let born = read(&root, "agents/f6656ff1/f6656ff1.md");
+    assert!(
+        born.contains("created: 2026-08-23T01:09:34-04:00"),
+        "000 still stamps created on a card born through props=: {born}"
+    );
+    assert!(
+        born.contains("session: 19-20-mrd-statusd-integration"),
+        "000 still stamps session: {born}"
+    );
+    assert!(
+        born.contains("tags: [type/agent]") && born.contains("type: agent"),
+        "the caller's own props landed: {born}"
+    );
+    assert_eq!(
+        born.lines().filter(|l| *l == "---").count(),
+        2,
+        "one frontmatter block, hostile manifest and all: {born}"
+    );
+    let meta = policy::defs::parse_meta(&born)
+        .expect("the born frontmatter parses")
+        .expect("frontmatter present");
+    assert_eq!(
+        meta.get("manifest"),
+        Some(&policy::defs::FmValue::Str(
+            "worker: card 17 — \"props\" at the door".to_string()
+        )),
+        "the hostile manifest reads back byte for byte: {born}"
+    );
+    assert!(born.ends_with("# Memo\n\n# Todo\n"), "body verbatim: {born}");
 }

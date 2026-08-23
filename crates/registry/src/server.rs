@@ -1455,6 +1455,9 @@ fn dispatch_read(
                 if_root,
                 dry: dry.unwrap_or(false),
                 fields,
+                // The wire `create` op carries no props field: `body` is the
+                // whole document, frontmatter included (§ A.3).
+                props: BTreeMap::new(),
             };
             // Birth is a root advance — owes the chain a seq. Sink records
             // inside the flock (`SeqSink::committed`) — see `Op::Splice`.

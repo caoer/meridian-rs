@@ -178,3 +178,99 @@ fn a_starlark_birth_into_a_machinery_dir_refuses() {
         );
     }
 }
+
+/// **D6 (card 17) end to end**: a block hands `create(props = {…})` a dict and
+/// the DOOR serializes the frontmatter. The program below carries no escaper —
+/// that is the whole point: the hostile value it births would have needed one
+/// under the round-2 shape, and the door quotes it instead.
+#[test]
+fn starlark_create_props_is_serialized_by_the_door_with_no_escaper_in_the_program() {
+    let (_tmp, root) = workspace();
+    let caps = Authority::granted(CapSet::parse("md.create:agents/*.md").unwrap());
+    let src = "def run(ctx):\n    create(path = \"agents/f6656ff1.md\",\n           props = {\"type\": \"agent\",\n                    \"manifest\": ctx.args[0],\n                    \"tags\": [\"type/agent\"]},\n           body = \"# Memo\\n\")\n";
+
+    let out = dispatch_starlark::dispatch(&root, &dispatch_of(src, &caps)).unwrap();
+    assert_eq!(out.effects.len(), 1, "one birth descriptor");
+
+    let born = std::fs::read_to_string(root.0.join("agents/f6656ff1.md")).unwrap();
+    assert_eq!(
+        born, "---\nmanifest: done\ntags: [type/agent]\ntype: agent\n---\n# Memo\n",
+        "the door composed the block: keys sorted, list in flow spelling, body verbatim"
+    );
+    assert!(
+        !src.contains("yaml("),
+        "the flagship example everyone copies carries no hand-rolled escaper"
+    );
+}
+
+/// The hostile half of the same lane: a value carrying a colon, a quote and a
+/// wikilink lands as ONE scalar — no forged key, no second block — and a value
+/// carrying a newline REFUSES the birth (D11) instead of being sanitized.
+#[test]
+fn starlark_create_props_quotes_hostile_values_and_refuses_a_newline() {
+    let (_tmp, root) = workspace();
+    let caps = Authority::granted(CapSet::parse("md.create").unwrap());
+    let src = "def run(ctx):\n    create(path = \"cards/hostile.md\",\n           props = {\"status\": \"owner: [[x]] \\\" #now\"},\n           body = \"# H\\n\")\n";
+    dispatch_starlark::dispatch(&root, &dispatch_of(src, &caps)).unwrap();
+    let born = std::fs::read_to_string(root.0.join("cards/hostile.md")).unwrap();
+    assert_eq!(
+        born.lines().filter(|l| *l == "---").count(),
+        2,
+        "the hostile value opened no second block: {born}"
+    );
+    assert_eq!(
+        born.lines().filter(|l| l.starts_with("status:")).count(),
+        1,
+        "one key, not two: {born}"
+    );
+    let meta = policy::defs::parse_meta(&born).unwrap().unwrap();
+    assert_eq!(
+        meta.get("status"),
+        Some(&policy::defs::FmValue::Str("owner: [[x]] \" #now".to_owned())),
+        "the value reads back byte for byte: {born}"
+    );
+
+    let (_tmp2, root2) = workspace();
+    let nl = "def run(ctx):\n    create(path = \"cards/nl.md\", props = {\"status\": \"a\\nb: forged\"}, body = \"# N\\n\")\n";
+    let err = dispatch_starlark::dispatch(&root2, &dispatch_of(nl, &caps))
+        .expect_err("a newline value refuses at the door");
+    let DispatchError::Exec(ExecError::BirthRefused { detail, .. }) = &err else {
+        panic!("expected BirthRefused, got {err:?}");
+    };
+    assert!(detail.contains("newline"), "{detail}");
+    assert!(!root2.0.join("cards/nl.md").exists(), "nothing landed");
+}
+
+/// The constructor judges only the SHAPE, and it judges it at the block, not
+/// at the door: a non-dict `props`, a non-string key, or a value that is
+/// neither string nor list is a starlark fault naming the argument.
+#[test]
+fn starlark_create_props_refuses_an_out_of_shape_dict_at_the_block() {
+    let caps = Authority::granted(CapSet::parse("md.create").unwrap());
+    for (src, needle) in [
+        (
+            "def run(ctx):\n    create(path = \"a.md\", props = \"type: agent\", body = \"# A\\n\")\n",
+            "frontmatter dict",
+        ),
+        (
+            "def run(ctx):\n    create(path = \"a.md\", props = {\"n\": 7}, body = \"# A\\n\")\n",
+            "string or a list of strings",
+        ),
+        (
+            "def run(ctx):\n    create(path = \"a.md\", props = {\"tags\": [7]}, body = \"# A\\n\")\n",
+            "list member",
+        ),
+        (
+            "def run(ctx):\n    create(path = \"a.md\", props = {\"tags\": [[\"a\"]]}, body = \"# A\\n\")\n",
+            "list member",
+        ),
+    ] {
+        let err = dispatch_starlark::evaluate(&dispatch_of(src, &caps))
+            .expect_err("an out-of-shape props refuses");
+        let rendered = format!("{err:?}");
+        assert!(
+            rendered.contains(needle),
+            "the fault teaches the shape ({needle}): {rendered}"
+        );
+    }
+}

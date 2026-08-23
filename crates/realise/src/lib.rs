@@ -603,6 +603,9 @@ fn mint_board_card(
         if_root: None,
         dry: false,
         fields: BTreeMap::default(),
+        // The card's frontmatter rides its rendered body (D6 props= is the
+        // starlark birth lane's door argument, not this one).
+        props: BTreeMap::default(),
     };
     match wire_serve::write::create(root, None, &args, &[]) {
         Ok(_) => Ok(Some(path)),

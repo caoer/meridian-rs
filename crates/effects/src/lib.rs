@@ -237,8 +237,13 @@ impl Serialize for EffectKind {
     }
 }
 
-/// Descriptor argument: scalar string or list of strings. Closed shape — no
-/// numbers, no nested maps; flat inert data.
+/// Descriptor argument: scalar string, list of strings, or a ONE-LEVEL map of
+/// those two (`create(props = {…})` — D6). Closed shape — no numbers, no
+/// deeper nesting; inert data throughout. The map arm exists because a
+/// frontmatter block IS a map: flattening it into `props.<key>` args would
+/// make every reader re-parse a name, and the door that serializes it needs
+/// the keys and the values apart to quote them (`yaml_safe_value` /
+/// `yaml_safe_flow`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum ArgValue {
@@ -246,6 +251,9 @@ pub enum ArgValue {
     Str(String),
     /// A list-of-strings argument (e.g. `send(to = [...])`).
     List(Vec<String>),
+    /// A map argument whose values are scalars or lists — one level, never a
+    /// map inside a map (the constructor that builds it refuses deeper).
+    Map(BTreeMap<String, ArgValue>),
 }
 
 /// Typed provenance of an effect. Planes carry different facts and cannot
