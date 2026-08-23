@@ -123,8 +123,8 @@ impl Ws {
             .env("XDG_RUNTIME_DIR", self.path().join(".rt"))
             .env("XDG_CACHE_HOME", self.path().join(".cache"))
             .current_dir(self.path());
-        let _ = std::fs::create_dir_all(self.path().join(".rt"));
-        let _ = std::fs::create_dir_all(self.path().join(".cache"));
+        std::fs::create_dir_all(self.path().join(".rt")).expect("runtime dir");
+        std::fs::create_dir_all(self.path().join(".cache")).expect("cache dir");
         if let Some(value) = timing {
             command.env("MRD_TIMING", value);
         } else {
