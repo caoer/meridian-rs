@@ -2170,6 +2170,102 @@ pub fn domain_leaves_memoized(
 /// (unlike [`PARALLEL_STAT_FLOOR`]'s stats), so the floor sits much lower.
 const PARALLEL_READ_FLOOR: usize = 64;
 
+/// One member's leaf digest with the bytes DROPPED at the end of this call —
+/// the fold-only half of [`read_and_digest_member`], refusal-shaped
+/// identically (same [`corpus_member_refusal`], same name, same order), so a
+/// fold-only caller cannot see a different corpus or a different first
+/// refusal than a snapshotting one.
+fn digest_member(root: &WorkspaceRoot, rel: &Path) -> io::Result<[u8; 32]> {
+    read_and_digest_member(root, rel).map(|(_, digest)| digest)
+}
+
+/// The fold-only sweep: [`read_and_digest_members`]'s discipline (same floor,
+/// same chunking, same worker clamp, same first-refusal merge) with each
+/// member's bytes released as soon as its digest exists.
+///
+/// Peak residency is therefore O(workers x largest member) instead of O(whole
+/// corpus). That is the entire point — see [`domain_fold`].
+fn digest_members(root: &WorkspaceRoot, rels: &[PathBuf], floor: usize) -> io::Result<Vec<[u8; 32]>> {
+    if rels.is_empty() || rels.len() < floor {
+        return rels.iter().map(|rel| digest_member(root, rel)).collect();
+    }
+    let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 4));
+    let chunk = rels.len().div_ceil(workers);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = rels
+            .chunks(chunk)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|rel| digest_member(root, rel))
+                        .collect::<io::Result<Vec<_>>>()
+                })
+            })
+            .collect();
+        let mut rows = Vec::with_capacity(rels.len());
+        for handle in handles {
+            match handle.join() {
+                Ok(chunk_rows) => rows.extend(chunk_rows?),
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+        Ok(rows)
+    })
+}
+
+/// The §12 hash-domain fold ALONE: the same walk, the same per-member leaf
+/// digest and the same root [`domain_snapshot`] returns — without allocating
+/// the [`DomainFiles`] the run plane immediately drops.
+///
+/// **Value identity is the contract.** This is `domain_snapshot(root).1` for
+/// every root: same [`domain::Domain`] load, same [`hash_domain`] walk, same
+/// [`model::leaf_digest`] per member, same [`hash_name`] leaf keys in the same
+/// `BTreeMap` order, same [`served_root`] fold at the same domain version.
+/// The only difference is that no member's bytes outlive its digest.
+///
+/// **Why it exists.** Every run-plane caller of [`domain_snapshot`] writes
+/// `let (_, folded) = …` — the token is the whole answer and the corpus bytes
+/// are dead on arrival. On a 37 800-member / 212 MiB root that discarded
+/// allocation is ~260 MB of peak RSS and the `snapshot.fold` phase's collect
+/// half, paid by every effectful run.
+///
+/// It emits the SAME `snapshot{,.walk,.read,.fold}` timing phases: a fold is a
+/// fold, and a reader comparing a run before and after this call site changed
+/// must be comparing the same named quantities (`run-plane.md` § Timing
+/// phases).
+///
+/// # Errors
+/// I/O failure loading the domain config, traversing the root, or reading a
+/// member — the same refusals, in the same order, as [`domain_snapshot`].
+pub fn domain_fold(root: &WorkspaceRoot) -> io::Result<model::MerkleRoot> {
+    FOLD_COUNT.fetch_add(1, Ordering::Relaxed);
+    let whole = timing::phase("snapshot");
+    let walk = timing::phase("snapshot.walk");
+    let domain = domain::Domain::load(root)?;
+    let rels = hash_domain(root, &domain)?;
+    walk.stop();
+    let read = timing::phase("snapshot.read");
+    let digests = digest_members(root, &rels, PARALLEL_READ_FLOOR)?;
+    read.stop();
+    let fold = timing::phase("snapshot.fold");
+    // Keyed and ordered exactly as `domain_snapshot_with_leaves` keys and
+    // orders its own leaves — a `BTreeMap` over the raw name bytes is the
+    // same sequence `leaves.iter().map(|(rel, d)| (hash_name(rel), *d))`
+    // produces there, because `hash_name` is order-preserving on the paths
+    // `hash_domain` returns.
+    let mut leaves: BTreeMap<PathBuf, [u8; 32]> = BTreeMap::new();
+    for (rel, digest) in rels.iter().zip(digests) {
+        leaves.insert(rel.clone(), digest);
+    }
+    let leaf_refs: Vec<(&[u8], [u8; 32])> =
+        leaves.iter().map(|(rel, d)| (hash_name(rel), *d)).collect();
+    let folded = served_root(&leaf_refs, domain.version());
+    fold.stop();
+    whole.stop();
+    Ok(folded)
+}
+
 /// One member's bytes + leaf digest, refusal-shaped exactly as the serial
 /// loop always was: a member that cannot be read refuses the whole snapshot,
 /// naming the member (`CorpusMemberError`) — the raw OS error carries no path.
