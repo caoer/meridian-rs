@@ -3136,8 +3136,11 @@ one refuses `not_declared` at the door.
 
   The `applied[]` vocabulary is amended (**A8**): `born` is a birth, `edited`
   an edit, `refused` the ONE descriptor a door judged (with its `class`), and
-  `not_applied` its siblings — the batch is atomic, so nothing landed and no
-  sibling claims it did. There is no `exists` arm: an occupied path REFUSES at
+  `not_applied` its siblings — POSITIONALLY, on the refusal's own descriptor
+  index: births realize sequentially BEFORE the atomic page splice, so a create
+  before the refused index reads `born` (it is on disk — decision #14 does not
+  roll it back), a create after it reads `not_applied`, and every edit reads
+  `not_applied` because the splice never ran. There is no `exists` arm: an occupied path REFUSES at
   the create door. **A door refusal is that effect's row and never the fire
   row's** — the fire row keeps `result:"ok"` and its `value`, which is the
   never-veto law; only a failure to carry the batch at all (lock, I/O, page
