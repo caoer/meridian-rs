@@ -518,12 +518,8 @@ mod tests {
     fn one_unloadable_row_does_not_silence_the_rules_beside_it() {
         // Registers by tag but declares no hook — the two layers.
         let bare = "---\ntags: [type/rule, rules/hook]\nid: bad.hook\n---\n\n# rule\n".to_string();
-        let (armed_page, mut pages) = armed(&[(
-            "good.md",
-            hook_page("good.hook"),
-            "good.hook",
-            Mode::Armed,
-        )]);
+        let (armed_page, mut pages) =
+            armed(&[("good.md", hook_page("good.hook"), "good.hook", Mode::Armed)]);
         pages.0.insert("bad.md".to_string(), bare.clone());
         let page = format!(
             "{armed_page}| `bad.hook` | `bad.md` | `{rev}` | `.` | `armed` |\n",

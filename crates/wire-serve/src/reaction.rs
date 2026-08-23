@@ -474,11 +474,22 @@ def on_change(event):
         let bare = "---\ntags: [type/rule, rules/hook]\nid: bare.rule\n---\n\n# rule\n";
         let (_temp, root) = arm_pages(
             ".",
-            &[
-                ("task-review-notify.md", &good, HOOK_ID, Mode::Armed),
-                ("bare.md", bare, "bare.rule", Mode::Armed),
-            ],
+            &[("task-review-notify.md", &good, HOOK_ID, Mode::Armed)],
         );
+        // The bad row is HAND-WRITTEN at the page's true rev, because the ARM
+        // act no longer mints one: it loads every firing winner and refuses
+        // `ArmFault::Unloadable` (card `mrd-arm-loads-page`). The fault stays
+        // reachable in the wild — a hand-edited artifact, or a row armed by an
+        // older engine — so the FIRE path must still fail closed on it, which
+        // is what this test holds.
+        write_page(&root.0, "bare.md", bare);
+        let artifact_path = root.0.join(policy::armed::ARMED_RULES_PATH);
+        let artifact_page = std::fs::read_to_string(&artifact_path).expect("the artifact");
+        let hand_written = format!(
+            "{artifact_page}| `bare.rule` | `bare.md` | `{rev}` | `.` | `armed` |\n",
+            rev = page_rev(bare)
+        );
+        std::fs::write(&artifact_path, hand_written).expect("append the hand-written row");
 
         let outcomes = feed(&root, "tasks/x.md", "in-progress", "review");
         let live = reactions(&outcomes);

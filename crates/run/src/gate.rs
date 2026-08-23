@@ -229,8 +229,7 @@ mod scenario {
         }]);
         // The act loads the winner it attests — a `path → bytes` map IS a
         // `PageSource`, and these are the bytes just landed.
-        let source =
-            BTreeMap::from([(RULE_PAGE_PATH.to_string(), RULE_PAGE.to_string())]);
+        let source = BTreeMap::from([(RULE_PAGE_PATH.to_string(), RULE_PAGE.to_string())]);
         let artifact = policy::armed::arm(
             &index,
             &policy::armed::ArmRoot::workspace(),
