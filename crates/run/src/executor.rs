@@ -162,6 +162,17 @@ pub struct CommitFacts<'a> {
     pub actor: &'a str,
     /// The caller's time fact; absent stays absent, never invented.
     pub now: Option<&'a str>,
+    /// The put frame's opaque § A.2.1 `fields` map, verbatim
+    /// ([`ApplyRequest::fields`]) — the same frame the armed middleware leg
+    /// saw as `ctx.fields` when it evaluated this write ([`crate::gate`]).
+    ///
+    /// This is a NOTIFICATION lane: a sink mints a frame from it, no rule
+    /// reads it. The frame a RULE evaluates on is the middleware ctx, which
+    /// the gate mount carries — the two are different mechanisms and the
+    /// second is what design § 6 step 6 promises. Carried here so a sink
+    /// can attribute a fire's splice the way it attributes a put, rather
+    /// than having to re-derive the caller's frame from the actor alone.
+    pub fields: &'a BTreeMap<String, String>,
 }
 
 /// Why the canonical intent → executor adapter refused (R13 ruling § normative
@@ -1424,6 +1435,7 @@ fn offer_committed(
             root_before,
             actor: &actor,
             now: req.now,
+            fields: req.fields,
         },
     );
 }
