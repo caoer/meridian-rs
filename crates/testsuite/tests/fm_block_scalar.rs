@@ -243,7 +243,10 @@ fn the_live_regression_fixture_reads_back_whole() {
     assert_ne!(face_a, ">", "the indicator byte is gone from both faces");
     // The keys AROUND a block scalar keep reading exactly as before.
     assert_eq!(wire_faces(dir.path(), &rel, "model").0, "opus");
-    assert_eq!(wire_faces(dir.path(), &rel, "name").0, "ground-truth-verifier");
+    assert_eq!(
+        wire_faces(dir.path(), &rel, "name").0,
+        "ground-truth-verifier"
+    );
 }
 
 /// The SUSPENDED half, pinned so nobody widens it by accident: a block-style
@@ -280,7 +283,11 @@ fn the_shared_props_entry_serves_block_scalars_untrimmed() {
             .value
             .clone()
     };
-    assert_eq!(of("folded"), "a b\n", "the trailing newline survives props_of");
+    assert_eq!(
+        of("folded"),
+        "a b\n",
+        "the trailing newline survives props_of"
+    );
     assert_eq!(of("literal"), "x\ny\n", "interior breaks survive props_of");
     assert_eq!(of("plain"), "ordinary", "an ordinary scalar still decodes");
 }
