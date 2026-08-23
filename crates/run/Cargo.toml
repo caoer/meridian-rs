@@ -27,6 +27,10 @@ path = "tests/exec_walltime.rs"
 required-features = ["perf-walltime"]
 
 [dependencies]
+# The plane's own phases under `MRD_TIMING` — pre_eval / dispatch / eval /
+# apply / cascade (docs/run-plane.md § Timing phases). Already in the graph via
+# `fs`; a std-only, zero-dependency leaf, silent and clock-free when off.
+timing = { workspace = true }
 # Page parse chain: fs::load → syntax::parse → model::build; mint-plane anchor
 # resolution (model::resolve) is the §2.1 lookup task bindings reuse. The
 # executor rides the same seam: model::validate_batch mints the sealed batch,

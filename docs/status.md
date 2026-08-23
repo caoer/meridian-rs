@@ -1433,9 +1433,13 @@ it on and off; the mode writes to stderr or to a file, never to stdout.
 
 | `MRD_TIMING` | Sink |
 |---|---|
-| unset, empty, `0` | **off** — no clock is read and nothing is written |
+| unset, empty, `0`, `off`, `false`, `no` | **off** — no clock is read and nothing is written |
 | `1`, `on`, `true`, `yes` | stderr |
 | any other value | that path, opened append (created if absent); an unopenable path degrades to stderr |
+
+The off words are spelled out rather than inferred, because the fallback arm
+CREATES A FILE: without them `MRD_TIMING=off` would write a file named `off`
+into the caller's working directory.
 
 The value is read **once per process**, at the first phase; changing it
 mid-process changes nothing. One line per phase, `\n`-terminated, written in a

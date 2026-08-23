@@ -2063,9 +2063,18 @@ pub fn domain_snapshot_with_leaves(
     root: &WorkspaceRoot,
 ) -> io::Result<(DomainFiles, BTreeMap<PathBuf, [u8; 32]>, model::MerkleRoot)> {
     FOLD_COUNT.fetch_add(1, Ordering::Relaxed);
+    // The three phases a timing reader acts on (`run-plane.md` § Timing
+    // phases). They are emitted HERE, not at a door, because every caller of
+    // this function pays them — the corpus fold does not care who asked.
+    let whole = timing::phase("snapshot");
+    let walk = timing::phase("snapshot.walk");
     let domain = domain::Domain::load(root)?;
     let rels = hash_domain(root, &domain)?;
+    walk.stop();
+    let read = timing::phase("snapshot.read");
     let members = read_and_digest_members(root, &rels, PARALLEL_READ_FLOOR)?;
+    read.stop();
+    let fold = timing::phase("snapshot.fold");
     let mut files = Vec::with_capacity(rels.len());
     let mut leaves: BTreeMap<PathBuf, [u8; 32]> = BTreeMap::new();
     for (rel, (bytes, digest)) in rels.iter().zip(members) {
@@ -2077,6 +2086,8 @@ pub fn domain_snapshot_with_leaves(
     let leaf_refs: Vec<(&[u8], [u8; 32])> =
         leaves.iter().map(|(rel, d)| (hash_name(rel), *d)).collect();
     let folded = served_root(&leaf_refs, domain.version());
+    fold.stop();
+    whole.stop();
     Ok((files, leaves, folded))
 }
 
