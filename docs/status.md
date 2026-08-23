@@ -40,7 +40,7 @@ write), `fingerprint`, `diff`, `sub`, plus standing additives (`plan_edits`,
 
 **As shipped (may lag design — treat gaps as debt, not law):**
 
-The daemon answers protocol 1 as `meridian-daemon/1.0.0` (derived:
+The daemon answers protocol 1 as `meridian-daemon/1.1.0` (derived:
 `concat!("meridian-daemon/", env!("CARGO_PKG_VERSION"))`); the stdio sidecar
 host is DROPPED (wire-contract §3.3, 2026-08-06). Live binaries still
 carry a dual negotiation path and some legacy `root` / `if_root` spellings in
