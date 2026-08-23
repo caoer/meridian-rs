@@ -1,4 +1,9 @@
 /target
+# the CI test lane's own CARGO_TARGET_DIR (.woodpecker/ci.yaml). It is a build
+# dir like /target and was simply missing here, so it showed up as `?? target-ci/`
+# in a shared CI workspace — enough to make the publish step's tree probe read
+# the tree as dirty on four consecutive main heads.
+/target-ci
 /.claude/worktrees
 # per-run history: CI artifacts carry it; only the current table + latest.json are tracked
 /crates/perfsuite/results/20*.json

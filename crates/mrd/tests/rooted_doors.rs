@@ -20,10 +20,6 @@ use std::time::{Duration, Instant};
 
 mod common;
 
-fn mrd_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_mrd")
-}
-
 /// The TRUE target, in the `sessions` root.
 const TARGET: &str = "# Notes\n\n## Design\n\nthe sessions root's real design note.\n";
 /// The decoy: same basename, ambient root, different bytes.
@@ -119,10 +115,8 @@ fn sandbox() -> Sandbox {
 
 impl Sandbox {
     fn base(&self) -> Command {
-        let mut cmd = Command::new(mrd_bin());
-        cmd.env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
-            .env("MERIDIAN_CONFIG", self.home.join("MERIDIAN.md"))
+        let mut cmd = common::mrd_command(&self.home, &self.cache_home);
+        cmd.env("MERIDIAN_CONFIG", self.home.join("MERIDIAN.md"))
             .env_remove("MERIDIAN_WORKSPACE");
         cmd
     }

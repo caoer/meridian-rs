@@ -148,7 +148,7 @@ it is the case the gate exists for, not an edge. Such a run leaves
 `root_at_eval` empty in the in-memory effect set: that is what "not observed"
 looks like, and nothing renders it.
 
-When a gate does fire: one `fs::domain_snapshot` AFTER the eval, its root
+When a gate does fire: one `fs::domain_fold` AFTER the eval, its root
 stamped onto every emitted effect's `Provenance::Run.root_at_eval` and, on the
 live leg, handed to the apply as `observed_root`. After-eval observes the same
 domain as before-eval would have: this entry is hermetic by construction, so
@@ -1545,8 +1545,13 @@ their fences; nothing re-implements addressing.
 
 ### Recording by declaration kind
 
-A **fire row writes no receipt** and takes no lock beyond the batch's own; a
-task row is unchanged. There is no caller flag for this — the engine reads
+**A fire row writes no receipt rows, and the fire PROCESS takes no task-path
+lock** (the recording law above); realizing md effects goes through the
+applier, which takes the workspace lock unconditionally and can refuse
+workspace busy — that is step 6's pre-birth stage (A8). *(Design § 2.2 step 4
+— the A8 consistency correction, ruled 96bff2d4 2026-08-23; the tree:
+`modes.rs` → `executor::apply`, which acquires `WorkspaceLock` first.)*
+A task row is unchanged. There is no caller flag for this — the engine reads
 the page. 100 declared-block fires add **zero** rows to `receipts/run.md`
 (gate row 6 of card `hook-01-mrd-run-load-fire`; the receipt anchors counted
 are `^r-<invocation>` and `^p-<invocation>`).
@@ -1719,15 +1724,45 @@ page's root.
 
 **`exec(block=)` resolves at LOAD**, not at the call: the declaration IS the
 program, so a declaration naming a fence that is not there is broken when it
-is read — `no_block`, carrying the anchor's own words.
+is read — `no_block`, carrying the anchor's own words; an anchor minted twice
+is the typed `ambiguous_anchor`. Both are faults on the **load row**, so a
+resolver deciding what to arm learns it from `--load` rather than from the
+first fire, and both are judged again at the fire door, because a page can
+change between the two.
 
-**Recording has a ceiling.** An `exec[]` row publishes `stdout_sha256` +
-`bytes` + a `log` path under `.meridian/runs/`, never the stream inline: a
-chatty hook would otherwise put its whole stdout on the wire, in the daemon's
-journal and in an agent's context on every fire. The dict the PROGRAM sees
-still carries `stdout`/`stderr` inline — a program branching on its own
-command's output is why `bash()` returns a value at all. Nothing is logged
-under `dry`.
+**An exec'd entry's program is a STAGED FILE.** The bytes are written once per
+block rev under `.meridian/staged/<rev>[.<token>]` and the process is
+`<interpreter> <staged-file> <args…>`. `-c` is a **shell** convention and
+cannot be the contract for a plane whose law is *a new language is `argv[0]`,
+not a concept*: measured 2026-08-23, `node -c '<source>'` reads `-c` as
+`--check` and answers `MODULE_NOT_FOUND` exit 1, `bun -c` answers `File not
+found`, `deno`'s `-c` is its config-file flag — so under `-c` every non-shell
+entry fails while looking like a script that ran and said no. The extension is
+the fence's own info-string token (`fence.rs` is untouched: that is the FIRST
+token, the classifier that already exists) because bun and deno pick a loader
+from the file name. The staged file IS the cache the design names — *staged
+bytes cached by block rev*: a rev names one immutable set of bytes, so a
+second fire of an unchanged block finds it there and writes nothing; the cache
+removes the read and the write, never the spawn. `$0` is therefore the staged
+path, not `mrd-task`; stdin, env, cwd and the exit contract are unchanged, so
+*the script's bytes run unchanged* holds. **The shipped task path keeps `-c`
+and `$0 = mrd-task`, byte for byte** (`run::exec::ExecSpec::task`).
+
+**Recording has a ceiling.** Logs live at
+`.meridian/runs/<page-path>/<invocation>-t<index>.log` for an exec'd entry and
+at `…-t<index>-b<n>.log` for the n-th `bash()` call of that target — a
+directory **per page**, which is what makes the stated retention (the last 50
+per page) implementable at all, and what keeps the fire path out of
+`.meridian/runs/`'s top level, where `run::record` writes the TASK path's logs
+and a run receipt points at them. An `exec[]` row publishes `stdout_sha256` +
+`bytes` + that `log` path, never the stream inline: a chatty hook would
+otherwise put its whole stdout on the wire, in the daemon's journal and in an
+agent's context on every fire. A `process` object is bounded the same way —
+`stdout_tail`/`stderr_tail` are the **last 4096 bytes** of each stream, with
+`stdout_bytes`/`stderr_bytes` saying how much there was and the `log` carrying
+all of it. The dict the PROGRAM sees still carries `stdout`/`stderr` inline —
+a program branching on its own command's output is why `bash()` returns a
+value at all. Nothing is staged and nothing is logged under `dry`.
 
 ### Input and answer
 
@@ -2107,6 +2142,39 @@ hermetic kernel eval; `bash` → exec in the **invocation cwd**. The language se
 is closed. There is **no `Exec` EffectKind** — a replayed exec would re-run
 arbitrary code, so exec never enters the effect surface.
 
+**This whole section is the TASK path.** Everything below — the two-phase
+receipts, phase-2 convergence, the `OutOfBand` refusal — is what a
+`task.<name>` row does, and a fire's **process** does none of it. The lock
+is the one split (§ Recording by declaration kind, design § 2.2 step 4 — the
+A8 consistency correction, ruled 96bff2d4 2026-08-23): **the fire PROCESS
+takes no task-path lock**; realizing
+md effects goes through the applier, which takes the workspace lock
+unconditionally and can refuse workspace busy (`runtime` on the row — step 6's
+pre-birth stage, A8); a fire that applies nothing — an exec'd entry, an
+evaluated entry whose program returns no effect — and any `dry` fire take
+none. A `declare()` row whose entry is **exec'd** runs its process through
+**the same bracket** (`run::exec::exec` over `ExecSpec` — the `exec_bracket()`
+the hook-support design names) and then parts company. An **evaluated** entry
+spawns nothing at all unless the program calls `bash()`, so the process rows
+below are the exec'd entry's:
+
+| | task row (`task.<name>`) | fire row (`declare()`) |
+|---|---|---|
+| receipts | phase-1 + phase-2 rows in `receipts/run.md` | **none** — 100 declared-block fires add zero rows |
+| `.meridian/run.lock` | taken | **the fire PROCESS takes no task-path lock**; realizing md effects goes through the applier (`executor::apply`), which takes the workspace lock unconditionally and can refuse workspace busy — a `runtime` fault on the row (step 6's pre-birth stage, A8) |
+| program | `bash -c <source> mrd-task <args…>`, `$0` = `mrd-task` | `<interpreter> <staged-file> <args…>`, `$0` = the staged path |
+| stdin | `Stdio::null()` | the fire's `input`, compact JSON |
+| exit | collapsed to `state: applied\|partial` | the **raw** code, 1 and 2 distinct |
+| stderr | captured, read by nothing | `stderr_tail` on the row |
+| record | the receipt + `.meridian/runs/<invocation-id>.log` | `.meridian/runs/<page-path>/<invocation-id>.log`, and the row |
+| language set | closed (`starlark`, `bash`) | `argv[0]` — any interpreter |
+
+**There is no flag for that split, and no caller can ask for it**: the engine
+reads the page, and recording follows the **declaration kind** (§ Recording by
+declaration kind). The one thing a fire's process is not is *unrecorded* — it
+is logged out of tree and answered on the row; what it is not is *receipted*.
+The laws it runs under are § The run entry, amended.
+
 A bash step runs where `mrd` runs (U16, requirements row E1 — *"DO NOT CHANGE
 THE RUNNING PATH"*). The supervisor does not relocate the process; the
 caller-minted out-of-tree scratch directory stays, as the artifact location
@@ -2391,10 +2459,10 @@ so on a rehearsal `snapshot` and `eval` sit directly inside `total`, and
 | `conventions.load` | `total` | `mrd::run_cmd` | `caps::load_conventions` — the root's `MERIDIAN.md` |
 | `task.gate` | `total` | `mrd::run_cmd` | the door's pre-check: `resolve_task` + `contract_for` + `validate` + `resolve_authority` |
 | `pre_eval` | `total` | `run::runner::pre_eval` | the plane's OWN address → contract → caps chain, which repeats the door's work. Measured on the chain, so `--dry` reports it too |
-| `dispatch` | `total` | `run::runner` | On the STARLARK leg: `eval` + `snapshot` + `apply`, whole — in that ORDER, the fold FOLLOWING the eval that decides whether it is needed (§ The run plane). **Bash is not that shape**: it opens no `eval` span, emits no `snapshot*` line at all (it observes through `fs::domain_leaves_memoized`, which carries no phase — the phases live in `fs::domain_snapshot_with_leaves`), and takes its observation FIRST, under the flock, before the block runs. The lazy rule is the starlark leg's |
-| `snapshot` | `dispatch` | `fs::domain_snapshot_with_leaves` | the three below, whole — absent whenever this tense's lazy gate did not fire (§ The run plane) |
+| `dispatch` | `total` | `run::runner` | On the STARLARK leg: `eval` + `snapshot` + `apply`, whole — in that ORDER, the fold FOLLOWING the eval that decides whether it is needed (§ The run plane). **Bash is not that shape**: it opens no `eval` span, emits no `snapshot*` line at all (it observes through `fs::domain_leaves_memoized`, which carries no phase — the phases live in `fs::domain_snapshot_with_leaves` and its fold-only twin `fs::domain_fold`), and takes its observation FIRST, under the flock, before the block runs. The lazy rule is the starlark leg's |
+| `snapshot` | `dispatch` | `fs::domain_fold` on the run plane; `fs::domain_snapshot_with_leaves` for callers that want the bytes | the three below, whole — absent whenever this tense's lazy gate did not fire (§ The run plane). Both emit the same four names: the run plane takes the fold-only twin because it drops the `DomainFiles`, and a reader must be able to compare the two without the phase names moving |
 | `snapshot.walk` | `snapshot` | same | `Domain::load` + `hash_domain` — the hash-domain walk |
-| `snapshot.read` | `snapshot` | same | `read_and_digest_members` — read + blake3 of every member |
+| `snapshot.read` | `snapshot` | same | `read_and_digest_members`, or `digest_members` on the fold-only path — read + blake3 of every member. The fold-only sweep releases each member's bytes with its digest, so this phase is where dropping them shows up |
 | `snapshot.fold` | `snapshot` | same | leaf assembly + `served_root` |
 | `eval` | `dispatch` | `run::dispatch_starlark` | hermetic evaluation of the block |
 | `apply` | `dispatch` | `run::dispatch_starlark` | the executor's one md.\* batch (absent when the block emitted none) |
@@ -2434,6 +2502,31 @@ the verb addresses — lock-addressed on `walk`/`check`/`status`/`walk_op`,
 link-addressed on `links`/`sql`/`sql_op` (`build_docs_at` calls
 `fs::domain_snapshot`). Count the `phase=snapshot` lines the same way as
 `corpus.build`.
+
+**But do not price a run by that count — some full-corpus folds emit no phase
+at all.** The write doors observe through `fs::DomainCache`
+(`wire_serve::write::observed_root` → `DomainCache::root`), which walks the
+domain, `stat`s every member and reads every mover WITHOUT opening a `snapshot`
+span. That cache is the process-global `wire_serve::write::WRITE_CACHES`, keyed
+by canonicalised root: the FIRST door call in a process observes cold and later
+ones in the SAME process are warm. The CLI does one birth per process, so on the
+CLI it is always the cold one — a property of the process model, not of
+`md.create`; a caller that batches births into one process pays it once.
+
+An `md.create` therefore pays a second full-corpus observation on top of the run
+plane's own fold — measured 2026-08-23 on a 37 800-member root: run-plane
+`snapshot` 446 ms, the door 620 ms inside `apply`, one `phase=snapshot` line for
+the pair. A `grep -c phase=snapshot` of that run answers 1 and under-reports the
+corpus work by more than half; the same run at 8 002 members answers 1 for
+27 ms + 58 ms. (Both pairs, the instrumented breakdown and the raw samples:
+`22-18-hook-support-design/results/mrd-run-perf/residual-cost-receipt.md` § 2,
+and the wire-serve create-door card.)
+
+**How to see it, since subtraction will not:** `apply` has NO nested phases —
+nothing under `crates/run/src/executor.rs` opens a span — so its whole span is
+un-itemised and there is no remainder to compute. Read the magnitude instead: on
+an effectful run a large `apply` beside a `snapshot` of the same order is the
+door's own corpus observation, and only an instrumented build splits it further.
 
 `corpus.build` is the same class: it is emitted by `fs::build_corpus`, and the
 callers that light it up include `mrd sql`, `mrd check`, `mrd walk`,
@@ -2484,7 +2577,7 @@ tenses).
 | CLI mount — script entry | `crates/mrd::script::cmd` — the same client edge; its human-mode face is non-normative |
 | in-process script serve (§ A.7) | `crates/registry` (the op arm: entry world, host, threading, commit) over `crates/effects` (kernel, trace, digest) — added 2026-08-12 |
 | wire run serve (§ A.8) + script effects mode | `crates/registry` (`run_op`: per-target loop, §9 threading; `script_op`: the live host) over `crates/run` (the plane, unchanged) — added 2026-08-13 |
-| per-phase timing (`MRD_TIMING`) | `crates/timing` (the switch, the sink, the span) — the phase call sites are `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`; § Timing phases — added 2026-08-22 |
+| per-phase timing (`MRD_TIMING`) | `crates/timing` (the switch, the sink, the span) — the phase call sites are `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`, `fs::domain_fold`; § Timing phases — added 2026-08-22 |
 | root-at-eval observation (the lazy fold) | `crates/run::dispatch_starlark::observe_if_emitted` — ONE owner of the per-tense gate; `runner::rehearse` calls it directly, the live leg calls it inside `dispatch_starlark::dispatch`. `evaluate` returns `Unobserved`, so neither can skip it and still compile; § The run plane (`RunCtx`) — added 2026-08-22 |
 
 ---

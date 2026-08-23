@@ -20,10 +20,6 @@ use std::process::{Command, Output, Stdio};
 
 mod common;
 
-fn mrd_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_mrd")
-}
-
 struct Sandbox {
     tmp: tempfile::TempDir,
     cache_home: PathBuf,
@@ -44,11 +40,9 @@ fn sandbox() -> Sandbox {
 
 impl Sandbox {
     fn command(&self, cwd: &Path, args: &[&str]) -> Command {
-        let mut c = Command::new(mrd_bin());
+        let mut c = common::mrd_command(&self.home, &self.cache_home);
         c.args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env_remove("MERIDIAN_WORKSPACE");
         c
     }
