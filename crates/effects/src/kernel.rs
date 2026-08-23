@@ -2421,7 +2421,10 @@ pub fn check_prelude(source: &str, ctx: &RunCtx, limits: EvalLimits) -> Option<B
         .count();
     if !loaded.declarations.is_empty() {
         let found = if execs > 0 {
-            format!("{} declaration(s), {execs} of them an `exec(...)` value", loaded.declarations.len())
+            format!(
+                "{} declaration(s), {execs} of them an `exec(...)` value",
+                loaded.declarations.len()
+            )
         } else {
             format!("{} declaration(s)", loaded.declarations.len())
         };
@@ -3763,8 +3766,12 @@ declare(on = \"Stop\", impl = check_stop)
 
         // A prelude of pure helpers is untouched.
         assert!(
-            check_prelude("def helper(x):\n    return x\n", &probe_ctx(), EvalLimits::default())
-                .is_none(),
+            check_prelude(
+                "def helper(x):\n    return x\n",
+                &probe_ctx(),
+                EvalLimits::default()
+            )
+            .is_none(),
             "a pure prelude is what a prelude is FOR"
         );
     }

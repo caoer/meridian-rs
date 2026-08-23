@@ -1495,7 +1495,7 @@ fn descriptor_surface(
     if effect.kind.domain() != Domain::Md {
         return Err(ExecError::NonMdEffect {
             kind: effect.kind.as_str().to_owned(),
-        index: None,
+            index: None,
         });
     }
     match effect.kind {
@@ -1514,7 +1514,7 @@ fn str_arg(effect: &Effect, key: &str) -> Result<String, ExecError> {
         _ => Err(ExecError::BadDescriptor {
             kind: effect.kind.as_str().to_owned(),
             reason: format!("missing scalar '{key}'"),
-        index: None,
+            index: None,
         }),
     }
 }
@@ -1562,7 +1562,7 @@ fn opt_str_arg(effect: &Effect, key: &str) -> Result<Option<String>, ExecError> 
         Some(_) => Err(ExecError::BadDescriptor {
             kind: effect.kind.as_str().to_owned(),
             reason: format!("non-scalar '{key}'"),
-        index: None,
+            index: None,
         }),
     }
 }
@@ -1655,7 +1655,7 @@ fn plan_edit(doc: &Document, effect: &Effect) -> Result<PlannedEdit, ExecError> 
         }
         _ => Err(ExecError::NonMdEffect {
             kind: effect.kind.as_str().to_owned(),
-        index: None,
+            index: None,
         }),
     }
 }

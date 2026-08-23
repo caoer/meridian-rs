@@ -483,14 +483,8 @@ pub(crate) const RUN_FIELDS: [&str; 7] = [
 /// The `run` op's fields as SHIPPED, before the hook-support amendment — the
 /// set a non-v3 session is judged against, so `prelude` refuses by name there
 /// instead of being accepted by a server the client never negotiated with.
-pub(crate) const SHIPPED_RUN_FIELDS: [&str; 6] = [
-    "targets",
-    "invocation",
-    "actor",
-    "now",
-    "fields",
-    "ambient",
-];
+pub(crate) const SHIPPED_RUN_FIELDS: [&str; 6] =
+    ["targets", "invocation", "actor", "now", "fields", "ambient"];
 
 /// The § A.8 fan-out ceiling: every face list carries one.
 const RUN_MAX_TARGETS: usize = 64;
