@@ -1033,6 +1033,12 @@ impl ArmedArtifact {
 /// Re-hash the given rows and split them into those that still stand and those that
 /// reddened. The one implementation behind both [`ArmedArtifact::verify`] and
 /// [`ArmedArtifact::verify_at`] — they differ only in which rows they hand it.
+///
+/// An `off` row is INERT: it is never read, never rev-checked, never red. It
+/// still stands in the artifact (and still shadows an outer arm of the same id
+/// under [`ArmedArtifact::select_at`]), but a retired rule that later drifts or
+/// vanishes must not redden every caller's `mrd rules` exit — flip-off-and-forget
+/// is the retirement path (card off-ledger-row-not-inert, 2026-08-22).
 fn verify_rows<'a>(
     rows: impl Iterator<Item = &'a ArmedRow>,
     pages: &dyn PageSource,
@@ -1040,6 +1046,9 @@ fn verify_rows<'a>(
     let mut firing = Vec::new();
     let mut red = Vec::new();
     for row in rows {
+        if !row.mode.fires() {
+            continue;
+        }
         match pages.read(&row.page) {
             Err(e) => red.push(RedRow {
                 row: row.clone(),
@@ -1874,6 +1883,60 @@ mod tests {
         assert!(
             artifact.verify(&ws).firing().is_empty(),
             "and it never fires"
+        );
+    }
+
+    /// An `off` row whose page drifts or vanishes stays inert: no redness, no
+    /// refusal — flip-off-and-forget retirement. An `on` row beside it still
+    /// reddens on the same edit, so the law is per row, not a blanket pass.
+    #[test]
+    fn an_off_row_whose_page_drifts_or_vanishes_never_reddens() {
+        let mut ws = Workspace::default().check("c.md", "c").check("d.md", "d");
+        let index = ws.index();
+        let artifact = arm(
+            &index,
+            &ArmRoot::workspace(),
+            [
+                request("c", Mode::Off, &ws.rev("c.md")),
+                request("d", Mode::Block, &ws.rev("d.md")),
+            ],
+        )
+        .expect("both arm");
+
+        ws.edit(
+            "c.md",
+            &format!("{}\n<!-- retired, edited -->\n", check_page("c")),
+        );
+        ws.edit("d.md", &format!("{}\n<!-- edited -->\n", check_page("d")));
+        let verdict = artifact.verify(&ws);
+        let red: Vec<&str> = verdict
+            .red()
+            .iter()
+            .map(|r| r.row().id().as_str())
+            .collect();
+        assert_eq!(
+            red,
+            vec!["d"],
+            "the off row is inert; the on row still reddens"
+        );
+        assert!(verdict.firing().is_empty());
+
+        ws.remove("c.md");
+        let verdict = artifact.verify(&ws);
+        let red: Vec<&str> = verdict
+            .red()
+            .iter()
+            .map(|r| r.row().id().as_str())
+            .collect();
+        assert_eq!(
+            red,
+            vec!["d"],
+            "a vanished off page is not a finding either"
+        );
+        assert_eq!(
+            artifact.rows().len(),
+            2,
+            "the off row still stands in the artifact"
         );
     }
 
