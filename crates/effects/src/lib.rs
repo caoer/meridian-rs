@@ -43,6 +43,7 @@ pub use kernel::validate;
 pub use kernel::{
     BashCall, BlockFault, BlockFire, BlockLoad, DEFAULT_HOOK_ENTRY, Declaration, DeclareAtFire,
     DeclaredEntry, EffectAtLoad, EffectPhase, ExecProgram, ExecSpec, FaultClass, FireHost,
+    ImplType,
     check_prelude, classify_starlark_fault, fire_entry, hook_globals, json_of_value, load_block,
     starlark_fault_line,
 };
