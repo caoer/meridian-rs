@@ -16,7 +16,7 @@ use crate::fence::GuaranteeClass;
 /// One starlark block dispatch: the addressed block's facts plus the
 /// caller-supplied identity (§9 — nothing here mints or reads a clock). It
 /// carries no root: the corpus observation is this module's own, taken after
-/// the eval and only when there is something to stamp
+/// the eval and only when the tense's output will show it
 /// ([`observe_if_emitted`]).
 #[derive(Debug)]
 pub struct StarlarkDispatch<'a> {
@@ -66,6 +66,17 @@ pub struct DispatchOutcome {
     /// The block's guarantee class (hermetic on this path).
     pub guarantee: GuaranteeClass,
     /// Every effect the block emitted, in emission order — never filtered.
+    ///
+    /// On this LIVE path, `Provenance::Run.root_at_eval` is filled only when
+    /// the block emitted an md.\* batch: that batch is what carries the token
+    /// onward (`observed_root` → the receipt's `root_pin`), and the live
+    /// report drops provenance entirely ([`crate::report::EffectLine`] is
+    /// kind + domain). A live block that emitted only `proto.*`/`daemon.*`
+    /// therefore leaves the field EMPTY rather than folding a corpus for an
+    /// observation with no reader — the lazy fold's live gate
+    /// (`run-plane.md` § The run plane). A future consumer that wants the
+    /// token on those effects must make the fold happen, not read the field
+    /// and believe it.
     pub effects: Vec<Effect>,
     /// The executor's commit result for the md.* subset (`None` when the
     /// block emitted no md.* effect — nothing to apply is not a fault).
@@ -84,8 +95,9 @@ pub enum DispatchError {
     /// The executor refused the md.* batch (typed [`ExecError`]) — nothing
     /// was applied.
     Exec(ExecError),
-    /// The post-eval corpus fold failed. Only reachable when the block
-    /// emitted — an effect-free block takes no fold and cannot fail here.
+    /// The post-eval corpus fold failed. Only reachable when the tense's gate
+    /// asked for the fold — a block that bought no observation cannot fail
+    /// here.
     Root {
         /// The underlying I/O failure, rendered.
         reason: String,
@@ -104,18 +116,57 @@ impl std::fmt::Display for DispatchError {
 
 impl std::error::Error for DispatchError {}
 
+/// Effects straight out of the kernel, before the lazy fold decided whether to
+/// stamp them. `Provenance::Run.root_at_eval` is EMPTY on every one of them.
+///
+/// The wrapper exists so the omission cannot compile. There is no way to reach
+/// the effects for reporting or applying except [`observe_if_emitted`], which
+/// is the one place that decides — per tense — whether the corpus is folded
+/// and the token written. Hand a caller a bare `Vec<Effect>` here and
+/// forgetting one call site ships `"root_at_eval": ""` in a `--dry --json`
+/// report: a well-shaped lie with no type error behind it.
+///
+/// [`Self::unobserved`] is the read-only escape for tests and diagnostics —
+/// it hands out the placeholder, and its name says so.
+#[derive(Debug)]
+pub struct Unobserved(Vec<Effect>);
+
+impl Unobserved {
+    /// The effects as the kernel produced them, token still empty. For tests
+    /// and diagnostics — never for a report or an apply.
+    #[must_use]
+    pub fn unobserved(&self) -> &[Effect] {
+        &self.0
+    }
+}
+
+/// Which tense is asking for the observation — the two have different readers,
+/// so they have different gates (`run-plane.md` § The run plane).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Observation {
+    /// `--dry`: the report serializes whole [`Effect`] values, provenance
+    /// included (`mrd::run_cmd` `dry_starlark`, `registry::run_op`'s rehearse
+    /// arm), so ANY emitted effect puts the token in front of a reader.
+    Rehearsal,
+    /// The live run: the report renders `kind` + `domain` only
+    /// ([`crate::report::EffectLine`]), so the token's only reader is the
+    /// receipt's `root_pin`, written from `observed_root` — which exists only
+    /// when there is an md.\* batch. A live `notice`-only block reaches no
+    /// reader at all, and folding for it would be the whole cost of the run
+    /// bought for nothing. That is the hook shape (notice / remind / send,
+    /// live, once per event), so it is the case worth naming.
+    Live,
+}
+
 /// Evaluate the block hermetically — the pure half of the dispatch, shared by
 /// `--dry` (full descriptor truth, nothing applied) and the real run.
 ///
-/// **The effects come back UNOBSERVED**: `Provenance::Run.root_at_eval` is
-/// empty on every one of them, because the fold that fills it is lazy and has
-/// not run yet (`run-plane.md` § The run plane). A caller that reports or
-/// applies these effects must pass them through [`observe_if_emitted`] first;
-/// [`dispatch`] does it for you.
+/// The result is [`Unobserved`]: the token is not written yet, and the type
+/// will not let you skip [`observe_if_emitted`].
 ///
 /// # Errors
 /// [`EvalError`] — the typed kernel surface.
-pub fn evaluate(d: &StarlarkDispatch<'_>) -> Result<Vec<Effect>, EvalError> {
+pub fn evaluate(d: &StarlarkDispatch<'_>) -> Result<Unobserved, EvalError> {
     // Measured here, not at the call site, so `--dry` reports the same `eval`
     // phase the live run does — one seam, both tenses. A faulted eval reports
     // nothing: the `?` below abandons the span (`timing` has no `Drop`).
@@ -134,7 +185,7 @@ pub fn evaluate(d: &StarlarkDispatch<'_>) -> Result<Vec<Effect>, EvalError> {
     };
     let effects = eval_run(&Rule::new(d.task, d.source), &ctx, d.limits)?;
     eval.stop();
-    Ok(effects)
+    Ok(Unobserved(effects))
 }
 
 /// Stamp `token` onto every effect's `Provenance::Run.root_at_eval`,
@@ -147,14 +198,20 @@ fn restamp_run_root(effects: &mut [Effect], token: &MerkleRoot) {
     }
 }
 
-/// The lazy observation, one owner for both tenses: fold the hash domain and
-/// stamp the emitted effects with its root — **only if the eval emitted**.
+/// The lazy observation, and the ONE owner of the rule: fold the hash domain
+/// and stamp the emitted effects with its root — **only when this tense's
+/// output will put the token in front of a reader.**
 ///
-/// An effect-free block returns `Ok(None)` having walked nothing: there is no
-/// provenance to carry the token, no md.\* batch to hand it to as
-/// `observed_root`, and no receipt to attest it, so the fold would be
-/// observation nobody observes. That is the whole saving (`run-plane.md`
-/// § The run plane: 99.5% of an effect-free run on a 37 800-member root).
+/// | tense | folds when | because the token's reader is |
+/// |---|---|---|
+/// | [`Observation::Rehearsal`] | any effect emitted | the `--dry` report, which serializes whole effects |
+/// | [`Observation::Live`] | an md.\* effect emitted | the receipt's `root_pin`, via `observed_root` |
+///
+/// Anything else returns `Ok((effects, None))` having walked nothing — and on
+/// the live leg that includes a `notice`-only block, whose token no live
+/// consumer renders. That is the whole saving (`run-plane.md` § The run plane:
+/// the fold was 99.5% of an effect-free run on a 37 800-member root), and the
+/// live gate is what extends it to the hook shape.
 ///
 /// Folding AFTER the eval names the same domain folding before it would have:
 /// this entry is hermetic by construction — the eval reaches no I/O, so it
@@ -165,20 +222,26 @@ fn restamp_run_root(effects: &mut [Effect], token: &MerkleRoot) {
 /// root, or reading a member.
 pub fn observe_if_emitted(
     root: &fs::WorkspaceRoot,
-    effects: &mut [Effect],
-) -> std::io::Result<Option<MerkleRoot>> {
-    if effects.is_empty() {
-        return Ok(None);
+    effects: Unobserved,
+    tense: Observation,
+) -> std::io::Result<(Vec<Effect>, Option<MerkleRoot>)> {
+    let mut effects = effects.0;
+    let observable = match tense {
+        Observation::Rehearsal => !effects.is_empty(),
+        Observation::Live => effects.iter().any(|e| e.kind.domain() == Domain::Md),
+    };
+    if !observable {
+        return Ok((effects, None));
     }
     let (_, folded) = fs::domain_snapshot(root)?;
-    restamp_run_root(effects, &folded);
-    Ok(Some(folded))
+    restamp_run_root(&mut effects, &folded);
+    Ok((effects, Some(folded)))
 }
 
-/// The full hermetic dispatch: evaluate, observe if it emitted, split by
-/// domain, apply the md.* subset through the executor's one batch. No pin is
-/// compared — a foreign advance across the eval window re-derives and
-/// proceeds (no-guard ruling); the receipt attests `root_at_eval` as the
+/// The full hermetic dispatch: evaluate, take the live tense's observation,
+/// split by domain, apply the md.* subset through the executor's one batch.
+/// No pin is compared — a foreign advance across the eval window re-derives
+/// and proceeds (no-guard ruling); the receipt attests `root_at_eval` as the
 /// observation the effects were produced against.
 ///
 /// # Errors
@@ -188,12 +251,15 @@ pub fn dispatch(
     root: &fs::WorkspaceRoot,
     d: &StarlarkDispatch<'_>,
 ) -> Result<DispatchOutcome, DispatchError> {
-    let mut effects = evaluate(d).map_err(DispatchError::Eval)?;
+    let evaluated = evaluate(d).map_err(DispatchError::Eval)?;
     // The lazy fold, before the partition: `md` is cloned out of `effects`,
     // so the stamp has to land while there is still one copy.
-    let observed = observe_if_emitted(root, &mut effects).map_err(|e| DispatchError::Root {
-        reason: e.to_string(),
-    })?;
+    let (effects, observed) =
+        observe_if_emitted(root, evaluated, Observation::Live).map_err(|e| {
+            DispatchError::Root {
+                reason: e.to_string(),
+            }
+        })?;
     let (md, unexecuted): (Vec<Effect>, Vec<Effect>) = effects
         .iter()
         .cloned()
@@ -207,10 +273,11 @@ pub fn dispatch(
         // was one. A REFUSED batch is likewise silent — the `?` abandons the
         // span, and a refusal is not a completed apply.
         let apply = timing::phase("apply");
-        // md.* effects are effects, so the fold above ran. Stated as a
-        // refusal rather than an unwrap: an apply may not invent a root.
+        // `Observation::Live` folds on exactly this condition, so the two are
+        // one fact. Stated as a refusal rather than an unwrap: if the gate and
+        // the partition ever disagree, an apply may not invent a root.
         let observed_root = observed.as_ref().ok_or_else(|| DispatchError::Root {
-            reason: "md.* effects with no post-eval observation".to_owned(),
+            reason: "the live gate and the md.* partition disagreed — no root to attest".to_owned(),
         })?;
         let committed = executor::apply(
             root,

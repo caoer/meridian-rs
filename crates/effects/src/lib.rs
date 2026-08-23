@@ -443,13 +443,15 @@ pub struct RunCtx {
     /// provenance), stamped onto every emitted effect.
     ///
     /// Supplied at eval time when the caller already holds a fold. A caller
-    /// that folds LAZILY — `mrd run`'s starlark leg, which folds only when
-    /// the eval emitted something to stamp (`docs/run-plane.md` § The run
-    /// plane) — passes it empty and rewrites the emitted effects' provenance
-    /// afterwards. Both spellings name the same domain: the entry is hermetic
-    /// by construction, so an eval cannot move the corpus under itself, and
-    /// the sandbox cannot read this field (above), so no output can depend on
-    /// which spelling ran.
+    /// that folds LAZILY — the starlark run leg, behind every caller of
+    /// `run::runner::run` / `rehearse` (the `mrd run` CLI, the wire `run` op,
+    /// `realise`), which folds only when THAT TENSE'S output will show the
+    /// token (`docs/run-plane.md` § The run plane) — passes it empty and
+    /// rewrites the emitted effects' provenance afterwards, or leaves it
+    /// empty when no reader exists. Where a fold happens, both spellings name
+    /// the same domain: the entry is hermetic by construction, so an eval
+    /// cannot move the corpus under itself, and the sandbox cannot read this
+    /// field (above), so no output can depend on which spelling ran.
     pub root_at_eval: String,
 }
 

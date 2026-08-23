@@ -1,6 +1,6 @@
-//! The lazy root-at-eval fold (`docs/run-plane.md` § The run plane): the run
-//! leg folds the hash domain when, and only when, a produced effect will carry
-//! the token.
+//! The lazy root-at-eval fold (`docs/run-plane.md` § The run plane): the
+//! starlark leg folds the hash domain when, and only when, THAT TENSE'S output
+//! will put the token in front of a reader.
 //!
 //! Why it exists: on a 37 800-member root `fs::domain_snapshot` was **99.5%**
 //! of an effect-free `mrd run` — 545 of 547 instrumented ms, ~0.9 s of wall —
@@ -10,10 +10,16 @@
 //! (`effects::RunCtx`), an effect-free block has no provenance to stamp, no
 //! md.\* batch to hand it to and no receipt to attest it.
 //!
-//! The two claims gated here, and they are opposite halves of one rule:
-//! **no effects ⇒ no fold**, and **any effect ⇒ exactly one fold, and its
-//! token is the live `fs::domain_snapshot` of the same tree** — in both
-//! tenses, dry and live, byte-identical to what the eager fold produced.
+//! The gate is per tense because the readers differ:
+//!
+//! | tense | folds when | reader |
+//! |---|---|---|
+//! | `Observation::Rehearsal` | any effect | the `--dry` report, which serializes whole effects |
+//! | `Observation::Live` | an md.\* effect | the receipt's `root_pin`, via `observed_root` |
+//!
+//! The live `notice`-only case is the one that pays: the live report is
+//! `kind` + `domain` only, so that run's token has no reader anywhere — and
+//! that is the shape the hook plane fires, live, once per event.
 //!
 //! This binary must be the only fold-asserting work in its process
 //! (`fs::fold_count` is process-global; assert as a difference — the pattern
@@ -24,7 +30,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use effects::{Effect, EvalLimits, Provenance};
 use run::caps::{Authority, CapSet};
-use run::dispatch_starlark::{self, StarlarkDispatch};
+use run::dispatch_starlark::{self, Observation, StarlarkDispatch};
 use run::executor::ReceiptAddr;
 
 /// Serializes the tests in this binary: `fold_count` is process-global, so a
@@ -49,7 +55,7 @@ status: todo
 
 /// A block that emits nothing at all — the shape ZT's complaint was about.
 const PASS: &str = "def run(ctx):\n    pass\n";
-/// A block that emits ONE non-md effect: no batch, no receipt, still stamped.
+/// A block that emits ONE non-md effect — the hook shape.
 const NOTICE: &str = "def run(ctx):\n    notice(message = \"advisory only\")\n";
 /// A block that emits an md.\* effect: the batch carries `observed_root`.
 const SET_FIELD: &str = "def run(ctx):\n    set_field(field = \"status\", value = \"done\")\n";
@@ -80,6 +86,9 @@ fn dispatch_of<'a>(source: &'a str, authority: &'a Authority) -> StarlarkDispatc
         }),
         limits: EvalLimits::default(),
         actor: None,
+        // No Delta sink: `executor::delta_pre_facts` takes a SECOND fold when
+        // one is armed ("the CLI pays no fold"), so an exact count over a
+        // whole `dispatch` is only the lazy seam's while this stays `None`.
         delta: None,
         fields: &TEST_EMPTY_FIELDS,
         birth_seq: None,
@@ -87,7 +96,7 @@ fn dispatch_of<'a>(source: &'a str, authority: &'a Authority) -> StarlarkDispatc
     }
 }
 
-/// Every effect's stamped observation, deduplicated by inspection.
+/// Every effect's stamped observation.
 fn stamped(effects: &[Effect]) -> Vec<&str> {
     effects
         .iter()
@@ -98,70 +107,81 @@ fn stamped(effects: &[Effect]) -> Vec<&str> {
         .collect()
 }
 
-/// **No effects ⇒ no fold**, in the dry tense (`evaluate` +
-/// `observe_if_emitted`, the pair `runner::rehearse` runs) and in the live one
-/// (`dispatch`). The saving IS this assertion: a fold that does not happen.
+/// Fold the given source in the given tense; answer `(folds taken, stamps)`.
+/// The count brackets the SEAM only — `observe_if_emitted` — so no other
+/// fold can be miscounted into it.
+fn observe(root: &fs::WorkspaceRoot, source: &str, tense: Observation) -> (u64, Vec<String>) {
+    let caps = Authority::granted(CapSet::parse("md.edit").unwrap());
+    let evaluated = dispatch_starlark::evaluate(&dispatch_of(source, &caps)).unwrap();
+    let before = fs::fold_count();
+    let (effects, _) = dispatch_starlark::observe_if_emitted(root, evaluated, tense).unwrap();
+    let folds = fs::fold_count() - before;
+    (
+        folds,
+        stamped(&effects).into_iter().map(str::to_owned).collect(),
+    )
+}
+
+/// **No effect ⇒ no fold, in either tense.** The saving IS this assertion: a
+/// fold that does not happen.
 #[test]
 fn an_effect_free_block_folds_nothing_in_either_tense() {
     let _guard = fold_guard();
     let (_tmp, root) = workspace();
-    let caps = Authority::granted(CapSet::parse("md.edit").unwrap());
 
-    // Dry: the rehearsal's own pair.
+    for tense in [Observation::Rehearsal, Observation::Live] {
+        let (folds, stamps) = observe(&root, PASS, tense);
+        assert_eq!(folds, 0, "an effect-free block folded in {tense:?}");
+        assert!(stamps.is_empty(), "the fixture emits nothing");
+    }
+}
+
+/// **The live gate is md-only, and the `notice` case is why it exists.** A
+/// live block that emits one `proto.notice` has no reader for the token:
+/// no batch, no `observed_root`, no receipt, and `report::EffectLine` renders
+/// kind + domain only. So it must not fold — this is the hook shape, fired
+/// once per event, and folding here would spend the whole run on nothing.
+#[test]
+fn a_live_notice_only_block_does_not_fold() {
+    let _guard = fold_guard();
+    let (_tmp, root) = workspace();
+
+    let (folds, stamps) = observe(&root, NOTICE, Observation::Live);
+    assert_eq!(folds, 0, "the live gate folded for a token with no reader");
+    assert_eq!(
+        stamps,
+        vec![String::new()],
+        "unobserved is spelled empty, not with a stale token"
+    );
+
+    // And the whole live dispatch agrees — nothing applied, nothing written.
+    let caps = Authority::granted(CapSet::none());
     let before = fs::fold_count();
-    let mut effects = dispatch_starlark::evaluate(&dispatch_of(PASS, &caps)).unwrap();
-    assert!(effects.is_empty(), "the fixture emits nothing");
-    let observed = dispatch_starlark::observe_if_emitted(&root, &mut effects).unwrap();
-    assert!(observed.is_none(), "nothing to stamp, so nothing observed");
+    let out = dispatch_starlark::dispatch(&root, &dispatch_of(NOTICE, &caps)).unwrap();
     assert_eq!(
         fs::fold_count(),
         before,
-        "an effect-free rehearsal walked the corpus"
+        "dispatch folded for a live notice"
     );
-
-    // Live: the same claim through the whole dispatch.
-    let before = fs::fold_count();
-    let out = dispatch_starlark::dispatch(&root, &dispatch_of(PASS, &caps)).unwrap();
-    assert!(out.effects.is_empty());
     assert!(out.applied.is_none());
-    assert_eq!(
-        fs::fold_count(),
-        before,
-        "an effect-free live run walked the corpus"
-    );
-
-    // And it stayed a no-op on disk: no write, no receipt.
-    assert_eq!(
-        std::fs::read_to_string(root.0.join("page.md")).unwrap(),
-        PAGE
-    );
+    assert_eq!(out.unexecuted.len(), 1);
     assert!(!root.0.join(RECEIPT).exists());
 }
 
-/// **Any effect ⇒ exactly one fold, carrying the live token.** A `notice`
-/// emits no md.\* batch and writes no receipt, so this is the arm where the
-/// ONLY consumer of the token is the reported provenance — the arm a
-/// "fold when we are about to write" rule would get wrong.
+/// The SAME block in the rehearsal tense DOES fold: `--dry` serializes whole
+/// effects, so the token has a reader there. One rule, two tenses, and the
+/// difference is the reader — not a special case.
 #[test]
-fn a_non_md_effect_still_folds_once_and_is_stamped_with_it() {
+fn the_same_notice_folds_once_in_the_rehearsal_tense() {
     let _guard = fold_guard();
     let (_tmp, root) = workspace();
-    let caps = Authority::granted(CapSet::none());
-    // The comparison token, taken BEFORE the measured window and on the same
+    // The comparison token, taken outside the measured bracket and on the same
     // unchanged tree: a `notice` writes nothing, so the domain cannot move.
     let live = fs::domain_snapshot(&root).unwrap().1;
 
-    let before = fs::fold_count();
-    let mut effects = dispatch_starlark::evaluate(&dispatch_of(NOTICE, &caps)).unwrap();
-    let observed = dispatch_starlark::observe_if_emitted(&root, &mut effects).unwrap();
-    assert_eq!(
-        fs::fold_count() - before,
-        1,
-        "one emitted effect buys exactly one fold"
-    );
-
-    assert_eq!(observed.as_ref(), Some(&live), "the fold is the live root");
-    assert_eq!(stamped(&effects), vec![live.0.as_str()]);
+    let (folds, stamps) = observe(&root, NOTICE, Observation::Rehearsal);
+    assert_eq!(folds, 1, "one emitted effect buys exactly one fold");
+    assert_eq!(stamps, vec![live.0.clone()], "the fold is the live root");
     assert!(!live.0.is_empty(), "a real token, not the placeholder");
 }
 
@@ -180,21 +200,25 @@ fn an_md_effect_stamps_the_batch_and_the_receipt_with_one_fold() {
 
     let before = fs::fold_count();
     let out = dispatch_starlark::dispatch(&root, &dispatch_of(SET_FIELD, &caps)).unwrap();
+    // One fold across the whole dispatch — the lazy seam's. `delta: None`
+    // above is what keeps `executor::delta_pre_facts` out of this count; with
+    // a Delta sink armed the honest expectation is two.
     let folds = fs::fold_count() - before;
 
     let applied = out.applied.expect("md.* applied");
     assert_eq!(applied.applied, 1);
     assert_eq!(stamped(&out.effects), vec![live.0.as_str()]);
-    assert_eq!(
-        folds, 1,
-        "the run leg's own fold, once — a second means the lazy seam ran twice"
-    );
+    assert_eq!(folds, 1, "the lazy seam folded more than once");
 
-    // The receipt attests the same observation the effects carry.
+    // The receipt attests the same observation the effects carry. Matched as
+    // the FIELD, not as a substring of the file: the row is compact JSON
+    // (`executor::render_receipt` → `serde_json::to_string`), and a bare
+    // `contains(token)` would also pass on a token that landed in some other
+    // field.
     let receipt = std::fs::read_to_string(root.0.join(RECEIPT)).expect("receipt written");
     assert!(
-        receipt.contains(&live.0),
-        "receipt root_pin is the observed root:\n{receipt}"
+        receipt.contains(&format!("\"root_pin\":\"{}\"", live.0)),
+        "receipt root_pin is not the observed root:\n{receipt}"
     );
 
     // The write landed — this arm is the real one, not a rehearsal.
@@ -211,19 +235,13 @@ fn an_md_effect_stamps_the_batch_and_the_receipt_with_one_fold() {
 fn the_stamp_follows_the_corpus() {
     let _guard = fold_guard();
     let (_tmp, root) = workspace();
-    let caps = Authority::granted(CapSet::none());
 
-    let mut first = dispatch_starlark::evaluate(&dispatch_of(NOTICE, &caps)).unwrap();
-    dispatch_starlark::observe_if_emitted(&root, &mut first).unwrap();
-
+    let (_, first) = observe(&root, NOTICE, Observation::Rehearsal);
     std::fs::write(root.0.join("second.md"), "# Second\n").unwrap();
-
-    let mut second = dispatch_starlark::evaluate(&dispatch_of(NOTICE, &caps)).unwrap();
-    dispatch_starlark::observe_if_emitted(&root, &mut second).unwrap();
+    let (_, second) = observe(&root, NOTICE, Observation::Rehearsal);
 
     assert_ne!(
-        stamped(&first),
-        stamped(&second),
+        first, second,
         "a new domain member must move the observed root"
     );
 }

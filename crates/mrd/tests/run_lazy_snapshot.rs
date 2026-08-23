@@ -130,6 +130,20 @@ fn an_effect_free_task_never_walks_the_corpus() {
     assert_no_fold(&ws, &["tasks.md", "quiet", "--json"]);
 }
 
+/// **The live gate is md-only.** A live `notice` has no reader for the token —
+/// the live report is `kind` + `domain` (`run::report::EffectLine`), there is
+/// no batch, no `observed_root` and no receipt — so the corpus is not walked.
+/// This is the hook shape (notice / remind / send, live, once per event): the
+/// case the whole gate exists for, through the real binary.
+///
+/// The SAME page under `--dry` folds, and the test beside this one asserts it:
+/// the dry report serializes provenance, so there the token has a reader.
+#[test]
+fn a_live_notice_only_task_never_walks_the_corpus() {
+    let ws = Ws::new();
+    assert_no_fold(&ws, &["tasks.md", "noticer", "--json"]);
+}
+
 /// One tense of the claim above: the run succeeds, the block demonstrably ran
 /// (`eval` present — a run that emitted no phase at all would pass a bare
 /// "no snapshot line" check for the wrong reason), and no `snapshot*` phase
@@ -148,11 +162,12 @@ fn assert_no_fold(ws: &Ws, args: &[&str]) {
     );
 }
 
-/// **Any effect ⇒ the fold happens**, and the emitted effect carries a real
-/// token. The `notice` arm is the one with no batch and no receipt: nothing
-/// but the report reads the token, and it is still owed.
+/// **In the REHEARSAL tense, any effect ⇒ the fold happens**, and the emitted
+/// effect carries a real token. `--dry` serializes whole effects, provenance
+/// included, so even a `notice` — no batch, no receipt — puts the token in
+/// front of a reader and is owed it.
 #[test]
-fn an_emitting_task_folds_and_stamps_the_effect() {
+fn an_emitting_task_folds_and_stamps_the_effect_under_dry() {
     let ws = Ws::new();
     let out = ws.run(true, &["tasks.md", "noticer", "--dry", "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -209,9 +224,11 @@ fn the_dry_token_is_the_root_pin_the_live_run_attests() {
     let live = ws.run(false, &["tasks.md", "editor", "--json"]);
     assert_eq!(live.status.code(), Some(0), "{}", stderr(&live));
 
+    // Matched as the FIELD: the row is compact JSON, and a bare
+    // `contains(token)` would also pass on a token that landed elsewhere.
     let receipt = std::fs::read_to_string(ws.file("receipts/run.md")).expect("receipt written");
     assert!(
-        receipt.contains(&dry[0]),
+        receipt.contains(&format!("\"root_pin\":\"{}\"", dry[0])),
         "the receipt attests a root the dry run never showed\ndry: {}\n{receipt}",
         dry[0]
     );

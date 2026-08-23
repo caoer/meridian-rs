@@ -426,7 +426,7 @@ pub fn rehearse(
     let name = task.binding.name.clone();
     match task.block.lang {
         TaskLanguage::Starlark => {
-            let mut effects = dispatch_starlark::evaluate(&StarlarkDispatch {
+            let evaluated = dispatch_starlark::evaluate(&StarlarkDispatch {
                 page: spec.page,
                 task: &name,
                 task_rev: &task.task_rev,
@@ -449,14 +449,19 @@ pub fn rehearse(
                 ambient: None,
             })
             .map_err(|e| RunnerError::Starlark(DispatchError::Eval(e)))?;
-            // The lazy observation, rehearsal tense: the SAME seam the live
-            // dispatch runs, so `--dry` reports the token the live run would
-            // stamp, and an effect-free rehearsal folds nothing (the fold is
-            // the whole cost — `run-plane.md` § The run plane).
-            dispatch_starlark::observe_if_emitted(root, &mut effects).map_err(|e| {
-                RunnerError::Root {
-                    reason: e.to_string(),
-                }
+            // The lazy observation, REHEARSAL tense: the same seam the live
+            // dispatch runs, on this tense's own gate. `--dry` serializes
+            // whole effects, provenance included, so ANY emitted effect puts
+            // the token in front of a reader and buys the fold — wider than
+            // the live gate, and deliberately so. An effect-free rehearsal
+            // still folds nothing (`run-plane.md` § The run plane).
+            let (effects, _observed) = dispatch_starlark::observe_if_emitted(
+                root,
+                evaluated,
+                dispatch_starlark::Observation::Rehearsal,
+            )
+            .map_err(|e| RunnerError::Root {
+                reason: e.to_string(),
             })?;
             // The choke point, rehearsal tense: the SAME admission the apply
             // enforces, over the same md.* partition — judging DECLARED

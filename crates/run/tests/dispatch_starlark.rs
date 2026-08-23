@@ -127,11 +127,12 @@ fn evaluate_alone_is_the_dry_seam_full_truth_nothing_applied() {
     let (_tmp, root) = workspace();
     let caps = Authority::granted(CapSet::parse("md.edit").unwrap());
     let src = "def run(ctx):\n    set_field(field = \"status\", value = \"x\")\n";
-    let effects = dispatch_starlark::evaluate(&dispatch_of(src, &caps)).unwrap();
+    let evaluated = dispatch_starlark::evaluate(&dispatch_of(src, &caps)).unwrap();
+    // The type says UNOBSERVED, and this is the only way to look without
+    // going through `observe_if_emitted`: the fold that fills `root_at_eval`
+    // is lazy and has not run. `lazy_snapshot.rs` gates the pair.
+    let effects = evaluated.unobserved();
     assert_eq!(effects.len(), 1, "all descriptors reported");
-    // And UNOBSERVED: the fold that fills `root_at_eval` is lazy, so this seam
-    // alone leaves it empty. `observe_if_emitted` is the other half —
-    // `lazy_snapshot.rs` gates the pair.
     assert_eq!(
         effects[0].provenance,
         Provenance::Run {
