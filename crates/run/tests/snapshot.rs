@@ -20,7 +20,13 @@ fn write(root: &Path, rel: &str, contents: &str) {
 
 /// A workspace nested under the tempdir (out-of-tree space beside it).
 fn workspace() -> (tempfile::TempDir, WorkspaceRoot) {
-    let tmp = tempfile::tempdir().unwrap();
+    // Under target/, not $TMPDIR: the guarded read (`fs::open_nofollow`)
+    // walks the ABSOLUTE path one `openat(O_NOFOLLOW|O_DIRECTORY)` step at a
+    // time, and macOS's `/var` → `/private/var` symlink is a component of
+    // every `$TMPDIR` path — `openat` answers ENOTDIR there and every open
+    // refuses at clean main on a mac (Linux CI never sees it; same class as
+    // birth_cap.rs / dispatch_bash.rs). A symlink-free path sidesteps it.
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let ws = tmp.path().join("ws");
     write(&ws, "notes/plan.md", "# Plan\n");
     write(&ws, "receipts/log.md", "# Receipts\n");
