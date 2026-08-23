@@ -2043,6 +2043,28 @@ plain scalars, flow collections (`[a, b]`), and **malformed quoting, which no
 reader may guess at**. A quoted scalar is a STRING in every schema — the
 decode is the quoting layer only, never type inference.
 
+**A.6.1a Block scalars (amended 2026-08-23, card
+`mrd-frontmatter-block-scalar-decoder-gap`).** A key line may carry a YAML
+**block-scalar header** instead of a value — `>` or `|`, an optional chomping
+indicator (`-` strip, `+` keep, default clip) and an optional indentation
+digit — with the value on the following indented lines. Both published faces
+(`read`'s `props[]`, `sql`'s `frontmatter`) decode it through ONE reader,
+`model::fm_block_scalar`: folded breaks become spaces, a run of *k* blank lines
+becomes *k* newlines, a break adjacent to a more-indented line is kept, and
+chomping owns the trailing breaks. Until this amendment both faces published
+the INDICATOR BYTE (`">"`), mis-serving 45 live pages that were valid YAML
+throughout — a decoder gap, never corpus damage.
+
+**Consequence, ruled by ZT: `props[].value` may now carry `\n`.** It is the
+first value on that plane that can, and it is true of BOTH indicators — clip
+chomping leaves one trailing newline on a FOLDED scalar too, so there is no
+single-line case to carve out. A face that renders values on one line escapes
+them; the JSON plane carries them verbatim. **The write plane does not widen:**
+§ A.6.3 still REFUSES a newline in a value (D11), so a block-scalar value read
+from a page cannot be written back through `properties`/`set_property`
+unchanged. YAML can express what this engine's single-line value plane cannot
+author — stated here rather than discovered on a round trip.
+
 The law binds the VALUE seams — every seam that publishes a frontmatter value
 to a consumer, or compares one against a caller-supplied string. One owner
 implements it (`model::scalar`) so the def checker and the read seams cannot
