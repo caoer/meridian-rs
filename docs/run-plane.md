@@ -2145,7 +2145,7 @@ exec'd entry's:
 | stdin | `Stdio::null()` | the fire's `input`, compact JSON |
 | exit | collapsed to `state: applied\|partial` | the **raw** code, 1 and 2 distinct |
 | stderr | captured, read by nothing | `stderr_tail` on the row |
-| record | the receipt + `.meridian/runs/<invocation>-t<index>.log` | `.meridian/runs/<page-path>/<invocation>-t<index>.log`, and the row |
+| record | the receipt + `.meridian/runs/<invocation-id>.log` | `.meridian/runs/<page-path>/<invocation-id>.log`, and the row |
 | language set | closed (`starlark`, `bash`) | `argv[0]` — any interpreter |
 
 **There is no flag for that split, and no caller can ask for it**: the engine
