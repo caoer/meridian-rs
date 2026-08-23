@@ -120,6 +120,9 @@ fn arm_rules(ws: &Path, ids: &[String]) {
         page,
         bytes,
     }));
+    // The act loads every firing winner — a `path → bytes` map IS a `PageSource`,
+    // and these are the bytes just written.
+    let source: std::collections::BTreeMap<String, String> = pages.iter().cloned().collect();
     let artifact = policy::armed::arm(
         &index,
         &policy::armed::ArmRoot::workspace(),
@@ -134,6 +137,8 @@ fn arm_rules(ws: &Path, ids: &[String]) {
             mode: policy::armed::Mode::Block,
             attested_rev: policy::page_rev(bytes),
         }),
+        &source,
+        policy::CheckLimits::default(),
     )
     .expect("the fixture arms at each page's live rev");
     let artifact_path = ws.join(fs::domain::ARMED_RULES_PATH);
