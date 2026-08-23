@@ -2881,6 +2881,7 @@ dependencies = [
  "policy",
  "query",
  "receipt",
+ "registry",
  "run",
  "serde",
  "serde_json",
