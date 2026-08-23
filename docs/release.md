@@ -356,9 +356,17 @@ out by its own `when` wave a release through ungated.
 Two consequences worth knowing before you cut one:
 
 - **A tag pipeline is slow by construction.** The tag lanes start after the
-  whole suite, ~18 minutes in. That lateness is safe only because every
-  workflow here clones with a non-rotating PAT rather than the server's
-  parse-time OAuth netrc; before that fix, a late clone died at `exit 128`.
+  whole suite, ~18 minutes in. That lateness is *expected* to be survivable, and
+  it is not yet proven. The mechanism is real: every workflow here clones with a
+  non-rotating PAT rather than the server's parse-time OAuth netrc, which was
+  stamped once at parse and died on its own clock — before that fix a late clone
+  hit `exit 128`. The evidence is one observation, pre-gate: pipeline 1328's
+  `tag-linux-amd64` clone started **1171 s after parse** and succeeded. Under
+  the gate no tag lane has cloned at all — the one gated tag pipeline (1330) was
+  refused by a red `ci`, so both tag workflows were **skipped, `started=null`**,
+  and never reached their clone step. The first real `v*` release is the proof;
+  the watch lives on card `22-18/tasks/meridian-rs-tag-lanes-not-gated`
+  § GREEN HALF. If it does fail, it fails closed: no release, never a bad one.
 - **The lane refuses a tree it cannot attest.** If the probe fails, or tracked
   content diverges from the commit, the lane exits 1 rather than stamping
   `-dirty` and publishing — §5.1's stamp is a claim, and an unverifiable clean
