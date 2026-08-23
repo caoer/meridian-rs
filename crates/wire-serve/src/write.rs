@@ -8474,13 +8474,21 @@ mod create_props_door {
         );
     }
 
-    /// The NAMED RESIDUAL, pinned so it is a decision and not an accident: a
-    /// props scalar whose text is a typed YAML scalar lands verbatim and reads
-    /// back typed — the value plane's standing carve-out, identical at every
-    /// other write door. Only the COLLECTION classes are forced to quote,
-    /// because this door has a typed arm for those.
+    /// **The former named residual, now closed** (2026-08-23, card
+    /// `all-digit-short-ids-read-as-int`). A props scalar whose text is a typed
+    /// YAML scalar used to land verbatim and read back typed. It quotes now, at
+    /// this door and at every other, because the same carve-out emitted the
+    /// all-digit agent short id `19895504` as an INTEGER — ids are the fleet's
+    /// join key. `props` is a STRING plane: what the caller spells as a string
+    /// reads back as that string.
+    ///
+    /// The residual that remains, pinned so it is a decision and not an
+    /// accident: this door has no numeric or boolean typed arm, so the integer
+    /// 7 can no longer be authored through `props` at all (`PropValue::List`
+    /// stays the one typed arm) — a def-declared `int`/`bool` property must be
+    /// born in the record's own body bytes.
     #[test]
-    fn a_typed_scalar_still_lands_verbatim_and_reads_back_typed() {
+    fn a_typed_scalar_now_quotes_and_reads_back_as_a_string() {
         let (dir, root) = ws();
         create(
             &root,
@@ -8488,19 +8496,33 @@ mod create_props_door {
             &args(
                 "notes/typed.md",
                 "# T\n",
-                &[("n", scalar("7")), ("flag", scalar("true"))],
+                &[
+                    ("n", scalar("7")),
+                    ("flag", scalar("true")),
+                    ("owner", scalar("19895504")),
+                ],
             ),
             &[],
         )
         .expect("the birth lands");
         let raw = std::fs::read_to_string(dir.path().join("notes/typed.md")).expect("born");
         assert!(
-            raw.contains("n: 7\n") && raw.contains("flag: true\n"),
+            raw.contains("n: \"7\"\n")
+                && raw.contains("flag: \"true\"\n")
+                && raw.contains("owner: \"19895504\"\n"),
             "{raw}"
         );
         let meta = read_back(&dir, "notes/typed.md");
-        assert_eq!(meta.get("n"), Some(&policy::defs::FmValue::Int(7)));
-        assert_eq!(meta.get("flag"), Some(&policy::defs::FmValue::Bool(true)));
+        assert_eq!(meta.get("n"), Some(&policy::defs::FmValue::Str("7".into())));
+        assert_eq!(
+            meta.get("flag"),
+            Some(&policy::defs::FmValue::Str("true".into()))
+        );
+        assert_eq!(
+            meta.get("owner"),
+            Some(&policy::defs::FmValue::Str("19895504".into())),
+            "an all-digit short id is a STRING at the create door too"
+        );
     }
 
     /// D11 at this door too: a newline cannot ride a v1 frontmatter value, so

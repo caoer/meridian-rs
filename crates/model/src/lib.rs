@@ -602,7 +602,8 @@ fn trim_terminator(bytes: &[u8], start: usize, mut end: usize) -> usize {
 fn parse_frontmatter(raw: &str, span: &ByteSpan) -> YamlMap {
     let block = raw.get(span.clone()).unwrap_or_default();
     let mut pairs: Vec<(String, String)> = Vec::new();
-    for line in block.lines() {
+    let all: Vec<&str> = block.lines().collect();
+    for (index, line) in all.iter().copied().enumerate() {
         let trimmed = line.trim();
         if trimmed == "---" || trimmed.is_empty() {
             continue;
@@ -617,7 +618,17 @@ fn parse_frontmatter(raw: &str, span: &ByteSpan) -> YamlMap {
                 continue;
             }
             if pairs.iter().all(|(k, _)| *k != key) {
-                pairs.push((key, line[colon + 1..].trim().to_string()));
+                let remainder = line[colon + 1..].trim();
+                // A block scalar keeps its value on the following lines: read
+                // it through the ONE decoder both faces share, so the flat map
+                // stops publishing the indicator byte (card
+                // `mrd-frontmatter-block-scalar-decoder-gap`). Every other
+                // shape is the key line's remainder, exactly as before.
+                let value = match block_header(remainder) {
+                    Some(header) => fm_block_scalar(&all, index, header),
+                    None => remainder.to_string(),
+                };
+                pairs.push((key, value));
             }
         }
     }
@@ -2875,6 +2886,301 @@ pub fn fm_tags(block: &str, key: &str) -> Vec<String> {
         .collect()
 }
 
+/// A YAML **block scalar** header as a key line's remainder spells it: `>` or
+/// `|`, an optional chomping indicator (`-` strip / `+` keep, default clip),
+/// an optional explicit indentation digit, and nothing else but spaces or a
+/// comment. Anything else is not a header — `> foo` is not a block scalar, and
+/// this returns `None` rather than guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlockHeader {
+    /// `|` keeps every line break; `>` folds them (YAML 1.2 § 8.1.3).
+    literal: bool,
+    chomp: Chomp,
+    /// The explicit indentation indicator, when the author wrote one.
+    indent: Option<usize>,
+}
+
+/// What happens to the trailing line breaks of a block scalar. **Clip is the
+/// default, and clip keeps ONE `\n`** — which is why every block scalar's value
+/// is multi-line, folded ones included (measured against `PyYAML`, card
+/// `mrd-frontmatter-block-scalar-decoder-gap`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Chomp {
+    Clip,
+    Strip,
+    Keep,
+}
+
+/// Parse a key line's remainder as a block-scalar header. `None` = not one.
+fn block_header(remainder: &str) -> Option<BlockHeader> {
+    let s = remainder.trim();
+    let mut chars = s.chars();
+    let literal = match chars.next()? {
+        '|' => true,
+        '>' => false,
+        _ => return None,
+    };
+    let mut header = BlockHeader {
+        literal,
+        chomp: Chomp::Clip,
+        indent: None,
+    };
+    let rest: String = chars.collect();
+    // The indicators bind to the header; whatever follows the first space must
+    // be a comment or nothing. `> foo` is NOT a block scalar (it is not even
+    // valid YAML), and reading it as one would swallow the next lines.
+    let (indicators, tail) = match rest.find([' ', '\t']) {
+        Some(i) => (&rest[..i], rest[i..].trim_start()),
+        None => (rest.as_str(), ""),
+    };
+    if !tail.is_empty() && !tail.starts_with('#') {
+        return None;
+    }
+    for ch in indicators.chars() {
+        match ch {
+            '-' => header.chomp = Chomp::Strip,
+            '+' => header.chomp = Chomp::Keep,
+            '1'..='9' => header.indent = Some(ch as usize - '0' as usize),
+            '#' => break,
+            // A payload after the indicator is not a block scalar at all.
+            _ => return None,
+        }
+    }
+    Some(header)
+}
+
+/// **The frontmatter block-scalar reader** — the ONE decoder both published
+/// faces call, so `read`'s `props[]` and `sql`'s `frontmatter` cannot answer
+/// differently (card `mrd-frontmatter-block-scalar-decoder-gap`).
+///
+/// Before this, both faces served a block scalar as its INDICATOR BYTE: a page
+/// carrying `description: >` and six indented lines published `">"` on `read`
+/// and `">"` in `sql`, while `PyYAML` read the whole 459-character text.
+///
+/// Engine-measured corpus-wide: **63 pages / 71 key rows across four roots** —
+/// sessions 37/45, ccc-statusd 15/15, mrd-experiments 8/8, field-notes 3/3
+/// (codespace and meridian-rs carry none). The sessions figure alone is 45
+/// rows, and quoting it without the root reads as a corpus total. The pages
+/// are valid YAML — this was a decoder gap, never corpus damage.
+///
+/// Serde-free by the crate law (`testsuite/tests/yaml_confinement.rs`): the
+/// folding is written here against YAML 1.2 § 8.1.2-8.1.3 and pinned against
+/// `PyYAML` by a matrix test, which is the only honest way to hold a hand-rolled
+/// parser to a standard.
+///
+/// - **Content**: the following lines indented at or beyond the block indent —
+///   the explicit indicator when the author wrote one, else the indentation of
+///   the first non-empty line. A blank line belongs to the block whatever its
+///   own indentation; the first non-empty line indented LESS ends it (the next
+///   key, or the closing fence).
+/// - **Literal** (`|`): line breaks kept.
+/// - **Folded** (`>`): a break between two ordinary lines becomes a space; a
+///   run of *k* blank lines becomes *k* newlines; a break adjacent to a
+///   MORE-indented line is kept (that is what makes indented examples survive
+///   folding).
+/// - **Chomping**: clip (default) leaves exactly one trailing `\n` when there
+///   is content, strip leaves none, keep leaves every trailing break.
+fn fm_block_scalar(lines: &[&str], at: usize, header: BlockHeader) -> String {
+    let body = &lines[at + 1..];
+    let indent = header.indent.or_else(|| {
+        body.iter()
+            .find(|l| !l.trim().is_empty())
+            .map(|l| l.len() - l.trim_start().len())
+    });
+    // A header with no content at all publishes the empty string, never the
+    // indicator byte — EXCEPT under `keep`, which keeps the empty lines
+    // themselves (`|+` over two blanks is "\n\n"). This arm runs before the
+    // block indent is even known, because with no non-empty line there is
+    // nothing to measure it from; the earlier version returned here
+    // unconditionally and swallowed chomping (B2, review seat `79c5905c`).
+    let Some(indent) = indent.filter(|i| *i > 0) else {
+        let blanks = body.iter().take_while(|l| l.trim().is_empty()).count();
+        return match header.chomp {
+            Chomp::Keep => "\n".repeat(blanks),
+            Chomp::Clip | Chomp::Strip => String::new(),
+        };
+    };
+
+    // (text, more_indented) per content line; blanks are None.
+    //
+    // A whitespace-only line is EMPTY only while it stays inside the block
+    // indent. Indented past it, those extra spaces are content (§ 8.1.1.1) and
+    // the line is more-indented, so a folded scalar keeps the breaks around it
+    // instead of folding them to a space — PyYAML reads `a`/`   `/`b` at
+    // indent 2 as "a\n \nb\n" under BOTH indicators.
+    let mut content: Vec<Option<(String, bool)>> = Vec::new();
+    for line in body {
+        let blank = line.trim().is_empty();
+        if blank && line.len() <= indent {
+            content.push(None);
+            continue;
+        }
+        let width = line.len() - line.trim_start().len();
+        if !blank && width < indent {
+            break;
+        }
+        let text = line[indent..].to_string();
+        content.push(Some((text, width > indent)));
+    }
+    // Trailing blanks are chomping's business, not content's.
+    let last_text = content.iter().rposition(Option::is_some);
+    let Some(last_text) = last_text else {
+        // No content at all: `keep` still keeps the empty lines (`|+` over two
+        // blanks is "\n\n"), clip and strip have nothing to keep.
+        return match header.chomp {
+            Chomp::Keep => "\n".repeat(content.len()),
+            Chomp::Clip | Chomp::Strip => String::new(),
+        };
+    };
+    let trailing_blanks = content.len() - last_text - 1;
+    content.truncate(last_text + 1);
+
+    let mut out = String::new();
+    let mut blanks = 0usize;
+    let mut prev_more_indented = false;
+    let mut seen_content = false;
+    for entry in &content {
+        match entry {
+            None => blanks += 1,
+            Some((text, more_indented)) => {
+                if seen_content {
+                    let breaks = if header.literal {
+                        // Every break is a break, blank lines included: the
+                        // line's own, plus one per blank.
+                        blanks + 1
+                    } else if *more_indented || prev_more_indented {
+                        // § 8.1.3 `b-l-spaced(n) ::= b-as-line-feed l-empty(n)*`
+                        // — a break beside a more-indented line is a LINE FEED
+                        // and each following empty line adds another. The two
+                        // arms are ADDITIVE; testing `blanks > 0` first made
+                        // them exclusive and lost a newline after every
+                        // more-indented line followed by a blank.
+                        blanks + 1
+                    } else {
+                        // k blank lines = k+1 breaks = k newlines; none folds
+                        // to a space.
+                        blanks
+                    };
+                    if breaks == 0 {
+                        out.push(' ');
+                    } else {
+                        for _ in 0..breaks {
+                            out.push('\n');
+                        }
+                    }
+                } else {
+                    // LEADING blanks precede the first content line, so they
+                    // carry no line of their own: k blanks are k newlines under
+                    // both indicators. Counting the first content line as
+                    // "preceded by a line" emitted k+1 and put a phantom break
+                    // at the head of every literal scalar that opens blank.
+                    for _ in 0..blanks {
+                        out.push('\n');
+                    }
+                }
+                out.push_str(text);
+                blanks = 0;
+                prev_more_indented = *more_indented;
+                seen_content = true;
+            }
+        }
+    }
+
+    match header.chomp {
+        Chomp::Strip => {}
+        Chomp::Clip => out.push('\n'),
+        Chomp::Keep => {
+            out.push('\n');
+            for _ in 0..trailing_blanks {
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
+/// **Does this key's line carry a block-scalar header?** — the question a
+/// value-publishing seam must ask before it decodes.
+///
+/// The flat map ([`YamlMap`]) stores a block scalar's ALREADY-DECODED text.
+/// Running that text through the § A.6.1 quoting decode a second time is not a
+/// no-op: [`scalar::decode`] opens with `value.trim()`, which is right for a
+/// key line's colon remainder and **wrong** for decoded block-scalar text — it
+/// eats the trailing newline clip chomping just produced, the leading newline
+/// a leading blank line produced, and the leading spaces an explicit
+/// indentation indicator preserved.
+///
+/// PR 189 review (seat `79c5905c`) measured exactly that: `sql` served the
+/// card page's 459 characters and `read`'s `props[]` served 458, the newline
+/// gone rather than escaped — the two faces the card exists to reconcile,
+/// still disagreeing one layer above the decoder.
+#[must_use]
+pub fn fm_is_block_scalar(block: &str, key: &str) -> bool {
+    let lines: Vec<&str> = block.lines().collect();
+    fm_key_line(&lines, key).is_some_and(|(_, remainder)| block_header(remainder).is_some())
+}
+
+/// The value a published seam serves for `key`, given the map's `stored` text:
+/// the § A.6.1 decode for every ordinary shape, and block-scalar text
+/// VERBATIM — it was decoded when the map was built.
+///
+/// The branch lives here, once, rather than at each seam: `scalar::text` is the
+/// door for `read`'s `props[]`, the script face's `fm`, and the run plane's
+/// bindings (`scalar.rs`), and a rule spelled three times is three chances to
+/// spell it differently.
+#[must_use]
+pub fn fm_publish(block: &str, key: &str, stored: &str) -> String {
+    if fm_is_block_scalar(block, key) {
+        return stored.to_owned();
+    }
+    scalar::text(stored)
+}
+
+/// [`fm_publish`] for a seam that holds a whole [`Document`]: the published
+/// text of one frontmatter key, or `None` when the page has no frontmatter or
+/// does not declare the key.
+///
+/// The block bytes are the point. `fm_publish` cannot be asked from a
+/// [`YamlMap`] alone, because *"is this a block scalar"* is a fact about the
+/// key LINE and the map has already thrown the line away. Every seam that
+/// wants the answer therefore needs the same three moves — find the
+/// frontmatter node, slice its span out of `doc.raw`, look the key up — and
+/// this is that walk, once.
+///
+/// It exists because it was already written four times. `preset`, `realise`
+/// and `mrd`'s `realise_cmd` each carried a byte-identical private `find`
+/// closure over the frontmatter node followed by [`scalar::text`], and
+/// `wire-serve`'s `read_props` carried a fourth near-copy — the shape PR 189's
+/// review named as *"a rule spelled three times is three chances to spell it
+/// differently"*, which is exactly how those three came to be spelled without
+/// the block-scalar branch at all (card
+/// `scalar-text-trims-config-key-block-scalars`).
+///
+/// **Three of those four now share this walk; `read_props` keeps its own
+/// deliberately** — it slices the block ONCE and loops every key, where a
+/// per-key doc walk would re-walk the document N times. So grepping for
+/// `fm_doc_publish` does NOT enumerate every seam that publishes a frontmatter
+/// value: it finds three, and the largest published face is the fourth.
+///
+/// Not every `scalar::text` caller wants this. `run`'s binding parser
+/// (`run/src/address.rs`) reads a value whose grammar is `[[#^id]]`, and the
+/// trim it gets from `scalar::text` is load-bearing there: a `>`-folded
+/// binding publishes a trailing newline that would push the closing `]]` out
+/// of reach of the parser's suffix strip. A seam earns this function by
+/// publishing a value to a caller, not by reading frontmatter.
+#[must_use]
+pub fn fm_doc_publish(doc: &Document, key: &str) -> Option<String> {
+    let fm = find_frontmatter(&doc.root)?;
+    let NodeKind::Frontmatter { map } = &fm.kind else {
+        return None;
+    };
+    let block = doc.raw.get(fm.span.clone()).unwrap_or_default();
+    map.0
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, stored)| fm_publish(block, key, stored))
+}
+
 /// The value one frontmatter key PUBLISHES, read off the BLOCK — § A.6.1′.
 ///
 /// A key line that carries a scalar serves it decoded (§ A.6.1, through
@@ -2902,6 +3208,13 @@ pub fn fm_tags(block: &str, key: &str) -> Vec<String> {
 pub fn fm_value(block: &str, key: &str) -> Option<String> {
     let lines: Vec<&str> = block.lines().collect();
     let (at, remainder) = fm_key_line(&lines, key)?;
+    // A block scalar's value is on the FOLLOWING lines; the key line carries
+    // only its header. Before this arm, `>` was non-empty, so the walk below
+    // returned the indicator byte and never looked further (card
+    // `mrd-frontmatter-block-scalar-decoder-gap`).
+    if let Some(header) = block_header(remainder) {
+        return Some(fm_block_scalar(&lines, at, header));
+    }
     let value = match scalar::decode(remainder) {
         scalar::Scalar::Quoted(one) => return Some(one),
         scalar::Scalar::Plain(plain) => fm_flow_join(&lines, at, plain.to_string()),
@@ -4934,5 +5247,137 @@ mod tests {
             write_uleb128(&mut out, *value);
             assert_eq!(&out, want, "uleb128({value})");
         }
+    }
+}
+
+/// The block-scalar decoder (card `mrd-frontmatter-block-scalar-decoder-gap`).
+///
+/// A hand-rolled parser held to a standard is only as good as what it is
+/// measured against, so the matrix here is pinned against `PyYAML` in
+/// `crates/testsuite/tests/fm_block_scalar.rs`. These unit tests fix
+/// the shapes; that one proves they match a real YAML parser.
+#[cfg(test)]
+mod fm_block_scalar_tests {
+    use super::{Chomp, block_header};
+
+    fn read(block: &str, key: &str) -> Option<String> {
+        super::fm_value(block, key)
+    }
+
+    #[test]
+    fn a_header_is_recognized_only_when_it_is_one() {
+        for (spelling, literal, chomp) in [
+            (">", false, Chomp::Clip),
+            ("|", true, Chomp::Clip),
+            (">-", false, Chomp::Strip),
+            ("|-", true, Chomp::Strip),
+            (">+", false, Chomp::Keep),
+            ("|+", true, Chomp::Keep),
+            ("> # a comment", false, Chomp::Clip),
+        ] {
+            let header = block_header(spelling).unwrap_or_else(|| panic!("{spelling:?}"));
+            assert_eq!(header.literal, literal, "{spelling:?}");
+            assert_eq!(header.chomp, chomp, "{spelling:?}");
+        }
+        assert_eq!(block_header("|2").and_then(|h| h.indent), Some(2));
+        // Not headers — a payload after the indicator, or no indicator at all.
+        for spelling in ["> foo", "|bar", "plain", "", "[a, b]", "\"x\"", "- item"] {
+            assert!(block_header(spelling).is_none(), "{spelling:?}");
+        }
+    }
+
+    #[test]
+    fn a_folded_scalar_folds_breaks_to_spaces_and_clips_to_one_newline() {
+        let block = "description: >\n  line one\n  line two\n";
+        assert_eq!(
+            read(block, "description"),
+            Some("line one line two\n".into())
+        );
+    }
+
+    #[test]
+    fn a_literal_scalar_keeps_every_break() {
+        let block = "notes: |\n  first\n  second\n  third\n";
+        assert_eq!(read(block, "notes"), Some("first\nsecond\nthird\n".into()));
+    }
+
+    #[test]
+    fn chomping_owns_the_trailing_newlines() {
+        assert_eq!(read("k: >-\n  a\n  b\n", "k"), Some("a b".into()));
+        assert_eq!(read("k: |-\n  a\n  b\n", "k"), Some("a\nb".into()));
+        assert_eq!(read("k: >+\n  a\n\n", "k"), Some("a\n\n".into()));
+    }
+
+    #[test]
+    fn a_blank_line_survives_folding_and_a_more_indented_line_keeps_its_breaks() {
+        assert_eq!(
+            read("k: >\n  para one\n\n  para two\n", "k"),
+            Some("para one\npara two\n".into())
+        );
+        assert_eq!(
+            read("k: >\n  normal\n    kept as is\n  normal\n", "k"),
+            Some("normal\n  kept as is\nnormal\n".into())
+        );
+    }
+
+    #[test]
+    fn the_block_ends_at_the_next_key_and_never_swallows_it() {
+        let block = "k: |\n  body\nnext: plain\n";
+        assert_eq!(read(block, "k"), Some("body\n".into()));
+        assert_eq!(read(block, "next"), Some("plain".into()));
+    }
+
+    #[test]
+    fn an_explicit_indentation_indicator_is_honoured() {
+        // With `|2`, the deeper indentation is CONTENT, not a more-indented line.
+        assert_eq!(
+            read("k: |2\n    a\n    b\n", "k"),
+            Some("  a\n  b\n".into())
+        );
+    }
+
+    #[test]
+    fn a_header_with_no_content_publishes_the_empty_string_not_the_indicator() {
+        assert_eq!(read("k: >\nnext: x\n", "k"), Some(String::new()));
+        assert_eq!(read("k: |\n", "k"), Some(String::new()));
+    }
+
+    #[test]
+    fn every_other_shape_reads_exactly_as_before() {
+        assert_eq!(read("k: plain\n", "k"), Some("plain".into()));
+        assert_eq!(read("k: \"q\"\n", "k"), Some("q".into()));
+        assert_eq!(read("k: [a, b]\n", "k"), Some("[a, b]".into()));
+        assert_eq!(read("k:\n  - a\n  - b\n", "k"), Some("[a, b]".into()));
+        assert_eq!(read("k:\n", "k"), Some(String::new()));
+        assert_eq!(
+            read("k: - not a list item\n", "k"),
+            Some("- not a list item".into())
+        );
+    }
+
+    /// Face A (the flat map behind `read`'s `props[]`) now answers the same as
+    /// Face B — the whole point of the card.
+    #[test]
+    fn the_flat_map_and_fm_value_agree_on_every_shape() {
+        let raw = "---\nfolded: >\n  a\n  b\nliteral: |\n  x\n  y\nplain: p\nlist:\n  - i\n---\n\n# Body\n";
+        let doc = crate::build(raw.to_string(), syntax::parse(raw));
+        let map = match &doc.root.children[0].kind {
+            crate::NodeKind::Frontmatter { map } => map.clone(),
+            other => panic!("expected frontmatter, got {other:?}"),
+        };
+        let block = &raw[doc.root.children[0].span.clone()];
+        for key in ["folded", "literal", "plain"] {
+            let face_a = map.0.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+            let face_b = crate::fm_value(block, key);
+            assert_eq!(face_a, face_b, "the two faces must agree on {key:?}");
+        }
+        assert_eq!(
+            map.0
+                .iter()
+                .find(|(k, _)| k == "folded")
+                .map(|(_, v)| v.as_str()),
+            Some("a b\n"),
+            "the flat map stopped publishing the indicator byte"
+        );
     }
 }

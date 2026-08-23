@@ -2045,6 +2045,49 @@ plain scalars, flow collections (`[a, b]`), and **malformed quoting, which no
 reader may guess at**. A quoted scalar is a STRING in every schema — the
 decode is the quoting layer only, never type inference.
 
+**A.6.1a Block scalars (amended 2026-08-23, card
+`mrd-frontmatter-block-scalar-decoder-gap`).** A key line may carry a YAML
+**block-scalar header** instead of a value — `>` or `|`, an optional chomping
+indicator (`-` strip, `+` keep, default clip) and an optional indentation
+digit — with the value on the following indented lines. Both published faces
+(`read`'s `props[]`, `sql`'s `frontmatter`) decode it through ONE reader,
+`model::fm_block_scalar`: folded breaks become spaces, a run of *k* blank lines
+becomes *k* newlines, a break adjacent to a more-indented line is kept, and
+chomping owns the trailing breaks.
+
+**Widened to the compared-value seams (2026-08-23, card
+`scalar-text-trims-config-key-block-scalars`).** The amendment above landed at
+the two published faces; the COMPARED-value seams in the table below still read
+the flat map through `model::scalar::text`, whose decode opens with
+`value.trim()` — correct for a key line's colon remainder, wrong for
+block-scalar text the map already stores decoded, because it eats the newline
+clip chomping just produced, the newline a leading blank produced, and the
+leading spaces an explicit indentation digit preserved. `preset`'s
+`^properties` rule check and `realise`'s `FieldEquals` — BOTH halves, the
+declared `realise.expected` read at the page edge and the observed field — now
+publish through `model::fm_doc_publish`, the one `Document`-grain door over
+`fm_publish`. The reachability is not bounded by key shape: `preset` compares
+`rule.key` and `realise` watches `realise.field`, both **arbitrary
+author-declared keys**, and `status` / `description` / `manifest` carry block
+scalars on live pages today. What keeps the class dormant is that no
+`type: preset` page and no `realise.field` declaration exists in any bound root
+yet, so the first one written opens it. Until this amendment both faces published
+the INDICATOR BYTE (`">"`), mis-serving **71 key rows across 63 live pages on
+four bound roots** (sessions 37/45, ccc-statusd 15/15, mrd-experiments 8/8,
+field-notes 3/3) that were valid YAML throughout — a decoder gap, never corpus
+damage. Each of those roots rebuilds its own drawer at the accompanying
+`SCHEMA_SALT` bump.
+
+**Consequence, ruled by ZT: `props[].value` may now carry `\n`.** It is the
+first value on that plane that can, and it is true of BOTH indicators — clip
+chomping leaves one trailing newline on a FOLDED scalar too, so there is no
+single-line case to carve out. A face that renders values on one line escapes
+them; the JSON plane carries them verbatim. **The write plane does not widen:**
+§ A.6.3 still REFUSES a newline in a value (D11), so a block-scalar value read
+from a page cannot be written back through `properties`/`set_property`
+unchanged. YAML can express what this engine's single-line value plane cannot
+author — stated here rather than discovered on a round trip.
+
 The law binds the VALUE seams — every seam that publishes a frontmatter value
 to a consumer, or compares one against a caller-supplied string. One owner
 implements it (`model::scalar`) so the def checker and the read seams cannot
@@ -2054,10 +2097,35 @@ drift into two dialects. The enumerated set, audited 2026-08-08:
 |---|---|
 | composed read `props[].value` (§ A.3) | published value |
 | a script's `fm` dict (`fm_key` value) | published value |
-| the run plane's frontmatter binding values | published value |
+| the run plane's frontmatter binding values — **§ A.6.1a does NOT reach this row**, see the carve-out below | published value |
 | `preset`'s `^properties` rule check and its `type`/`defines`/`root`/`births` reads | compared value |
 | `realise`'s `FieldEquals` — BOTH halves: the page's declared `realise.expected` and the observed field | compared value |
 | the view projection's `frontmatter.value` column — and the `record` pivot and B2 tag parse riding it | published value |
+
+**A.6.1a carve-out: the run plane's binding values (2026-08-23, card
+`scalar-text-trims-config-key-block-scalars`).** The binding row above stays
+bound by § A.6.1 — a quoted binding still decodes, and `task.build: "[[#^x]]"`
+must unquote exactly as before. **§ A.6.1a alone does not reach it: a
+block-scalar binding is NOT published verbatim, and routing this seam through
+`model::fm_doc_publish` for consistency would be a regression, not a fix.**
+
+The mechanism, and it is the whole justification — a carve-out asserted without
+one is the shape of the false `read_inputs_grain` claim this card deleted. A
+binding VALUE's grammar is `[[#^id]]`, so surrounding whitespace is never
+content. `run::address::parse_binding_value` strips `[[` and `]]` as a
+**matched pair**, and it does so BEFORE the value is trimmed again downstream.
+A `>`-folded binding is stored already decoded as `"[[#^id]]\n"` — clip
+chomping's trailing break — so published verbatim, `strip_suffix("]]")` misses
+the newline, the whole string reaches `split_once("#^")`, and the non-empty
+target `"[["` refuses `AddressError::CrossFileRef`. Trimmed, the pair strips
+and the binding resolves. The later `v.trim()` does not rescue it: that runs
+AFTER the bracket strip has already failed. A block scalar that is not a block
+ref refuses `InvalidBinding` on the grammar, as it always did.
+
+So the binding plane reads a value; it does not PUBLISH one, and a block
+scalar there is either accepted through the trim or refused by the grammar —
+never mis-served. Pinned by `crates/run/tests/binding_block_scalar.rs`, which
+asserts both directions and the `PyYAML` reading of the fixture.
 
 **Why the last two rows joined (2026-08-08).** They read a value and compare it
 against a caller-supplied string, which is exactly the shape § A.6's read-half
@@ -2106,11 +2174,31 @@ bare key line with no sequence below stays `''` — the engine never invents
 owns it (`model::fm_value`), and `fm_tags` rides the same block walk, so the
 tag lane and the value lane cannot disagree about where a sequence ends.
 
-Named residual, not silently left: the OTHER published-value seams in the
-table above (`props[].value`, a script's `fm`, the run plane's bindings) still
-read the flat map and still serve `''` for a block sequence. This amendment
-binds the view row only — ZT's GO was scoped to the projection — and the
-residual is recorded here so the next reader finds it named.
+Named residual, not silently left: the other seams in the table above still
+read the flat map and still serve `''` for a block sequence — `props[].value`,
+a script's `fm`, and (since 2026-08-23, card
+`scalar-text-trims-config-key-block-scalars`) `preset`'s `^properties` check
+and `realise`'s `FieldEquals` in BOTH halves, which joined the list when they
+were routed through `model::fm_doc_publish`. That door is block-SCALAR aware
+and block-SEQUENCE blind: it answers from the flat map's stored text plus a
+key-line header test, where `model::fm_value` — the reader the view row uses,
+thirty lines away in the same file — walks the block and handles sequences too.
+Measured on one page at engine `40fad579b`: `sql` served
+`tags=[alpha, beta]` where `read`'s `props[]` served `tags=` empty. It matters
+because `preset`'s `rule.key` and `realise`'s `field` are arbitrary
+author-declared keys and `tags:` / `aliases:` / `agents:` are block sequences
+on live pages, so a rule pinning a list-valued key compares its def string
+against `''`. **This is not a regression** — those seams served `''` before
+that card too — and it is not that card's to fix: this amendment binds the
+view row only (ZT's GO was scoped to the projection) and the disposition sits
+inside ZT's open block-list question, pinned by
+`crates/testsuite/tests/props_plane.rs:117-151`.
+
+The run plane's bindings are deliberately NOT in that list and are no longer
+described here as a published-value seam: per § A.6.1a's carve-out they read a
+value under the `[[#^id]]` grammar rather than publishing one, and a bare key
+line with a sequence below refuses on the grammar instead of serving `''` as a
+value.
 
 **What stays raw, and why it is not an omission** (§ A.6.2's reasoning, the
 same stance `cat` takes): `lock` (guard tokens) and `policy::change`'s
@@ -2148,13 +2236,109 @@ fleet writes are the same bytes. Concretely, a value is quoted when it:
 - would parse as a **map or a nested collection** (`{…}`, `[[…]]`, an
   unterminated `[…]`) — the I4 nesting was the emitter's, never the caller's;
 - carries `: ` unquoted, starts with `#`, or carries ` #` — a mapping or a
-  comment in value position.
+  comment in value position;
+- carries an interior TAB — `k: a<TAB>b` is unreadable to PyYAML ("while
+  scanning for the next token") and the whole block dies with it, while
+  `serde_yaml` reads the same bytes without complaint;
+- would be typed by a YAML **1.1** resolver even where a 1.2 one leaves it a
+  string: a digit run (`19895504`; `02146210` is OCTAL 576 648 to PyYAML), the
+  underscore grouping `1_000`, the underscore radix forms (`0x1_f` is 31,
+  `0b1_010` is 10) and every `0b…`, the sexagesimal forms (`12:30` is 750,
+  `1:02:03` is 3723, `1:30.5` the float — each group after the first is 0–59),
+  and the word booleans `y`/`yes`/`no`/`on`/`off` with their case variants;
+- is one of the two 1.1 resolver TAGS, `<<` (merge) or `=` (value): emitted
+  plain, PyYAML refuses the WHOLE block — "could not determine a constructor
+  for the tag" — while serde_yaml reads both back as strings.
 
-Unchanged, deliberately: a **typed scalar** (`true`, `7`, `2026-08-07`) and a
-**one-level flow list** (`[a, b]`) still emit verbatim. Those spellings are the
-only way this string plane can author a non-string value. A newline in a value
-is still REFUSED, never sanitized: a single-line frontmatter value cannot carry
-one, and an escaped-scalar workaround leaks.
+Unchanged, deliberately: a **one-level flow list** (`[a, b]`) still emits
+verbatim — the only way this string plane can author a non-string value — and a
+**timestamp** (`2026-08-07`) still emits plain, because `serde_yaml` reads it
+back as exactly the caller's string. A newline in a value is still REFUSED,
+never sanitized: a single-line frontmatter value cannot carry one, and an
+escaped-scalar workaround leaks.
+
+**The typed-scalar carve-out is RETIRED** (2026-08-23, card
+`all-digit-short-ids-read-as-int`, from PR 185's review finding F2). `true` and
+`7` used to emit verbatim as "the only way this string plane can author a
+non-string value". The price was the fleet's join key: an agent short id is
+8 hex, 203 of the 8 125 distinct ids in the live sessions root's frontmatter
+(2.5 %) are all digits, and `owner: 19895504` read back as the INTEGER
+19 895 504 in every foreign parser while `session: 02146210` read back as
+576 648 in PyYAML. 37 such ids already sit bare under `session`, `agent`,
+`from`, `owner`, `author`, `worker`, `leader`, `created_by`; 8-hex git shas
+share the shape. A value the caller spelled as a string is now written so that
+PyYAML, `serde_yaml` and `gopkg.in/yaml.v3` all read that same string back.
+
+**Named residual:** no door can author the integer `7` through the value plane
+any more — `create(props=…)`'s `PropValue::List` is the one typed arm left — so
+a def-declared `int`/`bool` property (`shape.rs` `SHAPE_INT`/`SHAPE_BOOL`) must
+be born in the record's own body bytes. No live def on the sessions root
+declares one.
+
+**Second residual — timestamps and dates are deliberately left PLAIN.** Ruled
+2026-08-23 (leader `a68417af`, card `all-digit-short-ids-read-as-int`), written
+down because an undocumented exclusion is indistinguishable from an oversight,
+and the next reviewer would re-derive the sweep to find out which it was.
+
+**The line is value corruption, not retyping**, and the three-parser table
+below is what draws it: an id comes back as the caller's STRING from
+`serde_yaml` and as the integer **576648** from BOTH 1.1 readers — PyYAML and
+`gopkg.in/yaml.v3` — so the join key is destroyed. A date comes back as text
+from `serde_yaml` and as a date object (`date` / `time.Time`) from both 1.1
+readers: every reader agrees on the same INSTANT, and only the carrier differs.
+The predicate defends against a changed value and does not tidy a changed
+carrier.
+
+The costs are asymmetric and both real: quoting the class would take churn from
+2.767 % to ~25 % of the plain population (+7 356 distinct spellings under
+`created`, `created_at`, `updated_at`) and would un-type the property Obsidian
+views sort and filter on — degrading what the field exists for, to defend
+against a disagreement no reader in this stack actually has.
+
+**The exposure, stated precisely:** a DATE-OBJECT WRITER — one that reads a
+plain date into a `date` / `time.Time` value and writes it back in its own
+formatting, so the stored spelling drifts with nobody editing the value.
+
+The reason no such writer exists here is NOT that our readers see a string —
+**both 1.1 readers decode a plain date into a date object** (corrected
+2026-08-23 in review, advisor `c6426434`: an earlier draft of this section
+claimed go-yaml reads a date as a string, and that is false for an untyped
+target). It is narrower and load-bearing: this engine reads frontmatter through
+`serde_yaml`, which resolves the 1.2 core schema and has no timestamp type; and
+`ccc-statusd` unmarshals into **typed `string` struct fields** — ALL FOUR of
+its non-test yaml decode sites target a typed struct (`internal/registry`
+`check.go` ×2 and `mrdsource.go`, all three into `hookPageFM` whose every field
+is `string`/`[]string`, plus `internal/mcpserver/notifyhow.go`'s anonymous
+string-valued struct), with zero `map[string]any` yaml targets and no
+`yaml.NewDecoder` site in the repo (surveyed at `8bde5792`). There `yaml.v3`
+hands back the source text (`created="2026-08-23"`, measured) and **the
+timestamp resolver never fires**. The safety comes from the TARGET TYPE, not
+from the resolver — so the failure scenario is precise: **the next reader that
+decodes frontmatter into `map[string]any`**.
+**A writer that unmarshals frontmatter into `interface{}` and re-emits it would
+rewrite every date in the corpus** — if one appears, this is the line it must
+read first.
+
+*Aperture of that absence claim* (2026-08-23): the writers surveyed were this
+engine through every § A.6.3a door, `ccc-statusd` (`yaml.v3` into typed string
+fields, plus its own line-level `frontmatter.SetField`), and the armed rules,
+which write through the engine. **Obsidian's property editor also writes
+frontmatter in this vault and was NOT measured** — a JS front-matter writer is
+the likeliest place a date-object round trip would appear, and nobody has
+looked. "None exists" means "none in the three surveyed writers", not "none
+anywhere". And the instrument caveat above generalises: a claim about a READER
+must be measured against the library a program links, not against a CLI that
+wraps it.
+
+**The no-op claim is measured, not asserted** (same card): 1 196 live records —
+every one carrying a value this amendment re-spells, plus 600 random controls —
+10 369 top-level keys, each written back through the real splice door with the
+value the read law serves. Base `361f248d3` and head produce **byte-identical
+reports**: 90 files moved, 14 refused, the same rows at both revs. The 90 are
+the standing § A.6.3c exclusions (79 bare-key `null` → `""`, the rest stored
+block-scalar markers and `[[…]]` nesting), so this change adds **zero** no-op
+re-spelling. Receipts: `.scratch/noop-base.txt`, `noop-head.txt`,
+`noop_list.txt`.
 
 **The trigger list above is NOT closed** (amended 2026-08-23, card
 `hook-17-mrd-create-props`). It enumerates the fast, teachable cases; the LAW is
@@ -2168,13 +2352,58 @@ frontmatter block dies, not one key (measured with PyYAML over the live sessions
 root: 47 unreadable blocks, 6 of them in a spelling this encoder emits). `!t`,
 `>` and `|` parsed to something the caller never wrote. A door adds no trigger
 of its own: the parser is the trigger, and the list is documentation of what it
-catches. The two carve-outs above survive it explicitly — a plain form that
-parses as a NON-string is legal exactly when the checker's classifier blesses it
-as a typed scalar or a one-level flow list. Measured churn across the live root
-at the amendment: **14 of 29 377 distinct plain-spelled values change spelling
-(0.048 %), all plain→quoted, none quoted→plain**, and a same-value write-back
-stays byte-identical (§ A.6.3c preservation), so no record is rewritten by the
-change alone.
+catches. ONE carve-out survives it — a plain form that parses as a NON-string is
+legal exactly when the checker's classifier reads it as a one-level flow list.
+Measured churn across the live root at that amendment: **14 of 29 377 distinct
+plain-spelled values change spelling (0.048 %), all plain→quoted, none
+quoted→plain**, and a same-value write-back stays byte-identical (§ A.6.3c
+preservation), so no record is rewritten by the change alone.
+
+**`serde_yaml` is not the whole oracle** (2026-08-23, card
+`all-digit-short-ids-read-as-int`). It resolves YAML **1.2**; PyYAML and
+go-yaml (`gopkg.in/yaml.v3` — what `ccc-statusd` and most of the fleet's
+non-Rust readers link) resolve **1.1**, and the schemas disagree:
+`02146210` is the string `"02146210"` to `serde_yaml` — a leading zero is not a
+1.2 integer — and the integer 576 648 to PyYAML. Deferring to the 1.2 parser
+alone would have left the worse half of the id defect standing (a value change,
+not a type change), so the law is the UNION of the schemas, and the 1.1 classes
+are the enumerated trigger above. Measured churn for the retirement plus the
+union, over the same instrument: **810 of 29 270 distinct plain-spelled values
+change spelling (2.767 %) — 515 ints, 245 floats, 37 all-digit short ids, 7
+booleans, 1 sexagesimal, 1 interior tab, 4 in the radix / resolver-tag classes
+— all plain→quoted, none quoted→plain, none refused**, and PyYAML reads every
+one of the 810 changed emits back as exactly the caller's string.
+
+**Why the id class had to be closed and the timestamp class did not**, measured
+2026-08-23 on one file, each reader run as a LIBRARY into an untyped target
+(`serde_yaml::Value`, PyYAML `safe_load`, `gopkg.in/yaml.v3` into
+`interface{}`):
+
+| plain value | serde_yaml (1.2) | PyYAML (1.1) | go-yaml `yaml.v3` (1.1) |
+|---|---|---|---|
+| `owner: 19895504` | int | int | int |
+| `session: 02146210` | string `"02146210"` | **576648** (octal) | **576648** (octal) |
+| `created: 2026-08-23` | string | `date` object | `time.Time` |
+| `stamp: 2026-08-23T02:09:32-04:00` | string | `datetime` object | `time.Time` |
+| `session: "02146210"` (the emit) | string | string | string |
+
+**The two 1.1 readers AGREE on 576648**, and that agreement is the case: an id
+the caller spelled as a string is silently a DIFFERENT INTEGER to both of the
+non-Rust readers in this stack, while `serde_yaml` alone still sees the string.
+The join key is destroyed, not merely retyped.
+
+*Instrument note, because it cost a wrong sentence in review:* the **`yq` CLI**
+(mikefarah v4.53.3) answers `2146210` for that same line — a third number, and
+neither library's. A CLI is not the library it embeds; the rows above are the
+libraries, which is what programs in this stack actually link.
+
+A timestamp is a different event: every reader agrees on the INSTANT, and the
+disagreement is only whether it arrives as text or as a date object — no value
+is corrupted. That is why the timestamp class stays plain rather than churning
+7 356 more distinct spellings (25 % of the population) and un-typing the `date`
+property
+every Obsidian view sorts on. § A.6.3c preservation is untouched, so the 37 ids
+already on disk keep their bytes until a write CHANGES their value.
 
 **A.6.3′ The KEY half of the composed line (2026-08-14, dogfood r3 f6).** The
 emitted line is `{key}: {encoded}`, so an unvalidated KEY forges frontmatter
@@ -2803,9 +3032,10 @@ guard applies exactly as at every other op):
   newline (D11, the § A.6.3a law verbatim) and a `body` that already opens its
   own frontmatter fence while `props` is inhabited — two spellings of one
   block, so the door refuses instead of choosing. Keys land sorted; a props
-  scalar that would read back as a COLLECTION is quoted, while the value
-  plane's typed-scalar carve-out is unchanged (`"7"` lands `7`), exactly as at
-  every other door. **The one deliberate asymmetry with the patch face**
+  scalar that would read back as a COLLECTION is quoted, and so is one that
+  would read back as a NUMBER or a BOOL (`"7"` lands `"7"`, card
+  `all-digit-short-ids-read-as-int` — the typed-scalar carve-out is retired at
+  every door). **The one deliberate asymmetry with the patch face**
   (§ A.6.3): the flow-list carve-out does NOT apply here, because this door has
   a typed list arm and that one does not — so the string `[a, b]` lands quoted
   when born through `props=` and plain when written through `properties`. A
