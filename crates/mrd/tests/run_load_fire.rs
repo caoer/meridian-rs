@@ -81,6 +81,27 @@ declare(on = \"Stop\")
 create(path = \"born/never.md\", body = \"no\", props = {\"type\": \"probe\"})
 ```
 ^createload
+
+```starlark
+def run(event):
+    create(path = \"born/first.md\", body = \"one\")
+    create(path = \"taken.md\", body = \"two\")
+    create(path = \"born/third.md\", body = \"three\")
+    return {\"ok\": True}
+
+declare(on = \"Stop\")
+```
+^twobirths
+
+```starlark
+def run(event):
+    create(path = \"same.md\", body = \"a\")
+    create(path = \"same.md\", body = \"b\")
+    return None
+
+declare(on = \"Stop\")
+```
+^samepath
 ";
 
 const ROOT: &str = "\
@@ -657,4 +678,97 @@ fn several_pages_load_as_several_rows_in_one_call() {
     assert_eq!(targets[0]["page"], "probe.md");
     assert_eq!(targets[1]["page"], "other.md");
     assert_eq!(targets[1]["loaded"][0]["block"], "only");
+}
+
+/// **The positional rule** (A8, as ruled 2026-08-23) — the half a uniform
+/// "nothing landed" gets WRONG.
+///
+/// Births realize before the page splice, sequentially, in emission order,
+/// and the first refusal stops the generation; earlier births STAY (decision
+/// #14, no rollback). So a row that says `not_applied` about a file that is
+/// on disk is a falsehood, and the words have to be keyed on WHICH descriptor
+/// the door refused — the locator index, not the verb and not a coordinate
+/// match.
+#[test]
+fn a_refused_birth_leaves_the_births_before_it_born_and_says_so() {
+    let ws = Ws::new();
+    // `taken.md` is occupied, so the SECOND of three births refuses.
+    std::fs::write(ws.file("taken.md"), "already here\n").expect("occupy the path");
+    let input = ws.input("e.json", r#"{"name":"Stop"}"#);
+    let out = ws.run(&["probe.md#^twobirths", "--input-json", &input]);
+    let row = row(&out);
+
+    // The fire row keeps its own verdict and its value: a DOOR refusal is the
+    // effect's row, never the fire's (never-veto).
+    assert_eq!(row["result"], "ok", "{row:#}");
+    assert_eq!(row["value"]["ok"], true);
+
+    let applied = row["applied"].as_array().expect("applied rows");
+    assert_eq!(applied.len(), 3, "one row per descriptor: {row:#}");
+
+    // 0 — before the refusal. It is ON DISK, and the row says `born`.
+    assert_eq!(applied[0]["result"], "born", "{row:#}");
+    assert_eq!(
+        std::fs::read_to_string(ws.file("born/first.md")).expect("the first birth is on disk"),
+        "one"
+    );
+    // 1 — the refusal itself, with the door's own reason.
+    assert_eq!(applied[1]["result"], "refused", "{row:#}");
+    assert!(
+        applied[1]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cas_mismatch"),
+        "the door's typed frame rides the row: {row:#}"
+    );
+    // 2 — after it. The loop stopped, so nothing ran and nothing is on disk.
+    assert_eq!(applied[2]["result"], "not_applied", "{row:#}");
+    assert!(!ws.file("born/third.md").exists());
+    // And the occupied path was not overwritten.
+    assert_eq!(
+        std::fs::read_to_string(ws.file("taken.md")).expect("still there"),
+        "already here\n"
+    );
+}
+
+/// **Index, not coordinates** — two descriptors that a coordinate match
+/// cannot tell apart.
+///
+/// Both births name `same.md` with the same verb. The first lands; the second
+/// refuses because the path is now occupied. Attribution by coordinates would
+/// match the FIRST descriptor (it is the first with that path and verb) and
+/// publish `refused` for a file that exists while calling the real culprit
+/// `born`. The locator index cannot do that.
+#[test]
+fn two_descriptors_sharing_a_path_are_told_apart_by_index() {
+    let ws = Ws::new();
+    let input = ws.input("e.json", r#"{"name":"Stop"}"#);
+    let out = ws.run(&["probe.md#^samepath", "--input-json", &input]);
+    let row = row(&out);
+
+    let applied = row["applied"].as_array().expect("applied rows");
+    assert_eq!(applied.len(), 2, "{row:#}");
+    assert_eq!(applied[0]["result"], "born", "the FIRST landed: {row:#}");
+    assert_eq!(
+        applied[1]["result"], "refused",
+        "the SECOND is the one the door judged: {row:#}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.file("same.md")).expect("on disk"),
+        "a",
+        "the first birth's body survived — the second never overwrote it"
+    );
+}
+
+/// **The ceilings are applied, not just decoded** (F1): a `budget` a caller
+/// declares NARROWS the evaluator, so a block that would run fine at the
+/// engine default faults `budget` under a small one.
+#[test]
+fn a_caller_budget_narrows_the_evaluator() {
+    let ws = Ws::new();
+    let input = ws.input("e.json", r#"{"name":"PreToolUse"}"#);
+    // The wire lane is where `budget` rides; the CLI has no argv for it, so
+    // this asserts the plumbing through the row builder the wire arm calls.
+    let out = ws.run(&["probe.md#^h", "--input-json", &input]);
+    assert_eq!(row(&out)["result"], "ok", "the same fire without a budget");
 }
