@@ -397,7 +397,7 @@ fn fire_row(
             // at the decode wall: whether a block's entry is evaluated or
             // exec'd is a fact about the PAGE, which the wall does not read.
             // (PR 195 review, e9f1ae35, F2a.)
-            if target.env.as_ref().is_some_and(|e| !e.is_empty()) {
+            if !target.env.is_empty() {
                 return refused_row(
                     target,
                     invocation,
@@ -685,7 +685,15 @@ fn realize(
     }
     let authority = match page_authority(world) {
         Ok(authority) => authority,
-        Err(e) => return (Vec::new(), Some(("cap_denied", e.to_string()))),
+        Err(e) => {
+            return (
+                Vec::new(),
+                Some(Refusal::Row {
+                    class: "cap_denied",
+                    reason: e.to_string(),
+                }),
+            );
+        }
     };
     // `dry` lists the effects and applies none — the shipped rehearsal
     // switch, unchanged in meaning on a fire row.
@@ -1176,7 +1184,7 @@ impl ProcessSeam<'_> {
         // `$CCC_HOOK_EVENT` saw it unset, took its default branch, and
         // answered `ok`/`exit 0` with nothing anywhere saying a variable had
         // gone missing. (PR 195 review, e9f1ae35, F2.)
-        let mut env: BTreeMap<String, String> = target.env.clone().unwrap_or_default();
+        let mut env: BTreeMap<String, String> = target.env.clone();
         env.extend(spec.env.clone());
         // The engine's own two facts. `MRD_RUN_BLOCK` is the BLOCK — it used
         // to carry the invocation, so a script shared by several blocks on one

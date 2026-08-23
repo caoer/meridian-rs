@@ -601,6 +601,7 @@ impl std::fmt::Display for ExecError {
                 resolved,
                 ceiling,
                 declared,
+                ..
             } => {
                 write!(f, "capability denied: {kind} on '{target}'")?;
                 // The matching coordinate is the ADDRESSED one (ZT ruling
@@ -1527,6 +1528,7 @@ fn props_arg(effect: &Effect) -> Result<BTreeMap<String, wire_serve::write::Prop
     let bad = |reason: String| ExecError::BadDescriptor {
         kind: effect.kind.as_str().to_owned(),
         reason,
+        index: None,
     };
     let map = match effect.args.get("props") {
         None => return Ok(BTreeMap::new()),
