@@ -1545,8 +1545,13 @@ their fences; nothing re-implements addressing.
 
 ### Recording by declaration kind
 
-A **fire row writes no receipt** and takes no lock beyond the batch's own; a
-task row is unchanged. There is no caller flag for this — the engine reads
+**A fire row writes no receipt rows, and the fire PROCESS takes no task-path
+lock** (the recording law above); realizing md effects goes through the
+applier, which takes the workspace lock unconditionally and can refuse
+workspace busy — that is step 6's pre-birth stage (A8). *(Design § 2.2 step 4
+— the A8 consistency correction, ruled 96bff2d4 2026-08-23; the tree:
+`modes.rs` → `executor::apply`, which acquires `WorkspaceLock` first.)*
+A task row is unchanged. There is no caller flag for this — the engine reads
 the page. 100 declared-block fires add **zero** rows to `receipts/run.md`
 (gate row 6 of card `hook-01-mrd-run-load-fire`; the receipt anchors counted
 are `^r-<invocation>` and `^p-<invocation>`).
@@ -2139,12 +2144,14 @@ arbitrary code, so exec never enters the effect surface.
 
 **This whole section is the TASK path.** Everything below — the two-phase
 receipts, phase-2 convergence, the `OutOfBand` refusal — is what a
-`task.<name>` row does, and a fire's **process** does none of it. The
-`run.lock` splits: a fire's process runs outside it, but a fire that
-**realizes md effects** takes the same workspace lock the task path does
-(`executor::apply` acquires it first, unconditionally) and can refuse
-`runtime` / *workspace busy*; a fire that applies nothing — an exec'd entry,
-an evaluated entry whose program returns no effect — and any `dry` fire take
+`task.<name>` row does, and a fire's **process** does none of it. The lock
+is the one split (§ Recording by declaration kind, design § 2.2 step 4 — the
+A8 consistency correction, ruled 96bff2d4 2026-08-23): **the fire PROCESS
+takes no task-path lock**; realizing
+md effects goes through the applier, which takes the workspace lock
+unconditionally and can refuse workspace busy (`runtime` on the row — step 6's
+pre-birth stage, A8); a fire that applies nothing — an exec'd entry, an
+evaluated entry whose program returns no effect — and any `dry` fire take
 none. A `declare()` row whose entry is **exec'd** runs its process through
 **the same bracket** (`run::exec::exec` over `ExecSpec` — the `exec_bracket()`
 the hook-support design names) and then parts company. An **evaluated** entry
@@ -2154,7 +2161,7 @@ below are the exec'd entry's:
 | | task row (`task.<name>`) | fire row (`declare()`) |
 |---|---|---|
 | receipts | phase-1 + phase-2 rows in `receipts/run.md` | **none** — 100 declared-block fires add zero rows |
-| `.meridian/run.lock` | taken | **not taken by the process**; taken by `executor::apply` only when the fire realizes md effects (`workspace busy` is then a `runtime` fault on the row) |
+| `.meridian/run.lock` | taken | **the fire PROCESS takes no task-path lock**; realizing md effects goes through the applier (`executor::apply`), which takes the workspace lock unconditionally and can refuse workspace busy — a `runtime` fault on the row (step 6's pre-birth stage, A8) |
 | program | `bash -c <source> mrd-task <args…>`, `$0` = `mrd-task` | `<interpreter> <staged-file> <args…>`, `$0` = the staged path |
 | stdin | `Stdio::null()` | the fire's `input`, compact JSON |
 | exit | collapsed to `state: applied\|partial` | the **raw** code, 1 and 2 distinct |
