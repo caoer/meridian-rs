@@ -12,7 +12,7 @@
 //! - **No shell interpretation beyond bash -c:** source is the block body.
 
 use std::collections::BTreeMap;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdout, Command, Stdio};
@@ -48,6 +48,48 @@ pub struct ExecSpec<'a> {
     /// inherits the invocation cwd (the CLI entry). The § A.8 wire arm
     /// passes the bound workspace root: a daemon has no meaningful cwd.
     pub step_cwd: Option<&'a Path>,
+    /// `argv[0]` — the interpreter (hook-support design § 1.4: *a new
+    /// language is `argv[0]`, not a concept*). [`BASH`] on the shipped task
+    /// path, where it is the only language the plane dispatches on.
+    pub interpreter: &'a str,
+    /// What to write on the child's stdin, then close.
+    ///
+    /// `None` is `Stdio::null()` — the shipped task path, byte-unchanged. A
+    /// `Some` is the amended `run` entry's pipe (§ 1.3, § 1.4): a hook's
+    /// official input JSON, so a `settings.json` script's bytes run
+    /// unchanged.
+    pub stdin: Option<&'a str>,
+}
+
+/// The interpreter the shipped task path runs — its only one.
+pub const BASH: &str = "bash";
+
+impl<'a> ExecSpec<'a> {
+    /// The shipped task-path spec: `bash -c`, no stdin. Named so the two new
+    /// fields do not have to be spelled at every existing call site with
+    /// values that mean "as before".
+    #[must_use]
+    pub fn task(
+        source: &'a str,
+        args: &'a [String],
+        env: &'a BTreeMap<String, String>,
+        scratch: &'a Path,
+        project_root: &'a Path,
+        timeout: Duration,
+        step_cwd: Option<&'a Path>,
+    ) -> Self {
+        Self {
+            source,
+            args,
+            env,
+            scratch,
+            project_root,
+            timeout,
+            step_cwd,
+            interpreter: BASH,
+            stdin: None,
+        }
+    }
 }
 
 /// How the step ended.
@@ -123,7 +165,7 @@ where
     F: FnOnce(ChildStdout) -> T + Send,
     T: Send,
 {
-    let mut cmd = Command::new("bash");
+    let mut cmd = Command::new(spec.interpreter);
     cmd.arg("-c")
         .arg(spec.source)
         .arg("mrd-task")
@@ -134,7 +176,12 @@ where
         .envs(spec.env)
         // After `envs`, so a declared key cannot shadow the plane's own.
         .env("MERIDIAN_PROJECT_ROOT", spec.project_root)
-        .stdin(Stdio::null())
+        // Absent stdin stays `null()`: the shipped task path is byte-unchanged.
+        .stdin(if spec.stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // U16 as written when `None` (the step runs where the process runs); the
@@ -160,8 +207,22 @@ where
     let pid = i32::try_from(child.id()).map_err(|_| io::Error::other("pid out of range"))?;
     let stdout_pipe = child.stdout.take().expect("stdout piped");
     let stderr_pipe = child.stderr.take().expect("stderr piped");
+    let stdin_pipe = child.stdin.take();
 
     let (status, stderr, consumed) = thread::scope(|s| {
+        // The payload is written on its own thread and the pipe closed there.
+        // Writing it inline would deadlock the moment it exceeds the pipe
+        // buffer (64 KiB on Linux): the parent would block on write while the
+        // child blocked on a stdout nobody was draining yet. A hook's input
+        // JSON routinely carries a whole tool payload, so this is the
+        // ordinary case, not the pathological one.
+        let payload = spec.stdin;
+        let stdin_h = s.spawn(move || {
+            if let (Some(mut pipe), Some(bytes)) = (stdin_pipe, payload) {
+                let _ = pipe.write_all(bytes.as_bytes());
+                // Dropping closes it, which is what lets `cat` see EOF.
+            }
+        });
         let stdout_h = s.spawn(move || stdout(stdout_pipe));
         let stderr_h = s.spawn(move || read_all(stderr_pipe));
 
@@ -196,6 +257,7 @@ where
 
         let consumed = stdout_h.join().expect("stdout consumer");
         let stderr = stderr_h.join().expect("stderr reader");
+        stdin_h.join().expect("stdin writer");
         status.map(|st| (st, stderr, consumed))
     })?;
 
