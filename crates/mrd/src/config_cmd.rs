@@ -102,6 +102,10 @@ fn to_json(
             "primary": m.primary(),
             "vault": m.vault(),
             "pin": m.pin(),
+            // The second lookup spelling (§5.1b); `null` when the block
+            // declares none — a name is its own alias, so absence is the
+            // majority row, not a missing fact.
+            "alias": m.alias(),
             "declared_name": m.declared_name(),
             // The same spelling the human line carries.
             "state": m.state().word(),
@@ -190,6 +194,12 @@ fn render_human(
         let _ = write!(out, "  vault:{}", m.vault().unwrap_or(ABSENT_LEG));
         if let Some(pin) = m.pin() {
             let _ = write!(out, "  pin:{pin}");
+        }
+        // The alias column prints only when declared: absence is the majority
+        // row (a name is its own alias, §5.1b), so a marker on every line would
+        // cost every reader to state nothing.
+        if let Some(alias) = m.alias() {
+            let _ = write!(out, "  alias:{alias}");
         }
         let _ = write!(out, "  {}", m.state().word());
         out.push('\n');

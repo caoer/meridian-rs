@@ -306,27 +306,37 @@ fn run_rooted(spelling: &str, cwd: &Path, format: Format) -> Result<(), Fail> {
         Ok((rel, rooted)) => {
             let landed = rooted.workspace.join(&rel);
             match format {
+                // `root` and `ref` carry the MOUNT's name whichever spelling the
+                // caller used — the canonical-spelling law (§ 4.6a). `alias` is
+                // the spelling that landed, present only when it was not the
+                // name, so a caller can see WHY `sessions:` reached this tree
+                // without diffing two strings.
                 Format::Json => {
                     let value = json!({
                         "workspace": rooted.workspace.display().to_string(),
                         "source": "rooted",
                         "root": rooted.name.as_str(),
+                        "alias": rooted.alias.as_ref().map(addr::MountName::as_str),
                         "primary": rooted.primary,
                         "path": landed.display().to_string(),
-                        "ref": format!("{}:{rel}", rooted.name),
+                        "ref": rooted.canonical_ref(&rel),
                     });
                     println!("{}", serde_json::to_string_pretty(&value).expect("json"));
                 }
                 Format::Human => {
+                    let via_alias = match &rooted.alias {
+                        Some(alias) => format!(" (alias {alias})"),
+                        None => String::new(),
+                    };
                     println!("{}", landed.display());
                     println!("  lane: rooted — the ref names root {}", rooted.name);
                     println!(
-                        "  root: {} (bound)  workspace:{}{}",
+                        "  root: {}{via_alias} (bound)  workspace:{}{}",
                         rooted.name,
                         rooted.workspace.display(),
                         if rooted.primary { "  ← primary" } else { "" }
                     );
-                    println!("  ref: {}:{rel}", rooted.name);
+                    println!("  ref: {}", rooted.canonical_ref(&rel));
                 }
             }
             Ok(())
