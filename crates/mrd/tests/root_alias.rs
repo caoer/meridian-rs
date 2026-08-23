@@ -506,3 +506,97 @@ fn the_pin_door_teaches_the_alias_line_on_an_unbound_root() {
         "and enumerates what DOES bind, so a reader can pick the mount to alias:\n{said}",
     );
 }
+
+/// D1/D2/D3 — the remaining doors that echo a resolved rooted ref: `rm`'s
+/// deletion receipt, `walk`'s root (both faces), and `pin`'s pinning-PAGE half.
+///
+/// One law, one helper, one arm: every door that echoes a rooted ref echoes the
+/// mount's NAME. These three were missed when `canonical_ref` was introduced
+/// because they hold the same `replace(rel)` shape the fixed doors held — which
+/// is the argument for a shared seam and against per-door judgement.
+#[test]
+fn every_echoing_door_names_the_mount_not_the_alias() {
+    let sb = sandbox("field-notes-sessions", |tree| {
+        format!(
+            "```meridian-mount\nname: field-notes-sessions\npath: {}\nvault: field-notes-sessions\nalias: sessions\n```\n",
+            tree.display()
+        )
+    });
+    for (page, body) in [
+        ("doomed.md", "---\ntype: note\n---\n\n# Doomed\n\nbytes.\n"),
+        ("walked.md", "---\ntype: note\n---\n\n# Walked\n\nbytes.\n"),
+        (
+            "pinner.md",
+            "---\ntype: note\n---\n\n# Pinner\n\n## Notes\n\nseed\n",
+        ),
+        (
+            "target.md",
+            "# Target\n\n## Design\n\nthe pinned section.\n",
+        ),
+    ] {
+        std::fs::write(sb.tree.join(page), body).expect("seed");
+    }
+
+    // D2 — walk, both faces. The json `root` field is the sharp one: a consumer
+    // parses it and has nothing to recover from.
+    let raw = sb.stdout(&["walk", "sessions:walked.md", "--json"]);
+    let value = json(&raw);
+    assert_eq!(
+        value["walk"]["root"], "field-notes-sessions:walked.md",
+        "walk.root is a structured field and carries the MOUNT's name:\n{raw}",
+    );
+    assert_no_alias_spelling(&raw, "sessions", "the walk --json report");
+    assert_no_alias_spelling(
+        &sb.both(&["walk", "sessions:walked.md"]),
+        "sessions",
+        "the walk human header",
+    );
+
+    // D3 — pin's pinning-PAGE half, the line whose target half is already
+    // canonical. Both ends of one sentence, one vocabulary.
+    let git = |args: &[&str]| {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(&sb.tree)
+                .output()
+                .expect("git")
+                .status
+                .success(),
+            "git {args:?} failed",
+        );
+    };
+    git(&["init", "--quiet"]);
+    let said = sb.both(&[
+        "pin",
+        "sessions:pinner.md",
+        "target.md#Target/Design",
+        "--vibe",
+    ]);
+    assert!(
+        said.contains("into field-notes-sessions:pinner.md"),
+        "the pinning page is named by the MOUNT:\n{said}",
+    );
+    assert_no_alias_spelling(&said, "sessions", "the pin receipt's page half");
+
+    // D1 — rm, last: it deletes the page it names.
+    // Remove-what-you-read: `rm` demands the file rev from every origin and has
+    // no `--force` — deletion is the one write with no recovery. So the arm does
+    // what a caller does: read the page through the alias, then remove it
+    // through the alias with the rev that read served.
+    let read = json(&sb.stdout(&["read", "sessions:doomed.md", "--json"]));
+    let rev = read["read"]["file_rev"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the read must serve a file_rev: {read}"))
+        .to_owned();
+    let said = sb.both(&["rm", "sessions:doomed.md", "--rev", &rev]);
+    assert!(
+        said.contains("removed field-notes-sessions:doomed.md"),
+        "a DELETION receipt names the MOUNT — it is the only record of what went:\n{said}",
+    );
+    assert_no_alias_spelling(&said, "sessions", "the rm receipt");
+    assert!(
+        !sb.tree.join("doomed.md").exists(),
+        "and it really removed the file, through the alias",
+    );
+}
