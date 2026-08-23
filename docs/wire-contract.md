@@ -2053,7 +2053,25 @@ digit — with the value on the following indented lines. Both published faces
 (`read`'s `props[]`, `sql`'s `frontmatter`) decode it through ONE reader,
 `model::fm_block_scalar`: folded breaks become spaces, a run of *k* blank lines
 becomes *k* newlines, a break adjacent to a more-indented line is kept, and
-chomping owns the trailing breaks. Until this amendment both faces published
+chomping owns the trailing breaks.
+
+**Widened to the compared-value seams (2026-08-23, card
+`scalar-text-trims-config-key-block-scalars`).** The amendment above landed at
+the two published faces; the COMPARED-value seams in the table below still read
+the flat map through `model::scalar::text`, whose decode opens with
+`value.trim()` — correct for a key line's colon remainder, wrong for
+block-scalar text the map already stores decoded, because it eats the newline
+clip chomping just produced, the newline a leading blank produced, and the
+leading spaces an explicit indentation digit preserved. `preset`'s
+`^properties` rule check and `realise`'s `FieldEquals` — BOTH halves, the
+declared `realise.expected` read at the page edge and the observed field — now
+publish through `model::fm_doc_publish`, the one `Document`-grain door over
+`fm_publish`. The reachability is not bounded by key shape: `preset` compares
+`rule.key` and `realise` watches `realise.field`, both **arbitrary
+author-declared keys**, and `status` / `description` / `manifest` carry block
+scalars on live pages today. What keeps the class dormant is that no
+`type: preset` page and no `realise.field` declaration exists in any bound root
+yet, so the first one written opens it. Until this amendment both faces published
 the INDICATOR BYTE (`">"`), mis-serving **71 key rows across 63 live pages on
 four bound roots** (sessions 37/45, ccc-statusd 15/15, mrd-experiments 8/8,
 field-notes 3/3) that were valid YAML throughout — a decoder gap, never corpus
@@ -2079,10 +2097,35 @@ drift into two dialects. The enumerated set, audited 2026-08-08:
 |---|---|
 | composed read `props[].value` (§ A.3) | published value |
 | a script's `fm` dict (`fm_key` value) | published value |
-| the run plane's frontmatter binding values | published value |
+| the run plane's frontmatter binding values — **§ A.6.1a does NOT reach this row**, see the carve-out below | published value |
 | `preset`'s `^properties` rule check and its `type`/`defines`/`root`/`births` reads | compared value |
 | `realise`'s `FieldEquals` — BOTH halves: the page's declared `realise.expected` and the observed field | compared value |
 | the view projection's `frontmatter.value` column — and the `record` pivot and B2 tag parse riding it | published value |
+
+**A.6.1a carve-out: the run plane's binding values (2026-08-23, card
+`scalar-text-trims-config-key-block-scalars`).** The binding row above stays
+bound by § A.6.1 — a quoted binding still decodes, and `task.build: "[[#^x]]"`
+must unquote exactly as before. **§ A.6.1a alone does not reach it: a
+block-scalar binding is NOT published verbatim, and routing this seam through
+`model::fm_doc_publish` for consistency would be a regression, not a fix.**
+
+The mechanism, and it is the whole justification — a carve-out asserted without
+one is the shape of the false `read_inputs_grain` claim this card deleted. A
+binding VALUE's grammar is `[[#^id]]`, so surrounding whitespace is never
+content. `run::address::parse_binding_value` strips `[[` and `]]` as a
+**matched pair**, and it does so BEFORE the value is trimmed again downstream.
+A `>`-folded binding is stored already decoded as `"[[#^id]]\n"` — clip
+chomping's trailing break — so published verbatim, `strip_suffix("]]")` misses
+the newline, the whole string reaches `split_once("#^")`, and the non-empty
+target `"[["` refuses `AddressError::CrossFileRef`. Trimmed, the pair strips
+and the binding resolves. The later `v.trim()` does not rescue it: that runs
+AFTER the bracket strip has already failed. A block scalar that is not a block
+ref refuses `InvalidBinding` on the grammar, as it always did.
+
+So the binding plane reads a value; it does not PUBLISH one, and a block
+scalar there is either accepted through the trim or refused by the grammar —
+never mis-served. Pinned by `crates/run/tests/binding_block_scalar.rs`, which
+asserts both directions and the `PyYAML` reading of the fixture.
 
 **Why the last two rows joined (2026-08-08).** They read a value and compare it
 against a caller-supplied string, which is exactly the shape § A.6's read-half
@@ -2131,11 +2174,31 @@ bare key line with no sequence below stays `''` — the engine never invents
 owns it (`model::fm_value`), and `fm_tags` rides the same block walk, so the
 tag lane and the value lane cannot disagree about where a sequence ends.
 
-Named residual, not silently left: the OTHER published-value seams in the
-table above (`props[].value`, a script's `fm`, the run plane's bindings) still
-read the flat map and still serve `''` for a block sequence. This amendment
-binds the view row only — ZT's GO was scoped to the projection — and the
-residual is recorded here so the next reader finds it named.
+Named residual, not silently left: the other seams in the table above still
+read the flat map and still serve `''` for a block sequence — `props[].value`,
+a script's `fm`, and (since 2026-08-23, card
+`scalar-text-trims-config-key-block-scalars`) `preset`'s `^properties` check
+and `realise`'s `FieldEquals` in BOTH halves, which joined the list when they
+were routed through `model::fm_doc_publish`. That door is block-SCALAR aware
+and block-SEQUENCE blind: it answers from the flat map's stored text plus a
+key-line header test, where `model::fm_value` — the reader the view row uses,
+thirty lines away in the same file — walks the block and handles sequences too.
+Measured on one page at engine `40fad579b`: `sql` served
+`tags=[alpha, beta]` where `read`'s `props[]` served `tags=` empty. It matters
+because `preset`'s `rule.key` and `realise`'s `field` are arbitrary
+author-declared keys and `tags:` / `aliases:` / `agents:` are block sequences
+on live pages, so a rule pinning a list-valued key compares its def string
+against `''`. **This is not a regression** — those seams served `''` before
+that card too — and it is not that card's to fix: this amendment binds the
+view row only (ZT's GO was scoped to the projection) and the disposition sits
+inside ZT's open block-list question, pinned by
+`crates/testsuite/tests/props_plane.rs:117-151`.
+
+The run plane's bindings are deliberately NOT in that list and are no longer
+described here as a published-value seam: per § A.6.1a's carve-out they read a
+value under the `[[#^id]]` grammar rather than publishing one, and a bare key
+line with a sequence below refuses on the grammar instead of serving `''` as a
+value.
 
 **What stays raw, and why it is not an omission** (§ A.6.2's reasoning, the
 same stance `cat` takes): `lock` (guard tokens) and `policy::change`'s
