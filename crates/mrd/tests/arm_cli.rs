@@ -730,7 +730,10 @@ fn the_twin_defining_the_middleware_entry_point_arms_block() {
     let parsed = policy::armed::parse_artifact(&s.read(policy::armed::ARMED_RULES_PATH))
         .expect("the artifact parses strictly");
     assert_eq!(parsed.rows().len(), 1);
-    assert_eq!(parsed.rows()[0].id().as_str(), shapes::MIDDLEWARE_RIGHT_ENTRY_ID);
+    assert_eq!(
+        parsed.rows()[0].id().as_str(),
+        shapes::MIDDLEWARE_RIGHT_ENTRY_ID
+    );
     assert_eq!(parsed.rows()[0].mode().as_str(), "block");
     assert_eq!(parsed.rows()[0].rev(), rev);
 }
