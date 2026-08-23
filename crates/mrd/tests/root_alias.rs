@@ -138,7 +138,10 @@ fn an_aliased_mount_answers_the_constant_and_echoes_the_name() {
         String::from_utf8_lossy(&out.stderr)
     );
     let value = json(&String::from_utf8_lossy(&out.stdout));
-    assert_eq!(value["root"], "field-notes-sessions", "the row names the MOUNT");
+    assert_eq!(
+        value["root"], "field-notes-sessions",
+        "the row names the MOUNT"
+    );
     assert_eq!(value["alias"], "sessions", "and which spelling landed it");
     assert_eq!(
         value["ref"], "field-notes-sessions:x.md",
@@ -169,7 +172,10 @@ fn an_aliased_mount_answers_the_constant_and_echoes_the_name() {
         serde_json::Value::Null,
         "no alias was spelled, so none is reported",
     );
-    assert_eq!(by_name["path"], value["path"], "both spellings land in one tree");
+    assert_eq!(
+        by_name["path"], value["path"],
+        "both spellings land in one tree"
+    );
 }
 
 /// Check 2 — a mount NAMED `sessions` resolves `sessions:` with no alias line.
@@ -225,8 +231,8 @@ fn a_table_with_neither_refuses_and_teaches_the_alias_line() {
         Some(1),
         "an address-plane refusal is an ANSWER about this machine's topology, exit 1",
     );
-    let text = String::from_utf8_lossy(&out.stderr).into_owned()
-        + &String::from_utf8_lossy(&out.stdout);
+    let text =
+        String::from_utf8_lossy(&out.stderr).into_owned() + &String::from_utf8_lossy(&out.stdout);
     assert!(
         text.contains("names root `sessions`, which this machine does not bind"),
         "the refusal must name the missing root:\n{text}",
@@ -260,8 +266,8 @@ fn an_alias_shadowing_a_name_refuses_the_whole_table() {
 
     let out = sb.run(&["config"]);
     assert!(!out.status.success(), "a shadowing alias must refuse");
-    let text = String::from_utf8_lossy(&out.stderr).into_owned()
-        + &String::from_utf8_lossy(&out.stdout);
+    let text =
+        String::from_utf8_lossy(&out.stderr).into_owned() + &String::from_utf8_lossy(&out.stdout);
     assert!(
         text.contains("alias: notes") && text.contains("`name` of a meridian-mount block"),
         "the refusal must name the collision:\n{text}",

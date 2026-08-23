@@ -509,10 +509,7 @@ impl MountSet {
     /// the faces that RENDER the table (`mounts` rows, `mrd config`).
     #[must_use]
     pub fn alias_of(&self, name: &MountName) -> Option<&MountName> {
-        self.aliases
-            .iter()
-            .find(|(_, n)| n == name)
-            .map(|(a, _)| a)
+        self.aliases.iter().find(|(_, n)| n == name).map(|(a, _)| a)
     }
 
     /// Does this machine bind `name` — under that name or an alias for it?
@@ -1022,7 +1019,11 @@ mod tests {
 
         assert!(set.is_bound(&real), "the name binds");
         assert!(set.is_bound(&spelled), "the alias binds the same root");
-        assert_eq!(set.canonical(&spelled), Some(&real), "the alias canonicalizes to the name");
+        assert_eq!(
+            set.canonical(&spelled),
+            Some(&real),
+            "the alias canonicalizes to the name"
+        );
         assert_eq!(set.canonical(&real), Some(&real), "a name is its own alias");
         assert_eq!(set.alias_of(&real), Some(&spelled));
 
@@ -1041,7 +1042,11 @@ mod tests {
         assert!(set.is_bound(&name("sessions")));
         assert_eq!(set.canonical(&name("sessions")), Some(&name("sessions")));
         assert_eq!(set.alias_of(&name("sessions")), None);
-        assert_eq!(set.canonical(&name("nothing")), None, "an undeclared name is undeclared");
+        assert_eq!(
+            set.canonical(&name("nothing")),
+            None,
+            "an undeclared name is undeclared"
+        );
         assert!(!set.is_bound(&name("nothing")));
     }
 
