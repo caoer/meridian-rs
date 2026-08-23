@@ -298,6 +298,7 @@ pub struct Mount {
     primary: bool,
     vault: Option<String>,
     pin: Option<String>,
+    alias: Option<String>,
     declared_name: Option<String>,
     fence_line: usize,
     state: MountState,
@@ -345,6 +346,20 @@ impl Mount {
         self.pin.as_deref()
     }
 
+    /// The second name this root answers to (schema §5.1b) — `Some` iff the
+    /// block declared `alias:`.
+    ///
+    /// A LOOKUP spelling only. Nothing stored is ever spelled with it: a
+    /// receipt, a pin, a `mint {…}` path, a `sub` row and a door's canonical
+    /// `root:path` echo all carry [`Mount::name`]. Lookup order is
+    /// name-first-then-alias ([`MountTable::by_name_or_alias`]), so a root
+    /// whose `name` already is the spelling a consumer needs carries no alias
+    /// line — a name is its own alias.
+    #[must_use]
+    pub fn alias(&self) -> Option<&str> {
+        self.alias.as_deref()
+    }
+
     /// The name the ROOT declares for itself — `Some` only when its declaration
     /// was found and read. Equal to [`Mount::name`] whenever it is `Some`, since
     /// a disagreement fails the whole parse.
@@ -383,9 +398,28 @@ impl MountTable {
     }
 
     /// name → (vault, path). The mount bound to a canonical root name.
+    ///
+    /// The NAME leg alone. A door resolving a caller's `root:` spelling wants
+    /// [`MountTable::by_name_or_alias`]; this stays the pure name lookup so a
+    /// caller that means "the mount actually named this" cannot be answered by
+    /// an alias.
     #[must_use]
     pub fn by_name(&self, name: &str) -> Option<&Mount> {
         self.mounts.iter().find(|m| m.name == name)
+    }
+
+    /// The mount a caller's `root:` spelling reaches: **by `name` first, then
+    /// by `alias`** (schema §5.1b).
+    ///
+    /// Name-first is what makes "a name is its own alias" true with no special
+    /// case — a mount already named `sessions` answers `sessions:` without an
+    /// alias line, and a table that also aliases `sessions` elsewhere cannot
+    /// exist (`alias-shadows-name` refuses it whole at parse), so the order is
+    /// a tie-break that never has a tie to break.
+    #[must_use]
+    pub fn by_name_or_alias(&self, spelling: &str) -> Option<&Mount> {
+        self.by_name(spelling)
+            .or_else(|| self.mounts.iter().find(|m| m.alias() == Some(spelling)))
     }
 
     /// path → (name, vault). The mount bound to a local path.
@@ -419,11 +453,15 @@ impl MountTable {
 
     /// The table, projected for the planes that resolve and translate.
     ///
-    /// Carries which names this machine binds, the vault name each bound vault
-    /// root carries, and which declared names are unreachable here with the
-    /// path to check. A refusing mount is recorded as unreachable rather than
-    /// dropped, so "declared but unreadable" is not collapsed into "nobody
-    /// declared it".
+    /// Carries which names this machine binds, the alias each aliased root
+    /// answers to, the vault name each bound vault root carries, and which
+    /// declared names are unreachable here with the path to check. A refusing
+    /// mount is recorded as unreachable rather than dropped, so "declared but
+    /// unreadable" is not collapsed into "nobody declared it".
+    ///
+    /// An alias is recorded for a refusing mount too: `sessions:` on a declared
+    /// root whose path is gone must refuse with THAT root's state, not as a
+    /// name nobody declares — the two take opposite remedies.
     ///
     /// Not `mrd walk`'s projection: `walk_cmd::load_mounts` also marks a root
     /// unreachable when its corpus will not build. The two agree wherever they
@@ -433,11 +471,17 @@ impl MountTable {
         let mut bound: Vec<addr::MountName> = Vec::new();
         let mut unreachable: Vec<(addr::MountName, &Mount)> = Vec::new();
         let mut vaults: Vec<(addr::MountName, &str)> = Vec::new();
+        let mut aliases: Vec<(addr::MountName, addr::MountName)> = Vec::new();
         for mount in &self.mounts {
             // Not a canonical name — no address can reach it anyway.
             let Ok(name) = addr::MountName::parse(mount.name()) else {
                 continue;
             };
+            // Recorded whatever the state: a `sessions:` that reaches a
+            // declared-but-unreadable root must carry that root's own refusal.
+            if let Some(Ok(alias)) = mount.alias().map(addr::MountName::parse) {
+                aliases.push((alias, name.clone()));
+            }
             if mount.state().refuses() {
                 unreachable.push((name, mount));
                 continue;
@@ -448,6 +492,9 @@ impl MountTable {
             bound.push(name);
         }
         let mut set = addr::MountSet::new(bound);
+        for (alias, name) in aliases {
+            set = set.with_alias(alias, name);
+        }
         for (name, vault) in vaults {
             set = set.with_vault(name, vault);
         }
@@ -708,6 +755,7 @@ fn mount_in_state(
         primary: entry.primary,
         vault: entry.vault.clone(),
         pin: entry.pin.clone(),
+        alias: entry.alias.clone(),
         declared_name,
         fence_line: entry.fence_line,
         state,
