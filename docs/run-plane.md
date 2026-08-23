@@ -1632,9 +1632,11 @@ it (a door refusal is the effect's row, the fire row keeps `ok` and its
 
 **The rule.** A **door** refusing one descriptor is that descriptor's own
 `applied[]` row: `result: "refused"` with the door's class and reason. The
-**fire row keeps `result: "ok"` and keeps its `value`.** The batch stays
-atomic — nothing landed — so every sibling descriptor reads
-`result: "not_applied"`, never `"born"`.
+**fire row keeps `result: "ok"` and keeps its `value`.** The page splice stays
+atomic, and the sibling rows are POSITIONAL on the refusal's own descriptor
+index — the table below states them; a create BEFORE the refused index reads
+`born`, because births realize sequentially ahead of the splice and stay
+(decision #14).
 
 That is the never-veto law made operational. A `PreToolUse` hook that answers
 `{"deny": "…"}` and also appends to a page the armed plane refuses must still
@@ -1648,10 +1650,11 @@ refused.
 |---|---|
 | `cap_denied` · a birth the create door refused (occupied path, bad path) · an **armed-middleware veto** · a section that is not there or is there twice · an fp-claim · a verdict refusal | the workspace lock is held · I/O · a page that will not load · a non-md descriptor reaching the executor · a malformed descriptor |
 
-The engine reports no descriptor index — every executor error is documented
-*"applied NOTHING"* — so the refusal is attributed by the door's own
-coordinates (`kind`+`target`, `path`, `section`) matched against the
-descriptor list.
+The refusal names WHICH descriptor it is about —
+`ExecError::descriptor_index` — and the rows are positional on it. (An
+earlier draft of this section attributed by matching the door's own
+coordinates against the descriptor list; that cannot tell two descriptors
+sharing a path and a verb apart, and the locator replaced it.)
 
 A refusal that names **no** descriptor renders **by stage**, because the
 splice runs after the birth lane and "nothing landed" would be false again:
