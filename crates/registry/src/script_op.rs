@@ -1256,8 +1256,19 @@ impl EntryWorldHost {
             return Ok(std::borrow::Cow::Borrowed(doc));
         }
         if let Some(condition) = self.world.unserved.get(path) {
+            // The §8 CODE leads, exactly as `walk_op`'s own unserved arm spells
+            // it. Not decoration: until card
+            // `script-door-commit-premise-world-grain-vs-touch-set` the CLI
+            // lane's reads crossed the wire, so this refusal reached an operator
+            // as a typed `invalid_utf8` FRAME and a consumer could grep the
+            // code. One lane later every script read is served here, and a
+            // condition rendered as bare prose would have dropped that code for
+            // every caller — the capability loss a lane change makes most
+            // quietly. Measured: `script_poison_corpus.rs`
+            // § `a_script_read_of_the_poison_member_faults_naming_the_file`
+            // reddened on the prose form.
             return Err(fault(format!(
-                "the corpus cannot serve this member: {condition}"
+                "invalid_utf8: {path} is in the hash domain but serves no spans ({condition})"
             )));
         }
         wire_serve::load_doc(&self.ws, &wire::Path(path.to_owned()))

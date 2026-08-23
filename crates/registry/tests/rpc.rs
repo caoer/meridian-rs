@@ -310,3 +310,109 @@ fn unregister_removes_and_reports() {
     );
     server.shutdown();
 }
+
+/// A VANISHED workspace unregisters by the canonical path a `list` reported.
+///
+/// This is the door's motivating fact — stale registry rows whose trees are
+/// gone, removable by no other verb — and it rests on one line: the
+/// `unwrap_or_else(|_| path.to_path_buf())` fallback in `Registry::unregister`.
+/// The map is keyed canonically, and `workspace::canonicalize` needs the
+/// directory to exist; without the fallback the lookup key can never be built
+/// once the tree is deleted, and the row is permanent.
+///
+/// The pre-existing happy-path test (`unregister_removes_and_reports`) proves
+/// only the arm where the directory is still there, so it passes either way.
+/// This one fails without the fallback.
+#[test]
+fn unregister_removes_a_vanished_workspace_by_its_canonical_path() {
+    let tmp = TempDir::new().unwrap();
+    let ws = tmp.path().join("vanishing");
+    mkdirs(&ws);
+    let want = canonical(&ws);
+
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let client = Client::new(server.socket_path().to_path_buf());
+
+    client.register(&ws).unwrap();
+    let listed = client.list().unwrap();
+    assert_eq!(listed.len(), 1, "the workspace registered");
+    assert_eq!(
+        listed[0].workspace, want,
+        "the daemon keys and reports the CANONICAL path — that spelling is the \
+         only handle a caller has after the tree is gone"
+    );
+
+    // The tree vanishes: `canonicalize` can no longer answer for it.
+    fs::remove_dir_all(&ws).unwrap();
+    assert!(!ws.exists(), "the workspace really vanished");
+    assert!(
+        fs::canonicalize(&want).is_err(),
+        "canonicalize must FAIL for the assertion below to exercise the fallback \
+         arm rather than the happy path"
+    );
+
+    assert!(
+        client.unregister(&want).unwrap(),
+        "a vanished workspace unregisters by the canonical path `list` reported"
+    );
+    assert!(
+        client.list().unwrap().is_empty(),
+        "the registry row is gone, not merely reported gone"
+    );
+
+    server.shutdown();
+}
+
+/// The same door reached through a SYMLINK, which pins where the fallback's
+/// authority ends. While the target exists, `canonicalize` answers and resolves
+/// the link, so the link spelling reaches the canonically-keyed row. Once the
+/// target vanishes, `canonicalize` fails and the fallback keys on the LINK path
+/// as given — which is not the stored canonical key, so the row survives.
+///
+/// That is the arm behaving as documented ("by the canonical path a `list`
+/// reported"), not a defect; the test exists so a future widening of the
+/// fallback cannot change it silently.
+#[test]
+fn unregister_follows_a_symlink_while_it_resolves_and_stops_when_it_does_not() {
+    let tmp = TempDir::new().unwrap();
+    let real = tmp.path().join("real");
+    let link = tmp.path().join("link");
+    mkdirs(&real);
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let want = canonical(&real);
+
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let client = Client::new(server.socket_path().to_path_buf());
+
+    // Leg 1 — link resolves: registering by the link and unregistering by the
+    // link both land on the canonical row.
+    client.register(&link).unwrap();
+    assert_eq!(
+        client.list().unwrap()[0].workspace,
+        want,
+        "keyed canonically"
+    );
+    assert!(
+        client.unregister(&link).unwrap(),
+        "a live symlink canonicalizes onto the stored key"
+    );
+    assert!(client.list().unwrap().is_empty());
+
+    // Leg 2 — target gone: the fallback keys on the link path, which is not the
+    // canonical key, so the row is NOT removed by that spelling.
+    client.register(&real).unwrap();
+    fs::remove_dir_all(&real).unwrap();
+    assert!(
+        !client.unregister(&link).unwrap(),
+        "a dangling symlink falls back to the link path, which never keyed the row"
+    );
+    assert_eq!(
+        client.list().unwrap().len(),
+        1,
+        "the row survives a spelling that is not its key"
+    );
+    // The canonical path still reaches it — the previous test's contract.
+    assert!(client.unregister(&want).unwrap());
+
+    server.shutdown();
+}

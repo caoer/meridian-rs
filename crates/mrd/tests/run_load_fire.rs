@@ -925,3 +925,288 @@ fn a_caller_budget_narrows_the_evaluator() {
     let out = ws.run(&["probe.md#^h", "--input-json", &input]);
     assert_eq!(row(&out)["result"], "ok", "the same fire without a budget");
 }
+
+// ── the exec'd entry's program, its environment, and its recording ──────────
+// (card `hook-02-mrd-run-exec`; design § 1.4, § 2.2 step 4)
+
+/// A page whose exec'd entry reports HOW it was invoked and WHAT it was given.
+const STAGE_PAGE: &str = "\
+# Stage probe
+
+```starlark
+declare(on = \"Stop\", impl = exec(\"bash\", block = \"argv0\"))
+```
+^argv0-entry
+
+```bash
+printf '%s' \"$0\"
+```
+^argv0
+
+```starlark
+declare(on = \"Stop\", impl = exec(\"bash\", block = \"facts\", env = {\"DECLARED\": \"yes\"}))
+```
+^facts-entry
+
+```bash
+printf '%s|%s|%s|%s' \"$MRD_RUN_PAGE\" \"$MRD_RUN_BLOCK\" \"$MRD_RUN_INVOCATION\" \"$DECLARED\"
+```
+^facts
+
+```starlark
+declare(on = \"Stop\", impl = exec(\"bash\", block = \"pwd\"))
+```
+^pwd-entry
+
+```bash
+printf '%s' \"$PWD\"
+```
+^pwd
+
+```starlark
+declare(on = \"Stop\", impl = exec(\"bash\", block = \"chatty\"))
+```
+^chatty-entry
+
+```bash
+printf 'x%.0s' $(seq 1 10000)
+>&2 printf 'e%.0s' $(seq 1 5000)
+```
+^chatty
+";
+
+/// **The program is a STAGED FILE, never `-c`** — the only invocation
+/// convention every interpreter honours, and what makes § 1.4's *"a new
+/// language is `argv[0]`, not a concept"* true of anything but a shell.
+///
+/// `$0` is the instrument: under `bash -c <source> mrd-task` it is the literal
+/// `mrd-task`, and under `<interpreter> <file>` it is the file. So this asserts
+/// the argv SHAPE from inside the process, and the staged file's bytes are the
+/// block's own.
+///
+/// Aperture: this proves the mechanism with `bash`, because bash is the only
+/// interpreter a CI image is guaranteed to carry. What it does NOT prove is
+/// that `bun`/`node`/`deno` then run — those were measured by hand on the card
+/// (`node -c` is `--check` and answers `MODULE_NOT_FOUND` exit 1, `bun -c` is
+/// `File not found`, `deno -c` is the config flag), which is why `-c` had to
+/// go.
+#[test]
+fn an_execd_entry_runs_a_staged_file_never_dash_c() {
+    let ws = Ws::new();
+    std::fs::write(ws.file("stage.md"), STAGE_PAGE).expect("stage page");
+    let input = ws.input("s.json", r#"{"name":"Stop"}"#);
+    let out = ws.run(&["stage.md#^argv0-entry", "--input-json", &input]);
+    let row = row(&out);
+
+    let argv0 = row["process"]["stdout_tail"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no stdout_tail: {row:#}"));
+    assert_ne!(argv0, "mrd-task", "the `-c` shape is back: {row:#}");
+    assert!(
+        argv0.contains("/.meridian/staged/"),
+        "the program must be a staged file: {argv0}"
+    );
+    assert_eq!(
+        Path::new(argv0)
+            .extension()
+            .and_then(std::ffi::OsStr::to_str),
+        Some("bash"),
+        "the fence's own info-string token is the extension — bun and deno \
+         pick a loader from the NAME: {argv0}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(argv0).expect("the staged file is on disk"),
+        // Verbatim, and that includes the fence's own missing final newline
+        // (`blocks::inner_source` keeps the bytes BETWEEN the fence lines):
+        // *the script's bytes run unchanged* is a byte claim, so staging adds
+        // nothing to them.
+        "printf '%s' \"$0\"",
+        "the staged bytes are the block's own"
+    );
+}
+
+/// The staged file IS the cache (§ 1.4: *"staged bytes cached by block rev"*):
+/// its name is the block's rev, so a second fire of an unchanged block finds
+/// it already there. The cache removes the read and the write; § 1.4 is
+/// explicit that it never removes the spawn.
+#[test]
+fn the_staged_file_is_keyed_by_block_rev_and_reused() {
+    let ws = Ws::new();
+    std::fs::write(ws.file("stage.md"), STAGE_PAGE).expect("stage page");
+    let input = ws.input("s.json", r#"{"name":"Stop"}"#);
+
+    let first = row(&ws.run(&["stage.md#^argv0-entry", "--input-json", &input]));
+    let staged = first["process"]["stdout_tail"]
+        .as_str()
+        .expect("staged path")
+        .to_owned();
+    // A marker byte the plane would have to overwrite to be re-staging.
+    std::fs::write(&staged, "printf '%s' REUSED\n").expect("mark the staged file");
+
+    let second = row(&ws.run(&["stage.md#^argv0-entry", "--input-json", &input]));
+    assert_eq!(
+        second["process"]["stdout_tail"], "REUSED",
+        "the second fire re-staged instead of serving the cache: {second:#}"
+    );
+}
+
+/// **The env layering, from inside the process** (§ 2.2 step 4): the engine's
+/// own facts reach an exec'd entry, and a declared `exec(env=)` pair reaches
+/// it too. `MRD_RUN_BLOCK` is the DECLARING block — the one the caller
+/// addressed — not the fence `exec(block=)` points at, which is the whole
+/// point of the pair: a script shared by several blocks branches on it.
+///
+/// This is the fixture the F2/F4 fixes shipped without. `env` was read zero
+/// times before that review, and nothing in the tree would have noticed it
+/// going back.
+#[test]
+fn the_engines_facts_and_the_declared_env_reach_an_execd_entry() {
+    let ws = Ws::new();
+    std::fs::write(ws.file("stage.md"), STAGE_PAGE).expect("stage page");
+    let input = ws.input("s.json", r#"{"name":"Stop"}"#);
+    let out = ws.run(&["stage.md#^facts-entry", "--input-json", &input]);
+    let row = row(&out);
+
+    let seen = row["process"]["stdout_tail"].as_str().expect("stdout_tail");
+    let fields: Vec<&str> = seen.split('|').collect();
+    assert_eq!(fields[0], "stage.md", "MRD_RUN_PAGE: {row:#}");
+    assert_eq!(
+        fields[1], "facts-entry",
+        "MRD_RUN_BLOCK is the DECLARING block, not ^facts: {row:#}"
+    );
+    assert_eq!(
+        fields[2],
+        row["invocation"].as_str().expect("invocation"),
+        "MRD_RUN_INVOCATION must be the row's own id — it is what joins a \
+         process to the daemon's journal: {row:#}"
+    );
+    assert_eq!(fields[3], "yes", "the declared exec(env=) pair: {row:#}");
+}
+
+/// **The cwd rule** (§ 2.2 step 4): an exec'd entry runs at `input["cwd"]`
+/// when the input names one, else the page's root — which is what makes the
+/// design's own `test -f allow-stop` test the FIRING session's directory,
+/// exactly as it would under `settings.json`.
+#[test]
+fn an_execd_entry_runs_at_the_inputs_cwd() {
+    let ws = Ws::new();
+    std::fs::write(ws.file("stage.md"), STAGE_PAGE).expect("stage page");
+    std::fs::create_dir_all(ws.file("sub")).expect("sub");
+    let input = ws.input("s.json", r#"{"name":"Stop","cwd":"sub"}"#);
+    let out = ws.run(&["stage.md#^pwd-entry", "--input-json", &input]);
+    let named = row(&out);
+    assert!(
+        named["process"]["stdout_tail"]
+            .as_str()
+            .expect("stdout_tail")
+            .ends_with("/sub"),
+        "the input named a cwd and the process ignored it: {named:#}"
+    );
+
+    // Absent `cwd`, the page's root — the default, stated so the rule is not
+    // half-tested.
+    let bare = ws.input("b.json", r#"{"name":"Stop"}"#);
+    let root_run = row(&ws.run(&["stage.md#^pwd-entry", "--input-json", &bare]));
+    assert!(
+        !root_run["process"]["stdout_tail"]
+            .as_str()
+            .expect("stdout_tail")
+            .ends_with("/sub"),
+        "an input with no cwd must run at the page's root: {root_run:#}"
+    );
+}
+
+/// **The streams are BOUNDED and the log carries the rest** (§ 1.4 names the
+/// out-of-tree log as one of the three things that bound an exec'd entry;
+/// § 2.2 calls the published fields *tails*).
+///
+/// They carried the WHOLE stream: a chatty entry put every byte it wrote on
+/// the wire, in the daemon's journal and in an agent's context on every fire —
+/// the unbounded per-fire cost F8 removed from `exec[]` rows, still open on
+/// the process row until this card.
+#[test]
+fn an_execd_entrys_streams_are_bounded_and_the_log_carries_the_rest() {
+    let ws = Ws::new();
+    std::fs::write(ws.file("stage.md"), STAGE_PAGE).expect("stage page");
+    let input = ws.input("s.json", r#"{"name":"Stop"}"#);
+    let out = ws.run(&["stage.md#^chatty-entry", "--input-json", &input]);
+    let row = row(&out);
+
+    let process = &row["process"];
+    assert_eq!(
+        process["stdout_bytes"], 10000,
+        "the row must say how much there WAS: {row:#}"
+    );
+    assert_eq!(
+        process["stdout_tail"].as_str().expect("tail").len(),
+        4096,
+        "the tail is the ceiling, not the stream: {row:#}"
+    );
+    assert_eq!(process["stderr_bytes"], 5000, "{row:#}");
+
+    let log = process["log"].as_str().unwrap_or_else(|| panic!("{row:#}"));
+    assert_eq!(
+        log,
+        format!(
+            ".meridian/runs/stage.md/{}.log",
+            row["invocation"].as_str().expect("invocation")
+        ),
+        "the log is per PAGE and named by the invocation — that is what makes \
+         retention per page and joins the row to the journal: {row:#}"
+    );
+    let body = std::fs::read_to_string(ws.file(log)).expect("the log is on disk");
+    assert!(
+        body.starts_with(&"x".repeat(10000)),
+        "the log must carry the whole stdout, not the tail"
+    );
+    assert!(
+        body.contains(&"e".repeat(5000)),
+        "the log must carry stderr too"
+    );
+}
+
+/// **`exec(block=)` resolves at LOAD** (§ 2.2 step 2, § 1.4): the declaration
+/// IS the program, so a declaration naming a fence that is not there is broken
+/// when it is READ — a resolver deciding what to arm learns it from the load,
+/// not from the first fire. A dangling anchor is `no_block`; an anchor minted
+/// twice is the typed `ambiguous_anchor`; both are load faults.
+///
+/// Before this card the resolution happened on the fire door alone, so a load
+/// answered `result: "ok"` for a hook that could never run — while
+/// `docs/run-plane.md` and `effects::kernel::ExecProgram::Block` both already
+/// stated the load rule.
+#[test]
+fn a_dangling_or_duplicated_exec_anchor_is_a_load_fault() {
+    let ws = Ws::new();
+    std::fs::write(
+        ws.file("dangle.md"),
+        "# D\n\n```starlark\ndeclare(on = \"Stop\", impl = exec(\"bash\", block = \"nope\"))\n\
+         ```\n^e\n",
+    )
+    .expect("page");
+    let dangling = row(&ws.run(&["--load", "dangle.md"]));
+    let e = block(&dangling, "e");
+    assert_eq!(e["result"], "fault", "{dangling:#}");
+    assert_eq!(e["fault"]["class"], "no_block", "{dangling:#}");
+    assert!(
+        e["fault"]["reason"]
+            .as_str()
+            .expect("reason")
+            .contains("^nope"),
+        "the fault must name the anchor: {dangling:#}"
+    );
+
+    std::fs::write(
+        ws.file("dupe.md"),
+        "# D\n\n```starlark\ndeclare(on = \"Stop\", impl = exec(\"bash\", block = \"twice\"))\n\
+         ```\n^e\n\n```bash\necho one\n```\n^twice\n\n```bash\necho two\n```\n^twice\n",
+    )
+    .expect("page");
+    let duplicated = row(&ws.run(&["--load", "dupe.md"]));
+    let e = block(&duplicated, "e");
+    assert_eq!(e["result"], "fault", "{duplicated:#}");
+    assert_eq!(
+        e["fault"]["class"], "ambiguous_anchor",
+        "a duplicated anchor addresses NONE of them: {duplicated:#}"
+    );
+}
