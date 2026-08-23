@@ -361,6 +361,11 @@ pub(crate) fn stored_text(
             },
         });
     }
+    // An alias is a LOOKUP spelling and never a stored one (`address-grammar.md`
+    // § 4.6a): the vault leg is keyed by the mount's own name, so `sessions:x`
+    // must become the canonical name here or it would refuse `NoVault` on a root
+    // that has one.
+    let root = mounts.canonical(root).unwrap_or(root);
     let vault = mounts
         .vault_of(root)
         .ok_or_else(|| TranslateError::NoVault {
