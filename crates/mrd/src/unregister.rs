@@ -44,7 +44,16 @@ pub(crate) fn run(target_arg: Option<&str>, format: Format) -> Result<(), Fail> 
         // it cannot string-equal some other live entry's canonical key.
         base.clone()
     } else {
-        resolve_runtime_lenient(&base)
+        // The operand decides. `MERIDIAN_WORKSPACE` used to answer this rung
+        // before the argument was ever canonicalized, so a live override made
+        // this door remove the tree the operator did NOT name (advisor ruling
+        // 2026-08-23, `unregister-env-override-vs-explicit-path`). With no PATH
+        // the cwd is ambient and the override still answers, as it always did.
+        let ladder_base = match target_arg {
+            Some(_) => workspace::Base::Named(&base),
+            None => workspace::Base::Cwd(&base),
+        };
+        resolve_runtime_lenient(ladder_base)
             .map_err(|e| {
                 Fail::tool(format!(
                     "cannot resolve workspace for {}: {e}",

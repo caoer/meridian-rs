@@ -6738,11 +6738,40 @@ mod guarded_create_remove {
             Recovery::Refresh,
             "taxonomy row 13: recovery refresh"
         );
+        // The consumers' discriminator, on the frame the engine really mints:
+        // `expected` is the empty document's rev, so this refusal — and only
+        // this one — reads as occupancy.
+        assert_eq!(
+            err.expected.as_ref().map(|r| r.0.as_str()),
+            Some(wire::ABSENT_REV),
+            "the create-CAS names the ABSENT rev as `expected`"
+        );
+        assert!(
+            err.is_path_occupied(),
+            "the create door's own refusal must satisfy the occupancy discriminator"
+        );
 
         assert_eq!(
             std::fs::read(dir.path().join("notes/new.md")).unwrap(),
             b"# First\n",
             "the occupant is untouched — the birth refused before any byte"
+        );
+    }
+
+    /// The published [`wire::ABSENT_REV`] and the engine's computed
+    /// [`super::absent_rev`] are the same token. The constant is what the Go daemon
+    /// and every out-of-process consumer compare against; the computation is
+    /// what the create door actually mints. A domain-rule change that moves the
+    /// empty document's rev fails HERE, loudly, instead of leaving the
+    /// published constant quietly lying to its readers.
+    #[test]
+    fn the_published_absent_rev_is_the_computed_one() {
+        assert_eq!(
+            super::absent_rev().0,
+            wire::ABSENT_REV,
+            "wire::ABSENT_REV has drifted from model::build(\"\")'s root rev — \
+             update the constant AND every mirror of it (the Go daemon's \
+             wirev3.AbsentRev), because callers key occupancy on it"
         );
     }
 
@@ -6808,6 +6837,15 @@ mod guarded_create_remove {
         assert_ne!(
             err.expected, err.actual,
             "the refusal cites both revs, and they differ"
+        );
+        // THE NEGATIVE: same code as the create-CAS, opposite meaning. A
+        // consumer that keys on `code` alone reads this drift refusal — "the
+        // file moved under your plan" — as a benign already-exists and reports
+        // a birth that never happened. The `expected` field is what separates
+        // them.
+        assert!(
+            !err.is_path_occupied(),
+            "a remove-CAS drift refusal must NOT read as occupancy: {err:?}"
         );
 
         // The drift refusal wrote nothing: the file still carries the drifted

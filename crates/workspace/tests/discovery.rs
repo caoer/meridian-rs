@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 use workspace::{
-    Answer, DenyReason, ResolveError, Tier, canonicalize, deny_reason, resolve,
+    Answer, Base, DenyReason, ResolveError, Tier, canonicalize, deny_reason, resolve,
     resolve_with_override,
 };
 
@@ -22,7 +22,7 @@ fn canon(path: &Path) -> PathBuf {
 
 /// Resolve with no override.
 fn resolve_bare(cwd: &Path) -> Answer {
-    resolve_with_override(cwd, None).expect("resolution succeeds")
+    resolve_with_override(Base::Cwd(cwd), None).expect("resolution succeeds")
 }
 
 // ── The retired markers anchor NOTHING ──────────────────────────────────────
@@ -183,7 +183,7 @@ fn env_override_beats_the_git_root() {
     let target = tmp.path().join("elsewhere");
     fs::create_dir_all(&target).unwrap();
 
-    let answer = resolve_with_override(&repo, Some(target.as_os_str())).unwrap();
+    let answer = resolve_with_override(Base::Cwd(&repo), Some(target.as_os_str())).unwrap();
     assert_eq!(answer.tier(), Tier::EnvOverride);
     assert_eq!(answer.root(), Some(canon(&target).as_path()));
 }
@@ -194,8 +194,77 @@ fn env_override_nonexistent_is_loud_error() {
     let cwd = tmp.path();
     let missing = tmp.path().join("does/not/exist");
 
-    let err = resolve_with_override(cwd, Some(missing.as_os_str())).unwrap_err();
+    let err = resolve_with_override(Base::Cwd(cwd), Some(missing.as_os_str())).unwrap_err();
     assert!(matches!(err, ResolveError::EnvWorkspaceNotFound { .. }));
+}
+
+// ── A NAMED argument outranks the ambient override ──────────────────────────
+//
+// Advisor ruling 2026-08-23 (`unregister-env-override-vs-explicit-path`, D with
+// C's shape). The same fixture as `env_override_beats_the_git_root` above, one
+// word changed — `Cwd` becomes `Named` — so the two tests read as the precedence
+// law from both sides.
+
+#[test]
+fn a_named_argument_outranks_the_env_override() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    fs::create_dir(repo.join(".git")).unwrap();
+    let target = tmp.path().join("elsewhere");
+    fs::create_dir_all(&target).unwrap();
+
+    let answer = resolve_with_override(Base::Named(&repo), Some(target.as_os_str())).unwrap();
+    assert_eq!(answer.tier(), Tier::GitRoot);
+    assert_eq!(answer.root(), Some(canon(&repo).as_path()));
+}
+
+#[test]
+fn a_named_unmarked_path_defaults_to_itself_not_to_the_override() {
+    let tmp = TempDir::new().unwrap();
+    let bare = tmp.path().join("bare");
+    fs::create_dir_all(&bare).unwrap();
+    let target = tmp.path().join("elsewhere");
+    fs::create_dir_all(&target).unwrap();
+    fs::create_dir(target.join(".git")).unwrap();
+
+    // No marker on the named path and an override that WOULD have answered:
+    // the ladder still refuses to substitute the override's tree. Rung 3, the
+    // named path itself — never a root, and never someone else's.
+    let answer = resolve_with_override(Base::Named(&bare), Some(target.as_os_str())).unwrap();
+    assert_eq!(answer.tier(), Tier::CwdDefault);
+    assert_eq!(answer.root(), None);
+    assert_eq!(answer.root_or_cwd(), canon(&bare).as_path());
+}
+
+#[test]
+fn a_named_argument_is_unharmed_by_an_unresolvable_override() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    fs::create_dir(repo.join(".git")).unwrap();
+    let missing = tmp.path().join("does/not/exist");
+
+    // The override rung never runs, so its loud error never fires: an operator
+    // who named a real tree is not blocked by stale ambient state.
+    let answer = resolve_with_override(Base::Named(&repo), Some(missing.as_os_str())).unwrap();
+    assert_eq!(answer.tier(), Tier::GitRoot);
+    assert_eq!(answer.root(), Some(canon(&repo).as_path()));
+}
+
+#[test]
+fn the_override_still_answers_when_nothing_was_named() {
+    let tmp = TempDir::new().unwrap();
+    let leaf = tmp.path().join("leaf");
+    fs::create_dir_all(&leaf).unwrap();
+    let target = tmp.path().join("elsewhere");
+    fs::create_dir_all(&target).unwrap();
+
+    // The other half of the law: override-driven scripting is untouched, because
+    // a caller that names nothing has nothing to outrank the override with.
+    let answer = resolve_with_override(Base::Cwd(&leaf), Some(target.as_os_str())).unwrap();
+    assert_eq!(answer.tier(), Tier::EnvOverride);
+    assert_eq!(answer.root(), Some(canon(&target).as_path()));
 }
 
 // ── Identity is canonicalize ────────────────────────────────────────────────
@@ -282,6 +351,6 @@ fn resolve_reads_process_env_without_panicking() {
     fs::create_dir_all(&cwd).unwrap();
     // Only assert env-independent invariant: resolve succeeds and returns a
     // canonical path. Tier depends on the ambient MERIDIAN_WORKSPACE.
-    let answer = resolve(&cwd).unwrap();
+    let answer = resolve(Base::Cwd(&cwd)).unwrap();
     assert!(answer.root_or_cwd().is_absolute());
 }

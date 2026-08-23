@@ -609,19 +609,17 @@ fn mint_board_card(
     };
     match wire_serve::write::create(root, None, &args, &[]) {
         Ok(_) => Ok(Some(path)),
-        // The card already exists — the CAS refusal IS the idempotency.
-        Err(e) if is_cas_mismatch(&e) => Ok(None),
+        // The card already exists — the create-door CAS refusal IS the
+        // idempotency. Keyed on the refusal's `expected`, not on this call
+        // site: `cas_mismatch` also spells the drift/remove-CAS and the splice
+        // verdict, and swallowing one of THOSE would report a card that was
+        // never minted.
+        Err(e) if e.is_path_occupied() => Ok(None),
         Err(e) => Err(RealiseError::CardMint {
             selector: selector.to_owned(),
             reason: format!("{e:?}"),
         }),
     }
-}
-
-/// Whether a guarded-create refusal is the `if_absent` CAS mismatch (the card
-/// already exists) — the one refusal the engine treats as idempotent success.
-fn is_cas_mismatch(err: &wire::ErrorBody) -> bool {
-    err.code == wire::ErrorCode::CasMismatch
 }
 
 /// The board-card file stem for a claim selector: path-safe, deterministic,
