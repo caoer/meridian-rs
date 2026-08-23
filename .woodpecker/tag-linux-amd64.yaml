@@ -35,15 +35,30 @@ when:
 # `optional: true` because `ci` is not part of every pipeline this lane runs in
 # — when `ci` is absent the dependency is ignored, when present it is enforced.
 #
-# THE TRAP THAT BUYS, AND HOW TO CHECK IT. `optional: true` means a name that
-# does not resolve is silently ignored — so if `ci.yaml` is ever renamed, this
-# lane goes back to publishing ungated and NOTHING SAYS SO. Measured 2026-08-23:
-# `woodpecker-cli lint` validates STEP dependency names (a dangling one is a hard
-# error, "One or more of the specified dependencies do not exist") but does NOT
-# validate WORKFLOW dependency names — a typo'd name lints rc=0 "Config is valid"
-# both with and without `optional: true`. The only instrument that sees it is a
-# real pipeline: while `ci` runs, this workflow must read state=PENDING (it did,
-# pipeline 1195). A tag lane that starts immediately is an ungated tag lane.
+# WHY THAT IS SAFE HERE, AND WHAT IT RESTS ON. This lane's event set (tag `v*`,
+# manual) is a strict SUBSET of ci.yaml's (push, pull_request, manual, tag `v*`),
+# so `ci` is part of every pipeline this lane can run in and `optional` never
+# fires. That safety rests ENTIRELY on the `event: tag / ref: refs/tags/v*`
+# clause in ci.yaml's `when` — delete it and `optional: true` starts silently
+# dropping this dependency on every tag. The two halves are one gate.
+#
+# THE TRAP `optional: true` BUYS. A name that does not resolve is silently
+# ignored, so renaming `ci.yaml` sends this lane back to publishing ungated and
+# NOTHING SAYS SO. Measured 2026-08-23: `woodpecker-cli lint` validates STEP
+# dependency names (a dangling one is a hard error, "One or more of the specified
+# dependencies do not exist") but does NOT validate WORKFLOW dependency names —
+# a typo'd name lints rc=0 "Config is valid", with and without `optional: true`.
+#
+# HOW TO CHECK IT — `GET /api/queue/info`, NOT the workflow state. A workflow
+# state of `pending` DOES NOT DISCRIMINATE: the queue has two buckets that both
+# render as pending, and a task whose dependency already FAILED can sit in the
+# plain `pending` one (measured on pipeline 1195, 201 s after `ci` went failure:
+# task 2798, this lane, `dep_status {"2796": "failure"}`). The discriminating
+# read is the task's own `deps` array — find this workflow's task id in
+# `waiting_on_deps` with `deps` naming the `ci` task (measured on pipeline 1204:
+# ci = task 2809, this lane = 2811 with `deps: ["2809"]`). A `deps` that is null
+# or absent is the dependency silently dropped. The converse still holds and is
+# the cheap check: a tag lane that STARTS IMMEDIATELY is an ungated tag lane.
 # Card: 22-18/tasks/meridian-rs-publish-not-gated.
 depends_on:
   - name: ci
