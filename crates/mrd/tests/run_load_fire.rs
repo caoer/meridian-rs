@@ -796,7 +796,7 @@ fn a_caller_budget_narrows_the_evaluator() {
 ///
 /// (The refusing half is `effects::kernel`'s
 /// `a_prelude_that_declares_is_refused_before_any_block`, which asserts the
-/// CLASS — `consent_in_prelude` — rather than a reason substring.)
+/// CLASS — `prelude_invalid` — rather than a reason substring.)
 #[test]
 fn a_declaring_page_with_a_pure_prelude_still_fires() {
     let ws = Ws::new();

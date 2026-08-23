@@ -1513,12 +1513,14 @@ shipping `declare(impl = exec("bash", cmd = "…"))` as its prelude would
 therefore make every anchored starlark fence on every addressed page a fire
 target running caller-authored bytes, including a fence that declares
 nothing. So a prelude that produces ANY declaration (or an `exec` value)
-refuses **`consent_in_prelude`** before a single block is looked at —
-regardless of whether the page declares, because silently dropping a caller's
-declaration is its own defect. A prelude carries shared helpers, not entries.
-*(Amendment A10; advisor `ea317a27`, 2026-08-23. The row still renders
-`prelude_invalid` at the target level; `consent_in_prelude` is the fault's own
-class.)*
+refuses **`prelude_invalid`** before a single block is looked at — regardless
+of whether the page declares, because silently dropping a caller's declaration
+is its own defect. A prelude carries shared helpers, not entries.
+*(Amendment A10; advisor `ea317a27`, 2026-08-23.)* `prelude_invalid` is ONE
+class broadened, not a new one: a prelude is invalid when its code faults **or
+when it carries consent material — a declaration or an `exec` value — because
+consent is page-authored**. The caller's remedy is the same either way, and
+the reason string names which invalidity it was.
 
 The consent gate is why a page-wide *block enumerator* was new machinery
 rather than a lifted function — discovery until now ran off frontmatter

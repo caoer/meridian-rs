@@ -589,17 +589,17 @@ pub enum FaultClass {
     /// `declare(impl = …)` named something that is not an entry — neither a
     /// callable nor an `exec(...)` value.
     ImplType,
-    /// The caller's `prelude` carried CONSENT MATERIAL — a `declare()` or an
-    /// `exec()` value. Consent is page-authored by law, and a prelude is
-    /// caller source: a declaration there would make every anchored fence on
-    /// every addressed page a fire target the page never consented to.
+    /// The caller's `prelude` is invalid — its code faulted, **or** it carried
+    /// CONSENT MATERIAL (a `declare()` or an `exec()` value).
     ///
-    /// Its own class, ruled by advisor `ea317a27` (2026-08-23, A10), because
-    /// the remedy is its own: `not_declared` would be wrong whenever the page
-    /// DID declare (and the prelude must refuse then too — never silently drop
-    /// a caller declaration), and `effect_at_load` would send a caller to fix
-    /// an effect builtin, which `declare`/`exec` are not.
-    ConsentInPrelude,
+    /// One class, not two (advisor `ea317a27`, 2026-08-23, A10 — an earlier
+    /// `consent_in_prelude` was withdrawn before it was written): the caller's
+    /// remedy is the same in both cases — fix your prelude — and the REASON
+    /// string names which invalidity it was. Consent is page-authored by law,
+    /// and a prelude is caller source: a declaration there would make every
+    /// anchored fence on every addressed page a fire target the page never
+    /// consented to.
+    PreludeInvalid,
     /// The entry ran and returned something outside the admitted set — the
     /// PROGRAM is fine, its answer is not, and saying `runtime` would send
     /// the author looking for a bug that is not there.
@@ -621,7 +621,7 @@ impl FaultClass {
             FaultClass::EffectAtLoad => "effect_at_load",
             FaultClass::DeclareAtFire => "declare_at_fire",
             FaultClass::ImplType => "impl_type",
-            FaultClass::ConsentInPrelude => "consent_in_prelude",
+            FaultClass::PreludeInvalid => "prelude_invalid",
             FaultClass::ReplyShape => "reply_shape",
             FaultClass::Budget => "budget",
             FaultClass::Runtime => "runtime",
@@ -2426,7 +2426,7 @@ pub fn check_prelude(source: &str, ctx: &RunCtx, limits: EvalLimits) -> Option<B
             format!("{} declaration(s)", loaded.declarations.len())
         };
         return Some(BlockFault {
-            class: FaultClass::ConsentInPrelude,
+            class: FaultClass::PreludeInvalid,
             reason: format!(
                 "the prelude carried consent material — {found}. Consent is the PAGE's: \
                  `run` executes what the page declares, a `task.<name>` binding in \
@@ -3751,10 +3751,10 @@ declare(on = \"Stop\", impl = check_stop)
             .expect("a declaring prelude must refuse");
         assert_eq!(
             fault.class,
-            FaultClass::ConsentInPrelude,
+            FaultClass::PreludeInvalid,
             "the class is the remedy a caller branches on: {fault:?}"
         );
-        assert_eq!(fault.class.as_str(), "consent_in_prelude");
+        assert_eq!(fault.class.as_str(), "prelude_invalid");
         assert!(
             fault.reason.contains("consent material"),
             "the refusal must name what it found: {}",

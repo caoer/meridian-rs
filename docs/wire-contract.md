@@ -3130,7 +3130,7 @@ one refuses `not_declared` at the door.
    "exec":[{"block":"check","command":"…","exit":1,"stdout_sha256":"…","bytes":412,
             "log":".meridian/runs/…-t0.log","timed_out":false,"dry":false}],
    "process":{"interpreter":"bash","exit":0,"stdout_tail":"…","stderr_tail":"…","timed_out":false},
-   "fault":{"class":"parse|name_error|effect_at_load|declare_at_fire|impl_type|consent_in_prelude|budget|reply_shape|runtime|no_block|not_declared|ambiguous_anchor|not_a_module|missing_entry|prelude_invalid|bad_path|corpus_race","reason":"…","line":7},
+   "fault":{"class":"parse|name_error|effect_at_load|declare_at_fire|impl_type|budget|reply_shape|runtime|no_block|not_declared|ambiguous_anchor|not_a_module|missing_entry|prelude_invalid|bad_path|corpus_race","reason":"…","line":7},
    "telemetry":{"steps":812,"mem":20480,"wall_ms":3}}
   ```
 
