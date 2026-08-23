@@ -42,7 +42,7 @@ pub const MOUNT_LANG: &str = "meridian-mount";
 pub const TOOL_LANG: &str = "meridian-tool";
 
 /// The mount block's fields, in canonical order (schema §5.1).
-pub const MOUNT_FIELDS: [&str; 5] = ["name", "path", "primary", "vault", "pin"];
+pub const MOUNT_FIELDS: [&str; 6] = ["name", "path", "primary", "vault", "pin", "alias"];
 
 /// The tool block's fields, in canonical order (schema §6).
 pub const TOOL_FIELDS: [&str; 3] = ["name", "kind", "config"];
@@ -61,7 +61,7 @@ pub const NO_PARTIAL_LOAD_CLAUSE: &str =
 /// exemplar of the shape schema §8.3 fixes.
 /// `refusal_exemplar_is_produced_not_asserted` reproduces it from a real
 /// parse, so drift in the wording fails a test.
-pub const UNKNOWN_FIELD_REFUSAL_EXEMPLAR: &str = "refused: ~/MERIDIAN.md line 14: unknown field `paths` in a meridian-mount block — legal fields are name, path, primary, vault, pin (in that order). No mount table was loaded; the config is not partially applied. Fix: remove the line or spell the field you meant.";
+pub const UNKNOWN_FIELD_REFUSAL_EXEMPLAR: &str = "refused: ~/MERIDIAN.md line 14: unknown field `paths` in a meridian-mount block — legal fields are name, path, primary, vault, pin, alias (in that order). No mount table was loaded; the config is not partially applied. Fix: remove the line or spell the field you meant.";
 
 /// Why a config refused — the closed reason set of schema §8.2. A reason word
 /// comes from [`Reason::word`], never free text.
@@ -106,11 +106,17 @@ pub enum Reason {
     /// a role exactly one mount may hold, so a second one is a table-level
     /// defect, not a tie to break.
     DuplicatePrimaryDesignation,
+    /// An `alias:` equals some mount's `name` or another mount's `alias`
+    /// (schema §5.1b). Resolution is name-first-then-alias, so a shadowing
+    /// alias is a name with two meanings — unreachable by construction, or
+    /// ambiguous. Table-level like [`Reason::DuplicateMountName`]: the whole
+    /// table refuses, because the parser never picks between two claimants.
+    AliasShadowsName,
 }
 
 impl Reason {
     /// Every reason word, in schema §8.2's table order.
-    pub const ALL: [Reason; 17] = [
+    pub const ALL: [Reason; 18] = [
         Reason::ConfigPathUnusable,
         Reason::HomeUnresolvable,
         Reason::NoFrontmatter,
@@ -128,6 +134,7 @@ impl Reason {
         Reason::DuplicateMountName,
         Reason::DuplicateToolName,
         Reason::DuplicatePrimaryDesignation,
+        Reason::AliasShadowsName,
     ];
 
     /// The reason word — the closed-set spelling schema §8.2 fixes.
@@ -151,6 +158,7 @@ impl Reason {
             Reason::DuplicateMountName => "duplicate-mount-name",
             Reason::DuplicateToolName => "duplicate-tool-name",
             Reason::DuplicatePrimaryDesignation => "duplicate-primary-designation",
+            Reason::AliasShadowsName => "alias-shadows-name",
         }
     }
 }
@@ -236,6 +244,14 @@ pub struct MountEntry {
     /// The mount-as-claim pin (schema §5.3) — a well-formed fingerprint
     /// CID-token, carried verbatim.
     pub pin: Option<String>,
+    /// The second name this mount answers to (schema §5.1b); `Some` iff the
+    /// block carries `alias:`. Resolution is name-first-then-alias, so a mount
+    /// whose `name` already IS the constant a consumer spells needs no alias
+    /// line — a name is its own alias, and there is no special case.
+    ///
+    /// Never a stored spelling: receipts, pins, `mint {…}` paths, `sub` rows
+    /// and the canonical `root:path` a door echoes all print [`MountEntry::name`].
+    pub alias: Option<String>,
     /// The 1-based FILE line of this block's opening fence — kept so a bind
     /// refusal can point at the mount after the raw bytes are gone (§8.1a).
     pub fence_line: usize,
@@ -546,11 +562,17 @@ pub fn parse(raw: &str, path: &Path) -> Result<Config, ConfigError> {
     let mut mount_name_lines: Vec<(String, usize)> = Vec::new();
     let mut tool_name_lines: Vec<(String, usize)> = Vec::new();
     let mut primary_designation: Option<(String, usize)> = None;
+    let mut alias_lines: Vec<(String, usize)> = Vec::new();
 
     for block in engine_blocks(raw, &doc.root) {
         match block.lang.as_str() {
             MOUNT_LANG => {
-                let (entry, name_line, primary_line) = parse_mount(&block, path)?;
+                let ParsedMount {
+                    entry,
+                    name_line,
+                    primary_line,
+                    alias_line,
+                } = parse_mount(&block, path)?;
                 if let Some((_, first)) = mount_name_lines.iter().find(|(n, _)| *n == entry.name) {
                     return Err(duplicate_name(
                         Reason::DuplicateMountName,
@@ -581,6 +603,25 @@ pub fn parse(raw: &str, path: &Path) -> Result<Config, ConfigError> {
                     }
                     primary_designation = Some((entry.name.clone(), second));
                 }
+                // The two halves are minted together by `parse_mount` and are
+                // Some/None in lockstep. Asserted rather than assumed: a pattern
+                // that silently skips on a mismatched pair would drop the block
+                // out of the `alias-shadows-name` check — a table-level guard
+                // that fails OPEN, which is the one failure mode a uniqueness
+                // rule may not have.
+                debug_assert_eq!(
+                    entry.alias.is_some(),
+                    alias_line.is_some(),
+                    "an alias and its FILE line are one fact from one parse",
+                );
+                if let (Some(alias), Some(line)) = (entry.alias.as_deref(), alias_line) {
+                    alias_lines.push((alias.to_owned(), line));
+                } else if let Some(alias) = entry.alias.as_deref() {
+                    // Release builds: keep the guard closed even with no line to
+                    // point at. The fence_line is always a real byte position,
+                    // and a refusal aimed one line off beats a shadow admitted.
+                    alias_lines.push((alias.to_owned(), entry.fence_line));
+                }
                 mount_name_lines.push((entry.name.clone(), name_line));
                 mounts.push(entry);
             }
@@ -606,6 +647,12 @@ pub fn parse(raw: &str, path: &Path) -> Result<Config, ConfigError> {
         }
     }
 
+    // Alias uniqueness (schema §5.1b) — table-level, so it runs once every
+    // block is read: a name declared LATER in the file shadows an alias
+    // declared earlier just as surely, and an incremental check would miss
+    // exactly that half.
+    check_alias_uniqueness(&alias_lines, &mount_name_lines, path)?;
+
     Ok(Config {
         path: path.to_path_buf(),
         file_rev: doc.root.node_rev.0.clone(),
@@ -615,6 +662,50 @@ pub fn parse(raw: &str, path: &Path) -> Result<Config, ConfigError> {
         mounts,
         tools,
     })
+}
+
+/// Every alias must be a name nothing else claims (schema §5.1b): resolution is
+/// name-first-then-alias, so an alias equal to some mount's `name` is a spelling
+/// that can never reach the mount declaring it, and two mounts claiming one
+/// alias is a key with two values. Both refuse the WHOLE table
+/// ([`NO_PARTIAL_LOAD_CLAUSE`]) — the `duplicate-mount-name` class, for the same
+/// reason: the parser never picks between two claimants.
+///
+/// An alias equal to its OWN mount's name refuses too. It is unreachable rather
+/// than ambiguous, but it is still a line that does nothing, and admitting it
+/// would make "a name is its own alias" (§5.1b) a rule with an exception.
+fn check_alias_uniqueness(
+    alias_lines: &[(String, usize)],
+    mount_name_lines: &[(String, usize)],
+    path: &Path,
+) -> Result<(), ConfigError> {
+    for (index, (alias, line)) in alias_lines.iter().enumerate() {
+        if let Some((name, name_line)) = mount_name_lines.iter().find(|(n, _)| n == alias) {
+            return Err(ConfigError::new(
+                Reason::AliasShadowsName,
+                path,
+                Some(*line),
+                format!(
+                    "`alias: {alias}` is already the `name` of a {MOUNT_LANG} block at line {name_line} — a root is looked up by name first and only then by alias, so `{name}:` would never reach the mount declaring this alias."
+                ),
+                format!(
+                    "pick an alias no mount is named, or delete the `alias:` line at line {line} — a mount whose name already is the spelling you want needs no alias."
+                ),
+            ));
+        }
+        if let Some((_, first)) = alias_lines[..index].iter().find(|(a, _)| a == alias) {
+            return Err(ConfigError::new(
+                Reason::AliasShadowsName,
+                path,
+                Some(*line),
+                format!(
+                    "a second {MOUNT_LANG} block declares the alias `{alias}`, already declared at line {first} — an alias is a key, and a map with two values for one key is not a map."
+                ),
+                format!("rename one of the two aliases, or delete the one at line {line}."),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn duplicate_name(
@@ -989,10 +1080,20 @@ fn split_field<'a>(
 // meridian-mount (schema §5)
 // ---------------------------------------------------------------------------
 
-fn parse_mount(
-    block: &Block,
-    path: &Path,
-) -> Result<(MountEntry, usize, Option<usize>), ConfigError> {
+/// One mount block, parsed, plus the FILE lines a TABLE-level check needs
+/// after the block itself is legal: the `name:` line, the `primary:` line when
+/// the block designates, and the `alias:` line when it declares one. Table-level
+/// facts (a duplicate name, a second designation, a shadowing alias) are
+/// decidable only across every block, and their refusals must still point at
+/// bytes.
+struct ParsedMount {
+    entry: MountEntry,
+    name_line: usize,
+    primary_line: Option<usize>,
+    alias_line: Option<usize>,
+}
+
+fn parse_mount(block: &Block, path: &Path) -> Result<ParsedMount, ConfigError> {
     if block.unterminated {
         return Err(unterminated(block, path));
     }
@@ -1043,18 +1144,52 @@ fn parse_mount(
         None => None,
     };
 
-    Ok((
-        MountEntry {
+    let alias = parse_mount_alias(&fields, path)?;
+
+    Ok(ParsedMount {
+        entry: MountEntry {
             name: name.to_string(),
             path: mount_path.to_string(),
             primary: primary.is_some(),
             vault,
             pin,
+            alias: alias.map(|(_, a)| a.to_string()),
             fence_line: block.fence_line,
         },
         name_line,
-        primary,
-    ))
+        primary_line: primary,
+        alias_line: alias.map(|(line, _)| line),
+    })
+}
+
+// The alias (schema §5.1b): optional, one name in the §5.2 charset — the same
+// charset as `name:`, because an alias occupies the same `root:` position in an
+// address and a spelling that cannot be parsed as a root name could never be
+// used. Empty refuses rather than becoming a second spelling for "no alias".
+//
+// Uniqueness against every other name and alias is a TABLE-level fact
+// ([`Reason::AliasShadowsName`]), checked in [`parse`] once every block is read.
+// Returns the alias's FILE line beside its value so that check can point at
+// bytes.
+fn parse_mount_alias<'f>(
+    fields: &'f Fields<'_>,
+    path: &Path,
+) -> Result<Option<(usize, &'f str)>, ConfigError> {
+    let Some((alias_line, alias)) = fields.get("alias") else {
+        return Ok(None);
+    };
+    if alias.trim().is_empty() {
+        return Err(ConfigError::new(
+            Reason::BadValue,
+            path,
+            Some(alias_line),
+            "`alias:` is empty — an alias must name the second spelling the root answers to."
+                .to_string(),
+            "write the alias after `alias: `, or remove the line.".to_string(),
+        ));
+    }
+    check_name(alias, path, alias_line, "a mount alias")?;
+    Ok(Some((alias_line, alias)))
 }
 
 // The vault name (schema §5.1 field 4): optional — presence IS vault-ness.
