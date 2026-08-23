@@ -123,7 +123,8 @@ stamped onto every emitted effect's `Provenance::Run.root_at_eval` and handed
 to the apply as `observed_root`. After-eval observes the same domain as
 before-eval would have: this entry is hermetic by construction, so the eval
 cannot write. It is the shape the cascade already had (its per-generation fold
-sits behind `md.is_empty()`), and observation honesty is unchanged — the token
+runs only when that generation emitted an md.\* effect), and observation
+honesty is unchanged — the token
 still names the world the effects were produced against, and it is still never
 compared (no-guard ruling, above). The saving is the whole cost: on a
 37 800-member root the fold was **99.5%** of an effect-free run, ~0.9 s → ~20 ms.
