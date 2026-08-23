@@ -2185,7 +2185,11 @@ fn digest_member(root: &WorkspaceRoot, rel: &Path) -> io::Result<[u8; 32]> {
 ///
 /// Peak residency is therefore O(workers x largest member) instead of O(whole
 /// corpus). That is the entire point — see [`domain_fold`].
-fn digest_members(root: &WorkspaceRoot, rels: &[PathBuf], floor: usize) -> io::Result<Vec<[u8; 32]>> {
+fn digest_members(
+    root: &WorkspaceRoot,
+    rels: &[PathBuf],
+    floor: usize,
+) -> io::Result<Vec<[u8; 32]>> {
     if rels.is_empty() || rels.len() < floor {
         return rels.iter().map(|rel| digest_member(root, rel)).collect();
     }
