@@ -963,7 +963,13 @@ fn armed_set_members(mw: &MwEmitted, delta: &Delta) -> Vec<wire::ArmedSetMember>
 /// FAULTS are not consulted here — the check gate downstream refuses them
 /// (a red/unloadable/unevaluable middleware row is `block`-mode and fails
 /// closed there), so a fault can never read as "no middleware".
-fn middleware_rows(root: &fs::WorkspaceRoot, path: &str) -> Vec<policy::ArmedRule> {
+///
+/// Public because the RUN plane mounts the same door over its own pending
+/// splice (`run::gate`, U4.2 byte-landing parity). WHICH rows fire at a path
+/// is one law; a second spelling in `run` is how the two doors would come to
+/// disagree about what is armed.
+#[must_use]
+pub fn middleware_rows(root: &fs::WorkspaceRoot, path: &str) -> Vec<policy::ArmedRule> {
     let law = crate::armed_disk::resolve_at(root, path);
     let mut rows: Vec<policy::ArmedRule> = law
         .rules()
