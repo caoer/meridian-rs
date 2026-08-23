@@ -16,6 +16,8 @@ use registry::{Config, RunningServer};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+mod common;
+
 /// A daemon config rooted under `tmp`, with reap horizons large enough that the
 /// background reaper never evicts a warm engine mid-test.
 // `Duration::from_hours` is not const-stable at MSRV 1.96; the seconds form is
@@ -41,6 +43,7 @@ fn test_config_with_build(tmp: &TempDir, build_sha: Option<&str>) -> Config {
     config.prewarm_quiet_max = forever;
     // Lifetime is the test's; idle-exit would flake mid-assertion.
     config.idle_exit = None;
+    config.drain_cold_builds = Duration::from_secs(30);
     config
 }
 
@@ -74,13 +77,15 @@ impl Conn {
     }
 
     fn call(&mut self, request: &Value) -> Value {
-        let mut line = serde_json::to_string(request).unwrap();
-        line.push('\n');
-        self.writer.write_all(line.as_bytes()).unwrap();
-        self.writer.flush().unwrap();
-        let mut response = String::new();
-        self.reader.read_line(&mut response).unwrap();
-        serde_json::from_str(&response).unwrap()
+        common::honour_retry(|| {
+            let mut line = serde_json::to_string(request).unwrap();
+            line.push('\n');
+            self.writer.write_all(line.as_bytes()).unwrap();
+            self.writer.flush().unwrap();
+            let mut response = String::new();
+            self.reader.read_line(&mut response).unwrap();
+            serde_json::from_str(&response).unwrap()
+        })
     }
 
     /// A v3 hello binding `ws`.

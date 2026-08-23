@@ -16,6 +16,8 @@ use registry::{Config, RunningServer};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+mod common;
+
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
@@ -33,6 +35,7 @@ fn test_config(tmp: &TempDir) -> Config {
     config.prewarm_quiet_max = forever;
     // Lifetime is the test's; idle-exit would flake mid-assertion.
     config.idle_exit = None;
+    config.drain_cold_builds = Duration::from_secs(30);
     // A build sha, so the hello pin covers the shape a deployed daemon emits
     // rather than the identity-less variant.
     config.build_sha = Some("pinfixturebuild01".to_owned());
@@ -69,9 +72,11 @@ impl Conn {
     }
 
     fn call(&mut self, request: &Value) -> Value {
-        let mut line = serde_json::to_string(request).unwrap();
-        line.push('\n');
-        self.call_line(&line)
+        common::honour_retry(|| {
+            let mut line = serde_json::to_string(request).unwrap();
+            line.push('\n');
+            self.call_line(&line)
+        })
     }
 
     /// One raw frame in, one frame out — for lexemes no `Value` can carry
@@ -109,10 +114,11 @@ fn corpus() -> [(&'static str, &'static str); 3] {
 }
 
 /// A live daemon bound to a fresh corpus, plus its first connection.
+/// Fields drop in declaration order: `server` (stop → drain) before `_tmp`.
 struct Fixture {
-    _tmp: TempDir,
-    ws: PathBuf,
     server: RunningServer,
+    ws: PathBuf,
+    _tmp: TempDir,
 }
 
 impl Fixture {
@@ -123,9 +129,9 @@ impl Fixture {
         let mut conn = Conn::open(server.socket_path());
         assert_eq!(conn.hello(&ws)["ok"], json!(true), "the fixture binds");
         let fixture = Fixture {
-            _tmp: tmp,
-            ws,
             server,
+            ws,
+            _tmp: tmp,
         };
         (fixture, conn)
     }

@@ -114,6 +114,12 @@ pub struct Config {
     /// crate's compilation environment alone, so this crate cannot see it;
     /// `mrd daemon` supplies it (`docs/wire-contract.md`).
     pub build_sha: Option<String>,
+    /// How long [`RunningServer::stop`] waits for in-flight drawer rebuilds
+    /// before releasing the singleton flock. See
+    /// [`crate::DEFAULT_DRAIN_COLD_BUILDS`] for the production default and the
+    /// three client budgets that cap it. Fixtures raise this so a `TempDir`
+    /// outlives a parked builder.
+    pub drain_cold_builds: Duration,
 }
 
 impl Config {
@@ -138,6 +144,7 @@ impl Config {
             // The layout cannot know the binary that will run it; the host
             // process supplies its own sha.
             build_sha: None,
+            drain_cold_builds: crate::DEFAULT_DRAIN_COLD_BUILDS,
         }
     }
 
@@ -230,6 +237,7 @@ pub struct RunningServer {
     prewarm: Option<JoinHandle<()>>,
     registry: Arc<Registry>,
     socket_path: PathBuf,
+    drain_cold_builds: Duration,
     // The singleton flock, held for the daemon's whole lifetime; dropping it
     // releases the guard so a successor can start.
     _singleton: DrawerLock,
@@ -338,6 +346,7 @@ impl RunningServer {
             prewarm: Some(prewarm),
             registry,
             socket_path: config.socket_path,
+            drain_cold_builds: config.drain_cold_builds,
             _singleton: singleton,
         })
     }
@@ -384,6 +393,16 @@ impl RunningServer {
         }
         if let Some(handle) = self.prewarm.take() {
             let _ = handle.join();
+        }
+        // Drawer-rebuild threads are fire-and-forget (`cold_gate` spawns them
+        // and never joins). They hold `Arc<Registry>` and the workspace path.
+        // Drain them before the caller drops a TempDir out from under the
+        // builder — the class-2 flake (pipelines 1098/1101). Empty in_flight
+        // returns immediately; a still-parked builder times out at
+        // `Config::drain_cold_builds` (production default 2 s — under the
+        // tightest client flock-wait of 5 s) and shutdown continues.
+        if !self.registry.drain_cold_builds(self.drain_cold_builds) {
+            eprintln!("registry: shutdown while a drawer rebuild is still in flight");
         }
         // Capture in-memory last_use bumps that resolve made without persisting.
         self.registry.flush();
@@ -2283,7 +2302,7 @@ mod hello_config_grade_tests {
     use std::os::unix::net::UnixStream;
     use std::path::Path;
     use std::sync::mpsc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use serde_json::{Value, json};
     use tempfile::TempDir;
@@ -2302,6 +2321,7 @@ mod hello_config_grade_tests {
         config.prewarm_interval = forever;
         config.prewarm_quiet_max = forever;
         config.idle_exit = None;
+        config.drain_cold_builds = Duration::from_secs(30);
         config
     }
 
@@ -2346,8 +2366,13 @@ mod hello_config_grade_tests {
         /// Retry `toc path` until the drawer lands — the §3.2 retry
         /// discipline a client runs against `corpus_warming`. Bounded, loud
         /// on expiry; any non-warming refusal fails immediately.
+        ///
+        /// Budget is 30s (15s + 2s × ~7 fixture files), not the kicker's
+        /// unpublished 2s: under load a small drawer is still rebuilding past
+        /// that bound (pipelines 1098/1101) and the contract says retry.
         fn toc_until_warm(&mut self, path: &str) -> Value {
-            for _ in 0..400 {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
                 let response = self.call(&json!({"op": "toc", "path": path}));
                 if response["ok"] == json!(true) {
                     return response;
@@ -2357,9 +2382,12 @@ mod hello_config_grade_tests {
                     json!("corpus_warming"),
                     "only the warming refusal is retryable here: {response}"
                 );
-                std::thread::sleep(Duration::from_millis(5));
+                assert!(
+                    Instant::now() < deadline,
+                    "drawer did not land within 30s: {response}"
+                );
+                std::thread::sleep(Duration::from_millis(20));
             }
-            panic!("drawer did not land within 2s");
         }
     }
 
@@ -2416,6 +2444,97 @@ mod hello_config_grade_tests {
             "A's retried read lands after release: {toc}"
         );
 
+        server.shutdown();
+    }
+
+    /// Injected delay past the kicker's unpublished 2s bound: the client
+    /// retries `corpus_warming` and the same `toc` serves once the drawer
+    /// lands. This is the class-1 flake (pipelines 1098/1101) with a
+    /// deterministic pause instead of nyc-2 load.
+    #[test]
+    fn retried_toc_lands_after_an_injected_delay_past_the_kicker_wait() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("a.md"), "# A\n").unwrap();
+        let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+        let (arrived_tx, arrived_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        *server.registry().pause_before_insert.lock().unwrap() = Some((arrived_tx, release_rx));
+
+        let mut a = Conn::open(server.socket_path());
+        a.set_read_timeout(Duration::from_secs(10));
+        assert_eq!(a.hello(&ws)["ok"], json!(true));
+        let cold = a.call(&json!({"op": "toc", "path": "a.md"}));
+        assert_eq!(
+            cold["error"]["code"],
+            json!("corpus_warming"),
+            "the kicker refuses at the unpublished 2s bound: {cold}"
+        );
+        arrived_rx.recv().expect("the builder parked");
+
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(2500));
+            release_tx.send(()).expect("release past the 2s bound");
+        });
+
+        let started = Instant::now();
+        let toc = a.toc_until_warm("a.md");
+        assert!(
+            started.elapsed() >= Duration::from_secs(2),
+            "the injected delay must outlive the kicker wait, else this is not the flake"
+        );
+        assert_eq!(toc["ok"], json!(true), "retry lands after release: {toc}");
+        server.shutdown();
+    }
+
+    /// Class 2: a builder parked past the kicker wait is still in flight;
+    /// `drain_cold_builds` blocks until it lands (fails if the drain is a no-op).
+    #[test]
+    fn drain_cold_builds_waits_out_an_injected_delay_past_the_kicker_wait() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("a.md"), "# A\n").unwrap();
+        let mut cfg = test_config(&tmp);
+        cfg.drain_cold_builds = Duration::from_secs(30);
+        let server = RunningServer::start(cfg).unwrap();
+
+        let (arrived_tx, arrived_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        *server.registry().pause_before_insert.lock().unwrap() = Some((arrived_tx, release_rx));
+
+        let mut a = Conn::open(server.socket_path());
+        a.set_read_timeout(Duration::from_secs(10));
+        assert_eq!(a.hello(&ws)["ok"], json!(true));
+        let cold = a.call(&json!({"op": "toc", "path": "a.md"}));
+        assert_eq!(
+            cold["error"]["code"],
+            json!("corpus_warming"),
+            "the kicker refuses: {cold}"
+        );
+        arrived_rx.recv().expect("the builder parked");
+
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(2500));
+            release_tx.send(()).expect("release past the 2s bound");
+        });
+
+        let started = Instant::now();
+        assert!(
+            server.registry().drain_cold_builds(Duration::from_secs(10)),
+            "drain must wait the injected delay out"
+        );
+        assert!(
+            started.elapsed() >= Duration::from_millis(2500),
+            "vacuous if the drawer had already landed: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            server.registry().cold_gate(&ws).unwrap(),
+            crate::registry::ColdGate::Serve
+        );
         server.shutdown();
     }
 
@@ -2534,14 +2653,24 @@ mod cold_read_door_tests {
     }
 
     /// Bounded spin until the drawer lands; loud instead of hung on a bug.
+    /// 30s client budget — see `toc_until_warm`.
     fn wait_serve(reg: &Registry, ws: &Path) {
-        for _ in 0..400 {
-            if reg.cold_gate(ws).unwrap() == ColdGate::Serve {
-                return;
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            match reg.cold_gate(ws).unwrap() {
+                ColdGate::Serve => return,
+                ColdGate::Failed(cause) => {
+                    panic!("drawer rebuild failed while waiting for Serve: {cause}")
+                }
+                ColdGate::Warming => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "drawer rebuild did not land within 30s"
+                    );
+                    std::thread::sleep(Duration::from_millis(20));
+                }
             }
-            std::thread::sleep(Duration::from_millis(5));
         }
-        panic!("drawer rebuild did not land within 2s");
     }
 
     /// The dogfood shape, modeled without a live daemon: a rebuild too long
@@ -2611,8 +2740,22 @@ mod cold_read_door_tests {
 /// short however deep the cache root is.
 #[cfg(test)]
 mod socket_placement_tests {
-    use super::{SOCKET_NAME, socket_path_under_home};
+    use super::{Config, SOCKET_NAME, socket_path_under_home};
     use std::path::Path;
+    use std::time::Duration;
+
+    /// Production drain default must sit under the tightest client flock-wait
+    /// (mrd CLI 5 s, ccc-statusd 15 s, kicker 2 s).
+    #[test]
+    fn drain_cold_builds_default_is_two_seconds() {
+        let cfg = Config::for_cache_root(std::path::PathBuf::from("/cache"));
+        assert_eq!(cfg.drain_cold_builds, crate::DEFAULT_DRAIN_COLD_BUILDS);
+        assert_eq!(cfg.drain_cold_builds, Duration::from_secs(2));
+        assert!(
+            cfg.drain_cold_builds < Duration::from_secs(5),
+            "must be under mrd SPAWN_READY_TIMEOUT"
+        );
+    }
 
     #[test]
     fn same_cache_root_derives_the_same_socket() {
