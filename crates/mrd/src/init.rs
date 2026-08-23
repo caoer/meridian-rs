@@ -8,10 +8,14 @@
 //! bytes, then reads them back through `config` and reports the name `config` read.
 //!
 //! # What init does not do
-//! It does not anchor the resolution ladder. The ladder answers `MERIDIAN_WORKSPACE` → nearest
-//! `.git` → the cwd default and never reads a declaration, so a tree declared below a git root
-//! still resolves to the git root. Init therefore reports the ladder's answer for the target,
-//! tier and root, and names the fix when the two differ.
+//! It does not anchor the resolution ladder. The ladder answers a NAMED argument → the
+//! `MERIDIAN_WORKSPACE` override → nearest `.git` → the cwd default, and never reads a
+//! declaration, so a tree declared below a git root still resolves to the git root. Init
+//! therefore reports the ladder's answer for the target, tier and root, and names the fix when
+//! the two differ. `mrd init PATH` names its target, so that report describes PATH's own
+//! resolution and not a live override's tree (ruling 2026-08-23,
+//! `unregister-env-override-vs-explicit-path`); with no PATH the cwd is ambient and the
+//! override still answers.
 
 use std::fs;
 use std::path::{Path, PathBuf};
