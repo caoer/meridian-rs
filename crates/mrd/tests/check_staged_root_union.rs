@@ -13,6 +13,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+mod common;
+
 /// The exact refusal `resolve_ref` raises when a root is bound but this process holds no corpus
 /// for it — the symptom of an under-collecting union, and the string this gate exists to prove
 /// absent.
@@ -59,6 +61,12 @@ fn staged_covers_a_root_the_worktree_does_not() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let home = tmp.path().join("home");
     let cache = tmp.path().join("xdg-cache");
+    // Reaps the daemon the runs below auto-spawn (common::reap_daemon documents
+    // the fixture daemon strategy). Declared after `tmp` so it drops first.
+    let _reaper = common::DaemonReaper {
+        home: home.clone(),
+        cache_home: cache.clone(),
+    };
     let other = tmp.path().join("other");
     let ws = tmp.path().join("ws");
     for dir in [&home, &other, &ws] {

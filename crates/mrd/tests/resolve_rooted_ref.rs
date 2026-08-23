@@ -29,6 +29,7 @@
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
+mod common;
 
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
@@ -365,4 +366,13 @@ fn a_rooted_refusal_emits_the_json_error_frame() {
             .is_some_and(|m| m.contains("does not bind")),
         "frame carries the teaching refusal: {v}"
     );
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
+    }
 }
