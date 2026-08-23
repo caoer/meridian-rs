@@ -1986,6 +1986,42 @@ S1 — ship the scoped claim, never the unqualified one."*
 | Local run beside a resident daemon (§7.1) | accepted | a local run's writes reach the daemon as external change — the same class as any out-of-band edit |
 | The script entry runs in **wire-client mode**, not pure-local | law, not gap | a script must execute AS the caller, and the row above disqualifies the pure-local leg by this plane's own table: its writes reach a resident daemon actor-absent. Through the daemon, a script's writes arrive as governed, actor-carrying change, Delta-minted like any splice. *(Amended 2026-08-12: the in-process lane — wire `script`, § A.7 — satisfies this row's reason by a shorter path: eval runs inside the daemon and its commit IS the governed write path, actor-carrying and Delta-minted. The law stands; it gains a second conforming lane.)* |
 
+## Timing phases
+
+Under `MRD_TIMING` (the switch, sink, line grammar and the two lanes:
+`status.md` § The timing mode) a run answers where its wall clock went. The
+phases, at the grain a reader can act on:
+
+| Phase | Emitted in | Covers |
+|---|---|---|
+| `total` | `mrd::run` | the whole process — every verb has it, not just `run` |
+| `workspace.resolve` | `mrd::run_cmd` | `workspace::resolve` — the discovery ladder |
+| `page.load` | `mrd::run_cmd` | the door's `address::load_page` (parse of the addressed page) |
+| `conventions.load` | `mrd::run_cmd` | `caps::load_conventions` — the root's `MERIDIAN.md` |
+| `task.gate` | `mrd::run_cmd` | the door's pre-check: `resolve_task` + `contract_for` + `validate` + `resolve_authority` |
+| `pre_eval` | `run::runner` | the plane's OWN address → contract → caps chain, which repeats the door's work |
+| `snapshot.walk` | `fs::domain_snapshot_with_leaves` | `Domain::load` + `hash_domain` — the hash-domain walk |
+| `snapshot.read` | same | `read_and_digest_members` — read + blake3 of every member |
+| `snapshot.fold` | same | leaf assembly + `served_root` |
+| `snapshot` | same | the three above, whole |
+| `eval` | `run::dispatch_starlark` | hermetic evaluation of the block |
+| `apply` | `run::dispatch_starlark` | the executor's one md.\* batch (absent when the block emitted none) |
+| `dispatch` | `run::runner` | `snapshot` + `eval` + `apply`, whole |
+| `cascade` | `run::runner` | the cascade loop — vacuous under the empty S1 ruleset, so a near-zero `us` here is the expected reading, not a missing measurement |
+| `report.render` | `mrd::run_cmd` | the U9 report render |
+
+`snapshot.*` is emitted by `fs`, not by this plane: **every** caller of
+`domain_snapshot*` lights it up, the daemon's resident rebuild included. That is
+the point — the corpus fold is the cost that does not care which door asked for
+it. `pre_eval` repeating `page.load` and `conventions.load` is likewise a fact
+of the shape, not an artifact of the instrument: the door resolves to refuse
+early, then the plane resolves again as its own gate ([`pre_eval`], ONE owner
+for both tenses).
+
+A phase that does not run emits no line. `--dry` never reaches `apply` or
+`cascade`, `--list` reaches neither `snapshot` nor anything below it, and
+`--dry` on bash reaches no `snapshot` at all.
+
 ## Seam map (for reviewers)
 
 | Seam | Owner |
@@ -2000,6 +2036,7 @@ S1 — ship the scoped claim, never the unqualified one."*
 | CLI mount — script entry | `crates/mrd::script::cmd` — the same client edge; its human-mode face is non-normative |
 | in-process script serve (§ A.7) | `crates/registry` (the op arm: entry world, host, threading, commit) over `crates/effects` (kernel, trace, digest) — added 2026-08-12 |
 | wire run serve (§ A.8) + script effects mode | `crates/registry` (`run_op`: per-target loop, §9 threading; `script_op`: the live host) over `crates/run` (the plane, unchanged) — added 2026-08-13 |
+| per-phase timing (`MRD_TIMING`) | `crates/timing` (the switch, the sink, the span) — the phase call sites are `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`; § Timing phases — added 2026-08-22 |
 
 ---
 
