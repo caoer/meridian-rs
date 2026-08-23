@@ -2037,6 +2037,15 @@ imply a run.** `mrd sql`, `mrd check`, `mrd walk`, `mrd repair`, the daemon's
 resident rebuild and its watch loop all fold and all report it, under their own
 `cmd=`. Read `cmd=` before attributing a fold.
 
+`corpus.build` is the same class: it is emitted by `fs::build_corpus`, and every
+caller of that function lights it up — `mrd sql`, `mrd check`, `mrd walk`,
+`mrd repair`, `mrd retire`, the daemon's resident rebuild, and `mrd links`. **A
+`phase=corpus.build` line does not imply a links call.** Read `cmd=` first. On
+the links ephemeral path it also repeats: once for the workspace corpus (inside
+`total`) and once per link-addressed mounted root (inside `links.read`, via
+`wire-serve` `build_docs_at`). Count the lines; the name does not distinguish
+workspace from mount.
+
 Within the run plane there are FOUR fold sites, and they do not all fire on one
 lane:
 

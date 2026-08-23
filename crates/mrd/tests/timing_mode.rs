@@ -110,6 +110,28 @@ impl Ws {
         }
         command.output().expect("spawn mrd")
     }
+
+    /// `links --json` forced onto the ephemeral path: a resident daemon on the
+    /// host would otherwise answer, and the client's sink would then miss
+    /// `snapshot.*` / `corpus.build` (those fire in the daemon, stderr nulled).
+    fn links_json(&self, timing: Option<&str>) -> Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mrd"));
+        command
+            .args(["links", "--json"])
+            .env("MERIDIAN_WORKSPACE", self.path())
+            .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+            .env("XDG_RUNTIME_DIR", self.path().join(".rt"))
+            .env("XDG_CACHE_HOME", self.path().join(".cache"))
+            .current_dir(self.path());
+        let _ = std::fs::create_dir_all(self.path().join(".rt"));
+        let _ = std::fs::create_dir_all(self.path().join(".cache"));
+        if let Some(value) = timing {
+            command.env("MRD_TIMING", value);
+        } else {
+            command.env_remove("MRD_TIMING");
+        }
+        command.output().expect("spawn mrd")
+    }
 }
 
 fn stderr(out: &Output) -> String {
@@ -201,6 +223,59 @@ fn off_and_on_agree_on_stdout_and_exit_code() {
         !timing_lines(&stderr(&on)).is_empty(),
         "on wrote none: {}",
         stderr(&on)
+    );
+}
+
+/// The same identity claim for `links --json` (PR 178). Ephemeral: a host
+/// daemon would hide `snapshot.*` / `corpus.build` on the client sink.
+#[test]
+fn links_json_off_and_on_agree_and_reports_its_phases() {
+    let ws = Ws::new();
+    let off = ws.links_json(None);
+    let on = ws.links_json(Some("1"));
+
+    assert_eq!(off.status.code(), Some(0), "{}", stderr(&off));
+    assert_eq!(on.status.code(), Some(0), "{}", stderr(&on));
+    assert_eq!(
+        off.stdout,
+        on.stdout,
+        "the switch moved stdout:\noff: {}\non:  {}",
+        String::from_utf8_lossy(&off.stdout),
+        String::from_utf8_lossy(&on.stdout)
+    );
+    assert!(
+        timing_lines(&stderr(&off)).is_empty(),
+        "off wrote timing lines: {}",
+        stderr(&off)
+    );
+
+    let lines = timing_lines(&stderr(&on));
+    let names = phases(&stderr(&on));
+    for expected in [
+        "daemon.dial",
+        "snapshot.walk",
+        "snapshot.read",
+        "snapshot.fold",
+        "snapshot",
+        "corpus.build",
+        "links.read",
+        "json.render",
+        "json.write",
+        "total",
+    ] {
+        assert!(
+            names.iter().any(|n| n == expected),
+            "no `{expected}` phase in: {names:?}\n{}",
+            stderr(&on)
+        );
+    }
+    for (cmd, phase, _) in &lines {
+        assert_eq!(cmd, "links", "wrong cmd on `{phase}`");
+    }
+    assert_eq!(
+        names.last().map(String::as_str),
+        Some("total"),
+        "total is not last: {names:?}"
     );
 }
 

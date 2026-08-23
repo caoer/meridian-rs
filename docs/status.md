@@ -1561,18 +1561,21 @@ Which phases `mrd run` emits: `run-plane.md` § Timing phases. The instrument is
 `crates/timing` (`laws.md` § Crate charters).
 
 Which phases `mrd links` emits (same instrument, same line grammar). `snapshot.*`
-come from `fs::domain_snapshot` on the ephemeral path only — a warm daemon answers
-without folding. A phase that did not run emits no line.
+and `corpus.build` are emitted by `fs`, so they fire on the ephemeral path **and**
+on every other caller of those functions (`run-plane.md` § Timing phases — read
+`cmd=` first). A warm daemon-served `links` emits neither on the **client** sink
+(the fold already happened in the daemon, whose sink is separate; `status.md`
+§ Two lanes). A phase that did not run emits no line.
 
 | Phase | Inside | Emitted in | Covers |
 |---|---|---|---|
 | `total` | — | `mrd::run` | the whole process |
-| `daemon.dial` | `total` | `mrd::engine::answer_links` | hello+links on the resident daemon, or the degrade decision |
-| `snapshot` / `snapshot.*` | `total` | `fs::domain_snapshot_with_leaves` | hash-domain walk + digest + fold — ephemeral only |
-| `corpus.build` | `total` | `fs::build_corpus` | UTF-8 + `syntax::parse` of every member — ephemeral only |
-| `links.read` | `total` | `mrd::engine::in_process_links` | mount-narrow + `wire_serve::read::links_rooted` + v3 re-key |
+| `daemon.dial` | `total` | `mrd::engine::answer_links` | hello+links on the resident daemon, or the degrade decision — includes `ensure_daemon` auto-spawn poll up to `SPAWN_READY_TIMEOUT` (5 s) |
+| `snapshot` / `snapshot.*` | `total` OR `links.read` | `fs::domain_snapshot_with_leaves` | hash-domain walk + digest + fold. Repeats once per mounted root (`build_docs_at`). A warm daemon-served `links` emits none on the client sink |
+| `corpus.build` | `total` OR `links.read` | `fs::build_corpus` | UTF-8 + `syntax::parse` of every member. Repeats once per mounted root: the workspace build sits in `total`; each mount build sits inside `links.read`. Not links-only — `sql` / `check` / `walk` / `repair` / `retire` / daemon emit it under their own `cmd=` |
+| `links.read` | `total` | `mrd::engine::in_process_links` | everything from the mount narrow to the v3 re-key |
 | `json.render` | `total` | `mrd::engine::run_command` | `serde_json::to_string_pretty` of the envelope |
-| `json.write` | `total` | same | `println` of that string |
+| `json.write` | `total` | same | the `println!` buffer (the OS drain is at process exit, after `total`) |
 
 ## Known gaps
 
