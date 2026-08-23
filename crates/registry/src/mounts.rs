@@ -101,6 +101,7 @@ fn project(table: &config::mount::MountTable) -> Vec<MountRow> {
             state: m.state().word().to_owned(),
             workspace: m.canonical_path().map(|p| p.to_string_lossy().into_owned()),
             primary: m.primary(),
+            alias: m.alias().map(ToOwned::to_owned),
         })
         .collect()
 }

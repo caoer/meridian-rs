@@ -25,7 +25,9 @@ use wire::{ErrorBody, ErrorCode};
 
 /// A rooted ref, resolved: the named root and the workspace its mount binds.
 pub(crate) struct RootedRef {
-    /// The canonical root name the spelling carried.
+    /// The MOUNT's canonical name — never the alias the caller spelled. Every
+    /// canonical echo (`resolve`'s `ref:` row, receipts, pins) is built from
+    /// this, which is what keeps aliases out of stored form (§ 4.6a).
     pub(crate) name: addr::MountName,
     /// The root's canonical bound path — the workspace the read binds to.
     pub(crate) workspace: PathBuf,
@@ -33,12 +35,37 @@ pub(crate) struct RootedRef {
     /// read so a door that renders the root row (resolve) never opens the
     /// table a second time for it.
     pub(crate) primary: bool,
+    /// The alias the caller SPELLED, when the mount was reached by one —
+    /// `None` when the spelling was the mount's own name. Carried so the
+    /// resolve door can show which spelling landed where without opening the
+    /// table again; never part of a canonical echo.
+    pub(crate) alias: Option<addr::MountName>,
 }
 
 /// Does this spelling enter the rooted lane at all? — the same lexical gate
 /// the link plane and the resolver's C-3 guard share.
 pub(crate) fn is_rooted(spelling: &str) -> bool {
     addr::head_carries_root_separator(spelling)
+}
+
+/// The alias half of the unbound-root refusal (`meridian-md-schema.md` § 5.1b).
+///
+/// A consumer that spells ONE constant — a skill writing `sessions:` — needs the
+/// refusal to teach the one line that makes its constant resolve. "Declare the
+/// mount" alone is the WRONG remedy when the tree is already mounted under
+/// another name: it sends a reader to add a second mount for a tree they have.
+///
+/// At `sessions` this renders, verbatim:
+///
+/// ```text
+/// declare `alias: sessions` on the mount that holds that tree
+/// ```
+///
+/// Pinned by `tests/root_alias.rs::a_table_with_neither_refuses_and_teaches_the_alias_line`,
+/// which asserts those bytes off a REAL refusal through the binary — produced,
+/// not asserted (the house pattern, `address-grammar.md` § 6).
+pub(crate) fn alias_teaching(name: &addr::MountName) -> String {
+    format!("declare `alias: {name}` on the mount that holds that tree")
 }
 
 /// The peel-then-admit sequence, one call per door: `Ok(None)` for an ambient
@@ -140,22 +167,30 @@ pub(crate) fn resolve_name(
              ({e}), so the name binds to no workspace. {consequence}"
         ))
     })?;
-    let Some(mount) = table.by_name(name.as_str()) else {
-        let names: Vec<&str> = table
+    // Name first, then alias (§ 5.1b) — the ONE lookup order, so `sessions:`
+    // reaches a mount named `sessions` and a mount aliased `sessions` alike, and
+    // nothing has to know which spelling this machine happens to use.
+    let Some(mount) = table.by_name_or_alias(name.as_str()) else {
+        let names: Vec<String> = table
             .mounts()
             .iter()
             .filter(|m| !m.state().refuses())
-            .map(config::mount::Mount::name)
+            .map(|m| match m.alias() {
+                Some(alias) => format!("{} (alias {alias})", m.name()),
+                None => m.name().to_owned(),
+            })
             .collect();
         return Err(refuse(format!(
             "{spelling} names root `{name}`, which this machine does not bind (bound roots: \
-             {}). {consequence} Fix: declare the mount in ~/MERIDIAN.md (name / path); see \
-             [[address-grammar]].",
+             {}). {consequence} Fix: declare the mount in ~/MERIDIAN.md (name / path), or {} \
+             — a root is looked up by name first and only then by alias, so the tree may \
+             already be here under another name; see [[address-grammar]].",
             if names.is_empty() {
                 "none".to_owned()
             } else {
                 names.join(", ")
-            }
+            },
+            alias_teaching(name)
         )));
     };
     if mount.state().refuses() {
@@ -174,9 +209,20 @@ pub(crate) fn resolve_name(
              {consequence}"
         )));
     };
+    // The MOUNT's name, not the caller's spelling: when an alias landed the
+    // lookup, every canonical echo downstream must still print the name.
+    let canonical = addr::MountName::parse(mount.name()).map_err(|e| {
+        refuse(format!(
+            "{spelling} resolves to a mount named `{}`, which is not a canonical root name \
+             ({e}). {consequence}",
+            mount.name()
+        ))
+    })?;
+    let alias = (canonical != *name).then(|| name.clone());
     Ok(RootedRef {
-        name: name.clone(),
+        name: canonical,
         workspace: workspace.to_path_buf(),
         primary: mount.primary(),
+        alias,
     })
 }

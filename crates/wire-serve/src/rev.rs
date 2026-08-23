@@ -135,6 +135,11 @@ pub fn project_response(frame: &mut Value) {
                 // Field-only amendment, dotted per § A.2: the mounts row
                 // carries the declared-primary designation (§ A.5).
                 caps.push(Value::String("mounts.primary".to_string()));
+                // Field-only amendment, same shape: the mounts row carries the
+                // root's alias — the second lookup spelling (§ A.5; the config
+                // schema's § 5.1b). A client that has not read this cap sees an
+                // unread key, inert by the tolerant-client law.
+                caps.push(Value::String("mounts.alias".to_string()));
                 caps.push(Value::String("hello.identity".to_string()));
                 // In-process script submission at op grain (§ A.7, the same
                 // precedent — no dotted script.<field> at birth).
@@ -423,6 +428,7 @@ mod tests {
                 "remove",
                 "mounts",
                 "mounts.primary",
+                "mounts.alias",
                 "hello.identity",
                 "script",
                 "run",

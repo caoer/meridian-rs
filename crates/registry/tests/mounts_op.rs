@@ -280,9 +280,9 @@ fn mounts_lifecycle_freshness_and_changed_invalid_refusal() {
 
 /// v3 advertises `mounts` at op grain (the `create` precedent — no dotted
 /// `mounts.<field>` at birth) plus exactly the field-only amendments § A.2
-/// ships as dotted caps — today `mounts.primary` and nothing else; the frozen
-/// v2 caps stay byte-identical, and a v2 session's `mounts` answers
-/// `unknown_op`.
+/// ships as dotted caps — today `mounts.primary` and `mounts.alias`, in that
+/// order and nothing else; the frozen v2 caps stay byte-identical, and a v2
+/// session's `mounts` answers `unknown_op`.
 #[test]
 fn v3_advertises_mounts_and_v2_answers_unknown_op() {
     let tmp = TempDir::new().unwrap();
@@ -300,8 +300,8 @@ fn v3_advertises_mounts_and_v2_answers_unknown_op() {
     let dotted: Vec<&&str> = caps.iter().filter(|c| c.starts_with("mounts.")).collect();
     assert_eq!(
         dotted,
-        vec![&"mounts.primary"],
-        "dotted mounts.<field> caps are exactly the § A.2 field-only amendments — today the declared-primary designation, nothing else: {hi}"
+        vec![&"mounts.primary", &"mounts.alias"],
+        "dotted mounts.<field> caps are exactly the § A.2 field-only amendments — today the declared-primary designation and the root alias, nothing else: {hi}"
     );
 
     let mut v2 = Conn::open(server.socket_path());

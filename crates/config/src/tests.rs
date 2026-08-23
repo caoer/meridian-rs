@@ -30,6 +30,12 @@ fn refuse(raw: &str) -> ConfigError {
     at(raw).expect_err("this input must refuse")
 }
 
+/// A minimal valid frontmatter with `body` after it — the shape every block
+/// grammar test needs and none of them is about.
+fn fm(body: &str) -> String {
+    format!("---\ntype: meridian-config\nversion: 1\n---\n\n{body}")
+}
+
 /// The kind sweep (ZT 2026-08-13): `kind:` left the mount schema — vault-ness
 /// is carried by `vault:` presence alone, and the primary designation is
 /// legal on any mount. A config still carrying the field refuses through the
@@ -58,6 +64,114 @@ vault: field-notes
     let text = err.to_string();
     assert!(text.contains("unknown field `kind`"), "{text}");
     assert!(text.contains("remove the line"), "{text}");
+}
+
+/// `alias:` is the sixth field (§5.1b), and it parses as a lookup spelling —
+/// the value survives to [`MountEntry::alias`] and nothing else about the block
+/// changes. The typo door stays shut by the closed schema: `alais:` is an
+/// ordinary `unknown-field`, so the silent-typo hazard §4 names is closed here
+/// exactly as it is for every other optional field.
+#[test]
+fn alias_parses_as_the_sixth_field_and_a_typo_refuses() {
+    let raw = "\
+---
+type: meridian-config
+version: 1
+---
+
+```meridian-mount
+name: field-notes-sessions
+path: /Users/Shared/projects/field-notes-sessions
+vault: field-notes-sessions
+alias: sessions
+```
+";
+    let config = at(raw).expect("a well-formed alias parses");
+    let mount = &config.mounts()[0];
+    assert_eq!(mount.name, "field-notes-sessions");
+    assert_eq!(mount.alias.as_deref(), Some("sessions"));
+
+    let typo = refuse(&raw.replace("alias: sessions", "alais: sessions"));
+    assert_eq!(typo.reason, Reason::UnknownField);
+    assert!(typo.to_string().contains("unknown field `alais`"), "{typo}");
+    // The legal set the refusal enumerates must name the field that exists,
+    // or the remedy sends a reader looking for a field the engine denies.
+    assert!(
+        typo.to_string()
+            .contains("name, path, primary, vault, pin, alias"),
+        "{typo}"
+    );
+}
+
+/// Canonical order is the table's (§5.1) and `alias:` is LAST — a block that
+/// writes it before `pin:` refuses `field-out-of-order` like any other
+/// transposition. Pinned because the field was appended: an implementation that
+/// slotted it anywhere but the end would pass every other alias test.
+#[test]
+fn alias_is_last_in_canonical_order() {
+    let err = refuse(&fm(
+        "```meridian-mount\nname: a\npath: /x\nalias: b\npin: fp1.span2.b3.ab\n```\n",
+    ));
+    assert_eq!(err.reason, Reason::FieldOutOfOrder);
+    assert!(
+        err.to_string()
+            .contains("name, path, primary, vault, pin, alias"),
+        "{err}"
+    );
+}
+
+/// An empty `alias:` refuses rather than becoming a second spelling for "no
+/// alias" — the rule `primary:` and `vault:` already hold. A value outside the
+/// §5.2 charset refuses too: an alias occupies the same `root:` position as a
+/// name, so a spelling no address can carry could never be used.
+#[test]
+fn an_empty_or_uncanonical_alias_refuses() {
+    let empty = refuse(&fm("```meridian-mount\nname: a\npath: /x\nalias:\n```\n"));
+    assert_eq!(empty.reason, Reason::MalformedLine, "{empty}");
+
+    let blank = refuse(&fm("```meridian-mount\nname: a\npath: /x\nalias: \n```\n"));
+    assert_eq!(blank.reason, Reason::BadValue, "{blank}");
+    assert!(blank.to_string().contains("`alias:` is empty"), "{blank}");
+
+    let shouty = refuse(&fm(
+        "```meridian-mount\nname: a\npath: /x\nalias: Sessions\n```\n",
+    ));
+    assert_eq!(shouty.reason, Reason::BadValue, "{shouty}");
+    assert!(shouty.to_string().contains("a mount alias"), "{shouty}");
+}
+
+/// An alias equal to any mount's `name` refuses the WHOLE table — including a
+/// name declared LATER in the file, which is the half an incremental check
+/// misses, and including the alias's own mount, where the line is unreachable
+/// rather than ambiguous.
+#[test]
+fn an_alias_shadowing_a_name_refuses_the_whole_table() {
+    // The shadowed name is declared AFTER the alias that shadows it.
+    let later = refuse(&fm(
+        "```meridian-mount\nname: a\npath: /x\nalias: b\n```\n\n```meridian-mount\nname: b\npath: /y\n```\n",
+    ));
+    assert_eq!(later.reason, Reason::AliasShadowsName);
+    assert!(
+        later.to_string().contains(NO_PARTIAL_LOAD_CLAUSE),
+        "{later}"
+    );
+    assert!(
+        later.to_string().contains("looked up by name first"),
+        "the refusal must teach WHY a shadow is fatal: {later}"
+    );
+
+    // Its own name: legal-looking, does nothing, refuses.
+    let own = refuse(&fm(
+        "```meridian-mount\nname: a\npath: /x\nalias: a\n```\n",
+    ));
+    assert_eq!(own.reason, Reason::AliasShadowsName);
+
+    // Two mounts claiming one alias: a key with two values.
+    let twice = refuse(&fm(
+        "```meridian-mount\nname: a\npath: /x\nalias: c\n```\n\n```meridian-mount\nname: b\npath: /y\nalias: c\n```\n",
+    ));
+    assert_eq!(twice.reason, Reason::AliasShadowsName);
+    assert!(twice.to_string().contains("already declared at line"), "{twice}");
 }
 
 /// The exemplar is produced by a real parse, not merely contained in one: a
@@ -151,6 +265,7 @@ fn the_closed_reason_set_is_complete_and_reachable() {
             "duplicate-mount-name",
             "duplicate-tool-name",
             "duplicate-primary-designation",
+            "alias-shadows-name",
         ],
         "the reason set is schema §8.2's table, in its order"
     );
@@ -183,7 +298,6 @@ fn one_of_each_reason() -> Vec<(Reason, ConfigError)> {
     })
     .expect_err("an unbuildable rung 2 refuses");
 
-    let fm = |body: &str| format!("---\ntype: meridian-config\nversion: 1\n---\n\n{body}");
     let mount = |body: &str| fm(&format!("```meridian-mount\n{body}```\n"));
     let tool = |body: &str| fm(&format!("```meridian-tool\n{body}```\n"));
 
@@ -247,6 +361,12 @@ fn one_of_each_reason() -> Vec<(Reason, ConfigError)> {
             Reason::DuplicatePrimaryDesignation,
             refuse(&fm(
                 "```meridian-mount\nname: a\npath: /x\nprimary: true\nvault: a\n```\n\n```meridian-mount\nname: b\npath: /y\nprimary: true\nvault: b\n```\n",
+            )),
+        ),
+        (
+            Reason::AliasShadowsName,
+            refuse(&fm(
+                "```meridian-mount\nname: a\npath: /x\n```\n\n```meridian-mount\nname: b\npath: /y\nalias: a\n```\n",
             )),
         ),
     ]

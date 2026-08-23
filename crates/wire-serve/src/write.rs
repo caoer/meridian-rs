@@ -4213,8 +4213,11 @@ fn resolve_rooted_spelling(target: &Path, what: &str) -> Result<RootedSpelling, 
             target.0
         )));
     };
+    // Name first, then alias (`meridian-md-schema.md` §5.1b) — the pin door
+    // shares the ONE lookup order, so a `sessions:` target names the same tree
+    // here that it names at every read door.
     let bound = table
-        .by_name(name.as_str())
+        .by_name_or_alias(name.as_str())
         .filter(|m| !m.state().refuses())
         .and_then(config::mount::Mount::canonical_path);
     let Some(target_root) = bound else {
