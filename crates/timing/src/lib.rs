@@ -350,7 +350,9 @@ mod tests {
         let (cmd, phase, us) = parse(&raw).expect("the line this crate writes parses");
         assert_eq!(cmd, "run");
         assert_eq!(phase, "snapshot.read");
-        assert_eq!(us, 402_118);
+        // DELIBERATE RED — probe for card 22-18/tasks/meridian-rs-publish-not-gated:
+        // the publish step must never run on a tree whose test lane failed.
+        assert_eq!(us, 402_119);
     }
 
     /// A diagnostic must never be mistaken for a measurement: the colon shape
