@@ -410,25 +410,64 @@ fn forward(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<ScriptT
     if parsed.dry {
         request["dry"] = json!(true);
     }
-    let line = door
-        .call(&request)
-        .map_err(|e| Fail::tool(format!("the daemon did not answer `script`: {e}")))?;
-    let frame = Frame::parse(&line).map_err(|e| Fail::tool(e.to_string()))?;
+    // ⭐ FROM HERE THE PROGRAM IS ON THE WIRE. Every exit below is a CONTROLLED
+    // exit and must SPEAK (`docs/run-plane.md` § A controlled failure exit
+    // SPEAKS) — the same law `commit()` states at its own bracket.
+    //
+    // **A trace may carry ONLY daemon-supplied facts — never mint.** That is the
+    // line that reconciles the two laws in tension here. Where the daemon's
+    // answer supplies what a trace needs, this speaks a trace. Where it does not
+    // — a lost answer, unreadable bytes — the entry fingerprint is the DAEMON's
+    // and was never received, so a trace here would have to fabricate its first
+    // field, which is the very thing the `NoPremise` control arm exists to
+    // forbid (`script_controlled_exits_speak.rs`, "synthesizing one would mint a
+    // fact"). Those paths stay `Err` and carry the indeterminacy in PROSE
+    // instead, stating three facts every time: the daemon did not answer, a
+    // commit MAY have landed daemon-side, and the remedy is a fresh read before
+    // any retry.
+    //
+    // The law is therefore FORMALLY UNMET on those two paths, and that is
+    // recorded rather than papered over: an honest "premise unknown" spelling in
+    // `ScriptTrace` is a trace-contract change, carded as
+    // `script-trace-premise-unknown-spelling` (it intersects
+    // `wire-contract-a8-null-vs-empty-clause` — null vs empty vs absent is one
+    // decision). Until it lands, THE PROSE IS THE OPERATING SURFACE, so the
+    // prose is what the suite pins.
+    const MAY_HAVE_LANDED: &str = "The program was SENT, so whether the workspace carries this \
+         run is UNKNOWN — a commit already on the wire is the daemon's to finish. Verify with a \
+         fresh read of the workspace fingerprint before retrying; never resend, because a resend \
+         writes twice";
+    let line = door.call(&request).map_err(|e| {
+        Fail::tool(format!(
+            "the daemon did not answer `script` ({e}). {MAY_HAVE_LANDED}"
+        ))
+    })?;
+    let frame = Frame::parse(&line).map_err(|e| {
+        Fail::tool(format!(
+            "the daemon answered `script` in bytes this engine cannot read ({e}). \
+             {MAY_HAVE_LANDED}"
+        ))
+    })?;
     match (frame.ok, frame.body.as_ref(), frame.error.as_ref()) {
         (true, Some(body), _) => serde_json::from_str::<ScriptTrace>(body.get()).map_err(|e| {
             Fail::tool(format!(
                 "the daemon answered `script` with a trace this build cannot read ({e}) — \
-                 engine and CLI likely disagree on the trace shape; align their versions"
+                 engine and CLI likely disagree on the trace shape; align their versions. \
+                 {MAY_HAVE_LANDED}"
             ))
         }),
+        // DETERMINATE, and the daemon said so itself: a refusal frame that never
+        // reached an entry means nothing was attempted, so there is no
+        // indeterminacy to state and none is invented.
         (false, _, Some(error)) => Err(Fail::tool(format!(
-            "`script` refused before any entry existed: {}",
+            "`script` refused before any entry existed, so nothing was evaluated and nothing \
+             landed: {}",
             error.get()
         ))),
-        _ => Err(Fail::tool(
-            "the daemon's `script` answer violates the §8 frame shape (no body, no error)"
-                .to_owned(),
-        )),
+        _ => Err(Fail::tool(format!(
+            "the daemon's `script` answer violates the §8 frame shape (no body, no error). \
+             {MAY_HAVE_LANDED}"
+        ))),
     }
 }
 
