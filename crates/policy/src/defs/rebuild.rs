@@ -868,6 +868,80 @@ pub fn yaml_safe_value(val: &str) -> Result<String, MultiLineValue> {
     Ok(val.to_string())
 }
 
+/// The value encoder for a door that carries a TYPED list arm
+/// (`create(props = {…})`, D6) — [`yaml_safe_value`] minus its one-level
+/// flow-list carve-out.
+///
+/// That carve-out is the string plane's only way to author a list, so it stays
+/// where the plane is a string (the patch face). Here it is a LEAK: a caller
+/// that hands this door the scalar `"[a, b]"` means the seven-byte string, and
+/// the list it wants it spells `PropValue::List`. So a plain emit that would
+/// read back as a collection quotes.
+///
+/// **Named residual — the typed-scalar carve-out stays.** `"7"`, `"true"`,
+/// `"2026-08-07"` still land verbatim and read back as int / bool / timestamp,
+/// exactly as they do through every other write door: this door has no typed
+/// arm for them, so the carve-out is the only way to author them, and quoting
+/// them here would spell the fleet's own frontmatter differently from every
+/// record already on disk.
+///
+/// # Errors
+/// `MultiLineValue` — the D11 law, unchanged.
+pub fn yaml_safe_scalar(val: &str) -> Result<String, MultiLineValue> {
+    let encoded = yaml_safe_value(val)?;
+    if encoded == val
+        && matches!(
+            super::fm::classify_scalar_or_flow(val),
+            super::fm::FmValue::List(_)
+        )
+    {
+        return Ok(model::scalar::double_quote(val));
+    }
+    Ok(encoded)
+}
+
+/// ONE member of a flow list (`tags: [a, b]`), encoded for the position it
+/// lands in — [`yaml_safe_value`]'s sibling for the one shape that plane
+/// cannot express as a scalar. A member is quoted whenever the plain emit
+/// would be read back as something else IN A FLOW CONTEXT: everything
+/// [`yaml_safe_value`] already quotes, plus the flow punctuation (`,` `[` `]`
+/// `{` `}`) that would end the member early or nest a collection inside it.
+/// The verbatim one-level-flow-list carve-out `yaml_safe_value` grants a
+/// scalar does NOT survive here: `[a, b]` as a MEMBER is a nested list, so it
+/// quotes.
+///
+/// # Errors
+/// `MultiLineValue` — same D11 law as every other value door: a member
+/// carrying `\n`/`\r` is refused, never sanitized.
+pub fn yaml_safe_flow_item(val: &str) -> Result<String, MultiLineValue> {
+    let encoded = yaml_safe_value(val)?;
+    if encoded == val && val.contains([',', '[', ']', '{', '}']) {
+        return Ok(model::scalar::double_quote(val));
+    }
+    Ok(encoded)
+}
+
+/// A LIST frontmatter value — `create(props = {"tags": [...]})`'s door-side
+/// spelling (D6). One line, flow style (`[a, b]`), because frontmatter values
+/// are single-line in v1 and this is the spelling the corpus already carries
+/// (`tags: [type/agent]`); an empty list is `[]`. Members go through
+/// [`yaml_safe_flow_item`], so a hostile member quotes instead of forging a
+/// second member or a nested collection.
+///
+/// # Errors
+/// `MultiLineValue` — a member carries `\n`/`\r`.
+pub fn yaml_safe_flow(items: &[String]) -> Result<String, MultiLineValue> {
+    let mut out = String::from("[");
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&yaml_safe_flow_item(item)?);
+    }
+    out.push(']');
+    Ok(out)
+}
+
 /// The § A.6.3c preservation predicate — may an UPDATE keep the stored value
 /// spelling? True when the stored spelling already decodes (§ A.6.1) to
 /// exactly the caller's string AND classifies as neither `Nested` nor `Null` —
@@ -942,10 +1016,51 @@ fn needs_quoting(val: &str) -> bool {
     // classifier so the encoder cannot judge by a second rule. `Nested` is the
     // I4 class the emitter must never manufacture; `Null` is the type this
     // plane cannot express.
-    matches!(
+    if matches!(
         super::fm::classify_scalar_or_flow(val),
         super::fm::FmValue::Nested | super::fm::FmValue::Null
-    )
+    ) {
+        return true;
+    }
+    // …and then the same question asked of a REAL YAML parser, because the
+    // classifier above is the engine's own and is measurably more permissive
+    // than YAML (2026-08-23, card 17, `props=` hostile table).
+    //
+    // Measured with PyYAML on `k: <val>`: a value opening `- `, `? `, `,`,
+    // `[`-that-is-not-a-flow-list, `*`, `&`, `%`, `@`, `` ` `` or an
+    // unterminated `[[a]] and [[b]]` makes bytes NO yaml parser can read —
+    // the whole frontmatter block dies, not one key — and `&a`, `!t`, `>`,
+    // `|` parse to something the caller never wrote. None of them tripped a
+    // trigger above, so every door emitted them plain.
+    !plain_reads_back(val)
+}
+
+/// Would the PLAIN emit `key: {val}` read back as exactly `val`? Asked of
+/// `serde_yaml` — the enumerated triggers above are the fast, teachable ones;
+/// this is the one that cannot be out-enumerated.
+///
+/// The two standing carve-outs survive: a value that parses as a NON-string is
+/// legal exactly when the checker's classifier already blesses it (a typed
+/// scalar or a one-level flow list — § A.6.3's "the only way this string plane
+/// can author a non-string value"). Everything else quotes.
+fn plain_reads_back(val: &str) -> bool {
+    let Ok(parsed) = serde_yaml::from_str::<serde_yaml::Value>(&format!("k: {val}\n")) else {
+        return false;
+    };
+    let Some(read_back) = parsed.get("k") else {
+        return false;
+    };
+    match read_back {
+        serde_yaml::Value::String(s) => s == val,
+        _ => matches!(
+            super::fm::classify_scalar_or_flow(val),
+            super::fm::FmValue::Bool(_)
+                | super::fm::FmValue::Int(_)
+                | super::fm::FmValue::Float(_)
+                | super::fm::FmValue::Timestamp(_)
+                | super::fm::FmValue::List(_)
+        ),
+    }
 }
 
 fn plan_anchored(

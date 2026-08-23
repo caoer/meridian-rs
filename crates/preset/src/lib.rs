@@ -1384,6 +1384,8 @@ fn birth(
         if_root: None,
         dry: opts.dry,
         fields: BTreeMap::default(),
+        // A preset ships whole documents — its frontmatter is body bytes.
+        props: BTreeMap::default(),
     };
     match wire_serve::write::create(root, None, &args, &[]) {
         Ok(_) => Ok(BirthResult::Born),

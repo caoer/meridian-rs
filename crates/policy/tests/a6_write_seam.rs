@@ -247,3 +247,83 @@ fn null_and_nested_spellings_still_re_encode_on_a_text_equal_write_back() {
         assert_eq!(reads_back_as(&cand, "owner"), value);
     }
 }
+
+/// **The indicator class, measured not enumerated** (2026-08-23, card 17).
+///
+/// The § A.6.3 rule is "emit plain when the plain form decodes back to exactly
+/// the caller's string". Until this landed, that question was asked only of the
+/// engine's OWN classifier, which is more permissive than YAML: every value
+/// below emitted plain, and the first group produces bytes NO yaml parser can
+/// read — the whole frontmatter block dies, not one key. Measured with `PyYAML`
+/// on `k: <val>` before the fix; pinned here so the class cannot reopen.
+#[test]
+fn plain_scalars_that_no_yaml_parser_can_read_are_quoted() {
+    for value in [
+        // ScannerError / ParserError — the block is unreadable
+        "- not a list item",
+        "- ",
+        "-",
+        "? question",
+        "?",
+        ", comma",
+        ",",
+        "* alias",
+        "&anchor",
+        "%directive",
+        "@at",
+        "`tick",
+        "]close",
+        "}close",
+        "[[a]] and [[b]]",
+        // parses, but as something the caller never wrote
+        "!tag",
+        ">fold",
+        "|block",
+    ] {
+        let emitted = yaml_safe_value(value).expect("single-line values encode");
+        assert_ne!(
+            emitted, value,
+            "{value:?} must not ride plain — it is not readable as itself"
+        );
+        assert_eq!(
+            model::scalar::text(&emitted),
+            value,
+            "round trip for {value:?}"
+        );
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&format!("k: {emitted}\n"))
+            .unwrap_or_else(|e| panic!("the emit for {value:?} must parse as yaml: {e}"));
+        assert_eq!(
+            parsed.get("k").and_then(serde_yaml::Value::as_str),
+            Some(value),
+            "a real yaml parser reads the emit for {value:?} back as itself"
+        );
+    }
+}
+
+/// The other half of the same fix: values that were ALREADY safe stay plain,
+/// so the fix costs no corpus churn. A `-` or `?` inside the text, and the
+/// standing typed carve-outs, are untouched.
+#[test]
+fn safe_plain_scalars_are_still_emitted_plain() {
+    for value in [
+        "a - b",
+        "a ? b",
+        "x, y",
+        "-nodash",
+        "--- not a fence",
+        "...",
+        "it's mine",
+        "a \" quote",
+        "true",
+        "7",
+        "2026-08-07",
+        "[a, b]",
+        r"C:\path",
+    ] {
+        assert_eq!(
+            yaml_safe_value(value),
+            Ok(value.to_string()),
+            "verbatim emit for {value:?}"
+        );
+    }
+}
