@@ -2955,9 +2955,13 @@ fn block_header(remainder: &str) -> Option<BlockHeader> {
 ///
 /// Before this, both faces served a block scalar as its INDICATOR BYTE: a page
 /// carrying `description: >` and six indented lines published `">"` on `read`
-/// and `">"` in `sql`, while `PyYAML` read the whole 459-character text — 45 key
-/// ROWS on 37 pages (`count(DISTINCT path)` = 37; `cache/src/lib.rs` says 37). The pages are valid YAML — this was a decoder gap,
-/// never corpus damage.
+/// and `">"` in `sql`, while `PyYAML` read the whole 459-character text.
+///
+/// Engine-measured corpus-wide: **63 pages / 71 key rows across four roots** —
+/// sessions 37/45, ccc-statusd 15/15, mrd-experiments 8/8, field-notes 3/3
+/// (codespace and meridian-rs carry none). The sessions figure alone is 45
+/// rows, and quoting it without the root reads as a corpus total. The pages
+/// are valid YAML — this was a decoder gap, never corpus damage.
 ///
 /// Serde-free by the crate law (`testsuite/tests/yaml_confinement.rs`): the
 /// folding is written here against YAML 1.2 § 8.1.2-8.1.3 and pinned against
