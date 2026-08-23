@@ -243,7 +243,12 @@ view = { workspace = true }
 fs = { workspace = true }
 cache = { workspace = true }
 workspace = { workspace = true }
-registry = { workspace = true }
+# `test-support` for `registry::TestServer`: the fixture type that owns a
+# daemon + `TempDir` teardown order, so a fixture here holds ONE field and has
+# no order to get wrong (card `fixture-drain-guard-followups`). A DEV edge —
+# the normal dependency above stays featureless, so the shipped binary never
+# compiles the module.
+registry = { workspace = true, features = ["test-support"] }
 model = { workspace = true }
 # build three-doc-chain Document fixtures for the U2.3 walk e2e gate: compute
 # each page's live rev (model::build ∘ syntax::parse — the SAME parse
