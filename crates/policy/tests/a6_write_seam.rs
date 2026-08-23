@@ -427,8 +427,8 @@ fn an_id_already_stored_plain_is_still_preserved_on_a_no_op_write_back() {
 }
 
 /// **The 1.1 blind spot, pinned.** `serde_yaml` resolves the YAML **1.2** core
-/// schema; `PyYAML` and go-yaml (`yq`, and what most of the fleet's readers use)
-/// resolve **1.1**. Deferring to the 1.2 parser alone left the WORSE half of
+/// schema; `PyYAML` and go-yaml (`gopkg.in/yaml.v3`, which `ccc-statusd` links)
+/// resolve **1.1**, and both of them answer 576 648 for `02146210`. Deferring to the 1.2 parser alone left the WORSE half of
 /// the id defect standing: `02146210` is the string `"02146210"` to
 /// `serde_yaml` — a leading zero is not a 1.2 integer — and the integer 576 648
 /// to `PyYAML`, which reads a leading-zero digit run as octal. The law is the
