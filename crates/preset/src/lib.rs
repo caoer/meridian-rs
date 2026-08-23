@@ -18,7 +18,6 @@
 use model::{Document, Ref};
 use serde::Serialize;
 use std::collections::BTreeMap;
-use wire::{ErrorBody, ErrorCode};
 
 /// The default root record a session preset instantiates and pins the preset
 /// into (d3 §6). Overridable by the def frontmatter key `root`.
@@ -1367,7 +1366,9 @@ enum BirthResult {
 /// Birth one file through the U2.6 guarded create ([`wire_serve::write::create`]):
 /// CAS `if_absent`, the gate seam over the bare commit (`&[]`).
 /// The `if_absent` CAS is the single no-clobber guard — an occupied path returns
-/// `cas_mismatch`, mapped to [`BirthResult::Occupied`], never a clobber.
+/// `cas_mismatch` with `expected` = [`wire::ABSENT_REV`], mapped to
+/// [`BirthResult::Occupied`], never a clobber. Every OTHER `cas_mismatch`
+/// variety is a write fault and surfaces as one.
 ///
 /// # Errors
 /// [`PresetError::Write`] on any write-door refusal OTHER than the CAS (a bad
@@ -1392,18 +1393,15 @@ fn birth(
     };
     match wire_serve::write::create(root, None, &args, &[]) {
         Ok(_) => Ok(BirthResult::Born),
-        Err(e) if is_cas_mismatch(&e) => {
+        // The occupancy finding is keyed on the refusal's `expected`, not on
+        // this call site: `cas_mismatch` also spells the drift/remove-CAS and
+        // the splice verdict, and reading one of THOSE as "already there"
+        // would report a birth that never happened.
+        Err(e) if e.is_path_occupied() => {
             Ok(BirthResult::Occupied(RefusalReason::cas_mismatch(path)))
         }
         Err(e) => Err(PresetError::Write(format!("{e:?}"))),
     }
-}
-
-/// Whether a guarded-create refusal is the `if_absent` CAS mismatch (the path is
-/// occupied) — the one refusal a birth treats as an occupancy finding, never a
-/// tool fault.
-fn is_cas_mismatch(err: &ErrorBody) -> bool {
-    err.code == ErrorCode::CasMismatch
 }
 
 /// Whether a session preset's `inputs` pin the convention floor — non-empty and
