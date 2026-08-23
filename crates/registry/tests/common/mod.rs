@@ -11,11 +11,8 @@ use serde_json::{Value, json};
 
 /// Client retry budget against `corpus_warming`.
 ///
-/// The engine's kicker wait is 2s (unpublished, `COLD_BUILD_WAIT`) — a small
-/// drawer lands inside it on an idle host. Under load (pipelines 1098/1101,
-/// loadavg ~190) the same drawer is still rebuilding past that bound, and
-/// the contract says `recovery: retry`. 30s is 15s + 2s × 7 files, the
-/// largest corpus these fixtures seed (the golden board).
+/// 30 s, chosen to survive nyc-2 loadavg ~190 (pipelines 1098/1101). Not the
+/// kicker's unpublished 2 s (`COLD_BUILD_WAIT`).
 pub(crate) const WARM_BUDGET: Duration = Duration::from_secs(30);
 
 /// True when this frame is the §3.2 `corpus_warming` refusal (`recovery: retry`).

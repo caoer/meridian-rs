@@ -37,6 +37,7 @@ fn test_config(tmp: &TempDir) -> Config {
     config.prewarm_quiet_max = forever;
     // Lifetime is the test's; idle-exit would flake mid-assertion.
     config.idle_exit = None;
+    config.drain_cold_builds = Duration::from_secs(30);
     config.push_write_timeout = PUSH_WRITE_TIMEOUT;
     // Parked far ahead for every gate that is not about the idle-write
     // horizon; the two that are set it themselves.

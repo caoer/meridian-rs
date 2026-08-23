@@ -27,6 +27,7 @@ fn quiet_server(tmp: &Path, idle_exit: Option<Duration>, reap_interval: Duration
     config.prewarm_interval = NEVER;
     config.prewarm_quiet_max = NEVER;
     config.idle_exit = idle_exit;
+    config.drain_cold_builds = Duration::from_secs(30);
     RunningServer::start(config).unwrap()
 }
 

@@ -32,6 +32,7 @@ fn test_config(tmp: &TempDir) -> Config {
     config.prewarm_quiet_max = forever;
     // No idle exit: a daemon that reaped itself mid-assertion would flake.
     config.idle_exit = None;
+    config.drain_cold_builds = Duration::from_secs(30);
     config
 }
 

@@ -605,12 +605,13 @@ fn revs_read(trace: &ScriptTrace) -> Vec<String> {
 
 /// A real `RunningServer` on a real socket, bound to a fresh corpus.
 ///
-/// Drop drains in-flight drawer rebuilds (via `RunningServer` stop) before
-/// `_tmp` vanishes — the class-2 flake (pipelines 1098/1101).
+/// Struct fields drop in declaration order: `server` (stop → drain) MUST
+/// precede `_tmp`, else the workspace vanishes under the builder — the
+/// class-2 flake (pipelines 1098/1101). Locals drop the other way.
 struct Fixture {
-    _tmp: TempDir,
-    ws: PathBuf,
     server: RunningServer,
+    ws: PathBuf,
+    _tmp: TempDir,
 }
 
 impl Fixture {
@@ -630,9 +631,9 @@ impl Fixture {
         }
         let server = RunningServer::start(config(&tmp)).expect("the daemon starts");
         Self {
-            _tmp: tmp,
-            ws,
             server,
+            ws,
+            _tmp: tmp,
         }
     }
 
@@ -670,6 +671,7 @@ fn config(tmp: &TempDir) -> Config {
     config.prewarm_interval = forever;
     config.prewarm_quiet_max = forever;
     config.idle_exit = None;
+    config.drain_cold_builds = Duration::from_secs(30);
     // The fixture daemon publishes THIS build's identity: the 0025 socket law
     // refuses an identity-less local hello, and these tests measure the wire
     // shape, not the law.
