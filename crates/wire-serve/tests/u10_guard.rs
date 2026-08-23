@@ -374,7 +374,7 @@ fn birth_is_guarded_by_absence_not_fingerprint() {
             if_root: None,
             dry: false,
             fields: BTreeMap::default(),
-            props: Default::default(),
+            props: BTreeMap::default(),
         },
         &[],
     );
@@ -392,7 +392,7 @@ fn birth_is_guarded_by_absence_not_fingerprint() {
             if_root: None,
             dry: false,
             fields: BTreeMap::default(),
-            props: Default::default(),
+            props: BTreeMap::default(),
         },
         &[],
     )

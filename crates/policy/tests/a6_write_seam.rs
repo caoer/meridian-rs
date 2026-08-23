@@ -254,7 +254,7 @@ fn null_and_nested_spellings_still_re_encode_on_a_text_equal_write_back() {
 /// the caller's string". Until this landed, that question was asked only of the
 /// engine's OWN classifier, which is more permissive than YAML: every value
 /// below emitted plain, and the first group produces bytes NO yaml parser can
-/// read — the whole frontmatter block dies, not one key. Measured with PyYAML
+/// read — the whole frontmatter block dies, not one key. Measured with `PyYAML`
 /// on `k: <val>` before the fix; pinned here so the class cannot reopen.
 #[test]
 fn plain_scalars_that_no_yaml_parser_can_read_are_quoted() {

@@ -134,7 +134,7 @@ fn the_genesis_epoch_is_unarmed_ungated_and_grey() {
         if_root: None,
         dry: false,
         fields: BTreeMap::default(),
-        props: Default::default(),
+        props: BTreeMap::default(),
     };
     let out = create(&root, None, &args, &[]).expect("the genesis write lands ungated");
 

@@ -1350,9 +1350,7 @@ fn str_arg(effect: &Effect, key: &str) -> Result<String, ExecError> {
 /// neither scalar nor list, is the same loud fault as a missing required arg:
 /// the kernel constructor already refused those shapes, so reaching here means
 /// a descriptor was built by hand out of contract.
-fn props_arg(
-    effect: &Effect,
-) -> Result<BTreeMap<String, wire_serve::write::PropValue>, ExecError> {
+fn props_arg(effect: &Effect) -> Result<BTreeMap<String, wire_serve::write::PropValue>, ExecError> {
     let bad = |reason: String| ExecError::BadDescriptor {
         kind: effect.kind.as_str().to_owned(),
         reason,

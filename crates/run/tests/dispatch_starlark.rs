@@ -226,7 +226,9 @@ fn starlark_create_props_quotes_hostile_values_and_refuses_a_newline() {
     let meta = policy::defs::parse_meta(&born).unwrap().unwrap();
     assert_eq!(
         meta.get("status"),
-        Some(&policy::defs::FmValue::Str("owner: [[x]] \" #now".to_owned())),
+        Some(&policy::defs::FmValue::Str(
+            "owner: [[x]] \" #now".to_owned()
+        )),
         "the value reads back byte for byte: {born}"
     );
 
