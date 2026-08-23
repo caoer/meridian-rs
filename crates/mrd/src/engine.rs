@@ -551,6 +551,28 @@ pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
     if client.ping().unwrap_or(false) {
         return Ok(());
     }
+    // The drain-budget hazard, checked HERE because the daemon cannot say it.
+    // `spawn_detached` gives the child `stderr(Stdio::null())`
+    // (`daemon::spawn_detached`), so the identical `debug_assert` inside
+    // `RunningServer::start` panics into /dev/null on this path and the caller
+    // simply degrades 5 s later — the failure would be invisible exactly where
+    // the subprocess fixtures live. This process's stderr and exit code ARE
+    // captured by whoever ran `mrd`, so the check is loud here.
+    //
+    // The child inherits this environment, so resolving the config here yields
+    // the same one it will build: `Config::resolve` stays the single reader of
+    // the budget variable. Debug builds only, so a release client on a tmpfs
+    // `XDG_CACHE_HOME` still spawns.
+    //
+    // Purely additive: a `Config` that does not resolve is left to the path
+    // that already handles it, so this insertion adds no new error route.
+    if let Ok(config) = registry::Config::resolve() {
+        debug_assert!(
+            config.drain_budget_hazard().is_none(),
+            "{}",
+            config.drain_budget_hazard().unwrap_or_default()
+        );
+    }
     daemon::spawn_detached()?;
     let deadline = Instant::now() + SPAWN_READY_TIMEOUT;
     while Instant::now() < deadline {
