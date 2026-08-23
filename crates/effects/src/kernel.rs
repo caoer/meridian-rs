@@ -589,6 +589,17 @@ pub enum FaultClass {
     /// `declare(impl = …)` named something that is not an entry — neither a
     /// callable nor an `exec(...)` value.
     ImplType,
+    /// The caller's `prelude` carried CONSENT MATERIAL — a `declare()` or an
+    /// `exec()` value. Consent is page-authored by law, and a prelude is
+    /// caller source: a declaration there would make every anchored fence on
+    /// every addressed page a fire target the page never consented to.
+    ///
+    /// Its own class, ruled by advisor `ea317a27` (2026-08-23, A10), because
+    /// the remedy is its own: `not_declared` would be wrong whenever the page
+    /// DID declare (and the prelude must refuse then too — never silently drop
+    /// a caller declaration), and `effect_at_load` would send a caller to fix
+    /// an effect builtin, which `declare`/`exec` are not.
+    ConsentInPrelude,
     /// The entry ran and returned something outside the admitted set — the
     /// PROGRAM is fine, its answer is not, and saying `runtime` would send
     /// the author looking for a bug that is not there.
@@ -610,6 +621,7 @@ impl FaultClass {
             FaultClass::EffectAtLoad => "effect_at_load",
             FaultClass::DeclareAtFire => "declare_at_fire",
             FaultClass::ImplType => "impl_type",
+            FaultClass::ConsentInPrelude => "consent_in_prelude",
             FaultClass::ReplyShape => "reply_shape",
             FaultClass::Budget => "budget",
             FaultClass::Runtime => "runtime",
@@ -2368,10 +2380,63 @@ static NO_CTX: std::sync::LazyLock<RunCtx> = std::sync::LazyLock::new(RunCtx::de
 /// "nothing but pure functions" enforced rather than requested: a prelude
 /// whose top level calls an effect builtin faults `effect_at_load` here.
 ///
+/// **A prelude may not DECLARE.** The consent gate is the page's — *`run`
+/// executes what the page declares* — and the prelude is CALLER source that
+/// evaluates into the same module, in the load phase, before the block's own
+/// top level. `declare()` and `exec()` are load-phase builtins, so they are
+/// admitted there; and a fire takes `declarations.first()`. A caller could
+/// therefore ship
+/// `declare(impl = exec("bash", cmd = "…"))` as its prelude and make EVERY
+/// anchored starlark fence on EVERY addressed page a fire target running
+/// caller-authored process bytes — including a fence that declares nothing,
+/// which is the exact case `not_declared` exists to refuse. That is not a
+/// sandbox escape; it is page-authored consent replaced by caller-authored
+/// consent, and hook-11/13 arm this fleet-wide. (PR 195 review, `fa5da9ec`,
+/// S3.)
+///
+/// The guard was armed against the wrong set: this function read only
+/// `.fault`, and `declare`/`exec` are not effect builtins, so `effect_at_load`
+/// never fires for them. It now refuses a prelude that produced ANY
+/// declaration.
+///
+/// **No new fault class is needed** — the caller sees the published
+/// `prelude_invalid`, which is what the row already renders for anything this
+/// function returns.
+///
 /// Returns the fault, or `None` when the prelude is sound.
 #[must_use]
 pub fn check_prelude(source: &str, ctx: &RunCtx, limits: EvalLimits) -> Option<BlockFault> {
-    load_block(source, None, ctx, limits).fault
+    let loaded = load_block(source, None, ctx, limits);
+    if let Some(fault) = loaded.fault {
+        return Some(fault);
+    }
+    // Declarations AND the exec values a prelude sank — both are consent
+    // material, and the refusal names WHICH was found so the remedy is one
+    // line. It refuses REGARDLESS of whether the page declares: silently
+    // dropping a caller's declaration would be its own defect class.
+    let execs = loaded
+        .declarations
+        .iter()
+        .filter(|d| matches!(d.entry, DeclaredEntry::Exec(_)))
+        .count();
+    if !loaded.declarations.is_empty() {
+        let found = if execs > 0 {
+            format!("{} declaration(s), {execs} of them an `exec(...)` value", loaded.declarations.len())
+        } else {
+            format!("{} declaration(s)", loaded.declarations.len())
+        };
+        return Some(BlockFault {
+            class: FaultClass::ConsentInPrelude,
+            reason: format!(
+                "the prelude carried consent material — {found}. Consent is the PAGE's: \
+                 `run` executes what the page declares, a `task.<name>` binding in \
+                 frontmatter or a `declare(...)` in the block. Move the declaration into \
+                 the block it belongs to; a prelude carries shared helpers, not entries"
+            ),
+            line: None,
+        });
+    }
+    None
 }
 
 /// What one FIRE produced (design § 2.2 Evaluation — fire).
@@ -3663,6 +3728,44 @@ declare(on = \"Stop\", impl = check_stop)
             fault.reason.contains("`impl` is int"),
             "the refusal must name what the author actually passed: {}",
             fault.reason
+        );
+    }
+
+    /// **S3 — a prelude may not DECLARE** (PR 195 review, `fa5da9ec`).
+    ///
+    /// The one-liner the reviewer used: a caller prelude declaring a process
+    /// entry. Before the guard it produced a declaration that outranked the
+    /// page's, so every anchored fence on every addressed page became a fire
+    /// target running caller-authored bytes.
+    #[test]
+    fn a_prelude_that_declares_is_refused_before_any_block() {
+        let prelude = "declare(impl = exec(\"bash\", cmd = \"id\"))\n";
+        // It still EVALUATES — the builtins are load-phase legal — which is
+        // why reading `.fault` alone could never catch it.
+        let loaded = load_block(prelude, None, &probe_ctx(), EvalLimits::default());
+        assert!(loaded.fault.is_none(), "it evaluates cleanly: {loaded:?}");
+        assert_eq!(loaded.declarations.len(), 1, "and it DECLARES");
+
+        // The guard refuses it, and the row renders `prelude_invalid`.
+        let fault = check_prelude(prelude, &probe_ctx(), EvalLimits::default())
+            .expect("a declaring prelude must refuse");
+        assert_eq!(
+            fault.class,
+            FaultClass::ConsentInPrelude,
+            "the class is the remedy a caller branches on: {fault:?}"
+        );
+        assert_eq!(fault.class.as_str(), "consent_in_prelude");
+        assert!(
+            fault.reason.contains("consent material"),
+            "the refusal must name what it found: {}",
+            fault.reason
+        );
+
+        // A prelude of pure helpers is untouched.
+        assert!(
+            check_prelude("def helper(x):\n    return x\n", &probe_ctx(), EvalLimits::default())
+                .is_none(),
+            "a pure prelude is what a prelude is FOR"
         );
     }
 
