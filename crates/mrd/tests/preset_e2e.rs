@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+mod common;
 
 const SESSION_PRESET: &str = r#"---
 type: def
@@ -153,4 +154,13 @@ fn cli_unfold_births_the_scaffold_and_new_refuses_an_invalid_def() {
     );
     assert!(ok.status.success(), "valid new failed: {}", stderr(&ok));
     assert!(ws.join("session/s2.md").exists(), "record not born");
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
+    }
 }

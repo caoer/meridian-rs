@@ -373,3 +373,12 @@ fn a_miss_inside_a_bound_root_is_scoped_to_that_root() {
         "the ambient cwd respelling never runs on the rooted lane: {err:?}"
     );
 }
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
+        // the fixture daemon strategy). Runs before the TempDir fields drop, so
+        // the pidfile is still on disk; never panics.
+        let _ = common::reap_daemon(&self.home, &self.cache_home);
+    }
+}
