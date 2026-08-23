@@ -82,9 +82,11 @@ steps:
       # The probe is the ENGINE'S OWN, flag for flag (crates/mrd/build_git.rs
       # worktree_dirty): --untracked-files=no, --no-optional-locks. This lane
       # shares one workspace with ci.yaml's lanes, which write untracked paths
-      # (`target-ci`, and `/target` is the only ignored one) — a bare probe
-      # would read those as a divergence and stamp a lie that a supplied
-      # MRD_BUILD_SHA then carries verbatim into the pin.
+      # (`.ci` scratch, and build dirs — `/target` and `/target-ci` are both
+      # ignored now; `target-ci` was NOT, and that omission cost ci.yaml nine
+      # `-dirty` main publishes) — a bare probe would read those as a
+      # divergence and stamp a lie that a supplied MRD_BUILD_SHA then carries
+      # verbatim into the pin.
       - |
         set -eu
         . /tmp/lane.env
