@@ -79,8 +79,52 @@ pub struct Doors<'a> {
     pub ambient: Option<&'a str>,
 }
 
-/// How many exec logs a workspace keeps (§ 2.2's stated ceiling).
+/// How many exec logs a PAGE keeps (§ 2.2's stated ceiling).
 const LOG_RETENTION: usize = 50;
+
+/// Where a fire's logs live, out of tree. One directory per page below it
+/// (`<RUNS_DIR>/<page-path>/`), which is what makes the ceiling above *per
+/// page* and keeps the fire path out of the top level, where the task path's
+/// receipted logs are.
+const RUNS_DIR: &str = ".meridian/runs";
+
+/// Where an exec'd entry's bytes are staged, keyed by the block's rev — the
+/// design's *"staged bytes cached by block rev"*. Out of tree, like the logs.
+const STAGED_DIR: &str = ".meridian/staged";
+
+/// The extension a staging write carries until its rename lands. Never a
+/// cache member, never pruned: it is another fire's in-flight write.
+const STAGED_TMP_EXT: &str = "tmp";
+
+/// Process-wide sequence for staging temp names: the pid tells two DAEMONS
+/// apart, this tells two THREADS of one daemon apart (`stage`).
+static STAGE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many staged programs a workspace keeps. Same ceiling as the logs, same
+/// reason: a cache keyed by every rev ever fired grows without bound. The
+/// prune runs at the START of a staging call, so at rest the directory holds
+/// at most one file over this — the one the last call staged and returned.
+const STAGED_RETENTION: usize = 50;
+
+/// How many bytes of each stream the `process` object publishes.
+///
+/// The field is named `stdout_tail`/`stderr_tail` and § 2.2 says *tails*, but
+/// it carried the WHOLE stream: a chatty exec'd entry put every byte it wrote
+/// on the wire, in the daemon's journal and in an agent's context on every
+/// fire — the unbounded per-fire cost PR 195's F8 removed from `exec[]` rows,
+/// still open on the process row. The tail is the LAST bytes (a failure
+/// explains itself at the end, not at the beginning); the whole stream is in
+/// the log the row points at, and `stdout_bytes`/`stderr_bytes` say how much
+/// was cut.
+const TAIL_BYTES: usize = 4096;
+
+/// The last [`TAIL_BYTES`] of a stream, lossily decoded (a codepoint split at
+/// the cut becomes `U+FFFD`, never a panic), plus the stream's true length.
+fn tail(bytes: &[u8]) -> (String, usize) {
+    let len = bytes.len();
+    let from = len.saturating_sub(TAIL_BYTES);
+    (String::from_utf8_lossy(&bytes[from..]).into_owned(), len)
+}
 
 /// Empty fields for a caller with no frame passthrough in reach.
 static NO_FIELDS: std::sync::LazyLock<BTreeMap<String, String>> =
@@ -359,6 +403,10 @@ fn loaded_row(
             }));
         }
     };
+    // § 2.2 step 2: an `exec(block=)` anchor resolves HERE, at load.
+    if let Some(fault) = exec_anchor_fault(world.doc, block, &loaded) {
+        return Some(fault);
+    }
     // A starlark block that declares nothing is not a target. It is not a
     // fault either — a page may carry a helper module — so it is reported
     // with `declarations: null` and the consent gate refuses a fire on it.
@@ -399,6 +447,8 @@ fn fire_row(
     let seam = ProcessSeam {
         doc: world.doc,
         root: &world.root.0,
+        page: &target.page,
+        invocation,
         calls: std::sync::Mutex::new(Vec::new()),
         // The root's ceiling, narrowed by the caller's `timeout_ms`
         // (`process_timeout`): min(declared, ceiling), never an assignment.
@@ -652,14 +702,7 @@ fn exec_row(
     // `MRD_RUN_BLOCK` is the DECLARING block — the one the caller addressed —
     // not the fence `exec(block=)` points at. A script shared by several
     // blocks on a page branches on which block it is running for.
-    let process = match seam.exec(
-        spec,
-        stdin.as_deref(),
-        invocation,
-        &target.page,
-        &block.anchor,
-        target,
-    ) {
+    let process = match seam.exec(spec, stdin.as_deref(), &block.anchor, target) {
         Ok(process) => process,
         // Could not START — an unstartable interpreter. Not a script's answer,
         // so not an `ok` row; the reason is the one the OS gave, never null.
@@ -1057,6 +1100,14 @@ struct ProcessSeam<'a> {
     /// The workspace root: the default cwd, the scratch dir, and
     /// `$MERIDIAN_PROJECT_ROOT`.
     root: &'a Path,
+    /// The page's workspace-relative path — the log directory's own key, so
+    /// retention is *per page* as § 2.2 states it.
+    page: &'a str,
+    /// The per-target invocation (`<invocation>-t<index>`, minted by the
+    /// caller): the log's NAME, which is what lets a row be joined to the
+    /// daemon's journal — the reason § 2.2 gives for `invocation` riding a
+    /// fire at all.
+    invocation: &'a str,
     /// Every call this fire made, in call order — the fire row's `exec[]`.
     /// A `Mutex` rather than a `RefCell` because [`FireHost`] is `Sync`: the
     /// kernel holds the seam across its evaluation thread. It is never
@@ -1074,7 +1125,10 @@ impl FireHost for ProcessSeam<'_> {
     fn bash(&self, call: &effects::BashCall) -> Result<Value, String> {
         let seen = self.run(call);
         if let Ok(mut calls) = self.calls.lock() {
-            calls.push(self.published(call, &seen));
+            // The call's position in the fire — the log name's `-b<n>`, so two
+            // calls of one target cannot write one file over the other.
+            let index = calls.len();
+            calls.push(self.published(call, &seen, index));
         }
         Ok(seen)
     }
@@ -1086,39 +1140,61 @@ impl ProcessSeam<'_> {
         self.calls.lock().map(|c| c.clone()).unwrap_or_default()
     }
 
-    /// Keep the newest [`LOG_RETENTION`] exec logs and drop the rest.
+    /// Keep the newest `keep` files with this extension in `dir` and drop the
+    /// rest — the ceiling § 2.2 names for logs (*"retention is the last 50 per
+    /// page, none under `dry`, named so that tool-call cadence has a
+    /// ceiling"*), and the same one this implementation puts on staged bytes,
+    /// because a cache keyed by an ever-growing set of revs is the same
+    /// unbounded cost with a longer fuse.
     ///
-    /// § 2.2 names the ceiling — *"retention is the last 50 per page, none under
-    /// `dry`, named so that tool-call cadence has a ceiling"* — and a log
-    /// directory that only ever grows is the unbounded cost with a longer fuse.
-    /// Best-effort by construction: a log that cannot be removed is not a reason
-    /// to fail a fire that already ran.
-    fn prune_logs(dir: &Path) {
+    /// `dir` is always a leaf the FIRE path owns — one page's log directory,
+    /// or the staged-bytes directory — never `.meridian/runs/` itself: the
+    /// task path's own logs live at that top level and a run receipt POINTS
+    /// AT them, so a prune that could reach them would delete the evidence a
+    /// receipt promises.
+    ///
+    /// Best-effort by construction: a file that cannot be removed is not a
+    /// reason to fail a fire that already ran.
+    fn prune(dir: &Path, ext: Option<&str>, keep: usize) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
-        let mut logs: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
+        let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
             .filter_map(Result::ok)
+            // `None` counts every file in the leaf — the staged directory's
+            // members carry the fence's own extension, so filtering on one
+            // would leave every other language unbounded. A `.tmp` is never a
+            // member either way: it is another fire's in-flight staging write,
+            // and deleting it would take the bytes that fire is about to run.
             .filter(|e| {
-                e.file_name().to_str().is_some_and(|n| {
-                    n.starts_with("exec-")
-                        && Path::new(n)
-                            .extension()
-                            .is_some_and(|ext| ext.eq_ignore_ascii_case("log"))
-                })
+                let path = e.path();
+                let found = path.extension();
+                !found.is_some_and(|found| found.eq_ignore_ascii_case(STAGED_TMP_EXT))
+                    && ext.is_none_or(|ext| {
+                        found.is_some_and(|found| found.eq_ignore_ascii_case(ext))
+                    })
             })
             .filter_map(|e| {
                 let modified = e.metadata().ok()?.modified().ok()?;
                 Some((modified, e.path()))
             })
             .collect();
-        if logs.len() <= LOG_RETENTION {
+        if files.len() <= keep {
             return;
         }
-        logs.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
-        for (_, path) in logs.drain(LOG_RETENTION..) {
+        files.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+        for (_, path) in files.drain(keep..) {
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    /// This page's log directory — `.meridian/runs/<page-path>/`.
+    ///
+    /// The page is a DIRECTORY, not a fragment of a file name, which is what
+    /// makes *"the last 50 per page"* implementable at all: retention is
+    /// [`Self::prune`] over this one leaf.
+    fn log_dir(&self) -> std::path::PathBuf {
+        self.root.join(RUNS_DIR).join(self.page)
     }
 
     /// The PUBLISHED row for one `bash()` call — deliberately **not** the dict
@@ -1134,9 +1210,12 @@ impl ProcessSeam<'_> {
     /// agent's context on EVERY fire — the unbounded per-tool-call cost the
     /// ceiling exists to prevent. (PR 195 review, e9f1ae35, F8.)
     ///
-    /// `log` is written under `.meridian/runs/`, never in the tree, and never
-    /// under `dry` — a rehearsal spawns nothing, so there is nothing to record.
-    fn published(&self, call: &effects::BashCall, seen: &Value) -> Value {
+    /// `log` is written under `.meridian/runs/<page>/`, never in the tree, and
+    /// never under `dry` — a rehearsal spawns nothing, so there is nothing to
+    /// record. `index` is this call's position in the fire, which is what
+    /// keeps several `bash()` calls of one target from writing one file over
+    /// another.
+    fn published(&self, call: &effects::BashCall, seen: &Value, index: usize) -> Value {
         let stdout = seen["stdout"].as_str().unwrap_or_default();
         let stderr = seen["stderr"].as_str().unwrap_or_default();
         let dry = seen["dry"].as_bool().unwrap_or(false);
@@ -1155,30 +1234,118 @@ impl ProcessSeam<'_> {
         }
         if !dry
             && (!stdout.is_empty() || !stderr.is_empty())
-            && let Some(path) = self.write_log(stdout, stderr)
+            && let Some(path) =
+                self.write_log(&format!("{}-b{index}", self.invocation), stdout, stderr)
         {
             row["log"] = json!(path);
         }
         row
     }
 
-    /// Write one call's streams to an out-of-tree log, and answer the
+    /// Write one process's streams to its out-of-tree log, and answer the
     /// workspace-relative path. `None` when the write fails: a row that cannot
     /// point at a log says nothing rather than pointing at a path that is not
     /// there.
-    fn write_log(&self, stdout: &str, stderr: &str) -> Option<String> {
-        let dir = self.root.join(".meridian/runs");
+    ///
+    /// The name is the caller's `stem` — `<invocation>-t<index>` for an exec'd
+    /// entry, `<invocation>-t<index>-b<n>` for the n-th `bash()` call of one
+    /// target — under this page's own directory, so a row can be joined to the
+    /// daemon's journal by the id it already carries and retention stays per
+    /// page.
+    fn write_log(&self, stem: &str, stdout: &str, stderr: &str) -> Option<String> {
+        let dir = self.log_dir();
         std::fs::create_dir_all(&dir).ok()?;
-        let digest = blake3::hash(format!("{stdout}\u{0}{stderr}").as_bytes());
-        let name = format!("exec-{}.log", &digest.to_hex()[..16]);
+        let name = format!("{stem}.log");
         let body = if stderr.is_empty() {
             stdout.to_owned()
         } else {
             format!("{stdout}\n--- stderr ---\n{stderr}")
         };
         std::fs::write(dir.join(&name), body).ok()?;
-        Self::prune_logs(&dir);
-        Some(format!(".meridian/runs/{name}"))
+        Self::prune(&dir, Some("log"), LOG_RETENTION);
+        Some(format!("{RUNS_DIR}/{}/{name}", self.page))
+    }
+
+    /// Stage an exec'd entry's bytes to a file and answer its path — the
+    /// design's *"staged bytes cached by block rev"*.
+    ///
+    /// `key` is the block's own rev (or, for an inline `cmd`, a digest of the
+    /// bytes), so the staged file IS the cache: a rev names one immutable set
+    /// of bytes, and a second fire of an unchanged block finds the file
+    /// already there and writes nothing. `ext` is the fence's own info-string
+    /// token when it has one, because a loader-by-extension interpreter (bun,
+    /// deno) reads the language off the name — `fence.rs` is untouched (D5):
+    /// this reads the FIRST token, the one classifier that already exists.
+    ///
+    /// # Errors
+    /// The staging write failed — reported as the engine's own failure, never
+    /// as an exit code the program did not produce.
+    fn stage(
+        &self,
+        source: &str,
+        key: &str,
+        ext: Option<&str>,
+    ) -> Result<std::path::PathBuf, String> {
+        let dir = self.root.join(STAGED_DIR);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("stage {STAGED_DIR}: {e}"))?;
+        let name = match ext {
+            Some(ext) => format!("{key}.{ext}"),
+            None => key.to_owned(),
+        };
+        let path = dir.join(&name);
+        // Prune BEFORE resolving the key, never after: a prune that ran after
+        // could evict the very file this call is about to hand the bracket
+        // (PR 205 review, N1). `.tmp` files are excluded from the count on
+        // purpose: a racer's in-flight write is not a cache member, and
+        // pruning one would delete the bytes a live fire is about to run.
+        Self::prune(&dir, None, STAGED_RETENTION);
+        // Write only when it is not already there: the key is the content's
+        // own identity, so an existing file has the bytes we were about to
+        // write. This is the cache — it removes the write, and (with the
+        // pinned page in memory) the read; § 1.4 is explicit that it never
+        // removes the spawn. A hit refreshes the file's mtime so the prune's
+        // order is last-USED, not first-created — otherwise the hottest,
+        // most stable block is exactly the one at the tail of the eviction
+        // list, and a sibling's prune could take it out from under a fire
+        // that just resolved it.
+        //
+        // **Write elsewhere, then rename.** Two fires of one block race here
+        // by construction — the daemon serves connections in parallel and the
+        // key is the same for both — and `fs::write` is not atomic, so the
+        // loser could `exec` a file the winner was still filling: a truncated
+        // script is a syntax error attributed to the author. A rename within
+        // one directory is atomic, so a reader sees the whole bytes or no
+        // file. The temp name carries the pid AND a process-wide counter:
+        // the daemon's racers are THREADS of one process, so the pid alone
+        // is the same for both (one thread per connection, `server.rs`
+        // `accept_loop`) and they would fill one temp file and race on its
+        // rename — the loser's rename answering ENOENT as a spurious
+        // `runtime` fault on bytes that were staged correctly.
+        if path.exists() {
+            // Best effort: a touch that fails costs eviction order, nothing
+            // else, and the bytes are already there.
+            let _ = std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .and_then(|f| f.set_modified(std::time::SystemTime::now()));
+            return Ok(path);
+        }
+        let tmp = dir.join(format!(
+            "{name}.{}.{}.{STAGED_TMP_EXT}",
+            std::process::id(),
+            STAGE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::write(&tmp, source).map_err(|e| format!("stage {name}: {e}"))?;
+        if let Err(e) = std::fs::rename(&tmp, &path) {
+            let _ = std::fs::remove_file(&tmp);
+            // A racer that lost the rename still staged the right bytes if a
+            // sibling landed the same key first: the key IS the content, so
+            // the file that won is the file we wanted.
+            if !path.exists() {
+                return Err(format!("stage {name}: {e}"));
+            }
+        }
+        Ok(path)
     }
 
     /// One `bash()` call → its row. Never `Err`: every failure mode of a
@@ -1219,7 +1386,10 @@ impl ProcessSeam<'_> {
                 self.timeout.min(std::time::Duration::from_secs(s))
             });
         let spec = crate::exec::ExecSpec {
-            source: &source,
+            // `bash()` IS bash by its own name, so `-c` is honest here and the
+            // staged-file convention buys nothing: the interpreter is not a
+            // parameter of this call (§ 1.3).
+            program: crate::exec::Program::Inline(&source),
             args: &[],
             env: &call.env,
             scratch: &scratch,
@@ -1261,36 +1431,55 @@ impl ProcessSeam<'_> {
     /// **raw exit** is surfaced: the run plane collapses 1 and 2 into `state:
     /// partial`, and the official hook contract needs them apart — *exit 2 →
     /// stderr's first line is the reason* is unconstructible otherwise.
+    ///
+    /// The bytes are **staged to a file** and the process is `<interpreter>
+    /// <staged-file> <args…>` ([`crate::exec::Program::Staged`]) — the one
+    /// convention every interpreter honours, and the only way § 1.4's *"a new
+    /// language is `argv[0]`"* is true of anything but a shell.
     fn exec(
         &self,
         spec: &effects::ExecSpec,
         stdin: Option<&str>,
-        invocation: &str,
-        page: &str,
         block_anchor: &str,
         target: &wire::RunTarget,
     ) -> Result<Value, (&'static str, String)> {
-        let source = match &spec.program {
-            effects::ExecProgram::Cmd(cmd) => Ok(cmd.clone()),
-            effects::ExecProgram::Block(anchor) => blocks::block(self.doc, anchor)
-                .map(|block| block.source)
-                .map_err(|e| e.to_string()),
-        };
-        // A dangling `exec(block=)` anchor is a DECLARATION defect, and § 2.2
-        // resolves it at LOAD — `addressed_entry` does that now, so reaching
-        // this arm means the page changed under us. It is still an inability
-        // to start, never a script's exit: it answers a typed refusal that
-        // keeps the anchor error's own words.
-        let source = match source {
-            Ok(source) => source,
-            Err(reason) => return Err(("no_block", reason)),
-        };
+        let invocation = self.invocation;
+        let page = self.page;
+        // Judged FIRST: a rehearsal spawns nothing, so it also stages nothing
+        // and writes no log — `dry` must leave the disk as it found it.
         if self.dry {
             return Ok(json!({
                 "interpreter": spec.interpreter, "exit": 0,
-                "stdout_tail": "", "stderr_tail": "", "timed_out": false, "dry": true,
+                "stdout_tail": "", "stderr_tail": "",
+                "stdout_bytes": 0, "stderr_bytes": 0,
+                "timed_out": false, "dry": true,
             }));
         }
+        // A dangling `exec(block=)` anchor is a DECLARATION defect, and § 2.2
+        // resolves it at LOAD — both `load_row` and `addressed_entry` do that
+        // now, so reaching this arm means the page changed under us. It is
+        // still an inability to start, never a script's exit: it answers a
+        // typed refusal that keeps the anchor error's own words.
+        let staged = match &spec.program {
+            // An inline `cmd` has no rev of its own, so the cache is keyed on
+            // the bytes; a block is keyed on the rev the read face publishes.
+            effects::ExecProgram::Cmd(cmd) => {
+                self.stage(cmd, &blake3::hash(cmd.as_bytes()).to_hex()[..16], None)
+            }
+            effects::ExecProgram::Block(anchor) => match blocks::block(self.doc, anchor) {
+                Ok(block) => {
+                    let ext = fence_extension(&block);
+                    self.stage(&block.source, &block.rev, ext)
+                }
+                Err(e) => return Err(("no_block", e.to_string())),
+            },
+        };
+        let staged = match staged {
+            Ok(path) => path,
+            // Nothing ran, and no exit code is invented for it: staging is the
+            // ENGINE's step, so its failure is the engine's to report.
+            Err(reason) => return Err(("runtime", reason)),
+        };
         let scratch = self.root.join(".meridian/scratch").join(invocation);
         let _ = std::fs::create_dir_all(&scratch);
         // The layering § 2.2 states, in its order: the TARGET's `env` is the
@@ -1324,7 +1513,7 @@ impl ProcessSeam<'_> {
             .and_then(Value::as_str)
             .map_or_else(|| self.root.to_path_buf(), |c| self.root.join(c));
         let exec_spec = crate::exec::ExecSpec {
-            source: &source,
+            program: crate::exec::Program::Staged(&staged),
             args: &spec.args,
             env: &env,
             scratch: &scratch,
@@ -1341,13 +1530,30 @@ impl ProcessSeam<'_> {
                     crate::exec::ExecStatus::Signaled { signal } => (128 + signal, false),
                     crate::exec::ExecStatus::TimedOut { .. } => (137, true),
                 };
-                Ok(json!({
+                // Tails, and the whole streams in the log the row points at —
+                // § 1.4 names the out-of-tree log as one of the three things
+                // that BOUND an exec'd entry, and until now it had none.
+                let (stdout_tail, stdout_bytes) = tail(&result.stdout);
+                let (stderr_tail, stderr_bytes) = tail(&result.stderr);
+                let mut process = json!({
                     "interpreter": spec.interpreter,
                     "exit": exit,
-                    "stdout_tail": String::from_utf8_lossy(&result.stdout),
-                    "stderr_tail": String::from_utf8_lossy(&result.stderr),
+                    "stdout_tail": stdout_tail,
+                    "stderr_tail": stderr_tail,
+                    "stdout_bytes": stdout_bytes,
+                    "stderr_bytes": stderr_bytes,
                     "timed_out": timed_out,
-                }))
+                });
+                if stdout_bytes + stderr_bytes > 0
+                    && let Some(path) = self.write_log(
+                        invocation,
+                        &String::from_utf8_lossy(&result.stdout),
+                        &String::from_utf8_lossy(&result.stderr),
+                    )
+                {
+                    process["log"] = json!(path);
+                }
+                Ok(process)
             }
             // The process never started. That is the engine's failure to
             // report, not an exit code to invent: a fabricated `127` here is
@@ -1418,6 +1624,77 @@ fn refused_row(
         row["block"] = json!(block);
     }
     row
+}
+
+/// A load fault for a declaration whose `exec(block=)` addresses no block —
+/// **§ 2.2 step 2: the anchor resolves at LOAD**, dangling → `no_block`,
+/// duplicate → `ambiguous_anchor`, load faults both.
+///
+/// The declaration IS the program (§ 1.4), so a declaration naming a fence
+/// that is not there is broken the moment it is READ, and a resolver loading a
+/// page to decide what to arm must learn that from the load rather than from
+/// the first fire. Until this card it was resolved on the FIRE door alone, so
+/// a load answered `result: "ok"` for a hook that could never run — while
+/// `docs/run-plane.md` and `effects::kernel::ExecProgram::Block`'s own doc
+/// both already stated the load rule. A doc claiming a refusal the tree does
+/// not make is the F2 class.
+fn exec_anchor_fault(doc: &Document, block: &AnchoredBlock, loaded: &LoadedBlock) -> Option<Value> {
+    // ONE declaration per block since card
+    // `hooks-load-row-declarations-array-vs-dict`: a second `declare()` in one
+    // block faults `declared_twice` at load and never reaches here.
+    let declaration = loaded.declaration.as_ref()?;
+    let DeclaredEntry::Exec(spec) = &declaration.entry else {
+        return None;
+    };
+    let effects::ExecProgram::Block(anchor) = &spec.program else {
+        return None;
+    };
+    let Err(e) = blocks::block(doc, anchor) else {
+        return None;
+    };
+    Some(json!({
+        "block": block.anchor,
+        "rev": block.rev,
+        "result": "fault",
+        "entry_kind": "exec",
+        "fault": {
+            "class": e.class(),
+            // The anchor error's OWN words: "no such block" and "is minted N
+            // times, so it addresses none of them" are different repairs, and
+            // a reason that flattened them would send the author looking for
+            // the wrong one.
+            "reason": format!(
+                "^{} declares `exec(block = \"{anchor}\")`, which addresses no block: {e}",
+                block.anchor
+            ),
+        },
+    }))
+}
+
+/// The staged file's extension — the fence's own info-string token.
+///
+/// bun and deno choose a loader from the file NAME, so a `ts` block must stage
+/// as `.ts` or the interpreter refuses bytes it could have run. `fence.rs` is
+/// untouched (D5): this reads the FIRST token, the classifier that already
+/// exists, and invents no second-token label mechanism.
+fn fence_extension(block: &AnchoredBlock) -> Option<&str> {
+    match &block.lang {
+        Ok(crate::fence::TaskLanguage::Bash) => Some("bash"),
+        Ok(crate::fence::TaskLanguage::Starlark) => Some("star"),
+        // The classifier refused, and its refusal CARRIES the token: a page
+        // may fence `ts`, `py`, `rb` — the plane dispatches on none of them,
+        // and an exec'd entry names its own interpreter anyway.
+        Err(crate::fence::FenceError::UnknownLanguage { lang }) => extension_token(lang),
+        Err(_) => None,
+    }
+}
+
+/// A token safe to hang on a file name: ASCII alphanumeric, at most 12 bytes.
+/// Anything else stages without an extension rather than putting a page's
+/// bytes into a path component nobody vetted.
+fn extension_token(token: &str) -> Option<&str> {
+    (!token.is_empty() && token.len() <= 12 && token.bytes().all(|b| b.is_ascii_alphanumeric()))
+        .then_some(token)
 }
 
 /// The anchor a block refusal is about.
@@ -1817,6 +2094,253 @@ declare(on = \"Stop\")
             "a fault was cached and served back"
         );
         assert!(cache.blocks.lock().expect("probe").is_empty());
+    }
+
+    /// **The TARGET's `env` is the base, and a declared `exec(env=)` pair
+    /// shadows it** (§ 2.2 step 4's layering, in its order). The target half
+    /// is where a daemon's `CCC_HOOK_*` scalars ride, carried opaque by the
+    /// engine, and it was read zero times until PR 195's review — a
+    /// `settings.json`-shaped hook saw `$CCC_HOOK_EVENT` unset, took its
+    /// default branch and answered `exit 0` with nothing saying a variable had
+    /// gone missing. The fix shipped without a fixture; this is it.
+    ///
+    /// It lives here rather than in the CLI suite because the CLI has no argv
+    /// for a target `env` — the wire lane is where it rides, and `mode_row` is
+    /// the row builder that lane calls.
+    #[test]
+    fn the_targets_env_is_the_base_and_a_declared_pair_shadows_it() {
+        let raw = "\
+# Env probe
+
+```starlark
+declare(on = \"Stop\", impl = exec(\"bash\", block = \"p\", env = {\"OVER\": \"declared\"}))
+```
+^e
+
+```bash
+printf '%s|%s' \"$BASE\" \"$OVER\"
+```
+^p
+"
+        .to_owned();
+        let doc = model::build(raw.clone(), syntax::parse(&raw));
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = fs::WorkspaceRoot(tmp.path().to_path_buf());
+        let fp = MerkleRoot(String::new());
+        let world = probe_world(&doc, &root, &fp, None, None);
+        let env = BTreeMap::from([
+            ("BASE".to_owned(), "target".to_owned()),
+            ("OVER".to_owned(), "target".to_owned()),
+        ]);
+        let target = wire::RunTarget {
+            page: "env.md".to_owned(),
+            block: Some("e".to_owned()),
+            mode: Some(wire::RunMode::Fire),
+            input: Some(json!({"name": "Stop"})),
+            ..wire::RunTarget::task_target("env.md".to_owned(), None, Vec::new(), env, None)
+        };
+
+        let row = mode_row(&world, &target, "probe-env-t0", None, None);
+        assert_eq!(row["result"], "ok", "{row:#}");
+        assert_eq!(
+            row["process"]["stdout_tail"], "target|declared",
+            "the target env is the base and the declared pair shadows it: {row:#}"
+        );
+    }
+
+    /// Retention is **per page**, and it can never reach the TASK path's logs.
+    ///
+    /// `.meridian/runs/` top level is where `run::record` writes a task's log
+    /// and a run receipt POINTS AT it. The fire path writes one directory
+    /// below, and the prune runs on that leaf only — so a busy page cannot
+    /// delete the evidence another lane's receipt promises.
+    #[test]
+    fn retention_keeps_the_last_fifty_of_one_page_and_never_a_task_log() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let runs = tmp.path().join(RUNS_DIR);
+        let page_dir = runs.join("HOOKS.md");
+        std::fs::create_dir_all(&page_dir).expect("page dir");
+        // A task log at the top level, receipted by construction.
+        std::fs::write(runs.join("inv-task-t0.log"), "task").expect("task log");
+        for i in 0..60 {
+            std::fs::write(page_dir.join(format!("inv-{i}-t0.log")), "fire").expect("fire log");
+            // Distinct mtimes: the prune keeps the NEWEST, and a filesystem
+            // whose timestamps collide would make the assertion vacuous.
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+
+        ProcessSeam::prune(&page_dir, Some("log"), LOG_RETENTION);
+
+        let left = std::fs::read_dir(&page_dir).expect("read back").count();
+        assert_eq!(left, LOG_RETENTION, "the ceiling is per page");
+        assert!(
+            runs.join("inv-task-t0.log").exists(),
+            "a per-page prune reached the task path's own log"
+        );
+        assert!(
+            page_dir.join("inv-59-t0.log").exists(),
+            "the newest must survive"
+        );
+        assert!(
+            !page_dir.join("inv-0-t0.log").exists(),
+            "the oldest must go"
+        );
+    }
+
+    /// The staged cache is bounded by the same ceiling, and an in-flight
+    /// `.tmp` is **not a member**: it is another fire's staging write, and
+    /// pruning it would delete the bytes that fire is about to `exec`.
+    #[test]
+    fn staged_pruning_keeps_the_ceiling_and_never_an_in_flight_write() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join(STAGED_DIR);
+        std::fs::create_dir_all(&dir).expect("staged dir");
+        for i in 0..60 {
+            std::fs::write(dir.join(format!("rev-{i}.bash")), "echo hi").expect("staged");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // The oldest file in the directory, so a prune that counted it would
+        // reach it first.
+        let inflight = dir.join(format!("rev-0.bash.4242.{STAGED_TMP_EXT}"));
+        std::fs::write(&inflight, "echo half").expect("in-flight write");
+
+        ProcessSeam::prune(&dir, None, STAGED_RETENTION);
+
+        let members = std::fs::read_dir(&dir)
+            .expect("read back")
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "bash"))
+            .count();
+        assert_eq!(members, STAGED_RETENTION, "the cache is bounded");
+        assert!(
+            inflight.exists(),
+            "a live staging write was pruned — the fire that owns it would exec a missing file"
+        );
+    }
+
+    /// The production shape: one daemon, one thread per connection, two
+    /// sessions' `Stop` hooks firing the SAME block at the same moment. The
+    /// pid is the same on every thread, so a temp name carrying only the pid
+    /// is ONE file for all racers — the first rename wins and every other
+    /// rename answers ENOENT, a spurious `runtime` fault on bytes that were
+    /// staged correctly. The sequential 100-fire gate could never see this
+    /// class; this is the instrument that does.
+    #[test]
+    fn concurrent_fires_of_one_block_all_stage_and_none_faults() {
+        const RACERS: usize = 8;
+        const ROUNDS: usize = 20;
+        let raw = "# Race\n```bash\necho ran\n```\n^p\n".to_owned();
+        let doc = model::build(raw.clone(), syntax::parse(&raw));
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let seam = ProcessSeam {
+            doc: &doc,
+            root: tmp.path(),
+            page: "race.md",
+            invocation: "race-t0",
+            calls: std::sync::Mutex::new(Vec::new()),
+            timeout: std::time::Duration::from_secs(5),
+            dry: false,
+        };
+        for round in 0..ROUNDS {
+            let key = format!("rev-{round}");
+            let gate = std::sync::Barrier::new(RACERS);
+            let staged: Vec<Result<std::path::PathBuf, String>> = std::thread::scope(|s| {
+                let racers: Vec<_> = (0..RACERS)
+                    .map(|_| {
+                        s.spawn(|| {
+                            gate.wait();
+                            seam.stage("echo ran\n", &key, Some("bash"))
+                        })
+                    })
+                    .collect();
+                racers
+                    .into_iter()
+                    .map(|r| r.join().expect("a racer panicked"))
+                    .collect()
+            });
+            let expected = tmp.path().join(STAGED_DIR).join(format!("{key}.bash"));
+            for outcome in &staged {
+                let path = outcome
+                    .as_ref()
+                    .unwrap_or_else(|e| panic!("round {round}: a racer faulted: {e}"));
+                assert_eq!(
+                    path, &expected,
+                    "round {round}: every racer names the one file"
+                );
+            }
+            assert_eq!(
+                std::fs::read_to_string(&expected).expect("staged bytes"),
+                "echo ran\n",
+                "round {round}: the file carries the whole program"
+            );
+        }
+        let leftover = std::fs::read_dir(tmp.path().join(STAGED_DIR))
+            .expect("read back")
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .is_some_and(|x| x.eq_ignore_ascii_case(STAGED_TMP_EXT))
+            })
+            .count();
+        assert_eq!(
+            leftover, 0,
+            "a loser's temp file must not outlive its rename"
+        );
+    }
+
+    /// PR 205 review N1: the prune used to run AFTER the key resolved, so at
+    /// the ceiling it could evict the very file the call was returning, and
+    /// it evicted by creation time — the hottest block first. Now the prune
+    /// runs first and a hit refreshes mtime: the file a call returns is on
+    /// disk when the bracket opens it, and the key fired most recently is the
+    /// last to go.
+    #[test]
+    fn a_hit_refreshes_the_key_and_a_call_never_prunes_what_it_returns() {
+        let raw = "# Hot\n```bash\necho hot\n```\n^p\n".to_owned();
+        let doc = model::build(raw.clone(), syntax::parse(&raw));
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let seam = ProcessSeam {
+            doc: &doc,
+            root: tmp.path(),
+            page: "hot.md",
+            invocation: "hot-t0",
+            calls: std::sync::Mutex::new(Vec::new()),
+            timeout: std::time::Duration::from_secs(5),
+            dry: false,
+        };
+        let hot = seam
+            .stage("echo hot\n", "hot", Some("bash"))
+            .expect("stage hot");
+        // Fill the cache to its ceiling behind the hot key, oldest first.
+        for i in 0..(STAGED_RETENTION - 1) {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            seam.stage("echo cold\n", &format!("cold-{i}"), Some("bash"))
+                .expect("stage cold");
+        }
+        // A hit: the bytes are already there, and the key becomes the newest.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let again = seam
+            .stage("echo hot\n", "hot", Some("bash"))
+            .expect("hit hot");
+        assert_eq!(again, hot, "a hit resolves the same file");
+        // Two more stagings push the cache over the ceiling twice; each call
+        // prunes before it writes, so the file it returns is always on disk.
+        for i in 0..2 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let fresh = seam
+                .stage("echo new\n", &format!("new-{i}"), Some("bash"))
+                .expect("stage new");
+            assert!(fresh.exists(), "a call must never prune what it returns");
+        }
+        assert!(
+            hot.exists(),
+            "the key fired most recently was evicted — the prune orders by creation, not use"
+        );
+        assert!(
+            !tmp.path().join(STAGED_DIR).join("cold-0.bash").exists(),
+            "the coldest key must be the one that went"
+        );
     }
 
     /// The key is the block's rev PLUS the prelude's digest. Both halves
