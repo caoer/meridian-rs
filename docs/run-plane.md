@@ -1644,15 +1644,26 @@ it (a door refusal is the effect's row, the fire row keeps `ok` and its
 > the EMPTY DOCUMENT** (`wire-serve/src/write.rs`: `AlreadyExists` →
 > `cas_mismatch(&absent_rev(), &occupant)`; `absent_rev()` is
 > `model::build(String::new(), syntax::parse(""))`'s root rev — a computed
-> blake3 value, not a nil hash and not an empty string). **`cas_mismatch` is
-> not unique to occupancy**: the same code spells the create-CAS, the
-> drift/remove-CAS and the splice verdict. **Only `expected == absent_rev()`
-> would discriminate, and no code performs that check today** — `preset`
-> keys on `err.code` alone and the daemon's `engineface.go` matches
-> `Code == "cas_mismatch"` on a create call. Both are safe *because their call
-> site is the create door*, which mints no other variety. So the discriminator
-> a caller may rely on is **the call site, not the `expected` field**, and this
-> paragraph promises no check that does not exist.
+> blake3 value, not a nil hash and not an empty string — measured
+> `af1349b9f5f9a1a6`). **`cas_mismatch` is not unique to occupancy**: the same
+> code spells the create-CAS, the drift/remove-CAS and the splice verdict, so
+> **only `expected == absent_rev()` discriminates**.
+>
+> **That check now exists** (card `cas-mismatch-occupied-discriminator`,
+> 2026-08-23). The token is published as **`wire::ABSENT_REV`** and the
+> comparison as **`ErrorBody::is_path_occupied()`** — one spelling, three Rust
+> consumers (`preset::birth`, `realise`'s card mint, and the wire-serve gates)
+> plus the daemon, which mirrors the constant as `wirev3.AbsentRev` and keys
+> `engineface.go`'s create path on it. The engine still COMPUTES `absent_rev()`
+> from the model and a wire-serve test asserts the two agree, so a domain-rule
+> change that moves the empty document's rev fails the build instead of leaving
+> the constant lying. **The discriminator a caller may rely on is now the
+> `expected` field, not the call site** — a future non-create caller of these
+> consumers gets an error, not a silent "it was already there".
+>
+> Fail-closed at the edge: the guard plane's `AlreadyBorn` is a benign
+> already-exists too, but it carries no `expected` and is a splice-path refusal
+> the create door never mints, so `is_path_occupied()` reads it false.
 
 ### A door refusal is that effect's row — never the fire's
 
