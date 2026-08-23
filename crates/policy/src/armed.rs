@@ -1454,13 +1454,31 @@ mod tests {
         )
     }
 
-    /// **A production shape.** A `caps: []` HOOK, modelled on
-    /// `rules/050-hook-idle-default.md` on the sessions root — every one of
-    /// that corpus's seven hook pages declares `caps: []`. It takes its own
-    /// loader branch (`hook::load_hook_with_caps`: with no caps the page emits
-    /// no intent, so `budget:` and `how:` are unreachable and may be omitted),
-    /// which the `caps: [proto.send]` fixture above never exercises.
+    /// **A production shape, key for key.** A `caps: []` HOOK as
+    /// `rules/050-hook-idle-default.md` actually writes one — every one of the
+    /// sessions root's seven armed hook pages declares `caps: []` AND
+    /// `budget: { steps, mem }` AND `how: {}`.
+    ///
+    /// The two declared keys are the point: with them the loader takes its
+    /// `Some(how_value)` arm — `validate_how` plus `extract_how_block`
+    /// (`hook.rs`) — which is the arm the live corpus runs through. Omitting
+    /// them takes the `None if caps.is_empty()` arm instead, a branch no armed
+    /// page on that root takes; [`zero_cap_hook_page_without_budget`] covers
+    /// that one separately so both are pinned rather than only the easier one.
     fn zero_cap_hook_page(id: &str) -> String {
+        format!(
+            "---\ntags: [type/rule, rules/hook]\nid: {id}\nseverity: info\n\
+             paths: [\"**\"]\non: \"idle>42m*3\"\naction: |\n  message(\"idle check\")\n\
+             caps: []\nbudget: {{ steps: 10000, mem: 4194304 }}\nhow: {{}}\n\
+             ---\n\n```starlark\ndef on_change(event):\n    pass\n```\n"
+        )
+    }
+
+    /// The same `caps: []` hook with `budget:` and `how:` OMITTED — legal,
+    /// because a page that emits no intent has no delivery config or per-eval
+    /// ceiling to declare, and it reaches `ZERO_CAP_DEFAULT_BUDGET`. No live
+    /// armed page is written this way; the arm gate must admit it anyway.
+    fn zero_cap_hook_page_without_budget(id: &str) -> String {
         format!(
             "---\ntags: [type/rule, rules/hook]\nid: {id}\nseverity: info\n\
              paths: [\"**\"]\non: \"idle>42m*3\"\naction: |\n  message(\"idle check\")\n\
@@ -2605,6 +2623,11 @@ mod tests {
     fn the_shapes_the_live_corpus_actually_arms_pass_the_load_gate() {
         for (body, id, mode) in [
             (zero_cap_hook_page("zero.hook"), "zero.hook", Mode::Armed),
+            (
+                zero_cap_hook_page_without_budget("zero.hook"),
+                "zero.hook",
+                Mode::Armed,
+            ),
             (middleware_page("mw.door"), "mw.door", Mode::Block),
         ] {
             let ws = Workspace::default().page(ScopeLayer::Workspace, "p.md", &body);

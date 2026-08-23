@@ -7,6 +7,13 @@
 /result
 # live drawer: the daemon writes this when meridian-rs is a bound workspace
 /.meridian/
+# the registry's currency sentinel (crates/registry/src/feed.rs), written into
+# ANY drawer a daemon binds — including the parity corpora's own `.meridian/`,
+# which the root-anchored rule above does not reach. Named rather than ignoring
+# the nested drawer: those drawers carry TRACKED fixtures (`stable-read.probe`)
+# and the parity pack is a byte-exact copy of ccc-statusd's testdata that must
+# not be edited around. A local test run put 11 of these into a commit once.
+.meridian/cookie
 # seat scratch: lives beside the worktree, never in the tree
 .scratch/
 /.scratch-*.yaml
