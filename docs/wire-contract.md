@@ -2212,6 +2212,24 @@ in this stack today; the writers are this engine (`serde_yaml`) and
 `ccc-statusd` (go-yaml), and both read a date as a string. **If one appears,
 this is the line it must read first.**
 
+*Aperture of that absence claim* (2026-08-23): the writers surveyed were this
+engine through every § A.6.3a door, `ccc-statusd` (go-yaml plus its own
+line-level `frontmatter.SetField`), and the armed rules, which write through
+the engine. **Obsidian's property editor also writes frontmatter in this vault
+and was NOT measured** — a JS front-matter writer is the most likely place a
+date-object round trip would appear, and nobody has looked. "None exists" means
+"none in the three surveyed writers", not "none anywhere."
+
+**The no-op claim is measured, not asserted** (same card): 1 196 live records —
+every one carrying a value this amendment re-spells, plus 600 random controls —
+10 369 top-level keys, each written back through the real splice door with the
+value the read law serves. Base `361f248d3` and head produce **byte-identical
+reports**: 90 files moved, 14 refused, the same rows at both revs. The 90 are
+the standing § A.6.3c exclusions (79 bare-key `null` → `""`, the rest stored
+block-scalar markers and `[[…]]` nesting), so this change adds **zero** no-op
+re-spelling. Receipts: `.scratch/noop-base.txt`, `noop-head.txt`,
+`noop_list.txt`.
+
 **The trigger list above is NOT closed** (amended 2026-08-23, card
 `hook-17-mrd-create-props`). It enumerates the fast, teachable cases; the LAW is
 the sentence in bold, and the last trigger asks a real YAML parser
