@@ -350,7 +350,7 @@ fn frontmatter_comments_and_indented_code_are_not_claim_link_positions() {
             if_root: None,
             dry: false,
             fields: BTreeMap::default(),
-            props: Default::default(),
+            props: BTreeMap::default(),
         },
         &[],
     )

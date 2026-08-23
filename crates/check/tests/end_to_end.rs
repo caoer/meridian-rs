@@ -23,7 +23,7 @@ fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
         if_root: None,
         dry: false,
         fields: BTreeMap::default(),
-        props: Default::default(),
+        props: BTreeMap::default(),
     };
     create(root, None, &args, &[])
         .unwrap_or_else(|e| panic!("production create {path} refused: {e:?}"));

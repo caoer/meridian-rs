@@ -254,7 +254,7 @@ fn create_cannot_birth_a_page_carrying_a_lock() {
             if_root: None,
             dry: false,
             fields: BTreeMap::default(),
-            props: Default::default(),
+            props: BTreeMap::default(),
         },
         &[],
     );

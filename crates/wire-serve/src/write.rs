@@ -2184,7 +2184,10 @@ fn compose_props<'a>(
             PropValue::List(items) => policy::defs::yaml_safe_flow(items),
         }
         .map_err(|_| bad_request(multi_line_value_refusal(key.as_str())))?;
-        block.push_str(&format!("{key}: {encoded}\n"));
+        block.push_str(key.as_str());
+        block.push_str(": ");
+        block.push_str(&encoded);
+        block.push('\n');
     }
     block.push_str("---\n");
     block.push_str(&body);
@@ -8364,8 +8367,7 @@ mod create_props_door {
             ("brackets", "[a, b]"),
             ("newline_escape", "a\\nb"),
         ];
-        let props: Vec<(&str, PropValue)> =
-            hostile.iter().map(|(k, v)| (*k, scalar(v))).collect();
+        let props: Vec<(&str, PropValue)> = hostile.iter().map(|(k, v)| (*k, scalar(v))).collect();
         create(&root, None, &args("notes/hostile.md", "# H\n", &props), &[])
             .expect("the birth lands");
 
@@ -8463,7 +8465,10 @@ mod create_props_door {
         )
         .expect("the birth lands");
         let raw = std::fs::read_to_string(dir.path().join("notes/typed.md")).expect("born");
-        assert!(raw.contains("n: 7\n") && raw.contains("flag: true\n"), "{raw}");
+        assert!(
+            raw.contains("n: 7\n") && raw.contains("flag: true\n"),
+            "{raw}"
+        );
         let meta = read_back(&dir, "notes/typed.md");
         assert_eq!(meta.get("n"), Some(&policy::defs::FmValue::Int(7)));
         assert_eq!(meta.get("flag"), Some(&policy::defs::FmValue::Bool(true)));

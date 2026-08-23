@@ -504,7 +504,7 @@ fn create_door_transforms_the_born_bytes_and_carries_intents() {
             if_root: None,
             dry: false,
             fields,
-            props: Default::default(),
+            props: BTreeMap::default(),
         },
         &[],
     )
@@ -553,7 +553,7 @@ fn create_door_stamps_a_frontmatterless_birth_with_one_block() {
         if_root: None,
         dry: false,
         fields: BTreeMap::new(),
-        props: Default::default(),
+        props: BTreeMap::default(),
     };
     create(
         &root,
@@ -646,8 +646,14 @@ fn a_birth_through_props_is_composed_before_middleware_and_still_stamped() {
     );
 
     let mut fields = BTreeMap::new();
-    fields.insert("created".to_string(), "2026-08-23T01:09:34-04:00".to_string());
-    fields.insert("session".to_string(), "19-20-mrd-statusd-integration".to_string());
+    fields.insert(
+        "created".to_string(),
+        "2026-08-23T01:09:34-04:00".to_string(),
+    );
+    fields.insert(
+        "session".to_string(),
+        "19-20-mrd-statusd-integration".to_string(),
+    );
     let mut props = BTreeMap::new();
     props.insert(
         "type".to_string(),
@@ -709,5 +715,8 @@ fn a_birth_through_props_is_composed_before_middleware_and_still_stamped() {
         )),
         "the hostile manifest reads back byte for byte: {born}"
     );
-    assert!(born.ends_with("# Memo\n\n# Todo\n"), "body verbatim: {born}");
+    assert!(
+        born.ends_with("# Memo\n\n# Todo\n"),
+        "body verbatim: {born}"
+    );
 }
