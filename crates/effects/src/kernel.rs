@@ -15,13 +15,17 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
-use starlark::environment::{Globals, GlobalsBuilder, Module};
+use starlark::collections::SmallMap;
+use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, Module};
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::syntax::{AstModule, Dialect};
 use starlark::values::Heap;
+use starlark::values::UnpackValue;
 use starlark::values::Value;
+use starlark::values::ValueLike;
 use starlark::values::dict::AllocDict;
+use starlark::values::function::FUNCTION_TYPE;
 use starlark::values::list::UnpackList;
 use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
@@ -258,7 +262,7 @@ fn is_word_byte(b: u8) -> bool {
 #[derive(starlark::any::ProvidesStaticType)]
 enum PlaneStore<'h> {
     /// Change / run planes: effect descriptors, provenance-stamped.
-    Emit(EmitStore),
+    Emit(EmitStore<'h>),
     /// Script plane: the one effectful seam plus its recorded reads.
     Script(&'h ScriptEntry<'h>),
 }
@@ -290,7 +294,7 @@ pub enum EffectPhase {
     Fire,
 }
 
-struct EmitStore {
+struct EmitStore<'h> {
     rule_id: String,
     provenance: Provenance,
     depth: u32,
@@ -299,9 +303,18 @@ struct EmitStore {
     /// The phase gate. [`Fire`](EffectPhase::Fire) for every shipped plane,
     /// so nothing existing changes behavior.
     phase: EffectPhase,
+    /// What `declare()` collected during the LOAD phase, in call order. Empty
+    /// on every shipped plane — `declare` is a hook-plane builtin and is not
+    /// registered on [`effect_globals`].
+    declarations: RefCell<Vec<Declaration>>,
+    /// The seam `bash()` reaches during the FIRE phase. `None` on every
+    /// shipped plane and on the load phase, where the phase gate refuses
+    /// first — so an absent seam is only ever reached by a fire the caller
+    /// built without one, and that is a loud fault, never a silent no-op.
+    host: Option<&'h dyn FireHost>,
 }
 
-impl EmitStore {
+impl<'h> EmitStore<'h> {
     fn new(rule_id: &str, provenance: Provenance, depth: u32) -> Self {
         Self {
             rule_id: rule_id.to_owned(),
@@ -311,6 +324,8 @@ impl EmitStore {
             next_seq: Cell::new(0),
             // The shipped planes are single-phase and effectful throughout.
             phase: EffectPhase::Fire,
+            declarations: RefCell::new(Vec::new()),
+            host: None,
         }
     }
 
@@ -318,6 +333,12 @@ impl EmitStore {
     /// two-phase evaluation.
     fn in_phase(mut self, phase: EffectPhase) -> Self {
         self.phase = phase;
+        self
+    }
+
+    /// The same store with the fire phase's process seam bound.
+    fn with_host(mut self, host: &'h dyn FireHost) -> Self {
+        self.host = Some(host);
         self
     }
 
@@ -399,6 +420,128 @@ impl std::fmt::Display for DeclareAtFire {
 
 impl std::error::Error for DeclareAtFire {}
 
+/// What one `declare()` call published, as the load phase collected it.
+///
+/// `data` is the **uninterpreted** dict the author passed, verbatim (design
+/// § 2.4: *"`declarations` is the uninterpreted dict `declare()` collected —
+/// evaluation's data, published verbatim; the caller owns every key's
+/// meaning"*). The engine reads exactly one key out of it, `impl`, and only
+/// to know WHAT to call — never why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Declaration {
+    /// Every key the author passed except `impl`, verbatim.
+    pub data: serde_json::Value,
+    /// What this block's entry is.
+    pub entry: DeclaredEntry,
+}
+
+/// A declared block's entry — the `entry_kind` a load row publishes.
+///
+/// `impl` is resolved at the `declare()` CALL, while the value is still in
+/// hand: a callable is the evaluated entry, an [`exec`](ExecSpec) value is a
+/// process entry, anything else is the `impl_type` fault. Resolving it there
+/// rather than after the freeze is why no custom starlark type is minted for
+/// `exec()` — the one bit that must be distinguished is distinguished where
+/// the distinction exists, and the spec travels onward as data because the
+/// load row publishes it as data anyway (§ 2.2 Response).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeclaredEntry {
+    /// `declare(impl = fn)` (or a bare `def run(event)`): the frozen module's
+    /// binding of this name is called at fire.
+    Evaluated {
+        /// The def's own name — what `frozen.get(..)` is asked for at fire.
+        name: String,
+    },
+    /// `declare(impl = exec(block = "check"))`: a process entry, run through
+    /// the exec bracket rather than evaluated.
+    Exec(ExecSpec),
+}
+
+impl DeclaredEntry {
+    /// The `entry_kind` word a load row carries.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            DeclaredEntry::Evaluated { .. } => "evaluated",
+            DeclaredEntry::Exec(_) => "exec",
+        }
+    }
+}
+
+/// A process entry as `exec()` declared it (§ 1.4):
+/// `exec(interpreter, cmd=|block=, args=[], env={})`. Data, not code — a new
+/// language is `argv[0]`, never a concept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecSpec {
+    /// `argv[0]` — `"bash"`, `"bun"`, anything on the path.
+    pub interpreter: String,
+    /// The program: exactly one of these is `Some`, enforced at the call.
+    pub program: ExecProgram,
+    /// Arguments after the program.
+    pub args: Vec<String>,
+    /// Declared environment pairs, overlaid on the target's own `env` (the
+    /// run-env ruling's shadowing rule).
+    pub env: BTreeMap<String, String>,
+}
+
+/// Where an exec'd entry's bytes come from — exactly one, never both, never
+/// neither.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecProgram {
+    /// `cmd = "test -f allow-stop"` — the bytes inline in the declaration.
+    Cmd(String),
+    /// `block = "check"` — the `^id` anchor of a block on the same page. The
+    /// anchor is resolved by the LOAD caller, which is the layer that holds
+    /// the page: a dangling anchor is the block's load fault `no_block`, a
+    /// duplicate the typed `ambiguous_anchor` (§ 1.4). The kernel knows no
+    /// pages, so it carries the name and judges nothing.
+    Block(String),
+}
+
+/// One `bash()` call as the program spelled it — the seam's whole input
+/// (§ 1.3: `bash(cmd=, block=, cwd=, env={}, timeout=, stdin=)`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BashCall {
+    /// The program: exactly one of `cmd` / `block`, enforced at the call.
+    pub program: ExecProgram,
+    /// `cwd = "…"` — workspace-relative working directory.
+    pub cwd: Option<String>,
+    /// Environment pairs overlaid on the bracket's inherited environment.
+    pub env: BTreeMap<String, String>,
+    /// Wall-clock ceiling in seconds; the bracket's configured one when
+    /// absent.
+    pub timeout_s: Option<u64>,
+    /// What to write on the process's stdin. A string rides verbatim; a dict
+    /// or list arrives here already serialized as compact JSON, because the
+    /// kernel owns the starlark→JSON edge and the plane owns the pipe.
+    pub stdin: Option<String>,
+    /// The 1-based source line of the call, for the row it produces.
+    pub line: u32,
+}
+
+/// The fire phase's process seam: what `bash()` reaches when a fire binds one.
+///
+/// A trait rather than a closure for the same reason [`ScriptEntry`] carries
+/// its host as one — the run plane owns the bracket (timeout, setsid, log,
+/// the `exec[]` row), and the kernel must not learn any of it. The kernel
+/// knows only that a call goes out and a JSON row comes back.
+pub trait FireHost: Sync {
+    /// Run one `bash()` call through the plane's bracket and answer the row
+    /// the program sees — and that the fire row's `exec[]` carries.
+    ///
+    /// § 1.3's law: **`bash` never raises.** An unstartable process is
+    /// `exit: 127`, a timeout `timed_out: true` with `exit: 137`. An `Err`
+    /// here is for the cases that are not the process's at all (a seam that
+    /// cannot reach its bracket), and it faults the program loudly.
+    ///
+    /// # Errors
+    /// The plane's own words, carried whole; the program faults with them. A
+    /// `String` rather than a typed error so the seam imposes no error crate
+    /// on its implementors — the run plane is the only layer with anything to
+    /// say here, and the kernel does nothing but relay it.
+    fn bash(&self, call: &BashCall) -> Result<serde_json::Value, String>;
+}
+
 /// How a two-phase evaluation fault is classified on a `run` row (design
 /// § 2.2 Response, as amended by A1). Only the classes THIS layer can decide
 /// live here — the addressing and shape classes (`no_block`, `not_declared`,
@@ -414,6 +557,10 @@ pub enum FaultClass {
     EffectAtLoad,
     /// A load-phase builtin (`declare`, `exec`) was called at fire.
     DeclareAtFire,
+    /// The entry ran and returned something outside the admitted set — the
+    /// PROGRAM is fine, its answer is not, and saying `runtime` would send
+    /// the author looking for a bug that is not there.
+    ReplyShape,
     /// Fuel, memory, or call depth exhausted.
     Budget,
     /// Anything else the evaluator raised.
@@ -430,6 +577,7 @@ impl FaultClass {
             FaultClass::NameError => "name_error",
             FaultClass::EffectAtLoad => "effect_at_load",
             FaultClass::DeclareAtFire => "declare_at_fire",
+            FaultClass::ReplyShape => "reply_shape",
             FaultClass::Budget => "budget",
             FaultClass::Runtime => "runtime",
         }
@@ -501,10 +649,10 @@ fn plane<'a, 'e>(eval: &'a Evaluator<'_, '_, 'e>) -> anyhow::Result<&'a PlaneSto
 ///
 /// # Errors
 /// [`EffectAtLoad`] on a `Load`-phase store; the script-plane fault as before.
-fn store<'a>(
-    eval: &'a Evaluator<'_, '_, '_>,
+fn store<'a, 'e>(
+    eval: &'a Evaluator<'_, '_, 'e>,
     builtin: &'static str,
-) -> anyhow::Result<&'a EmitStore> {
+) -> anyhow::Result<&'a EmitStore<'e>> {
     match plane(eval)? {
         PlaneStore::Emit(store) => {
             if store.phase == EffectPhase::Load {
@@ -514,6 +662,33 @@ fn store<'a>(
         }
         PlaneStore::Script(_) => Err(anyhow::anyhow!(
             "effect-api: constructor invoked on the script plane, which registers none"
+        )),
+    }
+}
+
+/// The emit store for a LOAD-phase builtin — A1's mirror of [`store`].
+///
+/// `declare()` and `exec()` publish what a block IS; that happens once, at
+/// load, and the answer is cached at the block's rev. Calling one at fire
+/// would assert a shape nobody reads, so it refuses instead of silently doing
+/// nothing.
+///
+/// # Errors
+/// [`DeclareAtFire`] on a `Fire`-phase store; the script-plane fault as for
+/// [`store`].
+fn load_store<'a, 'e>(
+    eval: &'a Evaluator<'_, '_, 'e>,
+    builtin: &'static str,
+) -> anyhow::Result<&'a EmitStore<'e>> {
+    match plane(eval)? {
+        PlaneStore::Emit(store) => {
+            if store.phase == EffectPhase::Fire {
+                return Err(anyhow::Error::new(DeclareAtFire { builtin }));
+            }
+            Ok(store)
+        }
+        PlaneStore::Script(_) => Err(anyhow::anyhow!(
+            "hook-api: `{builtin}` invoked on the script plane, which registers none"
         )),
     }
 }
@@ -714,6 +889,320 @@ fn effect_api(builder: &mut GlobalsBuilder) {
         store(eval, "notice")?.push(EffectKind::Notice, args);
         Ok(NoneType)
     }
+}
+
+/// The hook plane's own three builtins (design § 1.3, § 1.4): the two
+/// load-phase constructors that publish what a block IS, and the fire-phase
+/// process seam.
+///
+/// They join [`effect_globals`]' surface to make [`hook_globals`] — ONE
+/// closed set for compile, freeze and fire (A1). What differs between the
+/// phases is not which names exist but what they DO, and that difference
+/// lives in the two accessors ([`store`], [`load_store`]).
+#[starlark_module]
+fn hook_api(builder: &mut GlobalsBuilder) {
+    /// `declare(on = …, match = …, impl = fn, …)` — publish what this block
+    /// is. Every keyword is carried **verbatim and uninterpreted** (§ 2.4);
+    /// the engine reads exactly one of them, `impl`, and only to know what to
+    /// call.
+    ///
+    /// `impl` is *callable | exec-value*, resolved here while the value is
+    /// still in hand: a callable names the frozen module's binding the fire
+    /// calls, an [`exec`](ExecSpec) value is a process entry. Omitting it
+    /// means the conventional `def run(event)`.
+    fn declare<'v>(
+        #[starlark(require = named, default = NoneType)] r#impl: Value<'v>,
+        #[starlark(kwargs)] rest: SmallMap<String, Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let store = load_store(eval, "declare")?;
+        let entry = declared_entry(r#impl)?;
+        let mut data = serde_json::Map::new();
+        for (key, value) in rest {
+            data.insert(key, json_of_value(value)?);
+        }
+        store.declarations.borrow_mut().push(Declaration {
+            data: serde_json::Value::Object(data),
+            entry,
+        });
+        Ok(NoneType)
+    }
+
+    /// `exec(interpreter, cmd = | block = , args = [], env = {})` — a pure
+    /// typed constructor for a process entry (§ 1.4). Legal at load, refused
+    /// at fire; runs nothing itself.
+    ///
+    /// The value it returns is a plain dict — the spec as data. No custom
+    /// starlark type is minted because the one bit that must be
+    /// distinguished, *callable vs exec-value*, is distinguished at the
+    /// `declare()` call where both are still in hand, and the spec travels
+    /// onward as data anyway: a load row publishes it in `declarations`.
+    fn exec<'v>(
+        #[starlark(require = pos)] interpreter: String,
+        #[starlark(require = named)] cmd: Option<String>,
+        #[starlark(require = named)] block: Option<String>,
+        #[starlark(require = named)] args: Option<UnpackList<String>>,
+        #[starlark(require = named)] env: Option<SmallMap<String, String>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        // The phase gate first: a refusal must not depend on the arguments
+        // being right, or a wrong-phase call with a typo would teach the typo.
+        load_store(eval, "exec")?;
+        let program = one_program("exec", cmd, block)?;
+        let spec = ExecSpec {
+            interpreter,
+            program,
+            args: args.map(|a| a.items).unwrap_or_default(),
+            env: env.map(|e| e.into_iter().collect()).unwrap_or_default(),
+        };
+        let heap = eval.heap();
+        Ok(alloc_json(heap, &spec.to_json()))
+    }
+
+    /// `bash(cmd = | block = , cwd = , env = {}, timeout = , stdin = )` →
+    /// `{command, exit, stdout, stderr, timed_out, dry}` (§ 1.3).
+    ///
+    /// **Acts at fire only** — bound at every phase, so a top-level `bash()`
+    /// is the `effect_at_load` fault at its own line rather than an unbound
+    /// name at compile time (A1). It never raises for the process's sake:
+    /// unstartable is `exit: 127`, a timeout is `timed_out: True`.
+    fn bash<'v>(
+        #[starlark(require = named)] cmd: Option<String>,
+        #[starlark(require = named)] block: Option<String>,
+        #[starlark(require = named)] cwd: Option<String>,
+        #[starlark(require = named)] env: Option<SmallMap<String, String>>,
+        #[starlark(require = named)] timeout: Option<u64>,
+        #[starlark(require = named)] stdin: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        // The phase gate is the ACCESSOR, exactly as for every md
+        // constructor — `bash` records no descriptor, so a gate on the emit
+        // funnel alone would miss it entirely (A1).
+        let store = store(eval, "bash")?;
+        let program = one_program("bash", cmd, block)?;
+        let line =
+            call_site(eval).map_or(0, |(line, _)| u32::try_from(line + 1).unwrap_or(u32::MAX));
+        // A string rides verbatim; anything else is the compact JSON § 1.3
+        // promises, serialized here because the kernel owns this edge.
+        let stdin = match stdin {
+            None => None,
+            Some(value) if value.is_none() => None,
+            Some(value) => Some(match value.unpack_str() {
+                Some(text) => text.to_owned(),
+                None => serde_json::to_string(&json_of_value(value)?)?,
+            }),
+        };
+        let call = BashCall {
+            program,
+            cwd,
+            env: env.map(|e| e.into_iter().collect()).unwrap_or_default(),
+            timeout_s: timeout,
+            stdin,
+            line,
+        };
+        let host = store.host.ok_or_else(|| {
+            anyhow::anyhow!(
+                "`bash` has no process seam on this lane: the fire was built without one. \
+                 This is an engine defect, not an authoring fault — the call is legal."
+            )
+        })?;
+        let row = host.bash(&call).map_err(|reason| anyhow::anyhow!(reason))?;
+        let heap = eval.heap();
+        Ok(alloc_json(heap, &row))
+    }
+}
+
+/// Exactly one of `cmd` / `block`, named in the refusal as the author spelled
+/// them — both and neither are the same authoring mistake seen from two sides.
+fn one_program(
+    builtin: &str,
+    cmd: Option<String>,
+    block: Option<String>,
+) -> anyhow::Result<ExecProgram> {
+    match (cmd, block) {
+        (Some(cmd), None) => Ok(ExecProgram::Cmd(cmd)),
+        (None, Some(block)) => Ok(ExecProgram::Block(block)),
+        (Some(_), Some(_)) => Err(anyhow::anyhow!(
+            "{builtin}: `cmd` and `block` are exclusive — inline bytes or an anchored block, \
+             not both"
+        )),
+        (None, None) => Err(anyhow::anyhow!(
+            "{builtin}: pass `cmd = \"…\"` for inline bytes or `block = \"<id>\"` for an \
+             anchored block on this page"
+        )),
+    }
+}
+
+/// Resolve a `declare(impl = …)` value into the entry it names.
+///
+/// # Errors
+/// The `impl_type` fault when the value is neither callable nor an
+/// [`exec`](ExecSpec) value.
+fn declared_entry(value: Value<'_>) -> anyhow::Result<DeclaredEntry> {
+    if value.is_none() {
+        // No `impl`: the conventional entry. Whether the module actually
+        // defines it is the freeze's business (`missing_entry`), not this
+        // call's — the block may legitimately declare before it defines.
+        return Ok(DeclaredEntry::Evaluated {
+            name: DEFAULT_HOOK_ENTRY.to_owned(),
+        });
+    }
+    if value.get_type() == FUNCTION_TYPE {
+        // A def's `Display` is `ParametersSpec::signature()`, which renders
+        // `function_name` and nothing else — and starlark QUALIFIES that name
+        // with the module's: a `def check_stop` in module `probe` displays as
+        // `probe.check_stop`. Measured, not assumed; asserting the bare name
+        // is what `a_declared_impl_names_the_def_the_fire_calls` caught, and
+        // an unstripped qualifier would have sent every explicit-`impl` fire
+        // to an entry `FrozenModule::get` cannot find.
+        //
+        // The last dot-segment is the module binding's own name, which is
+        // what a fire asks the frozen module for. A def that is not a module
+        // binding (a nested one) yields a name the module does not carry, and
+        // the fire says `missing_entry` — loud, at the right layer.
+        let rendered = value.to_string();
+        let name = rendered.rsplit('.').next().unwrap_or(&rendered).to_owned();
+        return Ok(DeclaredEntry::Evaluated { name });
+    }
+    if let Some(spec) = ExecSpec::from_value(value) {
+        return Ok(DeclaredEntry::Exec(spec));
+    }
+    Err(anyhow::anyhow!(
+        "declare: `impl` is {} — it must be a function defined in this block, or an \
+         `exec(...)` value; nothing else is an entry",
+        value.get_type()
+    ))
+}
+
+/// The conventional entry name when `declare()` names none (§ 1.3).
+pub const DEFAULT_HOOK_ENTRY: &str = "run";
+
+/// The key `exec()` stamps on the dict it returns, so [`ExecSpec::from_value`]
+/// recognizes its own construction rather than guessing from shape.
+const EXEC_MARK: &str = "exec";
+
+impl ExecSpec {
+    /// The spec as the dict `exec()` returns and a load row publishes.
+    fn to_json(&self) -> serde_json::Value {
+        let (key, value) = match &self.program {
+            ExecProgram::Cmd(cmd) => ("cmd", cmd),
+            ExecProgram::Block(block) => ("block", block),
+        };
+        serde_json::json!({
+            EXEC_MARK: self.interpreter,
+            key: value,
+            "args": self.args,
+            "env": self.env,
+        })
+    }
+
+    /// Read an `exec()` value back out of the dict it returned, or `None`
+    /// when the value is not one.
+    fn from_value(value: Value<'_>) -> Option<Self> {
+        let json = json_of_value(value).ok()?;
+        let map = json.as_object()?;
+        let interpreter = map.get(EXEC_MARK)?.as_str()?.to_owned();
+        let program = match (map.get("cmd"), map.get("block")) {
+            (Some(cmd), None) => ExecProgram::Cmd(cmd.as_str()?.to_owned()),
+            (None, Some(block)) => ExecProgram::Block(block.as_str()?.to_owned()),
+            _ => return None,
+        };
+        let args = map
+            .get("args")?
+            .as_array()?
+            .iter()
+            .map(|a| a.as_str().map(ToOwned::to_owned))
+            .collect::<Option<Vec<_>>>()?;
+        let env = map
+            .get("env")?
+            .as_object()?
+            .iter()
+            .map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned())))
+            .collect::<Option<BTreeMap<_, _>>>()?;
+        Some(ExecSpec {
+            interpreter,
+            program,
+            args,
+            env,
+        })
+    }
+}
+
+/// One starlark value as JSON — the fire's return, `declare()`'s data, and
+/// `bash(stdin=)`'s payload all cross here.
+///
+/// The admitted set is § 2.2's, exactly: dict / list / str / int / float /
+/// bool / None. Anything else is the `reply_shape` fault, named by type so
+/// the author knows what they returned — never coerced to its `repr`, which
+/// would turn a wrong answer into a plausible string.
+///
+/// # Errors
+/// A value outside the admitted set, at whatever depth it sits.
+pub fn json_of_value(value: Value<'_>) -> anyhow::Result<serde_json::Value> {
+    use starlark::values::dict::DictRef;
+    use starlark::values::list::ListRef;
+
+    if value.is_none() {
+        return Ok(serde_json::Value::Null);
+    }
+    if let Some(b) = value.unpack_bool() {
+        return Ok(serde_json::Value::Bool(b));
+    }
+    if let Some(i) = value.unpack_i32() {
+        return Ok(serde_json::Value::Number(i64::from(i).into()));
+    }
+    if let Some(s) = value.unpack_str() {
+        return Ok(serde_json::Value::String(s.to_owned()));
+    }
+    if let Some(list) = ListRef::from_value(value) {
+        return list
+            .iter()
+            .map(json_of_value)
+            .collect::<anyhow::Result<Vec<_>>>()
+            .map(serde_json::Value::Array);
+    }
+    if let Some(dict) = DictRef::from_value(value) {
+        let mut out = serde_json::Map::new();
+        for (key, item) in dict.iter() {
+            let key = key.unpack_str().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "a reply dict's keys must be strings; this one is {}",
+                    key.get_type()
+                )
+            })?;
+            out.insert(key.to_owned(), json_of_value(item)?);
+        }
+        return Ok(serde_json::Value::Object(out));
+    }
+    // Floats and big ints last: they are rarer than the above and their
+    // unpacking is the one that can lose precision, so it is worth being
+    // explicit about the fallback.
+    if let Some(f) = value.downcast_ref::<starlark::values::float::StarlarkFloat>() {
+        return serde_json::Number::from_f64(f.0)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| anyhow::anyhow!("a reply carried {} , which has no JSON form", f.0));
+    }
+    if let Ok(i) = i64::unpack_value_err(value) {
+        return Ok(serde_json::Value::Number(i.into()));
+    }
+    Err(anyhow::anyhow!(
+        "a reply may carry dict, list, str, int, float, bool or None; this is {}",
+        value.get_type()
+    ))
+}
+
+/// The hook plane's globals: the effect surface plus [`hook_api`]'s three.
+///
+/// ONE closed set for compile, freeze and fire (A1) — the load/fire boundary
+/// is a phase gate at the accessors, never a difference in which names exist,
+/// because starlark-rust resolves globals at module-compile time and a frozen
+/// def cannot be rebound.
+#[must_use]
+pub fn hook_globals() -> Globals {
+    GlobalsBuilder::standard()
+        .with(effect_api)
+        .with(hook_api)
+        .build()
 }
 
 /// The banned suppression spelling `_ = read(…)`, located syntactically on the
@@ -1526,6 +2015,14 @@ pub(crate) fn run_task(
 /// purity from the outcome instead of trusting a comment.
 #[derive(Debug)]
 pub struct BlockLoad {
+    /// What `declare()` published, in call order. Empty when the block
+    /// declares nothing — which is the consent gate's whole subject: such a
+    /// block is not a target (§ 2.2, `not_declared`).
+    pub declarations: Vec<Declaration>,
+    /// The frozen module, present exactly when the load succeeded. This is
+    /// what a fire calls; caching it by block rev is what makes a warm fire
+    /// one function call (§ 2.2 Price).
+    pub module: Option<FrozenModule>,
     /// Empty on success. Anything here would mean the phase gate let
     /// something through — a defect to surface, not a state to handle.
     pub effects: Vec<Effect>,
@@ -1551,20 +2048,34 @@ pub struct BlockFault {
     pub line: Option<u32>,
 }
 
-/// Evaluate one starlark block's TOP LEVEL in the load phase.
+/// Evaluate one starlark block's TOP LEVEL in the load phase, then FREEZE it.
 ///
 /// No hook is looked up and none is called: publishing what a block declares
 /// IS evaluating its top level, exactly as on the script plane. Every effect
 /// builtin the top level reaches refuses `effect_at_load` at the accessor
 /// gate, so a block that tries to act while declaring says so at its own
 /// line rather than acting.
+///
+/// `prelude` is § 2.2's caller source, evaluated **into the same module**
+/// before the block's own top level, so its bindings are frozen with the
+/// module. Two `eval_module` calls rather than one concatenated source: each
+/// carries its own spans, so a block's `fault.line` is a line in the BLOCK —
+/// the one number an author navigates by — instead of an offset into a text
+/// they never wrote.
 #[must_use]
-pub fn load_block(source: &str, ctx: &RunCtx, limits: EvalLimits) -> BlockLoad {
+pub fn load_block(
+    source: &str,
+    prelude: Option<&str>,
+    ctx: &RunCtx,
+    limits: EvalLimits,
+) -> BlockLoad {
     let block = Rule::new(&ctx.task, source.to_owned());
-    let globals = effect_globals();
     // Same large stack as every other entry: pathological nesting must fault,
-    // never abort the process.
-    let run = on_eval_stack(|| metered_eval(&globals, &block, &EvalEntry::RunLoad(ctx), limits));
+    // never abort the process. The store is built INSIDE the closure because
+    // it is full of `Cell`/`RefCell` and therefore not `Sync` — the shipped
+    // planes do the same.
+    let (run, module, declarations) =
+        on_eval_stack(|| eval_and_freeze(&block, prelude, ctx, limits));
     let (effects, fault) = match run.outcome {
         Ok(effects) => (effects, None),
         Err(e) => (
@@ -1580,11 +2091,382 @@ pub fn load_block(source: &str, ctx: &RunCtx, limits: EvalLimits) -> BlockLoad {
         ),
     };
     BlockLoad {
+        declarations,
+        // A faulted load has nothing callable to hand on, whatever the
+        // freeze itself did.
+        module: fault.is_none().then_some(module).flatten(),
         effects,
         fault,
         fuel_used: run.fuel_used,
         mem_used: run.mem_used,
     }
+}
+
+/// The load phase's emit store: run provenance, gated to [`EffectPhase::Load`].
+fn load_emit_store(ctx: &RunCtx) -> EmitStore<'static> {
+    EmitStore::new(
+        &ctx.task,
+        Provenance::Run {
+            invocation_id: ctx.invocation_id.clone(),
+            root_at_eval: ctx.root_at_eval.clone(),
+        },
+        0,
+    )
+    .in_phase(EffectPhase::Load)
+}
+
+/// Evaluate a module's top level under `store` and freeze it, metered and
+/// panic-caught exactly as [`metered_eval`] is.
+///
+/// A path of its own rather than a flag on `metered_eval`, because the two
+/// differ in the one thing that matters: this one's module must OUTLIVE the
+/// evaluation. `metered_eval` owns its module inside
+/// [`Module::with_temp_heap`] and drops it, which is right for every plane
+/// that answers with effects and wrong for the only plane that answers with a
+/// callable.
+fn eval_and_freeze(
+    rule: &Rule,
+    prelude: Option<&str>,
+    ctx: &RunCtx,
+    limits: EvalLimits,
+) -> (RuleRun, Option<FrozenModule>, Vec<Declaration>) {
+    if let Err(e) = check_source_size(rule, limits) {
+        return (RuleRun::failed(e), None, Vec::new());
+    }
+    if let Err(e) = check_nesting_depth(rule) {
+        return (RuleRun::failed(e), None, Vec::new());
+    }
+    let step_guard = limits.fuel.max(1);
+    let mem_guard = usize::try_from(limits.mem).unwrap_or(usize::MAX).max(1);
+    let store = PlaneStore::Emit(load_emit_store(ctx));
+    let globals = hook_globals();
+
+    // AssertUnwindSafe: the panic path discards the store unread → budget.
+    let evaluated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        Module::with_temp_heap(|module| {
+            let mut eval = Evaluator::new(&module);
+            if let Err(e) = arm_guards(&mut eval, rule, step_guard, mem_guard, limits) {
+                return (e, None);
+            }
+            eval.extra = Some(&store);
+            // The prelude first, into the SAME module — its bindings are the
+            // block's to use and the freeze's to keep — then the block's own
+            // top level. Each carries its own spans, so the block's
+            // `fault.line` is a line in the block.
+            let mut outcome = Ok(());
+            for (id, source) in [
+                Some(("prelude", prelude)),
+                Some((&*rule.id, Some(&*rule.source))),
+            ]
+            .into_iter()
+            .flatten()
+            .filter_map(|(id, source)| source.map(|s| (id, s)))
+            {
+                if outcome.is_err() {
+                    break;
+                }
+                match AstModule::parse(id, source.to_owned(), &script_dialect()) {
+                    Ok(ast) => outcome = eval.eval_module(ast, &globals).map(|_| ()),
+                    Err(e) => {
+                        return (
+                            RuleRun::failed(EvalError::Parse {
+                                rule_id: id.to_owned(),
+                                reason: e.to_string(),
+                            }),
+                            None,
+                        );
+                    }
+                }
+            }
+            let used_steps = eval.get_total_tick_count();
+            let used_mem = heap_bytes(module.heap());
+            drop(eval);
+            let effects = match &store {
+                PlaneStore::Emit(store) => store.effects.take(),
+                PlaneStore::Script(_) => Vec::new(),
+            };
+            let over_budget = used_steps > limits.fuel || used_mem > limits.mem;
+            let (fault_class, ending) = ending_of(outcome.err().as_ref());
+            let faulted = !matches!(ending, Ending::Completed);
+            let outcome = classify_outcome(
+                rule,
+                &EvalEntry::RunLoad(&NO_CTX),
+                effects,
+                &Ended {
+                    ending,
+                    over_budget,
+                },
+                limits,
+            );
+            // Freezing a module whose top level faulted would hand a caller a
+            // half-built environment; the fault is the answer instead.
+            let frozen = if faulted { None } else { module.freeze().ok() };
+            (
+                RuleRun {
+                    fuel_used: used_steps,
+                    mem_used: used_mem,
+                    outcome,
+                    fault_class: if over_budget {
+                        Some(FaultClass::Budget)
+                    } else {
+                        fault_class
+                    },
+                },
+                frozen,
+            )
+        })
+    }));
+
+    // The declarations survive the panic boundary because the store outlives
+    // the closure — a bomb that dies mid-block still says what it declared
+    // before it died, which is data a caller can act on.
+    let declarations = match &store {
+        PlaneStore::Emit(store) => store.declarations.take(),
+        PlaneStore::Script(_) => Vec::new(),
+    };
+    match evaluated {
+        Ok((run, frozen)) => (run, frozen, declarations),
+        // Only reachable panic: resource-overflow assert → budget at ceiling.
+        Err(_panic) => (
+            RuleRun {
+                fuel_used: limits.fuel,
+                mem_used: limits.mem,
+                outcome: Err(budget(limits)),
+                fault_class: Some(FaultClass::Budget),
+            },
+            None,
+            declarations,
+        ),
+    }
+}
+
+/// One starlark error (or its absence) as the classified pair every two-phase
+/// path needs: the fault CLASS, taken by downcast while the error still
+/// exists, and the [`Ending`] the outcome is built from. One owner, so the
+/// load and fire paths cannot classify the same error differently.
+fn ending_of(error: Option<&starlark::Error>) -> (Option<FaultClass>, Ending) {
+    match error {
+        None => (None, Ending::Completed),
+        Some(e) => (
+            Some(classify_starlark_fault(e)),
+            Ending::Faulted {
+                depth_overflow: is_depth_overflow(e),
+                fault: Some(e.to_string()),
+                fault_line: starlark_fault_line(e),
+            },
+        ),
+    }
+}
+
+/// A `RunCtx` used only to name the entry kind in [`classify_outcome`]'s
+/// diagnosis. The load phase calls no hook, so the ctx's own facts are never
+/// read on that path — one static beats threading a borrow through purely to
+/// satisfy a match arm that ignores it.
+static NO_CTX: std::sync::LazyLock<RunCtx> = std::sync::LazyLock::new(RunCtx::default);
+
+/// Check the caller's `prelude` on its own, before any block is looked at —
+/// § 2.2's *`prelude_invalid` refuses before any block*.
+///
+/// It is evaluated in the LOAD phase like a block, which is what makes
+/// "nothing but pure functions" enforced rather than requested: a prelude
+/// whose top level calls an effect builtin faults `effect_at_load` here.
+///
+/// Returns the fault, or `None` when the prelude is sound.
+#[must_use]
+pub fn check_prelude(source: &str, ctx: &RunCtx, limits: EvalLimits) -> Option<BlockFault> {
+    load_block(source, None, ctx, limits).fault
+}
+
+/// What one FIRE produced (design § 2.2 Evaluation — fire).
+#[derive(Debug)]
+pub struct BlockFire {
+    /// The entry's return value as JSON — § 1.3's law, *the entry's return is
+    /// the answer; `None` is no answer*.
+    pub value: Option<serde_json::Value>,
+    /// The md effect descriptors the entry emitted, in call order. The
+    /// CALLER realizes them through the ordinary doors under the page's
+    /// `caps:` — the kernel emits descriptors and opens no door, here as
+    /// everywhere.
+    pub effects: Vec<Effect>,
+    /// The classified fault, when the entry refused.
+    pub fault: Option<BlockFault>,
+    /// Interpreter steps spent.
+    pub fuel_used: u64,
+    /// Peak heap bytes.
+    pub mem_used: u64,
+}
+
+/// Call one frozen entry with a JSON input, under a `Fire` store.
+///
+/// The seam is [`Heap::access_owned_frozen_value`] — the crossing point that
+/// lets a value frozen under one evaluator be called by a fresh one.
+/// (`Module::import_public_symbols` is NOT: it imports under
+/// `Visibility::Private` and `Module::get` then answers `None`. Measured; it
+/// cost a red test, and the note is here so it costs no one a second.)
+///
+/// # Errors
+/// [`EvalError::MissingEntry`] when the frozen module carries no binding of
+/// that name. Everything the ENTRY itself does — a fault, a budget refusal, an
+/// unserializable answer — rides the returned [`BlockFire`], because those are
+/// results of a run that happened, not reasons it could not start.
+pub fn fire_entry(
+    module: &FrozenModule,
+    entry: &str,
+    input: &serde_json::Value,
+    ctx: &RunCtx,
+    host: &dyn FireHost,
+    limits: EvalLimits,
+) -> Result<BlockFire, EvalError> {
+    let Ok(entry_value) = module.get(entry) else {
+        return Err(EvalError::MissingEntry {
+            rule_id: ctx.task.clone(),
+            expected: "run",
+            wrong_plane: None,
+        });
+    };
+    let rule = Rule::new(&ctx.task, String::new());
+    let step_guard = limits.fuel.max(1);
+    let mem_guard = usize::try_from(limits.mem).unwrap_or(usize::MAX).max(1);
+
+    // The store is built inside the eval thread — it is `Cell`/`RefCell`
+    // throughout and therefore not `Sync`, exactly like every shipped plane's.
+    let fired = on_eval_stack(|| {
+        let store = PlaneStore::Emit(
+            EmitStore::new(
+                &ctx.task,
+                Provenance::Run {
+                    invocation_id: ctx.invocation_id.clone(),
+                    root_at_eval: ctx.root_at_eval.clone(),
+                },
+                0,
+            )
+            .with_host(host),
+        );
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Module::with_temp_heap(|fresh| {
+                fresh.frozen_heap().add_reference(entry_value.owner());
+                let callable = fresh.heap().access_owned_frozen_value(&entry_value);
+                let arg = alloc_json(fresh.heap(), input);
+                let mut eval = Evaluator::new(&fresh);
+                if let Err(e) = arm_guards(&mut eval, &rule, step_guard, mem_guard, limits) {
+                    return (e, None);
+                }
+                eval.extra = Some(&store);
+                let called = eval.eval_function(callable, &[arg], &[]);
+                // The value must cross the heap boundary as JSON HERE: the
+                // heap dies with this closure.
+                let rendered = called.map(|v| json_of_value(v));
+                let used_steps = eval.get_total_tick_count();
+                let used_mem = heap_bytes(fresh.heap());
+                drop(eval);
+                fire_outcome(&rule, &store, rendered, used_steps, used_mem, limits)
+            })
+        }))
+    });
+
+    let (run, value) = match fired {
+        Ok(pair) => pair,
+        Err(_panic) => (
+            RuleRun {
+                fuel_used: limits.fuel,
+                mem_used: limits.mem,
+                outcome: Err(budget(limits)),
+                fault_class: Some(FaultClass::Budget),
+            },
+            None,
+        ),
+    };
+    let (effects, fault) = match run.outcome {
+        Ok(effects) => (effects, None),
+        Err(e) => (
+            Vec::new(),
+            Some(BlockFault {
+                class: run.fault_class.unwrap_or(FaultClass::Runtime),
+                reason: eval_error_reason(&e),
+                line: eval_error_line(&e),
+            }),
+        ),
+    };
+    Ok(BlockFire {
+        value,
+        effects,
+        fault,
+        fuel_used: run.fuel_used,
+        mem_used: run.mem_used,
+    })
+}
+
+/// Turn one fire's raw call result into the metered outcome plus the JSON
+/// answer. Split out so [`fire_entry`]'s closure stays readable.
+fn fire_outcome(
+    rule: &Rule,
+    store: &PlaneStore<'_>,
+    called: Result<anyhow::Result<serde_json::Value>, starlark::Error>,
+    used_steps: u64,
+    used_mem: u64,
+    limits: EvalLimits,
+) -> (RuleRun, Option<serde_json::Value>) {
+    let effects = match store {
+        PlaneStore::Emit(store) => store.effects.take(),
+        PlaneStore::Script(_) => Vec::new(),
+    };
+    let over_budget = used_steps > limits.fuel || used_mem > limits.mem;
+    let (fault_class, ending, value) = match called {
+        // Ran, and its answer serializes: the ordinary case. A starlark
+        // `None` return collapses to NO value, never to a JSON `null` —
+        // § 1.3's law is *the entry's return is the answer; `None` is no
+        // answer*, and a row carrying `"value": null` would be an answer that
+        // says nothing rather than the absence of one. Nothing is lost:
+        // starlark has exactly one none, so the two cases were never
+        // distinguishable at the source.
+        Ok(Ok(serde_json::Value::Null)) => (None, Ending::Completed, None),
+        Ok(Ok(value)) => (None, Ending::Completed, Some(value)),
+        // Ran, but returned something outside § 2.2's admitted set. The
+        // run is NOT a starlark fault — the program is fine and the answer
+        // is not — so it classes `reply_shape` at the caller, carried here
+        // as a runtime fault with the type in its words.
+        Ok(Err(shape)) => (
+            Some(FaultClass::ReplyShape),
+            Ending::Faulted {
+                depth_overflow: false,
+                fault: Some(shape.to_string()),
+                fault_line: None,
+            },
+            None,
+        ),
+        Err(e) => (
+            Some(classify_starlark_fault(&e)),
+            Ending::Faulted {
+                depth_overflow: is_depth_overflow(&e),
+                fault: Some(e.to_string()),
+                fault_line: starlark_fault_line(&e),
+            },
+            None,
+        ),
+    };
+    let outcome = classify_outcome(
+        rule,
+        &EvalEntry::RunLoad(&NO_CTX),
+        effects,
+        &Ended {
+            ending,
+            over_budget,
+        },
+        limits,
+    );
+    (
+        RuleRun {
+            fuel_used: used_steps,
+            mem_used: used_mem,
+            outcome,
+            fault_class: if over_budget {
+                Some(FaultClass::Budget)
+            } else {
+                fault_class
+            },
+        },
+        value,
+    )
 }
 
 /// The evaluator's own words for one fault — verbatim where the error kept
@@ -1876,15 +2758,7 @@ fn metered_eval(
                 script.note_echo_positions(&ast);
             }
 
-            let EntryRun {
-                aborted,
-                fault_class,
-                depth_overflow,
-                fault,
-                fault_line,
-                missing,
-                wrong_plane,
-            } = dispatch_entry(&mut eval, &module, entry, ast, globals, arg_value);
+            let run = dispatch_entry(&mut eval, &module, entry, ast, globals, arg_value);
 
             let used_steps = eval.get_total_tick_count();
             let used_mem = heap_bytes(module.heap());
@@ -1896,18 +2770,19 @@ fn metered_eval(
             };
 
             let over_budget = used_steps > limits.fuel || used_mem > limits.mem;
+            // A native-frame overflow is a budget verdict whichever side of
+            // the classification asks, so it is read out before the ending
+            // consumes it.
+            let overflowed = run.depth_overflow;
+            let fault_class = run.fault_class;
+            let ending = run.ending();
             let outcome = classify_outcome(
                 rule,
                 entry,
                 effects,
-                &Aborted {
-                    aborted,
-                    depth_overflow,
+                &Ended {
+                    ending,
                     over_budget,
-                    missing,
-                    wrong_plane,
-                    fault,
-                    fault_line,
                 },
                 limits,
             );
@@ -1916,7 +2791,7 @@ fn metered_eval(
                 mem_used: used_mem,
                 outcome,
                 // Budget is the kernel's OWN accounting, not starlark's word.
-                fault_class: if over_budget || depth_overflow {
+                fault_class: if over_budget || overflowed {
                     Some(FaultClass::Budget)
                 } else {
                     fault_class
@@ -1958,17 +2833,32 @@ fn arm_guards(
     Ok(())
 }
 
-/// How one entry's evaluation ended, before it is turned into an outcome.
-/// A struct rather than seven positional arguments — the booleans are all
-/// the same type and swapping two of them would compile.
-struct Aborted {
-    aborted: bool,
-    depth_overflow: bool,
+/// The three ways one entry's evaluation can end, each carrying only the
+/// facts its own case has. An enum rather than a bag of booleans: the states
+/// are mutually exclusive, so `missing && aborted` was never representable in
+/// the domain and should not be representable in the type.
+enum Ending {
+    /// A hooked plane found no hook of its own; `wrong_plane` names the OTHER
+    /// plane's hook when that is what the source defines instead.
+    Missing { wrong_plane: Option<&'static str> },
+    /// The entry aborted. `depth_overflow` separates a native-frame overflow
+    /// (which is a budget verdict) from a genuine fault.
+    Faulted {
+        depth_overflow: bool,
+        fault: Option<String>,
+        fault_line: Option<u32>,
+    },
+    /// The entry ran to completion.
+    Completed,
+}
+
+/// How one entry's evaluation ended, before it is turned into an outcome:
+/// the [`Ending`], plus the metering verdict — measured from the evaluator
+/// AFTER the entry returned, so it is orthogonal to how the entry ended and
+/// stays a field of its own.
+struct Ended {
+    ending: Ending,
     over_budget: bool,
-    missing: bool,
-    wrong_plane: Option<&'static str>,
-    fault: Option<String>,
-    fault_line: Option<u32>,
 }
 
 /// The typed outcome of one metered evaluation. Extracted from
@@ -1979,33 +2869,35 @@ fn classify_outcome(
     rule: &Rule,
     entry: &EvalEntry<'_>,
     effects: Vec<Effect>,
-    end: &Aborted,
+    end: &Ended,
     limits: EvalLimits,
 ) -> Result<Vec<Effect>, EvalError> {
-    if end.missing {
-        return Err(EvalError::MissingEntry {
+    match &end.ending {
+        Ending::Missing { wrong_plane } => Err(EvalError::MissingEntry {
             rule_id: rule.id.clone(),
             expected: entry.hook().unwrap_or_default(),
-            wrong_plane: end.wrong_plane,
-        });
-    }
-    if end.aborted {
+            wrong_plane: *wrong_plane,
+        }),
         // over_budget / StackOverflow → budget; else genuine fault.
-        return if end.over_budget || end.depth_overflow {
-            Err(budget(limits))
-        } else {
-            Err(EvalError::Runtime {
-                rule_id: rule.id.clone(),
-                reason: end.fault.clone().unwrap_or_default(),
-                line: end.fault_line,
-            })
-        };
-    }
-    if end.over_budget {
+        Ending::Faulted {
+            depth_overflow,
+            fault,
+            fault_line,
+        } => {
+            if end.over_budget || *depth_overflow {
+                Err(budget(limits))
+            } else {
+                Err(EvalError::Runtime {
+                    rule_id: rule.id.clone(),
+                    reason: fault.clone().unwrap_or_default(),
+                    line: *fault_line,
+                })
+            }
+        }
         // Completed without abort but exact mem still over — budget.
-        return Err(budget(limits));
+        Ending::Completed if end.over_budget => Err(budget(limits)),
+        Ending::Completed => Ok(effects),
     }
-    Ok(effects)
 }
 
 /// How one plane's entry point finished: aborted with a fault, or (hooked
@@ -2025,6 +2917,28 @@ struct EntryRun {
     missing: bool,
     /// …and the other plane's hook is what the source defines instead.
     wrong_plane: Option<&'static str>,
+}
+
+impl EntryRun {
+    /// This run as one [`Ending`], in the shipped precedence: a missing hook
+    /// first, then an abort, then a clean completion. The precedence lives
+    /// HERE, once, rather than at each caller — it is the part a reader has
+    /// to get right and the part a second copy would get wrong.
+    fn ending(self) -> Ending {
+        if self.missing {
+            Ending::Missing {
+                wrong_plane: self.wrong_plane,
+            }
+        } else if self.aborted {
+            Ending::Faulted {
+                depth_overflow: self.depth_overflow,
+                fault: self.fault,
+                fault_line: self.fault_line,
+            }
+        } else {
+            Ending::Completed
+        }
+    }
 }
 
 /// Evaluate the module, then enter the plane: the hooked planes look their hook
@@ -2226,7 +3140,7 @@ mod tests {
     /// appearing in `ALL`, and cannot record without `push`, so it can
     /// escape neither the gate nor this assertion.
     /// A probe store for the phase tests.
-    fn probe_store(phase: EffectPhase) -> EmitStore {
+    fn probe_store(phase: EffectPhase) -> EmitStore<'static> {
         EmitStore::new(
             "probe",
             Provenance::Run {
@@ -2240,16 +3154,13 @@ mod tests {
 
     /// Parse + evaluate one hook-plane module against a store, freeze it, and
     /// hand back the frozen module — the load half, in miniature.
-    fn load_module(
-        source: &str,
-        store: &PlaneStore<'_>,
-    ) -> Result<starlark::environment::FrozenModule, String> {
+    fn load_module(source: &str, store: &PlaneStore<'_>) -> Result<FrozenModule, String> {
         Module::with_temp_heap(|module| {
-            let ast = AstModule::parse("probe", source.to_owned(), &rule_dialect())
+            let ast = AstModule::parse("probe", source.to_owned(), &script_dialect())
                 .map_err(|e| format!("parse: {e}"))?;
             let mut eval = Evaluator::new(&module);
             eval.extra = Some(store);
-            let outcome = eval.eval_module(ast, &effect_globals());
+            let outcome = eval.eval_module(ast, &hook_globals());
             drop(eval);
             outcome.map_err(|e| format!("{e}"))?;
             module.freeze().map_err(|e| format!("freeze: {e:?}"))
@@ -2395,7 +3306,10 @@ def run(event):
     /// drives. Kept beside `EffectKind::ALL` and checked against it, so a new
     /// effect kind fails this module rather than silently going untested.
     const WELL_FORMED_CALLS: [(EffectKind, &str); 8] = [
-        (EffectKind::SetField, r#"set_field(field = "s", value = "v")"#),
+        (
+            EffectKind::SetField,
+            r#"set_field(field = "s", value = "v")"#,
+        ),
         (
             EffectKind::AppendSection,
             r#"append_section(section = "S", content = "c")"#,
@@ -2446,7 +3360,10 @@ def run(event):
         };
 
         // A well-formed effect call at load: the phase class, by downcast.
-        let (class, line) = classify("\ncreate(path = \"p.md\", body = \"b\")\n", EffectPhase::Load);
+        let (class, line) = classify(
+            "\ncreate(path = \"p.md\", body = \"b\")\n",
+            EffectPhase::Load,
+        );
         assert_eq!(class, FaultClass::EffectAtLoad);
         assert_eq!(
             class.as_str(),
@@ -2506,6 +3423,454 @@ def run(event):
         );
     }
 
+    /// A probe `RunCtx` — the load/fire paths read only its `task` (as the
+    /// rule id) and its provenance strings.
+    fn probe_ctx() -> RunCtx {
+        RunCtx {
+            task: "probe".to_owned(),
+            invocation_id: "i".to_owned(),
+            root_at_eval: "r".to_owned(),
+            ..RunCtx::default()
+        }
+    }
+
+    /// A `FireHost` that records what `bash()` was asked for and answers a
+    /// fixed row — enough to prove the seam is reached and its answer crosses
+    /// back, without a process anywhere near a unit test.
+    struct ProbeHost {
+        calls: std::sync::Mutex<Vec<BashCall>>,
+    }
+
+    impl FireHost for ProbeHost {
+        fn bash(&self, call: &BashCall) -> Result<serde_json::Value, String> {
+            self.calls
+                .lock()
+                .expect("probe host lock")
+                .push(call.clone());
+            Ok(serde_json::json!({"exit": 0, "stdout": "hi", "stderr": "", "timed_out": false}))
+        }
+    }
+
+    /// `declare()` publishes every key VERBATIM and reads exactly one of them.
+    ///
+    /// The design's law (§ 2.4) is that `declarations` is uninterpreted data —
+    /// so this asserts on keys the engine has no opinion about at all, which
+    /// is the only way to catch an engine that quietly starts having one.
+    #[test]
+    fn declare_publishes_its_keys_verbatim_and_reads_only_impl() {
+        let source = "\
+def run(event):
+    return None
+
+declare(on = \"Stop\", match = \"Bash\", weight = 3, nested = {\"a\": [1, True, None]})
+";
+        let loaded = load_block(source, None, &probe_ctx(), EvalLimits::default());
+        assert!(loaded.fault.is_none(), "load faulted: {:?}", loaded.fault);
+        assert_eq!(loaded.declarations.len(), 1);
+        let declaration = &loaded.declarations[0];
+        assert_eq!(
+            declaration.data,
+            serde_json::json!({
+                "on": "Stop",
+                "match": "Bash",
+                "weight": 3,
+                "nested": {"a": [1, true, null]},
+            }),
+            "every key the author passed rides verbatim, and `impl` is not among them"
+        );
+        assert_eq!(
+            declaration.entry,
+            DeclaredEntry::Evaluated {
+                name: "run".to_owned()
+            },
+            "no `impl` means the conventional entry"
+        );
+        assert_eq!(declaration.entry.kind(), "evaluated");
+    }
+
+    /// An explicit `declare(impl = f)` names the def the fire will call.
+    ///
+    /// This pins an INTERNAL of starlark's rendering: a def's `Display` is
+    /// `ParametersSpec::signature()`, which writes the function name and
+    /// nothing else. The whole explicit-`impl` path resolves the entry that
+    /// way, so a silent change upstream would send every such fire to the
+    /// wrong function — or to none — and nothing else would notice.
+    #[test]
+    fn a_declared_impl_names_the_def_the_fire_calls() {
+        let source = "\
+def check_stop(event):
+    return {\"deny\": \"no\"}
+
+declare(on = \"Stop\", impl = check_stop)
+";
+        let loaded = load_block(source, None, &probe_ctx(), EvalLimits::default());
+        assert!(loaded.fault.is_none(), "load faulted: {:?}", loaded.fault);
+        assert_eq!(
+            loaded.declarations[0].entry,
+            DeclaredEntry::Evaluated {
+                name: "check_stop".to_owned()
+            }
+        );
+        // …and the name really resolves in the frozen module: naming it is
+        // worth nothing if the fire cannot find it.
+        let module = loaded.module.expect("a clean load freezes");
+        let host = ProbeHost {
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+        let fired = fire_entry(
+            &module,
+            "check_stop",
+            &serde_json::json!({"name": "Stop"}),
+            &probe_ctx(),
+            &host,
+            EvalLimits::default(),
+        )
+        .expect("the named entry exists");
+        assert_eq!(fired.value, Some(serde_json::json!({"deny": "no"})));
+    }
+
+    /// `declare(impl = …)` takes a callable or an `exec()` value, and says so
+    /// by TYPE for anything else — the `impl_type` fault.
+    #[test]
+    fn an_impl_that_is_neither_callable_nor_exec_refuses_by_type() {
+        let loaded = load_block(
+            "declare(on = \"Stop\", impl = 7)\n",
+            None,
+            &probe_ctx(),
+            EvalLimits::default(),
+        );
+        let fault = loaded.fault.expect("an int is not an entry");
+        assert!(
+            fault.reason.contains("`impl` is int"),
+            "the refusal must name what the author actually passed: {}",
+            fault.reason
+        );
+    }
+
+    /// `exec()` declares a process entry: legal at load, carried as data.
+    #[test]
+    fn exec_declares_a_process_entry_as_data() {
+        let source = "\
+declare(on = \"Stop\", impl = exec(\"bash\", block = \"check\", args = [\"--quiet\"]))
+";
+        let loaded = load_block(source, None, &probe_ctx(), EvalLimits::default());
+        assert!(loaded.fault.is_none(), "load faulted: {:?}", loaded.fault);
+        assert_eq!(
+            loaded.declarations[0].entry,
+            DeclaredEntry::Exec(ExecSpec {
+                interpreter: "bash".to_owned(),
+                program: ExecProgram::Block("check".to_owned()),
+                args: vec!["--quiet".to_owned()],
+                env: BTreeMap::new(),
+            })
+        );
+        assert_eq!(loaded.declarations[0].entry.kind(), "exec");
+    }
+
+    /// Exactly one of `cmd` / `block`, on both builtins that take the pair.
+    #[test]
+    fn exec_takes_exactly_one_program() {
+        for (source, why) in [
+            (
+                "declare(impl = exec(\"bash\", cmd = \"true\", block = \"c\"))\n",
+                "exclusive",
+            ),
+            ("declare(impl = exec(\"bash\"))\n", "neither"),
+        ] {
+            let loaded = load_block(source, None, &probe_ctx(), EvalLimits::default());
+            let fault = loaded
+                .fault
+                .unwrap_or_else(|| panic!("{why}: the call should have refused"));
+            assert!(
+                fault.reason.contains("exec:"),
+                "{why}: the refusal must name the builtin: {}",
+                fault.reason
+            );
+        }
+    }
+
+    /// `declare()` and `exec()` are the LOAD phase's — A1's mirror gate.
+    #[test]
+    fn declare_and_exec_refuse_during_the_fire_phase() {
+        for (builtin, call) in [
+            ("declare", "declare(on = \"Stop\")"),
+            ("exec", "exec(\"bash\", cmd = \"true\")"),
+        ] {
+            let source = format!("def run(event):\n    {call}\n    return None\n");
+            let loaded = load_block(&source, None, &probe_ctx(), EvalLimits::default());
+            assert!(
+                loaded.fault.is_none(),
+                "`{builtin}` inside a def must LOAD fine — the refusal is about the \
+                 phase, not the name: {:?}",
+                loaded.fault
+            );
+            let module = loaded.module.expect("a clean load freezes");
+            let host = ProbeHost {
+                calls: std::sync::Mutex::new(Vec::new()),
+            };
+            let fired = fire_entry(
+                &module,
+                "run",
+                &serde_json::Value::Null,
+                &probe_ctx(),
+                &host,
+                EvalLimits::default(),
+            )
+            .expect("`run` exists");
+            let fault = fired
+                .fault
+                .unwrap_or_else(|| panic!("`{builtin}` did not refuse at fire"));
+            assert_eq!(
+                fault.class,
+                FaultClass::DeclareAtFire,
+                "`{builtin}` at fire is `declare_at_fire`, by downcast"
+            );
+            assert!(
+                fault.reason.contains("only runs at load"),
+                "`{builtin}` refused at fire for the wrong reason: {}",
+                fault.reason
+            );
+        }
+    }
+
+    /// A top-level `bash()` is the `effect_at_load` fault at its own line —
+    /// gate row 8's subject. `bash` is not an `EffectKind`, so the
+    /// table-driven purity test above cannot reach it and this one must.
+    #[test]
+    fn a_top_level_bash_is_effect_at_load_with_its_line() {
+        let source = "\
+x = 1
+bash(cmd = \"true\")
+";
+        let loaded = load_block(source, None, &probe_ctx(), EvalLimits::default());
+        let fault = loaded.fault.expect("`bash` at load must refuse");
+        assert_eq!(fault.class, FaultClass::EffectAtLoad);
+        assert_eq!(fault.class.as_str(), "effect_at_load");
+        assert_eq!(
+            fault.line,
+            Some(2),
+            "the fault points at the CALL, not at the block: {fault:?}"
+        );
+        assert!(loaded.module.is_none(), "a faulted load freezes nothing");
+    }
+
+    /// A `bash()` inside the entry reaches the process seam at fire, and its
+    /// answer crosses back into the program as a value.
+    #[test]
+    fn bash_reaches_the_process_seam_at_fire() {
+        let source = "\
+def run(event):
+    out = bash(cmd = \"echo hi\", stdin = event)
+    return {\"exit\": out[\"exit\"], \"said\": out[\"stdout\"]}
+";
+        let loaded = load_block(source, None, &probe_ctx(), EvalLimits::default());
+        assert!(loaded.fault.is_none(), "load faulted: {:?}", loaded.fault);
+        let module = loaded.module.expect("a clean load freezes");
+        let host = ProbeHost {
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+        let fired = fire_entry(
+            &module,
+            "run",
+            &serde_json::json!({"name": "Stop"}),
+            &probe_ctx(),
+            &host,
+            EvalLimits::default(),
+        )
+        .expect("`run` exists");
+        assert!(fired.fault.is_none(), "fire faulted: {:?}", fired.fault);
+        assert_eq!(
+            fired.value,
+            Some(serde_json::json!({"exit": 0, "said": "hi"})),
+            "the seam's row reached the program and the program's answer came back"
+        );
+        let calls = host.calls.lock().expect("probe host lock");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].program, ExecProgram::Cmd("echo hi".to_owned()));
+        assert_eq!(
+            calls[0].stdin.as_deref(),
+            Some(r#"{"name":"Stop"}"#),
+            "a dict `stdin` is serialized as COMPACT JSON before it reaches the pipe"
+        );
+    }
+
+    /// The prelude binds into the block's module — and the block keeps its
+    /// OWN line numbers.
+    ///
+    /// The obvious implementation concatenates the prelude ahead of the source,
+    /// which passes the first half of this test and fails the second: every
+    /// `fault.line` would be offset by the prelude's length, and `fault.line`
+    /// is the one number an author navigates by. Both halves are asserted here
+    /// because only the pair distinguishes the two implementations.
+    #[test]
+    fn a_prelude_binds_into_the_block_and_leaves_its_line_numbers_alone() {
+        let prelude = "\
+def deny(reason):
+    return {\"deny\": reason}
+
+def allow(reason):
+    return {\"allow\": reason}
+";
+        let source = "\
+def run(event):
+    return deny(\"no stash\")
+";
+        let loaded = load_block(source, Some(prelude), &probe_ctx(), EvalLimits::default());
+        assert!(loaded.fault.is_none(), "load faulted: {:?}", loaded.fault);
+        let module = loaded.module.expect("a clean load freezes");
+        let host = ProbeHost {
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+        let fired = fire_entry(
+            &module,
+            "run",
+            &serde_json::Value::Null,
+            &probe_ctx(),
+            &host,
+            EvalLimits::default(),
+        )
+        .expect("`run` exists");
+        assert_eq!(
+            fired.value,
+            Some(serde_json::json!({"deny": "no stash"})),
+            "a prelude binding is callable from the block and survives the freeze"
+        );
+
+        // The second half: a fault in the BLOCK reports the block's line.
+        let faulty = "\
+x = 1
+bash(cmd = \"true\")
+";
+        let loaded = load_block(faulty, Some(prelude), &probe_ctx(), EvalLimits::default());
+        let fault = loaded.fault.expect("`bash` at load must refuse");
+        assert_eq!(
+            fault.line,
+            Some(2),
+            "the prelude's 5 lines must not move the block's line 2: {fault:?}"
+        );
+    }
+
+    /// A prelude that is not pure refuses on its own, before any block —
+    /// § 2.2's `prelude_invalid`.
+    #[test]
+    fn a_prelude_that_acts_refuses_before_any_block() {
+        let fault = check_prelude(
+            "create(path = \"a.md\", body = \"x\")\n",
+            &probe_ctx(),
+            EvalLimits::default(),
+        )
+        .expect("an effectful prelude must refuse");
+        assert_eq!(fault.class, FaultClass::EffectAtLoad);
+        assert!(
+            check_prelude(
+                "def deny(r):\n    return r\n",
+                &probe_ctx(),
+                EvalLimits::default()
+            )
+            .is_none(),
+            "a prelude of pure functions is sound"
+        );
+    }
+
+    /// The fire's md effects land in the FIRE store and cross back as
+    /// descriptors for the caller's doors — the kernel opens none itself.
+    #[test]
+    fn a_fire_emits_descriptors_for_the_caller_to_realize() {
+        let source = "\
+def run(event):
+    create(path = event[\"path\"], body = \"born\")
+    return None
+";
+        let loaded = load_block(source, None, &probe_ctx(), EvalLimits::default());
+        assert!(loaded.fault.is_none(), "load faulted: {:?}", loaded.fault);
+        assert!(
+            loaded.effects.is_empty(),
+            "the LOAD phase applied something: {:?}",
+            loaded.effects
+        );
+        let module = loaded.module.expect("a clean load freezes");
+        let host = ProbeHost {
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+        let fired = fire_entry(
+            &module,
+            "run",
+            &serde_json::json!({"path": "agents/x/x.md"}),
+            &probe_ctx(),
+            &host,
+            EvalLimits::default(),
+        )
+        .expect("`run` exists");
+        assert!(fired.fault.is_none(), "fire faulted: {:?}", fired.fault);
+        assert_eq!(
+            fired.value, None,
+            "falling off the end is `None` — no answer, and that is legal"
+        );
+        assert_eq!(fired.effects.len(), 1);
+        assert_eq!(fired.effects[0].kind, EffectKind::Create);
+        assert_eq!(
+            fired.effects[0].args.get("path"),
+            Some(&ArgValue::Str("agents/x/x.md".to_owned()))
+        );
+    }
+
+    /// An answer outside § 2.2's admitted set is `reply_shape`, named by
+    /// type — not `runtime`, which would send the author hunting a bug that
+    /// is not in their program.
+    #[test]
+    fn a_reply_outside_the_admitted_set_is_reply_shape() {
+        let source = "\
+def run(event):
+    return run
+";
+        let loaded = load_block(source, None, &probe_ctx(), EvalLimits::default());
+        assert!(loaded.fault.is_none(), "load faulted: {:?}", loaded.fault);
+        let module = loaded.module.expect("a clean load freezes");
+        let host = ProbeHost {
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+        let fired = fire_entry(
+            &module,
+            "run",
+            &serde_json::Value::Null,
+            &probe_ctx(),
+            &host,
+            EvalLimits::default(),
+        )
+        .expect("`run` exists");
+        let fault = fired.fault.expect("a function is not a reply");
+        assert_eq!(fault.class, FaultClass::ReplyShape);
+        assert_eq!(fault.class.as_str(), "reply_shape");
+        assert!(
+            fault.reason.contains("function"),
+            "the refusal names what was returned: {}",
+            fault.reason
+        );
+    }
+
+    /// A fire naming an entry the module does not define is `MissingEntry` —
+    /// typed, before any evaluation.
+    #[test]
+    fn a_fire_on_an_undefined_entry_is_missing_entry() {
+        let loaded = load_block("x = 1\n", None, &probe_ctx(), EvalLimits::default());
+        let module = loaded.module.expect("a clean load freezes");
+        let host = ProbeHost {
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+        let outcome = fire_entry(
+            &module,
+            "run",
+            &serde_json::Value::Null,
+            &probe_ctx(),
+            &host,
+            EvalLimits::default(),
+        );
+        assert!(
+            matches!(outcome, Err(EvalError::MissingEntry { .. })),
+            "a missing entry is typed, not a runtime fault: {outcome:?}"
+        );
+    }
+
     /// The three entries hold their surfaces separately, and the script
     /// builtins never join the hooked planes' — otherwise `on_change` rules
     /// would gain live reads and the change plane would stop being hermetic by
@@ -2534,6 +3899,29 @@ def run(event):
             script, expected_script,
             "the PURE script plane adds read/me/put only — provably pure by \
              default (script-effects ruling: #17 stands on this path)"
+        );
+
+        // A1 assertion (1): the hook plane is the hooked surface plus exactly
+        // three names. Written as a set equality over `EffectKind::ALL` rather
+        // than a literal list so a new effect kind cannot join the globals
+        // without this test noticing — the structural half of "an effect
+        // builtin without the gate cannot exist".
+        let hook = plane_surface(&hook_globals());
+        println!("POPULATION hook-plane surface = {hook:?}");
+        let expected_hook: HashSet<String> = expected_hooked
+            .iter()
+            .cloned()
+            .chain(
+                ["declare", "exec", "bash"]
+                    .into_iter()
+                    .map(ToOwned::to_owned),
+            )
+            .collect();
+        assert_eq!(
+            hook, expected_hook,
+            "the hook plane is the effect surface ∪ {{declare, exec, bash}} — ONE closed \
+             set for compile, freeze and fire (A1); a name here that is not in the table \
+             is a builtin nothing gates"
         );
 
         // Effects mode: the admitted builtin joins EXACTLY when named — the

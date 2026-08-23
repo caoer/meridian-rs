@@ -638,15 +638,7 @@ fn decode_run_target(t: &Map<String, Value>, i: usize) -> Result<wire::RunTarget
         )));
     }
     let page = decode_run_page(t, i, source.is_some())?;
-    let task = match t.get("task") {
-        None => None,
-        Some(Value::String(s)) => Some(s.clone()),
-        Some(_) => {
-            return Err(bad_request(format!(
-                "`targets[{i}].task` must be a string on `run`"
-            )));
-        }
-    };
+    let task = decode_run_task(t, i)?;
     let args = decode_run_args(t, i)?;
     let env = decode_run_env(t, i)?;
     let dry = match t.get("dry") {
@@ -663,22 +655,23 @@ fn decode_run_target(t: &Map<String, Value>, i: usize) -> Result<wire::RunTarget
     // starlark value, so there is no shape to check here beyond presence.
     // `null` is a VALUE (starlark `None`), not an absence, so it is kept.
     let input = t.get("input").cloned();
-    let timeout_ms = match t.get("timeout_ms") {
-        None | Some(Value::Null) => None,
-        Some(v) => match v.as_u64() {
-            Some(ms) if ms > 0 => Some(ms),
-            _ => {
-                return Err(bad_request(format!(
-                    "`targets[{i}].timeout_ms` must be a positive integer on \
-                     `run` — it is a CEILING (effective limit = min(declared, \
-                     ceiling)); zero would name a target that cannot run"
-                )));
-            }
-        },
-    };
+    let timeout_ms = decode_run_timeout(t, i)?;
     let budget = decode_run_budget(t, i)?;
 
-    exclusions(i, &Target { mode, task: &task, args: &args, env: &env, block: &block, input: &input, timeout_ms, budget, source: &source })?;
+    exclusions(
+        i,
+        &Target {
+            mode,
+            task: &task,
+            args: &args,
+            env: &env,
+            block: &block,
+            input: &input,
+            timeout_ms,
+            budget,
+            source: &source,
+        },
+    )?;
 
     Ok(wire::RunTarget {
         page,
@@ -699,6 +692,33 @@ fn decode_run_target(t: &Map<String, Value>, i: usize) -> Result<wire::RunTarget
     })
 }
 
+/// One target's `task` — the shipped addressing, unchanged.
+fn decode_run_task(t: &Map<String, Value>, i: usize) -> Result<Option<String>, Box<ErrorBody>> {
+    match t.get("task") {
+        None => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(bad_request(format!(
+            "`targets[{i}].task` must be a string on `run`"
+        ))),
+    }
+}
+
+/// One mode-bearing target's `timeout_ms` CEILING (effective limit =
+/// min(declared, ceiling)).
+fn decode_run_timeout(t: &Map<String, Value>, i: usize) -> Result<Option<u64>, Box<ErrorBody>> {
+    match t.get("timeout_ms") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => match v.as_u64() {
+            Some(ms) if ms > 0 => Ok(Some(ms)),
+            _ => Err(bad_request(format!(
+                "`targets[{i}].timeout_ms` must be a positive integer on \
+                 `run` — it is a CEILING (effective limit = min(declared, \
+                 ceiling)); zero would name a target that cannot run"
+            ))),
+        },
+    }
+}
+
 /// One target's `page`. Required everywhere except on a `source` target,
 /// which carries the bytes instead — the ONE place this amendment relaxes a
 /// shipped requirement.
@@ -707,21 +727,18 @@ fn decode_run_page(
     i: usize,
     has_source: bool,
 ) -> Result<String, Box<ErrorBody>> {
-    Ok(match t.get("page") {
-        Some(Value::String(p)) if !p.is_empty() => p.clone(),
-        Some(_) => {
-            return Err(bad_request(format!(
-                "`targets[{i}].page` must be a non-empty string on `run`"
-            )));
-        }
+    match t.get("page") {
+        Some(Value::String(p)) if !p.is_empty() => Ok(p.clone()),
         // `source` replaces `page`, and only there.
-        None if has_source => String::new(),
-        None => {
-            return Err(bad_request(format!(
-                "`targets[{i}].page` must be a non-empty string on `run`"
-            )));
-        }
-    })
+        None if has_source => Ok(String::new()),
+        // Absent and present-but-wrong are ONE refusal on purpose: the
+        // caller's next move is the same either way — put a non-empty string
+        // there — and two spellings of it would be two strings to keep in
+        // step for no reader's benefit.
+        _ => Err(bad_request(format!(
+            "`targets[{i}].page` must be a non-empty string on `run`"
+        ))),
+    }
 }
 
 /// One target's `mode`. Read FIRST at the call site: it decides which of the
