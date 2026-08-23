@@ -115,7 +115,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         None => Ok(None),
     };
     let ambient = || -> Result<PathBuf, Fail> {
-        Ok(crate::resolve::resolve_runtime(&cwd)
+        Ok(crate::resolve::resolve_runtime(workspace::Base::Cwd(&cwd))
             .map_err(|e| {
                 Fail::tool(format!(
                     "cannot resolve workspace for {}: {e}",

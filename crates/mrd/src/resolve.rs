@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use cache::CacheDrawer;
 use registry::Client;
 use serde_json::json;
-use workspace::{ResolveError, Tier};
+use workspace::{Base, ResolveError, Tier};
 
 use crate::{Fail, Format, current_dir};
 
@@ -117,14 +117,19 @@ impl Resolved {
     }
 }
 
-/// Resolve the workspace for `cwd` per the settled ladder — the STRICT lane
+/// Resolve the workspace for `base` per the settled ladder — the STRICT lane
 /// every corpus verb takes. A tree outside every defined root refuses
 /// ([`RuntimeResolveError::OutsideWorkspace`], exit 2 at the callers) instead
 /// of adopting the bare cwd and walking a corpus that was never a workspace
 /// (measured 2026-08-20: `mrd rules` in an unmarked 75-repo parent adopted it
 /// and walked 46k files for ~21 s to report nothing).
-pub(crate) fn resolve_runtime(cwd: &Path) -> Result<Resolved, RuntimeResolveError> {
-    let resolved = resolve_runtime_lenient(cwd).map_err(RuntimeResolveError::Ladder)?;
+///
+/// The [`Base`] is the door's answer to "did the operator name this path?" —
+/// [`workspace::Base::Named`] for a PATH argument, [`workspace::Base::Cwd`] for
+/// the process working directory. It decides whether `MERIDIAN_WORKSPACE` gets
+/// to answer at all; see [`workspace::resolve_with_override`].
+pub(crate) fn resolve_runtime(base: Base<'_>) -> Result<Resolved, RuntimeResolveError> {
+    let resolved = resolve_runtime_lenient(base).map_err(RuntimeResolveError::Ladder)?;
     match resolved.source {
         Source::Ephemeral => Err(RuntimeResolveError::OutsideWorkspace {
             path: resolved.workspace,
@@ -136,7 +141,7 @@ pub(crate) fn resolve_runtime(cwd: &Path) -> Result<Resolved, RuntimeResolveErro
         // `mrd unregister` can still name and drop the stale registration.
         Source::DaemonAdopted if !config::mount::is_defined_root(&resolved.workspace) => {
             Err(RuntimeResolveError::StaleDaemonRoot {
-                path: cwd.to_path_buf(),
+                path: base.path().to_path_buf(),
                 workspace: resolved.workspace,
             })
         }
@@ -149,8 +154,8 @@ pub(crate) fn resolve_runtime(cwd: &Path) -> Result<Resolved, RuntimeResolveErro
 /// legitimate outside a defined root — `mrd unregister` (dropping a stale
 /// drawer/registry entry must work after the markers are gone). Everything
 /// else takes [`resolve_runtime`].
-pub(crate) fn resolve_runtime_lenient(cwd: &Path) -> Result<Resolved, ResolveError> {
-    let answer = workspace::resolve(cwd)?;
+pub(crate) fn resolve_runtime_lenient(base: Base<'_>) -> Result<Resolved, ResolveError> {
+    let answer = workspace::resolve(base)?;
     match answer.root() {
         // A rung answered: that root is the workspace, drawer opened directly.
         Some(root) => Ok(Resolved {
@@ -160,7 +165,10 @@ pub(crate) fn resolve_runtime_lenient(cwd: &Path) -> Result<Resolved, ResolveErr
         }),
         // Unanchored: taking the cwd buys no registration — the daemon may adopt
         // it, otherwise the store is ephemeral.
-        None => Ok(resolve_unanchored(cwd, answer.root_or_cwd().to_path_buf())),
+        None => Ok(resolve_unanchored(
+            base.path(),
+            answer.root_or_cwd().to_path_buf(),
+        )),
     }
 }
 
@@ -221,7 +229,15 @@ pub(crate) fn run_command(target_arg: Option<&str>, format: Format) -> Result<()
         Some(p) => cwd.join(p),
         None => cwd,
     };
-    let resolved = resolve_runtime(&base).map_err(|e| {
+    // `mrd resolve PATH` reports what the ladder says about the path the
+    // operator NAMED; with no PATH it reports the ambient cwd, where the
+    // override still answers. Reporting the override's tree under a named PATH
+    // would answer a question nobody asked.
+    let ladder_base = match target_arg {
+        Some(_) => Base::Named(&base),
+        None => Base::Cwd(&base),
+    };
+    let resolved = resolve_runtime(ladder_base).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace for {}: {e}",
             base.display()
@@ -277,7 +293,7 @@ fn run_rooted(spelling: &str, cwd: &Path, format: Format) -> Result<(), Fail> {
         // The refusal frames with the workspace the caller stands in — no
         // target workspace exists to name. Lenient on purpose: the frame is a
         // label, and a rooted refusal must still print outside a workspace.
-        let ambient = resolve_runtime_lenient(cwd)
+        let ambient = resolve_runtime_lenient(Base::Cwd(cwd))
             .map_err(|e| {
                 Fail::tool(format!(
                     "cannot resolve workspace for {}: {e}",

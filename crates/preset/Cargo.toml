@@ -22,7 +22,9 @@ fs = { workspace = true }
 # The U2.6 guarded create: every scaffold file / new record is born through
 # wire_serve::write::create (CAS if_absent, journaled birth, gate seam).
 wire-serve = { workspace = true }
-# The Path/ErrorCode/ErrorBody newtypes the guarded create takes and returns.
+# The Path newtype the guarded create takes, and the ErrorBody it returns —
+# whose `is_path_occupied` discriminates the occupancy refusal from every other
+# `cas_mismatch`.
 wire = { workspace = true }
 # The CompiledRuleset slice the guarded create's gate seam evaluates (&[] ⇒ the
 # bare commit; the armed set mounts at the write door, U4.2).

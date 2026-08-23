@@ -89,7 +89,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // The stdin Value is what rides the wire — re-serializing the decoded
     // Vec<Edit> is a second shape. Decode already proved the §4.4 wall.
     let cwd = current_dir()?;
-    let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
+    let resolved = crate::resolve::resolve_runtime(workspace::Base::Cwd(&cwd)).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace for {}: {e}",
             cwd.display()
