@@ -831,6 +831,13 @@ fn an_armed_sub_defers_idle_exit_and_releasing_it_restores_mortality() {
     // retract (CI 677 on 46caf36b3). Park past the first reap tick
     // (REAP_TICK = 200ms) so the hold measures the armed sub, not handshake
     // scheduling.
+    //
+    // The park is a FLOOR (card `registry-sweep-rebuild-flake-same-sha-split`).
+    // It used to STORE into the activity clock, which the `hello`/`sub` below
+    // then overwrote through `note_request` — the park was destroyed by the
+    // handshake it was covering, leaving the ordinary 2s horizon to run
+    // against the gap before `has_subscribers` turns true. Green on an idle
+    // box, red on a loaded one, at one identical tree.
     server.registry().park_activity_clock(365 * 24 * 60 * 60);
 
     let mut sub = Conn::open(server.socket_path());
@@ -852,6 +859,9 @@ fn an_armed_sub_defers_idle_exit_and_releasing_it_restores_mortality() {
         "parking the birth clock must keep idle-exit from latching during handshake"
     );
     // Horizon starts now. No further request traffic: only the armed sub holds.
+    // Release first — the park is a floor, so `note_liveness` alone could not
+    // bring the clock back down out of the future.
+    server.registry().release_activity_park();
     server.registry().note_liveness();
 
     let hold = Instant::now() + Duration::from_secs(4);
