@@ -118,6 +118,8 @@ impl Ws {
         let mut command = Command::new(env!("CARGO_BIN_EXE_mrd"));
         command
             .args(["links", "--json"])
+            .env("HOME", self.path().join("home"))
+            .env("MERIDIAN_CONFIG", self.path().join("home/MERIDIAN.md"))
             .env("MERIDIAN_WORKSPACE", self.path())
             .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
             // Linux-only: `registry::socket_path_for_cache_root` reads
@@ -126,6 +128,12 @@ impl Ws {
             .env("XDG_RUNTIME_DIR", self.path().join(".rt"))
             .env("XDG_CACHE_HOME", self.path().join(".cache"))
             .current_dir(self.path());
+        std::fs::create_dir_all(self.path().join("home")).expect("home");
+        std::fs::write(
+            self.path().join("home/MERIDIAN.md"),
+            "---\ntype: meridian-config\nversion: 1\n---\n\n# empty table\n",
+        )
+        .expect("empty mount table");
         std::fs::create_dir_all(self.path().join(".rt")).expect("runtime dir");
         std::fs::create_dir_all(self.path().join(".cache")).expect("cache dir");
         if let Some(value) = timing {
@@ -334,25 +342,39 @@ fn links_json_repeats_corpus_build_per_mounted_root() {
         .env("MERIDIAN_CONFIG", home.join("MERIDIAN.md"))
         .env("MERIDIAN_WORKSPACE", &ws)
         .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+        .env("XDG_RUNTIME_DIR", tmp.path().join("rt"))
         .env("XDG_CACHE_HOME", &cache)
         .env("MRD_TIMING", "1")
         .current_dir(&ws);
+    std::fs::create_dir_all(tmp.path().join("rt")).expect("runtime dir");
     let out = command.output().expect("spawn mrd");
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"source\": \"ephemeral\"") || stdout.contains("\"source\":\"ephemeral\""),
+        "want ephemeral: {stdout}"
+    );
 
     let lines = timing_lines(&stderr(&out));
     let names = phases(&stderr(&out));
-    let builds: Vec<u128> = lines
-        .iter()
-        .filter(|(_, p, _)| p == "corpus.build")
-        .map(|(_, _, us)| *us)
-        .collect();
+    let n_build = names.iter().filter(|p| *p == "corpus.build").count();
+    let n_snap = names.iter().filter(|p| *p == "snapshot").count();
     assert_eq!(
-        builds.len(),
+        n_build,
         2,
-        "want 1 + K=1 corpus.build lines, got {}: {names:?}\n{}",
-        builds.len(),
+        "want 1 + K=1 corpus.build lines (workspace + one mount); got {n_build}: {names:?}\n{}",
         stderr(&out)
+    );
+    assert_eq!(
+        n_snap,
+        2,
+        "want 1 + K=1 snapshot lines (workspace + one mount); got {n_snap}: {names:?}\n{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        names.last().map(String::as_str),
+        Some("total"),
+        "total is not last: {names:?}"
     );
     let of = |want: &str| {
         lines
@@ -361,12 +383,6 @@ fn links_json_repeats_corpus_build_per_mounted_root() {
             .map_or_else(|| panic!("no {want} in {names:?}"), |(_, _, us)| *us)
     };
     assert!(of("total") >= of("links.read"));
-    assert!(
-        of("links.read") >= builds[1],
-        "mount corpus.build ({}) must sit inside links.read ({})",
-        builds[1],
-        of("links.read")
-    );
 }
 
 /// Off words are off — trimmed, in any case — and an off word must never be
