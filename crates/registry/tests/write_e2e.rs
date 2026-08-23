@@ -12,6 +12,8 @@ use registry::{Config, RunningServer};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+mod common;
+
 /// A daemon config rooted under `tmp`, with reap horizons large enough that the
 /// background reaper never evicts a warm engine mid-test.
 #[allow(clippy::duration_suboptimal_units)]
@@ -61,13 +63,15 @@ impl Conn {
     }
 
     fn call(&mut self, request: &Value) -> Value {
-        let mut line = serde_json::to_string(request).unwrap();
-        line.push('\n');
-        self.writer.write_all(line.as_bytes()).unwrap();
-        self.writer.flush().unwrap();
-        let mut response = String::new();
-        self.reader.read_line(&mut response).unwrap();
-        serde_json::from_str(&response).unwrap()
+        common::honour_retry(|| {
+            let mut line = serde_json::to_string(request).unwrap();
+            line.push('\n');
+            self.writer.write_all(line.as_bytes()).unwrap();
+            self.writer.flush().unwrap();
+            let mut response = String::new();
+            self.reader.read_line(&mut response).unwrap();
+            serde_json::from_str(&response).unwrap()
+        })
     }
 
     fn hello(&mut self, ws: &Path) -> Value {

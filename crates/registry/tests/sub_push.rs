@@ -17,6 +17,8 @@ use registry::{Config, RunningServer};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+mod common;
+
 /// Wait for a pushed frame before calling it absent. Covers 250ms detect
 /// cadence + 50ms push tick with margin against flakes.
 const PUSH_WAIT: Duration = Duration::from_secs(10);
@@ -82,13 +84,15 @@ impl Conn {
     }
 
     fn call(&mut self, request: &Value) -> Value {
-        let mut line = serde_json::to_string(request).unwrap();
-        line.push('\n');
-        self.writer.write_all(line.as_bytes()).unwrap();
-        self.writer.flush().unwrap();
-        let mut response = String::new();
-        self.reader.read_line(&mut response).unwrap();
-        serde_json::from_str(&response).unwrap_or_else(|e| panic!("frame {response:?}: {e}"))
+        common::honour_retry(|| {
+            let mut line = serde_json::to_string(request).unwrap();
+            line.push('\n');
+            self.writer.write_all(line.as_bytes()).unwrap();
+            self.writer.flush().unwrap();
+            let mut response = String::new();
+            self.reader.read_line(&mut response).unwrap();
+            serde_json::from_str(&response).unwrap_or_else(|e| panic!("frame {response:?}: {e}"))
+        })
     }
 
     fn hello(&mut self, ws: &Path) -> Value {

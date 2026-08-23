@@ -21,7 +21,7 @@ use std::fmt::Write as _;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mrd::script::cmd::attempt;
 use mrd::script::{Door, ScriptOutcome, ScriptTrace, TraceEntry};
@@ -604,6 +604,9 @@ fn revs_read(trace: &ScriptTrace) -> Vec<String> {
 // ── the live daemon ───────────────────────────────────────────────────────────
 
 /// A real `RunningServer` on a real socket, bound to a fresh corpus.
+///
+/// Drop drains in-flight drawer rebuilds (via `RunningServer` stop) before
+/// `_tmp` vanishes — the class-2 flake (pipelines 1098/1101).
 struct Fixture {
     _tmp: TempDir,
     ws: PathBuf,
@@ -730,14 +733,30 @@ impl LiveDoor {
 
 impl Door for LiveDoor {
     fn call(&mut self, request: &Value) -> io::Result<String> {
+        // Record the logical call once. Retries of corpus_warming are the
+        // engine's `recovery: retry` contract, not extra plan rows.
         self.requests.push(request.clone());
-        let mut line = serde_json::to_string(request)?;
-        line.push('\n');
-        self.writer.write_all(line.as_bytes())?;
-        self.writer.flush()?;
-        let mut response = String::new();
-        self.reader.read_line(&mut response)?;
-        Ok(response)
+        let started = Instant::now();
+        loop {
+            let mut line = serde_json::to_string(request)?;
+            line.push('\n');
+            self.writer.write_all(line.as_bytes())?;
+            self.writer.flush()?;
+            let mut response = String::new();
+            self.reader.read_line(&mut response)?;
+            if let Ok(frame) = serde_json::from_str::<Value>(&response)
+                && frame["ok"] != json!(true)
+                && frame["error"]["code"] == json!("corpus_warming")
+            {
+                assert!(
+                    started.elapsed() < Duration::from_secs(30),
+                    "corpus_warming persisted past 30s (15s + 2s × 7 golden files); last: {response}"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            return Ok(response);
+        }
     }
 }
 

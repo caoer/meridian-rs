@@ -16,6 +16,8 @@ use registry::{Config, RunningServer};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+mod common;
+
 #[allow(clippy::duration_suboptimal_units)]
 fn test_config(tmp: &TempDir) -> Config {
     let forever = Duration::from_secs(365 * 24 * 60 * 60);
@@ -46,13 +48,15 @@ impl Conn {
     }
 
     fn call(&mut self, request: &Value) -> Value {
-        let mut line = serde_json::to_string(request).unwrap();
-        line.push('\n');
-        self.writer.write_all(line.as_bytes()).unwrap();
-        self.writer.flush().unwrap();
-        let mut response = String::new();
-        self.reader.read_line(&mut response).unwrap();
-        serde_json::from_str(&response).unwrap()
+        common::honour_retry(|| {
+            let mut line = serde_json::to_string(request).unwrap();
+            line.push('\n');
+            self.writer.write_all(line.as_bytes()).unwrap();
+            self.writer.flush().unwrap();
+            let mut response = String::new();
+            self.reader.read_line(&mut response).unwrap();
+            serde_json::from_str(&response).unwrap()
+        })
     }
 }
 
