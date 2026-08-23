@@ -1600,7 +1600,7 @@ mod tests {
         let doc = empty_doc();
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = fs::WorkspaceRoot(tmp.path().to_path_buf());
-        let fp = MerkleRoot::default();
+        let fp = MerkleRoot(String::new());
         // The reviewer's own one-liner.
         let prelude = "declare(impl = exec(\"bash\", cmd = \"id\"))\n";
         let world = probe_world(&doc, &root, &fp, Some(prelude), None);
@@ -1608,7 +1608,13 @@ mod tests {
             page: "probe.md".to_owned(),
             block: Some("bare".to_owned()),
             mode: Some(wire::RunMode::Fire),
-            ..wire::RunTarget::task_target("probe.md".to_owned())
+            ..wire::RunTarget::task_target(
+                "probe.md".to_owned(),
+                None,
+                Vec::new(),
+                BTreeMap::new(),
+                None,
+            )
         };
 
         let row = mode_row(&world, &target, "probe-fire", None, None);
@@ -1634,14 +1640,20 @@ mod tests {
         let doc = empty_doc();
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = fs::WorkspaceRoot(tmp.path().to_path_buf());
-        let fp = MerkleRoot::default();
+        let fp = MerkleRoot(String::new());
         let prelude = "declare(impl = exec(\"bash\", cmd = \"id\"))\n";
         let world = probe_world(&doc, &root, &fp, Some(prelude), None);
         let target = wire::RunTarget {
             page: "probe.md".to_owned(),
             block: Some("armer".to_owned()),
             mode: Some(wire::RunMode::Fire),
-            ..wire::RunTarget::task_target("probe.md".to_owned())
+            ..wire::RunTarget::task_target(
+                "probe.md".to_owned(),
+                None,
+                Vec::new(),
+                BTreeMap::new(),
+                None,
+            )
         };
 
         let row = mode_row(&world, &target, "probe-1", None, None);
