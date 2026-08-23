@@ -79,6 +79,9 @@ pub struct Doors<'a> {
     pub ambient: Option<&'a str>,
 }
 
+/// How many exec logs a workspace keeps (§ 2.2's stated ceiling).
+const LOG_RETENTION: usize = 50;
+
 /// Empty fields for a caller with no frame passthrough in reach.
 static NO_FIELDS: std::sync::LazyLock<BTreeMap<String, String>> =
     std::sync::LazyLock::new(BTreeMap::new);
@@ -1080,9 +1083,6 @@ fn prune_logs(dir: &Path) {
         let _ = std::fs::remove_file(path);
     }
 }
-
-/// How many exec logs a workspace keeps (§ 2.2's stated ceiling).
-const LOG_RETENTION: usize = 50;
 
 /// The PUBLISHED row for one `bash()` call — deliberately **not** the dict
     /// the program saw.
