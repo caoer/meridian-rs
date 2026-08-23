@@ -36,7 +36,7 @@ pub(crate) fn refuse_rooted(token: &str, door: &str, consequence: &str) -> Resul
 /// A tool failure (exit 2) when the workspace cannot be resolved or canonicalized.
 pub(crate) fn resolve_root() -> Result<fs::WorkspaceRoot, Fail> {
     let cwd = crate::current_dir()?;
-    let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
+    let resolved = crate::resolve::resolve_runtime(workspace::Base::Cwd(&cwd)).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace for {}: {e}",
             cwd.display()

@@ -130,8 +130,15 @@ pub(crate) fn run(
         gc::maybe_auto_gc(&cache_root);
     }
 
-    // What the ladder says about this directory — the declaration does not anchor it.
-    let answer = workspace::resolve(&target)
+    // What the ladder says about THIS directory — the declaration does not
+    // anchor it. A named PATH outranks `MERIDIAN_WORKSPACE`, so the note below
+    // describes the tree just initialised instead of whatever the override
+    // points at; with no PATH the cwd is ambient and the override answers.
+    let ladder_base = match target_arg {
+        Some(_) => workspace::Base::Named(&target),
+        None => workspace::Base::Cwd(&target),
+    };
+    let answer = workspace::resolve(ladder_base)
         .map_err(|e| Fail::tool(format!("cannot resolve {}: {e}", target.display())))?;
 
     report(
@@ -233,7 +240,7 @@ fn reconcile_descendants(cache_root: &Path, target: &Path) -> Result<Vec<String>
 /// Whether the ladder anchors `ws` at `ws` itself, with no environment
 /// override in play. An unreadable or vanished path anchors nothing.
 fn anchors_itself(ws: &Path) -> bool {
-    workspace::resolve_with_override(ws, None)
+    workspace::resolve_with_override(workspace::Base::Named(ws), None)
         .ok()
         .and_then(|answer| answer.root().map(|root| root == ws))
         .unwrap_or(false)

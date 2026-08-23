@@ -2,11 +2,16 @@
 //! to.
 //!
 //! # Charter
-//! **Owns:** the discovery ladder as pure filesystem functions (env override → git root →
-//! cwd default), the canonicalization that defines identity (symlinks and on-disk case
-//! resolved to one spelling), and the deny-ceiling predicate that refuses poisonous
-//! workspace paths (`$HOME`, `/`, mount points, `/tmp`, XDG base dirs, the meridian cache
-//! root).
+//! **Owns:** the discovery ladder as pure filesystem functions (explicit argument → env
+//! override → git root → cwd default), the canonicalization that defines identity
+//! (symlinks and on-disk case resolved to one spelling), and the deny-ceiling predicate
+//! that refuses poisonous workspace paths (`$HOME`, `/`, mount points, `/tmp`, XDG base
+//! dirs, the meridian cache root).
+//!
+//! The top rung is not a path of its own: it is the *provenance* of the path handed in
+//! ([`Base`]). A path the operator NAMED on this invocation outranks the ambient
+//! [`ENV_WORKSPACE`] override, which still answers whenever nothing was named. See
+//! [`resolve_with_override`].
 //!
 //! **Never does:** disk writes of any kind. No registration, no sentinel, no cache
 //! directory creation — this crate only *names* a situation. Every rung resolves with no
@@ -66,10 +71,54 @@ const GIT_ENTRY: &str = ".git";
 /// rather than hanging.
 pub const MAX_WALK_DEPTH: usize = 64;
 
+/// Where the path handed to the ladder came from — the one thing the ladder
+/// cannot infer from the path itself, and the thing rung 1 turns on.
+///
+/// A caller that got its path from an operator argument (`mrd unregister PATH`,
+/// `mrd init PATH`, `mrd status --cwd PATH`) says [`Base::Named`]; a caller
+/// standing in the process working directory says [`Base::Cwd`]. It is a type,
+/// not a flag, so a new door cannot forget to answer: the compiler asks.
+///
+/// Why it exists (advisor ruling 2026-08-23, `unregister-env-override-vs-explicit-path`,
+/// D with C's shape): `MERIDIAN_WORKSPACE=victim mrd unregister target` removed
+/// VICTIM. The override returned at rung 1 before the argument was ever
+/// canonicalized, so the operand the operator typed was discarded — on a
+/// DESTRUCTIVE verb. The operator's word for THIS invocation is the argument;
+/// the env var is ambient session state, and explicit beats ambient (`git -C`,
+/// `cargo --manifest-path`). The law lives here, in the shared resolver, and
+/// never as a per-verb bypass — two resolution seams for one question is how
+/// the divergence survived review the first time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Base<'a> {
+    /// The operator named this path on this invocation. Rung 1 is skipped: the
+    /// argument outranks the ambient override.
+    Named(&'a Path),
+    /// The ambient working directory — nobody named it, so [`ENV_WORKSPACE`]
+    /// still answers first.
+    Cwd(&'a Path),
+}
+
+impl<'a> Base<'a> {
+    /// The path itself, whatever its provenance.
+    #[must_use]
+    pub fn path(self) -> &'a Path {
+        match self {
+            Self::Named(path) | Self::Cwd(path) => path,
+        }
+    }
+
+    /// Whether the operator named this path on this invocation.
+    #[must_use]
+    pub fn is_named(self) -> bool {
+        matches!(self, Self::Named(_))
+    }
+}
+
 /// Which rung of the discovery ladder answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
-    /// The [`ENV_WORKSPACE`] override named the workspace — explicit.
+    /// The [`ENV_WORKSPACE`] override named the workspace — ambient session
+    /// state, and outranked by a [`Base::Named`] argument.
     EnvOverride,
     /// The nearest ancestor holding a `.git` entry — inferred from
     /// filesystem structure.
@@ -228,34 +277,56 @@ pub fn canonicalize(path: &Path) -> Result<PathBuf, ResolveError> {
     })
 }
 
-/// Resolve the workspace for `cwd`, reading the tier-1 override from the
+/// Resolve the workspace for `base`, reading the tier-1 override from the
 /// process environment ([`ENV_WORKSPACE`]).
+///
+/// The [`Base`] says whether the operator NAMED this path on this invocation
+/// or it is the ambient working directory — rung 1 answers only for the
+/// ambient case.
 ///
 /// # Errors
 /// Returns [`ResolveError::EnvWorkspaceNotFound`] when the override names an
-/// unresolvable path, or [`ResolveError::Canonicalize`] when `cwd` itself
+/// unresolvable path, or [`ResolveError::Canonicalize`] when the path itself
 /// cannot be canonicalized.
-pub fn resolve(cwd: &Path) -> Result<Answer, ResolveError> {
-    resolve_with_override(cwd, env::var_os(ENV_WORKSPACE).as_deref())
+pub fn resolve(base: Base<'_>) -> Result<Answer, ResolveError> {
+    resolve_with_override(base, env::var_os(ENV_WORKSPACE).as_deref())
 }
 
-/// Resolve the workspace for `cwd` with the tier-1 override supplied
+/// Resolve the workspace for `base` with the tier-1 override supplied
 /// explicitly (an empty override is treated as unset). This is the pure
 /// core [`resolve`] wraps; taking the override as a parameter keeps the
 /// ladder testable without mutating the process environment.
 ///
+/// The ladder, in order: **the named argument, then the env override, then
+/// the nearest `.git`, then the cwd default.** The first rung is provenance,
+/// not a path — a [`Base::Named`] path skips the override outright, because
+/// the operand the operator typed for THIS invocation outranks ambient
+/// session state. A [`Base::Cwd`] path is unchanged: the override still fills
+/// whenever nothing was named, so override-driven scripting keeps working.
+///
 /// # Errors
 /// Returns [`ResolveError::EnvWorkspaceNotFound`] when `workspace_override`
-/// names an unresolvable path, or [`ResolveError::Canonicalize`] when `cwd`
-/// itself cannot be canonicalized.
+/// names an unresolvable path, or [`ResolveError::Canonicalize`] when the
+/// path itself cannot be canonicalized.
 pub fn resolve_with_override(
-    cwd: &Path,
+    base: Base<'_>,
     workspace_override: Option<&OsStr>,
 ) -> Result<Answer, ResolveError> {
-    // Rung 1 — the explicit override wins. A relative override resolves
-    // against the given cwd, so the function stays independent of the
-    // process cwd.
-    if let Some(raw) = workspace_override.filter(|value| !value.is_empty()) {
+    let cwd = base.path();
+
+    // Rung 1 — the ambient override, and ONLY when nothing was named. A
+    // relative override resolves against the given path, so the function
+    // stays independent of the process cwd.
+    //
+    // A named path falls straight through to the marker walk below: with no
+    // override in play the answer is exactly what this path has always
+    // resolved to, so honouring the argument costs no new vocabulary and no
+    // new rung — the operand is simply no longer discarded.
+    let override_applies = !base.is_named();
+    if let Some(raw) = workspace_override
+        .filter(|value| !value.is_empty())
+        .filter(|_| override_applies)
+    {
         let candidate = Path::new(raw);
         let joined = if candidate.is_absolute() {
             candidate.to_path_buf()
@@ -270,7 +341,7 @@ pub fn resolve_with_override(
         return Ok(Answer::EnvOverride { root });
     }
 
-    // Canonicalize the cwd once: ancestors are then derived by
+    // Canonicalize the path once: ancestors are then derived by
     // path-component trimming — no per-ancestor canonicalize syscall.
     let canonical = canonicalize(cwd)?;
 

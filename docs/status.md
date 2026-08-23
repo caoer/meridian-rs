@@ -1227,9 +1227,28 @@ choice, not this engine's business:
 
 | Tier | What it answers | How |
 |---|---|---|
-| `env-override` | the environment named the root | `MERIDIAN_WORKSPACE` |
+| `env-override` | the environment named the root | `MERIDIAN_WORKSPACE`, **only when the caller named no path** |
 | `git-root` | where the version-control boundary is | the **nearest** ancestor `.git` (directory or worktree pointer file) |
 | `cwd-default` | nothing — a convenience default | the canonical cwd |
+
+**An explicitly NAMED path outranks the override** (ruling 2026-08-23,
+`unregister-env-override-vs-explicit-path`, D with C's shape). The rungs are
+still three and the tier words are unchanged; what the ruling added is a gate
+in front of rung 1. `workspace::resolve` takes a `workspace::Base` — `Named(p)`
+when the operator typed the path on this invocation (`mrd unregister PATH`,
+`mrd resolve PATH`, `mrd init PATH`, `mrd status --cwd PATH`, `mrd sql --cwd
+PATH`), `Cwd(p)` when it is the ambient working directory — and rung 1 answers
+only for `Cwd`. A named path therefore resolves by `.git` walk or cwd-default,
+exactly as it always did with no override set, and `MERIDIAN_WORKSPACE` still
+fills every invocation that names nothing, so override-driven scripting is
+untouched.
+
+The fact that forced it: `MERIDIAN_WORKSPACE=victim mrd unregister target`
+removed VICTIM. The override returned at rung 1 before the argument was ever
+canonicalized, so a destructive verb discarded the operand it was given. The
+gate lives in the shared resolver, never as a per-verb bypass — `Base` is a
+type, so a new door has to answer the question rather than inherit the old
+order by omission.
 
 **Every resolution states which tier answered and which root it named** — this
 is the ruling's requirement, not a rendering preference, and it is enforced by

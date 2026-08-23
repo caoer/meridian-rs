@@ -388,7 +388,7 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
     let mut parsed = RunArgs::parse(tail)?;
     let cwd = current_dir()?;
     let resolving = timing::phase("workspace.resolve");
-    let answer = workspace::resolve(&cwd)
+    let answer = workspace::resolve(workspace::Base::Cwd(&cwd))
         .map_err(|e| Fail::tool(format!("workspace resolution failed: {e:?}")))?;
     resolving.stop();
     // The rooted lane (§4.1 colon law), under the 2026-08-18 authority ruling
@@ -427,7 +427,7 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
         None => match answer.root() {
             Some(root) => fs::WorkspaceRoot(root.to_path_buf()),
             None => fs::WorkspaceRoot(
-                crate::resolve::resolve_runtime(&cwd)
+                crate::resolve::resolve_runtime(workspace::Base::Cwd(&cwd))
                     .map_err(|e| {
                         Fail::tool(format!(
                             "cannot resolve workspace for {}: {e}",
