@@ -73,8 +73,11 @@ when:
   # property of `depends_on` — the netrc was the repo user's OAuth access token
   # stamped once at pipeline parse, and it died on its own clock. PR 200 gave
   # every workflow here a non-rotating PAT (see the `clone:` block below), which
-  # is what makes a late workflow safe and therefore what makes this gate
-  # landable. Card: 22-18/tasks/meridian-rs-tag-lanes-not-gated.
+  # is what makes this gate landable. Landable, not proven safe: one tag-lane
+  # clone has run late and survived (1328, +1171 s from parse) and it was
+  # pre-gate, while under the gate none has cloned at all — 1330 was refused red
+  # and both tag workflows skipped, `started=null`. The first real `v*` release
+  # is the proof. Card: 22-18/tasks/meridian-rs-tag-lanes-not-gated.
   - event: tag
     ref: refs/tags/v*
 
