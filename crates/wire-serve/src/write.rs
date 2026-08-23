@@ -6753,7 +6753,7 @@ mod guarded_create_remove {
     }
 
     /// The published [`wire::ABSENT_REV`] and the engine's computed
-    /// [`absent_rev`] are the same token. The constant is what the Go daemon
+    /// [`super::absent_rev`] are the same token. The constant is what the Go daemon
     /// and every out-of-process consumer compare against; the computation is
     /// what the create door actually mints. A domain-rule change that moves the
     /// empty document's rev fails HERE, loudly, instead of leaving the
@@ -6761,7 +6761,7 @@ mod guarded_create_remove {
     #[test]
     fn the_published_absent_rev_is_the_computed_one() {
         assert_eq!(
-            absent_rev().0,
+            super::absent_rev().0,
             wire::ABSENT_REV,
             "wire::ABSENT_REV has drifted from model::build(\"\")'s root rev — \
              update the constant AND every mirror of it (the Go daemon's \
