@@ -669,6 +669,15 @@ fn a_birth_through_props_is_composed_before_middleware_and_still_stamped() {
         "tags".to_string(),
         wire_serve::write::PropValue::List(vec!["type/agent".to_string()]),
     );
+    // F4 (review of PR 185): a props key COLLIDING with a machinery key. The
+    // caller cannot win it — `created` is born identity, stamped by the door's
+    // middleware from the put frame's `fields`, and the props value is the
+    // caller's guess at a key that is not theirs. Pinned so the precedence is a
+    // decision, not an accident of which write runs last.
+    props.insert(
+        "created".to_string(),
+        wire_serve::write::PropValue::Scalar("1999-01-01T00:00:00-00:00".to_string()),
+    );
     create(
         &root,
         None,
@@ -691,6 +700,19 @@ fn a_birth_through_props_is_composed_before_middleware_and_still_stamped() {
     assert!(
         born.contains("created: 2026-08-23T01:09:34-04:00"),
         "000 still stamps created on a card born through props=: {born}"
+    );
+    // F4: the collision resolves to the MACHINERY value, and the caller's
+    // forged one is gone from the bytes — not merely outranked in a reader.
+    assert!(
+        !born.contains("1999-01-01"),
+        "a props key colliding with a machinery key loses: the middleware's \
+         stamp is the one in the file, and the caller's value is not in the \
+         bytes at all: {born}"
+    );
+    assert_eq!(
+        born.lines().filter(|l| l.starts_with("created:")).count(),
+        1,
+        "one created key, not two: {born}"
     );
     assert!(
         born.contains("session: 19-20-mrd-statusd-integration"),
