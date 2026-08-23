@@ -870,14 +870,21 @@ fn an_execd_entry_runs_a_staged_file_never_dash_c() {
         argv0.contains("/.meridian/staged/"),
         "the program must be a staged file: {argv0}"
     );
-    assert!(
-        argv0.ends_with(".bash"),
+    assert_eq!(
+        Path::new(argv0)
+            .extension()
+            .and_then(std::ffi::OsStr::to_str),
+        Some("bash"),
         "the fence's own info-string token is the extension — bun and deno \
          pick a loader from the NAME: {argv0}"
     );
     assert_eq!(
         std::fs::read_to_string(argv0).expect("the staged file is on disk"),
-        "printf '%s' \"$0\"\n",
+        // Verbatim, and that includes the fence's own missing final newline
+        // (`blocks::inner_source` keeps the bytes BETWEEN the fence lines):
+        // *the script's bytes run unchanged* is a byte claim, so staging adds
+        // nothing to them.
+        "printf '%s' \"$0\"",
         "the staged bytes are the block's own"
     );
 }
@@ -951,13 +958,13 @@ fn an_execd_entry_runs_at_the_inputs_cwd() {
     std::fs::create_dir_all(ws.file("sub")).expect("sub");
     let input = ws.input("s.json", r#"{"name":"Stop","cwd":"sub"}"#);
     let out = ws.run(&["stage.md#^pwd-entry", "--input-json", &input]);
-    let row = row(&out);
+    let named = row(&out);
     assert!(
-        row["process"]["stdout_tail"]
+        named["process"]["stdout_tail"]
             .as_str()
             .expect("stdout_tail")
             .ends_with("/sub"),
-        "the input named a cwd and the process ignored it: {row:#}"
+        "the input named a cwd and the process ignored it: {named:#}"
     );
 
     // Absent `cwd`, the page's root — the default, stated so the rule is not
@@ -1041,16 +1048,16 @@ fn a_dangling_or_duplicated_exec_anchor_is_a_load_fault() {
          ```\n^e\n",
     )
     .expect("page");
-    let row = row(&ws.run(&["--load", "dangle.md"]));
-    let e = block(&row, "e");
-    assert_eq!(e["result"], "fault", "{row:#}");
-    assert_eq!(e["fault"]["class"], "no_block", "{row:#}");
+    let dangling = row(&ws.run(&["--load", "dangle.md"]));
+    let e = block(&dangling, "e");
+    assert_eq!(e["result"], "fault", "{dangling:#}");
+    assert_eq!(e["fault"]["class"], "no_block", "{dangling:#}");
     assert!(
         e["fault"]["reason"]
             .as_str()
             .expect("reason")
             .contains("^nope"),
-        "the fault must name the anchor: {row:#}"
+        "the fault must name the anchor: {dangling:#}"
     );
 
     std::fs::write(
@@ -1059,11 +1066,11 @@ fn a_dangling_or_duplicated_exec_anchor_is_a_load_fault() {
          ```\n^e\n\n```bash\necho one\n```\n^twice\n\n```bash\necho two\n```\n^twice\n",
     )
     .expect("page");
-    let row = row(&ws.run(&["--load", "dupe.md"]));
-    let e = block(&row, "e");
-    assert_eq!(e["result"], "fault", "{row:#}");
+    let duplicated = row(&ws.run(&["--load", "dupe.md"]));
+    let e = block(&duplicated, "e");
+    assert_eq!(e["result"], "fault", "{duplicated:#}");
     assert_eq!(
         e["fault"]["class"], "ambiguous_anchor",
-        "a duplicated anchor addresses NONE of them: {row:#}"
+        "a duplicated anchor addresses NONE of them: {duplicated:#}"
     );
 }
