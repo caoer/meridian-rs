@@ -2131,9 +2131,11 @@ arbitrary code, so exec never enters the effect surface.
 **This whole section is the TASK path.** Everything below — the two-phase
 receipts, the `run.lock`, phase-2 convergence, the `OutOfBand` refusal — is
 what a `task.<name>` row does, and a fire does none of it. A `declare()` row
-runs its process through **the same bracket** (`run::exec::exec` over
-[`ExecSpec`](#the-run-entry-amended--load-freeze-fire), the `exec_bracket()`
-the hook-support design names) and then parts company:
+whose entry is **exec'd** runs its process through **the same bracket**
+(`run::exec::exec` over `ExecSpec` — the `exec_bracket()` the hook-support
+design names) and then parts company. An **evaluated** entry spawns nothing at
+all unless the program calls `bash()`, so the process rows below are the
+exec'd entry's:
 
 | | task row (`task.<name>`) | fire row (`declare()`) |
 |---|---|---|
