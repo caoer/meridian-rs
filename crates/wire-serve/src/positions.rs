@@ -109,13 +109,20 @@ pub(crate) enum TranslateError {
 impl std::fmt::Display for TranslateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            // The `Fix:` carries BOTH remedies, because at this door the wrong
+            // one is the likelier: a page spelling the agreed constant
+            // `sessions:` on a machine that mounts that very tree under its own
+            // name needs ONE alias line, not a second mount (§ 4.6a). "Declare
+            // the mount" alone sent that author to duplicate a root they have.
             TranslateError::Unmounted { address, root } => write!(
                 f,
                 "refused: '{address}' names root '{root}', which this machine does not bind — \
                  there is no vault name to store, so the link would land as bytes no reader can \
                  follow. Not a drift: nothing changed, you just cannot see from here. \
-                 Fix: declare '{root}' in ~/MERIDIAN.md as a mount entry (name / path); \
-                 see [[address-grammar]]."
+                 Fix: declare '{root}' in ~/MERIDIAN.md as a mount entry (name / path), or \
+                 declare `alias: {root}` on the mount that holds that tree — a root is looked \
+                 up by name first and only then by alias, so the tree may already be here \
+                 under another name; see [[address-grammar]]."
             ),
             TranslateError::PathUnseeable {
                 address,
@@ -361,6 +368,11 @@ pub(crate) fn stored_text(
             },
         });
     }
+    // An alias is a LOOKUP spelling and never a stored one (`address-grammar.md`
+    // § 4.6a): the vault leg is keyed by the mount's own name, so `sessions:x`
+    // must become the canonical name here or it would refuse `NoVault` on a root
+    // that has one.
+    let root = mounts.canonical(root).unwrap_or(root);
     let vault = mounts
         .vault_of(root)
         .ok_or_else(|| TranslateError::NoVault {
@@ -380,9 +392,17 @@ pub(crate) fn stored_text(
     let display = occupant.display.clone().unwrap_or_else(|| {
         // A bare wikilink's display is its address, so the round trip can tell
         // "no alias" from "an alias that happens to read like the address".
+        //
+        // The CANONICAL address, not the caller's spelling: an alias reaching
+        // the default display would put one machine's private mapping into
+        // shared bytes (§ 4.6a), and a bare `[[sessions:x]]` would round-trip
+        // as `[[field-notes-sessions:x|sessions:x]]` — a label nothing resolves,
+        // minted by the engine, on every write. An author who WANTS the alias
+        // on the page writes it as an explicit display, which rides untouched.
+        let canonical = format!("{root}:{}", occupant.addr.path());
         match selector {
-            Some(sel) => format!("{address}#{sel}"),
-            None => address.clone(),
+            Some(sel) => format!("{canonical}#{sel}"),
+            None => canonical,
         }
     });
     Ok(format!("[{display}]({uri})"))
@@ -579,6 +599,72 @@ mod tests {
         let assets = addr::MountName::parse("assets").expect("a name");
         MountSet::new([sessions.clone(), assets.clone()]).with_vault(sessions, "field-notes-sessions")
         // `assets` is bound WITHOUT a vault name — the plain-folder row.
+    }
+
+    /// A table whose sessions root is NAMED `field-notes-sessions` and ALIASED
+    /// `sessions` — the § 4.6a shape: the constant a page may spell is not the
+    /// name the machine binds.
+    fn aliased_mounts() -> MountSet {
+        let real = addr::MountName::parse("field-notes-sessions").expect("a name");
+        let spelled = addr::MountName::parse("sessions").expect("a name");
+        MountSet::new([real.clone()])
+            .with_alias(spelled, real.clone())
+            .with_vault(real, "field-notes-sessions")
+    }
+
+    /// § 4.6a — an alias is a LOOKUP spelling and reaches STORED BYTES nowhere.
+    ///
+    /// Two halves, and the second is the one a `NoVault` fix alone would miss:
+    /// the URI must carry the mount's vault (the alias canonicalizes before the
+    /// vault leg is asked), AND a bare wikilink's default display must be the
+    /// canonical address — otherwise the engine mints `[[real:x|alias:x]]` on
+    /// every write, putting one machine's private mapping into shared content as
+    /// a label nothing resolves.
+    #[test]
+    fn an_alias_reaches_no_stored_byte() {
+        let raw = "A ref: [[sessions:SCHEMA.md#Design]]\n";
+        let out = to_stored(raw, &aliased_mounts()).expect("the alias resolves");
+        assert!(
+            out.contains("vault=field-notes-sessions"),
+            "the URI carries the MOUNT's vault, reached by canonicalizing the alias:\n{out}",
+        );
+        // Anchored on the display's opening bracket, NOT a bare substring: the
+        // canonical name ENDS IN the alias (`field-notes-sessions` contains
+        // `sessions`), so a substring test passes on both spellings and asserts
+        // nothing.
+        assert!(
+            !out.contains("[sessions:"),
+            "no alias-spelled address survives into stored bytes — display included:\n{out}",
+        );
+        assert!(
+            out.contains("[field-notes-sessions:SCHEMA.md#Design]"),
+            "a bare wikilink's default display is the CANONICAL address:\n{out}",
+        );
+
+        // And it round-trips to a BARE wikilink, not a labelled one: the
+        // display equals the address, so the read plane drops it.
+        let back = to_agent_plane(&out, &aliased_mounts()).expect("reads back");
+        assert_eq!(
+            back, "A ref: [[field-notes-sessions:SCHEMA.md#Design]]\n",
+            "the round trip converges on the canonical bare spelling",
+        );
+    }
+
+    /// An author who WANTS the alias visible writes it as an explicit display —
+    /// that is prose, and the transform is the identity on it. Only the ENGINE's
+    /// own default display is canonicalized.
+    #[test]
+    fn an_explicit_display_rides_untouched_even_when_it_reads_like_an_alias() {
+        let raw = "A ref: [[sessions:SCHEMA.md|sessions:SCHEMA.md]]\n";
+        let out = to_stored(raw, &aliased_mounts()).expect("the alias resolves");
+        assert!(
+            out.starts_with("A ref: [sessions:SCHEMA.md](obsidian://"),
+            "the author's own label is prose and rides verbatim:\n{out}",
+        );
+        assert!(
+            out.contains("vault=field-notes-sessions"),
+            "while the ADDRESS half is still canonical:\n{out}",
+        );
     }
 
     /// § 9.4 — frontmatter and code are not address positions, asserted with

@@ -83,6 +83,7 @@ impl Sandbox {
         config.prewarm_quiet_max = forever;
         config.idle_exit = None;
         config.build_sha = build_sha.map(ToOwned::to_owned);
+        config.drain_cold_builds = Duration::from_secs(30);
         RunningServer::start(config).expect("in-process daemon binds the derived socket")
     }
 
