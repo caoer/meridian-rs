@@ -610,13 +610,25 @@ fn read_paths(trace: &ScriptTrace) -> Vec<&str> {
         .collect()
 }
 
-/// Every plan row this run committed, read from the trace's armed block.
+/// Every plan row this run PUT ON THE WIRE, read from the trace's armed block.
 ///
-/// These ARE the rows that reached the wire door: the daemon threads them
+/// These ARE the rows the wire door saw: the daemon threads them
 /// (`registry::script_op::thread_entry`), sends them as `plan_edits[]`, and
 /// publishes the same rows here — the trace shows what went on the wire, which
 /// is the property `script_cmd.rs` pinned when this process still sent them.
+///
+/// **The commit leg is what scopes it, and that is load-bearing.** A run that
+/// faulted or armed nothing issues no commit (`CommitLeg::NotIssued`, absent
+/// leg) and its armed rows are UNTHREADED — the daemon returns at the failed-eval
+/// exit, before `thread_entry` runs, exactly as the retired CLI lane returned
+/// before `guarded`. Those rows never reached a door, so the write-follows-read
+/// law has nothing to say about them; measured on golden scenario 4, whose two
+/// `set_property` rows publish `rev: null` and formerly were invisible here
+/// because the census read the SOCKET, where scenario 4 sent nothing.
 fn plan_rows(trace: &ScriptTrace) -> Vec<Value> {
+    if trace.commit.is_none() {
+        return Vec::new();
+    }
     trace
         .armed_entries()
         .map(|entry| {

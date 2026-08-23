@@ -376,6 +376,18 @@ fn run_local(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<Scrip
     Ok(ScriptTrace::assemble(entry, &eval, leg))
 }
 
+/// The three facts every INDETERMINATE exit of [`forward`] owes its caller: the
+/// program was sent, a commit may therefore have landed daemon-side, and the
+/// remedy is a fresh read rather than a resend.
+///
+/// It is a module const rather than a `forward`-local one only because an item
+/// after a statement is confusing (`clippy::items_after_statements`); its reader
+/// is `forward` and nothing else.
+const MAY_HAVE_LANDED: &str = "The program was SENT, so whether the workspace carries this \
+     run is UNKNOWN — a commit already on the wire is the daemon's to finish. Verify with a \
+     fresh read of the workspace fingerprint before retrying; never resend, because a resend \
+     writes twice";
+
 /// Forward one whole attempt as the § A.7 wire `script` op — the pattern
 /// lane. The daemon owns the entry pin, the expansion, the evaluation, and
 /// the commit; the trace that comes back is the one contract both lanes
@@ -432,11 +444,7 @@ fn forward(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<ScriptT
     // `script-trace-premise-unknown-spelling` (it intersects
     // `wire-contract-a8-null-vs-empty-clause` — null vs empty vs absent is one
     // decision). Until it lands, THE PROSE IS THE OPERATING SURFACE, so the
-    // prose is what the suite pins.
-    const MAY_HAVE_LANDED: &str = "The program was SENT, so whether the workspace carries this \
-         run is UNKNOWN — a commit already on the wire is the daemon's to finish. Verify with a \
-         fresh read of the workspace fingerprint before retrying; never resend, because a resend \
-         writes twice";
+    // prose is what the suite pins ([`MAY_HAVE_LANDED`], just above).
     let line = door.call(&request).map_err(|e| {
         Fail::tool(format!(
             "the daemon did not answer `script` ({e}). {MAY_HAVE_LANDED}"
