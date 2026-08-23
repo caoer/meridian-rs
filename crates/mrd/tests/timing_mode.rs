@@ -183,7 +183,12 @@ fn off_words_are_off_in_any_case_and_create_no_file() {
     let strays: Vec<String> = std::fs::read_dir(ws.path())
         .expect("read workspace")
         .filter_map(|e| e.ok()?.file_name().into_string().ok())
-        .filter(|name| !name.ends_with(".md") && !name.starts_with('.'))
+        .filter(|name| {
+            !Path::new(name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+                && !name.starts_with('.')
+        })
         .collect();
     assert!(
         strays.is_empty(),
