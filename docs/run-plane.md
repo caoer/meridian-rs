@@ -2039,7 +2039,11 @@ phase. The line means the decision completed, not that a daemon answered
 which door asked for it — which also means **a `phase=snapshot` line does not
 imply a run.** `mrd sql`, `mrd check`, `mrd walk`, `mrd repair`, `mrd retire`,
 `mrd links`, the daemon's resident rebuild and its watch loop all fold and all
-report it, under their own `cmd=`. Read `cmd=` before attributing a fold.
+report it, under their own `cmd=`. Read `cmd=` before attributing a fold. On
+the links ephemeral path the snapshot set also repeats: once for the workspace
+corpus and once per link-addressed mounted root (`build_docs_at` calls
+`fs::domain_snapshot`). Count the `phase=snapshot` lines the same way as
+`corpus.build`.
 
 `corpus.build` is the same class: it is emitted by `fs::build_corpus`, and the
 callers that light it up include `mrd sql`, `mrd check`, `mrd walk`,
