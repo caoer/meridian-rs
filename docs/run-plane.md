@@ -1486,8 +1486,17 @@ against (measured; design § Amendments / A1).
 | load | act — the declaration is the load's whole answer | bound, and **refuse**: `fault.class: effect_at_load`, carrying `fault.line` |
 | fire | refuse: `fault.class: declare_at_fire` | act, under the page's `caps:` ceiling |
 
-Both refusals are typed faults downcast out of starlark's `ErrorKind::Native`
-(`EffectAtLoad` / `DeclareAtFire`), so `name_error` keeps its own meaning —
+**A block declares ONCE.** `declarations` on the load row is the uninterpreted
+**dict** `declare()` collected (§ A.8) — one dict, or `null` when the block
+declares nothing — and the fire door calls ONE entry. A second `declare()` in
+one block therefore has no shape to publish, and the engine, which interprets
+no key of a declaration, has no basis on which to merge two: it refuses
+**`fault.class: declared_twice`** at that call's own line, on that block's row
+alone. Its siblings on the page are unaffected; the remedy is one anchored
+block per declaration.
+
+These refusals are typed faults downcast out of starlark's `ErrorKind::Native`
+(`EffectAtLoad` / `DeclareAtFire` / `DeclaredTwice`), so `name_error` keeps its own meaning —
 an identifier bound nowhere, a typo — and a phase violation is never absorbed
 into it. **Load purity is behavioral here, not structural**, and that is
 stated rather than glossed: nothing effectful *happens* at load, but the
