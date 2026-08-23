@@ -1560,14 +1560,24 @@ one the script op takes) and never run the `domain_snapshot` fold. The world
 is a parameter (`run::modes::ModeWorld`), so ONE implementation serves the
 daemon and the CLI, and the two lanes cannot answer differently.
 
-On a **cold workspace** a mode-bearing row takes the same § 3.2 cold gate the
-script op takes: it **refuses `corpus_warming` (retry)** — it does not block
-and does not bypass. Wire-contract § 3.2's promise is about the read door; a
-fire is not the read door, so the answer is stated here rather than implied.
+On a **cold workspace** the answer is per LANE, and there are two of them:
+
+- **the daemon lane** takes the same § 3.2 cold gate the script op takes and
+  **refuses `corpus_warming` (retry)** — it does not block and does not
+  bypass;
+- **the CLI / in-process lane** has no background substrate to warm on, so it
+  **builds the drawer inline** and the caller waits.
+
+That is not A7 breaking: one implementation still serves both, and what
+differs is the SUBSTRATE each lane runs on — a daemon has a background
+builder to refuse in favour of, and a one-shot process does not. Wire-contract
+§ 3.2's promise is about the read door; a fire is not the read door, so the
+answer is stated here rather than implied.
 
 `prelude` (one per call, cap `run.mode`) is evaluated into each block's
-module before its top level; a prelude that does not evaluate refuses
-`prelude_invalid` before any block runs. Declarations and frozen modules are
+module before its top level; when it is invalid it refuses `prelude_invalid`
+— defined once under § The consent gate above, and broadened there to cover a
+prelude that carries consent material. Declarations and frozen modules are
 cached per block rev, keyed with the prelude's blake3 — an unchanged block is
 served from cache rather than re-evaluated, which is what the fire p95 rests
 on.
@@ -1599,9 +1609,11 @@ disagree" a property of the type rather than of two authors' discipline.
 the defect (the same row already published the page's rev for it, so the word
 and the rev disagreed inside one row). `exists` is never emitted because this
 door has no such arm — an occupied path REFUSES at the create door, as
-`cas_mismatch` against the empty hash. `not_applied` exists because the batch
-is atomic: when a door refuses one descriptor nothing lands, and a sibling
-that reads `born` would be claiming a record that is not on disk. It touches
+`cas_mismatch` with `expected` = `absent_rev` (the `node_rev` of the empty
+document — not a nil hash, and not "the empty hash"). `not_applied` exists
+because the PAGE SPLICE is atomic: an edit either committed with the whole
+batch or did not happen, so a sibling edit that read `born` would be claiming
+a record that is not on disk. Births are the positional case above. It touches
 § 2.2's row shape and the § A.8 response block; the refusal semantics beside
 it (a door refusal is the effect's row, the fire row keeps `ok` and its
 `value`) are § 2.2's own words, implemented rather than amended.
