@@ -158,6 +158,10 @@ fn prepare_voice_dir(dir: &Path) -> io::Result<()> {
 /// stderr, which is a lane somebody hears: the daemon then starts mute, and the
 /// diagnostic says so rather than letting the operator read silence as "the
 /// daemon measured nothing".
+///
+/// The gate reads THIS process's switch, and that is sound rather than a guess:
+/// the child inherits this environment verbatim, so the daemon resolves the same
+/// `MRD_TIMING` value from the same bytes.
 fn voice() -> Stdio {
     if !timing::on() {
         return Stdio::null();
