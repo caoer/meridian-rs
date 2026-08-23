@@ -257,3 +257,30 @@ fn a_block_list_is_untouched_by_this_card() {
     assert_eq!(face_a, "", "read props: empty, by contract");
     assert_eq!(face_b, "[obsidian-md, other]", "sql: reads it");
 }
+
+/// **The SCRIPT plane rides the same repair** — the second consumer of the
+/// same function, named because a fix that covered only the JSON
+/// serialization would have missed it.
+///
+/// `crates/registry/src/script_op.rs:1196` builds the script face's `fm` map
+/// from `wire_serve::read::props_of(doc)`, which is `read_props` — where the
+/// `fm_publish` branch lives. There is no layer between `props_of` and either
+/// consumer that could re-decode: the composed read serializes its rows, and
+/// `script_op` maps them into `(key, value)` pairs. So asserting here asserts
+/// for both faces at once.
+#[test]
+fn the_shared_props_entry_serves_block_scalars_untrimmed() {
+    let raw = page("folded: >\n  a\n  b\nliteral: |\n  x\n  y\nplain: ordinary\n");
+    let doc = model::build(raw.clone(), syntax::parse(&raw));
+    let rows = wire_serve::read::props_of(&doc);
+    let of = |k: &str| {
+        rows.iter()
+            .find(|p| p.key == k)
+            .unwrap_or_else(|| panic!("key {k:?} absent"))
+            .value
+            .clone()
+    };
+    assert_eq!(of("folded"), "a b\n", "the trailing newline survives props_of");
+    assert_eq!(of("literal"), "x\ny\n", "interior breaks survive props_of");
+    assert_eq!(of("plain"), "ordinary", "an ordinary scalar still decodes");
+}
