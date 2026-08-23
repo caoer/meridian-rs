@@ -136,11 +136,6 @@ fn head_vs_stamp_guard_present_and_before_the_stamp() {
 /// `exit 1` after it.
 #[test]
 fn refusal_bodies_refuse_not_warn() {
-    // `exit 1` must sit within this many lines below the marker. A looser
-    // "anywhere before the stamp" search is defeated by a LATER guard's exit
-    // (measured while writing this: the warn-only mutation passed because the
-    // fourth-state guard's own `exit 1` satisfied the slice search).
-    const WINDOW: usize = 3;
     let markers: [&str; 2] = [
         // the fourth-state comparison — a mismatch that only warns stamps a
         // sha whose tree was not built
@@ -157,13 +152,18 @@ fn refusal_bodies_refuse_not_warn() {
                 .iter()
                 .position(|l| l.contains(marker))
                 .unwrap_or_else(|| panic!("{rel}: refuse-body marker gone: {marker}"));
+            // The `exit 1` must sit inside the marker's OWN if-body: scan to the
+            // body's closing `fi`, never a line count. A count was measured to
+            // have a one-line margin against the NEXT guard's exit (round-2
+            // review N1, probe M11: two simultaneous mutations slid a
+            // neighbour's `exit 1` into a 3-line window).
             let refuses = lines[at + 1..]
                 .iter()
-                .take(WINDOW)
+                .take_while(|l| l.trim() != "fi")
                 .any(|l| l.trim() == "exit 1");
             assert!(
                 refuses,
-                "{rel}: no `exit 1` within {WINDOW} lines below `{marker}` — the guard \
+                "{rel}: no `exit 1` between `{marker}` and its own `fi` — the guard \
                  warns instead of refusing, which is the ceremony class this card closes"
             );
         }
