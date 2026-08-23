@@ -42,9 +42,9 @@ pub use kernel::validate;
 /// never by matching a message.
 pub use kernel::{
     BashCall, BlockFault, BlockFire, BlockLoad, DEFAULT_HOOK_ENTRY, Declaration, DeclareAtFire,
-    DeclaredEntry, EffectAtLoad, EffectPhase, ExecProgram, ExecSpec, FaultClass, FireHost,
-    ImplType, check_prelude, classify_starlark_fault, fire_entry, hook_globals, json_of_value,
-    load_block, starlark_fault_line,
+    DeclaredEntry, DeclaredTwice, EffectAtLoad, EffectPhase, ExecProgram, ExecSpec, FaultClass,
+    FireHost, ImplType, check_prelude, classify_starlark_fault, fire_entry, hook_globals,
+    json_of_value, load_block, starlark_fault_line,
 };
 pub use script_edit::{ArmedEdit, hpath_addresses, segs_address, sel_addresses};
 /// starlark's own frozen module, re-exported so a caller can hold what a load

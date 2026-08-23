@@ -545,6 +545,15 @@ pub fn parse(raw: &str, path: &Path) -> Result<Config, ConfigError> {
     let doc = model::build(raw.to_string(), syntax::parse(raw));
 
     let fm = find_frontmatter(&doc.root).ok_or_else(|| {
+        // A CLOSED but EMPTY frontmatter block is not a shape fault. The file
+        // does open with `---\n` and the fence does close, so `no-frontmatter`
+        // would tell the author a falsehood about bytes they are looking at.
+        // What the block does is declare no keys — schema §4's
+        // `missing-required-key`, on `type`, the first key
+        // `check_frontmatter` gates.
+        if closed_empty_frontmatter(raw) {
+            return missing_key(path, "type");
+        }
         ConfigError::new(
             Reason::NoFrontmatter,
             path,
@@ -822,6 +831,29 @@ fn check_frontmatter(raw: &str, fm: &model::Node, path: &Path) -> Result<(), Con
         ));
     }
     Ok(())
+}
+
+/// A frontmatter block that opens at byte 0, closes on a later `---` line, and
+/// carries nothing but whitespace between the two.
+///
+/// The markdown parser mints no `Frontmatter` node for such a block (an empty
+/// YAML metadata block is not one), so [`parse`] has to recognise the shape
+/// here or refuse it as a shape it is not.
+fn closed_empty_frontmatter(raw: &str) -> bool {
+    let Some(rest) = raw.strip_prefix("---\n") else {
+        return false;
+    };
+    for line in rest.lines() {
+        // The closing-fence spelling `frontmatter_inner` uses.
+        if line.trim_end() == "---" {
+            return true;
+        }
+        if !line.trim().is_empty() {
+            return false;
+        }
+    }
+    // The fence never closed — that IS `no-frontmatter`.
+    false
 }
 
 fn missing_key(path: &Path, key: &str) -> ConfigError {
