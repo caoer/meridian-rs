@@ -32,17 +32,24 @@ def run(ctx):
 /// parameter.
 ///
 /// It has to be a page whose run REACHES every phase in the list — the corpus
-/// fold included — while leaving the corpus byte-identical, so the gate is
-/// about phases and never about writes. `emit.md` is that page: one `notice`,
-/// which is `proto.*` and not md.\*, so there is a fold and an eval but no
-/// batch, no receipt and no byte moved (measured on the release binary
-/// 2026-08-22: `emit.md` sha256 identical before and after, no `receipts/`).
+/// fold included.
 ///
-/// Why not the `pass` page: under the lazy-snapshot work (seat `8ed22d72`) a
-/// run with nothing to apply skips the fold, and a phase-list gate driven by
-/// `pass` would then be asserting the absence of the thing it exists to check.
-/// Driving it from `emit.md` makes that change a rebase, not a rewrite.
-const PHASE_LIST_PAGE: &str = "emit.md";
+/// **`stamp.md`, since the lazy fold landed (seat `8ed22d72`).** This constant
+/// was authored as `emit.md` precisely so the change would be a rebase and not
+/// a rewrite, and the rebase is this line. `emit.md` is one `notice`, and the
+/// live gate for the fold is md.\*-only: the live report renders `kind` +
+/// `domain` (`run::report::EffectLine`), so a `notice`'s `root_at_eval` has no
+/// reader and folding for it would buy nothing (`run-plane.md` § The run
+/// plane). A live `notice` therefore reaches no `snapshot` any more, and
+/// neither does `solo.md`'s `pass` — so the one page that still reaches every
+/// phase LIVE is the one that commits.
+///
+/// The cost of the swap, stated because it is real: this gate now writes.
+/// `stamp.md` sets a field and lands a receipt, so it is no longer "about
+/// phases and never about writes" — but each test gets a fresh `Ws`, and the
+/// alternative is a gate that asserts the presence of a phase the plane no
+/// longer emits.
+const PHASE_LIST_PAGE: &str = "stamp.md";
 
 /// One `notice` — a `proto.*` effect with no local executor. See
 /// [`PHASE_LIST_PAGE`].
@@ -313,35 +320,49 @@ fn a_run_reports_its_phases_and_total_is_last() {
     assert!(of("total") >= of("dispatch"));
 }
 
-/// On main TODAY an effect-free run folds the corpus too: `pass` reaches
-/// `snapshot` exactly as `notice` does, because the fold happens before anyone
-/// asks whether there is anything to apply.
+/// The inversion this test was authored for. It read, on main: "on main TODAY
+/// an effect-free run folds the corpus too … **this is the assertion the
+/// lazy-snapshot work (seat `8ed22d72`) inverts**, deliberately its own test so
+/// that flip is a two-line conflict rather than a rewrite of the gate that
+/// matters." This is that flip.
 ///
-/// **This is the assertion the lazy-snapshot work (seat `8ed22d72`) inverts.**
-/// It is deliberately its own test, and deliberately not the phase-list gate
-/// above, so that flip is a two-line conflict on rebase rather than a rewrite
-/// of the gate that matters.
+/// The fold is now LAZY and gated per tense (`run-plane.md` § The run plane):
+/// a run folds only when THAT tense's output will put `root_at_eval` in front
+/// of a reader. Live, the report is `kind` + `domain`
+/// (`run::report::EffectLine`), so only an md.\* batch — which carries the
+/// token onward to the receipt's `root_pin` — buys the walk.
+///
+/// So two live runs that used to fold now do not, and they are the two that
+/// matter: `solo.md` emits nothing at all, and `emit.md` emits one `notice`,
+/// which is the shape the hook plane fires once per event. On a 37 800-member
+/// root that fold was 99.5% of the run.
 #[test]
-fn an_effect_free_run_folds_today() {
+fn a_live_run_whose_gate_does_not_fire_never_folds() {
     let ws = Ws::new();
-    let out = ws.mrd(Some("1"), &["run", "solo.md", "--json"]);
-    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    let names = phases(&stderr(&out));
-    for part in [
-        "snapshot",
-        "snapshot.walk",
-        "snapshot.read",
-        "snapshot.fold",
-    ] {
+    for page in ["solo.md", "emit.md"] {
+        let out = ws.mrd(Some("1"), &["run", page, "--json"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let names = phases(&stderr(&out));
+        // `eval` proves the block ran: a run that emitted no phase at all
+        // would pass the absence check below for the wrong reason.
         assert!(
-            names.iter().any(|n| n == part),
-            "an effect-free run did not report `{part}`: {names:?}"
+            names.iter().any(|n| n == "eval"),
+            "{page} did not run: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with("snapshot")),
+            "{page} folded the corpus for a token with no reader: {names:?}"
         );
     }
 }
 
 /// The `solo` block emits no md.* effect, so there is no batch — and no
 /// `apply` line claiming there was one.
+///
+/// The `snapshot` half of "did not run" belongs to
+/// [`a_live_run_whose_gate_does_not_fire_never_folds`], which owns it for both
+/// pages; asserting it here too would state one fact in two places and drift
+/// in one of them.
 #[test]
 fn a_phase_that_did_not_run_emits_no_line() {
     let ws = Ws::new();
