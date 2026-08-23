@@ -29,8 +29,18 @@
 #     read). sccache wraps COMPILES only; linking is mold's job (RUSTFLAGS).
 #   - The workspace is SHARED: any lane that writes a TRACKED file races
 #     every lane that reads the tree (build_identity asserts tree state —
-#     pipeline #25). Lanes may write only untracked paths: target dirs,
-#     /tmp, the /ci-cache mount.
+#     pipeline #25). Lanes write untracked paths — target dirs, /tmp, the
+#     /ci-cache mount — WITH ONE EXCEPTION THAT IS NOW LOAD-BEARING: the test
+#     lane rewrites 11 TRACKED files every run. crates/fs/src/stable.rs
+#     touch() does File::create + write_all(b"stable-read probe\n"), and
+#     calibrate()/watermark() fire on every workspace open, so each
+#     crates/testsuite/data/parity/corpus/*/.meridian/stable-read.probe is
+#     truncated and rewritten. `git status` stays silent ONLY because the
+#     bytes are constant (all 11 hash to 46abd039e5ab386deb24247141a5978e).
+#     Since `publish mrd` now REFUSES a tracked divergence instead of warning,
+#     changing that probe string reds main immediately — and the symptom
+#     points at the publish step and 11 fixtures, not at the crate that
+#     changed. Found by reviewer 0af9c1b3 on PR 199; verified by md5 here.
 #   - The deny lane keeps NO shared state: cargo-deny's advisory DB is a git
 #     working copy, which a killed run leaves half-written and unrepairable by
 #     any lock, so that lane runs on a container-local CARGO_HOME and clones
@@ -409,25 +419,52 @@ steps:
       # and not a stricter one. Measured, and it is why this hunk exists: with a
       # bare `git status --porcelain` the test lane's `target-ci/` (its
       # CARGO_TARGET_DIR, untracked, sharing this workspace) read as divergence
-      # and EVERY main head shipped a `-dirty` pin — 1244 `3259343e1`, 1259
-      # `0d60d29be`, 1262 `ed15def72`, 1275 `4640044e0`, each log carrying
-      # exactly one porcelain line, `?? target-ci/`. The tag lanes already probe
-      # this way after the same defect bit them (d3accfbe4e28…-dirty).
-      # --no-optional-locks keeps the probe from writing the index under a
-      # concurrent git in the shared workspace.
+      # and every main head shipped a `-dirty` pin. NINE of them, every main
+      # push from the gating commit to this one, each log carrying exactly one
+      # porcelain line, `?? target-ci/`: 1228 `171280b46`, 1234 `40fad579b`,
+      # 1244 `3259343e1`, 1258 `612a4550e`, 1259 `0d60d29be`, 1262 `ed15def72`,
+      # 1275 `4640044e0`, 1284 `f249db4b9`, 1294 `165ba87a8`.
+      #
+      # It is DETERMINISTIC, not flaky, and `db71afc11` is where it starts —
+      # the commit that gated this step on all six lanes. Before that gate the
+      # step had `depends_on: []`, started beside the lanes and probed the tree
+      # BEFORE the test lane had created `target-ci/`; it won that race (1220,
+      # at a descendant of the commit that introduced `target-ci`, published
+      # clean). Gating it made it wait, so now it loses the race every time.
+      # The tag lanes already probe this way after the same defect bit them
+      # (d3accfbe4e28…-dirty). --no-optional-locks keeps the probe from writing
+      # the index under a concurrent git in the shared workspace.
       #
       # AND IT FAILS, it does not warn. `-dirty` here means a lane wrote a
       # TRACKED file mid-pipeline — the pin would name bytes no sha can recover
       # (crates/mrd/tests/rules_cli.rs:1407 refuses a dirty tree for that
-      # reason), and a WARNING that never fails is ceremony: it printed on four
-      # consecutive main heads and stopped nothing.
+      # reason), and a WARNING that never fails is ceremony: it printed on all
+      # nine and stopped nothing.
+      #
+      # THE PROBE IS TRI-STATE AND SO IS THIS GATE. `if [ -n "$(git …)" ]` is
+      # the wrong shape: a git that exits non-zero with empty stdout — dubious
+      # ownership, an unreadable .git, no git at all — yields the empty string,
+      # the test is false, and the step stamps a CLEAN sha it never measured.
+      # `set -eu` does not catch it: the failure is inside a command
+      # substitution in an `if` condition. That is live here, not theoretical —
+      # the test lane chowns this workspace to `ci:ci` (the find walk matches
+      # `.git`), so a root probe depends entirely on the `safe.directory` line
+      # above landing exactly. The engine is deliberately tri-state for the same
+      # reason (build_git.rs returns None on a non-zero exit; build.rs collapses
+      # that to `unknown`): "I could not tell" and "it was clean" are opposite
+      # answers. Matching the FLAGS without matching that is how a gate fails
+      # open. Found by reviewer 0af9c1b3 with a stub git exiting 128.
       # Card: 19-20/tasks/main-publish-stamps-dirty-on-every-head.
       - |
         set -eu
         git config --global --add safe.directory "$CI_WORKSPACE"
-        if [ -n "$(git --no-optional-locks status --porcelain --untracked-files=no)" ]; then
+        if ! porcelain="$(git --no-optional-locks status --porcelain --untracked-files=no)"; then
+          echo "the tree probe FAILED — cannot attest, and 'could not tell' is not 'clean'"
+          exit 1
+        fi
+        if [ -n "$porcelain" ]; then
           echo "tracked content diverges from $${CI_COMMIT_SHA} — refusing to publish a pin no sha can recover"
-          git --no-optional-locks status --porcelain --untracked-files=no
+          printf '%s\n' "$porcelain"
           exit 1
         fi
         echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}" > /tmp/stamp.env
