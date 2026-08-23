@@ -56,7 +56,30 @@ const RULE_PATH: &str = "rules/session-dir.md";
 /// frame" is the claim under test, and a verdict alone cannot carry it: a rule
 /// that never ran and a rule that ran on an empty frame would both simply
 /// let the write through.
+///
+/// The explicit `return` after each `refuse` is not style: **`refuse()` records
+/// a refusal and the program KEEPS RUNNING.** Without the return this program
+/// falls into `"session_dir is " + None` on the absent-key leg and dies as an
+/// evaluation fault instead of a refusal — measured here on nyc-2 before it was
+/// written this way, and pinned as its own test below.
 const RULE: &str = "---\ntags: [type/rule, rules/middleware]\nid: 025-fixture-session-dir\n\
+    paths:\n  - tasks/**\n---\n\n# 025-fixture-session-dir\n\n\
+    ```starlark\ndef middleware(ctx):\n    \
+    seen = ctx.fields.get(\"session_dir\")\n    \
+    if seen == None:\n        \
+    refuse(message = \"the put frame carries no session_dir\", \
+    passing = \"rules/session-dir.md#frame\")\n        \
+    return\n    \
+    if seen != \"sessions/19-20-real\":\n        \
+    refuse(message = \"session_dir is \" + seen, \
+    passing = \"rules/session-dir.md#same-dir\")\n        \
+    return\n    \
+    set_field(path = ctx.after.path, key = \"session-dir-seen\", value = seen)\n```\n";
+
+/// The same rule with the `return`s removed — the shape a rule author reaches
+/// for by reflex, believing `refuse()` short-circuits. On the absent-key leg it
+/// evaluates `"session_dir is " + None` and dies.
+const RULE_FAULTS_ON_ABSENT: &str = "---\ntags: [type/rule, rules/middleware]\nid: 025-fixture-session-dir\n\
     paths:\n  - tasks/**\n---\n\n# 025-fixture-session-dir\n\n\
     ```starlark\ndef middleware(ctx):\n    \
     seen = ctx.fields.get(\"session_dir\")\n    \
@@ -65,8 +88,7 @@ const RULE: &str = "---\ntags: [type/rule, rules/middleware]\nid: 025-fixture-se
     passing = \"rules/session-dir.md#frame\")\n    \
     if seen != \"sessions/19-20-real\":\n        \
     refuse(message = \"session_dir is \" + seen, \
-    passing = \"rules/session-dir.md#same-dir\")\n    \
-    set_field(path = ctx.after.path, key = \"session-dir-seen\", value = seen)\n```\n";
+    passing = \"rules/session-dir.md#same-dir\")\n```\n";
 
 fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     // Under target/, not $TMPDIR: macOS's /var→/private/var symlink makes the
@@ -92,21 +114,21 @@ fn read_page(root: &fs::WorkspaceRoot, rel: &str) -> String {
 /// Deliberately does NOT stamp the marker — `arm_ws` does, because arming is
 /// both files and the never-armed control's whole subject is having one
 /// without the other.
-fn write_rule_and_artifact(root: &fs::WorkspaceRoot) {
-    write_page(root, RULE_PATH, RULE);
+fn write_rule_and_artifact(root: &fs::WorkspaceRoot, rule: &str) {
+    write_page(root, RULE_PATH, rule);
     let index = policy::RuleIndex::discover([policy::PageRef {
         layer: policy::ScopeLayer::Workspace,
         page: RULE_PATH,
-        bytes: RULE,
+        bytes: rule,
     }]);
-    let source = BTreeMap::from([(RULE_PATH.to_string(), RULE.to_string())]);
+    let source = BTreeMap::from([(RULE_PATH.to_string(), rule.to_string())]);
     let artifact = policy::armed::arm(
         &index,
         &policy::armed::ArmRoot::workspace(),
         [policy::armed::ArmRequest {
             id: policy::RuleId::parse(RULE_ID).expect("a legal id"),
             mode: Mode::Block,
-            attested_rev: policy::page_rev(RULE),
+            attested_rev: policy::page_rev(rule),
         }],
         &source,
         policy::CheckLimits::default(),
@@ -118,7 +140,11 @@ fn write_rule_and_artifact(root: &fs::WorkspaceRoot) {
 
 /// Arm the workspace — BOTH files, which is what arming IS.
 fn arm_ws(root: &fs::WorkspaceRoot) {
-    write_rule_and_artifact(root);
+    arm_rule(root, RULE);
+}
+
+fn arm_rule(root: &fs::WorkspaceRoot, rule: &str) {
+    write_rule_and_artifact(root, rule);
     write_page(root, fs::domain::ATTESTED_MARKER_PATH, "");
 }
 
@@ -281,6 +307,41 @@ fn an_empty_frame_reaches_middleware_as_an_empty_ctx_fields() {
     );
 }
 
+/// A middleware that cannot COMPLETE on this lane fails CLOSED — the apply
+/// refuses, it does not land.
+///
+/// Measured, not reasoned: the rule here is the first draft of the rule above,
+/// written by an author who assumed `refuse()` short-circuits. It does not —
+/// the program keeps running, reaches `"session_dir is " + None` on the
+/// absent-key leg, and dies. This lane must turn that into a refusal, because
+/// the alternative (a fault reading as "no objection") is exactly how an armed
+/// law becomes decorative.
+///
+/// It also pins the `refuse()` semantics for the next fixture author, who will
+/// otherwise write this rule again.
+#[test]
+fn a_middleware_that_faults_mid_program_fails_closed() {
+    let (_tmp, root) = workspace();
+    arm_rule(&root, RULE_FAULTS_ON_ABSENT);
+    let before = read_page(&root, CARD_PATH);
+
+    let err = fire_set_field(&root, &BTreeMap::new())
+        .expect_err("an evaluation fault never reads as a pass");
+
+    let ExecError::ArmedRefusal { detail } = &err else {
+        panic!("a fail-closed fault is an armed refusal, got: {err:?}");
+    };
+    assert!(
+        detail.contains("could not be evaluated") && detail.contains(RULE_ID),
+        "the fault names the row that could not complete: {detail}"
+    );
+    assert_eq!(
+        read_page(&root, CARD_PATH),
+        before,
+        "a faulting law lands no bytes"
+    );
+}
+
 /// The no-op posture, unchanged: a workspace that was never armed runs the
 /// same fire to completion. The artifact is present and the marker is not —
 /// that state is this control's whole subject, and it is what proves the
@@ -288,7 +349,7 @@ fn an_empty_frame_reaches_middleware_as_an_empty_ctx_fields() {
 #[test]
 fn a_never_armed_workspace_runs_the_same_fire_untouched() {
     let (_tmp, root) = workspace();
-    write_rule_and_artifact(&root); // the artifact is present…
+    write_rule_and_artifact(&root, RULE); // the artifact is present…
     // …but NO marker → never armed → no middleware, no check gate.
 
     fire_set_field(
