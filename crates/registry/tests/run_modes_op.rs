@@ -326,11 +326,13 @@ fn a_resolve_is_one_call_with_three_load_targets() {
     let loaded = rows[0]["loaded"].as_array().unwrap();
     let hook = loaded.iter().find(|b| b["block"] == "no-stash").unwrap();
     assert_eq!(
-        hook["declarations"][0],
-        json!({"on": "PreToolUse", "match": "Bash"})
+        hook["declarations"],
+        json!({"on": "PreToolUse", "match": "Bash"}),
+        "§ A.8: ONE dict, published verbatim — not a list of them"
     );
     let armer = loaded.iter().find(|b| b["block"] == "armer").unwrap();
     assert_eq!(armer["entry_kind"], "task");
+    assert_eq!(armer["declarations"], Value::Null, "it declares nothing");
 }
 
 /// A fire over the wire answers the entry's return as JSON, and **row 6**:

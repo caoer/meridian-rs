@@ -242,7 +242,11 @@ pub fn observe_if_emitted(
     if !observable {
         return Ok((effects, None));
     }
-    let (_, folded) = fs::domain_snapshot(root)?;
+    // Fold-only: this path wants the token and nothing else, and
+    // `domain_snapshot` would allocate every member's bytes on the way to it
+    // (~260 MB of peak RSS on a 37 800-member root) for a `DomainFiles` that
+    // dies on this line. Value-identical to `domain_snapshot(root).1`.
+    let folded = fs::domain_fold(root)?;
     restamp_run_root(&mut effects, &folded);
     Ok((effects, Some(folded)))
 }
