@@ -2053,7 +2053,25 @@ digit — with the value on the following indented lines. Both published faces
 (`read`'s `props[]`, `sql`'s `frontmatter`) decode it through ONE reader,
 `model::fm_block_scalar`: folded breaks become spaces, a run of *k* blank lines
 becomes *k* newlines, a break adjacent to a more-indented line is kept, and
-chomping owns the trailing breaks. Until this amendment both faces published
+chomping owns the trailing breaks.
+
+**Widened to the compared-value seams (2026-08-23, card
+`scalar-text-trims-config-key-block-scalars`).** The amendment above landed at
+the two published faces; the COMPARED-value seams in the table below still read
+the flat map through `model::scalar::text`, whose decode opens with
+`value.trim()` — correct for a key line's colon remainder, wrong for
+block-scalar text the map already stores decoded, because it eats the newline
+clip chomping just produced, the newline a leading blank produced, and the
+leading spaces an explicit indentation digit preserved. `preset`'s
+`^properties` rule check and `realise`'s `FieldEquals` — BOTH halves, the
+declared `realise.expected` read at the page edge and the observed field — now
+publish through `model::fm_doc_publish`, the one `Document`-grain door over
+`fm_publish`. The reachability is not bounded by key shape: `preset` compares
+`rule.key` and `realise` watches `realise.field`, both **arbitrary
+author-declared keys**, and `status` / `description` / `manifest` carry block
+scalars on live pages today. What keeps the class dormant is that no
+`type: preset` page and no `realise.field` declaration exists in any bound root
+yet, so the first one written opens it. Until this amendment both faces published
 the INDICATOR BYTE (`">"`), mis-serving **71 key rows across 63 live pages on
 four bound roots** (sessions 37/45, ccc-statusd 15/15, mrd-experiments 8/8,
 field-notes 3/3) that were valid YAML throughout — a decoder gap, never corpus
@@ -2079,10 +2097,35 @@ drift into two dialects. The enumerated set, audited 2026-08-08:
 |---|---|
 | composed read `props[].value` (§ A.3) | published value |
 | a script's `fm` dict (`fm_key` value) | published value |
-| the run plane's frontmatter binding values | published value |
+| the run plane's frontmatter binding values — **§ A.6.1a does NOT reach this row**, see the carve-out below | published value |
 | `preset`'s `^properties` rule check and its `type`/`defines`/`root`/`births` reads | compared value |
 | `realise`'s `FieldEquals` — BOTH halves: the page's declared `realise.expected` and the observed field | compared value |
 | the view projection's `frontmatter.value` column — and the `record` pivot and B2 tag parse riding it | published value |
+
+**A.6.1a carve-out: the run plane's binding values (2026-08-23, card
+`scalar-text-trims-config-key-block-scalars`).** The binding row above stays
+bound by § A.6.1 — a quoted binding still decodes, and `task.build: "[[#^x]]"`
+must unquote exactly as before. **§ A.6.1a alone does not reach it: a
+block-scalar binding is NOT published verbatim, and routing this seam through
+`model::fm_doc_publish` for consistency would be a regression, not a fix.**
+
+The mechanism, and it is the whole justification — a carve-out asserted without
+one is the shape of the false `read_inputs_grain` claim this card deleted. A
+binding VALUE's grammar is `[[#^id]]`, so surrounding whitespace is never
+content. `run::address::parse_binding_value` strips `[[` and `]]` as a
+**matched pair**, and it does so BEFORE the value is trimmed again downstream.
+A `>`-folded binding is stored already decoded as `"[[#^id]]\n"` — clip
+chomping's trailing break — so published verbatim, `strip_suffix("]]")` misses
+the newline, the whole string reaches `split_once("#^")`, and the non-empty
+target `"[["` refuses `AddressError::CrossFileRef`. Trimmed, the pair strips
+and the binding resolves. The later `v.trim()` does not rescue it: that runs
+AFTER the bracket strip has already failed. A block scalar that is not a block
+ref refuses `InvalidBinding` on the grammar, as it always did.
+
+So the binding plane reads a value; it does not PUBLISH one, and a block
+scalar there is either accepted through the trim or refused by the grammar —
+never mis-served. Pinned by `crates/run/tests/binding_block_scalar.rs`, which
+asserts both directions and the `PyYAML` reading of the fixture.
 
 **Why the last two rows joined (2026-08-08).** They read a value and compare it
 against a caller-supplied string, which is exactly the shape § A.6's read-half
@@ -2131,11 +2174,31 @@ bare key line with no sequence below stays `''` — the engine never invents
 owns it (`model::fm_value`), and `fm_tags` rides the same block walk, so the
 tag lane and the value lane cannot disagree about where a sequence ends.
 
-Named residual, not silently left: the OTHER published-value seams in the
-table above (`props[].value`, a script's `fm`, the run plane's bindings) still
-read the flat map and still serve `''` for a block sequence. This amendment
-binds the view row only — ZT's GO was scoped to the projection — and the
-residual is recorded here so the next reader finds it named.
+Named residual, not silently left: the other seams in the table above still
+read the flat map and still serve `''` for a block sequence — `props[].value`,
+a script's `fm`, and (since 2026-08-23, card
+`scalar-text-trims-config-key-block-scalars`) `preset`'s `^properties` check
+and `realise`'s `FieldEquals` in BOTH halves, which joined the list when they
+were routed through `model::fm_doc_publish`. That door is block-SCALAR aware
+and block-SEQUENCE blind: it answers from the flat map's stored text plus a
+key-line header test, where `model::fm_value` — the reader the view row uses,
+thirty lines away in the same file — walks the block and handles sequences too.
+Measured on one page at engine `40fad579b`: `sql` served
+`tags=[alpha, beta]` where `read`'s `props[]` served `tags=` empty. It matters
+because `preset`'s `rule.key` and `realise`'s `field` are arbitrary
+author-declared keys and `tags:` / `aliases:` / `agents:` are block sequences
+on live pages, so a rule pinning a list-valued key compares its def string
+against `''`. **This is not a regression** — those seams served `''` before
+that card too — and it is not that card's to fix: this amendment binds the
+view row only (ZT's GO was scoped to the projection) and the disposition sits
+inside ZT's open block-list question, pinned by
+`crates/testsuite/tests/props_plane.rs:117-151`.
+
+The run plane's bindings are deliberately NOT in that list and are no longer
+described here as a published-value seam: per § A.6.1a's carve-out they read a
+value under the `[[#^id]]` grammar rather than publishing one, and a bare key
+line with a sequence below refuses on the grammar instead of serving `''` as a
+value.
 
 **What stays raw, and why it is not an omission** (§ A.6.2's reasoning, the
 same stance `cat` takes): `lock` (guard tokens) and `policy::change`'s
@@ -2173,13 +2236,109 @@ fleet writes are the same bytes. Concretely, a value is quoted when it:
 - would parse as a **map or a nested collection** (`{…}`, `[[…]]`, an
   unterminated `[…]`) — the I4 nesting was the emitter's, never the caller's;
 - carries `: ` unquoted, starts with `#`, or carries ` #` — a mapping or a
-  comment in value position.
+  comment in value position;
+- carries an interior TAB — `k: a<TAB>b` is unreadable to PyYAML ("while
+  scanning for the next token") and the whole block dies with it, while
+  `serde_yaml` reads the same bytes without complaint;
+- would be typed by a YAML **1.1** resolver even where a 1.2 one leaves it a
+  string: a digit run (`19895504`; `02146210` is OCTAL 576 648 to PyYAML), the
+  underscore grouping `1_000`, the underscore radix forms (`0x1_f` is 31,
+  `0b1_010` is 10) and every `0b…`, the sexagesimal forms (`12:30` is 750,
+  `1:02:03` is 3723, `1:30.5` the float — each group after the first is 0–59),
+  and the word booleans `y`/`yes`/`no`/`on`/`off` with their case variants;
+- is one of the two 1.1 resolver TAGS, `<<` (merge) or `=` (value): emitted
+  plain, PyYAML refuses the WHOLE block — "could not determine a constructor
+  for the tag" — while serde_yaml reads both back as strings.
 
-Unchanged, deliberately: a **typed scalar** (`true`, `7`, `2026-08-07`) and a
-**one-level flow list** (`[a, b]`) still emit verbatim. Those spellings are the
-only way this string plane can author a non-string value. A newline in a value
-is still REFUSED, never sanitized: a single-line frontmatter value cannot carry
-one, and an escaped-scalar workaround leaks.
+Unchanged, deliberately: a **one-level flow list** (`[a, b]`) still emits
+verbatim — the only way this string plane can author a non-string value — and a
+**timestamp** (`2026-08-07`) still emits plain, because `serde_yaml` reads it
+back as exactly the caller's string. A newline in a value is still REFUSED,
+never sanitized: a single-line frontmatter value cannot carry one, and an
+escaped-scalar workaround leaks.
+
+**The typed-scalar carve-out is RETIRED** (2026-08-23, card
+`all-digit-short-ids-read-as-int`, from PR 185's review finding F2). `true` and
+`7` used to emit verbatim as "the only way this string plane can author a
+non-string value". The price was the fleet's join key: an agent short id is
+8 hex, 203 of the 8 125 distinct ids in the live sessions root's frontmatter
+(2.5 %) are all digits, and `owner: 19895504` read back as the INTEGER
+19 895 504 in every foreign parser while `session: 02146210` read back as
+576 648 in PyYAML. 37 such ids already sit bare under `session`, `agent`,
+`from`, `owner`, `author`, `worker`, `leader`, `created_by`; 8-hex git shas
+share the shape. A value the caller spelled as a string is now written so that
+PyYAML, `serde_yaml` and `gopkg.in/yaml.v3` all read that same string back.
+
+**Named residual:** no door can author the integer `7` through the value plane
+any more — `create(props=…)`'s `PropValue::List` is the one typed arm left — so
+a def-declared `int`/`bool` property (`shape.rs` `SHAPE_INT`/`SHAPE_BOOL`) must
+be born in the record's own body bytes. No live def on the sessions root
+declares one.
+
+**Second residual — timestamps and dates are deliberately left PLAIN.** Ruled
+2026-08-23 (leader `a68417af`, card `all-digit-short-ids-read-as-int`), written
+down because an undocumented exclusion is indistinguishable from an oversight,
+and the next reviewer would re-derive the sweep to find out which it was.
+
+**The line is value corruption, not retyping**, and the three-parser table
+below is what draws it: an id comes back as the caller's STRING from
+`serde_yaml` and as the integer **576648** from BOTH 1.1 readers — PyYAML and
+`gopkg.in/yaml.v3` — so the join key is destroyed. A date comes back as text
+from `serde_yaml` and as a date object (`date` / `time.Time`) from both 1.1
+readers: every reader agrees on the same INSTANT, and only the carrier differs.
+The predicate defends against a changed value and does not tidy a changed
+carrier.
+
+The costs are asymmetric and both real: quoting the class would take churn from
+2.767 % to ~25 % of the plain population (+7 356 distinct spellings under
+`created`, `created_at`, `updated_at`) and would un-type the property Obsidian
+views sort and filter on — degrading what the field exists for, to defend
+against a disagreement no reader in this stack actually has.
+
+**The exposure, stated precisely:** a DATE-OBJECT WRITER — one that reads a
+plain date into a `date` / `time.Time` value and writes it back in its own
+formatting, so the stored spelling drifts with nobody editing the value.
+
+The reason no such writer exists here is NOT that our readers see a string —
+**both 1.1 readers decode a plain date into a date object** (corrected
+2026-08-23 in review, advisor `c6426434`: an earlier draft of this section
+claimed go-yaml reads a date as a string, and that is false for an untyped
+target). It is narrower and load-bearing: this engine reads frontmatter through
+`serde_yaml`, which resolves the 1.2 core schema and has no timestamp type; and
+`ccc-statusd` unmarshals into **typed `string` struct fields** — ALL FOUR of
+its non-test yaml decode sites target a typed struct (`internal/registry`
+`check.go` ×2 and `mrdsource.go`, all three into `hookPageFM` whose every field
+is `string`/`[]string`, plus `internal/mcpserver/notifyhow.go`'s anonymous
+string-valued struct), with zero `map[string]any` yaml targets and no
+`yaml.NewDecoder` site in the repo (surveyed at `8bde5792`). There `yaml.v3`
+hands back the source text (`created="2026-08-23"`, measured) and **the
+timestamp resolver never fires**. The safety comes from the TARGET TYPE, not
+from the resolver — so the failure scenario is precise: **the next reader that
+decodes frontmatter into `map[string]any`**.
+**A writer that unmarshals frontmatter into `interface{}` and re-emits it would
+rewrite every date in the corpus** — if one appears, this is the line it must
+read first.
+
+*Aperture of that absence claim* (2026-08-23): the writers surveyed were this
+engine through every § A.6.3a door, `ccc-statusd` (`yaml.v3` into typed string
+fields, plus its own line-level `frontmatter.SetField`), and the armed rules,
+which write through the engine. **Obsidian's property editor also writes
+frontmatter in this vault and was NOT measured** — a JS front-matter writer is
+the likeliest place a date-object round trip would appear, and nobody has
+looked. "None exists" means "none in the three surveyed writers", not "none
+anywhere". And the instrument caveat above generalises: a claim about a READER
+must be measured against the library a program links, not against a CLI that
+wraps it.
+
+**The no-op claim is measured, not asserted** (same card): 1 196 live records —
+every one carrying a value this amendment re-spells, plus 600 random controls —
+10 369 top-level keys, each written back through the real splice door with the
+value the read law serves. Base `361f248d3` and head produce **byte-identical
+reports**: 90 files moved, 14 refused, the same rows at both revs. The 90 are
+the standing § A.6.3c exclusions (79 bare-key `null` → `""`, the rest stored
+block-scalar markers and `[[…]]` nesting), so this change adds **zero** no-op
+re-spelling. Receipts: `.scratch/noop-base.txt`, `noop-head.txt`,
+`noop_list.txt`.
 
 **The trigger list above is NOT closed** (amended 2026-08-23, card
 `hook-17-mrd-create-props`). It enumerates the fast, teachable cases; the LAW is
@@ -2193,13 +2352,58 @@ frontmatter block dies, not one key (measured with PyYAML over the live sessions
 root: 47 unreadable blocks, 6 of them in a spelling this encoder emits). `!t`,
 `>` and `|` parsed to something the caller never wrote. A door adds no trigger
 of its own: the parser is the trigger, and the list is documentation of what it
-catches. The two carve-outs above survive it explicitly — a plain form that
-parses as a NON-string is legal exactly when the checker's classifier blesses it
-as a typed scalar or a one-level flow list. Measured churn across the live root
-at the amendment: **14 of 29 377 distinct plain-spelled values change spelling
-(0.048 %), all plain→quoted, none quoted→plain**, and a same-value write-back
-stays byte-identical (§ A.6.3c preservation), so no record is rewritten by the
-change alone.
+catches. ONE carve-out survives it — a plain form that parses as a NON-string is
+legal exactly when the checker's classifier reads it as a one-level flow list.
+Measured churn across the live root at that amendment: **14 of 29 377 distinct
+plain-spelled values change spelling (0.048 %), all plain→quoted, none
+quoted→plain**, and a same-value write-back stays byte-identical (§ A.6.3c
+preservation), so no record is rewritten by the change alone.
+
+**`serde_yaml` is not the whole oracle** (2026-08-23, card
+`all-digit-short-ids-read-as-int`). It resolves YAML **1.2**; PyYAML and
+go-yaml (`gopkg.in/yaml.v3` — what `ccc-statusd` and most of the fleet's
+non-Rust readers link) resolve **1.1**, and the schemas disagree:
+`02146210` is the string `"02146210"` to `serde_yaml` — a leading zero is not a
+1.2 integer — and the integer 576 648 to PyYAML. Deferring to the 1.2 parser
+alone would have left the worse half of the id defect standing (a value change,
+not a type change), so the law is the UNION of the schemas, and the 1.1 classes
+are the enumerated trigger above. Measured churn for the retirement plus the
+union, over the same instrument: **810 of 29 270 distinct plain-spelled values
+change spelling (2.767 %) — 515 ints, 245 floats, 37 all-digit short ids, 7
+booleans, 1 sexagesimal, 1 interior tab, 4 in the radix / resolver-tag classes
+— all plain→quoted, none quoted→plain, none refused**, and PyYAML reads every
+one of the 810 changed emits back as exactly the caller's string.
+
+**Why the id class had to be closed and the timestamp class did not**, measured
+2026-08-23 on one file, each reader run as a LIBRARY into an untyped target
+(`serde_yaml::Value`, PyYAML `safe_load`, `gopkg.in/yaml.v3` into
+`interface{}`):
+
+| plain value | serde_yaml (1.2) | PyYAML (1.1) | go-yaml `yaml.v3` (1.1) |
+|---|---|---|---|
+| `owner: 19895504` | int | int | int |
+| `session: 02146210` | string `"02146210"` | **576648** (octal) | **576648** (octal) |
+| `created: 2026-08-23` | string | `date` object | `time.Time` |
+| `stamp: 2026-08-23T02:09:32-04:00` | string | `datetime` object | `time.Time` |
+| `session: "02146210"` (the emit) | string | string | string |
+
+**The two 1.1 readers AGREE on 576648**, and that agreement is the case: an id
+the caller spelled as a string is silently a DIFFERENT INTEGER to both of the
+non-Rust readers in this stack, while `serde_yaml` alone still sees the string.
+The join key is destroyed, not merely retyped.
+
+*Instrument note, because it cost a wrong sentence in review:* the **`yq` CLI**
+(mikefarah v4.53.3) answers `2146210` for that same line — a third number, and
+neither library's. A CLI is not the library it embeds; the rows above are the
+libraries, which is what programs in this stack actually link.
+
+A timestamp is a different event: every reader agrees on the INSTANT, and the
+disagreement is only whether it arrives as text or as a date object — no value
+is corrupted. That is why the timestamp class stays plain rather than churning
+7 356 more distinct spellings (25 % of the population) and un-typing the `date`
+property
+every Obsidian view sorts on. § A.6.3c preservation is untouched, so the 37 ids
+already on disk keep their bytes until a write CHANGES their value.
 
 **A.6.3′ The KEY half of the composed line (2026-08-14, dogfood r3 f6).** The
 emitted line is `{key}: {encoded}`, so an unvalidated KEY forges frontmatter
@@ -2828,9 +3032,10 @@ guard applies exactly as at every other op):
   newline (D11, the § A.6.3a law verbatim) and a `body` that already opens its
   own frontmatter fence while `props` is inhabited — two spellings of one
   block, so the door refuses instead of choosing. Keys land sorted; a props
-  scalar that would read back as a COLLECTION is quoted, while the value
-  plane's typed-scalar carve-out is unchanged (`"7"` lands `7`), exactly as at
-  every other door. **The one deliberate asymmetry with the patch face**
+  scalar that would read back as a COLLECTION is quoted, and so is one that
+  would read back as a NUMBER or a BOOL (`"7"` lands `"7"`, card
+  `all-digit-short-ids-read-as-int` — the typed-scalar carve-out is retired at
+  every door). **The one deliberate asymmetry with the patch face**
   (§ A.6.3): the flow-list carve-out does NOT apply here, because this door has
   a typed list arm and that one does not — so the string `[a, b]` lands quoted
   when born through `props=` and plain when written through `properties`. A
@@ -2851,6 +3056,116 @@ guard applies exactly as at every other op):
   timeout, or code field: authority resolves from the page + declaring-root
   conventions, the timeout from the declaring root's config, and only
   corpus-declared task blocks run — the wire carries names, never code.
+  *(Two of these are AMENDED for mode-bearing targets only — see "The
+  amendment" below: `timeout_ms`/`budget` ride as caller CEILINGS, and
+  `source` carries draft bytes that force `dry`. A task target keeps every
+  absence exactly as written here.)*
+
+**The amendment — `mode: load|fire` (hook-support design, ratified
+2026-08-23; caps `run.mode`, `run.input`).** No new op enters the wire: this
+one gains two modes. The law the amendment carries, stated because amending
+a shipped authority surface widens it silently otherwise:
+
+> **`run` executes what the page declares: `task.<name>` in frontmatter or
+> `declare()` in the block, never an undeclared block.**
+
+The declared-task binding was always this op's consent gate — the author
+names what is invocable. A `declare()` block is *equally declared*; a bare
+anchored fence with neither declaration is not a target, and a fire naming
+one refuses `not_declared` at the door.
+
+- **`load`** evaluates a page's starlark blocks' top levels in a PURE
+  environment and answers each block's declarations. **`fire`** calls one
+  declared block's frozen entry with a JSON `input` and answers its return
+  value as JSON plus the md effects it applied through the ordinary doors.
+  Absent `mode` is the shipped task path, untouched.
+- **One addition to the top-level field set, six to the per-target set** —
+  every one optional and cap-gated, appended to the closed sets so a client
+  that skipped negotiation is refused BY NAME (`` unknown field `mode` on
+  `targets[0]` of `run` ``), never silently downgraded:
+
+  | Addition | Where | Cap | Carries |
+  |---|---|---|---|
+  | `prelude` string | top level, one per call | `run.mode` | load-phase source evaluated before each block's own top level; blake3-cached; a source that faults — **or that carries consent material, a declaration or an `exec` value, since consent is page-authored** — refuses `prelude_invalid` at the mode door, before any block of the page is loaded, for load and fire alike |
+  | `mode` `"load"\|"fire"` | per target | `run.mode` | absent = the shipped task path |
+  | `block` string | per target | `run.mode` | the `^id` anchor of a declared block (§2.4's charset); REQUIRED with `mode:"fire"`, refused with `task` |
+  | `input` any JSON | per target | `run.input` | the fire's one input channel, bound as a real starlark value (dict/list/str/int/float/bool/None) |
+  | `timeout_ms` u64, `budget` `{steps,mem}` | per target | `run.mode` | caller CEILINGS for one mode-bearing target: effective limit = min(declared, ceiling) |
+  | `source` string | per target | `run.mode` | a draft's page bytes instead of `page`; **forces `dry`** — the rehearsal lane |
+
+- **Exclusion rules, each refusing `bad_request` by name at the strict
+  wall.** `task` with `mode` (the two addressings are exclusive); `args` on
+  a mode-bearing target (argv is the task contract's — a fire's one input
+  channel is `input`); `env` on an EVALUATED-entry fire (no process exists
+  to receive it, and this op does not ignore silently — an exec'd entry's
+  fire takes `env` as its process overlay); `block`, `input` or `task` on a
+  `mode:"load"` target; `timeout_ms`/`budget` on a task target (the named
+  absence stands there); `block` absent on a `mode:"fire"` target. `source`
+  replaces `page` — `page` stays required on every other target.
+- **Mixed batches are legal by construction**: rows are independent and
+  answered in request order, so one call may carry a task target and a fire
+  target. This is the RECORDING law made concrete — **recording follows the
+  declaration kind, never a caller switch.** A `task.<name>` row is a task
+  run: receipts under `<invocation>-t<index>`, and the plane's lock. A
+  `declare()` row is a fire: **no receipt row, no lock**. There is no flag;
+  the engine reads the declaration.
+- **`invocation` is unchanged and still required** — on a fire it only
+  LABELS: no receipt row exists, so `<invocation>-t<index>` mints no receipt
+  anchor; it names the exec log and correlates the caller's journal.
+  Collisions are therefore harmless. A host deriving one from an id outside
+  the path-safe set maps every other byte to `.` on its own side; the engine
+  validates, never rewrites.
+- **`fields{}` extends its reach on a mode-bearing target** (a named
+  widening of § A.2.1's birth-lane scope): a fire's splice-door writes
+  (`set_field`/`append_section`) carry it as middleware `ctx.fields` too,
+  not only its `md.create` births.
+- **Response — `body.targets[]` gains two row kinds** beside the untouched
+  task row. A **fire row**:
+
+  ```json
+  {"result":"ok|fault|timeout|refused",
+   "page":"HOOKS.md","block":"no-stash","rev":{"file":"5c7347b8…","block":"75692e87…"},
+   "value":{"deny":"…"},
+   "applied":[{"kind":"md.create","path":"…","result":"born|edited|refused|not_applied","file_rev":"…","class":"…","reason":"…"}],
+   "exec":[{"block":"check","command":"…","exit":1,"stdout_sha256":"…","bytes":412,
+            "log":".meridian/runs/…-t0.log","timed_out":false,"dry":false}],
+   "process":{"interpreter":"bash","exit":0,"stdout_tail":"…","stderr_tail":"…","timed_out":false},
+   "fault":{"class":"parse|name_error|effect_at_load|declare_at_fire|impl_type|budget|reply_shape|runtime|no_block|not_declared|ambiguous_anchor|not_a_module|missing_entry|prelude_invalid|bad_path|corpus_race","reason":"…","line":7},
+   "telemetry":{"steps":812,"mem":20480,"wall_ms":3}}
+  ```
+
+  The `applied[]` vocabulary is amended (**A8**): `born` is a birth, `edited`
+  an edit, `refused` the ONE descriptor a door judged (with its `class`), and
+  `not_applied` its siblings — POSITIONALLY, on the refusal's own descriptor
+  index: births realize sequentially BEFORE the atomic page splice, so a create
+  before the refused index reads `born` (it is on disk — decision #14 does not
+  roll it back), a create after it reads `not_applied`, and every edit reads
+  `not_applied` because the splice never ran. There is no `exists` arm: an occupied path REFUSES at
+  the create door. **A door refusal is that effect's row and never the fire
+  row's** — the fire row keeps `result:"ok"` and its `value`, which is the
+  never-veto law; only a failure to carry the batch at all (lock, I/O, page
+  load, a non-md or malformed descriptor) refuses the row itself.
+
+  The fault union above is the one the ENGINE can emit: `runtime` is the
+  catch-all a caller will meet in production, `corpus_race` is the warm→pin
+  race, `bad_path` is A2's, and `impl_type` is typed (a downcast, not prose).
+
+  A **load row**: `{page, rev:{file}, loaded:[{block, rev, result,
+  declarations, entry_kind, fault?}]}`. `result` on a fire row is an
+  EVALUATION word, not a state word — the two vocabularies share one row
+  shape, and that is the amendment's named cost. `value` is the program's
+  return verbatim; for an exec'd entry it is absent and `process` carries
+  the interpreter, RAW exit code (1 and 2 distinct) and tails. `rev` is
+  provenance — the page's `file_rev` and the block's `rev` — so a caller can
+  print WHICH BYTES RAN. A `fault` carries no `applied` (all-or-nothing per
+  row); a `bash()` that ran before a fault stays in `exec[]` because it
+  happened. `declarations` is the uninterpreted dict `declare()` collected,
+  published verbatim — the engine interprets no key of it. A door refusal
+  during realization is that effect row's `result:"refused"` with the door's
+  reason; the fire row's own `result` stays `ok`.
+- **What the modes do NOT gain, on purpose:** no `rev` to attest
+  (provenance is echoed, not demanded), no vocabulary list, no event shape,
+  no armed check, and no `entry` parameter — the block self-describes.
 
 **Execution.** Targets run SEQUENTIALLY in list order, each an independent
 run-plane invocation: its own `run.lock` window, its own receipt, its own
@@ -2911,8 +3226,17 @@ op reached the plane. No aggregate boolean exists anywhere in the body:
 
 **Dispatch:** v3-only; op-grain cap `run` (the `create`/`mounts`/`script`
 precedent — no dotted fields at birth). A v2 session answers `unknown_op`;
-the frozen v2 caps stay byte-identical. §3.2's v3 push is eleven caps,
-twenty-seven in all.
+the frozen v2 caps stay byte-identical.
+
+*Amended 2026-08-23:* "no dotted fields at birth" was the BIRTH posture, and
+this op has outgrown it — `run.fields` and `run.ambient` ship dotted today,
+and the mode amendment adds **`run.mode`** and **`run.input`** to the v3
+push, per §3.2's own convention ("Field-only amendments ship as dotted
+`op.field` strings"). Discovery stays whole and unsniffed: a client that has
+not seen `run.mode` in the hello does not send it, and an old server
+receiving it anyway refuses by name at this section's strict wall. The
+complete served set and its count are §3.2's; this section names only its
+own four.
 
 **Containment (what this door inherits, all of it the plane's own).** The
 wire arm drives the same runner seam as the CLI: capability resolution

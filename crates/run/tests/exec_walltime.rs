@@ -28,15 +28,15 @@ fn a_background_child_is_reaped_within_the_wall_budget() {
         "( sleep 15; echo leaked > '{}/leak.txt'; echo late ) & exit 0",
         tmp.path().display()
     );
-    let r = exec::exec(&ExecSpec {
-        source: &src,
-        args: &[],
-        env: &env,
-        scratch: tmp.path(),
-        project_root: tmp.path(),
-        timeout: Duration::from_secs(30),
-        step_cwd: None,
-    })
+    let r = exec::exec(&ExecSpec::task(
+        &src,
+        &[],
+        &env,
+        tmp.path(),
+        tmp.path(),
+        Duration::from_secs(30),
+        None,
+    ))
     .unwrap();
     assert!(r.status.success());
     let elapsed = started.elapsed();
