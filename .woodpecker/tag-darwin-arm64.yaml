@@ -23,29 +23,6 @@ when:
   # publishes under the commit key like every other route.
   - event: manual
 
-# GATE ON THE TEST LANES — same reasoning as the linux sibling, and it applies
-# unchanged here even though this lane runs on a darwin agent: `depends_on` is
-# workflow-level scheduling, not a shared machine. `ci` runs on v* tags (ci.yaml
-# `when`) on the nyc-2 agent; this workflow waits for its verdict before it
-# builds or uploads anything, so a red test lane leaves the darwin release
-# unpublished instead of shipping ahead of the tests. `optional: true` covers
-# the pipelines `ci` is not part of, and carries the same trap the linux sibling
-# spells out in full (tag-linux-amd64.yaml, same directory — read it before
-# editing this dependency): lint does NOT validate workflow dependency names, so
-# renaming `ci.yaml` drops this gate silently, and this lane's safety rests on
-# the `event: tag` clause in ci.yaml's `when` being kept.
-#
-# The one rule not to misread: a workflow state of `pending` DOES NOT prove the
-# dependency is wired — a task whose dep already failed can sit in the plain
-# `pending` queue bucket. Check the task's `deps` array in `GET /api/queue/info`
-# (this lane in pipeline 1204: task 2810, `deps: ["2809"]` = the `ci` task, in
-# the `waiting_on_deps` bucket). A tag lane that STARTS IMMEDIATELY alongside
-# `ci` is an ungated tag lane.
-# Card: 22-18/tasks/meridian-rs-publish-not-gated.
-depends_on:
-  - name: ci
-    optional: true
-
 labels:
   platform: darwin/arm64
 
