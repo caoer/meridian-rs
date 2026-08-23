@@ -92,6 +92,10 @@ const RUNS_DIR: &str = ".meridian/runs";
 /// design's *"staged bytes cached by block rev"*. Out of tree, like the logs.
 const STAGED_DIR: &str = ".meridian/staged";
 
+/// The extension a staging write carries until its rename lands. Never a
+/// cache member, never pruned: it is another fire's in-flight write.
+const STAGED_TMP_EXT: &str = "tmp";
+
 /// How many staged programs a workspace keeps. Same ceiling as the logs, same
 /// reason: a cache keyed by every rev ever fired grows without bound.
 const STAGED_RETENTION: usize = 50;
@@ -1140,13 +1144,16 @@ impl ProcessSeam<'_> {
             .filter_map(Result::ok)
             // `None` counts every file in the leaf — the staged directory's
             // members carry the fence's own extension, so filtering on one
-            // would leave every other language unbounded.
+            // would leave every other language unbounded. A `.tmp` is never a
+            // member either way: it is another fire's in-flight staging write,
+            // and deleting it would take the bytes that fire is about to run.
             .filter(|e| {
-                ext.is_none_or(|ext| {
-                    e.path()
-                        .extension()
-                        .is_some_and(|found| found.eq_ignore_ascii_case(ext))
-                })
+                let path = e.path();
+                let found = path.extension();
+                !found.is_some_and(|found| found.eq_ignore_ascii_case(STAGED_TMP_EXT))
+                    && ext.is_none_or(|ext| {
+                        found.is_some_and(|found| found.eq_ignore_ascii_case(ext))
+                    })
             })
             .filter_map(|e| {
                 let modified = e.metadata().ok()?.modified().ok()?;
@@ -1272,9 +1279,25 @@ impl ProcessSeam<'_> {
         // write. This is the cache — it removes the write, and (with the
         // pinned page in memory) the read; § 1.4 is explicit that it never
         // removes the spawn.
+        //
+        // **Write elsewhere, then rename.** Two fires of one block race here
+        // by construction — the daemon serves connections in parallel and the
+        // key is the same for both — and `fs::write` is not atomic, so the
+        // loser could `exec` a file the winner was still filling: a truncated
+        // script is a syntax error attributed to the author. A rename within
+        // one directory is atomic, so a reader sees the whole bytes or no
+        // file. The temp name carries the pid, so two racers never share one.
         if !path.exists() {
-            std::fs::write(&path, source).map_err(|e| format!("stage {name}: {e}"))?;
+            let tmp = dir.join(format!("{name}.{}.{STAGED_TMP_EXT}", std::process::id()));
+            std::fs::write(&tmp, source).map_err(|e| format!("stage {name}: {e}"))?;
+            std::fs::rename(&tmp, &path).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp);
+                format!("stage {name}: {e}")
+            })?;
         }
+        // `.tmp` files are excluded from the count on purpose: a racer's
+        // in-flight write is not a cache member, and pruning one would delete
+        // the bytes a live fire is about to run.
         Self::prune(&dir, None, STAGED_RETENTION);
         Ok(path)
     }
@@ -2114,6 +2137,37 @@ printf '%s|%s' \"$BASE\" \"$OVER\"
         assert!(
             !page_dir.join("inv-0-t0.log").exists(),
             "the oldest must go"
+        );
+    }
+
+    /// The staged cache is bounded by the same ceiling, and an in-flight
+    /// `.tmp` is **not a member**: it is another fire's staging write, and
+    /// pruning it would delete the bytes that fire is about to `exec`.
+    #[test]
+    fn staged_pruning_keeps_the_ceiling_and_never_an_in_flight_write() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join(STAGED_DIR);
+        std::fs::create_dir_all(&dir).expect("staged dir");
+        for i in 0..60 {
+            std::fs::write(dir.join(format!("rev-{i}.bash")), "echo hi").expect("staged");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // The oldest file in the directory, so a prune that counted it would
+        // reach it first.
+        let inflight = dir.join(format!("rev-0.bash.4242.{STAGED_TMP_EXT}"));
+        std::fs::write(&inflight, "echo half").expect("in-flight write");
+
+        ProcessSeam::prune(&dir, None, STAGED_RETENTION);
+
+        let members = std::fs::read_dir(&dir)
+            .expect("read back")
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "bash"))
+            .count();
+        assert_eq!(members, STAGED_RETENTION, "the cache is bounded");
+        assert!(
+            inflight.exists(),
+            "a live staging write was pruned — the fire that owns it would exec a missing file"
         );
     }
 

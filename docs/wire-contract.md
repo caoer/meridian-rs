@@ -2192,7 +2192,10 @@ against `''`. **This is not a regression** — those seams served `''` before
 that card too — and it is not that card's to fix: this amendment binds the
 view row only (ZT's GO was scoped to the projection) and the disposition sits
 inside ZT's open block-list question, pinned by
-`crates/testsuite/tests/props_plane.rs:117-151`.
+`crates/testsuite/tests/props_plane.rs`'s
+`a_block_value_serves_the_key_line_remainder_and_the_full_grain` — the TEST
+NAME, not a line range, because a range is a drift generator and this one had
+already drifted once.
 
 The run plane's bindings are deliberately NOT in that list and are no longer
 described here as a published-value seam: per § A.6.1a's carve-out they read a
@@ -2391,6 +2394,19 @@ one of the 810 changed emits back as exactly the caller's string.
 the caller spelled as a string is silently a DIFFERENT INTEGER to both of the
 non-Rust readers in this stack, while `serde_yaml` alone still sees the string.
 The join key is destroyed, not merely retyped.
+
+*Correction, measured 2026-08-23 (daemon-lane probe, seat `3d072ae8`; card
+`wire-contract-go-yaml-11-claim-overstated`):* **go-yaml's 1.1 resolution is
+PARTIAL**, and calling it "1.1" without qualification overstates it. It
+resolves the integer classes (including the octal-looking ids above) and
+dates — the rows in the table, which were measured correctly — but it keeps
+two 1.1 classes as STRINGS where PyYAML resolves them: **word-bools**
+(`yes` / `no` / `on` / `off`) and **sexagesimals** (`12:30`). This changes no
+predicate and no test: the union law — a caller string is written so every
+parser reads it back as that string — is unaffected, because the writer
+already quotes the union of both readers' classes, which is a superset of
+either. What it changes is what a reader of this table may conclude about a
+value go-yaml did NOT resolve.
 
 *Instrument note, because it cost a wrong sentence in review:* the **`yq` CLI**
 (mikefarah v4.53.3) answers `2146210` for that same line — a third number, and
@@ -3129,7 +3145,9 @@ one refuses `not_declared` at the door.
    "applied":[{"kind":"md.create","path":"…","result":"born|edited|refused|not_applied","file_rev":"…","class":"…","reason":"…"}],
    "exec":[{"block":"check","command":"…","exit":1,"stdout_sha256":"…","bytes":412,
             "log":".meridian/runs/…-t0.log","timed_out":false,"dry":false}],
-   "process":{"interpreter":"bash","exit":0,"stdout_tail":"…","stderr_tail":"…","timed_out":false},
+   "process":{"interpreter":"bash","exit":0,"stdout_tail":"…","stderr_tail":"…",
+              "stdout_bytes":10000,"stderr_bytes":0,"timed_out":false,
+              "log":".meridian/runs/HOOKS.md/…-t0.log"},
    "fault":{"class":"parse|name_error|effect_at_load|declare_at_fire|impl_type|budget|reply_shape|runtime|no_block|not_declared|ambiguous_anchor|not_a_module|missing_entry|prelude_invalid|bad_path|corpus_race","reason":"…","line":7},
    "telemetry":{"steps":812,"mem":20480,"wall_ms":3}}
   ```
@@ -3155,7 +3173,17 @@ one refuses `not_declared` at the door.
   EVALUATION word, not a state word — the two vocabularies share one row
   shape, and that is the amendment's named cost. `value` is the program's
   return verbatim; for an exec'd entry it is absent and `process` carries
-  the interpreter, RAW exit code (1 and 2 distinct) and tails. `rev` is
+  the interpreter, RAW exit code (1 and 2 distinct) and tails. **The tails
+  are tails**: `stdout_tail`/`stderr_tail` are the last **4096 bytes** of each
+  stream, `stdout_bytes`/`stderr_bytes` say how much there was, and `log`
+  names the out-of-tree file carrying all of it —
+  `.meridian/runs/<page-path>/<invocation>-t<index>.log`, retained per page,
+  absent under `dry`. A chatty entry must not put every byte it wrote on the
+  wire, in the daemon's journal and in an agent's context on every fire. An
+  exec'd entry's program is a STAGED FILE run as `<interpreter> <file>
+  <args…>`, never `-c`: `-c` is a shell convention (`node -c` is `--check`,
+  `bun -c` answers `File not found`, `deno`'s `-c` is its config flag), so
+  `argv[0]` is only free once the bytes are a file. `rev` is
   provenance — the page's `file_rev` and the block's `rev` — so a caller can
   print WHICH BYTES RAN. A `fault` carries no `applied` (all-or-nothing per
   row); a `bash()` that ran before a fault stays in `exec[]` because it

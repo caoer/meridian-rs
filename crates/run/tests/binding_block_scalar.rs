@@ -168,3 +168,58 @@ echo hi
         "expected InvalidBinding, got {err:?}"
     );
 }
+
+/// **The pin the prose leaned on without a test** (card
+/// `wire-contract-go-yaml-11-claim-overstated`, PR 194 review N1): a LITERAL
+/// block scalar carrying TWO refs.
+///
+/// This is the case that makes "a block scalar here refuses rather than
+/// mis-reads" true rather than lucky. The stored value is
+/// `"[[#^build-1]]\n[[#^build-2]]\n"`; the trim removes the clip break, and
+/// then `strip_prefix("[[")` and `strip_suffix("]]")` BOTH match — they are a
+/// matched pair around the whole two-line value — so the bracket strip
+/// succeeds and hands `split_once("#^")` an inner value spanning both refs.
+/// The target half is empty, so `CrossFileRef` does not fire either. What
+/// refuses is the LAST guard: the block id
+/// `build-1]]\n[[#^build-2` is outside `[A-Za-z0-9-]`
+/// (`syntax::is_block_id`, reached at `address::parse_binding_value`'s charset
+/// arm). Nothing before it says no, which is why the guard is load-bearing and
+/// why this fixture exists: a "harmless" widening of the charset would turn
+/// this page into a binding that silently resolves to ONE of two blocks.
+#[test]
+fn a_literal_block_with_two_refs_refuses_invalid_binding() {
+    let page = "\
+---
+task.build: |
+  [[#^build-1]]
+  [[#^build-2]]
+---
+
+# Tasks
+
+```bash
+echo one
+```
+^build-1
+
+```bash
+echo two
+```
+^build-2
+";
+    let d = doc(page);
+    let err = address::resolve_task(&d, Some("build")).expect_err("must refuse");
+    match &err {
+        AddressError::InvalidBinding { reason, value, .. } => {
+            assert!(
+                reason.contains("charset"),
+                "the charset guard is what refuses this, not the bracket strip: {reason}"
+            );
+            assert!(
+                value.contains("build-1") && value.contains("build-2"),
+                "the refusal must carry the value the author wrote: {value}"
+            );
+        }
+        other => panic!("expected InvalidBinding, got {other:?}"),
+    }
+}
