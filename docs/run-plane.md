@@ -488,18 +488,27 @@ the host, above the kernel, because the loop is the host's.
 **The wall clock binds at four layers, and every one of them is load-bearing.**
 The entry does its I/O against a daemon, so time is the one budget evaluation
 cannot bound itself: fuel bounds computation, and a blocked read spends none.
+*(Amended 2026-08-23, card `script-door-commit-premise-world-grain-vs-touch-set`:
+the layers did not change in number or in purpose, but three of the four now sit
+in a DIFFERENT process. The whole attempt is one § A.7 `script` frame, so the CLI
+holds the socket and the daemon holds the evaluation. Each row names what it
+replaces.)*
 
-1. **Per round trip, above the socket.** The clock is checked before **every**
-   wire call the host makes — not once per script-level read. A whole-file
-   `read(path)` is 2+N round trips, so a per-read check would bound the number
-   of checks and not the time.
-2. **On the socket itself.** The connection carries read and write timeouts of
-   one wall clock, so a daemon that accepts a frame and never answers fails the
-   round trip instead of parking the process forever. Without it the check in
-   (1) never runs again.
-3. **Before the commit.** The commit leg is a wire call like any other and is
-   checked like one: a run whose clock elapsed during evaluation refuses
-   **pre-commit**, so nothing is issued and nothing lands.
+1. **Per read, in the daemon.** The clock is checked before **every** read the
+   program makes, against the pinned entry world. *(Was: per ROUND TRIP, above
+   the socket, in the CLI — a whole-file `read(path)` was 2+N round trips there,
+   so a per-read check would have bounded the number of checks and not the time.
+   In-process there are no round trips to distinguish, so the per-read check IS
+   the per-call check.)*
+2. **On the socket itself, in the CLI.** The connection carries read and write
+   timeouts of one wall clock, so a daemon that accepts a frame and never
+   answers fails the round trip instead of parking the process forever. This is
+   the one layer `mrd` still holds, and it now bounds the single `script` round
+   trip rather than each of many.
+3. **Before the commit, in the daemon.** The commit is checked before it is
+   issued: a run whose clock elapsed during evaluation refuses **pre-commit**,
+   so nothing is issued and nothing lands. *(Was the same check, on the CLI side
+   of the deleted local transaction.)*
 4. **Above the process, in the MCP host.** The child is spawned under a bound of
    its own and killed by process group if it passes it. That layer exists for
    the failures the first three cannot see — a child that never reaches its own
@@ -507,7 +516,10 @@ cannot bound itself: fuel bounds computation, and a blocked read spends none.
 
 Layers 1–3 refuse in the entry's own vocabulary and answer a trace; layer 4 is
 the backstop and answers a host refusal, never a face. A hung child that reached
-none of them would hang the tool with nothing bounding it.
+none of them would hang the tool with nothing bounding it. The budget is the
+same 7 s on both sides of the socket: `effects::DEFAULT_WALL_CLOCK` for layers 1
+and 3, `WALL_CLOCK` (`crates/mrd/src/script/cmd.rs`) for layer 2 — two
+independent literals kept equal by hand, not one derived from the other.
 
 *(Amended 2026-08-22, the write verbs.)* Layer 2 is the SOCKET's, and the write
 verbs (`put`, `pin`, `rm`, `retire`) dial the same `SocketDoor` — but they carry
@@ -972,14 +984,24 @@ journal, stated windows). Effects mode is untouched: write-one was never
 its law, and each live `put()` stays one single-path splice.
 
 **Wire-client mode.** When a daemon is resident the script entry does its I/O
-**as a wire client through the one door**: reads lower to `toc`/`cat`, and the
-commit lowers to ONE guarded `splice` carrying `actor`/`now`/`receipt`. §4.4
-is untouched — splice remains the only write op and the script executor is
-just another client — and the daemon still carries no run-plane type and no
-run-plane state. The whole wire cost of this entry is **zero schema delta**.
+**as a wire client through the one door**, and that I/O is ONE § A.7 `script`
+frame: the CLI sends the program, and the daemon pins the entry, serves every
+read from that entry world, and issues the ONE guarded `splice` carrying
+`actor`/`now`/`receipt`. §4.4 is untouched — splice remains the only write op
+and the script executor is just another client — and the daemon still carries no
+run-plane type and no run-plane state. The whole wire cost of this entry is
+**zero schema delta**.
 
-*(Amended 2026-08-12.)* The paragraph above is the CLI lane (`mrd script`),
-unchanged. The entry's SECOND lane is the wire `script` op
+*(Amended 2026-08-23, card `script-door-commit-premise-world-grain-vs-touch-set`.)*
+The paragraph above used to read *"reads lower to `toc`/`cat`, and the commit
+lowers to ONE guarded `splice`"* — the CLI driving a SECOND transaction of its
+own, whose commit guarded on the whole-corpus entry fingerprint. That is the
+world-grain law :918-931 records as amended and DELETED; PR 1 of the card made
+the wire `script` op the only lane and PR 2 deleted the CLI-side read lowering
+and commit with it. One lane, therefore one commit-premise implementation.
+
+*(Amended 2026-08-12.)* The lane the paragraph above now describes — since
+2026-08-23 the only one — is the wire `script` op
 (wire-contract § A.7): the caller submits the program in one frame, the
 daemon evaluates it in-process against the entry world, and the commit is
 the SAME one guarded splice, issued daemon-side through the same write
@@ -1432,7 +1454,7 @@ write path. Everything that differs is at the entry.
 | Entry point | `def run(ctx)` (decision: one entry per plane) | module top level — the script IS the body (kernel entry #3) |
 | Languages | starlark + bash (fence dispatch, decision #13) | starlark only; no exec, ever (decision #17 stands) |
 | Hermeticity | hermetic by construction: sealed kernel, zero I/O, `RunCtx` inert | recorded-read purity: eval is a pure function of (script, args, files, read-response sequence); trace records every read; replay against recorded reads is byte-identical (decision #3 amendment) |
-| Reads | none — inputs arrive as inert `RunCtx` data | CLI lane: `read()` lowering to `toc`/`cat` — live, as a wire client through the one door. In-process lane (§ A.7): `read()` serving from the entry world plus the program's own armed overlay |
+| Reads | none — inputs arrive as inert `RunCtx` data | ONE lane (§ A.7, amended 2026-08-23): `read()` serves in-process from the pinned entry world plus the program's own armed overlay. The `mrd script` verb forwards the whole attempt and lowers no read of its own — the CLI-side `read()` → `toc`/`cat` lowering was deleted with the local transaction it fed |
 | Enumeration | page names its own targets | none in-kernel: host resolves selector (sorted) or binds caller `files[]` in call order — inert paths only |
 | Commit | one atomic `if_fingerprint`-pinned batch via the local executor | ONE guarded commit as the caller (`actor`/`now`/`receipt` on the request): the single §4.4 splice for one armed path, the §4.4 SET form for N (§ One COMMIT per attempt) |
 | Concurrency | `run.lock` `LOCK_NB` (decision #9); `write.lock` bounded-wait at the door calls (amended 2026-08-20 — Executor laws) | stand-still optimistic at touch-set grain (amended 2026-08-15, plan §4.6): entry world pinned for reads (frozen view); commit premise = the engine-computed touch set, verified entry-vs-live — foreign churn outside it never refuses; conflict inside it ⇒ host re-resolves selector and retries (budget 2, `attempts` on the face) |

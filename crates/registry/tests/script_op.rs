@@ -173,6 +173,16 @@ fn a_read_only_program_answers_a_no_effect_trace_at_the_entry_fingerprint() {
         json!("open"),
         "decoded fm on the face: {trace}"
     );
+    // NAMED GAP 1 of PR 1's twin census, closed: the face's word count is a
+    // DELIVERED fact (`wire_serve::read::words_of` = `wc -w` of the whole raw
+    // doc, frontmatter included — 15 for DOC), and until this line nothing on
+    // either lane pinned the NUMBER. The retired CLI row was
+    // `wire_host.rs § a_whole_file_read_is_two_trips_whatever_the_frontmatter_costs`.
+    assert_eq!(
+        rows[0]["face"]["Toc"]["words"],
+        json!(15),
+        "words_total rides the face verbatim: {trace}"
+    );
     assert!(
         trace["telemetry"]["reads_used"] == json!(1),
         "telemetry is unconditional: {trace}"
