@@ -42,6 +42,20 @@ pub(crate) struct RootedRef {
     pub(crate) alias: Option<addr::MountName>,
 }
 
+impl RootedRef {
+    /// The CANONICAL rooted spelling of `rel` in this root — `name:rel`, never
+    /// the alias the caller wrote (`address-grammar.md` § 4.6a).
+    ///
+    /// ONE owner for the string every door echoes back. Each door used to hold
+    /// the caller's own bytes, which was correct while a rooted spelling could
+    /// only BE the mount's name; aliases ended that, and a per-door `format!`
+    /// is a rule spelled six times that drifts at five of them. A door that
+    /// echoes a resolved rooted ref calls this.
+    pub(crate) fn canonical_ref(&self, rel: &str) -> String {
+        format!("{}:{rel}", self.name)
+    }
+}
+
 /// Does this spelling enter the rooted lane at all? — the same lexical gate
 /// the link plane and the resolver's C-3 guard share.
 pub(crate) fn is_rooted(spelling: &str) -> bool {

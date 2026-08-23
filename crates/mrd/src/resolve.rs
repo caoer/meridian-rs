@@ -319,7 +319,7 @@ fn run_rooted(spelling: &str, cwd: &Path, format: Format) -> Result<(), Fail> {
                         "alias": rooted.alias.as_ref().map(addr::MountName::as_str),
                         "primary": rooted.primary,
                         "path": landed.display().to_string(),
-                        "ref": format!("{}:{rel}", rooted.name),
+                        "ref": rooted.canonical_ref(&rel),
                     });
                     println!("{}", serde_json::to_string_pretty(&value).expect("json"));
                 }
@@ -336,7 +336,7 @@ fn run_rooted(spelling: &str, cwd: &Path, format: Format) -> Result<(), Fail> {
                         rooted.workspace.display(),
                         if rooted.primary { "  ← primary" } else { "" }
                     );
-                    println!("  ref: {}:{rel}", rooted.name);
+                    println!("  ref: {}", rooted.canonical_ref(&rel));
                 }
             }
             Ok(())

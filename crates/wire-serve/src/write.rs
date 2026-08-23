@@ -4149,7 +4149,11 @@ fn resolve_pin_target(
 /// — grammar and table only, BEFORE any same-root normalization (that policy
 /// is each door's own).
 struct RootedSpelling {
-    /// The canonical root name the spelling carried.
+    /// The MOUNT's canonical name — never the alias the caller spelled
+    /// (`address-grammar.md` § 4.6a). This field reaches STORED BYTES: it
+    /// becomes the `meridian-lock` object's `root:` prefix and the wire pin
+    /// response's target, so an alias here would put one machine's private
+    /// mapping into portable shared content, where it resolves to nothing.
     name: addr::MountName,
     /// The root's canonical bound path.
     workspace: PathBuf,
@@ -4218,20 +4222,24 @@ fn resolve_rooted_spelling(target: &Path, what: &str) -> Result<RootedSpelling, 
     // here that it names at every read door.
     let bound = table
         .by_name_or_alias(name.as_str())
-        .filter(|m| !m.state().refuses())
-        .and_then(config::mount::Mount::canonical_path);
-    let Some(target_root) = bound else {
-        let names: Vec<&str> = table
+        .filter(|m| !m.state().refuses());
+    let Some(mount) = bound else {
+        let names: Vec<String> = table
             .mounts()
             .iter()
             .filter(|m| !m.state().refuses())
-            .map(config::mount::Mount::name)
+            .map(|m| match m.alias() {
+                Some(alias) => format!("{} (alias {alias})", m.name()),
+                None => m.name().to_owned(),
+            })
             .collect();
         return Err(refuse(format!(
             "{what} {} names root `{name}`, which this machine does not bind \
              (bound roots: {}). A claim on an unbound root could never be walked or \
              checked from here. Declare the name in the target root's own MERIDIAN.md and \
-             bind it in ~/MERIDIAN.md, then retry. Nothing was written.",
+             bind it in ~/MERIDIAN.md, or declare `alias: {name}` on the mount that holds \
+             that tree — a root is looked up by name first and only then by alias, so the \
+             tree may already be here under another name. Nothing was written.",
             target.0,
             if names.is_empty() {
                 "none".to_string()
@@ -4240,6 +4248,24 @@ fn resolve_rooted_spelling(target: &Path, what: &str) -> Result<RootedSpelling, 
             }
         )));
     };
+    let Some(target_root) = mount.canonical_path() else {
+        return Err(refuse(format!(
+            "{what} {} names root `{name}`, whose mount carries no canonical path. \
+             Nothing was written.",
+            target.0
+        )));
+    };
+    // The MOUNT's name, never the caller's spelling: this name reaches the lock
+    // object and the wire target, and an alias is a lookup spelling that means
+    // nothing on the next machine to read those bytes (§ 4.6a).
+    let name = addr::MountName::parse(mount.name()).map_err(|e| {
+        refuse(format!(
+            "{what} {} resolves to a mount named `{}`, which is not a canonical root name \
+             ({e}). Nothing was written.",
+            target.0,
+            mount.name()
+        ))
+    })?;
     Ok(RootedSpelling {
         name,
         workspace: target_root.to_path_buf(),

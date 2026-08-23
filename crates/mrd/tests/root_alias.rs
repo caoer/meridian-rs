@@ -19,7 +19,7 @@
 //! before, and no derivation reads it for `sessions`.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 mod common;
 
@@ -110,10 +110,58 @@ impl Sandbox {
         let out = self.run(args);
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
+
+    /// stdout+stderr together — for the write faces, whose human receipt and
+    /// refusal do not land on one stream.
+    fn both(&self, args: &[&str]) -> String {
+        let out = self.run(args);
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr)
+    }
+
+    /// A `put` batch fed on stdin. Wire-origin puts demand fingerprint-or-force;
+    /// these arms are about the SPELLING that comes back, not the guard.
+    fn put(&self, args: &[&str], edits: &str) -> Output {
+        let mut owned: Vec<&str> = args.to_vec();
+        if !owned.contains(&"--force") {
+            owned.push("--force");
+        }
+        let mut child = Command::new(mrd_bin())
+            .args(&owned)
+            .current_dir(&self.ws)
+            .env("XDG_CACHE_HOME", &self.cache_home)
+            .env("HOME", &self.home)
+            .env("MERIDIAN_CONFIG", &self.config)
+            .env("MERIDIAN_DAEMON_BIN", mrd_bin())
+            .env_remove("MERIDIAN_WORKSPACE")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn mrd");
+        common::feed_stdin(&mut child, edits.as_bytes());
+        child.wait_with_output().expect("wait mrd")
+    }
 }
 
 fn json(raw: &str) -> serde_json::Value {
     serde_json::from_str(raw).unwrap_or_else(|e| panic!("not json ({e}): {raw}"))
+}
+
+/// The substring trap this whole file must not fall into, as a helper.
+///
+/// `field-notes-sessions` ENDS IN `sessions`, so `haystack.contains("sessions:")`
+/// is true for BOTH spellings and asserts nothing. Every negative assertion here
+/// anchors on a boundary the alias would have to occupy: the `[[` of a lock
+/// object, the start of a receipt's path word, a `"` in JSON.
+fn assert_no_alias_spelling(haystack: &str, alias: &str, what: &str) {
+    for boundary in ["[[", "\"", " ", "(", "\n"] {
+        let needle = format!("{boundary}{alias}:");
+        assert!(
+            !haystack.contains(&needle),
+            "{what}: the alias `{alias}:` appears at a `{boundary}` boundary — an alias is a \
+             lookup spelling and reaches no stored byte or echoed line (§ 4.6a):\n{haystack}",
+        );
+    }
 }
 
 /// Check 1 — an aliased mount answers the constant, and every canonical echo
@@ -309,5 +357,152 @@ fn the_config_faces_publish_the_alias_column() {
     assert_eq!(
         value["mounts"][0]["name"], "field-notes-sessions",
         "the name leg is untouched by the alias leg",
+    );
+}
+
+/// F5 (a) — a cross-root PIN through an alias stores the mount's NAME in the
+/// `meridian-lock` object, and echoes it back.
+///
+/// This is the sharpest form of the canonical-spelling law, because a lock
+/// object is PORTABLE SHARED CONTENT: the bytes travel to machines whose tables
+/// never heard of this alias, and a `[[sessions:…]]` object there resolves to
+/// nothing. `mrd pin` writes the lock through the daemon splice, so this arm
+/// exercises the real write path, not a projection of it.
+#[test]
+fn a_cross_root_pin_stores_the_mount_name_never_the_alias() {
+    let sb = sandbox("field-notes-sessions", |tree| {
+        format!(
+            "```meridian-mount\nname: field-notes-sessions\npath: {}\nvault: field-notes-sessions\nalias: sessions\n```\n\n\
+             ```meridian-mount\nname: pinner-root\npath: {}\nvault: pinner-vault\n```\n",
+            tree.display(),
+            tree.parent().expect("parent").join("project").display(),
+        )
+    });
+    // The PINNING page lives in the ambient workspace; the TARGET is reached by
+    // the alias — the pin-cross-root shape, the only one that can leak.
+    std::fs::write(
+        sb.ws.join("pinner.md"),
+        "---\ntype: note\n---\n\n# Pinner\n\n## Notes\n\nseed\n",
+    )
+    .expect("seed the pinning page");
+    std::fs::write(
+        sb.tree.join("target.md"),
+        "# Target\n\n## Design\n\nthe pinned section.\n",
+    )
+    .expect("seed the target");
+    // An R4 pin's hash IS the target's meaning, and it comes from git — so the
+    // target root must be a real work tree. `--vibe` writes the blob into the
+    // object store so the pin is retrievable before any commit references it.
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(&sb.tree)
+            .output()
+            .expect("git")
+            .status
+            .success();
+        assert!(ok, "git {args:?} failed in the target tree");
+    };
+    git(&["init", "--quiet"]);
+
+    // The selector is a ROOT-ANCHORED heading path — it starts at the file's top
+    // heading, so `Target/Design`, never bare `Design`.
+    let out = sb.run(&[
+        "pin",
+        "pinner.md",
+        "sessions:target.md#Target/Design",
+        "--vibe",
+    ]);
+    let said =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "the alias must pin: {said}");
+
+    let lock = std::fs::read_to_string(sb.ws.join("pinner.md")).expect("read back the lock");
+    assert!(
+        lock.contains("[[field-notes-sessions:target"),
+        "the lock object carries the MOUNT's name — these bytes are portable:\n{lock}",
+    );
+    assert_no_alias_spelling(&lock, "sessions", "the stored meridian-lock");
+    assert_no_alias_spelling(&said, "sessions", "the pin receipt");
+}
+
+/// F5 (b) — a `put` through an alias echoes the mount's NAME in its receipt.
+///
+/// The receipt is a line a human or an agent acts on afterwards, often on
+/// another machine; naming a root by this machine's private lookup spelling
+/// sends them somewhere that does not exist. `--json` is asserted beside the
+/// human face because the two used to disagree, and one clean face hid the other.
+#[test]
+fn a_put_through_an_alias_echoes_the_mount_name() {
+    let sb = sandbox("field-notes-sessions", |tree| {
+        format!(
+            "```meridian-mount\nname: field-notes-sessions\npath: {}\nvault: field-notes-sessions\nalias: sessions\n```\n",
+            tree.display()
+        )
+    });
+    std::fs::write(
+        sb.tree.join("page.md"),
+        "---\ntype: note\n---\n\n# Page\n\n## Notes\n\nseed\n",
+    )
+    .expect("seed");
+
+    let edits = r#"[{"target":{"hpath":[{"h":"Page"},{"h":"Notes"}]},"edit":{"match":{"old":"seed","new":"landed"}}}]"#;
+    let out = sb.put(&["put", "sessions:page.md"], edits);
+    let said =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "the alias must write: {said}");
+    assert!(
+        said.contains("committed field-notes-sessions:page.md"),
+        "the human receipt names the MOUNT, rooted as the caller wrote rooted:\n{said}",
+    );
+    assert_no_alias_spelling(&said, "sessions", "the put receipt");
+
+    // It really wrote, through the alias, to the aliased tree.
+    let landed = std::fs::read_to_string(sb.tree.join("page.md")).expect("read back");
+    assert!(
+        landed.contains("landed"),
+        "the edit reached the tree:\n{landed}"
+    );
+
+    // The --json face, which was already clean, must stay clean AND agree.
+    let out = sb.put(
+        &["put", "sessions:page.md", "--json"],
+        &edits
+            .replace("seed", "landed")
+            .replace("landed\",\"new\":\"landed", "landed\",\"new\":\"again"),
+    );
+    let raw = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "the json face writes too: {raw}");
+    assert_no_alias_spelling(&raw, "sessions", "the put --json receipt");
+}
+
+/// F3 — the pin door's unbound-root refusal teaches the ALIAS line too.
+///
+/// An agent spelling the agreed constant at a write door, on a machine that
+/// mounts that very tree under its own name, needs ONE alias line. "Declare the
+/// mount in the target root's own MERIDIAN.md and bind it" alone is the wrong
+/// remedy — it sends them to duplicate a root they already have.
+#[test]
+fn the_pin_door_teaches_the_alias_line_on_an_unbound_root() {
+    let sb = sandbox("field-notes-sessions", |tree| {
+        format!(
+            "```meridian-mount\nname: field-notes-sessions\npath: {}\nvault: field-notes-sessions\n```\n",
+            tree.display()
+        )
+    });
+    std::fs::write(
+        sb.ws.join("pinner.md"),
+        "---\ntype: note\n---\n\n# Pinner\n\n## Notes\n\nseed\n",
+    )
+    .expect("seed");
+
+    let said = sb.both(&["pin", "pinner.md", "sessions:target.md#Design"]);
+    assert!(
+        said.contains("declare `alias: sessions` on the mount that holds that tree"),
+        "the pin door carries the alias teaching, like the read doors:\n{said}",
+    );
+    assert!(
+        said.contains("field-notes-sessions"),
+        "and enumerates what DOES bind, so a reader can pick the mount to alias:\n{said}",
     );
 }

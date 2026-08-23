@@ -603,8 +603,24 @@ pub fn parse(raw: &str, path: &Path) -> Result<Config, ConfigError> {
                     }
                     primary_designation = Some((entry.name.clone(), second));
                 }
+                // The two halves are minted together by `parse_mount` and are
+                // Some/None in lockstep. Asserted rather than assumed: a pattern
+                // that silently skips on a mismatched pair would drop the block
+                // out of the `alias-shadows-name` check — a table-level guard
+                // that fails OPEN, which is the one failure mode a uniqueness
+                // rule may not have.
+                debug_assert_eq!(
+                    entry.alias.is_some(),
+                    alias_line.is_some(),
+                    "an alias and its FILE line are one fact from one parse",
+                );
                 if let (Some(alias), Some(line)) = (entry.alias.as_deref(), alias_line) {
                     alias_lines.push((alias.to_owned(), line));
+                } else if let Some(alias) = entry.alias.as_deref() {
+                    // Release builds: keep the guard closed even with no line to
+                    // point at. The fence_line is always a real byte position,
+                    // and a refusal aimed one line off beats a shadow admitted.
+                    alias_lines.push((alias.to_owned(), entry.fence_line));
                 }
                 mount_name_lines.push((entry.name.clone(), name_line));
                 mounts.push(entry);
