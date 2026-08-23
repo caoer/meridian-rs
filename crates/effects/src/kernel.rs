@@ -303,10 +303,19 @@ struct EmitStore<'h> {
     /// The phase gate. [`Fire`](EffectPhase::Fire) for every shipped plane,
     /// so nothing existing changes behavior.
     phase: EffectPhase,
-    /// What `declare()` collected during the LOAD phase, in call order. Empty
-    /// on every shipped plane — `declare` is a hook-plane builtin and is not
-    /// registered on [`effect_globals`].
-    declarations: RefCell<Vec<Declaration>>,
+    /// What `declare()` collected during the LOAD phase — ONE, because a
+    /// block declares one thing and a second call is the `declared_twice`
+    /// fault. `None` on every shipped plane: `declare` is a hook-plane builtin
+    /// and is not registered on [`effect_globals`].
+    ///
+    /// **Boxed**, and that is not decoration: a [`Declaration`] carries a
+    /// `serde_json::Value` and an [`ExecSpec`], which inline would make this
+    /// store ~200 bytes wider than the [`PlaneStore::Script`] arm beside it
+    /// (`clippy::large_enum_variant`, denied in CI) — and one is built for
+    /// every evaluation on every plane while this field stays `None` on all
+    /// but the hook plane's load phase. The indirection is paid only by the
+    /// blocks that actually declare.
+    declaration: RefCell<Option<Box<Declaration>>>,
     /// The seam `bash()` reaches during the FIRE phase. `None` on every
     /// shipped plane and on the load phase, where the phase gate refuses
     /// first — so an absent seam is only ever reached by a fire the caller
@@ -324,7 +333,7 @@ impl<'h> EmitStore<'h> {
             next_seq: Cell::new(0),
             // The shipped planes are single-phase and effectful throughout.
             phase: EffectPhase::Fire,
-            declarations: RefCell::new(Vec::new()),
+            declaration: RefCell::new(None),
             host: None,
         }
     }
@@ -419,6 +428,35 @@ impl std::fmt::Display for DeclareAtFire {
 }
 
 impl std::error::Error for DeclareAtFire {}
+
+/// `declare()` was called a SECOND time in one block — the same typed
+/// treatment as its two siblings, and for the same reason: the class a caller
+/// branches on comes from a downcast, never from prose.
+///
+/// A block declares ONE thing. The load row publishes `declarations` as the
+/// uninterpreted **dict** `declare()` collected (`wire-contract.md` § A.8),
+/// the design's page shape is *one page per hook, each holding one
+/// `declare()` block*, and the fire door calls ONE entry. A second call has
+/// no honest answer: merging two dicts would invent a meaning the engine is
+/// forbidden to have (it interprets no key), and keeping the first silently
+/// would publish a shape the author did not write. So it refuses, loudly, at
+/// its own line — the block is unloadable until the author splits it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeclaredTwice;
+
+impl std::fmt::Display for DeclaredTwice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "`declare` was already called in this block: a block declares ONE \
+             thing — the load row publishes one declaration and a fire calls \
+             one entry, so a second call has no shape to publish. Move the \
+             second declaration into an anchored block of its own."
+        )
+    }
+}
+
+impl std::error::Error for DeclaredTwice {}
 
 /// `declare(impl = …)` was handed something that is not an entry — A1's
 /// third typed refusal, and for the same reason as the other two: the fault
@@ -586,6 +624,9 @@ pub enum FaultClass {
     EffectAtLoad,
     /// A load-phase builtin (`declare`, `exec`) was called at fire.
     DeclareAtFire,
+    /// `declare()` was called twice in one block. One block, one declaration —
+    /// the load row publishes a dict, not a list of them.
+    DeclaredTwice,
     /// `declare(impl = …)` named something that is not an entry — neither a
     /// callable nor an `exec(...)` value.
     ImplType,
@@ -620,6 +661,7 @@ impl FaultClass {
             FaultClass::NameError => "name_error",
             FaultClass::EffectAtLoad => "effect_at_load",
             FaultClass::DeclareAtFire => "declare_at_fire",
+            FaultClass::DeclaredTwice => "declared_twice",
             FaultClass::ImplType => "impl_type",
             FaultClass::PreludeInvalid => "prelude_invalid",
             FaultClass::ReplyShape => "reply_shape",
@@ -652,6 +694,8 @@ pub fn classify_starlark_fault(error: &starlark::Error) -> FaultClass {
                 FaultClass::EffectAtLoad
             } else if inner.downcast_ref::<DeclareAtFire>().is_some() {
                 FaultClass::DeclareAtFire
+            } else if inner.downcast_ref::<DeclaredTwice>().is_some() {
+                FaultClass::DeclaredTwice
             } else if inner.downcast_ref::<ImplType>().is_some() {
                 FaultClass::ImplType
             } else {
@@ -1021,21 +1065,31 @@ fn hook_api(builder: &mut GlobalsBuilder) {
     /// still in hand: a callable names the frozen module's binding the fire
     /// calls, an [`exec`](ExecSpec) value is a process entry. Omitting it
     /// means the conventional `def run(event)`.
+    ///
+    /// **Once per block.** A second call is the typed [`DeclaredTwice`] fault,
+    /// never a merge and never a silent drop.
     fn declare<'v>(
         #[starlark(require = named, default = NoneType)] r#impl: Value<'v>,
         #[starlark(kwargs)] rest: SmallMap<String, Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let store = load_store(eval, "declare")?;
+        // Before the arguments are looked at, for the reason the phase gate is
+        // checked first: a second call is refused whatever it carries, and
+        // classifying it by a typo in its own `impl` would teach the typo
+        // instead of the one fact the author has to act on.
+        if store.declaration.borrow().is_some() {
+            return Err(anyhow::Error::new(DeclaredTwice));
+        }
         let entry = declared_entry(r#impl)?;
         let mut data = serde_json::Map::new();
         for (key, value) in rest {
             data.insert(key, json_of_value(value)?);
         }
-        store.declarations.borrow_mut().push(Declaration {
+        *store.declaration.borrow_mut() = Some(Box::new(Declaration {
             data: serde_json::Value::Object(data),
             entry,
-        });
+        }));
         Ok(NoneType)
     }
 
@@ -2124,10 +2178,16 @@ pub(crate) fn run_task(
 /// purity from the outcome instead of trusting a comment.
 #[derive(Debug)]
 pub struct BlockLoad {
-    /// What `declare()` published, in call order. Empty when the block
-    /// declares nothing — which is the consent gate's whole subject: such a
+    /// What `declare()` published — ONE dict, or `None` when the block
+    /// declares nothing, which is the consent gate's whole subject: such a
     /// block is not a target (§ 2.2, `not_declared`).
-    pub declarations: Vec<Declaration>,
+    ///
+    /// A block that called `declare()` twice carries the FIRST call here
+    /// beside a `declared_twice` fault — the store survives a fault by design
+    /// (a bomb that dies mid-block still says what it declared), and nothing
+    /// merged. A faulted load has no module, so that declaration reaches no
+    /// caller and no wire row.
+    pub declaration: Option<Declaration>,
     /// The frozen module, present exactly when the load succeeded. This is
     /// what a fire calls; caching it by block rev is what makes a warm fire
     /// one function call (§ 2.2 Price).
@@ -2183,7 +2243,7 @@ pub fn load_block(
     // never abort the process. The store is built INSIDE the closure because
     // it is full of `Cell`/`RefCell` and therefore not `Sync` — the shipped
     // planes do the same.
-    let (run, module, declarations) =
+    let (run, module, declaration) =
         on_eval_stack(|| eval_and_freeze(&block, prelude, ctx, limits));
     let (effects, fault) = match run.outcome {
         Ok(effects) => (effects, None),
@@ -2200,7 +2260,7 @@ pub fn load_block(
         ),
     };
     BlockLoad {
-        declarations,
+        declaration,
         // A faulted load has nothing callable to hand on, whatever the
         // freeze itself did.
         module: fault.is_none().then_some(module).flatten(),
@@ -2238,12 +2298,12 @@ fn eval_and_freeze(
     prelude: Option<&str>,
     ctx: &RunCtx,
     limits: EvalLimits,
-) -> (RuleRun, Option<FrozenModule>, Vec<Declaration>) {
+) -> (RuleRun, Option<FrozenModule>, Option<Declaration>) {
     if let Err(e) = check_source_size(rule, limits) {
-        return (RuleRun::failed(e), None, Vec::new());
+        return (RuleRun::failed(e), None, None);
     }
     if let Err(e) = check_nesting_depth(rule) {
-        return (RuleRun::failed(e), None, Vec::new());
+        return (RuleRun::failed(e), None, None);
     }
     let step_guard = limits.fuel.max(1);
     let mem_guard = usize::try_from(limits.mem).unwrap_or(usize::MAX).max(1);
@@ -2326,15 +2386,17 @@ fn eval_and_freeze(
         })
     }));
 
-    // The declarations survive the panic boundary because the store outlives
+    // The declaration survives the panic boundary because the store outlives
     // the closure — a bomb that dies mid-block still says what it declared
     // before it died, which is data a caller can act on.
-    let declarations = match &store {
-        PlaneStore::Emit(store) => store.declarations.take(),
-        PlaneStore::Script(_) => Vec::new(),
+    let declaration = match &store {
+        // Unboxed on the way out: the box is the store's own size discipline,
+        // not a fact about what a load produced.
+        PlaneStore::Emit(store) => store.declaration.take().map(|d| *d),
+        PlaneStore::Script(_) => None,
     };
     match evaluated {
-        Ok((run, frozen)) => (run, frozen, declarations),
+        Ok((run, frozen)) => (run, frozen, declaration),
         // Only reachable panic: resource-overflow assert → budget at ceiling.
         Err(_panic) => (
             RuleRun {
@@ -2344,7 +2406,7 @@ fn eval_and_freeze(
                 fault_class: Some(FaultClass::Budget),
             },
             None,
-            declarations,
+            declaration,
         ),
     }
 }
@@ -2384,7 +2446,7 @@ static NO_CTX: std::sync::LazyLock<RunCtx> = std::sync::LazyLock::new(RunCtx::de
 /// executes what the page declares* — and the prelude is CALLER source that
 /// evaluates into the same module, in the load phase, before the block's own
 /// top level. `declare()` and `exec()` are load-phase builtins, so they are
-/// admitted there; and a fire takes `declarations.first()`. A caller could
+/// admitted there; and a fire takes the block's one declaration. A caller could
 /// therefore ship
 /// `declare(impl = exec("bash", cmd = "…"))` as its prelude and make EVERY
 /// anchored starlark fence on EVERY addressed page a fire target running
@@ -2401,7 +2463,9 @@ static NO_CTX: std::sync::LazyLock<RunCtx> = std::sync::LazyLock::new(RunCtx::de
 ///
 /// **No new fault class is needed** — the caller sees the published
 /// `prelude_invalid`, which is what the row already renders for anything this
-/// function returns.
+/// function returns. That holds for a prelude that declares TWICE too: the
+/// `declared_twice` fault arrives on `.fault` below, and `mode_row` publishes
+/// every fault of this function as `prelude_invalid` carrying its reason.
 ///
 /// Returns the fault, or `None` when the prelude is sound.
 #[must_use]
@@ -2410,23 +2474,14 @@ pub fn check_prelude(source: &str, ctx: &RunCtx, limits: EvalLimits) -> Option<B
     if let Some(fault) = loaded.fault {
         return Some(fault);
     }
-    // Declarations AND the exec values a prelude sank — both are consent
+    // The declaration AND the exec value a prelude sank — both are consent
     // material, and the refusal names WHICH was found so the remedy is one
     // line. It refuses REGARDLESS of whether the page declares: silently
     // dropping a caller's declaration would be its own defect class.
-    let execs = loaded
-        .declarations
-        .iter()
-        .filter(|d| matches!(d.entry, DeclaredEntry::Exec(_)))
-        .count();
-    if !loaded.declarations.is_empty() {
-        let found = if execs > 0 {
-            format!(
-                "{} declaration(s), {execs} of them an `exec(...)` value",
-                loaded.declarations.len()
-            )
-        } else {
-            format!("{} declaration(s)", loaded.declarations.len())
+    if let Some(declaration) = &loaded.declaration {
+        let found = match declaration.entry {
+            DeclaredEntry::Exec(_) => "a declaration, and its entry an `exec(...)` value",
+            DeclaredEntry::Evaluated { .. } => "a declaration",
         };
         return Some(BlockFault {
             class: FaultClass::PreludeInvalid,
@@ -3643,8 +3698,7 @@ declare(on = \"Stop\", match = \"Bash\", weight = 3, nested = {\"a\": [1, True, 
 ";
         let loaded = load_block(source, None, &probe_ctx(), EvalLimits::default());
         assert!(loaded.fault.is_none(), "load faulted: {:?}", loaded.fault);
-        assert_eq!(loaded.declarations.len(), 1);
-        let declaration = &loaded.declarations[0];
+        let declaration = loaded.declaration.as_ref().expect("one declaration");
         assert_eq!(
             declaration.data,
             serde_json::json!({
@@ -3683,7 +3737,7 @@ declare(on = \"Stop\", impl = check_stop)
         let loaded = load_block(source, None, &probe_ctx(), EvalLimits::default());
         assert!(loaded.fault.is_none(), "load faulted: {:?}", loaded.fault);
         assert_eq!(
-            loaded.declarations[0].entry,
+            loaded.declaration.as_ref().expect("one declaration").entry,
             DeclaredEntry::Evaluated {
                 name: "check_stop".to_owned()
             }
@@ -3747,7 +3801,7 @@ declare(on = \"Stop\", impl = check_stop)
         // why reading `.fault` alone could never catch it.
         let loaded = load_block(prelude, None, &probe_ctx(), EvalLimits::default());
         assert!(loaded.fault.is_none(), "it evaluates cleanly: {loaded:?}");
-        assert_eq!(loaded.declarations.len(), 1, "and it DECLARES");
+        assert!(loaded.declaration.is_some(), "and it DECLARES");
 
         // The guard refuses it, and the row renders `prelude_invalid`.
         let fault = check_prelude(prelude, &probe_ctx(), EvalLimits::default())
@@ -3784,8 +3838,9 @@ declare(on = \"Stop\", impl = exec(\"bash\", block = \"check\", args = [\"--quie
 ";
         let loaded = load_block(source, None, &probe_ctx(), EvalLimits::default());
         assert!(loaded.fault.is_none(), "load faulted: {:?}", loaded.fault);
+        let declaration = loaded.declaration.as_ref().expect("one declaration");
         assert_eq!(
-            loaded.declarations[0].entry,
+            declaration.entry,
             DeclaredEntry::Exec(ExecSpec {
                 interpreter: "bash".to_owned(),
                 program: ExecProgram::Block("check".to_owned()),
@@ -3793,7 +3848,60 @@ declare(on = \"Stop\", impl = exec(\"bash\", block = \"check\", args = [\"--quie
                 env: BTreeMap::new(),
             })
         );
-        assert_eq!(loaded.declarations[0].entry.kind(), "exec");
+        assert_eq!(declaration.entry.kind(), "exec");
+    }
+
+    /// **One block, one declaration.** A second `declare()` is the typed
+    /// `declared_twice` LOAD fault — never a merge, never a silent drop.
+    ///
+    /// The law is the wire shape's (`wire-contract.md` § A.8: `declarations`
+    /// is *the uninterpreted dict*, singular) and the design's page shape
+    /// (*one page per hook, each holding one `declare()` block*). The engine
+    /// interprets no key of a declaration, so it has no basis on which to
+    /// merge two — and keeping the first would publish a shape the author did
+    /// not write. Classified by DOWNCAST like its two siblings, so the class
+    /// survives every edit to the prose.
+    #[test]
+    fn a_second_declare_in_one_block_faults_declared_twice() {
+        let source = "\
+def run(event):
+    return None
+
+declare(on = \"Stop\")
+declare(on = \"PreToolUse\")
+";
+        let loaded = load_block(source, None, &probe_ctx(), EvalLimits::default());
+        let fault = loaded.fault.as_ref().expect("a second declare refuses");
+        assert_eq!(
+            fault.class,
+            FaultClass::DeclaredTwice,
+            "the class a caller branches on: {fault:?}"
+        );
+        assert_eq!(fault.class.as_str(), "declared_twice");
+        assert_eq!(
+            fault.line,
+            Some(5),
+            "the SECOND call's own line — the number the author navigates by"
+        );
+        assert!(
+            fault.reason.contains("declares ONE thing"),
+            "the refusal must say what the remedy is: {}",
+            fault.reason
+        );
+        // What the store kept is the FIRST call, untouched — the proof that
+        // nothing merged. It never reaches a caller: a faulted load freezes
+        // nothing, so `load_cached` answers with the fault and the block is
+        // not a fire target until the author splits it.
+        assert_eq!(
+            loaded
+                .declaration
+                .as_ref()
+                .expect("the first call is kept, unmerged")
+                .data,
+            serde_json::json!({"on": "Stop"}),
+            "no merge, no overwrite: {loaded:?}"
+        );
+        assert!(loaded.module.is_none(), "a faulted load freezes nothing");
     }
 
     /// Exactly one of `cmd` / `block`, on both builtins that take the pair.

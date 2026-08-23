@@ -70,6 +70,37 @@ when:
 labels:
   hostname: workstation-nyc-2
 
+# Clone with OUR credential, not the server-stamped one. The default clone's
+# netrc password is the repo user's OAuth access token, stamped into the
+# workflow ONCE at pipeline parse (v3.17.0 server/pipeline/items.go); Forgejo
+# expires it hourly, so a workflow whose clone starts late presents a dead
+# credential and dies with "could not read Username" / exit 128 (pipelines
+# 810, 1204 — both backends). This step pins a non-rotating read:repository
+# PAT instead (woodpecker secret `forgejo_clone_token`, PAT `woodpecker-clone`,
+# sops copy: field-notes-secrets infra/svc/common.sops.yaml).
+#
+# LOAD-BEARING, do not "clean up":
+#   - `environment:` is the whole mechanism: a clone step with any
+#     environment: is not a plugin (yaml types container.go IsPlugin), so the
+#     compiler does NOT copy the server netrc over these values
+#     (compiler.go:252). Delete environment: and the rotating token returns.
+#   - no `settings:` here — the schema forbids it beside environment: on
+#     clone; PLUGIN_* env is byte-identical (convert.go ParamsToEnv).
+#   - the secret must NOT carry an image filter: image-filtered secrets are
+#     served only to IsPlugin() steps, which this step deliberately is not.
+#   - if the repo's trusted.security flag is EVER enabled, the compiler
+#     copies the server netrc over EVERY step's env regardless and this fix
+#     silently stops working (compiler.go securityTrustedPipeline arm).
+clone:
+  - name: git
+    image: docker.io/woodpeckerci/plugin-git:2.9.2
+    environment:
+      PLUGIN_DEPTH: "0" # the server default clone's own setting — same fetch shape
+      CI_NETRC_MACHINE: git.0xdao.app
+      CI_NETRC_USERNAME: caoer115
+      CI_NETRC_PASSWORD:
+        from_secret: forgejo_clone_token
+
 variables:
   # Local image, built from Dockerfile.ci on the runner and referenced with
   # pull: false on every step. It bakes the old per-lane setup (rustfmt/clippy
