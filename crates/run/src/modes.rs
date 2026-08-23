@@ -917,6 +917,7 @@ fn is_door_refusal(e: &ExecError) -> bool {
         ExecError::CapDenied { .. }
             | ExecError::BirthRefused { .. }
             | ExecError::ArmedRefusal { .. }
+            | ExecError::MiddlewareEmit { .. }
             | ExecError::SectionNotFound { .. }
             | ExecError::SectionAmbiguous { .. }
             | ExecError::FpClaim { .. }
@@ -930,6 +931,7 @@ fn door_class(e: &ExecError) -> &'static str {
         ExecError::CapDenied { .. } => "cap_denied",
         ExecError::BirthRefused { .. } => "birth_refused",
         ExecError::ArmedRefusal { .. } => "armed_refusal",
+        ExecError::MiddlewareEmit { .. } => "middleware_emit",
         ExecError::SectionNotFound { .. } => "section_not_found",
         ExecError::SectionAmbiguous { .. } => "section_ambiguous",
         ExecError::FpClaim { .. } => "fp_claim",

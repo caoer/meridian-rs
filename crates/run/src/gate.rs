@@ -3,8 +3,27 @@
 //! workspace's own armed law over the pending change; a block-severity
 //! finding refuses. Never-armed workspaces are a no-op.
 //!
-//! This module adapts run-plane intents into [`policy::Change`] and calls
-//! [`policy::gate`]. It does not own armed-set load or rule evaluation.
+//! **Two legs of one law, both mounted here.** The armed plane judges a write
+//! through CHECK rules ([`refuse_reason`] → [`policy::gate`]) *and* through
+//! MIDDLEWARE rules ([`middleware_emits`] → [`policy::run_middleware`]). The
+//! wire door mounts both; the run plane lands bytes through `fs::apply_batch`
+//! rather than the wire choke-point, so it mounts both here — otherwise the
+//! same rule set governs a put and ignores a fire, which is the two-lanes-
+//! disagree class the parity mount exists to kill.
+//!
+//! The middleware leg is what carries the put frame's `fields` onto a fire's
+//! splice writes as `ctx.fields` (design § 6 step 6: *armed middleware
+//! evaluates on those writes as on any put, with the frame the put face would
+//! have given it*). `ctx.fields` lives on the middleware ctx and nowhere else
+//! — a CHECK rule has no `fields` surface, and the delta sink
+//! ([`crate::executor::CommitFacts`]) is a NOTIFICATION lane no rule reads.
+//!
+//! This module adapts run-plane state into [`policy::Change`] /
+//! [`policy::MwCtxInput`] and calls the evaluator. It does not own armed-set
+//! load, rule evaluation, or the batch: WHICH rows fire is
+//! [`wire_serve::write::middleware_rows`], the overlay world is
+//! [`wire_serve::middleware::DoorWorld`], and folding emissions into the
+//! pending batch is the executor's.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -120,6 +139,112 @@ pub(crate) fn refuse_reason(
         policy::GateOutcome::Ok(_) => None,
         policy::GateOutcome::Refusal(refusal) => Some(describe(refusal)),
     }
+}
+
+/// The armed middleware rows that fire on a run-plane write at `page`, `id`
+/// ascending — [`wire_serve::write::middleware_rows`] verbatim, so the fire
+/// lane and the put lane can never disagree about what is armed at a path.
+///
+/// Empty on a never-armed workspace, and empty when no armed rule carries a
+/// middleware leg in scope — which is the whole cost of the mount there.
+#[must_use]
+pub(crate) fn middleware_rows(root: &fs::WorkspaceRoot, page: &str) -> Vec<policy::ArmedRule> {
+    wire_serve::write::middleware_rows(root, page)
+}
+
+/// Evaluate ONE armed middleware row over the run plane's pending splice, and
+/// hand back its emissions in order.
+///
+/// This is the call that closes design § 6 step 6: `fields` is the put frame's
+/// opaque § A.2.1 map, delivered verbatim as `ctx.fields` — the same map the
+/// birth lane already hands the create door ([`crate::executor::ApplyRequest::fields`]),
+/// now reaching the splice-door writes too.
+///
+/// `before` is the page as the executor loaded it under the lock; `after` is
+/// the pending candidate INCLUDING every earlier row's transforms (the caller
+/// re-derives it between rows, as the wire door does), so row *n* reads the
+/// world row *n-1* left it. `edits` is the pending batch, `actor` the §9
+/// identity the receipt attests.
+///
+/// # Errors
+/// The rendered refusal detail, ready for
+/// [`crate::executor::ExecError::ArmedRefusal`]: a middleware `refuse` renders
+/// in the same voice as a CHECK violation (one rule, one message, one legal
+/// path), and an evaluation fault renders as [`policy::ArmedFault::Unevaluable`]
+/// — a law that cannot complete never reads as a pass.
+pub(crate) fn middleware_emits(
+    root: &fs::WorkspaceRoot,
+    row: &policy::ArmedRule,
+    before: &Document,
+    after: &Document,
+    page: &str,
+    edits: &[Edit],
+    actor: &str,
+    fields: &BTreeMap<String, String>,
+) -> Result<Vec<policy::MwEmit>, String> {
+    let source = row
+        .rule()
+        .middleware_source()
+        .expect("middleware_rows filtered on the middleware leg");
+    let before = path_stamped(before, page);
+    let after = path_stamped(after, page);
+    let change = policy::derive_change(
+        &before,
+        &after,
+        edits,
+        policy::Invocation {
+            op: policy::ChangeOp::Splice,
+            actor: Some(actor),
+            // A fire carries no `force`: the put face's per-write override is
+            // caller vocabulary, and the run request has no field for it.
+            // Inventing one here would hand every fire the escape hatch a put
+            // has to ask for by name.
+            force: false,
+        },
+        &[],
+        &|_reference| None,
+    );
+    // The overlay world the wire door uses, so `ctx.read` / `ctx.sql` answer
+    // the same question on both lanes — this file's PENDING bytes shadowing
+    // disk. The run plane compiles no cross-file members, so the overlay
+    // carries exactly one entry.
+    let mut overlay = BTreeMap::new();
+    overlay.insert(page.to_owned(), after.raw.clone());
+    let world = wire_serve::middleware::DoorWorld {
+        root,
+        overlay: &overlay,
+    };
+    let outcome = policy::run_middleware(
+        source,
+        &policy::MwCtxInput {
+            change: &change,
+            fields,
+        },
+        &world,
+        row.rule().limits(),
+    )
+    .map_err(|e| {
+        describe(policy::GateRefusal::ArmedLawFault {
+            faults: vec![policy::ArmedFault::Unevaluable {
+                row: row.row().clone(),
+                detail: e.to_string(),
+            }],
+        })
+    })?;
+    if !outcome.refusals.is_empty() {
+        return Err(describe(policy::GateRefusal::Blocked {
+            violations: outcome
+                .refusals
+                .into_iter()
+                .map(|r| policy::GateViolation {
+                    rule: row.id().as_str().to_owned(),
+                    message: r.message,
+                    passing_scenario: r.passing_scenario,
+                })
+                .collect(),
+        }));
+    }
+    Ok(outcome.emits)
 }
 
 /// A one-line refusal detail for [`crate::executor::ExecError::ArmedRefusal`],

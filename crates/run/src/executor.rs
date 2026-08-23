@@ -485,6 +485,23 @@ pub enum ExecError {
     /// names the rule and cites the legal path, or renders the armed-law fault in
     /// `policy::ArmedFault`'s own words.
     ArmedRefusal { detail: String },
+    /// An armed MIDDLEWARE row emitted something this lane cannot land, so the
+    /// apply refuses whole rather than dropping it (V1 limit, mirroring the
+    /// birth door's own: *"the birth door admits refuse, this-file set_field,
+    /// and send only"*).
+    ///
+    /// The run plane's page splice is ONE atomic batch on ONE page committed
+    /// through `fs::apply_batch`; it compiles no sealed SET, so a cross-file
+    /// `set_field`, a `create`, and a `send` (whose intents a fire row has no
+    /// channel to carry) have nowhere to go. Silently ignoring them would let
+    /// a rule believe it stamped a file it never touched — the failure mode a
+    /// loud refusal exists to prevent.
+    MiddlewareEmit {
+        /// The armed middleware id that emitted it.
+        rule: String,
+        /// What it emitted and why this lane cannot land it.
+        detail: String,
+    },
     /// The apply would put an `@fp` decoration token in a claim-link position
     /// (R32 (3)): a fingerprint claim nobody minted. Tokens the batch's
     /// own payloads carry are STRIPPED, silently and by law — this variant is
@@ -735,6 +752,9 @@ impl std::fmt::Display for ExecError {
             ExecError::Io { reason } => write!(f, "io: {reason}"),
             ExecError::ArmedRefusal { detail } => {
                 write!(f, "armed change refused: {detail}")
+            }
+            ExecError::MiddlewareEmit { rule, detail } => {
+                write!(f, "armed middleware `{rule}` emission refused: {detail}")
             }
             ExecError::FpClaim { page, cause } => write!(
                 f,
@@ -1190,6 +1210,17 @@ pub fn apply_under(
         planned.push(plan_edit(&doc, effect).map_err(|e| e.at(index))?);
     }
 
+    // 3b. THE MIDDLEWARE DOOR (armed-plane Part A2, § A.2.1) — the armed
+    // plane's OTHER leg, mounted for the same byte-landing-parity reason as
+    // the check gate at 6c. This is where the put frame's `fields` reaches a
+    // fire's splice write as `ctx.fields` (design § 6 step 6). Ordered like
+    // the wire door's: after planning, BEFORE the `@fp` strip — so a
+    // transform's payload is stripped like any other, and everything below
+    // (the strip, the lock guard, the check gate, the receipt) reads the
+    // bytes middleware left, and a middleware cannot smuggle bytes past an
+    // armed check.
+    mount_middleware(root, &doc, req, &mut planned)?;
+
     // 4-6. Seal the batch and the bytes it will write, `@fp`-stripped.
     let (batch, after_doc) = seal_stripped_candidate(&doc, &planned, req)?;
 
@@ -1430,20 +1461,7 @@ fn seal_stripped_candidate(
     planned: &[PlannedEdit],
     req: &ApplyRequest<'_>,
 ) -> Result<(SpliceRequest, model::CandidateDocument), ExecError> {
-    let mut batch = SpliceRequest {
-        if_root: None,
-        edits: planned.iter().map(|p| p.edit.clone()).collect(),
-        engine: None,
-    };
-    let mut sealed = match model::validate_batch(doc, None, &batch, None) {
-        SpliceVerdict::Validated(b) => b,
-        refused => {
-            return Err(ExecError::Refused {
-                verdict: format!("{refused:?}"),
-            });
-        }
-    };
-    let mut after_doc = crate::fp::candidate(req.page, doc, &sealed);
+    let (mut batch, mut sealed, mut after_doc) = seal_candidate(req.page, doc, planned)?;
     let before_facts: Vec<model::Target> = planned.iter().map(|p| p.before.clone()).collect();
     crate::fp::strip_candidate(
         doc,
@@ -1454,6 +1472,175 @@ fn seal_stripped_candidate(
         &mut after_doc,
     )?;
     Ok((batch, after_doc))
+}
+
+/// Steps 4-5 alone: the sealed batch and the candidate document, WITHOUT the
+/// `@fp` strip — the pending state the middleware door reads between rows
+/// ([`mount_middleware`]), and the first half of [`seal_stripped_candidate`].
+///
+/// Split out rather than duplicated because a second spelling of "seal this
+/// batch" is how the bytes middleware judges would come to differ from the
+/// bytes the gate judges.
+///
+/// # Errors
+/// [`ExecError::Refused`] from validation. Nothing has been applied.
+fn seal_candidate(
+    page: &str,
+    doc: &Document,
+    planned: &[PlannedEdit],
+) -> Result<
+    (
+        SpliceRequest,
+        model::ValidatedBatch,
+        model::CandidateDocument,
+    ),
+    ExecError,
+> {
+    let batch = SpliceRequest {
+        if_root: None,
+        edits: planned.iter().map(|p| p.edit.clone()).collect(),
+        engine: None,
+    };
+    let sealed = match model::validate_batch(doc, None, &batch, None) {
+        SpliceVerdict::Validated(b) => b,
+        refused => {
+            return Err(ExecError::Refused {
+                verdict: format!("{refused:?}"),
+            });
+        }
+    };
+    let after_doc = crate::fp::candidate(page, doc, &sealed);
+    Ok((batch, sealed, after_doc))
+}
+
+/// Step 3b: run every armed in-scope middleware row over the pending splice,
+/// `id` ascending, folding this-file transforms into `planned`.
+///
+/// **What this closes.** `ctx.fields` is a middleware-ctx surface
+/// ([`policy::MwCtxInput`]) and exists nowhere else — not on a CHECK change,
+/// not on [`CommitFacts`]. Until this mount, a fire's `set_field` /
+/// `append_section` evaluated NO middleware at all: the put lane and the fire
+/// lane governed the same page under different halves of the same armed law.
+/// Design § 6 step 6: *armed middleware evaluates on those writes as on any
+/// put, with the frame the put face would have given it.*
+///
+/// **Row *n* reads what row *n-1* left**, exactly as the wire door does: the
+/// candidate is re-derived between rows, so a stamp by an earlier rule is
+/// visible to a later one as `ctx.after`.
+///
+/// **What this lane admits, and what it refuses LOUD** (V1 limit, mirroring
+/// the birth door's): `refuse` and a this-file `set_field` are honored; a
+/// cross-file `set_field`, a `create`, and a `send` refuse the apply
+/// ([`ExecError::MiddlewareEmit`]). The page splice is one atomic batch on one
+/// page and compiles no sealed set, so those emissions have nowhere to land —
+/// and a rule that believes it stamped a file it never touched is worse than
+/// a refusal that says so.
+///
+/// A never-armed workspace, or one with no middleware row in scope, costs one
+/// marker `stat` and returns — the mount is a bit-for-bit no-op there.
+///
+/// # Errors
+/// [`ExecError::ArmedRefusal`] — a middleware `refuse`, or an evaluation fault
+/// (fail-closed: a law that cannot complete never reads as a pass).
+/// [`ExecError::MiddlewareEmit`] — an emission this lane cannot land.
+/// [`ExecError::Refused`] — the transformed batch does not validate.
+/// Nothing has been applied in any case.
+fn mount_middleware(
+    root: &fs::WorkspaceRoot,
+    doc: &Document,
+    req: &ApplyRequest<'_>,
+    planned: &mut Vec<PlannedEdit>,
+) -> Result<(), ExecError> {
+    let rows = crate::gate::middleware_rows(root, req.page);
+    if rows.is_empty() {
+        return Ok(());
+    }
+    // §9: the receipt's own actor law, so `ctx.actor` on this lane reads what
+    // the receipt attests and what the create door was told.
+    let actor = req
+        .actor
+        .map_or_else(|| format!("run:{}", req.task), str::to_owned);
+    for row in &rows {
+        let (batch, _sealed, after_doc) = seal_candidate(req.page, doc, planned)?;
+        let emits = crate::gate::middleware_emits(
+            root,
+            row,
+            doc,
+            after_doc.document(),
+            req.page,
+            &batch.edits,
+            &actor,
+            req.fields,
+        )
+        .map_err(|detail| ExecError::ArmedRefusal { detail })?;
+        for emit in emits {
+            let unsupported = |what: String| ExecError::MiddlewareEmit {
+                rule: row.id().as_str().to_owned(),
+                detail: format!(
+                    "{what} — a fire's page splice is ONE atomic batch on `{}` and compiles no \
+                     sealed set, so this lane admits refuse and this-file set_field only (V1 \
+                     limit); route cross-file work through a put",
+                    req.page
+                ),
+            };
+            match emit {
+                policy::MwEmit::SetField { path, key, value } if path == req.page => {
+                    planned.push(plan_edit(doc, &mw_set_field(req, row, &key, value))?);
+                }
+                policy::MwEmit::SetField { path, .. } => {
+                    return Err(unsupported(format!(
+                        "middleware `{}` emits set_field to `{path}`, not the page under fire",
+                        row.id()
+                    )));
+                }
+                policy::MwEmit::Create { path, .. } => {
+                    return Err(unsupported(format!(
+                        "middleware `{}` emits create `{path}` from the splice door",
+                        row.id()
+                    )));
+                }
+                policy::MwEmit::Send { to, .. } => {
+                    return Err(unsupported(format!(
+                        "middleware `{}` emits send to [{}], and a fire row carries no intent \
+                         channel to hand it to a host",
+                        row.id(),
+                        to.join(", ")
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One middleware self-transform as the descriptor [`plan_edit`] plans: a
+/// frontmatter upsert, planned against the SAME base document the caller's
+/// own edits were planned against (the wire door plans its `mw_upsert` rows
+/// the same way), so both carry load-time self-guards.
+///
+/// The provenance is the run's own — this edit happened inside this
+/// invocation — and `rule_id` names the middleware, so the receipt row the
+/// edit produces is attributable to the rule that asked for it.
+fn mw_set_field(
+    req: &ApplyRequest<'_>,
+    row: &policy::ArmedRule,
+    key: &str,
+    value: String,
+) -> Effect {
+    Effect {
+        kind: EffectKind::SetField,
+        rule_id: row.id().as_str().to_owned(),
+        seq: 0,
+        depth: req.depth,
+        provenance: Provenance::Run {
+            invocation_id: req.invocation_id.to_owned(),
+            root_at_eval: req.observed_root.0.clone(),
+        },
+        args: BTreeMap::from([
+            ("field".to_owned(), ArgValue::Str(key.to_owned())),
+            ("value".to_owned(), ArgValue::Str(value)),
+        ]),
+    }
 }
 
 /// **The lock ARTIFACT guard** (R25) — guard the artifact, not the verb.

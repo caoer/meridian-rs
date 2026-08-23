@@ -29,7 +29,15 @@ pub fn install_sql_backend(backend: SqlBackend) {
 /// The overlay world one middleware evaluation reads: the workspace snapshot
 /// on disk, shadowed by the pending after-state of every file this sealed set
 /// already carries (the caller's file, earlier middleware members, births).
-pub(crate) struct DoorWorld<'a> {
+///
+/// Public because the RUN plane mounts the same door over its own pending
+/// splice (`run::gate`, U4.2 byte-landing parity): the run plane lands bytes
+/// through `fs::apply_batch` rather than the wire choke-point, so it mounts
+/// this world rather than re-spelling what "the overlay world" is — and it
+/// inherits the same installed `ctx.sql` backend, which is the whole point of
+/// there being ONE of these.
+pub struct DoorWorld<'a> {
+    /// The workspace the un-shadowed reads resolve under.
     pub root: &'a fs::WorkspaceRoot,
     /// `workspace-relative path → pending bytes`, shadowing disk.
     pub overlay: &'a BTreeMap<String, String>,
