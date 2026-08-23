@@ -2437,6 +2437,7 @@ pub fn corpus_member_error(e: &io::Error) -> Option<&CorpusMemberError> {
 pub fn build_corpus(
     files: DomainFiles,
 ) -> (model::CorpusIndex, model::Docs, BTreeMap<String, String>) {
+    let building = timing::phase("corpus.build");
     let mut docs = model::Docs::new();
     let mut unserved = BTreeMap::new();
     for (rel, bytes) in files {
@@ -2450,7 +2451,9 @@ pub fn build_corpus(
             }
         }
     }
-    (corpus_index_of(&docs), docs, unserved)
+    let out = (corpus_index_of(&docs), docs, unserved);
+    building.stop();
+    out
 }
 
 /// The corpus name index over `docs`, in the docs map's own (path) order —

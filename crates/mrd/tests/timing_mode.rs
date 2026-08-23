@@ -32,17 +32,24 @@ def run(ctx):
 /// parameter.
 ///
 /// It has to be a page whose run REACHES every phase in the list — the corpus
-/// fold included — while leaving the corpus byte-identical, so the gate is
-/// about phases and never about writes. `emit.md` is that page: one `notice`,
-/// which is `proto.*` and not md.\*, so there is a fold and an eval but no
-/// batch, no receipt and no byte moved (measured on the release binary
-/// 2026-08-22: `emit.md` sha256 identical before and after, no `receipts/`).
+/// fold included.
 ///
-/// Why not the `pass` page: under the lazy-snapshot work (seat `8ed22d72`) a
-/// run with nothing to apply skips the fold, and a phase-list gate driven by
-/// `pass` would then be asserting the absence of the thing it exists to check.
-/// Driving it from `emit.md` makes that change a rebase, not a rewrite.
-const PHASE_LIST_PAGE: &str = "emit.md";
+/// **`stamp.md`, since the lazy fold landed (seat `8ed22d72`).** This constant
+/// was authored as `emit.md` precisely so the change would be a rebase and not
+/// a rewrite, and the rebase is this line. `emit.md` is one `notice`, and the
+/// live gate for the fold is md.\*-only: the live report renders `kind` +
+/// `domain` (`run::report::EffectLine`), so a `notice`'s `root_at_eval` has no
+/// reader and folding for it would buy nothing (`run-plane.md` § The run
+/// plane). A live `notice` therefore reaches no `snapshot` any more, and
+/// neither does `solo.md`'s `pass` — so the one page that still reaches every
+/// phase LIVE is the one that commits.
+///
+/// The cost of the swap, stated because it is real: this gate now writes.
+/// `stamp.md` sets a field and lands a receipt, so it is no longer "about
+/// phases and never about writes" — but each test gets a fresh `Ws`, and the
+/// alternative is a gate that asserts the presence of a phase the plane no
+/// longer emits.
+const PHASE_LIST_PAGE: &str = "stamp.md";
 
 /// One `notice` — a `proto.*` effect with no local executor. See
 /// [`PHASE_LIST_PAGE`].
@@ -109,6 +116,47 @@ impl Ws {
             command.env_remove("MRD_TIMING");
         }
         command.output().expect("spawn mrd")
+    }
+
+    /// `links --json` forced onto the ephemeral path: a resident daemon on the
+    /// host would otherwise answer, and the client's sink would then miss
+    /// `snapshot.*` / `corpus.build` (those fire in the daemon, stderr nulled).
+    fn links_json(&self, timing: Option<&str>) -> Output {
+        // home / rt / cache are siblings of the workspace, not members of it
+        // (a non-dot `.md` under the workspace root is a corpus file).
+        let side = tempfile::tempdir().expect("sidecar");
+        let home = side.path().join("home");
+        let rt = side.path().join("rt");
+        let cache = side.path().join("cache");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::create_dir_all(&rt).expect("runtime dir");
+        std::fs::create_dir_all(&cache).expect("cache dir");
+        std::fs::write(
+            home.join("MERIDIAN.md"),
+            "---\ntype: meridian-config\nversion: 1\n---\n\n# empty table\n",
+        )
+        .expect("empty mount table");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mrd"));
+        command
+            .args(["links", "--json"])
+            .env("HOME", &home)
+            .env("MERIDIAN_CONFIG", home.join("MERIDIAN.md"))
+            .env("MERIDIAN_WORKSPACE", self.path())
+            .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+            // Linux-only: `registry::socket_path_for_cache_root` reads
+            // `XDG_RUNTIME_DIR` under `#[cfg(target_os = "linux")]`. On macOS
+            // it is inert; `XDG_CACHE_HOME` is the load-bearing sock-key override.
+            .env("XDG_RUNTIME_DIR", &rt)
+            .env("XDG_CACHE_HOME", &cache)
+            .current_dir(self.path());
+        if let Some(value) = timing {
+            command.env("MRD_TIMING", value);
+        } else {
+            command.env_remove("MRD_TIMING");
+        }
+        let out = command.output().expect("spawn mrd");
+        drop(side);
+        out
     }
 }
 
@@ -202,6 +250,154 @@ fn off_and_on_agree_on_stdout_and_exit_code() {
         "on wrote none: {}",
         stderr(&on)
     );
+}
+
+/// The same identity claim for `links --json` (PR 178). Ephemeral: a host
+/// daemon would hide `snapshot.*` / `corpus.build` on the client sink.
+#[test]
+fn links_json_off_and_on_agree_and_reports_its_phases() {
+    let ws = Ws::new();
+    let off = ws.links_json(None);
+    let on = ws.links_json(Some("1"));
+
+    assert_eq!(off.status.code(), Some(0), "{}", stderr(&off));
+    assert_eq!(on.status.code(), Some(0), "{}", stderr(&on));
+    assert_eq!(
+        off.stdout,
+        on.stdout,
+        "the switch moved stdout:\noff: {}\non:  {}",
+        String::from_utf8_lossy(&off.stdout),
+        String::from_utf8_lossy(&on.stdout)
+    );
+    assert!(
+        timing_lines(&stderr(&off)).is_empty(),
+        "off wrote timing lines: {}",
+        stderr(&off)
+    );
+
+    let lines = timing_lines(&stderr(&on));
+    let names = phases(&stderr(&on));
+    for expected in [
+        "daemon.dial",
+        "snapshot.walk",
+        "snapshot.read",
+        "snapshot.fold",
+        "snapshot",
+        "corpus.build",
+        "links.read",
+        "json.render",
+        "json.write",
+        "total",
+    ] {
+        assert!(
+            names.iter().any(|n| n == expected),
+            "no `{expected}` phase in: {names:?}\n{}",
+            stderr(&on)
+        );
+    }
+    for (cmd, phase, _) in &lines {
+        assert_eq!(cmd, "links", "wrong cmd on `{phase}`");
+    }
+    assert_eq!(
+        names.last().map(String::as_str),
+        Some("total"),
+        "total is not last: {names:?}"
+    );
+    // Containment (K = 0: every corpus.build / snapshot.* is the workspace
+    // build, before `links.read`). json.render is a sibling of links.read,
+    // both inside total — not nested in links.read.
+    let of = |want: &str| {
+        lines
+            .iter()
+            .find(|(_, p, _)| p == want)
+            .map_or_else(|| panic!("no {want}"), |(_, _, us)| *us)
+    };
+    assert!(of("total") >= of("links.read"));
+    assert!(of("total") >= of("json.render"));
+    assert!(of("snapshot") >= of("snapshot.read"));
+}
+
+/// K ≥ 1: a workspace page that names a mounted root must emit 1 + K
+/// `corpus.build` lines, and the mount build sits inside `links.read`.
+#[test]
+fn links_json_repeats_corpus_build_per_mounted_root() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    let cache = tmp.path().join("xdg-cache");
+    let other = tmp.path().join("other");
+    let ws = tmp.path().join("ws");
+    for dir in [&home, &cache, &other, &ws] {
+        std::fs::create_dir_all(dir).expect("mkdir");
+    }
+    std::fs::write(
+        other.join("MERIDIAN.md"),
+        "---\ntype: meridian-root\nversion: 1\nname: other\n---\n\n# Other root\n",
+    )
+    .expect("root declaration");
+    std::fs::write(other.join("present.md"), "# Present\n\nreal page.\n").expect("page");
+    std::fs::write(
+        home.join("MERIDIAN.md"),
+        format!(
+            "---\ntype: meridian-config\nversion: 1\n---\n\n# Test roots\n\n\
+             ```meridian-mount\nname: other\npath: {}\nvault: othervault\n```\n",
+            other.display()
+        ),
+    )
+    .expect("mount table");
+    std::fs::write(
+        ws.join("claim.md"),
+        "# Claim\n\n## Body\n\nsee [[other:present]].\n",
+    )
+    .expect("claim");
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mrd"));
+    command
+        .args(["links", "--json"])
+        .env("HOME", &home)
+        .env("MERIDIAN_CONFIG", home.join("MERIDIAN.md"))
+        .env("MERIDIAN_WORKSPACE", &ws)
+        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+        .env("XDG_RUNTIME_DIR", tmp.path().join("rt"))
+        .env("XDG_CACHE_HOME", &cache)
+        .env("MRD_TIMING", "1")
+        .current_dir(&ws);
+    std::fs::create_dir_all(tmp.path().join("rt")).expect("runtime dir");
+    let out = command.output().expect("spawn mrd");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"source\": \"ephemeral\"") || stdout.contains("\"source\":\"ephemeral\""),
+        "want ephemeral: {stdout}"
+    );
+
+    let lines = timing_lines(&stderr(&out));
+    let names = phases(&stderr(&out));
+    let n_build = names.iter().filter(|p| *p == "corpus.build").count();
+    let n_snap = names.iter().filter(|p| *p == "snapshot").count();
+    assert_eq!(
+        n_build,
+        2,
+        "want 1 + K=1 corpus.build lines (workspace + one mount); got {n_build}: {names:?}\n{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        n_snap,
+        2,
+        "want 1 + K=1 snapshot lines (workspace + one mount); got {n_snap}: {names:?}\n{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        names.last().map(String::as_str),
+        Some("total"),
+        "total is not last: {names:?}"
+    );
+    let of = |want: &str| {
+        lines
+            .iter()
+            .find(|(_, p, _)| p == want)
+            .map_or_else(|| panic!("no {want} in {names:?}"), |(_, _, us)| *us)
+    };
+    assert!(of("total") >= of("links.read"));
 }
 
 /// Off words are off — trimmed, in any case — and an off word must never be
@@ -313,35 +509,49 @@ fn a_run_reports_its_phases_and_total_is_last() {
     assert!(of("total") >= of("dispatch"));
 }
 
-/// On main TODAY an effect-free run folds the corpus too: `pass` reaches
-/// `snapshot` exactly as `notice` does, because the fold happens before anyone
-/// asks whether there is anything to apply.
+/// The inversion this test was authored for. It read, on main: "on main TODAY
+/// an effect-free run folds the corpus too … **this is the assertion the
+/// lazy-snapshot work (seat `8ed22d72`) inverts**, deliberately its own test so
+/// that flip is a two-line conflict rather than a rewrite of the gate that
+/// matters." This is that flip.
 ///
-/// **This is the assertion the lazy-snapshot work (seat `8ed22d72`) inverts.**
-/// It is deliberately its own test, and deliberately not the phase-list gate
-/// above, so that flip is a two-line conflict on rebase rather than a rewrite
-/// of the gate that matters.
+/// The fold is now LAZY and gated per tense (`run-plane.md` § The run plane):
+/// a run folds only when THAT tense's output will put `root_at_eval` in front
+/// of a reader. Live, the report is `kind` + `domain`
+/// (`run::report::EffectLine`), so only an md.\* batch — which carries the
+/// token onward to the receipt's `root_pin` — buys the walk.
+///
+/// So two live runs that used to fold now do not, and they are the two that
+/// matter: `solo.md` emits nothing at all, and `emit.md` emits one `notice`,
+/// which is the shape the hook plane fires once per event. On a 37 800-member
+/// root that fold was 99.5% of the run.
 #[test]
-fn an_effect_free_run_folds_today() {
+fn a_live_run_whose_gate_does_not_fire_never_folds() {
     let ws = Ws::new();
-    let out = ws.mrd(Some("1"), &["run", "solo.md", "--json"]);
-    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    let names = phases(&stderr(&out));
-    for part in [
-        "snapshot",
-        "snapshot.walk",
-        "snapshot.read",
-        "snapshot.fold",
-    ] {
+    for page in ["solo.md", "emit.md"] {
+        let out = ws.mrd(Some("1"), &["run", page, "--json"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let names = phases(&stderr(&out));
+        // `eval` proves the block ran: a run that emitted no phase at all
+        // would pass the absence check below for the wrong reason.
         assert!(
-            names.iter().any(|n| n == part),
-            "an effect-free run did not report `{part}`: {names:?}"
+            names.iter().any(|n| n == "eval"),
+            "{page} did not run: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with("snapshot")),
+            "{page} folded the corpus for a token with no reader: {names:?}"
         );
     }
 }
 
 /// The `solo` block emits no md.* effect, so there is no batch — and no
 /// `apply` line claiming there was one.
+///
+/// The `snapshot` half of "did not run" belongs to
+/// [`a_live_run_whose_gate_does_not_fire_never_folds`], which owns it for both
+/// pages; asserting it here too would state one fact in two places and drift
+/// in one of them.
 #[test]
 fn a_phase_that_did_not_run_emits_no_line() {
     let ws = Ws::new();

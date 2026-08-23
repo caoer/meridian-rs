@@ -66,7 +66,9 @@ pub use caps::{
 };
 pub use contracts::{Contract, ContractError, ContractViolation};
 pub use dispatch_bash::{BashDispatch, BashError, BashOutcome, Phase2};
-pub use dispatch_starlark::{DispatchError, DispatchOutcome, StarlarkDispatch};
+pub use dispatch_starlark::{
+    DispatchError, DispatchOutcome, Observation, StarlarkDispatch, Unobserved,
+};
 pub use exec::{ExecResult, ExecSpec, ExecStatus, TimeoutConfigError};
 pub use executor::{Applied, ApplyRequest, ExecError, ReceiptAddr, WorkspaceLock};
 pub use fence::{FenceError, GuaranteeClass, TaskBlock, TaskLanguage};
