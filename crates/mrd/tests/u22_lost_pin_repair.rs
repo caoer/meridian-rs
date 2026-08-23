@@ -13,11 +13,6 @@ mod common;
 
 // ── harness (the u14 pin-plane harness, same env isolation) ──────────────────
 
-fn mrd_bin() -> PathBuf {
-    std::env::var_os("MRD_BIN")
-        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
-}
-
 struct Sandbox {
     tmp: tempfile::TempDir,
     cache_home: PathBuf,
@@ -44,11 +39,9 @@ impl Sandbox {
     /// `path_prefix` prepends a directory to `PATH` — the seam the one-`log`,
     /// one-`cat-file` gate uses to put a logging shim in front of git.
     fn run_with_path(&self, cwd: &Path, args: &[&str], path_prefix: Option<&Path>) -> Output {
-        let mut cmd = Command::new(mrd_bin());
+        let mut cmd = common::mrd_command(&self.home, &self.cache_home);
         cmd.args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
             .env_remove("MERIDIAN_WORKSPACE")

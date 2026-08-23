@@ -151,13 +151,76 @@ impl Config {
     /// Resolve the production layout from the environment via
     /// [`cache::cache_root`].
     ///
+    /// This is the ONE site that reads [`DRAIN_COLD_BUILDS_ENV`] — the
+    /// compliance path for a daemon nobody constructs a [`Config`] for (an
+    /// auto-spawned `mrd daemon`, whose caller cannot reach this struct). See
+    /// [`crate::DEFAULT_DRAIN_COLD_BUILDS`] for when to set it.
+    ///
     /// # Errors
     ///
     /// Returns [`io::ErrorKind::NotFound`] when no cache root resolves (neither
     /// `XDG_CACHE_HOME` nor `HOME` is set) — a hard error, not a degrade: the
     /// daemon needs a stable per-user home for its socket and state.
+    ///
+    /// Returns [`io::ErrorKind::InvalidInput`] when [`DRAIN_COLD_BUILDS_ENV`]
+    /// is set to something that is not a whole number of seconds. A malformed
+    /// value REFUSES rather than falling back to the default: a silent fallback
+    /// would hand back the exact 2 s production budget the variable was set to
+    /// escape, and the fixture would go back to flaking with its knob visibly
+    /// "set".
     pub fn resolve() -> io::Result<Self> {
-        Ok(Self::for_cache_root(cache::cache_root()?))
+        let mut config = Self::for_cache_root(cache::cache_root()?);
+        if let Some(raw) = std::env::var_os(DRAIN_COLD_BUILDS_ENV) {
+            config.drain_cold_builds = parse_drain_cold_builds(&raw)?;
+        }
+        Ok(config)
+    }
+
+    /// The drain-budget hazard, as the message to fail with — or `None` when
+    /// this config is fine.
+    ///
+    /// The hazard is a PAIR: a cache root under `std::env::temp_dir()` **and**
+    /// the production drain budget. A root under the temporary directory is a
+    /// fixture's by construction ([`tempfile::TempDir`] builds there, and no
+    /// real cache lives in a directory the OS may sweep), and on such a root
+    /// the 2 s default — a client's flock bound, not a fixture's — lets a
+    /// parked cold build outlive the drain, so the tree is removed under a
+    /// live builder. Either half alone is fine, so both are required.
+    ///
+    /// **One implementation, one message, two callers.** The daemon checks it
+    /// in [`RunningServer::start`], which is the true site. But a daemon the
+    /// `mrd` client AUTO-SPAWNS is launched with `stderr` set to
+    /// `Stdio::null()`, so a failure there is seen by nobody and the client
+    /// merely degrades — the client therefore checks the same predicate
+    /// before it spawns, where its own stderr and exit code are captured by
+    /// whoever ran it. Both callers assert in DEBUG builds only: a release
+    /// client whose `XDG_CACHE_HOME` really is on tmpfs must still spawn.
+    ///
+    /// Prefix comparison only: a root reached through a symlink the caller did
+    /// not spell (macOS `/var` → `/private/var`) reads as NOT under temp and
+    /// this answers `None`. False negatives are the safe direction — it never
+    /// fires on a daemon that is fine.
+    #[must_use]
+    pub fn drain_budget_hazard(&self) -> Option<String> {
+        if self.drain_cold_builds != crate::DEFAULT_DRAIN_COLD_BUILDS
+            || !self.cache_root.starts_with(std::env::temp_dir())
+        {
+            return None;
+        }
+        Some(format!(
+            "this daemon serves a cache root under the system temporary directory ({}) on the \
+             PRODUCTION drain budget ({}s). That budget is a client's flock bound, not a \
+             fixture's: on a loaded box a cold drawer build parks well past it, shutdown gives up \
+             on the drain, and the temporary tree is removed under a live builder — the class-2 \
+             flake (`background drawer rebuild failed for …/ws (No such file or directory)`).\n\
+             Two ways to comply, whichever one this daemon's caller can reach:\n\
+             \x20 · construct the Config yourself: `config.drain_cold_builds = \
+             Duration::from_secs(30);`\n\
+             \x20 · a daemon you only SPAWN (its Config comes from `Config::resolve`): set \
+             `{DRAIN_COLD_BUILDS_ENV}=30` in its environment.",
+            self.cache_root.display(),
+            crate::DEFAULT_DRAIN_COLD_BUILDS.as_secs(),
+        ))
     }
 
     /// The registry directory (parent of the STATE file, not of the socket):
@@ -167,6 +230,41 @@ impl Config {
             .parent()
             .unwrap_or_else(|| Path::new(REGISTRY_DIR))
     }
+}
+
+/// The environment variable that overrides [`Config::drain_cold_builds`], in
+/// **whole seconds** — the unit the field is always written in
+/// (`Duration::from_secs(30)`), so the name carries no unit suffix.
+///
+/// Read at exactly one site, [`Config::resolve`].
+pub const DRAIN_COLD_BUILDS_ENV: &str = "MRD_DRAIN_COLD_BUILDS";
+
+/// Parse [`DRAIN_COLD_BUILDS_ENV`]'s value as whole seconds.
+///
+/// Refuses loudly, naming the variable and echoing the bytes it saw: this
+/// value exists to escape a hazard, so guessing on its behalf is the one
+/// behaviour that must not happen.
+// `{:?}` on the `OsStr` is deliberate, which is why the lint is silenced rather
+// than obeyed: this message exists to show a value the parser could NOT read.
+// `Display` drops the quotes and unescapes, so an empty value prints as
+// nothing, `" 30 "` prints as `30`, and a stray newline breaks the line — the
+// three shapes a reader most needs to SEE. Debug renders all three visibly.
+#[allow(clippy::unnecessary_debug_formatting)]
+fn parse_drain_cold_builds(raw: &std::ffi::OsStr) -> io::Result<Duration> {
+    raw.to_str()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{DRAIN_COLD_BUILDS_ENV} must be a whole number of seconds, got {:?} — \
+                     unset it for the {}s default, or set it to the fixture budget (30)",
+                    raw,
+                    crate::DEFAULT_DRAIN_COLD_BUILDS.as_secs()
+                ),
+            )
+        })
 }
 
 /// The socket path for `cache_root` (short-sock law, 2026-08-20):
@@ -254,6 +352,15 @@ impl RunningServer {
     /// another daemon already holds the singleton lock
     /// ([`io::ErrorKind::AlreadyExists`]), or when the socket cannot be bound.
     pub fn start(config: Config) -> io::Result<Self> {
+        // The true site of the invariant. NOTE: a daemon the `mrd` client
+        // auto-spawns runs with `stderr` at `Stdio::null()`, so this panic is
+        // seen by nobody on that path — the client evaluates the same
+        // predicate before spawning (`Config::drain_budget_hazard`).
+        debug_assert!(
+            config.drain_budget_hazard().is_none(),
+            "{}",
+            config.drain_budget_hazard().unwrap_or_default()
+        );
         let dir = config.registry_dir().to_path_buf();
         prepare_dir(&dir)?;
         // The socket no longer lives in the registry directory (short-sock
@@ -2755,6 +2862,101 @@ mod socket_placement_tests {
             cfg.drain_cold_builds < Duration::from_secs(5),
             "must be under mrd SPAWN_READY_TIMEOUT"
         );
+    }
+
+    /// **The hazard is a PAIR, and one message serves both callers.**
+    ///
+    /// Only "temp root AND production budget" is the hazard: a real cache root
+    /// on the default is production, and a temp root on the fixture budget is
+    /// a correct fixture. Both are silent.
+    #[test]
+    fn the_drain_hazard_needs_both_halves_and_names_both_remedies() {
+        use super::DRAIN_COLD_BUILDS_ENV;
+
+        let temp = std::env::temp_dir().join("some-fixture/cache");
+        let real = std::path::PathBuf::from("/home/someone/.cache/meridian");
+
+        let hazard = Config::for_cache_root(temp.clone())
+            .drain_budget_hazard()
+            .expect("temp root on the production default IS the hazard");
+        assert!(
+            hazard.contains(&temp.display().to_string()),
+            "the message names the offending root: {hazard}"
+        );
+        assert!(
+            hazard.contains("drain_cold_builds"),
+            "it names the field — the remedy for a caller that builds a Config: {hazard}"
+        );
+        assert!(
+            hazard.contains(DRAIN_COLD_BUILDS_ENV),
+            "and the variable — the remedy for a caller that only SPAWNS: {hazard}"
+        );
+
+        let mut fixture = Config::for_cache_root(temp);
+        fixture.drain_cold_builds = Duration::from_secs(30);
+        assert!(
+            fixture.drain_budget_hazard().is_none(),
+            "a temp root on the fixture budget is a correct fixture"
+        );
+
+        assert!(
+            Config::for_cache_root(real).drain_budget_hazard().is_none(),
+            "a real cache root on the production default is production"
+        );
+    }
+
+    /// The knob parses whole seconds, surrounding space included — the shape a
+    /// shell or a CI `environment:` block actually hands over.
+    ///
+    /// Tested on the parser rather than through the environment on purpose:
+    /// `set_var` is process-global and these tests share a process, so an
+    /// env-driven test here would be a race against every other test.
+    #[test]
+    fn the_drain_knob_parses_whole_seconds() {
+        use super::parse_drain_cold_builds;
+        use std::ffi::OsStr;
+
+        assert_eq!(
+            parse_drain_cold_builds(OsStr::new("30")).unwrap(),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            parse_drain_cold_builds(OsStr::new(" 30\n")).unwrap(),
+            Duration::from_secs(30),
+            "a trailing newline is what a shell here-string hands over"
+        );
+        assert_eq!(
+            parse_drain_cold_builds(OsStr::new("0")).unwrap(),
+            Duration::from_secs(0),
+            "zero is a legal budget (drain nothing), not a parse failure"
+        );
+    }
+
+    /// **A malformed knob REFUSES; it never falls back to the default.**
+    ///
+    /// The whole reason to refuse: this variable is set to ESCAPE the 2 s
+    /// budget, so silently handing back that very budget would restore the
+    /// hazard while the knob still read as "set" — the failure would surface
+    /// later, as a flake, on someone else's pipeline.
+    #[test]
+    fn a_malformed_drain_knob_refuses_and_names_what_it_saw() {
+        use super::{DRAIN_COLD_BUILDS_ENV, parse_drain_cold_builds};
+        use std::ffi::OsStr;
+
+        for bad in ["30s", "", "thirty", "-1", "1.5"] {
+            let err = parse_drain_cold_builds(OsStr::new(bad))
+                .expect_err(&format!("{bad:?} is not whole seconds"));
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+            let msg = err.to_string();
+            assert!(
+                msg.contains(DRAIN_COLD_BUILDS_ENV),
+                "the refusal names the variable: {msg}"
+            );
+            assert!(
+                msg.contains(&format!("{bad:?}")),
+                "the refusal echoes the bytes it saw: {msg}"
+            );
+        }
     }
 
     #[test]

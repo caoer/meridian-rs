@@ -61,11 +61,9 @@ impl Sandbox {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(mrd_bin())
+        common::mrd_command(&self.home, &self.cache_home)
             .args(args)
             .current_dir(&self.ws)
-            .env("HOME", &self.home)
-            .env("XDG_CACHE_HOME", &self.cache_home)
             .env_remove("MERIDIAN_CONFIG")
             .env_remove("MERIDIAN_WORKSPACE")
             .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
@@ -501,11 +499,9 @@ fn meridian_rs_itself_is_clean_while_a_refusal_still_reddens_its_own_subtree() {
     );
 
     let neutral = tempfile::tempdir().expect("tempdir");
-    let out = Command::new(mrd_bin())
+    let out = common::mrd_command(neutral.path(), neutral.path())
         .args(["rules"])
         .current_dir(&repo)
-        .env("HOME", neutral.path())
-        .env("XDG_CACHE_HOME", neutral.path())
         .env_remove("MERIDIAN_CONFIG")
         .env_remove("MERIDIAN_WORKSPACE")
         .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")

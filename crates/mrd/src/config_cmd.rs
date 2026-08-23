@@ -13,6 +13,12 @@
 //! binding decided, and prints the canonical path beside the declared one whenever the two
 //! differ: that difference is the symlink the mount law exists to collapse.
 //!
+//! It also names WHOSE resolution this is. Two processes answer mount-table questions through
+//! the same `config::Env::from_process()` call — this CLI, and a serving daemon at
+//! `crates/registry/src/mounts.rs` — each from its own environment, so the table published here
+//! can differ from the one the engine binds. A client `MERIDIAN_CONFIG` never reaches that
+//! daemon. Ruled (a) 2026-08-23, card `serving-daemon-holds-mount-table-ignores-meridian-config`.
+//!
 //! `mrd read` cannot substitute: it routes through the render face, which elides every
 //! `meridian-*` block (`ToonRenderer::with_meridian_elision`) and leaves no marker, so a reader
 //! sees the prose, none of the blocks, and exit 0. Pinned by
@@ -92,6 +98,9 @@ fn to_json(
         "state": state(resolution),
         // The same word the human line carries — one spelling across both faces.
         "origin": rung.word(),
+        // WHICH PROCESS resolved the chain above. `origin` names the rung; this names the
+        // resolver. A wire client asking the daemon gets that daemon's table, not this one.
+        "answered_by": ANSWERED_BY,
         "file_rev": resolution.file_rev(),
         "fingerprint": resolution.config().and_then(config::Config::fingerprint),
         "clear": table.is_clear(),
@@ -134,6 +143,19 @@ fn to_json(
 /// string-comparing `vault` would read a marker as a vault actually named that.
 const ABSENT_LEG: &str = "(none)";
 
+/// Which process resolved the chain that produced this output.
+///
+/// Two processes answer mount-table questions through the *same* call —
+/// `config::Env::from_process()` here at [`run`], and the daemon's `mounts` op at
+/// `crates/registry/src/mounts.rs` — each reading its own environment. The resolved path cannot
+/// say which one answered, so this does. One spelling across both faces: the human line quotes
+/// it, `--json` carries it at `answered_by`.
+///
+/// Note what is NOT frozen in the daemon: the file's *contents*. It re-derives per call on a
+/// blake3 of the bytes (`docs/wire-contract.md` § A.5), so this line is about *which file*,
+/// never about staleness.
+const ANSWERED_BY: &str = "this process";
+
 fn render_human(
     resolution: &config::Resolution,
     table: &config::mount::MountTable,
@@ -165,6 +187,30 @@ fn render_human(
         // Absent is neither an error nor a warning: every machine starts here, and saying so
         // keeps an operator from reading a bare empty table as a failure.
         out.push_str("no config file — single-root behaviour, unchanged\n");
+    }
+
+    // WHOSE answer this is. Two processes resolve the same chain through the same call
+    // (`config::Env::from_process()`): this CLI at `config_cmd.rs`, and a serving daemon at
+    // `registry/src/mounts.rs` — each from its OWN environment. So a table published here can
+    // differ from the one the engine binds, and until this line existed nothing in either
+    // output said which process answered. Printed unconditionally, because the divergence is
+    // not limited to the override rung: a daemon started under a different `$HOME` resolves a
+    // different rung-2 file with no variable set anywhere.
+    let _ = writeln!(
+        out,
+        "answered by: {ANSWERED_BY}, from its own environment — a serving daemon answers the \
+         `mounts` op from ITS environment, so a wire client can be served a different table"
+    );
+    if matches!(rung, config::Rung::Override) {
+        // Only on the override rung, because this is the case where an operator has
+        // deliberately re-pointed the chain and is most likely to read the result as the
+        // engine's. The daemon never sees the variable: its env was fixed at exec.
+        let _ = writeln!(
+            out,
+            "      {} is read here and never reaches a serving daemon: the table below may \
+             not be the one the engine binds",
+            config::Rung::Override.word()
+        );
     }
 
     let _ = writeln!(out, "mounts ({}):", table.mounts().len());

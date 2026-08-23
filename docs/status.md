@@ -76,7 +76,12 @@ mrd init [PATH] [--name NAME]
  declare the root (PATH's own MERIDIAN.md,
  `type: meridian-root`), register its drawer, reconcile
  shadowed descendant drawers (amendment M2)
-mrd unregister [PATH] drop the daemon entry (if a daemon answers) + the drawer
+mrd unregister [PATH] drop the daemon entry (if a daemon answers) + the drawer.
+ A PATH whose directory is already gone is matched as
+ given — `Registry::unregister`'s own fallback key, and
+ the stale-entry class a sweep leaves behind. A vanished
+ path keyed by nothing refuses (exit 2) rather than
+ reporting the never-registered clean no-op
 mrd resolve [PATH] report how a path resolves — the tier that answered and
  the root it named (read-only; writes nothing). PATH
  also takes the agent-plane `root:path` spelling: a
@@ -330,7 +335,15 @@ mrd rules [PATH] [--workspace | --user] [--json]
 mrd config the MERIDIAN.md config plane: resolve the bootstrap
  (MERIDIAN_CONFIG, then $HOME/MERIDIAN.md) and print path,
  state, origin, rev/fingerprint, the BOUND mount table, and
- declared tools — this verb PUBLISHES the mount table
+ declared tools — this verb PUBLISHES the mount table.
+ It resolves in THIS process from THIS process's env, and
+ says so ("answered by: this process"). A serving daemon
+ answers the `mounts` op from ITS OWN env, so a wire client
+ can be served a different table; MERIDIAN_CONFIG set for
+ this CLI never reaches that daemon. What the daemon is NOT
+ frozen on is the file's CONTENTS — it re-derives per call
+ on a blake3 of the bytes (wire-contract § A.5), so editing
+ the table the daemon already reads rebinds with no restart
 mrd check [--core] [--staged] [--commit-gate [--require-pins]] [--json]
  the pure READ validity verb: claim drift + the pin
  plane (pin verdicts + blob anchoring); writes nothing,

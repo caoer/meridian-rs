@@ -254,7 +254,17 @@ Malformed frontmatter itself:
 |---|---|
 | The file does not open with `---\n` | `no-frontmatter` |
 | The frontmatter block is not terminated by a closing `---` | `no-frontmatter` (naming that the fence never closed) |
+| The frontmatter block opens and closes but carries no keys | `missing-required-key` naming `type` — see below |
 | The frontmatter is not parseable YAML | `frontmatter-unparseable`, carrying the parser's own message |
+
+**An empty *closed* block is a missing key, not a missing block.** `---\n---` opens with `---\n` and
+closes its fence, so neither `no-frontmatter` condition holds; what it does is declare no `type:`,
+which is the key table's case. The distinction is not cosmetic: the markdown parser mints no
+frontmatter node for an empty metadata block, so a door that reads only the parse tree refuses it as
+`no-frontmatter` and tells the author their file *"does not open with a closed `---` frontmatter
+block"* — a false statement about bytes the author is looking at, on the one door whose whole job is
+to teach. `crates/config/src/lib.rs` (`closed_empty_frontmatter`) recognises the shape before the
+`no-frontmatter` refusal is minted.
 
 ## 5. The `meridian-mount` block grammar
 

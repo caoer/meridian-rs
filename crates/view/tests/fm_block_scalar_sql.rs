@@ -115,7 +115,9 @@ fn no_row_projects_a_bare_indicator_byte() {
 
 /// The SUSPENDED neighbour, pinned so this card cannot drift into it: a block
 /// LIST still projects flow-style text here, and the `read` face still serves
-/// it empty by contract (`docs/wire-contract.md:2084-2111`). Widening that is
+/// it empty by contract (`docs/wire-contract.md` § A.6.1′ — *a list value is
+/// read off the BLOCK, for every key*; cited by SECTION, because the range
+/// this comment used to name has since drifted onto A.6.1a). Widening that is
 /// ZT's amendment, not this card.
 #[test]
 fn a_block_list_still_projects_flow_text() {
