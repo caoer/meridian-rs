@@ -227,6 +227,9 @@ mod scenario {
             page: RULE_PAGE_PATH,
             bytes: RULE_PAGE,
         }]);
+        // The act loads the winner it attests — a `path → bytes` map IS a
+        // `PageSource`, and these are the bytes just landed.
+        let source = BTreeMap::from([(RULE_PAGE_PATH.to_string(), RULE_PAGE.to_string())]);
         let artifact = policy::armed::arm(
             &index,
             &policy::armed::ArmRoot::workspace(),
@@ -235,6 +238,8 @@ mod scenario {
                 mode: policy::armed::Mode::Block,
                 attested_rev: policy::page_rev(RULE_PAGE),
             }],
+            &source,
+            policy::CheckLimits::default(),
         )
         .expect("the fixture arms");
 

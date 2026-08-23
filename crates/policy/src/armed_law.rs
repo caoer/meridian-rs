@@ -397,6 +397,12 @@ mod tests {
             page: path,
             bytes,
         }));
+        let source = MemPages(
+            pages
+                .iter()
+                .map(|(path, bytes, ..)| ((*path).to_string(), bytes.clone()))
+                .collect(),
+        );
         let artifact = arm(
             &index,
             &ArmRoot::workspace(),
@@ -405,14 +411,10 @@ mod tests {
                 mode: *mode,
                 attested_rev: page_rev(bytes),
             }),
+            &source,
+            CheckLimits::default(),
         )
         .expect("the fixture arms");
-        let source = MemPages(
-            pages
-                .iter()
-                .map(|(path, bytes, ..)| ((*path).to_string(), bytes.clone()))
-                .collect(),
-        );
         (artifact.render(), source)
     }
 
@@ -505,14 +507,24 @@ mod tests {
 
     /// F-1: two rules govern the path; one page registers but does not load.
     /// The faulting row is reported by name and the other rule still governs.
+    ///
+    /// The bad row is HAND-WRITTEN at the page's true rev, because `arm` no
+    /// longer produces one: the ARM act loads every firing winner and refuses
+    /// `ArmFault::Unloadable` (card `mrd-arm-loads-page`). The fault stays
+    /// reachable — a hand-edited artifact, a row armed by an older engine, or
+    /// limits that differ between arm and fire — so the fire path must still
+    /// fail closed on it, which is what this test holds.
     #[test]
     fn one_unloadable_row_does_not_silence_the_rules_beside_it() {
-        // Registers by tag (so it arms) but declares no hook — the two layers.
+        // Registers by tag but declares no hook — the two layers.
         let bare = "---\ntags: [type/rule, rules/hook]\nid: bad.hook\n---\n\n# rule\n".to_string();
-        let (page, pages) = armed(&[
-            ("good.md", hook_page("good.hook"), "good.hook", Mode::Armed),
-            ("bad.md", bare, "bad.hook", Mode::Armed),
-        ]);
+        let (armed_page, mut pages) =
+            armed(&[("good.md", hook_page("good.hook"), "good.hook", Mode::Armed)]);
+        pages.0.insert("bad.md".to_string(), bare.clone());
+        let page = format!(
+            "{armed_page}| `bad.hook` | `bad.md` | `{rev}` | `.` | `armed` |\n",
+            rev = page_rev(&bare)
+        );
         let law = resolve(Some(&page), true, &pages);
 
         let [ArmedFault::Unloadable { row, .. }] = law.faults() else {

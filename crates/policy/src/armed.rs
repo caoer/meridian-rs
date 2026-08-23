@@ -2,12 +2,16 @@
 //! grammar, and selection of what governs a path.
 //!
 //! [`arm`] is the ONE act that turns a discovered page into an armed one: it
-//! narrows to an [`ArmRoot`], resolves through the landed resolver, and pins
-//! each winner's page + [`page_rev`] into an [`ArmedArtifact`] row keyed by
-//! (id, arm root). Discovery makes a page known; only ARM activates it.
+//! narrows to an [`ArmRoot`], resolves through the landed resolver, LOADS the
+//! winner through the loader the fire path runs, and pins each winner's page +
+//! [`page_rev`] into an [`ArmedArtifact`] row keyed by (id, arm root).
+//! Discovery makes a page known; only ARM activates it.
 //!
 //! # Row law
 //! - Key is (id, arm root); mode must be one the page kind admits.
+//! - A row that will FIRE must LOAD at arm time ([`ArmFault::Unloadable`]):
+//!   registration answers identity, declaration answers evaluability, and
+//!   attesting only the first pins rows that can never fire.
 //! - Selection for a write path is nearest-wins under § 3 narrowing.
 //! - Fail-closed on corrupt/missing artifact once the workspace has been armed.
 //! - Sibling subtrees do not couple: a CHECK armed at `sessions/a` must not
@@ -15,7 +19,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::check_eval::CheckLimits;
 use crate::registration::{RuleId, RuleIndex, RuleKind, ScopeLayer, page_rev};
+use crate::rule::{RuleLoadError, load_rule};
 
 /// The workspace path the attested armed-set artifact lives at — sibling of the
 /// once-armed marker (`meridian/attested`), under the engine-managed `meridian/`
@@ -495,6 +501,18 @@ pub enum ArmFault {
         /// Why it cannot be rendered.
         fault: PathFault,
     },
+    /// The winner is the page the reviewer read, at the rev they read, and its
+    /// bytes do not LOAD as the rule they register as. Registration and
+    /// declaration are two layers; attesting only the first pins a row that can
+    /// never fire, and nothing complains until a red verdict on the fire path.
+    Unloadable {
+        /// The id that was asked for.
+        id: RuleId,
+        /// The resolved page.
+        page: String,
+        /// Why it did not load.
+        fault: ArmLoadFault,
+    },
     /// **A named deferral, not a silent drop.** The id resolves to a USER-space page.
     /// § 4 defines the `page` column as the workspace path of the resolved page, so a
     /// user-space winner has no unambiguous spelling in a per-workspace artifact.
@@ -505,6 +523,60 @@ pub enum ArmFault {
         /// The user-space page that won.
         page: String,
     },
+}
+
+/// Why the ARM act could not load the winner it was about to attest — the
+/// payload of [`ArmFault::Unloadable`].
+///
+/// Two ways one act can fail to reach a loaded rule, kept apart because they
+/// call for different repairs: restore a page, or fix a declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArmLoadFault {
+    /// The winner's bytes could not be read at all.
+    Unreadable {
+        /// The reader's own message.
+        detail: String,
+        /// The kind the reader reported. `NotFound` is a page that moved or
+        /// vanished between discovery and the act; every other kind
+        /// (permission, a directory in a page's place, a symlink loop,
+        /// undecodable bytes) is a page still WHERE the resolver found it and
+        /// unreadable anyway — a different repair, so a different sentence.
+        kind: std::io::ErrorKind,
+    },
+    /// The bytes read, and did not become the rule they register as.
+    Refused(RuleLoadError),
+}
+
+impl std::fmt::Display for ArmLoadFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArmLoadFault::Unreadable { detail, kind } => {
+                if *kind == std::io::ErrorKind::NotFound {
+                    write!(
+                        f,
+                        "its bytes cannot be read ({detail}) — the page moved or vanished between \
+                         discovery and this act"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "its bytes cannot be read ({detail}) — the page is still where the \
+                         resolver found it, so this is the reader failing, not the page moving"
+                    )
+                }
+            }
+            ArmLoadFault::Refused(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for ArmLoadFault {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ArmLoadFault::Refused(error) => Some(error),
+            ArmLoadFault::Unreadable { .. } => None,
+        }
+    }
 }
 
 impl ArmFault {
@@ -518,6 +590,7 @@ impl ArmFault {
             | ArmFault::Drift { id, .. }
             | ArmFault::Duplicate { id }
             | ArmFault::Unrenderable { id, .. }
+            | ArmFault::Unloadable { id, .. }
             | ArmFault::UserLayerDeferred { id, .. } => id,
         }
     }
@@ -584,6 +657,14 @@ impl std::fmt::Display for ArmFault {
                 f,
                 "id `{id}` resolves to `{page}`, which cannot be attested: {fault}"
             ),
+            ArmFault::Unloadable { id, page, fault } => write!(
+                f,
+                "id `{id}` resolves to `{page}`, whose bytes are the ones you attested but do not \
+                 LOAD as the rule they register: {fault}. Arming a row that cannot load pins law \
+                 that can never fire, and nothing says so until a red verdict on the write path — \
+                 so the act refuses here, before the artifact is touched. Repair the page, then \
+                 arm at the rev `mrd rules` prints"
+            ),
             ArmFault::UserLayerDeferred { id, page } => write!(
                 f,
                 "id `{id}` resolves to the USER-space page `{page}`. The artifact's `page` column \
@@ -597,13 +678,27 @@ impl std::fmt::Display for ArmFault {
 
 impl std::error::Error for ArmFault {}
 
-/// **The ARM act.** Narrow to `root`, resolve, and pin the winners the requests name.
+/// **The ARM act.** Narrow to `root`, resolve, LOAD, and pin the winners the
+/// requests name.
 ///
 /// The one act that turns a discovered page into an armed one, as a single
 /// indivisible step: narrow to `root`'s chain (§ 3), resolve through the landed
-/// resolver ([`RuleIndex::resolve`]), pin the winner's page and rev. The caller
-/// cannot interpose between narrowing and resolution, which keeps `scope`
-/// truthful.
+/// resolver ([`RuleIndex::resolve`]), load the winner through [`load_rule`], pin
+/// the winner's page and rev. The caller cannot interpose between narrowing and
+/// resolution, which keeps `scope` truthful.
+///
+/// `pages` reads the winner's live bytes and `limits` bound its load — injected
+/// because `policy` performs no I/O, and the same pair the fire path
+/// ([`crate::resolve_armed_law`]) is handed, so what arms is what would load.
+///
+/// The load gate runs on the modes that FIRE and never on [`Mode::Off`]:
+/// attesting a page `off` is the reviewer's record that they read it at this rev
+/// and did not activate it — worth recording even for a page too broken to load.
+/// That is a SUPERSET of what the fire path loads, not a mirror of it: the fire
+/// path loads `verdict.firing()`, which is additionally narrowed to the write's
+/// own path and excludes reddened rows. The divergence is on the safe side —
+/// arming demands loadability of every non-`off` winner, whatever path it will
+/// later govern.
 ///
 /// All-or-nothing, reporting every fault: a partially-landed artifact would
 /// silently drop a rule the reviewer meant to arm.
@@ -614,6 +709,8 @@ pub fn arm(
     index: &RuleIndex,
     root: &ArmRoot,
     requests: impl IntoIterator<Item = ArmRequest>,
+    pages: &dyn PageSource,
+    limits: CheckLimits,
 ) -> Result<ArmedArtifact, Vec<ArmFault>> {
     let effective = index.narrowed_to(root.as_str()).resolve();
 
@@ -686,6 +783,37 @@ pub fn arm(
             continue;
         }
 
+        // The load gate, last: every cheaper refusal has been spent, and the
+        // winner is the page the reviewer read at the rev they read.
+        if mode.fires()
+            && let Err(fault) = load_winner(winner, pages, limits)
+        {
+            faults.push(match fault {
+                // The page moved between the walk that built the index and
+                // this act's read. The `Drift` gate above could not see it —
+                // it compares the request against the index's FROZEN rev, and
+                // that rev is the stale one. The loader's own rev law catches
+                // it, and what it caught is DRIFT: these bytes are precisely
+                // not the ones the reviewer attested. Calling it `Unloadable`
+                // would send the operator hunting a declaration bug in a
+                // healthy page.
+                ArmLoadFault::Refused(RuleLoadError::RevMismatch { supplied, .. }) => {
+                    ArmFault::Drift {
+                        id,
+                        page: winner.page().to_string(),
+                        attested_rev,
+                        resolved_rev: supplied,
+                    }
+                }
+                fault => ArmFault::Unloadable {
+                    id,
+                    page: winner.page().to_string(),
+                    fault,
+                },
+            });
+            continue;
+        }
+
         rows.push(ArmedRow {
             id,
             page: winner.page().to_string(),
@@ -700,6 +828,33 @@ pub fn arm(
     } else {
         Err(faults)
     }
+}
+
+/// Load the winner the act is about to attest, through the loader the fire path
+/// runs — [`load_rule`], the one enforcement point for the kind seam.
+///
+/// Takes the [`crate::registration::Registration`] the resolver produced rather
+/// than re-deriving one: re-registering here would be a second registrar, and
+/// `load_rule` verifies the bytes against that registration's rev, so the page
+/// that loads is provably the page that resolved.
+///
+/// The loaded [`crate::Rule`] is dropped. Arming attests that the page WILL
+/// load, not what it evaluates to — the fire path loads it again, from the same
+/// pinned bytes, at the moment it acts.
+fn load_winner(
+    winner: &crate::registration::Registration,
+    pages: &dyn PageSource,
+    limits: CheckLimits,
+) -> Result<(), ArmLoadFault> {
+    let bytes = pages
+        .read(winner.page())
+        .map_err(|e| ArmLoadFault::Unreadable {
+            detail: e.to_string(),
+            kind: e.kind(),
+        })?;
+    load_rule(winner, &bytes, limits)
+        .map(|_| ())
+        .map_err(ArmLoadFault::Refused)
 }
 
 // ── the artifact ──────────────────────────────────────────────────────────────
@@ -957,6 +1112,22 @@ pub trait PageSource {
     /// Any I/O or decode failure. A page that cannot be read reddens its row; it
     /// never reads as unchanged.
     fn read(&self, page: &str) -> std::io::Result<String>;
+}
+
+/// Pages held in memory: a `path → bytes` map IS a page source.
+///
+/// The shape every caller that is not the disk edge already builds by hand — a
+/// fixture corpus, or the bytes a walk read and kept. Giving it the impl means
+/// one law for "no such page" instead of a copy per call site.
+impl PageSource for BTreeMap<String, String> {
+    fn read(&self, page: &str) -> std::io::Result<String> {
+        self.get(page).cloned().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("no such page: {page}"),
+            )
+        })
+    }
 }
 
 /// Why a row reddened.
@@ -1255,17 +1426,77 @@ mod tests {
     use super::*;
     use crate::registration::PageRef;
 
-    /// A rule page carrying one registration tag and an id.
-    fn rule_page(tag: &str, id: &str) -> String {
+    /// A rule page carrying one registration tag and an id, and NOTHING ELSE —
+    /// it registers, and it does not load. The shape the load gate exists for:
+    /// before it, this page armed at exit 0 and pinned a row that could never
+    /// fire.
+    fn bare_page(tag: &str, id: &str) -> String {
         format!("---\ntags: [type/rule, {tag}]\nid: {id}\n---\n\n# rule\n")
     }
 
+    /// A HOOK page in the ruled shape — the tag names the leg, the declaration
+    /// keys and the `on_change` entry point make it LOADABLE.
     fn hook_page(id: &str) -> String {
-        rule_page("rules/hook", id)
+        format!(
+            "---\ntags: [type/rule, rules/hook]\nid: {id}\nseverity: info\n\
+             paths: [\"tasks/*.md\"]\ncaps:  [proto.send]\n\
+             budget: {{ steps: 10000, mem: 4194304 }}\nhow:\n  route: {{ info: channel-review }}\n\
+             ---\n\n```starlark\ndef on_change(event):\n    pass\n```\n"
+        )
     }
 
+    /// A CHECK page in the ruled shape — `paths:` scope plus the `check_change`
+    /// entry point its leg is evaluated through.
     fn check_page(id: &str) -> String {
-        rule_page("rules/check", id)
+        format!(
+            "---\ntags: [type/rule, rules/check]\nid: {id}\npaths:\n  - tasks/**\n---\n\n\
+             # {id}\n\n```starlark\ndef check_change(change):\n    pass\n```\n"
+        )
+    }
+
+    /// **A production shape, key for key.** A `caps: []` HOOK as
+    /// `rules/050-hook-idle-default.md` actually writes one — every one of the
+    /// sessions root's seven armed hook pages declares `caps: []` AND
+    /// `budget: { steps, mem }` AND `how: {}`.
+    ///
+    /// The two declared keys are the point: with them the loader takes its
+    /// `Some(how_value)` arm — `validate_how` plus `extract_how_block`
+    /// (`hook.rs`) — which is the arm the live corpus runs through. Omitting
+    /// them takes the `None if caps.is_empty()` arm instead, a branch no armed
+    /// page on that root takes; [`zero_cap_hook_page_without_budget`] covers
+    /// that one separately so both are pinned rather than only the easier one.
+    fn zero_cap_hook_page(id: &str) -> String {
+        format!(
+            "---\ntags: [type/rule, rules/hook]\nid: {id}\nseverity: info\n\
+             paths: [\"**\"]\non: \"idle>42m*3\"\naction: |\n  message(\"idle check\")\n\
+             caps: []\nbudget: {{ steps: 10000, mem: 4194304 }}\nhow: {{}}\n\
+             ---\n\n```starlark\ndef on_change(event):\n    pass\n```\n"
+        )
+    }
+
+    /// The same `caps: []` hook with `budget:` and `how:` OMITTED — legal,
+    /// because a page that emits no intent has no delivery config or per-eval
+    /// ceiling to declare, and it reaches `ZERO_CAP_DEFAULT_BUDGET`. No live
+    /// armed page is written this way; the arm gate must admit it anyway.
+    fn zero_cap_hook_page_without_budget(id: &str) -> String {
+        format!(
+            "---\ntags: [type/rule, rules/hook]\nid: {id}\nseverity: info\n\
+             paths: [\"**\"]\non: \"idle>42m*3\"\naction: |\n  message(\"idle check\")\n\
+             caps: []\n---\n\n```starlark\ndef on_change(event):\n    pass\n```\n"
+        )
+    }
+
+    /// **A production shape.** A `rules/middleware` page, modelled on
+    /// `rules/025-middleware-task-card.md` — eight of the fifteen rows armed on
+    /// the sessions root are middleware. It loads through `parse_check` against
+    /// a `def middleware` entry point, a third path neither hook nor check
+    /// covers, and it arms `block`.
+    fn middleware_page(id: &str) -> String {
+        format!(
+            "---\ntags: [type/rule, rules/middleware]\nid: {id}\n\
+             paths: [\"**/tasks/*.md\"]\n---\n\n\
+             # {id}\n\n```starlark\ndef middleware(ctx):\n    pass\n```\n"
+        )
     }
 
     /// An in-memory workspace: the pages a walk would offer, and the bytes a
@@ -1364,6 +1595,8 @@ mod tests {
             &ws.index(),
             &ArmRoot::workspace(),
             [request(text, mode, &rev)],
+            ws,
+            CheckLimits::default(),
         )
     }
 
@@ -1490,6 +1723,8 @@ mod tests {
                 request("one", Mode::Armed, &ws.rev("a.md")),
                 request("two", Mode::Block, &ws.rev("b.md")),
             ],
+            &ws,
+            CheckLimits::default(),
         )
         .expect("both arm");
         assert_eq!(artifact.rows().len(), 2);
@@ -1617,6 +1852,8 @@ mod tests {
                 request("c", Mode::Block, &ws.rev("c.md")),
                 request("h", Mode::Armed, &ws.rev("h.md")),
             ],
+            &ws,
+            CheckLimits::default(),
         )
         .expect("both arm");
 
@@ -1681,6 +1918,8 @@ mod tests {
                 request("c", Mode::Off, &ws.rev("c.md")),
                 request("d", Mode::Block, &ws.rev("d.md")),
             ],
+            &ws,
+            CheckLimits::default(),
         )
         .expect("both arm");
 
@@ -1737,6 +1976,8 @@ mod tests {
             &index,
             &ArmRoot::workspace(),
             [request("shared", Mode::Armed, &ws.rev("notify.md"))],
+            &ws,
+            CheckLimits::default(),
         )
         .expect("the outer arm");
         artifact
@@ -1749,6 +1990,8 @@ mod tests {
                         Mode::Armed,
                         &ws.rev("sessions/s1/notify.md"),
                     )],
+                    &ws,
+                    CheckLimits::default(),
                 )
                 .expect("the inner arm"),
             )
@@ -1798,6 +2041,8 @@ mod tests {
             &index,
             &ArmRoot::parse("sessions/a").unwrap(),
             [request("law", Mode::Block, &ws.rev("sessions/a/law.md"))],
+            &ws,
+            CheckLimits::default(),
         )
         .expect("arms");
 
@@ -1882,6 +2127,8 @@ mod tests {
                 Mode::Armed,
                 &ws.rev("sessions/s1/rules.md"),
             )],
+            &ws,
+            CheckLimits::default(),
         )
         .expect("a re-arm at the inner root pins the deeper page");
         assert_eq!(rearmed.rows()[0].page(), "sessions/s1/rules.md");
@@ -1926,6 +2173,8 @@ mod tests {
                 Mode::Armed,
                 &ws.rev("sessions/a/rules.md"),
             )],
+            &ws,
+            CheckLimits::default(),
         )
         .expect("the first sibling arms");
         let second = arm(
@@ -1936,6 +2185,8 @@ mod tests {
                 Mode::Armed,
                 &ws.rev("sessions/b/rules.md"),
             )],
+            &ws,
+            CheckLimits::default(),
         )
         .expect("and so does the second — siblings are NOT a collision");
         artifact.merge(second).expect("both live in one artifact");
@@ -1967,6 +2218,8 @@ mod tests {
             &ws.index(),
             &ArmRoot::workspace(),
             [request("shared", Mode::Armed, &ws.rev("rules.md"))],
+            &ws,
+            CheckLimits::default(),
         )
         .expect("the workspace root arms the shallow page");
         let inner = arm(
@@ -1977,6 +2230,8 @@ mod tests {
                 Mode::Armed,
                 &ws.rev("sessions/s1/rules.md"),
             )],
+            &ws,
+            CheckLimits::default(),
         )
         .expect("the inner root arms the deeper page");
         artifact.merge(inner).expect("one artifact, two arm roots");
@@ -2011,6 +2266,8 @@ mod tests {
                 Mode::Armed,
                 &ws.rev("sessions/s1/rules.md"),
             )],
+            &ws,
+            CheckLimits::default(),
         )
         .expect_err("a page BELOW the arm root is not a candidate at it");
         assert!(
@@ -2026,6 +2283,8 @@ mod tests {
             &ws.index(),
             &ArmRoot::parse("sessions/s1").unwrap(),
             [request("shared", Mode::Armed, &ws.rev("rules.md"))],
+            &ws,
+            CheckLimits::default(),
         )
         .expect("the chain reaches UP to the workspace root");
         assert_eq!(artifact.rows()[0].page(), "rules.md");
@@ -2068,6 +2327,8 @@ mod tests {
             &ws.index(),
             &ArmRoot::workspace(),
             [request("unknown", Mode::Armed, "0000000000000000")],
+            &ws,
+            CheckLimits::default(),
         )
         .expect_err("arming cannot invent an effective set");
         assert!(
@@ -2089,6 +2350,8 @@ mod tests {
             &ws.index(),
             &ArmRoot::workspace(),
             [request("shared", Mode::Armed, "0000000000000000")],
+            &ws,
+            CheckLimits::default(),
         )
         .expect_err("an id that resolves to nothing arms nothing");
         assert!(
@@ -2115,6 +2378,8 @@ mod tests {
                 &ws.index(),
                 &ArmRoot::workspace(),
                 [request("dual", mode, &ws.rev("dual.md"))],
+                &ws,
+                CheckLimits::default(),
             )
             .expect_err("but arming it does not");
             assert!(matches!(faults[0], ArmFault::DualKind { .. }), "{faults:?}");
@@ -2133,6 +2398,8 @@ mod tests {
             &ws.index(),
             &ArmRoot::workspace(),
             [request("c", Mode::Block, "deadbeefdeadbeef")],
+            &ws,
+            CheckLimits::default(),
         )
         .expect_err("a stale approval never silently re-pins");
         let ArmFault::Drift {
@@ -2158,6 +2425,8 @@ mod tests {
                 request("h", Mode::Armed, &rev),
                 request("h", Mode::Off, &rev),
             ],
+            &ws,
+            CheckLimits::default(),
         )
         .expect_err("one act attests one mode per id");
         assert!(
@@ -2177,6 +2446,8 @@ mod tests {
                 request("c", Mode::Block, "deadbeefdeadbeef"), // drifted
                 request("ghost", Mode::Off, "0000000000000000"), // unresolved
             ],
+            &ws,
+            CheckLimits::default(),
         )
         .expect_err("nothing lands");
         assert_eq!(faults.len(), 3, "every fault in ONE round-trip: {faults:?}");
@@ -2194,6 +2465,8 @@ mod tests {
                 request("h", Mode::Armed, &ws.rev("h.md")), // fine
                 request("c", Mode::Armed, &ws.rev("c.md")), // cross-kind
             ],
+            &ws,
+            CheckLimits::default(),
         );
         assert!(
             outcome.is_err(),
@@ -2211,6 +2484,8 @@ mod tests {
             &ws.index(),
             &ArmRoot::workspace(),
             [request("u", Mode::Armed, &page_rev(&body))],
+            &ws,
+            CheckLimits::default(),
         )
         .expect_err("a user-space page does not arm into a workspace artifact");
         assert!(
@@ -2229,9 +2504,260 @@ mod tests {
             &ws.index(),
             &ArmRoot::workspace(),
             [request("shared", Mode::Armed, &ws.rev("rules.md"))],
+            &ws,
+            CheckLimits::default(),
         )
         .expect("the workspace page wins and arms");
         assert_eq!(artifact.rows()[0].page(), "rules.md");
+    }
+
+    // ── the act attests LOADABILITY, not bytes ────────────────────────────────
+
+    /// The measured gap (twice during the hook-plane work): a page that
+    /// REGISTERS — tag plus `id:` — but declares nothing armed at exit 0 and
+    /// pinned a row that could never fire. The act now loads the winner first
+    /// and refuses, naming the loader's own fault.
+    #[test]
+    fn a_page_that_registers_but_does_not_load_is_refused_at_arm() {
+        for (tag, id, mode) in [
+            ("rules/hook", "bare.hook", Mode::Armed),
+            ("rules/check", "bare.check", Mode::Block),
+            ("rules/check", "bare.check", Mode::Warn),
+        ] {
+            let body = bare_page(tag, id);
+            let ws = Workspace::default().page(ScopeLayer::Workspace, "bare.md", &body);
+            assert_eq!(
+                ws.index().registered().len(),
+                1,
+                "{tag}: it REGISTERS — that is the whole trap"
+            );
+
+            let faults = arm_one(&ws, id, mode).expect_err("but it does not arm");
+            let [ArmFault::Unloadable { page, fault, .. }] = faults.as_slice() else {
+                panic!("{tag} {mode}: expected Unloadable, got {faults:?}");
+            };
+            assert_eq!(page, "bare.md");
+            assert!(
+                matches!(fault, ArmLoadFault::Refused(_)),
+                "the loader's own refusal rides along: {fault:?}"
+            );
+            let rendered = faults[0].to_string();
+            assert!(
+                rendered.contains(id) && rendered.contains("bare.md"),
+                "the refusal names the id and the page: {rendered}"
+            );
+            assert!(
+                rendered.contains("can never fire"),
+                "and teaches why bytes alone are not an attestation: {rendered}"
+            );
+        }
+    }
+
+    /// The narrower half of the same trap, and the one actually met live: the
+    /// page declares a hook and loads all the way to its declaration, which is
+    /// missing one required key. Registration cannot see that; the loader can.
+    #[test]
+    fn a_hook_page_missing_a_declaration_key_is_refused_at_arm() {
+        let complete = hook_page("h");
+        let missing_severity = complete.replace("severity: info\n", "");
+        assert_ne!(missing_severity, complete, "the fixture carries the key");
+
+        let ws = Workspace::default().page(ScopeLayer::Workspace, "h.md", &missing_severity);
+        let faults = arm_one(&ws, "h", Mode::Armed).expect_err("a keyless hook does not arm");
+        assert!(
+            matches!(faults[0], ArmFault::Unloadable { .. }),
+            "{faults:?}"
+        );
+
+        // The control: the same page WITH the key arms, so the gate is the
+        // declaration and not the fixture.
+        let ws = Workspace::default().page(ScopeLayer::Workspace, "h.md", &complete);
+        assert!(arm_one(&ws, "h", Mode::Armed).is_ok());
+    }
+
+    /// The gate runs on the modes that FIRE — exactly the rows the fire path
+    /// loads. Attesting `off` is the reviewer's record that they read the page
+    /// at this rev and did not activate it, which is worth recording precisely
+    /// when the page is too broken to load.
+    #[test]
+    fn an_unloadable_page_still_arms_off_because_off_never_loads() {
+        let body = bare_page("rules/hook", "bare.hook");
+        let ws = Workspace::default().page(ScopeLayer::Workspace, "bare.md", &body);
+
+        let artifact = arm_one(&ws, "bare.hook", Mode::Off).expect("attested-off arms");
+        assert_eq!(artifact.rows()[0].rev(), ws.rev("bare.md"), "and it pins");
+        assert!(artifact.verify(&ws).firing().is_empty(), "and never fires");
+    }
+
+    /// Nothing lands: a load fault refuses the whole act, so the artifact is
+    /// never touched — the load gate keeps the all-or-nothing law the mode and
+    /// drift gates already have.
+    #[test]
+    fn a_load_fault_refuses_the_whole_act_beside_a_good_request() {
+        let ws = Workspace::default().hook("good.md", "good").page(
+            ScopeLayer::Workspace,
+            "bad.md",
+            &bare_page("rules/hook", "bad"),
+        );
+        let faults = arm(
+            &ws.index(),
+            &ArmRoot::workspace(),
+            [
+                request("good", Mode::Armed, &ws.rev("good.md")),
+                request("bad", Mode::Armed, &ws.rev("bad.md")),
+            ],
+            &ws,
+            CheckLimits::default(),
+        )
+        .expect_err("one unloadable winner refuses the act");
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert_eq!(faults[0].id().as_str(), "bad");
+    }
+
+    /// **The two production shapes.** The sessions root's fifteen armed rows
+    /// are eight `rules/middleware` and seven `caps: []` hooks — neither is the
+    /// shape the fixtures above use. Both take their own loader branch, so a
+    /// gate that passed only the fixture shapes would break `mrd arm` for the
+    /// entire live corpus while these tests stayed green.
+    #[test]
+    fn the_shapes_the_live_corpus_actually_arms_pass_the_load_gate() {
+        for (body, id, mode) in [
+            (zero_cap_hook_page("zero.hook"), "zero.hook", Mode::Armed),
+            (
+                zero_cap_hook_page_without_budget("zero.hook"),
+                "zero.hook",
+                Mode::Armed,
+            ),
+            (middleware_page("mw.door"), "mw.door", Mode::Block),
+        ] {
+            let ws = Workspace::default().page(ScopeLayer::Workspace, "p.md", &body);
+            let artifact =
+                arm_one(&ws, id, mode).unwrap_or_else(|faults| panic!("{id} must arm: {faults:?}"));
+            assert_eq!(artifact.rows()[0].rev(), ws.rev("p.md"));
+            assert_eq!(
+                artifact.verify(&ws).firing().len(),
+                1,
+                "{id}: and it fires — the gate admitted a page the fire path loads"
+            );
+        }
+    }
+
+    /// The other direction on the same two shapes: each is broken in the way
+    /// its OWN loader branch refuses, and the gate catches it. Without this the
+    /// pair above could pass on a gate that never ran.
+    #[test]
+    fn each_production_shape_is_refused_when_its_own_loader_branch_faults() {
+        // A `caps: []` hook may omit `budget:`/`how:`, but never `paths:`.
+        let hook = zero_cap_hook_page("zero.hook").replace("paths: [\"**\"]\n", "");
+        // A middleware page whose block defines no `def middleware` entry.
+        let mw =
+            middleware_page("mw.door").replace("def middleware(ctx)", "def not_the_entry(ctx)");
+
+        for (body, id, mode, expect) in [
+            (hook, "zero.hook", Mode::Armed, "paths:"),
+            (mw, "mw.door", Mode::Block, "middleware"),
+        ] {
+            let ws = Workspace::default().page(ScopeLayer::Workspace, "p.md", &body);
+            let faults =
+                arm_one(&ws, id, mode).expect_err("a broken production shape does not arm");
+            assert!(
+                matches!(faults[0], ArmFault::Unloadable { .. }),
+                "{id}: {faults:?}"
+            );
+            let rendered = faults[0].to_string();
+            assert!(
+                rendered.contains(expect),
+                "{id}: the loader's own words survive into the refusal: {rendered}"
+            );
+        }
+    }
+
+    /// A page edited between discovery and the act is DRIFT, not a broken
+    /// declaration. The drift gate above cannot see it — it compares the
+    /// request against the index's frozen rev, and that rev is the stale one —
+    /// so the loader's rev law catches it and the act must re-label what it
+    /// caught. Naming it `Unloadable` would send an operator hunting a
+    /// declaration bug in a perfectly healthy page; on a 19-agent working tree
+    /// this is a routine race, not a corner.
+    #[test]
+    fn a_page_edited_under_the_act_is_drift_not_a_broken_declaration() {
+        let ws = Workspace::default().hook("h.md", "h");
+        let index = ws.index();
+        let rev = ws.rev("h.md");
+
+        // The index froze the winner; the page source now serves other bytes —
+        // still a perfectly loadable hook page.
+        let mut moved = ws.clone();
+        moved.edit("h.md", &format!("{}\n<!-- moved -->\n", hook_page("h")));
+
+        let faults = arm(
+            &index,
+            &ArmRoot::workspace(),
+            [request("h", Mode::Armed, &rev)],
+            &moved,
+            CheckLimits::default(),
+        )
+        .expect_err("the bytes under the act are not the bytes that resolved");
+        let [
+            ArmFault::Drift {
+                attested_rev,
+                resolved_rev,
+                ..
+            },
+        ] = faults.as_slice()
+        else {
+            panic!("expected Drift, got {faults:?}");
+        };
+        assert_eq!(attested_rev, &rev, "the rev the reviewer read");
+        assert_eq!(
+            *resolved_rev,
+            moved.rev("h.md"),
+            "and the rev the page reads NOW — the loader's `supplied`, not the \
+             index's stale one"
+        );
+        let rendered = faults[0].to_string();
+        assert!(
+            rendered.contains("drifted between approval and arming")
+                && rendered.contains("arm at the live rev"),
+            "the operator is sent to re-read the page, not to debug a declaration: {rendered}"
+        );
+        assert!(
+            !rendered.contains("do not LOAD"),
+            "and never told the page is broken: {rendered}"
+        );
+    }
+
+    /// A winner whose page vanished between discovery and the act is a named
+    /// fault, never a silent arm against a page that is not there.
+    #[test]
+    fn a_winner_that_vanished_under_the_act_is_unreadable_not_armed() {
+        let ws = Workspace::default().hook("h.md", "h");
+        let index = ws.index();
+        let rev = ws.rev("h.md");
+
+        let mut gone = ws.clone();
+        gone.remove("h.md");
+
+        let faults = arm(
+            &index,
+            &ArmRoot::workspace(),
+            [request("h", Mode::Armed, &rev)],
+            &gone,
+            CheckLimits::default(),
+        )
+        .expect_err("a vanished winner does not arm");
+        let [ArmFault::Unloadable { fault, .. }] = faults.as_slice() else {
+            panic!("expected Unloadable, got {faults:?}");
+        };
+        assert!(
+            matches!(fault, ArmLoadFault::Unreadable { .. }),
+            "{fault:?}"
+        );
+        assert!(
+            faults[0].to_string().contains("vanished"),
+            "the teaching says the page moved: {}",
+            faults[0]
+        );
     }
 
     // ── the row grammar cannot be forged ──────────────────────────────────────
@@ -2249,6 +2775,8 @@ mod tests {
                 &ws.index(),
                 &ArmRoot::workspace(),
                 [request("h", Mode::Armed, &page_rev(&body))],
+                &ws,
+                CheckLimits::default(),
             ) else {
                 panic!("a page path forging {forges} must not arm: {hostile:?}");
             };
@@ -2373,6 +2901,8 @@ mod tests {
             &ws.index(),
             &ArmRoot::workspace(),
             [request("h", Mode::Armed, &ws.rev("h.md"))],
+            &ws,
+            CheckLimits::default(),
         )
         .expect("arms");
         artifact
@@ -2381,6 +2911,8 @@ mod tests {
                     &ws.index(),
                     &ArmRoot::parse("sessions/s1").unwrap(),
                     [request("c", Mode::Warn, &ws.rev("sessions/s1/c.md"))],
+                    &ws,
+                    CheckLimits::default(),
                 )
                 .expect("arms"),
             )

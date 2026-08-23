@@ -40,6 +40,8 @@ fn arming_artifact() -> String {
         page: RULE_PATH,
         bytes: RULE_PAGE,
     }]);
+    // The act loads the winner it attests — a `path → bytes` map IS a `PageSource`.
+    let source = std::collections::BTreeMap::from([(RULE_PATH.to_string(), RULE_PAGE.to_string())]);
     policy::armed::arm(
         &index,
         &policy::armed::ArmRoot::workspace(),
@@ -48,6 +50,8 @@ fn arming_artifact() -> String {
             mode: policy::armed::Mode::Block,
             attested_rev: policy::page_rev(RULE_PAGE),
         }],
+        &source,
+        policy::CheckLimits::default(),
     )
     .expect("arms")
     .render()

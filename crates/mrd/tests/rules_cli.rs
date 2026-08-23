@@ -16,10 +16,27 @@ fn mrd_bin() -> PathBuf {
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
 }
 
-/// A rule page: the registration tag, the id, and a body that makes the bytes
-/// (and so the rev) unique per page.
+/// A rule page: the registration tag, the id, a body that makes the bytes (and
+/// so the rev) unique per page, and enough DECLARATION for the page to load.
+///
+/// The declaration half is not decoration. The ARM act loads the winner it
+/// attests (card `mrd-arm-loads-page`), so a fixture the act can pin has to be
+/// a page the loader accepts — a tag and an `id:` alone register and then
+/// refuse, which is the very defect that gate exists to catch. Each kind gets
+/// the keys and the entry point its own leg is evaluated through.
 fn rule_page(kind: &str, id: &str, body: &str) -> String {
-    format!("---\ntags: [type/rule, rules/{kind}]\nid: {id}\n---\n\n# {id}\n\n{body}\n")
+    let (keys, entry) = match kind {
+        "hook" => (
+            "severity: info\npaths: [\"**\"]\ncaps: []\n",
+            "def on_change(event):\n    pass\n",
+        ),
+        "middleware" => ("paths: [\"**\"]\n", "def middleware(ctx):\n    pass\n"),
+        _ => ("paths: [\"**\"]\n", "def check_change(change):\n    pass\n"),
+    };
+    format!(
+        "---\ntags: [type/rule, rules/{kind}]\nid: {id}\n{keys}---\n\n# {id}\n\n{body}\n\n\
+         ```starlark\n{entry}```\n"
+    )
 }
 
 struct Sandbox {
@@ -696,6 +713,10 @@ fn arm(s: &Sandbox, requests: &[(&str, &str, &str)]) {
         bytes,
     }));
 
+    // The act loads every firing winner — hand it the snapshot's own bytes, so
+    // the loader reads exactly what the resolver resolved.
+    let source: BTreeMap<String, String> = text.iter().cloned().collect();
+
     let mut artifact: Option<policy::armed::ArmedArtifact> = None;
     for (arm_root, id, mode) in requests {
         let root = policy::armed::ArmRoot::parse(arm_root).expect("a legal root");
@@ -716,6 +737,8 @@ fn arm(s: &Sandbox, requests: &[(&str, &str, &str)]) {
                 mode: policy::armed::Mode::parse(mode).expect("a legal mode"),
                 attested_rev,
             }],
+            &source,
+            policy::CheckLimits::default(),
         )
         .expect("the arm act");
         match artifact.as_mut() {
@@ -1848,6 +1871,9 @@ fn a_user_layer_winner_cannot_be_armed_and_the_act_says_why() {
     );
     let attested_rev = winner.rev().to_owned();
 
+    // The user-layer deferral is decided before the load gate, so the page
+    // source never gets asked — an empty one keeps that visible.
+    let source = BTreeMap::new();
     let faults = policy::armed::arm(
         &index,
         &armroot,
@@ -1856,6 +1882,8 @@ fn a_user_layer_winner_cannot_be_armed_and_the_act_says_why() {
             mode: policy::armed::Mode::parse("armed").expect("a legal mode"),
             attested_rev,
         }],
+        &source,
+        policy::CheckLimits::default(),
     )
     .expect_err("the arm act refuses a user-layer winner");
     let rendered = faults

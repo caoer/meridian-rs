@@ -11,8 +11,12 @@
 //! `mrd read`.
 //!
 //! The act is `policy::armed::arm` — narrow to the arm root, resolve through
-//! the one resolver, admit the attestation only at the live rev, pin the
-//! winner — and every refusal is that act's own teaching fault. The disk edge
+//! the one resolver, admit the attestation only at the live rev, LOAD the
+//! winner through the loader the fire path runs, pin the winner — and every
+//! refusal is that act's own teaching fault. A page that registers but does
+//! not load refuses `ArmFault::Unloadable` and the artifact is left
+//! byte-untouched: attesting bytes that cannot become a rule pins law that can
+//! never fire. The disk edge
 //! is `wire_serve::armed_disk::ArmSession`: the write flock from read to
 //! commit, rename-atomic artifact landing, the once-armed marker created on
 //! the first arm (artifact first, marker second — the safe crash order).
@@ -101,7 +105,11 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         })?,
     };
 
-    // The act: all validation is policy's, every fault its own teaching.
+    // The act: all validation is policy's, every fault its own teaching. The
+    // winner's bytes and the limits are the SAME pair the fire path is handed
+    // (`wire_serve::armed_disk::resolve_at`), so a page that arms is a page
+    // that would load — and both reads happen under the session's flock.
+    let pages = wire_serve::armed_disk::DiskPages::new(&root);
     let act = policy::armed::arm(
         &index,
         &parsed.root,
@@ -110,6 +118,8 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             mode: parsed.mode,
             attested_rev: parsed.rev.clone(),
         }],
+        &pages,
+        policy::CheckLimits::default(),
     )
     .map_err(|faults| {
         let rendered: Vec<String> = faults

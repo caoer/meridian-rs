@@ -46,6 +46,10 @@ fn armed_law() -> policy::ArmedLaw {
         page,
         bytes: STATUS_MOVE,
     }));
+    let pages = MemPages(BTreeMap::from([(
+        page.to_string(),
+        STATUS_MOVE.to_string(),
+    )]));
     let artifact = arm(
         &index,
         &ArmRoot::workspace(),
@@ -54,13 +58,11 @@ fn armed_law() -> policy::ArmedLaw {
             mode: Mode::Block,
             attested_rev: page_rev(STATUS_MOVE),
         }),
+        &pages,
+        CheckLimits::default(),
     )
     .expect("the page arms")
     .render();
-    let pages = MemPages(BTreeMap::from([(
-        page.to_string(),
-        STATUS_MOVE.to_string(),
-    )]));
     resolve_armed_law(Some(&artifact), true, CARD, &pages, CheckLimits::default())
 }
 
