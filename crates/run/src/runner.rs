@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-use effects::{ChangeEvent, Domain, Effect, EvalError, EvalLimits, Rule};
+use effects::{ChangeEvent, Domain, Effect, EvalError, EvalLimits, Provenance, Rule};
 
 use crate::address::{self, AddressError};
 use crate::caps::{self, Authority, CapsError};
@@ -201,7 +201,9 @@ pub enum RunnerError {
     Violation(ContractViolation),
     /// Capability resolution refused.
     Caps(CapsError),
-    /// Computing the pre-dispatch corpus root failed.
+    /// Computing the corpus root the effects are stamped with failed. Taken
+    /// after the eval and only when it emitted (the lazy fold — `run-plane.md`
+    /// § The run plane), so an effect-free run cannot reach this.
     Root {
         /// The underlying failure.
         reason: String,
@@ -424,13 +426,7 @@ pub fn rehearse(
     let name = task.binding.name.clone();
     match task.block.lang {
         TaskLanguage::Starlark => {
-            let root_at_eval =
-                fs::domain_snapshot(root)
-                    .map(|(_, r)| r)
-                    .map_err(|e| RunnerError::Root {
-                        reason: e.to_string(),
-                    })?;
-            let effects = dispatch_starlark::evaluate(&StarlarkDispatch {
+            let evaluated = dispatch_starlark::evaluate(&StarlarkDispatch {
                 page: spec.page,
                 task: &name,
                 task_rev: &task.task_rev,
@@ -439,7 +435,6 @@ pub fn rehearse(
                 env: spec.env.clone(),
                 invocation_id: spec.invocation_id,
                 now: spec.now,
-                root_at_eval: &root_at_eval,
                 authority: &authority,
                 receipt: None,
                 limits: spec.limits,
@@ -454,6 +449,33 @@ pub fn rehearse(
                 ambient: None,
             })
             .map_err(|e| RunnerError::Starlark(DispatchError::Eval(e)))?;
+            // The lazy observation, REHEARSAL tense: the same seam the live
+            // dispatch runs, on this tense's own gate. `--dry` serializes
+            // whole effects, provenance included, so ANY emitted effect puts
+            // the token in front of a reader and buys the fold — wider than
+            // the live gate, and deliberately so. An effect-free rehearsal
+            // still folds nothing (`run-plane.md` § The run plane).
+            let (effects, _observed) = dispatch_starlark::observe_if_emitted(
+                root,
+                evaluated,
+                dispatch_starlark::Observation::Rehearsal,
+            )
+            .map_err(|e| RunnerError::Root {
+                reason: e.to_string(),
+            })?;
+            // The rehearsal's own obligation, checked where it is owed: this
+            // tense REPORTS provenance, so every effect it hands back must
+            // carry a real token. The tense is a plain argument above — pass
+            // the live one here by mistake and a `notice`-only `--dry` would
+            // report `"root_at_eval": ""`, which is the silent half of the
+            // failure (the live half refuses loudly in `dispatch`).
+            debug_assert!(
+                effects.iter().all(|e| match &e.provenance {
+                    Provenance::Run { root_at_eval, .. } => !root_at_eval.is_empty(),
+                    Provenance::Change { .. } => true,
+                }),
+                "a rehearsed effect reached the report unobserved"
+            );
             // The choke point, rehearsal tense: the SAME admission the apply
             // enforces, over the same md.* partition — judging DECLARED
             // coordinates, BEFORE resolution, exactly as the live order (ZT
@@ -503,12 +525,8 @@ fn dispatch(
 ) -> Result<TaskOutcome, RunnerError> {
     match task.block.lang {
         TaskLanguage::Starlark => {
-            let root_at_eval =
-                fs::domain_snapshot(root)
-                    .map(|(_, r)| r)
-                    .map_err(|e| RunnerError::Root {
-                        reason: e.to_string(),
-                    })?;
+            // No fold here: the dispatcher takes it after the eval, and only
+            // if the eval emitted (`run-plane.md` § The run plane).
             Ok(TaskOutcome::Starlark(Box::new(
                 dispatch_starlark::dispatch(
                     root,
@@ -521,7 +539,6 @@ fn dispatch(
                         env: spec.env.clone(),
                         invocation_id: spec.invocation_id,
                         now: spec.now,
-                        root_at_eval: &root_at_eval,
                         authority,
                         receipt: spec.receipt.clone(),
                         limits: spec.limits,
@@ -532,7 +549,15 @@ fn dispatch(
                         ambient: spec.ambient,
                     },
                 )
-                .map_err(RunnerError::Starlark)?,
+                // A failed fold answers in ONE grammar whichever tense asked
+                // for it: the rehearsal raises `RunnerError::Root` directly,
+                // so the live leg unwraps the dispatcher's own `Root` rather
+                // than nesting it under `dispatch:` (`rehearse` doc — one
+                // gate, one grammar, both tenses).
+                .map_err(|e| match e {
+                    DispatchError::Root { reason } => RunnerError::Root { reason },
+                    other => RunnerError::Starlark(other),
+                })?,
             )))
         }
         TaskLanguage::Bash => Ok(TaskOutcome::Bash(Box::new(
