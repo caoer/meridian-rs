@@ -104,6 +104,9 @@ impl std::error::Error for DispatchError {}
 /// # Errors
 /// [`EvalError`] — the typed kernel surface.
 pub fn evaluate(d: &StarlarkDispatch<'_>) -> Result<Vec<Effect>, EvalError> {
+    // Measured here, not at the call site, so `--dry` reports the same `eval`
+    // phase the live run does — one seam, both tenses.
+    let _eval = timing::phase("eval");
     let ctx = RunCtx {
         page: d.page.to_owned(),
         task: d.task.to_owned(),
@@ -136,6 +139,10 @@ pub fn dispatch(
     let applied = if md.is_empty() {
         None
     } else {
+        // A block that emitted no md.* effect emits no `apply` line either:
+        // there was no batch, and a zero-microsecond line would claim there
+        // was one.
+        let _apply = timing::phase("apply");
         Some(
             executor::apply(
                 root,

@@ -248,6 +248,7 @@ pub fn run(
     live: &mut (dyn Write + Send),
 ) -> Result<RunReport, RunnerError> {
     // 1. Pre-eval resolution (U2): address → contract → caps.
+    let pre = timing::phase("pre_eval");
     let (task, authority) = pre_eval(
         root,
         spec.page,
@@ -256,10 +257,13 @@ pub fn run(
         &spec.env,
         spec.declaring_root,
     )?;
+    pre.stop();
     let name = task.binding.name.clone();
 
     // 2. Dispatch by fence language (decision #13).
+    let dispatching = timing::phase("dispatch");
     let outcome = dispatch(root, spec, &task, &name, &authority, live)?;
+    dispatching.stop();
 
     // 3. The guarantee label: `hermetic` is the sealed kernel's proof by
     // construction; bash is `unsandboxed` (`docs/laws.md` § Amendment) — the
@@ -279,6 +283,7 @@ pub fn run(
             _ => None,
         },
     };
+    let cascading = timing::phase("cascade");
     let (cascade, cap_reached) = cascade(
         root,
         spec,
@@ -289,6 +294,7 @@ pub fn run(
         first_event,
     )
     .map_err(|e| RunnerError::Cascade(Box::new(e)))?;
+    cascading.stop();
 
     Ok(RunReport {
         task: name,

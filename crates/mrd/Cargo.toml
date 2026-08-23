@@ -89,6 +89,11 @@ name = "mrd"
 path = "src/main.rs"
 
 [dependencies]
+# The `MRD_TIMING` instrument: the process label (`cmd=`), the `total` phase
+# every verb has, and the run door's own phases (docs/status.md § The timing
+# mode). Already in the graph via `fs` and `run`; std-only with zero
+# dependencies, so `cargo deny` is unchanged.
+timing = { workspace = true }
 # The three landed foundation crates this CLI wires together.
 workspace = { workspace = true }
 cache = { workspace = true }
