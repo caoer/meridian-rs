@@ -1,12 +1,19 @@
 # Correctness lane on the fleet runner. Steps are named so a red pipeline
 # names its own defect instead of saying "test failed".
 #
-# DAG, NOT SERIAL: every step declares `depends_on: []`, so all lanes start
-# together and each always produces its own verdict. The previous revision
+# DAG, NOT SERIAL: every VERDICT lane declares `depends_on: []`, so all lanes
+# start together and each always produces its own verdict. The previous revision
 # ordered tests first because a serial pipeline aborts the remaining steps on
 # the first failure — a lint nit converted the test verdict into SKIPPED. The
 # DAG removes that coupling structurally: no verdict can mask another, and a
 # new lane cannot reintroduce the problem by being inserted in the wrong slot.
+#
+# THE ONE EXCEPTION, and it is not a verdict lane: `publish mrd` (bottom of this
+# file) declares a dependency on ALL SIX verdict lanes, because it produces the
+# artifact downstream repos pin rather than a verdict of its own. ADDING A LANE
+# MEANS ADDING IT TO THAT LIST TOO — copy `depends_on: []` for the lane itself,
+# then extend the publish step's list, or the artifact ships on a tree your new
+# lane failed.
 #
 # What makes the parallelism safe:
 #   - CARGO_HOME shares ONLY the registry/git cache (host /var/cache/ci via
@@ -34,7 +41,9 @@
 #     root-owned artifacts and the ci user's builds never collide.
 #
 # Event filter is workflow-level: every step inherits it, so a new step cannot
-# be added without one.
+# be added without one. A step may NARROW it with its own `when:` — `publish mrd`
+# does, and is the only step here that does — so this block is the ceiling on
+# what runs, not the answer to "on which events does step X run".
 when:
   - event: [push, pull_request, manual]
   # v* TAGS TOO — not so this file publishes anything on a tag (its publish step
