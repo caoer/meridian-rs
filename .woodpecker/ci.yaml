@@ -37,6 +37,15 @@
 # be added without one.
 when:
   - event: [push, pull_request, manual]
+  # v* TAGS TOO — not so this file publishes anything on a tag (its publish step
+  # stays main+manual), but so the tag lanes have a test verdict to depend on.
+  # `tag-linux-amd64.yaml` / `tag-darwin-arm64.yaml` are separate WORKFLOWS
+  # (`labels` selects the agent per workflow) and each now carries
+  # `depends_on: [{name: ci, optional: true}]`; a dependency that never runs
+  # gates nothing, so this clause is half of that gate. Before 2026-08-23 a v*
+  # tag published a release with no test run anywhere in the pipeline.
+  - event: tag
+    ref: refs/tags/v*
 
 labels:
   hostname: workstation-nyc-2
@@ -330,8 +339,27 @@ steps:
   # invalidate a digest a consumer already recorded.
   #
   # main + manual only: a PR's engine is not a thing anyone should pin.
+  #
+  # GATED, and the only step in this file that is. The DAG header above is about
+  # VERDICT lanes: they must not mask each other, so none of them waits. This
+  # step produces no verdict — it produces the artifact downstream repos PIN —
+  # and with `depends_on: []` it started alongside the verdict lanes and often
+  # finished first, so a red main push published its bytes anyway. Same class as
+  # ccc-statusd pipeline 821 (2026-08-23: go-test FAILURE / deploy SUCCESS),
+  # fixed there by a workflow-level `depends_on: [{name: ci, optional: true}]`;
+  # here the lanes live in this same workflow, so the dependency is step-level.
+  # Woodpecker skips a step whose dependency failed, so a red lane now leaves
+  # this step never-run. EVERY lane is named on purpose: the artifact must not
+  # ship on a tree that failed any check we run, and a lane added tomorrow has
+  # to be added here too. Card: 22-18/tasks/meridian-rs-publish-not-gated.
   - name: publish mrd (forgejo generic package, keyed by commit)
-    depends_on: []
+    depends_on:
+      - test (cargo test --workspace --locked)
+      - fmt (cargo fmt --all --check)
+      - clippy (workspace lint policy, escalated)
+      - clippy the perf-gated targets (compiled here, never run)
+      - "deny (cargo-deny: bans, licenses, sources, advisories)"
+      - bench smoke + claim verdicts (perfsuite harness)
     when:
       - event: push
         branch: main

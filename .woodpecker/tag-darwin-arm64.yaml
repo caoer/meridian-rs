@@ -23,6 +23,17 @@ when:
   # publishes under the commit key like every other route.
   - event: manual
 
+# GATE ON THE TEST LANES — same reasoning as the linux sibling, and it applies
+# unchanged here even though this lane runs on a darwin agent: `depends_on` is
+# workflow-level scheduling, not a shared machine. `ci` runs on v* tags (ci.yaml
+# `when`) on the nyc-2 agent; this workflow waits for its verdict before it
+# builds or uploads anything, so a red test lane leaves the darwin release
+# unpublished instead of shipping ahead of the tests. `optional: true` covers
+# the pipelines `ci` is not part of. Card: 22-18/tasks/meridian-rs-publish-not-gated.
+depends_on:
+  - name: ci
+    optional: true
+
 labels:
   platform: darwin/arm64
 
