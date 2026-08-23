@@ -219,7 +219,10 @@ usage:
                            byte-for-byte; present-but-invalid MERIDIAN.md
                            refuses (exit 2).
 ! mrd unregister [PATH]    drop the daemon entry (if a daemon answers) and the
-                           workspace drawer.
+                           workspace drawer. A PATH whose directory is already
+                           gone is matched as given — the stale entry a sweep
+                           leaves behind. Keyed by nothing, it refuses (exit 2)
+                           instead of reporting a removal that did not happen.
   mrd resolve [PATH]       how PATH resolves: the tier that answered and the
                            root it named.
   mrd links [PATH]         corpus edge map (whole corpus, or one file). Daemon

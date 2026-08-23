@@ -44,9 +44,8 @@ use std::time::{Duration, Instant};
 
 use mrd::script::cmd::attempt;
 use mrd::script::{Door, ScriptOutcome, ScriptTrace, TraceEntry};
-use registry::{Config, RunningServer};
+use registry::{Config, TestServer};
 use serde_json::{Value, json};
-use tempfile::TempDir;
 
 // ── the corpus ────────────────────────────────────────────────────────────────
 
@@ -676,15 +675,15 @@ fn revs_read(trace: &ScriptTrace) -> Vec<String> {
 
 // ── the live daemon ───────────────────────────────────────────────────────────
 
-/// A real `RunningServer` on a real socket, bound to a fresh corpus.
+/// A real daemon on a real socket, bound to a fresh corpus.
 ///
-/// Struct fields drop in declaration order: `server` (stop → drain) MUST
-/// precede `_tmp`, else the workspace vanishes under the builder — the
-/// class-2 flake (pipelines 1098/1101). Locals drop the other way.
+/// `daemon` owns the server AND the temporary tree, and orders their teardown
+/// itself ([`TestServer`]) — the stop drains in-flight drawer rebuilds and the
+/// tree outlives it, whatever order these fields are in. `ws` is a `PathBuf`
+/// and has no teardown, so this fixture has no order of its own to get wrong.
 struct Fixture {
-    server: RunningServer,
+    daemon: TestServer,
     ws: PathBuf,
-    _tmp: TempDir,
 }
 
 impl Fixture {
@@ -695,24 +694,22 @@ impl Fixture {
     /// The same daemon over a caller-chosen corpus — one scenario that needs a
     /// card the golden table does not carry seeds its own.
     fn start_with(files: Vec<(&'static str, String)>) -> Self {
-        let tmp = TempDir::new().expect("tempdir");
-        let ws = tmp.path().join("ws");
+        // Seed the corpus BEFORE the daemon starts, as this fixture always
+        // has: `idle` + `ensure_live` is that order, `start` would invert it.
+        let daemon = TestServer::idle().expect("tempdir");
+        let ws = daemon.path().join("ws");
         for (rel, content) in files {
             let path = ws.join(rel);
             std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
             std::fs::write(path, content).expect("seed");
         }
-        let server = RunningServer::start(config(&tmp)).expect("the daemon starts");
-        Self {
-            server,
-            ws,
-            _tmp: tmp,
-        }
+        daemon.ensure_live(config).expect("the daemon starts");
+        Self { daemon, ws }
     }
 
     /// Run one scenario end to end against this daemon.
     fn run(&self, scenario: &Scenario) -> (ScriptTrace, LiveDoor) {
-        let mut door = LiveDoor::open(self.server.socket_path(), &self.ws);
+        let mut door = LiveDoor::open(&self.daemon.socket_path(), &self.ws);
         let mut argv = vec!["--actor".to_owned(), ME.to_owned()];
         if scenario.files {
             for path in FILES {
@@ -736,9 +733,9 @@ impl Fixture {
 /// A real daemon config: the reaper never evicts a warm engine mid-test, and the
 /// idle-exit clock is the test's.
 #[allow(clippy::duration_suboptimal_units)]
-fn config(tmp: &TempDir) -> Config {
+fn config(root: &Path) -> Config {
     let forever = Duration::from_secs(365 * 24 * 60 * 60);
-    let mut config = Config::for_cache_root(tmp.path().join("cache"));
+    let mut config = Config::for_cache_root(root.join("cache"));
     config.idle_threshold = forever;
     config.reap_interval = forever;
     config.prewarm_interval = forever;

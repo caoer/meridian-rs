@@ -3,6 +3,12 @@
 //! entry is removed only when a daemon is reachable, while the drawer is always removed. An
 //! ephemeral tree (cwd-default, no daemon, never registered) has neither — unregister is then a
 //! clean no-op.
+//!
+//! It also works with the DIRECTORY gone, which is the stale-entry class a registry sweep exists
+//! to remove: a path that cannot be canonicalized is matched as given, the spelling
+//! [`registry::Registry::unregister`] already documents as its fallback key. A vanished path that
+//! matches nothing refuses (exit 2) rather than reporting the clean no-op above — with no tree
+//! there, "nothing was registered" and "you typed it wrong" are the same output otherwise.
 
 use std::path::{Path, PathBuf};
 
@@ -24,13 +30,29 @@ pub(crate) fn run(target_arg: Option<&str>, format: Format) -> Result<(), Fail> 
     // Lenient on purpose: unregister must run outside a defined root — dropping
     // a stale drawer/registry entry is legitimate exactly when the markers are
     // already gone (the strict lane would refuse with OutsideWorkspace).
-    let resolved = resolve_runtime_lenient(&base).map_err(|e| {
-        Fail::tool(format!(
-            "cannot resolve workspace for {}: {e}",
-            base.display()
-        ))
-    })?;
-    let workspace = resolved.workspace;
+    //
+    // Leniency has to reach one rung further than the ladder does. A workspace
+    // whose DIRECTORY is gone cannot be resolved at all — there is nothing left
+    // to canonicalize — and that is precisely the stale entry this door exists
+    // to remove. The registry already spells the contract from the other side:
+    // `Registry::unregister` "matches on the canonical path when the directory
+    // still resolves, else on the path as given". Resolving first threw that
+    // away, refusing before the request was ever made.
+    let vanished = !base.exists();
+    let workspace = if vanished {
+        // The path as given, absolutized above — never a relative spelling, so
+        // it cannot string-equal some other live entry's canonical key.
+        base.clone()
+    } else {
+        resolve_runtime_lenient(&base)
+            .map_err(|e| {
+                Fail::tool(format!(
+                    "cannot resolve workspace for {}: {e}",
+                    base.display()
+                ))
+            })?
+            .workspace
+    };
 
     // Daemon entry: removed only when a daemon answers a ping.
     let mut daemon_removed: Option<bool> = None;
@@ -58,6 +80,20 @@ pub(crate) fn run(target_arg: Option<&str>, format: Format) -> Result<(), Fail> 
         if existed {
             gc::maybe_auto_gc(&cache_root);
         }
+    }
+
+    // A vanished directory that matched nothing is NOT the documented clean
+    // no-op. That no-op is about a tree that is present and simply was never
+    // registered — running it again changes nothing and says so. Here there is
+    // no tree at all, so nothing this invocation could ever have acted on
+    // existed: exit 0 would confirm a removal that did not happen, and a
+    // mistyped path would read back as a completed sweep.
+    if vanished && daemon_removed != Some(true) && !drawer_removed {
+        return Err(Fail::tool(format!(
+            "nothing to unregister for {}: the directory does not exist, and no registry entry or drawer is keyed by that exact path. \
+             A registration is keyed by its canonical path — unregister it by the path `mrd cache ls` reports.",
+            base.display()
+        )));
     }
 
     report(format, &workspace, daemon_removed, drawer_removed);

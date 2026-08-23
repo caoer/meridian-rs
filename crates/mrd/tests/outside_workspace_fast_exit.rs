@@ -201,6 +201,95 @@ fn a_declared_gitless_root_still_serves() {
     }
 }
 
+/// A registered workspace whose DIRECTORY has been deleted is unregisterable
+/// through the door.
+///
+/// This is the stale-entry class the registry sweep exists to remove, and
+/// before this gate it was the one class the door could not touch: the CLI
+/// resolved (and so canonicalized) the path before the request, and a vanished
+/// directory cannot be canonicalized — exit 2, `cannot canonicalize workspace
+/// path … (No such file or directory)`, entry intact. The workaround in use was
+/// to recreate the directory just to remove its registration.
+///
+/// `Registry::unregister` already matched "on the path as given" for exactly
+/// this case; only the CLI's resolve-first order kept the request from being
+/// made.
+#[test]
+fn unregister_removes_an_entry_whose_directory_is_gone() {
+    let sb = sandbox();
+    let ws = sb.dir("vanishing");
+
+    // Register: init writes the declaration and the drawer sentinel.
+    let out = sb.run_in(&ws, &["init"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "init must register the tree — stderr: {}",
+        stderr(&out),
+    );
+    let listed = stdout(&sb.run_in(&sb.root, &["cache", "ls"]));
+    assert!(
+        listed.contains(&ws.display().to_string()),
+        "the drawer must be registered before the tree is deleted — got: {listed}",
+    );
+
+    // The directory vanishes. Run from a cwd that still exists, naming the
+    // gone path explicitly.
+    std::fs::remove_dir_all(&ws).expect("delete the workspace");
+    assert!(!ws.exists(), "the workspace directory must be gone");
+
+    let out = sb.run_in(&sb.root, &["unregister", &ws.display().to_string()]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a vanished workspace must unregister through the door — stdout: {} stderr: {}",
+        stdout(&out),
+        stderr(&out),
+    );
+    let text = stdout(&out);
+    assert!(
+        text.contains("drawer:  removed"),
+        "the drawer keyed by that path must be gone — got: {text}",
+    );
+
+    // The receipt that matters: the drawer is no longer listed.
+    let listed = stdout(&sb.run_in(&sb.root, &["cache", "ls"]));
+    assert!(
+        !listed.contains(&ws.display().to_string()),
+        "the drawer must be gone from `cache ls` — got: {listed}",
+    );
+}
+
+/// A non-existent path that is keyed by nothing refuses, naming the path.
+///
+/// The clean no-op is for a tree that is PRESENT and was never registered.
+/// With no tree there, exit 0 would report a sweep that removed nothing, and a
+/// typo would read back as success.
+#[test]
+fn unregister_refuses_a_vanished_path_that_matches_nothing() {
+    let sb = sandbox();
+    let never = sb.root.join("never-existed");
+    assert!(!never.exists(), "the fixture path must not exist");
+
+    let out = sb.run_in(&sb.root, &["unregister", &never.display().to_string()]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a vanished path keyed by nothing must refuse — stdout: {} stderr: {}",
+        stdout(&out),
+        stderr(&out),
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains(&never.display().to_string()),
+        "the refusal must name the path — got: {err}",
+    );
+    assert!(
+        err.contains("nothing to unregister"),
+        "the refusal must say what did not happen — got: {err}",
+    );
+}
+
 #[test]
 fn init_and_unregister_still_run_outside_a_defined_root() {
     let sb = sandbox();

@@ -11,16 +11,12 @@
 //! the pid the daemon wrote to its OWN pidfile (never `pgrep -f`).
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 mod common;
-
-fn mrd_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_mrd")
-}
 
 /// The TRUE target, in the `sessions` root.
 const TARGET: &str = "# Notes\n\nTARGET BYTES — this file lives in the `sessions` root.\n";
@@ -102,11 +98,9 @@ fn sandbox() -> Sandbox {
 
 impl Sandbox {
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(mrd_bin())
+        common::mrd_command(&self.home, &self.cache_home)
             .args(args)
             .current_dir(&self.ws)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env("MERIDIAN_CONFIG", &self.config)
             .env_remove("MERIDIAN_WORKSPACE")
             .output()

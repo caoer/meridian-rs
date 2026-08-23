@@ -254,7 +254,10 @@ fn the_live_regression_fixture_reads_back_whole() {
 
 /// The SUSPENDED half, pinned so nobody widens it by accident: a block-style
 /// LIST still reads empty on the props face and as flow text in sql. That
-/// asymmetry is the contract (`docs/wire-contract.md:2084-2111`), not a bug —
+/// asymmetry is the contract (`docs/wire-contract.md` § A.6.1′ — *a list value
+/// is read off the BLOCK, for every key*; cited by SECTION because the range
+/// this comment used to name has since drifted onto A.6.1a's chomping text),
+/// not a bug —
 /// changing it needs ZT's amendment (advisor ruling 2026-08-23).
 #[test]
 fn a_block_list_is_untouched_by_this_card() {
