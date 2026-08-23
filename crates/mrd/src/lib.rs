@@ -200,6 +200,9 @@ const HEADER: &str = "\
 mrd — the meridian workspace CLI
   `!` in the gutter marks a verb that CHANGES something — files or the drawer.
   Every unmarked verb is a read.
+  MRD_TIMING=1 (or a file path) adds `mrd-timing` phase lines on stderr, for
+  ANY verb: time cost only, nothing else — stdout and the exit code are
+  unchanged. Off, no clock is read. `docs/status.md` § The timing mode.
 ";
 
 /// The verb listing and the options block: the single source for `mrd --help` and every
@@ -735,7 +738,13 @@ pub fn run(args: &[String]) -> ExitCode {
     // process can host an in-process write, so the projection seam is
     // installed unconditionally at entry (idempotent).
     registry::mw_sql::install();
-    match dispatch(args) {
+    // The one phase every verb has: the whole process. It is stopped on BOTH
+    // arms, and deliberately AFTER the refusal is printed — unlike every phase
+    // below it, `total` completes whether the verb succeeded or refused,
+    // because the thing it measures is the process, and the process finished
+    // either way (docs/status.md § The timing mode).
+    let total = timing::phase("total");
+    let exit = match dispatch(args) {
         Ok(()) => ExitCode::from(EXIT_OK),
         Err(fail) => {
             // The diagnostic leads, so a refusal is never buried under the help listing.
@@ -745,13 +754,18 @@ pub fn run(args: &[String]) -> ExitCode {
             }
             ExitCode::from(fail.code)
         }
-    }
+    };
+    total.stop();
+    exit
 }
 
 fn dispatch(args: &[String]) -> Result<(), Fail> {
     let Some(verb) = args.first() else {
         return Err(Fail::usage("no subcommand given".to_owned()));
     };
+    // The `cmd=` every timing line carries. One call covers every verb: the
+    // instrument never learns a verb name of its own.
+    timing::label(verb);
     if let Some(page) = help::for_invocation(args) {
         print!("{page}");
         return Ok(());
