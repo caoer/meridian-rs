@@ -18,12 +18,8 @@
 //!   (`wire_serve::write::relative_respelling`), earned and never guessed.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 mod common;
-
-fn mrd_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_mrd")
-}
 
 /// A run-plane task page: the marker only ever prints if a door EXECUTES it,
 /// so its absence from stdout is the proof the admission fired first.
@@ -60,11 +56,9 @@ impl Sandbox {
     /// Every run is hermetic: spawn-impossible daemon (deterministic in-process
     /// answers), isolated cache and home, no ambient workspace override.
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
-        Command::new(mrd_bin())
+        common::mrd_command(&self.home, &self.cache_home)
             .args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
             .env_remove("MERIDIAN_WORKSPACE")
             .output()

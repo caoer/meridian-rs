@@ -17,6 +17,8 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
+mod common;
+
 /// A single-task page whose block emits NO effect — so two runs of it leave
 /// the corpus byte-identical and their reports are comparable.
 const SOLO_PAGE: &str = "\
@@ -142,10 +144,9 @@ impl Ws {
             "---\ntype: meridian-config\nversion: 1\n---\n\n# empty table\n",
         )
         .expect("empty mount table");
-        let mut command = Command::new(env!("CARGO_BIN_EXE_mrd"));
+        let mut command = common::mrd_command(&home, &cache);
         command
             .args(["links", "--json"])
-            .env("HOME", &home)
             .env("MERIDIAN_CONFIG", home.join("MERIDIAN.md"))
             .env("MERIDIAN_WORKSPACE", self.path())
             .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
@@ -153,7 +154,6 @@ impl Ws {
             // `XDG_RUNTIME_DIR` under `#[cfg(target_os = "linux")]`. On macOS
             // it is inert; `XDG_CACHE_HOME` is the load-bearing sock-key override.
             .env("XDG_RUNTIME_DIR", &rt)
-            .env("XDG_CACHE_HOME", &cache)
             .current_dir(self.path());
         if let Some(value) = timing {
             command.env("MRD_TIMING", value);
@@ -356,15 +356,13 @@ fn links_json_repeats_corpus_build_per_mounted_root() {
     )
     .expect("claim");
 
-    let mut command = Command::new(env!("CARGO_BIN_EXE_mrd"));
+    let mut command = common::mrd_command(&home, &cache);
     command
         .args(["links", "--json"])
-        .env("HOME", &home)
         .env("MERIDIAN_CONFIG", home.join("MERIDIAN.md"))
         .env("MERIDIAN_WORKSPACE", &ws)
         .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
         .env("XDG_RUNTIME_DIR", tmp.path().join("rt"))
-        .env("XDG_CACHE_HOME", &cache)
         .env("MRD_TIMING", "1")
         .current_dir(&ws);
     std::fs::create_dir_all(tmp.path().join("rt")).expect("runtime dir");

@@ -71,11 +71,9 @@ impl Drop for Sandbox {
 
 impl Sandbox {
     fn command(&self, cwd: &Path, args: &[&str]) -> Command {
-        let mut c = Command::new(mrd_bin());
+        let mut c = common::mrd_command(&self.home, &self.cache_home);
         c.args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .env_remove("MERIDIAN_WORKSPACE");
         c

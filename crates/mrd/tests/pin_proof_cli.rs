@@ -49,11 +49,9 @@ impl Sandbox {
     /// Writes are IPC: this path auto-spawns the test binary as the daemon
     /// (`MERIDIAN_DAEMON_BIN` = this `mrd`), same as `read_put_cli.rs`.
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
-        Command::new(mrd_bin())
+        common::mrd_command(&self.home, &self.cache_home)
             .args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .env_remove("MERIDIAN_WORKSPACE")
             .output()

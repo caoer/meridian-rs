@@ -6,26 +6,42 @@
 //!
 //! # Fixture rule: a fixture that starts a daemon owns its teardown
 //!
-//! Two lines, both enforced by `tests/fixture_drain_budget.rs`, both the
-//! class-2 flake (pipelines 1098/1101: `background drawer rebuild failed for
-//! /tmp/.tmp…/ws (No such file or directory)`):
+//! Both halves of this rule used to be checked by reading source TEXT
+//! (`tests/fixture_drain_budget.rs`, card `registry-tests-drain-residue`).
+//! Both are now structural, and the guard is deleted — the point was never to
+//! check the invariant better, it was to stop the invariant from being
+//! breakable (card `fixture-drain-guard-followups`).
 //!
-//! 1. **Raise the budget.** Any fixture config passed to
-//!    `RunningServer::start` sets `config.drain_cold_builds =
-//!    Duration::from_secs(30)`. The `registry::DEFAULT_DRAIN_COLD_BUILDS`
-//!    default is 2 s because it must stay under the tightest CLIENT
-//!    flock/respawn budget (mrd CLI 5 s) — it is not a fixture budget, and on
-//!    a loaded box a cold build parks well past it, at which point shutdown
-//!    gives up and the `TempDir` goes away under the builder.
-//! 2. **Order the fields.** A fixture that keeps the `TempDir` and the server
-//!    in a STRUCT declares the **server first**. Struct fields drop in
-//!    declaration order; locals drop in reverse. So the same two values that
-//!    tear down correctly as `let tmp = …; let server = …;` tear down
-//!    INVERTED as `struct F { _tmp: TempDir, server: RunningServer }`. A
-//!    `_`-prefixed name signals "unused", never "drops last". The alternative
-//!    is an explicit `impl Drop`.
+//! 1. **Raise the budget — or say so in the environment.** A fixture that
+//!    builds its own `Config` sets `config.drain_cold_builds =
+//!    Duration::from_secs(30)`. A fixture that only SPAWNS an `mrd` whose
+//!    daemon auto-starts never holds a `Config` at all, and sets
+//!    `MRD_DRAIN_COLD_BUILDS=30` in that process's environment instead.
+//!    `registry::DEFAULT_DRAIN_COLD_BUILDS` is 2 s for two reasons, and the
+//!    second is the one usually missed: it must stay under the tightest
+//!    CLIENT flock/respawn budget (mrd CLI `SPAWN_READY_TIMEOUT`, 5 s), AND
+//!    it is exactly the engine kicker's own `COLD_BUILD_WAIT`
+//!    (`crates/registry/src/registry.rs:171`). The ceiling says how large it
+//!    may not be; `COLD_BUILD_WAIT` says why it is precisely 2. Neither is a
+//!    fixture budget: on a loaded box a cold build parks well past 2 s, at
+//!    which point shutdown gives up and the `TempDir` goes away under the
+//!    builder.
+//!    Enforced at runtime by a `debug_assert` on the hazard PAIR — cache root
+//!    under `std::env::temp_dir()` AND the production budget — in BOTH
+//!    `RunningServer::start` and, because an auto-spawned daemon's stderr is
+//!    `Stdio::null()` and its panic reaches nobody, in the client before it
+//!    spawns (`registry::Config::drain_budget_hazard`).
+//! 2. **Own the teardown order — by holding ONE field.** Use
+//!    `registry::TestServer`: it owns the server and the `TempDir` together
+//!    and stops the server in its own `Drop::drop`, which Rust runs before any
+//!    of its own fields' drop glue. The order is therefore not a rule to
+//!    remember but a property of the type, and a fixture holding one field has
+//!    no order of its own to get wrong. (The old rule — "declare the server
+//!    first, because struct fields drop in declaration order and locals in
+//!    reverse" — is why this type exists; it cost three hand-fixed
+//!    inversions.)
 //!
-//! The same rule governs `crates/mrd/tests/`; the guard reads both trees.
+//! The same rule governs `crates/mrd/tests/`.
 #![allow(dead_code)]
 
 use std::time::{Duration, Instant};
