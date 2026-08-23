@@ -128,6 +128,48 @@ fn head_vs_stamp_guard_present_and_before_the_stamp() {
     }
 }
 
+/// The guards must REFUSE, not warn (F4, review of PR 211 round 1): a lane that
+/// keeps the tri-state opener but replaces the `exit 1` body with an echo is
+/// exactly the ceremony PR 199 measured — a warning that printed on TEN
+/// consecutive `-dirty` main heads and stopped nothing. Bind the refuse bodies:
+/// between each opener and the stamp there must be the comparison/print AND an
+/// `exit 1` after it.
+#[test]
+fn refusal_bodies_refuse_not_warn() {
+    // `exit 1` must sit within this many lines below the marker. A looser
+    // "anywhere before the stamp" search is defeated by a LATER guard's exit
+    // (measured while writing this: the warn-only mutation passed because the
+    // fourth-state guard's own `exit 1` satisfied the slice search).
+    const WINDOW: usize = 3;
+    let markers: [&str; 2] = [
+        // the fourth-state comparison — a mismatch that only warns stamps a
+        // sha whose tree was not built
+        "\"$head\" != ",
+        // the dirty-branch print — a `-dirty` warning that publishes is the
+        // ceremony PR 199 measured on ten main heads
+        "printf '%s\\n' \"$porcelain\"",
+    ];
+    for rel in PIPELINE_FILES {
+        let body = without_comments(&read(rel));
+        let lines: Vec<&str> = body.lines().collect();
+        for marker in markers {
+            let at = lines
+                .iter()
+                .position(|l| l.contains(marker))
+                .unwrap_or_else(|| panic!("{rel}: refuse-body marker gone: {marker}"));
+            let refuses = lines[at + 1..]
+                .iter()
+                .take(WINDOW)
+                .any(|l| l.trim() == "exit 1");
+            assert!(
+                refuses,
+                "{rel}: no `exit 1` within {WINDOW} lines below `{marker}` — the guard \
+                 warns instead of refusing, which is the ceremony class this card closes"
+            );
+        }
+    }
+}
+
 /// `cargo deny` shells out to `cargo metadata`, the one cargo call in the
 /// pipeline that can rewrite the tracked Cargo.lock on a stale resolve
 /// (deny.toml sets all-features=true, widening it). Every deny invocation must
