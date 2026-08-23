@@ -116,21 +116,42 @@ steps:
       # The probe is the ENGINE'S OWN, flag for flag (crates/mrd/build_git.rs
       # worktree_dirty): --untracked-files=no, --no-optional-locks. This lane
       # shares one workspace with ci.yaml's lanes, which write untracked paths
-      # (`target-ci`, and `/target` is the only ignored one) — a bare probe
-      # would read those as a divergence and stamp a lie that a supplied
-      # MRD_BUILD_SHA then carries verbatim into the pin.
+      # (`.ci` scratch and build dirs; `/target` and `/target-ci` are both
+      # ignored) — a bare probe would read those as a divergence and stamp a
+      # lie that a supplied MRD_BUILD_SHA then carries verbatim into the pin.
+      #
+      # IT REFUSES, IT DOES NOT WARN — and it is TRI-STATE. Both halves came
+      # from ci.yaml (PR 199) and belong here MORE than there, because what
+      # this lane publishes is a RELEASE:
+      #   - a WARNING that never fails is ceremony. ci.yaml's warned on nine
+      #     consecutive main heads and stopped nothing. `-dirty` means a lane
+      #     wrote a TRACKED file mid-pipeline, and the pin would then name
+      #     bytes no sha can recover.
+      #   - `if [ -n "$(git …)" ]` FAILS OPEN: a git exiting non-zero with
+      #     EMPTY stdout — dubious ownership, an unreadable .git, no git —
+      #     yields the empty string, the test is false, and the lane publishes
+      #     a release stamped with a sha it never measured. `set -eu` does not
+      #     catch it; the failure is inside a command substitution in an `if`
+      #     condition. Reproduced with a stub git exiting 128.
+      # The engine is deliberately tri-state for the same reason: build_git.rs
+      # returns None on a non-zero exit, build.rs collapses that to `unknown`,
+      # under its own rule that "I could not tell" and "it was clean" are
+      # opposite answers. Card: 22-18/tasks/tag-lanes-still-publish-dirty-releases.
       - |
         set -eu
         . /tmp/lane.env
         [ "$${SKIP_BUILD}" = "0" ] || exit 0
         rev="$(cat /tmp/rev)"
-        if [ -n "$(git --no-optional-locks status --porcelain --untracked-files=no)" ]; then
-          echo "MRD_BUILD_SHA=$${rev}-dirty" > /tmp/stamp.env
-          echo "WARNING tracked content diverges from $${rev} — stamping -dirty"
-          git --no-optional-locks status --porcelain --untracked-files=no
-        else
-          echo "MRD_BUILD_SHA=$${rev}" > /tmp/stamp.env
+        if ! porcelain="$(git --no-optional-locks status --porcelain --untracked-files=no)"; then
+          echo "the tree probe FAILED — cannot attest, and 'could not tell' is not 'clean'"
+          exit 1
         fi
+        if [ -n "$porcelain" ]; then
+          echo "tracked content diverges from $${rev} — refusing to publish a RELEASE no sha can recover"
+          printf '%s\n' "$porcelain"
+          exit 1
+        fi
+        echo "MRD_BUILD_SHA=$${rev}" > /tmp/stamp.env
         cat /tmp/stamp.env
         env $(cat /tmp/stamp.env) cargo build -q --locked --release -p mrd
       # The artifact must be the thing consumers run, so ASK it. A build that

@@ -97,6 +97,12 @@ clone:
     image: docker.io/woodpeckerci/plugin-git:2.9.2
     environment:
       PLUGIN_DEPTH: "0" # the server default clone's own setting — same fetch shape
+      # ci now runs on tag events too (the v* gate); the default clone only fetched tags there, so
+      # fetch them always — the mirror is local, cost ~nil. (Hunk authored by e860ada5, who owns
+      # this block, and handed to this PR so the lanes are touched once: without it, a `ci` running
+      # on a v* tag clones WITHOUT the tag object, and anything that peels or describes the tag
+      # breaks silently — compiler.go set cloneSettings["tags"] only on tag events.)
+      PLUGIN_TAGS: "true"
       CI_NETRC_MACHINE: git.0xdao.app
       CI_NETRC_USERNAME: caoer115
       CI_NETRC_PASSWORD:
