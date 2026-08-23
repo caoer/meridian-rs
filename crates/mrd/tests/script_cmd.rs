@@ -9,7 +9,7 @@
 //! `script` op, and everything else drove a LOCAL transaction here — reads
 //! lowered to `toc`/`cat`, the commit went out as a `splice`, and that splice
 //! carried `if_fingerprint` = the whole-corpus entry fingerprint. That
-//! world-grain premise is the law `run-plane.md`:929-942 records as amended and
+//! world-grain premise is the law `run-plane.md`:930-943 records as amended and
 //! DELETED: it refused a 64-file slice on fleet churn that never touched one of
 //! its 64 targets.
 //!
@@ -198,7 +198,7 @@ fn the_ops_on_the_socket_are_only_the_ones_the_contract_already_declares() {
 /// It asserted that the CLI minted a whole-corpus entry fingerprint and put it
 /// on its own `splice` as `if_fingerprint` — the world-grain premise that
 /// refused a 64-file slice because a memo landed somewhere else in the corpus.
-/// `run-plane.md`:929-942 records that law as amended and DELETED, and :930
+/// `run-plane.md`:930-943 records that law as amended and DELETED, and :931
 /// names this lane: *"the touch-set law covers ALL script lanes (S1), same
 /// product as MCP `script`"*.
 ///
@@ -644,7 +644,7 @@ fn read_sel_parse_is_the_only_section_parser_on_the_script_path() {
 //   `an_engine_minted_refusal_names_its_own_class_and_no_code` (its clock half),
 //   and the `StallingFake` harness — the entry wall clock. It binds in the
 //   daemon now, at the same three layers. Twin:
-//   `crates/registry/src/script_op.rs:2032`
+//   `crates/registry/src/script_op.rs:2053`
 //   § `the_wall_clock_binds_at_the_read_builtin`, plus the pre-commit wall site
 //   at `crates/registry/src/script_op.rs:358`.
 //
@@ -689,7 +689,7 @@ fn read_sel_parse_is_the_only_section_parser_on_the_script_path() {
 //   `arm.path`, so a program touching two files threads each row from the file
 //   THAT ROW targets. `thread_entry` keys the same way and nothing pinned it on
 //   this side — the nearest twin arms two rows on ONE file, where a path-blind
-//   lookup passes. Written in this PR: `crates/registry/src/script_op.rs:1603`
+//   lookup passes. Written in this PR: `crates/registry/src/script_op.rs:1608`
 //   § `a_rows_entry_rev_is_looked_up_by_its_own_path_not_by_arm_order`.
 // * `a_row_targeting_an_unread_path_mints_its_own_token` — the CAS relaxation
 //   for an unread target. The mint is gone with the lane (the daemon threads
@@ -705,7 +705,7 @@ fn read_sel_parse_is_the_only_section_parser_on_the_script_path() {
 //   — a row with no entry facts is never given a guessed token — is now
 //   structural (`thread_entry` maps over `entry_toc(..) -> Option`) and the
 //   commit says it out loud: an armed path absent at entry premises ABSENCE
-//   (§5.6). Pinned by `crates/registry/src/script_op.rs:1726`
+//   (§5.6). Pinned by `crates/registry/src/script_op.rs:1731`
 //   § `touch_premises_cover_reads_expansions_and_arms_at_entry_values`.
 //
 // `src/script/wire_host.rs` — the read lowering's six
@@ -727,7 +727,7 @@ fn read_sel_parse_is_the_only_section_parser_on_the_script_path() {
 // * `the_wall_clock_is_checked_before_every_round_trip_not_once_per_read` — the
 //   per-TRIP-not-per-READ distinction. It is a statement ABOUT round trips and
 //   dies with them. What survives is that the clock binds at the read site at
-//   all: `crates/registry/src/script_op.rs:2032`
+//   all: `crates/registry/src/script_op.rs:2053`
 //   § `the_wall_clock_binds_at_the_read_builtin`, plus the pre-commit wall at
 //   `crates/registry/src/script_op.rs:358`.
 // * `the_deadline_refusal_is_pinned_and_claims_nothing_the_host_cannot_see` —

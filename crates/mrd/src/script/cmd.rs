@@ -14,7 +14,7 @@
 //! **One lane: the whole attempt IS the wire `script` op.** The daemon pins the
 //! entry, expands, evaluates and commits; this verb parses argv, sends the
 //! program, and renders the trace that comes back. So the system holds exactly
-//! ONE commit-premise implementation, which is what `run-plane.md`:930 means by
+//! ONE commit-premise implementation, which is what `run-plane.md`:931 means by
 //! *"the touch-set law covers ALL script lanes (S1), same product as MCP
 //! `script`"*.
 //!
@@ -29,7 +29,7 @@
 //! *(Until card `script-door-commit-premise-world-grain-vs-touch-set`, a
 //! pattern-less `files[]` drove a SECOND transaction here that guarded the
 //! commit on the whole-corpus entry fingerprint — so any fleet write anywhere
-//! refused it. That is the law `run-plane.md`:929-942 records as amended and
+//! refused it. That is the law `run-plane.md`:930-943 records as amended and
 //! DELETED, and it is why a 64-file slice refused while all 64 of its targets
 //! stood still.)*
 //!
@@ -243,8 +243,8 @@ pub fn attempt(args: &[String], source: &str, door: &mut dyn Door) -> Result<Scr
 /// It used to fork here — a `files[]` carrying a glob forwarded (expansion is
 /// the engine's, never a CLI-private one), and everything else drove a local
 /// transaction whose commit guarded on the WHOLE-CORPUS entry fingerprint. That
-/// second premise is the defect: `run-plane.md`:929-942 records the world-grain
-/// law as amended and DELETED, and :930 names this lane — *"the touch-set law
+/// second premise is the defect: `run-plane.md`:930-943 records the world-grain
+/// law as amended and DELETED, and :931 names this lane — *"the touch-set law
 /// covers ALL script lanes (S1), same product as MCP `script`"*. One product
 /// means one commit path, so the fork is gone and, with it, the transaction
 /// itself: `run_local`, `guarded`, `mint_for`, `mint_toc`, `file_rev_of`,
