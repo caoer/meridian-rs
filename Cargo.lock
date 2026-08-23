@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "addr"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "adler2"
@@ -514,7 +514,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "cache"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "libc",
  "serde",
@@ -572,7 +572,7 @@ dependencies = [
 
 [[package]]
 name = "check"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "addr",
  "fs",
@@ -688,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "config"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "addr",
  "lock",
@@ -1057,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "effects"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1268,7 +1268,7 @@ dependencies = [
 
 [[package]]
 name = "fs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "blake3",
  "libc",
@@ -1413,7 +1413,7 @@ dependencies = [
 
 [[package]]
 name = "git"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "receipt",
  "tempfile",
@@ -2030,7 +2030,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "lock"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "inventory",
  "model",
@@ -2160,7 +2160,7 @@ dependencies = [
 
 [[package]]
 name = "model"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "addr",
  "blake3",
@@ -2169,7 +2169,7 @@ dependencies = [
 
 [[package]]
 name = "mrd"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "addr",
  "allocative",
@@ -2396,7 +2396,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "perfsuite"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "criterion",
  "hdrhistogram",
@@ -2424,7 +2424,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "policy"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2472,7 +2472,7 @@ dependencies = [
 
 [[package]]
 name = "preset"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "fs",
  "model",
@@ -2561,7 +2561,7 @@ source = "git+https://github.com/caoer/pulldown-cmark?rev=bc5df96c23da33283ef53c
 
 [[package]]
 name = "query"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "addr",
  "fs",
@@ -2786,7 +2786,7 @@ dependencies = [
 
 [[package]]
 name = "realise"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "effects",
  "fs",
@@ -2801,7 +2801,7 @@ dependencies = [
 
 [[package]]
 name = "receipt"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "serde_json",
  "syntax",
@@ -2868,7 +2868,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "registry"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "blake3",
  "cache",
@@ -2904,7 +2904,7 @@ dependencies = [
 
 [[package]]
 name = "render"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "addr",
  "lock",
@@ -2999,7 +2999,7 @@ dependencies = [
 
 [[package]]
 name = "run"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "cache",
  "config",
@@ -3624,7 +3624,7 @@ dependencies = [
 
 [[package]]
 name = "syntax"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "pulldown-cmark",
 ]
@@ -3667,7 +3667,7 @@ dependencies = [
 
 [[package]]
 name = "testsuite"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "addr",
  "blake3",
@@ -3721,7 +3721,7 @@ dependencies = [
 
 [[package]]
 name = "timing"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "tiny-keccak"
@@ -3928,7 +3928,7 @@ dependencies = [
 
 [[package]]
 name = "transport"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4065,7 +4065,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "view"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "addr",
  "blake3",
@@ -4483,7 +4483,7 @@ dependencies = [
 
 [[package]]
 name = "wire"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4491,7 +4491,7 @@ dependencies = [
 
 [[package]]
 name = "wire-map"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "model",
  "syntax",
@@ -4500,7 +4500,7 @@ dependencies = [
 
 [[package]]
 name = "wire-serve"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "addr",
  "config",
@@ -4529,7 +4529,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "workspace"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "cache",
  "tempfile",
