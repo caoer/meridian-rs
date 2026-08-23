@@ -161,9 +161,7 @@ fn an_alias_shadowing_a_name_refuses_the_whole_table() {
     );
 
     // Its own name: legal-looking, does nothing, refuses.
-    let own = refuse(&fm(
-        "```meridian-mount\nname: a\npath: /x\nalias: a\n```\n",
-    ));
+    let own = refuse(&fm("```meridian-mount\nname: a\npath: /x\nalias: a\n```\n"));
     assert_eq!(own.reason, Reason::AliasShadowsName);
 
     // Two mounts claiming one alias: a key with two values.
@@ -171,7 +169,10 @@ fn an_alias_shadowing_a_name_refuses_the_whole_table() {
         "```meridian-mount\nname: a\npath: /x\nalias: c\n```\n\n```meridian-mount\nname: b\npath: /y\nalias: c\n```\n",
     ));
     assert_eq!(twice.reason, Reason::AliasShadowsName);
-    assert!(twice.to_string().contains("already declared at line"), "{twice}");
+    assert!(
+        twice.to_string().contains("already declared at line"),
+        "{twice}"
+    );
 }
 
 /// The exemplar is produced by a real parse, not merely contained in one: a
