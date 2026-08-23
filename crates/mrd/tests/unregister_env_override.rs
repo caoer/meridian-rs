@@ -34,16 +34,26 @@
 //! and no fixture that sets the override ever reaches `unregister`. The two
 //! halves have simply never met. This file is where they meet.
 //!
-//! # Status: ignored pending a ruling, not pending a fix
+//! # Status: a live gate — the ruling landed
 //!
 //! Card `19-20-mrd-statusd-integration/tasks/unregister-env-override-present-path-wrong-removal`
-//! asks for the shape to be carded, NOT prescribed: should `unregister` REFUSE
+//! asked for the shape to be carded, NOT prescribed: should `unregister` REFUSE
 //! when an explicit PATH disagrees with the override, or WARN and name the
-//! divergence? (Same divergence family as PR 207's `answered-by` line.) Until
-//! that lands, this test is `#[ignore]`d — it is a live description of a defect
-//! nobody has yet ruled on, and turning it into a gate would prescribe the
-//! answer. Un-`ignore` it when the ruling lands; the invariant it asserts
-//! (§ "the one assertion") holds under EITHER ruling.
+//! divergence? (Same divergence family as PR 207's `answered-by` line.) While
+//! that stayed open this test was `#[ignore]`d — turning a description of an
+//! unruled defect into a gate would have prescribed the answer.
+//!
+//! **Ruled 2026-08-23**, `19-20-mrd-statusd-integration/decisions/unregister-env-override-vs-explicit-path.md`,
+//! **D with C's shape**: an explicit PATH argument outranks the env override,
+//! for the WHOLE ladder, fixed in `workspace::resolve_with_override` and never
+//! as a per-verb bypass. The `#[ignore]` came off with that fix. Every
+//! assertion below is unchanged from the description this file shipped as.
+//!
+//! Under D the test takes the `argument_won` leg of § "the one assertion".
+//! (The retired header claimed the invariant held under EITHER ruling. That
+//! was false for option B — warn-and-proceed still removes the victim — and
+//! the decision record carries the correction. It is true for the ruling
+//! actually taken.)
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -148,8 +158,6 @@ impl Sandbox {
 /// requires the outcome to be one of the two defensible shapes — never the
 /// third, which is what ships today.
 #[test]
-#[ignore = "describes an unruled defect (card unregister-env-override-present-path-wrong-removal); \
-            un-ignore when the refuse-vs-warn ruling lands"]
 fn unregister_with_an_explicit_path_must_not_remove_the_env_override_root() {
     let sb = sandbox();
     let victim = sb.registered_root("victim");
