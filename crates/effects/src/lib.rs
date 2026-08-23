@@ -267,7 +267,9 @@ pub enum Provenance {
     Run {
         /// Caller-supplied invocation id (engine mints none).
         invocation_id: String,
-        /// Workspace root fingerprint at evaluation time.
+        /// The workspace root fingerprint this invocation observed. Stamped
+        /// verbatim from [`RunCtx`]; a caller that folds lazily writes it
+        /// here after the eval instead (see that type).
         root_at_eval: String,
     },
 }
@@ -437,7 +439,17 @@ pub struct RunCtx {
     pub env: BTreeMap<String, String>,
     /// The caller-supplied invocation id (Run-plane provenance).
     pub invocation_id: String,
-    /// The workspace root fingerprint at evaluation time (Run-plane provenance).
+    /// The workspace root fingerprint this invocation observed (Run-plane
+    /// provenance), stamped onto every emitted effect.
+    ///
+    /// Supplied at eval time when the caller already holds a fold. A caller
+    /// that folds LAZILY — `mrd run`'s starlark leg, which folds only when
+    /// the eval emitted something to stamp (`docs/run-plane.md` § The run
+    /// plane) — passes it empty and rewrites the emitted effects' provenance
+    /// afterwards. Both spellings name the same domain: the entry is hermetic
+    /// by construction, so an eval cannot move the corpus under itself, and
+    /// the sandbox cannot read this field (above), so no output can depend on
+    /// which spelling ran.
     pub root_at_eval: String,
 }
 

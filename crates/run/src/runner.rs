@@ -201,7 +201,9 @@ pub enum RunnerError {
     Violation(ContractViolation),
     /// Capability resolution refused.
     Caps(CapsError),
-    /// Computing the pre-dispatch corpus root failed.
+    /// Computing the corpus root the effects are stamped with failed. Taken
+    /// after the eval and only when it emitted (the lazy fold — `run-plane.md`
+    /// § The run plane), so an effect-free run cannot reach this.
     Root {
         /// The underlying failure.
         reason: String,
@@ -424,13 +426,7 @@ pub fn rehearse(
     let name = task.binding.name.clone();
     match task.block.lang {
         TaskLanguage::Starlark => {
-            let root_at_eval =
-                fs::domain_snapshot(root)
-                    .map(|(_, r)| r)
-                    .map_err(|e| RunnerError::Root {
-                        reason: e.to_string(),
-                    })?;
-            let effects = dispatch_starlark::evaluate(&StarlarkDispatch {
+            let mut effects = dispatch_starlark::evaluate(&StarlarkDispatch {
                 page: spec.page,
                 task: &name,
                 task_rev: &task.task_rev,
@@ -439,7 +435,6 @@ pub fn rehearse(
                 env: spec.env.clone(),
                 invocation_id: spec.invocation_id,
                 now: spec.now,
-                root_at_eval: &root_at_eval,
                 authority: &authority,
                 receipt: None,
                 limits: spec.limits,
@@ -454,6 +449,15 @@ pub fn rehearse(
                 ambient: None,
             })
             .map_err(|e| RunnerError::Starlark(DispatchError::Eval(e)))?;
+            // The lazy observation, rehearsal tense: the SAME seam the live
+            // dispatch runs, so `--dry` reports the token the live run would
+            // stamp, and an effect-free rehearsal folds nothing (the fold is
+            // the whole cost — `run-plane.md` § The run plane).
+            dispatch_starlark::observe_if_emitted(root, &mut effects).map_err(|e| {
+                RunnerError::Root {
+                    reason: e.to_string(),
+                }
+            })?;
             // The choke point, rehearsal tense: the SAME admission the apply
             // enforces, over the same md.* partition — judging DECLARED
             // coordinates, BEFORE resolution, exactly as the live order (ZT
@@ -503,12 +507,8 @@ fn dispatch(
 ) -> Result<TaskOutcome, RunnerError> {
     match task.block.lang {
         TaskLanguage::Starlark => {
-            let root_at_eval =
-                fs::domain_snapshot(root)
-                    .map(|(_, r)| r)
-                    .map_err(|e| RunnerError::Root {
-                        reason: e.to_string(),
-                    })?;
+            // No fold here: the dispatcher takes it after the eval, and only
+            // if the eval emitted (`run-plane.md` § The run plane).
             Ok(TaskOutcome::Starlark(Box::new(
                 dispatch_starlark::dispatch(
                     root,
@@ -521,7 +521,6 @@ fn dispatch(
                         env: spec.env.clone(),
                         invocation_id: spec.invocation_id,
                         now: spec.now,
-                        root_at_eval: &root_at_eval,
                         authority,
                         receipt: spec.receipt.clone(),
                         limits: spec.limits,
@@ -532,7 +531,15 @@ fn dispatch(
                         ambient: spec.ambient,
                     },
                 )
-                .map_err(RunnerError::Starlark)?,
+                // A failed fold answers in ONE grammar whichever tense asked
+                // for it: the rehearsal raises `RunnerError::Root` directly,
+                // so the live leg unwraps the dispatcher's own `Root` rather
+                // than nesting it under `dispatch:` (`rehearse` doc — one
+                // gate, one grammar, both tenses).
+                .map_err(|e| match e {
+                    DispatchError::Root { reason } => RunnerError::Root { reason },
+                    other => RunnerError::Starlark(other),
+                })?,
             )))
         }
         TaskLanguage::Bash => Ok(TaskOutcome::Bash(Box::new(

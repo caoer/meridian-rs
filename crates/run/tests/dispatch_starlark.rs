@@ -4,8 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use effects::{Domain, EvalError, EvalLimits};
-use model::MerkleRoot;
+use effects::{Domain, EvalError, EvalLimits, Provenance};
 use run::caps::{Authority, CapSet};
 use run::dispatch_starlark::{self, DispatchError, StarlarkDispatch};
 use run::executor::{ExecError, ReceiptAddr};
@@ -29,11 +28,7 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     (tmp, root)
 }
 
-fn dispatch_of<'a>(
-    source: &'a str,
-    root_at_eval: &'a MerkleRoot,
-    authority: &'a Authority,
-) -> StarlarkDispatch<'a> {
+fn dispatch_of<'a>(source: &'a str, authority: &'a Authority) -> StarlarkDispatch<'a> {
     StarlarkDispatch {
         page: "page.md",
         task: "fix-x",
@@ -43,7 +38,6 @@ fn dispatch_of<'a>(
         env: BTreeMap::new(),
         invocation_id: "inv-1",
         now: Some("2026-07-22T02:00:00Z"),
-        root_at_eval,
         authority,
         receipt: Some(ReceiptAddr {
             path: "receipts/2026-07-22.md".to_owned(),
@@ -61,11 +55,10 @@ fn dispatch_of<'a>(
 #[test]
 fn starlark_set_field_applies_via_the_splice_batch() {
     let (_tmp, root) = workspace();
-    let now = fs::domain_snapshot(&root).unwrap().1;
     let caps = Authority::granted(CapSet::parse("md.edit").unwrap());
     let src = "def run(ctx):\n    set_field(field = \"status\", value = ctx.args[0])\n    notice(message = \"applied\")\n";
 
-    let out = dispatch_starlark::dispatch(&root, &dispatch_of(src, &now, &caps)).unwrap();
+    let out = dispatch_starlark::dispatch(&root, &dispatch_of(src, &caps)).unwrap();
 
     // The page changed through the ONE batch; the event is real.
     let text = std::fs::read_to_string(root.0.join("page.md")).unwrap();
@@ -85,10 +78,9 @@ fn starlark_set_field_applies_via_the_splice_batch() {
 #[test]
 fn no_md_effects_means_nothing_applied_nothing_written() {
     let (_tmp, root) = workspace();
-    let now = fs::domain_snapshot(&root).unwrap().1;
     let caps = Authority::granted(CapSet::none());
     let src = "def run(ctx):\n    notice(message = \"advisory only\")\n";
-    let out = dispatch_starlark::dispatch(&root, &dispatch_of(src, &now, &caps)).unwrap();
+    let out = dispatch_starlark::dispatch(&root, &dispatch_of(src, &caps)).unwrap();
     assert!(out.applied.is_none());
     assert_eq!(out.unexecuted.len(), 1);
     assert_eq!(
@@ -101,10 +93,9 @@ fn no_md_effects_means_nothing_applied_nothing_written() {
 #[test]
 fn wrong_plane_source_propagates_the_typed_eval_error() {
     let (_tmp, root) = workspace();
-    let now = fs::domain_snapshot(&root).unwrap().1;
     let caps = Authority::granted(CapSet::none());
     let src = "def on_change(event):\n    pass\n";
-    let err = dispatch_starlark::dispatch(&root, &dispatch_of(src, &now, &caps)).unwrap_err();
+    let err = dispatch_starlark::dispatch(&root, &dispatch_of(src, &caps)).unwrap_err();
     assert!(matches!(
         err,
         DispatchError::Eval(EvalError::MissingEntry {
@@ -118,10 +109,9 @@ fn wrong_plane_source_propagates_the_typed_eval_error() {
 #[test]
 fn cap_denied_at_the_choke_propagates_and_applies_nothing() {
     let (_tmp, root) = workspace();
-    let now = fs::domain_snapshot(&root).unwrap().1;
     let caps = Authority::granted(CapSet::none());
     let src = "def run(ctx):\n    set_field(field = \"status\", value = \"x\")\n";
-    let err = dispatch_starlark::dispatch(&root, &dispatch_of(src, &now, &caps)).unwrap_err();
+    let err = dispatch_starlark::dispatch(&root, &dispatch_of(src, &caps)).unwrap_err();
     assert!(matches!(
         err,
         DispatchError::Exec(ExecError::CapDenied { .. })
@@ -135,11 +125,20 @@ fn cap_denied_at_the_choke_propagates_and_applies_nothing() {
 #[test]
 fn evaluate_alone_is_the_dry_seam_full_truth_nothing_applied() {
     let (_tmp, root) = workspace();
-    let now = fs::domain_snapshot(&root).unwrap().1;
     let caps = Authority::granted(CapSet::parse("md.edit").unwrap());
     let src = "def run(ctx):\n    set_field(field = \"status\", value = \"x\")\n";
-    let effects = dispatch_starlark::evaluate(&dispatch_of(src, &now, &caps)).unwrap();
+    let effects = dispatch_starlark::evaluate(&dispatch_of(src, &caps)).unwrap();
     assert_eq!(effects.len(), 1, "all descriptors reported");
+    // And UNOBSERVED: the fold that fills `root_at_eval` is lazy, so this seam
+    // alone leaves it empty. `observe_if_emitted` is the other half —
+    // `lazy_snapshot.rs` gates the pair.
+    assert_eq!(
+        effects[0].provenance,
+        Provenance::Run {
+            invocation_id: "inv-1".to_owned(),
+            root_at_eval: String::new(),
+        }
+    );
     assert_eq!(
         std::fs::read_to_string(root.0.join("page.md")).unwrap(),
         PAGE
@@ -155,12 +154,11 @@ fn evaluate_alone_is_the_dry_seam_full_truth_nothing_applied() {
 fn a_starlark_birth_into_a_machinery_dir_refuses() {
     for dir in [".git", ".meridian", "meridian", "receipts"] {
         let (_tmp, root) = workspace();
-        let now = fs::domain_snapshot(&root).unwrap().1;
         let caps = Authority::granted(CapSet::parse("md.create:tasks/*.md").unwrap());
         let src = format!(
             "def run(ctx):\n    create(path = \"tasks/card.md\", base = \"{dir}\", body = \"# Escaped\\n\")\n"
         );
-        let err = dispatch_starlark::dispatch(&root, &dispatch_of(&src, &now, &caps))
+        let err = dispatch_starlark::dispatch(&root, &dispatch_of(&src, &caps))
             .expect_err("a machinery landing refuses at the door");
         let DispatchError::Exec(ExecError::BirthRefused { detail, .. }) = &err else {
             panic!("expected BirthRefused for base `{dir}`, got {err:?}");
