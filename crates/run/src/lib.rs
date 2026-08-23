@@ -46,6 +46,7 @@
 //! caller. Full law: [`caps`].
 
 pub mod address;
+pub mod blocks;
 pub mod caps;
 pub mod contracts;
 pub mod dispatch_bash;
@@ -55,6 +56,7 @@ pub mod executor;
 pub mod fence;
 mod fp;
 pub mod gate;
+pub mod modes;
 pub mod record;
 pub mod report;
 pub mod runner;

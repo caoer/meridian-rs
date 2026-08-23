@@ -73,6 +73,12 @@ pub struct Registry {
     /// dropped on idle-reap like [`Self::engines`]. S6: key is canonical
     /// path (not a global ring).
     rings: Mutex<HashMap<PathBuf, Arc<crate::ring::WorkspaceRing>>>,
+    /// The § 2.2 per-block-rev module cache, one per workspace — a block
+    /// evaluated once per rev, so a WARM fire is one function call instead of
+    /// a parse, an evaluation and a freeze. Resident like the engines and
+    /// dropped with them on idle-reap; a restart simply re-evaluates, because
+    /// the cache holds no truth, only work already done.
+    modules: Mutex<HashMap<PathBuf, Arc<crate::run_modules::WorkspaceModules>>>,
     /// G11 pre-warm quiet map: last [`fs::domain_stat_signature`] per warm
     /// workspace. Matching signature skips the corpus fold. Advisory only —
     /// missing/stale costs one extra snapshot, never a wrong answer.
@@ -312,6 +318,8 @@ impl Registry {
             // Cold: no rings; a pre-restart cursor dies on its instance ⇒
             // `root_unknown` (§7.1, B-01).
             rings: Mutex::new(HashMap::new()),
+            // Cold: nothing evaluated yet; the first load of each block pays.
+            modules: Mutex::new(HashMap::new()),
             prewarm_signatures: Mutex::new(HashMap::new()),
             // Cold: no memo; the first currency pass reads every member once.
             domain_caches: Mutex::new(HashMap::new()),
@@ -1229,6 +1237,16 @@ impl Registry {
     /// canonical — S6 isolation key (hello bind supplies it). [`Arc`] so a
     /// parked subscriber never holds this map's lock.
     #[must_use]
+    /// The workspace's resident module cache (§ 2.2), created on first use.
+    pub fn modules(&self, workspace: &Path) -> Arc<crate::run_modules::WorkspaceModules> {
+        let mut modules = self.modules.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(
+            modules
+                .entry(workspace.to_path_buf())
+                .or_insert_with(|| Arc::new(crate::run_modules::WorkspaceModules::default())),
+        )
+    }
+
     pub fn ring(&self, workspace: &Path) -> Arc<crate::ring::WorkspaceRing> {
         let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
         Arc::clone(rings.entry(workspace.to_path_buf()).or_insert_with(|| {
