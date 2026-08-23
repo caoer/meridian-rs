@@ -1073,14 +1073,15 @@ fn needs_quoting(val: &str) -> bool {
 /// The YAML **1.1** scalar classes that a 1.2 parser leaves as strings — the
 /// blind spot of the `serde_yaml` oracle above.
 ///
-/// The fleet reads this frontmatter with `PyYAML` and go-yaml (`yq`, Obsidian) as
-/// well as with this engine, and both of those resolve the 1.1 schema. Measured
-/// 2026-08-23 (card `all-digit-short-ids-read-as-int`): the agent short id
-/// `02146210` is the STRING `"02146210"` to `serde_yaml` — a leading zero is
-/// not a 1.2 integer — and the INTEGER 576 648 to `PyYAML`, which reads a
-/// leading-zero digit run as octal. Deferring to the 1.2 parser alone would
-/// have left the worse half of the defect standing: not a type change, a value
-/// change, on the ids the whole tree joins by.
+/// The fleet reads this frontmatter with `PyYAML` and with go-yaml
+/// (`gopkg.in/yaml.v3`, which `ccc-statusd` links) as well as with this engine,
+/// and both of those resolve the 1.1 schema. Measured 2026-08-23 (card
+/// `all-digit-short-ids-read-as-int`), each library into an untyped target: the
+/// agent short id `02146210` is the STRING `"02146210"` to `serde_yaml` — a
+/// leading zero is not a 1.2 integer — and the INTEGER 576 648 to BOTH 1.1
+/// readers, which take a leading-zero digit run as octal. Deferring to the 1.2
+/// parser alone would have left the worse half of the defect standing: not a
+/// type change, a value change, on the ids the whole tree joins by.
 ///
 /// So the law is the UNION of the two schemas: a value the caller spelled as a
 /// string must read back as that string whichever parser opens the file.

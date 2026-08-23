@@ -2179,7 +2179,7 @@ non-string value". The price was the fleet's join key: an agent short id is
 576 648 in PyYAML. 37 such ids already sit bare under `session`, `agent`,
 `from`, `owner`, `author`, `worker`, `leader`, `created_by`; 8-hex git shas
 share the shape. A value the caller spelled as a string is now written so that
-PyYAML, `serde_yaml` and `yq` all read that same string back.
+PyYAML, `serde_yaml` and `gopkg.in/yaml.v3` all read that same string back.
 
 **Named residual:** no door can author the integer `7` through the value plane
 any more — `create(props=…)`'s `PropValue::List` is the one typed arm left — so
@@ -2193,11 +2193,13 @@ down because an undocumented exclusion is indistinguishable from an oversight,
 and the next reviewer would re-derive the sweep to find out which it was.
 
 **The line is value corruption, not retyping**, and the three-parser table
-below is what draws it: an id comes back as three different things from three
-readers, two of them different NUMBERS, and the join key is destroyed; a date
-comes back as the caller's string from `serde_yaml` and go-yaml and as a `date`
-object from PyYAML — one instant, three readers, no value disagreement. The
-predicate defends against the first and does not tidy the second.
+below is what draws it: an id comes back as the caller's STRING from
+`serde_yaml` and as the integer **576648** from BOTH 1.1 readers — PyYAML and
+`gopkg.in/yaml.v3` — so the join key is destroyed. A date comes back as text
+from `serde_yaml` and as a date object (`date` / `time.Time`) from both 1.1
+readers: every reader agrees on the same INSTANT, and only the carrier differs.
+The predicate defends against a changed value and does not tidy a changed
+carrier.
 
 The costs are asymmetric and both real: quoting the class would take churn from
 2.767 % to ~25 % of the plain population (+7 356 distinct spellings under
@@ -2205,20 +2207,40 @@ The costs are asymmetric and both real: quoting the class would take churn from
 views sort and filter on — degrading what the field exists for, to defend
 against a disagreement no reader in this stack actually has.
 
-**The exposure, stated precisely:** a PyYAML-CLASS WRITER — one that reads a
-plain date into a `date` object and writes it back in its own formatting, so
-the stored spelling drifts with nobody editing the value. No such writer exists
-in this stack today; the writers are this engine (`serde_yaml`) and
-`ccc-statusd` (go-yaml), and both read a date as a string. **If one appears,
-this is the line it must read first.**
+**The exposure, stated precisely:** a DATE-OBJECT WRITER — one that reads a
+plain date into a `date` / `time.Time` value and writes it back in its own
+formatting, so the stored spelling drifts with nobody editing the value.
+
+The reason no such writer exists here is NOT that our readers see a string —
+**both 1.1 readers decode a plain date into a date object** (corrected
+2026-08-23 in review, advisor `c6426434`: an earlier draft of this section
+claimed go-yaml reads a date as a string, and that is false for an untyped
+target). It is narrower and load-bearing: this engine reads frontmatter through
+`serde_yaml`, which resolves the 1.2 core schema and has no timestamp type; and
+`ccc-statusd` unmarshals into **typed `string` struct fields** — ALL FOUR of
+its non-test yaml decode sites target a typed struct (`internal/registry`
+`check.go` ×2 and `mrdsource.go`, all three into `hookPageFM` whose every field
+is `string`/`[]string`, plus `internal/mcpserver/notifyhow.go`'s anonymous
+string-valued struct), with zero `map[string]any` yaml targets and no
+`yaml.NewDecoder` site in the repo (surveyed at `8bde5792`). There `yaml.v3`
+hands back the source text (`created="2026-08-23"`, measured) and **the
+timestamp resolver never fires**. The safety comes from the TARGET TYPE, not
+from the resolver — so the failure scenario is precise: **the next reader that
+decodes frontmatter into `map[string]any`**.
+**A writer that unmarshals frontmatter into `interface{}` and re-emits it would
+rewrite every date in the corpus** — if one appears, this is the line it must
+read first.
 
 *Aperture of that absence claim* (2026-08-23): the writers surveyed were this
-engine through every § A.6.3a door, `ccc-statusd` (go-yaml plus its own
-line-level `frontmatter.SetField`), and the armed rules, which write through
-the engine. **Obsidian's property editor also writes frontmatter in this vault
-and was NOT measured** — a JS front-matter writer is the most likely place a
-date-object round trip would appear, and nobody has looked. "None exists" means
-"none in the three surveyed writers", not "none anywhere."
+engine through every § A.6.3a door, `ccc-statusd` (`yaml.v3` into typed string
+fields, plus its own line-level `frontmatter.SetField`), and the armed rules,
+which write through the engine. **Obsidian's property editor also writes
+frontmatter in this vault and was NOT measured** — a JS front-matter writer is
+the likeliest place a date-object round trip would appear, and nobody has
+looked. "None exists" means "none in the three surveyed writers", not "none
+anywhere". And the instrument caveat above generalises: a claim about a READER
+must be measured against the library a program links, not against a CLI that
+wraps it.
 
 **The no-op claim is measured, not asserted** (same card): 1 196 live records —
 every one carrying a value this amendment re-spells, plus 600 random controls —
@@ -2250,8 +2272,9 @@ quoted→plain**, and a same-value write-back stays byte-identical (§ A.6.3c
 preservation), so no record is rewritten by the change alone.
 
 **`serde_yaml` is not the whole oracle** (2026-08-23, card
-`all-digit-short-ids-read-as-int`). It resolves YAML **1.2**; PyYAML and go-yaml
-(`yq`, and most of the fleet's readers) resolve **1.1**, and the two disagree:
+`all-digit-short-ids-read-as-int`). It resolves YAML **1.2**; PyYAML and
+go-yaml (`gopkg.in/yaml.v3` — what `ccc-statusd` and most of the fleet's
+non-Rust readers link) resolve **1.1**, and the schemas disagree:
 `02146210` is the string `"02146210"` to `serde_yaml` — a leading zero is not a
 1.2 integer — and the integer 576 648 to PyYAML. Deferring to the 1.2 parser
 alone would have left the worse half of the id defect standing (a value change,
@@ -2263,21 +2286,34 @@ booleans, 1 sexagesimal, 1 interior tab, 4 in the radix / resolver-tag classes
 — all plain→quoted, none quoted→plain, none refused**, and PyYAML reads every
 one of the 810 changed emits back as exactly the caller's string.
 
-**Why the id class had to be closed and the timestamp class did not** (the
-three-reader table, measured 2026-08-23 on one file):
+**Why the id class had to be closed and the timestamp class did not**, measured
+2026-08-23 on one file, each reader run as a LIBRARY into an untyped target
+(`serde_yaml::Value`, PyYAML `safe_load`, `gopkg.in/yaml.v3` into
+`interface{}`):
 
-| plain value | serde_yaml (1.2) | PyYAML (1.1) | yq / go-yaml |
+| plain value | serde_yaml (1.2) | PyYAML (1.1) | go-yaml `yaml.v3` (1.1) |
 |---|---|---|---|
 | `owner: 19895504` | int | int | int |
-| `session: 02146210` | string `"02146210"` | **576648** (octal) | **2146210** (decimal) |
-| `created: 2026-08-23` | string | `date` object | string |
-| `stamp: 2026-08-23T02:09:32-04:00` | string | `datetime` object | string |
+| `session: 02146210` | string `"02146210"` | **576648** (octal) | **576648** (octal) |
+| `created: 2026-08-23` | string | `date` object | `time.Time` |
+| `stamp: 2026-08-23T02:09:32-04:00` | string | `datetime` object | `time.Time` |
+| `session: "02146210"` (the emit) | string | string | string |
 
-An id gets THREE different answers from three readers, one of them a different
-NUMBER — the join key is destroyed, not merely retyped. A timestamp is the
-caller's string to two of the three readers and the same instant to the third,
-which is why the timestamp class stays plain rather than churning 7 356 more
-distinct spellings (25 % of the population) and un-typing the `date` property
+**The two 1.1 readers AGREE on 576648**, and that agreement is the case: an id
+the caller spelled as a string is silently a DIFFERENT INTEGER to both of the
+non-Rust readers in this stack, while `serde_yaml` alone still sees the string.
+The join key is destroyed, not merely retyped.
+
+*Instrument note, because it cost a wrong sentence in review:* the **`yq` CLI**
+(mikefarah v4.53.3) answers `2146210` for that same line — a third number, and
+neither library's. A CLI is not the library it embeds; the rows above are the
+libraries, which is what programs in this stack actually link.
+
+A timestamp is a different event: every reader agrees on the INSTANT, and the
+disagreement is only whether it arrives as text or as a date object — no value
+is corrupted. That is why the timestamp class stays plain rather than churning
+7 356 more distinct spellings (25 % of the population) and un-typing the `date`
+property
 every Obsidian view sorts on. § A.6.3c preservation is untouched, so the 37 ids
 already on disk keep their bytes until a write CHANGES their value.
 
