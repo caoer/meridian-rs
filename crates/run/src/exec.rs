@@ -10,6 +10,17 @@
 //!   report [`ExecStatus::Timeout`] (distinct from signaled/nonzero).
 //! - **Pipes:** stdout/stderr collected; stderr is diagnostic only.
 //! - **No shell interpretation beyond bash -c:** source is the block body.
+//!
+//! # The bracket
+//!
+//! [`exec`] / [`exec_streaming`] over [`ExecSpec`] ARE the `exec_bracket()`
+//! the hook-support design names (§ 1.4, § 2.2 step 4): one generic process
+//! contract, called by both lanes — the shipped task path
+//! (`dispatch_bash::dispatch`, through [`ExecSpec::task`]) and the fire path
+//! (`modes::ProcessSeam`), the latter with no receipt and no run lock. The
+//! design's name is kept in the prose rather than stamped on the symbol: the
+//! task path's call sites are older than the design and renaming them buys a
+//! reader nothing that this paragraph does not.
 
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
@@ -27,8 +38,8 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_mins(5);
 /// and roots are the dispatcher's business.
 #[derive(Debug)]
 pub struct ExecSpec<'a> {
-    /// The fence's inner source, run as `bash -c <source>`.
-    pub source: &'a str,
+    /// What the interpreter is handed — inline source, or a staged file.
+    pub program: Program<'a>,
     /// Contract-validated positional args (`$1`…).
     pub args: &'a [String],
     /// Contract-validated declared env — overlays the inherited daemon
@@ -64,6 +75,33 @@ pub struct ExecSpec<'a> {
 /// The interpreter the shipped task path runs — its only one.
 pub const BASH: &str = "bash";
 
+/// How the interpreter receives the program — a closed set, because the two
+/// lanes differ in exactly this and nothing else.
+///
+/// `-c` is a **shell** convention, not a universal one, so it cannot be the
+/// contract for a plane whose law is *"a new language is `argv[0]`, not a
+/// concept"* (design § 1.4). Measured 2026-08-23, card `hook-02-mrd-run-exec`:
+/// `node -c 'console.log("ran")'` → `Cannot find module '/…/console.log("ran")'`
+/// exit 1 (node reads `-c` as `--check`, i.e. a FILE path); `bun -c` →
+/// `error: File not found`; `deno`'s `-c` is its config-file flag. The design's
+/// own `exec("bun", block = "check")` example cannot run under `-c`, and a
+/// `node` entry would answer exit 1 with a `MODULE_NOT_FOUND` stderr that
+/// reads like the script's own verdict.
+///
+/// Handing the interpreter a **file** is the one convention every interpreter
+/// honours, and it is the design's own word for it: *"staged bytes cached by
+/// block rev"*.
+#[derive(Debug)]
+pub enum Program<'a> {
+    /// `<interpreter> -c <source> mrd-task <args…>` — the SHIPPED task path,
+    /// byte-unchanged, `$0` = `mrd-task`. Only a shell honours it.
+    Inline(&'a str),
+    /// `<interpreter> <file> <args…>` — an exec'd entry's staged bytes. `$0`
+    /// is the staged file; stdin, env, cwd and the exit contract are the
+    /// bracket's, unchanged, so *the script's bytes run unchanged* holds.
+    Staged(&'a Path),
+}
+
 impl<'a> ExecSpec<'a> {
     /// The shipped task-path spec: `bash -c`, no stdin. Named so the two new
     /// fields do not have to be spelled at every existing call site with
@@ -79,7 +117,7 @@ impl<'a> ExecSpec<'a> {
         step_cwd: Option<&'a Path>,
     ) -> Self {
         Self {
-            source,
+            program: Program::Inline(source),
             args,
             env,
             scratch,
@@ -166,10 +204,18 @@ where
     T: Send,
 {
     let mut cmd = Command::new(spec.interpreter);
-    cmd.arg("-c")
-        .arg(spec.source)
-        .arg("mrd-task")
-        .args(spec.args)
+    match spec.program {
+        // The shipped task path: `$0` is `mrd-task` and `$1…` are the
+        // contract-validated args.
+        Program::Inline(source) => {
+            cmd.arg("-c").arg(source).arg("mrd-task").args(spec.args);
+        }
+        // An exec'd entry: the program IS a file, so `argv[0]` is free.
+        Program::Staged(file) => {
+            cmd.arg(file).args(spec.args);
+        }
+    }
+    cmd
         // Run-env ruling (2026-08-16): the child INHERITS the daemon's
         // environment — no `env_clear`. A task whose `^env` gate needs a
         // daemon-held variable must see it without redeclaring it.

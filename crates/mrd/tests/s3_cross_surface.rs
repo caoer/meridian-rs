@@ -138,11 +138,9 @@ impl Corpus {
     /// A drive with `MERIDIAN_CONFIG` removed — the default rung. Identical in
     /// every other respect, making criterion 1 a one-variable differential.
     fn bare(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(mrd_bin());
+        let mut c = common::mrd_command(&self.home, &self.cache_home);
         c.args(args)
             .current_dir(&self.ws)
-            .env("HOME", &self.home)
-            .env("XDG_CACHE_HOME", &self.cache_home)
             // The producer-side isolation: this engine may not become the host's
             // resident daemon.
             .env("MERIDIAN_DAEMON_BIN", mrd_bin())
