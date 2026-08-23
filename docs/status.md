@@ -1560,6 +1560,20 @@ Two gaps on that lane, both named rather than fixed here (card
 Which phases `mrd run` emits: `run-plane.md` § Timing phases. The instrument is
 `crates/timing` (`laws.md` § Crate charters).
 
+Which phases `mrd links` emits (same instrument, same line grammar). `snapshot.*`
+come from `fs::domain_snapshot` on the ephemeral path only — a warm daemon answers
+without folding. A phase that did not run emits no line.
+
+| Phase | Inside | Emitted in | Covers |
+|---|---|---|---|
+| `total` | — | `mrd::run` | the whole process |
+| `daemon.dial` | `total` | `mrd::engine::answer_links` | hello+links on the resident daemon, or the degrade decision |
+| `snapshot` / `snapshot.*` | `total` | `fs::domain_snapshot_with_leaves` | hash-domain walk + digest + fold — ephemeral only |
+| `corpus.build` | `total` | `fs::build_corpus` | UTF-8 + `syntax::parse` of every member — ephemeral only |
+| `links.read` | `total` | `mrd::engine::in_process_links` | mount-narrow + `wire_serve::read::links_rooted` + v3 re-key |
+| `json.render` | `total` | `mrd::engine::run_command` | `serde_json::to_string_pretty` of the envelope |
+| `json.write` | `total` | same | `println` of that string |
+
 ## Known gaps
 
 - Perf rungs are largely UNTESTED pending baselines (see the tally above).
