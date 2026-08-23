@@ -155,7 +155,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let mut parsed = Script::parse(args)?;
     let source = read_stdin_source()?;
     let cwd = current_dir()?;
-    let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
+    let resolved = crate::resolve::resolve_runtime(workspace::Base::Cwd(&cwd)).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace for {}: {e}",
             cwd.display()

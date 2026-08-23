@@ -79,11 +79,20 @@ const EXIT_FINDING: u8 = 1;
 /// faulted INDEX).
 pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
     let (format, cwd_arg) = parse(tail)?;
+    // `--cwd PATH` is an explicit TREE argument (address-grammar.md, the
+    // non-page predicate), so it outranks `MERIDIAN_WORKSPACE`; without it the
+    // ambient cwd leaves the override answering exactly as before.
+    let named = cwd_arg.is_some();
     let cwd = match cwd_arg {
         Some(p) => p,
         None => current_dir()?,
     };
-    let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
+    let ladder_base = if named {
+        workspace::Base::Named(&cwd)
+    } else {
+        workspace::Base::Cwd(&cwd)
+    };
+    let resolved = crate::resolve::resolve_runtime(ladder_base).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace for {}: {e}",
             cwd.display()

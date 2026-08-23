@@ -913,7 +913,7 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
     }
 
     let cwd = crate::current_dir()?;
-    let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
+    let resolved = crate::resolve::resolve_runtime(workspace::Base::Cwd(&cwd)).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace for {}: {e}",
             cwd.display()

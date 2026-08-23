@@ -286,11 +286,20 @@ pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
             .map_err(|e| Fail::tool(crate::engine::render_wire_error(&e)))?;
         rooted.workspace
     } else {
+        // `--cwd PATH` is an explicit TREE argument, so it outranks
+        // `MERIDIAN_WORKSPACE`; without it the ambient cwd leaves the override
+        // answering exactly as before.
+        let named = args.cwd.is_some();
         let cwd = match &args.cwd {
             Some(p) => p.clone(),
             None => current_dir()?,
         };
-        resolve_runtime(&cwd)
+        let ladder_base = if named {
+            workspace::Base::Named(&cwd)
+        } else {
+            workspace::Base::Cwd(&cwd)
+        };
+        resolve_runtime(ladder_base)
             .map_err(|e| {
                 Fail::tool(format!(
                     "cannot resolve workspace for {}: {e}",
