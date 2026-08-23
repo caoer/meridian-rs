@@ -1900,6 +1900,8 @@ mod tests {
                 request("c", Mode::Off, &ws.rev("c.md")),
                 request("d", Mode::Block, &ws.rev("d.md")),
             ],
+            &ws,
+            CheckLimits::default(),
         )
         .expect("both arm");
 
