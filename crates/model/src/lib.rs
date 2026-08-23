@@ -2990,10 +2990,7 @@ fn fm_block_scalar(lines: &[&str], at: usize, header: BlockHeader) -> String {
     // nothing to measure it from; the earlier version returned here
     // unconditionally and swallowed chomping (B2, review seat `79c5905c`).
     let Some(indent) = indent.filter(|i| *i > 0) else {
-        let blanks = body
-            .iter()
-            .take_while(|l| l.trim().is_empty())
-            .count();
+        let blanks = body.iter().take_while(|l| l.trim().is_empty()).count();
         return match header.chomp {
             Chomp::Keep => "\n".repeat(blanks),
             Chomp::Clip | Chomp::Strip => String::new(),
