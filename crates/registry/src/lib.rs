@@ -37,6 +37,12 @@ mod script_op;
 mod server;
 mod sql_op;
 mod state;
+// Fixture support, never on the production surface: `test-support` is enabled
+// by the dev-dependency edges alone (this crate's own, and `mrd`'s), so a
+// consumer that merely depends on `registry` never compiles it and never grows
+// the `tempfile` edge.
+#[cfg(feature = "test-support")]
+pub mod test_support;
 mod walk_op;
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -48,9 +54,11 @@ pub use feed::{FeedStats, RescanCause};
 pub use protocol::{DenyKind, Request, Response, WorkspaceEntry};
 pub use registry::{RegisterOutcome, Registry, ResolveOutcome};
 pub use server::{
-    Config, RunningServer, ServeOutcome, default_socket_path, in_process_registry, serve_lines,
-    socket_path_for_cache_root, socket_path_under_home,
+    Config, DRAIN_COLD_BUILDS_ENV, RunningServer, ServeOutcome, default_socket_path,
+    in_process_registry, serve_lines, socket_path_for_cache_root, socket_path_under_home,
 };
+#[cfg(feature = "test-support")]
+pub use test_support::TestServer;
 
 /// Idle-reap horizon: an unused workspace's warm serving state (engine, ring,
 /// read-mint ledger, sql handle) drops from memory. The registration, its
@@ -105,8 +113,30 @@ pub const DEFAULT_PREWARM_QUIET_MAX: Duration = Duration::from_secs(60);
 /// - ccc-statusd `DefaultSpawnTimeout` = 15 s (`internal/registryclient/lifecycle.go`)
 /// - engine kicker wait (`COLD_BUILD_WAIT`) = 2 s (unpublished)
 ///
-/// Default is 2 s. Test fixtures that must keep a `TempDir` under a parked
-/// builder raise [`Config::drain_cold_builds`] (30 s).
+/// Default is 2 s — the engine kicker's own `COLD_BUILD_WAIT`
+/// (`registry.rs`), not merely something under the 5 s ceiling above. The
+/// ceiling says how large it may not be; `COLD_BUILD_WAIT` says why it is
+/// exactly this.
+///
+/// **Fixtures must raise it, and there are two ways.** A fixture that keeps a
+/// `TempDir` under a parked builder needs 30 s, because on a loaded box a cold
+/// drawer build parks well past 2 s, shutdown gives up on the drain, and the
+/// tree is removed under a live builder. A fixture that CONSTRUCTS its
+/// [`Config`] sets [`Config::drain_cold_builds`] directly. A fixture that only
+/// SPAWNS a daemon — a subprocess `mrd` whose resident auto-spawns, so nothing
+/// in the test ever holds a `Config` — sets
+/// [`DRAIN_COLD_BUILDS_ENV`][crate::DRAIN_COLD_BUILDS_ENV] (`=30`) in that
+/// process's environment instead; [`Config::resolve`] is the one site that
+/// reads it, and a malformed value refuses rather than falling back.
+/// [`RunningServer::start`] carries a `debug_assert` for the pair that is
+/// always wrong — a cache root under `std::env::temp_dir()` still on this
+/// default — and names both compliance paths.
+///
+/// The same knob covers the one legitimate non-fixture case: a developer whose
+/// `XDG_CACHE_HOME` is on tmpfs, running a DEBUG build. Their cache root really
+/// is under the temporary directory, the assertion really does fire, and it is
+/// not a false alarm — a swept cache root is the same hazard. Setting the
+/// variable is the answer there too; release builds compile the assertion out.
 pub const DEFAULT_DRAIN_COLD_BUILDS: Duration = Duration::from_secs(2);
 
 /// Current unix time in whole seconds. Returns `0` if the clock predates the
