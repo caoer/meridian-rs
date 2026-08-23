@@ -144,10 +144,11 @@ fn a_live_notice_only_task_never_walks_the_corpus() {
     assert_no_fold(&ws, &["tasks.md", "noticer", "--json"]);
 }
 
-/// One tense of the claim above: the run succeeds, the block demonstrably ran
-/// (`eval` present — a run that emitted no phase at all would pass a bare
-/// "no snapshot line" check for the wrong reason), and no `snapshot*` phase
-/// exists.
+/// One case of "this run's gate did not fire": the run succeeds, the block
+/// demonstrably ran (`eval` present — a run that emitted no phase at all would
+/// pass a bare "no snapshot line" check for the wrong reason), and no
+/// `snapshot*` phase exists. Shared by the effect-free cases and by the live
+/// `notice`-only one, so the message names the gate rather than the fixture.
 fn assert_no_fold(ws: &Ws, args: &[&str]) {
     let out = ws.run(true, args);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
@@ -158,7 +159,7 @@ fn assert_no_fold(ws: &Ws, args: &[&str]) {
     );
     assert!(
         !names.iter().any(|p| p.starts_with("snapshot")),
-        "an effect-free run folded the corpus: {names:?} ({args:?})"
+        "the corpus was folded for a run whose gate should not have fired: {names:?} ({args:?})"
     );
 }
 

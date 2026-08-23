@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-use effects::{ChangeEvent, Domain, Effect, EvalError, EvalLimits, Rule};
+use effects::{ChangeEvent, Domain, Effect, EvalError, EvalLimits, Provenance, Rule};
 
 use crate::address::{self, AddressError};
 use crate::caps::{self, Authority, CapsError};
@@ -463,6 +463,19 @@ pub fn rehearse(
             .map_err(|e| RunnerError::Root {
                 reason: e.to_string(),
             })?;
+            // The rehearsal's own obligation, checked where it is owed: this
+            // tense REPORTS provenance, so every effect it hands back must
+            // carry a real token. The tense is a plain argument above — pass
+            // the live one here by mistake and a `notice`-only `--dry` would
+            // report `"root_at_eval": ""`, which is the silent half of the
+            // failure (the live half refuses loudly in `dispatch`).
+            debug_assert!(
+                effects.iter().all(|e| match &e.provenance {
+                    Provenance::Run { root_at_eval, .. } => !root_at_eval.is_empty(),
+                    Provenance::Change { .. } => true,
+                }),
+                "a rehearsed effect reached the report unobserved"
+            );
             // The choke point, rehearsal tense: the SAME admission the apply
             // enforces, over the same md.* partition — judging DECLARED
             // coordinates, BEFORE resolution, exactly as the live order (ZT
