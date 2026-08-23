@@ -1068,7 +1068,8 @@ fn prune_logs(dir: &Path) {
         .filter(|e| {
             e.file_name()
                 .to_str()
-                .is_some_and(|n| n.starts_with("exec-") && n.ends_with(".log"))
+                .is_some_and(|n| n.starts_with("exec-") && std::path::Path::new(n).extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("log")))
         })
         .filter_map(|e| {
             let modified = e.metadata().ok()?.modified().ok()?;
@@ -1078,7 +1079,7 @@ fn prune_logs(dir: &Path) {
     if logs.len() <= LOG_RETENTION {
         return;
     }
-    logs.sort_by(|a, b| b.0.cmp(&a.0));
+    logs.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
     for (_, path) in logs.drain(LOG_RETENTION..) {
         let _ = std::fs::remove_file(path);
     }
@@ -1116,10 +1117,11 @@ fn prune_logs(dir: &Path) {
         if let effects::ExecProgram::Block(anchor) = &call.program {
             row["block"] = json!(anchor);
         }
-        if !dry && !(stdout.is_empty() && stderr.is_empty()) {
-            if let Some(path) = self.write_log(stdout, stderr) {
-                row["log"] = json!(path);
-            }
+        if !dry
+            && !(stdout.is_empty() && stderr.is_empty())
+            && let Some(path) = self.write_log(stdout, stderr)
+        {
+            row["log"] = json!(path);
         }
         row
     }
