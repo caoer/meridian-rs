@@ -635,13 +635,12 @@ fn cascade(
             // The generation's own eval-time observation — receipt-less
             // here, but the fold is still the root these effects were
             // produced against (observation honesty; never compared).
-            let live =
-                fs::domain_snapshot(root)
-                    .map(|(_, r)| r)
-                    .map_err(|e| CascadeError::Root {
-                        depth: ev.depth,
-                        reason: e.to_string(),
-                    })?;
+            // Fold-only (`fs::domain_fold`): the generation keeps the token,
+            // never the corpus bytes.
+            let live = fs::domain_fold(root).map_err(|e| CascadeError::Root {
+                depth: ev.depth,
+                reason: e.to_string(),
+            })?;
             Some(
                 executor::apply(
                     root,

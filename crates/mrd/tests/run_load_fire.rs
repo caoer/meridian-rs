@@ -134,6 +134,12 @@ impl Ws {
         self.tmp.path().join(rel)
     }
 
+    /// A second page in the same workspace, for a law whose fixture would
+    /// disturb `PAGE`'s block set.
+    fn page(&self, rel: &str, body: &str) {
+        std::fs::write(self.file(rel), body).expect("page");
+    }
+
     fn input(&self, name: &str, json: &str) -> String {
         std::fs::write(self.file(name), json).expect("input file");
         name.to_owned()
@@ -196,23 +202,21 @@ fn a_load_publishes_declarations_and_leaves_task_blocks_alone() {
     let row = row(&out);
 
     assert_eq!(
-        block(&row, "h")["declarations"][0],
+        block(&row, "h")["declarations"],
         serde_json::json!({"on": "PreToolUse", "match": "Bash"}),
         "the declaration is the author's dict, uninterpreted"
     );
     assert_eq!(block(&row, "h")["entry_kind"], "evaluated");
 
     // A `task.<name>`-bound block is the run plane's: reported, never
-    // evaluated, and carrying no declarations.
+    // evaluated, and declaring nothing.
     assert_eq!(block(&row, "armer")["entry_kind"], "task");
     assert_eq!(block(&row, "armer")["task"], "arm");
-    assert_eq!(
-        block(&row, "armer")["declarations"]
-            .as_array()
-            .expect("array")
-            .len(),
-        0
-    );
+    assert_eq!(block(&row, "armer")["declarations"], Value::Null);
+
+    // A starlark block that declares nothing says so the same way — `null`,
+    // never `{}`, which is what a `declare()` with no keys publishes.
+    assert_eq!(block(&row, "bare")["declarations"], Value::Null);
 
     // A bash block is not a module and never appears — it is an exec target
     // and a `bash(block=)` helper.
@@ -229,6 +233,138 @@ fn a_load_publishes_declarations_and_leaves_task_blocks_alone() {
     // can print WHICH BYTES ran.
     assert!(row["rev"]["file"].as_str().is_some_and(|r| !r.is_empty()));
     assert_ne!(block(&row, "h")["rev"], block(&row, "birth")["rev"]);
+}
+
+/// **The load row's WIRE SHAPE, pinned as a fixture against `wire-contract.md`
+/// § A.8** — the one instrument that catches a contract-vs-serialization
+/// drift, which a text-bound review cannot see.
+///
+/// § A.8 publishes two facts about this row: its field set — `{page,
+/// rev:{file}, loaded:[{block, rev, result, declarations, entry_kind,
+/// fault?}]}` — and, in its own words, *"`declarations` is the uninterpreted
+/// **dict** `declare()` collected, published verbatim"*. The engine emitted an
+/// ARRAY there for the whole of hook-01. Every review of that PR read the
+/// contract sentence and the code and passed both; the defect only appeared at
+/// the first live resolve, where the consumer's decoder
+/// (`Declarations map[string]any`) refused the bytes —
+/// `json: cannot unmarshal array into Go struct field .targets.loaded.declarations
+/// of type map[string]interface {}` — and the page served ZERO hooks while
+/// looking healthy. Prose cannot catch that. Bytes can, so this test asserts
+/// bytes.
+#[test]
+fn a_load_row_matches_the_a8_wire_fixture() {
+    let ws = Ws::new();
+    let out = ws.run(&["--load", "probe.md"]);
+    let row = row(&out);
+
+    // The declaring block's row, whole, with only its content-addressed `rev`
+    // normalized — everything else is the contract's own field set, in the
+    // contract's own spelling.
+    let mut declaring = block(&row, "h").clone();
+    assert!(
+        declaring["rev"].as_str().is_some_and(|r| !r.is_empty()),
+        "a block row carries its own rev: {declaring:#}"
+    );
+    declaring["rev"] = Value::from("<block-rev>");
+    assert_eq!(
+        declaring,
+        serde_json::json!({
+            "block": "h",
+            "rev": "<block-rev>",
+            "result": "ok",
+            "entry_kind": "evaluated",
+            "declarations": {"on": "PreToolUse", "match": "Bash"}
+        }),
+        "the load row drifted from `wire-contract.md` § A.8"
+    );
+
+    // And the law that drift broke, across EVERY row of the answer: a
+    // `map[string]any` decoder must accept `declarations`. An object or a
+    // `null` decodes; an array does not, whatever the row.
+    for loaded in row["loaded"].as_array().expect("loaded rows") {
+        let declarations = &loaded["declarations"];
+        assert!(
+            declarations.is_object() || declarations.is_null(),
+            "`declarations` on ^{} is {declarations}, which no `map[string]any` \
+             decoder accepts (§ A.8: the uninterpreted dict)",
+            loaded["block"]
+        );
+    }
+}
+
+/// **One block, one declaration** — a second `declare()` at load is the typed
+/// `declared_twice` fault on THAT block's row, and its siblings are untouched.
+///
+/// The wire shape above is the reason the law exists: `declarations` is one
+/// dict, so a block that declares twice has no honest row. The engine
+/// interprets no key of a declaration, so it cannot merge two; keeping the
+/// first silently would publish a shape the author did not write. It refuses
+/// instead, at load, by name.
+#[test]
+fn a_second_declare_in_one_block_faults_declared_twice() {
+    let ws = Ws::new();
+    ws.page(
+        "twice.md",
+        "\
+# Twice
+
+```starlark
+def run(event):
+    return None
+
+declare(on = \"Stop\")
+declare(on = \"PreToolUse\", match = \"Bash\")
+```
+^double
+
+```starlark
+def run(event):
+    return None
+
+declare(on = \"Stop\")
+```
+^single
+",
+    );
+    let out = ws.run(&["--load", "twice.md"]);
+    let answer = row(&out);
+
+    let double = block(&answer, "double");
+    assert_eq!(double["result"], "fault", "{answer:#}");
+    assert_eq!(
+        double["fault"]["class"], "declared_twice",
+        "the class a caller branches on: {answer:#}"
+    );
+    assert_eq!(
+        double["fault"]["line"], 5,
+        "the SECOND call's own line, so the author goes straight to it: {answer:#}"
+    );
+    // Not a merge and not a first-wins: the faulted block publishes no
+    // declaration at all, so it is not a fire target.
+    assert!(
+        double["declarations"].is_null(),
+        "a faulted row published a declaration: {answer:#}"
+    );
+
+    // Its sibling on the same page is untouched — the fault is the block's,
+    // never the page's.
+    assert_eq!(block(&answer, "single")["result"], "ok", "{answer:#}");
+    assert_eq!(
+        block(&answer, "single")["declarations"],
+        serde_json::json!({"on": "Stop"}),
+        "{answer:#}"
+    );
+
+    // And the consent gate holds: a block that faulted at load is not a
+    // target, so a fire on it refuses rather than calling a half-built entry.
+    let fired = ws.run(&["twice.md#^double"]);
+    assert_eq!(
+        row(&fired)["fault"]["class"],
+        "declared_twice",
+        "{}",
+        stdout(&fired)
+    );
+    assert_eq!(code(&fired), 1, "a faulted fire exits 1");
 }
 
 /// **Load purity** (gate row 8): a top-level effect faults `effect_at_load`

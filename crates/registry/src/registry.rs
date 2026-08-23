@@ -111,6 +111,15 @@ pub struct Registry {
     /// backoff and idle-exit both read this.
     requests: AtomicU64,
     last_request: AtomicU64,
+    /// Fixture-only FLOOR under the activity clock; `0` means unset.
+    ///
+    /// [`park_activity_clock`](Self::park_activity_clock) raises it and only
+    /// [`release_activity_park`](Self::release_activity_park) lowers it, so
+    /// the handshake's own `note_request` bumps cannot destroy the park — the
+    /// defect that made the park useless (card
+    /// `registry-sweep-rebuild-flake-same-sha-split`). Production never parks,
+    /// so this stays `0` and `max(last_request, 0)` is `last_request`.
+    activity_floor: AtomicU64,
     /// The §6.5 checkpoint receipt of each workspace's last restore — what
     /// the file delivered (rows adopted, members replayed, whether the cursor
     /// anchored, the labeled re-baseline if it did not). The card's published
@@ -334,6 +343,8 @@ impl Registry {
             requests: AtomicU64::new(0),
             // Clock starts at birth so idle-exit can age an unused daemon.
             last_request: AtomicU64::new(now_secs()),
+            // Unparked: production never parks, and an unset floor is 0.
+            activity_floor: AtomicU64::new(0),
             // Cold: the first `mounts` call derives the table.
             mounts: crate::mounts::MountsCache::default(),
             // Cold: no rebuild in flight, no recorded failure.
@@ -1362,11 +1373,28 @@ impl Registry {
     /// Integration fixtures call this immediately after `RunningServer::start`
     /// so a short idle-exit horizon cannot latch during handshake (pin +
     /// `sub` arm). Production never calls this.
-    /// [`note_liveness`] starts the horizon at a known instant after the
-    /// subscriber is armed.
+    /// [`release_activity_park`](Self::release_activity_park) then starts the
+    /// horizon at a known instant, after the subscriber is armed.
+    ///
+    /// **This raises a FLOOR, it does not store the clock.** Storing was the
+    /// defect: the handshake this exists to protect dispatches its own
+    /// requests, each one calling `note_request`, which overwrote the parked
+    /// value with `now` — so the park was destroyed by the very traffic it
+    /// was covering, and the ordinary horizon then applied to the gap between
+    /// the last handshake request and the subscriber becoming visible to
+    /// `has_subscribers`. On a loaded box that gap exceeds a 2 s horizon and
+    /// idle-exit latches (card `registry-sweep-rebuild-flake-same-sha-split`;
+    /// prior art CI 677 on `46caf36b3`, whose fix was believed complete).
     pub fn park_activity_clock(&self, extra_secs: u64) {
-        self.last_request
+        self.activity_floor
             .store(now_secs().saturating_add(extra_secs), Ordering::Relaxed);
+    }
+
+    /// Drop the fixture park, so the idle-exit horizon runs from the ordinary
+    /// activity clock again. Pair it with [`note_liveness`](Self::note_liveness)
+    /// to start the horizon at this instant.
+    pub fn release_activity_park(&self) {
+        self.activity_floor.store(0, Ordering::Relaxed);
     }
 
     /// Is any workspace subscribed? (G11 idle-exit: a subscribed daemon does
@@ -1389,9 +1417,16 @@ impl Registry {
 
     /// Unix seconds of the last client request — or of daemon start, when there
     /// has been none, so an idle-exit check cannot fire immediately.
+    ///
+    /// Never below a fixture's [`park_activity_clock`](Self::park_activity_clock)
+    /// floor. Folding the floor in HERE rather than at the reaper means every
+    /// reader of the activity clock sees the park; production leaves the floor
+    /// at `0`, where this is exactly `last_request`.
     #[must_use]
     pub fn last_request_secs(&self) -> u64 {
-        self.last_request.load(Ordering::Relaxed)
+        self.last_request
+            .load(Ordering::Relaxed)
+            .max(self.activity_floor.load(Ordering::Relaxed))
     }
 
     /// Unregister `path`, dropping it from memory and the state file. The
@@ -1674,6 +1709,57 @@ mod engine_tests {
             reg.warm_or_build(&ws).unwrap(),
             WarmOutcome::Reused,
             "the rebuild is once, not a storm"
+        );
+    }
+
+    /// **The park is a floor, not a store.** This is the whole mechanism of
+    /// the same-sha green/red split at `sub_push.rs:850`, reduced to something
+    /// that needs no daemon, no socket, no sleep and no load: a fixture parks
+    /// the activity clock, the handshake it parked for dispatches its own
+    /// requests, and the clock must still read parked afterwards.
+    ///
+    /// Before the fix `park_activity_clock` STORED into `last_request`, so the
+    /// first `note_request` — the fixture's own `hello` — overwrote it with
+    /// `now`. The park was destroyed by the traffic it existed to cover, and
+    /// the ordinary 2 s horizon then applied to the gap before the subscriber
+    /// became visible. Deterministic here; on a loaded CI box, a coin flip.
+    ///
+    /// Card `registry-sweep-rebuild-flake-same-sha-split`. Prior art: CI 677
+    /// on `46caf36b3`, whose fix was believed complete and covered only the
+    /// window before the first request.
+    #[test]
+    fn a_dispatched_request_cannot_lower_a_parked_activity_clock() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_shared_in(home.path());
+
+        reg.park_activity_clock(365 * 24 * 60 * 60);
+        let parked = reg.last_request_secs();
+        assert!(
+            parked > now_secs(),
+            "the park puts the clock in the future: {parked} vs {}",
+            now_secs()
+        );
+
+        // Exactly what the handshake does: `hello` and `sub` are dispatched
+        // requests, and the reaper notes liveness once a subscriber is armed.
+        reg.note_request();
+        reg.note_request();
+        reg.note_liveness();
+
+        assert_eq!(
+            reg.last_request_secs(),
+            parked,
+            "a dispatched request must not lower a parked clock — this is the \
+             flake: the park is destroyed by the handshake it was covering"
+        );
+
+        // And the park must be releasable, or the horizon could never start:
+        // the fixture says "measure from here" once its subscriber is armed.
+        reg.release_activity_park();
+        reg.note_liveness();
+        assert!(
+            reg.last_request_secs() < parked,
+            "releasing the park hands the clock back to ordinary activity"
         );
     }
 

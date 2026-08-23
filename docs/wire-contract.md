@@ -3148,7 +3148,7 @@ one refuses `not_declared` at the door.
    "process":{"interpreter":"bash","exit":0,"stdout_tail":"…","stderr_tail":"…",
               "stdout_bytes":10000,"stderr_bytes":0,"timed_out":false,
               "log":".meridian/runs/HOOKS.md/…-t0.log"},
-   "fault":{"class":"parse|name_error|effect_at_load|declare_at_fire|impl_type|budget|reply_shape|runtime|no_block|not_declared|ambiguous_anchor|not_a_module|missing_entry|prelude_invalid|bad_path|corpus_race","reason":"…","line":7},
+   "fault":{"class":"parse|name_error|effect_at_load|declare_at_fire|declared_twice|impl_type|budget|reply_shape|runtime|no_block|not_declared|ambiguous_anchor|not_a_module|missing_entry|prelude_invalid|bad_path|corpus_race","reason":"…","line":7},
    "telemetry":{"steps":812,"mem":20480,"wall_ms":3}}
   ```
 
@@ -3188,7 +3188,14 @@ one refuses `not_declared` at the door.
   print WHICH BYTES RAN. A `fault` carries no `applied` (all-or-nothing per
   row); a `bash()` that ran before a fault stays in `exec[]` because it
   happened. `declarations` is the uninterpreted dict `declare()` collected,
-  published verbatim — the engine interprets no key of it. A door refusal
+  published verbatim — the engine interprets no key of it. **It is ONE dict or
+  `null`, never `{}`**: a block that declares nothing publishes `null`, and
+  `{}` is what a `declare()` with no keys publishes, so the two must stay
+  distinguishable — the consumer law is presence (`Declares() != nil`,
+  `resolve.go:183`), and an engine emitting `{}` for a non-declaring block
+  would arm it. (Card `wire-contract-a8-null-vs-empty-clause`; the law lived
+  in the design, in `docs/run-plane.md` and in the CLI fixture, and not in the
+  one document the daemon lane reads.) A door refusal
   during realization is that effect row's `result:"refused"` with the door's
   reason; the fire row's own `result` stays `ok`.
 - **What the modes do NOT gain, on purpose:** no `rev` to attest
