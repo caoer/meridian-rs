@@ -96,6 +96,10 @@ const STAGED_DIR: &str = ".meridian/staged";
 /// cache member, never pruned: it is another fire's in-flight write.
 const STAGED_TMP_EXT: &str = "tmp";
 
+/// Process-wide sequence for staging temp names: the pid tells two DAEMONS
+/// apart, this tells two THREADS of one daemon apart (`stage`).
+static STAGE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// How many staged programs a workspace keeps. Same ceiling as the logs, same
 /// reason: a cache keyed by every rev ever fired grows without bound.
 const STAGED_RETENTION: usize = 50;
@@ -1299,14 +1303,28 @@ impl ProcessSeam<'_> {
         // loser could `exec` a file the winner was still filling: a truncated
         // script is a syntax error attributed to the author. A rename within
         // one directory is atomic, so a reader sees the whole bytes or no
-        // file. The temp name carries the pid, so two racers never share one.
+        // file. The temp name carries the pid AND a process-wide counter:
+        // the daemon's racers are THREADS of one process, so the pid alone
+        // is the same for both (one thread per connection, `server.rs`
+        // `accept_loop`) and they would fill one temp file and race on its
+        // rename — the loser's rename answering ENOENT as a spurious
+        // `runtime` fault on bytes that were staged correctly.
         if !path.exists() {
-            let tmp = dir.join(format!("{name}.{}.{STAGED_TMP_EXT}", std::process::id()));
+            let tmp = dir.join(format!(
+                "{name}.{}.{}.{STAGED_TMP_EXT}",
+                std::process::id(),
+                STAGE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
             std::fs::write(&tmp, source).map_err(|e| format!("stage {name}: {e}"))?;
-            std::fs::rename(&tmp, &path).map_err(|e| {
+            if let Err(e) = std::fs::rename(&tmp, &path) {
                 let _ = std::fs::remove_file(&tmp);
-                format!("stage {name}: {e}")
-            })?;
+                // A racer that lost the rename still staged the right bytes
+                // if a sibling landed the same key first: the key IS the
+                // content, so the file that won is the file we wanted.
+                if !path.exists() {
+                    return Err(format!("stage {name}: {e}"));
+                }
+            }
         }
         // `.tmp` files are excluded from the count on purpose: a racer's
         // in-flight write is not a cache member, and pruning one would delete
@@ -2182,6 +2200,77 @@ printf '%s|%s' \"$BASE\" \"$OVER\"
         assert!(
             inflight.exists(),
             "a live staging write was pruned — the fire that owns it would exec a missing file"
+        );
+    }
+
+    /// The production shape: one daemon, one thread per connection, two
+    /// sessions' `Stop` hooks firing the SAME block at the same moment. The
+    /// pid is the same on every thread, so a temp name carrying only the pid
+    /// is ONE file for all racers — the first rename wins and every other
+    /// rename answers ENOENT, a spurious `runtime` fault on bytes that were
+    /// staged correctly. The sequential 100-fire gate could never see this
+    /// class; this is the instrument that does.
+    #[test]
+    fn concurrent_fires_of_one_block_all_stage_and_none_faults() {
+        const RACERS: usize = 8;
+        const ROUNDS: usize = 20;
+        let raw = "# Race\n```bash\necho ran\n```\n^p\n".to_owned();
+        let doc = model::build(raw.clone(), syntax::parse(&raw));
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let seam = ProcessSeam {
+            doc: &doc,
+            root: tmp.path(),
+            page: "race.md",
+            invocation: "race-t0",
+            calls: std::sync::Mutex::new(Vec::new()),
+            timeout: std::time::Duration::from_secs(5),
+            dry: false,
+        };
+        for round in 0..ROUNDS {
+            let key = format!("rev-{round}");
+            let gate = std::sync::Barrier::new(RACERS);
+            let staged: Vec<Result<std::path::PathBuf, String>> = std::thread::scope(|s| {
+                let racers: Vec<_> = (0..RACERS)
+                    .map(|_| {
+                        s.spawn(|| {
+                            gate.wait();
+                            seam.stage("echo ran\n", &key, Some("bash"))
+                        })
+                    })
+                    .collect();
+                racers
+                    .into_iter()
+                    .map(|r| r.join().expect("a racer panicked"))
+                    .collect()
+            });
+            let expected = tmp.path().join(STAGED_DIR).join(format!("{key}.bash"));
+            for outcome in &staged {
+                let path = outcome
+                    .as_ref()
+                    .unwrap_or_else(|e| panic!("round {round}: a racer faulted: {e}"));
+                assert_eq!(
+                    path, &expected,
+                    "round {round}: every racer names the one file"
+                );
+            }
+            assert_eq!(
+                std::fs::read_to_string(&expected).expect("staged bytes"),
+                "echo ran\n",
+                "round {round}: the file carries the whole program"
+            );
+        }
+        let leftover = std::fs::read_dir(tmp.path().join(STAGED_DIR))
+            .expect("read back")
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .is_some_and(|x| x.eq_ignore_ascii_case(STAGED_TMP_EXT))
+            })
+            .count();
+        assert_eq!(
+            leftover, 0,
+            "a loser's temp file must not outlive its rename"
         );
     }
 
