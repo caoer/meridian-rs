@@ -3156,6 +3156,12 @@ pub fn fm_publish(block: &str, key: &str, stored: &str) -> String {
 /// the block-scalar branch at all (card
 /// `scalar-text-trims-config-key-block-scalars`).
 ///
+/// **Three of those four now share this walk; `read_props` keeps its own
+/// deliberately** — it slices the block ONCE and loops every key, where a
+/// per-key doc walk would re-walk the document N times. So grepping for
+/// `fm_doc_publish` does NOT enumerate every seam that publishes a frontmatter
+/// value: it finds three, and the largest published face is the fourth.
+///
 /// Not every `scalar::text` caller wants this. `run`'s binding parser
 /// (`run/src/address.rs`) reads a value whose grammar is `[[#^id]]`, and the
 /// trim it gets from `scalar::text` is load-bearing there: a `>`-folded
