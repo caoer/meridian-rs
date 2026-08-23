@@ -55,8 +55,7 @@ const PHASE_LIST_PAGE: &str = "stamp.md";
 /// [`PHASE_LIST_PAGE`].
 const EMIT_PAGE: &str = "\
 ---
-task.editor: \"[[#^edit-1]]\"
-task.editor.caps: md.edit
+task.emit: \"[[#^emit-1]]\"
 ---
 
 # Tasks
@@ -65,7 +64,7 @@ task.editor.caps: md.edit
 def run(ctx):
     notice(message = \"advisory\")
 ```
-^edit-1
+^emit-1
 ";
 
 /// A page whose task COMMITS: the md.\* batch makes `apply` real, and the run
@@ -321,50 +320,56 @@ fn a_run_reports_its_phases_and_total_is_last() {
     assert!(of("total") >= of("dispatch"));
 }
 
-/// On main TODAY an effect-free run folds the corpus too: `pass` reaches
-/// `snapshot` exactly as `notice` does, because the fold happens before anyone
-/// asks whether there is anything to apply.
+/// The inversion this test was authored for. It read, on main: "on main TODAY
+/// an effect-free run folds the corpus too … **this is the assertion the
+/// lazy-snapshot work (seat `8ed22d72`) inverts**, deliberately its own test so
+/// that flip is a two-line conflict rather than a rewrite of the gate that
+/// matters." This is that flip.
 ///
-/// **This is the assertion the lazy-snapshot work (seat `8ed22d72`) inverts.**
-/// It is deliberately its own test, and deliberately not the phase-list gate
-/// above, so that flip is a two-line conflict on rebase rather than a rewrite
-/// of the gate that matters.
+/// The fold is now LAZY and gated per tense (`run-plane.md` § The run plane):
+/// a run folds only when THAT tense's output will put `root_at_eval` in front
+/// of a reader. Live, the report is `kind` + `domain`
+/// (`run::report::EffectLine`), so only an md.\* batch — which carries the
+/// token onward to the receipt's `root_pin` — buys the walk.
+///
+/// So two live runs that used to fold now do not, and they are the two that
+/// matter: `solo.md` emits nothing at all, and `emit.md` emits one `notice`,
+/// which is the shape the hook plane fires once per event. On a 37 800-member
+/// root that fold was 99.5% of the run.
 #[test]
-fn an_effect_free_run_folds_today() {
+fn a_live_run_whose_gate_does_not_fire_never_folds() {
     let ws = Ws::new();
-    let out = ws.mrd(Some("1"), &["run", "solo.md", "--json"]);
-    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    let names = phases(&stderr(&out));
-    for part in [
-        "snapshot",
-        "snapshot.walk",
-        "snapshot.read",
-        "snapshot.fold",
-    ] {
+    for page in ["solo.md", "emit.md"] {
+        let out = ws.mrd(Some("1"), &["run", page, "--json"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let names = phases(&stderr(&out));
+        // `eval` proves the block ran: a run that emitted no phase at all
+        // would pass the absence check below for the wrong reason.
         assert!(
-            names.iter().any(|n| n == part),
-            "an effect-free run did not report `{part}`: {names:?}"
+            names.iter().any(|n| n == "eval"),
+            "{page} did not run: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with("snapshot")),
+            "{page} folded the corpus for a token with no reader: {names:?}"
         );
     }
 }
 
 /// The `solo` block emits no md.* effect, so there is no batch — and no
-/// `apply` line claiming there was one. It emits no effect AT ALL, so the
-/// lazy fold never runs either and no `snapshot*` line claims a walk that did
-/// not happen (`run_lazy_snapshot.rs` gates that claim in both tenses).
+/// `apply` line claiming there was one.
+///
+/// The `snapshot` half of "did not run" belongs to
+/// [`a_live_run_whose_gate_does_not_fire_never_folds`], which owns it for both
+/// pages; asserting it here too would state one fact in two places and drift
+/// in one of them.
 #[test]
 fn a_phase_that_did_not_run_emits_no_line() {
     let ws = Ws::new();
     let out = ws.mrd(Some("1"), &["run", "solo.md", "--json"]);
-    let names = phases(&stderr(&out));
     assert!(
-        !names.iter().any(|p| p == "apply"),
+        !phases(&stderr(&out)).iter().any(|p| p == "apply"),
         "an effect-free run reported an apply: {}",
-        stderr(&out)
-    );
-    assert!(
-        !names.iter().any(|p| p.starts_with("snapshot")),
-        "an effect-free run reported a corpus fold: {}",
         stderr(&out)
     );
 }
