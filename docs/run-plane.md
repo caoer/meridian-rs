@@ -1583,14 +1583,27 @@ that reads `born` would be claiming a record that is not on disk. It touches
 it (a door refusal is the effect's row, the fire row keeps `ok` and its
 `value`) are § 2.2's own words, implemented rather than amended.
 
-> **A8's touch set reaches past the engine** (doc editor `4a68c823`, on the
-> fold): `exists` is load-bearing in the daemon's born-card idempotency (§ 1.5,
-> § 3.1, § 3.3), where "already there" must be benign rather than an error. The
-> engine no longer says that word, so the mapping is the caller's and belongs
-> in the fold: **a create refusal whose detail is `cas_mismatch` against the
-> EMPTY hash is the benign `exists`** — the path was occupied, nothing was
-> overwritten, and a re-birth of the same card is not a failure. Any other
-> create refusal stays a refusal.
+> **A8's touch set reaches past the engine** (doc editor `4a68c823`; token
+> ruled by leader `f16d266a` with advisor `1161daf7`, 2026-08-23): `exists` is
+> load-bearing in the daemon's born-card idempotency (§ 1.5, § 3.1, § 3.3),
+> where "already there" must be benign rather than an error. The engine no
+> longer says that word, so the mapping is the caller's — and the token it
+> keys on, character for character, is **`cas_mismatch`**.
+>
+> Stated as it actually is, not as it would be convenient: an occupied path
+> refuses `cas_mismatch` with `expected` = **`absent_rev`, the `node_rev` of
+> the EMPTY DOCUMENT** (`wire-serve/src/write.rs`: `AlreadyExists` →
+> `cas_mismatch(&absent_rev(), &occupant)`; `absent_rev()` is
+> `model::build(String::new(), syntax::parse(""))`'s root rev — a computed
+> blake3 value, not a nil hash and not an empty string). **`cas_mismatch` is
+> not unique to occupancy**: the same code spells the create-CAS, the
+> drift/remove-CAS and the splice verdict. **Only `expected == absent_rev()`
+> would discriminate, and no code performs that check today** — `preset`
+> keys on `err.code` alone and the daemon's `engineface.go` matches
+> `Code == "cas_mismatch"` on a create call. Both are safe *because their call
+> site is the create door*, which mints no other variety. So the discriminator
+> a caller may rely on is **the call site, not the `expected` field**, and this
+> paragraph promises no check that does not exist.
 
 ### A door refusal is that effect's row — never the fire's
 
@@ -1615,7 +1628,19 @@ refused.
 The engine reports no descriptor index — every executor error is documented
 *"applied NOTHING"* — so the refusal is attributed by the door's own
 coordinates (`kind`+`target`, `path`, `section`) matched against the
-descriptor list. A refusal naming no single descriptor stays the row's.
+descriptor list.
+
+A refusal that names **no** descriptor renders **by stage**, because the
+splice runs after the birth lane and "nothing landed" would be false again:
+
+| stage | creates | edits |
+|---|---|---|
+| pre-birth (the workspace lock — taken before anything runs) | `not_applied` | `not_applied` |
+| post-birth, no descriptor named (page load, splice I/O) | `born` — the birth lane completed, or its refusal would carry that birth's index | `not_applied` |
+
+`refused` is **reserved for the descriptor a door judged**. The fire row
+refuses in both of those engine-failure cases; a door refusal keeps it `ok`
+and keeps its `value`.
 
 **Result words** (§ 2.2's row vocabulary, amended — A8): `born` for a birth,
 `edited` for an edit, `refused` for the descriptor a door judged,

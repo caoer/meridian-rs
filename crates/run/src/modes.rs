@@ -804,6 +804,17 @@ fn result_word(kind: effects::EffectKind) -> &'static str {
     }
 }
 
+/// Whether this refusal happened BEFORE the birth lane ran.
+///
+/// Only the workspace lock does: it is taken in `executor::apply` before any
+/// descriptor is looked at. Everything else — birth-target resolution, the
+/// birth lane, the page load, the splice — runs after, so a refusal from any
+/// of them leaves the birth lane's own progress on disk (and, when it is the
+/// birth lane, carries the index that says how much).
+fn pre_birth(e: &ExecError) -> bool {
+    matches!(e, ExecError::WorkspaceBusy)
+}
+
 /// Whether this executor refusal is a DOOR saying no, or the engine being
 /// unable to carry the batch at all.
 ///
@@ -861,9 +872,18 @@ fn door_class(e: &ExecError) -> &'static str {
 /// | a create AFTER it | `not_applied` | the loop stopped before reaching it |
 /// | every edit | `not_applied` | the splice never ran — a refusal from the birth lane or the armed gate is before the commit |
 ///
-/// A refusal that names no descriptor (`descriptor_index() == None` — the
-/// workspace lock, I/O, a page that will not load) refuses every row: nothing
-/// is known to have landed, and guessing would be the falsehood this replaces.
+/// A refusal naming NO descriptor renders BY STAGE (advisor `1161daf7`,
+/// 2026-08-23), because the splice runs after the birth lane and a uniform
+/// `refused` would say a file that exists is not there:
+///
+/// - **pre-birth** (the workspace lock, taken before anything runs) — every
+///   row `not_applied`;
+/// - **post-birth, no descriptor named** (the page load, splice I/O) — every
+///   create `born`, because the birth lane ran to completion (had it refused,
+///   the refusal would carry that birth's index), and every edit
+///   `not_applied`.
+///
+/// `refused` stays RESERVED for the descriptor a door judged.
 fn refused_rows(effects: &[Effect], e: &ExecError, class: &str, reason: &str) -> Vec<Value> {
     let culprit = e.descriptor_index();
     effects
@@ -875,9 +895,32 @@ fn refused_rows(effects: &[Effect], e: &ExecError, class: &str, reason: &str) ->
                 "args": args_of(effect),
             });
             let Some(culprit) = culprit else {
-                row["result"] = json!("refused");
-                row["class"] = json!(class);
-                row["reason"] = json!(reason);
+                // NO descriptor is named. Rendering every row `refused` here
+                // would re-admit the falsehood the positional rule removes:
+                // the page load and the splice run AFTER the birth lane, so a
+                // page that will not load fails with every birth ALREADY ON
+                // DISK. Render BY STAGE, which the variant knows:
+                if pre_birth(e) {
+                    // The workspace lock is taken before anything runs.
+                    row["result"] = json!("not_applied");
+                    row["reason"] = json!("refused before the batch began");
+                } else if effect.kind == effects::EffectKind::Create {
+                    // realize_births ran to completion — had it refused, the
+                    // refusal would carry that birth's index — so every create
+                    // landed.
+                    row["result"] = json!("born");
+                    row["reason"] =
+                        json!("the birth lane completed; the failure is after it");
+                } else if is_door_refusal(e) {
+                    // A door judged the SPLICE as a whole (an armed veto, a
+                    // verdict): the edits are what it judged.
+                    row["result"] = json!("refused");
+                    row["class"] = json!(class);
+                    row["reason"] = json!(reason);
+                } else {
+                    row["result"] = json!("not_applied");
+                    row["reason"] = json!("the page splice never ran");
+                }
                 return row;
             };
             if i == culprit {
@@ -1006,7 +1049,42 @@ impl ProcessSeam<'_> {
         self.calls.lock().map(|c| c.clone()).unwrap_or_default()
     }
 
-    /// The PUBLISHED row for one `bash()` call — deliberately **not** the dict
+    /// Keep the newest [`LOG_RETENTION`] exec logs and drop the rest.
+///
+/// § 2.2 names the ceiling — *"retention is the last 50 per page, none under
+/// `dry`, named so that tool-call cadence has a ceiling"* — and a log
+/// directory that only ever grows is the unbounded cost with a longer fuse.
+/// Best-effort by construction: a log that cannot be removed is not a reason
+/// to fail a fire that already ran.
+fn prune_logs(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut logs: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with("exec-") && n.ends_with(".log"))
+        })
+        .filter_map(|e| {
+            let modified = e.metadata().ok()?.modified().ok()?;
+            Some((modified, e.path()))
+        })
+        .collect();
+    if logs.len() <= LOG_RETENTION {
+        return;
+    }
+    logs.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in logs.drain(LOG_RETENTION..) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// How many exec logs a workspace keeps (§ 2.2's stated ceiling).
+const LOG_RETENTION: usize = 50;
+
+/// The PUBLISHED row for one `bash()` call — deliberately **not** the dict
     /// the program saw.
     ///
     /// The program's dict carries `stdout`/`stderr` inline, because a program
@@ -1061,6 +1139,7 @@ impl ProcessSeam<'_> {
             format!("{stdout}\n--- stderr ---\n{stderr}")
         };
         std::fs::write(dir.join(&name), body).ok()?;
+        prune_logs(&dir);
         Some(format!(".meridian/runs/{name}"))
     }
 
@@ -1348,6 +1427,80 @@ pub fn is_mode_target(target: &wire::RunTarget) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One md descriptor, for the row-rendering tests.
+    fn effect(kind: effects::EffectKind, path: &str) -> Effect {
+        let mut args = BTreeMap::new();
+        args.insert("path".to_owned(), effects::ArgValue::Str(path.to_owned()));
+        Effect {
+            kind,
+            rule_id: "probe".to_owned(),
+            seq: 0,
+            depth: 0,
+            provenance: effects::Provenance::Run {
+                invocation_id: "probe".to_owned(),
+                root_at_eval: String::new(),
+            },
+            args,
+        }
+    }
+
+    /// **The by-stage rendering, post-birth half** (advisor `1161daf7`,
+    /// 2026-08-23; PR 195 pass-2 fixture 3).
+    ///
+    /// The page load runs at `apply_under` step 2 — AFTER the birth lane — so
+    /// a page that will not load fails with every birth already on disk. The
+    /// rows must say `born` for those creates, not `refused` and not
+    /// `not_applied`: both would say a file that exists is not there.
+    ///
+    /// Aperture: this drives the RENDERER with the executor's own `Page`
+    /// variant, not a live page-load failure — the CLI loads the page before
+    /// the apply, so a test cannot make step 2 fail without racing it. What it
+    /// proves is the mapping from variant to words; what it does not prove is
+    /// that `apply_under` returns `Page` there, which the executor's own
+    /// ordering (and its corrected doc) states.
+    #[test]
+    fn a_post_birth_failure_naming_no_descriptor_still_says_born() {
+        let effects = vec![
+            effect(effects::EffectKind::Create, "born/one.md"),
+            effect(effects::EffectKind::SetField, "page.md"),
+            effect(effects::EffectKind::Create, "born/two.md"),
+        ];
+        let e = ExecError::Page {
+            path: "probe.md".to_owned(),
+            reason: "no such file".to_owned(),
+        };
+        assert_eq!(e.descriptor_index(), None, "this variant names none");
+        let rows = refused_rows(&effects, &e, "runtime", "page load failed");
+
+        assert_eq!(rows[0]["result"], "born", "{rows:#?}");
+        assert_eq!(rows[2]["result"], "born", "{rows:#?}");
+        assert_eq!(rows[1]["result"], "not_applied", "the splice never ran");
+        assert!(
+            rows.iter().all(|r| r["result"] != "refused"),
+            "`refused` is reserved for the descriptor a door judged: {rows:#?}"
+        );
+    }
+
+    /// **The by-stage rendering, pre-birth half**: the workspace lock is taken
+    /// before any descriptor is looked at, so nothing ran and nothing landed.
+    #[test]
+    fn a_pre_birth_failure_says_not_applied_for_everything() {
+        let effects = vec![
+            effect(effects::EffectKind::Create, "born/one.md"),
+            effect(effects::EffectKind::SetField, "page.md"),
+        ];
+        let rows = refused_rows(
+            &effects,
+            &ExecError::WorkspaceBusy,
+            "runtime",
+            "another run holds the lock",
+        );
+        assert!(
+            rows.iter().all(|r| r["result"] == "not_applied"),
+            "{rows:#?}"
+        );
+    }
 
     /// A probe cache that counts what it was asked to keep.
     #[derive(Default)]
