@@ -2185,11 +2185,32 @@ PyYAML, `serde_yaml` and `yq` all read that same string back.
 any more — `create(props=…)`'s `PropValue::List` is the one typed arm left — so
 a def-declared `int`/`bool` property (`shape.rs` `SHAPE_INT`/`SHAPE_BOOL`) must
 be born in the record's own body bytes. No live def on the sessions root
-declares one. **Second residual:** the timestamp class stays plain (7 356
-distinct spellings under `created`, `created_at`, `updated_at`), so PyYAML
-still reads those back as `date`/`datetime` objects rather than strings — a
-spelling difference this amendment deliberately did not widen to, and the
-reason its churn is 806 values rather than an order of magnitude more.
+declares one.
+
+**Second residual — timestamps and dates are deliberately left PLAIN.** Ruled
+2026-08-23 (leader `a68417af`, card `all-digit-short-ids-read-as-int`), written
+down because an undocumented exclusion is indistinguishable from an oversight,
+and the next reviewer would re-derive the sweep to find out which it was.
+
+**The line is value corruption, not retyping**, and the three-parser table
+below is what draws it: an id comes back as three different things from three
+readers, two of them different NUMBERS, and the join key is destroyed; a date
+comes back as the caller's string from `serde_yaml` and go-yaml and as a `date`
+object from PyYAML — one instant, three readers, no value disagreement. The
+predicate defends against the first and does not tidy the second.
+
+The costs are asymmetric and both real: quoting the class would take churn from
+2.767 % to ~25 % of the plain population (+7 356 distinct spellings under
+`created`, `created_at`, `updated_at`) and would un-type the property Obsidian
+views sort and filter on — degrading what the field exists for, to defend
+against a disagreement no reader in this stack actually has.
+
+**The exposure, stated precisely:** a PyYAML-CLASS WRITER — one that reads a
+plain date into a `date` object and writes it back in its own formatting, so
+the stored spelling drifts with nobody editing the value. No such writer exists
+in this stack today; the writers are this engine (`serde_yaml`) and
+`ccc-statusd` (go-yaml), and both read a date as a string. **If one appears,
+this is the line it must read first.**
 
 **The trigger list above is NOT closed** (amended 2026-08-23, card
 `hook-17-mrd-create-props`). It enumerates the fast, teachable cases; the LAW is
