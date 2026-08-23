@@ -1,694 +1,751 @@
-//! **No controlled failure exit of `mrd script` is silent past the point where
-//! the trace has a premise** (`docs/run-plane.md` § A controlled failure exit
-//! SPEAKS).
+//! **No controlled failure exit of `mrd script` is silent about what it does
+//! not know** (`docs/run-plane.md` § A controlled failure exit SPEAKS).
 //!
 //! The property under test is not "these five messages are right". It is that a
 //! consumer reading a nonzero exit can tell a deliberate refusal from a process
 //! killed mid-write — and it cannot, if the engine's own deliberate refusals
-//! arrive as an absent trace, because that is exactly what a killed process
-//! leaves behind. The remedies are opposite: fix your request, versus never
-//! resend this one.
+//! arrive saying nothing about whether bytes landed, because that is exactly
+//! what a killed process leaves behind. The remedies are opposite: fix your
+//! request, versus never resend this one.
 //!
-//! Every test drives the verb through its `Door` seam, so what the engine SAYS on
-//! a broken commit is assertable without breaking a real daemon.
+//! ⭐ **THE SUBJECT MOVED, AND SO DID THE LAW'S REACH.** Until card
+//! `script-door-commit-premise-world-grain-vs-touch-set`, this file swept
+//! `commit()` — the local transaction's own splice doors — and every one of them
+//! held a PREMISE: the CLI had minted the entry fingerprint itself, so it could
+//! always speak a trace. `mrd script` is now ONE lane: the whole attempt is the
+//! wire `script` op, the entry fingerprint is the DAEMON's, and it reaches this
+//! process only inside a trace that arrived. So the doors this file sweeps are
+//! `forward()`'s, and the premise is no longer this engine's to state.
 //!
-//! ⭐ THE SWEEP AT THE BOTTOM CARRIES ITS OWN POSITIVE CONTROL. A test that
-//! walks the premise-holding doors and finds all of them speaking proves nothing
-//! unless the same walk is shown going RED on a door that does not speak. The
-//! control arm walks the doors BEFORE the premise exists — where the contract
-//! deliberately keeps them silent — and asserts the sweep's own predicate fails
-//! there. Without it this file would certify rather than check.
+//! **The recorded exception, stated rather than papered over.** On the exits
+//! where no trace arrived, this lane CANNOT speak in band: a `ScriptTrace`'s
+//! first field is the premise, and synthesizing one would mint a fact — the very
+//! thing [`NoPremise`]'s control arm exists to forbid. Those exits carry the
+//! indeterminacy in PROSE instead, and the prose is what this suite pins: the
+//! daemon did not answer, a commit MAY have landed daemon-side, verify with a
+//! fresh read before retrying. An honest "premise unknown" spelling in
+//! `ScriptTrace` is a trace-contract change, carded as
+//! `script-trace-premise-unknown-spelling`. **Until it lands, THE PROSE IS THE
+//! OPERATING SURFACE.**
+//!
+//! Every test drives the verb through its `Door` seam, so what the engine SAYS
+//! on a broken answer is assertable without breaking a real daemon. The seven
+//! injected pathologies of the pre-card suite all survive — they land on the
+//! `script` response instead of the `splice` response.
 //!
 //! ⭐ AND THE SWEEP'S POPULATION IS ANSWERABLE TO THE CODE. A sweep that walks a
 //! hand-maintained list covers only the doors someone remembered; the census at
-//! the bottom derives `commit()`'s arms from its own source and refuses any arm
-//! that is neither swept nor recorded unreachable with the law that keeps it so.
-//! A gate that cannot notice a missing door is the defect it was built to remove.
+//! the bottom derives `forward()`'s exits from its own source and refuses any
+//! exit that is neither swept nor recorded unreachable with the law that keeps
+//! it so. A gate that cannot notice a missing door is the defect it was built to
+//! remove.
 
 use std::io;
 
 use mrd::script::cmd::attempt;
-use mrd::script::{Door, FaultClass, ScriptOutcome, ScriptTrace};
+use mrd::script::{Door, ScriptOutcome, ScriptTrace};
 use serde_json::{Value, json};
-use wire::Recovery;
 
-/// The entry fingerprint the fake daemon reports (§4.7).
+/// The entry fingerprint the fake daemon reports inside its trace (§4.7). It is
+/// the DAEMON's value now: this engine never mints one.
 const ENTRY: &str = "b3:a90f13c7ba0e1d4f5c6b7a8990112233445566778899aabbccddeeff00112233";
 
 /// The card the script reads and claims.
 const CARD: &str = "tasks/0011-token-audit.md";
 
-/// A script that ARMS something, so the run reaches the commit. A read-class
-/// script would never issue a splice and could not exercise a commit door.
+/// A script that ARMS something. Under one lane the source never runs in this
+/// process — the daemon evaluates it — but the request still carries it, and a
+/// read-class script would be a different fixture than the one these doors are
+/// about.
 const CLAIM: &str = r#"
 card = read("tasks/0011-token-audit.md")
 if card["fm"]["owner"] == "":
     put("tasks/0011-token-audit.md", props={"owner": me(), "status": "doing"})
 "#;
 
-/// How the fake daemon behaves when the armed splice arrives.
+/// A whole `ScriptTrace` as the daemon serves it — `forward()` deserializes the
+/// body as one, so a fake answering `script` must produce a complete trace, not
+/// a fragment.
+fn committed_trace() -> Value {
+    json!({
+        "entry_fingerprint": ENTRY,
+        "outcome": "committed",
+        "trace": [],
+        "commit": {"armed": {"edits": 1}, "fingerprint_before": ENTRY,
+                   "fingerprint_after": "b3:c4e91d02", "seq": 3, "verdicts": []},
+        "telemetry": {"fuel_used": 812, "mem_used": 4096, "reads_used": 1, "wall_ms": 3},
+    })
+}
+
+/// The same shape, ending as the daemon's own `conflict` — the touch-set guard
+/// refusing with the mismatch extras in band.
+fn conflict_trace() -> Value {
+    json!({
+        "entry_fingerprint": ENTRY,
+        "outcome": "conflict",
+        "trace": [],
+        "commit": {"code": "fingerprint_mismatch", "recovery": "resync",
+                   "expected": ENTRY, "actual": "b3:00ff11ee22dd33cc",
+                   "scope": CARD},
+        "telemetry": {"fuel_used": 812, "mem_used": 4096, "reads_used": 1, "wall_ms": 3},
+    })
+}
+
+/// The same shape, ending `refused` with a determinate fault — used to pin that
+/// the indeterminacy marker stays absent from an ordinary trace.
+fn refused_trace() -> Value {
+    json!({
+        "entry_fingerprint": ENTRY,
+        "outcome": "refused",
+        "trace": [],
+        "fault": {"class": "refused", "code": "would_corrupt", "recovery": "fix",
+                  "reason": "would_corrupt: the heading identity does not survive the reparse"},
+        "telemetry": {"fuel_used": 812, "mem_used": 4096, "reads_used": 1, "wall_ms": 3},
+    })
+}
+
+/// How the fake daemon answers the one `script` op the whole attempt now is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OnSplice {
+enum OnScript {
     /// The call itself fails: the request went out, no answer came back.
     NeverAnswers,
     /// Bytes that are not a frame at all.
     Unparseable,
     /// `ok: true` with no body — success asserted, nothing to describe it with.
     OkWithNoBody,
-    /// `ok: false` carrying a §5.1 `fingerprint_mismatch` — the world moved
-    /// under the guard. It speaks as a CONFLICT, not as a fault.
-    ConflictOnMismatch,
-    /// `ok: false` with a readable §8 error body that is not the world moving.
-    RefusedWithErrorBody,
+    /// `ok: true` with a body that is not a `ScriptTrace` this build can read —
+    /// engine and CLI disagreeing on the trace shape.
+    UnreadableTrace,
+    /// `ok: false` carrying a readable §8 error body. **The daemon's `script`
+    /// door emits this ONLY from before the entry exists** (see [`NoPremise`]),
+    /// which is what makes it the determinate arm.
+    RefusedBeforeEntry,
     /// `ok: false` with no error body — a refusal that will not say why.
     RefusedWithNoErrorBody,
+    /// `ok: true` with a whole readable trace — the ONE arm that produces a
+    /// trace, and the census's positive control against a suite of failures.
+    ATrace,
 }
 
-/// What SPEAKING means for a door.
+/// What SPEAKING means for an exit of `forward()`.
 ///
-/// The law is one law — a premise-holding commit door does not exit silently —
-/// but the doors do not all speak the same way, and a single predicate that only
-/// knew `fault` would have to drop the conflict door from the population to stay
-/// green. Dropping a door to keep a sweep green is the defect this file exists to
-/// remove, so the door DECLARES its speech and the sweep applies it.
+/// The law is one law — an exit past the send point does not leave a consumer
+/// unable to tell a refusal from a killed process — but the exits do not all
+/// know the same thing, and a single predicate that only knew "prose mentioning
+/// doubt" would have to drop the determinate door from the population to stay
+/// green. Dropping a door to keep a sweep green is the defect this file exists
+/// to remove, so the door DECLARES what it knows and the sweep applies it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Speech {
-    /// A `fault` states why the commit failed.
-    Fault,
-    /// `outcome: conflict` carrying the daemon's own mismatch body. There is no
-    /// fault: a moved world is an answer, not a failure to answer.
-    Conflict,
+enum Knows {
+    /// The answer never arrived, or arrived unreadable. A commit MAY have
+    /// landed daemon-side and this engine cannot tell — so it says so.
+    Unknown,
+    /// The daemon said itself that nothing was attempted. Determinate, and the
+    /// exit must invent no doubt.
+    NothingLanded,
+    /// A trace came back. The trace is the speech.
+    Trace,
 }
 
-impl OnSplice {
-    /// Every premise-holding commit FAILURE door reachable through this seam.
+impl OnScript {
+    /// Every door reachable through this seam.
     ///
-    /// This list is no longer trusted to be the population: the census in
-    /// `every_commit_door_is_either_swept_or_recorded_unreachable` derives the
-    /// arms from `commit()`'s own source and refuses a door that is not here.
-    const ALL: [Self; 6] = [
+    /// This list is not trusted to be the population: the census in
+    /// [`every_forward_door_is_either_swept_or_recorded_unreachable`] derives
+    /// the exits from `forward()`'s own source and refuses a door that is not
+    /// here.
+    const ALL: [Self; 7] = [
         Self::NeverAnswers,
         Self::Unparseable,
         Self::OkWithNoBody,
-        Self::ConflictOnMismatch,
-        Self::RefusedWithErrorBody,
+        Self::UnreadableTrace,
+        Self::RefusedBeforeEntry,
         Self::RefusedWithNoErrorBody,
+        Self::ATrace,
     ];
 
-    /// How this door speaks — see [`Speech`].
-    fn speech(self) -> Speech {
+    /// What this door knows about the workspace — see [`Knows`].
+    fn knows(self) -> Knows {
         match self {
-            Self::ConflictOnMismatch => Speech::Conflict,
             Self::NeverAnswers
             | Self::Unparseable
             | Self::OkWithNoBody
-            | Self::RefusedWithErrorBody
-            | Self::RefusedWithNoErrorBody => Speech::Fault,
+            | Self::UnreadableTrace
+            | Self::RefusedWithNoErrorBody => Knows::Unknown,
+            Self::RefusedBeforeEntry => Knows::NothingLanded,
+            Self::ATrace => Knows::Trace,
         }
     }
 
-    /// Does this door KNOW what happened to the workspace?
-    ///
-    /// Three of the six do not: the request was issued and its fate is not
-    /// readable from here. The three `ok: false` doors DO — the daemon declined,
-    /// so nothing landed; they differ only in how much they say about why.
-    fn is_indeterminate(self) -> bool {
-        match self {
-            Self::NeverAnswers | Self::Unparseable | Self::OkWithNoBody => true,
-            Self::ConflictOnMismatch
-            | Self::RefusedWithErrorBody
-            | Self::RefusedWithNoErrorBody => false,
-        }
+    /// The bytes this door puts back on the wire.
+    fn answer(self) -> io::Result<String> {
+        Ok(match self {
+            Self::NeverAnswers => return Err(io::Error::other("connection reset by peer")),
+            Self::Unparseable => "<html>502 Bad Gateway</html>".to_owned(),
+            Self::OkWithNoBody => json!({"id": null, "ok": true}).to_string(),
+            Self::UnreadableTrace => {
+                json!({"id": null, "ok": true, "body": {"not_a": "trace"}}).to_string()
+            }
+            // The daemon's own pre-entry refusal, verbatim in shape: the cold
+            // gate answers `corpus_warming` before the entry world is pinned
+            // (`registry::server::cold_gate_wire`).
+            Self::RefusedBeforeEntry => json!({"id": null, "ok": false, "error": {
+                "code": "corpus_warming",
+                "recovery": "retry",
+                "message": "the drawer is still warming: this workspace has no resident corpus \
+                            engine yet (cold start)",
+            }})
+            .to_string(),
+            Self::RefusedWithNoErrorBody => json!({"id": null, "ok": false}).to_string(),
+            Self::ATrace => json!({"id": null, "ok": true, "body": committed_trace()}).to_string(),
+        })
     }
 }
 
-/// A fake daemon that answers the read ops honestly and breaks exactly one way at
-/// the commit.
+/// A fake daemon that breaks exactly one way at the one op this verb speaks.
+///
+/// It answers NOTHING else: under one lane a `fingerprint`, `toc`, `cat` or
+/// `splice` trip is a law violation, and the assertion below is what makes that
+/// a measurement rather than a claim.
 struct Fake {
-    on_splice: OnSplice,
-    /// Set when a `splice` request was actually put on the door — the fact the
+    on_script: OnScript,
+    /// Set when the `script` request was actually put on the door — the fact the
     /// indeterminacy claim rests on.
-    splice_issued: bool,
-    /// The last `splice` request's bytes, verbatim — what the set-form pin
-    /// asserts its shape on.
-    last_splice: Option<Value>,
+    sent: bool,
+    /// The last `script` request's bytes, verbatim.
+    last: Option<Value>,
 }
 
 impl Fake {
-    fn breaking(on_splice: OnSplice) -> Self {
+    fn breaking(on_script: OnScript) -> Self {
         Self {
-            on_splice,
-            splice_issued: false,
-            last_splice: None,
+            on_script,
+            sent: false,
+            last: None,
         }
     }
 }
 
 impl Door for Fake {
     fn call(&mut self, request: &Value) -> io::Result<String> {
-        let op = request["op"].as_str().expect("every request names an op");
-        if op == "splice" {
-            self.splice_issued = true;
-            self.last_splice = Some(request.clone());
-            return match self.on_splice {
-                OnSplice::NeverAnswers => Err(io::Error::other("connection reset by peer")),
-                OnSplice::Unparseable => Ok("<html>502 Bad Gateway</html>".to_owned()),
-                OnSplice::OkWithNoBody => Ok(json!({"ok": true}).to_string()),
-                OnSplice::ConflictOnMismatch => Ok(json!({"ok": false, "error": {
-                    "code": "fingerprint_mismatch",
-                    "expected": ENTRY,
-                    "actual": "b3:00ff11ee22dd33cc44bb55aa66997788",
-                }})
-                .to_string()),
-                // No `recovery` field: the class comes from the §8 frozen table's
-                // binding for the code, which is the precedence the engine states.
-                OnSplice::RefusedWithErrorBody => Ok(json!({"ok": false, "error": {
-                    "code": "would_corrupt",
-                    "message": "the heading identity does not survive the reparse",
-                }})
-                .to_string()),
-                OnSplice::RefusedWithNoErrorBody => Ok(json!({"ok": false}).to_string()),
-            };
-        }
-        Ok(match op {
-            "fingerprint" => format!(r#"{{"ok":true,"body":{{"fingerprint":"{ENTRY}","seq":2}}}}"#),
-            "toc" => json!({"ok": true, "body": {
-                "path": CARD,
-                "file_rev": "7c40e1a8b2f9d356",
-                "fingerprint": ENTRY,
-                "nodes": [
-                    {"kind": "frontmatter", "span": [0, 32], "node_rev": "26796ebec5d0bf1a",
-                     "text_prefix_16b": "---\nowner:\n", "keys": ["owner", "status"]},
-                ],
-            }})
-            .to_string(),
-            "read" => json!({"ok": true, "body": {
-                "path": CARD,
-                "file_rev": "7c40e1a8b2f9d356",
-                "root": ENTRY,
-                "words_total": 41,
-                "toc": [],
-                "anchors": [],
-                "rendered_text": "",
-                "props": [
-                    {"key": "owner", "value": "", "span": [4, 11], "prop_rev": "33d5b0e1"},
-                    {"key": "status", "value": "todo", "span": [12, 25], "prop_rev": "41f643f0"},
-                ],
-            }})
-            .to_string(),
-            "cat" => json!({"ok": true, "body": {
-                "span": [4, 12], "node_rev": "33d5b0e1b27cb48b", "content": "owner:\n"
-            }})
-            .to_string(),
-            other => panic!("the script entry asked for an op it must not know: {other}"),
-        })
+        assert_eq!(
+            request["op"], "script",
+            "one lane: the whole attempt IS the wire `script` op, and it spends \
+             no other trip: {request}"
+        );
+        self.sent = true;
+        self.last = Some(request.clone());
+        self.on_script.answer()
     }
 }
 
-/// A daemon that breaks BEFORE the premise exists: `fingerprint` refuses, so no
-/// entry fingerprint is ever minted.
+/// A daemon that refuses BEFORE the premise exists.
 ///
-/// This is the control arm's door. The contract deliberately keeps this path
-/// silent — a trace's first field is the premise, and synthesizing one would mint
-/// a fact — so it is the honest negative the sweep is measured against.
+/// **This is not a hypothetical.** `registry::script_op::serve` has exactly
+/// three `Err(ErrorBody)` exits and every one of them stands ABOVE
+/// `let entry = world.at_fingerprint.0.clone()`: the cold gate
+/// (`corpus_warming`), the entry pass (`io_error`), and the warm→pin race
+/// (`corpus_race`). `serve_line` adds four more, all further above still — a
+/// decode refusal, `unknown_op` on a non-v3 session, `bad_request` for an
+/// unbound workspace, and the internal routing arm. So a §8 error frame from
+/// this door NEVER carries an entry fingerprint, and a trace built here would
+/// have to fabricate its first field.
+///
+/// That is why this door's silence is the CONTRACT rather than a gap, and why
+/// the sweep's predicate must go red on it.
 struct NoPremise;
 
 impl Door for NoPremise {
     fn call(&mut self, request: &Value) -> io::Result<String> {
-        let op = request["op"].as_str().expect("every request names an op");
-        assert_eq!(op, "fingerprint", "the run must not get past the premise");
-        Ok(json!({"ok": false, "error": {"code": "bad_request"}}).to_string())
+        assert_eq!(request["op"], "script", "the one op");
+        OnScript::RefusedBeforeEntry.answer()
     }
 }
 
 /// Run the claim script with `flags` against `door`, returning whatever the verb
-/// gives back — a trace, or the diagnostic of an exit that said nothing.
+/// gives back — a trace, or the diagnostic of an exit that had no premise.
 fn run(door: &mut dyn Door, flags: &[&str]) -> Result<ScriptTrace, String> {
     let argv: Vec<String> = flags.iter().map(|flag| (*flag).to_owned()).collect();
     attempt(&argv, CLAIM, door)
 }
 
-/// The sweep's predicate, named once so the control arm can apply the SAME one:
-/// this door produced a trace, and that trace speaks about the commit in the way
-/// the door declares.
-fn speaks(door: &mut dyn Door, flags: &[&str], speech: Speech) -> Result<(), String> {
-    let trace = run(door, flags)?;
-    match speech {
-        Speech::Fault => {
-            if trace.fault.is_none() {
-                return Err(
-                    "a trace with no fault says nothing about why the commit failed".to_owned(),
-                );
+/// The three facts an indeterminate exit owes its caller. They are asserted as
+/// SUBSTRINGS of the diagnostic, because the diagnostic is the operating
+/// surface until `script-trace-premise-unknown-spelling` lands.
+const OWED: [&str; 3] = [
+    // 1. the answer did not arrive (or did not survive)
+    "`script`",
+    // 2. a commit may have landed anyway
+    "UNKNOWN",
+    // 3. the remedy, and the one thing that must not be done
+    "never resend",
+];
+
+/// The sweep's predicate, named once so the control arm can apply the SAME one.
+fn speaks(door: &mut dyn Door, flags: &[&str], knows: Knows) -> Result<(), String> {
+    let outcome = run(door, flags);
+    match (knows, outcome) {
+        (Knows::Trace, Ok(_)) => Ok(()),
+        (Knows::Trace, Err(why)) => Err(format!("a readable trace must come back, not: {why}")),
+        (Knows::Unknown | Knows::NothingLanded, Ok(trace)) => Err(format!(
+            "no trace arrived, so none may be spoken — this one names {}",
+            trace.entry_fingerprint
+        )),
+        (Knows::Unknown, Err(why)) => {
+            for owed in OWED {
+                if !why.contains(owed) {
+                    return Err(format!(
+                        "an exit that does not know whether the commit landed must say so, \
+                         and this one never says {owed:?}: {why}"
+                    ));
+                }
             }
+            Ok(())
         }
-        Speech::Conflict => {
-            if trace.outcome != ScriptOutcome::Conflict {
+        (Knows::NothingLanded, Err(why)) => {
+            if !why.contains("nothing landed") {
                 return Err(format!(
-                    "a moved world must arrive as `conflict`, not {:?}",
-                    trace.outcome
+                    "a determinate refusal states that nothing landed: {why}"
                 ));
             }
-            if trace.commit.is_none() {
-                return Err(
-                    "a conflict with no commit leg drops the daemon's own mismatch body, which \
-                     is the whole answer here"
-                        .to_owned(),
-                );
+            if why.contains("UNKNOWN") || why.contains("never resend") {
+                return Err(format!(
+                    "the daemon said nothing was attempted, so this exit must invent \
+                     no doubt: {why}"
+                ));
             }
+            Ok(())
         }
     }
-    Ok(())
 }
 
-// ── the four premise-holding doors, one at a time ─────────────────────────────
+// ── the doors, one at a time ─────────────────────────────────────────────────
 
-/// The load-bearing door, and the one the consumer's own source names: the splice
-/// went out and no answer came. The engine does not know whether it landed, and
-/// `resync` is the class that says "re-read, never resend" to a machine.
+/// The load-bearing door: the program went out and no answer came. This engine
+/// does not know whether it landed, and — sharper than the retired local
+/// lane's — a `script` op that got no answer may have COMMITTED daemon-side,
+/// because the daemon owns the whole attempt now.
 #[test]
-fn a_splice_whose_answer_never_came_declares_resync_and_an_unknown_commit() {
-    let mut door = Fake::breaking(OnSplice::NeverAnswers);
-    let trace =
-        run(&mut door, &["--actor", "8ab41c02"]).expect("the door SPEAKS, it does not exit");
+fn a_program_whose_answer_never_came_states_all_three_facts_it_owes() {
+    let mut door = Fake::breaking(OnScript::NeverAnswers);
+    let why = run(&mut door, &["--actor", "8ab41c02"])
+        .expect_err("no trace arrived, so no trace may be spoken");
 
-    assert!(door.splice_issued, "the premise of the whole claim");
-    assert_eq!(trace.outcome, ScriptOutcome::Refused);
+    assert!(door.sent, "the premise of the whole claim");
     assert!(
-        trace.commit_unknown,
-        "the splice was issued and never answered for, so the trace must not let \
-         `refused` be read as `nothing was applied`"
-    );
-    let fault = trace.fault.expect("a controlled exit says why");
-    assert_eq!(fault.class, FaultClass::Refused);
-    assert_eq!(fault.recovery, Some(Recovery::Resync));
-    assert_eq!(
-        fault.code, None,
-        "no frame minted a §8 code, and inventing one puts a value on the wire \
-         surface no daemon can answer with"
+        why.contains("the daemon did not answer `script`"),
+        "fact 1 — the answer never came: {why}"
     );
     assert!(
-        fault.reason.contains("UNKNOWN"),
-        "the operator-facing half states it too: {}",
-        fault.reason
-    );
-}
-
-/// The same door under `--dry`. A rehearsal runs everything except disk, so it
-/// provably committed nothing — declaring `resync` would tell a caller their file
-/// might have changed when it could not. The consumer's killed-engine face splits
-/// on exactly this, and the engine must not disagree with it.
-#[test]
-fn a_dry_run_that_lost_its_answer_declares_retry_because_a_rehearsal_writes_nothing() {
-    let mut door = Fake::breaking(OnSplice::NeverAnswers);
-    let trace = run(&mut door, &["--actor", "8ab41c02", "--dry"]).expect("the door SPEAKS");
-
-    let fault = trace.fault.expect("a controlled exit says why");
-    assert_eq!(
-        fault.recovery,
-        Some(Recovery::Retry),
-        "a dry run's lost answer is retry, never resync"
+        why.contains("SENT") && why.contains("UNKNOWN"),
+        "fact 2 — a commit MAY have landed daemon-side: {why}"
     );
     assert!(
-        fault.reason.contains("DRY"),
-        "and it says which fact makes the class safe: {}",
-        fault.reason
+        why.contains("fresh read") && why.contains("never resend"),
+        "fact 3 — verify before retrying, and a resend writes twice: {why}"
     );
 }
 
 /// An answer that is not a frame is the same indeterminacy as no answer: the
-/// daemon may have applied the splice before replying with something unreadable.
+/// daemon may have committed before replying with something unreadable.
 #[test]
 fn an_unparseable_answer_is_the_same_indeterminacy_as_no_answer() {
-    let mut door = Fake::breaking(OnSplice::Unparseable);
-    let trace = run(&mut door, &["--actor", "8ab41c02"]).expect("the door SPEAKS");
+    let mut door = Fake::breaking(OnScript::Unparseable);
+    let why = run(&mut door, &["--actor", "8ab41c02"]).expect_err("nothing readable arrived");
 
-    assert_eq!(trace.outcome, ScriptOutcome::Refused);
-    assert!(trace.commit_unknown);
-    assert_eq!(
-        trace.fault.expect("says why").recovery,
-        Some(Recovery::Resync)
-    );
-}
-
-/// `ok: true` with no body: the daemon asserts success and hands nothing to carry
-/// as the commit fact. The trace cannot embed a leg it never received, so the
-/// honest answer is the workspace, not this trace.
-#[test]
-fn an_ok_frame_with_no_body_carries_no_commit_fact_so_it_declares_unknown() {
-    let mut door = Fake::breaking(OnSplice::OkWithNoBody);
-    let trace = run(&mut door, &["--actor", "8ab41c02"]).expect("the door SPEAKS");
-
-    assert_eq!(trace.outcome, ScriptOutcome::Refused);
-    assert!(trace.commit_unknown);
     assert!(
-        trace.commit.is_none(),
-        "there were no bytes to embed — absence, never a synthesized leg"
+        why.contains("bytes this engine cannot read"),
+        "it names the door it died at: {why}"
     );
+    for owed in OWED {
+        assert!(why.contains(owed), "{owed:?} missing: {why}");
+    }
 }
 
-/// `ok: false` with no error body is DETERMINATE: the daemon declined, so nothing
-/// landed. It gets a plain refusal — `commit_unknown` would be a false alarm — and
-/// the class is `respawn`, because a frame that violates §8's own shape is a
-/// broken channel rather than a request the caller can repair.
+/// A trace shape this build cannot read is the THIRD indeterminate exit, and it
+/// is the one a version skew produces: the daemon committed, and the answer
+/// describing it will not decode here.
 #[test]
-fn a_refusal_with_no_error_body_states_that_nothing_landed_and_blames_the_channel() {
-    let mut door = Fake::breaking(OnSplice::RefusedWithNoErrorBody);
-    let trace = run(&mut door, &["--actor", "8ab41c02"]).expect("the door SPEAKS");
+fn a_trace_this_build_cannot_read_still_states_the_indeterminacy() {
+    let mut door = Fake::breaking(OnScript::UnreadableTrace);
+    let why = run(&mut door, &["--actor", "8ab41c02"]).expect_err("the trace would not decode");
 
-    assert_eq!(trace.outcome, ScriptOutcome::Refused);
     assert!(
-        !trace.commit_unknown,
-        "the daemon REFUSED, so nothing landed — claiming indeterminacy here would \
-         send a caller to re-read a file that provably did not change"
+        why.contains("align their versions"),
+        "it names the remedy for a skew rather than blaming the script: {why}"
     );
-    assert_eq!(
-        trace.fault.expect("says why").recovery,
-        Some(Recovery::Respawn)
-    );
+    for owed in OWED {
+        assert!(why.contains(owed), "{owed:?} missing: {why}");
+    }
 }
 
-/// A `fingerprint_mismatch` is the world moving, and it is an ANSWER: the daemon
-/// read the guard, declined, and said exactly what changed. It speaks as
-/// `conflict` with the daemon's own body embedded — no fault, because nothing
-/// failed to be understood.
+/// `ok: true` with no body, and `ok: false` with no error, both violate §8's own
+/// frame shape. The daemon may have done anything, so both are indeterminate.
+#[test]
+fn a_frame_that_violates_the_eight_shape_is_indeterminate_in_both_directions() {
+    for door in [OnScript::OkWithNoBody, OnScript::RefusedWithNoErrorBody] {
+        let mut fake = Fake::breaking(door);
+        let why = run(&mut fake, &["--actor", "8ab41c02"])
+            .expect_err("a frame with neither body nor error cannot produce a trace");
+        assert!(
+            why.contains("violates the §8 frame shape"),
+            "{door:?} names the shape it wanted: {why}"
+        );
+        for owed in OWED {
+            assert!(why.contains(owed), "{door:?}: {owed:?} missing: {why}");
+        }
+    }
+}
+
+/// ⭐ **THE DETERMINATE ARM, and the §8 ruling it answers to.**
 ///
-/// It is in the sweep because the census puts it there: it is one of `commit()`'s
-/// arms, so a change that made it silent would be caught by the same law as the
-/// rest.
+/// The canonical line (afe34e1a and e57663f7, 2026-08-23): *a readable §8
+/// refusal speaks as `CommitLeg::Refused` IFF every trace fact is
+/// daemon-supplied — the refusal frame's own premise token, code, and words,
+/// nothing minted.*
+///
+/// **VERIFIED, and the branch is unreachable.** `wire::ErrorBody` has no slot
+/// that can carry an entry premise for these codes (`expected`/`actual` are the
+/// §8 `cas_mismatch`/`root_mismatch` node tokens, `new_fingerprint` is the
+/// `cas_mismatch` resend token, `scope` is the scoped-premise spelling), and
+/// every §8 exit of the `script` door stands above the entry pin — see
+/// [`NoPremise`] for the enumeration. So there is no premise token to speak
+/// with, the arm correctly stays `Err`, and what it must do instead is state the
+/// determinacy WITHOUT inventing doubt.
 #[test]
-fn a_moved_world_speaks_as_a_conflict_carrying_the_daemons_own_body() {
-    let mut door = Fake::breaking(OnSplice::ConflictOnMismatch);
-    let trace = run(&mut door, &["--actor", "8ab41c02"]).expect("the door SPEAKS");
+fn a_refusal_that_never_reached_an_entry_says_nothing_landed_and_invents_no_doubt() {
+    let mut door = Fake::breaking(OnScript::RefusedBeforeEntry);
+    let why = run(&mut door, &["--actor", "8ab41c02"]).expect_err("no entry, so no trace");
+
+    assert!(
+        why.contains("refused before any entry existed"),
+        "it names WHY there is no trace: {why}"
+    );
+    assert!(
+        why.contains("nothing was evaluated and nothing landed"),
+        "the determinate half — the daemon said so itself: {why}"
+    );
+    assert!(
+        !why.contains("UNKNOWN") && !why.contains("never resend"),
+        "a determinate refusal must not borrow the indeterminate arm's doubt — \
+         it would send a caller to re-read a file that provably did not change: {why}"
+    );
+    assert!(
+        why.contains("corpus_warming"),
+        "and the daemon's own error body rides verbatim: {why}"
+    );
+}
+
+/// The success arm: a whole readable trace comes back and is carried VERBATIM.
+/// The daemon owns every fact in it — this lane re-types nothing.
+#[test]
+fn a_readable_trace_comes_back_verbatim_and_this_lane_mints_nothing() {
+    let mut door = Fake::breaking(OnScript::ATrace);
+    let trace = run(&mut door, &["--actor", "8ab41c02"]).expect("the trace arrives");
+
+    assert_eq!(
+        trace.entry_fingerprint, ENTRY,
+        "the premise is the DAEMON's — this engine no longer mints one"
+    );
+    assert_eq!(trace.outcome, ScriptOutcome::Committed);
+    let commit: Value = serde_json::from_str(trace.commit.as_ref().expect("the leg").get())
+        .expect("the leg is the daemon's own bytes");
+    assert_eq!(
+        commit["fingerprint_after"], "b3:c4e91d02",
+        "the §4.4 response is embedded, not re-typed: {commit}"
+    );
+    let sent = door.last.expect("the door recorded the request");
+    assert_eq!(sent["source"], json!(CLAIM), "the program rode verbatim");
+    assert_eq!(sent["actor"], json!("8ab41c02"));
+}
+
+/// A moved TOUCH SET arrives as the daemon's own `conflict` INSIDE the trace —
+/// not as an error frame, and not as anything this lane classifies. The mismatch
+/// extras ride the commit leg verbatim, `scope` included, which is the §5.7
+/// spelling the touch-set guard uses.
+#[test]
+fn a_moved_touch_set_arrives_as_the_daemons_own_conflict_in_band() {
+    struct Conflicting;
+    impl Door for Conflicting {
+        fn call(&mut self, request: &Value) -> io::Result<String> {
+            assert_eq!(request["op"], "script");
+            Ok(json!({"id": null, "ok": true, "body": conflict_trace()}).to_string())
+        }
+    }
+
+    let trace = run(&mut Conflicting, &["--actor", "8ab41c02"]).expect("a conflict is an ANSWER");
 
     assert_eq!(trace.outcome, ScriptOutcome::Conflict);
-    assert!(
-        !trace.commit_unknown,
-        "the daemon answered the guard, so the workspace is known: nothing landed"
-    );
-    let commit = trace
-        .commit
-        .as_ref()
-        .expect("the mismatch body rides the leg");
-    let body: Value = serde_json::from_str(commit.get()).expect("the leg is the daemon's bytes");
-    assert_eq!(body["code"], "fingerprint_mismatch");
-    assert!(
-        body.get("changed").is_none(),
-        "`changed` is STRUCK (§18 row 2, ruled 2026-08-10) — nothing mints it, \
-         and the extras that DO exist ride verbatim: {body}"
-    );
     assert!(
         trace.fault.is_none(),
         "a moved world is not a fault — a consumer greps the two apart"
     );
-}
-
-/// A readable §8 refusal that is not the world moving: the engine's own wording
-/// rides into the reason, and the class comes from the frozen table's binding for
-/// the code, because this frame carried no `recovery` of its own.
-#[test]
-fn a_refusal_with_a_readable_error_body_carries_its_code_and_the_tables_class() {
-    let mut door = Fake::breaking(OnSplice::RefusedWithErrorBody);
-    let trace = run(&mut door, &["--actor", "8ab41c02"]).expect("the door SPEAKS");
-
-    assert_eq!(trace.outcome, ScriptOutcome::Refused);
-    assert!(
-        !trace.commit_unknown,
-        "the daemon refused with a readable body, so nothing landed and the run knows it"
-    );
-    let fault = trace.fault.expect("a controlled exit says why");
-    assert_eq!(fault.class, FaultClass::Refused);
-    assert_eq!(fault.code.as_deref(), Some("would_corrupt"));
+    let commit: Value = serde_json::from_str(trace.commit.as_ref().expect("the leg").get())
+        .expect("the leg is the daemon's bytes");
+    assert_eq!(commit["code"], "fingerprint_mismatch");
     assert_eq!(
-        fault.recovery,
-        Some(Recovery::Fix),
-        "no `recovery` on the frame, so the §8 table's binding for the code decides — \
-         one source read a second way, never a second table"
+        commit["scope"], CARD,
+        "the touch-set refusal names the moved premise's SCOPE (§5.7) — the \
+         world-grain refusal this card deleted named none: {commit}"
     );
     assert!(
-        fault.reason.contains("does not survive the reparse"),
-        "the daemon's own wording travels verbatim: {}",
-        fault.reason
+        commit.get("changed").is_none(),
+        "`changed` is STRUCK (§18 row 2, ruled 2026-08-10): {commit}"
     );
 }
 
 // ── the law, and the control that makes it a measurement ─────────────────────
 
-/// **THE LAW.** No premise-holding commit door exits without speaking.
+/// **THE LAW.** No exit of `forward()` leaves a consumer unable to tell a
+/// refusal from a killed process.
 ///
-/// It walks every door in `OnSplice::ALL` rather than trusting the tests above to
-/// stay in step with the code. `ALL` is a maintained list, so on its own it makes
-/// coverage true only for doors someone remembered; the census below is what
-/// makes the list answerable to `commit()`'s real arms.
+/// It walks every door in `OnScript::ALL` rather than trusting the tests above
+/// to stay in step with the code. `ALL` is a maintained list, so on its own it
+/// makes coverage true only for doors someone remembered; the census below is
+/// what makes the list answerable to `forward()`'s real exits.
 #[test]
-fn no_premise_holding_commit_door_exits_silently() {
-    for door in OnSplice::ALL {
+fn no_forward_door_leaves_the_caller_unable_to_tell_what_happened() {
+    for door in OnScript::ALL {
         let mut fake = Fake::breaking(door);
-        speaks(&mut fake, &["--actor", "8ab41c02"], door.speech())
-            .unwrap_or_else(|why| panic!("{door:?} exited without speaking: {why}"));
-        assert!(fake.splice_issued, "{door:?} never reached the commit");
-
-        // The indeterminacy marker is not decoration: it is the only thing that
-        // stops `refused` from being read as "nothing was applied".
-        let mut fake = Fake::breaking(door);
-        let trace = run(&mut fake, &["--actor", "8ab41c02"]).expect("speaks");
-        assert_eq!(
-            trace.commit_unknown,
-            door.is_indeterminate(),
-            "{door:?} must declare exactly what it knows about the workspace"
+        speaks(&mut fake, &["--actor", "8ab41c02"], door.knows())
+            .unwrap_or_else(|why| panic!("{door:?} did not speak: {why}"));
+        assert!(
+            fake.sent,
+            "{door:?} never reached the wire, so it swept nothing"
         );
     }
 }
 
 /// ⭐ **THE POSITIVE CONTROL for the sweep above.** The same predicate, applied
-/// to a door the contract deliberately keeps SILENT, must go red.
+/// with the WRONG expectation to the door the contract deliberately keeps silent
+/// about doubt, must go red.
 ///
-/// A path that fails before the entry fingerprint exists has no premise to state,
-/// and a synthesized premise would mint a fact. So it exits through
-/// `mrd::run` — exit 2, empty stdout — and `speaks()` fails on it. That failure
-/// is what proves the sweep is capable of failing at all: without this arm,
-/// `no_premise_holding_commit_door_exits_silently` would pass just as happily
-/// against an engine that emitted a trace unconditionally, or against a predicate
-/// that asserted nothing.
+/// [`NoPremise`] fails before the entry fingerprint exists, so it has no premise
+/// to state and a synthesized one would mint a fact. Asking `speaks()` to find
+/// the indeterminate prose there must FAIL — and that failure is what proves the
+/// sweep is capable of failing at all. Without this arm,
+/// [`no_forward_door_leaves_the_caller_unable_to_tell_what_happened`] would pass
+/// just as happily against an engine that appended the doubt paragraph to every
+/// diagnostic, or against a predicate that asserted nothing.
 ///
-/// It also pins the OTHER half of the absence contract. This door's silence is
-/// the contract's guarantee — nothing armed, nothing sent, the workspace
-/// unchanged — and the guarantee is only true because the doors above stopped
+/// It also pins the OTHER half of the absence contract: this door's silence is
+/// the contract's guarantee — nothing evaluated, the workspace unchanged — and
+/// the guarantee is only true because the indeterminate doors above stopped
 /// sharing this exit with it.
 #[test]
-fn the_sweeps_predicate_goes_red_on_a_path_that_deliberately_stays_silent() {
+fn the_sweeps_predicate_goes_red_on_the_door_that_deliberately_states_no_doubt() {
     let mut door = NoPremise;
-    let outcome = speaks(&mut door, &["--actor", "8ab41c02"], Speech::Fault);
+    let outcome = speaks(&mut door, &["--actor", "8ab41c02"], Knows::Unknown);
 
     let why = outcome.expect_err(
-        "a pre-premise failure must NOT produce a trace — if it does, either the \
-         engine is synthesizing a premise it does not have, or this control has \
+        "a pre-entry refusal must NOT carry the indeterminacy prose — if it does, \
+         either the engine is inventing doubt it does not have, or this control has \
          stopped being able to fail",
     );
     assert!(
-        why.contains("fingerprint"),
-        "and it names the door it died at, on stderr, for an operator: {why}"
+        why.contains("must say so"),
+        "the control fails on the predicate's own words, not by accident: {why}"
     );
+
+    // And the same door under its TRUE expectation passes — otherwise the arm
+    // above would be red for the trivial reason that this door speaks nothing.
+    speaks(
+        &mut NoPremise,
+        &["--actor", "8ab41c02"],
+        Knows::NothingLanded,
+    )
+    .expect("its own class is determinate, and it states that");
 }
 
 // ── the census: the population, DERIVED from the code it claims to cover ─────
 
-/// `commit()`'s own source. The sweep above walks a hand-maintained list, and a
-/// hand-maintained list is a literal wearing a derived costume: a door added to
-/// `commit()` and never wired into `OnSplice` is invisible to it, the suite stays
-/// green, and nothing says the coverage shrank.
+/// `forward()`'s own source. The sweep above walks a hand-maintained list, and a
+/// hand-maintained list is a literal wearing a derived costume: an exit added to
+/// `forward()` and never wired into `OnScript` is invisible to it, the suite
+/// stays green, and nothing says the coverage shrank.
 ///
 /// Reading the source is the cheap instrument that makes the list ANSWERABLE.
-/// The exhaustiveness cannot be a compile-time fact here without the door
-/// taxonomy living in the engine's own types, and it must not: three of these
-/// arms build the SAME `CommitLeg::Unknown` variant, so a variant-exhaustive
-/// match would certify a population it cannot see — the defect one level up.
-/// Precedent for reading a sibling module's source in a test:
+/// The exhaustiveness cannot be a compile-time fact here — `forward()`'s exits
+/// are five constructions of ONE type (`Fail::tool`), so a variant-exhaustive
+/// match would certify a population it cannot see. Precedent for reading a
+/// sibling module's source in a test:
 /// `crates/mrd/tests/rules_cli.rs` § `the_cli_layer_holds_no_second_resolver`.
-const COMMIT_SOURCE: &str = include_str!("../src/script/cmd.rs");
+const FORWARD_SOURCE: &str = include_str!("../src/script/cmd.rs");
 
-/// What the census says about one arm of `commit()`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Coverage {
-    /// A failure door the sweep drives through the `Door` seam.
-    Swept(OnSplice),
-    /// Not a failure exit: the daemon answered and the leg carries its answer.
-    Success,
-}
-
-/// Every `CommitLeg` construction inside `fn commit`, in source order, as
-/// `(1-based line, variant)`.
+/// Every `Fail::tool(` exit inside `fn forward`, in source order, as
+/// `(1-based line, what it claims to know)`.
 ///
-/// Comment lines are dropped before matching, so prose naming a leg can neither
-/// satisfy nor break a claim about code — the same discipline the rules-CLI
-/// structural test uses.
-fn commit_arms() -> Vec<(usize, String)> {
-    let lines: Vec<(usize, &str)> = COMMIT_SOURCE
+/// The claim is READ FROM THE CODE, not declared: an exit whose message carries
+/// the `MAY_HAVE_LANDED` clause states the indeterminacy, and one that does not
+/// declares the outcome determinate. That is the law itself, so the census
+/// measures the law rather than a label beside it.
+///
+/// Comment lines are dropped before matching, so prose naming an exit can
+/// neither satisfy nor break a claim about code — the same discipline the
+/// rules-CLI structural test uses.
+fn forward_exits() -> Vec<(usize, Knows)> {
+    let lines: Vec<(usize, &str)> = FORWARD_SOURCE
         .lines()
         .enumerate()
         .map(|(i, l)| (i + 1, l))
         .collect();
     let start = lines
         .iter()
-        .position(|(_, line)| line.starts_with("fn commit("))
-        .expect("`fn commit` is the function this census is about");
+        .position(|(_, line)| line.starts_with("fn forward("))
+        .expect("`fn forward` is the function this census is about");
     let end = lines[start..]
         .iter()
         .position(|(_, line)| *line == "}")
         .expect("the function closes at column zero")
         + start;
 
-    let mut arms = Vec::new();
-    for (number, line) in &lines[start..=end] {
+    let mut exits: Vec<(usize, String)> = Vec::new();
+    for (number, raw) in &lines[start..=end] {
+        let line: &str = raw;
         if line.trim_start().starts_with("//") {
             continue;
         }
-        let mut rest = *line;
-        while let Some(at) = rest.find("CommitLeg::") {
-            rest = &rest[at + "CommitLeg::".len()..];
-            let variant: String = rest
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_')
-                .collect();
-            arms.push((*number, variant));
+        if let Some(at) = line.find("Fail::tool(") {
+            exits.push((*number, line[at..].to_owned()));
+        } else if let Some((_, text)) = exits.last_mut() {
+            text.push('\n');
+            text.push_str(line);
         }
     }
-    arms
+    exits
+        .into_iter()
+        .map(|(number, text)| {
+            let knows = if text.contains("MAY_HAVE_LANDED") {
+                Knows::Unknown
+            } else {
+                Knows::NothingLanded
+            };
+            (number, knows)
+        })
+        .collect()
 }
 
-/// ⭐ **THE POPULATION GATE.** Every arm of `commit()` is either swept by the law
-/// above or recorded here as unreachable WITH the law that makes it so.
+/// ⭐ **THE POPULATION GATE.** Every exit of `forward()` is either swept by the
+/// law above or recorded here as unreachable WITH the law that makes it so.
 ///
-/// This is the gate the sweep could not be: the sweep asks "does each door I know
-/// about speak?", and this asks "do I know about every door?". A door added to
-/// `commit()` and not wired in fails HERE, loudly, naming its line — instead of
-/// passing silently as a coverage gap nobody minted a signal for.
+/// This is the gate the sweep could not be: the sweep asks "does each door I
+/// know about speak?", and this asks "do I know about every door?". An exit
+/// added to `forward()` and not wired in fails HERE, loudly, naming its line —
+/// instead of passing silently as a coverage gap nobody minted a signal for.
+///
+/// **This census replaces the one over `commit()`.** `commit()` is the retired
+/// local transaction, deleted in PR 2 of card
+/// `script-door-commit-premise-world-grain-vs-touch-set`; sweeping it would be a
+/// gate over code no caller can reach, which is a gate that measures nothing.
 #[test]
-fn every_commit_door_is_either_swept_or_recorded_unreachable() {
-    /// The census, in `commit()`'s own source order. Adding a door to `commit()`
-    /// means adding its row here and either wiring it into `OnSplice` or stating
-    /// the law that keeps it unreachable.
-    const CENSUS: [(&str, Coverage); 8] = [
-        ("Unknown", Coverage::Swept(OnSplice::NeverAnswers)),
-        ("Unknown", Coverage::Swept(OnSplice::Unparseable)),
-        // `dry` — a rehearsal that ran everything except disk.
-        ("Rehearsal", Coverage::Success),
-        ("Response", Coverage::Success),
-        ("Unknown", Coverage::Swept(OnSplice::OkWithNoBody)),
-        ("Conflict", Coverage::Swept(OnSplice::ConflictOnMismatch)),
-        ("Refused", Coverage::Swept(OnSplice::RefusedWithErrorBody)),
-        ("Refused", Coverage::Swept(OnSplice::RefusedWithNoErrorBody)),
+fn every_forward_door_is_either_swept_or_recorded_unreachable() {
+    /// The census, in `forward()`'s own source order. Adding an exit to
+    /// `forward()` means adding its row here and either wiring it into
+    /// `OnScript` or stating the law that keeps it unreachable.
+    const CENSUS: [(Knows, &[OnScript]); 5] = [
+        // the door call failed — the answer never came
+        (Knows::Unknown, &[OnScript::NeverAnswers]),
+        // the line would not parse as a frame
+        (Knows::Unknown, &[OnScript::Unparseable]),
+        // a trace this build cannot read
+        (Knows::Unknown, &[OnScript::UnreadableTrace]),
+        // a §8 error frame — DETERMINATE, and the only one (see `NoPremise`)
+        (Knows::NothingLanded, &[OnScript::RefusedBeforeEntry]),
+        // the §8 shape violation, reached from both directions
+        (
+            Knows::Unknown,
+            &[OnScript::OkWithNoBody, OnScript::RefusedWithNoErrorBody],
+        ),
     ];
 
-    let arms = commit_arms();
-    let rendered = arms
+    let exits = forward_exits();
+    let rendered = exits
         .iter()
-        .map(|(line, variant)| format!("  cmd.rs:{line} CommitLeg::{variant}"))
+        .map(|(line, knows)| format!("  cmd.rs:{line} {knows:?}"))
         .collect::<Vec<_>>()
         .join("\n");
     assert_eq!(
-        arms.len(),
+        exits.len(),
         CENSUS.len(),
-        "`commit()` has {} arms and the census names {}. A door added to `commit()` is \
-         invisible to the sweep until it is wired into `OnSplice` (or recorded here with the \
-         law that keeps it unreachable). The arms as read from source:\n{rendered}",
-        arms.len(),
+        "`forward()` has {} exits and the census names {}. An exit added to `forward()` is \
+         invisible to the sweep until it is wired into `OnScript` (or recorded here with the \
+         law that keeps it unreachable). The exits as read from source:\n{rendered}",
+        exits.len(),
         CENSUS.len(),
     );
-    for (index, ((line, variant), (expected, _))) in arms.iter().zip(CENSUS).enumerate() {
+    for (index, ((line, knows), (expected, _))) in exits.iter().zip(CENSUS).enumerate() {
         assert_eq!(
-            variant, expected,
-            "census row {index} says `CommitLeg::{expected}` and cmd.rs:{line} builds \
-             `CommitLeg::{variant}` — the population moved under the sweep"
+            *knows, expected,
+            "census row {index} says {expected:?} and cmd.rs:{line} reads as {knows:?} — \
+             the population moved under the sweep. Every exit past the send point must \
+             carry MAY_HAVE_LANDED; the pre-entry refusal must not"
         );
     }
 
-    // And the other direction: no door sits in `OnSplice` without a census row,
+    // The success arm is not a `Fail::tool` exit, so it has no census row — but
+    // it must exist, or every row above would be a failure mode of a function
+    // that can no longer succeed.
+    assert!(
+        FORWARD_SOURCE.contains("from_str::<ScriptTrace>"),
+        "`forward()` must still have the ONE arm that yields a trace"
+    );
+
+    // And the other direction: no door sits in `OnScript` without a census row,
     // so the enum cannot drift away from the code either.
-    let mut swept: Vec<OnSplice> = CENSUS
+    let mut swept: Vec<OnScript> = CENSUS
         .iter()
-        .filter_map(|(_, coverage)| match coverage {
-            Coverage::Swept(door) => Some(*door),
-            Coverage::Success => None,
-        })
+        .flat_map(|(_, doors)| doors.iter().copied())
         .collect();
-    for door in OnSplice::ALL {
+    for door in OnScript::ALL {
+        // `ATrace` is the success arm's door: swept by the law, censused by the
+        // assertion above rather than by a row, because it is not an exit.
+        if door == OnScript::ATrace {
+            continue;
+        }
         let at = swept
             .iter()
             .position(|candidate| *candidate == door)
             .unwrap_or_else(|| {
                 panic!(
-                    "{door:?} is in the sweep but names no arm of `commit()` — it tests a \
-                        door the engine no longer has"
+                    "{door:?} is in the sweep but names no exit of `forward()` — it tests a \
+                     door the engine no longer has"
                 )
             });
         swept.remove(at);
     }
     assert!(
         swept.is_empty(),
-        "the census claims these doors are swept and `OnSplice::ALL` does not walk them: \
+        "the census claims these doors are swept and `OnScript::ALL` does not walk them: \
          {swept:?}"
     );
 }
 
-/// **THE SET-FORM LOWERING PIN** (replaces the retired door-367 pin: the
-/// arm-time `multi_file_write_set` law and `commit()`'s single-path door both
-/// retired with the §4.4 set form — run-plane.md § One COMMIT per attempt).
-///
-/// A two-file armed set issues exactly ONE splice, and that splice is the SET
-/// form: `files[]` carrying every armed path's plan group in first-arm order,
-/// under the entry guard — never two splices, never a bare `path` form.
-#[test]
-fn a_multi_file_armed_set_issues_one_set_splice() {
-    const TWO_FILES: &str = r#"
-card = read("tasks/0011-token-audit.md")
-put("tasks/0011-token-audit.md", props={"owner": me()})
-put("tasks/0012-second-file.md", props={"owner": me()})
-"#;
-
-    let mut door = Fake::breaking(OnSplice::NeverAnswers);
-    let argv = ["--actor".to_owned(), "8ab41c02".to_owned()];
-    let trace = attempt(&argv, TWO_FILES, &mut door).expect("a lost answer still SPEAKS");
-
-    assert!(
-        door.splice_issued,
-        "a two-file armed set commits — one set splice goes out"
-    );
-    let request = door.last_splice.expect("the door recorded the request");
-    assert!(
-        request.get("path").is_none(),
-        "the set form carries no top-level `path`: {request}"
-    );
-    let files = request["files"]
-        .as_array()
-        .expect("the set form carries `files[]`");
-    assert_eq!(files.len(), 2, "one member per armed content path");
-    assert_eq!(files[0]["path"], "tasks/0011-token-audit.md");
-    assert_eq!(files[1]["path"], "tasks/0012-second-file.md");
-    assert!(
-        files
-            .iter()
-            .all(|f| f["plan_edits"].as_array().is_some_and(|e| e.len() == 1)),
-        "each member carries its own plan group: {request}"
-    );
-    assert!(
-        request.get("if_fingerprint").is_some(),
-        "the set commit rides the entry guard"
-    );
-    // The daemon never answered, and the request DID go out — the leg is the
-    // same indeterminacy speech as the single form's (a lost answer renders
-    // the refused class and says the outcome is NOT KNOWN).
-    assert_eq!(trace.outcome, ScriptOutcome::Refused);
-    assert!(
-        trace.commit_unknown,
-        "a lost set answer carries the commit-unknown flag, like the single form"
-    );
-}
+// ── retired against named twins ──────────────────────────────────────────────
+//
+// Two rows of this suite lost their subject when the local transaction stopped
+// being a lane. Neither is dropped silently; each names the daemon-side test
+// that now owns the behavior:
+//
+// * `a_dry_run_that_lost_its_answer_declares_retry_because_a_rehearsal_writes_nothing`
+//   — the dry/live split of a lost commit's recovery class. The splitting
+//   function is now `registry::script_op::lost_commit`, and its twin is
+//   `registry/src/script_op.rs` § `a_panicked_splice_speaks_commit_unknown_never_a_plain_refusal`,
+//   which builds both legs (`lost_commit(false)` and `lost_commit(true)`) and
+//   asserts the two classes apart. `forward()` cannot split on `--dry`: it has
+//   no trace to carry a class in, which is exactly what
+//   `script-trace-premise-unknown-spelling` is carded to fix.
+//
+// * `a_multi_file_armed_set_issues_one_set_splice` — the §4.4 set-form
+//   lowering. The CLI issues no splice at all now; the twins are
+//   `registry/tests/script_op.rs` § `an_armed_target_reads_back_its_own_armed_content_and_commits_once`
+//   (one commit per attempt, over a live daemon) and § `a_set_member_that_cannot_validate_refuses_the_whole_set`
+//   (the set form's all-or-nothing law).
 
 // ── additive migration, proved rather than asserted ──────────────────────────
 
-/// A trace minted before this change carries no `commit_unknown`. It must still
-/// deserialize, and the missing field must read as `false` — not as a decode
-/// error, and not as an alarm.
+/// A trace minted before the `commit_unknown` field existed carries none. It
+/// must still deserialize, and the missing field must read as `false` — not as a
+/// decode error, and not as an alarm.
 #[test]
 fn a_pre_change_trace_json_still_deserializes_and_reads_as_a_known_commit() {
     const PRE_CHANGE: &str = r#"{
@@ -713,8 +770,17 @@ fn a_pre_change_trace_json_still_deserializes_and_reads_as_a_known_commit() {
 /// reading a determinate run sees byte-identical output to before.
 #[test]
 fn the_marker_is_absent_from_the_json_of_a_determinate_refusal() {
-    let mut door = Fake::breaking(OnSplice::RefusedWithNoErrorBody);
-    let trace = run(&mut door, &["--actor", "8ab41c02"]).expect("the door SPEAKS");
+    struct Refusing;
+    impl Door for Refusing {
+        fn call(&mut self, request: &Value) -> io::Result<String> {
+            assert_eq!(request["op"], "script");
+            Ok(json!({"id": null, "ok": true, "body": refused_trace()}).to_string())
+        }
+    }
+
+    let trace = run(&mut Refusing, &["--actor", "8ab41c02"]).expect("the trace arrives");
+    assert_eq!(trace.outcome, ScriptOutcome::Refused);
+    assert!(!trace.commit_unknown, "the daemon declared it determinate");
 
     let json = serde_json::to_string(&trace).expect("the trace serializes");
     assert!(
