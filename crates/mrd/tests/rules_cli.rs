@@ -824,6 +824,84 @@ fn a_drifted_pin_reddens_the_armed_cell_and_gates_the_exit() {
     );
 }
 
+/// **An `off` row is inert** (card off-ledger-row-not-inert): a retired rule
+/// that drifts after its attested-off arm is neither red nor a finding — it is
+/// still listed, as `off`, and the verb exits 0. The same edit under an `on`
+/// row is the drift finding above; this gate holds both faces side by side.
+#[test]
+fn an_off_row_whose_page_drifts_is_listed_off_and_does_not_gate_the_exit() {
+    let s = populated();
+    arm(&s, &[("sessions/s1", "task.notify", "off")]);
+    s.write(
+        "sessions/s1/notify.md",
+        &rule_page(
+            "hook",
+            "task.notify",
+            "s1 overrides, edited after the off arm",
+        ),
+    );
+
+    let out = s.run(&["rules", "sessions/s1", "--json"]);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "an off row is never a finding: {stdout}"
+    );
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    let notify = value["rules"]["rules"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|row| row["id"] == "task.notify")
+        .expect("task.notify resolves at s1")
+        .clone();
+    assert_eq!(notify["armed"]["mode"], "off", "{stdout}");
+    assert_eq!(
+        notify["armed"]["redness"],
+        serde_json::Value::Null,
+        "{stdout}"
+    );
+    assert_eq!(notify["armed"]["rendered"], "off", "{stdout}");
+    assert_eq!(
+        value["rules"]["armed_set"]["rows"], 1,
+        "still listed: {stdout}"
+    );
+
+    // The human face agrees, and the same row queried from OUTSIDE its arm
+    // root (the elsewhere line) is inert too.
+    let out = s.run(&["rules", "sessions/s1"]);
+    let human = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(out.status.code(), Some(0), "{human}");
+    assert!(
+        human.contains("  task.notify  armed=off\n"),
+        "listed as off, never off(drifted): {human}"
+    );
+    let out = s.run(&["rules", "sessions/s2", "--json"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "an off row outside the queried path is inert too"
+    );
+
+    // Control: the same drift under an ON row is still the finding.
+    arm(&s, &[("sessions/s1", "task.notify", "armed")]);
+    s.write(
+        "sessions/s1/notify.md",
+        &rule_page(
+            "hook",
+            "task.notify",
+            "s1 overrides, edited after the on arm",
+        ),
+    );
+    let out = s.run(&["rules", "sessions/s1", "--json"]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "an on row that drifts still gates the exit"
+    );
+}
+
 // ── the inert arm names its cause (card armed-inert-diagnosis) ───────────────
 //
 // `armed=-` used to spell TWO unrelated truths: "no armed row exists for this id
