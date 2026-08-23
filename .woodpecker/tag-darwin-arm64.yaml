@@ -29,7 +29,13 @@ when:
 # `when`) on the nyc-2 agent; this workflow waits for its verdict before it
 # builds or uploads anything, so a red test lane leaves the darwin release
 # unpublished instead of shipping ahead of the tests. `optional: true` covers
-# the pipelines `ci` is not part of. Card: 22-18/tasks/meridian-rs-publish-not-gated.
+# the pipelines `ci` is not part of — and carries the same trap the linux
+# sibling's comment spells out: a workflow dependency name that does not resolve
+# is silently ignored, `woodpecker-cli lint` does NOT validate workflow
+# dependency names (rc=0 "Config is valid" on a typo, with or without
+# `optional`), and the only instrument that sees it is a real pipeline in which
+# this workflow reads state=PENDING while `ci` runs.
+# Card: 22-18/tasks/meridian-rs-publish-not-gated.
 depends_on:
   - name: ci
     optional: true

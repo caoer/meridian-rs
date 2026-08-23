@@ -34,6 +34,16 @@ when:
 # so a red `ci` leaves this whole workflow skipped and the registry untouched.
 # `optional: true` because `ci` is not part of every pipeline this lane runs in
 # — when `ci` is absent the dependency is ignored, when present it is enforced.
+#
+# THE TRAP THAT BUYS, AND HOW TO CHECK IT. `optional: true` means a name that
+# does not resolve is silently ignored — so if `ci.yaml` is ever renamed, this
+# lane goes back to publishing ungated and NOTHING SAYS SO. Measured 2026-08-23:
+# `woodpecker-cli lint` validates STEP dependency names (a dangling one is a hard
+# error, "One or more of the specified dependencies do not exist") but does NOT
+# validate WORKFLOW dependency names — a typo'd name lints rc=0 "Config is valid"
+# both with and without `optional: true`. The only instrument that sees it is a
+# real pipeline: while `ci` runs, this workflow must read state=PENDING (it did,
+# pipeline 1195). A tag lane that starts immediately is an ungated tag lane.
 # Card: 22-18/tasks/meridian-rs-publish-not-gated.
 depends_on:
   - name: ci
