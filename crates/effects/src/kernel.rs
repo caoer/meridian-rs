@@ -3423,6 +3423,18 @@ def run(event):
         );
     }
 
+    /// Whether a `FrozenModule` may be held in a resident, shared cache — the
+    /// § 2.2 per-block-rev module cache lives in the daemon's registry and is
+    /// reached from every connection thread, so `Send + Sync` is a
+    /// PRECONDITION of that design, not a detail. Asserted at compile time
+    /// because a runtime discovery would arrive as an unexplainable borrow
+    /// error three layers away.
+    #[test]
+    fn a_frozen_module_can_live_in_a_shared_cache() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<FrozenModule>();
+    }
+
     /// A probe `RunCtx` — the load/fire paths read only its `task` (as the
     /// rule id) and its provenance strings.
     fn probe_ctx() -> RunCtx {
