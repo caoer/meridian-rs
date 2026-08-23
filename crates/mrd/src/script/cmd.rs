@@ -11,21 +11,35 @@
 //! argv, and every input is the caller's: the engine mints no identity and reads
 //! no clock (§9).
 //!
-//! **The transaction is stand-still optimistic, and the entry is
-//! single-attempt.** One `fingerprint` (§4.7) pins the entry fingerprint, reads
-//! run LIVE against it, and the commit is ONE `splice` carrying
-//! `if_fingerprint` = that same value, which §5.1 checks first. A world that
-//! moved refuses `fingerprint_mismatch` and NOTHING commits — the entry never
-//! retries, because the retry loop is the host's (`attempts:N` is a host fact,
-//! never a field of this trace).
+//! **One lane: the whole attempt IS the wire `script` op.** The daemon pins the
+//! entry, expands, evaluates and commits; this verb parses argv, sends the
+//! program, and renders the trace that comes back. So the system holds exactly
+//! ONE commit-premise implementation, which is what `run-plane.md`:919 means by
+//! *"the touch-set law covers ALL script lanes (S1), same product as MCP
+//! `script`"*.
 //!
-//! A caller may pin its own `--if-fingerprint`. It is checked against the minted
-//! entry fingerprint before evaluation — a fast-fail courtesy, refusing with
-//! zero reads and nothing armed — and the SAME value still rides the commit, so
-//! a world that moves during eval is still caught. Two checks, one value. A pin
-//! that is not a `Root`-family token at all refuses BEFORE the compare, as a
-//! REFUSED trace with the raw bytes debug-quoted (§ A.7's malformed arm;
-//! `run-plane.md` § the pre-eval caller guard) — never as a moved world.
+//! **Single-attempt, and the commit's authority is the TOUCH SET** — the nodes
+//! the attempt itself touched: every served read's file, every pattern
+//! expansion's matched member, every armed target, verified entry-vs-live at
+//! exactly those nodes. A foreign write OUTSIDE that set does not refuse; one
+//! INSIDE it refuses `fingerprint_mismatch` naming the moved scope, and nothing
+//! commits. The entry never retries — the retry loop is the host's (`attempts:N`
+//! is a host fact, never a field of this trace).
+//!
+//! *(Until card `script-door-commit-premise-world-grain-vs-touch-set`, a
+//! pattern-less `files[]` drove a SECOND transaction here that guarded the
+//! commit on the whole-corpus entry fingerprint — so any fleet write anywhere
+//! refused it. That is the law `run-plane.md`:918-931 records as amended and
+//! DELETED, and it is why a 64-file slice refused while all 64 of its targets
+//! stood still.)*
+//!
+//! A caller may pin its own `--if-fingerprint`. It stays legal as a **widening**
+//! premise — strictest wins, never sufficient alone, never able to drop write
+//! coverage — checked against the minted entry fingerprint before evaluation as
+//! a fast-fail courtesy, and again at the commit. A pin that is not a
+//! `Root`-family token at all refuses BEFORE the compare, as a REFUSED trace
+//! with the raw bytes debug-quoted (§ A.7's malformed arm; `run-plane.md` § the
+//! pre-eval caller guard) — never as a moved world.
 //!
 //! A caller may also pin `--expect-armed <digest>`: the digest of the armed set
 //! it authorized. It is checked after rev threading and BEFORE the splice is
@@ -36,9 +50,14 @@
 //! definition ([`super::digest::armed_digest`]) and the trace publishes it, so
 //! the host copies a string rather than re-deriving a second canonicalization.
 //!
-//! **Zero wire delta.** The ops are `hello`, `fingerprint`, `toc`, `cat`,
-//! `splice` — every one already on the wire. This verb invents no op, no field
-//! and no request shape.
+//! **Zero wire delta.** The ops are `hello` and `script` — both already on the
+//! wire. This verb invents no op, no field and no request shape.
+//!
+//! **It needs a daemon.** This door writes AS you through the one socket, so
+//! there is no daemonless leg. With none running it auto-spawns one and waits
+//! for it to bind ([`crate::engine::ensure_daemon`]); if that never happens it
+//! refuses by name and nothing is evaluated. That has always been true of this
+//! verb — the check sits above every lane it ever had.
 //!
 //! **The human face is non-normative** (§ The `mrd script` human-mode face). The
 //! MCP host owns the normative text face and renders it from the trace;
@@ -220,20 +239,40 @@ pub fn attempt(args: &[String], source: &str, door: &mut dyn Door) -> Result<Scr
 
 /// The whole single attempt, against any [`Door`].
 ///
+/// **One lane.** Every attempt forwards as the wire `script` op: the daemon
+/// pins the entry, expands, evaluates and commits under the §4.6 TOUCH SET
+/// ([`registry::script_op::touch_premises`]'s law), and the answer is the
+/// `ScriptTrace` this verb renders.
+///
+/// It used to fork here — a `files[]` carrying a glob forwarded (expansion is
+/// the engine's, never a CLI-private one), and everything else drove a local
+/// transaction whose commit guarded on the WHOLE-CORPUS entry fingerprint. That
+/// second premise is the defect: `run-plane.md`:918-931 records the world-grain
+/// law as amended and DELETED, and :919 names this lane — *"the touch-set law
+/// covers ALL script lanes (S1), same product as MCP `script`"*. One product
+/// means one commit path, so the fork is gone.
+///
+/// The local transaction could not simply be re-premised in place: touch-set
+/// premises digest each touched file's WHOLE bytes, and this side records only
+/// the served FACE of a read (a `cat` of one section is not the file). Porting
+/// it would have bought a second, subtly different premise implementation —
+/// the drift class that produced the bug.
+///
 /// # Errors
 /// A transport failure, or a refusal that never reached evaluation.
 pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<ScriptTrace, Fail> {
-    // § A.7 patterns (OQ3 ruling 2026-08-14): expansion is the ENGINE's,
-    // against the daemon's entry world — never a CLI-private glob. A
-    // `--files` member carrying a pattern forwards the WHOLE attempt as one
-    // wire `script` op through the same door: the daemon pins the entry,
-    // expands (recording the rows), evaluates, and commits; the answer is
-    // the same ScriptTrace this lane assembles locally — one trace contract,
-    // one expansion site in the system.
-    if parsed.files.iter().any(|m| policy::is_glob_pattern(m)) {
-        return forward(door, parsed, source);
-    }
+    forward(door, parsed, source)
+}
 
+/// The retired local transaction — **unreachable, and deleted in the very next
+/// PR** (card `script-door-commit-premise-world-grain-vs-touch-set`, PR 2).
+///
+/// It is left standing for exactly one PR so the behavior change above can be
+/// reviewed as its own argument, without a reviewer pricing a large deletion in
+/// the same verdict. Nothing calls it; the `allow` is the marker that says so
+/// out loud rather than letting `-D warnings` decide the split for us.
+#[allow(dead_code)]
+fn run_local(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<ScriptTrace, Fail> {
     // 1. The entry fingerprint (§4.7) — the premise the whole run is consistent
     //    with, and the value the commit will guard on.
     let entry = fingerprint(door)?;

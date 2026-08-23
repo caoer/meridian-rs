@@ -524,17 +524,28 @@ usage:
                            and commit what it arms. Top level IS the program:
                            read(PATH[, section=]), put(PATH,
                            props=|section=,append=) arms wire plan edits; ONE
-                           guarded splice applies them. Entry pins one
-                           fingerprint; commit guards on it — world moved ⇒
-                           refuse, nothing lands. READ BUDGET: 64 read() CALLS
-                           per attempt — NOT 64 files. A section read spends one
-                           like any other, so a file taken as toc+N sections
-                           spends 1+N and three files can exhaust it. Over the
-                           budget the run REFUSES, never truncates. The pinned
-                           fingerprint is guaranteed to that budget; above it,
-                           compose runs and check them: EQUAL entry fingerprints
-                           across runs = one snapshot, unequal = the world moved,
-                           re-run. Single attempt (retry is the
+                           guarded splice applies them. THE COMMIT'S AUTHORITY
+                           IS THE TOUCH SET — the nodes this attempt actually
+                           touched (what it read, what a pattern expanded to,
+                           what it armed), verified entry-vs-live at exactly
+                           those nodes. A foreign write OUTSIDE that set does
+                           NOT refuse; one INSIDE it refuses
+                           fingerprint_mismatch naming the moved scope, and
+                           nothing lands. NEEDS A DAEMON: this door writes AS
+                           you through the one socket, so there is no
+                           daemonless leg — with none running it auto-spawns
+                           one and waits for it to bind; if that never happens
+                           it refuses by name and nothing is evaluated. READ
+                           BUDGET: 64 read() CALLS per attempt — NOT 64 files.
+                           A section read spends one like any other, so a file
+                           taken as toc+N sections spends 1+N and three files
+                           can exhaust it. Over the budget the run REFUSES,
+                           never truncates. The pinned fingerprint is
+                           guaranteed to that budget; above it, compose runs —
+                           each run's commit answers for its OWN touch set, so
+                           unrelated corpus churn between them is not a reason
+                           to re-run; only a move inside a run's own touch set
+                           is. Single attempt (retry is the
                            caller's). --dry rehearses; --json emits the trace —
                            and THE TRACE CARRIES WHAT YOU READ: each row is
                            {kind, line, path, face}, so a read-only script is
@@ -542,9 +553,11 @@ usage:
                            reads exits `no_effect`, which reports that it armed
                            nothing, NOT that it did nothing. BY DESIGN (D-04)
                            this door has no --scope/--scope-bytes: the
-                           caller's --if-fingerprint stays the world-grain
-                           entry token; the finer grain is the run plane's
-                           own automatic touch-set premises (PR-2).
+                           caller's --if-fingerprint is the world-grain entry
+                           token and stays a WIDENING guard (strictest wins),
+                           never a requirement (R3); the finer grain is the
+                           engine's own automatic touch-set premises, which
+                           need no flag.
                            Exits: 0 committed|nothing-armed / 1
                            conflict|fault|refusal / 2 bad invocation.
 ! mrd new <KIND> <ID> [--dry] [--actor A] [--now T]
