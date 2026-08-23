@@ -403,7 +403,7 @@ pub enum ExecError {
         /// The descriptor kind that should never have arrived.
         kind: String,
         /// WHICH descriptor, by index into the batch (see [`ExecError::at`]).
-        index: Option<usize>,
+        index: Option<u32>,
     },
     /// A descriptor's verb/path is not admitted by the block's caps.
     CapDenied {
@@ -425,9 +425,9 @@ pub enum ExecError {
         /// The effective grants the resolution measured — the deny-default
         /// arm's teachable facts (dogfood r3 gap 6b). Empty for a task that
         /// declares no caps.
-        declared: Vec<String>,
+        declared: Box<[String]>,
         /// WHICH descriptor, by index into the batch.
-        index: Option<usize>,
+        index: Option<u32>,
     },
     /// A descriptor argument is missing or wrongly shaped (kernel constructors
     /// make this unreachable; hand-built descriptors fault here).
@@ -437,14 +437,14 @@ pub enum ExecError {
         /// What is wrong with it.
         reason: String,
         /// WHICH descriptor, by index into the batch.
-        index: Option<usize>,
+        index: Option<u32>,
     },
     /// `md.append_section` names a section absent from the page.
     SectionNotFound {
         /// The heading nobody could find.
         section: String,
         /// WHICH descriptor, by index into the batch.
-        index: Option<usize>,
+        index: Option<u32>,
     },
     /// `md.append_section` names a heading appearing more than once.
     SectionAmbiguous {
@@ -453,7 +453,7 @@ pub enum ExecError {
         /// How many times.
         count: usize,
         /// WHICH descriptor, by index into the batch.
-        index: Option<usize>,
+        index: Option<u32>,
     },
     /// The create door refused an `md.create` birth (occupied path, armed
     /// refusal, bad path, …) — the door's own error, carried verbatim. The
@@ -466,7 +466,7 @@ pub enum ExecError {
         /// The door's typed frame, carried whole.
         detail: String,
         /// WHICH descriptor, by index into the batch.
-        index: Option<usize>,
+        index: Option<u32>,
     },
     /// Another run holds the workspace lock (decision #9: `LOCK_NB` — a fast
     /// typed refusal, never a wait; a hung holder can never make callers hang).
@@ -514,7 +514,8 @@ impl ExecError {
     /// sharing a path and a verb apart.
     #[must_use]
     pub fn at(self, at: usize) -> Self {
-        let stamp = |index: Option<usize>| index.or(Some(at));
+        let at = u32::try_from(at).unwrap_or(u32::MAX);
+        let stamp = |index: Option<u32>| index.or(Some(at));
         match self {
             ExecError::NonMdEffect { kind, index } => ExecError::NonMdEffect {
                 kind,
@@ -583,7 +584,7 @@ impl ExecError {
             | ExecError::SectionNotFound { index, .. }
             | ExecError::SectionAmbiguous { index, .. }
             | ExecError::BirthRefused { index, .. }
-            | ExecError::CapDenied { index, .. } => *index,
+            | ExecError::CapDenied { index, .. } => index.map(|i| i as usize),
             _ => None,
         }
     }
@@ -977,7 +978,7 @@ pub fn admit(
                 .capabilities()
                 .and_then(|caps| caps.ceiling_denying(verb, Some(&coordinate)))
                 .map(ToString::to_string);
-            let declared = authority
+            let declared: Box<[String]> = authority
                 .capabilities()
                 .map(|caps| caps.effective.0.iter().map(Cap::as_string).collect())
                 .unwrap_or_default();
@@ -988,7 +989,7 @@ pub fn admit(
                     .then(|| page.to_owned()),
                 ceiling,
                 declared,
-                index: Some(index),
+                index: Some(u32::try_from(index).unwrap_or(u32::MAX)),
             });
         }
     }
@@ -1052,7 +1053,7 @@ fn realize_births(
         let out = create_waiting_out_busy(root, req.birth_seq, &args).map_err(|e| {
             ExecError::BirthRefused {
                 path: path.clone(),
-                index: Some(index),
+                index: Some(u32::try_from(index).unwrap_or(u32::MAX)),
                 // The door's typed frame, carried whole (it has no Display).
                 detail: serde_json::to_string(e.as_ref()).unwrap_or_else(|_| format!("{e:?}")),
             }
@@ -1131,7 +1132,7 @@ pub fn resolve_birth_targets(
             .map_err(|e| {
                 ExecError::BirthRefused {
                     path: path.clone(),
-                    index: Some(index),
+                    index: Some(u32::try_from(index).unwrap_or(u32::MAX)),
                     // The resolver's typed frame, carried whole (no Display).
                     detail: serde_json::to_string(e.as_ref()).unwrap_or_else(|_| format!("{e:?}")),
                 }

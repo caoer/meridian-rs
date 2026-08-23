@@ -440,12 +440,17 @@ fn a_constructor_outside_caps_is_callable_and_refused_at_admit() {
     let out = ws.run(&["probe.md#^birth", "--input-json", &input]);
     let row = row(&out);
 
-    assert_eq!(row["result"], "refused");
-    assert_eq!(row["fault"]["class"], "cap_denied");
-    assert_eq!(
-        row["applied"].as_array().expect("array").len(),
-        0,
-        "a denied batch is atomic: no row may claim it landed"
+    // A DOOR refusal is the EFFECT's row, never the fire's (F5b / A8): the
+    // fire row keeps `ok` and its `value`, so a hook's verdict survives a
+    // refused write. The denial itself is on the descriptor the door judged.
+    assert_eq!(row["result"], "ok", "{row:#}");
+    let applied = row["applied"].as_array().expect("array");
+    assert_eq!(applied.len(), 1, "one row per descriptor: {row:#}");
+    assert_eq!(applied[0]["result"], "refused", "{row:#}");
+    assert_eq!(applied[0]["class"], "cap_denied", "{row:#}");
+    assert!(
+        applied.iter().all(|r| r["result"] != "born"),
+        "a denied batch landed nothing: {row:#}"
     );
     assert!(
         !ws.file("born/Denied.md").exists(),
@@ -607,7 +612,19 @@ fn a_dry_fire_stubs_bash_and_says_so() {
 
     assert_eq!(row["exec"][0]["dry"], true, "the stub must say so: {row:#}");
     assert_eq!(row["exec"][0]["exit"], 0);
-    assert_eq!(row["exec"][0]["stdout"], "");
+    // The PUBLISHED row is the bounded one (F8): stdout by sha and a log
+    // path, never the stream inline. Under `dry` nothing ran, so there are
+    // zero bytes and no log — the dict the PROGRAM saw still carries its own
+    // empty `stdout`, which is a different surface and stays inline.
+    assert!(
+        row["exec"][0]["stdout"].is_null(),
+        "the published row must not carry the stream: {row:#}"
+    );
+    assert_eq!(row["exec"][0]["bytes"], 0, "{row:#}");
+    assert!(
+        row["exec"][0]["log"].is_null(),
+        "no log is written under dry: {row:#}"
+    );
 }
 
 // ── the argv exclusions ─────────────────────────────────────────────────────
