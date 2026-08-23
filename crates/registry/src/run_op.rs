@@ -37,7 +37,7 @@ use run::fence::TaskLanguage;
 use run::runner::{self, RunSpec, RunnerError};
 use serde_json::{Map, Value, json};
 
-use crate::run_mode;
+use run::modes;
 use wire::{ErrorBody, ErrorCode};
 
 use crate::registry::Registry;
@@ -112,7 +112,7 @@ pub(crate) fn serve_line(
     // (`corpus_warming`, retry). A fire is not the read door, so § 3.2's
     // never-blocked promise does not cover it — it refuses, it does not wait,
     // and it does not bypass.
-    if request.targets.iter().any(run_mode::is_mode_target)
+    if request.targets.iter().any(modes::is_mode_target)
         && let Err(error) = crate::server::cold_gate_wire(registry, ws)
     {
         return error_line(id, *error, rev);
@@ -189,7 +189,7 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
     let pinned = request
         .targets
         .iter()
-        .any(run_mode::is_mode_target)
+        .any(modes::is_mode_target)
         .then(|| {
             registry.warm_or_build(ws).ok();
             registry.engine_snapshot(ws)
@@ -198,21 +198,42 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
     let mut rows = Vec::with_capacity(request.targets.len());
     for (index, target) in request.targets.iter().enumerate() {
         let invocation = format!("{}-t{index}", request.invocation);
-        if run_mode::is_mode_target(target) {
+        if modes::is_mode_target(target) {
             rows.push(match &pinned {
-                Some(world) => run_mode::mode_row(
-                    &run_mode::ModeWorld {
-                        world,
-                        root: &root,
-                        ws,
-                        prelude: request.prelude.as_deref(),
-                    },
-                    target,
-                    &invocation,
-                    request.actor.as_deref(),
-                    request.now.as_deref(),
-                    &host,
-                ),
+                Some(world) => match world.docs.get(&target.page) {
+                    Some(doc) => modes::mode_row(
+                        &modes::ModeWorld {
+                            doc,
+                            root: &root,
+                            declaring_root: Some(ws),
+                            observed_root: &world.at_fingerprint,
+                            prelude: request.prelude.as_deref(),
+                            doors: modes::Doors {
+                                delta: Some(host.sink),
+                                birth_seq: Some(host.birth_seq),
+                                fields: Some(host.fields),
+                                ambient: host.ambient,
+                            },
+                        },
+                        target,
+                        &invocation,
+                        request.actor.as_deref(),
+                        request.now.as_deref(),
+                    ),
+                    // The pinned corpus does not carry this page. Answered on
+                    // the row so its siblings still report for themselves.
+                    None => json!({
+                        "page": target.page,
+                        "invocation": invocation,
+                        "result": "refused",
+                        "fault": {
+                            "class": "bad_path",
+                            "reason": format!(
+                                "no such page in the pinned corpus: {}", target.page
+                            ),
+                        },
+                    }),
+                },
                 // The reaper won the warm→pin race — the same transient the
                 // read path names, answered on the row so its siblings still
                 // report for themselves.

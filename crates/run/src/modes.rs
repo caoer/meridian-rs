@@ -27,38 +27,71 @@ use std::path::Path;
 use effects::{
     BlockFault, DeclaredEntry, Effect, EvalLimits, FireHost, RunCtx, fire_entry, load_block,
 };
-use run::blocks::{self, AnchoredBlock, BlockError};
-use run::caps::{self, Authority};
-use run::executor::{self, ApplyRequest, ExecError};
+use model::{Document, MerkleRoot};
 use serde_json::{Value, json};
 
-use crate::engine::WorkspaceEngine;
-use crate::run_op::RunHost;
+use crate::blocks::{self, AnchoredBlock, BlockError};
+use crate::caps::{self, Authority};
+use crate::executor::{self, Applied, ApplyRequest, DeltaSink, ExecError};
 
-/// The pinned world one mode-bearing submission runs against, plus the
-/// workspace facts every row needs. Built once per submission so the rows of
-/// one call cannot disagree about which corpus they read.
-pub(crate) struct ModeWorld<'a> {
-    pub(crate) world: &'a WorkspaceEngine,
-    pub(crate) root: &'a fs::WorkspaceRoot,
-    pub(crate) ws: &'a Path,
+/// What one mode-bearing target runs against.
+///
+/// The DOC is a parameter, not a lookup: the two callers hold it differently
+/// and both are right. The daemon hands the page out of its PINNED resident
+/// snapshot (an `Arc` clone — never the `domain_snapshot` fold); the CLI has
+/// no resident engine and hands the page it just loaded. Putting the world
+/// behind a borrow here is what lets ONE implementation of the rows serve
+/// both lanes, so the two cannot answer differently.
+pub struct ModeWorld<'a> {
+    /// The page, as the caller's world serves it.
+    pub doc: &'a Document,
+    /// The workspace root the effects apply against.
+    pub root: &'a fs::WorkspaceRoot,
+    /// The declaring root — whose conventions ceiling narrows the page's
+    /// `caps:`. `None` when nothing is entitled to declare policy.
+    pub declaring_root: Option<&'a Path>,
+    /// The corpus root the fire observed. Receipt provenance only; this door
+    /// holds no world pin (the 2026-08-15 no-guard-on-effects ruling).
+    pub observed_root: &'a MerkleRoot,
     /// The caller's `prelude` (cap `run.mode`), shared by every mode-bearing
     /// target in the call.
-    pub(crate) prelude: Option<&'a str>,
+    pub prelude: Option<&'a str>,
+    /// The door-side facilities a realized effect rides.
+    pub doors: Doors<'a>,
 }
 
+/// The door-side facilities one fire's md effects ride — the same four the
+/// task path threads, with the same meanings, so a fire's writes are
+/// indistinguishable from any other door write. All optional: the CLI is a
+/// separate process with no ring in reach, exactly as on the task path.
+#[derive(Default)]
+pub struct Doors<'a> {
+    /// Delta honesty: the host's frame mint. `None` on the CLI.
+    pub delta: Option<&'a dyn DeltaSink>,
+    /// The workspace ring as the create door's `SeqSink`. `None` on the CLI.
+    pub birth_seq: Option<&'a dyn wire_serve::seq::SeqSink>,
+    /// § A.2.1 passthrough onto every birth's `ctx.fields`.
+    pub fields: Option<&'a BTreeMap<String, String>>,
+    /// The caller's ambient directory, workspace-relative.
+    pub ambient: Option<&'a str>,
+}
+
+/// Empty fields for a caller with no frame passthrough in reach.
+static NO_FIELDS: std::sync::LazyLock<BTreeMap<String, String>> =
+    std::sync::LazyLock::new(BTreeMap::new);
+
 /// One mode-bearing target → one row.
-pub(crate) fn mode_row(
+#[must_use]
+pub fn mode_row(
     world: &ModeWorld<'_>,
     target: &wire::RunTarget,
     invocation: &str,
     actor: Option<&str>,
     now: Option<&str>,
-    host: &RunHost<'_>,
 ) -> Value {
     match target.mode {
         Some(wire::RunMode::Load) => load_row(world, target, invocation),
-        Some(wire::RunMode::Fire) => fire_row(world, target, invocation, actor, now, host),
+        Some(wire::RunMode::Fire) => fire_row(world, target, invocation, actor, now),
         // `mode_row` is only reached for a mode-bearing target; the shipped
         // task path is chosen before this call.
         None => refused_row(
@@ -73,15 +106,7 @@ pub(crate) fn mode_row(
 
 /// A `mode:"load"` row: `{page, rev, loaded: [...]}`.
 fn load_row(world: &ModeWorld<'_>, target: &wire::RunTarget, invocation: &str) -> Value {
-    let Some(doc) = world.world.docs.get(&target.page) else {
-        return refused_row(
-            target,
-            invocation,
-            "no_block",
-            &format!("no such page in the pinned corpus: {}", target.page),
-            None,
-        );
-    };
+    let doc = world.doc;
     // The prelude is checked ONCE, before any block — § 2.2's
     // `prelude_invalid` refuses before a single block is looked at, so a
     // typo in caller source is never reported as a page's fault.
@@ -180,17 +205,8 @@ fn fire_row(
     invocation: &str,
     actor: Option<&str>,
     now: Option<&str>,
-    host: &RunHost<'_>,
 ) -> Value {
-    let Some(doc) = world.world.docs.get(&target.page) else {
-        return refused_row(
-            target,
-            invocation,
-            "no_block",
-            &format!("no such page in the pinned corpus: {}", target.page),
-            None,
-        );
-    };
+    let doc = world.doc;
     let (block, entry, module) = match addressed_entry(world, target, invocation, doc) {
         Ok(resolved) => resolved,
         Err(row) => return row,
@@ -225,7 +241,6 @@ fn fire_row(
         &fired.effects,
         actor,
         now,
-        host,
     );
     let mut row = json!({
         "page": target.page,
@@ -257,7 +272,7 @@ fn addressed_entry(
     world: &ModeWorld<'_>,
     target: &wire::RunTarget,
     invocation: &str,
-    doc: &model::Document,
+    doc: &Document,
 ) -> Result<(AnchoredBlock, String, effects::FrozenModule), Value> {
     let Some(anchor) = target.block.as_deref() else {
         return Err(refused_row(
@@ -344,12 +359,11 @@ fn realize(
     effects: &[Effect],
     actor: Option<&str>,
     now: Option<&str>,
-    host: &RunHost<'_>,
 ) -> (Vec<Value>, Option<(&'static str, String)>) {
     if effects.is_empty() {
         return (Vec::new(), None);
     }
-    let authority = match page_authority(world, target) {
+    let authority = match page_authority(world) {
         Ok(authority) => authority,
         Err(e) => return (Vec::new(), Some(("cap_denied", e.to_string()))),
     };
@@ -372,30 +386,23 @@ fn realize(
         now,
         effects,
         authority: &authority,
-        observed_root: &world.world.at_fingerprint,
+        observed_root: world.observed_root,
         // **A fire row writes no receipt** — the recording law. The record of
         // a fire is its response and the caller's own journal.
         receipt: None,
         exec: None,
         actor,
         depth: 0,
-        delta: Some(host.sink),
-        fields: host.fields,
-        birth_seq: Some(host.birth_seq),
-        ambient: host.ambient,
+        delta: world.doors.delta,
+        fields: world.doors.fields.unwrap_or(&NO_FIELDS),
+        birth_seq: world.doors.birth_seq,
+        ambient: world.doors.ambient,
     };
     match executor::apply(world.root, &request) {
         Ok(applied) => {
             let rows = effects
                 .iter()
-                .map(|e| {
-                    json!({
-                        "kind": e.kind.as_str(),
-                        "result": "born",
-                        "args": args_of(e),
-                        "file_rev": applied.file_rev_after,
-                    })
-                })
+                .map(|e| applied_row(world, e, &applied))
                 .collect();
             (rows, None)
         }
@@ -428,20 +435,49 @@ fn realize(
     }
 }
 
+/// One realized effect as its `applied[]` row.
+///
+/// `file_rev` names the rev of **the record this row touched** — for a birth
+/// that is the BORN file, not the page. The batch's own `file_rev_after` is
+/// the page's, and reporting it on a birth row would put a plausible,
+/// unrelated hash where a caller expects the thing it just created. The born
+/// rev costs one read of a file we just wrote, and a rev nobody can act on
+/// costs more.
+fn applied_row(world: &ModeWorld<'_>, effect: &Effect, applied: &Applied) -> Value {
+    let mut row = json!({
+        "kind": effect.kind.as_str(),
+        "result": "born",
+        "args": args_of(effect),
+    });
+    let born_path = (effect.kind == effects::EffectKind::Create)
+        .then(|| effect.args.get("path"))
+        .flatten()
+        .and_then(|p| match p {
+            effects::ArgValue::Str(path) => Some(path.clone()),
+            effects::ArgValue::List(_) => None,
+        });
+    match born_path {
+        Some(path) => {
+            row["path"] = json!(path);
+            // Absent rather than wrong: a birth whose rev cannot be read back
+            // says nothing about it, which is a fact a caller can handle. A
+            // borrowed page rev is one it cannot.
+            if let Ok(doc) = crate::address::load_page(world.root, Path::new(&path)) {
+                row["file_rev"] = json!(doc.root.node_rev.0);
+            }
+        }
+        // An edit touched the page, so the page's post-apply rev IS this
+        // row's rev.
+        None => row["file_rev"] = json!(applied.file_rev_after),
+    }
+    row
+}
+
 /// The page's authority: its `caps:` narrowed by the declaring root's
 /// conventions.
-fn page_authority(
-    world: &ModeWorld<'_>,
-    target: &wire::RunTarget,
-) -> Result<Authority, caps::CapsError> {
-    let page_caps = world
-        .world
-        .docs
-        .get(&target.page)
-        .map(|doc| caps::page_caps(doc))
-        .transpose()?
-        .flatten();
-    let (conventions, _) = caps::load_conventions(Some(world.ws))?;
+fn page_authority(world: &ModeWorld<'_>) -> Result<Authority, caps::CapsError> {
+    let page_caps = caps::page_caps(world.doc)?;
+    let (conventions, _) = caps::load_conventions(world.declaring_root)?;
     Ok(caps::resolve_page_authority(
         page_caps.as_ref(),
         &conventions,
@@ -556,6 +592,6 @@ fn ctx_for(target: &wire::RunTarget, invocation: &str) -> RunCtx {
 
 /// Whether this target takes the mode path at all.
 #[must_use]
-pub(crate) fn is_mode_target(target: &wire::RunTarget) -> bool {
+pub fn is_mode_target(target: &wire::RunTarget) -> bool {
     target.mode.is_some()
 }

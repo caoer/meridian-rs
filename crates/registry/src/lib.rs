@@ -32,7 +32,6 @@ pub mod mw_sql;
 mod protocol;
 mod registry;
 pub mod ring;
-mod run_mode;
 mod run_op;
 mod script_op;
 mod server;

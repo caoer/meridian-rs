@@ -56,6 +56,7 @@ pub mod executor;
 pub mod fence;
 mod fp;
 pub mod gate;
+pub mod modes;
 pub mod record;
 pub mod report;
 pub mod runner;
