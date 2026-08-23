@@ -46,21 +46,16 @@
 # what runs, not the answer to "on which events does step X run".
 when:
   - event: [push, pull_request, manual]
-  # v* TAGS TOO — not so this file publishes anything on a tag (its publish step
-  # stays main+manual), but so the tag lanes have a test verdict to depend on.
-  # `tag-linux-amd64.yaml` / `tag-darwin-arm64.yaml` are separate WORKFLOWS
-  # (`labels` selects the agent per workflow) and each carries
-  # `depends_on: [{name: ci, optional: true}]`.
-  #
-  # DO NOT REMOVE THIS CLAUSE. THE TAG LANES ARE GATED ONLY THROUGH IT. Their
-  # dependency is `optional: true`, which means a dependency that is not part of
-  # the pipeline is SILENTLY IGNORED — so the moment `ci` stops running on tags,
-  # both tag lanes go back to publishing a release with no test verdict anywhere
-  # in the pipeline, exactly as they did before 2026-08-23, and nothing reports
-  # it. The subset argument that makes `optional: true` safe (their event sets
-  # are subsets of this workflow's) is true only while this clause is here.
-  - event: tag
-    ref: refs/tags/v*
+  # NOT `tag`: the v* tag lanes (`tag-linux-amd64.yaml`, `tag-darwin-arm64.yaml`)
+  # are still UNGATED — they publish a release with no test verdict anywhere in
+  # the pipeline. Gating them needs this workflow to run on tags so they have a
+  # verdict to depend on, and that was withdrawn from this change on evidence:
+  # a tag workflow that starts ~18 min after `ci` (pipeline 1204) failed its
+  # CLONE with `could not read Username`, on both a docker and a local agent,
+  # while the same workflows cloned fine when they started beside `ci`
+  # (pipeline 845). Gating the tag lanes without settling that would trade
+  # "publishes ahead of the verdict" for "cannot publish at all".
+  # Follow-up card: 22-18/tasks/meridian-rs-tag-lanes-not-gated.
 
 labels:
   hostname: workstation-nyc-2
