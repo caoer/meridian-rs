@@ -152,19 +152,37 @@ pub(crate) fn middleware_rows(root: &fs::WorkspaceRoot, page: &str) -> Vec<polic
     wire_serve::write::middleware_rows(root, page)
 }
 
+/// The pending splice one middleware row evaluates over — the run plane's
+/// batch as it stands at that row.
+///
+/// A struct rather than eight parameters: these six travel together through
+/// every row of the mount, and the two `Document`s in particular are only
+/// meaningful as a pair.
+pub(crate) struct PendingSplice<'a> {
+    /// The workspace-relative page under fire.
+    pub page: &'a str,
+    /// The page as the executor loaded it under the lock.
+    pub before: &'a Document,
+    /// The pending candidate INCLUDING every earlier row's transforms — the
+    /// caller re-derives it between rows, as the wire door does, so row *n*
+    /// reads the world row *n-1* left it.
+    pub after: &'a Document,
+    /// The pending batch's edits.
+    pub edits: &'a [Edit],
+    /// The §9 identity the receipt attests.
+    pub actor: &'a str,
+    /// The put frame's opaque § A.2.1 map, delivered verbatim as `ctx.fields`.
+    pub fields: &'a BTreeMap<String, String>,
+}
+
 /// Evaluate ONE armed middleware row over the run plane's pending splice, and
 /// hand back its emissions in order.
 ///
 /// This is the call that closes design § 6 step 6: `fields` is the put frame's
 /// opaque § A.2.1 map, delivered verbatim as `ctx.fields` — the same map the
-/// birth lane already hands the create door ([`crate::executor::ApplyRequest::fields`]),
-/// now reaching the splice-door writes too.
-///
-/// `before` is the page as the executor loaded it under the lock; `after` is
-/// the pending candidate INCLUDING every earlier row's transforms (the caller
-/// re-derives it between rows, as the wire door does), so row *n* reads the
-/// world row *n-1* left it. `edits` is the pending batch, `actor` the §9
-/// identity the receipt attests.
+/// birth lane already hands the create door
+/// ([`crate::executor::ApplyRequest::fields`]), now reaching the splice-door
+/// writes too.
 ///
 /// # Errors
 /// The rendered refusal detail, ready for
@@ -175,26 +193,21 @@ pub(crate) fn middleware_rows(root: &fs::WorkspaceRoot, page: &str) -> Vec<polic
 pub(crate) fn middleware_emits(
     root: &fs::WorkspaceRoot,
     row: &policy::ArmedRule,
-    before: &Document,
-    after: &Document,
-    page: &str,
-    edits: &[Edit],
-    actor: &str,
-    fields: &BTreeMap<String, String>,
+    splice: &PendingSplice<'_>,
 ) -> Result<Vec<policy::MwEmit>, String> {
     let source = row
         .rule()
         .middleware_source()
         .expect("middleware_rows filtered on the middleware leg");
-    let before = path_stamped(before, page);
-    let after = path_stamped(after, page);
+    let before = path_stamped(splice.before, splice.page);
+    let after = path_stamped(splice.after, splice.page);
     let change = policy::derive_change(
         &before,
         &after,
-        edits,
+        splice.edits,
         policy::Invocation {
             op: policy::ChangeOp::Splice,
-            actor: Some(actor),
+            actor: Some(splice.actor),
             // A fire carries no `force`: the put face's per-write override is
             // caller vocabulary, and the run request has no field for it.
             // Inventing one here would hand every fire the escape hatch a put
@@ -209,7 +222,7 @@ pub(crate) fn middleware_emits(
     // disk. The run plane compiles no cross-file members, so the overlay
     // carries exactly one entry.
     let mut overlay = BTreeMap::new();
-    overlay.insert(page.to_owned(), after.raw.clone());
+    overlay.insert(splice.page.to_owned(), after.raw.clone());
     let world = wire_serve::middleware::DoorWorld {
         root,
         overlay: &overlay,
@@ -218,7 +231,7 @@ pub(crate) fn middleware_emits(
         source,
         &policy::MwCtxInput {
             change: &change,
-            fields,
+            fields: splice.fields,
         },
         &world,
         row.rule().limits(),

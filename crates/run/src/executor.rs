@@ -498,7 +498,7 @@ pub enum ExecError {
     ArmedRefusal { detail: String },
     /// An armed MIDDLEWARE row emitted something this lane cannot land, so the
     /// apply refuses whole rather than dropping it (V1 limit, mirroring the
-    /// birth door's own: *"the birth door admits refuse, this-file set_field,
+    /// birth door's own: *"the birth door admits refuse, this-file `set_field`,
     /// and send only"*).
     ///
     /// The run plane's page splice is ONE atomic batch on ONE page committed
@@ -1577,12 +1577,14 @@ fn mount_middleware(
         let emits = crate::gate::middleware_emits(
             root,
             row,
-            doc,
-            after_doc.document(),
-            req.page,
-            &batch.edits,
-            &actor,
-            req.fields,
+            &crate::gate::PendingSplice {
+                page: req.page,
+                before: doc,
+                after: after_doc.document(),
+                edits: &batch.edits,
+                actor: &actor,
+                fields: req.fields,
+            },
         )
         .map_err(|detail| ExecError::ArmedRefusal { detail })?;
         for emit in emits {
