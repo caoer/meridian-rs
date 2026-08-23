@@ -67,6 +67,20 @@ def run(ctx):
 echo hi
 ```
 ^shell
+
+```starlark
+def run(event):
+    create(path = \"born/props.md\", body = \"hi\", props = {\"type\": \"probe\", \"tags\": [\"a\", \"b\"]})
+    return None
+
+declare(on = \"Stop\")
+```
+^birthprops
+
+```starlark
+create(path = \"born/never.md\", body = \"no\", props = {\"type\": \"probe\"})
+```
+^createload
 ";
 
 const ROOT: &str = "\
@@ -333,6 +347,63 @@ fn a_fire_births_through_the_create_door_and_reports_the_born_rev() {
         born_rev,
         row["rev"]["file"].as_str().expect("page rev"),
         "the birth row must carry the BORN file's rev, not the page's"
+    );
+}
+
+/// The two seams the merge of main `40fad579b` created, crossed in ONE page:
+/// `md.create` carries `props=` (PR 189 — the door serializes the newborn's
+/// frontmatter) **and** every effect builtin reaches its store through the
+/// phase-gated accessor (A1). Neither half is covered by "it compiles": a
+/// resolution that dropped `props_arg` would still build and would silently
+/// birth a file with no frontmatter, and one that kept the ungated `store`
+/// would still build and would let `create()` act at LOAD.
+///
+/// So: the same constructor, with the same argument, on both sides of the
+/// boundary — at fire it births WITH the props on disk; at load it faults
+/// `effect_at_load` at its own line and nothing lands.
+#[test]
+fn create_with_props_births_at_fire_and_faults_at_load() {
+    let ws = Ws::new();
+
+    // Fire: the props reach the create door and land as the born file's
+    // frontmatter — the door does the serializing, the block never spells
+    // YAML.
+    let input = ws.input("e.json", r#"{"name":"Props"}"#);
+    let out = ws.run(&["probe.md#^birthprops", "--input-json", &input]);
+    let fired = row(&out);
+    assert_eq!(fired["result"], "ok", "{fired:#}");
+    let applied = &fired["applied"][0];
+    assert_eq!(applied["kind"], "md.create");
+    assert_eq!(applied["result"], "born");
+    assert_eq!(applied["path"], "born/props.md");
+    let born = std::fs::read_to_string(ws.file("born/props.md")).expect("the file is on disk");
+    assert!(
+        born.starts_with("---\n"),
+        "the born file carries a frontmatter block: {born:?}"
+    );
+    assert!(born.contains("type: probe"), "props did not land: {born:?}");
+    // A list prop spells as ONE-LINE FLOW at the door (`write::PropValue::List`
+    // → `policy::defs::yaml_safe_flow`), which is the door's spelling and not
+    // this test's preference.
+    assert!(
+        born.contains("tags: [a, b]"),
+        "the list prop did not land in the door's flow spelling: {born:?}"
+    );
+    assert!(born.trim_end().ends_with("hi"), "body missing: {born:?}");
+
+    // Load: the SAME constructor at a block's top level is bound — so this is
+    // not a NameError — and refuses, at its own line, with nothing on disk.
+    let out = ws.run(&["--load", "probe.md"]);
+    let loaded = block(&row(&out), "createload").clone();
+    assert_eq!(loaded["result"], "fault", "{loaded:#}");
+    assert_eq!(loaded["fault"]["class"], "effect_at_load");
+    assert_eq!(
+        loaded["fault"]["line"], 1,
+        "the fault names the call site, not the block"
+    );
+    assert!(
+        !ws.file("born/never.md").exists(),
+        "a load-phase create reached disk"
     );
 }
 
