@@ -76,7 +76,12 @@ mrd init [PATH] [--name NAME]
  declare the root (PATH's own MERIDIAN.md,
  `type: meridian-root`), register its drawer, reconcile
  shadowed descendant drawers (amendment M2)
-mrd unregister [PATH] drop the daemon entry (if a daemon answers) + the drawer
+mrd unregister [PATH] drop the daemon entry (if a daemon answers) + the drawer.
+ A PATH whose directory is already gone is matched as
+ given — `Registry::unregister`'s own fallback key, and
+ the stale-entry class a sweep leaves behind. A vanished
+ path keyed by nothing refuses (exit 2) rather than
+ reporting the never-registered clean no-op
 mrd resolve [PATH] report how a path resolves — the tier that answered and
  the root it named (read-only; writes nothing). PATH
  also takes the agent-plane `root:path` spelling: a
