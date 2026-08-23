@@ -377,6 +377,7 @@ mod scenarios {
             if_root: None,
             dry: false,
             fields: BTreeMap::default(),
+            props: BTreeMap::default(),
         }
     }
 

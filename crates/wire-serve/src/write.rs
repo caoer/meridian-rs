@@ -2113,6 +2113,85 @@ pub struct CreateArgs {
     /// § A.2.1 opaque passthrough, delivered to middleware verbatim as
     /// `ctx.fields`. The engine interprets NO key.
     pub fields: BTreeMap<String, String>,
+    /// D6 — the newborn's frontmatter AS DATA: keys to scalars or lists, which
+    /// THIS DOOR serializes ([`compose_props`]). Empty is the shipped
+    /// behaviour: `body` is the whole document, frontmatter included.
+    ///
+    /// The point is the quoting: a caller that composes its own frontmatter
+    /// string must escape every value or forge keys with one `:` — an
+    /// injection class that reappeared in every record-birthing block. Handing
+    /// the door the map closes it at one place for all of them.
+    pub props: BTreeMap<String, PropValue>,
+}
+
+/// A `props` value: the two shapes a v1 frontmatter value can take. Both are
+/// single-line at the door — a list spells as one-line flow (`[a, b]`), the
+/// spelling the corpus already carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PropValue {
+    /// A scalar value — encoded by `policy::defs::yaml_safe_value`.
+    Scalar(String),
+    /// A list value — encoded by `policy::defs::yaml_safe_flow`.
+    List(Vec<String>),
+}
+
+/// **The create door's frontmatter serializer** (D6, card 17): `props` as data
+/// → the newborn's frontmatter block, prepended to `body`.
+///
+/// Keys go through `yaml_safe_key` and values through the value plane's own
+/// encoders (`yaml_safe_value` / `yaml_safe_flow`), so this door quotes
+/// exactly what every other write door quotes — one law, one owner. A hostile
+/// value cannot end its own line, open a second key, or nest a collection: it
+/// quotes, or (the D11 newline case) the birth REFUSES. Keys land in sorted
+/// order — the map carries no order, and a birth must be replayable byte for
+/// byte.
+///
+/// Ordered AFTER the `@fp` strip and the stored-form translation deliberately:
+/// those two rewrite caller bytes, and a props value must land byte-identical
+/// or refuse. A value carrying an `@fp` token or a standing agent-plane
+/// address therefore meets the guards below as a loud refusal instead of a
+/// silent rewrite.
+///
+/// # Errors
+/// `bad_request` — a key outside the property-key grammar, a value carrying a
+/// newline (D11), or a `body` that already opens its own frontmatter fence
+/// while `props` is inhabited (two spellings of one block: pass one).
+fn compose_props<'a>(
+    body: std::borrow::Cow<'a, str>,
+    path: &Path,
+    props: &BTreeMap<String, PropValue>,
+) -> Result<std::borrow::Cow<'a, str>, Box<ErrorBody>> {
+    if props.is_empty() {
+        return Ok(body);
+    }
+    // The frontmatter predicate is `syntax`'s own (`parse`: a metadata block
+    // counts only at offset 0 of a body opening `---\n`), cited rather than
+    // re-derived.
+    if body.starts_with("---\n") {
+        return Err(bad_request(format!(
+            "refused: {} was born with props= AND a body that already opens its own frontmatter \
+             fence — two spellings of one block. Pass the keys as props= (the door quotes them) \
+             or write the whole document as body=, never both",
+            path.0
+        )));
+    }
+    let mut block = String::from("---\n");
+    for (key, value) in props {
+        let key = policy::defs::yaml_safe_key(key)
+            .map_err(|_| bad_request(policy::defs::invalid_property_key_refusal(key)))?;
+        let encoded = match value {
+            PropValue::Scalar(v) => policy::defs::yaml_safe_scalar(v),
+            PropValue::List(items) => policy::defs::yaml_safe_flow(items),
+        }
+        .map_err(|_| bad_request(multi_line_value_refusal(key.as_str())))?;
+        block.push_str(key.as_str());
+        block.push_str(": ");
+        block.push_str(&encoded);
+        block.push('\n');
+    }
+    block.push_str("---\n");
+    block.push_str(&body);
+    Ok(std::borrow::Cow::Owned(block))
 }
 
 /// The outcome of a guarded `create` (birth). `committed`/`root_after` are absent
@@ -2265,6 +2344,12 @@ pub fn create_with_cache(
     // U12 — the stored-form translation at the BIRTH door (see
     // [`translate_stored_body`]).
     let body = translate_stored_body(body, &args.path)?;
+
+    // D6 — the frontmatter serializer (see [`compose_props`]): the door owns
+    // quoting, so no record-birthing block hand-rolls a YAML escaper. Last of
+    // the three body steps: the two above rewrite caller bytes, and a props
+    // value lands byte-identical or refuses at the guards below.
+    let body = compose_props(body, &args.path, &args.props)?;
 
     // The birth's after-state, built once from the body (path-stamped so the
     // gate sees it). Its whole-file rev is the born file's rev.
@@ -6583,6 +6668,7 @@ mod guarded_create_remove {
             if_root: None,
             dry: false,
             fields: BTreeMap::default(),
+            props: BTreeMap::default(),
         }
     }
 
@@ -7803,6 +7889,7 @@ mod resident_write_path {
             if_root: None,
             dry: false,
             fields: BTreeMap::default(),
+            props: BTreeMap::default(),
         }
     }
 
@@ -8230,5 +8317,269 @@ mod resident_write_path {
             );
             assert_ne!(served, ambient_root(&root).expect("oracle"));
         }
+    }
+}
+
+/// **The create door's frontmatter serializer** (D6, card 17): `props` is data
+/// the DOOR quotes, so the quoting-injection class closes once for every
+/// record-birthing block instead of once per block.
+///
+/// The table below is the card's own hostile-value gate: every value a program
+/// could previously have smuggled a key, a comment, a collection or a second
+/// line through lands as ONE scalar that reads back byte-identically — or, for
+/// the one shape v1 frontmatter cannot hold (a newline), refuses the birth.
+#[cfg(test)]
+mod create_props_door {
+    use std::collections::BTreeMap;
+    use wire::{ErrorCode, Path};
+
+    use super::{CreateArgs, PropValue, create};
+
+    fn ws() -> (tempfile::TempDir, fs::WorkspaceRoot) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = fs::WorkspaceRoot(dir.path().to_path_buf());
+        (dir, root)
+    }
+
+    fn args(path: &str, body: &str, props: &[(&str, PropValue)]) -> CreateArgs {
+        CreateArgs {
+            id: None,
+            path: Path(path.into()),
+            body: body.into(),
+            actor: Some("alice".into()),
+            now: None,
+            if_root: None,
+            dry: false,
+            fields: BTreeMap::default(),
+            props: props
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), v.clone()))
+                .collect(),
+        }
+    }
+
+    fn scalar(v: &str) -> PropValue {
+        PropValue::Scalar(v.to_owned())
+    }
+
+    /// The read-back: the § A.6.1 decode every read seam serves through, so
+    /// "byte-identical" is asserted through the reader's own eyes, never by
+    /// re-implementing the decode in the test.
+    fn read_back(dir: &tempfile::TempDir, path: &str) -> policy::defs::FmMeta {
+        let raw = std::fs::read_to_string(dir.path().join(path)).expect("born file");
+        policy::defs::parse_meta(&raw)
+            .expect("the born frontmatter parses")
+            .expect("the born file carries frontmatter")
+    }
+
+    /// A refusal's sentence — the wire body carries it optionally.
+    fn msg(err: &wire::ErrorBody) -> String {
+        err.message.clone().unwrap_or_default()
+    }
+
+    /// THE HOSTILE-VALUE TABLE. Each value is one way a hand-rolled escaper
+    /// leaked; each lands as one scalar and reads back as itself.
+    #[test]
+    fn hostile_values_land_as_single_line_scalars_and_read_back_identical() {
+        let (dir, root) = ws();
+        let hostile: Vec<(&str, &str)> = vec![
+            ("dq", "a \" quote"),
+            ("sq", "it's mine"),
+            ("colon", "key: value"),
+            ("hash", "# not a comment"),
+            ("dash", "- not a list item"),
+            ("space", "  padded  "),
+            ("wikilink", "[[f6656ff1]]"),
+            ("yaml", "{a: 1}"),
+            ("fence", "--- not a fence"),
+            ("empty", ""),
+            ("brackets", "[a, b]"),
+            ("newline_escape", "a\\nb"),
+        ];
+        let props: Vec<(&str, PropValue)> = hostile.iter().map(|(k, v)| (*k, scalar(v))).collect();
+        create(&root, None, &args("notes/hostile.md", "# H\n", &props), &[])
+            .expect("the birth lands");
+
+        let meta = read_back(&dir, "notes/hostile.md");
+        for (key, value) in &hostile {
+            assert_eq!(
+                meta.get(*key),
+                Some(&policy::defs::FmValue::Str((*value).to_owned())),
+                "{key} must read back as the caller's own string"
+            );
+        }
+        let raw = std::fs::read_to_string(dir.path().join("notes/hostile.md")).expect("born");
+        assert_eq!(
+            raw.lines().filter(|l| *l == "---").count(),
+            2,
+            "no hostile value opened or closed a second frontmatter block: {raw}"
+        );
+        assert!(
+            raw.ends_with("# H\n"),
+            "the body follows the door's block verbatim: {raw}"
+        );
+    }
+
+    /// A list value lands as a ONE-LINE flow list — the spelling the corpus
+    /// carries (`tags: [type/agent]`) — and a hostile member quotes instead of
+    /// ending the list early.
+    #[test]
+    fn list_values_land_as_a_flow_list_a_reader_projects() {
+        let (dir, root) = ws();
+        create(
+            &root,
+            None,
+            &args(
+                "notes/list.md",
+                "# L\n",
+                &[
+                    ("tags", PropValue::List(vec!["type/agent".into()])),
+                    (
+                        "hostile",
+                        PropValue::List(vec!["a, b".into(), "]".into(), "[x, y]".into()]),
+                    ),
+                    ("empty", PropValue::List(vec![])),
+                ],
+            ),
+            &[],
+        )
+        .expect("the birth lands");
+
+        let raw = std::fs::read_to_string(dir.path().join("notes/list.md")).expect("born");
+        assert!(
+            raw.contains("tags: [type/agent]\n"),
+            "the plain list keeps the corpus spelling: {raw}"
+        );
+        let meta = read_back(&dir, "notes/list.md");
+        assert_eq!(
+            meta.get("tags"),
+            Some(&policy::defs::FmValue::List(vec![
+                policy::defs::FmValue::Str("type/agent".into())
+            ])),
+            "a list value reads back as a list"
+        );
+        let policy::defs::FmValue::List(members) =
+            meta.get("hostile").expect("hostile list").clone()
+        else {
+            panic!("the hostile list must still be a list: {raw}");
+        };
+        assert_eq!(
+            members,
+            vec![
+                policy::defs::FmValue::Str("a, b".into()),
+                policy::defs::FmValue::Str("]".into()),
+                policy::defs::FmValue::Str("[x, y]".into()),
+            ],
+            "every hostile member reads back as itself, three members not six"
+        );
+    }
+
+    /// The NAMED RESIDUAL, pinned so it is a decision and not an accident: a
+    /// props scalar whose text is a typed YAML scalar lands verbatim and reads
+    /// back typed — the value plane's standing carve-out, identical at every
+    /// other write door. Only the COLLECTION classes are forced to quote,
+    /// because this door has a typed arm for those.
+    #[test]
+    fn a_typed_scalar_still_lands_verbatim_and_reads_back_typed() {
+        let (dir, root) = ws();
+        create(
+            &root,
+            None,
+            &args(
+                "notes/typed.md",
+                "# T\n",
+                &[("n", scalar("7")), ("flag", scalar("true"))],
+            ),
+            &[],
+        )
+        .expect("the birth lands");
+        let raw = std::fs::read_to_string(dir.path().join("notes/typed.md")).expect("born");
+        assert!(
+            raw.contains("n: 7\n") && raw.contains("flag: true\n"),
+            "{raw}"
+        );
+        let meta = read_back(&dir, "notes/typed.md");
+        assert_eq!(meta.get("n"), Some(&policy::defs::FmValue::Int(7)));
+        assert_eq!(meta.get("flag"), Some(&policy::defs::FmValue::Bool(true)));
+    }
+
+    /// D11 at this door too: a newline cannot ride a v1 frontmatter value, so
+    /// the BIRTH refuses — the value is never sanitized into something the
+    /// caller did not write, and nothing lands.
+    #[test]
+    fn a_newline_value_refuses_the_birth() {
+        let (dir, root) = ws();
+        let err = create(
+            &root,
+            None,
+            &args("notes/nl.md", "# N\n", &[("bad", scalar("a\nb: forged"))]),
+            &[],
+        )
+        .expect_err("a newline value refuses");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(
+            msg(&err).contains("\"bad\"") && msg(&err).contains("newline"),
+            "the refusal names the key and the law: {}",
+            msg(&err)
+        );
+        assert!(
+            !dir.path().join("notes/nl.md").exists(),
+            "nothing landed on a refused birth"
+        );
+    }
+
+    /// A key outside the property-key grammar refuses through the SAME sentence
+    /// the patch face teaches — one law, one owner.
+    #[test]
+    fn a_forged_key_refuses_the_birth() {
+        let (_dir, root) = ws();
+        let err = create(
+            &root,
+            None,
+            &args("notes/key.md", "# K\n", &[("a: b\nc", scalar("x"))]),
+            &[],
+        )
+        .expect_err("a forged key refuses");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert_eq!(
+            msg(&err),
+            policy::defs::invalid_property_key_refusal("a: b\nc")
+        );
+    }
+
+    /// `props=` AND a body that opens its own fence are two spellings of one
+    /// block: the door refuses rather than pick one.
+    #[test]
+    fn props_beside_a_body_frontmatter_refuses() {
+        let (_dir, root) = ws();
+        let err = create(
+            &root,
+            None,
+            &args(
+                "notes/both.md",
+                "---\nstatus: open\n---\n# B\n",
+                &[("type", scalar("agent"))],
+            ),
+            &[],
+        )
+        .expect_err("two frontmatter spellings refuse");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(
+            msg(&err).contains("two spellings of one block"),
+            "the refusal teaches the choice: {}",
+            msg(&err)
+        );
+    }
+
+    /// Empty `props` is the shipped birth, byte for byte: the door adds no
+    /// frontmatter a caller did not ask for.
+    #[test]
+    fn empty_props_leaves_the_body_untouched() {
+        let (dir, root) = ws();
+        create(&root, None, &args("notes/plain.md", "# P\n", &[]), &[]).expect("the birth lands");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("notes/plain.md")).expect("born"),
+            "# P\n"
+        );
     }
 }
