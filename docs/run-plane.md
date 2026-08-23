@@ -114,20 +114,44 @@ not join their globals.
 Identity and time are **caller-supplied** (§9) — the kernel never reads a
 clock and never mints an id.
 
-**The fold behind root-at-eval is LAZY on the `mrd run` starlark leg
-(2026-08-22): it is taken when, and only when, a produced effect will carry
-it.** Eval runs first, against no token. Emitted nothing ⇒ nothing to stamp,
-no md.\* batch, no receipt — so no fold is taken and the corpus is never
-walked. Emitted something ⇒ one `fs::domain_snapshot` AFTER the eval, its root
-stamped onto every emitted effect's `Provenance::Run.root_at_eval` and handed
-to the apply as `observed_root`. After-eval observes the same domain as
-before-eval would have: this entry is hermetic by construction, so the eval
-cannot write. It is the shape the cascade already had (its per-generation fold
-runs only when that generation emitted an md.\* effect), and observation
-honesty is unchanged — the token
-still names the world the effects were produced against, and it is still never
-compared (no-guard ruling, above). The saving is the whole cost: on a
-37 800-member root the fold was **99.5%** of an effect-free run, ~0.9 s → ~20 ms.
+**The fold behind root-at-eval is LAZY on the starlark leg (2026-08-22): it is
+taken when, and only when, THIS TENSE'S OUTPUT will put the token in front of a
+reader.** Eval runs first, against no token; the fold, if it is bought at all,
+happens after it. This binds every caller of `runner::run` / `runner::rehearse`
+— the `mrd run` CLI, the wire `run` op (`registry::run_op`) and `realise` — not
+the CLI alone.
+
+The two tenses have different readers, so they have different gates, and the
+difference is the point:
+
+| tense | folds when | the token's reader |
+|---|---|---|
+| **rehearsal** (`--dry`) | ANY effect was emitted | the report, which serializes whole effects — provenance included |
+| **live** | an **md.\*** effect was emitted | the receipt's `root_pin`, written from `observed_root` |
+
+The live gate is narrower because the live report renders `kind` + `domain`
+only (`run::report::EffectLine`): a live block that emitted nothing but
+`proto.*`/`daemon.*` has no consumer for the token anywhere — no batch, no
+`observed_root`, no receipt, and a report that never prints provenance. Folding
+for it would spend the whole cost of the run on an observation nobody reads.
+**That is the hook shape** — notice / remind / send, live, once per event — so
+it is the case the gate exists for, not an edge. Such a run leaves
+`root_at_eval` empty in the in-memory effect set: that is what "not observed"
+looks like, and nothing renders it.
+
+When a gate does fire: one `fs::domain_snapshot` AFTER the eval, its root
+stamped onto every emitted effect's `Provenance::Run.root_at_eval` and, on the
+live leg, handed to the apply as `observed_root`. After-eval observes the same
+domain as before-eval would have: this entry is hermetic by construction, so
+the eval cannot write. Observation honesty is unchanged — the token still names
+the world the effects were produced against, and it is still never compared
+(no-guard ruling, above).
+
+The live gate is the gate the **cascade** already had (its per-generation fold
+runs only when that generation emitted an md.\* effect); the run leg was the
+odd one out. The rehearsal's gate is deliberately wider — its report shows
+more, so it owes more. The saving is the whole cost: on a 37 800-member root
+the fold was **99.5%** of an effect-free run, ~0.9 s → ~20 ms.
 
 Starlark-invokes-bash is a **permanent no**
 (decision #17, test-gated): the sandbox exposes no `exec` / `subprocess` /
@@ -2100,7 +2124,7 @@ tenses).
 | in-process script serve (§ A.7) | `crates/registry` (the op arm: entry world, host, threading, commit) over `crates/effects` (kernel, trace, digest) — added 2026-08-12 |
 | wire run serve (§ A.8) + script effects mode | `crates/registry` (`run_op`: per-target loop, §9 threading; `script_op`: the live host) over `crates/run` (the plane, unchanged) — added 2026-08-13 |
 | per-phase timing (`MRD_TIMING`) | `crates/timing` (the switch, the sink, the span) — the phase call sites are `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`; § Timing phases — added 2026-08-22 |
-| root-at-eval observation (the lazy fold) | `crates/run::dispatch_starlark::observe_if_emitted` — ONE owner, called by `runner` in both tenses (rehearse and live); § The run plane (`RunCtx`) — added 2026-08-22 |
+| root-at-eval observation (the lazy fold) | `crates/run::dispatch_starlark::observe_if_emitted` — ONE owner of the per-tense gate; `runner::rehearse` calls it directly, the live leg calls it inside `dispatch_starlark::dispatch`. `evaluate` returns `Unobserved`, so neither can skip it and still compile; § The run plane (`RunCtx`) — added 2026-08-22 |
 
 ---
 
