@@ -3136,6 +3136,45 @@ pub fn fm_publish(block: &str, key: &str, stored: &str) -> String {
     scalar::text(stored)
 }
 
+/// [`fm_publish`] for a seam that holds a whole [`Document`]: the published
+/// text of one frontmatter key, or `None` when the page has no frontmatter or
+/// does not declare the key.
+///
+/// The block bytes are the point. `fm_publish` cannot be asked from a
+/// [`YamlMap`] alone, because *"is this a block scalar"* is a fact about the
+/// key LINE and the map has already thrown the line away. Every seam that
+/// wants the answer therefore needs the same three moves — find the
+/// frontmatter node, slice its span out of `doc.raw`, look the key up — and
+/// this is that walk, once.
+///
+/// It exists because it was already written four times. `preset`, `realise`
+/// and `mrd`'s `realise_cmd` each carried a byte-identical private `find`
+/// closure over the frontmatter node followed by [`scalar::text`], and
+/// `wire-serve`'s `read_props` carried a fourth near-copy — the shape PR 189's
+/// review named as *"a rule spelled three times is three chances to spell it
+/// differently"*, which is exactly how those three came to be spelled without
+/// the block-scalar branch at all (card
+/// `scalar-text-trims-config-key-block-scalars`).
+///
+/// Not every `scalar::text` caller wants this. `run`'s binding parser
+/// (`run/src/address.rs`) reads a value whose grammar is `[[#^id]]`, and the
+/// trim it gets from `scalar::text` is load-bearing there: a `>`-folded
+/// binding publishes a trailing newline that would push the closing `]]` out
+/// of reach of the parser's suffix strip. A seam earns this function by
+/// publishing a value to a caller, not by reading frontmatter.
+#[must_use]
+pub fn fm_doc_publish(doc: &Document, key: &str) -> Option<String> {
+    let fm = find_frontmatter(&doc.root)?;
+    let NodeKind::Frontmatter { map } = &fm.kind else {
+        return None;
+    };
+    let block = doc.raw.get(fm.span.clone()).unwrap_or_default();
+    map.0
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, stored)| fm_publish(block, key, stored))
+}
+
 /// The value one frontmatter key PUBLISHES, read off the BLOCK — § A.6.1′.
 ///
 /// A key line that carries a scalar serves it decoded (§ A.6.1, through
