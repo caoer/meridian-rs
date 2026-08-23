@@ -962,6 +962,17 @@ pub fn yaml_safe_flow(items: &[String]) -> Result<String, MultiLineValue> {
 /// decodes to a text the doors REFUSE to accept, and preservation must not
 /// smuggle it past that refusal as a "no-op".
 ///
+/// **Deliberately NOT widened by the 2026-08-23 encoder change** (card
+/// `all-digit-short-ids-read-as-int`). The write side now quotes a value a YAML
+/// parser would read back as a number, a bool or a 1.1-typed spelling, but this
+/// predicate keeps the two exclusions it had. So a stored `owner: 19895504`
+/// survives a same-value write-back with its bytes, and the 37 such ids on the
+/// live root are repaired only by a write that CHANGES the value. Two reasons,
+/// both load-bearing: preservation is what stops two writers oscillating over
+/// one line (§ A.6.3c's whole purpose), and repairing on a no-op would turn a
+/// 2.8 % population into a rewrite of every record anyone touches. Repairing
+/// the class on purpose is a corpus migration, not a write-door behaviour.
+///
 /// ONE owner, shared by every § A.6.3a door: the value-span splice above keeps
 /// the span bytes; the line-composing doors keep the spelling through
 /// [`yaml_preserve_or_encode`].
