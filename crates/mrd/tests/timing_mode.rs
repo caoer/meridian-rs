@@ -78,16 +78,6 @@ def run(ctx):
 ^stamp-1
 ";
 
-struct Ws {
-    tmp: tempfile::TempDir,
-}
-
-impl Ws {
-    fn new() -> Self {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        std::fs::write(tmp.path().join("solo.md"), SOLO_PAGE).expect("page");
-        std::fs::write(tmp.path().join("emit.md"), EMIT_PAGE).expect("emit page");
-        std::fs::write(tmp.path().join("stamp.md"), EFFECTFUL_PAGE).expect("effectful page");
         Self { tmp }
     }
 
@@ -341,14 +331,22 @@ fn an_effect_free_run_folds_today() {
 }
 
 /// The `solo` block emits no md.* effect, so there is no batch — and no
-/// `apply` line claiming there was one.
+/// `apply` line claiming there was one. It emits no effect AT ALL, so the
+/// lazy fold never runs either and no `snapshot*` line claims a walk that did
+/// not happen (`run_lazy_snapshot.rs` gates that claim in both tenses).
 #[test]
 fn a_phase_that_did_not_run_emits_no_line() {
     let ws = Ws::new();
     let out = ws.mrd(Some("1"), &["run", "solo.md", "--json"]);
+    let names = phases(&stderr(&out));
     assert!(
-        !phases(&stderr(&out)).iter().any(|p| p == "apply"),
+        !names.iter().any(|p| p == "apply"),
         "an effect-free run reported an apply: {}",
+        stderr(&out)
+    );
+    assert!(
+        !names.iter().any(|p| p.starts_with("snapshot")),
+        "an effect-free run reported a corpus fold: {}",
         stderr(&out)
     );
 }
