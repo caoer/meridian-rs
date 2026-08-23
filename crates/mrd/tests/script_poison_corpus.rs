@@ -43,6 +43,7 @@ fn config(tmp: &TempDir) -> Config {
     // refuses an identity-less local hello, and these tests measure poison
     // handling, not the law.
     config.build_sha = Some(env!("MRD_BUILD_SHA").to_owned());
+    config.drain_cold_builds = Duration::from_secs(30);
     config
 }
 

@@ -280,6 +280,7 @@ fn g1_stale_daemon_at_the_old_path_is_not_dialled() {
     config.prewarm_quiet_max = forever;
     config.idle_exit = None;
     config.build_sha = Some(env!("MRD_BUILD_SHA").to_owned());
+    config.drain_cold_builds = Duration::from_secs(30);
     let server = registry::RunningServer::start(config).expect("old-path daemon binds");
 
     let out = sb.run_degraded(&ws, &["read", "doc.md", "--json"]);
