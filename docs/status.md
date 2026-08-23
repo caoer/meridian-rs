@@ -1485,11 +1485,12 @@ mrd-timing cmd=run who=p41273.t1 phase=snapshot.read us=402118
   diagnostic's text gets the same treatment, for the same reason.)
 - `who=` — the EMITTER inside that process: `p<pid>.t<n>`, where `n` is a
   per-process thread ordinal minted on that thread's first line. Both halves are
-  digits. The daemon serves one connection per thread, so ops in flight at the
-  same moment carry different `t` and separate; several processes appending to
-  one file separate by `p`. **It is not a request id**: a thread reused for a
-  later request keeps its ordinal, so `who=` separates concurrent work, never
-  successive work on one thread.
+  digits. Several processes appending to one file separate by `p`; concurrent
+  work inside one process separates by `t`. **It is not a request id** — a
+  thread reused for later work keeps its ordinal — and on the daemon it is not a
+  connection either: § The daemon's own lane is the only place that answers what
+  `t` will actually be on a busy server, and reading it as "one op" is the
+  mistake this field is easiest to make.
 - `phase=` — a name whose dot marks a PART of the phase it prefixes
   (`snapshot.read` is inside `snapshot`). That is not the whole containment
   rule — `dispatch` contains `snapshot`, `eval` and `apply` with no dot in
@@ -1574,8 +1575,29 @@ and the registry's own startup and error lines.
   is still deaf — this covers the auto-spawn, which is how the daemon actually
   starts.
 
+##### What `t` names here, and what it does not
+
+Read a daemon sink as **folds, not requests**. Every phase the daemon can emit
+comes from the corpus fold in `Registry::warm_or_build`, and the cold gate does
+not run that on the thread that took your request: it kicks a background
+`drawer-rebuild` thread, SINGLE-FLIGHT per workspace, and the connection thread
+waits for it (`crates/registry/src/registry.rs` § `cold_gate`). So on this lane
+`t` is *which fold*, and the three consequences are the ones an operator will
+actually meet:
+
+| What you run | What the sink shows |
+|---|---|
+| Concurrent ops on DIFFERENT cold workspaces | one `who=` per workspace — they separate |
+| Concurrent ops on the SAME cold workspace | **one** `who=`. There is one fold; the second op waits on it or is refused `corpus_warming`. Two ops, one emitter, and nothing was lost |
+| Any op on a WARM workspace | **no daemon line at all** — nothing was folded, so nothing is measured |
+| The prewarm sweep | its own `who=`, with no connection behind it at all |
+
+The trap this table exists to close: a missing `t2` is not a request that never
+ran. It is work that was already done, or done once for two askers.
+
 For a single request's server-side total the frame's `meta.duration_us` remains
-the honest number: `who=` names the thread, not the request (§ Two line shapes).
+the honest number: `who=` names the emitting thread, never the request
+(§ Two line shapes).
 
 Which phases `mrd run` emits: `run-plane.md` § Timing phases. The instrument is
 `crates/timing` (`laws.md` § Crate charters).
