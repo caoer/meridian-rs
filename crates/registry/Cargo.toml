@@ -10,6 +10,15 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Fixture support: `test_support::TestServer`, the one owner of a fixture's
+# daemon + `TempDir` teardown order (card `fixture-drain-guard-followups`).
+# Reached through DEV-dependency edges only — this crate's own self-edge below
+# and `mrd`'s — so a production consumer of `registry` never compiles the
+# module and never grows the `tempfile` edge. That is why `tempfile` is
+# optional here rather than a plain dependency.
+test-support = ["dep:tempfile"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -75,6 +84,9 @@ receipt = { workspace = true }
 # outside `model`'s public surface). Both already in the graph and lockfile.
 config = { workspace = true }
 blake3 = "1"
+# Optional, and ONLY for the `test-support` fixture module (see [features]).
+# Off by default, so this is not a production edge.
+tempfile = { version = "3", optional = true }
 # § A.10 wire `walk`: the serve arm hands the warm engine's projection to the
 # SAME walk computer the CLI pin planes color through (`view::walk`) — the
 # one-owner law; the corpus assembly it feeds lives in
@@ -89,7 +101,11 @@ view = { workspace = true }
 notify = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+# The self-edge is how this crate's OWN integration tests get a lib compiled
+# with `test-support` (the standard cargo idiom for a test-only feature). It
+# also keeps `tempfile` — declared optional above — active for the test build,
+# which is what the fixtures `use` directly.
+registry = { path = ".", features = ["test-support"] }
 # walk_op gates render green-pin fixtures through the one owner of the lock
 # grammar; `model`/`syntax` (already runtime deps) mint the live fingerprints.
 lock = { workspace = true }

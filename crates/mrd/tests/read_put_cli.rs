@@ -40,11 +40,9 @@ const DOC: &str = "# Alpha\n\none two three\n\n## Beta\n\nfour five\n";
 
 impl Sandbox {
     fn command(&self, cwd: &Path, args: &[&str]) -> Command {
-        let mut cmd = Command::new(mrd_bin());
+        let mut cmd = common::mrd_command(&self.home, &self.cache_home);
         cmd.args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             // Spawn-impossible: the read path degrades in-process,
             // deterministically — no resident daemon ever starts.
             .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
@@ -61,11 +59,9 @@ impl Sandbox {
     /// Writes are IPC: this path auto-spawns the test binary as the daemon
     /// (`MERIDIAN_DAEMON_BIN` = this `mrd`). Parse-only refusals never dial.
     fn run_stdin(&self, cwd: &Path, args: &[&str], stdin_bytes: &str) -> Output {
-        let mut cmd = Command::new(mrd_bin());
+        let mut cmd = common::mrd_command(&self.home, &self.cache_home);
         cmd.args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .env_remove("MERIDIAN_WORKSPACE");
         let mut child = cmd

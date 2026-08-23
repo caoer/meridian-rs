@@ -14,7 +14,7 @@ fn spec_in<'a>(
     env: &'a BTreeMap<String, String>,
 ) -> ExecSpec<'a> {
     ExecSpec {
-        source,
+        program: exec::Program::Inline(source),
         args: &[],
         env,
         scratch: scratch.path(),
@@ -65,7 +65,7 @@ fn the_project_root_is_exported_to_the_step() {
     let project = tempfile::tempdir().unwrap();
     let env = BTreeMap::new();
     let r = exec::exec(&ExecSpec {
-        source: r#"printf '%s' "${MERIDIAN_PROJECT_ROOT:-unset}""#,
+        program: exec::Program::Inline(r#"printf '%s' "${MERIDIAN_PROJECT_ROOT:-unset}""#),
         args: &[],
         env: &env,
         scratch: scratch.path(),
@@ -112,7 +112,7 @@ fn timeout_sigkills_the_group_and_is_a_distinct_state() {
     let env = BTreeMap::new();
     let started = Instant::now();
     let r = exec::exec(&ExecSpec {
-        source: "sleep 30",
+        program: exec::Program::Inline("sleep 30"),
         args: &[],
         env: &env,
         scratch: tmp.path(),

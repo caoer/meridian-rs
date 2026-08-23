@@ -56,16 +56,30 @@
 # what runs, not the answer to "on which events does step X run".
 when:
   - event: [push, pull_request, manual]
-  # NOT `tag`: the v* tag lanes (`tag-linux-amd64.yaml`, `tag-darwin-arm64.yaml`)
-  # are still UNGATED — they publish a release with no test verdict anywhere in
-  # the pipeline. Gating them needs this workflow to run on tags so they have a
-  # verdict to depend on, and that was withdrawn from this change on evidence:
-  # a tag workflow that starts ~18 min after `ci` (pipeline 1204) failed its
-  # CLONE with `could not read Username`, on both a docker and a local agent,
-  # while the same workflows cloned fine when they started beside `ci`
-  # (pipeline 845). Gating the tag lanes without settling that would trade
-  # "publishes ahead of the verdict" for "cannot publish at all".
-  # Follow-up card: 22-18/tasks/meridian-rs-tag-lanes-not-gated.
+  # `tag` is here so the RELEASE route has a verdict to depend on: both v* tag
+  # lanes (`tag-linux-amd64.yaml`, `tag-darwin-arm64.yaml`) now declare
+  # `depends_on: [ci]`, and a workflow cannot depend on one that never ran.
+  # Nothing in THIS file publishes on a tag — `publish mrd` narrows to
+  # push/main + manual, and the tag lanes own the release artifacts.
+  #
+  # The same `v*` filter as the tag lanes, for the same reason: the repo also
+  # carries component and snapshot tags (`sidecar-v0.1.0`, `stage2-pin`), and a
+  # bare `event: tag` would run the whole suite for every one of them.
+  #
+  # THIS WAS WITHDRAWN ONCE, ON EVIDENCE, AND IT IS BACK BECAUSE THE EVIDENCE
+  # CHANGED. Gating makes the tag workflows start ~18 min after `ci`, and a late
+  # workflow used to lose its clone credential (pipeline 1204: `could not read
+  # Username`, exit 128, on BOTH a docker and a local agent). That was never a
+  # property of `depends_on` — the netrc was the repo user's OAuth access token
+  # stamped once at pipeline parse, and it died on its own clock. PR 200 gave
+  # every workflow here a non-rotating PAT (see the `clone:` block below), which
+  # is what makes this gate landable. Landable, not proven safe: one tag-lane
+  # clone has run late and survived (1328, +1171 s from parse) and it was
+  # pre-gate, while under the gate none has cloned at all — 1330 was refused red
+  # and both tag workflows skipped, `started=null`. The first real `v*` release
+  # is the proof. Card: 22-18/tasks/meridian-rs-tag-lanes-not-gated.
+  - event: tag
+    ref: refs/tags/v*
 
 labels:
   hostname: workstation-nyc-2
@@ -96,6 +110,12 @@ clone:
     image: docker.io/woodpeckerci/plugin-git:2.9.2
     environment:
       PLUGIN_DEPTH: "0" # the server default clone's own setting — same fetch shape
+      # ci now runs on tag events too (the v* gate); the default clone only fetched tags there, so
+      # fetch them always — the mirror is local, cost ~nil. (Hunk authored by e860ada5, who owns
+      # this block, and handed to this PR so the lanes are touched once: without it, a `ci` running
+      # on a v* tag clones WITHOUT the tag object, and anything that peels or describes the tag
+      # breaks silently — compiler.go set cloneSettings["tags"] only on tag events.)
+      PLUGIN_TAGS: "true"
       CI_NETRC_MACHINE: git.0xdao.app
       CI_NETRC_USERNAME: caoer115
       CI_NETRC_PASSWORD:
@@ -338,7 +358,14 @@ steps:
       # nothing. -s keeps the per-check tallies, so the warning COUNT still
       # prints — the number survives, its 2340-line graph does not. Any real
       # error still prints in full, and the exit code is untouched.
-      - cargo deny --log-level error check -s
+      # --locked: cargo-deny shells out to `cargo metadata`, the ONE cargo call
+      # in this pipeline that could rewrite the tracked Cargo.lock on a stale
+      # resolve (deny.toml sets all-features=true, which widens it). Every other
+      # lane is --locked; without this flag the deny lane could refresh the lock
+      # early enough that the --locked lanes then find it current — and the tree
+      # gate would red main from the publish step with the symptom naming the
+      # wrong lane. Card: 22-18/tasks/ci-tree-gate-blind-spots.
+      - cargo deny --locked --log-level error check -s
 
   # Harness bit-rot catches, not perf gates: one iteration per bench target,
   # then render the live claims table into the CI log. Wall-time numbers are
@@ -389,8 +416,11 @@ steps:
   # byte-wise must never silently invalidate a digest a consumer already
   # recorded.
   #
-  # THIS BUILD *IS* BIT-REPRODUCIBLE, and the previous revision of this comment
-  # said otherwise. Measured 2026-08-23: a `git archive` of 4640044e0, built in
+  # THIS BUILD REPRODUCED BIT-FOR-BIT ONCE, WITH EVERY INPUT HELD — one commit,
+  # linux-amd64, this image tag, a warm shard. That is what was measured and all
+  # that is claimed; the previous revision of this comment asserted the opposite
+  # in general, which was also more than it knew. Measured 2026-08-23: a `git
+  # archive` of 4640044e0, built in
   # this image on this runner with the same sccache shard, the same
   # MRD_BUILD_SHA and the same target-dir PATH, reproduced the published
   # mrd-linux-amd64 byte for byte — sha256
@@ -464,11 +494,13 @@ steps:
       # and not a stricter one. Measured, and it is why this hunk exists: with a
       # bare `git status --porcelain` the test lane's `target-ci/` (its
       # CARGO_TARGET_DIR, untracked, sharing this workspace) read as divergence
-      # and every main head shipped a `-dirty` pin. NINE of them, every main
-      # push from the gating commit to this one, each log carrying exactly one
+      # and every main head shipped a `-dirty` pin. TEN of them — every main
+      # push from the gating commit to the fix, each log carrying exactly one
       # porcelain line, `?? target-ci/`: 1228 `171280b46`, 1234 `40fad579b`,
       # 1244 `3259343e1`, 1258 `612a4550e`, 1259 `0d60d29be`, 1262 `ed15def72`,
-      # 1275 `4640044e0`, 1284 `f249db4b9`, 1294 `165ba87a8`.
+      # 1275 `4640044e0`, 1284 `f249db4b9`, 1294 `165ba87a8`, 1311 `f3b586aec`.
+      # (This comment said NINE when it was written and the run was still open:
+      # 1311 landed after it. First CLEAN main stamp: 1335, `4ac5acbc6`.)
       #
       # It is DETERMINISTIC, not flaky, and `db71afc11` is where it starts —
       # the commit that gated this step on all six lanes. Before that gate the
@@ -484,7 +516,7 @@ steps:
       # TRACKED file mid-pipeline — the pin would name bytes no sha can recover
       # (crates/mrd/tests/rules_cli.rs:1407 refuses a dirty tree for that
       # reason), and a WARNING that never fails is ceremony: it printed on all
-      # nine and stopped nothing.
+      # TEN and stopped nothing.
       #
       # THE PROBE IS TRI-STATE AND SO IS THIS GATE. `if [ -n "$(git …)" ]` is
       # the wrong shape: a git that exits non-zero with empty stdout — dubious
@@ -510,6 +542,21 @@ steps:
         if [ -n "$porcelain" ]; then
           echo "tracked content diverges from $${CI_COMMIT_SHA} — refusing to publish a pin no sha can recover"
           printf '%s\n' "$porcelain"
+          exit 1
+        fi
+        # THE FOURTH STATE (F7, binding review of PR 199): the probe above answers
+        # "does TRACKED content diverge from HEAD" — but the stamp names
+        # CI_COMMIT_SHA, which came from the environment and was never read from
+        # the tree. Nothing else compares them: a lane that moves HEAD (none does
+        # today; `git checkout` added tomorrow is the failing input) would stamp
+        # a sha whose tree was not built, with a clean probe. Same tri-state
+        # shape: a rev-parse that cannot answer refuses, it does not warn.
+        if ! head="$(git rev-parse HEAD)"; then
+          echo "rev-parse FAILED — cannot attest which tree was built"
+          exit 1
+        fi
+        if [ "$head" != "$${CI_COMMIT_SHA}" ]; then
+          echo "HEAD is $head, not $${CI_COMMIT_SHA} — the probe answered for a tree the stamp does not name; refusing"
           exit 1
         fi
         echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}" > /tmp/stamp.env
