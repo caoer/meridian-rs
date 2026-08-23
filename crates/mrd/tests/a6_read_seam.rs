@@ -10,131 +10,173 @@
 //!
 //! **Why the assertion is an OUTCOME and not a string.** A test that read `fm`
 //! and compared it here would prove the test's own comparison, not the engine's
-//! behaviour. These drive the real script entry through its `Door` seam and
-//! assert on what the run DID: a decoded value arms the claim and reaches
-//! `Committed`; a value still carrying quote bytes leaves the run at
-//! `NoEffect`. That is exactly the silent face the receipts caught, so it
-//! cannot pass vacuously. **Unchanged by the rewrite below.**
+//! behaviour. These drive the real script entry and assert on what the run DID:
+//! a decoded value arms the claim and reaches `Committed`; a value still
+//! carrying quote bytes leaves the run at `NoEffect`. That is exactly the silent
+//! face the receipts caught, so it cannot pass vacuously. **Unchanged by either
+//! rewrite below.**
 //!
 //! **Rewritten 2026-08-08 (Amendment 1a).** `read(path)` no longer fetches
 //! frontmatter with one `cat` per key; it takes the whole plane from the
-//! composed read's `props[]`, which the daemon serves already decoded
-//! (`wire-serve::read` `read_props`). So the decode moved OUT of the code path
-//! this file exercises, and a fake serving raw key lines would now be testing
-//! nothing.
+//! composed read's `props[]`, which the daemon serves already decoded. So the
+//! decode moved out of the code path this file exercised, and the fake was
+//! changed to serve each stored form through the production codec.
 //!
-//! The law is therefore gated in two places instead of one, and this file keeps
-//! the half it can still prove:
+//! ⭐ **Rewritten again 2026-08-23 (card
+//! `script-door-commit-premise-world-grain-vs-touch-set`) — and this one is a
+//! PROMOTION.** `mrd script` became one lane: the whole attempt is the wire
+//! `script` op, so this process no longer performs the read, and a fake door
+//! standing in for the daemon can no longer place a `props[]` where the
+//! evaluation would see it. The rows here would have had nothing left to
+//! measure.
 //!
-//! - **That the daemon decodes** — `wire-serve::read::props_scalar_tests`,
-//!   net-new, asserting `read_props` applies the § A.6 codec across every
-//!   stored form. That gate did not exist before this change.
-//! - **That the script plane carries a decoded value through and does not
-//!   re-decode it** — here. The fake serves each stored form through the
-//!   production codec, exactly as the daemon would, and the assertions on what
-//!   the run DID are untouched.
+//! So they run against a LIVE daemon over REAL FILES instead. That is strictly
+//! stronger than what they replaced, and in the direction the season-1 finding
+//! came from: the old fake called `model::scalar::text` to stand in for the
+//! daemon — one function of the chain — while this drives the whole chain the
+//! corpus actually has (the frontmatter parse, `read_props`' § A.6 codec, the
+//! kernel's comparison), on bytes as they sit on disk. A decode that worked in
+//! the codec and broke in the parse was invisible before and is not now.
 //!
-//! The fake calls `model::scalar::text` rather than hardcoding decoded strings:
-//! standing in for the daemon means using the daemon's own function, not a
-//! second implementation of it that could drift.
+//! The other half of the law keeps its own gate:
+//! `wire-serve::read::props_scalar_tests` asserts `read_props` applies the § A.6
+//! codec across every stored form.
 
-use std::io;
+use std::io::{self, BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use mrd::script::cmd::attempt;
 use mrd::script::{Door, ScriptOutcome};
+use registry::{Config, RunningServer};
 use serde_json::{Value, json};
+use tempfile::TempDir;
 
-/// The entry fingerprint the fake daemon reports (§4.7).
-const ENTRY: &str = "b3:a90f13c7ba0e1d4f5c6b7a8990112233445566778899aabbccddeeff00112233";
-
-/// The one page the fake daemon serves.
+/// The one page each fixture serves.
 const CARD: &str = "tasks/0011-token-audit.md";
 
-/// A fake daemon serving ONE frontmatter value, verbatim as it would sit on
-/// disk. Everything else it answers is fixed, so two runs differing only in
-/// `owner_line` differ only in the stored quoting.
-struct Fake {
-    /// The bytes after `owner:` on disk — the receipts' left-hand column.
-    stored: String,
-    owner_line: String,
+// ── the live daemon ──────────────────────────────────────────────────────────
+
+/// A real `RunningServer` over a corpus of one card, whose `owner` line carries
+/// the stored form under test.
+///
+/// Struct fields drop in declaration order: `server` (stop → drain) MUST precede
+/// `_tmp`, else the workspace vanishes under the builder — the class-2 flake
+/// (pipelines 1098/1101).
+struct Fixture {
+    server: RunningServer,
+    ws: PathBuf,
+    _tmp: TempDir,
 }
 
-impl Fake {
-    /// `stored` is the bytes after `owner:` on disk, exactly as the corpus
-    /// carries them — the receipts' left-hand column.
+impl Fixture {
+    /// `stored` is the bytes AFTER `owner:` on disk — the receipts' left-hand
+    /// column, leading space included.
     fn serving(stored: &str) -> Self {
+        let tmp = TempDir::new().expect("tempdir");
+        let ws = tmp.path().join("ws");
+        let card = ws.join(CARD);
+        std::fs::create_dir_all(card.parent().expect("a parent")).expect("mkdir");
+        std::fs::write(
+            &card,
+            format!("---\nowner:{stored}\nstatus: todo\n---\n\n# Goals\n\nship the script entry\n"),
+        )
+        .expect("seed the card");
+        let server = RunningServer::start(config(&tmp)).expect("the daemon starts");
         Self {
-            stored: stored.to_owned(),
-            owner_line: format!("owner:{stored}\n"),
+            server,
+            ws,
+            _tmp: tmp,
         }
     }
 }
 
-impl Door for Fake {
-    fn call(&mut self, request: &Value) -> io::Result<String> {
-        let op = request["op"].as_str().expect("every request names an op");
-        Ok(match op {
-            "fingerprint" => format!(r#"{{"ok":true,"body":{{"fingerprint":"{ENTRY}","seq":2}}}}"#),
-            "toc" => json!({"ok": true, "body": {
-                "path": CARD,
-                "file_rev": "7c40e1a8b2f9d356",
-                "fingerprint": ENTRY,
-                "nodes": [
-                    {"kind": "frontmatter", "span": [0, 32], "node_rev": "26796ebec5d0bf1a",
-                     "text_prefix_16b": "---\nowner:\n", "keys": ["owner", "status"]},
-                    {"kind": "heading", "level": 1, "hpath": [{"h": "Goals"}],
-                     "span": [32, 140], "content_span": [40, 140],
-                     "node_rev": "a6665baff294bd04", "text_prefix_16b": "# Goals\n\nship th"},
-                ],
-            }})
-            .to_string(),
-            "read" => json!({"ok": true, "body": {
-                "path": CARD,
-                "file_rev": "7c40e1a8b2f9d356",
-                "root": ENTRY,
-                "words_total": 41,
-                "toc": [],
-                "anchors": [],
-                "rendered_text": "",
-                // The daemon decodes; standing in for it means using ITS
-                // function, so this cannot drift from production behaviour.
-                "props": [
-                    {"key": "owner", "value": model::scalar::text(&self.stored),
-                     "span": [4, 11], "prop_rev": "33d5b0e1"},
-                    {"key": "status", "value": "todo",
-                     "span": [12, 25], "prop_rev": "41f643f0"},
-                ],
-            }})
-            .to_string(),
-            "cat" => {
-                let content = match request["sec"]["fm_key"].as_str() {
-                    Some("owner") => self.owner_line.clone(),
-                    Some("status") => "status: todo\n".to_string(),
-                    _ => "## Goals\n\nship the script entry\n".to_string(),
-                };
-                json!({"ok": true, "body": {
-                    "span": [4, 12], "node_rev": "33d5b0e1b27cb48b", "content": content
-                }})
-                .to_string()
-            }
-            "splice" => format!(
-                r#"{{"ok":true,"body":{{"armed":{{"edits":1}},"fingerprint_before":"{ENTRY}","fingerprint_after":"b3:c4e91d02","seq":3,"verdicts":[]}}}}"#
-            ),
-            other => panic!("the script entry asked for an op it must not know: {other}"),
-        })
+/// A real daemon config: the reaper never evicts a warm engine mid-test, and the
+/// idle-exit clock is the test's.
+#[allow(clippy::duration_suboptimal_units)]
+fn config(tmp: &TempDir) -> Config {
+    let forever = Duration::from_secs(365 * 24 * 60 * 60);
+    let mut config = Config::for_cache_root(tmp.path().join("cache"));
+    config.idle_threshold = forever;
+    config.reap_interval = forever;
+    config.prewarm_interval = forever;
+    config.prewarm_quiet_max = forever;
+    config.idle_exit = None;
+    config.drain_cold_builds = Duration::from_secs(30);
+    config.build_sha = Some(env!("MRD_BUILD_SHA").to_owned());
+    config
+}
+
+/// The production NDJSON dialogue, with the `corpus_warming` retry the cold
+/// gate's `recovery: retry` contract asks for.
+struct LiveDoor {
+    writer: UnixStream,
+    reader: BufReader<UnixStream>,
+}
+
+impl LiveDoor {
+    fn open(socket: &Path, ws: &Path) -> Self {
+        let stream = UnixStream::connect(socket).expect("dial the daemon");
+        let mut door = Self {
+            writer: stream.try_clone().expect("clone"),
+            reader: BufReader::new(stream),
+        };
+        let hello = door
+            .call(&json!({
+                "op": "hello", "proto": 1, "contract": "v3",
+                "workspace": ws.to_str().expect("utf-8 workspace"),
+            }))
+            .expect("the handshake");
+        assert_eq!(
+            serde_json::from_str::<Value>(&hello).expect("a frame")["ok"],
+            json!(true),
+            "the daemon binds the workspace: {hello}"
+        );
+        door
     }
 }
 
-/// Run `src` against a daemon whose `owner` line carries `stored`, and report
-/// whether the run armed anything.
+impl Door for LiveDoor {
+    fn call(&mut self, request: &Value) -> io::Result<String> {
+        let started = std::time::Instant::now();
+        loop {
+            let mut line = serde_json::to_string(request)?;
+            line.push('\n');
+            self.writer.write_all(line.as_bytes())?;
+            self.writer.flush()?;
+            let mut response = String::new();
+            self.reader.read_line(&mut response)?;
+            if let Ok(frame) = serde_json::from_str::<Value>(&response)
+                && frame["ok"] != json!(true)
+                && frame["error"]["code"] == json!("corpus_warming")
+            {
+                assert!(
+                    started.elapsed() < Duration::from_secs(30),
+                    "corpus_warming persisted past 30s; last: {response}"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            return Ok(response);
+        }
+    }
+}
+
+/// Run `src` against a daemon whose card's `owner` line carries `stored`, and
+/// report whether the run armed anything.
 fn armed(stored: &str, src: &str) -> bool {
-    let mut door = Fake::serving(stored);
+    let fixture = Fixture::serving(stored);
+    let mut door = LiveDoor::open(fixture.server.socket_path(), &fixture.ws);
     let argv = ["--actor".to_owned(), "8ab41c02".to_owned()];
     let trace = attempt(&argv, src, &mut door).expect("the attempt runs");
     match trace.outcome {
         ScriptOutcome::Committed => true,
         ScriptOutcome::NoEffect => false,
-        other => panic!("the run neither committed nor stayed inert: {other:?}"),
+        other => panic!(
+            "the run neither committed nor stayed inert: {other:?} — {:?}",
+            trace.fault
+        ),
     }
 }
 
