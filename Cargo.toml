@@ -38,7 +38,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT OR Apache-2.0"
@@ -49,39 +49,39 @@ publish = false
 # The timing instrument (docs/status.md § The timing mode): `std`-only, ZERO
 # deps, under every layer — `fs`, `run` and `mrd` take it, and an instrument
 # that knows nothing about them can sit beneath all three without a cycle.
-timing = { path = "crates/timing", version = "1.0.0" }
+timing = { path = "crates/timing", version = "1.1.0" }
 # The agent-plane address leaf (stage 3, D4): `std`-only, zero deps, UPSTREAM of
 # `syntax` — an address becomes a value here, so nothing downstream re-splits a
 # string (docs/address-grammar.md § 7.1).
-addr = { path = "crates/addr", version = "1.0.0" }
-syntax = { path = "crates/syntax", version = "1.0.0" }
-model = { path = "crates/model", version = "1.0.0" }
-fs = { path = "crates/fs", version = "1.0.0" }
-wire = { path = "crates/wire", version = "1.0.0" }
-wire-map = { path = "crates/wire-map", version = "1.0.0" }
-wire-serve = { path = "crates/wire-serve", version = "1.0.0" }
-render = { path = "crates/render", version = "1.0.0" }
-receipt = { path = "crates/receipt", version = "1.0.0" }
-transport = { path = "crates/transport", version = "1.0.0" }
-policy = { path = "crates/policy", version = "1.0.0" }
-query = { path = "crates/query", version = "1.0.0" }
-workspace = { path = "crates/workspace", version = "1.0.0" }
-cache = { path = "crates/cache", version = "1.0.0" }
-registry = { path = "crates/registry", version = "1.0.0" }
-effects = { path = "crates/effects", version = "1.0.0" }
-run = { path = "crates/run", version = "1.0.0" }
-realise = { path = "crates/realise", version = "1.0.0" }
-view = { path = "crates/view", version = "1.0.0" }
-lock = { path = "crates/lock", version = "1.0.0" }
-preset = { path = "crates/preset", version = "1.0.0" }
-check = { path = "crates/check", version = "1.0.0" }
+addr = { path = "crates/addr", version = "1.1.0" }
+syntax = { path = "crates/syntax", version = "1.1.0" }
+model = { path = "crates/model", version = "1.1.0" }
+fs = { path = "crates/fs", version = "1.1.0" }
+wire = { path = "crates/wire", version = "1.1.0" }
+wire-map = { path = "crates/wire-map", version = "1.1.0" }
+wire-serve = { path = "crates/wire-serve", version = "1.1.0" }
+render = { path = "crates/render", version = "1.1.0" }
+receipt = { path = "crates/receipt", version = "1.1.0" }
+transport = { path = "crates/transport", version = "1.1.0" }
+policy = { path = "crates/policy", version = "1.1.0" }
+query = { path = "crates/query", version = "1.1.0" }
+workspace = { path = "crates/workspace", version = "1.1.0" }
+cache = { path = "crates/cache", version = "1.1.0" }
+registry = { path = "crates/registry", version = "1.1.0" }
+effects = { path = "crates/effects", version = "1.1.0" }
+run = { path = "crates/run", version = "1.1.0" }
+realise = { path = "crates/realise", version = "1.1.0" }
+view = { path = "crates/view", version = "1.1.0" }
+lock = { path = "crates/lock", version = "1.1.0" }
+preset = { path = "crates/preset", version = "1.1.0" }
+check = { path = "crates/check", version = "1.1.0" }
 # The git plumbing organ (S5): shell-out content-addressing + reachability. A
 # std-only leaf, so `mrd`/`wire-serve`/`view` can each take the edge.
-git = { path = "crates/git", version = "1.0.0" }
+git = { path = "crates/git", version = "1.1.0" }
 # The MERIDIAN.md config plane (stage 3, D4): the one entry point parsed as
 # content. Downstream of `model` — it is the markdown engine's own parser that
 # gives the config a rev, which is what "config is content" means.
-config = { path = "crates/config", version = "1.0.0" }
+config = { path = "crates/config", version = "1.1.0" }
 
 serde = { version = "1", features = ["derive"] }
 # `raw_value` is what lets a consumer carry a response through VERBATIM: the
