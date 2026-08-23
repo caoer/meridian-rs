@@ -1356,6 +1356,14 @@ pub struct MountRow {
     /// the engine reports it verbatim and never acts on it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub primary: bool,
+    /// The second spelling this root answers to (`meridian-md-schema.md`
+    /// §5.1b) — present exactly on a row whose block declares `alias:`, absent
+    /// everywhere else, mirroring the config grammar. A LOOKUP spelling only:
+    /// a `root:path` resolves by name first and only then by alias, and every
+    /// canonical echo a client receives back — receipts, pins, `mint {…}`
+    /// paths, `sub` rows — carries [`MountRow::name`], never this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 /// One reached walk edge (§ A.10): depth-tagged, color-computed per query.

@@ -604,9 +604,12 @@ fn store_path(
             "`{name}` names a root, but no mount table could be read here, so its object store cannot be asked"
         ));
     };
-    let Some(mount) = table.by_name(name.as_str()) else {
+    // Name first, then alias (§5.1b) — the one lookup order every door shares,
+    // so a spelling that reaches a root at one door reaches it at all of them.
+    let Some(mount) = table.by_name_or_alias(name.as_str()) else {
         return Err(format!(
-            "root `{name}` is not mounted here, so its object store cannot be asked. Fix: declare it in MERIDIAN.md"
+            "root `{name}` is not mounted here, so its object store cannot be asked. Fix: declare it in MERIDIAN.md, or {}",
+            crate::rooted::alias_teaching(name)
         ));
     };
     // Declared but unusable is a different cause with a different fix. The mount
