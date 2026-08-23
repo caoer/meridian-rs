@@ -3,7 +3,7 @@
 //!
 //! A page carrying `description: >` and six indented lines published `">"` on
 //! `read`'s `props[]` and `">"` in `sql`'s `frontmatter`, while `PyYAML` read
-//! the whole 459-character text. 45 live pages were mis-served. The pages are
+//! the whole 459-character text. 45 key ROWS on 37 pages were mis-served. The pages are
 //! valid YAML: this was a decoder gap on our side, never corpus damage.
 //!
 //! The engine's decoder is hand-rolled (the `model` crate is serde-free by the
@@ -14,31 +14,71 @@
 //!
 //! ZT-ruled (a) 2026-08-23, relayed by leader `73c3fab5`: `props[].value`
 //! carries the real newlines. This is the FIRST widening of that plane, and it
-//! is a widening for BOTH indicators — clip chomping (the default, and what all
-//! 45 pages use) leaves a trailing `\n` on a FOLDED scalar too, so there is no
-//! "folded is the safe case" split.
+//! is a widening for BOTH indicators — clip chomping (the default, and what
+//! every one of those pages uses) leaves a trailing `\n` on a FOLDED scalar
+//! too, so there is no "folded is the safe case" split.
+//!
+//! **These assertions drive the WIRE FACE, not the model.** The first version
+//! of this file called `model`'s flat map directly and passed while the
+//! published `read` face still trimmed every value at
+//! `wire-serve/src/read.rs:474` — one layer BELOW the assertion. Review seat
+//! `79c5905c` caught it (B1, PR 189 @ `563bff59b`): `sql` served the card
+//! page's 459 characters, `read` served 458. A gate one layer off the face it
+//! claims to cover is not a gate, so every row below now goes through
+//! `serve()` (the `props_plane.rs` shape) for `read` and through `fm_value`
+//! for `sql`, with `PyYAML` as the third opinion.
 
-/// The engine's answer for one key, off the `model` faces both published
-/// surfaces call: Face B (`fm_value`, behind `sql`'s `frontmatter`) and Face A
-/// (the flat `YamlMap` behind `read`'s `props[]`).
-fn engine_faces(raw: &str, key: &str) -> (String, String) {
-    let doc = model::build(raw.to_string(), syntax::parse(raw));
+use serde_json::{Value, json};
+
+/// The two PUBLISHED faces for one key, each driven at its own door:
+/// `read`'s `props[]` over the v3 serve (what an agent actually receives) and
+/// `sql`'s `frontmatter` value through `model::fm_value` (what the projector
+/// stores). Never the model flat map — that is the layer the first gate
+/// mistook for the face.
+fn wire_faces(dir: &std::path::Path, rel: &str, key: &str) -> (String, String) {
+    let frames = serve(dir, &[json!({"id":1,"op":"read","path":rel})]);
+    assert_eq!(frames[1]["ok"], json!(true), "read serves: {}", frames[1]);
+    let props = frames[1]["body"]["props"]
+        .as_array()
+        .expect("props plane")
+        .clone();
+    let read_face = props
+        .iter()
+        .find(|p| p["key"] == json!(key))
+        .unwrap_or_else(|| panic!("key {key:?} absent from props[]"))["value"]
+        .as_str()
+        .expect("value is a string")
+        .to_owned();
+
+    let raw = std::fs::read_to_string(dir.join(rel)).expect("fixture readable");
+    let doc = model::build(raw.clone(), syntax::parse(&raw));
     let fm = doc
         .root
         .children
         .iter()
         .find(|n| matches!(n.kind, model::NodeKind::Frontmatter { .. }))
         .expect("the fixture carries frontmatter");
-    let model::NodeKind::Frontmatter { map } = &fm.kind else {
-        unreachable!("filtered above")
-    };
-    let face_a = map.0.iter().find(|(k, _)| k == key).map_or_else(
-        || panic!("key {key:?} absent from the flat map"),
-        |(_, v)| v.clone(),
-    );
-    let face_b = model::fm_value(&raw[fm.span.clone()], key)
+    let sql_face = model::fm_value(&raw[fm.span.clone()], key)
         .unwrap_or_else(|| panic!("key {key:?} absent from fm_value"));
-    (face_a, face_b)
+    (read_face, sql_face)
+}
+
+/// Drive one v3 serve session over `doc_dir` — the `props_plane.rs` harness.
+fn serve(doc_dir: &std::path::Path, requests: &[Value]) -> Vec<Value> {
+    let mut input = crate::daemon_door::hello_line(Some("v3"), doc_dir);
+    for r in requests {
+        input.push_str(&serde_json::to_string(r).expect("request serializes"));
+        input.push('\n');
+    }
+    crate::daemon_door::serve_frames(&input)
+}
+
+/// Write one fixture page into a temp workspace and answer (dir, rel).
+fn fixture(frontmatter: &str) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rel = "probe.md".to_owned();
+    std::fs::write(dir.path().join(&rel), page(frontmatter)).expect("write fixture");
+    (dir, rel)
 }
 
 /// One key's value as `PyYAML` reads it — the foreign oracle.
@@ -95,12 +135,38 @@ fn every_block_scalar_shape_agrees_with_pyyaml_on_both_faces() {
         ("value carrying a colon", "k: |\n  owner: not a key\n"),
         ("value carrying a dash", "k: |\n  - not a list\n"),
         ("next key after the block", "k: |\n  body\nother: plain\n"),
+        // The four shapes review seat 79c5905c hand-crafted to break the first
+        // implementation (B2). Both faces agreed with each other and disagreed
+        // with YAML; live reachability is zero, which is exactly why only an
+        // oracle could find them.
+        ("literal, one leading blank", "k: |\n\n  a\n"),
+        ("literal, two leading blanks", "k: |\n\n\n  a\n"),
+        ("folded, one leading blank", "k: >\n\n  a\n"),
+        (
+            "folded, blank AFTER a more-indented line",
+            "k: >\n  a\n    b\n\n  c\n",
+        ),
+        (
+            "literal, whitespace-only line indented PAST the block",
+            "k: |\n  a\n   \n  b\n",
+        ),
+        (
+            "folded, whitespace-only line indented PAST the block",
+            "k: >\n  a\n   \n  b\n",
+        ),
+        ("keep, body is only empty lines", "k: |+\n\n\n"),
+        ("keep, body is one empty line", "k: |+\n\n"),
+        ("clip, body is only empty lines", "k: |\n\n\n"),
+        ("keep, content then trailing blanks", "k: |+\n  a\n\n\n"),
     ] {
-        let raw = page(fm);
-        let want = pyyaml(&raw, "k");
-        let (face_a, face_b) = engine_faces(&raw, "k");
-        assert_eq!(face_b, want, "{name}: sql face vs PyYAML");
-        assert_eq!(face_a, want, "{name}: read props face vs PyYAML");
+        let want = pyyaml(&page(fm), "k");
+        let (dir, rel) = fixture(fm);
+        let (read_face, sql_face) = wire_faces(dir.path(), &rel, "k");
+        assert_eq!(sql_face, want, "{name}: sql frontmatter vs PyYAML");
+        assert_eq!(
+            read_face, want,
+            "{name}: read props[].value vs PyYAML — THE face the card is about"
+        );
     }
 }
 
@@ -108,8 +174,9 @@ fn every_block_scalar_shape_agrees_with_pyyaml_on_both_faces() {
 /// interior newlines on the JSON face, and `sql`'s text is identical.
 #[test]
 fn a_literal_three_line_scalar_carries_two_interior_newlines_on_both_faces() {
-    let raw = page("notes: |\n  first\n  second\n  third\n");
-    let (face_a, face_b) = engine_faces(&raw, "notes");
+    let fm = "notes: |\n  first\n  second\n  third\n";
+    let (dir, rel) = fixture(fm);
+    let (face_a, face_b) = wire_faces(dir.path(), &rel, "notes");
     assert_eq!(face_a, "first\nsecond\nthird\n");
     assert_eq!(face_b, face_a, "sql text identical to the props value");
     assert_eq!(
@@ -122,7 +189,7 @@ fn a_literal_three_line_scalar_carries_two_interior_newlines_on_both_faces() {
         2,
         "exactly two U+000A INSIDE the value, as ruled"
     );
-    assert_eq!(face_a, pyyaml(&raw, "notes"));
+    assert_eq!(face_a, pyyaml(&page(fm), "notes"));
 }
 
 /// The leader's required test, part 2: the `>` clip case — a folded scalar is
@@ -130,22 +197,23 @@ fn a_literal_three_line_scalar_carries_two_interior_newlines_on_both_faces() {
 /// ruling had to cover both indicators.
 #[test]
 fn a_folded_clip_scalar_still_ends_in_a_newline() {
-    let raw = page("description: >\n  line one\n  line two\n");
-    let (face_a, face_b) = engine_faces(&raw, "description");
+    let fm = "description: >\n  line one\n  line two\n";
+    let (dir, rel) = fixture(fm);
+    let (face_a, face_b) = wire_faces(dir.path(), &rel, "description");
     assert_eq!(face_a, "line one line two\n");
     assert_eq!(face_b, face_a);
     assert!(
         face_a.ends_with('\n'),
         "clip chomping keeps one trailing newline — the reason (a) is (a) for both indicators"
     );
-    assert_eq!(face_a, pyyaml(&raw, "description"));
+    assert_eq!(face_a, pyyaml(&page(fm), "description"));
 }
 
 /// The regression fixture the advisor named: the live page's own bytes, copied
 /// (the live page is read-only). 459 characters, ending in a newline.
 #[test]
 fn the_live_regression_fixture_reads_back_whole() {
-    let raw = page(concat!(
+    let fm = concat!(
         "name: ground-truth-verifier\n",
         "description: >\n",
         "  Verifies a wiki page or compound source against the REAL system it describes\n",
@@ -155,9 +223,10 @@ fn the_live_regression_fixture_reads_back_whole() {
         "  a fidelity check needs an external anchor instead of self-report. Returns a\n",
         "  per-claim ledger: VERIFIED-AGAINST-REALITY / CONTRADICTED / UNVERIFIABLE.\n",
         "model: opus\n",
-    ));
-    let (face_a, face_b) = engine_faces(&raw, "description");
-    let want = pyyaml(&raw, "description");
+    );
+    let (dir, rel) = fixture(fm);
+    let (face_a, face_b) = wire_faces(dir.path(), &rel, "description");
+    let want = pyyaml(&page(fm), "description");
     assert_eq!(face_b, want, "sql face");
     assert_eq!(face_a, want, "read props face");
     // 459 CHARACTERS, 463 bytes — the two em-dashes cost 2 bytes each.
@@ -173,8 +242,8 @@ fn the_live_regression_fixture_reads_back_whole() {
     assert!(face_a.ends_with("UNVERIFIABLE.\n"));
     assert_ne!(face_a, ">", "the indicator byte is gone from both faces");
     // The keys AROUND a block scalar keep reading exactly as before.
-    assert_eq!(engine_faces(&raw, "model").0, "opus");
-    assert_eq!(engine_faces(&raw, "name").0, "ground-truth-verifier");
+    assert_eq!(wire_faces(dir.path(), &rel, "model").0, "opus");
+    assert_eq!(wire_faces(dir.path(), &rel, "name").0, "ground-truth-verifier");
 }
 
 /// The SUSPENDED half, pinned so nobody widens it by accident: a block-style
@@ -183,8 +252,8 @@ fn the_live_regression_fixture_reads_back_whole() {
 /// changing it needs ZT's amendment (advisor ruling 2026-08-23).
 #[test]
 fn a_block_list_is_untouched_by_this_card() {
-    let raw = page("skills:\n  - obsidian-md\n  - other\n");
-    let (face_a, face_b) = engine_faces(&raw, "skills");
+    let (dir, rel) = fixture("skills:\n  - obsidian-md\n  - other\n");
+    let (face_a, face_b) = wire_faces(dir.path(), &rel, "skills");
     assert_eq!(face_a, "", "read props: empty, by contract");
     assert_eq!(face_b, "[obsidian-md, other]", "sql: reads it");
 }

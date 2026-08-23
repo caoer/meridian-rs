@@ -2955,8 +2955,8 @@ fn block_header(remainder: &str) -> Option<BlockHeader> {
 ///
 /// Before this, both faces served a block scalar as its INDICATOR BYTE: a page
 /// carrying `description: >` and six indented lines published `">"` on `read`
-/// and `">"` in `sql`, while `PyYAML` read the whole 459-character text. 45 live
-/// pages were mis-served. The pages are valid YAML — this was a decoder gap,
+/// and `">"` in `sql`, while `PyYAML` read the whole 459-character text — 45 key
+/// ROWS on 37 pages (`count(DISTINCT path)` = 37; `cache/src/lib.rs` says 37). The pages are valid YAML — this was a decoder gap,
 /// never corpus damage.
 ///
 /// Serde-free by the crate law (`testsuite/tests/yaml_confinement.rs`): the
@@ -2984,20 +2984,38 @@ fn fm_block_scalar(lines: &[&str], at: usize, header: BlockHeader) -> String {
             .map(|l| l.len() - l.trim_start().len())
     });
     // A header with no content at all publishes the empty string, never the
-    // indicator byte.
+    // indicator byte — EXCEPT under `keep`, which keeps the empty lines
+    // themselves (`|+` over two blanks is "\n\n"). This arm runs before the
+    // block indent is even known, because with no non-empty line there is
+    // nothing to measure it from; the earlier version returned here
+    // unconditionally and swallowed chomping (B2, review seat `79c5905c`).
     let Some(indent) = indent.filter(|i| *i > 0) else {
-        return String::new();
+        let blanks = body
+            .iter()
+            .take_while(|l| l.trim().is_empty())
+            .count();
+        return match header.chomp {
+            Chomp::Keep => "\n".repeat(blanks),
+            Chomp::Clip | Chomp::Strip => String::new(),
+        };
     };
 
     // (text, more_indented) per content line; blanks are None.
+    //
+    // A whitespace-only line is EMPTY only while it stays inside the block
+    // indent. Indented past it, those extra spaces are content (§ 8.1.1.1) and
+    // the line is more-indented, so a folded scalar keeps the breaks around it
+    // instead of folding them to a space — PyYAML reads `a`/`   `/`b` at
+    // indent 2 as "a\n \nb\n" under BOTH indicators.
     let mut content: Vec<Option<(String, bool)>> = Vec::new();
     for line in body {
-        if line.trim().is_empty() {
+        let blank = line.trim().is_empty();
+        if blank && line.len() <= indent {
             content.push(None);
             continue;
         }
         let width = line.len() - line.trim_start().len();
-        if width < indent {
+        if !blank && width < indent {
             break;
         }
         let text = line[indent..].to_string();
@@ -3006,7 +3024,12 @@ fn fm_block_scalar(lines: &[&str], at: usize, header: BlockHeader) -> String {
     // Trailing blanks are chomping's business, not content's.
     let last_text = content.iter().rposition(Option::is_some);
     let Some(last_text) = last_text else {
-        return String::new();
+        // No content at all: `keep` still keeps the empty lines (`|+` over two
+        // blanks is "\n\n"), clip and strip have nothing to keep.
+        return match header.chomp {
+            Chomp::Keep => "\n".repeat(content.len()),
+            Chomp::Clip | Chomp::Strip => String::new(),
+        };
     };
     let trailing_blanks = content.len() - last_text - 1;
     content.truncate(last_text + 1);
@@ -3014,30 +3037,50 @@ fn fm_block_scalar(lines: &[&str], at: usize, header: BlockHeader) -> String {
     let mut out = String::new();
     let mut blanks = 0usize;
     let mut prev_more_indented = false;
-    for (i, entry) in content.iter().enumerate() {
+    let mut seen_content = false;
+    for entry in &content {
         match entry {
             None => blanks += 1,
             Some((text, more_indented)) => {
-                if i > 0 {
-                    if header.literal {
-                        // Every break is a break, blank lines included.
-                        for _ in 0..=blanks {
-                            out.push('\n');
-                        }
-                    } else if blanks > 0 {
-                        // k blank lines = k+1 breaks = k newlines.
-                        for _ in 0..blanks {
-                            out.push('\n');
-                        }
+                if seen_content {
+                    let breaks = if header.literal {
+                        // Every break is a break, blank lines included: the
+                        // line's own, plus one per blank.
+                        blanks + 1
                     } else if *more_indented || prev_more_indented {
-                        out.push('\n');
+                        // § 8.1.3 `b-l-spaced(n) ::= b-as-line-feed l-empty(n)*`
+                        // — a break beside a more-indented line is a LINE FEED
+                        // and each following empty line adds another. The two
+                        // arms are ADDITIVE; testing `blanks > 0` first made
+                        // them exclusive and lost a newline after every
+                        // more-indented line followed by a blank.
+                        blanks + 1
                     } else {
+                        // k blank lines = k+1 breaks = k newlines; none folds
+                        // to a space.
+                        blanks
+                    };
+                    if breaks == 0 {
                         out.push(' ');
+                    } else {
+                        for _ in 0..breaks {
+                            out.push('\n');
+                        }
+                    }
+                } else {
+                    // LEADING blanks precede the first content line, so they
+                    // carry no line of their own: k blanks are k newlines under
+                    // both indicators. Counting the first content line as
+                    // "preceded by a line" emitted k+1 and put a phantom break
+                    // at the head of every literal scalar that opens blank.
+                    for _ in 0..blanks {
+                        out.push('\n');
                     }
                 }
                 out.push_str(text);
                 blanks = 0;
                 prev_more_indented = *more_indented;
+                seen_content = true;
             }
         }
     }
@@ -3053,6 +3096,43 @@ fn fm_block_scalar(lines: &[&str], at: usize, header: BlockHeader) -> String {
         }
     }
     out
+}
+
+/// **Does this key's line carry a block-scalar header?** — the question a
+/// value-publishing seam must ask before it decodes.
+///
+/// The flat map ([`YamlMap`]) stores a block scalar's ALREADY-DECODED text.
+/// Running that text through the § A.6.1 quoting decode a second time is not a
+/// no-op: [`scalar::decode`] opens with `value.trim()`, which is right for a
+/// key line's colon remainder and **wrong** for decoded block-scalar text — it
+/// eats the trailing newline clip chomping just produced, the leading newline
+/// a leading blank line produced, and the leading spaces an explicit
+/// indentation indicator preserved.
+///
+/// PR 189 review (seat `79c5905c`) measured exactly that: `sql` served the
+/// card page's 459 characters and `read`'s `props[]` served 458, the newline
+/// gone rather than escaped — the two faces the card exists to reconcile,
+/// still disagreeing one layer above the decoder.
+#[must_use]
+pub fn fm_is_block_scalar(block: &str, key: &str) -> bool {
+    let lines: Vec<&str> = block.lines().collect();
+    fm_key_line(&lines, key).is_some_and(|(_, remainder)| block_header(remainder).is_some())
+}
+
+/// The value a published seam serves for `key`, given the map's `stored` text:
+/// the § A.6.1 decode for every ordinary shape, and block-scalar text
+/// VERBATIM — it was decoded when the map was built.
+///
+/// The branch lives here, once, rather than at each seam: `scalar::text` is the
+/// door for `read`'s `props[]`, the script face's `fm`, and the run plane's
+/// bindings (`scalar.rs`), and a rule spelled three times is three chances to
+/// spell it differently.
+#[must_use]
+pub fn fm_publish(block: &str, key: &str, stored: &str) -> String {
+    if fm_is_block_scalar(block, key) {
+        return stored.to_owned();
+    }
+    scalar::text(stored)
 }
 
 /// The value one frontmatter key PUBLISHES, read off the BLOCK — § A.6.1′.
@@ -5128,7 +5208,7 @@ mod tests {
 ///
 /// A hand-rolled parser held to a standard is only as good as what it is
 /// measured against, so the matrix here is pinned against `PyYAML` in
-/// `crates/testsuite/tests/fm_block_scalar_foreign.rs`. These unit tests fix
+/// `crates/testsuite/tests/fm_block_scalar.rs`. These unit tests fix
 /// the shapes; that one proves they match a real YAML parser.
 #[cfg(test)]
 mod fm_block_scalar_tests {

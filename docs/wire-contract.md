@@ -2052,8 +2052,8 @@ digit — with the value on the following indented lines. Both published faces
 `model::fm_block_scalar`: folded breaks become spaces, a run of *k* blank lines
 becomes *k* newlines, a break adjacent to a more-indented line is kept, and
 chomping owns the trailing breaks. Until this amendment both faces published
-the INDICATOR BYTE (`">"`), mis-serving 45 live pages that were valid YAML
-throughout — a decoder gap, never corpus damage.
+the INDICATOR BYTE (`">"`), mis-serving 45 key rows across 37 live pages that
+were valid YAML throughout — a decoder gap, never corpus damage.
 
 **Consequence, ruled by ZT: `props[].value` may now carry `\n`.** It is the
 first value on that plane that can, and it is true of BOTH indicators — clip
