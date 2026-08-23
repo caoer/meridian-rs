@@ -152,7 +152,11 @@ fn prepare_voice_dir(dir: &Path) -> io::Result<()> {
 /// costs a run that did not ask for the mode nothing at all.
 ///
 /// The file grows for as long as the mode is on and is nobody's to rotate — it
-/// is the operator's to read and remove.
+/// is the operator's to read and remove. It is also opened BEFORE the spawn, so
+/// a spawn that then fails (a bad [`DAEMON_BIN_ENV`]) leaves an empty one with
+/// no daemon behind it. Named rather than fixed: the alternative is handing the
+/// child a descriptor opened after it exists, which is not a thing, and an empty
+/// file next to a daemon that did not start is not a lie about anything.
 ///
 /// A voice that cannot be opened is said out loud HERE, on the spawning client's
 /// stderr, which is a lane somebody hears: the daemon then starts mute, and the

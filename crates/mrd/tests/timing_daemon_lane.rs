@@ -11,9 +11,13 @@
 //!   no complaint AND no measurements: the "the code never ran there" answer
 //!   the instrument must never fake. While the mode is on the daemon now speaks
 //!   into `<socket-stem>.log` beside its own socket and pidfile.
-//! - **Concurrent ops are attributable.** Every line carries `who=p<pid>.t<n>`,
-//!   and the daemon serves one connection per thread, so two ops no longer emit
-//!   byte-identical `phase=` lines with nothing to tell them apart.
+//! - **Concurrent work is attributable.** Every line carries `who=p<pid>.t<n>`,
+//!   so daemon lines that used to be byte-identical now name their emitter.
+//!   What that emitter IS on this lane is narrower than it first looks: the
+//!   cold gate runs the fold on a per-workspace `drawer-rebuild` thread, not on
+//!   the connection thread, so `t` separates concurrent COLD FOLDS — one per
+//!   workspace — and two ops on one workspace share the single fold they both
+//!   waited for (`docs/status.md` § What `t` names here, and what it does not).
 //!
 //! Harness note: these tests do NOT set `MERIDIAN_DAEMON_BIN` — the point is the
 //! real auto-spawn, which launches `current_exe()`, i.e. the `mrd` under test.
@@ -119,13 +123,16 @@ impl Sandbox {
             .expect("mrd script exits")
     }
 
-    /// `mrd links --json` against `ws`. Same daemon, different op — and unlike a
-    /// `script` read this one always makes the daemon FOLD the workspace, which
-    /// is what gives each connection thread a phase to emit. Measured on
-    /// workstation-nyc-2, 2026-08-23: three `links` calls on three fresh
-    /// workspaces produced three complete folds under `who=…t1/t2/t3`, while
-    /// three `script` calls produced exactly ONE fold in total — the lazy-fold
-    /// law (`run-plane.md` § The run plane) means a served read walks nothing.
+    /// `mrd links --json` against `ws` — the op these gates drive, because a
+    /// fresh workspace makes the daemon FOLD it, which is the only thing the
+    /// daemon emits phases for.
+    ///
+    /// Measured on workstation-nyc-2, 2026-08-23: three `links` calls on three
+    /// fresh workspaces produced three complete folds (`who=…t1/t2/t3`), while
+    /// three `script` calls on three fresh workspaces produced exactly ONE.
+    /// The `script` asymmetry is UNEXPLAINED — `script_op::serve` takes the same
+    /// `cold_gate_wire` + `warm_or_build` entry, so by code it should fold per
+    /// workspace. It is recorded, not accounted for.
     fn links(&self, ws: &Path, timing: &str) -> Child {
         Command::new(mrd_bin())
             .args(["links", "--json"])
@@ -279,6 +286,53 @@ fn the_stderr_word_reaches_the_daemons_lane_too() {
     );
 }
 
+/// The OTHER half of "a lane that cannot be opened is heard": the sink the
+/// operator named is fine, but the daemon's own lane will not open. Nothing
+/// server-side can report that — the daemon has no stderr yet, which is the
+/// whole problem — so it is said on the SPAWNING CLIENT's stderr, a lane
+/// somebody hears, and the daemon starts mute rather than pretending.
+///
+/// A DIRECTORY at `<socket-stem>.log` is the cleanest way to fail exactly that
+/// open: `EISDIR` on the log, and the socket bind beside it is untouched, so
+/// the daemon still comes up and answers. A degrade that also broke the daemon
+/// would be a worse bug than the silence it replaced.
+#[test]
+fn an_unopenable_voice_is_said_on_the_spawning_clients_stderr() {
+    let sb = Sandbox::new();
+    let ws = sb.workspace();
+
+    // Occupy the lane's path with something that cannot be opened for append.
+    let voice = sb.voice();
+    std::fs::create_dir_all(&voice).expect("a directory where the lane wants a file");
+
+    let out = sb
+        .links(&ws, "1")
+        .wait_with_output()
+        .expect("mrd links exits");
+    let client = String::from_utf8_lossy(&out.stderr).into_owned();
+
+    let said = diagnostics(&client);
+    assert!(
+        said.iter()
+            .any(|line| line.contains("cannot open the daemon's lane")),
+        "the client swallowed the unopenable lane: {client}"
+    );
+    // One line, whatever the OS put in the error text.
+    for line in &said {
+        assert!(!line.trim_end().contains('\n'), "diagnostic split: {line}");
+    }
+    // And the daemon still came up: the degrade costs the voice, not the server.
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a mute daemon must still answer: {client}"
+    );
+    assert!(
+        common::child_daemon_pidfile(&sb.home, &sb.cache_home).exists(),
+        "no daemon was spawned, so this proves nothing: {client}"
+    );
+}
+
 /// Off, nothing changes: no voice file is created, and the daemon keeps the
 /// null stderr it was always spawned with. The gate is the operator's own
 /// switch, so a run that did not ask for the mode pays nothing.
@@ -322,28 +376,34 @@ fn the_mode_off_creates_no_lane() {
     );
 }
 
-/// The N4 receipt: concurrent wire ops served by ONE daemon are separable
-/// afterwards. Same `p` (one process), different `t` (one thread per
-/// connection) — which is exactly what "byte-identical `phase=snapshot` lines"
-/// lacked.
+/// The N4 receipt: concurrent work served by ONE daemon is separable afterwards.
+/// Same `p` (one process), different `t` — which is exactly what "byte-identical
+/// `phase=snapshot` lines" lacked.
 ///
 /// Three clients and the daemon all append to ONE sink file here, which is the
-/// arrangement `status.md` used to say was not demultiplexable. Each caller gets
-/// its own workspace so every connection has a fold to measure
-/// ([`Sandbox::workspace_named`]).
+/// arrangement `status.md` used to say was not demultiplexable.
+///
+/// **One workspace per caller, and that is load-bearing, not tidiness.** The
+/// cold gate folds on a per-workspace `drawer-rebuild` thread, single-flight
+/// (`registry.rs` § `cold_gate`), so what `t` separates is folds. Three fresh
+/// workspaces is what makes three of them exist; the same three calls against
+/// ONE workspace would correctly yield ONE `who=`, which is
+/// [`two_ops_on_one_cold_workspace_share_one_fold`].
 ///
 /// **Why `links` and not `script`.** The card's receipt named two concurrent
-/// `script` calls, and that op cannot carry this gate any more: since the lazy
-/// fold (`run-plane.md` § The run plane) a daemon-served READ walks nothing, so
-/// three `script` calls produce ONE fold in the daemon and there is no
-/// second daemon-side line to attribute (measured on workstation-nyc-2,
-/// 2026-08-23). `links` is the same daemon on the same wire lane and always
-/// folds. The `script` clients were still separable from each other by their own
-/// `p` halves — the gap was daemon-side work to demultiplex, not the field.
+/// `script` calls. Measured on workstation-nyc-2 2026-08-23, three `script`
+/// calls on three fresh workspaces produced ONE daemon fold, so there was no
+/// second daemon-side line to attribute and this gate failed on that. **Why is
+/// not established** — `script_op::serve` takes the same `cold_gate_wire` +
+/// `warm_or_build` entry `links` does, so by code it should fold per workspace,
+/// and the earlier claim here that the `run-plane.md` lazy-fold law explains it
+/// was wrong: that law binds `runner::run`/`rehearse` callers, not `script`.
+/// The observation stands, the cause does not; `links` folds deterministically
+/// per fresh workspace, which is all this gate needs.
 ///
-/// What this does NOT claim: that `who=` is a request id. A thread reused for a
-/// later request keeps its ordinal — the field separates concurrent work, never
-/// successive work on one thread (`crates/timing` § who).
+/// What this does NOT claim: that `who=` is a request id, or a connection. A
+/// thread reused for later work keeps its ordinal — the field separates
+/// concurrent work, never successive work on one thread (`crates/timing` § who).
 #[test]
 fn concurrent_ops_on_one_daemon_are_attributable() {
     let sb = Sandbox::new();
@@ -437,5 +497,74 @@ fn concurrent_ops_on_one_daemon_are_attributable() {
     assert!(
         client_pids.is_disjoint(&daemon_pids),
         "a client and the daemon share a pid: {client_pids:?} vs {daemon_pids:?}"
+    );
+}
+
+/// The other side of the same coin, and the one a reader is most likely to get
+/// wrong: two ops racing for ONE cold workspace produce **one** `who=`, not two.
+///
+/// That is not attribution failing. The cold gate is single-flight per
+/// workspace (`registry.rs` § `cold_gate`): the first caller kicks a
+/// `drawer-rebuild` thread, the second waits on that same rebuild or is refused
+/// `corpus_warming`, and there is exactly one fold for both to be attributed
+/// to. An operator who reads the missing `t2` as "my second op never ran" is
+/// being misled by the very field that was added to stop that — hence a gate,
+/// so `docs/status.md` § What `t` names here cannot drift away from it.
+///
+/// Robust to the race either way: if the second call arrives after the fold
+/// finished, its workspace is warm and it emits nothing server-side. One fold
+/// either way, which is the claim.
+#[test]
+fn two_ops_on_one_cold_workspace_share_one_fold() {
+    let sb = Sandbox::new();
+    let sink_dir = tempfile::tempdir().expect("sink dir");
+    let sink = sink_dir.path().join("timing.log");
+    let arg = sink.to_str().expect("utf-8 sink").to_owned();
+
+    // Bring the daemon up on a DIFFERENT workspace, so the workspace under test
+    // is still cold when the two racing calls arrive.
+    let warm = sb
+        .links(&sb.workspace_named("elsewhere"), &arg)
+        .wait_with_output()
+        .expect("mrd links exits");
+    assert_eq!(
+        warm.status.code(),
+        Some(0),
+        "the warm-up links failed: {}",
+        String::from_utf8_lossy(&warm.stderr)
+    );
+    let before: BTreeSet<String> = measurements(&read(&sink))
+        .into_iter()
+        .filter(|m| m.cmd == "daemon")
+        .map(|m| m.who)
+        .collect();
+
+    let contested = sb.workspace_named("contested");
+    let (left, right) = (sb.links(&contested, &arg), sb.links(&contested, &arg));
+    for child in [left, right] {
+        let out = child.wait_with_output().expect("mrd links exits");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "a racing links failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    let text = wait_for(&sink, |text| {
+        measurements(text)
+            .iter()
+            .filter(|m| m.cmd == "daemon")
+            .any(|m| !before.contains(&m.who))
+    });
+    let added: BTreeSet<String> = measurements(&text)
+        .into_iter()
+        .filter(|m| m.cmd == "daemon" && !before.contains(&m.who))
+        .map(|m| m.who)
+        .collect();
+    assert_eq!(
+        added.len(),
+        1,
+        "one contested workspace is one fold, so one new emitter — got {added:?}\n{text}"
     );
 }

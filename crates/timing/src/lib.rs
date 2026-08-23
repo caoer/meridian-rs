@@ -44,15 +44,17 @@
 //! request — a daemon serving many ops reports `cmd=daemon` for all of them.
 //!
 //! `who=` names the EMITTER inside that process: `p<pid>.t<n>`, where `n` is a
-//! per-process thread ordinal minted on that thread's first line ([`who`]). The
-//! daemon serves one connection per thread, so two ops in flight at the same
-//! moment carry different `who=` and demultiplex; and one file that several
-//! processes append to separates by the `p` half.
+//! per-process thread ordinal minted on that thread's first line ([`who`]). One
+//! file that several processes append to separates by the `p` half; work on
+//! different threads of one process separates by the `t` half.
 //!
-//! **What `who=` is NOT: a request id.** A thread that serves two requests one
-//! after the other emits both under one `who=`, so the field separates
-//! CONCURRENT work, never successive work on one thread. For a single request's
-//! server-side total the honest number is still the wire frame's
+//! **What `who=` is NOT: a request id**, and on the daemon it is not a
+//! connection either. A thread that does two pieces of work one after the other
+//! emits both under one `who=`, so the field separates CONCURRENT work, never
+//! successive work on one thread. What `t` names on the daemon specifically —
+//! the thread that did the FOLD, which is not the thread that served the
+//! request — is `docs/status.md` § The daemon's own lane. For a single
+//! request's server-side total the honest number is still the wire frame's
 //! `meta.duration_us`.
 //!
 //! **A dotted name marks a PART of the phase it prefixes** (`snapshot.walk` is
@@ -286,15 +288,19 @@ thread_local! {
 
 /// The `who=` field: `p<pid>.t<n>` — which process, and which thread inside it.
 ///
-/// This is the DISCRIMINATOR that makes one sink file demultiplexable. The
-/// daemon serves one connection per thread (`registry::server` § accept loop),
-/// so ops in flight at the same moment carry different `t`; several processes
-/// appending to one file separate by `p`.
+/// This is the DISCRIMINATOR that makes one sink file demultiplexable: several
+/// processes appending to one file separate by `p`, and concurrent work inside
+/// one process separates by `t`.
 ///
-/// It names the emitter, NOT the request: a thread reused for a later request
-/// keeps its ordinal. `t0` means the ordinal could not be minted — a phase
-/// stopped while this thread's TLS was already being destroyed — which is a
-/// value, not a panic.
+/// It names the EMITTER — not the request, and on the daemon not the connection
+/// either. A thread reused for later work keeps its ordinal. Which thread
+/// actually emits on the daemon lane, and what that means for reading a busy
+/// sink, is `docs/status.md` § The daemon's own lane; this crate cannot know,
+/// because an instrument that sits under every layer knows nothing about any of
+/// them.
+///
+/// `t0` means the ordinal could not be minted — a phase stopped while this
+/// thread's TLS was already being destroyed — which is a value, not a panic.
 ///
 /// Both halves are digits, so no `who=` can ever mint a field the grammar does
 /// not have.
