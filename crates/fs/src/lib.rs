@@ -1823,7 +1823,7 @@ fn read_member(
     law: ObserveLaw,
 ) -> Result<stable::SettledRead, ObserveRefusal> {
     let abs = root.0.join(rel);
-    match stable::read_settled(&abs) {
+    match stable::read_settled(&root.0, rel) {
         Ok(read) => Ok(read),
         Err(e) => match law {
             ObserveLaw::Plain => Err(ObserveRefusal::Io(corpus_member_refusal(
@@ -1846,14 +1846,24 @@ fn read_member(
     }
 }
 
-/// Open `path` without following any symlink component. The walk is a
-/// directory-fd `openat` per component (`O_NOFOLLOW` on every step,
-/// `O_DIRECTORY` on intermediates) — not `openat2`/`RESOLVE_NO_SYMLINKS`.
-/// A symlink at any component refuses (`ELOOP`) instead of redirecting
-/// the read. Shared by the strict walk ([`guard`]) and the cached
-/// observation ([`DomainCache::observe`]).
+/// Open `rel` under `root` without following any symlink component BELOW
+/// the root. The root itself opens as an ordinary directory (symlinks in its
+/// own prefix are followed): the root is the caller's trust anchor — the
+/// workspace crate hands every production root out canonical, and a fixture
+/// root under macOS's `/var` → `/private/var` `$TMPDIR` is still the tree
+/// the caller named. The law guards the CORPUS: from the root down the walk
+/// is a directory-fd `openat` per component (`O_NOFOLLOW` on every step,
+/// `O_DIRECTORY` on intermediates) — not `openat2`/`RESOLVE_NO_SYMLINKS` —
+/// and a symlink at any of those components refuses (`ELOOP`, `ENOTDIR` on
+/// Linux intermediates) instead of redirecting the read. Before 2026-08-22
+/// the walk started at `/`, which refused every root whose prefix crossed a
+/// symlink and turned a default-`$TMPDIR` mac red across the workspace (card
+/// mac-devhost-snapshot-canonicalization). Shared by the strict walk
+/// ([`guard`]) and the cached observation ([`DomainCache::observe`]).
+///
+/// `rel` must be relative; an absolute or prefixed `rel` is `InvalidInput`.
 #[cfg(unix)]
-pub(crate) fn open_nofollow(path: &Path) -> io::Result<File> {
+pub(crate) fn open_nofollow(root: &Path, rel: &Path) -> io::Result<File> {
     use std::ffi::CString;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::ffi::OsStrExt;
@@ -1875,30 +1885,22 @@ pub(crate) fn open_nofollow(path: &Path) -> io::Result<File> {
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
 
-    let mut rest = path.components().peekable();
-    let mut current: Option<OwnedFd> = None;
-    if matches!(rest.peek(), Some(Component::RootDir)) {
-        rest.next();
-        // SAFETY: "/" is a valid C string. A non-negative fd is owned.
-        let fd = unsafe {
-            libc::open(
-                c"/".as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
-            )
-        };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        current = Some(unsafe { OwnedFd::from_raw_fd(fd) });
+    // The anchor: the root as the caller named it, followed like any path.
+    let root_c = CString::new(root.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "root path contains NUL"))?;
+    // SAFETY: `root_c` is a NUL-terminated path. A non-negative fd is owned.
+    let fd = unsafe {
+        libc::open(
+            root_c.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
     }
+    let mut current = unsafe { OwnedFd::from_raw_fd(fd) };
 
-    if rest.peek().is_none() {
-        return match current {
-            Some(fd) => Ok(File::from(fd)),
-            None => Err(io::Error::new(io::ErrorKind::NotFound, "empty path")),
-        };
-    }
-
+    let mut rest = rel.components().peekable();
     while let Some(comp) = rest.next() {
         let name: &[u8] = match comp {
             Component::CurDir => b".",
@@ -1907,7 +1909,7 @@ pub(crate) fn open_nofollow(path: &Path) -> io::Result<File> {
             Component::RootDir | Component::Prefix(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "unexpected path component in the directory-fd walk",
+                    "the member path under a root must be relative",
                 ));
             }
         };
@@ -1916,20 +1918,16 @@ pub(crate) fn open_nofollow(path: &Path) -> io::Result<File> {
         } else {
             INTERMEDIATE
         };
-        let base = current.as_ref().map_or(libc::AT_FDCWD, AsRawFd::as_raw_fd);
-        current = Some(openat_name(base, name, flags)?);
+        current = openat_name(current.as_raw_fd(), name, flags)?;
     }
-    let Some(fd) = current else {
-        return Err(io::Error::new(io::ErrorKind::NotFound, "empty path"));
-    };
-    Ok(File::from(fd))
+    Ok(File::from(current))
 }
 
 /// Off unix there is no `O_NOFOLLOW`; the guarded walk has already refused
 /// symlinks, so only the walk→read race is uncovered here.
 #[cfg(not(unix))]
-pub(crate) fn open_nofollow(path: &Path) -> io::Result<File> {
-    File::open(path)
+pub(crate) fn open_nofollow(root: &Path, rel: &Path) -> io::Result<File> {
+    File::open(root.join(rel))
 }
 
 /// Members below this count take the serial stat loop — thread spawn only
@@ -6032,9 +6030,38 @@ mod stable_trust_tests {
         }
     }
 
+    /// The law's other half: a symlink in the ROOT's own prefix is followed,
+    /// because the root is the anchor, not a member — the macOS `/var` →
+    /// `/private/var` `$TMPDIR` shape, which refused every fixture on a mac
+    /// before 2026-08-22. The member below it still reads `O_NOFOLLOW`.
+    #[cfg(unix)]
+    #[test]
+    fn open_nofollow_follows_a_symlink_in_the_roots_own_prefix() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let notes = tmp.path().join("notes");
+        std::fs::create_dir(&notes).expect("mkdir");
+        std::fs::write(notes.join("x.md"), b"# INSIDE\n").expect("inside");
+
+        let anchor = tempfile::tempdir().expect("anchor");
+        let via_link = anchor.path().join("link-to-root");
+        std::os::unix::fs::symlink(tmp.path(), &via_link).expect("root-prefix symlink");
+        let mut f = super::open_nofollow(&via_link, Path::new("notes/x.md"))
+            .expect("a symlink in the root's own prefix is the anchor, never a refusal");
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut f, &mut bytes).expect("read");
+        assert_eq!(bytes, b"# INSIDE\n");
+
+        // Same anchored root, a link BELOW it: still refused.
+        std::os::unix::fs::symlink(notes.join("x.md"), notes.join("link.md")).expect("member link");
+        let err = super::open_nofollow(&via_link, Path::new("notes/link.md"))
+            .expect_err("a member symlink under a prefix-linked root still refuses");
+        assert_eq!(err.raw_os_error(), Some(libc::ELOOP));
+    }
+
     /// The directory-fd `openat` walk named above: an intermediate symlink
-    /// is `ELOOP`, a real nested file still opens, a basename symlink still
-    /// refuses.
+    /// STRICTLY BELOW the root is `ELOOP`/`ENOTDIR`, a real nested file still
+    /// opens, a basename symlink still refuses, an absolute member path is
+    /// refused as input.
     #[cfg(unix)]
     #[test]
     fn open_nofollow_directory_fd_openat_refuses_intermediate_symlink() {
@@ -6045,11 +6072,11 @@ mod stable_trust_tests {
         std::fs::create_dir(&notes).expect("mkdir");
         let nested = notes.join("x.md");
         std::fs::write(&nested, b"# INSIDE\n").expect("inside");
-        super::open_nofollow(&nested).expect("real nested file opens");
+        super::open_nofollow(tmp.path(), Path::new("notes/x.md")).expect("real nested file opens");
 
         std::fs::remove_dir_all(&notes).expect("remove notes");
         std::os::unix::fs::symlink(outside.path(), &notes).expect("symlink");
-        let err = super::open_nofollow(&tmp.path().join("notes/x.md"))
+        let err = super::open_nofollow(tmp.path(), Path::new("notes/x.md"))
             .expect_err("intermediate symlink must refuse");
         // Linux: O_DIRECTORY|O_NOFOLLOW on a symlink is ENOTDIR (the
         // symlink inode is not a directory). Darwin: ELOOP. Either is a
@@ -6063,10 +6090,14 @@ mod stable_trust_tests {
         std::fs::write(tmp.path().join("real.md"), b"ok\n").expect("real");
         std::os::unix::fs::symlink(tmp.path().join("real.md"), tmp.path().join("link.md"))
             .expect("basename symlink");
-        let err = super::open_nofollow(&tmp.path().join("link.md"))
+        let err = super::open_nofollow(tmp.path(), Path::new("link.md"))
             .expect_err("basename symlink must refuse");
         assert_eq!(err.raw_os_error(), Some(libc::ELOOP));
-        super::open_nofollow(&tmp.path().join("real.md")).expect("real file still opens");
+        super::open_nofollow(tmp.path(), Path::new("real.md")).expect("real file still opens");
+
+        let err = super::open_nofollow(tmp.path(), &tmp.path().join("real.md"))
+            .expect_err("an absolute member path is not a path under the root");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     /// The dir-listing memo rides the same trust close: a listing recorded
