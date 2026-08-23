@@ -109,13 +109,20 @@ pub(crate) enum TranslateError {
 impl std::fmt::Display for TranslateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            // The `Fix:` carries BOTH remedies, because at this door the wrong
+            // one is the likelier: a page spelling the agreed constant
+            // `sessions:` on a machine that mounts that very tree under its own
+            // name needs ONE alias line, not a second mount (§ 4.6a). "Declare
+            // the mount" alone sent that author to duplicate a root they have.
             TranslateError::Unmounted { address, root } => write!(
                 f,
                 "refused: '{address}' names root '{root}', which this machine does not bind — \
                  there is no vault name to store, so the link would land as bytes no reader can \
                  follow. Not a drift: nothing changed, you just cannot see from here. \
-                 Fix: declare '{root}' in ~/MERIDIAN.md as a mount entry (name / path); \
-                 see [[address-grammar]]."
+                 Fix: declare '{root}' in ~/MERIDIAN.md as a mount entry (name / path), or \
+                 declare `alias: {root}` on the mount that holds that tree — a root is looked \
+                 up by name first and only then by alias, so the tree may already be here \
+                 under another name; see [[address-grammar]]."
             ),
             TranslateError::PathUnseeable {
                 address,
