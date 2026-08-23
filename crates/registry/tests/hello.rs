@@ -43,6 +43,7 @@ fn test_config_with_build(tmp: &TempDir, build_sha: Option<&str>) -> Config {
     config.prewarm_quiet_max = forever;
     // Lifetime is the test's; idle-exit would flake mid-assertion.
     config.idle_exit = None;
+    config.drain_cold_builds = Duration::from_secs(30);
     config
 }
 
