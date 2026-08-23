@@ -432,8 +432,9 @@ mod tests {
     }
 
     /// The claim the daemon lane rests on: work in flight at the same moment
-    /// carries different `who=`. One thread per connection there; N threads
-    /// here, and the ordinals must be N distinct values.
+    /// carries different `who=`. One thread per cold FOLD there (`docs/status.md`
+    /// § What `t` names here, and what it does not — not per connection); N
+    /// threads here, and the ordinals must be N distinct values.
     #[test]
     fn concurrent_threads_get_distinct_ordinals() {
         let seen: BTreeSet<String> = std::thread::scope(|scope| {

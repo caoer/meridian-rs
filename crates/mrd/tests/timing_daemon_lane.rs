@@ -16,8 +16,8 @@
 //!   What that emitter IS on this lane is narrower than it first looks: the
 //!   cold gate runs the fold on a per-workspace `drawer-rebuild` thread, not on
 //!   the connection thread, so `t` separates concurrent COLD FOLDS — one per
-//!   workspace — and two ops on one workspace share the single fold they both
-//!   waited for (`docs/status.md` § What `t` names here, and what it does not).
+//!   workspace — and two ops on one workspace share its single fold
+//!   (`docs/status.md` § What `t` names here, and what it does not).
 //!
 //! Harness note: these tests do NOT set `MERIDIAN_DAEMON_BIN` — the point is the
 //! real auto-spawn, which launches `current_exe()`, i.e. the `mrd` under test.
@@ -83,8 +83,8 @@ impl Sandbox {
     ///
     /// This is what makes the concurrency gate deterministic: a repeat call on
     /// an already-warm workspace can be served with no fold at all, and so with
-    /// no phase to emit — one workspace per caller guarantees each connection
-    /// thread has something to measure.
+    /// no phase to emit — one workspace per caller guarantees each caller's
+    /// workspace gets its own fold, so there is a `who=` to attribute.
     fn workspace_named(&self, name: &str) -> PathBuf {
         let ws = self.tmp.path().join(name);
         std::fs::create_dir_all(ws.join(".git")).expect("git anchor");
@@ -130,9 +130,10 @@ impl Sandbox {
     /// Measured on workstation-nyc-2, 2026-08-23: three `links` calls on three
     /// fresh workspaces produced three complete folds (`who=…t1/t2/t3`), while
     /// three `script` calls on three fresh workspaces produced exactly ONE.
-    /// The `script` asymmetry is UNEXPLAINED — `script_op::serve` takes the same
-    /// `cold_gate_wire` + `warm_or_build` entry, so by code it should fold per
-    /// workspace. It is recorded, not accounted for.
+    /// The `script` asymmetry is UNEXPLAINED. A pattern-less `mrd script`
+    /// evaluates CLIENT-SIDE (`script/cmd.rs`), and the wire `read` its program
+    /// issues takes `cold_gate_wire` exactly as `links` does — so by code it
+    /// should fold per fresh workspace too. Recorded, not accounted for.
     fn links(&self, ws: &Path, timing: &str) -> Child {
         Command::new(mrd_bin())
             .args(["links", "--json"])
@@ -317,19 +318,50 @@ fn an_unopenable_voice_is_said_on_the_spawning_clients_stderr() {
             .any(|line| line.contains("cannot open the daemon's lane")),
         "the client swallowed the unopenable lane: {client}"
     );
-    // One line, whatever the OS put in the error text.
-    for line in &said {
-        assert!(!line.trim_end().contains('\n'), "diagnostic split: {line}");
-    }
-    // And the daemon still came up: the degrade costs the voice, not the server.
+    // The `io::Error` text is the OS's, not ours, and it rides this line: it
+    // must not have split it. `diagnostics()` splits on newlines already, so
+    // "no `\n` in the element" is vacuous — the real assertion is that the ONE
+    // matching line still carries the END of the message.
+    let complaint: Vec<&String> = said
+        .iter()
+        .filter(|line| line.contains("cannot open the daemon's lane"))
+        .collect();
+    assert_eq!(complaint.len(), 1, "expected exactly one: {said:?}");
+    assert!(
+        complaint[0].trim_end().ends_with("are LOST."),
+        "the error text split the diagnostic — the tail lost its prefix: {}",
+        complaint[0]
+    );
+
+    // And the daemon still came up. Exit 0 alone would NOT show that: `links`
+    // degrades to the in-process engine on any daemon-path failure
+    // (`engine.rs` § `try_daemon_links`), so a dead daemon also exits 0. The
+    // pidfile is written after the bind.
     assert_eq!(
         out.status.code(),
         Some(0),
-        "a mute daemon must still answer: {client}"
+        "the verb must not fail: {client}"
     );
     assert!(
         common::child_daemon_pidfile(&sb.home, &sb.cache_home).exists(),
-        "no daemon was spawned, so this proves nothing: {client}"
+        "no daemon bound, so the degrade cost the server and not just the voice: {client}"
+    );
+
+    // The decisive one: who ANSWERED. Asked on a SECOND call, deliberately —
+    // the first is the cold one, and a cold workspace can be refused
+    // `corpus_warming` while the drawer rebuilds, which degrades the client to
+    // its own engine and would report `ephemeral` for a perfectly healthy
+    // daemon. By now the daemon is resident and the workspace warm, so
+    // `source` answers the question this test is actually asking.
+    let second = sb
+        .links(&ws, "1")
+        .wait_with_output()
+        .expect("mrd links exits");
+    let stdout = String::from_utf8_lossy(&second.stdout);
+    assert!(
+        stdout.contains("\"source\": \"daemon\"") || stdout.contains("\"source\":\"daemon\""),
+        "a mute daemon must still ANSWER, not be degraded past: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&second.stderr)
     );
 }
 
@@ -394,12 +426,14 @@ fn the_mode_off_creates_no_lane() {
 /// `script` calls. Measured on workstation-nyc-2 2026-08-23, three `script`
 /// calls on three fresh workspaces produced ONE daemon fold, so there was no
 /// second daemon-side line to attribute and this gate failed on that. **Why is
-/// not established** — `script_op::serve` takes the same `cold_gate_wire` +
-/// `warm_or_build` entry `links` does, so by code it should fold per workspace,
-/// and the earlier claim here that the `run-plane.md` lazy-fold law explains it
-/// was wrong: that law binds `runner::run`/`rehearse` callers, not `script`.
-/// The observation stands, the cause does not; `links` folds deterministically
-/// per fresh workspace, which is all this gate needs.
+/// not established.** A pattern-less `mrd script` evaluates client-side
+/// (`script/cmd.rs`), and the wire `read` its program issues takes
+/// `cold_gate_wire` exactly as `links` does, so by code it should fold per fresh
+/// workspace. Two explanations have already been wrong here: the `run-plane.md`
+/// lazy-fold law (it binds `runner::run`/`rehearse` callers, not this), and
+/// `script_op::serve` (a pattern-less script never reaches it). The observation
+/// stands, the cause does not; `links` folds deterministically per fresh
+/// workspace, which is all this gate needs.
 ///
 /// What this does NOT claim: that `who=` is a request id, or a connection. A
 /// thread reused for later work keeps its ordinal — the field separates
@@ -468,12 +502,12 @@ fn concurrent_ops_on_one_daemon_are_attributable() {
     assert_eq!(
         by_who.len(),
         3,
-        "three connections, three emitters — a shared `who=` means those lines \
-         are still indistinguishable: {by_who:?}\n{text}"
+        "three workspaces, three folds, three emitters — a shared `who=` means \
+         those lines are still indistinguishable: {by_who:?}\n{text}"
     );
-    // Each connection's group is a WHOLE fold, not a fragment of one shuffled in
-    // with another's: attribution that split a fold across two `who=` would be
-    // worse than none.
+    // Each fold's group is a WHOLE fold, not a fragment of one shuffled in with
+    // another's: attribution that split a fold across two `who=` would be worse
+    // than none.
     for (who, seen) in &by_who {
         assert!(
             seen.contains(&"snapshot") && seen.contains(&"corpus.build"),
