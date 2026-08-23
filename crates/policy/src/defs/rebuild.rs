@@ -836,10 +836,16 @@ pub fn multi_line_value_refusal(key: &str) -> String {
 /// something else — a null, a nested collection, a comment, a mapping, or a
 /// quoted scalar the caller never wrote — is a value the engine forged.
 ///
-/// [`needs_quoting`] carries the enumerated triggers. Two spellings stay
-/// VERBATIM by standing contract: a typed scalar (`true`, `7`, `2026-08-07`)
-/// and a one-level flow list (`[a, b]`) are the only way this string plane can
-/// author a non-string value, and no reported defect touches them.
+/// [`needs_quoting`] carries the enumerated triggers. ONE spelling stays
+/// VERBATIM: a one-level flow list (`[a, b]`), the only way this string plane
+/// can author a list. **The typed-scalar carve-out is RETIRED** (2026-08-23,
+/// card `all-digit-short-ids-read-as-int`): `true`, `7` and every all-digit
+/// agent short id used to emit plain, so a caller string like `19895504` read
+/// back as an INTEGER in every foreign parser, and `02146210` read back as
+/// 576648 (YAML 1.1 octal, `PyYAML`) — on `owner`, `session`, `agent`, `from`,
+/// the join keys of the fleet's whole tree. A value the caller spelled as a
+/// string is now written so it reads back as that string; a timestamp still
+/// emits plain because `serde_yaml` reads it back as a string already.
 ///
 /// The double-quoted form is the fleet-canonical one (`ccc-cli task claim`
 /// writes it), so two writers on one tree stop churning each other's bytes.
@@ -878,12 +884,16 @@ pub fn yaml_safe_value(val: &str) -> Result<String, MultiLineValue> {
 /// the list it wants it spells `PropValue::List`. So a plain emit that would
 /// read back as a collection quotes.
 ///
-/// **Named residual — the typed-scalar carve-out stays.** `"7"`, `"true"`,
-/// `"2026-08-07"` still land verbatim and read back as int / bool / timestamp,
-/// exactly as they do through every other write door: this door has no typed
-/// arm for them, so the carve-out is the only way to author them, and quoting
-/// them here would spell the fleet's own frontmatter differently from every
-/// record already on disk.
+/// **The former named residual is closed.** `"7"` and `"true"` used to land
+/// verbatim here and read back as int / bool; since 2026-08-23 (card
+/// `all-digit-short-ids-read-as-int`) [`yaml_safe_value`] quotes them, and this
+/// door inherits that. `"2026-08-07"` still lands verbatim — `serde_yaml` reads
+/// a timestamp back as a string, so the plain emit already round-trips.
+/// **Residual, named:** this door has no numeric or boolean typed arm, so a
+/// caller who MEANS the integer 7 can no longer author it through `props`
+/// (`PropValue::List` remains the one typed arm). A def-declared `int`/`bool`
+/// property (`shape.rs` `SHAPE_INT`/`SHAPE_BOOL`) is therefore unwritable
+/// through the value plane and must be born in the record's own body bytes.
 ///
 /// # Errors
 /// `MultiLineValue` — the D11 law, unchanged.
@@ -1004,6 +1014,15 @@ fn needs_quoting(val: &str) -> bool {
     if val.starts_with(['\'', '"']) {
         return true;
     }
+    // An INTERIOR tab (the trim above only catches the outer ones). Measured
+    // 2026-08-23 with `PyYAML`: `k: a<TAB>b` is "while scanning for the next
+    // token" — the whole frontmatter block dies, not one key — while
+    // `serde_yaml` reads the same bytes happily, so the parser oracle below
+    // never flags it. Inside the double-quoted emit the tab is legal and reads
+    // back verbatim.
+    if val.contains('\t') {
+        return true;
+    }
     // A comment in value position: the value would read back empty.
     if val.starts_with('#') || val.contains(" #") || val.contains("\t#") {
         return true;
@@ -1026,23 +1045,121 @@ fn needs_quoting(val: &str) -> bool {
     // classifier above is the engine's own and is measurably more permissive
     // than YAML (2026-08-23, card 17, `props=` hostile table).
     //
-    // Measured with PyYAML on `k: <val>`: a value opening `- `, `? `, `,`,
+    // Measured with `PyYAML` on `k: <val>`: a value opening `- `, `? `, `,`,
     // `[`-that-is-not-a-flow-list, `*`, `&`, `%`, `@`, `` ` `` or an
     // unterminated `[[a]] and [[b]]` makes bytes NO yaml parser can read —
     // the whole frontmatter block dies, not one key — and `&a`, `!t`, `>`,
     // `|` parse to something the caller never wrote. None of them tripped a
     // trigger above, so every door emitted them plain.
-    !plain_reads_back(val)
+    if !plain_reads_back(val) {
+        return true;
+    }
+    // …and finally the classes a YAML **1.1** resolver types and a 1.2 one does
+    // not, because `serde_yaml` is not the only parser that opens these files.
+    reads_typed_in_yaml_1_1(val)
+}
+
+/// The YAML **1.1** scalar classes that a 1.2 parser leaves as strings — the
+/// blind spot of the `serde_yaml` oracle above.
+///
+/// The fleet reads this frontmatter with `PyYAML` and go-yaml (`yq`, Obsidian) as
+/// well as with this engine, and both of those resolve the 1.1 schema. Measured
+/// 2026-08-23 (card `all-digit-short-ids-read-as-int`): the agent short id
+/// `02146210` is the STRING `"02146210"` to `serde_yaml` — a leading zero is
+/// not a 1.2 integer — and the INTEGER 576 648 to `PyYAML`, which reads a
+/// leading-zero digit run as octal. Deferring to the 1.2 parser alone would
+/// have left the worse half of the defect standing: not a type change, a value
+/// change, on the ids the whole tree joins by.
+///
+/// So the law is the UNION of the two schemas: a value the caller spelled as a
+/// string must read back as that string whichever parser opens the file.
+fn reads_typed_in_yaml_1_1(val: &str) -> bool {
+    // `y`/`yes`/`on` and friends are booleans in 1.1, plain strings in 1.2.
+    if matches!(
+        val,
+        "y" | "Y"
+            | "yes"
+            | "Yes"
+            | "YES"
+            | "n"
+            | "N"
+            | "no"
+            | "No"
+            | "NO"
+            | "on"
+            | "On"
+            | "ON"
+            | "off"
+            | "Off"
+            | "OFF"
+    ) {
+        return true;
+    }
+    let body = val.strip_prefix(['+', '-']).unwrap_or(val);
+    // A digit run — decimal in both schemas, OCTAL in 1.1 when it leads with a
+    // zero, and `1_000` is a number in 1.1 only. The whole class quotes: an id
+    // is digits, and which integer it becomes must not depend on the reader.
+    let digit_run = |s: &str| {
+        s.bytes().any(|b| b.is_ascii_digit()) && s.bytes().all(|b| b.is_ascii_digit() || b == b'_')
+    };
+    if digit_run(body) {
+        return true;
+    }
+    // `1_000.5` — the 1.1 float spelling `serde_yaml` reads as a string.
+    if let Some((int, frac)) = body.split_once('.')
+        && (int.contains('_') || frac.contains('_'))
+        && (int.is_empty() || digit_run(int))
+        && (frac.is_empty() || digit_run(frac))
+    {
+        return true;
+    }
+    // Sexagesimal: `12:30` is 750 and `1:02:03` is 3723 to a 1.1 resolver, and
+    // the colon with no space after it trips no trigger above. Each group after
+    // the first is one base-60 digit — `PyYAML`'s `[0-5]?[0-9]` — so `1:60` and
+    // `12:345` are strings to every parser and stay plain.
+    let mut groups = body.split(':');
+    let Some(first) = groups.next() else {
+        return false;
+    };
+    let mut seen = false;
+    for g in groups {
+        seen = true;
+        let base = g.split_once('.').map_or(g, |(a, _)| a);
+        let base60 = matches!(base.len(), 1 | 2)
+            && base.bytes().all(|b| b.is_ascii_digit())
+            && base.parse::<u8>().is_ok_and(|n| n < 60);
+        if !base60 {
+            return false;
+        }
+    }
+    seen && digit_run(first)
 }
 
 /// Would the PLAIN emit `key: {val}` read back as exactly `val`? Asked of
 /// `serde_yaml` — the enumerated triggers above are the fast, teachable ones;
 /// this is the one that cannot be out-enumerated.
 ///
-/// The two standing carve-outs survive: a value that parses as a NON-string is
-/// legal exactly when the checker's classifier already blesses it (a typed
-/// scalar or a one-level flow list — § A.6.3's "the only way this string plane
-/// can author a non-string value"). Everything else quotes.
+/// ONE carve-out survives: a plain form that parses as a NON-string is legal
+/// only when the checker's classifier reads it as a one-level flow list — the
+/// single shape this string plane cannot otherwise author (§ A.6.3). Everything
+/// else quotes, `serde_yaml`'s verdict deciding.
+///
+/// The `Bool | Int | Float | Timestamp` arm that used to sit beside `List` was
+/// removed 2026-08-23 (card `all-digit-short-ids-read-as-int`): it let a value
+/// the caller spelled as a string be emitted as a number or a boolean. 203 of
+/// 8 125 distinct 8-hex ids on the live sessions root (2.5 %) are all-digit,
+/// and 37 of them already sit bare in frontmatter under `session`, `agent`,
+/// `from`, `owner`, `author` — read as integers by every foreign parser.
+///
+/// This oracle is HALF the law: `serde_yaml` resolves YAML 1.2, and the 1.1
+/// classes it leaves as strings are [`reads_typed_in_yaml_1_1`]'s. Measured
+/// cost of the two together: 806 of 29 270 distinct plain-spelled values
+/// (2.754 %) change spelling on a CHANGED write — 515 ints, 245 floats, 37
+/// short ids, 7 bools, 1 sexagesimal, 1 interior tab — all plain→quoted, none
+/// quoted→plain, and `PyYAML` reads every changed emit back as the caller's
+/// string. The timestamp class does not move: `serde_yaml` answers `String`
+/// for it, so the plain emit already round-trips here (`PyYAML` still reads a
+/// `datetime` — a named residual, § A.6.3).
 fn plain_reads_back(val: &str) -> bool {
     let Ok(parsed) = serde_yaml::from_str::<serde_yaml::Value>(&format!("k: {val}\n")) else {
         return false;
@@ -1054,11 +1171,7 @@ fn plain_reads_back(val: &str) -> bool {
         serde_yaml::Value::String(s) => s == val,
         _ => matches!(
             super::fm::classify_scalar_or_flow(val),
-            super::fm::FmValue::Bool(_)
-                | super::fm::FmValue::Int(_)
-                | super::fm::FmValue::Float(_)
-                | super::fm::FmValue::Timestamp(_)
-                | super::fm::FmValue::List(_)
+            super::fm::FmValue::List(_)
         ),
     }
 }

@@ -2146,13 +2146,44 @@ fleet writes are the same bytes. Concretely, a value is quoted when it:
 - would parse as a **map or a nested collection** (`{…}`, `[[…]]`, an
   unterminated `[…]`) — the I4 nesting was the emitter's, never the caller's;
 - carries `: ` unquoted, starts with `#`, or carries ` #` — a mapping or a
-  comment in value position.
+  comment in value position;
+- carries an interior TAB — `k: a<TAB>b` is unreadable to PyYAML ("while
+  scanning for the next token") and the whole block dies with it, while
+  `serde_yaml` reads the same bytes without complaint;
+- would be typed by a YAML **1.1** resolver even where a 1.2 one leaves it a
+  string: a digit run (`19895504`; `02146210` is OCTAL 576 648 to PyYAML), the
+  underscore grouping `1_000`, the sexagesimal forms (`12:30` is 750, `1:02:03`
+  is 3723 — each group after the first is 0–59), and the word booleans
+  `y`/`yes`/`no`/`on`/`off` with their case variants.
 
-Unchanged, deliberately: a **typed scalar** (`true`, `7`, `2026-08-07`) and a
-**one-level flow list** (`[a, b]`) still emit verbatim. Those spellings are the
-only way this string plane can author a non-string value. A newline in a value
-is still REFUSED, never sanitized: a single-line frontmatter value cannot carry
-one, and an escaped-scalar workaround leaks.
+Unchanged, deliberately: a **one-level flow list** (`[a, b]`) still emits
+verbatim — the only way this string plane can author a non-string value — and a
+**timestamp** (`2026-08-07`) still emits plain, because `serde_yaml` reads it
+back as exactly the caller's string. A newline in a value is still REFUSED,
+never sanitized: a single-line frontmatter value cannot carry one, and an
+escaped-scalar workaround leaks.
+
+**The typed-scalar carve-out is RETIRED** (2026-08-23, card
+`all-digit-short-ids-read-as-int`, from PR 185's review finding F2). `true` and
+`7` used to emit verbatim as "the only way this string plane can author a
+non-string value". The price was the fleet's join key: an agent short id is
+8 hex, 203 of the 8 125 distinct ids in the live sessions root's frontmatter
+(2.5 %) are all digits, and `owner: 19895504` read back as the INTEGER
+19 895 504 in every foreign parser while `session: 02146210` read back as
+576 648 in PyYAML. 37 such ids already sit bare under `session`, `agent`,
+`from`, `owner`, `author`, `worker`, `leader`, `created_by`; 8-hex git shas
+share the shape. A value the caller spelled as a string is now written so that
+PyYAML, `serde_yaml` and `yq` all read that same string back.
+
+**Named residual:** no door can author the integer `7` through the value plane
+any more — `create(props=…)`'s `PropValue::List` is the one typed arm left — so
+a def-declared `int`/`bool` property (`shape.rs` `SHAPE_INT`/`SHAPE_BOOL`) must
+be born in the record's own body bytes. No live def on the sessions root
+declares one. **Second residual:** the timestamp class stays plain (7 356
+distinct spellings under `created`, `created_at`, `updated_at`), so PyYAML
+still reads those back as `date`/`datetime` objects rather than strings — a
+spelling difference this amendment deliberately did not widen to, and the
+reason its churn is 806 values rather than an order of magnitude more.
 
 **The trigger list above is NOT closed** (amended 2026-08-23, card
 `hook-17-mrd-create-props`). It enumerates the fast, teachable cases; the LAW is
@@ -2166,13 +2197,27 @@ frontmatter block dies, not one key (measured with PyYAML over the live sessions
 root: 47 unreadable blocks, 6 of them in a spelling this encoder emits). `!t`,
 `>` and `|` parsed to something the caller never wrote. A door adds no trigger
 of its own: the parser is the trigger, and the list is documentation of what it
-catches. The two carve-outs above survive it explicitly — a plain form that
-parses as a NON-string is legal exactly when the checker's classifier blesses it
-as a typed scalar or a one-level flow list. Measured churn across the live root
-at the amendment: **14 of 29 377 distinct plain-spelled values change spelling
-(0.048 %), all plain→quoted, none quoted→plain**, and a same-value write-back
-stays byte-identical (§ A.6.3c preservation), so no record is rewritten by the
-change alone.
+catches. ONE carve-out survives it — a plain form that parses as a NON-string is
+legal exactly when the checker's classifier reads it as a one-level flow list.
+Measured churn across the live root at that amendment: **14 of 29 377 distinct
+plain-spelled values change spelling (0.048 %), all plain→quoted, none
+quoted→plain**, and a same-value write-back stays byte-identical (§ A.6.3c
+preservation), so no record is rewritten by the change alone.
+
+**`serde_yaml` is not the whole oracle** (2026-08-23, card
+`all-digit-short-ids-read-as-int`). It resolves YAML **1.2**; PyYAML and go-yaml
+(`yq`, and most of the fleet's readers) resolve **1.1**, and the two disagree:
+`02146210` is the string `"02146210"` to `serde_yaml` — a leading zero is not a
+1.2 integer — and the integer 576 648 to PyYAML. Deferring to the 1.2 parser
+alone would have left the worse half of the id defect standing (a value change,
+not a type change), so the law is the UNION of the schemas, and the 1.1 classes
+are the enumerated trigger above. Measured churn for the retirement plus the
+union, over the same instrument: **806 of 29 270 distinct plain-spelled values
+change spelling (2.754 %) — 515 ints, 245 floats, 37 all-digit short ids, 7
+booleans, 1 sexagesimal, 1 interior tab — all plain→quoted, none quoted→plain,
+none refused**, and PyYAML reads every one of the 806 changed emits back as
+exactly the caller's string. § A.6.3c preservation is untouched, so the 37 ids
+already on disk keep their bytes until a write CHANGES their value.
 
 **A.6.3′ The KEY half of the composed line (2026-08-14, dogfood r3 f6).** The
 emitted line is `{key}: {encoded}`, so an unvalidated KEY forges frontmatter
@@ -2801,9 +2846,10 @@ guard applies exactly as at every other op):
   newline (D11, the § A.6.3a law verbatim) and a `body` that already opens its
   own frontmatter fence while `props` is inhabited — two spellings of one
   block, so the door refuses instead of choosing. Keys land sorted; a props
-  scalar that would read back as a COLLECTION is quoted, while the value
-  plane's typed-scalar carve-out is unchanged (`"7"` lands `7`), exactly as at
-  every other door. **The one deliberate asymmetry with the patch face**
+  scalar that would read back as a COLLECTION is quoted, and so is one that
+  would read back as a NUMBER or a BOOL (`"7"` lands `"7"`, card
+  `all-digit-short-ids-read-as-int` — the typed-scalar carve-out is retired at
+  every door). **The one deliberate asymmetry with the patch face**
   (§ A.6.3): the flow-list carve-out does NOT apply here, because this door has
   a typed list arm and that one does not — so the string `[a, b]` lands quoted
   when born through `props=` and plain when written through `properties`. A
