@@ -3063,13 +3063,26 @@ one refuses `not_declared` at the door.
   {"result":"ok|fault|timeout|refused",
    "page":"HOOKS.md","block":"no-stash","rev":{"file":"5c7347b8…","block":"75692e87…"},
    "value":{"deny":"…"},
-   "applied":[{"kind":"md.create","path":"…","result":"born|exists|refused","file_rev":"…","reason":"…"}],
+   "applied":[{"kind":"md.create","path":"…","result":"born|edited|refused|not_applied","file_rev":"…","class":"…","reason":"…"}],
    "exec":[{"block":"check","command":"…","exit":1,"stdout_sha256":"…","bytes":412,
             "log":".meridian/runs/…-t0.log","timed_out":false,"dry":false}],
    "process":{"interpreter":"bash","exit":0,"stdout_tail":"…","stderr_tail":"…","timed_out":false},
-   "fault":{"class":"parse|name_error|budget|reply_shape|no_block|not_declared|ambiguous_anchor|not_a_module|missing_entry|impl_type|prelude_invalid","reason":"…","line":7},
+   "fault":{"class":"parse|name_error|effect_at_load|declare_at_fire|impl_type|budget|reply_shape|runtime|no_block|not_declared|ambiguous_anchor|not_a_module|missing_entry|prelude_invalid|bad_path|corpus_race","reason":"…","line":7},
    "telemetry":{"steps":812,"mem":20480,"wall_ms":3}}
   ```
+
+  The `applied[]` vocabulary is amended (**A8**): `born` is a birth, `edited`
+  an edit, `refused` the ONE descriptor a door judged (with its `class`), and
+  `not_applied` its siblings — the batch is atomic, so nothing landed and no
+  sibling claims it did. There is no `exists` arm: an occupied path REFUSES at
+  the create door. **A door refusal is that effect's row and never the fire
+  row's** — the fire row keeps `result:"ok"` and its `value`, which is the
+  never-veto law; only a failure to carry the batch at all (lock, I/O, page
+  load, a non-md or malformed descriptor) refuses the row itself.
+
+  The fault union above is the one the ENGINE can emit: `runtime` is the
+  catch-all a caller will meet in production, `corpus_race` is the warm→pin
+  race, `bad_path` is A2's, and `impl_type` is typed (a downcast, not prose).
 
   A **load row**: `{page, rev:{file}, loaded:[{block, rev, result,
   declarations, entry_kind, fault?}]}`. `result` on a fire row is an

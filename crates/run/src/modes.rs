@@ -137,6 +137,7 @@ fn load_cached(
     world: &ModeWorld<'_>,
     block: &AnchoredBlock,
     ctx: &RunCtx,
+    limits: EvalLimits,
 ) -> Result<std::sync::Arc<LoadedBlock>, BlockFault> {
     let key = cache_key(&block.rev, world.prelude);
     if let Some(cache) = world.cache
@@ -144,7 +145,7 @@ fn load_cached(
     {
         return Ok(hit);
     }
-    let loaded = load_block(&block.source, world.prelude, ctx, EvalLimits::default());
+    let loaded = load_block(&block.source, world.prelude, ctx, limits);
     if let Some(fault) = loaded.fault {
         return Err(fault);
     }
@@ -165,6 +166,45 @@ fn load_cached(
     Ok(entry)
 }
 
+/// The caller's evaluation ceilings, applied — **effective = min(declared,
+/// ceiling)** (§ 2.2, the formula `wire-contract.md` § A.8 publishes and
+/// `Op::Run`'s doc comment repeats).
+///
+/// A caller NARROWS; nothing a caller sends can raise the engine's own
+/// ceiling, so this is a `min` in both axes and never an assignment. Absent
+/// fields leave the engine ceiling standing.
+///
+/// This exists because `budget` was decoded, validated (positive integers, a
+/// closed `{steps, mem}` object, an empty-budget refusal) and then read zero
+/// times: every eval site passed `EvalLimits::default()`, so a hook declaring
+/// `{"steps":10000,"mem":4194304}` ran at 100× the steps and 16× the memory
+/// it asked for, while `telemetry` reported the real consumption and made the
+/// row look instrumented. (PR 195 review, e9f1ae35, F1.)
+fn eval_limits(target: &wire::RunTarget) -> EvalLimits {
+    let mut limits = EvalLimits::default();
+    if let Some(budget) = target.budget.as_ref() {
+        if let Some(steps) = budget.steps {
+            limits.fuel = limits.fuel.min(steps);
+        }
+        if let Some(mem) = budget.mem {
+            limits.mem = limits.mem.min(mem);
+        }
+    }
+    limits
+}
+
+/// The process wall-clock ceiling for this target: the root's configured
+/// ceiling, narrowed by the caller's `timeout_ms`. Same law as
+/// [`eval_limits`] — `min`, never an assignment.
+fn process_timeout(world: &ModeWorld<'_>, target: &wire::RunTarget) -> std::time::Duration {
+    let ceiling = crate::exec::configured_timeout(world.declaring_root)
+        .unwrap_or(crate::exec::DEFAULT_TIMEOUT);
+    match target.timeout_ms {
+        Some(ms) => ceiling.min(std::time::Duration::from_millis(ms)),
+        None => ceiling,
+    }
+}
+
 /// One mode-bearing target → one row.
 #[must_use]
 pub fn mode_row(
@@ -174,6 +214,62 @@ pub fn mode_row(
     actor: Option<&str>,
     now: Option<&str>,
 ) -> Value {
+    // The prelude is checked ONCE, before any block is looked at, on BOTH
+    // modes — § 2.2: `prelude_invalid` refuses before any block runs.
+    //
+    // It used to be checked in `load_row` alone, and the fire path paid for
+    // it: a typo in the DAEMON-supplied prelude faulted inside the block's
+    // own evaluation, so every hook on every page answered `name_error`
+    // naming that page, that block's rev, and a line number belonging to
+    // source the page's author cannot see. `--load` on the same input said
+    // `prelude_invalid` and named it correctly, so the two modes disagreed
+    // about one broken input and the mode that lied was the one that runs in
+    // production. (PR 195 review, e9f1ae35, F9.)
+    if let Some(prelude) = world.prelude
+        && let Some(fault) =
+            effects::check_prelude(prelude, &ctx_for(target, invocation), eval_limits(target))
+    {
+        return refused_row(
+            target,
+            invocation,
+            "prelude_invalid",
+            &fault.reason,
+            fault.line,
+        );
+    }
+    // `source` — a page that is not on disk yet (§ 2.2; § 6's row: *"`source`
+    // (forces `dry`)"*). The wall forces `dry` and relaxes `page`, so nothing
+    // downstream can forget; what was missing is anyone READING it, so a
+    // client that negotiated the cap and sent a draft got `bad_path` naming
+    // an empty page. Building the document here keeps ONE owner, so the CLI
+    // and the daemon cannot answer differently. (PR 195 review, e9f1ae35, F6.)
+    if let Some(source) = target.source.as_deref() {
+        let drafted = model::build(source.to_owned(), syntax::parse(source));
+        let drafted_world = ModeWorld {
+            doc: &drafted,
+            root: world.root,
+            declaring_root: world.declaring_root,
+            observed_root: world.observed_root,
+            prelude: world.prelude,
+            doors: Doors::default(),
+            cache: None,
+        };
+        return match target.mode {
+            Some(wire::RunMode::Load) => load_row(&drafted_world, target, invocation),
+            // A fire needs a declared block to call. `source` carries no
+            // identity a caller can address twice, and its `dry` makes the
+            // effects a rehearsal, so a fire on a draft is refused by name
+            // rather than half-served.
+            Some(wire::RunMode::Fire) | None => refused_row(
+                target,
+                invocation,
+                "bad_request",
+                "`source` serves `mode: load` — it answers what a draft page \
+                 DECLARES. A fire calls a declared block on a page that exists",
+                None,
+            ),
+        };
+    }
     match target.mode {
         Some(wire::RunMode::Load) => load_row(world, target, invocation),
         Some(wire::RunMode::Fire) => fire_row(world, target, invocation, actor, now),
@@ -192,21 +288,6 @@ pub fn mode_row(
 /// A `mode:"load"` row: `{page, rev, loaded: [...]}`.
 fn load_row(world: &ModeWorld<'_>, target: &wire::RunTarget, invocation: &str) -> Value {
     let doc = world.doc;
-    // The prelude is checked ONCE, before any block — § 2.2's
-    // `prelude_invalid` refuses before a single block is looked at, so a
-    // typo in caller source is never reported as a page's fault.
-    if let Some(prelude) = world.prelude
-        && let Some(fault) =
-            effects::check_prelude(prelude, &ctx_for(target, invocation), EvalLimits::default())
-    {
-        return refused_row(
-            target,
-            invocation,
-            "prelude_invalid",
-            &fault.reason,
-            fault.line,
-        );
-    }
     let loaded: Vec<Value> = blocks::anchored_blocks(doc)
         .into_iter()
         .filter_map(|block| match block {
@@ -252,7 +333,7 @@ fn loaded_row(
     if !block.is_starlark() {
         return None;
     }
-    let loaded = match load_cached(world, block, &ctx_for(target, invocation)) {
+    let loaded = match load_cached(world, block, &ctx_for(target, invocation), eval_limits(target)) {
         Ok(loaded) => loaded,
         Err(fault) => {
             return Some(json!({
@@ -298,10 +379,9 @@ fn fire_row(
         doc: world.doc,
         root: &world.root.0,
         calls: std::sync::Mutex::new(Vec::new()),
-        // The root's ceiling, resolved once. A caller `timeout_ms` narrows it
-        // per call; nothing raises it.
-        timeout: crate::exec::configured_timeout(world.declaring_root)
-            .unwrap_or(crate::exec::DEFAULT_TIMEOUT),
+        // The root's ceiling, narrowed by the caller's `timeout_ms`
+        // (`process_timeout`): min(declared, ceiling), never an assignment.
+        timeout: process_timeout(world, target),
         dry: target.dry.unwrap_or(false),
     };
     let (block, entry, loaded) = match addressed {
@@ -309,7 +389,30 @@ fn fire_row(
             block,
             entry,
             loaded,
-        } => (block, entry, loaded),
+        } => {
+            // `env` on an evaluated-entry fire: REFUSED, as the doc says.
+            // There is no process to receive it, and a field that is
+            // meaningless on a target must refuse rather than be silently
+            // dropped — the guard-you-believe-is-armed trap. It cannot refuse
+            // at the decode wall: whether a block's entry is evaluated or
+            // exec'd is a fact about the PAGE, which the wall does not read.
+            // (PR 195 review, e9f1ae35, F2a.)
+            if target.env.as_ref().is_some_and(|e| !e.is_empty()) {
+                return refused_row(
+                    target,
+                    invocation,
+                    "bad_request",
+                    &format!(
+                        "`env` is refused on a fire of ^{} — that block declares an \
+                         EVALUATED entry, and no process exists to receive it. `env` \
+                         is an exec'd entry's process overlay",
+                        block.anchor
+                    ),
+                    None,
+                );
+            }
+            (block, entry, loaded)
+        }
         // An exec'd entry never reaches the evaluator: one process through
         // the bracket, its stdin the input, its raw exit and stderr surfaced
         // (§ 1.4). Caps do not apply to a process, by law — what bounds it is
@@ -318,13 +421,14 @@ fn fire_row(
             return exec_row(&seam, target, invocation, &block, &spec, doc);
         }
     };
+    let started = std::time::Instant::now();
     let fired = match fire_entry(
         &loaded.module,
         &entry,
         target.input.as_ref().unwrap_or(&Value::Null),
         &ctx,
         &seam,
-        EvalLimits::default(),
+        eval_limits(target),
     ) {
         Ok(fired) => fired,
         Err(e) => {
@@ -352,15 +456,31 @@ fn fire_row(
         "invocation": invocation,
         "block": block.anchor,
         "rev": {"file": doc.root.node_rev.0, "block": block.rev},
-        "result": if refusal.is_some() { "refused" } else { "ok" },
+        // A DOOR refusal is the effect row's, never this one's: a hook that
+        // answered `{"deny": …}` and also tried a write the armed plane
+        // refused must still deliver its verdict, or a daemon that checks
+        // `result == "ok"` before reading `value` drops the deny. Only a
+        // failure to carry the batch at all refuses here.
+        // (PR 195 review, e9f1ae35, F5b; § 2.2 and run-plane.md § the rule.)
+        "result": match &refusal {
+            Some(Refusal::Row { .. }) => "refused",
+            Some(Refusal::Door) | None => "ok",
+        },
         "applied": applied,
         "exec": seam.rows(),
-        "telemetry": {"steps": fired.fuel_used, "mem": fired.mem_used},
+        "telemetry": {
+            "steps": fired.fuel_used,
+            "mem": fired.mem_used,
+            // Published by § 2.2 and absent until now. A fire's wall time is
+            // the one telemetry number a caller with a deadline can act on:
+            // fuel says nothing about a `bash()` that slept.
+            "wall_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        },
     });
     if let Some(value) = fired.value {
         row["value"] = value;
     }
-    if let Some((class, reason)) = refusal {
+    if let Some(Refusal::Row { class, reason }) = refusal {
         row["fault"] = json!({"class": class, "reason": reason});
     }
     row
@@ -409,7 +529,7 @@ fn addressed_entry(
         ));
     }
     let ctx = ctx_for(target, invocation);
-    let loaded = load_cached(world, &block, &ctx)
+    let loaded = load_cached(world, &block, &ctx, eval_limits(target))
         .map_err(|fault| fault_row(target, invocation, &block, &fault))?;
     let Some(declaration) = loaded.declarations.first() else {
         return Err(refused_row(
@@ -435,6 +555,27 @@ fn addressed_entry(
         // program (§ 1.4). Every other language runs this way — one generic
         // process contract, never a peer evaluator.
         DeclaredEntry::Exec(spec) => {
+            // § 2.2 resolves an `exec(block=)` anchor at LOAD: the declaration
+            // is the program, so a declaration naming a fence that is not
+            // there is broken the moment it is read, not when it is called.
+            // Resolving it here — the fire's own load step — is what makes a
+            // dangling anchor a `no_block` refusal with the anchor's own
+            // words, instead of a fabricated `exit: 127` row.
+            if let effects::ExecProgram::Block(anchor) = &spec.program
+                && let Err(e) = blocks::block(doc, anchor)
+            {
+                return Err(refused_row(
+                    target,
+                    invocation,
+                    "no_block",
+                    &format!(
+                        "^{} declares `exec(block = \"{anchor}\")`, and this page has no \
+                         such block: {e}",
+                        block.anchor
+                    ),
+                    None,
+                ));
+            }
             return Ok(Addressed::Exec {
                 block,
                 spec: spec.clone(),
@@ -470,7 +611,24 @@ fn exec_row(
         .input
         .as_ref()
         .map(|v| serde_json::to_string(v).unwrap_or_default());
-    let process = seam.exec(spec, stdin.as_deref(), invocation, &target.page);
+    // `MRD_RUN_BLOCK` is the DECLARING block — the one the caller addressed —
+    // not the fence `exec(block=)` points at. A script shared by several
+    // blocks on a page branches on which block it is running for.
+    let process = match seam.exec(
+        spec,
+        stdin.as_deref(),
+        invocation,
+        &target.page,
+        &block.anchor,
+        target,
+    ) {
+        Ok(process) => process,
+        // Could not START — an unstartable interpreter. Not a script's answer,
+        // so not an `ok` row; the reason is the one the OS gave, never null.
+        Err((class, reason)) => {
+            return refused_row(target, invocation, class, &reason, None);
+        }
+    };
     let mut row = json!({
         "page": target.page,
         "invocation": invocation,
@@ -484,13 +642,14 @@ fn exec_row(
         "exec": [],
         "process": process,
     });
-    if row["process"]["exit"] == 127 {
-        row["result"] = json!("fault");
-        row["fault"] = json!({
-            "class": "no_block",
-            "reason": row["process"]["stderr"].clone(),
-        });
-    }
+    // NO exit-code remap. `127` is the shell's own "command not found" and is
+    // reachable from any script whose binary is off `PATH`: rewriting that row
+    // into `fault`/`no_block` contradicted the doctrine three lines above and
+    // destroyed the diagnostic besides — the branch read `process["stderr"]`
+    // while every construction site spells `stderr_tail`, so `fault.reason`
+    // was JSON `null` on every hit. An entry that could not START says so
+    // through `ProcessSeam::exec`'s own Err, below, which keeps its reason.
+    // (PR 195 review, e9f1ae35, F3.)
     row
 }
 
@@ -520,7 +679,7 @@ fn realize(
     effects: &[Effect],
     actor: Option<&str>,
     now: Option<&str>,
-) -> (Vec<Value>, Option<(&'static str, String)>) {
+) -> (Vec<Value>, Option<Refusal>) {
     if effects.is_empty() {
         return (Vec::new(), None);
     }
@@ -567,33 +726,176 @@ fn realize(
                 .collect();
             (rows, None)
         }
-        // The batch is atomic: nothing landed, so no effect row claims it
-        // did. `cap_denied` is the row's fault by name; every other refusal
-        // rides the door's own words.
-        Err(ExecError::CapDenied {
-            kind,
-            target: coordinate,
-            ceiling,
-            declared,
-            ..
-        }) => (
-            Vec::new(),
-            Some((
-                "cap_denied",
-                format!(
-                    "`{kind}` on `{coordinate}` is outside this page's `caps:` \
-                     (granted: {}; ceiling: {})",
-                    if declared.is_empty() {
-                        "none".to_owned()
-                    } else {
-                        declared.join(", ")
-                    },
-                    ceiling.unwrap_or_else(|| "none".to_owned())
+        Err(e) => {
+            // `cap_denied` keeps its teaching text — the grants it measured
+            // and the ceiling that took the cap are what an author fixes.
+            let (class, reason) = match &e {
+                ExecError::CapDenied {
+                    kind,
+                    target: coordinate,
+                    ceiling,
+                    declared,
+                    ..
+                } => (
+                    "cap_denied",
+                    format!(
+                        "`{kind}` on `{coordinate}` is outside this page's `caps:` \
+                         (granted: {}; ceiling: {})",
+                        if declared.is_empty() {
+                            "none".to_owned()
+                        } else {
+                            declared.join(", ")
+                        },
+                        ceiling.clone().unwrap_or_else(|| "none".to_owned())
+                    ),
                 ),
-            )),
-        ),
-        Err(e) => (Vec::new(), Some(("runtime", e.to_string()))),
+                other if is_door_refusal(other) => (door_class(other), other.to_string()),
+                other => ("runtime", other.to_string()),
+            };
+            // Nothing landed either way — the batch is atomic. What changes
+            // is WHOSE refusal it is: a door's verdict belongs to the
+            // descriptor it judged, and the fire row keeps its own result and
+            // its `value` (the never-veto law); an infrastructure failure is
+            // the row's, because the engine could not carry the batch at all.
+            let rows = refused_rows(effects, &e, class, &reason);
+            if is_door_refusal(&e) {
+                (rows, Some(Refusal::Door))
+            } else {
+                (rows, Some(Refusal::Row { class, reason }))
+            }
+        }
     }
+}
+
+/// Whose refusal a failed realization is.
+enum Refusal {
+    /// A door judged one descriptor. Its row carries the verdict; the fire
+    /// row stays `ok` and keeps its `value`.
+    Door,
+    /// The engine could not carry the batch. The fire row refuses.
+    Row {
+        /// The published fault class.
+        class: &'static str,
+        /// The door's own words.
+        reason: String,
+    },
+}
+
+/// What an effect that LANDED is called (§ 2.2's row vocabulary, amended —
+/// A8).
+///
+/// § 2.2 spells the triple `born|exists|refused`. Two departures, both
+/// deliberate and both on the card: this door has no `exists` arm — an
+/// occupied path REFUSES at the create door, so `exists` is never emitted —
+/// and an edit is `edited`, a word § 2.2 does not name, because the
+/// alternative is calling an edit a birth.
+fn result_word(kind: effects::EffectKind) -> &'static str {
+    match kind {
+        effects::EffectKind::Create => "born",
+        _ => "edited",
+    }
+}
+
+/// Whether this executor refusal is a DOOR saying no, or the engine being
+/// unable to carry the batch at all.
+///
+/// The distinction is the never-veto law made operational (§ 2.2, and
+/// `docs/run-plane.md` § A door refusal is that effect's row):
+///
+/// - a **door refusal** — caps, an occupied birth, an armed-middleware veto,
+///   a section that is not there or is there twice, an fp-claim, a verdict —
+///   is about ONE descriptor. It becomes that effect's own row, and **the
+///   fire row stays `ok` and keeps its `value`**, because a hook's answer
+///   must not be discarded because an unrelated write was refused.
+/// - an **infrastructure failure** — the workspace lock, I/O, a page that
+///   will not load, a non-md descriptor, a malformed descriptor — is not a
+///   verdict about a descriptor at all. The engine could not carry the batch,
+///   so the fire row refuses and says which class.
+fn is_door_refusal(e: &ExecError) -> bool {
+    matches!(
+        e,
+        ExecError::CapDenied { .. }
+            | ExecError::BirthRefused { .. }
+            | ExecError::ArmedRefusal { .. }
+            | ExecError::SectionNotFound { .. }
+            | ExecError::SectionAmbiguous { .. }
+            | ExecError::FpClaim { .. }
+            | ExecError::Refused { .. }
+    )
+}
+
+/// The class a door refusal publishes.
+fn door_class(e: &ExecError) -> &'static str {
+    match e {
+        ExecError::CapDenied { .. } => "cap_denied",
+        ExecError::BirthRefused { .. } => "birth_refused",
+        ExecError::ArmedRefusal { .. } => "armed_refusal",
+        ExecError::SectionNotFound { .. } => "section_not_found",
+        ExecError::SectionAmbiguous { .. } => "section_ambiguous",
+        ExecError::FpClaim { .. } => "fp_claim",
+        _ => "refused",
+    }
+}
+
+/// The `applied[]` rows for a batch that REFUSED.
+///
+/// The words follow the executor's ACTUAL ordering, which is not uniform and
+/// which its own header doc used to deny (now corrected there): births
+/// realize FIRST, one door call each in emission order, stopping at the first
+/// refusal; the page splice — load, plan, seal, the armed gate, commit — runs
+/// after them as ONE atomic batch. So, keyed on
+/// [`ExecError::descriptor_index`]:
+///
+/// | descriptor | word | because |
+/// |---|---|---|
+/// | a create BEFORE the refused index | `born` | it is on disk; decision #14 does not roll it back |
+/// | the descriptor AT the refused index | `refused` + class + reason | the door judged this one |
+/// | a create AFTER it | `not_applied` | the loop stopped before reaching it |
+/// | every edit | `not_applied` | the splice never ran — a refusal from the birth lane or the armed gate is before the commit |
+///
+/// A refusal that names no descriptor (`descriptor_index() == None` — the
+/// workspace lock, I/O, a page that will not load) refuses every row: nothing
+/// is known to have landed, and guessing would be the falsehood this replaces.
+fn refused_rows(effects: &[Effect], e: &ExecError, class: &str, reason: &str) -> Vec<Value> {
+    let culprit = e.descriptor_index();
+    effects
+        .iter()
+        .enumerate()
+        .map(|(i, effect)| {
+            let mut row = json!({
+                "kind": effect.kind.as_str(),
+                "args": args_of(effect),
+            });
+            let Some(culprit) = culprit else {
+                row["result"] = json!("refused");
+                row["class"] = json!(class);
+                row["reason"] = json!(reason);
+                return row;
+            };
+            if i == culprit {
+                row["result"] = json!("refused");
+                row["class"] = json!(class);
+                row["reason"] = json!(reason);
+            } else if effect.kind == effects::EffectKind::Create && i < culprit {
+                // ON DISK. Saying `not_applied` about a record that exists is
+                // the falsehood the ordering makes possible, and the reason
+                // this table is keyed on the index rather than on the verb.
+                row["result"] = json!("born");
+                row["reason"] = json!(
+                    "committed before the refusal — the birth lane realizes in emission \
+                     order and does not roll back"
+                );
+            } else {
+                row["result"] = json!("not_applied");
+                row["reason"] = json!(if effect.kind == effects::EffectKind::Create {
+                    "the birth lane stopped at the refusal before reaching this descriptor"
+                } else {
+                    "the page splice never ran — one atomic batch, refused before commit"
+                });
+            }
+            row
+        })
+        .collect()
 }
 
 /// One realized effect as its `applied[]` row.
@@ -607,7 +909,12 @@ fn realize(
 fn applied_row(world: &ModeWorld<'_>, effect: &Effect, applied: &Applied) -> Value {
     let mut row = json!({
         "kind": effect.kind.as_str(),
-        "result": "born",
+        // The effect's OWN word. It used to be the literal "born" for every
+        // kind, so a `set_field` — an edit, not a birth — reported `born`
+        // while the same function's next arm published the PAGE's rev for it,
+        // and the word and the rev disagreed inside one row.
+        // (PR 195 review, e9f1ae35, F5a.)
+        "result": result_word(effect.kind),
         "args": args_of(effect),
     });
     let born_path = (effect.kind == effects::EffectKind::Create)
@@ -677,11 +984,11 @@ struct ProcessSeam<'a> {
 
 impl FireHost for ProcessSeam<'_> {
     fn bash(&self, call: &effects::BashCall) -> Result<Value, String> {
-        let row = self.run(call);
+        let seen = self.run(call);
         if let Ok(mut calls) = self.calls.lock() {
-            calls.push(row.clone());
+            calls.push(self.published(call, &seen));
         }
-        Ok(row)
+        Ok(seen)
     }
 }
 
@@ -689,6 +996,64 @@ impl ProcessSeam<'_> {
     /// The `exec[]` rows this fire produced, in call order.
     fn rows(&self) -> Vec<Value> {
         self.calls.lock().map(|c| c.clone()).unwrap_or_default()
+    }
+
+    /// The PUBLISHED row for one `bash()` call — deliberately **not** the dict
+    /// the program saw.
+    ///
+    /// The program's dict carries `stdout`/`stderr` inline, because a program
+    /// branching on its own command's output is the entire reason `bash()`
+    /// returns a value (§ 1.4's cadence rule). The published row must not:
+    /// § 2.2 states the recording is *"stdout by sha + a log path, not inline
+    /// in the trace"*, with logs out of tree, *"named so that tool-call
+    /// cadence has a ceiling"*. Publishing the program's dict put a chatty
+    /// hook's entire stdout on the wire, into the daemon's journal and into an
+    /// agent's context on EVERY fire — the unbounded per-tool-call cost the
+    /// ceiling exists to prevent. (PR 195 review, e9f1ae35, F8.)
+    ///
+    /// `log` is written under `.meridian/runs/`, never in the tree, and never
+    /// under `dry` — a rehearsal spawns nothing, so there is nothing to record.
+    fn published(&self, call: &effects::BashCall, seen: &Value) -> Value {
+        let stdout = seen["stdout"].as_str().unwrap_or_default();
+        let stderr = seen["stderr"].as_str().unwrap_or_default();
+        let dry = seen["dry"].as_bool().unwrap_or(false);
+        let mut row = json!({
+            "command": seen["command"].clone(),
+            "exit": seen["exit"].clone(),
+            "stdout_sha256": format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(stdout.as_bytes())),
+            "bytes": stdout.len(),
+            "timed_out": seen["timed_out"].clone(),
+            "dry": dry,
+        });
+        // `block` when the call named one — the fact that says WHICH fence
+        // ran, which a bare command string cannot.
+        if let effects::ExecProgram::Block(anchor) = &call.program {
+            row["block"] = json!(anchor);
+        }
+        if !dry && !(stdout.is_empty() && stderr.is_empty()) {
+            if let Some(path) = self.write_log(stdout, stderr) {
+                row["log"] = json!(path);
+            }
+        }
+        row
+    }
+
+    /// Write one call's streams to an out-of-tree log, and answer the
+    /// workspace-relative path. `None` when the write fails: a row that cannot
+    /// point at a log says nothing rather than pointing at a path that is not
+    /// there.
+    fn write_log(&self, stdout: &str, stderr: &str) -> Option<String> {
+        let dir = self.root.join(".meridian/runs");
+        std::fs::create_dir_all(&dir).ok()?;
+        let digest = blake3::hash(format!("{stdout}\u{0}{stderr}").as_bytes());
+        let name = format!("exec-{}.log", &digest.to_hex()[..16]);
+        let body = if stderr.is_empty() {
+            stdout.to_owned()
+        } else {
+            format!("{stdout}\n--- stderr ---\n{stderr}")
+        };
+        std::fs::write(dir.join(&name), body).ok()?;
+        Some(format!(".meridian/runs/{name}"))
     }
 
     /// One `bash()` call → its row. Never `Err`: every failure mode of a
@@ -777,36 +1142,62 @@ impl ProcessSeam<'_> {
         stdin: Option<&str>,
         invocation: &str,
         page: &str,
-    ) -> Value {
+        block_anchor: &str,
+        target: &wire::RunTarget,
+    ) -> Result<Value, (&'static str, String)> {
         let source = match &spec.program {
             effects::ExecProgram::Cmd(cmd) => Ok(cmd.clone()),
             effects::ExecProgram::Block(anchor) => blocks::block(self.doc, anchor)
                 .map(|block| block.source)
                 .map_err(|e| e.to_string()),
         };
+        // A dangling `exec(block=)` anchor is a DECLARATION defect, and § 2.2
+        // resolves it at LOAD — `addressed_entry` does that now, so reaching
+        // this arm means the page changed under us. It is still an inability
+        // to start, never a script's exit: it answers a typed refusal that
+        // keeps the anchor error's own words.
         let source = match source {
             Ok(source) => source,
-            Err(reason) => {
-                return json!({
-                    "interpreter": spec.interpreter, "exit": 127,
-                    "stdout_tail": "", "stderr_tail": reason, "timed_out": false,
-                });
-            }
+            Err(reason) => return Err(("no_block", reason)),
         };
         if self.dry {
-            return json!({
+            return Ok(json!({
                 "interpreter": spec.interpreter, "exit": 0,
                 "stdout_tail": "", "stderr_tail": "", "timed_out": false, "dry": true,
-            });
+            }));
         }
         let scratch = self.root.join(".meridian/scratch").join(invocation);
         let _ = std::fs::create_dir_all(&scratch);
-        // The engine's own two facts, plus the declaration's env pairs. The
-        // daemon's `CCC_HOOK_*` scalars ride the target's `env`, which the
-        // caller overlays; the engine carries them opaque.
-        let mut env = spec.env.clone();
+        // The layering § 2.2 states, in its order: the TARGET's `env` is the
+        // base — that is where the daemon's `CCC_HOOK_*` scalars ride, and the
+        // engine carries them opaque — and the DECLARED `exec(env=)` pairs
+        // overlay it. The target half used to be dropped on the floor: `env`
+        // was read zero times, so a `settings.json`-shaped hook reading
+        // `$CCC_HOOK_EVENT` saw it unset, took its default branch, and
+        // answered `ok`/`exit 0` with nothing anywhere saying a variable had
+        // gone missing. (PR 195 review, e9f1ae35, F2.)
+        let mut env: BTreeMap<String, String> = target.env.clone().unwrap_or_default();
+        env.extend(spec.env.clone());
+        // The engine's own two facts. `MRD_RUN_BLOCK` is the BLOCK — it used
+        // to carry the invocation, so a script shared by several blocks on one
+        // page (the reason the pair exists) branched on a token that differed
+        // every call and matched no block name, falling through to its default
+        // every time. The invocation is worth publishing too, and now does so
+        // under its own honest name. (F4.)
         env.insert("MRD_RUN_PAGE".to_owned(), page.to_owned());
-        env.insert("MRD_RUN_BLOCK".to_owned(), invocation.to_owned());
+        env.insert("MRD_RUN_BLOCK".to_owned(), block_anchor.to_owned());
+        env.insert("MRD_RUN_INVOCATION".to_owned(), invocation.to_owned());
+        // § 2.2's cwd rule for an exec'd entry, the same one `bash()` keeps:
+        // the input's own `cwd` when it named one, else the page's root — the
+        // official contract runs a hook in the project directory. `step_cwd`
+        // used to be the root unconditionally, so a hook that asked to run
+        // somewhere else was silently run somewhere else than it asked.
+        let cwd = target
+            .input
+            .as_ref()
+            .and_then(|input| input.get("cwd"))
+            .and_then(serde_json::Value::as_str)
+            .map_or_else(|| self.root.to_path_buf(), |c| self.root.join(c));
         let exec_spec = crate::exec::ExecSpec {
             source: &source,
             args: &spec.args,
@@ -814,7 +1205,7 @@ impl ProcessSeam<'_> {
             scratch: &scratch,
             project_root: self.root,
             timeout: self.timeout,
-            step_cwd: Some(self.root),
+            step_cwd: Some(&cwd),
             interpreter: &spec.interpreter,
             stdin,
         };
@@ -825,18 +1216,18 @@ impl ProcessSeam<'_> {
                     crate::exec::ExecStatus::Signaled { signal } => (128 + signal, false),
                     crate::exec::ExecStatus::TimedOut { .. } => (137, true),
                 };
-                json!({
+                Ok(json!({
                     "interpreter": spec.interpreter,
                     "exit": exit,
                     "stdout_tail": String::from_utf8_lossy(&result.stdout),
                     "stderr_tail": String::from_utf8_lossy(&result.stderr),
                     "timed_out": timed_out,
-                })
+                }))
             }
-            Err(e) => json!({
-                "interpreter": spec.interpreter, "exit": 127,
-                "stdout_tail": "", "stderr_tail": e.to_string(), "timed_out": false,
-            }),
+            // The process never started. That is the engine's failure to
+            // report, not an exit code to invent: a fabricated `127` here is
+            // indistinguishable from a script whose binary was off `PATH`.
+            Err(e) => Err(("no_block", e.to_string())),
         };
         let _ = std::fs::remove_dir_all(&scratch);
         answer
@@ -1024,8 +1415,8 @@ mod tests {
         let block = probe_block();
         let ctx = RunCtx::default();
 
-        let first = load_cached(&world, &block, &ctx).expect("the block loads");
-        let second = load_cached(&world, &block, &ctx).expect("and loads again");
+        let first = load_cached(&world, &block, &ctx, EvalLimits::default()).expect("the block loads");
+        let second = load_cached(&world, &block, &ctx, EvalLimits::default()).expect("and loads again");
 
         assert_eq!(
             cache.misses.load(std::sync::atomic::Ordering::Relaxed),
@@ -1052,8 +1443,8 @@ mod tests {
         block.source = "bash(cmd = \"true\")\n".to_owned();
         let ctx = RunCtx::default();
 
-        assert!(load_cached(&world, &block, &ctx).is_err());
-        assert!(load_cached(&world, &block, &ctx).is_err());
+        assert!(load_cached(&world, &block, &ctx, EvalLimits::default()).is_err());
+        assert!(load_cached(&world, &block, &ctx, EvalLimits::default()).is_err());
         assert_eq!(
             cache.misses.load(std::sync::atomic::Ordering::Relaxed),
             2,

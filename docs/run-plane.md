@@ -1549,6 +1549,114 @@ cached per block rev, keyed with the prelude's blake3 — an unchanged block is
 served from cache rather than re-evaluated, which is what the fire p95 rests
 on.
 
+### Amendments this implementation carries (A7, A8)
+
+Two departures from the accepted design text, both deliberate, both stated
+here rather than discovered in the diff. They are written for the fold into
+`final-design.md` § Amendments beside A1 and A2.
+
+**A7 — the world is a parameter, not a second implementation.** § 2.5's file
+table gives the daemon and the CLI their own paths into the run rows, which
+would make two implementations that can answer differently about the same
+page — the failure mode that table exists to prevent, one layer up. What the
+code does instead: `run::modes::ModeWorld` carries the page, the workspace
+root, the declaring root, the observed corpus root, the caller's `prelude`,
+the door-side facilities and the module cache as **borrows**, and ONE
+implementation of `load_row`/`fire_row` serves both lanes. The daemon hands
+the page out of its pinned resident snapshot (an `Arc` clone — never the
+`domain_snapshot` fold) with a resident cache; the CLI hands the page it just
+loaded, with `cache: None`, because a cache built once per process is a cost
+with no benefit. It touches § 2.5's file table only: the laws (pinned world,
+no fold, one write path) are unchanged, and it makes "the two lanes cannot
+disagree" a property of the type rather than of two authors' discipline.
+
+**A8 — the `applied[]` row vocabulary.** § 2.2 spells the triple
+`born|exists|refused`. The wire emits `born|edited|refused|not_applied`.
+`edited` exists because a `set_field` is not a birth and calling it `born` was
+the defect (the same row already published the page's rev for it, so the word
+and the rev disagreed inside one row). `exists` is never emitted because this
+door has no such arm — an occupied path REFUSES at the create door, as
+`cas_mismatch` against the empty hash. `not_applied` exists because the batch
+is atomic: when a door refuses one descriptor nothing lands, and a sibling
+that reads `born` would be claiming a record that is not on disk. It touches
+§ 2.2's row shape and the § A.8 response block; the refusal semantics beside
+it (a door refusal is the effect's row, the fire row keeps `ok` and its
+`value`) are § 2.2's own words, implemented rather than amended.
+
+> **A8's touch set reaches past the engine** (doc editor `4a68c823`, on the
+> fold): `exists` is load-bearing in the daemon's born-card idempotency (§ 1.5,
+> § 3.1, § 3.3), where "already there" must be benign rather than an error. The
+> engine no longer says that word, so the mapping is the caller's and belongs
+> in the fold: **a create refusal whose detail is `cas_mismatch` against the
+> EMPTY hash is the benign `exists`** — the path was occupied, nothing was
+> overwritten, and a re-birth of the same card is not a failure. Any other
+> create refusal stays a refusal.
+
+### A door refusal is that effect's row — never the fire's
+
+**The rule.** A **door** refusing one descriptor is that descriptor's own
+`applied[]` row: `result: "refused"` with the door's class and reason. The
+**fire row keeps `result: "ok"` and keeps its `value`.** The batch stays
+atomic — nothing landed — so every sibling descriptor reads
+`result: "not_applied"`, never `"born"`.
+
+That is the never-veto law made operational. A `PreToolUse` hook that answers
+`{"deny": "…"}` and also appends to a page the armed plane refuses must still
+deliver its verdict; a daemon that checks `result == "ok"` before reading
+`value` would otherwise discard a deny because an unrelated write was
+refused.
+
+**Where the line sits**, because "refusal" names two different situations:
+
+| A door said no → the EFFECT's row, fire row stays `ok` | The engine could not carry the batch → the FIRE row refuses |
+|---|---|
+| `cap_denied` · a birth the create door refused (occupied path, bad path) · an **armed-middleware veto** · a section that is not there or is there twice · an fp-claim · a verdict refusal | the workspace lock is held · I/O · a page that will not load · a non-md descriptor reaching the executor · a malformed descriptor |
+
+The engine reports no descriptor index — every executor error is documented
+*"applied NOTHING"* — so the refusal is attributed by the door's own
+coordinates (`kind`+`target`, `path`, `section`) matched against the
+descriptor list. A refusal naming no single descriptor stays the row's.
+
+**Result words** (§ 2.2's row vocabulary, amended — A8): `born` for a birth,
+`edited` for an edit, `refused` for the descriptor a door judged,
+`not_applied` for its siblings. § 2.2 spells the triple `born|exists|refused`;
+this door has no `exists` arm — an occupied path REFUSES at the create door —
+and `edited` exists because the alternative is calling an edit a birth.
+
+### Ceilings, and what a caller can narrow
+
+`timeout_ms` and `budget {steps, mem}` on a mode-bearing target are the
+caller's **ceilings**: **effective = min(declared, ceiling)** in every axis.
+A caller narrows; nothing a caller sends raises the engine's own limit, and an
+absent field leaves the engine ceiling standing. `budget` reaches the
+evaluator as its fuel and memory limits; `timeout_ms` reaches every process
+the fire starts — the exec'd entry and each `bash()` call.
+
+`env` on a fire is an **exec'd entry's process overlay**: the target's `env`
+is the base — where a daemon's `CCC_HOOK_*` scalars ride, carried opaque — and
+the declared `exec(env=)` pairs overlay it. On an **evaluated**-entry fire it
+**refuses** (`bad_request`), because no process exists to receive it. That
+refusal is a row, not a wall: whether a block's entry is evaluated or exec'd
+is a fact about the page, which the decode wall does not read.
+
+The engine's own facts reach an exec'd entry as `MRD_RUN_PAGE` (the page),
+`MRD_RUN_BLOCK` (**the declaring block's anchor** — the one the caller
+addressed, not the fence `exec(block=)` points at) and `MRD_RUN_INVOCATION`.
+Its working directory is `input["cwd"]` when the input names one, else the
+page's root.
+
+**`exec(block=)` resolves at LOAD**, not at the call: the declaration IS the
+program, so a declaration naming a fence that is not there is broken when it
+is read — `no_block`, carrying the anchor's own words.
+
+**Recording has a ceiling.** An `exec[]` row publishes `stdout_sha256` +
+`bytes` + a `log` path under `.meridian/runs/`, never the stream inline: a
+chatty hook would otherwise put its whole stdout on the wire, in the daemon's
+journal and in an agent's context on every fire. The dict the PROGRAM sees
+still carries `stdout`/`stderr` inline — a program branching on its own
+command's output is why `bash()` returns a value at all. Nothing is logged
+under `dry`.
+
 ### Input and answer
 
 **Which def a fire calls.** `declare(impl = f)` names it; with no `impl` the
