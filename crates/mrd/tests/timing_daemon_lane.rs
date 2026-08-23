@@ -118,6 +118,27 @@ impl Sandbox {
             .wait_with_output()
             .expect("mrd script exits")
     }
+
+    /// `mrd links --json` against `ws`. Same daemon, different op — and unlike a
+    /// `script` read this one always makes the daemon FOLD the workspace, which
+    /// is what gives each connection thread a phase to emit. Measured on
+    /// workstation-nyc-2, 2026-08-23: three `links` calls on three fresh
+    /// workspaces produced three complete folds under `who=…t1/t2/t3`, while
+    /// three `script` calls produced exactly ONE fold in total — the lazy-fold
+    /// law (`run-plane.md` § The run plane) means a served read walks nothing.
+    fn links(&self, ws: &Path, timing: &str) -> Child {
+        Command::new(mrd_bin())
+            .args(["links", "--json"])
+            .env("HOME", &self.home)
+            .env("XDG_CACHE_HOME", &self.cache_home)
+            .env("MRD_TIMING", timing)
+            .env_remove("MERIDIAN_WORKSPACE")
+            .current_dir(ws)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn mrd links")
+    }
 }
 
 /// One parsed MEASUREMENT. This lane's question is ATTRIBUTION, so `us=` is
@@ -301,20 +322,30 @@ fn the_mode_off_creates_no_lane() {
     );
 }
 
-/// The N4 receipt: `script` calls served by ONE daemon are separable afterwards.
-/// Same `p` (one process), different `t` (one thread per connection) — which is
-/// exactly what "byte-identical `phase=snapshot` lines" lacked.
+/// The N4 receipt: concurrent wire ops served by ONE daemon are separable
+/// afterwards. Same `p` (one process), different `t` (one thread per
+/// connection) — which is exactly what "byte-identical `phase=snapshot` lines"
+/// lacked.
 ///
 /// Three clients and the daemon all append to ONE sink file here, which is the
 /// arrangement `status.md` used to say was not demultiplexable. Each caller gets
 /// its own workspace so every connection has a fold to measure
 /// ([`Sandbox::workspace_named`]).
 ///
+/// **Why `links` and not `script`.** The card's receipt named two concurrent
+/// `script` calls, and that op cannot carry this gate any more: since the lazy
+/// fold (`run-plane.md` § The run plane) a daemon-served READ walks nothing, so
+/// three `script` calls produce ONE fold in the daemon and there is no
+/// second daemon-side line to attribute (measured on workstation-nyc-2,
+/// 2026-08-23). `links` is the same daemon on the same wire lane and always
+/// folds. The `script` clients were still separable from each other by their own
+/// `p` halves — the gap was daemon-side work to demultiplex, not the field.
+///
 /// What this does NOT claim: that `who=` is a request id. A thread reused for a
 /// later request keeps its ordinal — the field separates concurrent work, never
 /// successive work on one thread (`crates/timing` § who).
 #[test]
-fn two_script_calls_on_one_daemon_are_attributable() {
+fn concurrent_ops_on_one_daemon_are_attributable() {
     let sb = Sandbox::new();
     let sink_dir = tempfile::tempdir().expect("sink dir");
     let sink = sink_dir.path().join("timing.log");
@@ -322,22 +353,25 @@ fn two_script_calls_on_one_daemon_are_attributable() {
 
     // Warm the daemon first, so the two calls below are served by one resident
     // process rather than racing to spawn it.
-    let warm = sb.script_now(&sb.workspace_named("first"), &arg);
+    let warm = sb
+        .links(&sb.workspace_named("first"), &arg)
+        .wait_with_output()
+        .expect("mrd links exits");
     assert_eq!(
         warm.status.code(),
         Some(0),
-        "the warm-up script failed: {}",
+        "the warm-up links failed: {}",
         String::from_utf8_lossy(&warm.stderr)
     );
 
     let (second, third) = (sb.workspace_named("second"), sb.workspace_named("third"));
-    let (left, right) = (sb.script(&second, &arg), sb.script(&third, &arg));
+    let (left, right) = (sb.links(&second, &arg), sb.links(&third, &arg));
     for child in [left, right] {
-        let out = child.wait_with_output().expect("mrd script exits");
+        let out = child.wait_with_output().expect("mrd links exits");
         assert_eq!(
             out.status.code(),
             Some(0),
-            "a concurrent script failed: {}",
+            "a concurrent links failed: {}",
             String::from_utf8_lossy(&out.stderr)
         );
     }
@@ -349,7 +383,7 @@ fn two_script_calls_on_one_daemon_are_attributable() {
             .map(|m| m.who.clone())
             .collect::<BTreeSet<_>>()
             .len()
-            >= 2
+            >= 3
     });
     let all = measurements(&text);
     let served: Vec<&Measurement> = all.iter().filter(|m| m.cmd == "daemon").collect();
@@ -371,23 +405,34 @@ fn two_script_calls_on_one_daemon_are_attributable() {
             .or_default()
             .push(m.phase.as_str());
     }
-    assert!(
-        by_who.len() >= 2,
-        "two connections shared one `who=`, so their lines are still \
-         indistinguishable: {by_who:?}\n{text}"
+    assert_eq!(
+        by_who.len(),
+        3,
+        "three connections, three emitters — a shared `who=` means those lines \
+         are still indistinguishable: {by_who:?}\n{text}"
     );
+    // Each connection's group is a WHOLE fold, not a fragment of one shuffled in
+    // with another's: attribution that split a fold across two `who=` would be
+    // worse than none.
+    for (who, seen) in &by_who {
+        assert!(
+            seen.contains(&"snapshot") && seen.contains(&"corpus.build"),
+            "{who} carries a partial fold: {seen:?}\n{text}"
+        );
+    }
 
     // And the clients that appended to the SAME file are separable from the
     // daemon and from each other — the `p` half doing the job the doc used to
     // say no field did.
     let client_pids: BTreeSet<&str> = all
         .iter()
-        .filter(|m| m.cmd == "script")
+        .filter(|m| m.cmd == "links")
         .map(|m| pid_of(&m.who))
         .collect();
-    assert!(
-        client_pids.len() >= 2,
-        "the clients sharing this file are not separable: {client_pids:?}\n{text}"
+    assert_eq!(
+        client_pids.len(),
+        3,
+        "the three clients sharing this file are not separable: {client_pids:?}\n{text}"
     );
     assert!(
         client_pids.is_disjoint(&daemon_pids),
