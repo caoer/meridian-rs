@@ -564,15 +564,29 @@ pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
     // the budget variable. Debug builds only, so a release client on a tmpfs
     // `XDG_CACHE_HOME` still spawns.
     //
-    // Purely additive: a `Config` that does not resolve is left to the path
-    // that already handles it, so this insertion adds no new error route.
-    if let Ok(config) = registry::Config::resolve() {
-        debug_assert!(
-            config.drain_budget_hazard().is_none(),
-            "{}",
-            config.drain_budget_hazard().unwrap_or_default()
-        );
-    }
+    // A config that does NOT resolve is checked here too, and for the same
+    // reason. `Config::resolve` refuses a malformed `MRD_DRAIN_COLD_BUILDS`
+    // rather than falling back to the 2 s default (`parse_drain_cold_builds`) —
+    // correctly, since the value exists to escape that default. But the child
+    // re-resolves the same environment and dies with that refusal on a null
+    // stderr, so leaving the `Err` unspoken here reproduces the exact silence
+    // this whole check exists to end. Measured on `5bbd7912e`:
+    // `MRD_DRAIN_COLD_BUILDS=notanumber` gave exit 0, 5.03 s, an ephemeral
+    // answer, and no mention of the variable anywhere.
+    //
+    // Still no new error route: both arms are `debug_assert`, so a release
+    // client spawns and degrades exactly as it does today.
+    let refusal = match registry::Config::resolve() {
+        Ok(config) => config.drain_budget_hazard(),
+        Err(e) => Some(format!(
+            "the daemon layout this client is about to spawn does not resolve: {e}\n\
+             The child would re-resolve the same environment and die with that \
+             refusal on a null stderr, leaving a ~{}s degrade to the ephemeral \
+             engine as the only symptom.",
+            SPAWN_READY_TIMEOUT.as_secs()
+        )),
+    };
+    debug_assert!(refusal.is_none(), "{}", refusal.unwrap_or_default());
     daemon::spawn_detached()?;
     let deadline = Instant::now() + SPAWN_READY_TIMEOUT;
     while Instant::now() < deadline {
