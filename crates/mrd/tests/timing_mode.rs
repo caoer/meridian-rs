@@ -193,8 +193,7 @@ fn a_run_reports_its_phases_and_total_is_last() {
         lines
             .iter()
             .find(|(_, p, _)| p == want)
-            .map(|(_, _, us)| *us)
-            .unwrap_or_else(|| panic!("no {want}"))
+            .map_or_else(|| panic!("no {want}"), |(_, _, us)| *us)
     };
     assert!(of("snapshot") >= of("snapshot.read"));
     assert!(of("total") >= of("snapshot"));
