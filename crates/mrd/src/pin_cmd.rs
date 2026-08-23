@@ -56,7 +56,12 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // `name:rel` target resolves through the mount table.
     let workspace = match crate::rooted::enter(&parsed.page, "pin", "Nothing was written.") {
         Ok(Some((rel, rooted))) => {
-            parsed.display = Some(std::mem::replace(&mut parsed.page, rel));
+            // The CANONICAL spelling, not the caller's bytes (§ 4.6a). The
+            // "into <page>" half of the receipt whose target half is already
+            // canonical: one line answering "what drew from what" must not name
+            // its two ends in two different vocabularies.
+            parsed.display = Some(rooted.canonical_ref(&rel));
+            parsed.page = rel;
             rooted.workspace
         }
         Ok(None) => resolved.workspace,
@@ -136,7 +141,14 @@ fn print_human(parsed: &Pin, body: &Value) {
         .unwrap_or(false);
     let anchor = field("anchor");
     if promoted {
-        println!("  anchor:      ^{anchor} (written into {})", parsed.target);
+        // The WIRE fact's target, not the caller's typed argument — the same
+        // source the first line above already uses. Since aliases (§ 4.6a) a
+        // typed root may be a lookup spelling that means nothing to whoever
+        // reads this line next; the engine's own answer is the canonical one.
+        println!(
+            "  anchor:      ^{anchor} (written into {})",
+            field("target")
+        );
     } else {
         println!("  anchor:      ^{anchor} (already present)");
     }

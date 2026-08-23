@@ -42,7 +42,15 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // `{workspace, error}` frame under `--json`), never a literal-path walk.
     let workspace = match crate::rooted::enter(&parsed.page, "walk", "Nothing was walked.") {
         Ok(Some((rel, rooted))) => {
-            parsed.display = Some(std::mem::replace(&mut parsed.page, rel));
+            // The CANONICAL spelling, not the caller's bytes (§ 4.6a). Both
+            // faces, deliberately: `walk.root` is a STRUCTURED field a consumer
+            // parses with nothing to recover from, and splitting the law — JSON
+            // canonical, human as-typed — would mean two answers to "which root
+            // did I walk" from one command. One law is cheaper to hold than an
+            // exception, and the alias is still visible where it belongs
+            // (`mrd resolve`, the `mounts` row).
+            parsed.display = Some(rooted.canonical_ref(&rel));
+            parsed.page = rel;
             parsed.rooted = Some(rooted.name.clone());
             rooted.workspace
         }
@@ -92,8 +100,10 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         parsed.depth,
     )
     .map_err(|e| walk_error(e, &workspace, &cwd, &parsed))?;
-    // The echo law at the face: the walk root renders as the caller wrote it.
-    // Entries are untouched — as-if-cd'd into the named root (see [`Walk`]).
+    // The echo law at the face: the walk root renders rooted where the caller
+    // wrote rooted, with the root half CANONICAL (§ 4.6a — an alias is a lookup
+    // spelling). Entries are untouched — as-if-cd'd into the named root (see
+    // [`Walk`]).
     if let Some(display) = &parsed.display {
         report.root.clone_from(display);
     }
