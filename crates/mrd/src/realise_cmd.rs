@@ -322,21 +322,20 @@ fn applies_line(applies: u32, receipts: &[String]) -> String {
     )
 }
 
-/// Read a scalar frontmatter value off a parsed document, DECODED through the one scalar owner
-/// (wire-contract § A.6.1). Dotted keys (`realise.field`) are ordinary map entries, exactly as
-/// `mrd run` reads `task.<name>`. This is the DECLARED half of the `FieldEquals` comparison —
-/// `realise.expected` — and it decodes for the same reason the observed half does: a
-/// fleet-canonical `realise.expected: "done"` read raw never equals an observed `done`.
+/// Read a scalar frontmatter value off a parsed document, PUBLISHED through the one value owner
+/// ([`model::fm_doc_publish`], wire-contract § A.6.1 + § A.6.1a). Dotted keys (`realise.field`)
+/// are ordinary map entries, exactly as `mrd run` reads `task.<name>`. This is the DECLARED half
+/// of the `FieldEquals` comparison — `realise.expected` — and it publishes for the same reason
+/// the observed half does: a fleet-canonical `realise.expected: "done"` read raw never equals an
+/// observed `done`.
+///
+/// The keys read here are fixed (`realise.*`), so no live page can carry a block scalar under one
+/// today. It publishes through the seam anyway, because the DECLARED and OBSERVED halves must
+/// agree byte for byte: `realise.expected` written as a `|` block against an observed block
+/// scalar would compare a trimmed string against an untrimmed one and report permanent drift
+/// (card `scalar-text-trims-config-key-block-scalars`).
 fn fm_scalar(doc: &model::Document, key: &str) -> Option<String> {
-    fn find(node: &model::Node) -> Option<&model::YamlMap> {
-        if let model::NodeKind::Frontmatter { map } = &node.kind {
-            return Some(map);
-        }
-        node.children.iter().find_map(find)
-    }
-    find(&doc.root)
-        .and_then(|m| m.0.iter().find(|(k, _)| k == key))
-        .map(|(_, v)| model::scalar::text(v))
+    model::fm_doc_publish(doc, key)
 }
 
 /// The workspace-relative directory pending-agent cards are born in: the page's own

@@ -292,6 +292,35 @@ pub(crate) fn frontmatter(doc: &Document) -> Option<&YamlMap> {
 /// The § A.6.1 scalar law, through its one owner. The stored form keeps its
 /// quote characters (`model`'s flat parse is the hash grain, § A.6.2); a
 /// binding VALUE is a string, so it is decoded exactly where it is read.
+///
+/// **Deliberately NOT [`model::fm_doc_publish`], and the trim is why.** The
+/// other three flat-map readers were routed through that seam so a block
+/// scalar stops being trimmed (card
+/// `scalar-text-trims-config-key-block-scalars`); this one was audited in the
+/// same pass and kept, because publishing verbatim here would REGRESS a shape
+/// that works today.
+///
+/// A page may write its binding as a folded scalar:
+///
+/// ```yaml
+/// task.build: >
+///   [[#^build]]
+/// ```
+///
+/// The flat map stores that already decoded, with the trailing newline clip
+/// chomping leaves: `"[[#^build]]\n"`. [`parse_binding_value`] — this
+/// function's ONLY caller — then strips `[[` and `]]` as a matched pair. With
+/// the trim the suffix strip matches and the binding resolves. Without it the
+/// value still ends in `\n`, `strip_suffix("]]")` misses, and the whole
+/// `"[[#^build]]\n"` goes to `split_once("#^")`, which yields a non-empty
+/// target `"[["` and refuses [`AddressError::CrossFileRef`] — a working page
+/// turned into a typed refusal. The later `v.trim()` does not rescue it: that
+/// runs AFTER the bracket strip has already failed.
+///
+/// So the binding plane is not a value-publishing seam. It reads a value whose
+/// grammar is `[[#^id]]`, where surrounding whitespace is never content, and
+/// anything a block scalar could add is either trimmed harmlessly or refused
+/// by the grammar. Pinned by `crates/run/tests/binding_block_scalar.rs`.
 fn unquote(value: &str) -> String {
     model::scalar::text(value)
 }

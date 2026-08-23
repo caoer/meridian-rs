@@ -132,22 +132,22 @@ impl Check for FieldEquals {
     }
 }
 
-/// Read one frontmatter field's current value off a parsed document, using only
-/// the public model surface (the frontmatter node's [`model::YamlMap`]),
-/// DECODED through the one scalar owner (wire-contract § A.6.1). This is the
-/// OBSERVED half of a value comparison; the declared half (`realise.expected`,
-/// read at the page edge) decodes through the same owner, because a decode on
-/// one side alone moves the mismatch instead of closing it.
+/// Read one frontmatter field's current value off a parsed document, PUBLISHED
+/// through the one value owner ([`model::fm_doc_publish`], wire-contract
+/// § A.6.1 + § A.6.1a). This is the OBSERVED half of a value comparison; the
+/// declared half (`realise.expected`, read at the page edge) publishes through
+/// the same owner, because a decode on one side alone moves the mismatch
+/// instead of closing it.
+///
+/// `field` is whatever a page declares as `realise.field`, so a block scalar is
+/// authorable under it and no naming convention bounds the class — the same
+/// arbitrary-key reason [`preset`](../preset)'s checker publishes through the
+/// seam (card `scalar-text-trims-config-key-block-scalars`). Trimming here
+/// would report DRIFTED against a page that has already converged, which is the
+/// worse half of the failure: a realise loop then applies a change the world
+/// did not need.
 fn fm_value(doc: &model::Document, field: &str) -> Option<String> {
-    fn find(node: &model::Node) -> Option<&model::YamlMap> {
-        if let model::NodeKind::Frontmatter { map } = &node.kind {
-            return Some(map);
-        }
-        node.children.iter().find_map(find)
-    }
-    find(&doc.root)
-        .and_then(|m| m.0.iter().find(|(k, _)| k == field))
-        .map(|(_, v)| model::scalar::text(v))
+    model::fm_doc_publish(doc, field)
 }
 
 /// A claim's apply program — a run-plane task binding. Running it drives the

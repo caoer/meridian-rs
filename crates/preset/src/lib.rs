@@ -15,7 +15,7 @@
 //! as a whole block-sequence value ([`render_block_sequence`]) written
 //! atomically as birth bytes, never a single-line properties upsert.
 
-use model::{Document, NodeKind, Ref, YamlMap};
+use model::{Document, Ref};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use wire::{ErrorBody, ErrorCode};
@@ -277,24 +277,27 @@ fn parse_ephemeral(raw: &str) -> Vec<String> {
         .collect()
 }
 
-/// Read a scalar frontmatter value off the parsed frontmatter map (the public
-/// [`YamlMap`] surface), DECODED through the one scalar owner (wire-contract
-/// § A.6.1). This is a value plane: the `^properties` rule check compares what
-/// it returns against a def-supplied string, so a fleet-canonical
-/// `status: "done"` read raw would compare false against `done` and the face
-/// would render a legitimate-looking "no violation" — § A.6's read-half defect,
-/// in a checker instead of a script. Multi-line block values are read through
-/// the grain ([`read_inputs_grain`]), never here.
+/// Read a scalar frontmatter value off a parsed page, PUBLISHED through the one
+/// value owner ([`model::fm_doc_publish`], wire-contract § A.6.1 + § A.6.1a).
+/// This is a value plane: the `^properties` rule check compares what it returns
+/// against a def-supplied string, so a fleet-canonical `status: "done"` read raw
+/// would compare false against `done` and the face would render a
+/// legitimate-looking "no violation" — § A.6's read-half defect, in a checker
+/// instead of a script.
+///
+/// **A block scalar reaches here, and the key is not ours to bound.** The
+/// earlier wording claimed multi-line block values were read through the grain
+/// ([`read_inputs_grain`]) and "never here". That was false: the grain handles
+/// `inputs` only, while [`first_violated_rule`] calls this with `rule.key` —
+/// whatever key a preset page's `^properties` rule happens to declare. `status`,
+/// `description` and `manifest` all carry block scalars on live pages today, so
+/// the only thing keeping the class dormant is that nobody has written a
+/// `type: preset` page yet (card
+/// `scalar-text-trims-config-key-block-scalars`). Publishing through the seam
+/// is what makes that safe; the doc comment asserting a property the code did
+/// not enforce is what would have let the next reader skip the check.
 fn fm_scalar(doc: &Document, key: &str) -> Option<String> {
-    fn find(node: &model::Node) -> Option<&YamlMap> {
-        if let NodeKind::Frontmatter { map } = &node.kind {
-            return Some(map);
-        }
-        node.children.iter().find_map(find)
-    }
-    find(&doc.root)
-        .and_then(|m| m.0.iter().find(|(k, _)| k == key))
-        .map(|(_, v)| model::scalar::text(v))
+    model::fm_doc_publish(doc, key)
 }
 
 /// Read the `inputs` block sequence through the U2.11 whole-value grain
