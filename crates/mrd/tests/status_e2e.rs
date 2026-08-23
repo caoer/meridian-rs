@@ -103,6 +103,13 @@ fn arm_rules(ws: &Path, rules: &[(&str, String, String, policy::armed::Mode)]) {
         page,
         bytes,
     }));
+    // The act loads every firing winner. Hand it the PINNED bytes — the ones on
+    // disk right now and the ones the index resolved. The live bytes replace
+    // them below, which is the only honest way to build a drifted row.
+    let source: std::collections::BTreeMap<String, String> = pages
+        .iter()
+        .map(|(page, pinned)| (page.clone(), (*pinned).clone()))
+        .collect();
     let artifact = policy::armed::arm(
         &index,
         &policy::armed::ArmRoot::workspace(),
@@ -113,6 +120,8 @@ fn arm_rules(ws: &Path, rules: &[(&str, String, String, policy::armed::Mode)]) {
                 mode: *mode,
                 attested_rev: policy::page_rev(pinned),
             }),
+        &source,
+        policy::CheckLimits::default(),
     )
     .expect("the fixture arms at each page's live rev");
     let artifact_path = ws.join(fs::domain::ARMED_RULES_PATH);

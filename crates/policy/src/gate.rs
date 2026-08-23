@@ -308,6 +308,12 @@ mod tests {
             page: path,
             bytes,
         }));
+        let source = MemPages(
+            pages
+                .iter()
+                .map(|(path, bytes, ..)| ((*path).to_string(), bytes.clone()))
+                .collect(),
+        );
         let artifact = arm(
             &index,
             &ArmRoot::workspace(),
@@ -316,14 +322,10 @@ mod tests {
                 mode: *mode,
                 attested_rev: page_rev(bytes),
             }),
+            &source,
+            CheckLimits::default(),
         )
         .expect("the fixture arms");
-        let source = MemPages(
-            pages
-                .iter()
-                .map(|(path, bytes, ..)| ((*path).to_string(), bytes.clone()))
-                .collect(),
-        );
         (artifact.render(), source)
     }
 

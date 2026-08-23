@@ -166,7 +166,7 @@ the one resolver, pin the winner's page and rev — so `scope` cannot drift from
 the resolution it describes. It is all-or-nothing and reports every fault at
 once: a partial artifact would silently drop a rule the reviewer meant to arm.
 
-Three properties the runbook depends on:
+Four properties the runbook depends on:
 
 - **Arming freezes resolution.** A page that appears LATER — including a deeper
   override candidate that live resolution would now prefer — governs nothing
@@ -179,6 +179,33 @@ Three properties the runbook depends on:
 - **Mode vocabulary splits by kind.** A hook has no severity axis: it is `off` or
   it fires. A hook row carrying `warn`/`block`, or a check row carrying `armed`,
   is refused at the act, so no artifact can render one.
+- **A row that will FIRE must LOAD.** Registration (tag + `id:`) and declaration
+  (`severity:`, `caps:`, `budget:`, the block's entry point) are two layers, and
+  arming used to attest only the first — so a page missing a declaration key
+  armed at exit 0 and pinned a row that could never fire, with no complaint
+  before a later red verdict on the fire path. The act now loads the winner
+  through `policy::rule::load_rule` — the same loader `armed_law::resolve_armed_law`
+  runs on the fire path — and refuses `ArmFault::Unloadable`, naming the loader's
+  own fault, **before anything is written to `meridian/armed-rules.md`**.
+  `policy` still performs no I/O: the winner's bytes arrive through the injected
+  `PageSource`, under the caller's `CheckLimits`.
+
+The load gate runs on the modes that FIRE, never on `off`. Attesting a page `off`
+is the reviewer's record that they read it at this rev and chose not to activate
+it — including a page too broken to load, which is precisely a state worth
+attesting. That set is a SUPERSET of what the fire path loads, not a mirror of
+it: `resolve_armed_law` loads `verdict.firing()`, which is additionally narrowed
+to the write's own path and excludes reddened rows. The divergence is on the safe
+side — arming demands loadability of every non-`off` winner, whatever path it
+will later govern.
+
+A page edited between the corpus walk and the act is **drift, not a broken
+declaration.** `mrd arm` builds its index before it takes the write flock, so the
+drift gate compares the request against a rev that may already be stale; the
+loader's own rev law (`RuleLoadError::RevMismatch`) is what catches the race, and
+the act re-labels it `ArmFault::Drift` at the rev the loader actually read. Those
+bytes are precisely NOT the ones attested, and reporting them as unloadable would
+send an operator hunting a declaration bug in a healthy page.
 
 #### The disk edge (wired), and what is still deferred
 

@@ -269,6 +269,9 @@ fn arm_frozen_guide(root: &fs::WorkspaceRoot) {
         page: RULE_PATH,
         bytes: FROZEN_GUIDE_RULE,
     }]);
+    // The page is already on disk, so the act's loader reads it exactly where
+    // the fire path will, under the same limits.
+    let source = wire_serve::armed_disk::DiskPages::new(root);
     let artifact = policy::armed::arm(
         &index,
         &policy::armed::ArmRoot::workspace(),
@@ -277,6 +280,8 @@ fn arm_frozen_guide(root: &fs::WorkspaceRoot) {
             mode: policy::armed::Mode::Block,
             attested_rev: policy::page_rev(FROZEN_GUIDE_RULE),
         }],
+        &source,
+        policy::CheckLimits::default(),
     )
     .expect("arm at the live rev");
 

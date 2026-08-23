@@ -314,6 +314,12 @@ mod scenarios {
                 page: path,
                 bytes,
             }));
+        // The act loads every firing winner, so it needs the bytes the index
+        // was discovered from — a `path → bytes` map IS a `PageSource`.
+        let source: BTreeMap<String, String> = pages
+            .iter()
+            .map(|(path, bytes, ..)| ((*path).to_string(), (*bytes).to_string()))
+            .collect();
         policy::armed::arm(
             &index,
             &policy::armed::ArmRoot::workspace(),
@@ -324,6 +330,8 @@ mod scenarios {
                     mode: *mode,
                     attested_rev: policy::page_rev(bytes),
                 }),
+            &source,
+            policy::CheckLimits::default(),
         )
         .expect("the fixture arms")
         .render()
@@ -553,13 +561,18 @@ mod scenarios {
         let (dir, root) = tmp_ws();
         write_page(&root, RULE_PATH, RULE_PAGE);
         write_page(&root, "rules/bare.md", BARE);
-        write_artifact(
-            &root,
-            &artifact_for(&[
-                (RULE_PATH, RULE_PAGE, "reviewer.not-owner", Mode::Block),
-                ("rules/bare.md", BARE, "bare.check", Mode::Block),
-            ]),
+        // The bad row is HAND-WRITTEN at the page's true rev: the ARM act loads
+        // every firing winner and refuses `ArmFault::Unloadable`, so it no
+        // longer mints one (card `mrd-arm-loads-page`). The fault stays
+        // reachable — a hand-edited artifact, a row armed by an older engine —
+        // and this test's subject is what the DOOR does when it meets one.
+        let mut artifact =
+            artifact_for(&[(RULE_PATH, RULE_PAGE, "reviewer.not-owner", Mode::Block)]);
+        artifact = format!(
+            "{artifact}| `bare.check` | `rules/bare.md` | `{rev}` | `.` | `block` |\n",
+            rev = policy::page_rev(BARE)
         );
+        write_artifact(&root, &artifact);
         set_marker(&root);
 
         let err = create(&root, None, &owner_self_create("agent:alice"), &[])
