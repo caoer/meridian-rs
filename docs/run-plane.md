@@ -2060,7 +2060,7 @@ so on a rehearsal `snapshot` and `eval` sit directly inside `total`, and
 | `conventions.load` | `total` | `mrd::run_cmd` | `caps::load_conventions` — the root's `MERIDIAN.md` |
 | `task.gate` | `total` | `mrd::run_cmd` | the door's pre-check: `resolve_task` + `contract_for` + `validate` + `resolve_authority` |
 | `pre_eval` | `total` | `run::runner::pre_eval` | the plane's OWN address → contract → caps chain, which repeats the door's work. Measured on the chain, so `--dry` reports it too |
-| `dispatch` | `total` | `run::runner` | `eval` + `snapshot` + `apply`, whole — in that ORDER: the fold follows the eval that decides whether it is needed (§ The run plane) |
+| `dispatch` | `total` | `run::runner` | On the STARLARK leg: `eval` + `snapshot` + `apply`, whole — in that ORDER, the fold FOLLOWING the eval that decides whether it is needed (§ The run plane). **Bash is not that shape**: it opens no `eval` span, emits no `snapshot*` line at all (it observes through `fs::domain_leaves_memoized`, which carries no phase — the phases live in `fs::domain_snapshot_with_leaves`), and takes its observation FIRST, under the flock, before the block runs. The lazy rule is the starlark leg's |
 | `snapshot` | `dispatch` | `fs::domain_snapshot_with_leaves` | the three below, whole — absent whenever this tense's lazy gate did not fire (§ The run plane) |
 | `snapshot.walk` | `snapshot` | same | `Domain::load` + `hash_domain` — the hash-domain walk |
 | `snapshot.read` | `snapshot` | same | `read_and_digest_members` — read + blake3 of every member |
