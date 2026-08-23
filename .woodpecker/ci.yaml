@@ -386,8 +386,22 @@ steps:
   # Forgejo's generic registry is APPEND-ONLY per (name, version, file): a
   # re-run of the same commit gets 409 and the FIRST published bytes stay
   # authoritative. That is the property the pin needs — a rebuild that differs
-  # byte-wise (Rust builds are not bit-reproducible here) must never silently
-  # invalidate a digest a consumer already recorded.
+  # byte-wise must never silently invalidate a digest a consumer already
+  # recorded.
+  #
+  # THIS BUILD *IS* BIT-REPRODUCIBLE, and the previous revision of this comment
+  # said otherwise. Measured 2026-08-23: a `git archive` of 4640044e0, built in
+  # this image on this runner with the same sccache shard, the same
+  # MRD_BUILD_SHA and the same target-dir PATH, reproduced the published
+  # mrd-linux-amd64 byte for byte — sha256
+  # 0098356f0f9ac63af221128459595138f1600eb7aabf4f15a7e04f4306129ce0, 54151480
+  # bytes. So the 409 is NOT protection against inherent nondeterminism. It is
+  # protection against an INPUT drifting, and the inputs are not pinned: the
+  # same source built into a different target-dir path came out 64 bytes
+  # smaller (OUT_DIR strings reach the binary through build scripts), and the
+  # image tag, toolchain and RUSTFLAGS can all move. That is the honest reason
+  # the FIRST bytes must win, and it is a better reason than the one it
+  # replaces. Card: 19-20/tasks/main-publish-stamps-dirty-on-every-head.
   #
   # main + manual only: a PR's engine is not a thing anyone should pin.
   #
