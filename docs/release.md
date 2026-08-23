@@ -343,6 +343,34 @@ at (§5.2) — never by the tag name, and there is **no `latest`**.
 | Files | `mrd-linux-amd64`, `mrd-darwin-arm64`, and a `.sha256` beside each |
 | The pin a consumer records | `(COMMIT, SHA256)` |
 | Re-publish of the same commit | HTTP **409**; the FIRST published bytes stay authoritative |
+| Precondition | the `ci` workflow SUCCEEDED for that tag pipeline — all six verdict lanes |
+
+**A tag cannot publish ahead of its verdict.** `ci.yaml` runs on `refs/tags/v*`
+and both tag workflows declare `depends_on: [ci]`, so Woodpecker will not start
+them until every lane in `ci` has succeeded: a red suite leaves both tag
+workflows **skipped** and `publish` never-run, and the release simply does not
+exist. The dependency is deliberately **not** `optional: true` — optional means
+"enforced only if `ci` is part of the pipeline", which would let a `ci` filtered
+out by its own `when` wave a release through ungated.
+
+Two consequences worth knowing before you cut one:
+
+- **A tag pipeline is slow by construction.** The tag lanes start after the
+  whole suite, ~18 minutes in. That lateness is *expected* to be survivable, and
+  it is not yet proven. The mechanism is real: every workflow here clones with a
+  non-rotating PAT rather than the server's parse-time OAuth netrc, which was
+  stamped once at parse and died on its own clock — before that fix a late clone
+  hit `exit 128`. The evidence is one observation, pre-gate: pipeline 1328's
+  `tag-linux-amd64` clone started **1171 s after parse** and succeeded. Under
+  the gate no tag lane has cloned at all — the one gated tag pipeline (1330) was
+  refused by a red `ci`, so both tag workflows were **skipped, `started=null`**,
+  and never reached their clone step. The first real `v*` release is the proof;
+  the watch lives on card `22-18/tasks/meridian-rs-tag-lanes-not-gated`
+  § GREEN HALF. If it does fail, it fails closed: no release, never a bad one.
+- **The lane refuses a tree it cannot attest.** If the probe fails, or tracked
+  content diverges from the commit, the lane exits 1 rather than stamping
+  `-dirty` and publishing — §5.1's stamp is a claim, and an unverifiable clean
+  claim is not published.
 
 **The tag NAMES the point; the commit KEYS the bytes.** A tag is a movable ref
 and a name is not a hash, so nothing a consumer pins may derive from it: a
@@ -363,7 +391,11 @@ hands out, so a tag adds a platform — it does not add a second pin vocabulary.
 same commit can differ byte-wise, and the 409 is what keeps it from silently
 invalidating a digest a consumer already recorded.
 
-*Not because the build is nondeterministic — it is not.* Measured 2026-08-23: a
+*And not because the build is inherently nondeterministic — held every input, it
+reproduced exactly.* The measurement is one commit on one platform with one image
+tag and a warm sccache shard; it does not license a general claim in either
+direction, and an earlier revision of this paragraph made the opposite general
+claim on no measurement at all. Measured 2026-08-23: a
 `git archive` of `4640044e0`, rebuilt in the CI image on `workstation-nyc-2`
 with the same sccache shard, the same `MRD_BUILD_SHA` and the same target-dir
 **path**, reproduced the published `mrd-linux-amd64` byte for byte (sha256

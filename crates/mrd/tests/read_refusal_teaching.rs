@@ -18,10 +18,6 @@ use std::time::{Duration, Instant};
 
 mod common;
 
-fn mrd_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_mrd")
-}
-
 const GUIDE: &str = "# Guide\n\n## Usage\n\nA healthy page beside the poison.\n";
 
 /// The three facts the refusal owes the operator: WHICH member, WHAT is wrong
@@ -51,10 +47,8 @@ fn sandbox() -> Sandbox {
 
 impl Sandbox {
     fn base(&self) -> Command {
-        let mut cmd = Command::new(mrd_bin());
-        cmd.env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
-            .env_remove("MERIDIAN_WORKSPACE");
+        let mut cmd = common::mrd_command(&self.home, &self.cache_home);
+        cmd.env_remove("MERIDIAN_WORKSPACE");
         cmd
     }
 
