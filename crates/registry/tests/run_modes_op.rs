@@ -153,19 +153,17 @@ fn rows_of(resp: &Value) -> Vec<Value> {
 /// set is still closed, and an unknown field refuses BY NAME with its target
 /// index.
 ///
-/// The card's row 4 says "the same frame sent WITHOUT `run.mode` in the
-/// negotiated hello (client hello omits the cap)". That is not constructible:
-/// a client does not choose which caps it negotiates — the SERVER advertises
-/// its capability set whole (`wire-contract.md:1229`: *"Op discovery is
-/// complete; there is no version sniffing"*), and a v3 server always
-/// advertises `run.mode`. The design says what the real instrument is: *"an
-/// old server receiving it anyway refuses by name at the closed set"* — so
-/// the row's other half is measured against a daemon built at the BASE sha,
-/// and it rides the same two-binary setup row 5 needs. Reported to the
-/// leader rather than silently substituted.
+/// A client does not choose which caps it negotiates — the SERVER advertises
+/// its capability set whole (`wire-contract.md`: *"Op discovery is complete;
+/// there is no version sniffing"*), so "a v3 client without `run.mode`" is not
+/// a thing that exists. The instrument the design names is the other one: *"an
+/// old server receiving it anyway refuses by name at the closed set"*, and
+/// that is now constructible in-process — see
+/// `an_unnegotiated_mode_refuses_by_name_at_the_closed_set` below, which was
+/// unconstructible until the closed sets became rev-conditional.
 ///
-/// What this test pins is the property that makes that refusal exist at all:
-/// the wall is still a closed set after six fields joined it.
+/// What THIS test pins is the property underneath both: the wall is still a
+/// closed set after six fields joined it.
 #[test]
 fn the_target_field_set_is_still_closed_and_refuses_by_name() {
     let tmp = TempDir::new().unwrap();
@@ -188,12 +186,24 @@ fn the_target_field_set_is_still_closed_and_refuses_by_name() {
     );
 }
 
-/// The other side of the skew, and the one an OLD CLIENT meets: `run` is
-/// v3-only, so a v2 hello does not reach the field wall at all — the whole op
-/// is `unknown_op`. Loud either way, which is the property that matters; the
-/// two refusals just belong to opposite ends of the skew.
+/// **GATE ROW 4, the bytes** — an unnegotiated `mode` refused BY NAME at the
+/// closed set, from a v2 session.
+///
+/// This test asserted the OPPOSITE until PR 195's review: it recorded that a
+/// v2 client meets `unknown_op` at the OP grain and never reaches the field
+/// wall — which was true, and which made the acceptance gate's own required
+/// bytes unconstructible. The six target additions and `prelude` sat in
+/// UNCONDITIONAL closed sets, so no client could ever see the by-name refusal
+/// the design and both docs publish: a v2 client was stopped one layer
+/// earlier and a v3 client always has the caps.
+///
+/// The sets are now rev-conditional (the shipped precedent is the root op's
+/// mint arm), so a non-v3 session is judged against the SHIPPED fields and
+/// meets the wall first. The feature was never ungated — what was false was
+/// the published mechanism, and this test is what would have caught it.
+/// (Reviewer `fa5da9ec`; advisor `ea317a27`, design conformance.)
 #[test]
-fn a_v2_client_does_not_reach_the_field_wall_because_run_is_v3_only() {
+fn an_unnegotiated_mode_refuses_by_name_at_the_closed_set() {
     let tmp = TempDir::new().unwrap();
     let ws = seeded(&tmp);
     let _server = RunningServer::start(test_config(&tmp)).unwrap();
@@ -203,10 +213,39 @@ fn a_v2_client_does_not_reach_the_field_wall_because_run_is_v3_only() {
     let resp = conn.call(&run_frame(
         5,
         "gate-row-4b",
-        &json!([{"page": "HOOKS.md", "block": "no-stash", "mode": "fire"}]),
+        &json!([{"page": "HOOKS.md", "task": "arm", "mode": "fire"}]),
     ));
     assert_eq!(resp["ok"], json!(false));
-    assert_eq!(resp["error"]["code"], "unknown_op");
+    assert_eq!(
+        resp["error"]["message"].as_str().unwrap_or_default(),
+        "unknown field `mode` on `targets[0]` of `run`",
+        "the acceptance gate's own bytes, from an unnegotiated session: {resp}"
+    );
+
+    // The same wall, one field over, and at the OP grain for `prelude`.
+    let resp = conn.call(&run_frame(
+        6,
+        "gate-row-4c",
+        &json!([{"page": "HOOKS.md", "task": "arm", "input": {"a": 1}}]),
+    ));
+    assert_eq!(
+        resp["error"]["message"].as_str().unwrap_or_default(),
+        "unknown field `input` on `targets[0]` of `run`",
+        "{resp}"
+    );
+
+    // A v2 target that names ONLY shipped fields still decodes and is
+    // answered by the op-grain gate — the amendment took nothing away.
+    let resp = conn.call(&run_frame(
+        7,
+        "gate-row-4d",
+        &json!([{"page": "HOOKS.md", "task": "arm"}]),
+    ));
+    assert_eq!(resp["ok"], json!(false));
+    assert_eq!(
+        resp["error"]["code"], "unknown_op",
+        "the shipped shape still meets the op-grain v3 gate: {resp}"
+    );
 }
 
 /// Every § 2.2 exclusion refuses BY NAME and TEACHES which addressing the

@@ -1513,12 +1513,16 @@ shipping `declare(impl = exec("bash", cmd = "…"))` as its prelude would
 therefore make every anchored starlark fence on every addressed page a fire
 target running caller-authored bytes, including a fence that declares
 nothing. So a prelude that produces ANY declaration (or an `exec` value)
-refuses **`prelude_invalid` at the mode door, before any block of the page is
-loaded, for load and fire alike — a prelude declaration never reaches the
-declaration list; `not_declared` stays reachable.** It refuses regardless of
-whether the page declares: a task-bound block has no `declare()` of its own,
-so a guard that only fired when the page declared would leave exactly that
-block hijackable. A prelude carries shared helpers, not entries.
+refuses **`prelude_invalid`** — the existing class, broadened, no new
+vocabulary — at the mode door (`check_prelude` in `mode_row`, above the
+load/fire dispatch), before any block of the page is loaded, for load and fire
+alike, regardless of what the page itself declares; a prelude declaration
+never reaches the declaration list; `not_declared` stays reachable.
+
+*Regardless* is load-bearing rather than cautious: a task-bound block has no
+`declare()` of its own, so a guard that fired only when the page declared
+would leave exactly that block hijackable. A prelude carries shared helpers,
+not entries.
 *(Amendment A10; advisor `ea317a27`, 2026-08-23.)* `prelude_invalid` is ONE
 class broadened, not a new one: a prelude is invalid when its code faults **or
 when it carries consent material — a declaration or an `exec` value — because

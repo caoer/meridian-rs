@@ -3086,7 +3086,7 @@ one refuses `not_declared` at the door.
 
   | Addition | Where | Cap | Carries |
   |---|---|---|---|
-  | `prelude` string | top level, one per call | `run.mode` | load-phase source evaluated before each block's own top level; blake3-cached; a source that faults refuses `prelude_invalid` before any block runs |
+  | `prelude` string | top level, one per call | `run.mode` | load-phase source evaluated before each block's own top level; blake3-cached; a source that faults — **or that carries consent material, a declaration or an `exec` value, since consent is page-authored** — refuses `prelude_invalid` at the mode door, before any block of the page is loaded, for load and fire alike |
   | `mode` `"load"\|"fire"` | per target | `run.mode` | absent = the shipped task path |
   | `block` string | per target | `run.mode` | the `^id` anchor of a declared block (§2.4's charset); REQUIRED with `mode:"fire"`, refused with `task` |
   | `input` any JSON | per target | `run.input` | the fire's one input channel, bound as a real starlark value (dict/list/str/int/float/bool/None) |
