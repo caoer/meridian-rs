@@ -571,3 +571,77 @@ fn the_json_face_carries_the_bridge_and_nulls_the_mount_on_divergence() {
     let human = run_bridged(home.path(), None, &[], Some(&bound), Some(&elsewhere));
     assert!(stdout(&human).contains("CCC_LLM_WIKI_REPOS_ROOT  diverges"));
 }
+
+/// The verb names WHICH PROCESS resolved the chain, and warns only where the operator has
+/// re-pointed it. Two processes answer mount-table questions through the same
+/// `config::Env::from_process()` call — this CLI, and the daemon's `mounts` op
+/// (`crates/registry/src/mounts.rs`) — each from its own environment, so a table published here
+/// can differ from the one the engine binds and nothing used to say so. Ruled (a) 2026-08-23,
+/// card `serving-daemon-holds-mount-table-ignores-meridian-config`.
+///
+/// The line is UNCONDITIONAL by design, and this test is what stops it being narrowed back to
+/// the override rung: a daemon started under a different `$HOME` resolves a different rung-2
+/// file with no variable set anywhere, so an override-gated line would stay silent on the very
+/// case that has no variable to notice.
+#[test]
+fn the_verb_names_which_process_answered_and_warns_only_on_the_override_rung() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let default_path = home.path().join("MERIDIAN.md");
+    std::fs::write(&default_path, single(home.path())).expect("write the config");
+
+    // ── the line is on BOTH rungs, and on the absent resolution ──────────────
+    let fell_through = run(home.path(), None, &[]);
+    let stated = run(home.path(), Some(&default_path), &[]);
+    let empty = tempfile::tempdir().expect("tempdir");
+    let absent = run(empty.path(), None, &[]);
+
+    for (label, out) in [
+        ("rung 2", &fell_through),
+        ("rung 1", &stated),
+        ("state A", &absent),
+    ] {
+        let text = stdout(out);
+        assert_eq!(out.status.code(), Some(0), "{label}: {}", stderr(out));
+        assert!(
+            text.contains("answered by: this process"),
+            "{label} names the resolving PROCESS, not only the rung: {text}"
+        );
+        assert!(
+            text.contains("a serving daemon answers the `mounts` op from ITS environment"),
+            "{label} says where the other answer comes from, or the first half teaches nothing: \
+             {text}"
+        );
+    }
+
+    // ── the warning is the override rung ONLY ───────────────────────────────
+    let warning = "is read here and never reaches a serving daemon";
+    assert!(
+        stdout(&stated).contains(warning),
+        "the override rung warns that the variable stops at this process: {}",
+        stdout(&stated)
+    );
+    assert!(
+        stdout(&stated).contains("MERIDIAN_CONFIG is read here"),
+        "the warning NAMES the variable — a warning that does not name it cannot be acted on: {}",
+        stdout(&stated)
+    );
+    assert!(
+        !stdout(&fell_through).contains(warning),
+        "rung 2 has no variable to warn about, and a warning printed where nothing is set is \
+         noise that trains the reader to skip the line: {}",
+        stdout(&fell_through)
+    );
+    assert!(
+        !stdout(&absent).contains(warning),
+        "state A resolved through rung 2 as well: {}",
+        stdout(&absent)
+    );
+
+    // ── one spelling across both faces, the rule `origin` already follows ────
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout(&run(home.path(), None, &["--json"]))).expect("json");
+    assert_eq!(
+        json["answered_by"], "this process",
+        "the json face carries the resolver as data, in the human line's own words"
+    );
+}
