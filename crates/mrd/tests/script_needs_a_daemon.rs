@@ -74,10 +74,10 @@ impl Sandbox {
     }
 
     /// `mrd script`, with `source` fed on stdin the way the verb takes it.
-    fn script(&self, cwd: &Path, args: &[&str], source: &str, daemon_bin: Option<&str>) -> Output {
-        let mut argv = vec!["script"];
-        argv.extend_from_slice(args);
-        let mut command = self.command(cwd, &argv);
+    fn script(&self, cwd: &Path, flags: &[&str], source: &str, daemon_bin: Option<&str>) -> Output {
+        let mut invocation = vec!["script"];
+        invocation.extend_from_slice(flags);
+        let mut command = self.command(cwd, &invocation);
         if let Some(bin) = daemon_bin {
             command.env("MERIDIAN_DAEMON_BIN", bin);
         }

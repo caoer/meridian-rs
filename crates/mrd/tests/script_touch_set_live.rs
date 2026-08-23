@@ -31,8 +31,12 @@
 //! * inside ⇒ the entry fingerprint is the pre-write one AND the refusal has no
 //!   `guard_expected`, because it happened at the commit.
 //!
-//! Only the third is accepted. The delay that produced it is then reused for the
-//! matched control, so the pair differs in exactly one thing: the flag.
+//! Only the third is accepted, and each rung of the ladder is tried more than
+//! once, because the window's position depends on what else the box is doing.
+//! The delay that produced it is then reused for the matched control, so the
+//! pair differs in exactly one thing: the flag. When the load moves under the
+//! control, it searches for its own window and SAYS SO — both probes are still
+//! proven in-window by their own bounds, which is what the comparison rests on.
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -70,7 +74,17 @@ if card["fm"]["owner"] == "":
 /// orders of magnitude because the window's position is a property of the
 /// machine, not of the test: a warm daemon on a fast disk commits in
 /// microseconds, a loaded CI box in tens of milliseconds.
-const LADDER: [u64; 9] = [1, 2, 4, 8, 16, 32, 64, 128, 256];
+const LADDER: [u64; 11] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
+
+/// How many attempts each rung of the ladder gets before the search moves on.
+///
+/// One attempt per rung is a coin toss, because the window's position depends on
+/// what else the box is doing, not only on the box. Measured 2026-08-23 on
+/// workstation-nyc-2: the search found its window at 1 ms in isolation and again
+/// on a whole-file rerun, and exhausted a single-try ladder once during a full
+/// `-p mrd` run at 5-minute loadavg 47. A rung that is right on average must be
+/// allowed to prove it.
+const TRIES_PER_RUNG: usize = 3;
 
 // ── the corpus ───────────────────────────────────────────────────────────────
 
@@ -352,44 +366,95 @@ fn run_probe(foreign_page: &str, pin: bool, delay: Duration) -> Probe {
     }
 }
 
-/// Walk the ladder until a delay lands the foreign write INSIDE the attempt,
-/// proved by the pinned arm refusing at the commit rather than pre-eval.
+/// One row of the search log — what a single attempt actually did, so a search
+/// that fails names its own measurements instead of a bare timeout.
+fn describe(probe: &Probe) -> String {
+    format!(
+        "outcome {:?}, entry {} the write, guard_expected {}, commit saw {}",
+        probe.trace.outcome,
+        if probe.entered_before_the_write() {
+            "PREDATES"
+        } else {
+            "INCLUDES (the write beat the entry pin — too EARLY)"
+        },
+        if probe.trace.guard_expected.is_some() {
+            "present (pre-eval refusal — too EARLY)"
+        } else {
+            "absent"
+        },
+        match probe.commit_saw() {
+            Some(root) if root == probe.before => "the PRE-write world (too LATE)".to_owned(),
+            Some(_) => "the moved world".to_owned(),
+            None => "— (no commit leg)".to_owned(),
+        }
+    )
+}
+
+/// Walk the ladder until a probe lands its foreign write INSIDE the attempt.
 ///
-/// Returns the delay and the probe that proved it. Panics with every
-/// measurement when no delay works — a window that cannot be found is a
-/// finding, never a skip.
-fn find_the_window(foreign_page: &str) -> (Duration, Probe) {
+/// `decisive` is the caller's, because the two arms prove their window
+/// differently — a pinned arm by refusing at the COMMIT, an unpinned one by the
+/// commit's own live observation carrying the moved world.
+///
+/// **Why each rung is tried more than once.** The window's position is a
+/// property of the machine AND of what else the machine is doing. Measured
+/// 2026-08-23 on workstation-nyc-2: this search found its window at 1 ms in
+/// isolation and again on a second full-file run, and exhausted a single-try
+/// ladder once during a whole `-p mrd` run at loadavg 47. One attempt per rung
+/// is a coin toss under load; a rung that is right on average must be allowed to
+/// prove it.
+///
+/// Panics with every measurement when nothing works — a window that cannot be
+/// found is a finding, never a skip.
+fn search(foreign_page: &str, pin: bool, decisive: &dyn Fn(&Probe) -> bool) -> (Duration, Probe) {
     let mut seen: Vec<String> = Vec::new();
     for ms in LADDER {
         let delay = Duration::from_millis(ms);
-        let probe = run_probe(foreign_page, true, delay);
-        assert!(probe.landed, "{ms}ms: the foreign write never happened");
-        if probe.entered_before_the_write() && probe.refused_at_the_commit() {
-            return (delay, probe);
+        for attempt_no in 1..=TRIES_PER_RUNG {
+            let probe = run_probe(foreign_page, pin, delay);
+            assert!(probe.landed, "{ms}ms: the foreign write never happened");
+            if decisive(&probe) {
+                return (delay, probe);
+            }
+            seen.push(format!(
+                "  {ms:>5}ms try {attempt_no} → {}",
+                describe(&probe)
+            ));
         }
-        seen.push(format!(
-            "  {ms:>4}ms → outcome {:?}, entry {} the write, guard_expected {}",
-            probe.trace.outcome,
-            if probe.entered_before_the_write() {
-                "PREDATES"
-            } else {
-                "INCLUDES"
-            },
-            if probe.trace.guard_expected.is_some() {
-                "present (pre-eval refusal — the write was too EARLY)"
-            } else {
-                "absent"
-            },
-        ));
     }
     panic!(
         "no delay on the ladder landed the foreign write between the entry pin and \
-         the commit. Every row below is a real attempt against a real daemon; read \
-         them before widening the ladder, because \"outcome committed with the entry \
-         predating the write\" at EVERY delay would mean the pinned premise stopped \
-         being checked at all:\n{}",
+         the commit (pin={pin}). Every row below is a real attempt against a real \
+         daemon; read them before widening the ladder, because rows reading \
+         \"PREDATES … the PRE-write world\" at EVERY delay would mean the premise \
+         stopped being checked at all, which is a defect and not a timing \
+         problem:\n{}",
         seen.join("\n")
     );
+}
+
+/// The pinned arm is in-window when the entry world predates the foreign write
+/// AND the refusal came from the commit rather than the pre-eval guard.
+fn pinned_is_in_window(probe: &Probe) -> bool {
+    probe.entered_before_the_write() && probe.refused_at_the_commit()
+}
+
+/// The unpinned arm is in-window when the entry world predates the foreign write
+/// AND the commit's own live observation carried it.
+///
+/// The `Conflict` clause is not a second success condition — it is how a LAW
+/// VIOLATION reaches its assertion instead of being retried into a timeout. An
+/// unpinned attempt that refuses has no `fingerprint_before` to compare, so
+/// without this the search would walk the whole ladder and report "no window",
+/// hiding the very failure this suite exists to catch.
+fn unpinned_is_in_window(probe: &Probe) -> bool {
+    if !probe.entered_before_the_write() {
+        return false;
+    }
+    if probe.trace.outcome == ScriptOutcome::Conflict {
+        return true;
+    }
+    probe.commit_saw().is_some_and(|root| root != probe.before)
 }
 
 // ── predicate 1 + 3: the matched pair ────────────────────────────────────────
@@ -416,7 +481,7 @@ fn find_the_window(foreign_page: &str) -> (Duration, Probe) {
 /// engine adds none of its own.
 #[test]
 fn an_untouched_set_commits_while_the_callers_own_pin_still_refuses() {
-    let (delay, pinned) = find_the_window(DISJOINT);
+    let (delay, pinned) = search(DISJOINT, true, &pinned_is_in_window);
 
     // The pinned arm, as the search proved it: refused, at the commit, with the
     // entry world predating the foreign write.
@@ -439,11 +504,25 @@ fn an_untouched_set_commits_while_the_callers_own_pin_still_refuses() {
     );
 
     // The control: the same everything, minus the flag.
-    let free = run_probe(DISJOINT, false, delay);
+    //
+    // It is tried at the pinned arm's own delay first, because a pair that
+    // differs in ONE variable is the whole design. When the box moves under it —
+    // the window is a property of the load, not only of the machine — it falls
+    // back to its own search, and says so. Both probes are then still proven
+    // in-window by their own bounds, which is what the comparison actually
+    // rests on; the shared delay is the instrument, not the claim.
+    let free = (0..TRIES_PER_RUNG)
+        .map(|_| run_probe(DISJOINT, false, delay))
+        .find(unpinned_is_in_window)
+        .unwrap_or_else(|| {
+            let (own, probe) = search(DISJOINT, false, &unpinned_is_in_window);
+            println!("the control needed its own window: {own:?} (the pinned arm's was {delay:?})");
+            probe
+        });
     assert!(free.landed, "the foreign write has to have happened");
     assert!(
         free.entered_before_the_write(),
-        "the control must share the pinned arm's window: its entry world predates \
+        "the control must land inside the attempt too: its entry world predates \
          the foreign write ({} vs {})",
         free.trace.entry_fingerprint,
         free.before
@@ -521,50 +600,36 @@ fn an_untouched_set_commits_while_the_callers_own_pin_still_refuses() {
 /// § `a_foreign_edit_inside_the_touch_set_refuses_naming_the_scope`.
 #[test]
 fn a_moved_touch_set_refuses_fingerprint_mismatch_naming_the_moved_scope() {
-    let mut seen: Vec<String> = Vec::new();
-    for ms in LADDER {
-        let probe = run_probe(READ_ONLY, false, Duration::from_millis(ms));
-        assert!(probe.landed, "{ms}ms: the foreign write never happened");
-        if !probe.entered_before_the_write() {
-            seen.push(format!("  {ms:>4}ms → the write beat the entry pin"));
-            continue;
-        }
-        if probe.trace.outcome != ScriptOutcome::Conflict {
-            seen.push(format!(
-                "  {ms:>4}ms → outcome {:?} (the write landed after the commit)",
-                probe.trace.outcome
-            ));
-            continue;
-        }
+    // In-window here means the entry world predates the foreign write AND the
+    // attempt refused: with no caller pin riding, a refusal can only have come
+    // from the touch set. A write that landed after the commit COMMITS, which is
+    // "too late" rather than a law violation, so the search moves on.
+    let (delay, probe) = search(READ_ONLY, false, &|probe: &Probe| {
+        probe.entered_before_the_write() && probe.trace.outcome == ScriptOutcome::Conflict
+    });
+    println!("the window this machine offered: {delay:?}");
 
-        assert!(
-            probe.request.get("if_fingerprint").is_none(),
-            "no caller pin rode — so what refused can only be the touch set: {}",
-            probe.request
-        );
-        assert!(
-            probe.trace.guard_expected.is_none(),
-            "a commit-time refusal, not the pre-eval guard"
-        );
-        let commit: Value =
-            serde_json::from_str(probe.trace.commit.as_ref().expect("the leg").get())
-                .expect("the leg is the daemon's own bytes");
-        assert_eq!(
-            commit["code"],
-            json!("fingerprint_mismatch"),
-            "the word the code emits: {commit}"
-        );
-        assert_eq!(
-            commit["scope"],
-            json!(READ_ONLY),
-            "and it NAMES the moved premise's scope — a refusal with no scope is \
-             the whole-corpus guard this card deleted: {commit}"
-        );
-        return;
-    }
-    panic!(
-        "no delay on the ladder landed the foreign write inside the attempt:\n{}",
-        seen.join("\n")
+    assert!(
+        probe.request.get("if_fingerprint").is_none(),
+        "no caller pin rode — so what refused can only be the touch set: {}",
+        probe.request
+    );
+    assert!(
+        probe.trace.guard_expected.is_none(),
+        "a commit-time refusal, not the pre-eval guard"
+    );
+    let commit: Value = serde_json::from_str(probe.trace.commit.as_ref().expect("the leg").get())
+        .expect("the leg is the daemon's own bytes");
+    assert_eq!(
+        commit["code"],
+        json!("fingerprint_mismatch"),
+        "the word the code emits: {commit}"
+    );
+    assert_eq!(
+        commit["scope"],
+        json!(READ_ONLY),
+        "and it NAMES the moved premise's scope — a refusal with no scope is \
+         the whole-corpus guard this card deleted: {commit}"
     );
 }
 
