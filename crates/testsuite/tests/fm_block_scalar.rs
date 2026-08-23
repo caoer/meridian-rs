@@ -135,10 +135,10 @@ fn every_block_scalar_shape_agrees_with_pyyaml_on_both_faces() {
         ("value carrying a colon", "k: |\n  owner: not a key\n"),
         ("value carrying a dash", "k: |\n  - not a list\n"),
         ("next key after the block", "k: |\n  body\nother: plain\n"),
-        // The four shapes review seat 79c5905c hand-crafted to break the first
-        // implementation (B2). Both faces agreed with each other and disagreed
-        // with YAML; live reachability is zero, which is exactly why only an
-        // oracle could find them.
+        // The ten shapes review seat 79c5905c hand-crafted to expose FOUR
+        // divergences in the first implementation (B2). Both faces agreed with
+        // each other and disagreed with YAML; live reachability is zero, which
+        // is exactly why only an oracle could find them.
         ("literal, one leading blank", "k: |\n\n  a\n"),
         ("literal, two leading blanks", "k: |\n\n\n  a\n"),
         ("folded, one leading blank", "k: >\n\n  a\n"),
@@ -158,6 +158,9 @@ fn every_block_scalar_shape_agrees_with_pyyaml_on_both_faces() {
         ("keep, body is one empty line", "k: |+\n\n"),
         ("clip, body is only empty lines", "k: |\n\n\n"),
         ("keep, content then trailing blanks", "k: |+\n  a\n\n\n"),
+        // The reviewer's 25th: keep chomping with a leading blank AND
+        // content — both ends of the block in one shape.
+        ("keep, leading blank and content", "k: |+\n\n  a\n\n"),
     ] {
         let want = pyyaml(&page(fm), "k");
         let (dir, rel) = fixture(fm);
