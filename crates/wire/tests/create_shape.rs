@@ -4,7 +4,7 @@
 //! discrimination in both directions.
 
 use serde_json::json;
-use wire::{ErrorBody, ErrorCode, NodeRev, Path, ResponseBody, Root, ABSENT_REV};
+use wire::{ABSENT_REV, ErrorBody, ErrorCode, NodeRev, Path, ResponseBody, Root};
 
 fn create_body() -> ResponseBody {
     ResponseBody::Create {
