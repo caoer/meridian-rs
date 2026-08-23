@@ -271,7 +271,7 @@ fn a_block_list_is_untouched_by_this_card() {
 /// same function, named because a fix that covered only the JSON
 /// serialization would have missed it.
 ///
-/// `crates/registry/src/script_op.rs:1196` builds the script face's `fm` map
+/// `crates/registry/src/script_op.rs:1200` builds the script face's `fm` map
 /// from `wire_serve::read::props_of(doc)`, which is `read_props` — where the
 /// `fm_publish` branch lives. There is no layer between `props_of` and either
 /// consumer that could re-decode: the composed read serializes its rows, and
