@@ -1585,6 +1585,82 @@ mod tests {
         );
     }
 
+    /// **The accident, made law — re-homed from the deleted CLI lane** (card
+    /// `script-door-commit-premise-world-grain-vs-touch-set`, PR 2). The row it
+    /// replaces was `mrd/src/script/cmd.rs`
+    /// § `a_rows_rev_is_looked_up_by_its_own_path_not_by_read_order`, which
+    /// pinned that `guarded()` looked a token up BY `arm.path` — so a program
+    /// touching two files threads each row from the file THAT ROW targets.
+    /// [`thread_entry`] keys the same way (`entry_toc(.., &arm.path)`), and
+    /// nothing pinned it on this side: the surviving twin above arms two rows
+    /// on ONE file, where a path-blind implementation passes.
+    ///
+    /// The fixture points read order the other way on purpose — `other.md` is
+    /// written and armed FIRST, `doc.md` second — so an implementation that
+    /// took "the last file seen" would thread `doc.md`'s revs onto the row
+    /// armed at `other.md`, and both assertions below would fail.
+    #[test]
+    fn a_rows_entry_rev_is_looked_up_by_its_own_path_not_by_arm_order() {
+        const OTHER: &str = "---\nstatus: parked\n---\n# Beta\n\nfour five\n";
+
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = registry_in(tmp.path());
+        let ws = seeded_ws(tmp.path());
+        write(ws.join("other.md"), OTHER).unwrap();
+        let (world, root) = pinned_world(&registry, &ws);
+        let ws_root = ws_root_of(&ws);
+
+        let other = entry_toc(&world, &ws_root, &root, "other.md").expect("other in world");
+        let here = entry_toc(&world, &ws_root, &root, "doc.md").expect("doc in world");
+        assert_ne!(
+            other.rev, here.rev,
+            "the fixture is only a test if the two files carry different revs"
+        );
+
+        let armed = vec![
+            ArmedEdit {
+                path: "other.md".to_owned(),
+                edit: PlanEdit::SetProperty {
+                    key: "status".to_owned(),
+                    value: "done".to_owned(),
+                    rev: None,
+                },
+                line: 2,
+                depth: 0,
+            },
+            ArmedEdit {
+                path: "doc.md".to_owned(),
+                edit: PlanEdit::SetProperty {
+                    key: "status".to_owned(),
+                    value: "done".to_owned(),
+                    rev: None,
+                },
+                line: 3,
+                depth: 0,
+            },
+        ];
+
+        let threaded = thread_entry(&armed, &world, &ws_root, &root);
+        let PlanEdit::SetProperty { rev, .. } = &threaded[0].edit else {
+            panic!("shape preserved");
+        };
+        assert_eq!(
+            rev.as_deref(),
+            Some(other.rev.as_str()),
+            "a row threads the entry rev of ITS OWN target, not of the file \
+             armed after it"
+        );
+        let PlanEdit::SetProperty { rev, .. } = &threaded[1].edit else {
+            panic!("shape preserved");
+        };
+        assert_eq!(
+            rev.as_deref(),
+            Some(here.rev.as_str()),
+            "and the other target threads its own — the lookup is keyed, not \
+             disabled"
+        );
+    }
+
     fn ws_root_of(ws: &Path) -> fs::WorkspaceRoot {
         fs::WorkspaceRoot(ws.to_path_buf())
     }

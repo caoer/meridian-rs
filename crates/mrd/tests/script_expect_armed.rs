@@ -409,7 +409,7 @@ fn the_flag_demands_its_value() {
 //
 // * `a_planted_mismatch_refuses_before_the_splice_is_issued` — the load-bearing
 //   negative proof, whose assertion was the socket census ("no `splice` frame
-//   exists"). Twin: `crates/registry/tests/script_op.rs:530`
+//   exists"). Twin: `crates/registry/tests/script_op.rs:540`
 //   § `an_expect_armed_mismatch_refuses_pre_splice`, which runs a real daemon
 //   over a real corpus and asserts the refusal AND that the workspace is
 //   unchanged — a stronger statement than the census, because it measures the
@@ -425,7 +425,7 @@ fn the_flag_demands_its_value() {
 //   § `identical_edits_to_two_targets_publish_different_digests` assert it
 //   directly, with no socket in the way. The wire-shape half — that the digest
 //   is over what the COMMIT sends — is the daemon's: twin
-//   `crates/registry/tests/script_op.rs:194`
+//   `crates/registry/tests/script_op.rs:204`
 //   § `an_armed_target_reads_back_its_own_armed_content_and_commits_once`.
 // * `an_ordinary_commit_still_commits_on_the_tagged_engine`,
 //   `a_matching_digest_commits_normally`,
@@ -435,4 +435,4 @@ fn the_flag_demands_its_value() {
 //   still hold (§ `the_entry_sends_no_expectation_when_the_caller_pinned_none`
 //   and § `the_flag_rides_the_wire_as_the_script_ops_own_declared_field`, which
 //   both end `committed`); the end-to-end admit is the daemon's, twin
-//   `crates/registry/tests/script_op.rs:194` as above.
+//   `crates/registry/tests/script_op.rs:204` as above.
