@@ -3,9 +3,17 @@
 //! 2026-08-13):
 //!
 //! > **Every write row reaches the wire door carrying a CAS token** — threaded
-//! > from the script's own reads when they cover the target, minted by the
-//! > lane's own commit-time `toc` trip when they do not. The author performs
-//! > no read ritual; the commit's entry fingerprint is the enforcement point.
+//! > from the script's own reads when they cover the target, minted at commit
+//! > time when they do not. The author performs no read ritual; the enforcement
+//! > point is the §4.6 TOUCH SET — entry-vs-live at exactly the nodes the
+//! > attempt touched.
+//!
+//! That last clause read *"the commit's entry fingerprint is the enforcement
+//! point"* until card `script-door-commit-premise-world-grain-vs-touch-set`.
+//! That was the whole-corpus premise `run-plane.md`:918-931 records as amended
+//! and DELETED, and it stopped being true of these tests the moment `mrd script`
+//! became one lane over the wire `script` op — so it is rewritten in the PR that
+//! made it false, not in the later one that deletes the code it described.
 //!
 //! Why a live daemon and not the `Door` fake (`script_cmd.rs`). The guard that
 //! demands the token is scoped by ORIGIN (`wire-serve::guard`): `Origin::Wire` —
