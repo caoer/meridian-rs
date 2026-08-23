@@ -104,7 +104,7 @@ fn fail_open_probe_shape_is_absent() {
 }
 
 /// The fourth state (F7, binding review of PR 199): the probe answers for HEAD,
-/// the stamp names CI_COMMIT_SHA / $rev, and only this guard compares the two.
+/// the stamp names `CI_COMMIT_SHA` / `$rev`, and only this guard compares the two.
 /// It must exist, be tri-state itself, and run BEFORE the stamp.
 #[test]
 fn head_vs_stamp_guard_present_and_before_the_stamp() {
@@ -117,9 +117,9 @@ fn head_vs_stamp_guard_present_and_before_the_stamp() {
                  is gone — the probe would again answer for a tree the stamp does not name"
             )
         });
-        let stamp_at = body
-            .find("MRD_BUILD_SHA=")
-            .unwrap_or_else(|| panic!("{rel}: no stamp line found — lane shape changed, re-derive this guard"));
+        let stamp_at = body.find("MRD_BUILD_SHA=").unwrap_or_else(|| {
+            panic!("{rel}: no stamp line found — lane shape changed, re-derive this guard")
+        });
         assert!(
             guard_at < stamp_at,
             "{rel}: the HEAD-vs-stamp guard sits AFTER the stamp — it must refuse before \
