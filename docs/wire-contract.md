@@ -2154,9 +2154,13 @@ fleet writes are the same bytes. Concretely, a value is quoted when it:
   `serde_yaml` reads the same bytes without complaint;
 - would be typed by a YAML **1.1** resolver even where a 1.2 one leaves it a
   string: a digit run (`19895504`; `02146210` is OCTAL 576 648 to PyYAML), the
-  underscore grouping `1_000`, the sexagesimal forms (`12:30` is 750, `1:02:03`
-  is 3723 — each group after the first is 0–59), and the word booleans
-  `y`/`yes`/`no`/`on`/`off` with their case variants.
+  underscore grouping `1_000`, the underscore radix forms (`0x1_f` is 31,
+  `0b1_010` is 10) and every `0b…`, the sexagesimal forms (`12:30` is 750,
+  `1:02:03` is 3723, `1:30.5` the float — each group after the first is 0–59),
+  and the word booleans `y`/`yes`/`no`/`on`/`off` with their case variants;
+- is one of the two 1.1 resolver TAGS, `<<` (merge) or `=` (value): emitted
+  plain, PyYAML refuses the WHOLE block — "could not determine a constructor
+  for the tag" — while serde_yaml reads both back as strings.
 
 Unchanged, deliberately: a **one-level flow list** (`[a, b]`) still emits
 verbatim — the only way this string plane can author a non-string value — and a
@@ -2214,11 +2218,28 @@ preservation), so no record is rewritten by the change alone.
 alone would have left the worse half of the id defect standing (a value change,
 not a type change), so the law is the UNION of the schemas, and the 1.1 classes
 are the enumerated trigger above. Measured churn for the retirement plus the
-union, over the same instrument: **806 of 29 270 distinct plain-spelled values
-change spelling (2.754 %) — 515 ints, 245 floats, 37 all-digit short ids, 7
-booleans, 1 sexagesimal, 1 interior tab — all plain→quoted, none quoted→plain,
-none refused**, and PyYAML reads every one of the 806 changed emits back as
-exactly the caller's string. § A.6.3c preservation is untouched, so the 37 ids
+union, over the same instrument: **810 of 29 270 distinct plain-spelled values
+change spelling (2.767 %) — 515 ints, 245 floats, 37 all-digit short ids, 7
+booleans, 1 sexagesimal, 1 interior tab, 4 in the radix / resolver-tag classes
+— all plain→quoted, none quoted→plain, none refused**, and PyYAML reads every
+one of the 810 changed emits back as exactly the caller's string.
+
+**Why the id class had to be closed and the timestamp class did not** (the
+three-reader table, measured 2026-08-23 on one file):
+
+| plain value | serde_yaml (1.2) | PyYAML (1.1) | yq / go-yaml |
+|---|---|---|---|
+| `owner: 19895504` | int | int | int |
+| `session: 02146210` | string `"02146210"` | **576648** (octal) | **2146210** (decimal) |
+| `created: 2026-08-23` | string | `date` object | string |
+| `stamp: 2026-08-23T02:09:32-04:00` | string | `datetime` object | string |
+
+An id gets THREE different answers from three readers, one of them a different
+NUMBER — the join key is destroyed, not merely retyped. A timestamp is the
+caller's string to two of the three readers and the same instant to the third,
+which is why the timestamp class stays plain rather than churning 7 356 more
+distinct spellings (25 % of the population) and un-typing the `date` property
+every Obsidian view sorts on. § A.6.3c preservation is untouched, so the 37 ids
 already on disk keep their bytes until a write CHANGES their value.
 
 **A.6.3′ The KEY half of the composed line (2026-08-14, dogfood r3 f6).** The
