@@ -240,7 +240,9 @@ fn choke_point_denies_undeclared_kind_before_any_io() {
             // the refusal names the measured grants (none) and the
             // `task.<name>.caps` declaration (r3 gap 6b).
             ceiling: None,
-            declared: Vec::new(),
+            declared: Box::new([]),
+            // The locator: `admit` names WHICH descriptor it judged.
+            index: Some(0),
         }
     );
     assert_eq!(page_text(&root), PAGE, "nothing applied");
@@ -362,7 +364,8 @@ fn missing_and_ambiguous_sections_are_typed() {
     assert_eq!(
         err,
         ExecError::SectionNotFound {
-            section: "Nope".to_owned()
+            section: "Nope".to_owned(),
+            index: Some(0),
         }
     );
 
@@ -386,7 +389,8 @@ fn missing_and_ambiguous_sections_are_typed() {
         err,
         ExecError::SectionAmbiguous {
             section: "Log".to_owned(),
-            count: 2
+            count: 2,
+            index: Some(0),
         }
     );
 }
@@ -998,6 +1002,7 @@ fn denial(kind: &str, target: &str, declared: &[&str]) -> ExecError {
         resolved: None,
         ceiling: None,
         declared: declared.iter().map(|s| (*s).to_owned()).collect(),
+        index: None,
     }
 }
 
