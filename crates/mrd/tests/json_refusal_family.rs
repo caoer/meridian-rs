@@ -36,7 +36,7 @@
 //! two-face family table over `links` would look unswept and be complete.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 
 mod common;
 
@@ -78,11 +78,9 @@ fn run(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
 }
 
 fn run_with_stdin(sb: &Sandbox, cwd: &Path, args: &[&str], stdin: &str) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mrd"))
+    let mut child = common::mrd_command(&sb.home, &sb.cache_home)
         .args(args)
         .current_dir(cwd)
-        .env("XDG_CACHE_HOME", &sb.cache_home)
-        .env("HOME", &sb.home)
         // Spawn-impossible: no resident daemon ever starts, so the engine under test is the
         // binary this suite built and nothing else can answer.
         .env("MERIDIAN_DAEMON_BIN", env!("CARGO_BIN_EXE_mrd"))
