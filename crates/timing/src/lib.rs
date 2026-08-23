@@ -14,11 +14,11 @@
 //!
 //! # Two line shapes, and the space that tells them apart
 //!
-//! A MEASUREMENT opens `mrd-timing` + a SPACE, and always carries exactly three
+//! A MEASUREMENT opens `mrd-timing` + a SPACE, and always carries exactly four
 //! `key=value` fields in this order:
 //!
 //! ```text
-//! mrd-timing cmd=run phase=snapshot.read us=402118
+//! mrd-timing cmd=run who=p41273.t1 phase=snapshot.read us=402118
 //! ```
 //!
 //! A DIAGNOSTIC about the mode itself opens `mrd-timing` + a COLON:
@@ -43,11 +43,17 @@
 //! `cmd=` names the PROCESS's entry verb (set once by [`label`]), never one
 //! request — a daemon serving many ops reports `cmd=daemon` for all of them.
 //!
-//! **KNOWN GAP — there is no request discriminator.** Two concurrent wire ops
-//! emit byte-identical `phase=snapshot` lines, and nothing on the line says
-//! which op, thread or process produced it. On a busy daemon the lines are a
-//! population, not a trace: read them as a distribution, and do not try to
-//! reconstruct one request from them. Card `mrd-timing-daemon-lane-sink`.
+//! `who=` names the EMITTER inside that process: `p<pid>.t<n>`, where `n` is a
+//! per-process thread ordinal minted on that thread's first line ([`who`]). The
+//! daemon serves one connection per thread, so two ops in flight at the same
+//! moment carry different `who=` and demultiplex; and one file that several
+//! processes append to separates by the `p` half.
+//!
+//! **What `who=` is NOT: a request id.** A thread that serves two requests one
+//! after the other emits both under one `who=`, so the field separates
+//! CONCURRENT work, never successive work on one thread. For a single request's
+//! server-side total the honest number is still the wire frame's
+//! `meta.duration_us`.
 //!
 //! **A dotted name marks a PART of the phase it prefixes** (`snapshot.walk` is
 //! inside `snapshot`). It is not the whole containment rule: `dispatch`
@@ -70,6 +76,7 @@ use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -125,27 +132,31 @@ static SINK: OnceLock<Sink> = OnceLock::new();
 static LABEL: OnceLock<String> = OnceLock::new();
 
 /// One diagnostic about the mode itself — the COLON shape, so it can never be
-/// read as a measurement.
+/// read as a measurement. Public because the mode's audibility is not only this
+/// crate's business: the process that SPAWNS a voiceless child (`mrd`'s
+/// `daemon::spawn_detached`) says so in this same shape, on the lane that is
+/// heard, rather than minting a second one.
 ///
-/// **It goes to stderr, which the daemon does not have** (`daemon.rs` spawns it
-/// with `Stdio::null()`), so on the daemon lane every refusal below is
-/// INAUDIBLE. That is the gap named in `docs/status.md` § The timing mode and
-/// carded as `mrd-timing-daemon-lane-sink`; until it closes, an operator
-/// pointing a daemon at a file sink confirms the mode by checking that the file
-/// GROWS, never by the absence of a complaint.
-fn diagnostic(text: &str) {
-    let _ = std::io::stderr().write_all(format!("{PREFIX}: {text}\n").as_bytes());
+/// **It goes to stderr — which a detached daemon does not have.** The auto-spawn
+/// nulls the child's stdio, so while the mode is ON `mrd` hands the daemon a
+/// file for its stderr instead (`<socket-stem>.log` beside the socket), and
+/// every diagnostic and measurement below lands there. Outside that arm — a
+/// daemon someone else started with a null stderr — the complaint is still
+/// inaudible, and the only confirmation of the mode is that the sink file
+/// GROWS. `docs/status.md` § The timing mode.
+pub fn diagnostic(text: &str) {
+    // The whole message is folded to one line, not merely the paths inside it:
+    // an `io::Error` renders text this crate never chose either.
+    let _ = std::io::stderr().write_all(format!("{PREFIX}: {}\n", one_line(text)).as_bytes());
 }
 
-/// A path as it may appear on a diagnostic LINE: control characters — a newline
+/// Text as it may appear on a diagnostic LINE: control characters — a newline
 /// above all — are replaced, because a raw one would split the diagnostic in
 /// two and the tail would carry no prefix at all. The same defence [`label`]
 /// applies to `cmd=`, for the same reason: a value from outside must not be
 /// able to mint a line.
-fn one_line(path: &Path) -> String {
-    path.display()
-        .to_string()
-        .chars()
+fn one_line(text: &str) -> String {
+    text.chars()
         .map(|c| if c.is_control() { '\u{fffd}' } else { c })
         .collect()
 }
@@ -209,7 +220,7 @@ fn open_file_sink(path: &Path) -> Sink {
              line the sink gained would change the corpus and the fold would \
              report more lines to append. Writing to stderr instead; name a \
              sink that is not .md or .base.",
-            one_line(path)
+            path.display()
         ));
         return Sink::Stderr;
     }
@@ -218,7 +229,7 @@ fn open_file_sink(path: &Path) -> Sink {
         Err(error) => {
             diagnostic(&format!(
                 "cannot open `{}` ({error}) — writing to stderr instead.",
-                one_line(path)
+                path.display()
             ));
             Sink::Stderr
         }
@@ -259,14 +270,49 @@ pub fn label(name: &str) {
     let _ = LABEL.set(name.to_owned());
 }
 
+/// This process's id, read once — the `p` half of [`who`].
+static PID: OnceLock<u32> = OnceLock::new();
+
+/// The next thread ordinal to hand out. Ordinals start at 1, so `t0` is free to
+/// mean "no ordinal could be minted" (see [`who`]).
+static NEXT_THREAD: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    /// This thread's ordinal, minted on the thread's FIRST emitted line — so
+    /// the ordinals are dense over the threads that actually measured
+    /// something, and a process that never emits mints none.
+    static THREAD_ORDINAL: u64 = NEXT_THREAD.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The `who=` field: `p<pid>.t<n>` — which process, and which thread inside it.
+///
+/// This is the DISCRIMINATOR that makes one sink file demultiplexable. The
+/// daemon serves one connection per thread (`registry::server` § accept loop),
+/// so ops in flight at the same moment carry different `t`; several processes
+/// appending to one file separate by `p`.
+///
+/// It names the emitter, NOT the request: a thread reused for a later request
+/// keeps its ordinal. `t0` means the ordinal could not be minted — a phase
+/// stopped while this thread's TLS was already being destroyed — which is a
+/// value, not a panic.
+///
+/// Both halves are digits, so no `who=` can ever mint a field the grammar does
+/// not have.
+#[must_use]
+pub fn who() -> String {
+    let pid = *PID.get_or_init(std::process::id);
+    let thread = THREAD_ORDINAL.try_with(|ordinal| *ordinal).unwrap_or(0);
+    format!("p{pid}.t{thread}")
+}
+
 /// One measurement line, exactly as it is written.
-fn line(cmd: &str, phase: &str, us: u128) -> String {
-    format!("{PREFIX} cmd={cmd} phase={phase} us={us}\n")
+fn line(cmd: &str, who: &str, phase: &str, us: u128) -> String {
+    format!("{PREFIX} cmd={cmd} who={who} phase={phase} us={us}\n")
 }
 
 fn emit(phase: &str, elapsed: Duration) {
     let cmd = LABEL.get().map_or(DEFAULT_LABEL, String::as_str);
-    let line = line(cmd, phase, elapsed.as_micros());
+    let line = line(cmd, &who(), phase, elapsed.as_micros());
     match sink() {
         // Unreachable by construction — a `Phase` holds an `Instant` only when
         // the sink is on. Kept, and kept silent, so that a future caller who
@@ -321,36 +367,77 @@ pub fn phase(name: &'static str) -> Phase {
 mod tests {
     use super::{
         Chosen, DEFAULT_LABEL, OFF_WORDS, ON_WORDS, PREFIX, Phase, choose, is_corpus_extension,
-        line, one_line,
+        line, one_line, who,
     };
+    use std::collections::BTreeSet;
     use std::ffi::OsStr;
     use std::path::Path;
 
-    /// The line a consumer parses: prefix, then three `key=value` fields in a
+    /// The line a consumer parses: prefix, then four `key=value` fields in a
     /// fixed order, space-separated, newline-terminated.
-    fn parse(raw: &str) -> Option<(String, String, u128)> {
+    fn parse(raw: &str) -> Option<(String, String, String, u128)> {
         let body = raw.strip_suffix('\n')?;
         let mut fields = body.split(' ');
         if fields.next()? != PREFIX {
             return None;
         }
         let cmd = fields.next()?.strip_prefix("cmd=")?;
+        let who = fields.next()?.strip_prefix("who=")?;
         let phase = fields.next()?.strip_prefix("phase=")?;
         let us = fields.next()?.strip_prefix("us=")?.parse().ok()?;
         if fields.next().is_some() {
             return None;
         }
-        Some((cmd.to_owned(), phase.to_owned(), us))
+        Some((cmd.to_owned(), who.to_owned(), phase.to_owned(), us))
     }
 
     #[test]
     fn the_emitted_line_parses_back() {
-        let raw = line("run", "snapshot.read", 402_118);
-        assert_eq!(raw, "mrd-timing cmd=run phase=snapshot.read us=402118\n");
-        let (cmd, phase, us) = parse(&raw).expect("the line this crate writes parses");
+        let raw = line("run", "p41273.t1", "snapshot.read", 402_118);
+        assert_eq!(
+            raw,
+            "mrd-timing cmd=run who=p41273.t1 phase=snapshot.read us=402118\n"
+        );
+        let (cmd, who, phase, us) = parse(&raw).expect("the line this crate writes parses");
         assert_eq!(cmd, "run");
+        assert_eq!(who, "p41273.t1");
         assert_eq!(phase, "snapshot.read");
         assert_eq!(us, 402_118);
+    }
+
+    /// `who=` is what makes one sink file demultiplexable, so its shape is the
+    /// contract: `p<digits>.t<digits>`, no whitespace — a value that could
+    /// carry either would mint a field the grammar does not have.
+    #[test]
+    fn who_names_this_process_and_this_thread() {
+        let mine = who();
+        let (pid, thread) = mine
+            .strip_prefix('p')
+            .and_then(|rest| rest.split_once(".t"))
+            .unwrap_or_else(|| panic!("who() is not p<pid>.t<n>: {mine}"));
+        assert_eq!(
+            pid.parse::<u32>().expect("pid is digits"),
+            std::process::id()
+        );
+        assert!(thread.parse::<u64>().is_ok(), "thread ordinal is digits");
+        assert!(!mine.chars().any(char::is_whitespace), "{mine}");
+        // Stable within a thread: two phases from one thread group together.
+        assert_eq!(mine, who());
+    }
+
+    /// The claim the daemon lane rests on: work in flight at the same moment
+    /// carries different `who=`. One thread per connection there; N threads
+    /// here, and the ordinals must be N distinct values.
+    #[test]
+    fn concurrent_threads_get_distinct_ordinals() {
+        let seen: BTreeSet<String> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8).map(|_| scope.spawn(who)).collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("thread"))
+                .collect()
+        });
+        assert_eq!(seen.len(), 8, "ordinals collided: {seen:?}");
     }
 
     /// A diagnostic must never be mistaken for a measurement: the colon shape
@@ -368,7 +455,7 @@ mod tests {
     /// integer is always present, so a consumer summing `us` never guesses.
     #[test]
     fn a_zero_phase_still_carries_its_field() {
-        let (_, _, us) = parse(&line(DEFAULT_LABEL, "cascade", 0)).expect("parses");
+        let (_, _, _, us) = parse(&line(DEFAULT_LABEL, &who(), "cascade", 0)).expect("parses");
         assert_eq!(us, 0);
     }
 
@@ -433,16 +520,21 @@ mod tests {
         }
     }
 
-    /// A sink path is attacker-adjacent text on a machine-read stream: a
-    /// newline in it would split the diagnostic and leave the tail carrying no
-    /// prefix at all. Same defence as `label`'s on `cmd=`.
+    /// A diagnostic carries text nobody in this crate chose — a sink path from
+    /// argv, an `io::Error` rendered by the OS. A newline in either would split
+    /// the line and leave the tail carrying no prefix at all, so the WHOLE
+    /// message is folded, not just the path inside it. Same defence as
+    /// `label`'s on `cmd=`.
     #[test]
-    fn a_control_character_in_a_sink_path_cannot_split_the_line() {
-        let rendered = one_line(Path::new("a\nmrd-timing cmd=x phase=y us=1"));
+    fn a_control_character_in_a_diagnostic_cannot_split_the_line() {
+        let rendered = one_line(&format!(
+            "cannot open `{}`",
+            Path::new("a\nmrd-timing cmd=x who=p1.t1 phase=y us=1").display()
+        ));
         assert!(!rendered.contains('\n'), "{rendered}");
         assert_eq!(rendered.lines().count(), 1);
-        // And an ordinary path is untouched.
-        assert_eq!(one_line(Path::new("/tmp/t.log")), "/tmp/t.log");
+        // And ordinary text is untouched.
+        assert_eq!(one_line("/tmp/t.log"), "/tmp/t.log");
     }
 
     /// The off path holds no `Instant`: the switch is read at construction, and
