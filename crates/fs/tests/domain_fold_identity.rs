@@ -119,6 +119,33 @@ fn fold_tracks_a_moved_corpus() {
 /// A member that cannot be read refuses the whole fold, exactly as it refuses
 /// the whole snapshot — same failure, so a fold-only caller never proceeds on
 /// a corpus the snapshotting caller would have rejected.
+///
+/// The assertion is on the RENDERED refusal, not just `kind()`: the refusal
+/// carries the offending member's name (`CorpusMemberError`), and "names the
+/// same member" is the half of the contract a kind compare cannot see.
+#[cfg(unix)]
+fn assert_refusals_agree(root: &WorkspaceRoot, why: &str) {
+    let snapshot = fs::domain_snapshot(root);
+    let fold = fs::domain_fold(root);
+
+    // Running as root defeats the permission bit; then neither refuses and
+    // the gate has nothing to say. Assert the agreement either way.
+    match (snapshot, fold) {
+        (Err(s), Err(f)) => {
+            assert_eq!(s.kind(), f.kind(), "same io::ErrorKind: {why}");
+            assert_eq!(
+                s.to_string(),
+                f.to_string(),
+                "same rendered refusal, naming the same member: {why}"
+            );
+        }
+        (Ok((_, s)), Ok(f)) => {
+            assert_eq!(f, s, "readable after all — the roots still agree: {why}");
+        }
+        (s, f) => panic!("instruments disagreed about refusing ({why}): {s:?} vs {f:?}"),
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn an_unreadable_member_refuses_both_instruments() {
@@ -131,23 +158,47 @@ fn an_unreadable_member_refuses_both_instruments() {
     let sealed = root_path.join("notes/sealed.md");
     std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-    let root = WorkspaceRoot(root_path.to_path_buf());
-    let snapshot = fs::domain_snapshot(&root);
-    let fold = fs::domain_fold(&root);
-
-    // Running as root defeats the permission bit; then neither refuses and
-    // the gate has nothing to say. Assert the agreement either way.
-    match (snapshot, fold) {
-        (Err(s), Err(f)) => assert_eq!(
-            s.kind(),
-            f.kind(),
-            "both instruments must refuse an unreadable member the same way"
-        ),
-        (Ok((_, s)), Ok(f)) => {
-            assert_eq!(f, s, "when the member is readable the roots still agree");
-        }
-        (s, f) => panic!("instruments disagreed about refusing: {s:?} vs {f:?}"),
-    }
+    assert_refusals_agree(
+        &WorkspaceRoot(root_path.to_path_buf()),
+        "one unreadable member, serial sweep",
+    );
 
     std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+/// The refusal that the serial test cannot reach: TWO unreadable members, far
+/// enough apart to land in different chunks, above `PARALLEL_READ_FLOOR` so
+/// both sweeps are threaded. Each chunk stops at its own first refusal and the
+/// merge takes the earliest chunk's — so this is the case where a merge-order
+/// defect in `digest_members` (the one loop not shared with
+/// `read_and_digest_members`) would surface as the WRONG member being named,
+/// with the right `ErrorKind`. The rendered-refusal compare is what catches it.
+#[cfg(unix)]
+#[test]
+fn two_unreadable_members_in_different_chunks_name_the_same_one() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root_path = tmp.path();
+    for i in 0..200 {
+        write(root_path, &format!("d/m{i:03}.md"), &format!("# {i}\n"));
+    }
+    // Two sealed members with 100+ readable members between them: whatever the
+    // worker count (2..=4) and chunk size, they cannot share a chunk.
+    let sealed: Vec<_> = ["d/m010.md", "d/m190.md"]
+        .iter()
+        .map(|rel| root_path.join(rel))
+        .collect();
+    for p in &sealed {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o000)).unwrap();
+    }
+
+    assert_refusals_agree(
+        &WorkspaceRoot(root_path.to_path_buf()),
+        "two unreadable members in different chunks, parallel sweep",
+    );
+
+    for p in &sealed {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
 }
