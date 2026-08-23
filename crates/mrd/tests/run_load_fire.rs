@@ -135,8 +135,8 @@ fn code(out: &Output) -> i32 {
 /// The one target row, parsed.
 fn row(out: &Output) -> Value {
     let text = stdout(out);
-    let parsed: Value = serde_json::from_str(&text)
-        .unwrap_or_else(|e| panic!("stdout is not JSON ({e}):\n{text}"));
+    let parsed: Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("stdout is not JSON ({e}):\n{text}"));
     parsed["targets"][0].clone()
 }
 
@@ -391,6 +391,133 @@ fn fires_add_no_receipt_rows() {
     assert_eq!(after, before, "the receipt file moved at all");
 }
 
+// ── exec'd entries and the bash seam ────────────────────────────────────────
+
+/// The exec fixture: a declared process entry, the bash block it names, and a
+/// starlark entry that reaches the same block through `bash(block=)`.
+const EXEC_PAGE: &str = "\
+# Exec probe
+
+```starlark
+declare(on = \"Stop\", impl = exec(\"bash\", block = \"echoer\"))
+```
+^exec-entry
+
+```bash
+echo \"stdin was: $(cat)\"
+>&2 echo \"a stderr line\"
+exit 2
+```
+^echoer
+
+```starlark
+def run(event):
+    out = bash(block = \"echoer\", stdin = event)
+    return {\"exit\": out[\"exit\"], \"said\": out[\"stdout\"], \"err\": out[\"stderr\"]}
+
+declare(on = \"Stop\")
+```
+^via-bash
+";
+
+/// **Gate row 10** — the exec'd entry's stdin IS the input, verbatim compact
+/// JSON, which is what makes a `settings.json` script's bytes run unchanged.
+///
+/// Two further laws ride the same run, and both are why the bracket had to be
+/// factored rather than reused as-is:
+/// - the **raw exit** survives — the task path collapses 1 and 2 into `state:
+///   partial`, and the official contract's *exit 2 → stderr's first line is
+///   the reason* is unconstructible if they are the same number;
+/// - **stderr is surfaced** — it was captured and read by nothing.
+#[test]
+fn an_execd_entry_receives_the_input_on_stdin_and_keeps_its_raw_exit() {
+    let ws = Ws::new();
+    std::fs::write(ws.file("exec.md"), EXEC_PAGE).expect("exec page");
+    let input = ws.input("s.json", r#"{"name":"Stop","tool":"Bash"}"#);
+    let out = ws.run(&["exec.md#^exec-entry", "--input-json", &input]);
+    let row = row(&out);
+
+    let process = &row["process"];
+    assert_eq!(
+        process["stdout_tail"], "stdin was: {\"name\":\"Stop\",\"tool\":\"Bash\"}\n",
+        "the input must reach stdin as compact JSON: {row:#}"
+    );
+    assert_eq!(process["exit"], 2, "the RAW exit, not a collapsed state");
+    assert_eq!(process["stderr_tail"], "a stderr line\n");
+    assert_eq!(process["interpreter"], "bash");
+    assert_eq!(process["timed_out"], false);
+    // The row's `result` is an evaluation word about the FIRE: a script that
+    // exits 2 ran fine and said no. `process.exit` carries what it said.
+    assert_eq!(row["result"], "ok");
+}
+
+/// `bash(block=)` inside a starlark entry runs the same block through the
+/// same bracket, and its row crosses back into the program as a value the
+/// program can branch on — which is the whole reason a script needing to read
+/// its own exit code is a starlark entry (§ 1.4's cadence rule).
+#[test]
+fn bash_inside_an_entry_answers_a_row_the_program_can_branch_on() {
+    let ws = Ws::new();
+    std::fs::write(ws.file("exec.md"), EXEC_PAGE).expect("exec page");
+    let input = ws.input("s.json", r#"{"name":"Stop","tool":"Bash"}"#);
+    let out = ws.run(&["exec.md#^via-bash", "--input-json", &input]);
+    let row = row(&out);
+
+    assert_eq!(
+        row["value"]["exit"], 2,
+        "the program read the exit code: {row:#}"
+    );
+    assert_eq!(row["value"]["err"], "a stderr line\n");
+    // …and the call is recorded on the row, because it happened.
+    assert_eq!(row["exec"].as_array().expect("exec rows").len(), 1);
+    assert_eq!(row["exec"][0]["exit"], 2);
+    assert_eq!(row["exec"][0]["dry"], false);
+}
+
+/// A `bash(block=)` naming an anchor that is not there is the "could not
+/// start" class — `exit: 127` with `stderr` naming it — and **never a raise**
+/// (§ 1.3: `bash` never raises). A program that branched on a fault it has no
+/// syntax to catch would simply die.
+#[test]
+fn a_dangling_bash_block_is_exit_127_not_a_fault() {
+    let ws = Ws::new();
+    std::fs::write(
+        ws.file("dangle.md"),
+        "# D\n\n```starlark\ndef run(event):\n    return bash(block = \"nope\")\n\n\
+         declare(on = \"Stop\")\n```\n^d\n",
+    )
+    .expect("page");
+    let input = ws.input("s.json", "{}");
+    let out = ws.run(&["dangle.md#^d", "--input-json", &input]);
+    let row = row(&out);
+
+    assert_eq!(row["result"], "ok", "the FIRE succeeded: {row:#}");
+    assert_eq!(row["value"]["exit"], 127);
+    assert!(
+        row["value"]["stderr"]
+            .as_str()
+            .expect("stderr")
+            .contains("no such block: ^nope"),
+        "the row must name the anchor it could not find: {row:#}"
+    );
+}
+
+/// Under `--dry` a `bash()` is a STUB that says it is one. A decision reached
+/// under `dry` is a rehearsal, and a row that looked like a real `exit: 0`
+/// would let a caller mistake one for the other.
+#[test]
+fn a_dry_fire_stubs_bash_and_says_so() {
+    let ws = Ws::new();
+    std::fs::write(ws.file("exec.md"), EXEC_PAGE).expect("exec page");
+    let input = ws.input("s.json", r#"{"name":"Stop"}"#);
+    let out = ws.run(&["exec.md#^via-bash", "--input-json", &input, "--dry"]);
+    let row = row(&out);
+
+    assert_eq!(row["exec"][0]["dry"], true, "the stub must say so: {row:#}");
+    assert_eq!(row["exec"][0]["exit"], 0);
+    assert_eq!(row["exec"][0]["stdout"], "");
+}
+
 // ── the argv exclusions ─────────────────────────────────────────────────────
 
 /// An argument that is meaningless where it was written refuses BY NAME.
@@ -401,11 +528,11 @@ fn meaningless_arguments_refuse_by_name() {
     let ws = Ws::new();
     ws.input("e.json", "{}");
     for (args, expect) in [
+        (vec!["--load", "probe.md#^h"], "addresses one block to fire"),
         (
-            vec!["--load", "probe.md#^h"],
-            "addresses one block to fire",
+            vec!["probe.md", "--input-json", "e.json"],
+            "is a fire's input",
         ),
-        (vec!["probe.md", "--input-json", "e.json"], "is a fire's input"),
         (
             vec!["probe.md#^h", "--input-json", "e.json", "--env", "A=1"],
             "one input channel",
