@@ -120,6 +120,9 @@ impl Ws {
             .args(["links", "--json"])
             .env("MERIDIAN_WORKSPACE", self.path())
             .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+            // Linux-only: `registry::socket_path_for_cache_root` reads
+            // `XDG_RUNTIME_DIR` under `#[cfg(target_os = "linux")]`. On macOS
+            // it is inert; `XDG_CACHE_HOME` is the load-bearing sock-key override.
             .env("XDG_RUNTIME_DIR", self.path().join(".rt"))
             .env("XDG_CACHE_HOME", self.path().join(".cache"))
             .current_dir(self.path());
@@ -277,9 +280,97 @@ fn links_json_off_and_on_agree_and_reports_its_phases() {
         Some("total"),
         "total is not last: {names:?}"
     );
+    // Containment (K = 0: every corpus.build / snapshot.* is the workspace
+    // build, before `links.read`). json.render is a sibling of links.read,
+    // both inside total — not nested in links.read.
+    let of = |want: &str| {
+        lines
+            .iter()
+            .find(|(_, p, _)| p == want)
+            .map_or_else(|| panic!("no {want}"), |(_, _, us)| *us)
+    };
+    assert!(of("total") >= of("links.read"));
+    assert!(of("total") >= of("json.render"));
+    assert!(of("snapshot") >= of("snapshot.read"));
+}
+
+/// K ≥ 1: a workspace page that names a mounted root must emit 1 + K
+/// `corpus.build` lines, and the mount build sits inside `links.read`.
+#[test]
+fn links_json_repeats_corpus_build_per_mounted_root() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    let cache = tmp.path().join("xdg-cache");
+    let other = tmp.path().join("other");
+    let ws = tmp.path().join("ws");
+    for dir in [&home, &cache, &other, &ws] {
+        std::fs::create_dir_all(dir).expect("mkdir");
+    }
+    std::fs::write(
+        other.join("MERIDIAN.md"),
+        "---\ntype: meridian-root\nversion: 1\nname: other\n---\n\n# Other root\n",
+    )
+    .expect("root declaration");
+    std::fs::write(other.join("present.md"), "# Present\n\nreal page.\n").expect("page");
+    std::fs::write(
+        home.join("MERIDIAN.md"),
+        format!(
+            "---\ntype: meridian-config\nversion: 1\n---\n\n# Test roots\n\n\
+             ```meridian-mount\nname: other\npath: {}\nvault: othervault\n```\n",
+            other.display()
+        ),
+    )
+    .expect("mount table");
+    std::fs::write(
+        ws.join("claim.md"),
+        "# Claim\n\n## Body\n\nsee [[other:present]].\n",
+    )
+    .expect("claim");
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mrd"));
+    command
+        .args(["links", "--json"])
+        .env("HOME", &home)
+        .env("MERIDIAN_CONFIG", home.join("MERIDIAN.md"))
+        .env("MERIDIAN_WORKSPACE", &ws)
+        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+        .env("XDG_CACHE_HOME", &cache)
+        .env("MRD_TIMING", "1")
+        .current_dir(&ws);
+    let out = command.output().expect("spawn mrd");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+
+    let lines = timing_lines(&stderr(&out));
+    let names = phases(&stderr(&out));
+    let builds: Vec<u128> = lines
+        .iter()
+        .filter(|(_, p, _)| p == "corpus.build")
+        .map(|(_, _, us)| *us)
+        .collect();
+    assert_eq!(
+        builds.len(),
+        2,
+        "want 1 + K=1 corpus.build lines, got {}: {names:?}\n{}",
+        builds.len(),
+        stderr(&out)
+    );
+    let of = |want: &str| {
+        lines
+            .iter()
+            .find(|(_, p, _)| p == want)
+            .map_or_else(|| panic!("no {want} in {names:?}"), |(_, _, us)| *us)
+    };
+    assert!(of("total") >= of("links.read"));
+    assert!(
+        of("links.read") >= builds[1],
+        "mount corpus.build ({}) must sit inside links.read ({})",
+        builds[1],
+        of("links.read")
+    );
 }
 
 /// Off words are off — trimmed, in any case — and an off word must never be
+}
 /// taken for a file path. Measured on the release binary before the fix:
 /// `MRD_TIMING=OFF` created a file named `OFF`, and `MRD_TIMING="1 "` created
 /// one named `1 `, in the caller's working directory.

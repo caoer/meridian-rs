@@ -2026,20 +2026,25 @@ line — `--dry` never reaches `apply` or `cascade`, `--list` reaches neither
 Neither does a phase that FAILED: the span is abandoned on the error path, so
 `mrd run missing.md` prints `workspace.resolve`, the refusal, and `total` — and
 no `page.load`, because there was no page load. `total` reports on a refusal
-because the process is what it measures.
+because the process is what it measures. One completed-degrade exception:
+`daemon.dial` `stop()`s on the degrade path (`mrd::engine::answer_links`) — the
+dial finished with a verdict (no usable daemon answer), which is not a failed
+phase. The line means the decision completed, not that a daemon answered
+(`status.md` `daemon.dial` Covers).
 
 #### The `snapshot` set can repeat, and which lane you are on decides
 
 `snapshot.*` is emitted by `fs`, not by this plane: **every** caller of
 `domain_snapshot*` lights it up. The corpus fold is the cost that does not care
 which door asked for it — which also means **a `phase=snapshot` line does not
-imply a run.** `mrd sql`, `mrd check`, `mrd walk`, `mrd repair`, the daemon's
-resident rebuild and its watch loop all fold and all report it, under their own
-`cmd=`. Read `cmd=` before attributing a fold.
+imply a run.** `mrd sql`, `mrd check`, `mrd walk`, `mrd repair`, `mrd retire`,
+`mrd links`, the daemon's resident rebuild and its watch loop all fold and all
+report it, under their own `cmd=`. Read `cmd=` before attributing a fold.
 
-`corpus.build` is the same class: it is emitted by `fs::build_corpus`, and every
-caller of that function lights it up — `mrd sql`, `mrd check`, `mrd walk`,
-`mrd repair`, `mrd retire`, the daemon's resident rebuild, and `mrd links`. **A
+`corpus.build` is the same class: it is emitted by `fs::build_corpus`, and the
+callers that light it up include `mrd sql`, `mrd check`, `mrd walk`,
+`mrd repair`, `mrd retire`, `mrd links`, the daemon's resident rebuild, and the
+write-door referrer scan (`wire_serve::write::inbound_referrers`). **A
 `phase=corpus.build` line does not imply a links call.** Read `cmd=` first. On
 the links ephemeral path it also repeats: once for the workspace corpus (inside
 `total`) and once per link-addressed mounted root (inside `links.read`, via
