@@ -54,6 +54,28 @@ const NOTIFY_HOOK: &str = "---\ntags: [type/rule, rules/hook]\nid: task.notify\n
 /// A governed task card in `close-verdict`'s declared scope.
 const CARD: &str = "---\ntype: task\nstatus: todo\n---\n\n# a card\n";
 
+/// The two PRODUCTION shapes, as files — the arm gate's wiring is only proved
+/// by shapes the live corpus actually arms.
+///
+/// They are FIXTURES on purpose. The sessions root's own
+/// `rules/010-middleware-spawned-by.md` is being rewritten under card
+/// `rules-010-middleware-wrong-entry-point`; a test that read the live page
+/// would flip with that rewrite and stop testing the wiring it exists to test.
+mod shapes {
+    /// `rules/middleware` tag, `check_change` body — registers, cannot load.
+    pub(super) const MIDDLEWARE_WRONG_ENTRY: &str =
+        include_str!("fixtures/middleware-wrong-entry.md");
+    /// Its twin, `def middleware` — the control that must arm.
+    pub(super) const MIDDLEWARE_RIGHT_ENTRY: &str =
+        include_str!("fixtures/middleware-right-entry.md");
+    /// A `caps: []` hook declaring `budget:`/`how:` — the live hook shape.
+    pub(super) const HOOK_CAPS_EMPTY: &str = include_str!("fixtures/hook-caps-empty.md");
+
+    pub(super) const MIDDLEWARE_WRONG_ENTRY_ID: &str = "010-fixture-middleware-wrong-entry";
+    pub(super) const MIDDLEWARE_RIGHT_ENTRY_ID: &str = "010-fixture-middleware-right-entry";
+    pub(super) const HOOK_CAPS_EMPTY_ID: &str = "050-fixture-hook-caps-empty";
+}
+
 struct Sandbox {
     #[allow(dead_code)]
     tmp: tempfile::TempDir,
@@ -588,5 +610,158 @@ fn a_missing_rev_is_a_bad_invocation_that_teaches_where_to_read_it() {
     assert!(
         text.contains("--rev") && text.contains("mrd rules"),
         "the refusal teaches the attestation and where to read the rev: {text}"
+    );
+}
+
+// ── the LOAD gate's production wiring ─────────────────────────────────────────
+//
+// `policy::armed::arm` takes its page bytes from an injected `PageSource`, and
+// `arm_cmd.rs` is the ONE place that hands it the production one —
+// `wire_serve::armed_disk::DiskPages`, the same source the fire path reads.
+// The gate's law has six unit tests over an in-memory source; none of them
+// touches that argument. Swap it for an empty source and every one stays green
+// while the shipped `mrd` arms law that can never fire.
+//
+// These four drive the gate through the real binary on the two shapes the live
+// corpus actually arms, in both directions — so the argument is asserted, not
+// assumed.
+
+/// The refusal. A `rules/middleware` page whose fenced block defines
+/// `check_change` instead of `middleware` REGISTERS and cannot LOAD; `block`
+/// fires, so the winner is loaded, and the act refuses with the loader's own
+/// `EntryMissing` words. Nothing lands.
+#[test]
+fn a_middleware_page_with_the_wrong_entry_point_refuses_the_arm() {
+    let s = sandbox();
+    s.write("rules/wrong.md", shapes::MIDDLEWARE_WRONG_ENTRY);
+    let rev = s.reviewed_rev(shapes::MIDDLEWARE_WRONG_ENTRY_ID);
+
+    let out = s.run(&[
+        "arm",
+        shapes::MIDDLEWARE_WRONG_ENTRY_ID,
+        "--mode",
+        "block",
+        "--rev",
+        &rev,
+    ]);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a winner that does not load refuses the act: {text}"
+    );
+    assert!(
+        text.contains(shapes::MIDDLEWARE_WRONG_ENTRY_ID) && text.contains("rules/wrong.md"),
+        "the refusal names the id and the page: {text}"
+    );
+    assert!(
+        text.contains("rules/middleware") && text.contains("def middleware"),
+        "the loader's own EntryMissing teaching survives the process boundary — \
+         the leg and the entry point it is evaluated through: {text}"
+    );
+    assert!(
+        text.contains("can never fire"),
+        "and the act teaches why bytes alone are not an attestation: {text}"
+    );
+    assert!(
+        !s.ws.join(policy::armed::ARMED_RULES_PATH).exists(),
+        "the artifact is byte-untouched — here, never created"
+    );
+    assert!(
+        !s.ws.join(policy::ATTESTED_MARKER_PATH).exists(),
+        "and the workspace was not marked armed"
+    );
+}
+
+/// The same bytes at the same rev arm `off`: the gate runs on the modes that
+/// FIRE, and an attested-off row is precisely the reviewer's record that they
+/// read a page too broken to load and did not activate it. Same page, opposite
+/// outcome — so the refusal above is the LOAD gate, not this shape being
+/// unarmable through the binary.
+#[test]
+fn the_same_unloadable_page_still_arms_off() {
+    let s = sandbox();
+    s.write("rules/wrong.md", shapes::MIDDLEWARE_WRONG_ENTRY);
+    let rev = s.reviewed_rev(shapes::MIDDLEWARE_WRONG_ENTRY_ID);
+
+    let armed = s.stdout(&[
+        "arm",
+        shapes::MIDDLEWARE_WRONG_ENTRY_ID,
+        "--mode",
+        "off",
+        "--rev",
+        &rev,
+    ]);
+    assert!(
+        armed.contains(shapes::MIDDLEWARE_WRONG_ENTRY_ID) && armed.contains("off"),
+        "the act names what it attested: {armed}"
+    );
+
+    let parsed = policy::armed::parse_artifact(&s.read(policy::armed::ARMED_RULES_PATH))
+        .expect("the artifact parses strictly");
+    assert_eq!(parsed.rows().len(), 1);
+    assert_eq!(parsed.rows()[0].mode().as_str(), "off");
+    assert_eq!(parsed.rows()[0].rev(), rev, "and it pins the reviewed rev");
+}
+
+/// The control on the other axis: the twin that differs only in defining
+/// `def middleware` arms `block` clean. Without it, the refusal above could
+/// mean the gate discriminates on the entry point — or that no
+/// `rules/middleware` page arms through this binary at all.
+#[test]
+fn the_twin_defining_the_middleware_entry_point_arms_block() {
+    let s = sandbox();
+    s.write("rules/right.md", shapes::MIDDLEWARE_RIGHT_ENTRY);
+    let rev = s.reviewed_rev(shapes::MIDDLEWARE_RIGHT_ENTRY_ID);
+
+    s.stdout(&[
+        "arm",
+        shapes::MIDDLEWARE_RIGHT_ENTRY_ID,
+        "--mode",
+        "block",
+        "--rev",
+        &rev,
+    ]);
+
+    let parsed = policy::armed::parse_artifact(&s.read(policy::armed::ARMED_RULES_PATH))
+        .expect("the artifact parses strictly");
+    assert_eq!(parsed.rows().len(), 1);
+    assert_eq!(parsed.rows()[0].id().as_str(), shapes::MIDDLEWARE_RIGHT_ENTRY_ID);
+    assert_eq!(parsed.rows()[0].mode().as_str(), "block");
+    assert_eq!(parsed.rows()[0].rev(), rev);
+}
+
+/// The second live shape. Seven of the sessions root's armed rows are `caps: []`
+/// hooks declaring `budget:` and `how:` — the loader's `Some(how_value)` arm.
+/// It arms `armed` clean through the binary, so the wiring admits a page the
+/// fire path loads, and not only refuses ones it does not.
+#[test]
+fn the_caps_empty_hook_shape_arms_clean() {
+    let s = sandbox();
+    s.write("rules/idle.md", shapes::HOOK_CAPS_EMPTY);
+    let rev = s.reviewed_rev(shapes::HOOK_CAPS_EMPTY_ID);
+
+    s.stdout(&[
+        "arm",
+        shapes::HOOK_CAPS_EMPTY_ID,
+        "--mode",
+        "armed",
+        "--rev",
+        &rev,
+    ]);
+
+    let parsed = policy::armed::parse_artifact(&s.read(policy::armed::ARMED_RULES_PATH))
+        .expect("the artifact parses strictly");
+    assert_eq!(parsed.rows().len(), 1);
+    assert_eq!(parsed.rows()[0].id().as_str(), shapes::HOOK_CAPS_EMPTY_ID);
+    assert_eq!(parsed.rows()[0].mode().as_str(), "armed");
+    assert_eq!(parsed.rows()[0].rev(), rev);
+    assert!(
+        s.ws.join(policy::ATTESTED_MARKER_PATH).is_file(),
+        "the once-armed marker landed"
     );
 }
