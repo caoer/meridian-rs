@@ -1,0 +1,16 @@
+[package]
+name = "timing"
+description = "The timing instrument: the MRD_TIMING switch resolved once per process into a sink, and the phase span that emits one `mrd-timing` line per completed phase — a std-only leaf with zero dependencies, silent and clock-free when off"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Zero dependencies, by charter (docs/laws.md § Crate charters). An instrument
+# that sits under `fs`, `run` and `mrd` may know nothing about any of them, and
+# it may not drag anything into their graphs either.
+[dependencies]

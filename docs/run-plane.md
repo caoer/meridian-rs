@@ -1986,6 +1986,78 @@ S1 — ship the scoped claim, never the unqualified one."*
 | Local run beside a resident daemon (§7.1) | accepted | a local run's writes reach the daemon as external change — the same class as any out-of-band edit |
 | The script entry runs in **wire-client mode**, not pure-local | law, not gap | a script must execute AS the caller, and the row above disqualifies the pure-local leg by this plane's own table: its writes reach a resident daemon actor-absent. Through the daemon, a script's writes arrive as governed, actor-carrying change, Delta-minted like any splice. *(Amended 2026-08-12: the in-process lane — wire `script`, § A.7 — satisfies this row's reason by a shorter path: eval runs inside the daemon and its commit IS the governed write path, actor-carrying and Delta-minted. The law stands; it gains a second conforming lane.)* |
 
+## Timing phases
+
+Under `MRD_TIMING` (the switch, sink, line grammar and the two lanes:
+`status.md` § The timing mode) a run answers where its wall clock went. The
+phases, at the grain a reader can act on:
+
+**Containment is this table, not the dot.** A dotted name marks a part of the
+phase it prefixes, but `dispatch` contains three undotted phases and `total`
+contains everything — so the `us` column does not sum. Read the "inside" column
+before adding anything up.
+
+The "inside" column is the LIVE run's shape. **`--dry` has no `dispatch` span at
+all** — [`rehearse`] composes the chain itself instead of calling `dispatch` —
+so on a rehearsal `snapshot` and `eval` sit directly inside `total`, and
+`dispatch`, `apply`, `cascade` and `report.render` do not appear.
+
+| Phase | Inside | Emitted in | Covers |
+|---|---|---|---|
+| `total` | — | `mrd::run` | the whole process — every verb has it, not just `run` |
+| `workspace.resolve` | `total` | `mrd::run_cmd` | `workspace::resolve` — the discovery ladder |
+| `page.load` | `total` | `mrd::run_cmd` | the door's `address::load_page` (parse of the addressed page) |
+| `conventions.load` | `total` | `mrd::run_cmd` | `caps::load_conventions` — the root's `MERIDIAN.md` |
+| `task.gate` | `total` | `mrd::run_cmd` | the door's pre-check: `resolve_task` + `contract_for` + `validate` + `resolve_authority` |
+| `pre_eval` | `total` | `run::runner::pre_eval` | the plane's OWN address → contract → caps chain, which repeats the door's work. Measured on the chain, so `--dry` reports it too |
+| `dispatch` | `total` | `run::runner` | `snapshot` + `eval` + `apply`, whole |
+| `snapshot` | `dispatch` | `fs::domain_snapshot_with_leaves` | the three below, whole |
+| `snapshot.walk` | `snapshot` | same | `Domain::load` + `hash_domain` — the hash-domain walk |
+| `snapshot.read` | `snapshot` | same | `read_and_digest_members` — read + blake3 of every member |
+| `snapshot.fold` | `snapshot` | same | leaf assembly + `served_root` |
+| `eval` | `dispatch` | `run::dispatch_starlark` | hermetic evaluation of the block |
+| `apply` | `dispatch` | `run::dispatch_starlark` | the executor's one md.\* batch (absent when the block emitted none) |
+| `cascade` | `total` | `run::runner` | the cascade loop — vacuous under the empty S1 ruleset, so a near-zero `us` here is the expected reading, not a missing measurement |
+| `report.render` | `total` | `mrd::run_cmd` | the U9 report render |
+
+**A phase reports only where it COMPLETED.** A phase that never ran emits no
+line — `--dry` never reaches `apply` or `cascade`, `--list` reaches neither
+`snapshot` nor anything below it, `--dry` on bash reaches no `snapshot` at all.
+Neither does a phase that FAILED: the span is abandoned on the error path, so
+`mrd run missing.md` prints `workspace.resolve`, the refusal, and `total` — and
+no `page.load`, because there was no page load. `total` reports on a refusal
+because the process is what it measures.
+
+#### The `snapshot` set can repeat, and which lane you are on decides
+
+`snapshot.*` is emitted by `fs`, not by this plane: **every** caller of
+`domain_snapshot*` lights it up. The corpus fold is the cost that does not care
+which door asked for it — which also means **a `phase=snapshot` line does not
+imply a run.** `mrd sql`, `mrd check`, `mrd walk`, `mrd repair`, the daemon's
+resident rebuild and its watch loop all fold and all report it, under their own
+`cmd=`. Read `cmd=` before attributing a fold.
+
+Within the run plane there are FOUR fold sites, and they do not all fire on one
+lane:
+
+| Fold | Fires when |
+|---|---|
+| `runner.rs` `dispatch` | every live run — the one every lane pays |
+| `runner.rs` `rehearse` | `--dry` instead of the above, not as well |
+| `runner.rs` `cascade` | a generation that applies md.\* — needs a NON-EMPTY ruleset, and both doors hand `S1_RULES` (empty), so today: never |
+| `executor.rs` pre-commit | only when a `DeltaSink` is in reach, i.e. the WIRE arm. The CLI passes `delta: None` and returns before the fold |
+
+So on the **CLI** an effectful `mrd run` emits exactly ONE `snapshot` set
+(measured on the release binary, 2026-08-22: `grep -c 'phase=snapshot '` = 1).
+On the **wire/daemon** arm a run that commits folds a second time inside the
+executor, and the two sets are identical in name with no discriminator — count
+them, do not assume the first is the only one.
+
+`pre_eval` repeating `page.load` and `conventions.load` is likewise a fact of
+the shape, not an artifact of the instrument: the door resolves to refuse early,
+then the plane resolves again as its own gate ([`pre_eval`], ONE owner for both
+tenses).
+
 ## Seam map (for reviewers)
 
 | Seam | Owner |
@@ -2000,6 +2072,7 @@ S1 — ship the scoped claim, never the unqualified one."*
 | CLI mount — script entry | `crates/mrd::script::cmd` — the same client edge; its human-mode face is non-normative |
 | in-process script serve (§ A.7) | `crates/registry` (the op arm: entry world, host, threading, commit) over `crates/effects` (kernel, trace, digest) — added 2026-08-12 |
 | wire run serve (§ A.8) + script effects mode | `crates/registry` (`run_op`: per-target loop, §9 threading; `script_op`: the live host) over `crates/run` (the plane, unchanged) — added 2026-08-13 |
+| per-phase timing (`MRD_TIMING`) | `crates/timing` (the switch, the sink, the span) — the phase call sites are `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`; § Timing phases — added 2026-08-22 |
 
 ---
 

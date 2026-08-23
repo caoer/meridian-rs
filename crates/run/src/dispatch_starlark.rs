@@ -104,6 +104,10 @@ impl std::error::Error for DispatchError {}
 /// # Errors
 /// [`EvalError`] — the typed kernel surface.
 pub fn evaluate(d: &StarlarkDispatch<'_>) -> Result<Vec<Effect>, EvalError> {
+    // Measured here, not at the call site, so `--dry` reports the same `eval`
+    // phase the live run does — one seam, both tenses. A faulted eval reports
+    // nothing: the `?` below abandons the span (`timing` has no `Drop`).
+    let eval = timing::phase("eval");
     let ctx = RunCtx {
         page: d.page.to_owned(),
         task: d.task.to_owned(),
@@ -112,7 +116,9 @@ pub fn evaluate(d: &StarlarkDispatch<'_>) -> Result<Vec<Effect>, EvalError> {
         invocation_id: d.invocation_id.to_owned(),
         root_at_eval: d.root_at_eval.0.clone(),
     };
-    eval_run(&Rule::new(d.task, d.source), &ctx, d.limits)
+    let effects = eval_run(&Rule::new(d.task, d.source), &ctx, d.limits)?;
+    eval.stop();
+    Ok(effects)
 }
 
 /// The full hermetic dispatch: evaluate, split by domain, apply the md.*
@@ -136,30 +142,35 @@ pub fn dispatch(
     let applied = if md.is_empty() {
         None
     } else {
-        Some(
-            executor::apply(
-                root,
-                &ApplyRequest {
-                    page: d.page,
-                    task: d.task,
-                    task_rev: d.task_rev,
-                    invocation_id: d.invocation_id,
-                    now: d.now,
-                    effects: &md,
-                    authority: d.authority,
-                    observed_root: d.root_at_eval,
-                    receipt: d.receipt.clone(),
-                    exec: None, // hermetic: no child process
-                    actor: d.actor,
-                    depth: 0,
-                    delta: d.delta,
-                    fields: d.fields,
-                    birth_seq: d.birth_seq,
-                    ambient: d.ambient,
-                },
-            )
-            .map_err(DispatchError::Exec)?,
+        // A block that emitted no md.* effect emits no `apply` line either:
+        // there was no batch, and a zero-microsecond line would claim there
+        // was one. A REFUSED batch is likewise silent — the `?` abandons the
+        // span, and a refusal is not a completed apply.
+        let apply = timing::phase("apply");
+        let committed = executor::apply(
+            root,
+            &ApplyRequest {
+                page: d.page,
+                task: d.task,
+                task_rev: d.task_rev,
+                invocation_id: d.invocation_id,
+                now: d.now,
+                effects: &md,
+                authority: d.authority,
+                observed_root: d.root_at_eval,
+                receipt: d.receipt.clone(),
+                exec: None, // hermetic: no child process
+                actor: d.actor,
+                depth: 0,
+                delta: d.delta,
+                fields: d.fields,
+                birth_seq: d.birth_seq,
+                ambient: d.ambient,
+            },
         )
+        .map_err(DispatchError::Exec)?;
+        apply.stop();
+        Some(committed)
     };
 
     Ok(DispatchOutcome {
