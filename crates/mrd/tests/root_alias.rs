@@ -94,11 +94,9 @@ fn sandbox(declared_name: &str, blocks: impl Fn(&Path) -> String) -> Sandbox {
 
 impl Sandbox {
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(mrd_bin())
+        common::mrd_command(&self.home, &self.cache_home)
             .args(args)
             .current_dir(&self.ws)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env("MERIDIAN_CONFIG", &self.config)
             .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .env_remove("MERIDIAN_WORKSPACE")
@@ -125,11 +123,9 @@ impl Sandbox {
         if !owned.contains(&"--force") {
             owned.push("--force");
         }
-        let mut child = Command::new(mrd_bin())
+        let mut child = common::mrd_command(&self.home, &self.cache_home)
             .args(&owned)
             .current_dir(&self.ws)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env("MERIDIAN_CONFIG", &self.config)
             .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .env_remove("MERIDIAN_WORKSPACE")

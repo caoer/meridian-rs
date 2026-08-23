@@ -17,7 +17,7 @@
 //!
 //! Isolation: `mrd read` dials a resident daemon, so every drive runs under
 //! its own `XDG_CACHE_HOME`/`HOME` with auto-spawn pointed at nowhere — only a
-//! daemon a test started itself ([`Sandbox::start_daemon`]) can answer.
+//! daemon a test started itself ([`Sandbox::ensure_live`]) can answer.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -38,25 +38,25 @@ fn mrd_bin() -> PathBuf {
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
 }
 
-/// Struct fields drop in DECLARATION order (locals drop the other way), so
-/// `daemon` MUST precede `tmp`: the daemon's stop drains in-flight drawer
-/// rebuilds, and a `tmp` dropped first deletes the workspace under a live
-/// builder. See `crates/registry/tests/common/mod.rs` § Fixture rule.
+/// `daemon` owns the temporary tree AND the resident this sandbox starts into
+/// it, and orders their teardown itself ([`registry::TestServer`]): the stop
+/// drains in-flight drawer rebuilds, and the tree outlives the stop. The other
+/// two fields are `PathBuf`s with no teardown, so this fixture has no drop
+/// order of its own to get wrong. The daemon is started lazily — only the
+/// drives that need a resident pay for one.
 struct Sandbox {
-    daemon: std::sync::Mutex<Option<registry::RunningServer>>,
-    tmp: tempfile::TempDir,
+    daemon: registry::TestServer,
     cache_home: PathBuf,
     home: PathBuf,
 }
 
 fn sandbox() -> Sandbox {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let cache_home = tmp.path().join("xdg-cache");
-    let home = tmp.path().join("home");
+    let daemon = registry::TestServer::idle().expect("tempdir");
+    let cache_home = daemon.path().join("xdg-cache");
+    let home = daemon.path().join("home");
     std::fs::create_dir_all(&home).expect("home");
     Sandbox {
-        daemon: std::sync::Mutex::new(None),
-        tmp,
+        daemon,
         cache_home,
         home,
     }
@@ -70,7 +70,7 @@ impl Sandbox {
             .env("XDG_CACHE_HOME", &self.cache_home)
             .env("HOME", &self.home)
             // Auto-spawn disabled: only a daemon this sandbox started itself
-            // ([`Sandbox::start_daemon`]) may answer these drives.
+            // ([`Sandbox::ensure_live`]) may answer these drives.
             .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
             .env_remove("MERIDIAN_WORKSPACE");
         cmd
@@ -82,11 +82,11 @@ impl Sandbox {
         self.cache_home.join("meridian")
     }
 
-    /// Start the resident daemon in-process on this sandbox's own socket.
-    /// Dropping the handle stops it. Reaper and prewarm intervals are set past
-    /// any test's lifetime so no assertion depends on background timing.
+    /// The resident daemon's config on this sandbox's own socket. Reaper and
+    /// prewarm intervals are set past any test's lifetime so no assertion
+    /// depends on background timing.
     #[allow(clippy::duration_suboptimal_units)]
-    fn start_daemon(&self) -> registry::RunningServer {
+    fn daemon_config(&self) -> registry::Config {
         let reg_dir = self.cache_root().join("registry");
         std::fs::create_dir_all(&reg_dir).expect("registry dir");
         let never = Duration::from_secs(365 * 24 * 60 * 60);
@@ -105,14 +105,14 @@ impl Sandbox {
         // the token surfaces, not the law.
         config.build_sha = Some(env!("MRD_BUILD_SHA").to_owned());
         config.drain_cold_builds = Duration::from_secs(30);
-        registry::RunningServer::start(config).expect("the resident daemon starts")
+        config
     }
 
+    /// Start the resident on first need; a no-op once it is running.
     fn ensure_live(&self) {
-        let mut slot = self.daemon.lock().expect("daemon mutex");
-        if slot.is_none() {
-            *slot = Some(self.start_daemon());
-        }
+        self.daemon
+            .ensure_live(|_| self.daemon_config())
+            .expect("the resident daemon starts");
     }
 
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
@@ -147,7 +147,7 @@ impl Sandbox {
     /// A git-backed workspace, declared a root by `mrd init`. Git is real
     /// because the blob plane and the vibe-debt gauge ask it real questions.
     fn workspace(&self, name: &str) -> PathBuf {
-        let ws = self.tmp.path().join(name);
+        let ws = self.daemon.path().join(name);
         std::fs::create_dir_all(&ws).expect("mkdir");
         git(&ws, &["init", "-q"]);
         git(&ws, &["config", "user.email", "fixv@example.invalid"]);

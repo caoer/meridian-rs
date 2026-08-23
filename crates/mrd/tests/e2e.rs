@@ -11,10 +11,6 @@ use serde_json::Value;
 
 mod common;
 
-fn mrd_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_mrd")
-}
-
 /// An isolated cache root + HOME under one tempdir.
 struct Sandbox {
     tmp: tempfile::TempDir,
@@ -38,17 +34,15 @@ fn sandbox() -> Sandbox {
 }
 
 impl Sandbox {
-    fn base(&self, program: &str) -> Command {
-        let mut cmd = Command::new(program);
-        cmd.env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
-            .env_remove("MERIDIAN_WORKSPACE");
+    fn base(&self) -> Command {
+        let mut cmd = common::mrd_command(&self.home, &self.cache_home);
+        cmd.env_remove("MERIDIAN_WORKSPACE");
         cmd
     }
 
     /// Run `mrd <args>` from `cwd`, capturing the output.
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
-        self.base(mrd_bin())
+        self.base()
             .args(args)
             .current_dir(cwd)
             .output()
@@ -442,11 +436,7 @@ fn e2e_daemon_serves_resolve_adopt_and_shuts_down() {
     let out = sb.run(&proj, &["init"]);
     assert!(out.status.success(), "init failed: {}", stderr(&out));
 
-    let mut daemon = sb
-        .base(mrd_bin())
-        .arg("daemon")
-        .spawn()
-        .expect("spawn mrd daemon");
+    let mut daemon = sb.base().arg("daemon").spawn().expect("spawn mrd daemon");
 
     let socket = common::child_socket_path(&sb.home, &sb.cache_home);
     let client = registry::Client::new(socket.clone());
@@ -494,11 +484,7 @@ fn e2e_daemon_row_for_unmarked_tree_refuses_corpus_verbs() {
     let bare = sb.dir("leftover");
     let canon = std::fs::canonicalize(&bare).unwrap();
 
-    let mut daemon = sb
-        .base(mrd_bin())
-        .arg("daemon")
-        .spawn()
-        .expect("spawn mrd daemon");
+    let mut daemon = sb.base().arg("daemon").spawn().expect("spawn mrd daemon");
     let socket = common::child_socket_path(&sb.home, &sb.cache_home);
     let client = registry::Client::new(socket);
     assert!(
@@ -654,7 +640,7 @@ fn e2e_links_cold_auto_spawns_and_answers_warm() {
     }
     // With the daemon gone, the same query degrades to the in-process engine.
     let cold = sb
-        .base(mrd_bin())
+        .base()
         .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
         .args(["links", "--json"])
         .current_dir(&ws)
@@ -722,7 +708,7 @@ fn e2e_links_spawn_impossible_degrades_and_answers_correctly() {
     // does not exist), so `ensure_daemon` fails and the client degrades — the run still
     // succeeds.
     let out = sb
-        .base(mrd_bin())
+        .base()
         .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
         .args(["links", "--json"])
         .current_dir(&ws)

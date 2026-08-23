@@ -8,10 +8,6 @@ use std::process::{Command, Output};
 
 mod common;
 
-fn mrd_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_mrd")
-}
-
 const PINNER: &str = "# Plan\n\ndraws from both dups.\n";
 const DUP_TARGET: &str = "# Guide\n\n## Dup\n\nfirst dup body.\n\n## Dup\n\nsecond dup body.\n";
 
@@ -43,11 +39,9 @@ fn sandbox() -> Sandbox {
 
 impl Sandbox {
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
-        Command::new(mrd_bin())
+        common::mrd_command(&self.home, &self.cache_home)
             .args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env_remove("MERIDIAN_WORKSPACE")
             .output()
             .expect("spawn mrd")
