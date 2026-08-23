@@ -548,6 +548,7 @@ fn sql_routes_through_a_resident_daemon() {
     config.prewarm_interval = forever;
     config.prewarm_quiet_max = forever;
     config.idle_exit = None;
+    config.drain_cold_builds = Duration::from_secs(30);
     let server = registry::RunningServer::start(config).expect("daemon");
 
     // Warm the daemon's ownership of the file: one wire sql through it.
