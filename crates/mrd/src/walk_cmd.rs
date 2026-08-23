@@ -264,7 +264,7 @@ impl Walk {
 /// lane every walk took before the rooted lane existed (byte-identical to the
 /// read door's helper, the doors sharing the lane).
 fn ambient_workspace(cwd: &Path) -> Result<std::path::PathBuf, Fail> {
-    let resolved = crate::resolve::resolve_runtime(cwd).map_err(|e| {
+    let resolved = crate::resolve::resolve_runtime(workspace::Base::Cwd(cwd)).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace for {}: {e}",
             cwd.display()
