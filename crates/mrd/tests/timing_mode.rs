@@ -28,6 +28,38 @@ def run(ctx):
 ^solo-1
 ";
 
+/// The fixture the PHASE-LIST gate drives, named once so it is the gate's only
+/// parameter.
+///
+/// It has to be a page whose run REACHES every phase in the list — the corpus
+/// fold included — while leaving the corpus byte-identical, so the gate is
+/// about phases and never about writes. `emit.md` is that page: one `notice`,
+/// which is `proto.*` and not md.\*, so there is a fold and an eval but no
+/// batch, no receipt and no byte moved (measured on the release binary
+/// 2026-08-22: `emit.md` sha256 identical before and after, no `receipts/`).
+///
+/// Why not the `pass` page: under the lazy-snapshot work (seat `8ed22d72`) a
+/// run with nothing to apply skips the fold, and a phase-list gate driven by
+/// `pass` would then be asserting the absence of the thing it exists to check.
+/// Driving it from `emit.md` makes that change a rebase, not a rewrite.
+const PHASE_LIST_PAGE: &str = "emit.md";
+
+/// One `notice` — a `proto.*` effect with no local executor. See
+/// [`PHASE_LIST_PAGE`].
+const EMIT_PAGE: &str = "\
+---
+task.emit: \"[[#^emit-1]]\"
+---
+
+# Tasks
+
+```starlark
+def run(ctx):
+    notice(message = \"advisory\")
+```
+^emit-1
+";
+
 /// A page whose task COMMITS: the md.\* batch makes `apply` real, and the run
 /// is the one `run-plane.md` § The `snapshot` set can repeat is about.
 const EFFECTFUL_PAGE: &str = "\
@@ -54,6 +86,7 @@ impl Ws {
     fn new() -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::write(tmp.path().join("solo.md"), SOLO_PAGE).expect("page");
+        std::fs::write(tmp.path().join("emit.md"), EMIT_PAGE).expect("emit page");
         std::fs::write(tmp.path().join("stamp.md"), EFFECTFUL_PAGE).expect("effectful page");
         Self { tmp }
     }
@@ -219,10 +252,13 @@ fn on_words_are_on_in_any_case_and_with_whitespace() {
 /// The phase list a reader of `mrd run` gets — the grain `run-plane.md`
 /// § Timing phases promises. `total` closes the stream: it contains every
 /// other phase, and lines print in completion order.
+///
+/// Driven by [`PHASE_LIST_PAGE`], which is the only thing about this gate that
+/// is allowed to change.
 #[test]
 fn a_run_reports_its_phases_and_total_is_last() {
     let ws = Ws::new();
-    let out = ws.mrd(Some("1"), &["run", "solo.md", "--json"]);
+    let out = ws.mrd(Some("1"), &["run", PHASE_LIST_PAGE, "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let lines = timing_lines(&stderr(&out));
     let names = phases(&stderr(&out));
@@ -268,6 +304,33 @@ fn a_run_reports_its_phases_and_total_is_last() {
     assert!(of("snapshot") >= of("snapshot.read"));
     assert!(of("dispatch") >= of("snapshot"));
     assert!(of("total") >= of("dispatch"));
+}
+
+/// On main TODAY an effect-free run folds the corpus too: `pass` reaches
+/// `snapshot` exactly as `notice` does, because the fold happens before anyone
+/// asks whether there is anything to apply.
+///
+/// **This is the assertion the lazy-snapshot work (seat `8ed22d72`) inverts.**
+/// It is deliberately its own test, and deliberately not the phase-list gate
+/// above, so that flip is a two-line conflict on rebase rather than a rewrite
+/// of the gate that matters.
+#[test]
+fn an_effect_free_run_folds_today() {
+    let ws = Ws::new();
+    let out = ws.mrd(Some("1"), &["run", "solo.md", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let names = phases(&stderr(&out));
+    for part in [
+        "snapshot",
+        "snapshot.walk",
+        "snapshot.read",
+        "snapshot.fold",
+    ] {
+        assert!(
+            names.iter().any(|n| n == part),
+            "an effect-free run did not report `{part}`: {names:?}"
+        );
+    }
 }
 
 /// The `solo` block emits no md.* effect, so there is no batch — and no
