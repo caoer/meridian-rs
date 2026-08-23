@@ -541,8 +541,11 @@ fn plan_set_property_writes_the_task_grammars_dotted_keys() {
     .expect("the dotted task keys commit");
 
     let after = std::fs::read_to_string(dir.path().join("card.md")).expect("read");
+    // The claim here is the KEY grammar. The value `"1"` rides quoted since
+    // 2026-08-23 (card `all-digit-short-ids-read-as-int`): a value plane that
+    // is typed `string` no longer emits a caller string as a number.
     assert!(
-        after.contains("task.index: 1\n") && after.contains("task.index.caps: md.set_field\n"),
+        after.contains("task.index: \"1\"\n") && after.contains("task.index.caps: md.set_field\n"),
         "both dotted keys land as their own lines: {after}"
     );
 
