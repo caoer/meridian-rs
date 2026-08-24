@@ -59,7 +59,8 @@ pub struct ReceiptAddr {
 pub struct ApplyRequest<'a> {
     /// The page the effects apply to (workspace-relative).
     pub page: &'a str,
-    /// The task name — the receipt actor is `run:<task>`.
+    /// The task name — the plane's self-label is `run:<task>`, the fallback
+    /// half of the §9 actor law ([`ApplyRequest::actor`]).
     pub task: &'a str,
     /// The addressed task block's `node_rev` at eval/address time — the
     /// procedure-hash the receipt attests (WHICH code ran, not just the
@@ -119,6 +120,25 @@ pub struct ApplyRequest<'a> {
     /// predating cap `run.ambient`) keeps the bare-door law:
     /// workspace-root-relative.
     pub ambient: Option<&'a str>,
+}
+
+impl ApplyRequest<'_> {
+    /// **The §9 actor law, in one spelling: supplied verbatim, else the
+    /// plane's `run:<task>` self-label.**
+    ///
+    /// A function rather than the expression written out at each site, for the
+    /// same reason [`seal_candidate`] is one function: a second spelling of an
+    /// identity law is how two legs of ONE apply come to disagree about who is
+    /// writing. That is not hypothetical here — the CHECK leg (6c) spelled it
+    /// `format!("run:{}", req.task)` unconditionally while the middleware leg,
+    /// the birth door, the delta sink and the receipt all resolved the
+    /// supplied actor, so a fire by `agent:x` presented `agent:x` to a
+    /// middleware rule and `run:<task>` to a check rule in the same write.
+    /// Every leg now reads this.
+    fn actor(&self) -> String {
+        self.actor
+            .map_or_else(|| format!("run:{}", self.task), str::to_owned)
+    }
 }
 
 /// The host seam of the run-delta ruling (§ A.8 Delta honesty): the daemon
@@ -1066,13 +1086,9 @@ fn realize_births(
             id: None,
             path: wire::Path(path.clone()),
             body,
-            // §9: the receipt's own actor law — supplied verbatim, else the
-            // plane's self-label — so the door's frame and the run receipt
-            // name one identity.
-            actor: Some(
-                req.actor
-                    .map_or_else(|| format!("run:{}", req.task), str::to_owned),
-            ),
+            // §9: the receipt's own actor law, so the door's frame and the run
+            // receipt name one identity.
+            actor: Some(req.actor()),
             now: req.now.map(str::to_owned),
             // No world pin on this door (no-guard-on-effects ruling).
             if_root: None,
@@ -1262,13 +1278,22 @@ pub fn apply_under(
     //
     // `law` is the SAME snapshot 3b judged against (resolved at 3a′), not a
     // second read of disk.
+    //
+    // The actor is `req.actor()` — the §9 law, NOT `run:<task>` unconditional.
+    // This leg dropped the supplied identity, so one apply presented two
+    // different `change.actor` values to the same workspace's law depending on
+    // which leg was evaluating. A CHECK keyed on actor — the shipped
+    // `reviewer-not-owner` shape in `crate::gate` is exactly one — could then
+    // never fire on a fire: it compared the caller's identity against the
+    // plane's self-label and silently passed. An armed rule reading as a pass
+    // for the wrong reason is the failure class the parity mounts exist to end.
     if let Some(detail) = crate::gate::refuse_reason(
         &law,
         &doc,
         after_doc.document(),
         req.page,
         &batch.edits,
-        &format!("run:{}", req.task),
+        &req.actor(),
     ) {
         return Err(ExecError::ArmedRefusal { detail });
     }
@@ -1434,9 +1459,7 @@ fn offer_committed(
     let (Some(sink), Some((receipt_before, root_before))) = (req.delta, pre) else {
         return;
     };
-    let actor = req
-        .actor
-        .map_or_else(|| format!("run:{}", req.task), str::to_owned);
+    let actor = req.actor();
     sink.committed(
         root,
         &CommitFacts {
@@ -1604,10 +1627,9 @@ fn mount_middleware(
         return Ok(());
     }
     // §9: the receipt's own actor law, so `ctx.actor` on this lane reads what
-    // the receipt attests and what the create door was told.
-    let actor = req
-        .actor
-        .map_or_else(|| format!("run:{}", req.task), str::to_owned);
+    // the receipt attests, what the create door was told, and — since the
+    // CHECK leg was brought onto the same law — what a check rule sees.
+    let actor = req.actor();
     for row in &rows {
         let (batch, _sealed, after_doc) = seal_candidate(req.page, doc, planned)?;
         let emits = crate::gate::middleware_emits(
@@ -1981,9 +2003,7 @@ fn render_receipt(
         invocation: req.invocation_id.to_owned(),
         // §9 / § A.8: a supplied actor is the caller's identity; absent
         // keeps the plane's self-label and the CLI's receipt bytes.
-        actor: req
-            .actor
-            .map_or_else(|| format!("run:{}", req.task), str::to_owned),
+        actor: req.actor(),
         now: req.now.map(str::to_owned),
         root_pin: req.observed_root.0.clone(),
         task_rev: req.task_rev.to_owned(),

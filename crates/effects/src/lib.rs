@@ -980,13 +980,19 @@ pub struct EffectFault {
 /// (review `dc6d9ca9` finding 5, PR 213). The CLI holds an INDEPENDENT
 /// `Duration::from_secs(7)` — `WALL_CLOCK` in `crates/mrd/src/script/cmd.rs` —
 /// bounding the socket the one `script` frame rides. Nothing links the two
-/// constants and no test asserts they are equal: they are two values kept equal
-/// by hand, one per side of the socket. A reader who believes one derives from
-/// the other will change this one and expect the other to follow, which is why
-/// the claim is corrected rather than left as an aspiration. Whether that
-/// equality earns a pin test is carded, not decided here — making the CLI
-/// derive from this constant is behavior-adjacent and does not belong in the
-/// deletion PR that found the false claim.
+/// constants: they are two values kept equal BY HAND, one per side of the
+/// socket. A reader who believes one derives from the other will change this
+/// one and expect the other to follow, which is why the claim is corrected
+/// rather than left as an aspiration.
+///
+/// **TUNING THIS ALONE IS A BUG, and a test now says so.**
+/// `mrd::script::cmd::tests::the_two_wall_clock_spellings_stay_equal` asserts
+/// the equality, so a one-sided edit goes red instead of shipping a socket
+/// that kills round trips the daemon still has budget for. Change this
+/// constant and you must change `WALL_CLOCK` in
+/// `crates/mrd/src/script/cmd.rs` in the same act. (The pin is deliberately
+/// not a derivation: making the CLI read this constant is behavior-adjacent
+/// and remains uncarded.)
 pub const DEFAULT_WALL_CLOCK: std::time::Duration = std::time::Duration::from_secs(7);
 
 /// Why a host could not serve a read. Rendered by the consumer plane; the

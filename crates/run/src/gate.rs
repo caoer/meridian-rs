@@ -128,11 +128,15 @@ pub fn resolve_at(root: &fs::WorkspaceRoot, at_path: &str) -> policy::ArmedLaw {
 /// `before`/`after` are the pre/post-apply page states; `page` is the
 /// workspace-relative path (stamped onto the change so a rule's declared scope can
 /// match it — `fs::load`/`model::build` leave the path empty); `edits` are the
-/// planned model edits; `actor` is `run:<task>`.
+/// planned model edits; `actor` is the §9-resolved identity
+/// (`ApplyRequest::actor` — supplied verbatim, else `run:<task>`), the SAME
+/// value the middleware leg, the birth door, the delta sink and the receipt
+/// carry. It was `run:<task>` unconditionally until 2026-08-24, which is why a
+/// CHECK keyed on `change.actor` could not see the caller on a fire.
 ///
-/// `law` is the apply's OWN snapshot, resolved once by the caller and shared
-/// with the middleware leg (see this module's header) — this function no
-/// longer reads disk.
+/// `law` is the apply's OWN snapshot, resolved once by the caller (at `page` —
+/// [`resolve_at`]) and shared with the middleware leg (see this module's
+/// header) — this function no longer reads disk.
 #[must_use]
 pub(crate) fn refuse_reason(
     law: &policy::ArmedLaw,
