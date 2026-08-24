@@ -39,7 +39,7 @@ use serde_json::{Value, json};
 /// deliberately far above any greet a healthy daemon produces, because a
 /// number is the wrong instrument here and this one is only the floor under
 /// the right one.
-pub const GREET_CAP: Duration = Duration::from_secs(60);
+pub const GREET_CAP: Duration = Duration::from_mins(1);
 
 /// How long a liveness probe may take before we call the daemon unreachable.
 /// Its own bound, because [`registry::Client::request`] sets no read timeout:
