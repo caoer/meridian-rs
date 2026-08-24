@@ -1,8 +1,16 @@
-//! `mrd config` — the config plane's publishing surface.
+//! `mrd config` — the config plane's publishing surface, in two legs.
 //!
 //! ```text
-//! mrd config [--json]
+//! mrd config [--json]            the plane: path, state, rev, mount table, tools
+//! mrd config get [KEY] [--json]  the value: what the `^config` block's config() returned
 //! ```
+//!
+//! They read one file and answer about different things. The bare verb answers about the MOUNT
+//! PLANE — a table this machine's engine binds, whose every root's state is the engine's
+//! business. `get` answers about the USER'S OWN DATA — an arbitrary value the engine declares no
+//! schema for and reads no key of (`docs/meridian-md-schema.md` §6a). So `get` binds no roots:
+//! an unbound root is the mount plane's refusal to make, and making it here would cost a machine
+//! its config over a root it was not asking about.
 //!
 //! Resolves the `MERIDIAN.md` bootstrap chain and prints what it found: the resolved path, the
 //! state, the config's own rev and fingerprint, the bound mount table with each root's state,
@@ -110,6 +118,187 @@ fn state(resolution: &config::Resolution) -> &'static str {
     match resolution {
         config::Resolution::Absent { .. } => "absent",
         config::Resolution::Loaded(_) => "loaded",
+    }
+}
+
+/// The block id that addresses the config block. One spelling, and it is an
+/// ADDRESS: nothing scans `MERIDIAN.md` for a starlark fence, so a page may
+/// carry as many other starlark blocks as its author likes.
+const CONFIG_ANCHOR: &str = "config";
+
+/// The entry the block owes: a zero-argument function whose return value IS the
+/// config. Same word as the anchor, because the block and its entry name one
+/// thing.
+const CONFIG_ENTRY: &str = "config";
+
+/// The block's shape, printed by every refusal that means "there is no block
+/// here to read" — a refusal on this door is a teaching moment or it is nothing.
+const BLOCK_SHAPE: &str =
+    "```starlark\ndef config():\n    return {\"repos_root\": \"/path/to/repos\"}\n```\n^config";
+
+/// Run `mrd config get [KEY] [--json]`: resolve the same bootstrap chain, read
+/// the `^config` block out of the file it names, evaluate it, and print what
+/// `config()` returned — the whole value, or the top-level member `key` names.
+///
+/// The value is arbitrary data (`docs/meridian-md-schema.md` §6a): this door
+/// declares no schema and reads no key of it. It prints the VALUE and no
+/// provenance, so `repos=$(mrd config get repos_root)` is the intended use;
+/// `mrd config` is where the plane's path/rev/table live.
+///
+/// Roots are deliberately NOT bound here. Binding is the mount plane's business
+/// and an unbound root refuses `mrd config`; the config block is readable either
+/// way, and coupling them would make one broken path cost the other.
+///
+/// # Errors
+/// [`Fail`] exit 1 when the chain refuses, when the file carries no `^config`
+/// block (or two), when the block is not a `starlark` fence, when the source
+/// will not parse, faults, or defines no `config()`, when it returns something
+/// that is not data, or when `key` names a member the config does not have.
+pub(crate) fn run_get(key: Option<&str>, format: Format) -> Result<(), Fail> {
+    let env = config::Env::from_process();
+    // The same chain `mrd config` walks, refusing in the same words: one file
+    // per machine, and a file broken enough to refuse the mount table is not a
+    // file this door will read a value out of either.
+    let resolution = config::resolve(&env).map_err(refused)?;
+    let path = resolution.path().to_path_buf();
+    if matches!(resolution, config::Resolution::Absent { .. }) {
+        return Err(Fail::findings(format!(
+            "no config file at {} — there is no config to get. \
+             Fix: create that file and give it a config block:\n{BLOCK_SHAPE}",
+            path.display()
+        )));
+    }
+
+    // Re-read rather than carry the bytes out of the parse: a `Config` holds the
+    // mount plane's findings, never the page, and this door needs the page.
+    let raw = std::fs::read_to_string(&path).map_err(|e| {
+        Fail::findings(format!(
+            "{}: {e}. Fix: make the file readable, then run this again.",
+            path.display()
+        ))
+    })?;
+    let nodes = syntax::parse(&raw);
+    let doc = model::build(raw, nodes);
+
+    let source = config_block(&doc, &path)?;
+    let block_id = format!("{}#^{CONFIG_ANCHOR}", path.display());
+    let value = effects::eval_value(
+        &effects::Rule::new(block_id, source),
+        CONFIG_ENTRY,
+        effects::EvalLimits::default(),
+    )
+    .map_err(|e| Fail::findings(e.to_string()))?;
+
+    let selected = match key {
+        None => value,
+        Some(key) => member(value, key, &path)?,
+    };
+
+    match format {
+        // The value alone on both faces — the difference is only how a scalar
+        // is spelled, never what is published.
+        Format::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&selected).expect("serialize a value that came from json")
+        ),
+        Format::Human => println!("{}", human_value(&selected)),
+    }
+    Ok(())
+}
+
+/// The `^config` block's starlark source, or the refusal that names what stands
+/// in its place.
+fn config_block(doc: &model::Document, path: &std::path::Path) -> Result<String, Fail> {
+    let r#ref = model::Ref::anchor(CONFIG_ANCHOR)
+        .expect("`config` is inside the block-id charset [A-Za-z0-9-]");
+    let target = model::resolve(doc, &r#ref).map_err(|e| match e {
+        model::ResolveError::NotFound => Fail::findings(format!(
+            "{}: no block carries `^{CONFIG_ANCHOR}` — this machine declares no config. \
+             Fix: add one, with the id on its own line under the closing fence:\n{BLOCK_SHAPE}",
+            path.display()
+        )),
+        // The mint plane never picks between duplicates, and neither does this
+        // door: merging two blocks would need a precedence rule nobody ruled on.
+        model::ResolveError::Ambiguous(candidates) => Fail::findings(format!(
+            "{}: {} blocks carry `^{CONFIG_ANCHOR}` — the config is ambiguous and nothing was \
+             read. Fix: keep one and delete or rename the rest.",
+            path.display(),
+            candidates.len()
+        )),
+    })?;
+    let (span, _rev) = run::address::host_code_block(doc, &target.span).ok_or_else(|| {
+        Fail::findings(format!(
+            "{}: `^{CONFIG_ANCHOR}` does not key a fenced code block. \
+             Fix: the id belongs on its own line directly under a fence's closing line:\n{BLOCK_SHAPE}",
+            path.display()
+        ))
+    })?;
+    let block = run::fence::classify(doc, &span).map_err(|e| {
+        Fail::findings(format!(
+            "{}#^{CONFIG_ANCHOR}: {e}. Fix: the config block is a `starlark` fence.",
+            path.display()
+        ))
+    })?;
+    if !matches!(block.lang, run::fence::TaskLanguage::Starlark) {
+        return Err(Fail::findings(format!(
+            "{}#^{CONFIG_ANCHOR}: the config block is a `{}` fence; it must be `starlark`. \
+             Fix: change the info string to `starlark` and return the config from `config()`.",
+            path.display(),
+            block.lang.as_str()
+        )));
+    }
+    Ok(block.source)
+}
+
+/// One top-level member of the returned config, or the refusal naming what the
+/// config does carry. A KEY is a mapping's member — no path grammar, no
+/// silent `null` for an absent key.
+fn member(value: Value, key: &str, path: &std::path::Path) -> Result<Value, Fail> {
+    let Value::Object(mut map) = value else {
+        return Err(Fail::findings(format!(
+            "{}#^{CONFIG_ANCHOR}: `{CONFIG_ENTRY}()` returned {}, not a mapping, so `{key}` \
+             addresses nothing. Fix: run `mrd config get` with no KEY to see the whole value.",
+            path.display(),
+            type_word(&value)
+        )));
+    };
+    map.remove(key).ok_or_else(|| {
+        let keys: Vec<&str> = map.keys().map(String::as_str).collect();
+        Fail::findings(format!(
+            "{}#^{CONFIG_ANCHOR}: the config has no `{key}`. Fix: it declares {}.",
+            path.display(),
+            if keys.is_empty() {
+                "no keys at all".to_owned()
+            } else {
+                format!("[{}]", keys.join(", "))
+            }
+        ))
+    })
+}
+
+/// The human spelling of one value: a string rides BARE so a shell can capture
+/// it (`repos=$(mrd config get repos_root)` is the whole point of the verb), and
+/// every other shape rides as the JSON it already is. Quoting the string here
+/// would put two quote characters into every path this verb is asked for.
+fn human_value(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Null | Value::Bool(_) | Value::Number(_) => value.to_string(),
+        Value::Array(_) | Value::Object(_) => {
+            serde_json::to_string_pretty(value).expect("serialize a value that came from json")
+        }
+    }
+}
+
+/// The type word a refusal names — the reader's own vocabulary, not serde's.
+fn type_word(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "None",
+        Value::Bool(_) => "a bool",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "a list",
+        Value::Object(_) => "a mapping",
     }
 }
 
