@@ -33,10 +33,27 @@
 //! target position is a path, and neither silent reinterpretation is legal.
 //! Partition grain (parent-dir-name match) is retired with them.
 //!
+//! # One grammar, both planes (caps-one-parser ruling, 2026-08-23)
+//! `caps:` is read by this plane AND by the policy plane's HOOK loader
+//! (`crates/policy/src/hook.rs`) with different VOCABULARIES — verbs with an
+//! optional glob scope here, descriptor kinds there. The SPELLING is shared and
+//! has exactly one owner: [`model::parse_caps_list`] tokenizes, and
+//! [`model::fm_doc_caps`] / `model::fm_caps` read the key off the frontmatter
+//! block. Bare scalar, flow sequence and block sequence therefore mean the same
+//! thing on both planes; `caps: []` is a DECLARED empty grant and a bare
+//! `caps:` is not a declaration at all, on both. Gate:
+//! `crates/testsuite/tests/caps_one_grammar.rs`.
+//!
+//! Before that, each plane had its own reader and they disagreed in opposite
+//! directions — the run plane faulted `invalid capability '[md.create'` on a
+//! flow sequence the policy plane read fine, and the policy plane refused
+//! `invalid type: string` on a plain scalar the run plane read fine (card
+//! `caps-flow-sequence-faults-at-run-plane` and its sibling).
+//!
 //! # Convention plane (marker-retirement ruling)
 //! Table lives in `<root>/MERIDIAN.md` with `type: meridian-root`. Retired
-//! marker files are not read and have no fallback. Grammar is flat dotted
-//! keys (model's FM scanner skips indented lines):
+//! marker files are not read and have no fallback. Grammar is dotted keys,
+//! whose VALUE takes any of the three spellings above:
 //!
 //! ```yaml
 //! run.caps.fix-*: md.edit
@@ -53,7 +70,6 @@ use std::path::{Path, PathBuf};
 
 use model::Document;
 
-use crate::address::frontmatter;
 use crate::fence::TaskLanguage;
 
 /// The frontmatter key prefix carrying one convention entry. The pattern is
@@ -237,19 +253,36 @@ impl CapSet {
         Self(BTreeSet::new())
     }
 
-    /// Parse a comma/whitespace-separated cap list.
+    /// Parse a cap list VALUE in the one capability grammar
+    /// ([`model::parse_caps_list`]): items separate on comma, space or tab, a
+    /// surrounding bracket pair is stripped, quotes come off the value and off
+    /// each item.
+    ///
+    /// The splitting is the POLICY PLANE's, literally — the same function
+    /// `crates/policy/src/hook.rs` tokenizes a HOOK's `caps:` with. This door
+    /// used to trim quotes off the whole string and never brackets, so a flow
+    /// sequence (`[md.create, md.edit]`) that the policy plane read fine
+    /// reached [`Cap::parse`] as `[md.create` and faulted (card
+    /// `caps-flow-sequence-faults-at-run-plane`).
     ///
     /// # Errors
     /// [`CapsError::BadCap`] on the first malformed cap.
     pub fn parse(raw: &str) -> Result<Self, CapsError> {
         let mut set = BTreeSet::new();
-        for word in raw
-            .trim()
-            .trim_matches(['"', '\''])
-            .split([',', ' ', '\t'])
-            .filter(|s| !s.is_empty())
-        {
-            set.insert(Cap::parse(word)?);
+        for word in model::parse_caps_list(raw) {
+            set.insert(Cap::parse(&word)?);
+        }
+        Ok(Self(set))
+    }
+
+    /// A set from tokens the one grammar already split ([`model::fm_doc_caps`]).
+    ///
+    /// # Errors
+    /// [`CapsError::BadCap`] on the first malformed cap.
+    fn from_tokens(tokens: &[String]) -> Result<Self, CapsError> {
+        let mut set = BTreeSet::new();
+        for token in tokens {
+            set.insert(Cap::parse(token)?);
         }
         Ok(Self(set))
     }
@@ -604,18 +637,23 @@ impl std::fmt::Display for CapsError {
 
 impl std::error::Error for CapsError {}
 
-/// The explicit `task.<name>.caps` declaration, if present. A present-but-empty
+/// The explicit `task.<name>.caps` declaration, if present. A `caps: []`
 /// declaration is an EXPLICIT read-only grant (distinct from undeclared).
+///
+/// Read through [`model::fm_doc_caps`], the one capability grammar, so every
+/// YAML spelling of the list means the same thing here as it does on the
+/// policy plane — and so a BLOCK sequence is seen at all: `frontmatter(doc)`
+/// keeps only the key LINE's remainder, which for a block list is the empty
+/// string, and an empty string parses to an explicit read-only grant. That is
+/// a page's declared caps silently replaced, not a fault (same defect class as
+/// card `fm-block-list-sql-empty`).
 ///
 /// # Errors
 /// [`CapsError::BadCap`] on a malformed cap in the declaration.
 pub fn explicit_caps(doc: &Document, task: &str) -> Result<Option<CapSet>, CapsError> {
-    let Some(map) = frontmatter(doc) else {
-        return Ok(None);
-    };
     let key = format!("task.{task}.caps");
-    match map.0.iter().find(|(k, _)| *k == key) {
-        Some((_, value)) => CapSet::parse(value).map(Some),
+    match model::fm_doc_caps(doc, &key) {
+        Some(tokens) => CapSet::from_tokens(&tokens).map(Some),
         None => Ok(None),
     }
 }
@@ -632,22 +670,25 @@ pub const PAGE_CAPS_KEY: &str = "caps";
 /// The page-level `caps:` declaration, if present (§ 2.2 *Evaluation — fire*,
 /// step 2).
 ///
-/// A present-but-empty declaration is an EXPLICIT read-only grant, exactly as
-/// on the task plane — the distinction between "declared nothing" and "did not
+/// A `caps: []` declaration is an EXPLICIT read-only grant, exactly as on the
+/// task plane — the distinction between "declared nothing" and "did not
 /// declare" is preserved because they are different statements by the author.
 /// Absent is deny-by-default: a fire on a page with no `caps:` may call any
 /// constructor and every one of them is refused at [`crate::executor::admit`]
 /// with `cap_denied`, which is A1's shape — callable and refused, never absent
 /// and mysterious.
 ///
+/// This is the key the daemon's declaring pages carry, so it is the key both
+/// planes read: [`model::fm_doc_caps`] is the same grammar
+/// `crates/policy/src/hook.rs` loads a HOOK's `caps:` through. A bare `caps:`
+/// with nothing after it is NOT a declaration on either plane — the engine
+/// never invents `[]` for it.
+///
 /// # Errors
 /// [`CapsError::BadCap`] on a malformed cap in the declaration.
 pub fn page_caps(doc: &Document) -> Result<Option<CapSet>, CapsError> {
-    let Some(map) = frontmatter(doc) else {
-        return Ok(None);
-    };
-    match map.0.iter().find(|(k, _)| k == PAGE_CAPS_KEY) {
-        Some((_, value)) => CapSet::parse(value).map(Some),
+    match model::fm_doc_caps(doc, PAGE_CAPS_KEY) {
+        Some(tokens) => CapSet::from_tokens(&tokens).map(Some),
         None => Ok(None),
     }
 }
@@ -689,15 +730,22 @@ pub fn conventions_from_declaration(
     declaration: &Document,
     source: Option<&Path>,
 ) -> Result<Conventions, CapsError> {
-    let Some(map) = frontmatter(declaration) else {
-        return Ok(Conventions::none());
-    };
     let mut entries = Vec::new();
-    for (key, value) in &map.0 {
+    // Key NAMES from the frontmatter map (the pattern is whatever follows the
+    // fixed prefix), VALUES through the one capability grammar — so a
+    // convention entry spelled as a block sequence is read, not silently
+    // emptied, and every spelling means here what it means on the policy plane.
+    for key in model::fm_doc_keys(declaration) {
         let Some(pattern) = key.strip_prefix(CAPS_KEY_PREFIX) else {
             continue;
         };
-        let caps = CapSet::parse(value).map_err(|fault| CapsError::TableEntry {
+        // A bare `run.caps.<pattern>:` declares no cap, and a ceiling that
+        // declares no cap is the EMPTY one — never an absent entry. Fail
+        // closed, the same direction an absent `caps:` fails on the grant
+        // side: a mis-spelled ceiling is never read as no ceiling (see
+        // [`CapsError::TableEntry`]).
+        let tokens = model::fm_doc_caps(declaration, &key).unwrap_or_default();
+        let caps = CapSet::from_tokens(&tokens).map_err(|fault| CapsError::TableEntry {
             path: source.map(Path::to_path_buf),
             key: key.clone(),
             source: Box::new(fault),
