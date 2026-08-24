@@ -4,14 +4,14 @@ The fixture corpus for the `MERIDIAN.md` in-file schema. Spec:
 `docs/meridian-md-schema.md` (stage 3, U2). Consumed by U6 (parse + resolution) and U7 (the mount
 table). **This pack is data — it ships no engine code, and U2 wrote no engine code.**
 
-38 cases: **12 acceptances** and **26 refusals**, all listed in `cases.json` (the kind-sweep, 2026-08-13, retired the three kind-rule refusals and re-aimed `mount-unknown-kind` as `mount-stale-kind`).
+39 cases: **12 acceptances** and **27 refusals**, all listed in `cases.json` (the kind-sweep, 2026-08-13, retired the three kind-rule refusals and re-aimed `mount-unknown-kind` as `mount-stale-kind`; `empty-frontmatter` arrived 2026-08-24 with schema §4's empty-closed-block row).
 7 of them have no fixture file — a file cannot express its own absence — so **`cases.json`, not the
 file tree, is the pairing mechanism.**
 
 ```
 cases.json      every case paired with its required outcome
 corpus/*.md     8 well-formed configs   (the acceptances)
-refusals/*.md   23 malformed configs    (the refusals)
+refusals/*.md   24 malformed configs    (the refusals)
 ```
 
 ## The pairing rule
