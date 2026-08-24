@@ -1221,6 +1221,16 @@ pub fn apply_under(
         planned.push(plan_edit(&doc, effect).map_err(|e| e.at(index))?);
     }
 
+    // 3a′. ONE APPLY, ONE LAW. The armed law is resolved from disk exactly
+    // ONCE here and shared by BOTH armed legs below — the middleware door at
+    // 3b and the check gate at 6c. They used to resolve independently, and
+    // `run.lock` does not exclude wire writers (`write.lock` is taken only at
+    // the delta bracket, 7b), so a concurrent splice rewriting
+    // `meridian/armed-rules.md` between the two reads had the two legs of ONE
+    // write evaluating DIFFERENT law. Resolved before 3b so the snapshot
+    // predates every transform this apply makes.
+    let law = crate::gate::resolve_at(root, req.page);
+
     // 3b. THE MIDDLEWARE DOOR (armed-plane Part A2, § A.2.1) — the armed
     // plane's OTHER leg, mounted for the same byte-landing-parity reason as
     // the check gate at 6c. This is where the put frame's `fields` reaches a
@@ -1230,7 +1240,7 @@ pub fn apply_under(
     // (the strip, the lock guard, the check gate, the receipt) reads the
     // bytes middleware left, and a middleware cannot smuggle bytes past an
     // armed check.
-    mount_middleware(root, &doc, req, &mut planned)?;
+    mount_middleware(root, &law, &doc, req, &mut planned)?;
 
     // 4-6. Seal the batch and the bytes it will write, `@fp`-stripped.
     let (batch, after_doc) = seal_stripped_candidate(&doc, &planned, req)?;
@@ -1249,8 +1259,11 @@ pub fn apply_under(
     // lands bytes through `fs::apply_batch`, not the wire choke-point, so it
     // mounts the SAME `policy::gate` at this write's path before the commit.
     // A never-armed workspace is a bit-for-bit no-op.
+    //
+    // `law` is the SAME snapshot 3b judged against (resolved at 3a′), not a
+    // second read of disk.
     if let Some(detail) = crate::gate::refuse_reason(
-        root,
+        &law,
         &doc,
         after_doc.document(),
         req.page,
@@ -1579,11 +1592,14 @@ fn seal_candidate(
 /// Nothing has been applied in any case.
 fn mount_middleware(
     root: &fs::WorkspaceRoot,
+    law: &policy::ArmedLaw,
     doc: &Document,
     req: &ApplyRequest<'_>,
     planned: &mut Vec<PlannedEdit>,
 ) -> Result<(), ExecError> {
-    let rows = crate::gate::middleware_rows(root, req.page);
+    // The apply's own snapshot (resolved at 3a′), never a second disk read:
+    // the check gate at 6c judges against this same law.
+    let rows = crate::gate::middleware_rows(law, req.page);
     if rows.is_empty() {
         return Ok(());
     }

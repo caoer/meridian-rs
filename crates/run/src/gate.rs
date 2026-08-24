@@ -18,12 +18,30 @@
 //! — a CHECK rule has no `fields` surface, and the delta sink
 //! ([`crate::executor::CommitFacts`]) is a NOTIFICATION lane no rule reads.
 //!
+//! **ONE APPLY, ONE LAW.** Both legs judge against a SINGLE snapshot, which
+//! [`crate::executor::apply_under`] resolves once ([`resolve_at`]) and hands
+//! to [`middleware_rows`] and [`refuse_reason`] alike. They used to resolve
+//! independently, from disk, with nothing excluding a writer between the two
+//! reads — `run.lock` does not exclude wire writers (`write.lock` is taken
+//! only at the delta bracket, step 7b), so a concurrent splice rewriting
+//! `meridian/armed-rules.md` between 3b and 6c had the two legs of ONE write
+//! evaluating DIFFERENT law. Both legs fail closed independently, so that
+//! window could never produce an unguarded write; what it could produce is a
+//! transform emitted by a row disarmed mid-apply. "One write, one law" is the
+//! property the armed plane is supposed to have, and a reader reasoning about
+//! this mount will assume it holds. Now it does.
+//!
+//! Sharing the snapshot is the same argument [`resolve_at`]'s own page cache
+//! already makes one level down — verification and loading must see the SAME
+//! bytes — extended across the two legs.
+//!
 //! This module adapts run-plane state into [`policy::Change`] /
-//! [`policy::MwCtxInput`] and calls the evaluator. It does not own armed-set
-//! load, rule evaluation, or the batch: WHICH rows fire is
-//! [`wire_serve::write::middleware_rows`], the overlay world is
+//! [`policy::MwCtxInput`] and calls the evaluator. It does not own rule
+//! evaluation or the batch: WHICH rows fire is
+//! [`wire_serve::write::middleware_rows_of`], the overlay world is
 //! [`wire_serve::middleware::DoorWorld`], and folding emissions into the
-//! pending batch is the executor's.
+//! pending batch is the executor's. It DOES now own the apply's law
+//! resolution — one read, deliberately, rather than two.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -109,12 +127,15 @@ pub fn resolve_at(root: &fs::WorkspaceRoot, at_path: &str) -> policy::ArmedLaw {
 ///
 /// `before`/`after` are the pre/post-apply page states; `page` is the
 /// workspace-relative path (stamped onto the change so a rule's declared scope can
-/// match it — `fs::load`/`model::build` leave the path empty, and it is also the
-/// path the law is resolved AT); `edits` are the planned model edits; `actor` is
-/// `run:<task>`.
+/// match it — `fs::load`/`model::build` leave the path empty); `edits` are the
+/// planned model edits; `actor` is `run:<task>`.
+///
+/// `law` is the apply's OWN snapshot, resolved once by the caller and shared
+/// with the middleware leg (see this module's header) — this function no
+/// longer reads disk.
 #[must_use]
 pub(crate) fn refuse_reason(
-    root: &fs::WorkspaceRoot,
+    law: &policy::ArmedLaw,
     before: &Document,
     after: &Document,
     page: &str,
@@ -135,21 +156,24 @@ pub(crate) fn refuse_reason(
         &[],
         &|_reference| None,
     );
-    match policy::gate(&change, &resolve_at(root, page)) {
+    match policy::gate(&change, law) {
         policy::GateOutcome::Ok(_) => None,
         policy::GateOutcome::Refusal(refusal) => Some(describe(refusal)),
     }
 }
 
 /// The armed middleware rows that fire on a run-plane write at `page`, `id`
-/// ascending — [`wire_serve::write::middleware_rows`] verbatim, so the fire
+/// ascending — [`wire_serve::write::middleware_rows_of`] verbatim, so the fire
 /// lane and the put lane can never disagree about what is armed at a path.
+///
+/// Takes the apply's OWN law snapshot rather than resolving: one apply, one
+/// law (see this module's header). Selection is still wire-serve's.
 ///
 /// Empty on a never-armed workspace, and empty when no armed rule carries a
 /// middleware leg in scope — which is the whole cost of the mount there.
 #[must_use]
-pub(crate) fn middleware_rows(root: &fs::WorkspaceRoot, page: &str) -> Vec<policy::ArmedRule> {
-    wire_serve::write::middleware_rows(root, page)
+pub(crate) fn middleware_rows(law: &policy::ArmedLaw, page: &str) -> Vec<policy::ArmedRule> {
+    wire_serve::write::middleware_rows_of(law, page)
 }
 
 /// The pending splice one middleware row evaluates over — the run plane's
@@ -471,6 +495,163 @@ mod scenario {
         assert!(
             !tmp.path().join("receipts/run.md").exists(),
             "no run receipt on a refused apply"
+        );
+    }
+
+    // ── ONE APPLY, ONE LAW (reviewer 36637e1a on PR 214, finding 5) ─────────
+
+    /// TWO rules, one per leg — a single page may NOT declare both
+    /// (`policy::armed::arm` refuses `DualKind`), so the snapshot is
+    /// interrogated with DISTINCT evidence per leg: the middleware leg must
+    /// name `MW_LEG_ID`, the check leg must name `CHECK_LEG_ID`. Neither
+    /// assertion can be satisfied by the other leg's rule.
+    const CHECK_LEG_ID: &str = "check-leg-one-law";
+    const CHECK_LEG_PATH: &str = "rules/check-leg.md";
+    const CHECK_LEG_PAGE: &str = "---\ntags: [type/rule, rules/check]\n\
+        id: check-leg-one-law\npaths:\n  - tasks/**\n---\n\n# check-leg-one-law\n\n\
+        ```starlark\ndef check_change(change):\n    \
+        owner = change.doc.frontmatter.get(\"owner\")\n    \
+        actor = change.actor\n    \
+        if actor != None and owner != None and actor == owner:\n        \
+        refuse(message = \"reviewer must not be the owner\", \
+        passing = \"rules/check-leg.md#close\")\n```\n";
+
+    const MW_LEG_ID: &str = "mw-leg-one-law";
+    const MW_LEG_PATH: &str = "rules/mw-leg.md";
+    const MW_LEG_PAGE: &str = "---\ntags: [type/rule, rules/middleware]\n\
+        id: mw-leg-one-law\npaths:\n  - tasks/**\n---\n\n# mw-leg-one-law\n\n\
+        ```starlark\ndef middleware(ctx):\n    \
+        set_field(path = ctx.after.path, key = \"stamped\", value = \"yes\")\n```\n";
+
+    /// Arm BOTH rules into one artifact — the snapshot under test.
+    fn arm_both_legs(root: &fs::WorkspaceRoot) {
+        for (path, page) in [(CHECK_LEG_PATH, CHECK_LEG_PAGE), (MW_LEG_PATH, MW_LEG_PAGE)] {
+            let p = root.0.join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, page).unwrap();
+        }
+        let index = policy::RuleIndex::discover([
+            policy::PageRef {
+                layer: policy::ScopeLayer::Workspace,
+                page: CHECK_LEG_PATH,
+                bytes: CHECK_LEG_PAGE,
+            },
+            policy::PageRef {
+                layer: policy::ScopeLayer::Workspace,
+                page: MW_LEG_PATH,
+                bytes: MW_LEG_PAGE,
+            },
+        ]);
+        let source = BTreeMap::from([
+            (CHECK_LEG_PATH.to_string(), CHECK_LEG_PAGE.to_string()),
+            (MW_LEG_PATH.to_string(), MW_LEG_PAGE.to_string()),
+        ]);
+        let artifact = policy::armed::arm(
+            &index,
+            &policy::armed::ArmRoot::workspace(),
+            [
+                policy::armed::ArmRequest {
+                    id: policy::RuleId::parse(CHECK_LEG_ID).expect("a legal id"),
+                    mode: policy::armed::Mode::Block,
+                    attested_rev: policy::page_rev(CHECK_LEG_PAGE),
+                },
+                policy::armed::ArmRequest {
+                    id: policy::RuleId::parse(MW_LEG_ID).expect("a legal id"),
+                    mode: policy::armed::Mode::Block,
+                    attested_rev: policy::page_rev(MW_LEG_PAGE),
+                },
+            ],
+            &source,
+            policy::CheckLimits::default(),
+        )
+        .expect("the fixture arms")
+        .render();
+        let artifact_path = root.0.join(fs::domain::ARMED_RULES_PATH);
+        std::fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+        std::fs::write(artifact_path, artifact).unwrap();
+        set_marker(root);
+    }
+
+    /// **Both armed legs consume the caller's snapshot, and neither reads
+    /// disk.** Proven by resolving the law and then DELETING the artifact and
+    /// the rule page out from under both legs: a leg that re-resolved would no
+    /// longer find the rule, so still naming it is only possible by consuming
+    /// the snapshot it was handed. A control asserts exactly that about a
+    /// fresh resolve at that moment, which is what makes the two assertions
+    /// below non-vacuous.
+    ///
+    /// Deleting is the strongest available stand-in for "the disk changed
+    /// between the two legs" and is fully deterministic — the card explicitly
+    /// does not want the real race simulated, because that test would be
+    /// flaky and would prove less.
+    ///
+    /// This test could not be WRITTEN against the parent: both legs took
+    /// `&WorkspaceRoot` there and resolved for themselves.
+    #[test]
+    fn both_legs_consume_the_callers_law_snapshot_and_never_reread_disk() {
+        let (tmp, root) = workspace();
+        arm_both_legs(&root);
+
+        // ONE resolution — what `apply_under` does at 3a′.
+        let law = super::resolve_at(&root, "tasks/board.md");
+        assert!(
+            !super::middleware_rows(&law, "tasks/board.md").is_empty(),
+            "precondition: the snapshot carries a middleware row"
+        );
+
+        // The world moves. A re-resolving leg would now find neither rule.
+        std::fs::remove_file(tmp.path().join(fs::domain::ARMED_RULES_PATH)).unwrap();
+        std::fs::remove_file(tmp.path().join(CHECK_LEG_PATH)).unwrap();
+        std::fs::remove_file(tmp.path().join(MW_LEG_PATH)).unwrap();
+        assert!(
+            super::resolve_at(&root, "tasks/board.md")
+                .rules()
+                .is_empty(),
+            "control: a fresh resolve at this moment finds no armed rule — so \
+             anything the legs below still see came from the snapshot, and \
+             this control is what makes the two assertions non-vacuous"
+        );
+
+        // MIDDLEWARE leg (3b): still names ITS OWN rule, from the snapshot.
+        let rows = super::middleware_rows(&law, "tasks/board.md");
+        assert_eq!(
+            rows.iter().map(|r| r.id().as_str()).collect::<Vec<_>>(),
+            vec![MW_LEG_ID],
+            "the middleware leg reads the snapshot, not the (now empty) disk"
+        );
+
+        // CHECK leg (6c): still refuses, naming ITS OWN rule, from the SAME
+        // snapshot. Distinct ids, so neither leg's evidence can stand in for
+        // the other's.
+        let before = model::build(PAGE.to_string(), syntax::parse(PAGE));
+        let after_bytes = PAGE.replace("status: todo", "status: done");
+        let after = model::build(after_bytes.clone(), syntax::parse(&after_bytes));
+        let detail =
+            super::refuse_reason(&law, &before, &after, "tasks/board.md", &[], "run:closer")
+                .expect("the CHECK leg judges the snapshot, not the (now empty) disk");
+        assert!(
+            detail.contains(CHECK_LEG_ID),
+            "the refusal names the snapshot's check rule: {detail}"
+        );
+    }
+
+    /// End-to-end: with both legs wired to one snapshot, the armed apply still
+    /// refuses exactly as it did — the fix must not disarm the mount it
+    /// unifies. Pairs with `s7_*` above, which pin the same behaviour through
+    /// the pre-fix wiring's replacement.
+    #[test]
+    fn one_law_wiring_leaves_the_armed_refusal_intact() {
+        let (tmp, root) = workspace();
+        arm_ws(&root);
+        let err = apply_as_closer(&root).expect_err("the owner closing their own card refuses");
+        assert!(
+            matches!(&err, ExecError::ArmedRefusal { detail } if detail.contains(RULE_ID)),
+            "still the armed refusal, still naming the rule: {err:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("tasks/board.md")).unwrap(),
+            PAGE,
+            "refused whole — no byte landed"
         );
     }
 
