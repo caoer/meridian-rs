@@ -672,7 +672,9 @@ fn attempt(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Attempt, 
             // sql-extension-ddl-escapes-rollback-lane): this build has no file
             // to leak into, but the contract a caller reads is ONE contract —
             // an extension that loads here and refuses there would make the
-            // lane, not the statement, decide what "ephemeral" means.
+            // lane, not the statement, decide what "ephemeral" means. All
+            // THREE caller-SQL doors take it: here, `SqlStore::open`/`recreate`,
+            // and `registry::mw_sql`'s middleware projection. No exemptions.
             view::store::apply_extension_gate(&conn)
                 .map_err(|e| Fail::tool(format!("cannot apply the extension gate: {e}")))?;
             let (columns, rows, error) = match view::store::run_query(&conn, query) {
