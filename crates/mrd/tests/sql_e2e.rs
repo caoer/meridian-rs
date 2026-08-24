@@ -258,10 +258,23 @@ fn rebuild_refuses_while_the_drawer_is_held() {
     assert!(cold.status.success(), "{}", stderr(&cold));
     let drawer = walk_find_suffix(&sb.cache_home, "sql.duckdb").expect("the drawer cache file");
 
-    // Hold it for the whole arm; snapshot AFTER the holder opens, so the
-    // comparison sees only what the refused rebuilds did (nothing).
+    // Hold it for the whole arm. `DuckDB` locks with POSIX `fcntl` records, and
+    // those are dropped when the process closes ANY descriptor on the file —
+    // so this arm must never OPEN the drawer again, not even to read it. The
+    // identity snapshot is `stat` only (measured: an `fs::read` here released
+    // the hold, the child rebuilt happily, and the arm failed on exit 0).
     let _holder = view::store::SqlStore::open(&drawer).expect("hold the drawer");
-    let before = std::fs::read(&drawer).expect("read the held drawer");
+    let before = drawer_identity(&drawer);
+
+    // Control: prove the hold is REAL before asserting on what it causes. A
+    // plain query degrades, voiced — no line, and every assertion below would
+    // be vacuous rather than failing honestly.
+    let control = sb.run(&ws, &["sql", "SELECT 1"]);
+    assert!(
+        stderr(&control).contains("cache file unavailable"),
+        "the in-test holder must actually hold the DuckDB lock, else this arm proves nothing\nstderr: {}",
+        stderr(&control),
+    );
 
     for args in [
         &["sql", "--rebuild", "SELECT 1"][..],
@@ -292,10 +305,19 @@ fn rebuild_refuses_while_the_drawer_is_held() {
     }
 
     assert_eq!(
-        std::fs::read(&drawer).expect("re-read the held drawer"),
+        drawer_identity(&drawer),
         before,
-        "a refused rebuild leaves the drawer byte-identical"
+        "a refused rebuild leaves the drawer where it was — rebuild-and-swap moves the inode"
     );
+}
+
+/// `(inode, size, mtime)` of `path`, read by `stat` alone: identifying the
+/// drawer must not cost a descriptor (see the holder comment above), and the
+/// inode is exactly what rebuild-and-swap moves.
+fn drawer_identity(path: &Path) -> (u64, u64, std::time::SystemTime) {
+    use std::os::unix::fs::MetadataExt as _;
+    let meta = std::fs::metadata(path).expect("stat the drawer");
+    (meta.ino(), meta.size(), meta.modified().expect("mtime"))
 }
 
 /// The first file whose name ends in `suffix` anywhere under `dir`.
