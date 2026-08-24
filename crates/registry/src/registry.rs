@@ -1784,6 +1784,9 @@ mod engine_tests {
     ///
     /// Card `registry-sweep-poll-flake-instance-1` § F1 full-close; the window
     /// was named by review `results/review-193-claude-e540dc0b.md` § F1.
+    // `Duration::from_days` is not const-stable at MSRV 1.96 and this is the
+    // same year the fixtures park; the seconds form is the only option.
+    #[allow(clippy::duration_suboptimal_units)]
     #[test]
     fn a_config_borne_park_is_up_before_the_constructor_returns() {
         let home = tempfile::tempdir().unwrap();
