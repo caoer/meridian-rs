@@ -2654,37 +2654,84 @@ mod engine_tests {
         );
     }
 
-    /// Poll until the workspace's §6.7 vouch is engaged against `at` — the
-    /// deterministic form of waiting out kernel-event delivery.
-    fn wait_vouched(reg: &Registry, canonical: &Path, at: &model::MerkleRoot) {
-        let t0 = std::time::Instant::now();
-        let mut iters = 0u64;
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !reg.vouched_quiet(canonical, at) {
-            if iters < 3 || iters % 25 == 0 {
-                let feed_live = {
-                    let feeds = reg.feeds.lock().unwrap_or_else(PoisonError::into_inner);
-                    matches!(feeds.get(canonical), Some(FeedSlot::Live(_)))
-                };
-                let (cache, applied) = reg.patched_cache(canonical);
-                let memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
-                eprintln!(
-                    "PROBE it={iters} el={:?} feed_live={feed_live} applied={applied:?} \
-                     guard={:?} served_some={} served_eq={}",
-                    t0.elapsed(),
-                    memo.guard_currency(),
-                    memo.served_cached().is_some(),
-                    memo.served_cached() == Some(at),
-                );
-            }
-            iters += 1;
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the vouch never engaged: feed dead or memo untrusted"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        eprintln!("PROBE DONE iters={iters} elapsed={:?}", t0.elapsed());
+    /// Engage the workspace's §6.7 vouch against `at` — PROVEN, not waited
+    /// out. Nothing here is a function of the clock.
+    ///
+    /// This replaces a 10 s wall-clock deadline that polled
+    /// [`Registry::vouched_quiet`] until it answered. Kernel event delivery
+    /// is asynchronous, so that deadline asserted the BOX rather than the
+    /// vouch — the same box-vs-sweep confusion as `daemon_idle_exit.rs`
+    /// § `a_changed_corpus_is_still_rebuilt_on_the_sweep` and
+    /// § `prewarm_absorbs_the_change_so_the_next_query_parses_nothing`, both
+    /// already converted to this instrument. Instrumented on the build box
+    /// (2026-08-24), the loop ran **zero** iterations at all four call sites
+    /// (~5 µs each): the state it waited for is the state
+    /// [`Registry::warm_or_build`] has already left behind, because the
+    /// currency pass at the head of its own loop IS this proof. What the
+    /// deadline could still do was expire on a saturated runner and report a
+    /// defect that was never there.
+    ///
+    /// [`Registry::currency_refresh`] is that proof and it leaves no residual
+    /// clock. The §6.4 cookie barrier orders every event the kernel captured
+    /// before its sentinel into the dirty set, and the take-and-apply that
+    /// follows folds them in; ANY miss — dead feed, unproven cookie, doubt
+    /// collapse, untrusted memo — falls to the §6.2 extent-refresh floor,
+    /// a full observation that re-derives. On BOTH paths the memo ends with a
+    /// drained dirty set, `Trusted` guard currency, and its served fold
+    /// cached — which is precisely what `vouched_quiet` reports. The
+    /// barrier's own [`DOOR_COOKIE_TIMEOUT`] costs the slow path, never a red.
+    ///
+    /// `vouched` is deliberately NOT asserted: it is false whenever the
+    /// barrier floors, which a loaded box can cause — asserting it would put
+    /// the load meter straight back.
+    fn engage_vouch(reg: &Registry, canonical: &Path, at: &model::MerkleRoot) {
+        let (root, _floored_or_vouched) = reg
+            .currency_refresh(canonical, DOOR_COOKIE_TIMEOUT)
+            .expect("the registry can observe its own workspace");
+        assert_eq!(
+            &root, at,
+            "the refresh observed the very corpus the engine is stamped at"
+        );
+        assert!(
+            reg.vouched_quiet(canonical, at),
+            "the refresh must leave the §6.7 vouch engaged: a drained dirty \
+             set, a trusted memo, and a served fold cached at the stamp"
+        );
+    }
+
+    /// The counterweight to [`engage_vouch`]: its proof must be able to FAIL.
+    /// A helper that returned no matter what would make all four §6.7 gates
+    /// below vacuous — they would assert against a stamp nothing had checked.
+    ///
+    /// A member rewritten after the stamp is taken moves the root, and
+    /// `currency_refresh` observes that on EITHER path: the §6.4 barrier puts
+    /// the write's event in the dirty set for the apply to fold, and the §6.2
+    /// floor stats it off the disk. So the refusal below is not a race — both
+    /// paths reach it, which is the same reason the helper itself carries no
+    /// clock.
+    #[test]
+    #[should_panic(expected = "the refresh observed the very corpus")]
+    fn engage_vouch_refuses_a_stamp_the_corpus_has_moved_past() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n"), ("b.md", "# B\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 2 }
+        );
+        let stamped = reg
+            .engine_snapshot(&canonical)
+            .expect("resident engine")
+            .at_fingerprint
+            .clone();
+        engage_vouch(&reg, &canonical, &stamped);
+
+        // Past the stat memo's timestamp granularity, so the floor path is
+        // measuring the write and not its own blind spot.
+        rewrite(&ws, "b.md", "# B moved\n\nnew body\n");
+        engage_vouch(&reg, &canonical, &stamped);
     }
 
     /// §6.7 cost gate, warm read pass: once the vouch is engaged, a quiet
@@ -2707,7 +2754,7 @@ mod engine_tests {
             .expect("resident engine")
             .at_fingerprint
             .clone();
-        wait_vouched(&reg, &canonical, &stamped);
+        engage_vouch(&reg, &canonical, &stamped);
 
         let cache = reg.domain_cache(&canonical);
         let (sweeps, stats) = {
@@ -2745,7 +2792,7 @@ mod engine_tests {
             .expect("resident engine")
             .at_fingerprint
             .clone();
-        wait_vouched(&reg, &canonical, &stamped);
+        engage_vouch(&reg, &canonical, &stamped);
 
         fs::write(ws.join("b.md"), "# B moved\n\nnew body\n").unwrap();
 
@@ -2802,7 +2849,7 @@ mod engine_tests {
             .expect("resident engine")
             .at_fingerprint
             .clone();
-        wait_vouched(&reg, &canonical, &stamped);
+        engage_vouch(&reg, &canonical, &stamped);
 
         fs::write(
             ws.join(::fs::domain::DOMAIN_CONFIG_PATH),
@@ -2857,7 +2904,7 @@ mod engine_tests {
             .expect("resident engine")
             .at_fingerprint
             .clone();
-        wait_vouched(&reg, &canonical, &stamped);
+        engage_vouch(&reg, &canonical, &stamped);
 
         let ring = reg.ring(&canonical);
         ring.prime(&ws_root, &reg).expect("baseline prime");
