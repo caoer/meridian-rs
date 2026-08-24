@@ -182,24 +182,56 @@ fn a_pattern_may_contain_a_dot() {
     assert_eq!(pattern, "fix.note");
 }
 
-/// The TOML array habit refuses loudly rather than reading as an absent
-/// ceiling — the second widening-catcher.
+/// The bracketed spelling READS as the declared ceiling — never as an empty
+/// one. The second widening-catcher, at its post-ruling trigger.
+///
+/// It used to refuse (`invalid capability '[md.edit'`), and refusing was the
+/// right shape while a bracket was unreadable here: an unread ceiling that
+/// became the empty table would be the widening. The caps-one-parser ruling
+/// (2026-08-23) made a flow sequence a LEGAL spelling of a cap list on both
+/// planes, so the bracket is now read, and the invariant this test exists for
+/// is satisfied more directly — the ceiling in force is the one the author
+/// wrote. What must never happen, and is what is asserted, is `[md.edit]`
+/// silently yielding an EMPTY ceiling, which admits nothing and so hides a
+/// declaration rather than enforcing it.
 #[test]
-fn the_array_spelling_refuses_never_an_empty_ceiling() {
+fn the_array_spelling_reads_as_its_ceiling_never_an_empty_one() {
     let tmp = tempfile::tempdir().unwrap();
     declare(tmp.path(), "run.caps.fix-*: [md.edit]\n");
+
+    let (conv, _) = caps::load_conventions(Some(tmp.path())).expect("a flow sequence is legal");
+    let (pattern, caps) = conv
+        .matching("fix-drift")
+        .expect("the entry is in the table, not silently absent");
+    assert_eq!(pattern, "fix-*");
+    assert_eq!(
+        caps,
+        &CapSet::parse("md.edit").unwrap(),
+        "the bracketed spelling must yield the ceiling it names, never an empty one"
+    );
+}
+
+/// A genuinely malformed entry still refuses loudly, naming the file AND the
+/// key — the widening-catcher's other half, kept on the fault that motivated
+/// the whole gate: a TRAILING YAML COMMENT, which the frontmatter scanner does
+/// not strip, so `#` arrives as a capability and bricks the root.
+///
+/// Card cap-refusals-teach-legally, defect b, proven at the entry point that
+/// actually knows the path: `load_conventions` is the only caller holding the
+/// declaration's location, so this is where a bricked root either gets told
+/// which file and key to fix, or does not.
+#[test]
+fn a_malformed_entry_refuses_loudly_naming_the_file_and_the_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    declare(tmp.path(), "run.caps.fix-*: md.edit # longest wins\n");
 
     let err = caps::load_conventions(Some(tmp.path())).unwrap_err();
     assert!(
         matches!(err, CapsError::TableEntry { ref source, .. }
             if matches!(**source, CapsError::BadCap { .. })),
-        "the array spelling must refuse, never yield a silently empty ceiling: {err:?}"
+        "a malformed entry must refuse, never yield a silently empty ceiling: {err:?}"
     );
 
-    // Card cap-refusals-teach-legally, defect b, proven at the entry point that
-    // actually knows the path: `load_conventions` is the only caller holding
-    // the declaration's location, so this is where a bricked root either gets
-    // told which file and key to fix, or does not.
     let CapsError::TableEntry { path, key, .. } = &err else {
         unreachable!("asserted above")
     };
@@ -212,6 +244,26 @@ fn the_array_spelling_refuses_never_an_empty_ceiling() {
     let rendered = err.to_string();
     assert!(rendered.contains("MERIDIAN.md"), "{rendered}");
     assert!(rendered.contains("run.caps.fix-*"), "{rendered}");
+}
+
+/// A bare `run.caps.<pattern>:` is the EMPTY ceiling, never an absent entry.
+/// Fail-closed: a key the author wrote and left blank must not read as "no
+/// ceiling for this pattern", which is the widening this whole family guards.
+#[test]
+fn a_bare_convention_key_is_the_empty_ceiling_never_an_absent_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    declare(tmp.path(), "run.caps.fix-*:\n");
+
+    let (conv, _) = caps::load_conventions(Some(tmp.path())).expect("a bare key is not a fault");
+    let (pattern, caps) = conv
+        .matching("fix-drift")
+        .expect("the entry is present, not absent");
+    assert_eq!(pattern, "fix-*");
+    assert_eq!(
+        caps,
+        &CapSet::none(),
+        "a bare ceiling key admits nothing — it never lifts the ceiling"
+    );
 }
 
 /// The retired marker is INERT: a `.meridian.toml` carrying a full `[run.caps]`
