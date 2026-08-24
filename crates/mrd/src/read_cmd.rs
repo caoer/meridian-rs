@@ -314,12 +314,21 @@ fn try_daemon_read(workspace: &Path, r: &Read) -> DaemonRead {
 /// silently degrading in-process forever instead of starting the daemon. The cold path is
 /// unchanged — an absent or refusing socket still reaches `ensure_daemon`, which spawns and waits
 /// for readiness.
+/// Both arms hand back a stream already under the wedge discipline
+/// ([`registry::wedge`]): a connect proves only that something is LISTENING,
+/// and an unbounded read on a daemon that accepts and never answers parks this
+/// process forever — past every degrade this lane has (card
+/// `registry-client-read-timeout-absent`).
 fn connect_or_spawn(client: &Client) -> std::io::Result<UnixStream> {
+    let bound = |stream: UnixStream| -> std::io::Result<UnixStream> {
+        registry::wedge::bind(&stream, registry::wedge::WEDGE_CAP)?;
+        Ok(stream)
+    };
     if let Ok(stream) = UnixStream::connect(client.socket_path()) {
-        return Ok(stream);
+        return bound(stream);
     }
     engine::ensure_daemon(client)?;
-    UnixStream::connect(client.socket_path())
+    UnixStream::connect(client.socket_path()).and_then(bound)
 }
 
 /// `None` on any transport or handshake failure — the caller degrades. An op-level `ok:false`
@@ -336,7 +345,7 @@ fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
         "contract": "v3",
         "workspace": workspace.to_string_lossy(),
     });
-    let greeted = engine::call(&mut writer, &mut reader, &hello).ok()?;
+    let greeted = engine::call(&mut writer, &mut reader, client.socket_path(), &hello).ok()?;
     if greeted.get("ok").and_then(Value::as_bool) != Some(true) {
         return None;
     }
@@ -346,10 +355,17 @@ fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
         return Some(DaemonRead::Skew(message));
     }
 
-    let response = engine::call(&mut writer, &mut reader, &r.request()).ok()?;
+    let response =
+        engine::call(&mut writer, &mut reader, client.socket_path(), &r.request()).ok()?;
     if response.get("ok").and_then(Value::as_bool) == Some(true) {
         let body = response.get("body")?.clone();
-        let mint = match mint_scoped_token(&mut writer, &mut reader, greeted.get("body"), r) {
+        let mint = match mint_scoped_token(
+            &mut writer,
+            &mut reader,
+            client.socket_path(),
+            greeted.get("body"),
+            r,
+        ) {
             Ok(mint) => mint,
             Err(error) => return Some(DaemonRead::Refused(error)),
         };
@@ -378,6 +394,7 @@ fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
 fn mint_scoped_token(
     writer: &mut UnixStream,
     reader: &mut BufReader<UnixStream>,
+    socket: &Path,
     hello_body: Option<&Value>,
     r: &Read,
 ) -> Result<Option<Value>, Box<ErrorBody>> {
@@ -387,7 +404,7 @@ fn mint_scoped_token(
         return Ok(None);
     }
     let request = json!({ "op": "fingerprint", "scope": r.path });
-    let response = engine::call(writer, reader, &request).map_err(|e| {
+    let response = engine::call(writer, reader, socket, &request).map_err(|e| {
         let mut err = ErrorBody::new(wire::ErrorCode::IoError);
         err.message = Some(format!(
             "the daemon served the read but dropped the §4.7 scoped-mint exchange \
