@@ -365,14 +365,25 @@ impl Registry {
 
     /// The daemon's constructor: [`Registry::new`] with the self-handle
     /// bound, so the §3.2 cold gate can spawn background drawer rebuilds.
+    ///
+    /// `activity_park` is the fixture-only born-parked floor
+    /// ([`Config::activity_park`](crate::Config::activity_park)). It is raised
+    /// HERE rather than by a call on the returned handle because the caller's
+    /// first chance to park is after `start()` returns — and the activity
+    /// clock, and the reaper that reads it, both already exist by then. `None`
+    /// (production) leaves the floor at `0`.
     pub(crate) fn new_shared(
         state: StateStore,
         cache_root: PathBuf,
         entries: Vec<WorkspaceEntry>,
+        activity_park: Option<Duration>,
     ) -> Arc<Self> {
         Arc::new_cyclic(|weak| {
             let mut registry = Registry::new(state, cache_root, entries);
             registry.myself = weak.clone();
+            if let Some(park) = activity_park {
+                registry.park_activity_clock(park.as_secs());
+            }
             registry
         })
     }
@@ -1763,6 +1774,58 @@ mod engine_tests {
         );
     }
 
+    /// **Born parked: the floor is up before the constructor returns.** The
+    /// after-the-fact park cannot cover its own birth — `Registry::new` starts
+    /// the activity clock and `RunningServer::start` spawns the reaper, so a
+    /// fixture parking the handle `start()` returns has already been reapable
+    /// for the length of `start()`'s body. This asserts on the CLOCK, not on a
+    /// race, because the window it closes is unobservable from outside:
+    /// nothing in the public surface can sample the clock mid-construction.
+    ///
+    /// Card `registry-sweep-poll-flake-instance-1` § F1 full-close; the window
+    /// was named by review `results/review-193-claude-e540dc0b.md` § F1.
+    // `Duration::from_days` is not const-stable at MSRV 1.96 and this is the
+    // same year the fixtures park; the seconds form is the only option.
+    #[allow(clippy::duration_suboptimal_units)]
+    #[test]
+    fn a_config_borne_park_is_up_before_the_constructor_returns() {
+        let home = tempfile::tempdir().unwrap();
+        let cache_root = home.path().join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let park = Duration::from_secs(365 * 24 * 60 * 60);
+
+        let reg = Registry::new_shared(
+            StateStore::new(home.path().join("state.json")),
+            cache_root,
+            Vec::new(),
+            Some(park),
+        );
+
+        // No call has been made on this handle. If the floor is not already
+        // up, there is no instant at which a caller could have raised it that
+        // the reaper had not already passed.
+        assert!(
+            reg.last_request_secs() >= now_secs() + park.as_secs() - 5,
+            "a config-borne park is up at construction: {} vs {}",
+            reg.last_request_secs(),
+            now_secs() + park.as_secs()
+        );
+
+        // And `None` — production, always — leaves the ordinary clock alone.
+        let cache_root = home.path().join("cache2");
+        fs::create_dir_all(&cache_root).unwrap();
+        let plain = Registry::new_shared(
+            StateStore::new(home.path().join("state2.json")),
+            cache_root,
+            Vec::new(),
+            None,
+        );
+        assert!(
+            plain.last_request_secs() <= now_secs(),
+            "no park configured means no floor — production must age normally"
+        );
+    }
+
     /// Daemon-shaped registry (self-handle bound) under `home` — the §3.2
     /// cold gate can spawn background rebuilds.
     fn registry_shared_in(home: &Path) -> Arc<Registry> {
@@ -1772,6 +1835,7 @@ mod engine_tests {
             StateStore::new(home.join("state.json")),
             cache_root,
             Vec::new(),
+            None,
         )
     }
 
