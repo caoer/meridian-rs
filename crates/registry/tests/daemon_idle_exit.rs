@@ -109,48 +109,68 @@ fn an_idle_daemon_asks_to_exit() {
     );
 }
 
-/// The observable half of the born-parked floor, and the exact counterweight to
-/// `an_idle_daemon_asks_to_exit` above: **same horizon, same reap interval, one
-/// config field different.**
+/// The observable half of the born-parked floor: **two daemons, same horizon,
+/// same reap interval, one config field different.**
 ///
-/// Horizon ZERO means every reaper pass is past it, so the unparked twin latches
-/// on the first pass — that is what the test above measures. Under
-/// `activity_park` the flag must still be down after many passes, and the only
-/// way that can be true is that the floor was up *before the first pass*, which
-/// is before `start()` returned.
+/// The twin runs first and is the control. An unparked daemon's `quiet_for`
+/// grows from birth, so at a 1 s horizon it latches within ~2 s of wall time,
+/// always — and if it ever did not, the parked half below would prove nothing.
+/// A born-parked daemon's `quiet_for` is `now - a floor a year ahead`, which
+/// saturates to `0`, so it can never reach a horizon of 1 s at all.
 ///
-/// That window is why the field exists. The activity clock starts inside
-/// `Registry::new` and the reaper is spawned before `start()` returns, so a
-/// fixture parking the handle `start()` hands back has already been reapable for
-/// the length of `start()`'s body — with a whole-second clock, ~1.0 s of wall
-/// time is enough to latch a 2 s horizon (review
+/// **Not horizon ZERO** — that was this test's first shape and it failed in CI
+/// 1437 for a reason worth keeping: at `Duration::ZERO` the check is
+/// `0 >= 0`, which the saturated `quiet_for` satisfies. A zero horizon is not
+/// "a horizon the park has to beat", it is "exit unconditionally", and no floor
+/// defers it. The horizon must be non-zero for the park to be observable.
+///
+/// What the pair proves is *when* the floor went up. The activity clock starts
+/// inside `Registry::new` and the reaper is spawned before `start()` returns, so
+/// a fixture parking the handle `start()` hands back has already been reapable
+/// for the length of `start()`'s body — with a whole-second clock, ~1.0 s of
+/// wall time is enough to latch a 2 s horizon (review
 /// `results/review-193-claude-e540dc0b.md` § F1). Nothing outside can sample the
-/// clock mid-construction, so this is the strongest outside instrument there is;
-/// the clock itself is asserted in
+/// clock mid-construction; the clock itself is asserted in
 /// `registry::engine_tests::a_config_borne_park_is_up_before_the_constructor_returns`.
 ///
 /// *Mutation:* stop threading `Config::activity_park` into
 /// `Registry::new_shared` — the floor is then raised (if at all) after the
-/// reaper is already reading the clock, and this goes red on the first pass.
+/// reaper is already reading the clock, and the parked half goes red.
 ///
 /// Card `registry-sweep-poll-flake-instance-1` § F1 full-close.
 #[test]
-fn a_born_parked_daemon_never_latches_even_at_horizon_zero() {
+fn a_born_parked_daemon_never_latches_and_its_unparked_twin_does() {
     let tmp = tempfile::tempdir().unwrap();
-    let server = quiet_server_parked(
-        tmp.path(),
-        Some(Duration::ZERO),
-        Duration::from_millis(100),
-        Some(NEVER),
-    );
+    let horizon = Duration::from_secs(1);
+    let reap = Duration::from_millis(100);
 
-    // ~15 reaper passes at REAP_TICK = 200ms. The unparked twin latches on the
-    // first one.
+    // CONTROL: no park, everything else identical. Without this half, "the
+    // parked one did not latch" could just mean "nothing latches here".
+    let twin_dir = tmp.path().join("twin");
+    fs::create_dir_all(&twin_dir).unwrap();
+    let twin = quiet_server_parked(&twin_dir, Some(horizon), reap, None);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && !twin.idle_exit_requested() {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        twin.idle_exit_requested(),
+        "control: an unparked daemon at a {horizon:?} horizon must latch — if it \
+         does not, this box is not measuring idle-exit at all and the parked \
+         half below proves nothing"
+    );
+    twin.shutdown();
+
+    // Same config, one field different.
+    let parked_dir = tmp.path().join("parked");
+    fs::create_dir_all(&parked_dir).unwrap();
+    let server = quiet_server_parked(&parked_dir, Some(horizon), reap, Some(NEVER));
+
     std::thread::sleep(Duration::from_secs(3));
     assert!(
         !server.idle_exit_requested(),
-        "a born-parked daemon cannot latch idle-exit, even at horizon zero — if \
-         it did, the floor went up after the reaper was already reading the \
+        "a born-parked daemon cannot latch idle-exit while its twin already has \
+         — if it did, the floor went up after the reaper was already reading the \
          clock, which is the window the config field exists to close"
     );
 
@@ -167,6 +187,7 @@ fn a_born_parked_daemon_never_latches_even_at_horizon_zero() {
         "releasing a born park restores mortality — a park that could not be \
          released would disable idle-exit rather than delay it"
     );
+    server.shutdown();
 }
 
 /// The horizon must not fire on a young daemon — one that tripped immediately
