@@ -649,7 +649,12 @@ options:
                            rather than a fresh-looking result.
   --rebuild                (sql) delete the drawer's sql.duckdb cache and
                            cold-build it at the live corpus (repair verb). May
-                           be given without a query.
+                           be given without a query. Never degrades: a drawer
+                           HELD by another process (the resident daemon owns
+                           it while it serves the workspace) refuses exit 2
+                           naming the holder and the remedy, rather than
+                           answering from :memory: at exit 0 with the drawer
+                           untouched.
   --cwd PATH               (sql, status) resolve the workspace from PATH
                            instead of the process working directory.
   -V, --version            build identity: package version + the tree this
