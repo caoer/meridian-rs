@@ -2373,9 +2373,15 @@ mod spill_tests {
             .expect("lane")
             .expect_err("a community extension never loads through this lane");
         if refusal.contains("signature is either missing or invalid") {
+            // This host HAS duckpgq, so the gate — not a missing file — is what
+            // refused, and the teaching must ride.
             assert!(
-                refusal.contains("community-extension gate"),
+                refusal.contains("Neither shut door is the knob that message names"),
                 "this host HAS duckpgq, so the teaching must ride: {refusal}"
+            );
+            assert!(
+                refusal.contains("allow_community_extensions=false"),
+                "and it must name OUR door specifically: {refusal}"
             );
         }
 
