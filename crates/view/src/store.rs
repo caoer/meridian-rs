@@ -82,6 +82,16 @@
 //! persistent file — rolled-back DML does not even grow it); DML against a
 //! latest view refuses through `DuckDB`'s own `Binder Error`, extended with
 //! the remedy (ruling OQ1: the refusal teaches).
+//!
+//! A transaction is not the whole contract, because extension code does not
+//! live inside one: `LOAD` lands on the shared `DatabaseInstance`, and a
+//! loaded extension may then write through its own path (duckpgq's `CREATE
+//! PROPERTY GRAPH` wrote `sql.main.__duckpgq_internal` durably into the
+//! drawer — card `sql-extension-ddl-escapes-rollback-lane`). So the lane also
+//! runs no unaudited third-party code: [`apply_extension_gate`] shuts
+//! community extensions one-way at open, leaving core extensions, external
+//! access and caller `SET`s exactly where the NO-SANDBOX ruling put them.
+//! What the rollback cannot undo, the door never admits.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -363,6 +373,86 @@ struct BaseDelta {
 /// a host (one query spilled >9 GiB into the seat's cwd).
 const SPILL_BUDGET: &str = "8GiB";
 
+/// Shut the query lane to COMMUNITY extension code (card
+/// sql-extension-ddl-escapes-rollback-lane).
+///
+/// `BEGIN → statement → ROLLBACK` is a TRANSACTION, and a transaction covers
+/// only what `DuckDB`'s own catalog and storage put inside it. An extension
+/// loads onto the shared `DatabaseInstance`, not into the caller's
+/// transaction, and is then free to write through its own path: measured
+/// 2026-08-23, `LOAD duckpgq; …; CREATE PROPERTY GRAPH g …` left
+/// `sql.main.__duckpgq_internal` holding 2 rows in the drawer AFTER the call,
+/// and a second `CREATE PROPERTY GRAPH g` answered `Property graph table with
+/// name g already exists`. The same call's `CREATE TABLE n`/`e` were gone —
+/// core DDL rolls back exactly as the contract says. A bare `LOAD duckpgq`
+/// with no DDL at all also survived the call, leaking the extension (parser
+/// override included) onto every later caller of that root.
+///
+/// **The line is third-party code, and it is drawn where this codebase
+/// already draws it.** The NO-SANDBOX ruling (2026-08-14) accepted the
+/// caller's own reach — `read_csv('/etc/hosts')` answers rows, not a refusal,
+/// because every caller already holds a shell (`registry/tests/sql_op.rs`
+/// `sql_lifecycle_over_the_wire`). That posture is about what a caller may do
+/// TO ITSELF. It says nothing about unaudited third-party code writing the
+/// DRAWER THAT EVERY OTHER CALLER SHARES, which is the defect here — and
+/// which no caller's shell could do on the others' behalf. So the gate is
+/// exactly one `SET`, and it is the narrowest one that closes the class:
+///
+/// - `duckpgq` is a **community** extension (`installed_from = community`);
+///   `fts`, `vss`, `json`, `parquet`, `icu` are **core**. `LOAD fts` and
+///   `LOAD vss` keep working, and both were measured transactional:
+///   `PRAGMA create_fts_index` over a durable `hist` table left no
+///   `fts_main_*` schema behind, and an HNSW index built under
+///   `hnsw_enable_experimental_persistence` left neither index nor table.
+/// - A community extension cannot slip in by the back door either: they do
+///   not autoload (a bare `SELECT quack('hello')` answered `Did you mean
+///   "quarter"?` with `quack` installed and both autoload settings on), and
+///   `CREATE PROPERTY GRAPH` with no prior `LOAD` is a parser error.
+/// - The `SET` is one-way **by code, not by observation**: at the vendored
+///   v1.5.4, `AllowCommunityExtensionsSetting::Scope =
+///   SettingScopeTarget::GLOBAL_ONLY` (`settings.hpp:144-153`, so it is
+///   DBConfig-level and survives every `try_clone`), and its `OnSet` throws
+///   `Cannot change allow_community_extensions setting while database is
+///   running` for any `true` input once `info.db` is set
+///   (`custom_settings.cpp:153-157`). Tightening at runtime is allowed;
+///   loosening is not.
+/// - **The gate's precondition holds by the same mechanism.** It bites inside
+///   `extension_load.cpp:482-497`, which only runs while
+///   `allow_unsigned_extensions` is false — and that setting is likewise
+///   `GLOBAL_ONLY`, defaults false, and refuses a runtime `true`
+///   (`settings.hpp:198-207`, `custom_settings.cpp:197-201`). We never set it,
+///   so no caller can unlock the branch this gate lives in.
+/// - The knob touches nothing else: its `OnSet` is those four lines. Contrast
+///   `EnableExternalAccessSetting::OnSet` (`custom_settings.cpp:744-767`),
+///   which whitelists the temp dir as it closes and therefore FREEZES
+///   `temp_directory` — the ordering coupling an earlier draft of this gate
+///   introduced, and which this one simply does not have.
+///
+/// This is a door, not a sandbox: one execution path for every caller, no
+/// per-caller profile, external access untouched, and the configuration NOT
+/// locked — a caller's `SET memory_limit` still succeeds.
+///
+/// **What it does not close**, named rather than implied: a core extension
+/// that wrote outside the caller's transaction would still reach the drawer.
+/// That would be a `DuckDB` bug in `DuckDB`'s own code, reportable upstream —
+/// not unaudited third-party code the engine chose to run. And a caller's
+/// global `SET` still leaks across calls (card
+/// `sql-set-config-cross-caller-starvation`, a ruling of its own).
+///
+/// **Every caller-SQL door takes it, with no exemptions** — [`SqlStore::open`]
+/// and [`SqlStore::recreate`] (so `SqlStore::query`'s `try_clone` inherits it
+/// by `GLOBAL_ONLY` scope), `mrd sql`'s `:memory:` lane, and
+/// `registry::mw_sql`'s middleware projection. The last two have no drawer to
+/// leak into; they are gated anyway, because a door that admits third-party
+/// extension code while its siblings refuse it would make the DOOR, not the
+/// statement, decide what the contract means.
+///
+/// # Errors
+/// Propagates the `DuckDB` error from the `SET`.
+pub fn apply_extension_gate(conn: &Connection) -> duckdb::Result<()> {
+    conn.execute_batch("SET allow_community_extensions=false;")
+}
+
 /// Bound the connection's disk spill (card sql-spill-config-lockout):
 /// `spill_dir` becomes the ABSOLUTE `temp_directory`, with [`SPILL_BUDGET`]
 /// as `max_temp_directory_size`. Plain config, never a sandbox (the
@@ -500,6 +590,29 @@ fn teach(error: &str) -> String {
         );
     }
 
+    // The extension gate's own refusal (card
+    // sql-extension-ddl-escapes-rollback-lane). DuckDB blames the WRONG
+    // setting here — it reports the signature check and names
+    // `allow_unsigned_extensions`, because a community extension is unsigned
+    // by construction — so the caller is left hunting a knob that is not the
+    // one that stopped it. Say which gate it hit, and why.
+    if error.contains("signature is either missing or invalid") {
+        return format!(
+            "{error}\nNeither shut door is the knob that message names. A \
+             COMMUNITY extension cannot load here: this engine sets \
+             allow_community_extensions=false at open. An UNSIGNED local build \
+             cannot load anywhere: DuckDB's own default keeps \
+             allow_unsigned_extensions=false. Both refuse to loosen while the \
+             database is running. Why the first one exists: an extension loads \
+             onto the shared engine instance OUTSIDE your statement's \
+             transaction and is then free to write the drawer that every other \
+             caller shares (duckpgq's CREATE PROPERTY GRAPH wrote \
+             sql.main.__duckpgq_internal durably). Signed core extensions are \
+             not gated, external files are not gated, and your own SET still \
+             works."
+        );
+    }
+
     // A suggestion fitted to a catalog internal is worse than none: it sends
     // the caller at metadata. Drop the clause, keep every other word.
     let out: String = error
@@ -570,6 +683,7 @@ impl SqlStore {
             file: file.to_path_buf(),
         };
         apply_spill_containment(&store.conn, &store.spill_dir())?;
+        apply_extension_gate(&store.conn)?;
         if fresh {
             store.conn.execute_batch(CACHE_SCHEMA_SQL)?;
             return Ok(store);
@@ -599,6 +713,7 @@ impl SqlStore {
             file: file.to_path_buf(),
         };
         apply_spill_containment(&store.conn, &store.spill_dir())?;
+        apply_extension_gate(&store.conn)?;
         Ok(store)
     }
 
@@ -2129,9 +2244,293 @@ mod spill_tests {
         );
     }
 
+    /// One setting's live value on the store's own connection.
+    fn setting(store: &SqlStore, name: &str) -> String {
+        store
+            .connection()
+            // `::VARCHAR` because the boolean settings answer BOOLEAN, and one
+            // reader for every setting is the point of this helper.
+            .query_row(
+                &format!("SELECT current_setting('{name}')::VARCHAR"),
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap_or_else(|e| panic!("setting {name}: {e}"))
+    }
+
+    /// The gate is in force on every store the moment it opens — no caller
+    /// action, no first-query lazy path (card
+    /// sql-extension-ddl-escapes-rollback-lane).
+    #[test]
+    fn the_extension_gate_is_in_force_at_open() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        assert_eq!(
+            setting(&store, "allow_community_extensions"),
+            "false",
+            "the door must be shut at open, not at first query"
+        );
+        // The gate lives inside DuckDB's signature branch
+        // (extension_load.cpp:482-497), which only runs while this is false.
+        // If a future change ever turns it on at open, the gate above becomes
+        // decorative and nothing else would say so.
+        assert_eq!(
+            setting(&store, "allow_unsigned_extensions"),
+            "false",
+            "the gate's precondition: unsigned loading must stay off, or the \
+             signature branch the gate lives in never runs"
+        );
+        // F4's ordering coupling, inverted into a guard: the broad knob
+        // (enable_external_access) freezes temp_directory as it closes, this
+        // one does not. If someone swaps the mechanism back, this fails.
+        store
+            .connection()
+            .execute_batch("SET temp_directory='/tmp/mrd-gate-probe';")
+            .expect("the gate must not freeze temp_directory (card sql-spill-config-lockout)");
+    }
+
+    /// The gate is one-way: a caller cannot re-open the door it found shut.
+    /// `DuckDB` refuses the loosening `SET` itself, which is what makes a
+    /// runtime gate as strong as an open-time one.
+    #[test]
+    fn a_caller_cannot_reopen_the_extension_gate() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let refusal = store
+            .query("SET allow_community_extensions=true")
+            .expect("lane")
+            .expect_err("loosening refuses");
+        assert!(
+            refusal.contains("Cannot change allow_community_extensions"),
+            "the refusal is DuckDB's own one-way rule: {refusal}"
+        );
+        assert_eq!(
+            setting(&store, "allow_community_extensions"),
+            "false",
+            "the door is still shut after the attempt"
+        );
+    }
+
+    /// `DuckDB` blames `allow_unsigned_extensions` for a gate the caller never
+    /// touched, so the teaching has to say which door it actually hit. The
+    /// input is `DuckDB` v1.5.4's verbatim message, captured 2026-08-23 — this
+    /// test is what tells us upstream reworded it.
+    #[test]
+    fn the_community_gate_refusal_teaches_which_door() {
+        let verbatim = "IO Error: Extension \"/home/x/.duckdb/extensions/v1.5.4/linux_amd64/\
+                        duckpgq.duckdb_extension\" could not be loaded because its signature is \
+                        either missing or invalid and unsigned extensions are disabled by \
+                        configuration (allow_unsigned_extensions)";
+        let taught = teach(verbatim);
+        assert!(
+            taught.starts_with(verbatim),
+            "DuckDB's own words survive first: {taught}"
+        );
+        assert!(
+            taught.contains("Neither shut door is the knob that message names"),
+            "the caller is not sent hunting the wrong setting: {taught}"
+        );
+        // r2 F-D: this message is DuckDB's for ANY extension failing the
+        // signature check, including a caller's own unsigned local build —
+        // which is not a community extension. The teaching must name both
+        // doors, or it tells that caller something false about their own.
+        assert!(
+            taught.contains("UNSIGNED local build") && taught.contains("COMMUNITY extension"),
+            "both shut doors are named, not just ours: {taught}"
+        );
+        assert!(
+            taught.contains("OUTSIDE your statement's transaction"),
+            "the refusal teaches WHY: {taught}"
+        );
+        // F2: the sentence must describe the GATE, never what this process
+        // happened to load — a capability claim built from a constant is false
+        // on any host that does not have the extension.
+        assert!(
+            taught.contains("core extensions are not gated"),
+            "and what is NOT taken away: {taught}"
+        );
+        assert!(
+            !taught.contains("Loaded at open"),
+            "no capability claim the process cannot back: {taught}"
+        );
+    }
+
+    /// The card's leak at its door. Best-effort by construction: `DuckDB`
+    /// checks the extension FILE before the community flag, so a host without
+    /// duckpgq installed answers `not found` instead of the gate's words. The
+    /// assertion that holds on every host is the one that matters — the load
+    /// never SUCCEEDS, and no side table is left behind.
+    #[test]
+    fn a_caller_cannot_load_a_community_extension() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let refusal = store
+            .query("LOAD duckpgq")
+            .expect("lane")
+            .expect_err("a community extension never loads through this lane");
+        if refusal.contains("signature is either missing or invalid") {
+            // This host HAS duckpgq, so the gate — not a missing file — is what
+            // refused, and the teaching must ride.
+            assert!(
+                refusal.contains("Neither shut door is the knob that message names"),
+                "this host HAS duckpgq, so the teaching must ride: {refusal}"
+            );
+            assert!(
+                refusal.contains("allow_community_extensions=false"),
+                "and it must name OUR door specifically: {refusal}"
+            );
+        }
+
+        let leaked: i64 = store
+            .connection()
+            .query_row(
+                "SELECT count(*)::BIGINT FROM duckdb_tables() \
+                 WHERE table_name = '__duckpgq_internal'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(leaked, 0, "the drawer holds no extension side table");
+    }
+
+    /// F3, by mechanism rather than by name: the invariant the card is
+    /// actually about — **a caller query leaves the drawer's catalog exactly as
+    /// it found it.**
+    ///
+    /// **What it does and does not guard, because an earlier version of this
+    /// comment overclaimed and review r2 (F-A) caught it.** The first draft
+    /// said "THIS catches whatever the next duckpgq turns out to be" while the
+    /// statement list held no `CREATE PROPERTY GRAPH` at all — so deleting
+    /// [`apply_extension_gate`] left it green on every host, and it was a
+    /// rollback test wearing a gate test's label. The leaking statement is now
+    /// in the list, in the single-statement form the lane actually runs
+    /// (`run_query` prepares one statement), which the reviewer measured to
+    /// leak `sql.main.__duckpgq_internal` through `BEGIN … ROLLBACK` with the
+    /// gate open.
+    ///
+    /// So: on a host that HAS duckpgq this fails if the gate is removed. On a
+    /// host without it (CI), that statement is a parser error and this degrades
+    /// to what it always was — a rollback test. The gate's host-independent
+    /// guards are [`the_extension_gate_is_in_force_at_open`] and
+    /// [`a_caller_cannot_reopen_the_extension_gate`], which read a setting
+    /// whose `DefaultValue` is `"true"`; do not let this test be counted twice.
+    ///
+    /// **Verified by mutation, not asserted** (2026-08-24, duckpgq-stocked
+    /// build box): commenting out both `apply_extension_gate` call sites in
+    /// [`SqlStore::open`] and [`SqlStore::recreate`] fails FOUR tests — this
+    /// one, `the_extension_gate_is_in_force_at_open`,
+    /// `a_caller_cannot_reopen_the_extension_gate` and
+    /// `a_caller_cannot_load_a_community_extension` — while the two over-reach
+    /// guards stay green, which is the correct signature (they guard the
+    /// opposite failure). The claim in this comment is a measurement; if you
+    /// change the statement list, re-run that mutation rather than trusting
+    /// this paragraph.
+    ///
+    /// Schemas are snapshotted beside tables because `duckdb_tables()` cannot
+    /// see an EMPTY schema — without that, the `CREATE SCHEMA` line below was
+    /// unasserted (r2, same finding).
+    #[test]
+    fn a_caller_query_leaves_the_drawer_catalog_identical() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        // Tables AND schemas: duckdb_tables() cannot see an empty schema.
+        let catalog = |s: &SqlStore| -> Vec<String> {
+            let mut stmt = s
+                .connection()
+                .prepare(
+                    "SELECT 'T ' || database_name || '.' || schema_name || '.' || table_name \
+                       FROM duckdb_tables() \
+                     UNION ALL \
+                     SELECT 'S ' || database_name || '.' || schema_name FROM duckdb_schemas() \
+                     ORDER BY 1",
+                )
+                .expect("prepare");
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .expect("query")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("rows")
+        };
+
+        let before = catalog(&store);
+        assert!(!before.is_empty(), "the fixture built a catalog to compare");
+
+        // Everything a caller can throw at it: the extension door, the LEAKING
+        // STATEMENT ITSELF (single-statement, as the lane runs it — this is the
+        // one that would move the snapshot if the gate were gone), ordinary
+        // DDL, DML, and a plain read.
+        for statement in [
+            "LOAD duckpgq",
+            "CREATE PROPERTY GRAPH g VERTEX TABLES (doc)",
+            "CREATE OR REPLACE TABLE n AS SELECT path AS id FROM doc",
+            "CREATE SCHEMA IF NOT EXISTS sneaky",
+            "UPDATE hist.doc SET bytes = 0",
+            "SELECT count(*) FROM doc",
+        ] {
+            let _ = store.query(statement).expect("lane");
+        }
+
+        assert_eq!(
+            before,
+            catalog(&store),
+            "a caller query changed the drawer's catalog — that is the whole defect"
+        );
+    }
+
+    /// The gate must NOT reach past third-party extension code. The NO-SANDBOX
+    /// ruling accepted the caller's own file reach — `registry`'s
+    /// `sql_lifecycle_over_the_wire` asserts `read_csv('/etc/hosts')` answers
+    /// rows — and an earlier draft of this gate broke exactly that by shutting
+    /// `enable_external_access`. This is that regression, nailed down on the
+    /// write side too, where it is cheap to observe.
+    #[test]
+    fn the_gate_leaves_external_file_access_alone() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let out = dir.path().join("caller-owned.csv");
+        store
+            .query(&format!(
+                "COPY (SELECT 1 AS a) TO '{}' (FORMAT CSV)",
+                out.display()
+            ))
+            .expect("lane")
+            .expect("the caller's own reach is the accepted posture, not this card's defect");
+        assert!(
+            out.exists(),
+            "the write happened: {} — if this fails, the gate over-reached again",
+            out.display()
+        );
+    }
+
+    /// The gate closes the lane to extension code, not to the caller's own
+    /// reads: an ordinary projection query is untouched by it.
+    #[test]
+    fn the_gate_leaves_the_projection_readable() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let (_, rows) = store
+            .query("SELECT count(*)::BIGINT FROM doc")
+            .expect("lane")
+            .expect("the projection still answers");
+        assert!(
+            rows[0][0].as_i64().unwrap_or(0) > 0,
+            "the fixture's docs project"
+        );
+    }
+
     /// The containment is plain config, not a lock (NO-SANDBOX ruling): a
     /// caller's own `SET` through the query lane succeeds — nothing refuses,
-    /// nothing is frozen.
+    /// nothing is frozen. The extension gate does not change that: it shuts
+    /// ONE door, it does not lock the configuration.
     #[test]
     fn spill_containment_is_plain_config_not_a_lock() {
         let dir = tempfile::tempdir().expect("tmpdir");
