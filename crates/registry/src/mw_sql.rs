@@ -19,6 +19,13 @@ pub fn install() {
 /// One `ctx.sql` call: project `docs`, run `query`, convert rows.
 fn backend(docs: &model::Docs, query: &str) -> Result<Vec<SqlRow>, String> {
     let conn = view::build_memory(docs, "middleware-overlay").map_err(|e| e.to_string())?;
+    // The same extension door as the two sql lanes (card
+    // sql-extension-ddl-escapes-rollback-lane). This projection is snapshot-
+    // scoped and discarded, so it has no drawer to leak into and no later
+    // caller to leak to — but a caller-SQL door that admits third-party
+    // extension code while the others refuse it would make the DOOR, not the
+    // statement, decide what the contract means. Three doors, one law.
+    view::store::apply_extension_gate(&conn).map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(query).map_err(|e| e.to_string())?;
     let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
     let names: Vec<String> = {

@@ -4,6 +4,7 @@
 
 mod armed_disk_agreement;
 mod base_projection;
+mod caps_one_grammar;
 mod charset_guard;
 mod daemon_door;
 mod delta_e3e4;
