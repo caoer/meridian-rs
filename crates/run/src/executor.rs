@@ -1504,12 +1504,15 @@ fn seal_stripped_candidate(
 /// and cannot see, and nothing in the string says "middleware" or names the
 /// rule. The caller is handed an index into a batch that is not theirs.
 ///
-/// Not repaired here (engine grain, follow-up card): the sibling arm of the
-/// same collision — the key being NEW rather than existing — does not refuse
-/// at all but lands the key TWICE, and the reviewer reproduced that with two
-/// caller effects and no middleware, so it is a `validate_batch` span-overlap
-/// hole that predates this mount and is shared with the wire door's own
-/// `mw_upsert` path. One law, both lanes, or neither.
+/// The sibling arm — the key being NEW rather than existing — used to LAND
+/// THE KEY TWICE rather than refuse, because both upserts planned the same
+/// zero-width insert and the region grain read them disjoint. Closed at
+/// engine grain (`model::validate_batch` rung 3a, one key one upsert), so
+/// both arms now refuse the same way through every lane that calls it — this
+/// one, the wire put door's re-seal, and the wire create door's own
+/// `mw_upsert` self-transform. What remains open is the TEXT quoted above:
+/// naming which leg is the middleware's is card
+/// `actor-asymmetry-check-leg-vs-mw-leg`.
 ///
 /// # Errors
 /// [`ExecError::Refused`] from validation. Nothing has been applied.

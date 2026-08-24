@@ -6102,6 +6102,27 @@ fn target_display(sec: &SecRef) -> String {
     }
 }
 
+/// The frontmatter key BOTH offending edits upsert, when that is what the
+/// collision is — the model's rung-3a refusal (`validate_batch`, §4.4 target
+/// grain), which reuses the `Overlap` verdict. `None` for an ordinary region
+/// overlap, including two `match` edits on one key line: those really do
+/// rewrite overlapping bytes and the general remedy fits them.
+fn duplicate_fm_upsert_key<'a>(offending: &[usize], edits: &'a [Edit]) -> Option<&'a str> {
+    let [a, b] = offending else { return None };
+    let upsert_key = |i: &usize| match edits.get(*i) {
+        Some(Edit {
+            target: SecRef::FmKey { fm_key },
+            edit: EditShape::Put {
+                at: PutAt::Upsert, ..
+            },
+            ..
+        }) => Some(fm_key.as_str()),
+        _ => None,
+    };
+    let (x, y) = (upsert_key(a)?, upsert_key(b)?);
+    (x == y).then_some(x)
+}
+
 /// The §4.4 overlap refusal, loud (§8): names the offending edits by batch
 /// index and target, and teaches the fix. An index one past the caller's
 /// edits is the engine-minted edit (receipt append).
@@ -6114,12 +6135,24 @@ fn overlap_refusal(offending: &[usize], edits: &[Edit]) -> ErrorBody {
         )
     };
     let names: Vec<String> = offending.iter().map(name).collect();
-    e.message = Some(format!(
-        "batch edits must rewrite disjoint bytes (§4.4): {} rewrite overlapping \
-         regions of the file — re-anchor one so they touch different bytes, or \
-         split them into separate splice calls",
-        names.join(" and ")
-    ));
+    e.message = Some(match duplicate_fm_upsert_key(offending, edits) {
+        // Model rung 3a (§4.4 target grain): one key, one upsert. The general
+        // remedy below is UNFOLLOWABLE here — a frontmatter key has exactly one
+        // place in the block, so "re-anchor one" cannot be done and the caller
+        // resends the same batch. This arm teaches its own fix instead.
+        Some(key) => format!(
+            "a batch must upsert each frontmatter key at most once (§4.4): {} both \
+             upsert \"{key}\" — send the key once carrying the value you want, or \
+             split them into separate splice calls",
+            names.join(" and ")
+        ),
+        None => format!(
+            "batch edits must rewrite disjoint bytes (§4.4): {} rewrite overlapping \
+             regions of the file — re-anchor one so they touch different bytes, or \
+             split them into separate splice calls",
+            names.join(" and ")
+        ),
+    });
     let overlapping: Vec<SecRef> = offending
         .iter()
         .filter_map(|&i| edits.get(i))
@@ -7453,6 +7486,64 @@ mod guarded_create_remove {
             "# Alpha\n\n## Beta\n\nship by August\n",
             "refused whole — no byte landed"
         );
+    }
+
+    /// PUT LANE, model rung 3a (reviewer `36637e1a` on PR 214, finding 1):
+    /// two upserts of ONE frontmatter key in one splice. The ABSENT-key arm
+    /// used to land the key TWICE — both edits plan the same zero-width insert
+    /// at the block's first-key offset, which the region grain reads disjoint.
+    /// It now refuses, byte-clean, with a remedy a caller can actually follow:
+    /// "re-anchor one" is impossible for a key that has one place.
+    #[test]
+    fn same_fm_key_upserted_twice_refuses_on_the_put_lane() {
+        let (dir, root) = ws();
+        create(
+            &root,
+            None,
+            &create_args("notes/plan.md", "---\ntitle: c\n---\n# Alpha\n"),
+            &[],
+        )
+        .expect("birth");
+        let before = std::fs::read_to_string(dir.path().join("notes/plan.md")).unwrap();
+
+        for (key, arm) in [
+            ("nope", "absent key — two zero-width inserts at one point"),
+            ("title", "existing key — two identical replace regions"),
+        ] {
+            let mut args = splice_args("notes/plan.md", "unused", "unused");
+            args.edits = ["one", "two"]
+                .into_iter()
+                .map(|value| Edit {
+                    target: SecRef::FmKey {
+                        fm_key: key.to_string(),
+                    },
+                    edit: EditShape::Put {
+                        at: wire::PutAt::Upsert,
+                        text: value.into(),
+                    },
+                    if_node_rev: None,
+                })
+                .collect();
+            let err = splice(&root, None, &args, &[], None)
+                .expect_err("two upserts of one key must refuse");
+            assert_eq!(err.code, ErrorCode::BadRequest, "{arm}");
+            let want = format!(
+                "a batch must upsert each frontmatter key at most once (§4.4): \
+                 edits[0] (target \"{key}\") and edits[1] (target \"{key}\") both \
+                 upsert \"{key}\" — send the key once carrying the value you want, \
+                 or split them into separate splice calls"
+            );
+            assert_eq!(
+                err.message.as_deref(),
+                Some(want.as_str()),
+                "{arm}: the remedy must be followable"
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("notes/plan.md")).unwrap(),
+                before,
+                "{arm}: refused whole — no byte landed"
+            );
+        }
     }
 
     /// The write door's own gate: every splice moves the ambient root, and no

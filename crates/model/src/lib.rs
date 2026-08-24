@@ -1458,20 +1458,12 @@ pub fn validate_batch(
     // each plans against the same pre-batch bytes — so the batch's upserts
     // compose ONE block ([`FmBlockSynth`]): count them up front, position each
     // as it plans.
-    let is_fm_upsert = |e: &Edit| {
-        matches!(
-            (&e.edit, &e.target),
-            (
-                EditKind::Put {
-                    at: PutAt::Upsert,
-                    ..
-                },
-                Ref::FmKey(_)
-            )
-        )
-    };
     let fm_synth_total = if find_frontmatter(&doc.root).is_none() {
-        batch.edits.iter().filter(|e| is_fm_upsert(e)).count()
+        batch
+            .edits
+            .iter()
+            .filter(|e| fm_upsert_key(e).is_some())
+            .count()
     } else {
         0
     };
@@ -1579,9 +1571,35 @@ pub fn validate_batch(
         }
     }
 
-    // 3. Disjointness (§4.4, region grain): the replaced regions must not
-    // overlap. Targets may nest — an append to a child and an append under its
-    // parent rewrite different bytes and compose legally.
+    // 3. Disjointness, in two grains. The region grain (§4.4) is the general
+    // law; the `fm_key` upsert door needs a target grain in front of it,
+    // because its two arms plan unlike regions for the same collision and only
+    // one of them is visible to a region check.
+    //
+    // 3a. One key, one upsert. Two upserts of the same key are the same node
+    // twice — but when the key is ABSENT both plan the SAME zero-width insert
+    // at the block's first-key offset, and zero-width regions at one byte
+    // satisfy `a.end <= b.start`, so `first_overlap` reads them disjoint and
+    // the key lands TWICE. An EXISTING key plans two identical non-empty
+    // regions and refuses. This rung runs first so both arms refuse under ONE
+    // law: the verdict cannot depend on whether the key existed before the
+    // write. Scoped to the upsert door on purpose — two `match` edits on
+    // disjoint bytes of one key line are a legal composition, same as any
+    // nested target.
+    //
+    // REFUSE, never dedupe: the last-writer-wins reading picks a winner the
+    // caller never named, and § A.3's first-occurrence model cannot represent
+    // one key twice anyway. Same call the lock plane already makes for a
+    // `properties` selector naming one key twice (`lock::…::DuplicateSelectorKey`,
+    // R4 18a.2) — one law across the planes, not a second opinion.
+    let fm_upsert_targets: Vec<Option<&str>> = batch.edits.iter().map(fm_upsert_key).collect();
+    if let Some((edits, spans)) = first_duplicate_fm_upsert(&fm_upsert_targets, &planned) {
+        return SpliceVerdict::Overlap { edits, spans };
+    }
+
+    // 3b. Region grain: the replaced regions must not overlap. Targets may
+    // nest — an append to a child and an append under its parent rewrite
+    // different bytes and compose legally.
     if let Some((edits, spans)) = first_overlap(&planned) {
         return SpliceVerdict::Overlap { edits, spans };
     }
@@ -1690,6 +1708,47 @@ fn plan_engine_edit(raw: &str, engine: &EngineEdit) -> Result<PlannedEdit, Splic
 /// region counts as overlap. Touching boundaries (`[a,b)` then `[b,c)`) and
 /// zero-width regions at a shared byte are disjoint — same-point inserts
 /// apply in request order ([`ValidatedBatch`]'s stable sort).
+/// The frontmatter key an edit upserts, or `None` when the edit is not an
+/// `fm_key` upsert. That door is the only one whose collision the region grain
+/// cannot see (rung 3a); every other `fm_key` shape plans a real span.
+fn fm_upsert_key(edit: &Edit) -> Option<&str> {
+    match (&edit.edit, &edit.target) {
+        (
+            EditKind::Put {
+                at: PutAt::Upsert, ..
+            },
+            Ref::FmKey(key),
+        ) => Some(key.as_str()),
+        _ => None,
+    }
+}
+
+/// The first pair of edits that upsert the SAME frontmatter key, in batch
+/// order, with the regions each planned — the target-grain half of §4.4
+/// disjointness (rung 3a). `fm_upsert_targets` is index-aligned with the
+/// caller's edits (`None` for every edit that is not an `fm_key` upsert), and
+/// the caller's edits are `planned`'s first entries in the same order, so the
+/// indices reported are batch-order indices the caller can read back.
+/// `None` when every `fm_key` upsert in the batch names a distinct key.
+fn first_duplicate_fm_upsert(
+    fm_upsert_targets: &[Option<&str>],
+    planned: &[PlannedEdit],
+) -> Option<(Vec<usize>, Vec<ByteSpan>)> {
+    for (i, target) in fm_upsert_targets.iter().enumerate() {
+        let Some(key) = target else { continue };
+        if let Some(first) = fm_upsert_targets[..i]
+            .iter()
+            .position(|earlier| *earlier == Some(*key))
+        {
+            return Some((
+                vec![first, i],
+                vec![planned[first].region.clone(), planned[i].region.clone()],
+            ));
+        }
+    }
+    None
+}
+
 fn first_overlap(planned: &[PlannedEdit]) -> Option<(Vec<usize>, Vec<ByteSpan>)> {
     let mut idx: Vec<usize> = (0..planned.len()).collect();
     // (start, end) key: at a shared start byte the zero-width insert sorts
@@ -4784,6 +4843,68 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    /// Regression (reviewer `36637e1a` on PR 214, finding 1): the SAME
+    /// frontmatter key upserted twice in one batch. The two arms used to
+    /// disagree on whether the key existed before the write — an EXISTING key
+    /// planned two identical non-empty replace regions and refused `overlap`,
+    /// an ABSENT key planned two zero-width inserts at the block's first-key
+    /// offset (`4..4`, `4..4`), which satisfy `a.end <= b.start` and read
+    /// disjoint, so the key landed TWICE. One law now: both arms refuse
+    /// `overlap` with the offending pair in batch order.
+    #[test]
+    fn gate4_same_fm_key_twice_refuses_whether_or_not_the_key_exists() {
+        let raw = "---\ntitle: c\n---\n# c\n";
+        let doc = build(raw.to_string(), syntax::parse(raw));
+        for (key, name, want) in [
+            (
+                "title",
+                "existing key — two identical replace regions",
+                4..12,
+            ),
+            (
+                "nope",
+                "absent key — two zero-width inserts at one point",
+                4..4,
+            ),
+        ] {
+            let b = batch(vec![
+                put_edit(Ref::FmKey(key.to_string()), PutAt::Upsert, "one"),
+                put_edit(Ref::FmKey(key.to_string()), PutAt::Upsert, "two"),
+            ]);
+            let SpliceVerdict::Overlap { edits, spans } = validate_batch(&doc, None, &b, None)
+            else {
+                panic!("{name}: two upserts of one key must refuse overlap");
+            };
+            assert_eq!(edits, vec![0, 1], "{name}: the offending pair, batch order");
+            assert_eq!(
+                spans,
+                vec![want.clone(), want],
+                "{name}: both edits' planned regions"
+            );
+        }
+    }
+
+    /// The sibling of the law above: DIFFERENT keys sharing one insertion
+    /// point still compose. Two absent keys both plan `4..4`, and refusing
+    /// them would break every multi-key birth the armed doors write.
+    #[test]
+    fn gate4_two_distinct_absent_fm_keys_at_one_point_still_land() {
+        let raw = "---\ntitle: c\n---\n# c\n";
+        let doc = build(raw.to_string(), syntax::parse(raw));
+        let b = batch(vec![
+            put_edit(Ref::FmKey("alpha".to_string()), PutAt::Upsert, "one"),
+            put_edit(Ref::FmKey("beta".to_string()), PutAt::Upsert, "two"),
+        ]);
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &b, None) else {
+            panic!("two distinct absent keys at one insertion point must validate");
+        };
+        assert_eq!(
+            apply_validated(&doc.raw, &vb),
+            "---\nalpha: one\nbeta: two\ntitle: c\n---\n# c\n",
+            "both keys land, request order preserved at the shared point"
+        );
     }
 
     /// The F2 mixed-batch shape at model grain: append to a section plus a
