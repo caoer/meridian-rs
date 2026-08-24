@@ -55,20 +55,30 @@ fn a_changed_corpus_is_still_rebuilt_on_the_sweep() {
 
     fs::write(ws.join("a.md"), "# A changed\n\nnew body\n").unwrap();
 
-    // Kernel delivery is asynchronous: a sweep landing before the event is a
-    // lawful skip (latency-only). Poll — the same posture as
-    // `prewarm_absorbs_the_change_so_the_next_query_parses_nothing`. Under
-    // load this is the class-1 flake at daemon_idle_exit.rs:57 (pipeline 1101).
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let rebuilt = loop {
-        let got = registry.prewarm();
-        if !got.is_empty() || Instant::now() > deadline {
-            break got;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    // The sweep's quiet gate (`Registry::vouched_quiet`) reads the feed's
+    // pending state WITHOUT a barrier, so it cannot tell "nothing moved" from
+    // "the event has not been delivered yet" — `FsMemo::served_cached` names
+    // that skip LATENCY-ONLY by design (merkle-spec §6.7). Kernel delivery is
+    // asynchronous and, on a box sharing itself with N CI pipelines, has no
+    // bound, so POLLING for it asserted the BOX rather than the sweep: that is
+    // the same-sha split at this line (1197 green / 1198 red on 3f4859513;
+    // pipeline 1101), where the deadline was 15s and the tree was identical.
+    //
+    // `currency_refresh` is the daemon's OWN proof of delivery — the call every
+    // door takes. It parks on the feed's cookie barrier, which orders this
+    // write's event before its own sighting, and when the barrier does not
+    // report `Seen` inside the timeout it falls to a full extent walk. On
+    // EITHER path the memo has observed this write by the time it returns, so
+    // what the sweep does next is a function of the corpus alone and needs no
+    // deadline. It refreshes the MEMO, not the engine — the engine is still
+    // stamped at the pre-edit fingerprint, so the rebuild below is still the
+    // sweep's own work and the assertion still says what it always said.
+    registry
+        .currency_refresh(&ws, Duration::from_secs(2))
+        .expect("the daemon can observe its own workspace");
+
     assert_eq!(
-        rebuilt,
+        registry.prewarm(),
         vec![ws.clone()],
         "the edit must rebuild on the sweep, not lazily on the next query"
     );
