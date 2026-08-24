@@ -111,7 +111,11 @@ pub fn resolve_at(root: &fs::WorkspaceRoot, at_path: &str) -> policy::ArmedLaw {
 /// workspace-relative path (stamped onto the change so a rule's declared scope can
 /// match it — `fs::load`/`model::build` leave the path empty, and it is also the
 /// path the law is resolved AT); `edits` are the planned model edits; `actor` is
-/// `run:<task>`.
+/// the §9-resolved identity (`ApplyRequest::actor` — supplied verbatim, else
+/// `run:<task>`), the SAME value the middleware leg, the birth door, the delta
+/// sink and the receipt carry. It was `run:<task>` unconditionally until
+/// 2026-08-24, which is why a CHECK keyed on `change.actor` could not see the
+/// caller on a fire.
 #[must_use]
 pub(crate) fn refuse_reason(
     root: &fs::WorkspaceRoot,
