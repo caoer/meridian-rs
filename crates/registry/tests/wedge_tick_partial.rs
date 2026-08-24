@@ -67,8 +67,10 @@ fn slow_split_server(
                 }
                 Err(_) => thread::sleep(Duration::from_millis(20)),
             }
-            if !rest_written && first.is_some() && started.elapsed() >= STALL {
-                let s = first.as_mut().expect("held");
+            if !rest_written
+                && started.elapsed() >= STALL
+                && let Some(s) = first.as_mut()
+            {
                 s.write_all(rest).expect("rest");
                 s.flush().expect("flush rest");
                 rest_written = true;
