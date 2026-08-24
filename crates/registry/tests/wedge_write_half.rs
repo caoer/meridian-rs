@@ -114,9 +114,10 @@ impl Peer {
                         let mut buf = vec![0u8; 64 * 1024];
                         while bytes.len() < OVERSIZED {
                             match stream.read(&mut buf) {
-                                Ok(0) => break,
+                                // EOF, or the drain's own bound: either way no
+                                // more of this frame is coming.
+                                Ok(0) | Err(_) => break,
                                 Ok(n) => bytes.extend_from_slice(&buf[..n]),
-                                Err(_) => break,
                             }
                         }
                         let _ = sink.send(bytes);
@@ -293,9 +294,8 @@ fn a_draining_peer_is_served_immediately_and_never_probed() {
         let mut buf = vec![0u8; 64 * 1024];
         while sink.len() < OVERSIZED {
             match stream.read(&mut buf) {
-                Ok(0) => break,
+                Ok(0) | Err(_) => break,
                 Ok(n) => sink.extend_from_slice(&buf[..n]),
-                Err(_) => break,
             }
         }
         sink.len()
