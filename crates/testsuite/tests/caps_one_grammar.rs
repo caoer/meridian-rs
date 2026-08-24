@@ -38,12 +38,19 @@ use model::Document;
 use policy::{CheckLimits, PageRef, ScopeLayer, register_page};
 use run::caps::{Cap, CapSet, CapsError};
 
-/// The four spellings every `caps:`-shaped key must read identically. Each
-/// entry renders the frontmatter lines for a list of cap names.
+/// Render the `caps:` frontmatter lines for a list of cap names, in one YAML
+/// spelling.
+type Render = fn(&[&str]) -> String;
+
+/// One spelling under test: its name, for the assertion messages, and its
+/// renderer.
+type Spelling = (&'static str, Render);
+
+/// The four spellings every `caps:`-shaped key must read identically.
 ///
 /// `caps: []` and a bare `caps:` are separate cases below — they are about
 /// DECLARED-EMPTY vs NOT-DECLARED, not about how a non-empty list is spelled.
-const SPELLINGS: [(&str, fn(&[&str]) -> String); 4] = [
+const SPELLINGS: [Spelling; 4] = [
     ("plain scalar", |names| {
         format!("caps: {}\n", names.join(", "))
     }),
@@ -57,7 +64,9 @@ const SPELLINGS: [(&str, fn(&[&str]) -> String); 4] = [
     ("block sequence", |names| {
         let mut out = String::from("caps:\n");
         for n in names {
-            out.push_str(&format!("  - {n}\n"));
+            out.push_str("  - ");
+            out.push_str(n);
+            out.push('\n');
         }
         out
     }),
