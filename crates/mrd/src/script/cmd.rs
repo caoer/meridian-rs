@@ -636,6 +636,33 @@ mod tests {
 
     use super::Door;
 
+    /// PIN (reviewer `dc6d9ca9` on PR 213, finding 5): the two wall-clock
+    /// spellings are kept equal BY HAND — [`super::WALL_CLOCK`] bounds the CLI
+    /// side of the socket, `effects::DEFAULT_WALL_CLOCK` is the daemon's
+    /// default budget — and nothing in the code links them.
+    ///
+    /// The failure this pins is a ONE-SIDED TUNE. An operator raising the
+    /// budget to 15s edits `DEFAULT_WALL_CLOCK`, trusting the one-spelling
+    /// story; the CLI socket timeout stays 7s and kills the round trip while
+    /// the daemon still has budget. What the operator gets is a "daemon did
+    /// not answer" transport error carrying [`MAY_HAVE_LANDED`] indeterminacy —
+    /// not the clean budget refusal they were tuning toward, and not a symptom
+    /// that points at the edit they made.
+    ///
+    /// It lives in the crate that OWNS the drifting literal, so tuning that
+    /// literal is what turns it red.
+    #[test]
+    fn the_two_wall_clock_spellings_stay_equal() {
+        assert_eq!(
+            super::WALL_CLOCK,
+            effects::DEFAULT_WALL_CLOCK,
+            "the CLI socket bound and the daemon's default budget are two \
+             hand-kept literals, one per side of the socket — tune one and you \
+             MUST tune the other, or the socket kills a round trip the daemon \
+             still has budget for"
+        );
+    }
+
     /// A door that answers the § A.7 `script` op with a canned trace and
     /// refuses every other op — the ONE lane forwards EVERYTHING, so a
     /// `fingerprint`/`toc`/`splice` trip here is a law violation.
