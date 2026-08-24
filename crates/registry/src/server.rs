@@ -114,6 +114,21 @@ pub struct Config {
     /// crate's compilation environment alone, so this crate cannot see it;
     /// `mrd daemon` supplies it (`docs/wire-contract.md`).
     pub build_sha: Option<String>,
+    /// FIXTURE-ONLY: park the G11 activity clock this far into the future at
+    /// REGISTRY CONSTRUCTION, so the daemon is **born parked**. `None`
+    /// (production, always) leaves the floor at `0`.
+    ///
+    /// This exists because the after-the-fact form cannot close its own
+    /// window. The clock starts inside [`Registry::new`] and the reaper is
+    /// spawned before `start()` returns, so a fixture calling
+    /// [`Registry::park_activity_clock`](crate::Registry::park_activity_clock)
+    /// on the value `start()` hands back parks a daemon that has already been
+    /// reapable for the length of `start()`'s body — `mw_sql::install`, the
+    /// bind, the pidfile write and three thread spawns. With a whole-second
+    /// clock that stretch only has to cover ~1.0 s of wall time to latch a 2 s
+    /// horizon (review `results/review-193-claude-e540dc0b.md` § F1). Setting
+    /// the floor at construction removes the window instead of narrowing it.
+    pub activity_park: Option<Duration>,
     /// How long [`RunningServer::stop`] waits for in-flight drawer rebuilds
     /// before releasing the singleton flock. See
     /// [`crate::DEFAULT_DRAIN_COLD_BUILDS`] for the production default and the
@@ -144,6 +159,8 @@ impl Config {
             // The layout cannot know the binary that will run it; the host
             // process supplies its own sha.
             build_sha: None,
+            // Production never parks: an unset floor is 0.
+            activity_park: None,
             drain_cold_builds: crate::DEFAULT_DRAIN_COLD_BUILDS,
         }
     }
@@ -387,7 +404,16 @@ impl RunningServer {
 
         let store = StateStore::new(config.state_path.clone());
         let entries = store.load();
-        let registry = Registry::new_shared(store, config.cache_root.clone(), entries);
+        // Born parked when the fixture asked for it: the floor goes up inside
+        // the constructor, so no wall time exists between the activity clock
+        // starting and the park — the reaper spawned below cannot observe an
+        // unparked clock.
+        let registry = Registry::new_shared(
+            store,
+            config.cache_root.clone(),
+            entries,
+            config.activity_park,
+        );
 
         // The middleware door's ctx.sql backend (armed-plane Part A2) —
         // installed before the first frame can reach a write.
@@ -2743,6 +2769,7 @@ mod cold_read_door_tests {
             StateStore::new(home.join("state.json")),
             cache_root,
             Vec::new(),
+            None,
         )
     }
 
