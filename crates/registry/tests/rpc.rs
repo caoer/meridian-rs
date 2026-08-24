@@ -112,6 +112,75 @@ fn concurrent_register_converges_on_one_identity() {
     server.shutdown();
 }
 
+/// One workspace's blocked drawer must not wall every other workspace.
+///
+/// `cache::register` takes the drawer's `flock` and BLOCKS (`LOCK_EX`, no
+/// `LOCK_NB`) — a cross-process wait. It used to run under `Registry::inner`'s
+/// write guard, which is the guard every `hello`, `register`, `resolve` and
+/// `list` takes, so one held drawer stalled the whole daemon while `ping` kept
+/// answering: alive by every liveness probe, walled for every workspace op.
+///
+/// The gate: hold the flock on one workspace's drawer, park a registrar on it,
+/// and require an UNRELATED workspace to be served meanwhile. The 5 s bound is
+/// "walled or not", not a latency assertion — the unrelated call is two hash
+/// ops and a sentinel write of its own.
+#[test]
+fn a_blocked_drawer_does_not_wall_another_workspace() {
+    let tmp = TempDir::new().unwrap();
+    let held = tmp.path().join("held");
+    let free = tmp.path().join("free");
+    mkdirs(&held);
+    mkdirs(&free);
+
+    let config = test_config(&tmp);
+    let cache_root = config.cache_root.clone();
+    let server = RunningServer::start(config).unwrap();
+    let sock = server.socket_path().to_path_buf();
+
+    // Pre-create `held`'s drawer and take its lock, so the daemon's
+    // `cache::register` for `held` parks inside the sentinel write.
+    let drawer = cache::drawer_dir(&cache_root, &canonical(&held));
+    mkdirs(&drawer);
+    let lock = cache::DrawerLock::acquire(&drawer).unwrap();
+
+    let parked = {
+        let (sock, held) = (sock.clone(), held.clone());
+        thread::spawn(move || Client::new(sock).register(&held))
+    };
+    // Let the parked registrar reach the flock.
+    thread::sleep(Duration::from_millis(300));
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    {
+        let (sock, free) = (sock.clone(), free.clone());
+        thread::spawn(move || tx.send(Client::new(sock).register(&free)));
+    }
+    let answered = rx.recv_timeout(Duration::from_secs(5));
+
+    // Release before asserting: a panic here must not leave the parked
+    // registrar — and the daemon's shutdown — waiting on this lock forever.
+    drop(lock);
+
+    let unrelated = answered
+        .expect("an unrelated workspace must register while another drawer is locked")
+        .expect("register RPC failed");
+    match unrelated {
+        Response::Registered { entry, .. } => {
+            assert_eq!(entry.workspace, canonical(&free));
+        }
+        other => panic!("unrelated register did not succeed: {other:?}"),
+    }
+
+    // The parked registrar completes once the lock is released — it was waiting
+    // on the drawer, not deadlocked.
+    match parked.join().unwrap().expect("parked register RPC failed") {
+        Response::Registered { entry, .. } => assert_eq!(entry.workspace, canonical(&held)),
+        other => panic!("parked register did not succeed: {other:?}"),
+    }
+
+    server.shutdown();
+}
+
 /// The deny ceiling is enforced in the daemon: `$HOME` and `/tmp` are refused
 /// with a typed reason, and neither is registered.
 #[test]
