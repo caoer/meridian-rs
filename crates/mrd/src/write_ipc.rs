@@ -42,8 +42,15 @@ pub(crate) fn connect(workspace: &Path) -> Result<SocketDoor, Fail> {
             })
         ))
     })?;
-    SocketDoor::connect(client.socket_path(), workspace)
-        .map_err(|e| Fail::tool(format!("{DAEMON_DOWN} (cannot dial the daemon: {e})")))
+    // A write verb carries no budget, so the handshake gets the general
+    // backstop, never the script entry's wall clock: a busy daemon's slow greet
+    // is not this verb's deadline (card `dial-eagain-under-pipeline-load`).
+    SocketDoor::connect(
+        client.socket_path(),
+        workspace,
+        crate::script::wire_host::GREET_CAP,
+    )
+    .map_err(|e| Fail::tool(e.teach(DAEMON_DOWN)))
 }
 
 /// Printed to stderr once when the daemon has held a write past the socket's

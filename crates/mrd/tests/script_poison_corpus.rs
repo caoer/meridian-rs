@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use mrd::script::ScriptOutcome;
 use mrd::script::cmd::attempt;
-use mrd::script::wire_host::SocketDoor;
+use mrd::script::wire_host::{GREET_CAP, SocketDoor};
 use registry::{Config, RunningServer};
 use tempfile::TempDir;
 
@@ -76,7 +76,7 @@ fn the_script_entry_serves_with_a_poison_member_present() {
     );
     let server = RunningServer::start(config(&tmp)).unwrap();
 
-    let mut door = SocketDoor::connect(server.socket_path(), &ws).unwrap_or_else(|e| {
+    let mut door = SocketDoor::connect(server.socket_path(), &ws, GREET_CAP).unwrap_or_else(|e| {
         panic!("hello over the real socket binds a poisoned-but-healthy workspace: {e}")
     });
 
@@ -105,7 +105,7 @@ fn a_script_read_of_the_poison_member_faults_naming_the_file() {
     );
     let server = RunningServer::start(config(&tmp)).unwrap();
 
-    let mut door = SocketDoor::connect(server.socket_path(), &ws)
+    let mut door = SocketDoor::connect(server.socket_path(), &ws, GREET_CAP)
         .expect("the workspace binds — degradation is per-file");
     let argv = vec!["--actor".to_owned(), "e50dfd13".to_owned()];
     let trace = attempt(&argv, r#"bad = read("notes/poison.md")"#, &mut door)
@@ -141,7 +141,7 @@ fn a_live_handshake_refusal_surfaces_the_daemons_cause() {
     );
     let server = RunningServer::start(config(&tmp)).unwrap();
 
-    let Err(err) = SocketDoor::connect(server.socket_path(), &ws) else {
+    let Err(err) = SocketDoor::connect(server.socket_path(), &ws, GREET_CAP) else {
         panic!("an ambiguous domain refuses the handshake");
     };
     let rendered = err.to_string();
@@ -177,7 +177,7 @@ fn the_handshake_refusal_carries_the_error_body_verbatim() {
         w.flush().unwrap();
     });
 
-    let Err(err) = SocketDoor::connect(&sock, dir.path()) else {
+    let Err(err) = SocketDoor::connect(&sock, dir.path(), GREET_CAP) else {
         panic!("an ok:false handshake is a refusal");
     };
     served.join().unwrap();

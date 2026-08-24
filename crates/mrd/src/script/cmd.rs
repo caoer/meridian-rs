@@ -212,8 +212,12 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             })
         ))
     })?;
-    let mut door = SocketDoor::connect(client.socket_path(), &workspace)
-        .map_err(|e| Fail::tool(format!("cannot dial the daemon: {e}")))?;
+    // The script entry's budget IS real (§ Where the budgets bind), so its
+    // handshake keeps the entry's wall clock as the backstop — unchanged. What
+    // changed is that a tick inside it now asks whether the daemon is alive
+    // instead of asserting that it is not.
+    let mut door = SocketDoor::connect(client.socket_path(), &workspace, WALL_CLOCK)
+        .map_err(|e| Fail::tool(e.teach("no daemon answered the dial")))?;
 
     let trace = run(&mut door, &parsed, &source)?;
     emit(&parsed, &trace);
