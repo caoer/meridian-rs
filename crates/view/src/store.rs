@@ -439,6 +439,14 @@ const SPILL_BUDGET: &str = "8GiB";
 /// global `SET` still leaks across calls (card
 /// `sql-set-config-cross-caller-starvation`, a ruling of its own).
 ///
+/// **Every caller-SQL door takes it, with no exemptions** — [`SqlStore::open`]
+/// and [`SqlStore::recreate`] (so `SqlStore::query`'s `try_clone` inherits it
+/// by GLOBAL_ONLY scope), `mrd sql`'s `:memory:` lane, and
+/// `registry::mw_sql`'s middleware projection. The last two have no drawer to
+/// leak into; they are gated anyway, because a door that admits third-party
+/// extension code while its siblings refuse it would make the DOOR, not the
+/// statement, decide what the contract means.
+///
 /// # Errors
 /// Propagates the `DuckDB` error from the `SET`.
 pub fn apply_extension_gate(conn: &Connection) -> duckdb::Result<()> {
@@ -588,18 +596,20 @@ fn teach(error: &str) -> String {
     // `allow_unsigned_extensions`, because a community extension is unsigned
     // by construction — so the caller is left hunting a knob that is not the
     // one that stopped it. Say which gate it hit, and why.
-    if error.contains("signature is either missing or invalid")
-        || error.contains("community extensions are disabled")
-    {
+    if error.contains("signature is either missing or invalid") {
         return format!(
-            "{error}\nThat is the community-extension gate, not the signature \
-             knob: this lane runs no COMMUNITY extension, because an extension \
-             loads onto the shared engine instance OUTSIDE your statement's \
+            "{error}\nNeither shut door is the knob that message names. A \
+             COMMUNITY extension cannot load here: this engine sets \
+             allow_community_extensions=false at open. An UNSIGNED local build \
+             cannot load anywhere: DuckDB's own default keeps \
+             allow_unsigned_extensions=false. Both refuse to loosen while the \
+             database is running. Why the first one exists: an extension loads \
+             onto the shared engine instance OUTSIDE your statement's \
              transaction and is then free to write the drawer that every other \
              caller shares (duckpgq's CREATE PROPERTY GRAPH wrote \
-             sql.main.__duckpgq_internal durably). The gate is on the community \
-             flag alone: core extensions are not gated, external files are not \
-             gated, and your own SET still works."
+             sql.main.__duckpgq_internal durably). Signed core extensions are \
+             not gated, external files are not gated, and your own SET still \
+             works."
         );
     }
 
@@ -2319,8 +2329,16 @@ mod spill_tests {
             "DuckDB's own words survive first: {taught}"
         );
         assert!(
-            taught.contains("community-extension gate, not the signature knob"),
+            taught.contains("Neither shut door is the knob that message names"),
             "the caller is not sent hunting the wrong setting: {taught}"
+        );
+        // r2 F-D: this message is DuckDB's for ANY extension failing the
+        // signature check, including a caller's own unsigned local build —
+        // which is not a community extension. The teaching must name both
+        // doors, or it tells that caller something false about their own.
+        assert!(
+            taught.contains("UNSIGNED local build") && taught.contains("COMMUNITY extension"),
+            "both shut doors are named, not just ours: {taught}"
         );
         assert!(
             taught.contains("OUTSIDE your statement's transaction"),
@@ -2373,24 +2391,47 @@ mod spill_tests {
         assert_eq!(leaked, 0, "the drawer holds no extension side table");
     }
 
-    /// F3, by mechanism rather than by name. An allow-list test can only catch
-    /// the extensions someone remembered to list; THIS catches whatever the
-    /// next duckpgq turns out to be, because it asserts the invariant the card
-    /// is actually about: **a caller query leaves the drawer's catalog exactly
-    /// as it found it.** `sql.main.__duckpgq_internal` appearing is precisely
-    /// what this fails on.
+    /// F3, by mechanism rather than by name: the invariant the card is
+    /// actually about — **a caller query leaves the drawer's catalog exactly as
+    /// it found it.**
+    ///
+    /// **What it does and does not guard, because an earlier version of this
+    /// comment overclaimed and review r2 (F-A) caught it.** The first draft
+    /// said "THIS catches whatever the next duckpgq turns out to be" while the
+    /// statement list held no `CREATE PROPERTY GRAPH` at all — so deleting
+    /// [`apply_extension_gate`] left it green on every host, and it was a
+    /// rollback test wearing a gate test's label. The leaking statement is now
+    /// in the list, in the single-statement form the lane actually runs
+    /// (`run_query` prepares one statement), which the reviewer measured to
+    /// leak `sql.main.__duckpgq_internal` through `BEGIN … ROLLBACK` with the
+    /// gate open.
+    ///
+    /// So: on a host that HAS duckpgq this fails if the gate is removed. On a
+    /// host without it (CI), that statement is a parser error and this degrades
+    /// to what it always was — a rollback test. The gate's host-independent
+    /// guards are [`the_extension_gate_is_in_force_at_open`] and
+    /// [`a_caller_cannot_reopen_the_extension_gate`], which read a setting
+    /// whose `DefaultValue` is `"true"`; do not let this test be counted twice.
+    ///
+    /// Schemas are snapshotted beside tables because `duckdb_tables()` cannot
+    /// see an EMPTY schema — without that, the `CREATE SCHEMA` line below was
+    /// unasserted (r2, same finding).
     #[test]
     fn a_caller_query_leaves_the_drawer_catalog_identical() {
         let dir = tempfile::tempdir().expect("tmpdir");
         let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
         sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
 
+        // Tables AND schemas: duckdb_tables() cannot see an empty schema.
         let catalog = |s: &SqlStore| -> Vec<String> {
             let mut stmt = s
                 .connection()
                 .prepare(
-                    "SELECT database_name || '.' || schema_name || '.' || table_name \
-                     FROM duckdb_tables() ORDER BY 1",
+                    "SELECT 'T ' || database_name || '.' || schema_name || '.' || table_name \
+                       FROM duckdb_tables() \
+                     UNION ALL \
+                     SELECT 'S ' || database_name || '.' || schema_name FROM duckdb_schemas() \
+                     ORDER BY 1",
                 )
                 .expect("prepare");
             stmt.query_map([], |r| r.get::<_, String>(0))
@@ -2402,10 +2443,13 @@ mod spill_tests {
         let before = catalog(&store);
         assert!(!before.is_empty(), "the fixture built a catalog to compare");
 
-        // Everything a caller can throw at it, in one batch: the leaking
-        // command's shape, ordinary DDL, DML, and the extension door.
+        // Everything a caller can throw at it: the extension door, the LEAKING
+        // STATEMENT ITSELF (single-statement, as the lane runs it — this is the
+        // one that would move the snapshot if the gate were gone), ordinary
+        // DDL, DML, and a plain read.
         for statement in [
             "LOAD duckpgq",
+            "CREATE PROPERTY GRAPH g VERTEX TABLES (doc)",
             "CREATE OR REPLACE TABLE n AS SELECT path AS id FROM doc",
             "CREATE SCHEMA IF NOT EXISTS sneaky",
             "UPDATE hist.doc SET bytes = 0",
