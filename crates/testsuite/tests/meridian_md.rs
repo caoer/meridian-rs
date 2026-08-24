@@ -1,7 +1,7 @@
 //! The `MERIDIAN.md` in-file schema pack, replayed.
 //!
 //! `crates/testsuite/data/meridian-md/cases.json` pairs every case with its
-//! required outcome, and this module drives all 37 through `config::resolve` —
+//! required outcome, and this module drives all 39 through `config::resolve` —
 //! the same entry point the CLI calls — so the four resolution states of
 //! schema §2.2 are exercised as states rather than as functions.
 //!
@@ -14,15 +14,16 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-/// Fixtures on disk, per the pack README: 8 acceptances + 23 refusals
-/// (the kind-sweep retired three kind-rule refusal cases, 2026-08-13).
-const FIXTURES_ON_DISK: usize = 31;
-/// Cases in the manifest: the 31 fixtures plus 7 that cannot have a file.
-const CASE_COUNT: usize = 38;
+/// Fixtures on disk, per the pack README: 8 acceptances + 24 refusals
+/// (the kind-sweep retired three kind-rule refusal cases, 2026-08-13;
+/// `empty-frontmatter` arrived with the §4 empty-closed-block row, 2026-08-24).
+const FIXTURES_ON_DISK: usize = 32;
+/// Cases in the manifest: the 32 fixtures plus 7 that cannot have a file.
+const CASE_COUNT: usize = 39;
 /// The acceptance / refusal split the pack states.
 const ACCEPTANCES: usize = 12;
-const REFUSALS: usize = 26;
-/// Acceptance fixtures under `corpus/`; the remaining 23 on disk are refusals.
+const REFUSALS: usize = 27;
+/// Acceptance fixtures under `corpus/`; the remaining 24 on disk are refusals.
 const ACCEPTANCE_FIXTURES: usize = 8;
 /// Cases carrying `expect_not` — the ones where the wrong behaviour still looks
 /// healthy, so the refusal alone is not evidence: `env-path-missing` (a silent
@@ -60,7 +61,7 @@ fn case_count_is_pinned() {
     assert_eq!(
         cases.len(),
         CASE_COUNT,
-        "the pack is 38 cases; a case was added or dropped without this gate moving"
+        "the pack is 39 cases; a case was added or dropped without this gate moving"
     );
 
     let accepts = cases
@@ -132,7 +133,7 @@ fn every_fixture_is_paired_and_every_reference_resolves() {
     assert_eq!(
         on_disk.len(),
         FIXTURES_ON_DISK,
-        "the pack ships 31 fixture files"
+        "the pack ships 32 fixture files"
     );
     for path in &on_disk {
         assert!(
