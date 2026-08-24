@@ -379,7 +379,7 @@ const SPILL_BUDGET: &str = "8GiB";
 /// extension is reachable from the query lane only by standing here.
 ///
 /// Membership is earned by MEASUREMENT — the extension's DDL must stay inside
-/// the caller's transaction. `fts` and `vss` were measured clean on DuckDB
+/// the caller's transaction. `fts` and `vss` were measured clean on `DuckDB`
 /// v1.5.4 (2026-08-23): `PRAGMA create_fts_index` over a durable `hist` table
 /// left no `fts_main_*` schema behind, and an HNSW index built under
 /// `hnsw_enable_experimental_persistence` left neither index nor table.
@@ -2258,7 +2258,7 @@ mod spill_tests {
 
     /// The card's leak, at its door: `LOAD` is what let duckpgq write
     /// `sql.main.__duckpgq_internal` past the rollback, and `LOAD` is what
-    /// refuses now. The refusal is DuckDB's, extended with the reason and the
+    /// refuses now. The refusal is `DuckDB`'s, extended with the reason and the
     /// allow-list. Hermetic: the Permission Error precedes the extension-file
     /// lookup, so the test does not need duckpgq installed.
     #[test]
@@ -2305,7 +2305,7 @@ mod spill_tests {
     }
 
     /// The gate is one-way: a caller cannot re-open the door it found shut.
-    /// DuckDB refuses the loosening `SET` itself — `Cannot enable external
+    /// `DuckDB` refuses the loosening `SET` itself — `Cannot enable external
     /// access while database is running`.
     #[test]
     fn a_caller_cannot_reopen_the_extension_gate() {
