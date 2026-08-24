@@ -2419,6 +2419,17 @@ mod spill_tests {
     /// [`a_caller_cannot_reopen_the_extension_gate`], which read a setting
     /// whose `DefaultValue` is `"true"`; do not let this test be counted twice.
     ///
+    /// **Verified by mutation, not asserted** (2026-08-24, duckpgq-stocked
+    /// build box): commenting out both `apply_extension_gate` call sites in
+    /// [`SqlStore::open`] and [`SqlStore::recreate`] fails FOUR tests — this
+    /// one, `the_extension_gate_is_in_force_at_open`,
+    /// `a_caller_cannot_reopen_the_extension_gate` and
+    /// `a_caller_cannot_load_a_community_extension` — while the two over-reach
+    /// guards stay green, which is the correct signature (they guard the
+    /// opposite failure). The claim in this comment is a measurement; if you
+    /// change the statement list, re-run that mutation rather than trusting
+    /// this paragraph.
+    ///
     /// Schemas are snapshotted beside tables because `duckdb_tables()` cannot
     /// see an EMPTY schema — without that, the `CREATE SCHEMA` line below was
     /// unasserted (r2, same finding).
