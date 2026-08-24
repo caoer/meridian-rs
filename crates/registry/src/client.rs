@@ -188,6 +188,9 @@ mod tests {
 
     /// A BACKSTOP, never a budget — see `wedge::tests::NEVER_RETURNED`. It only
     /// decides whether a regression FAILS or hangs the suite forever.
+    // `Duration::from_mins` not const-stable at MSRV 1.96 (same reason as
+    // `wedge::WEDGE_CAP`).
+    #[allow(clippy::duration_suboptimal_units)]
     const NEVER_RETURNED: Duration = Duration::from_secs(120);
 
     /// A listener that accepts and answers nothing, held open by a flag rather

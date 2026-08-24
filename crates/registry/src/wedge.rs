@@ -213,6 +213,9 @@ mod tests {
     /// few ticks, and the only thing this number decides is whether a
     /// regression FAILS or hangs the suite forever. Set far above any load
     /// this suite meets, because a flaky red is worth less than a slow one.
+    // `Duration::from_mins` not const-stable at MSRV 1.96 (same reason as
+    // `WEDGE_CAP` above).
+    #[allow(clippy::duration_suboptimal_units)]
     const NEVER_RETURNED: Duration = Duration::from_secs(120);
 
     /// A listener whose accepted connections are held open and mute until the
