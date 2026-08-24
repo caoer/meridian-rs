@@ -23,25 +23,28 @@ mod common;
 /// cadence + 50ms push tick with margin against flakes.
 const PUSH_WAIT: Duration = Duration::from_secs(10);
 
-/// Reaper and pre-warm parked far ahead — default for gates not about the reaper.
+/// Longer than any test's life: the horizon a gate parks when it is not the
+/// thing under test. Also the fixture park (`Config::activity_park`).
 #[allow(clippy::duration_suboptimal_units)]
+const FOREVER: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+
+/// Reaper and pre-warm parked far ahead — default for gates not about the reaper.
 fn test_config(tmp: &TempDir) -> Config {
-    let forever = Duration::from_secs(365 * 24 * 60 * 60);
     let dir = tmp.path().join("registry");
     let mut config = Config::for_cache_root(tmp.path().join("cache"));
     config.socket_path = dir.join("daemon.sock");
     config.state_path = dir.join("state.json");
-    config.idle_threshold = forever;
-    config.reap_interval = forever;
-    config.prewarm_interval = forever;
-    config.prewarm_quiet_max = forever;
+    config.idle_threshold = FOREVER;
+    config.reap_interval = FOREVER;
+    config.prewarm_interval = FOREVER;
+    config.prewarm_quiet_max = FOREVER;
     // Lifetime is the test's; idle-exit would flake mid-assertion.
     config.idle_exit = None;
     config.drain_cold_builds = Duration::from_secs(30);
     config.push_write_timeout = PUSH_WRITE_TIMEOUT;
     // Parked far ahead for every gate that is not about the idle-write
     // horizon; the two that are set it themselves.
-    config.sub_idle_write_timeout = forever;
+    config.sub_idle_write_timeout = FOREVER;
     config
 }
 
@@ -824,7 +827,6 @@ fn an_armed_sub_defers_idle_exit_and_releasing_it_restores_mortality() {
     let mut config = test_config(&tmp);
     config.idle_exit = Some(Duration::from_secs(2));
     config.reap_interval = Duration::from_millis(100);
-    let server = RunningServer::start(config).unwrap();
     // The idle-exit clock is unix whole seconds from birth. A 2s horizon can
     // latch in 1–2s of wall time, during start→sub, before the subscriber is
     // visible — and the reaper then returns, so a later subscribe cannot
@@ -838,7 +840,14 @@ fn an_armed_sub_defers_idle_exit_and_releasing_it_restores_mortality() {
     // handshake it was covering, leaving the ordinary 2s horizon to run
     // against the gap before `has_subscribers` turns true. Green on an idle
     // box, red on a loaded one, at one identical tree.
-    server.registry().park_activity_clock(365 * 24 * 60 * 60);
+    //
+    // And it is BORN parked, not parked on the handle `start()` returns: the
+    // clock starts inside `Registry::new` and the reaper is spawned before
+    // `start()` returns, so the after-the-fact form left `start()`'s own body
+    // exposed — ~1.0 s of wall time is enough to latch a 2 s horizon (card
+    // `registry-sweep-poll-flake-instance-1` § F1 full-close).
+    config.activity_park = Some(FOREVER);
+    let server = RunningServer::start(config).unwrap();
 
     let mut sub = Conn::open(server.socket_path());
     assert_eq!(sub.hello(&ws)["ok"], json!(true));
@@ -919,6 +928,7 @@ fn an_armed_sub_with_zero_frames_written_is_dropped_after_the_idle_horizon() {
     config.sub_idle_write_timeout = SUB_IDLE_WRITE_TIMEOUT;
     config.idle_exit = Some(idle_exit);
     config.reap_interval = Duration::from_millis(100);
+    config.activity_park = Some(FOREVER);
     let server = RunningServer::start(config).unwrap();
     // The idle-exit clock is unix whole seconds from DAEMON BIRTH, so a 1s
     // horizon could latch on the reaper's first tick, before this test's
@@ -928,8 +938,10 @@ fn an_armed_sub_with_zero_frames_written_is_dropped_after_the_idle_horizon() {
     // mortality had already latched before the SubGuard existed (card
     // `sub-push-913-latent-false-green`). The park is a FLOOR under the
     // activity clock, so the handshake's own `note_request` bumps cannot
-    // destroy it (card `registry-sweep-rebuild-flake-same-sha-split`).
-    server.registry().park_activity_clock(365 * 24 * 60 * 60);
+    // destroy it (card `registry-sweep-rebuild-flake-same-sha-split`), and it is
+    // BORN with the daemon (`Config::activity_park`) rather than taken on the
+    // handle `start()` returns, so `start()`'s own body is covered too (card
+    // `registry-sweep-poll-flake-instance-1` § F1 full-close).
 
     // Age the daemon PAST the horizon before the subscriber exists. Under the
     // park this is inert; without it the flag latches here every time — which
