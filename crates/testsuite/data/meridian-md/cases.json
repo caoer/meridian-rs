@@ -324,6 +324,23 @@
    "kills": "a reader that scans for a closing `---` and, failing, silently treats the whole file as frontmatter"
   },
   {
+   "id": "empty-frontmatter",
+   "fixture": "refusals/empty-frontmatter.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "missing-required-key",
+    "line": 1,
+    "names": [
+     "type",
+     "add `type: meridian-config` to the frontmatter"
+    ]
+   },
+   "law": "spec §4 — a frontmatter block that opens and closes but carries no keys is `missing-required-key` naming `type`, not `no-frontmatter`: neither no-frontmatter condition holds, since the file does open with `---` and the fence does close",
+   "kills": "a door that reads only the parse tree. The markdown parser mints no frontmatter node for an empty metadata block, so such a door refuses `---\\n---` as `no-frontmatter` and tells the author their file `does not open with a closed --- frontmatter block` — false about bytes the author is looking at. Asserting the Fix clause is what makes the case fail on the message as well as the reason word; asserting the reason word alone would still pass a build that kept the old sentence under a renamed reason"
+  },
+  {
    "id": "frontmatter-unparseable",
    "fixture": "refusals/frontmatter-unparseable.md",
    "env": {},
