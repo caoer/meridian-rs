@@ -24,7 +24,7 @@
 
 use std::io::{self, BufReader};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -130,6 +130,45 @@ impl DialFailure {
     }
 }
 
+/// Where a write verb's round trip stopped — and therefore **what is known
+/// about the file**.
+///
+/// The two arms have opposite remedies, exactly like [`DialFailure`]'s, and
+/// for the same reason: they were rendered with one voice. Every failure of
+/// [`SocketDoor::call_until_answered`] reached `write_ipc::call` as one
+/// `io::Error` and was reported as a landed-or-not UNKNOWN — true of a lost
+/// answer, false of a frame that never finished going out. A caller told
+/// "UNKNOWN" reads the file back and distrusts it; a caller told "nothing was
+/// committed" retries. Getting that backwards is the same class of defect as
+/// calling a wedged daemon an absent one.
+#[derive(Debug)]
+pub(crate) enum WriteHalt {
+    /// The frame did not reach the daemon whole — a stalled or dead drain, or
+    /// a request that would not even serialize. No newline arrived, so the
+    /// daemon never parsed a request: **nothing was committed**, and a retry is
+    /// safe.
+    NotSent(io::Error),
+    /// The frame WAS delivered and the answer was lost (EOF, a torn stream).
+    /// The daemon may have committed before the loss: the outcome is UNKNOWN,
+    /// and the file must be read back before any re-send.
+    AnswerLost(io::Error),
+}
+
+impl WriteHalt {
+    /// The transport error underneath, whichever half it came from.
+    pub(crate) fn error(&self) -> &io::Error {
+        match self {
+            Self::NotSent(e) | Self::AnswerLost(e) => e,
+        }
+    }
+}
+
+impl std::fmt::Display for WriteHalt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.error())
+    }
+}
+
 impl std::fmt::Display for DialFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.teach(ABSENT))
@@ -207,6 +246,11 @@ pub trait Door: Send {
 pub struct SocketDoor {
     writer: UnixStream,
     reader: BufReader<UnixStream>,
+    /// The daemon's own socket path, retained at connect. The write half's
+    /// tick probes it on a SECOND connection — that is what lets a daemon too
+    /// busy to drain be told from one that died mid-send
+    /// ([`registry::wedge::write_all`]).
+    socket: PathBuf,
     /// The caps the daemon's hello advertised, retained at connect — the
     /// client half of §3.2 discovery honesty. A write verb consults these
     /// before sending a field the daemon never negotiated (the strict wall
@@ -266,6 +310,7 @@ impl SocketDoor {
         let mut door = Self {
             writer,
             reader,
+            socket: socket.to_path_buf(),
             caps: Vec::new(),
         };
         let hello = json!({
@@ -341,6 +386,13 @@ impl SocketDoor {
         let mut frame = serde_json::to_string(request)
             .map_err(|e| DialFailure::Unreachable(io::Error::other(e)))?;
         frame.push('\n');
+        // DOCUMENTED-FLAT, and the one write half in this repo that stays so.
+        // The hello is ~120 bytes on a connection opened microseconds ago, so
+        // its send buffer is empty and the whole frame fits in one `write(2)`
+        // — a stalled DRAIN, which needs a FULL buffer, is unreachable here.
+        // What can still fail is the connection itself, and `Unreachable` is
+        // the right arm for that. The bytes that could stall the drain are a
+        // write verb's BODY, and they go through `call_until_answered` below.
         self.writer
             .write_all(frame.as_bytes())
             .map_err(DialFailure::Unreachable)?;
@@ -415,29 +467,55 @@ impl SocketDoor {
     /// with the daemon's answer or a transport loss (EOF, a torn stream), and
     /// THAT is the caller's to render as an unknown outcome.
     ///
+    /// # The two halves have OPPOSITE commit facts, so they are separate arms
+    ///
+    /// This function's own read half is where "the outcome is unknown" is true:
+    /// the frame is whole on the wire, the daemon is committing, and only its
+    /// answer can settle what landed. Its WRITE half is the exact opposite —
+    /// the frame never arrived whole, so the daemon cannot have acted on it —
+    /// and until 2026-08-24 both reached the caller as one `io::Result`, which
+    /// `write_ipc::call` rendered with the read half's words: *"the frame had
+    /// reached the daemon, so the write may have committed … whether the file
+    /// carries it is UNKNOWN."* On a stalled drain every clause of that is
+    /// false, and it sends an operator to re-read a file that was never
+    /// touched — the mirror image of the false-negative this door was built to
+    /// fix. [`WriteHalt`] keeps them apart.
+    ///
+    /// The write half is also no longer flat-bounded: it carries the wedge
+    /// discipline ([`registry::wedge::write_all`]), so a daemon too busy to
+    /// drain a large body is not abandoned at the socket's 7 s tick, and a
+    /// daemon that IS wedged says so instead of emitting a bare `os error
+    /// 35`/`11`.
+    ///
     /// # Errors
-    /// The write failed, or the connection died before an answer arrived.
+    /// [`WriteHalt::NotSent`] — the frame never reached the daemon whole;
+    /// nothing was committed. [`WriteHalt::AnswerLost`] — it did, and the
+    /// answer did not come back; the outcome is unknown.
     pub(crate) fn call_until_answered(
         &mut self,
         request: &Value,
         notice: &str,
-    ) -> io::Result<String> {
-        use std::io::{BufRead as _, Write as _};
+    ) -> Result<String, WriteHalt> {
+        use std::io::BufRead as _;
 
-        let mut frame = serde_json::to_string(request).map_err(io::Error::other)?;
+        let mut frame =
+            serde_json::to_string(request).map_err(|e| WriteHalt::NotSent(io::Error::other(e)))?;
         frame.push('\n');
-        self.writer.write_all(frame.as_bytes())?;
-        self.writer.flush()?;
+        // A write verb carries no budget, so the send gets the general
+        // backstop rather than the socket's 7 s script wall clock — the same
+        // reasoning that hands the handshake `GREET_CAP` (`write_ipc::connect`).
+        registry::wedge::write_all(&mut self.writer, &self.socket, GREET_CAP, frame.as_bytes())
+            .map_err(WriteHalt::NotSent)?;
 
         let mut line = String::new();
         let mut noticed = false;
         loop {
             match self.reader.read_line(&mut line) {
                 Ok(0) => {
-                    return Err(io::Error::new(
+                    return Err(WriteHalt::AnswerLost(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "daemon closed the connection without a response",
-                    ));
+                    )));
                 }
                 Ok(_) => return Ok(line),
                 Err(e)
@@ -453,7 +531,7 @@ impl SocketDoor {
                 }
                 // No `Interrupted` arm: `read_until` (which `read_line` calls)
                 // absorbs EINTR itself, so it cannot surface here.
-                Err(e) => return Err(e),
+                Err(e) => return Err(WriteHalt::AnswerLost(e)),
             }
         }
     }
@@ -461,7 +539,7 @@ impl SocketDoor {
 
 impl Door for SocketDoor {
     fn call(&mut self, request: &Value) -> io::Result<String> {
-        crate::engine::call_line(&mut self.writer, &mut self.reader, request)
+        crate::engine::call_line(&mut self.writer, &mut self.reader, &self.socket, request)
     }
 }
 
