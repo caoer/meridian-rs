@@ -1,9 +1,15 @@
 //! In-memory registry: map keyed by canonical workspace path, plus
 //! register / resolve / unregister / list / reap.
 //!
-//! Map write lock is the serialization point. Register critical section
-//! (deny → sentinel → insert → persist) holds one guard so concurrent
-//! registrars for the same path first-writer-win by serialization.
+//! Map write lock is the serialization point for the MAP, and **no disk I/O
+//! runs under it** — one hash op per take. First-writer-wins for a path is the
+//! DRAWER FLOCK's (`cache::register` holds it and adopts a valid sentinel, so
+//! same-path registrars converge on one identity) plus the insert's re-check.
+//! The sentinel write and the state-file write both run with no map guard held:
+//! `cache::register` takes a blocking cross-process `flock`, and holding the map
+//! guard across it let one drawer wall every other workspace's `hello`
+//! (`Registry::register` still writes the sentinel BEFORE the insert, so a
+//! sentinel failure leaves no entry — one entry iff one sentinel, unchanged).
 
 use std::collections::{BTreeSet, HashMap};
 use std::io;
@@ -144,6 +150,11 @@ pub struct Registry {
     /// honest answer there. [`Registry::new_shared`] (the daemon) binds it.
     myself: Weak<Registry>,
     state: StateStore,
+    /// Serializes state-file writers ([`Registry::persist`]). The snapshot is
+    /// taken INSIDE this gate, so file-write order is snapshot order and the
+    /// last write is the newest state — which is what lets `persist` run with
+    /// no `inner` guard held instead of writing disk under the map lock.
+    persist_gate: Mutex<()>,
     cache_root: PathBuf,
     /// Test-only pause gate for the rebuild race window. When armed, the next
     /// rebuild pass announces itself on the first channel, then parks on the
@@ -353,6 +364,7 @@ impl Registry {
             // Dead on the in-process lane; `new_shared` (the daemon) binds it.
             myself: Weak::new(),
             state,
+            persist_gate: Mutex::new(()),
             cache_root,
             #[cfg(test)]
             pause_before_insert: Mutex::new(None),
@@ -396,10 +408,14 @@ impl Registry {
 
     /// Register `path` as a warm workspace.
     ///
-    /// Canonicalizes, enforces the deny ceiling, then — under the write lock —
-    /// adopts an existing entry or writes the drawer sentinel, inserts, and
-    /// persists the state file. See the module docs for the serialization
-    /// guarantee.
+    /// Canonicalizes, enforces the deny ceiling, adopts an existing entry under
+    /// a short map guard, and — for a first writer — writes the drawer sentinel
+    /// and the state file with **no map guard held**. See the module docs for
+    /// what serializes what.
+    ///
+    /// This is the whole lock take on the `hello` path
+    /// ([`pin_declared`](Self::pin_declared)): for an already-registered
+    /// workspace, one hash lookup and an LRU touch.
     pub fn register(&self, path: &Path) -> RegisterOutcome {
         let canonical = match workspace::canonicalize(path) {
             Ok(canonical) => canonical,
@@ -415,15 +431,17 @@ impl Registry {
             return RegisterOutcome::Denied(reason.into());
         }
 
-        let mut map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        if let Some(existing) = map.get_mut(&canonical) {
-            existing.last_use = now_secs();
-            return RegisterOutcome::Adopted(existing.clone());
+        if let Some(entry) = self.touch(&canonical) {
+            return RegisterOutcome::Adopted(entry);
         }
 
-        // First writer for this path. Write the drawer sentinel before the map
-        // insert, still under the lock, so a sentinel failure leaves no
-        // dangling registry entry — one entry iff one sentinel.
+        // First writer for this path. The sentinel write is its own
+        // serialization point — `cache::register` holds the drawer flock and
+        // adopts an already-valid sentinel — so it needs no map guard, and MUST
+        // NOT hold one: that flock blocks on any other holder of the drawer,
+        // including another process, and the map guard is what every `hello`
+        // takes. Still written BEFORE the insert, so a sentinel failure leaves
+        // no dangling registry entry — one entry iff one sentinel.
         let drawer = cache::drawer_dir(&self.cache_root, &canonical);
         if let Err(e) = cache::register(&drawer, &canonical) {
             return RegisterOutcome::Error(format!(
@@ -438,9 +456,28 @@ impl Registry {
             registered_at: now,
             last_use: now,
         };
-        map.insert(canonical, entry.clone());
-        self.persist(&map);
+        {
+            let mut map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+            // A concurrent registrar for this same path may have inserted while
+            // we wrote the sentinel. Both wrote through the drawer flock, so the
+            // identities converged; adopt its entry rather than clobbering it.
+            if let Some(existing) = map.get_mut(&canonical) {
+                existing.last_use = now;
+                return RegisterOutcome::Adopted(existing.clone());
+            }
+            map.insert(canonical, entry.clone());
+        }
+        self.persist();
         RegisterOutcome::Registered(entry)
+    }
+
+    /// LRU-touch `canonical` when it is registered, returning the adopted entry.
+    /// The guard spans one hash lookup and one field write — never disk.
+    fn touch(&self, canonical: &Path) -> Option<WorkspaceEntry> {
+        let mut map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        let entry = map.get_mut(canonical)?;
+        entry.last_use = now_secs();
+        Some(entry.clone())
     }
 
     /// Resolve `cwd` against the registry: canonicalize, then walk it and its
@@ -1455,12 +1492,13 @@ impl Registry {
         let key = workspace::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let removed = {
             let mut map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-            let removed = map.remove(&key).is_some();
-            if removed {
-                self.persist(&map);
-            }
-            removed
+            map.remove(&key).is_some()
         };
+        // Outside the guard: the state-file write is disk, and the guard is what
+        // every `hello` takes (see [`Self::persist`]).
+        if removed {
+            self.persist();
+        }
         let feed = {
             let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
             feeds.remove(&key)
@@ -1622,8 +1660,24 @@ impl Registry {
     /// Persist the current map to the state file, logging (never failing) on a
     /// write error — a lost persist only costs a warm registration across
     /// restart.
-    fn persist(&self, map: &HashMap<PathBuf, WorkspaceEntry>) {
-        let entries: Vec<WorkspaceEntry> = map.values().cloned().collect();
+    ///
+    /// Takes its own snapshot under a READ guard, then writes with **no map
+    /// guard held** — `StateStore::save` serializes the whole entry set and
+    /// fsyncs twice, and that is disk under the lock every `hello` takes.
+    /// [`Self::persist_gate`] serializes the writers, so the last file written
+    /// is the last snapshot taken.
+    ///
+    /// Callers must hold no `inner` guard: `RwLock` is not reentrant, so a
+    /// caller holding the write guard would deadlock on the read below.
+    fn persist(&self) {
+        let _gate = self
+            .persist_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let entries: Vec<WorkspaceEntry> = {
+            let map = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+            map.values().cloned().collect()
+        };
         if let Err(e) = self.state.save(&entries) {
             eprintln!("registry: state save failed ({e}); warm set may not survive restart");
         }
@@ -1632,8 +1686,7 @@ impl Registry {
     /// Persist the current map to the state file (used at graceful shutdown to
     /// capture in-memory `last_use` bumps from `resolve`).
     pub(crate) fn flush(&self) {
-        let map = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        self.persist(&map);
+        self.persist();
     }
 }
 
