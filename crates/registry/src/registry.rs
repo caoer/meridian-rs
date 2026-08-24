@@ -2657,14 +2657,34 @@ mod engine_tests {
     /// Poll until the workspace's §6.7 vouch is engaged against `at` — the
     /// deterministic form of waiting out kernel-event delivery.
     fn wait_vouched(reg: &Registry, canonical: &Path, at: &model::MerkleRoot) {
+        let t0 = std::time::Instant::now();
+        let mut iters = 0u64;
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while !reg.vouched_quiet(canonical, at) {
+            if iters < 3 || iters % 25 == 0 {
+                let feed_live = {
+                    let feeds = reg.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+                    matches!(feeds.get(canonical), Some(FeedSlot::Live(_)))
+                };
+                let (cache, applied) = reg.patched_cache(canonical);
+                let memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+                eprintln!(
+                    "PROBE it={iters} el={:?} feed_live={feed_live} applied={applied:?} \
+                     guard={:?} served_some={} served_eq={}",
+                    t0.elapsed(),
+                    memo.guard_currency(),
+                    memo.served_cached().is_some(),
+                    memo.served_cached() == Some(at),
+                );
+            }
+            iters += 1;
             assert!(
                 std::time::Instant::now() < deadline,
                 "the vouch never engaged: feed dead or memo untrusted"
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+        eprintln!("PROBE DONE iters={iters} elapsed={:?}", t0.elapsed());
     }
 
     /// §6.7 cost gate, warm read pass: once the vouch is engaged, a quiet
