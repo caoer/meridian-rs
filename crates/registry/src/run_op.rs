@@ -208,6 +208,24 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
         let invocation = format!("{}-t{index}", request.invocation);
         if modes::is_mode_target(target) {
             rows.push(match &pinned {
+                // A `source` target carries the page's bytes instead of its
+                // name, and the wall RELAXES `page` for it. So there is no
+                // page to find, and the lookup below would look up the empty
+                // string, miss, and answer `bad_path` naming nothing — which
+                // is what every `hooks check --file <draft>` got: the draft
+                // path lived in `modes::mode_row` and no wire caller reached
+                // it. Dispatched here, to the same owner the CLI reaches.
+                Some(world) if target.source.is_some() => modes::draft_row(
+                    &modes::DraftWorld {
+                        root: &root,
+                        declaring_root: Some(ws),
+                        observed_root: &world.at_fingerprint,
+                        prelude: request.prelude.as_deref(),
+                    },
+                    target,
+                    target.source.as_deref().unwrap_or_default(),
+                    &invocation,
+                ),
                 Some(world) => match world.docs.get(&target.page) {
                     Some(doc) => modes::mode_row(
                         &modes::ModeWorld {
