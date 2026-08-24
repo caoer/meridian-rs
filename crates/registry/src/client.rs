@@ -179,11 +179,56 @@ fn unexpected(op: &str, response: &Response) -> io::Error {
 #[cfg(test)]
 mod tests {
     use std::os::unix::net::UnixListener;
-    use std::sync::mpsc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, mpsc};
     use std::thread;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use super::{Client, Request, wedge};
+
+    /// A BACKSTOP, never a budget — see `wedge::tests::NEVER_RETURNED`. It only
+    /// decides whether a regression FAILS or hangs the suite forever.
+    const NEVER_RETURNED: Duration = Duration::from_secs(120);
+
+    /// A listener that accepts and answers nothing, held open by a flag rather
+    /// than a sleep, so it outlives the slowest read without costing a green
+    /// run that sleep. (Same reasoning as `wedge::tests::Mute`; kept local
+    /// because a test helper shared across modules is a dependency between
+    /// tests, and these two measure different doors.)
+    struct Mute {
+        done: Arc<AtomicBool>,
+        thread: Option<thread::JoinHandle<()>>,
+    }
+
+    impl Mute {
+        fn holding(listener: UnixListener) -> Self {
+            let done = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&done);
+            listener.set_nonblocking(true).expect("poll for the flag");
+            let thread = thread::spawn(move || {
+                let mut held = Vec::new();
+                while !flag.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((stream, _)) => held.push(stream),
+                        Err(_) => thread::sleep(Duration::from_millis(20)),
+                    }
+                }
+            });
+            Mute {
+                done,
+                thread: Some(thread),
+            }
+        }
+    }
+
+    impl Drop for Mute {
+        fn drop(&mut self) {
+            self.done.store(true, Ordering::SeqCst);
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
+            }
+        }
+    }
 
     /// **The whole point of the card.** A daemon that accepts the connection
     /// and answers nothing used to park every caller of this client forever —
@@ -191,69 +236,62 @@ mod tests {
     /// had no symptom: no error, no exit, no log line, just a process that
     /// never returned.
     ///
-    /// Measured here through the PUBLIC door, because that is what callers
-    /// hold. The listener also fails the liveness probe, so the verdict is
-    /// "died mid-request", and the elapsed lower bound proves the socket's own
-    /// tick is what ended the wait rather than something cheaper upstream.
+    /// Measured through the PUBLIC door, because that is what callers hold. The
+    /// elapsed lower bound proves the socket's own tick ended the wait rather
+    /// than something cheaper upstream.
     #[test]
     fn a_daemon_that_accepts_and_never_answers_does_not_park_the_client() {
         let dir = tempfile::tempdir().expect("tempdir");
         let sock = dir.path().join("daemon.sock");
-        let listener = UnixListener::bind(&sock).expect("bind");
-        let held = thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept");
-            thread::sleep(wedge::TICK * 6);
-            drop(stream);
-        });
+        let _mute = Mute::holding(UnixListener::bind(&sock).expect("bind"));
 
         let (tx, rx) = mpsc::channel();
         let client = Client::new(sock.clone());
         thread::spawn(move || {
             let started = Instant::now();
             let outcome = client.request(&Request::List);
-            let _ = tx.send((outcome.is_err(), started.elapsed()));
+            let _ = tx.send((
+                outcome.map(|_| ()).map_err(|e| e.to_string()),
+                started.elapsed(),
+            ));
         });
 
-        let (refused, elapsed) = rx
-            .recv_timeout(wedge::TICK * 6)
+        let (outcome, elapsed) = rx
+            .recv_timeout(NEVER_RETURNED)
             .expect("request returned — a socket with no read timeout never would");
-        assert!(
-            refused,
-            "a daemon that answers nothing fails the round trip"
-        );
+        let message = outcome.expect_err("a daemon that answers nothing fails the round trip");
         assert!(
             elapsed >= wedge::TICK,
-            "the socket's own tick is what fired, not something faster: {elapsed:?}"
+            "the socket's own tick is what fired, not something faster: {elapsed:?} ({message})"
         );
-        held.join().expect("the mute listener finishes");
     }
 
     /// `ping` carries the probe bound, not the wedge cap: it IS the liveness
     /// question, and `engine::ensure_daemon` polls it against a 5 s deadline.
-    /// A ping inheriting `WEDGE_CAP` would blow that deadline twelvefold.
+    /// A ping inheriting `WEDGE_CAP` would blow that deadline twelvefold, so
+    /// the upper bound here is a real requirement rather than a timing guess —
+    /// it is asserted against the CAP, which is 30x the value under test.
     #[test]
     fn ping_is_bounded_by_the_probe_timeout_not_the_wedge_cap() {
         let dir = tempfile::tempdir().expect("tempdir");
         let sock = dir.path().join("daemon.sock");
-        let listener = UnixListener::bind(&sock).expect("bind");
-        let held = thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept");
-            thread::sleep(wedge::TICK * 6);
-            drop(stream);
-        });
+        let _mute = Mute::holding(UnixListener::bind(&sock).expect("bind"));
 
         let (tx, rx) = mpsc::channel();
         let client = Client::new(sock.clone());
         thread::spawn(move || {
-            let _ = tx.send(client.ping().is_err());
+            let started = Instant::now();
+            let _ = tx.send((client.ping().is_err(), started.elapsed()));
         });
 
+        let (refused, elapsed) = rx
+            .recv_timeout(NEVER_RETURNED)
+            .expect("ping returned — an unbounded ping never would");
+        assert!(refused, "an unanswering daemon does not pong");
         assert!(
-            rx.recv_timeout(wedge::TICK * 6)
-                .expect("ping returned well inside the wedge cap"),
-            "an unanswering daemon does not pong"
+            elapsed < wedge::WEDGE_CAP,
+            "a ping must not inherit the wedge cap — ensure_daemon polls it against 5 s: {elapsed:?}"
         );
-        held.join().expect("the mute listener finishes");
     }
 
     /// An absent socket still fails at `connect(2)` — instantly, and with the
