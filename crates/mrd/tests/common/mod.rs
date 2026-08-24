@@ -22,8 +22,12 @@
 //!
 //! Enforced at runtime, in both directions, by a `debug_assert` on
 //! `registry::Config::drain_budget_hazard` — in `RunningServer::start`, and in
-//! the `mrd` client before it auto-spawns a daemon, because that daemon's
-//! stderr is `Stdio::null()` and its own panic reaches nobody.
+//! the `mrd` client before it auto-spawns a daemon. The client-side half was
+//! added because that daemon's stderr was `Stdio::null()` and its own panic
+//! reached nobody; since card `auto-spawned-daemon-dies-silently` the child
+//! writes to a lane the client reads back, so the panic is no longer lost —
+//! the client-side check stays because it is still 5 s faster and carries an
+//! exit code.
 #![allow(dead_code)]
 
 use std::io::{ErrorKind, Write as _};
@@ -46,10 +50,14 @@ const FIXTURE_DRAIN_SECS: &str = "30";
 /// resolves its own layout through `Config::resolve`, whose only lever from
 /// outside is the environment. Without it the daemon runs the 2 s PRODUCTION
 /// budget against a `TempDir` cache root, which is the class-2 flake, and it
-/// fails **silently**: an auto-spawned daemon's stderr is `Stdio::null()`, so
-/// it dies unheard and the client degrades to the ephemeral engine ~5 s later
-/// with exit 0. Measured: 5.02 s and an ephemeral answer without this, 0.12 s
-/// and a live daemon with it (card `fixture-drain-guard-followups`).
+/// used to fail **silently**: an auto-spawned daemon's stderr was
+/// `Stdio::null()`, so it died unheard and the client degraded to the ephemeral
+/// engine ~5 s later with exit 0. Measured: 5.02 s and an ephemeral answer
+/// without this, 0.12 s and a live daemon with it (card
+/// `fixture-drain-guard-followups`). The silence half is closed — the child now
+/// dies onto a lane the client quotes (card
+/// `auto-spawned-daemon-dies-silently`) — but the FLAKE is not, and this is
+/// still what prevents it.
 ///
 /// **What it does NOT do, stated because the opposite is the tempting claim.**
 /// This helper CREATES a chokepoint; it does not retrofit one. Files in this
