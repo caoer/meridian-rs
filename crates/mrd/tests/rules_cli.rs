@@ -815,8 +815,70 @@ fn a_drifted_pin_reddens_the_armed_cell_and_gates_the_exit() {
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     assert_eq!(out.status.code(), Some(1), "a red armed row is a finding");
     assert!(
-        stdout.contains("  task.notify  armed=armed(drifted)"),
+        stdout.contains("  task.notify  armed=armed(drifted)  drift=drifted"),
         "the rev the arm pinned no longer stands: {stdout}"
+    );
+}
+
+/// **One rev law, two faces.** On a row that FIRES, the drift column and the
+/// `armed=` redness are computed from the same `policy` join, so they cannot
+/// disagree — a reader who trusts either is reading the same fact. The gate this
+/// pins is the one `mrd status` fails: it holds a second rev law
+/// (`status_cmd::page_drifted`) and can therefore report a drift count `mrd
+/// rules` does not.
+#[test]
+fn the_drift_column_and_the_redness_agree_on_a_row_that_fires() {
+    let s = populated();
+    arm(&s, &[("sessions/s1", "task.notify", "armed")]);
+    s.write(
+        "sessions/s1/notify.md",
+        &rule_page("hook", "task.notify", "edited after the arm"),
+    );
+    let out = s.run(&["rules", "sessions/s1", "--json"]);
+    assert_eq!(out.status.code(), Some(1), "a red armed row is a finding");
+    let value: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("json");
+    let notify = value["rules"]["rules"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|row| row["id"] == "task.notify")
+        .expect("task.notify")
+        .clone();
+    assert_eq!(notify["armed"]["redness"], "drifted", "{notify}");
+    assert_eq!(notify["armed"]["drift"], "drifted", "{notify}");
+    // The live rev the column publishes IS the winner's rev on the same row —
+    // the join `rules-drift.py` had to make by hand, now served.
+    let winner = notify["chain"]
+        .as_array()
+        .expect("chain")
+        .iter()
+        .find(|entry| entry["role"] == "winner")
+        .expect("a winner")
+        .clone();
+    assert_eq!(notify["armed"]["live_rev"], winner["rev"], "{notify}");
+    assert_ne!(notify["armed"]["pinned_rev"], winner["rev"], "{notify}");
+}
+
+/// A ledger row whose pin is CLEAN says so — `drift=-`, not an empty cell. An
+/// absent marker reading as "nothing drifted" when it meant "nobody asked" is
+/// the entire defect class this column closes.
+#[test]
+fn a_clean_ledger_row_prints_the_column_rather_than_omitting_it() {
+    let s = populated();
+    arm(&s, &[("sessions/s1", "task.notify", "armed")]);
+    let out = s.run(&["rules", "sessions/s1"]);
+    let human = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(out.status.code(), Some(0), "{human}");
+    assert!(
+        human.contains("  task.notify  armed=armed  drift=-\n"),
+        "a clean join is stated, never left blank: {human}"
+    );
+    // An id with NO ledger row gets no drift cell at all: `drift=-` there would
+    // claim a join that was never made.
+    assert!(
+        !human.contains("armed=-  drift"),
+        "a row the ledger does not carry has no drift cell: {human}"
     );
 }
 
@@ -859,6 +921,14 @@ fn an_off_row_whose_page_drifts_is_listed_off_and_does_not_gate_the_exit() {
         "{stdout}"
     );
     assert_eq!(notify["armed"]["rendered"], "off", "{stdout}");
+    // The drift column, added 2026-08-24 (card mrd-rules-all-rows-drift-column,
+    // ruling 4dab0746): the redness stays null — the contract STANDS — and the
+    // edit is named anyway, in its own column, with its own word.
+    assert_eq!(notify["armed"]["drift"], "off-drifted", "{stdout}");
+    assert_ne!(
+        notify["armed"]["pinned_rev"], notify["armed"]["live_rev"],
+        "the two revs the word was computed from, both published: {stdout}"
+    );
     assert_eq!(
         value["rules"]["armed_set"]["rows"], 1,
         "still listed: {stdout}"
@@ -870,8 +940,13 @@ fn an_off_row_whose_page_drifts_is_listed_off_and_does_not_gate_the_exit() {
     let human = String::from_utf8_lossy(&out.stdout).to_string();
     assert_eq!(out.status.code(), Some(0), "{human}");
     assert!(
-        human.contains("  task.notify  armed=off\n"),
-        "listed as off, never off(drifted): {human}"
+        human.contains("  task.notify  armed=off  drift=off-drifted\n"),
+        "listed as off with its drift beside it, never off(drifted): {human}"
+    );
+    assert!(
+        !human.contains("off(drifted)"),
+        "the drift word never enters the armed cell — there it would read as a \
+         redness: {human}"
     );
     let out = s.run(&["rules", "sessions/s2", "--json"]);
     assert_eq!(
@@ -879,6 +954,20 @@ fn an_off_row_whose_page_drifts_is_listed_off_and_does_not_gate_the_exit() {
         Some(0),
         "an off row outside the queried path is inert too"
     );
+    // …and carries the column there as well: `verify_elsewhere_at` shares
+    // `verify_rows`, so redness is silent on this row in that section for the
+    // very same reason, and the drift join is what breaks the silence.
+    let elsewhere: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("json");
+    let row = elsewhere["rules"]["armed_elsewhere"]
+        .as_array()
+        .expect("elsewhere rows")
+        .iter()
+        .find(|row| row["id"] == "task.notify")
+        .expect("the off row, seen from outside its arm root")
+        .clone();
+    assert_eq!(row["redness"], serde_json::Value::Null, "{row}");
+    assert_eq!(row["drift"], "off-drifted", "{row}");
 
     // Control: the same drift under an ON row is still the finding.
     arm(&s, &[("sessions/s1", "task.notify", "armed")]);
@@ -1175,6 +1264,11 @@ fn the_cli_layer_holds_no_second_resolver() {
         ".select_at(",
         ".verify_at(",
         ".chain()",
+        // The drift column is `policy`'s join too. A rev comparison written
+        // here would be free to disagree with the gate about a row that fires —
+        // which is exactly how `mrd status` (`status_cmd::page_drifted`) can
+        // report a drift count this verb does not.
+        ".drift(",
     ] {
         assert!(body.contains(called), "the verb must call {called}");
     }
@@ -2067,6 +2161,124 @@ fn a_small_undecidable_population_is_named_in_full_with_no_remainder() {
     assert!(
         !line.contains(" more"),
         "nothing was withheld, so the line must claim no remainder: {line}"
+    );
+}
+
+// ── the drift column's cost (PERF LAW, leader 015f083a) ──────────────────────
+//
+// Any change touching rules RESOLUTION passes its perf test on wall time AND
+// CPU. Wall alone is a lie on a shared self-hosted runner — it measures the
+// neighbours — so the gate is CPU (`getrusage(RUSAGE_CHILDREN)`, load
+// independent, the convention this crate's dev-dep comment states) and the wall
+// number is measured and RECORDED beside it. Both are printed on every run, so a
+// regression in either is visible whether or not it trips the assert.
+//
+// What is actually being bounded: the drift column adds ONE page read per
+// DISTINCT pinned page (`ArmedArtifact::drift` memoises by page), joined once
+// for the whole answer rather than per section. This fixture arms a ledger wide
+// enough that a per-row or per-section re-read would show up as a multiple.
+
+/// The CPU budget for one `mrd rules` over a `LEDGER_ROWS`-row ledger.
+///
+/// Derived, not guessed: measured at this head on the mac lane at ~110 ms and on
+/// the nyc-2 lane at ~150 ms for the whole invocation (resolution included, of
+/// which the drift join is a small part). 1 500 ms carries ≳10× headroom over
+/// the measured value — the same ratio `check_multiroot_cpu.rs` chose — so it
+/// catches a shape change (a read per row per section would be ~3×, a snapshot
+/// of the whole domain ~20×) without failing on runner noise.
+const DRIFT_CPU_BUDGET: std::time::Duration = std::time::Duration::from_millis(1_500);
+
+/// Wide enough that a per-row re-read is a multiple, small enough to stay a unit
+/// test.
+const LEDGER_ROWS: usize = 40;
+
+/// `getrusage(RUSAGE_CHILDREN)` — the measured child's user+sys. Cumulative and
+/// monotonic, so the caller subtracts a before-reading.
+fn children_cpu() -> std::time::Duration {
+    // SAFETY: `getrusage` writes a fully-initialised `rusage` into the out
+    // pointer and reads nothing else; `RUSAGE_CHILDREN` is a valid `who`.
+    let mut usage = unsafe { std::mem::zeroed::<libc::rusage>() };
+    let rc = unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &raw mut usage) };
+    assert_eq!(rc, 0, "getrusage(RUSAGE_CHILDREN)");
+    let secs = |t: libc::timeval| {
+        std::time::Duration::new(
+            u64::try_from(t.tv_sec).expect("non-negative seconds"),
+            u32::try_from(t.tv_usec).expect("microseconds fit") * 1_000,
+        )
+    };
+    secs(usage.ru_utime) + secs(usage.ru_stime)
+}
+
+/// **The drift column is bounded on CPU and its wall time is recorded.** Half
+/// the rows are `off` — the population the column exists for, and the one
+/// `verify_rows` skips, so this also proves the added work is the drift join's
+/// and not the gate's.
+#[test]
+fn the_drift_column_costs_one_read_per_pinned_page_not_one_per_row() {
+    let s = sandbox();
+    let mut requests: Vec<(String, String, String)> = Vec::new();
+    for n in 0..LEDGER_ROWS {
+        let id = format!("task.rule{n:03}");
+        s.write(
+            &format!("rules/rule{n:03}.md"),
+            &rule_page("hook", &id, &format!("rule {n} body")),
+        );
+        // Half off, half armed: the off half is invisible to `verify_rows` and
+        // visible to the drift join, which is the whole point of the column.
+        let mode = if n % 2 == 0 { "off" } else { "armed" };
+        requests.push((".".to_owned(), id, mode.to_owned()));
+    }
+    let borrowed: Vec<(&str, &str, &str)> = requests
+        .iter()
+        .map(|(root, id, mode)| (root.as_str(), id.as_str(), mode.as_str()))
+        .collect();
+    arm(&s, &borrowed);
+
+    // Warm the page cache with a throwaway run, then measure the next one.
+    let _ = s.run(&["rules"]);
+    let cpu_before = children_cpu();
+    let wall_start = std::time::Instant::now();
+    let out = s.run(&["rules"]);
+    let wall = wall_start.elapsed();
+    // Cumulative and monotonic; the checked form says so rather than trusting
+    // it — an underflow would print as an under-budget PASS.
+    let cpu = children_cpu()
+        .checked_sub(cpu_before)
+        .expect("children CPU is cumulative, so it never goes backwards");
+
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let code = out.status.code().unwrap_or(-1);
+    assert_eq!(
+        code,
+        0,
+        "a clean ledger of {LEDGER_ROWS} rows is no finding: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The measurement is only about the column if the column is actually there.
+    let drift_cells = stdout.matches("drift=").count();
+    assert_eq!(
+        drift_cells, LEDGER_ROWS,
+        "one drift cell per ledger row, no more and no fewer: {stdout}"
+    );
+
+    eprintln!(
+        "rules over a {LEDGER_ROWS}-row ledger ({} off, {} armed): \
+         CPU {} ms (budget {} ms), wall {} ms (recorded, NOT gated)",
+        LEDGER_ROWS.div_ceil(2),
+        LEDGER_ROWS / 2,
+        cpu.as_millis(),
+        DRIFT_CPU_BUDGET.as_millis(),
+        wall.as_millis(),
+    );
+    assert!(
+        cpu < DRIFT_CPU_BUDGET,
+        "the drift join reads each DISTINCT pinned page once for the whole \
+         answer. Over {LEDGER_ROWS} rows it burned {} ms of CPU against a {} ms \
+         budget — a per-row or per-section re-read is the shape that looks like \
+         this.",
+        cpu.as_millis(),
+        DRIFT_CPU_BUDGET.as_millis(),
     );
 }
 
