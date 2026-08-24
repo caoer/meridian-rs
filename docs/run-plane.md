@@ -1589,6 +1589,36 @@ disk; absence of a cap is never a silent no-op. The declaring root's
 conventions ceiling narrows a page's caps and never widens them, exactly as
 for tasks. An exec'd entry's process is inert to it, by law.
 
+#### One spelling, both planes
+
+`caps:` is read by **two planes with different vocabularies** — the run plane's
+verbs (`md.edit:tasks/*.md`) here, and the policy plane's descriptor kinds
+(`proto.send`) at the HOOK leg (`crates/policy/src/hook.rs`). The vocabularies
+differ on purpose. **The spelling has exactly one owner**,
+`model::parse_caps_list`, read off the frontmatter block by `model::fm_caps` /
+`model::fm_doc_caps`, so these all declare the same two caps on **either**
+plane:
+
+```yaml
+caps: md.create, md.edit          # plain scalar, comma- or space-separated
+caps: [md.create, md.edit]        # flow sequence, items optionally quoted
+caps:                             # block sequence
+  - md.create
+  - md.edit
+```
+
+`caps: []` declares the empty grant; a bare `caps:` declares nothing at all (on
+the policy plane that is a refusal, on the run plane deny-by-default). Gate:
+`crates/testsuite/tests/caps_one_grammar.rs`.
+
+Until the caps-one-parser ruling (2026-08-23) the two planes had a reader each,
+and they disagreed in **opposite** directions — the run plane faulted `invalid
+capability '[md.create'` on the flow sequence, the policy plane refused
+`invalid type: string` on the plain scalar, and a block sequence reached the run
+plane as the empty string, silently replacing a page's declared caps with an
+explicit read-only grant. One key, one reader, or the two drift; the same law
+`model::fm_tags` exists under for `tags:`.
+
 ### The world a mode-bearing row runs against
 
 `load` and `fire` take the **pinned resident snapshot** (an `Arc` clone, the
@@ -2057,8 +2087,10 @@ widened this way at the cutover. A page that relied on the OP grain as a
 guard has lost it and must re-guard inside the block; the cap plane has no
 op grain left to express it with.
 
-A present-but-empty `caps` declaration is an EXPLICIT read-only grant, distinct
-from no declaration. Precedence for the grant is explicit > convention > none;
+`caps: []` is an EXPLICIT read-only grant, distinct from no declaration — and
+distinct from a bare `caps:` with nothing after it, which is not a declaration
+either (the engine never invents `[]` for a bare key). Precedence for the grant
+is explicit > convention > none;
 conventions **narrow only, never widen**, and every cap that did not survive
 intact is reported in `narrowed[]`. **Scopes meet by GLOB CONTAINMENT**
 (`Cap::meet` → `policy::glob_subsumes`; cap-meet-subsumption ruling
@@ -2143,10 +2175,14 @@ travels with the page whatever tree resolves it. Corrected 2026-08-18: an earlie
 this sentence illustrated the bypass with bash tasks — address-grammar § 4.6, second editorial
 note.)
 
-The grammar is the page grammar reused: flat dotted frontmatter keys with
-comma-separated cap lists. Flat is the reader's law, not a preference —
-`model`'s frontmatter scanner takes no YAML crate and skips every indented
-line, so a nested `run:`/` caps:` spelling would be unreadable.
+The grammar is the page grammar reused: flat dotted frontmatter keys carrying a
+cap list. Flat is the reader's law for the KEY, not a preference — the pattern
+is the `<pattern>` in `run.caps.<pattern>`, and a nested `run:`/` caps:` mapping
+would put it on an indented line where no key exists. The VALUE is the ordinary
+cap list, in
+any of the three spellings § *One spelling, both planes* names. A bare
+`run.caps.<pattern>:` declares the EMPTY ceiling, never an absent entry —
+fail-closed, the same direction a broken declaration refuses.
 
 Which root answered is never silent (`ConventionSource`):
 

@@ -3297,6 +3297,123 @@ fn tag_item(raw: &str) -> Option<String> {
     (!s.is_empty()).then(|| s.to_string())
 }
 
+/// Split a `caps:` VALUE into cap tokens — the ONE tokenizer for the
+/// capability grammar, called by BOTH capability planes.
+///
+/// It takes the value as [`fm_value`] serves it, so every YAML spelling of a
+/// list arrives here as the same text: a bare scalar (`md.create`), a flow
+/// sequence (`[md.create, md.edit]`, multi-line joined) and a block sequence
+/// (rendered to flow form) are indistinguishable by the time they reach this
+/// function. Items separate on comma, space or tab; a surrounding bracket pair
+/// is stripped once; quotes are trimmed off the whole value and off each item.
+///
+/// # Why it lives here, and why there is exactly one
+/// `caps:` had two readers and they disagreed in OPPOSITE directions, each
+/// measured in production: the policy plane's `serde_yaml` sequence accepted
+/// the flow and block spellings and refused a plain scalar, while the run
+/// plane's `CapSet::parse` accepted a plain scalar, faulted `invalid
+/// capability '[md.create'` on a flow sequence (card
+/// `caps-flow-sequence-faults-at-run-plane`) and read a block sequence as the
+/// EMPTY STRING — silently replacing a page's declared caps with an explicit
+/// read-only grant. This is the same shape [`fm_tags`] was written for after
+/// `policy`'s independent `serde_yaml` parse and the sql projection disagreed
+/// about a block-form `tags:` (card `tag-all-block-form-blindness`): one key,
+/// one reader, or the two drift.
+///
+/// A token is NOT validated here — the two planes have different
+/// vocabularies (`policy` names descriptor kinds, `run` names verbs optionally
+/// scoped by a path glob), and that difference is legitimate. Only the
+/// spelling is shared, so only the spelling is here.
+///
+/// Splitting on whitespace applies to every item on both planes, including the
+/// items of a real YAML sequence: `[md.create md.edit]` names two caps
+/// wherever it is written. The alternative — splitting a scalar but not a
+/// sequence item — is how two spellings of one declaration come to mean
+/// different things again.
+#[must_use]
+pub fn parse_caps_list(value: &str) -> Vec<String> {
+    let text = value.trim().trim_matches(['"', '\'']).trim();
+    let inner = text
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(text);
+    inner
+        .split([',', ' ', '\t'])
+        .filter_map(|item| {
+            let s = item.trim().trim_matches(['"', '\'']).trim();
+            (!s.is_empty()).then(|| s.to_string())
+        })
+        .collect()
+}
+
+/// The capability list one frontmatter key DECLARES, read off the frontmatter
+/// BLOCK — [`fm_value`] for the shape, [`parse_caps_list`] for the tokens.
+///
+/// `None` is *not declared*: the key is absent, or the key line is bare and no
+/// block sequence follows it. The engine never invents `[]` for a bare key
+/// ([`fm_value`]), and neither does this — `caps:` with nothing after it is a
+/// typo, and both planes are entitled to say so. `Some(vec![])` is the
+/// DECLARED empty grant (`caps: []`): explicit read-only, a different
+/// statement by the author.
+///
+/// Key-parameterized like [`fm_tags`]: the run plane reads the same grammar
+/// under `caps`, `task.<name>.caps` and `run.caps.<pattern>`.
+///
+/// `caps: ""` IS a declaration — the author wrote a value and the value is
+/// empty. Only a key line carrying nothing at all declares nothing, and
+/// [`fm_value`] serves both as `Some("")`, so the two are told apart by
+/// [`fm_is_quoted_scalar`] rather than by the served text.
+#[must_use]
+pub fn fm_caps(block: &str, key: &str) -> Option<Vec<String>> {
+    let value = fm_value(block, key)?;
+    if value.trim().is_empty() && !fm_is_quoted_scalar(block, key) {
+        return None;
+    }
+    Some(parse_caps_list(&value))
+}
+
+/// **Did this key's line carry a QUOTED scalar?** — the question that tells an
+/// author's explicit empty value (`key: ""`) apart from a key line that
+/// carries nothing, which [`fm_value`] serves identically as `Some("")`.
+///
+/// The same shape as [`fm_is_block_scalar`], and for the same reason: the fact
+/// lives on the key LINE, which the served value has already thrown away.
+fn fm_is_quoted_scalar(block: &str, key: &str) -> bool {
+    let lines: Vec<&str> = block.lines().collect();
+    fm_key_line(&lines, key).is_some_and(|(_, remainder)| {
+        block_header(remainder).is_none()
+            && matches!(scalar::decode(remainder), scalar::Scalar::Quoted(_))
+    })
+}
+
+/// [`fm_caps`] for a seam holding a whole [`Document`] — the run plane's
+/// position, which reads caps off a parsed page rather than off raw bytes.
+///
+/// The block bytes are the point, for the reason [`fm_doc_publish`] states:
+/// [`YamlMap`] has already thrown the key LINE away, so a block sequence read
+/// off the map alone is the empty string.
+#[must_use]
+pub fn fm_doc_caps(doc: &Document, key: &str) -> Option<Vec<String>> {
+    let fm = find_frontmatter(&doc.root)?;
+    let block = doc.raw.get(fm.span.clone()).unwrap_or_default();
+    fm_caps(block, key)
+}
+
+/// Every frontmatter key at the block's top level, in document order — the
+/// companion [`fm_doc_caps`] needs when the KEYS are a pattern (`run.caps.*`)
+/// rather than a fixed name, so a caller never has to reach into [`YamlMap`]
+/// for names and then read values from somewhere else.
+#[must_use]
+pub fn fm_doc_keys(doc: &Document) -> Vec<String> {
+    let Some(fm) = find_frontmatter(&doc.root) else {
+        return Vec::new();
+    };
+    let NodeKind::Frontmatter { map } = &fm.kind else {
+        return Vec::new();
+    };
+    map.keys().map(str::to_owned).collect()
+}
+
 /// A `---` fence line.
 fn is_fm_fence(line: &str) -> bool {
     line.trim() == "---"
