@@ -254,6 +254,100 @@ fn process_timeout(world: &ModeWorld<'_>, target: &wire::RunTarget) -> std::time
     }
 }
 
+/// What a `source` target runs against: everything [`ModeWorld`] carries
+/// EXCEPT the page, because a draft brings its own bytes.
+///
+/// It is a type of its own so the DAEMON can reach the draft path without
+/// first finding a doc. Its pinned corpus has none to find — the wall relaxes
+/// `page` for a `source` target, so a corpus lookup keyed on `page` looks up
+/// the empty string, misses, and answers `bad_path` naming nothing. That is
+/// exactly what `ccc-statusd hooks check --file <draft>` got for every draft
+/// on daemon 9def8084 / engine f3b586ae: the draft path existed in
+/// [`mode_row`] and no wire caller could reach it.
+pub struct DraftWorld<'a> {
+    /// The workspace root the effects apply against.
+    pub root: &'a fs::WorkspaceRoot,
+    /// The declaring root — whose conventions ceiling narrows the draft's
+    /// `caps:`. `None` when nothing is entitled to declare policy.
+    pub declaring_root: Option<&'a Path>,
+    /// The corpus root the caller observed. Receipt provenance only, and a
+    /// draft forces `dry`, so nothing here reads it — it is carried so the
+    /// draft and the page paths cannot drift into two shapes.
+    pub observed_root: &'a MerkleRoot,
+    /// The caller's `prelude` (cap `run.mode`).
+    pub prelude: Option<&'a str>,
+}
+
+/// One `source` target → one row: a page that is not on disk yet (§ 2.2;
+/// § 6's row: *"`source` (forces `dry`)"*).
+///
+/// ONE owner for the draft path, reached by BOTH lanes — the CLI through
+/// [`mode_row`], the daemon directly — so the two cannot answer differently.
+#[must_use]
+pub fn draft_row(
+    world: &DraftWorld<'_>,
+    target: &wire::RunTarget,
+    source: &str,
+    invocation: &str,
+) -> Value {
+    if let Some(row) = prelude_refusal(world.prelude, target, invocation) {
+        return row;
+    }
+    let drafted = model::build(source.to_owned(), syntax::parse(source));
+    let drafted_world = ModeWorld {
+        doc: &drafted,
+        root: world.root,
+        declaring_root: world.declaring_root,
+        observed_root: world.observed_root,
+        prelude: world.prelude,
+        doors: Doors::default(),
+        cache: None,
+    };
+    match target.mode {
+        Some(wire::RunMode::Load) => load_row(&drafted_world, target, invocation),
+        // A fire needs a declared block to call. `source` carries no
+        // identity a caller can address twice, and its `dry` makes the
+        // effects a rehearsal, so a fire on a draft is refused by name
+        // rather than half-served.
+        Some(wire::RunMode::Fire) | None => refused_row(
+            target,
+            invocation,
+            "bad_request",
+            "`source` serves `mode: load` — it answers what a draft page \
+             DECLARES. A fire calls a declared block on a page that exists",
+            None,
+        ),
+    }
+}
+
+/// The § 2.2 prelude gate: checked ONCE, before any block is looked at, on
+/// BOTH modes and on the draft path — `prelude_invalid` refuses before any
+/// block runs. `Some(row)` is that refusal.
+///
+/// It used to be checked in `load_row` alone, and the fire path paid for it:
+/// a typo in the DAEMON-supplied prelude faulted inside the block's own
+/// evaluation, so every hook on every page answered `name_error` naming that
+/// page, that block's rev, and a line number belonging to source the page's
+/// author cannot see. `--load` on the same input said `prelude_invalid` and
+/// named it correctly, so the two modes disagreed about one broken input and
+/// the mode that lied was the one that runs in production. (PR 195 review,
+/// e9f1ae35, F9.)
+fn prelude_refusal(
+    prelude: Option<&str>,
+    target: &wire::RunTarget,
+    invocation: &str,
+) -> Option<Value> {
+    let fault =
+        effects::check_prelude(prelude?, &ctx_for(target, invocation), eval_limits(target))?;
+    Some(refused_row(
+        target,
+        invocation,
+        "prelude_invalid",
+        &fault.reason,
+        fault.line,
+    ))
+}
+
 /// One mode-bearing target → one row.
 #[must_use]
 pub fn mode_row(
@@ -263,61 +357,24 @@ pub fn mode_row(
     actor: Option<&str>,
     now: Option<&str>,
 ) -> Value {
-    // The prelude is checked ONCE, before any block is looked at, on BOTH
-    // modes — § 2.2: `prelude_invalid` refuses before any block runs.
-    //
-    // It used to be checked in `load_row` alone, and the fire path paid for
-    // it: a typo in the DAEMON-supplied prelude faulted inside the block's
-    // own evaluation, so every hook on every page answered `name_error`
-    // naming that page, that block's rev, and a line number belonging to
-    // source the page's author cannot see. `--load` on the same input said
-    // `prelude_invalid` and named it correctly, so the two modes disagreed
-    // about one broken input and the mode that lied was the one that runs in
-    // production. (PR 195 review, e9f1ae35, F9.)
-    if let Some(prelude) = world.prelude
-        && let Some(fault) =
-            effects::check_prelude(prelude, &ctx_for(target, invocation), eval_limits(target))
-    {
-        return refused_row(
+    // A draft brings its own bytes and never reads `world.doc`. Dispatched
+    // FIRST so this lane and the daemon's reach one owner ([`draft_row`]),
+    // which also owns the prelude gate.
+    if let Some(source) = target.source.as_deref() {
+        return draft_row(
+            &DraftWorld {
+                root: world.root,
+                declaring_root: world.declaring_root,
+                observed_root: world.observed_root,
+                prelude: world.prelude,
+            },
             target,
+            source,
             invocation,
-            "prelude_invalid",
-            &fault.reason,
-            fault.line,
         );
     }
-    // `source` — a page that is not on disk yet (§ 2.2; § 6's row: *"`source`
-    // (forces `dry`)"*). The wall forces `dry` and relaxes `page`, so nothing
-    // downstream can forget; what was missing is anyone READING it, so a
-    // client that negotiated the cap and sent a draft got `bad_path` naming
-    // an empty page. Building the document here keeps ONE owner, so the CLI
-    // and the daemon cannot answer differently. (PR 195 review, e9f1ae35, F6.)
-    if let Some(source) = target.source.as_deref() {
-        let drafted = model::build(source.to_owned(), syntax::parse(source));
-        let drafted_world = ModeWorld {
-            doc: &drafted,
-            root: world.root,
-            declaring_root: world.declaring_root,
-            observed_root: world.observed_root,
-            prelude: world.prelude,
-            doors: Doors::default(),
-            cache: None,
-        };
-        return match target.mode {
-            Some(wire::RunMode::Load) => load_row(&drafted_world, target, invocation),
-            // A fire needs a declared block to call. `source` carries no
-            // identity a caller can address twice, and its `dry` makes the
-            // effects a rehearsal, so a fire on a draft is refused by name
-            // rather than half-served.
-            Some(wire::RunMode::Fire) | None => refused_row(
-                target,
-                invocation,
-                "bad_request",
-                "`source` serves `mode: load` — it answers what a draft page \
-                 DECLARES. A fire calls a declared block on a page that exists",
-                None,
-            ),
-        };
+    if let Some(row) = prelude_refusal(world.prelude, target, invocation) {
+        return row;
     }
     match target.mode {
         Some(wire::RunMode::Load) => load_row(world, target, invocation),

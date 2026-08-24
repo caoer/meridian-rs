@@ -440,3 +440,160 @@ fn a_mixed_batch_keeps_each_rows_own_vocabulary() {
         "a fire row must carry no receipt pointer: {resp}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `source` — a draft's bytes over the wire
+// ---------------------------------------------------------------------------
+
+/// A draft: one clean declaring block and one that declares twice. It is
+/// never written to the workspace — `source` is the whole point.
+const DRAFT: &str = "\
+---
+type: hooks
+---
+
+# Draft
+
+```starlark
+def run(event):
+    return {\"deny\": \"drafted\"}
+
+declare(on = \"Stop\")
+```
+^clean
+
+```starlark
+def run(event):
+    return None
+
+declare(on = \"Stop\")
+declare(on = \"PreToolUse\", match = \"Bash\")
+```
+^double
+";
+
+/// **A `source` target answers the DRAFT's load rows, over the wire.**
+///
+/// It did not. `run_op::serve` looked every mode-bearing target up in the
+/// pinned corpus by `target.page` — but the decode wall RELAXES `page` for a
+/// `source` target (`decode_run_page`: *"`source` replaces `page`, and only
+/// there"*), so the lookup key was the empty string, it missed, and the row
+/// came back `bad_path: no such page in the pinned corpus: ` naming nothing.
+/// The draft path existed in `modes::mode_row` and NO WIRE CALLER COULD REACH
+/// IT: `ccc-statusd hooks check --file <draft>` — the one shipped consumer —
+/// answered that refusal, `verdict: the check COULD NOT RUN`, exit 2, for
+/// every draft ever passed to it (daemon 9def8084, engine f3b586ae).
+///
+/// The whole `source` target form had no test on either lane. This is the
+/// wire half.
+#[test]
+fn a_source_target_answers_the_drafts_load_rows() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let resp = conn.call(&run_frame(
+        40,
+        "draft-load",
+        &json!([{"source": DRAFT, "mode": "load"}]),
+    ));
+    let rows = rows_of(&resp);
+    assert_eq!(rows.len(), 1, "one target, one row: {resp}");
+    assert!(
+        rows[0].get("fault").is_none(),
+        "a draft carries its own bytes — nothing is looked up in the corpus, \
+         so no `bad_path` is reachable: {resp}"
+    );
+    let loaded = rows[0]["loaded"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a draft load must answer `loaded[]`: {resp}"));
+
+    let clean = loaded
+        .iter()
+        .find(|r| r["block"] == "clean")
+        .unwrap_or_else(|| panic!("the draft's clean block must load: {resp}"));
+    assert_eq!(clean["result"], "ok", "{resp}");
+    assert_eq!(
+        clean["declarations"]["on"], "Stop",
+        "the draft's declaration reaches the caller verbatim: {resp}"
+    );
+
+    // The card's named acceptance case: a deliberate `declared_twice` block
+    // is reported as that fault, not swallowed by an unreachable lane.
+    let double = loaded
+        .iter()
+        .find(|r| r["block"] == "double")
+        .unwrap_or_else(|| panic!("the draft's faulty block must be reported: {resp}"));
+    assert_eq!(double["result"], "fault", "{resp}");
+    assert_eq!(
+        double["fault"]["class"], "declared_twice",
+        "the class a caller branches on: {resp}"
+    );
+}
+
+/// The draft path is ONE owner, reached by both lanes: the daemon's dispatch
+/// answers the same by-name refusal the CLI's does for `mode: "fire"`.
+///
+/// Without this, the daemon could reach `load` and still miss `fire` — which
+/// is exactly the shape of the defect above, one branch deeper.
+#[test]
+fn a_source_target_on_fire_refuses_by_name() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let resp = conn.call(&run_frame(
+        41,
+        "draft-fire",
+        &json!([{"source": DRAFT, "mode": "fire", "block": "clean"}]),
+    ));
+    let rows = rows_of(&resp);
+    assert_eq!(rows[0]["result"], "refused", "{resp}");
+    assert_eq!(rows[0]["fault"]["class"], "bad_request", "{resp}");
+    assert!(
+        rows[0]["fault"]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("`source` serves `mode: load`"),
+        "the refusal must teach which mode `source` serves: {resp}"
+    );
+}
+
+/// A draft rides BESIDE a corpus page in one call, and each row answers for
+/// itself. The dispatch is per target, so a batch must not make one lane
+/// answer for the other.
+#[test]
+fn a_draft_and_a_corpus_page_answer_side_by_side() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let resp = conn.call(&run_frame(
+        42,
+        "draft-mixed",
+        &json!([
+            {"source": DRAFT, "mode": "load"},
+            {"page": "HOOKS.md", "mode": "load"},
+        ]),
+    ));
+    let rows = rows_of(&resp);
+    assert_eq!(rows.len(), 2, "rows answer in request order: {resp}");
+    assert!(
+        rows[0]["loaded"].is_array(),
+        "the draft row loads its own bytes: {resp}"
+    );
+    assert_eq!(
+        rows[1]["page"], "HOOKS.md",
+        "the corpus row still addresses its page: {resp}"
+    );
+    assert!(
+        rows[1]["loaded"].is_array(),
+        "the corpus row is untouched by the draft beside it: {resp}"
+    );
+}
