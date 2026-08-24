@@ -16,7 +16,7 @@
 //! through a client whose reads are themselves probe-driven — see
 //! `wire_host::PROBE_TIMEOUT`.
 
-use std::io::{self, BufReader, Write};
+use std::io::{self, BufReader};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -78,12 +78,16 @@ impl Client {
         let stream = UnixStream::connect(&self.socket_path)?;
         // Before the clone: the timeouts are socket-level, so both halves
         // inherit them from this one call.
-        wedge::bind(&stream, cap)?;
+        wedge::bind(&stream)?;
         let mut writer = stream.try_clone()?;
         let mut line = serde_json::to_string(request).map_err(io::Error::other)?;
         line.push('\n');
-        writer.write_all(line.as_bytes())?;
-        writer.flush()?;
+        // Both halves under the discipline. Registry frames are small — a
+        // `Register` carries one path — so a stalled drain is unlikely here;
+        // it is not impossible (a daemon that has stopped reading altogether
+        // leaves a full socket buffer), and the raw `WouldBlock` it used to
+        // produce is the very message class this module abolishes.
+        wedge::write_all(&mut writer, &self.socket_path, cap, line.as_bytes())?;
 
         let mut reader = BufReader::new(stream);
         let mut response_line = String::new();

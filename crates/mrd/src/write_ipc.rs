@@ -13,7 +13,7 @@ use registry::Client;
 use serde_json::Value;
 use wire::ErrorBody;
 
-use crate::script::wire_host::{Frame, SocketDoor};
+use crate::script::wire_host::{Frame, SocketDoor, WriteHalt};
 use crate::{Fail, engine};
 
 /// The one teaching every write verb prints when the authority cannot be
@@ -74,23 +74,38 @@ is a second write. If you must stop, read the file back before any retry.";
 /// stream tore) is reported as what it is: the outcome is UNKNOWN, the write
 /// may have committed, read before any re-send. It is never rendered as a
 /// failed write — that was the false negative.
+///
+/// **A frame that never finished going out is the other half of that honesty**
+/// ([`WriteHalt`]). It used to take the UNKNOWN wording too, which is the false
+/// negative inverted: an operator was sent to distrust a file the daemon had
+/// not been asked to touch. A stalled drain leaves no newline on the wire, so
+/// no request was ever parsed — that is a KNOWN nothing, and it says so.
 pub(crate) fn call(door: &mut SocketDoor, request: &Value) -> Result<Value, Box<ErrorBody>> {
     let line = door
         .call_until_answered(request, STILL_WAITING)
-        .map_err(|e| {
+        .map_err(|halt| {
             let mut err = ErrorBody::new(wire::ErrorCode::IoError);
             let target = request
                 .get("path")
                 .and_then(Value::as_str)
                 .unwrap_or("the target");
-            err.message = Some(format!(
-                "the answer to the write on {target} was lost ({e}) — the frame had reached the \
-             daemon, so the write may have committed before the loss: whether the file \
-             carries it is UNKNOWN. Read the file back and check for your edit BEFORE any \
-             re-send; a re-send of landed bytes is a second write, and a lost answer is not \
-             a failed write."
-            ));
-            err.cause = Some(e.to_string());
+            err.message = Some(match &halt {
+                WriteHalt::AnswerLost(e) => format!(
+                    "the answer to the write on {target} was lost ({e}) — the frame had reached \
+                     the daemon, so the write may have committed before the loss: whether the \
+                     file carries it is UNKNOWN. Read the file back and check for your edit \
+                     BEFORE any re-send; a re-send of landed bytes is a second write, and a lost \
+                     answer is not a failed write."
+                ),
+                WriteHalt::NotSent(e) => format!(
+                    "the write on {target} was never delivered ({e}). The request frame did not \
+                     reach the daemon whole — no newline arrived, so the daemon never parsed a \
+                     request and NOTHING was committed: {target} is untouched. This is not the \
+                     lost-answer case; no read-back is owed, and a retry sends the write for the \
+                     first time, not a second."
+                ),
+            });
+            err.cause = Some(halt.error().to_string());
             Box::new(err)
         })?;
     let frame = Frame::parse(&line).map_err(|e| {

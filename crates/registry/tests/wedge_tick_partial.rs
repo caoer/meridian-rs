@@ -92,7 +92,7 @@ fn read_off_thread(
     let dialled = sock.to_owned();
     thread::spawn(move || {
         let stream = UnixStream::connect(&dialled).expect("connect");
-        wedge::bind(&stream, wedge::WEDGE_CAP).expect("bind");
+        wedge::bind(&stream).expect("bind");
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         let outcome = wedge::read_line(&mut reader, &dialled, wedge::WEDGE_CAP, &mut line);
@@ -171,7 +171,7 @@ fn a_partial_line_then_eof_answers_the_partial_not_zero() {
     });
 
     let stream = UnixStream::connect(&sock).expect("connect");
-    wedge::bind(&stream, wedge::WEDGE_CAP).expect("bind");
+    wedge::bind(&stream).expect("bind");
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     let read = wedge::read_line(&mut reader, &sock, wedge::WEDGE_CAP, &mut line)
