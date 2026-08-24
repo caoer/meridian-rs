@@ -161,10 +161,10 @@ fn a_blocked_drawer_does_not_wall_another_workspace() {
     // registrar — and the daemon's shutdown — waiting on this lock forever.
     drop(lock);
 
-    let served = answered
+    let unrelated = answered
         .expect("an unrelated workspace must register while another drawer is locked")
         .expect("register RPC failed");
-    match served {
+    match unrelated {
         Response::Registered { entry, .. } => {
             assert_eq!(entry.workspace, canonical(&free));
         }
