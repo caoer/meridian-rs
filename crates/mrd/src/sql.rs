@@ -668,6 +668,13 @@ fn attempt(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Attempt, 
                 &std::env::temp_dir().join("mrd-sql-spill"),
             )
             .map_err(|e| Fail::tool(format!("cannot apply the spill containment: {e}")))?;
+            // Same door as the drawer lane (card
+            // sql-extension-ddl-escapes-rollback-lane): this build has no file
+            // to leak into, but the contract a caller reads is ONE contract —
+            // an extension that loads here and refuses there would make the
+            // lane, not the statement, decide what "ephemeral" means.
+            view::store::apply_extension_gate(&conn)
+                .map_err(|e| Fail::tool(format!("cannot apply the extension gate: {e}")))?;
             let (columns, rows, error) = match view::store::run_query(&conn, query) {
                 Ok((c, r)) => (c, r, None),
                 Err(msg) => (Vec::new(), Vec::new(), Some(msg)),

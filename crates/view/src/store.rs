@@ -82,6 +82,16 @@
 //! persistent file — rolled-back DML does not even grow it); DML against a
 //! latest view refuses through `DuckDB`'s own `Binder Error`, extended with
 //! the remedy (ruling OQ1: the refusal teaches).
+//!
+//! A transaction is not the whole contract, because extension code does not
+//! live inside one: `LOAD` lands on the shared `DatabaseInstance`, and a
+//! loaded extension may then write through its own path (duckpgq's `CREATE
+//! PROPERTY GRAPH` wrote `sql.main.__duckpgq_internal` durably into the
+//! drawer — card `sql-extension-ddl-escapes-rollback-lane`). So the lane is
+//! also gated at the only door extension code has:
+//! [`apply_extension_gate`] loads the measured-clean [`EXTENSION_ALLOW_LIST`]
+//! at open and then closes `LOAD`/`INSTALL` one-way. What the rollback cannot
+//! undo, the door never admits.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -363,6 +373,68 @@ struct BaseDelta {
 /// a host (one query spilled >9 GiB into the seat's cwd).
 const SPILL_BUDGET: &str = "8GiB";
 
+/// The extensions loaded into every engine instance at open (card
+/// sql-extension-ddl-escapes-rollback-lane). The list is the gate: after
+/// [`apply_extension_gate`] runs, nothing else can ever be loaded, so an
+/// extension is reachable from the query lane only by standing here.
+///
+/// Membership is earned by MEASUREMENT — the extension's DDL must stay inside
+/// the caller's transaction. `fts` and `vss` were measured clean on DuckDB
+/// v1.5.4 (2026-08-23): `PRAGMA create_fts_index` over a durable `hist` table
+/// left no `fts_main_*` schema behind, and an HNSW index built under
+/// `hnsw_enable_experimental_persistence` left neither index nor table.
+/// `duckpgq` is the counter-example that opened the card and is NOT here: its
+/// `CREATE PROPERTY GRAPH` wrote two durable rows into
+/// `sql.main.__duckpgq_internal`, outside the caller's transaction.
+const EXTENSION_ALLOW_LIST: &[&str] = &["fts", "vss"];
+
+/// Close the query lane to extension code (card
+/// sql-extension-ddl-escapes-rollback-lane).
+///
+/// `BEGIN → statement → ROLLBACK` is a TRANSACTION, and a transaction covers
+/// only what `DuckDB`'s own catalog and storage put inside it. An extension
+/// loads onto the shared `DatabaseInstance`, not into the caller's
+/// transaction, and is then free to write through its own path: measured
+/// 2026-08-23, `LOAD duckpgq; …; CREATE PROPERTY GRAPH g …` left
+/// `sql.main.__duckpgq_internal` holding 2 rows in the drawer AFTER the call,
+/// and a second `CREATE PROPERTY GRAPH g` answered `Property graph table with
+/// name g already exists`. The same call's `CREATE TABLE n`/`e` were gone —
+/// core DDL rolls back exactly as the contract says.
+///
+/// So the lane is gated at the only door extension code has. Explicit `LOAD`
+/// and `INSTALL` are the whole door: community extensions do not autoload
+/// (measured — a bare `SELECT quack('hello')` answered `Did you mean
+/// "quarter"?` with `quack` installed and both autoload settings on), and
+/// `CREATE PROPERTY GRAPH` without a prior `LOAD` is a parser error.
+///
+/// Three statements, in this order:
+/// 1. `autoinstall_known_extensions=false` — the engine never reaches the
+///    network; a `LOAD` below can only find what the host already has.
+/// 2. the [`EXTENSION_ALLOW_LIST`], best effort — a host with the extension
+///    absent keeps serving the projection, and the capability is simply
+///    missing (the caller's own `Catalog Error` says so).
+/// 3. `enable_external_access=false` — one-way in `DuckDB`: a caller's own
+///    `SET` can tighten it, never loosen it (`Cannot enable external access
+///    while database is running`). After it, `LOAD`/`INSTALL` answers
+///    `Permission Error: Loading external extensions is disabled through
+///    configuration` and no external file can be written either.
+///
+/// This is a door, not a sandbox (the NO-SANDBOX ruling, 2026-08-14): one
+/// execution path for every caller, no per-caller profile, and the
+/// configuration is NOT locked — a caller's `SET memory_limit` still
+/// succeeds.
+///
+/// # Errors
+/// Propagates the `DuckDB` error from the two gate `SET`s. A failed allow-list
+/// `LOAD` is not an error — see step 2.
+pub fn apply_extension_gate(conn: &Connection) -> duckdb::Result<()> {
+    conn.execute_batch("SET autoinstall_known_extensions=false;")?;
+    for ext in EXTENSION_ALLOW_LIST {
+        let _ = conn.execute_batch(&format!("LOAD {ext};"));
+    }
+    conn.execute_batch("SET enable_external_access=false;")
+}
+
 /// Bound the connection's disk spill (card sql-spill-config-lockout):
 /// `spill_dir` becomes the ABSOLUTE `temp_directory`, with [`SPILL_BUDGET`]
 /// as `max_temp_directory_size`. Plain config, never a sandbox (the
@@ -500,6 +572,21 @@ fn teach(error: &str) -> String {
         );
     }
 
+    // The extension gate's own refusal (card
+    // sql-extension-ddl-escapes-rollback-lane). DuckDB names the setting; the
+    // caller needs the reason and the allow-list.
+    if error.contains("Loading external extensions is disabled") {
+        let allowed = EXTENSION_ALLOW_LIST.join(", ");
+        return format!(
+            "{error}\nThe query lane loads no extension on demand: an extension \
+             loads onto the shared engine instance, OUTSIDE your statement's \
+             transaction, so its catalog writes are not rolled back at call end \
+             (duckpgq's CREATE PROPERTY GRAPH wrote sql.main.__duckpgq_internal \
+             durably into the drawer). Loaded at open, and all there is: \
+             {allowed}."
+        );
+    }
+
     // A suggestion fitted to a catalog internal is worse than none: it sends
     // the caller at metadata. Drop the clause, keep every other word.
     let out: String = error
@@ -570,6 +657,7 @@ impl SqlStore {
             file: file.to_path_buf(),
         };
         apply_spill_containment(&store.conn, &store.spill_dir())?;
+        apply_extension_gate(&store.conn)?;
         if fresh {
             store.conn.execute_batch(CACHE_SCHEMA_SQL)?;
             return Ok(store);
@@ -599,6 +687,7 @@ impl SqlStore {
             file: file.to_path_buf(),
         };
         apply_spill_containment(&store.conn, &store.spill_dir())?;
+        apply_extension_gate(&store.conn)?;
         Ok(store)
     }
 
@@ -2129,9 +2218,124 @@ mod spill_tests {
         );
     }
 
+    /// One setting's live value on the store's own connection.
+    fn setting(store: &SqlStore, name: &str) -> String {
+        store
+            .connection()
+            .query_row(&format!("SELECT current_setting('{name}')"), [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap_or_else(|e| panic!("setting {name}: {e}"))
+    }
+
+    /// The gate is in force on every store the moment it opens — no caller
+    /// action, no first-query lazy path (card
+    /// sql-extension-ddl-escapes-rollback-lane).
+    #[test]
+    fn the_extension_gate_is_in_force_at_open() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        assert_eq!(
+            setting(&store, "enable_external_access"),
+            "false",
+            "the door must be shut at open, not at first query"
+        );
+        assert_eq!(
+            setting(&store, "autoinstall_known_extensions"),
+            "false",
+            "a LOAD must never reach the network from the engine"
+        );
+    }
+
+    /// The card's leak, at its door: `LOAD` is what let duckpgq write
+    /// `sql.main.__duckpgq_internal` past the rollback, and `LOAD` is what
+    /// refuses now. The refusal is DuckDB's, extended with the reason and the
+    /// allow-list. Hermetic: the Permission Error precedes the extension-file
+    /// lookup, so the test does not need duckpgq installed.
+    #[test]
+    fn a_caller_cannot_load_an_extension() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        for statement in ["LOAD duckpgq", "INSTALL duckpgq"] {
+            let refusal = store
+                .query(statement)
+                .expect("lane")
+                .expect_err("the gate refuses extension loading");
+            assert!(
+                refusal.contains("Loading external extensions is disabled"),
+                "{statement}: DuckDB's own words survive: {refusal}"
+            );
+            assert!(
+                refusal.contains("OUTSIDE your statement's transaction"),
+                "{statement}: the refusal teaches WHY: {refusal}"
+            );
+            assert!(
+                refusal.contains("fts, vss"),
+                "{statement}: the refusal names the allow-list: {refusal}"
+            );
+        }
+
+        // And the leak's own artefact never appears.
+        let leaked: i64 = store
+            .connection()
+            .query_row(
+                "SELECT count(*)::BIGINT FROM duckdb_tables() \
+                 WHERE table_name = '__duckpgq_internal'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(leaked, 0, "the drawer holds no extension side table");
+    }
+
+    /// The gate is one-way: a caller cannot re-open the door it found shut.
+    /// DuckDB refuses the loosening `SET` itself — `Cannot enable external
+    /// access while database is running`.
+    #[test]
+    fn a_caller_cannot_reopen_the_extension_gate() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let refusal = store
+            .query("SET enable_external_access=true")
+            .expect("lane")
+            .expect_err("loosening refuses");
+        assert!(
+            refusal.contains("Cannot enable external access"),
+            "the refusal is DuckDB's own one-way rule: {refusal}"
+        );
+        assert_eq!(
+            setting(&store, "enable_external_access"),
+            "false",
+            "the door is still shut after the attempt"
+        );
+    }
+
+    /// The gate closes the lane to extension code, not to the caller's own
+    /// reads: an ordinary projection query is untouched by it.
+    #[test]
+    fn the_gate_leaves_the_projection_readable() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let (_, rows) = store
+            .query("SELECT count(*)::BIGINT FROM doc")
+            .expect("lane")
+            .expect("the projection still answers");
+        assert!(
+            rows[0][0].as_i64().unwrap_or(0) > 0,
+            "the fixture's docs project"
+        );
+    }
+
     /// The containment is plain config, not a lock (NO-SANDBOX ruling): a
     /// caller's own `SET` through the query lane succeeds — nothing refuses,
-    /// nothing is frozen.
+    /// nothing is frozen. The extension gate does not change that: it shuts
+    /// ONE door, it does not lock the configuration.
     #[test]
     fn spill_containment_is_plain_config_not_a_lock() {
         let dir = tempfile::tempdir().expect("tmpdir");
