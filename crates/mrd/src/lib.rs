@@ -425,7 +425,13 @@ usage:
                            armed=<mode> | armed=<mode>@<page> (freeze: arming
                            pins resolution); (drifted)/(missing) when the
                            pinned page no
-                           longer stands. Collision at one scope on one chain =
+                           longer stands. drift= is a THIRD column, on every
+                           ledger row: the pinned rev vs the rev that page reads
+                           now. drift=- | drifted | missing | off-drifted |
+                           off-missing. An off row is not armed, so it never
+                           reddens — off-drifted names an off-then-edited page
+                           and GATES NOTHING (--json adds pinned_rev/live_rev).
+                           Collision at one scope on one chain =
                            REFUSED naming every tied page. --workspace / --user
                            print that layer alone. Exits: 0 clean /
                            1 finding (collision | refused rule page | red armed row)

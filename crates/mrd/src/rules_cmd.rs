@@ -59,7 +59,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use policy::armed::{ArmedArtifact, ArmedRow, PageSource, Redness};
+use policy::armed::{ArmedArtifact, ArmedRow, Drift, PageSource, Redness};
 use policy::{Effective, EffectiveSet, PageRef, RuleIndex, ScopeLayer};
 use serde_json::{Value, json};
 
@@ -291,11 +291,18 @@ struct ArmedCell {
     elsewhere: Option<String>,
     /// Why the pinned page no longer stands, when it does not.
     redness: Option<String>,
+    /// The drift join for this ledger row — see [`DriftCell`].
+    drift: DriftCell,
 }
 
 impl ArmedCell {
     /// The rendered cell: the mode word, its redness, and the pinned page when
     /// the arm and discovery disagree.
+    ///
+    /// ⛔ The drift word is NOT in here. `armed=` means what governs and how,
+    /// and an `off` row's drift governs nothing — folding it in would spell
+    /// `off(off-drifted)`, which reads as a redness and is not one. It is its
+    /// own column: [`DriftCell::render`].
     fn render(&self) -> String {
         let mut cell = self.mode.clone();
         if let Some(why) = &self.redness {
@@ -308,6 +315,69 @@ impl ArmedCell {
             cell.push_str(page);
         }
         cell
+    }
+}
+
+/// **The drift column** — one per LEDGER ROW: does the pinned page still read at
+/// the rev the row was attested at?
+///
+/// Ruled by advisor `4dab0746` 2026-08-23 02:27 EDT (card
+/// `rules-drift-invisible-on-off-rows`): the redness contract STANDS, so
+/// [`policy::armed::verify_rows`] keeps answering nothing for an `off` row and
+/// `armed=` keeps its vocabulary. The gap it leaves is OBSERVABILITY — a rule
+/// flipped off and then edited rendered `armed=off` and nothing else, on a
+/// surface that printed the ledger's row count four lines above — and it closes
+/// additively, here: every ledger row carries this cell, and the `off` case has
+/// its own word, `off-drifted`, which **is not a redness state and trips no
+/// gate** ([`RulesReport::findings`] never reads this field).
+///
+/// The join is [`policy::armed::ArmedArtifact::drift`] — one rev law with the
+/// gate, so this column and the `armed=` redness cannot disagree about a row
+/// that fires. The reference implementation it folds in is fleet watcher
+/// `c38541e3`'s `rules-drift.py`, which joined the ledger's pinned rev against
+/// the live winner rev out of `--json`; the machine face now publishes both revs
+/// (`pinned_rev`, `live_rev`), so that script's whole reason to exist is gone.
+#[derive(Debug, PartialEq, Eq)]
+struct DriftCell {
+    /// The rev the ledger row attests.
+    pinned_rev: String,
+    /// The rev the pinned page reads NOW — `None` when it could not be read at
+    /// all, which is why [`DriftCell::word`] is not derived from comparing two
+    /// `Option`s: unreadable and unchanged are opposite answers.
+    live_rev: Option<String>,
+    /// The word, or `None` when the join held.
+    word: Option<&'static str>,
+}
+
+impl DriftCell {
+    /// The cell from one row's drift. `off-` prefixes the whole `off` vocabulary
+    /// for one reason: a reader who greps `drifted` must not match a row that
+    /// gates nothing, and a reader who greps `off-` must find every one of them.
+    ///
+    /// `off` admits every rule kind ([`policy::armed::Mode::admits`]), so an off
+    /// row can never be kind-mismatched — there is no third word to spell.
+    fn of(row: &policy::armed::DriftRow) -> Self {
+        let fires = row.row().mode().fires();
+        let (live_rev, word) = match row.drift() {
+            Drift::Clean => (Some(row.row().rev().to_owned()), None),
+            Drift::Drifted { report_rev } => (
+                Some(report_rev.clone()),
+                Some(if fires { "drifted" } else { "off-drifted" }),
+            ),
+            Drift::Missing { .. } => (None, Some(if fires { "missing" } else { "off-missing" })),
+        };
+        DriftCell {
+            pinned_rev: row.row().rev().to_owned(),
+            live_rev,
+            word,
+        }
+    }
+
+    /// The rendered cell. A clean join prints `-` rather than nothing: the whole
+    /// defect this column answers is that an absent marker read as "nothing
+    /// drifted" when it meant "nobody asked".
+    fn render(&self) -> &str {
+        self.word.unwrap_or("-")
     }
 }
 
@@ -370,6 +440,9 @@ struct ArmedOrphan {
     /// Why discovery no longer carries the page, ESTABLISHED rather than
     /// assumed. See [`orphan_cause`].
     cause: &'static str,
+    /// This ledger row's drift column. An orphan is a ledger row like any other,
+    /// and the ruling says EVERY ledger row carries one.
+    drift: DriftCell,
 }
 
 /// An armed row for an id this answer RESOLVES whose arm root does not contain
@@ -399,6 +472,10 @@ struct ArmedElsewhere {
     /// Why the pinned page no longer stands, when it does not. Containment is a
     /// FACT and rides the section header; redness is a FAULT and rides here.
     redness: Option<String>,
+    /// This ledger row's drift column. Redness is silent on an `off` row here
+    /// for exactly the reason it is silent in the cell — `verify_elsewhere_at`
+    /// shares `verify_rows` — so this section needs the column just as much.
+    drift: DriftCell,
 }
 
 /// Why an armed row's pinned page is absent from the corpus — decided by
@@ -713,7 +790,11 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
         seed: &corpus,
     };
     let (armed, artifact) = load_armed(&pages);
-    let rows = rows(&effective, artifact.as_ref(), at, &pages);
+    // ONE join for the whole answer: a ledger row renders in at most one of the
+    // three sections below, but every one of them needs the column, and a
+    // pinned page must not be read three times on a hook-adjacent verb.
+    let drift = drift_column(artifact.as_ref(), &pages);
+    let rows = rows(&effective, artifact.as_ref(), at, &pages, &drift);
 
     // ⛔ Only a view that admits the WORKSPACE layer can have orphans. The
     // armed artifact's `page` column is a workspace spelling by construction
@@ -736,8 +817,8 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
     // would be manufactured into a finding.
     let (armed_orphans, armed_elsewhere) = if view.admits(ScopeLayer::Workspace) {
         (
-            orphans(artifact.as_ref(), at, &effective, workspace),
-            armed_elsewhere(artifact.as_ref(), at, &effective, &pages),
+            orphans(artifact.as_ref(), at, &effective, workspace, &drift),
+            armed_elsewhere(artifact.as_ref(), at, &effective, &pages, &drift),
         )
     } else {
         (Vec::new(), Vec::new())
@@ -896,6 +977,7 @@ fn orphans(
     at: &str,
     effective: &EffectiveSet,
     workspace: &Path,
+    drift: &BTreeMap<(String, String), DriftCell>,
 ) -> Vec<ArmedOrphan> {
     let Some(artifact) = artifact else {
         return Vec::new();
@@ -910,6 +992,7 @@ fn orphans(
             scope: row.scope().as_str().to_owned(),
             mode: row.mode().as_str().to_owned(),
             cause: orphan_cause(workspace, row.page()),
+            drift: drift_of(drift, row),
         })
         .collect()
 }
@@ -936,6 +1019,62 @@ fn load_armed(pages: &DomainPages<'_>) -> (ArmedSource, Option<ArmedArtifact>) {
             None,
         ),
     }
+}
+
+/// The drift column for EVERY attested row, keyed by the row key (id, arm root)
+/// — the ruling's "per-row drift column for every ledger row", joined once.
+///
+/// ⛔ The comparison is [`ArmedArtifact::drift`]'s, never one written here: a rev
+/// law at this layer would be the second resolver the CLI is forbidden to hold,
+/// and it would be free to disagree with the gate about a row that fires.
+/// `mrd status` holds exactly such a second law (`status_cmd::page_drifted`) and
+/// that is why the two verbs could report different drift counts on one
+/// artifact.
+fn drift_column(
+    artifact: Option<&ArmedArtifact>,
+    pages: &dyn PageSource,
+) -> BTreeMap<(String, String), DriftCell> {
+    let Some(artifact) = artifact else {
+        return BTreeMap::new();
+    };
+    artifact
+        .drift(pages)
+        .iter()
+        .map(|row| {
+            (
+                (
+                    row.row().id().as_str().to_owned(),
+                    row.row().scope().as_str().to_owned(),
+                ),
+                DriftCell::of(row),
+            )
+        })
+        .collect()
+}
+
+/// One row's drift cell out of the joined column. A row the column does not
+/// carry cannot happen — the column is built from the same artifact these
+/// sections select from — but a `map_or_else` over an absent key would silently
+/// print `-`, which is the exact lie this column exists to stop. So the
+/// fallback carries the pinned rev it does know and no clean claim.
+fn drift_of(column: &BTreeMap<(String, String), DriftCell>, row: &ArmedRow) -> DriftCell {
+    column
+        .get(&(
+            row.id().as_str().to_owned(),
+            row.scope().as_str().to_owned(),
+        ))
+        .map_or_else(
+            || DriftCell {
+                pinned_rev: row.rev().to_owned(),
+                live_rev: None,
+                word: Some("unjoined"),
+            },
+            |cell| DriftCell {
+                pinned_rev: cell.pinned_rev.clone(),
+                live_rev: cell.live_rev.clone(),
+                word: cell.word,
+            },
+        )
 }
 
 /// The word a [`Redness`] renders as. One mapping, shared by the armed cell and
@@ -966,6 +1105,7 @@ fn armed_elsewhere(
     at: &str,
     effective: &EffectiveSet,
     pages: &dyn PageSource,
+    drift: &BTreeMap<(String, String), DriftCell>,
 ) -> Vec<ArmedElsewhere> {
     let Some(artifact) = artifact else {
         return Vec::new();
@@ -985,6 +1125,7 @@ fn armed_elsewhere(
             scope: found.row().scope().as_str().to_owned(),
             mode: found.row().mode().as_str().to_owned(),
             redness: found.why().map(|why| redness_word(why).to_owned()),
+            drift: drift_of(drift, found.row()),
         })
         .collect()
 }
@@ -996,6 +1137,7 @@ fn rows(
     artifact: Option<&ArmedArtifact>,
     at: &str,
     pages: &dyn PageSource,
+    drift: &BTreeMap<(String, String), DriftCell>,
 ) -> Vec<RuleRow> {
     // The selection law, from the artifact: per id, the deepest armed row whose
     // arm root contains this path. Keyed by (id, arm root), never by id alone.
@@ -1026,6 +1168,7 @@ fn rows(
                     row.scope().as_str().to_owned(),
                 ))
                 .map(|why| (*why).to_owned()),
+            drift: drift_of(drift, row),
         })
     };
 
@@ -1133,11 +1276,21 @@ fn render_human(report: &RulesReport) -> String {
                     row.id
                 );
             }
-            (None, armed) => {
-                let cell = armed
-                    .as_ref()
-                    .map_or_else(|| "-".to_owned(), ArmedCell::render);
-                let _ = writeln!(out, "  {}  armed={cell}", row.id);
+            // The drift column rides only where a LEDGER ROW does. `armed=-`
+            // means no ledger row governs this id here, and `drift=-` beside it
+            // would claim a join that was never made — the same lie in the
+            // opposite direction from the one this column closes.
+            (None, Some(armed)) => {
+                let _ = writeln!(
+                    out,
+                    "  {}  armed={}  drift={}",
+                    row.id,
+                    armed.render(),
+                    armed.drift.render()
+                );
+            }
+            (None, None) => {
+                let _ = writeln!(out, "  {}  armed=-", row.id);
             }
         }
         for entry in &row.chain {
@@ -1163,10 +1316,11 @@ fn render_human(report: &RulesReport) -> String {
             // `.` exactly as the artifact's own cell does.
             let _ = writeln!(
                 out,
-                "  {}  armed={} at scope={} — pinned {} ({})",
+                "  {}  armed={} at scope={}  drift={} — pinned {} ({})",
                 orphan.id,
                 orphan.mode,
                 display_path(&orphan.scope),
+                orphan.drift.render(),
                 orphan.page,
                 orphan.cause
             );
@@ -1192,10 +1346,11 @@ fn render_human(report: &RulesReport) -> String {
                 .map_or_else(String::new, |why| format!(" ({why})"));
             let _ = writeln!(
                 out,
-                "  {}  armed={} at scope={} — pinned {}{redness}",
+                "  {}  armed={} at scope={}  drift={} — pinned {}{redness}",
                 row.id,
                 row.mode,
                 display_path(&row.scope),
+                row.drift.render(),
                 row.page
             );
         }
@@ -1297,6 +1452,15 @@ fn to_json(workspace: &Path, report: &RulesReport) -> Value {
                     "pinned_page": armed.elsewhere,
                     "redness": armed.redness,
                     "rendered": armed.render(),
+                    // STRICTLY ADDITIVE, and the whole point of the machine
+                    // half: `drift` is the word, `pinned_rev` and `live_rev`
+                    // are the two facts it was computed from. The instrument
+                    // this folds in (`rules-drift.py`) existed only because
+                    // this face published the live rev and not the pinned one,
+                    // so a reader had to parse the ledger markdown to ask.
+                    "drift": armed.drift.word,
+                    "pinned_rev": armed.drift.pinned_rev,
+                    "live_rev": armed.drift.live_rev,
                 })),
                 "chain": chain,
             })
@@ -1331,6 +1495,9 @@ fn to_json(workspace: &Path, report: &RulesReport) -> Value {
                 "scope": orphan.scope,
                 "mode": orphan.mode,
                 "cause": orphan.cause,
+                "drift": orphan.drift.word,
+                "pinned_rev": orphan.drift.pinned_rev,
+                "live_rev": orphan.drift.live_rev,
             })).collect::<Vec<_>>(),
             // STRICTLY ADDITIVE: `armed` above keeps meaning WHAT GOVERNS HERE
             // and stays null for these rows, so no consumer that reads
@@ -1342,6 +1509,9 @@ fn to_json(workspace: &Path, report: &RulesReport) -> Value {
                 "scope": row.scope,
                 "mode": row.mode,
                 "redness": row.redness,
+                "drift": row.drift.word,
+                "pinned_rev": row.drift.pinned_rev,
+                "live_rev": row.drift.live_rev,
             })).collect::<Vec<_>>(),
             "not_offered": {
                 "workspace": report.declined_workspace,
@@ -1368,6 +1538,24 @@ mod tests {
             layer: "workspace",
             depth,
             kinds: "hook".to_owned(),
+        }
+    }
+
+    /// A clean drift cell: pinned rev == live rev, no word.
+    fn clean_drift() -> DriftCell {
+        DriftCell {
+            pinned_rev: "a".repeat(16),
+            live_rev: Some("a".repeat(16)),
+            word: None,
+        }
+    }
+
+    /// A drifted cell, with the word the caller's mode earns.
+    fn drifted(word: &'static str) -> DriftCell {
+        DriftCell {
+            pinned_rev: "a".repeat(16),
+            live_rev: Some("b".repeat(16)),
+            word: Some(word),
         }
     }
 
@@ -1418,6 +1606,59 @@ rules at sessions/s1
         assert_eq!(render_human(&report(rows)), expected);
     }
 
+    /// The drift column rides EVERY ledger row and only ledger rows: an id with
+    /// an armed cell carries `drift=`, and `armed=-` — no ledger row here —
+    /// carries none, because `drift=-` beside it would claim a join nobody made.
+    #[test]
+    fn render_human_puts_the_drift_column_on_ledger_rows_and_nowhere_else() {
+        let rows = vec![
+            RuleRow {
+                id: "task.off-and-edited".to_owned(),
+                state: "resolved",
+                collision_scope: None,
+                armed: Some(ArmedCell {
+                    mode: "off".to_owned(),
+                    elsewhere: None,
+                    redness: None,
+                    drift: drifted("off-drifted"),
+                }),
+                chain: vec![entry("winner", "off.md", 0)],
+            },
+            RuleRow {
+                id: "task.steady".to_owned(),
+                state: "resolved",
+                collision_scope: None,
+                armed: Some(ArmedCell {
+                    mode: "armed".to_owned(),
+                    elsewhere: None,
+                    redness: None,
+                    drift: clean_drift(),
+                }),
+                chain: vec![entry("winner", "steady.md", 0)],
+            },
+            RuleRow {
+                id: "task.unarmed".to_owned(),
+                state: "resolved",
+                collision_scope: None,
+                armed: None,
+                chain: vec![entry("winner", "unarmed.md", 0)],
+            },
+        ];
+        let rendered = render_human(&report(rows));
+        assert!(
+            rendered.contains("  task.off-and-edited  armed=off  drift=off-drifted\n"),
+            "the off row names its drift and keeps `armed=off`: {rendered}"
+        );
+        assert!(
+            rendered.contains("  task.steady  armed=armed  drift=-\n"),
+            "a clean ledger row still carries the column: {rendered}"
+        );
+        assert!(
+            rendered.contains("  task.unarmed  armed=-\n") && !rendered.contains("armed=-  drift"),
+            "no ledger row, no drift cell: {rendered}"
+        );
+    }
+
     #[test]
     fn render_human_names_an_empty_set() {
         let rendered = render_human(&report(Vec::new()));
@@ -1457,7 +1698,8 @@ rules at sessions/s1
             ArmedCell {
                 mode: "armed".to_owned(),
                 elsewhere: None,
-                redness: None
+                redness: None,
+                drift: clean_drift(),
             }
             .render(),
             "armed"
@@ -1466,7 +1708,8 @@ rules at sessions/s1
             ArmedCell {
                 mode: "block".to_owned(),
                 elsewhere: None,
-                redness: Some("drifted".to_owned())
+                redness: Some("drifted".to_owned()),
+                drift: drifted("drifted"),
             }
             .render(),
             "block(drifted)"
@@ -1475,11 +1718,82 @@ rules at sessions/s1
             ArmedCell {
                 mode: "armed".to_owned(),
                 elsewhere: Some("notify.md".to_owned()),
-                redness: Some("missing".to_owned())
+                redness: Some("missing".to_owned()),
+                drift: DriftCell {
+                    pinned_rev: "a".repeat(16),
+                    live_rev: None,
+                    word: Some("missing"),
+                },
             }
             .render(),
             "armed(missing)@notify.md"
         );
+    }
+
+    /// The armed cell NEVER absorbs the drift word — `off(off-drifted)` reads as
+    /// a redness and is not one. The two are separate columns, and an `off` row
+    /// that drifted still renders its mode alone.
+    #[test]
+    fn the_drift_word_stays_out_of_the_armed_cell() {
+        let cell = ArmedCell {
+            mode: "off".to_owned(),
+            elsewhere: None,
+            redness: None,
+            drift: drifted("off-drifted"),
+        };
+        assert_eq!(cell.render(), "off");
+        assert_eq!(cell.drift.render(), "off-drifted");
+    }
+
+    /// A clean join prints `-`, not nothing: the defect this column closes is an
+    /// ABSENT marker being read as "nothing drifted" when it meant "nobody
+    /// asked".
+    #[test]
+    fn a_clean_join_renders_a_dash_rather_than_an_empty_cell() {
+        assert_eq!(clean_drift().render(), "-");
+        assert_eq!(drifted("off-drifted").render(), "off-drifted");
+    }
+
+    /// `off-drifted` IS NOT A REDNESS STATE AND TRIPS NO GATE — the ruling's own
+    /// words. An off row whose pinned page moved is a clean exit.
+    #[test]
+    fn an_off_drifted_row_is_not_a_finding() {
+        let r = report(vec![RuleRow {
+            id: "task.notify".to_owned(),
+            state: "resolved",
+            collision_scope: None,
+            armed: Some(ArmedCell {
+                mode: "off".to_owned(),
+                elsewhere: None,
+                redness: None,
+                drift: drifted("off-drifted"),
+            }),
+            chain: Vec::new(),
+        }]);
+        assert!(
+            r.findings().is_empty(),
+            "the drift column gates nothing: {:?}",
+            r.findings()
+        );
+    }
+
+    /// The complement, so the pair pins the boundary: a row that FIRES and
+    /// drifted still reddens and still gates, exactly as before this column.
+    #[test]
+    fn a_firing_drifted_row_still_gates_the_exit() {
+        let r = report(vec![RuleRow {
+            id: "task.notify".to_owned(),
+            state: "resolved",
+            collision_scope: None,
+            armed: Some(ArmedCell {
+                mode: "armed".to_owned(),
+                elsewhere: None,
+                redness: Some("drifted".to_owned()),
+                drift: drifted("drifted"),
+            }),
+            chain: Vec::new(),
+        }]);
+        assert_eq!(r.findings(), vec!["1 red armed row(s)"]);
     }
 
     #[test]
@@ -1500,6 +1814,7 @@ rules at sessions/s1
                 mode: "armed".to_owned(),
                 elsewhere: None,
                 redness: Some("drifted".to_owned()),
+                drift: drifted("drifted"),
             }),
             chain: Vec::new(),
         });
@@ -1535,6 +1850,7 @@ rules at sessions/s1
                 mode: "armed".to_owned(),
                 elsewhere: Some("notify.md".to_owned()),
                 redness: None,
+                drift: clean_drift(),
             }),
             chain: vec![
                 entry("winner", "sessions/s1/notify.md", 2),
@@ -1554,6 +1870,12 @@ rules at sessions/s1
         );
         assert_eq!(rules[0]["armed"]["pinned_page"], json!("notify.md"));
         assert_eq!(rules[0]["armed"]["rendered"], json!("armed@notify.md"));
+        // The machine half of the drift column: the word, and the two revs it
+        // was computed from — so a reader re-derives the join instead of
+        // parsing the ledger markdown, which is why `rules-drift.py` existed.
+        assert_eq!(rules[0]["armed"]["drift"], Value::Null, "a clean join");
+        assert_eq!(rules[0]["armed"]["pinned_rev"], json!("a".repeat(16)));
+        assert_eq!(rules[0]["armed"]["live_rev"], json!("a".repeat(16)));
         assert_eq!(value["rules"]["view"], json!("effective"));
         assert_eq!(value["rules"]["armed_set"]["state"], json!("absent"));
         assert_eq!(value["rules"]["user_scope"]["scope"], Value::Null);

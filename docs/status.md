@@ -840,6 +840,23 @@ vocabularies produced hand-armed rows that parsed clean and governed nothing
  which is the freeze in visible form (arming pins resolution; later discovery
  never moves it) · `(drifted)`/`(missing)` when the pinned page no longer
  stands. A corrupt artifact reads `UNREADABLE`, never "nothing armed".
+- **`drift=` is a THIRD column, on EVERY ledger row** — the pinned rev against
+ the rev that page reads now, `off` rows included: `-` the join held · `drifted`
+ · `missing` · `off-drifted` · `off-missing`. It rides every row the ledger
+ carries (the cells above, the `armed rows counted above …` sections below) and
+ no row the ledger does not — `armed=-` gets no drift cell, because a `-` there
+ would claim a join nobody made. `--json` adds `pinned_rev` and `live_rev`
+ beside the word, so a reader re-derives it instead of parsing the ledger table.
+- **`off-drifted` IS NOT A REDNESS AND TRIPS NO GATE.** An `off` row is not
+ armed, so no `⚠ page-drift` is owed and `redness` stays null on it — the
+ documented contract, and it STANDS (advisor `4dab0746`, 2026-08-23). But "no
+ page-drift marker" means "no ARMED row drifted", never "no row drifted": a rule
+ flipped off and then edited was invisible to every redness-based reader
+ (measured on the live sessions root 2026-08-23, `rules/010` pinned
+ `a3f19a9dbb15ea8d` against a live `5d6ebb468c85d8ee`, `redness` null). The gap
+ is observability, not enforcement, so it closes additively — the word is
+ printed, the exit code is not touched. `mrd rules` exits 0 on an `off-drifted`
+ row and 1 on a `drifted` one, before this column and after it.
 - **`armed=-` names one thing only: nothing governs HERE.** An armed row whose
  arm root does not contain PATH is not squeezed into that cell — it prints
  beneath the rows under `armed rows counted above whose arm root does NOT
