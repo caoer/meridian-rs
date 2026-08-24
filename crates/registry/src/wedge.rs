@@ -1,10 +1,11 @@
-//! The read-timeout discipline for a client waiting on the daemon.
+//! The timeout discipline for a client talking to the daemon — both halves.
 //!
-//! **A unix stream with no read timeout parks the caller forever.** A daemon
-//! that accepts a frame and never answers it — wedged, not gone — is invisible
-//! to every check *above* the socket: the caller is blocked inside `read(2)`
-//! and never reaches the line that would have given up. Only the socket bounds
-//! ONE call, so only the socket can end that wait.
+//! **A unix stream with no timeout parks the caller forever.** A daemon that
+//! accepts a frame and never answers it — wedged, not gone — is invisible to
+//! every check *above* the socket: the caller is blocked inside `read(2)` and
+//! never reaches the line that would have given up. Only the socket bounds ONE
+//! call, so only the socket can end that wait. The same is true of `write(2)`
+//! against a daemon that has stopped DRAINING (§ The write half).
 //!
 //! # A tick is a question, not a verdict
 //!
@@ -29,6 +30,36 @@
 //! The wait is therefore bounded AND evidenced: what normally ends it is the
 //! daemon's own liveness, not a constant. [`WEDGE_CAP`] is only the floor under
 //! that instrument.
+//!
+//! # The write half
+//!
+//! **A stalled DRAIN is the same daemon, seen from the other side**, and until
+//! 2026-08-24 it was the one place this module still drew the verdict it exists
+//! to abolish. [`bind`] put the whole cap on the write as a flat socket
+//! timeout, so a daemon that stopped reading — busy, saturated, wedged mid-put —
+//! surfaced as a bare `WouldBlock`: "Resource temporarily unavailable (os error
+//! 35/11)", with no wedged-vs-absent separation, no remedy, and no statement of
+//! what happened to the bytes. That is the exact message class card
+//! `dial-eagain-under-pipeline-load` was opened over, arriving by the other
+//! half.
+//!
+//! The justification for the flat cap was that "a timeout mid-frame leaves a
+//! partial line on the wire, which is unrecoverable", so a write timeout could
+//! only mean a dead peer. **Measured 2026-08-24 (macOS, `SO_SNDTIMEO` 2 s, an
+//! 8 MiB body against a listener that accepts and never reads), that premise is
+//! false**: the first `write(2)` returned `Ok(8192)` — a PARTIAL COUNT, the
+//! bytes the kernel took — and every later one returned `WouldBlock` with the
+//! transferred total unchanged. The kernel says exactly how far it got, so
+//! resuming at that offset loses no byte and duplicates none. `write_all` is
+//! what makes the partial unrecoverable: it discards the count on error.
+//!
+//! So [`write_all`] is the write-half twin of [`read_line`] — the socket
+//! timeout is the TICK, the probe is the instrument, and the same three
+//! outcomes apply. It has one thing the read half does not: **the frame is not
+//! whole on the wire, so nothing was committed** — an NDJSON request the daemon
+//! never received to its newline cannot have been acted on. Every verdict below
+//! says so, because "the write failed" and "the outcome is unknown" send a
+//! caller to opposite acts.
 //!
 //! # What a caller observes
 //!
@@ -78,13 +109,19 @@ pub const TICK: Duration = Duration::from_secs(2);
 #[allow(clippy::duration_suboptimal_units)]
 pub const WEDGE_CAP: Duration = Duration::from_secs(60);
 
-/// Put `stream` under the discipline: reads tick at [`TICK`], writes are bound
-/// by `cap`.
+/// Put `stream` under the discipline: **both halves tick at [`TICK`]**.
 ///
-/// The write bound is the whole cap rather than a tick because a write is not a
-/// tick loop — a timeout mid-frame leaves a partial line on the wire, which is
-/// unrecoverable. A write that cannot drain within the cap is a dead peer, not
-/// a slow one.
+/// No cap here on purpose. The cap is a property of the QUESTION, not of the
+/// connection — a liveness probe that has waited two seconds has already
+/// answered, while a write verb past the wire has no budget at all — so it is
+/// passed per call, to [`read_line`] and [`write_all`]. Taking a `cap`
+/// parameter it then put on only one half is what let the write half keep the
+/// flat bound after the read half stopped drawing verdicts from a constant.
+///
+/// **A bare `write_all`/`read_line` on a stream bound here is now a bug**: it
+/// gets a 2-second bound and a raw `WouldBlock`, which is the defect this
+/// module exists to abolish. Reach the daemon through [`read_line`] and
+/// [`write_all`].
 ///
 /// Call this BEFORE [`UnixStream::try_clone`]: `SO_RCVTIMEO`/`SO_SNDTIMEO` are
 /// socket-level, so the clone inherits them and one call covers both halves.
@@ -92,9 +129,9 @@ pub const WEDGE_CAP: Duration = Duration::from_secs(60);
 /// # Errors
 ///
 /// The socket rejected the option — the connection is unusable.
-pub fn bind(stream: &UnixStream, cap: Duration) -> io::Result<()> {
+pub fn bind(stream: &UnixStream) -> io::Result<()> {
     stream.set_read_timeout(Some(TICK))?;
-    stream.set_write_timeout(Some(cap))?;
+    stream.set_write_timeout(Some(TICK))?;
     Ok(())
 }
 
@@ -132,6 +169,108 @@ pub fn answers_ping(socket: &Path) -> bool {
                 .map(|s| s == "pong")
         })
         .unwrap_or(false)
+}
+
+/// Write `frame` whole under the discipline — the write-half twin of
+/// [`read_line`]. Drop-in for [`io::Write::write_all`] followed by a flush,
+/// with the tick loop around it.
+///
+/// # The offset is what makes the tick lossless
+///
+/// A tick lands wherever the daemon stopped draining, so it lands mid-frame
+/// routinely on any body worth stalling over. [`io::Write::write_all`] cannot
+/// be used across ticks: on error it discards how many bytes it had already
+/// handed the kernel, so a caller cannot know where to resume — which is
+/// precisely why the flat write cap looked unavoidable. A single
+/// [`io::Write::write`] does report it: measured 2026-08-24, `Ok(8192)` when
+/// the kernel took a partial slice at the timeout, then `WouldBlock` with the
+/// total unchanged. So the bytes are tracked here, by offset, and a tick never
+/// re-sends a byte the daemon already has (a duplicated slice is a corrupt
+/// frame, not a retry).
+///
+/// The frame is sent ONCE. A tick resumes it; it never restarts it.
+///
+/// # Errors
+///
+/// On every error the frame is incomplete on the wire — no newline arrived, so
+/// the daemon has not acted on it and **nothing was committed**. Each message
+/// says so.
+///
+/// - [`io::ErrorKind::ConnectionAborted`] — the daemon stopped answering
+///   liveness probes while this frame was still going out: it died mid-send.
+/// - [`io::ErrorKind::TimedOut`] — it answered probes for the whole `cap` and
+///   never drained the rest: up, and wedged.
+/// - [`io::ErrorKind::WriteZero`] — the socket accepted nothing and reported
+///   success, which cannot make progress.
+/// - Any other transport failure, verbatim.
+pub fn write_all(
+    writer: &mut impl Write,
+    socket: &Path,
+    cap: Duration,
+    frame: &[u8],
+) -> io::Result<()> {
+    let started = Instant::now();
+    let mut sent = 0usize;
+    let total = frame.len();
+    while sent < total {
+        match writer.write(&frame[sent..]) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    format!(
+                        "the socket accepted none of the remaining {} bytes of this \
+                         {total}-byte request and reported success — the frame cannot be \
+                         completed, so it never reached the daemon whole and nothing was \
+                         committed",
+                        total - sent
+                    ),
+                ));
+            }
+            // Whatever the kernel took is already on the wire; the offset is
+            // what keeps the resumption lossless.
+            Ok(n) => sent += n,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                let waited = started.elapsed();
+                if !answers_ping(socket) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::ConnectionAborted,
+                        format!(
+                            "the daemon stopped answering liveness probes after {waited:?} while \
+                             this request was still being sent ({sent} of {total} bytes drained) \
+                             — it died mid-send. The frame never reached it whole, so nothing \
+                             was committed"
+                        ),
+                    ));
+                }
+                if waited >= cap {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "the daemon is up (it is still answering liveness probes) and has not \
+                             drained this {total}-byte request in {waited:?} ({sent} bytes taken) \
+                             — it is wedged, not absent, so restarting the client will not help; \
+                             restart the daemon. The frame never reached it whole, so nothing was \
+                             committed"
+                        ),
+                    ));
+                }
+            }
+            // `Write::write` does NOT absorb EINTR — unlike `read_until`, which
+            // is why `read_line` above has no such arm. `write_all` handles it
+            // internally and this loop replaces `write_all`, so the arm moves
+            // here or a signal becomes a spurious transport failure.
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    // A no-op on a bare `UnixStream` (there is no user-space buffer), kept so
+    // this is a drop-in for the `write_all` + `flush` pair it replaces.
+    writer.flush()
 }
 
 /// Read one NDJSON line under the discipline. Drop-in for
@@ -343,7 +482,7 @@ mod tests {
         let dialled = sock.to_owned();
         thread::spawn(move || {
             let stream = UnixStream::connect(&dialled).expect("connect");
-            super::bind(&stream, cap).expect("bind the discipline");
+            super::bind(&stream).expect("bind the discipline");
             let mut reader = BufReader::new(stream);
             let mut line = String::new();
             let started = Instant::now();
@@ -469,7 +608,7 @@ mod tests {
         });
 
         let stream = UnixStream::connect(&sock).expect("connect");
-        super::bind(&stream, super::WEDGE_CAP).expect("bind the discipline");
+        super::bind(&stream).expect("bind the discipline");
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         let started = Instant::now();

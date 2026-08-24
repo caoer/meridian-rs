@@ -40,7 +40,7 @@
 //! post-result fold sets `stale = true|false`; a SQL error yields no rows to
 //! certify, so it reports `live_source=none, stale=null` (`state=UNVERIFIED`).
 
-use std::io::{BufReader, Write as _};
+use std::io::BufReader;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
@@ -377,8 +377,11 @@ fn daemon_call(
 ) -> Option<Value> {
     let mut line = request.to_string();
     line.push('\n');
-    writer.write_all(line.as_bytes()).ok()?;
-    writer.flush().ok()?;
+    // Disciplined on BOTH halves. The error is discarded either way — this lane
+    // degrades to the local ladder — but the bound is not the same: a bare
+    // `write_all` on a bound socket gives up after one tick, abandoning a live
+    // daemon mid-frame over a 2 s stall.
+    registry::wedge::write_all(writer, socket, registry::wedge::WEDGE_CAP, line.as_bytes()).ok()?;
     let mut response = String::new();
     registry::wedge::read_line(reader, socket, registry::wedge::WEDGE_CAP, &mut response).ok()?;
     serde_json::from_str(&response).ok()
@@ -394,7 +397,7 @@ fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
     let socket = client.socket_path().to_owned();
     let stream = UnixStream::connect(&socket).ok()?;
     // Before the clone: socket-level, so both halves inherit the discipline.
-    registry::wedge::bind(&stream, registry::wedge::WEDGE_CAP).ok()?;
+    registry::wedge::bind(&stream).ok()?;
     let mut writer = stream.try_clone().ok()?;
     let mut reader = BufReader::new(stream);
 

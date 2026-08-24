@@ -732,9 +732,29 @@ fn token_count_dial(
     let mut frame = serde_json::json!({"type": "token_count", "text": text}).to_string();
     frame.push('\n');
     let mut writer = &stream;
-    writer
-        .write_all(frame.as_bytes())
-        .map_err(|e| format!("sending the measurement to {endpoint} failed: {e}"))?;
+    // DOCUMENTED-FLAT, and deliberately not the wedge tick: the bound here is
+    // the script entry's REMAINING wall clock, which is a real budget — an
+    // entry whose clock has run out must stop writing, not keep resuming. What
+    // the flat bound owes is an honest message, and `text` is a whole record's
+    // bytes, so a stalled drain is reachable: EAGAIN used to surface raw here
+    // ("Resource temporarily unavailable (os error 35/11)"), reading like an
+    // absent endpoint. The read arm below already names its clock; this one now
+    // does too, and states the commit fact the read half cannot.
+    writer.write_all(frame.as_bytes()).map_err(|e| {
+        if matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ) {
+            format!(
+                "the script entry's wall clock elapsed while the measurement was still going out \
+                 to {endpoint} — it is draining slowly or has stopped reading, not absent \
+                 (the dial above succeeded). The frame never arrived whole, so no measurement \
+                 was taken."
+            )
+        } else {
+            format!("sending the measurement to {endpoint} failed: {e}")
+        }
+    })?;
     let mut line = String::new();
     BufReader::new(&stream).read_line(&mut line).map_err(|e| {
         if matches!(
