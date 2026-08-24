@@ -1622,22 +1622,35 @@ that null made the mode deaf on the one lane the file sink exists for. Both
 refusals above speak on stderr, and `MRD_TIMING=1` IS stderr, so an operator who
 pointed a daemon at `ws/x.md` or at an unwritable path got no complaint AND no
 measurements: the "the code never ran there" answer this instrument must never
-fake (card `mrd-timing-daemon-lane-sink`, from PR #176 round-2 finding N1).
+fake (card `mrd-timing-daemon-lane-sink`, from PR #176 round-2 finding N1). The
+same null swallowed everything ELSE the daemon said, which is why the lane is no
+longer gated on this mode at all.
 
-**While the mode is on, the auto-spawn gives the daemon a voice**: its stderr is
-`<socket-stem>.log`, opened append beside the socket and the pidfile that
-already key off the same stem — `$XDG_RUNTIME_DIR/mrd/<12hex>.log` on Linux,
-else `$HOME/.cache/mrd-run/<12hex>.log`. Into it go every `mrd-timing:`
-diagnostic, every measurement that degraded to stderr, the `MRD_TIMING=1` form,
-and the registry's own startup and error lines.
+**The auto-spawn gives the daemon a voice**: its stderr is `<socket-stem>.log`,
+opened append beside the socket and the pidfile that already key off the same
+stem — `$XDG_RUNTIME_DIR/mrd/<12hex>.log` on Linux, else
+`$HOME/.cache/mrd-run/<12hex>.log`. Into it go the daemon's own startup and
+shutdown lines, any refusal or panic it dies with, the registry's operational
+diagnostics — and, while the mode is on, every `mrd-timing:` diagnostic, every
+measurement that degraded to stderr, and the `MRD_TIMING=1` form.
 
-- **Off, nothing changes** — the daemon is spawned with a null stderr and no
-  file is created. The gate is your own switch.
+- **The lane is unconditional; the MEASUREMENTS are the gate.** It was gated on
+  the mode when this section was written, and that gate was also the mechanism
+  by which an auto-spawned daemon that died at startup was silent everywhere:
+  the client polls 5 s, degrades to the ephemeral engine and never refuses, so
+  a panic, an unresolvable layout, an unbindable socket and a poisoned state
+  file all present as "5 seconds slower" (card
+  `auto-spawned-daemon-dies-silently`).
+- **What a run that did not ask for the mode pays**: one file beside the socket,
+  gaining a handful of lines per daemon LIFETIME — not per operation. The
+  per-operation firehose is still yours to switch on.
+- **The degrade quotes it.** When a daemon this run spawned never binds, the
+  client reads back exactly the region that child appended and names the cause
+  on its own stderr, with the lane's path so you can read the rest.
 - A voice that will not open is said on the **spawning client's** stderr, which
   is a lane somebody hears; the daemon then starts mute and the diagnostic says
   so.
-- The file grows for as long as the mode is on and nothing rotates it. It is
-  yours to read and to remove.
+- Nothing rotates the file. It is yours to read and to remove.
 - A daemon started by hand in the foreground (`mrd daemon`) keeps the terminal's
   stderr, unchanged. One someone else's supervisor started with a null stderr
   is still deaf — this covers the auto-spawn, which is how the daemon actually

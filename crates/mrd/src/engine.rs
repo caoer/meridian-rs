@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use config::mount::DECLARATION_FILENAME;
@@ -137,29 +138,97 @@ pub(crate) fn voice_degrade(source: &EngineSource) {
     }
 }
 
-/// The one degrade cause worth naming beyond "no daemon answered": a socket path that cannot
-/// fit in `sun_path`. It is silent, and it is not fixed by starting a daemon. Since the
-/// short-sock law the socket is hash-keyed under a short per-user base
-/// (`registry::socket_path_for_cache_root`), so a merely long `XDG_CACHE_HOME` no longer
-/// reaches this — only a pathological base (deep `HOME`, or a missing one forcing the in-root
-/// fallback) still can. Every other cause (not running, spawn failed, refused handshake) is
-/// already covered by the first line, so this says nothing rather than guessing.
+/// WHY the daemon path did not serve, when this run can say it. `None` when it cannot — the
+/// first line of [`voice_degrade`] already names the fact, and a guess is worth less than
+/// silence.
+///
+/// Two causes, in the order an operator can act on them:
+///
+/// 1. **A socket path that cannot fit in `sun_path`** — silent, and not fixed by starting a
+///    daemon, so it outranks anything a spawn attempt reports (under it, a spawn is bound to
+///    fail too, and naming the bind limit is what ends the loop). Since the short-sock law the
+///    socket is hash-keyed under a short per-user base
+///    (`registry::socket_path_for_cache_root`), so a merely long `XDG_CACHE_HOME` no longer
+///    reaches this — only a pathological base (deep `HOME`, or a missing one forcing the
+///    in-root fallback) still can.
+/// 2. **A daemon this process spawned and never heard from** — its own dying words, read back
+///    off its lane ([`SPAWN_FAILURE`]). This is not a guess: it is the child's own text.
+///
+/// A refused handshake and a daemon somebody else's process failed to start are still covered
+/// by the first line alone.
 pub(crate) fn degrade_reason() -> Option<String> {
     let Ok(client) = Client::from_default() else {
         return Some("No cache root resolves, so there is no socket path to dial.".to_owned());
     };
     let socket = client.socket_path();
     let len = socket.as_os_str().as_encoded_bytes().len();
-    if len < SUN_PATH_CAPACITY {
-        return None;
+    if len >= SUN_PATH_CAPACITY {
+        return Some(format!(
+            "The socket path is {len} bytes, at or over this platform's {SUN_PATH_CAPACITY}-byte \
+             sun_path limit, so NO daemon can bind or dial it. The socket rides a short per-user \
+             base ($XDG_RUNTIME_DIR on Linux, else $HOME/.cache/mrd-run); shorten that base \
+             directory: {}",
+            socket.display()
+        ));
     }
-    Some(format!(
-        "The socket path is {len} bytes, at or over this platform's {SUN_PATH_CAPACITY}-byte \
-         sun_path limit, so NO daemon can bind or dial it. The socket rides a short per-user \
-         base ($XDG_RUNTIME_DIR on Linux, else $HOME/.cache/mrd-run); shorten that base \
-         directory: {}",
-        socket.display()
-    ))
+    spawn_failure()
+}
+
+/// The last words of a daemon THIS process auto-spawned and never heard from — set by
+/// [`ensure_daemon`], read by [`degrade_reason`].
+///
+/// A process-wide cell rather than a return value, because the five lanes that need this fact
+/// do not share a call shape: two swallow `ensure_daemon`'s error into a degrade
+/// ([`try_daemon_links`], `read_cmd::connect_or_spawn`) and three interpolate it into a refusal
+/// (`write_ipc`, `fingerprint_cmd`, `script::cmd`). [`degrade_reason`] is the seam all five
+/// already consult, so the fact is recorded once and stated once, in one voice, wherever the
+/// run ends up surfacing it.
+///
+/// Last writer wins: a process that spawns twice is reporting on its latest attempt.
+static SPAWN_FAILURE: Mutex<Option<String>> = Mutex::new(None);
+
+/// Record why the spawn this process just attempted left it with no daemon.
+fn record_spawn_failure(reason: String) {
+    if let Ok(mut slot) = SPAWN_FAILURE.lock() {
+        *slot = Some(reason);
+    }
+}
+
+/// The recorded spawn failure, if this process attempted one and it failed. A poisoned lock
+/// answers `None`: a diagnostic is never worth a panic on the degrade path.
+fn spawn_failure() -> Option<String> {
+    SPAWN_FAILURE.lock().ok()?.clone()
+}
+
+/// What to say when a daemon we launched never bound its socket: QUOTE it. Its stderr is the
+/// lane beside the socket (`daemon::voice`), so whatever it managed to say on the way down is
+/// there, and `mark` is the length that lane had before this spawn — so the quote is this
+/// child's words and nobody else's.
+///
+/// An EMPTY region is reported as such rather than skipped. "It said nothing" is a different
+/// finding from "it said this", and it still beats the silence this whole path replaces: it
+/// names the file, the timeout, and the fact that the child never reached its first line.
+fn never_bound(mark: u64) -> String {
+    let lane = daemon::voice_path().map_or_else(
+        |_| "no cache root resolves, so it had none".to_owned(),
+        |path| path.display().to_string(),
+    );
+    let secs = SPAWN_READY_TIMEOUT.as_secs();
+    daemon::voice_since(mark).map_or_else(
+        || {
+            format!(
+                "The daemon this run auto-spawned never bound its socket within {secs}s, and its \
+                 lane ({lane}) carries nothing from it — it died before its first line, or \
+                 something killed it."
+            )
+        },
+        |said| {
+            format!(
+                "The daemon this run auto-spawned never bound its socket within {secs}s. Its own \
+                 lane ({lane}) carries its last words: {said}"
+            )
+        },
+    )
 }
 
 /// An engine read answer: the wire success body plus which path produced it.
@@ -229,6 +298,14 @@ pub(crate) fn run_command(path_arg: Option<&str>, format: Format) -> Result<(), 
     // Read off the ANSWER, so warm and degrade voice one fact from one source:
     // an enumeration names the population it did not carry (§4.6 `excluded`).
     voice_excluded(&answer.body);
+    // `links` is the lane the never-refusing degrade was measured on, and it
+    // reported the degrade as a `source:` LABEL with no cause — which is the
+    // "5 seconds slower, then the ephemeral answer" symptom itself, spelled in
+    // one word (card `auto-spawned-daemon-dies-silently`). The label stays
+    // where it is; this adds the WHY on stderr, the lane `voice_excluded`
+    // already speaks on, so both output formats gain it and neither's stdout
+    // moves by a byte.
+    voice_degrade(&answer.source);
 
     match format {
         Format::Json => {
@@ -551,13 +628,14 @@ pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
     if client.ping().unwrap_or(false) {
         return Ok(());
     }
-    // The drain-budget hazard, checked HERE because the daemon cannot say it.
-    // `spawn_detached` gives the child `stderr(Stdio::null())`
-    // (`daemon::spawn_detached`), so the identical `debug_assert` inside
-    // `RunningServer::start` panics into /dev/null on this path and the caller
-    // simply degrades 5 s later — the failure would be invisible exactly where
-    // the subprocess fixtures live. This process's stderr and exit code ARE
-    // captured by whoever ran `mrd`, so the check is loud here.
+    // The drain-budget hazard, checked HERE because this is where it is LOUD.
+    // The child's identical `debug_assert` (inside `RunningServer::start`) now
+    // lands on a lane that is read back — `spawn_detached` gives it a file for
+    // its stderr (`daemon::voice`) and the degrade below quotes it — so this is
+    // no longer the only place the failure can be seen. It is still the best:
+    // it fails before the 5 s wait is spent, it carries this process's exit
+    // code, and its stderr is captured directly by whoever ran `mrd`, which is
+    // exactly where the subprocess fixtures look.
     //
     // The child inherits this environment, so resolving the config here yields
     // the same one it will build: `Config::resolve` stays the single reader of
@@ -567,10 +645,10 @@ pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
     // A config that does NOT resolve is checked here too, and for the same
     // reason. `Config::resolve` refuses a malformed `MRD_DRAIN_COLD_BUILDS`
     // rather than falling back to the 2 s default (`parse_drain_cold_builds`) —
-    // correctly, since the value exists to escape that default. But the child
-    // re-resolves the same environment and dies with that refusal on a null
-    // stderr, so leaving the `Err` unspoken here reproduces the exact silence
-    // this whole check exists to end. Measured on `5bbd7912e`:
+    // correctly, since the value exists to escape that default. The child
+    // re-resolves the same environment and dies with that refusal, and while
+    // that refusal now reaches its lane, this arm still says it 5 s earlier and
+    // with a nonzero exit. Measured on `5bbd7912e`, before the lane existed:
     // `MRD_DRAIN_COLD_BUILDS=notanumber` gave exit 0, 5.03 s, an ephemeral
     // answer, and no mention of the variable anywhere.
     //
@@ -587,7 +665,17 @@ pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
         )),
     };
     debug_assert!(refusal.is_none(), "{}", refusal.unwrap_or_default());
-    daemon::spawn_detached()?;
+    // Taken BEFORE the spawn: the lane is append-only and may already hold an
+    // earlier daemon's lines, so only the region added after this mark is the
+    // child we are about to launch ([`daemon::voice_since`]).
+    let mark = daemon::voice_mark();
+    if let Err(error) = daemon::spawn_detached() {
+        record_spawn_failure(format!(
+            "The daemon could not be launched at all ({error}) — nothing was started, so nothing \
+             can answer until it is (check MERIDIAN_DAEMON_BIN if it is set)."
+        ));
+        return Err(error);
+    }
     let deadline = Instant::now() + SPAWN_READY_TIMEOUT;
     while Instant::now() < deadline {
         if client.ping().unwrap_or(false) {
@@ -595,6 +683,10 @@ pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
         }
         std::thread::sleep(PING_POLL);
     }
+    // The whole point of the lane: the caller degrades (or refuses) in a moment,
+    // and now it can say WHY rather than presenting every startup failure alike
+    // as "5 seconds slower" (card `auto-spawned-daemon-dies-silently`).
+    record_spawn_failure(never_bound(mark));
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
         "auto-spawned daemon did not become ready",
