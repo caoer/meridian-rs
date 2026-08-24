@@ -67,7 +67,13 @@ const SPELLINGS: [(&str, fn(&[&str]) -> String); 4] = [
 
 /// A `rules/hook` page carrying `caps_block` verbatim. `budget:`/`how:` are
 /// always present so a refusal can only be about the caps.
-fn hook_page(caps_block: &str) -> String {
+///
+/// `predicate` is the predicate BODY: a page declaring caps must reach for the
+/// constructors they grant, and a page declaring none must reach for nothing —
+/// the load-time capability ceiling (`check_ceiling`) refuses otherwise, and
+/// that refusal would be about the predicate, not about the spelling this gate
+/// is measuring.
+fn hook_page(caps_block: &str, predicate: &str) -> String {
     format!(
         "---\n\
          tags: [type/rule, rules/hook]\n\
@@ -85,15 +91,24 @@ fn hook_page(caps_block: &str) -> String {
          \n\
          ```starlark\n\
          def on_change(event):\n    \
-         send(to = [\"reviewer\"], message = \"probe\")\n\
+         {predicate}\n\
          ```\n"
     )
 }
 
+/// The predicate a `proto.send`-granting page carries.
+const SENDS: &str = "send(to = [\"reviewer\"], message = \"probe\")";
+/// The predicate a page granting NOTHING carries.
+const EMITS_NOTHING: &str = "pass";
+
 /// Load a hook page through the PUBLIC seam (`register_page` → `load_rule`),
 /// answering with the declared caps as wire names or the refusal's own text.
 fn policy_caps(caps_block: &str) -> Result<Vec<String>, String> {
-    let md = hook_page(caps_block);
+    policy_caps_with(caps_block, SENDS)
+}
+
+fn policy_caps_with(caps_block: &str, predicate: &str) -> Result<Vec<String>, String> {
+    let md = hook_page(caps_block, predicate);
     let registration = register_page(PageRef {
         layer: ScopeLayer::Workspace,
         page: "rules/caps-spelling-probe.md",
@@ -216,7 +231,7 @@ fn a_rejected_cap_is_named_without_its_spelling() {
 #[test]
 fn a_declared_empty_list_is_explicit_read_only_on_both_planes() {
     assert_eq!(
-        policy_caps("caps: []\n").expect("`caps: []` loads"),
+        policy_caps_with("caps: []\n", EMITS_NOTHING).expect("`caps: []` loads"),
         Vec::<String>::new()
     );
     assert_eq!(
