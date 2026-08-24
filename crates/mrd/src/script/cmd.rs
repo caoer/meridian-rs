@@ -205,11 +205,18 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let client = Client::from_default()
         .map_err(|e| Fail::tool(format!("cannot resolve the daemon socket: {e}")))?;
     engine::ensure_daemon(&client).map_err(|e| {
+        // The design sentence is UNCONDITIONAL, and the cause is added to it —
+        // never substituted for it. The two answer different questions ("why
+        // did this fail" vs "why is there no fallback"), and a door that
+        // reported a cause INSTEAD of its design reads as a transient: the
+        // operator waits for it to clear rather than starting a daemon. This
+        // was an `unwrap_or_else` until `degrade_reason` learned to name a
+        // failed spawn, at which point the design sentence silently vanished
+        // from exactly the case that produces one.
         Fail::tool(format!(
-            "the script entry runs as a wire client and no daemon answered ({e}). {}",
-            engine::degrade_reason().unwrap_or_else(|| {
-                "It writes AS you through the one door, so there is no daemonless leg.".to_owned()
-            })
+            "the script entry runs as a wire client and no daemon answered ({e}). It writes AS \
+             you through the one door, so there is no daemonless leg.{}",
+            engine::degrade_reason().map_or_else(String::new, |why| format!(" {why}"))
         ))
     })?;
     // The script entry's budget IS real (§ Where the budgets bind), so its

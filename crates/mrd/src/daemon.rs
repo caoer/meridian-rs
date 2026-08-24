@@ -5,7 +5,7 @@
 //! loop until SIGINT/SIGTERM.
 
 use std::fs::OpenOptions;
-use std::io;
+use std::io::{self, Read as _, Seek as _};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -29,6 +29,17 @@ const DAEMON_BIN_ENV: &str = "MERIDIAN_DAEMON_BIN";
 /// The extension of the detached daemon's voice file, beside the socket and the
 /// pidfile that already key off the same stem ([`voice_path`]).
 const VOICE_EXTENSION: &str = "log";
+
+/// How much of the lane's new region [`voice_since`] may quote. The region can
+/// be a whole timing firehose; a daemon's dying words are at its END.
+const VOICE_QUOTE_BYTES: u64 = 4096;
+
+/// How many lines of that region reach the quote — the last few, which is where
+/// a startup refusal lands.
+const VOICE_QUOTE_LINES: usize = 3;
+
+/// A hard ceiling on the quoted text, because it rides ONE diagnostic line.
+const VOICE_QUOTE_CHARS: usize = 600;
 
 extern "C" fn on_signal(_sig: libc::c_int) {
     SIGNALLED.store(true, Ordering::SeqCst);
@@ -77,10 +88,11 @@ pub(crate) fn run() -> Result<(), Fail> {
 }
 
 /// Auto-spawn the resident daemon DETACHED (decision 0002 §3): launch `mrd daemon` in a new
-/// session with null stdin/stdout, so it survives this clients exit. Its stderr is null too
-/// unless the timing mode is on, in which case it gets a file to speak into ([`voice`]).
-/// Returns as soon as the child is launched — the caller polls the socket for readiness (a
-/// launched daemon that never binds is a caller-side timeout, then a degrade).
+/// session with null stdin/stdout, so it survives this clients exit. Its stderr is a FILE it
+/// can speak into ([`voice`]) — a detached daemon has no terminal, and a daemon nobody can
+/// hear dies unheard. Returns as soon as the child is launched — the caller polls the socket
+/// for readiness (a launched daemon that never binds is a caller-side timeout, then a degrade
+/// that QUOTES that file: `engine::degrade_reason`).
 pub(crate) fn spawn_detached() -> io::Result<()> {
     let bin = match std::env::var_os(DAEMON_BIN_ENV) {
         Some(path) => PathBuf::from(path),
@@ -117,8 +129,92 @@ pub(crate) fn spawn_detached() -> io::Result<()> {
 ///
 /// Returns [`io::ErrorKind::NotFound`] when no cache root resolves — the same
 /// condition that leaves the client with no socket to dial.
-fn voice_path() -> io::Result<PathBuf> {
+pub(crate) fn voice_path() -> io::Result<PathBuf> {
     Ok(registry::default_socket_path()?.with_extension(VOICE_EXTENSION))
+}
+
+/// How many bytes the lane already holds — the mark a caller takes BEFORE
+/// spawning, so [`voice_since`] reads back exactly what the child IT spawned
+/// said, never a line an earlier daemon left on the same append-only file.
+///
+/// An absent lane (the cold case, and the common one) is `0`, which is also
+/// what an unreadable one reports: the mark exists to bound a later read, and
+/// bounding it at the start of the file is the honest answer when the length
+/// cannot be established.
+pub(crate) fn voice_mark() -> u64 {
+    voice_path()
+        .and_then(std::fs::metadata)
+        .map(|meta| meta.len())
+        .unwrap_or_default()
+}
+
+/// What the lane gained since `mark`, folded to ONE line fit to ride a
+/// diagnostic — the dying words of the daemon this caller spawned.
+///
+/// `None` when the lane never opened, when it gained nothing, or when it cannot
+/// be read back. That is a real distinction for the caller: **an empty region
+/// is itself a finding** ("it died before it could speak"), and reporting it as
+/// absent-text rather than as empty-text is what lets the caller say so.
+///
+/// Bounded twice, because the region can be a whole timing session: the last
+/// [`VOICE_QUOTE_BYTES`] of it, then its last [`VOICE_QUOTE_LINES`] non-empty
+/// lines, then [`VOICE_QUOTE_CHARS`]. A byte-bounded read can start mid-line,
+/// so that first partial line is dropped rather than quoted as if it were a
+/// whole one.
+pub(crate) fn voice_since(mark: u64) -> Option<String> {
+    let path = voice_path().ok()?;
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    if len <= mark {
+        return None;
+    }
+    let start = mark.max(len.saturating_sub(VOICE_QUOTE_BYTES));
+    file.seek(io::SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines = text.lines();
+    if start > mark {
+        // The read began mid-file, so line one may be a fragment of a line the
+        // mark already covered.
+        lines.next();
+    }
+    let kept: Vec<&str> = lines
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    let quote = kept[kept.len().saturating_sub(VOICE_QUOTE_LINES)..].join(" / ");
+    Some(one_line(&quote))
+}
+
+/// Text as it may appear on a diagnostic LINE. A raw newline would split the
+/// line and leave the tail carrying no prefix at all; every other control
+/// character is squeezed for the same reason. Also length-bounded — a daemon
+/// that dies mid-dump must not own the terminal.
+fn one_line(text: &str) -> String {
+    let mut folded: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    if folded.chars().count() > VOICE_QUOTE_CHARS {
+        folded = folded.chars().take(VOICE_QUOTE_CHARS).collect();
+        folded.push('…');
+    }
+    folded
+}
+
+/// Say — on the SPAWNING CLIENT's stderr, a lane somebody hears — that the
+/// daemon is about to start with no lane of its own, and start it anyway.
+///
+/// Muting is always the degrade, never the failure: a daemon that answers
+/// inaudibly is worth strictly more than no daemon, and the point of this whole
+/// file is that silence must be ANNOUNCED rather than discovered.
+fn mute(reason: &str) -> Stdio {
+    eprintln!("mrd: {}", one_line(reason));
+    Stdio::null()
 }
 
 /// The socket directory, created if this client got there before any daemon.
@@ -136,48 +232,50 @@ fn prepare_voice_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The child's stderr.
+/// The child's stderr: [`voice_path`], opened append — ALWAYS.
 ///
-/// A detached daemon has no terminal, so this was `Stdio::null()` unconditionally
-/// — and that null was the whole reason the timing mode is deaf on the daemon
-/// lane. Both file-sink refusals degrade to stderr, and the `MRD_TIMING=1` form
-/// IS stderr (`crates/timing`), so an operator who pointed a daemon at a corpus
-/// extension or an unopenable path got no complaint AND no measurements: exactly
-/// the "the code never ran there" answer the instrument must never fake.
+/// A detached daemon has no terminal, so this was `Stdio::null()`
+/// unconditionally, and then `Stdio::null()` unless the timing mode was on.
+/// Both spellings shared one hole, and the timing mode was only its loudest
+/// instance: **everything the daemon says goes to `/dev/null`**. It dies in
+/// `RunningServer::start` — a panic, a layout that will not resolve, an
+/// unbindable socket, a poisoned state file — and says its refusal into
+/// nothing. The client's only symptom is the `SPAWN_READY_TIMEOUT` degrade, so
+/// every startup failure alike presents as "5 seconds slower, then the
+/// ephemeral answer" (card `auto-spawned-daemon-dies-silently`). The registry's
+/// own operational diagnostics — three dozen `eprintln!` sites: accept errors,
+/// connection errors, a failed state save, idle reaps — were inaudible on this
+/// path for the same reason.
 ///
-/// So while the mode is ON the daemon gets a real voice — [`voice_path`], opened
-/// append — and every `mrd-timing:` diagnostic, every degraded measurement, and
-/// the registry's own startup and error lines land in it. **Off, nothing changes
-/// and no file is created**: the gate is the operator's own switch, so this
-/// costs a run that did not ask for the mode nothing at all.
+/// The degrade is right as a POLICY and is untouched. What changes is that it
+/// now has something to quote (`engine::degrade_reason` reads this file back
+/// through [`voice_since`]), so a run can say WHY it degraded.
 ///
-/// The file grows for as long as the mode is on and is nobody's to rotate — it
-/// is the operator's to read and remove. It is also opened BEFORE the spawn, so
-/// a spawn that then fails (a bad [`DAEMON_BIN_ENV`]) leaves an empty one with
-/// no daemon behind it. Named rather than fixed: the alternative is handing the
-/// child a descriptor opened after it exists, which is not a thing, and an empty
-/// file next to a daemon that did not start is not a lie about anything.
+/// What that costs a run that did not ask for the timing mode: one file beside
+/// the socket, gaining a handful of lines per daemon LIFETIME (start, shutdown,
+/// errors) — not per operation. The per-operation firehose is still gated on
+/// `MRD_TIMING`, which is what that gate was actually protecting; this trades
+/// the startup lines for the end of the silence, deliberately. The file is
+/// nobody's to rotate: it is the operator's to read and to remove.
 ///
-/// A voice that cannot be opened is said out loud HERE, on the spawning client's
-/// stderr, which is a lane somebody hears: the daemon then starts mute, and the
-/// diagnostic says so rather than letting the operator read silence as "the
-/// daemon measured nothing".
+/// It is opened BEFORE the spawn, so a spawn that then fails (a bad
+/// [`DAEMON_BIN_ENV`]) leaves an empty one with no daemon behind it. Named
+/// rather than fixed: the alternative is handing the child a descriptor opened
+/// after it exists, which is not a thing, and an empty file next to a daemon
+/// that did not start is not a lie about anything.
 ///
-/// The gate reads THIS process's switch, and that is sound rather than a guess:
-/// the child inherits this environment verbatim, so the daemon resolves the same
-/// `MRD_TIMING` value from the same bytes.
+/// A voice that cannot be opened is said out loud HERE, on the spawning
+/// client's stderr, which is a lane somebody hears ([`mute`]): the daemon then
+/// starts mute, and the diagnostic says so rather than letting the operator
+/// read silence as "nothing went wrong".
 fn voice() -> Stdio {
-    if !timing::on() {
-        return Stdio::null();
-    }
     let path = match voice_path() {
         Ok(path) => path,
         Err(error) => {
-            timing::diagnostic(&format!(
-                "no cache root resolves ({error}), so the daemon has nowhere to speak — it \
-                 starts with no stderr and its measurements are LOST."
+            return mute(&format!(
+                "the daemon has nowhere to speak (no cache root resolves: {error}) — it starts \
+                 MUTE, so a startup failure of its own will be silent."
             ));
-            return Stdio::null();
         }
     };
     let opened = match path.parent() {
@@ -187,13 +285,10 @@ fn voice() -> Stdio {
     .and_then(|()| OpenOptions::new().create(true).append(true).open(&path));
     match opened {
         Ok(file) => Stdio::from(file),
-        Err(error) => {
-            timing::diagnostic(&format!(
-                "cannot open the daemon's lane `{}` ({error}) — it starts with no stderr, so \
-                 its measurements and any refusal of the sink you named are LOST.",
-                path.display()
-            ));
-            Stdio::null()
-        }
+        Err(error) => mute(&format!(
+            "cannot open the daemon's lane `{}` ({error}) — it starts MUTE, so a startup failure \
+             of its own will be silent.",
+            path.display()
+        )),
     }
 }

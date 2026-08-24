@@ -9,8 +9,12 @@
 //!   corpus-extension refusal and the failed-open degrade, which both speak on
 //!   stderr, reached nobody. An operator who pointed a daemon at `ws/x.md` got
 //!   no complaint AND no measurements: the "the code never ran there" answer
-//!   the instrument must never fake. While the mode is on the daemon now speaks
-//!   into `<socket-stem>.log` beside its own socket and pidfile.
+//!   the instrument must never fake. The daemon now speaks into
+//!   `<socket-stem>.log` beside its own socket and pidfile. That lane started
+//!   here, gated on the mode; card `auto-spawned-daemon-dies-silently` made it
+//!   unconditional, because the same null stderr was swallowing the daemon's
+//!   own startup refusals. `MRD_TIMING` still governs what this file is about —
+//!   whether there are MEASUREMENTS on that lane.
 //! - **Concurrent work is attributable.** Every line carries `who=p<pid>.t<n>`,
 //!   so daemon lines that used to be byte-identical now name their emitter.
 //!   What that emitter IS on this lane is narrower than it first looks: the
@@ -314,25 +318,33 @@ fn an_unopenable_voice_is_said_on_the_spawning_clients_stderr() {
         .expect("mrd links exits");
     let client = String::from_utf8_lossy(&out.stderr).into_owned();
 
-    let said = diagnostics(&client);
-    assert!(
-        said.iter()
-            .any(|line| line.contains("cannot open the daemon's lane")),
-        "the client swallowed the unopenable lane: {client}"
-    );
     // The `io::Error` text is the OS's, not ours, and it rides this line: it
-    // must not have split it. `diagnostics()` splits on newlines already, so
-    // "no `\n` in the element" is vacuous — the real assertion is that the ONE
+    // must not have split it. Splitting on newlines already happened, so "no
+    // `\n` in the element" is vacuous — the real assertion is that the ONE
     // matching line still carries the END of the message.
-    let complaint: Vec<&String> = said
-        .iter()
+    //
+    // The complaint is in the house `mrd:` grammar, not the `mrd-timing:` one
+    // it used to take: since the lane became unconditional, an unopenable lane
+    // is not a fact about the timing mode. What is lost is wider than
+    // measurements, and the line says so.
+    let complaint: Vec<&str> = client
+        .lines()
         .filter(|line| line.contains("cannot open the daemon's lane"))
         .collect();
-    assert_eq!(complaint.len(), 1, "expected exactly one: {said:?}");
+    assert_eq!(
+        complaint.len(),
+        1,
+        "expected exactly one complaint about the unopenable lane: {client}"
+    );
     assert!(
-        complaint[0].trim_end().ends_with("are LOST."),
-        "the complaint line does not end with `are LOST.` — split by the error text, or the tail \
-         in daemon.rs changed: {}",
+        complaint[0].starts_with("mrd: "),
+        "the complaint is not in the house grammar: {}",
+        complaint[0]
+    );
+    assert!(
+        complaint[0].trim_end().ends_with("will be silent."),
+        "the complaint line does not end with `will be silent.` — split by the error text, or the \
+         tail in daemon.rs changed: {}",
         complaint[0]
     );
 
@@ -379,11 +391,23 @@ fn an_unopenable_voice_is_said_on_the_spawning_clients_stderr() {
     );
 }
 
-/// Off, nothing changes: no voice file is created, and the daemon keeps the
-/// null stderr it was always spawned with. The gate is the operator's own
-/// switch, so a run that did not ask for the mode pays nothing.
+/// Off, the daemon still has a LANE — it just has nothing to measure.
+///
+/// This gate used to assert the opposite (`the_mode_off_creates_no_lane`: no
+/// file at all), and that was the right reading of a gate whose only purpose
+/// was the measurement firehose. It was also the mechanism by which every
+/// startup failure of an auto-spawned daemon was silent, since the same null
+/// stderr swallowed the daemon's own refusals and the registry's operational
+/// diagnostics along with the timing lines (card
+/// `auto-spawned-daemon-dies-silently`, whose gates are
+/// `crates/mrd/tests/daemon_startup_voice.rs`). The lane is now unconditional
+/// and `MRD_TIMING` governs only what this file is actually about.
+///
+/// So what "a run that did not ask for the mode pays nothing" now means, and
+/// what this gate holds the line on: **no measurements**. The lane gains a
+/// handful of lines per daemon LIFETIME, never one per operation.
 #[test]
-fn the_mode_off_creates_no_lane() {
+fn the_mode_off_still_gives_the_daemon_a_lane_but_no_measurements() {
     let sb = Sandbox::new();
     let ws = sb.workspace();
 
@@ -407,16 +431,28 @@ fn the_mode_off_creates_no_lane() {
         "the read-only script failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // The daemon it auto-spawned answered — so the spawn path ran — and left
-    // no file behind.
+    // The daemon it auto-spawned answered — so the spawn path ran.
     assert!(
         common::child_daemon_pidfile(&sb.home, &sb.cache_home).exists(),
         "no daemon was spawned, so this proves nothing about the off path"
     );
+
+    // It has a lane, and the lane carries the daemon's own startup line: the
+    // proof the channel is live on the REAL binary with the mode off, which is
+    // what makes a startup failure quotable.
+    let said = wait_for(&sb.voice(), |text| text.contains("listening on"));
     assert!(
-        !sb.voice().exists(),
-        "the mode is off and a lane was created anyway: {}",
-        sb.voice().display()
+        said.contains("listening on"),
+        "the mode is off and the daemon's lane {} carries none of its own \
+         startup lines: {said}\nclient stderr: {}",
+        sb.voice().display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // And nothing the mode is gated for: no measurements, no diagnostics.
+    assert!(
+        measurements(&said).is_empty() && diagnostics(&said).is_empty(),
+        "the mode is off and the lane carries timing output anyway: {said}"
     );
 }
 
