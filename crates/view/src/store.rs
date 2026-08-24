@@ -2811,23 +2811,50 @@ mod config_scope_tests {
         }
     }
 
-    /// A caller whose statement FAILED can still have moved config before it
-    /// failed — and an error path that skips the restore is the same leak with
-    /// a smaller door. (`SET threads=2` succeeds; the second statement in the
-    /// same string is what `DuckDB` refuses, since `run_query` prepares one.)
+    /// The error path is not a place config can hide.
+    ///
+    /// **Why this is two halves and not one.** A caller who moved config and
+    /// THEN failed is the case worth guarding, but the lane cannot be handed
+    /// one: `run_query` prepares exactly ONE statement, so `SET x; <bad>` never
+    /// reaches the `SET`. So this pins the two halves that ARE reachable —
+    /// (1) through the lane, a failing statement still answers the caller's own
+    /// error, which is the return shape the restore must not disturb; (2) at
+    /// function grain, `restore_global_config` puts back a `SET` made on a
+    /// connection whose statement then errored, which is exactly the state
+    /// `SqlStore::query` hands it when `run_query` returns `Err`.
+    ///
+    /// This test is deliberately NOT the guard for the lane wiring — it stays
+    /// green if the restore call is deleted from
+    /// [`SqlStore::query`] (measured 2026-08-24). The wiring is guarded by
+    /// `a_caller_set_does_not_reach_the_next_caller` and the two beside it,
+    /// which go RED under that mutation.
     #[test]
-    fn a_failed_statement_still_gets_its_config_restored() {
+    fn the_error_path_is_not_a_place_config_can_hide() {
         let dir = tempfile::tempdir().expect("tmpdir");
         let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
         sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
-
         let engine_threads = next_caller_sees(&store, "threads");
+
+        // (1) Through the lane: the caller's own error survives the restore.
+        let refusal = store
+            .query("SELECT * FROM no_such_table")
+            .expect("lane")
+            .expect_err("the caller's own SQL failed");
+        assert!(
+            refusal.contains("no_such_table"),
+            "the caller's error is theirs, verbatim, restore or no restore: {refusal}"
+        );
+
+        // (2) At function grain: the state the lane hands the restore on Err.
         let conn = store.connection().try_clone().expect("clone");
         let before = global_config_snapshot(&conn).expect("snapshot");
         conn.execute_batch("SET threads=2;").expect("caller SET");
-        let _ = run_query(&conn, "SELECT * FROM no_such_table")
-            .expect_err("the caller's statement fails after the SET");
-        restore_global_config(&conn, &before);
+        run_query(&conn, "SELECT * FROM no_such_table")
+            .expect_err("the statement fails after the SET");
+        assert!(
+            restore_global_config(&conn, &before).is_empty(),
+            "the restore puts everything back on the error path too"
+        );
         drop(conn);
 
         assert_eq!(
