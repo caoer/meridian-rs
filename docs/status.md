@@ -81,7 +81,12 @@ mrd unregister [PATH] drop the daemon entry (if a daemon answers) + the drawer.
  given — `Registry::unregister`'s own fallback key, and
  the stale-entry class a sweep leaves behind. A vanished
  path keyed by nothing refuses (exit 2) rather than
- reporting the never-registered clean no-op
+ reporting the never-registered clean no-op — and that
+ refusal names only what the run checked: the drawer
+ always, the registry only when a daemon answered. With
+ none answering it says the registry was NOT checked and
+ an entry may still be registered, instead of asserting
+ an absence nobody looked for
 mrd resolve [PATH] report how a path resolves — the tier that answered and
  the root it named (read-only; writes nothing). PATH
  also takes the agent-plane `root:path` spelling: a
