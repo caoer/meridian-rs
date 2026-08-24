@@ -236,18 +236,22 @@ fn a_rejected_cap_is_named_without_its_spelling() {
 }
 
 /// `caps: []` is a DECLARED empty grant on both planes — explicit read-only,
-/// distinct from not declaring the key at all.
+/// distinct from not declaring the key at all. So is `caps: ""`: the author
+/// wrote a value, and the value is empty.
 #[test]
 fn a_declared_empty_list_is_explicit_read_only_on_both_planes() {
-    assert_eq!(
-        policy_caps_with("caps: []\n", EMITS_NOTHING).expect("`caps: []` loads"),
-        Vec::<String>::new()
-    );
-    assert_eq!(
-        run_caps("caps: []\n").expect("`caps: []` parses"),
-        Some(Vec::<String>::new()),
-        "the run plane must read `caps: []` as a DECLARED empty grant"
-    );
+    for spelling in ["caps: []\n", "caps: \"\"\n"] {
+        assert_eq!(
+            policy_caps_with(spelling, EMITS_NOTHING)
+                .unwrap_or_else(|e| panic!("`{spelling:?}` must load: {e}")),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            run_caps(spelling).unwrap_or_else(|e| panic!("`{spelling:?}` must parse: {e}")),
+            Some(Vec::<String>::new()),
+            "the run plane must read {spelling:?} as a DECLARED empty grant"
+        );
+    }
 }
 
 /// An absent `caps:` is not a declaration on either plane: the policy plane
