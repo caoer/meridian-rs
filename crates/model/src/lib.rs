@@ -3358,13 +3358,32 @@ pub fn parse_caps_list(value: &str) -> Vec<String> {
 ///
 /// Key-parameterized like [`fm_tags`]: the run plane reads the same grammar
 /// under `caps`, `task.<name>.caps` and `run.caps.<pattern>`.
+///
+/// `caps: ""` IS a declaration — the author wrote a value and the value is
+/// empty. Only a key line carrying nothing at all declares nothing, and
+/// [`fm_value`] serves both as `Some("")`, so the two are told apart by
+/// [`fm_is_quoted_scalar`] rather than by the served text.
 #[must_use]
 pub fn fm_caps(block: &str, key: &str) -> Option<Vec<String>> {
     let value = fm_value(block, key)?;
-    if value.trim().is_empty() {
+    if value.trim().is_empty() && !fm_is_quoted_scalar(block, key) {
         return None;
     }
     Some(parse_caps_list(&value))
+}
+
+/// **Did this key's line carry a QUOTED scalar?** — the question that tells an
+/// author's explicit empty value (`key: ""`) apart from a key line that
+/// carries nothing, which [`fm_value`] serves identically as `Some("")`.
+///
+/// The same shape as [`fm_is_block_scalar`], and for the same reason: the fact
+/// lives on the key LINE, which the served value has already thrown away.
+fn fm_is_quoted_scalar(block: &str, key: &str) -> bool {
+    let lines: Vec<&str> = block.lines().collect();
+    fm_key_line(&lines, key).is_some_and(|(_, remainder)| {
+        block_header(remainder).is_none()
+            && matches!(scalar::decode(remainder), scalar::Scalar::Quoted(_))
+    })
 }
 
 /// [`fm_caps`] for a seam holding a whole [`Document`] — the run plane's
