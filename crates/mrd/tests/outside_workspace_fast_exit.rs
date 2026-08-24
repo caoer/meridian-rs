@@ -320,6 +320,95 @@ fn unregister_refuses_a_vanished_path_that_matches_nothing() {
     );
 }
 
+/// The DRAWER half of the same class, end to end — the reviewer's executed
+/// probe made permanent (card `drawer-exists-folds-eacces`).
+///
+/// The test above is this one's ZERO CONTROL: there the drawer was genuinely
+/// absent and the refusal asserts the absence in full. Here the drawer is
+/// physically on disk and only its parent is unreadable, and PRE-FIX the two
+/// runs produced the same sentence — `drawer_dir.exists()` folded EACCES to
+/// `false`, exactly as `base.exists()` did one layer up before PR 218:
+///
+/// ```text
+/// nothing was unregistered for <ws>: the directory does not exist, and no
+/// drawer is keyed by that exact path, and the registry was NOT checked …
+/// ```
+///
+/// An operator reading that deletes a drawer they think is orphaned, or stops
+/// looking for one that is still there.
+#[test]
+fn unregister_does_not_report_an_unreadable_drawer_as_absent() {
+    let sb = sandbox();
+    let ws = sb.dir("shrouded");
+
+    // Register, so a drawer exists on disk for the rest of the fixture.
+    let out = sb.run_in(&ws, &["init"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "init must register the tree — stderr: {}",
+        stderr(&out),
+    );
+
+    // The drawer lives at <cache-root>/<key>/<version-segment>/. Shroud the
+    // KEY directory: the drawer itself is untouched and still on disk, and the
+    // `try_exists` of the segment under it answers EACCES instead of `false`.
+    let cache_root = sb.cache_home.join("meridian");
+    let key_dir = std::fs::read_dir(&cache_root)
+        .expect("read cache root")
+        .map(|e| e.expect("entry").path())
+        .find(|p| p.is_dir())
+        .expect("init must have created exactly one drawer key directory");
+    let restore = std::fs::metadata(&key_dir).expect("stat").permissions();
+    let mut shroud = restore.clone();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut shroud, 0o000);
+    std::fs::set_permissions(&key_dir, shroud).expect("chmod 000");
+
+    // The tree vanishes too — that is the leg the refusal below belongs to.
+    std::fs::remove_dir_all(&ws).expect("delete the workspace");
+
+    let out = sb.run_in(&sb.root, &["unregister", &ws.display().to_string()]);
+
+    // Restore first: an unreadable directory would outlive the assertions and
+    // break the tempdir's cleanup.
+    std::fs::set_permissions(&key_dir, restore).expect("chmod back");
+
+    // PRECONDITION, asserted rather than assumed: root bypasses mode bits, and
+    // a fixture that cannot build its condition must FAIL LOUD, never skip. As
+    // root the drawer is readable, gets removed, and this run exits 0 — a
+    // silent skip would report a clean suite over the leg nobody exercised.
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "precondition: the shrouded drawer must make the run refuse — running as root, or on \
+         a filesystem ignoring mode bits, this fixture proves nothing and says so; stdout: {} \
+         stderr: {}",
+        stdout(&out),
+        stderr(&out),
+    );
+
+    let err = stderr(&out);
+    assert!(
+        !err.contains("no drawer is keyed by that exact path"),
+        "PRE-FIX SENTENCE: an absence asserted about a drawer nobody could look at — got: {err}",
+    );
+    assert!(
+        err.contains("the drawer could not be examined"),
+        "the failed lookup must be reported as itself — got: {err}",
+    );
+    assert!(
+        err.contains("a drawer may still be keyed by that path"),
+        "and the unknown must stay open — got: {err}",
+    );
+
+    // The drawer is still there. The refusal's whole job is to not have said
+    // otherwise.
+    assert!(
+        key_dir.is_dir(),
+        "the drawer must survive a run that could not even look at it",
+    );
+}
+
 #[test]
 fn init_and_unregister_still_run_outside_a_defined_root() {
     let sb = sandbox();
