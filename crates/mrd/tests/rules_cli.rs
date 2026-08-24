@@ -1025,9 +1025,11 @@ fn an_arm_that_does_not_contain_this_path_names_its_cause_and_stays_clean() {
     );
     assert!(
         stdout.contains(
-            "  task.notify  armed=armed at scope=sessions/s1 — pinned sessions/s1/notify.md"
+            "  task.notify  armed=armed at scope=sessions/s1  drift=- — pinned \
+             sessions/s1/notify.md"
         ),
-        "the cause names the arm root that DOES hold it: {stdout}"
+        "the cause names the arm root that DOES hold it, and the ledger row \
+         carries its drift column here as it does everywhere: {stdout}"
     );
 }
 
@@ -1635,9 +1637,12 @@ fn an_armed_page_leaving_the_domain_is_named_not_dropped() {
         "the answer still counts an armed row it never shows:\n{witness}\n{subject}"
     );
     assert!(
-        subject.contains("task.notify  armed=armed at scope=. — pinned rules/notify.md"),
+        subject.contains(
+            "task.notify  armed=armed at scope=.  drift=missing — pinned rules/notify.md"
+        ),
         "the orphan names the id, its mode, its arm root (the workspace root spelled `.`, \
-         never an ambiguous empty cell) and its pinned page:\n{subject}"
+         never an ambiguous empty cell), its drift — a pinned page the source cannot \
+         serve is `missing`, never a clean join — and its pinned page:\n{subject}"
     );
 
     // ⛔ THE CAUSE IS ESTABLISHED, NOT MINTED. `policy` reddens this row
