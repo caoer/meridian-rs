@@ -321,7 +321,7 @@ fn try_daemon_read(workspace: &Path, r: &Read) -> DaemonRead {
 /// `registry-client-read-timeout-absent`).
 fn connect_or_spawn(client: &Client) -> std::io::Result<UnixStream> {
     let bound = |stream: UnixStream| -> std::io::Result<UnixStream> {
-        registry::wedge::bind(&stream, registry::wedge::WEDGE_CAP)?;
+        registry::wedge::bind(&stream)?;
         Ok(stream)
     };
     if let Ok(stream) = UnixStream::connect(client.socket_path()) {

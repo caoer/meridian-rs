@@ -3,7 +3,7 @@
 //! daemon is unavailable. A run never fails for want of a daemon.
 
 use std::fmt::Write as _;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::Mutex;
@@ -702,7 +702,7 @@ fn dial_links(socket: &Path, workspace: &Path, path: Option<&str>) -> io::Result
     // Before the clone — the timeouts are socket-level, so both halves inherit
     // them. Without this the `hello` below waits on a wedged daemon forever and
     // the caller never reaches its degrade (card `registry-client-read-timeout-absent`).
-    registry::wedge::bind(&stream, registry::wedge::WEDGE_CAP)?;
+    registry::wedge::bind(&stream)?;
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
 
@@ -966,13 +966,16 @@ fn extras(error: &ErrorBody) -> String {
     out
 }
 
-/// Write one NDJSON request line. The half both round trips share; the halves
-/// differ only in what bounds the READ.
-fn write_frame(writer: &mut UnixStream, request: &Value) -> io::Result<()> {
+/// Write one NDJSON request line **under the wedge discipline**
+/// ([`registry::wedge::write_all`]): the write ticks, each tick asks `socket`
+/// whether the daemon is still alive, and a frame that stalls mid-drain is
+/// reported as wedged-or-absent with the commit fact stated — never as a bare
+/// `WouldBlock`. The half both round trips share; the halves differ only in
+/// what bounds the READ.
+fn write_frame(writer: &mut UnixStream, socket: &Path, request: &Value) -> io::Result<()> {
     let mut line = serde_json::to_string(request).map_err(io::Error::other)?;
     line.push('\n');
-    writer.write_all(line.as_bytes())?;
-    writer.flush()
+    registry::wedge::write_all(writer, socket, registry::wedge::WEDGE_CAP, line.as_bytes())
 }
 
 /// One NDJSON round trip on an open connection, **under the wedge discipline**
@@ -991,7 +994,7 @@ pub(crate) fn call(
     socket: &Path,
     request: &Value,
 ) -> io::Result<Value> {
-    write_frame(writer, request)?;
+    write_frame(writer, socket, request)?;
     let mut response = String::new();
     let read =
         registry::wedge::read_line(reader, socket, registry::wedge::WEDGE_CAP, &mut response)?;
@@ -1010,7 +1013,11 @@ pub(crate) fn call(
 /// whitespace — a second commit-fact shape. Callers that only read fields use
 /// [`call`]. Errors The write fails, or the daemon closes without a response.
 ///
-/// **Unbounded on purpose, and only because its one caller bounds itself.**
+/// **The READ is unbounded on purpose, and only because its one caller bounds
+/// itself.** The WRITE is not: it carries the wedge discipline like every other
+/// frame ([`write_frame`]), because a stalled drain is answerable — the frame
+/// is not whole on the wire, so nothing was committed — where a stalled ANSWER
+/// is not.
 /// [`crate::script::wire_host::SocketDoor`] owns the script/write door: it sets
 /// the entry's wall clock on the socket at connect and runs its own tick loop
 /// (`call_until_answered`), where a tick prints a notice instead of drawing a
@@ -1020,9 +1027,10 @@ pub(crate) fn call(
 pub(crate) fn call_line(
     writer: &mut UnixStream,
     reader: &mut BufReader<UnixStream>,
+    socket: &Path,
     request: &Value,
 ) -> io::Result<String> {
-    write_frame(writer, request)?;
+    write_frame(writer, socket, request)?;
 
     let mut response = String::new();
     if reader.read_line(&mut response)? == 0 {
