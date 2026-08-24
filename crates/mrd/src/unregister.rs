@@ -9,6 +9,13 @@
 //! [`registry::Registry::unregister`] already documents as its fallback key. A vanished path that
 //! matches nothing refuses (exit 2) rather than reporting the clean no-op above — with no tree
 //! there, "nothing was registered" and "you typed it wrong" are the same output otherwise.
+//!
+//! That refusal speaks only what this invocation checked, because the split above means the two
+//! halves are not checked together: the drawer is looked at on every path through the door, while
+//! the registry is queried only when a daemon answers the ping. With no daemon there is no
+//! registry fact to report — an entry may still be keyed by that path — and the same discipline
+//! covers the path itself, probed with `try_exists` so "could not look" never reads back as "not
+//! there".
 
 use std::path::{Path, PathBuf};
 
@@ -38,7 +45,16 @@ pub(crate) fn run(target_arg: Option<&str>, format: Format) -> Result<(), Fail> 
     // `Registry::unregister` "matches on the canonical path when the directory
     // still resolves, else on the path as given". Resolving first threw that
     // away, refusing before the request was ever made.
-    let vanished = !base.exists();
+    //
+    // Probed once, and with `try_exists` rather than `exists`: `exists()` folds
+    // EACCES, ELOOP and ESTALE into a plain `false`, so a path this process was
+    // not ALLOWED to look at reads back identically to one that is gone — and
+    // the refusal below would then assert "the directory does not exist" about
+    // a directory nobody could check. Every reader of `vanished` still treats
+    // "cannot tell" the way `exists()` did, which is safe here because a miss
+    // can only end in that refusal, never in a removal of the wrong tree.
+    let probe = base.try_exists();
+    let vanished = !matches!(probe, Ok(true));
     let workspace = if vanished {
         // The path as given, absolutized above — never a relative spelling, so
         // it cannot string-equal some other live entry's canonical key.
@@ -98,15 +114,55 @@ pub(crate) fn run(target_arg: Option<&str>, format: Format) -> Result<(), Fail> 
     // existed: exit 0 would confirm a removal that did not happen, and a
     // mistyped path would read back as a completed sweep.
     if vanished && daemon_removed != Some(true) && !drawer_removed {
-        return Err(Fail::tool(format!(
-            "nothing to unregister for {}: the directory does not exist, and no registry entry or drawer is keyed by that exact path. \
-             A registration is keyed by its canonical path — unregister it by the path `mrd cache ls` reports.",
-            base.display()
-        )));
+        return Err(Fail::tool(nothing_removed(&base, &probe, daemon_removed)));
     }
 
     report(format, &workspace, daemon_removed, drawer_removed);
     Ok(())
+}
+
+/// The refusal for a vanished path this invocation removed nothing for.
+///
+/// It states what was CHECKED and nothing else. The retired sentence said "no
+/// registry entry or drawer is keyed by that exact path" on every leg —
+/// including the one where no daemon answered, where the registry was never
+/// queried at all. That leg is ordinary, not exotic: a vanished path on a host
+/// with no daemon running and the drawer already swept. Asserting the absence
+/// of an entry nobody looked for is the kind of sentence an operator acts on,
+/// so it is now two sentences, one per fact, and the unknown stays unknown.
+///
+/// `probe` is the `try_exists` result for `base`, so "could not look" (EACCES,
+/// ELOOP, ESTALE) is reported as itself rather than as "does not exist".
+/// `daemon_removed` is `None` exactly when no daemon answered the ping;
+/// `Some(true)` cannot reach here (the caller's guard excludes it).
+fn nothing_removed(
+    base: &Path,
+    probe: &std::io::Result<bool>,
+    daemon_removed: Option<bool>,
+) -> String {
+    let presence = match probe {
+        Ok(_) => "the directory does not exist".to_owned(),
+        Err(e) => format!("the directory could not be examined ({e})"),
+    };
+    let (found, hint) = match daemon_removed {
+        // A daemon answered and held no entry: both facts are ours to assert.
+        Some(_) => (
+            "neither a registry entry nor a drawer is keyed by that exact path",
+            "",
+        ),
+        // No daemon answered: the drawer fact stands alone.
+        None => (
+            "no drawer is keyed by that exact path, and the registry was NOT checked \
+             — no daemon answered, so an entry may still be registered under it",
+            " Start the daemon and run this again to sweep the registry entry too.",
+        ),
+    };
+    format!(
+        "nothing was unregistered for {}: {presence}, and {found}. \
+         A registration is keyed by its canonical path — unregister it by the path \
+         `mrd cache ls` reports.{hint}",
+        base.display()
+    )
 }
 
 fn report(format: Format, workspace: &Path, daemon_removed: Option<bool>, drawer_removed: bool) {
@@ -132,5 +188,80 @@ fn report(format: Format, workspace: &Path, daemon_removed: Option<bool>, drawer
                 println!("  drawer:  none present");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nothing_removed;
+    use std::io;
+    use std::path::Path;
+
+    /// No daemon answered: the message may not speak about the registry as if
+    /// it had been queried, and must say the lookup did not happen — the
+    /// operator's next move (start a daemon, run it again) depends on it.
+    #[test]
+    fn with_no_daemon_the_refusal_reports_the_registry_as_unchecked() {
+        let text = nothing_removed(Path::new("/gone/tree"), &Ok(false), None);
+        assert!(
+            text.contains("the registry was NOT checked"),
+            "the unqueried registry must be named as unchecked — got: {text}",
+        );
+        assert!(
+            text.contains("an entry may still be registered"),
+            "and the unknown must stay open — got: {text}",
+        );
+        assert!(
+            !text.contains("no registry entry or drawer"),
+            "the retired sentence asserted an absence nobody looked for — got: {text}",
+        );
+        assert!(
+            !text.contains("neither a registry entry nor a drawer"),
+            "nor may the daemon-answered wording leak onto this leg — got: {text}",
+        );
+        assert!(
+            text.contains("no drawer is keyed by that exact path"),
+            "the drawer WAS checked, so that half is still asserted — got: {text}",
+        );
+        assert!(
+            text.contains("/gone/tree"),
+            "the refusal names the path — got: {text}",
+        );
+    }
+
+    /// A daemon answered and held no entry: both facts were checked, so both
+    /// are asserted, and there is nothing to go start.
+    #[test]
+    fn with_a_daemon_answering_the_refusal_asserts_both_facts() {
+        let text = nothing_removed(Path::new("/gone/tree"), &Ok(false), Some(false));
+        assert!(
+            text.contains("neither a registry entry nor a drawer is keyed by that exact path"),
+            "a queried registry is reported as queried — got: {text}",
+        );
+        assert!(
+            !text.contains("NOT checked"),
+            "and the unchecked wording must not appear — got: {text}",
+        );
+        assert!(
+            !text.contains("Start the daemon"),
+            "nor the hint that only helps the daemonless leg — got: {text}",
+        );
+    }
+
+    /// `try_exists` erred: the path was not looked at, so the refusal says that
+    /// instead of claiming the directory is gone. `exists()` folded this case
+    /// into `false` and the message read identically to a real absence.
+    #[test]
+    fn an_unreadable_path_is_not_reported_as_absent() {
+        let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+        let text = nothing_removed(Path::new("/locked/tree"), &Err(denied), None);
+        assert!(
+            text.contains("could not be examined"),
+            "a path that could not be probed says so — got: {text}",
+        );
+        assert!(
+            !text.contains("does not exist"),
+            "and never claims an absence it did not observe — got: {text}",
+        );
     }
 }
