@@ -573,17 +573,22 @@ fn teach(error: &str) -> String {
     }
 
     // The extension gate's own refusal (card
-    // sql-extension-ddl-escapes-rollback-lane). DuckDB names the setting; the
-    // caller needs the reason and the allow-list.
-    if error.contains("Loading external extensions is disabled") {
+    // sql-extension-ddl-escapes-rollback-lane). ONE gate, two DuckDB
+    // spellings: `LOAD` answers the extension sentence, `INSTALL` (and any
+    // external-file read) answers the filesystem one, because
+    // `enable_external_access` shuts both in the same act. DuckDB names the
+    // setting; the caller needs the reason and the allow-list.
+    if error.contains("Loading external extensions is disabled")
+        || error.contains("file system operations are disabled by configuration")
+    {
         let allowed = EXTENSION_ALLOW_LIST.join(", ");
         return format!(
-            "{error}\nThe query lane loads no extension on demand: an extension \
-             loads onto the shared engine instance, OUTSIDE your statement's \
-             transaction, so its catalog writes are not rolled back at call end \
-             (duckpgq's CREATE PROPERTY GRAPH wrote sql.main.__duckpgq_internal \
-             durably into the drawer). Loaded at open, and all there is: \
-             {allowed}."
+            "{error}\nThe sql lane loads no extension and touches no external \
+             file: an extension loads onto the shared engine instance, OUTSIDE \
+             your statement's transaction, so its catalog writes are not rolled \
+             back at call end (duckpgq's CREATE PROPERTY GRAPH wrote \
+             sql.main.__duckpgq_internal durably into the drawer). Loaded at \
+             open, and all there is: {allowed}."
         );
     }
 
@@ -2222,9 +2227,13 @@ mod spill_tests {
     fn setting(store: &SqlStore, name: &str) -> String {
         store
             .connection()
-            .query_row(&format!("SELECT current_setting('{name}')"), [], |r| {
-                r.get::<_, String>(0)
-            })
+            // `::VARCHAR` because the boolean settings answer BOOLEAN, and one
+            // reader for every setting is the point of this helper.
+            .query_row(
+                &format!("SELECT current_setting('{name}')::VARCHAR"),
+                [],
+                |r| r.get::<_, String>(0),
+            )
             .unwrap_or_else(|e| panic!("setting {name}: {e}"))
     }
 
@@ -2263,8 +2272,13 @@ mod spill_tests {
                 .query(statement)
                 .expect("lane")
                 .expect_err("the gate refuses extension loading");
+            // One gate, two DuckDB spellings: LOAD answers the extension
+            // sentence, INSTALL answers the filesystem one (it goes for the
+            // extension directory first). Either is the gate refusing.
             assert!(
-                refusal.contains("Loading external extensions is disabled"),
+                refusal.contains("Permission Error")
+                    && (refusal.contains("Loading external extensions is disabled")
+                        || refusal.contains("file system operations are disabled")),
                 "{statement}: DuckDB's own words survive: {refusal}"
             );
             assert!(
@@ -2312,6 +2326,30 @@ mod spill_tests {
             "false",
             "the door is still shut after the attempt"
         );
+    }
+
+    /// The same gate shuts the other durable door a caller had: writing a file
+    /// out of the query. "Writes nothing durable" was never only about the
+    /// drawer.
+    #[test]
+    fn a_caller_cannot_write_an_external_file() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let out = dir.path().join("escaped.csv");
+        let refusal = store
+            .query(&format!(
+                "COPY (SELECT 1 AS a) TO '{}' (FORMAT CSV)",
+                out.display()
+            ))
+            .expect("lane")
+            .expect_err("the gate refuses the write");
+        assert!(
+            refusal.contains("disabled by configuration"),
+            "the refusal is the gate's: {refusal}"
+        );
+        assert!(!out.exists(), "no file was written: {}", out.display());
     }
 
     /// The gate closes the lane to extension code, not to the caller's own
