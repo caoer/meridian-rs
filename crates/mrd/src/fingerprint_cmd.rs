@@ -162,8 +162,13 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             })
         ))
     })?;
-    let mut door = SocketDoor::connect(client.socket_path(), &workspace)
-        .map_err(|e| Fail::tool(format!("{MINT_DAEMON_DOWN} (cannot dial the daemon: {e})")))?;
+    // The mint carries no budget either — same backstop, same reason.
+    let mut door = SocketDoor::connect(
+        client.socket_path(),
+        &workspace,
+        crate::script::wire_host::GREET_CAP,
+    )
+    .map_err(|e| Fail::tool(e.teach(MINT_DAEMON_DOWN)))?;
 
     // The cap wall, client half (§3.2): a scoped mint rides only when the
     // connect-time hello advertised the family. The world arm is the
