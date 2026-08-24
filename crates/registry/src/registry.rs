@@ -2610,10 +2610,16 @@ mod engine_tests {
 
     /// P2 latency: change pre-warms on the watch event; next query pays zero parse.
     ///
-    /// The rebuild assertion POLLS: the §6.7 quiet gate is the feed's own
-    /// pending state, and kernel delivery is asynchronous — a sweep landing
-    /// before the event is a lawful skip (latency-only), so the guarantee is
-    /// eventual absorption within delivery + cadence, not same-tick.
+    /// The rebuild assertion does NOT poll. The §6.7 quiet gate reads the
+    /// feed's pending state without a barrier, and kernel delivery is
+    /// asynchronous — a sweep landing before the event is a lawful skip
+    /// (latency-only), so a deadline here asserts the BOX, not the sweep, and
+    /// is the same defect as the class-1 flake at `daemon_idle_exit.rs`
+    /// § `a_changed_corpus_is_still_rebuilt_on_the_sweep`. `currency_refresh`
+    /// is the barrier every door already takes: it orders the write's event
+    /// before its own sighting, or falls to the extent floor, so the memo has
+    /// observed the write on either path. It refreshes the MEMO, not the
+    /// engine, so the rebuild asserted below is still the sweep's own work.
     #[test]
     fn prewarm_absorbs_the_change_so_the_next_query_parses_nothing() {
         let home = tempfile::tempdir().unwrap();
@@ -2632,20 +2638,12 @@ mod engine_tests {
 
         fs::write(ws.join("a.md"), "# A changed\n\nnew body\n").unwrap();
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let absorbed = loop {
-            let rebuilt = reg.prewarm();
-            if rebuilt == vec![canonical.clone()] {
-                break true;
-            }
-            assert!(rebuilt.is_empty(), "only this workspace may rebuild");
-            if std::time::Instant::now() > deadline {
-                break false;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        assert!(
-            absorbed,
+        reg.currency_refresh(&canonical, Duration::from_secs(2))
+            .expect("the registry can observe its own workspace");
+
+        assert_eq!(
+            reg.prewarm(),
+            vec![canonical.clone()],
             "the edit rebuilds on the watch event, not lazily on the query"
         );
 
