@@ -1011,6 +1011,58 @@ impl ArmedArtifact {
         verify_rows(self.rows.iter(), pages)
     }
 
+    /// **The drift join, for EVERY attested row** — pinned rev against the rev
+    /// the pinned page reads now, `off` rows included. Ordered by (id, arm
+    /// root); one entry per row of the artifact, never fewer.
+    ///
+    /// ⛔ **A REPORT, NEVER A GATE.** [`ArmedArtifact::verify_at`] decides what
+    /// may act and is the only thing that may; this decides nothing. The two
+    /// share one rev law — [`page_rev`] over the bytes the injected source
+    /// serves, the same call [`verify_rows`] makes — so the drift column and the
+    /// redness cannot disagree about a row that fires. Where they differ is
+    /// exactly the point: for `off` rows `verify_rows` answers nothing and this
+    /// answers the join.
+    ///
+    /// Each distinct pinned page is read ONCE however many rows pin it: this
+    /// runs on `mrd rules`, a hook-adjacent verb whose cost multiplies by every
+    /// caller.
+    #[must_use]
+    pub fn drift(&self, pages: &dyn PageSource) -> Vec<DriftRow> {
+        let mut read: BTreeMap<&str, Result<String, String>> = BTreeMap::new();
+        let mut found: Vec<DriftRow> = self
+            .rows
+            .iter()
+            .map(|row| {
+                let seen = read.entry(row.page.as_str()).or_insert_with(|| {
+                    pages
+                        .read(&row.page)
+                        .map(|bytes| page_rev(&bytes))
+                        .map_err(|e| e.to_string())
+                });
+                let drift = match seen {
+                    Ok(report_rev) if *report_rev == row.rev => Drift::Clean,
+                    Ok(report_rev) => Drift::Drifted {
+                        report_rev: report_rev.clone(),
+                    },
+                    Err(detail) => Drift::Missing {
+                        detail: detail.clone(),
+                    },
+                };
+                DriftRow {
+                    row: row.clone(),
+                    drift,
+                }
+            })
+            .collect();
+        found.sort_by(|a, b| {
+            a.row
+                .id
+                .cmp(&b.row.id)
+                .then_with(|| a.row.scope.cmp(&b.row.scope))
+        });
+        found
+    }
+
     /// Render the full artifact page: title, preamble, and the § 4 table, terminated
     /// by a trailing newline. Rows sort by arm root then id — structural and
     /// deterministic, with no severity order invented across two kinds whose mode
@@ -1165,6 +1217,63 @@ impl Redness {
                 Mode::vocabulary(*kind)
             });
         Redness::ModeOutsideKind { kinds, vocabulary }
+    }
+}
+
+/// Whether an attested row's pinned page still reads at the rev it was armed
+/// at — asked of EVERY row, `off` ones included.
+///
+/// **Not a redness and not a gate.** [`Redness`] answers *may this row fire on
+/// these bytes*, so [`verify_rows`] never asks it of a row that does not fire —
+/// correct, and the reason an `off` row that is then edited is invisible to
+/// every redness reader (measured 2026-08-23 on the live sessions root:
+/// `rules/010` pinned `a3f19a9dbb15ea8d`, live `5d6ebb468c85d8ee`, `redness`
+/// null). This type answers the strictly weaker question *did the pinned bytes
+/// move*, which is meaningful for a row that fires and a row that does not
+/// alike. Advisor `4dab0746` 2026-08-23 02:27 EDT: the redness contract STANDS —
+/// the gap is observability, not enforcement — closed additively by a per-row
+/// drift column for every ledger row, with `off-drifted` for the `off` case,
+/// "not a redness state and trips no gate".
+///
+/// ⛔ Never compose this into a decision about what may act. A caller that
+/// refuses a write because a row is [`Drift::Drifted`] has silently armed the
+/// `off` mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Drift {
+    /// The pinned page reads at the attested rev. The join was made and it held.
+    Clean,
+    /// The page is there and its bytes moved off the attested rev.
+    Drifted {
+        /// The rev the page reads NOW.
+        report_rev: String,
+    },
+    /// The pinned page could not be read, so the join could not be made at all.
+    /// Distinct from [`Drift::Clean`]: an unanswerable question is not a clean
+    /// answer, which is the whole defect class this type exists for.
+    Missing {
+        /// The reader's own message.
+        detail: String,
+    },
+}
+
+/// One attested row and its drift — the element of [`ArmedArtifact::drift`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriftRow {
+    row: ArmedRow,
+    drift: Drift,
+}
+
+impl DriftRow {
+    /// The row as attested.
+    #[must_use]
+    pub fn row(&self) -> &ArmedRow {
+        &self.row
+    }
+
+    /// Whether its pinned page still stands at the attested rev.
+    #[must_use]
+    pub fn drift(&self) -> &Drift {
+        &self.drift
     }
 }
 
@@ -1838,6 +1947,174 @@ mod tests {
         assert!(
             rendered.contains(&pinned) && rendered.contains(report_rev),
             "the refusal names both revs: {rendered}"
+        );
+    }
+
+    /// The defect the drift join exists for: an `off` row that is then edited is
+    /// invisible to `verify` — correctly, because it does not fire — and VISIBLE
+    /// to `drift`. Measured live 2026-08-23 (`rules/010`, redness null while the
+    /// pinned rev and the live rev differed); this is that case in a fixture.
+    #[test]
+    fn an_off_row_that_is_edited_is_silent_to_verify_and_named_by_drift() {
+        let mut ws = Workspace::default().hook("h.md", "h");
+        let artifact = arm_one(&ws, "h", Mode::Off).expect("attested-off arms");
+        let pinned = artifact.rows()[0].rev().to_string();
+        assert_eq!(
+            artifact.drift(&ws)[0].drift(),
+            &Drift::Clean,
+            "fresh, the join holds"
+        );
+
+        ws.edit("h.md", &format!("{}\n<!-- edited -->\n", hook_page("h")));
+
+        // The gate: unchanged, and that is the ruling — an off row is not armed,
+        // so no redness is owed and none is minted.
+        let verdict = artifact.verify(&ws);
+        assert!(
+            verdict.red().is_empty() && verdict.firing().is_empty(),
+            "the redness contract STANDS on an off row: {verdict:?}"
+        );
+
+        // The report: the same edit, named.
+        let drifted = artifact.drift(&ws);
+        assert_eq!(drifted.len(), 1, "one entry per attested row, always");
+        let Drift::Drifted { report_rev } = drifted[0].drift() else {
+            panic!("expected drift, got {:?}", drifted[0].drift());
+        };
+        assert_ne!(report_rev, &pinned, "the rev moved");
+        assert_eq!(*report_rev, ws.rev("h.md"));
+        assert_eq!(drifted[0].row().mode(), Mode::Off);
+    }
+
+    /// A firing row and an off row are asked the SAME question by one rev law:
+    /// the drift join agrees with the redness wherever the redness exists, so the
+    /// column can never contradict the gate on a row that fires.
+    #[test]
+    fn drift_agrees_with_redness_on_the_rows_redness_answers_for() {
+        let mut ws = Workspace::default().check("c.md", "c").hook("h.md", "h");
+        let index = ws.index();
+        let artifact = arm(
+            &index,
+            &ArmRoot::workspace(),
+            [
+                request("c", Mode::Block, &ws.rev("c.md")),
+                request("h", Mode::Off, &ws.rev("h.md")),
+            ],
+            &ws,
+            CheckLimits::default(),
+        )
+        .expect("both arm");
+        ws.edit("c.md", &format!("{}\n<!-- x -->\n", check_page("c")));
+        ws.edit("h.md", &format!("{}\n<!-- x -->\n", hook_page("h")));
+
+        let verdict = artifact.verify(&ws);
+        assert_eq!(verdict.red().len(), 1, "only the firing row reddens");
+        let Redness::Drifted { report_rev: red } = verdict.red()[0].why() else {
+            panic!("expected drift");
+        };
+
+        let drifted = artifact.drift(&ws);
+        assert_eq!(drifted.len(), 2, "both rows answered");
+        for row in &drifted {
+            let Drift::Drifted { report_rev } = row.drift() else {
+                panic!("both pages moved: {:?}", row.drift());
+            };
+            assert_eq!(*report_rev, ws.rev(row.row().page()));
+        }
+        let c = drifted
+            .iter()
+            .find(|r| r.row().page() == "c.md")
+            .expect("the firing row");
+        let Drift::Drifted { report_rev } = c.drift() else {
+            unreachable!("asserted above")
+        };
+        assert_eq!(report_rev, red, "one rev law, two faces");
+    }
+
+    /// **The per-page read budget, COUNTED rather than timed.** `mrd rules` is
+    /// hook-adjacent — its cost multiplies by every caller — and the drift join
+    /// visits every attested row, so the thing that must hold is one read per
+    /// DISTINCT pinned page, not one per row. Two rows at sibling arm roots
+    /// pinning the same page is the case that separates the two.
+    ///
+    /// A timing budget cannot gate this: the read is a small fraction of the
+    /// verb's total, so a 3× regression in it hides inside the headroom. This
+    /// counts.
+    #[test]
+    fn drift_reads_each_distinct_pinned_page_once() {
+        /// A page source that records every read it serves.
+        struct Counting {
+            inner: Workspace,
+            reads: std::cell::RefCell<Vec<String>>,
+        }
+        impl PageSource for Counting {
+            fn read(&self, page: &str) -> std::io::Result<String> {
+                self.reads.borrow_mut().push(page.to_owned());
+                self.inner.read(page)
+            }
+        }
+
+        // One page, armed at TWO arm roots — two ledger rows, one pinned page.
+        let ws = Workspace::default().hook("h.md", "h");
+        let index = ws.index();
+        let rev = ws.rev("h.md");
+        let mut artifact = arm(
+            &index,
+            &ArmRoot::workspace(),
+            [request("h", Mode::Off, &rev)],
+            &ws,
+            CheckLimits::default(),
+        )
+        .expect("the root arm");
+        artifact
+            .merge(
+                arm(
+                    &index,
+                    &ArmRoot::parse("sub").expect("a legal root"),
+                    [request("h", Mode::Armed, &rev)],
+                    &ws,
+                    CheckLimits::default(),
+                )
+                .expect("the inner arm"),
+            )
+            .expect("distinct row keys merge");
+        assert_eq!(artifact.rows().len(), 2, "two ledger rows");
+
+        let counting = Counting {
+            inner: ws,
+            reads: std::cell::RefCell::new(Vec::new()),
+        };
+        let drifted = counting_drift(&artifact, &counting);
+        assert_eq!(drifted.len(), 2, "both rows answered");
+
+        let reads = counting.reads.borrow();
+        assert_eq!(
+            reads.len(),
+            1,
+            "one read per DISTINCT pinned page, not one per row — served {reads:?}"
+        );
+        assert_eq!(reads[0], "h.md");
+    }
+
+    /// Indirection so the assertion above reads as one call while the borrow of
+    /// `reads` starts after it.
+    fn counting_drift(artifact: &ArmedArtifact, pages: &dyn PageSource) -> Vec<DriftRow> {
+        artifact.drift(pages)
+    }
+
+    /// A pinned page that cannot be read is `Missing`, never `Clean` — an
+    /// unanswerable join is not a clean answer.
+    #[test]
+    fn a_pinned_page_that_cannot_be_read_drifts_as_missing_not_clean() {
+        let mut ws = Workspace::default().hook("h.md", "h");
+        let artifact = arm_one(&ws, "h", Mode::Off).expect("attested-off arms");
+        ws.remove("h.md");
+        let drifted = artifact.drift(&ws);
+        assert_eq!(drifted.len(), 1);
+        assert!(
+            matches!(drifted[0].drift(), Drift::Missing { .. }),
+            "got {:?}",
+            drifted[0].drift()
         );
     }
 
