@@ -298,6 +298,14 @@ pub(crate) fn run_command(path_arg: Option<&str>, format: Format) -> Result<(), 
     // Read off the ANSWER, so warm and degrade voice one fact from one source:
     // an enumeration names the population it did not carry (§4.6 `excluded`).
     voice_excluded(&answer.body);
+    // `links` is the lane the never-refusing degrade was measured on, and it
+    // reported the degrade as a `source:` LABEL with no cause — which is the
+    // "5 seconds slower, then the ephemeral answer" symptom itself, spelled in
+    // one word (card `auto-spawned-daemon-dies-silently`). The label stays
+    // where it is; this adds the WHY on stderr, the lane `voice_excluded`
+    // already speaks on, so both output formats gain it and neither's stdout
+    // moves by a byte.
+    voice_degrade(&answer.source);
 
     match format {
         Format::Json => {
