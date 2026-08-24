@@ -207,8 +207,26 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
     for (index, target) in request.targets.iter().enumerate() {
         let invocation = format!("{}-t{index}", request.invocation);
         if modes::is_mode_target(target) {
-            rows.push(match &pinned {
-                Some(world) => match world.docs.get(&target.page) {
+            rows.push(match (&pinned, target.source.as_deref()) {
+                // A `source` target carries the page's bytes instead of its
+                // name, and the wall RELAXES `page` for it. So there is no
+                // page to find, and the lookup below would look up the empty
+                // string, miss, and answer `bad_path` naming nothing — which
+                // is what every `hooks check --file <draft>` got: the draft
+                // path lived in `modes::mode_row` and no wire caller reached
+                // it. Dispatched here, to the same owner the CLI reaches.
+                (Some(world), Some(source)) => modes::draft_row(
+                    &modes::DraftWorld {
+                        root: &root,
+                        declaring_root: Some(ws),
+                        observed_root: &world.at_fingerprint,
+                        prelude: request.prelude.as_deref(),
+                    },
+                    target,
+                    source,
+                    &invocation,
+                ),
+                (Some(world), None) => match world.docs.get(&target.page) {
                     Some(doc) => modes::mode_row(
                         &modes::ModeWorld {
                             doc,
@@ -246,7 +264,7 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
                 // The reaper won the warm→pin race — the same transient the
                 // read path names, answered on the row so its siblings still
                 // report for themselves.
-                None => json!({
+                (None, _) => json!({
                     "page": target.page,
                     "invocation": invocation,
                     "result": "refused",
