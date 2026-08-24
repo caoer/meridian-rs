@@ -83,8 +83,10 @@
 //! latest view refuses through `DuckDB`'s own `Binder Error`, extended with
 //! the remedy (ruling OQ1: the refusal teaches).
 //!
-//! A transaction is not the whole contract, because extension code does not
-//! live inside one: `LOAD` lands on the shared `DatabaseInstance`, and a
+//! A transaction is not the whole contract, because two things do not live
+//! inside one.
+//!
+//! **Extension code.** `LOAD` lands on the shared `DatabaseInstance`, and a
 //! loaded extension may then write through its own path (duckpgq's `CREATE
 //! PROPERTY GRAPH` wrote `sql.main.__duckpgq_internal` durably into the
 //! drawer — card `sql-extension-ddl-escapes-rollback-lane`). So the lane also
@@ -92,6 +94,14 @@
 //! community extensions one-way at open, leaving core extensions, external
 //! access and caller `SET`s exactly where the NO-SANDBOX ruling put them.
 //! What the rollback cannot undo, the door never admits.
+//!
+//! **Engine configuration.** A GLOBAL-scope `SET` re-tunes the `DBConfig` the
+//! whole instance shares, so a caller's `SET memory_limit='1MB'` used to
+//! starve every LATER caller of that root until the daemon restarted (card
+//! `sql-set-config-cross-caller-starvation`). The lane now closes each call
+//! with [`restore_global_config`]: the caller's `SET` still succeeds and still
+//! governs its own statement, and the values the next caller finds are the
+//! ones the engine set. What the rollback cannot undo, the lane puts back.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -435,8 +445,9 @@ const SPILL_BUDGET: &str = "8GiB";
 /// **What it does not close**, named rather than implied: a core extension
 /// that wrote outside the caller's transaction would still reach the drawer.
 /// That would be a `DuckDB` bug in `DuckDB`'s own code, reportable upstream —
-/// not unaudited third-party code the engine chose to run. And a caller's
-/// global `SET` still leaks across calls (card
+/// not unaudited third-party code the engine chose to run. A caller's global
+/// `SET` was the other open leak here; it is closed by
+/// [`restore_global_config`], not by this gate (card
 /// `sql-set-config-cross-caller-starvation`, a ruling of its own).
 ///
 /// **Every caller-SQL door takes it, with no exemptions** — [`SqlStore::open`]
@@ -453,11 +464,114 @@ pub fn apply_extension_gate(conn: &Connection) -> duckdb::Result<()> {
     conn.execute_batch("SET allow_community_extensions=false;")
 }
 
+/// Every GLOBAL-scope setting `DuckDB` reports, `(name, value)`, sorted by
+/// name. LOCAL-scope settings are deliberately absent: they live on the
+/// connection, and `SqlStore::query`'s clone dies at the end of the call, so
+/// they cannot reach the next caller (measured 2026-08-23 on
+/// `hnsw_enable_experimental_persistence`, card
+/// `sql-set-config-cross-caller-starvation`). A `NULL` value is skipped —
+/// there is nothing to put back and `SET x=NULL` is not the way to say it.
+fn global_config_snapshot(conn: &Connection) -> duckdb::Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT name, value::VARCHAR FROM duckdb_settings() \
+         WHERE scope::VARCHAR = 'GLOBAL' AND value IS NOT NULL ORDER BY name",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    rows.collect()
+}
+
+/// How many restore passes [`restore_global_config`] runs before it reports
+/// what it could not put back. Two, because `DuckDB` DERIVES some settings
+/// from others: restoring `memory_limit` re-derives
+/// `write_buffer_row_group_memory_limit`, which a single alphabetical pass
+/// would then leave at the caller's value on a host where the derived name
+/// sorts first.
+const RESTORE_PASSES: usize = 2;
+
+/// Put back every GLOBAL-scope setting a caller's statement moved, so the
+/// caller's `SET` governs its own call and nothing after it (card
+/// `sql-set-config-cross-caller-starvation`).
+///
+/// **Why this shape and not the other two.** The leak is real and it is the
+/// ROOT's, not the caller's: the resident daemon holds one `DatabaseInstance`
+/// per workspace for its whole life, `SqlStore::query`'s `try_clone` is a new
+/// connection on that SAME instance, and a GLOBAL `SET` writes the `DBConfig`
+/// they share — so `SET memory_limit='1MB'` starved every later caller of a
+/// fleet-shared root until the daemon restarted. `BEGIN … ROLLBACK` cannot
+/// reach it: that is a transaction, and engine config is not in one. The
+/// advisor's ruling (2026-08-24) took this shape over locking the
+/// configuration precisely because it takes NOTHING away — the NO-SANDBOX
+/// ruling (2026-08-14) answered "may a caller do X?", and this defect asks
+/// "may a caller's X outlive its call and bind every OTHER caller?".
+///
+/// **Snapshot-and-re-`SET`, never `RESET`.** `RESET temp_directory` would
+/// restore `DuckDB`'s default, not [`apply_spill_containment`]'s value, and
+/// silently unbound the spill that card `sql-spill-config-lockout` exists to
+/// bound. The `before` snapshot is taken with the engine's own values already
+/// in force, so putting it back is putting the ENGINE's value back. Measured
+/// 2026-08-24: a caller `SET temp_directory='/tmp/mrd-hostile-probe'` came
+/// back to the drawer-derived spill dir, and `max_temp_directory_size` to
+/// `8.0 GiB`.
+///
+/// Returns the names it could NOT put back — empty on the ordinary path. Two
+/// classes can appear there, both measured on `DuckDB` v1.5.4:
+///
+/// - A setting `DuckDB` refuses to re-`SET` to the value it just reported
+///   (`force_variant_shredding` reads `INVALID`, which is not an accepted
+///   input). Eight of the 134 GLOBAL settings are in this class; seven of
+///   them also refuse a caller's `SET` ("Cannot change … while database is
+///   running", "not adjustable by a user"), so they can never drift in the
+///   first place.
+/// - `lock_configuration`, which is one-way BY DESIGN: once a caller sets it
+///   true, every later `SET` on that instance refuses — this one included.
+///   That residue is a denial of the DOOR, not starvation: the restore pass
+///   has already run at the end of the previous call, so the values it
+///   freezes are the engine's. Pinned by
+///   `a_caller_lock_is_the_one_residue_and_it_freezes_engine_values`.
+///
+/// The return value is advisory: a caller's query has already answered by the
+/// time this runs, and failing it here would turn a successful query into an
+/// error over state the caller cannot see. It is what the tests assert on.
+pub fn restore_global_config(conn: &Connection, before: &[(String, String)]) -> Vec<String> {
+    let mut drifted: Vec<(String, String)> = Vec::new();
+    for pass in 0..=RESTORE_PASSES {
+        let Ok(now) = global_config_snapshot(conn) else {
+            // The snapshot itself failed (a locked or dying instance): say so
+            // by name rather than reporting a clean restore we never made.
+            return vec!["<config snapshot unavailable>".to_owned()];
+        };
+        drifted = before
+            .iter()
+            .filter(|(name, was)| {
+                now.iter()
+                    .any(|(seen, is_now)| seen == name && is_now != was)
+            })
+            .cloned()
+            .collect();
+        // The last iteration only MEASURES: it reports what the passes before
+        // it failed to put back.
+        if drifted.is_empty() || pass == RESTORE_PASSES {
+            break;
+        }
+        for (name, was) in &drifted {
+            let value = was.replace('\'', "''");
+            // Best effort by construction — the names that refuse are this
+            // function's return value, not its error.
+            let _ = conn.execute_batch(&format!("SET \"{name}\"='{value}';"));
+        }
+    }
+    drifted.into_iter().map(|(name, _)| name).collect()
+}
+
 /// Bound the connection's disk spill (card sql-spill-config-lockout):
 /// `spill_dir` becomes the ABSOLUTE `temp_directory`, with [`SPILL_BUDGET`]
 /// as `max_temp_directory_size`. Plain config, never a sandbox (the
 /// NO-SANDBOX ruling, 2026-08-14) — nothing is locked, and a caller's own
-/// `SET` can re-point it. The `DuckDB` defaults were the defect this repairs:
+/// `SET` can re-point it FOR THE LENGTH OF THAT CALL
+/// ([`restore_global_config`] puts the engine's value back at the end of it,
+/// card `sql-set-config-cross-caller-starvation`; the `SET` still succeeds,
+/// which is what the NO-SANDBOX ruling asserts). The `DuckDB` defaults were
+/// the defect this repairs:
 /// a `.tmp` path RELATIVE to the shell cwd (no flag changes the process cwd,
 /// so spills landed wherever the seat happened to be) and a %-of-disk budget.
 ///
@@ -1236,25 +1350,43 @@ impl SqlStore {
     }
 
     /// Run one caller query through the rollback lane on a clone of the base
-    /// connection: `BEGIN → statement → collect → ROLLBACK`. One execution
-    /// path for every caller (the NO-SANDBOX ruling, 2026-08-14): no profile,
-    /// no lock — spill containment is already in force instance-wide from
-    /// open.
+    /// connection: `BEGIN → statement → collect → ROLLBACK → restore config`.
+    /// One execution path for every caller (the NO-SANDBOX ruling,
+    /// 2026-08-14): no profile, no lock — spill containment is already in
+    /// force instance-wide from open.
+    ///
+    /// The config restore is the fourth step, not a fifth guarantee: a
+    /// GLOBAL-scope `SET` writes the `DBConfig` this clone shares with every
+    /// other caller of the root, which no `ROLLBACK` reaches (card
+    /// `sql-set-config-cross-caller-starvation`). It runs whether the caller's
+    /// statement succeeded or failed — a failed statement can still have
+    /// moved config before it failed. Two `duckdb_settings()` scans per query
+    /// on the clean path, one more when something actually drifted.
     ///
     /// # Errors
     /// A connection failure is a `ViewError`; the caller's own SQL failing is
     /// `Ok` with the error string in the result (their register, not ours) —
-    /// including `DuckDB`'s MVCC transaction conflicts, verbatim.
+    /// including `DuckDB`'s MVCC transaction conflicts, verbatim. A setting
+    /// that will not go back is NOT an error (see [`restore_global_config`]).
     #[allow(clippy::type_complexity)]
     pub fn query(
         &self,
         sql: &str,
     ) -> Result<Result<(Vec<ColMeta>, Vec<Vec<Json>>), String>, ViewError> {
         let conn = self.conn.try_clone()?;
+        // Taken with the engine's own values in force, so the restore puts the
+        // ENGINE's value back, never DuckDB's default.
+        let before = global_config_snapshot(&conn)?;
         conn.execute_batch("BEGIN")?;
         let result = run_query(&conn, sql);
         // Always roll back — reads are unaffected; DML dies here (P3/P6).
-        conn.execute_batch("ROLLBACK")?;
+        let rolled_back = conn.execute_batch("ROLLBACK");
+        // Always restore — the transaction never held the engine's config, so
+        // a ROLLBACK that itself failed is no reason to leave the next caller
+        // with this caller's `memory_limit`. Restore first, then answer for
+        // the rollback.
+        let _ = restore_global_config(&conn, &before);
+        rolled_back?;
         Ok(result)
     }
 
@@ -2542,5 +2674,264 @@ mod spill_tests {
             .query("SET memory_limit='1GB'")
             .expect("lane")
             .expect("configuration is not locked — a caller SET succeeds");
+    }
+}
+
+/// Card `sql-set-config-cross-caller-starvation`: a caller's GLOBAL `SET`
+/// governs its own call and nothing after it.
+///
+/// **These tests need TWO calls on ONE instance, never one connection.** A
+/// single-connection assertion cannot see this defect at all: the leak IS the
+/// second caller, and `SqlStore::query` makes a fresh `try_clone` per call —
+/// which is exactly the shape the resident daemon serves (`registry`'s
+/// `sql_op::serve` holds one `Arc<Mutex<SqlStore>>` per workspace for the
+/// daemon's whole life).
+#[cfg(test)]
+mod config_scope_tests {
+    use super::tests::{fixture_v1, sync_ambient, tmp_store};
+    use super::*;
+
+    /// One setting as the NEXT caller would find it — through the query lane,
+    /// so the reader is a different connection from the writer.
+    fn next_caller_sees(store: &SqlStore, name: &str) -> String {
+        let (_, rows) = store
+            .query(&format!("SELECT current_setting('{name}')::VARCHAR"))
+            .expect("lane")
+            .expect("readback");
+        rows[0][0].as_str().expect("value").to_owned()
+    }
+
+    /// The defect itself, at the grain the card measured it: call 1 sets, call
+    /// 2 must not see it. `memory_limit` AND `threads`, so this is about the
+    /// GLOBAL class and not one name — `SET memory_limit='1MB'` on a
+    /// fleet-shared root was the starvation.
+    #[test]
+    fn a_caller_set_does_not_reach_the_next_caller() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let engine_memory = next_caller_sees(&store, "memory_limit");
+        let engine_threads = next_caller_sees(&store, "threads");
+        assert_ne!(
+            engine_memory, "953.6 MiB",
+            "the fixture must not already sit at the value call 1 sets, or \
+             this test cannot fail"
+        );
+
+        // Call 1: the hostile (or merely careless) caller.
+        store
+            .query("SET memory_limit='1GB'")
+            .expect("lane")
+            .expect("the caller's own SET still succeeds — NO-SANDBOX");
+        assert_eq!(
+            next_caller_sees(&store, "memory_limit"),
+            engine_memory,
+            "call 1's memory_limit reached call 2 — that is the starvation"
+        );
+
+        store
+            .query("SET threads=2")
+            .expect("lane")
+            .expect("the caller's own SET still succeeds");
+        assert_eq!(
+            next_caller_sees(&store, "threads"),
+            engine_threads,
+            "the leak is the GLOBAL class, not one setting name"
+        );
+    }
+
+    /// The trap the card named explicitly: the restore must reapply the
+    /// ENGINE's `temp_directory`/`max_temp_directory_size`
+    /// ([`apply_spill_containment`], card `sql-spill-config-lockout`), never
+    /// `DuckDB`'s defaults — a `RESET`-shaped fix would silently unbound the
+    /// spill that ENOSPC'ed a host.
+    #[test]
+    fn restoring_config_reapplies_the_engines_spill_bound_not_duckdbs_default() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let engine_temp = next_caller_sees(&store, "temp_directory");
+        let engine_budget = next_caller_sees(&store, "max_temp_directory_size");
+        assert!(
+            engine_temp.starts_with(dir.path().to_str().expect("utf8 dir")),
+            "precondition: the engine owns temp_directory, drawer-derived: {engine_temp}"
+        );
+
+        store
+            .query("SET temp_directory='/tmp/mrd-caller-owned-spill'")
+            .expect("lane")
+            .expect("the caller's own SET succeeds");
+
+        assert_eq!(
+            next_caller_sees(&store, "temp_directory"),
+            engine_temp,
+            "the next caller must spill into the ENGINE's drawer-derived dir, \
+             not the previous caller's path and not DuckDB's cwd-relative default"
+        );
+        assert_eq!(
+            next_caller_sees(&store, "max_temp_directory_size"),
+            engine_budget,
+            "and under the ENGINE's bound, not DuckDB's %-of-disk default"
+        );
+        assert!(
+            !engine_budget.contains('%'),
+            "the bound restored is a real size: {engine_budget}"
+        );
+    }
+
+    /// `DuckDB` derives settings from settings: `memory_limit` re-derives
+    /// `write_buffer_row_group_memory_limit`, and `threads` re-derives
+    /// `worker_threads`. A single restore pass would leave a derived name at
+    /// the caller's value depending on sort order — this pins that the derived
+    /// ones come back too.
+    #[test]
+    fn derived_settings_come_back_with_the_setting_they_derive_from() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let before: Vec<(String, String)> = ["max_memory", "write_buffer_row_group_memory_limit"]
+            .iter()
+            .map(|n| ((*n).to_owned(), next_caller_sees(&store, n)))
+            .collect();
+
+        store
+            .query("SET memory_limit='1GB'")
+            .expect("lane")
+            .expect("the caller's own SET succeeds");
+
+        for (name, was) in &before {
+            assert_eq!(
+                &next_caller_sees(&store, name),
+                was,
+                "{name} is derived from memory_limit and must come back with it"
+            );
+        }
+    }
+
+    /// The error path is not a place config can hide.
+    ///
+    /// **Why this is two halves and not one.** A caller who moved config and
+    /// THEN failed is the case worth guarding, but the lane cannot be handed
+    /// one: `run_query` prepares exactly ONE statement, so `SET x; <bad>` never
+    /// reaches the `SET`. So this pins the two halves that ARE reachable —
+    /// (1) through the lane, a failing statement still answers the caller's own
+    /// error, which is the return shape the restore must not disturb; (2) at
+    /// function grain, `restore_global_config` puts back a `SET` made on a
+    /// connection whose statement then errored, which is exactly the state
+    /// `SqlStore::query` hands it when `run_query` returns `Err`.
+    ///
+    /// This test is deliberately NOT the guard for the lane wiring — it stays
+    /// green if the restore call is deleted from
+    /// [`SqlStore::query`] (measured 2026-08-24). The wiring is guarded by
+    /// `a_caller_set_does_not_reach_the_next_caller` and the two beside it,
+    /// which go RED under that mutation.
+    #[test]
+    fn the_error_path_is_not_a_place_config_can_hide() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        let engine_threads = next_caller_sees(&store, "threads");
+
+        // (1) Through the lane: the caller's own error survives the restore.
+        let refusal = store
+            .query("SELECT * FROM no_such_table")
+            .expect("lane")
+            .expect_err("the caller's own SQL failed");
+        assert!(
+            refusal.contains("no_such_table"),
+            "the caller's error is theirs, verbatim, restore or no restore: {refusal}"
+        );
+
+        // (2) At function grain: the state the lane hands the restore on Err.
+        let conn = store.connection().try_clone().expect("clone");
+        let before = global_config_snapshot(&conn).expect("snapshot");
+        conn.execute_batch("SET threads=2;").expect("caller SET");
+        run_query(&conn, "SELECT * FROM no_such_table")
+            .expect_err("the statement fails after the SET");
+        assert!(
+            restore_global_config(&conn, &before).is_empty(),
+            "the restore puts everything back on the error path too"
+        );
+        drop(conn);
+
+        assert_eq!(
+            next_caller_sees(&store, "threads"),
+            engine_threads,
+            "a failed statement's config change must not outlive it either"
+        );
+    }
+
+    /// The residue (c) provably cannot close, pinned rather than implied:
+    /// `lock_configuration` is one-way BY `DuckDB`'s DESIGN, so no restore can
+    /// undo it. What this test asserts is that the residue is a denial of the
+    /// DOOR, not starvation — the values it freezes are the ENGINE's, because
+    /// the restore pass already ran at the end of the previous call.
+    ///
+    /// If `DuckDB` ever makes the lock reversible, this test fails and the
+    /// residue paragraph on [`restore_global_config`] is what to delete.
+    #[test]
+    fn a_caller_lock_is_the_one_residue_and_it_freezes_engine_values() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let engine_memory = next_caller_sees(&store, "memory_limit");
+
+        // Call 1 leaks, and is restored — this is what makes the freeze land
+        // on good values rather than the leaked one.
+        store.query("SET memory_limit='1GB'").expect("lane").ok();
+        // Call 2 locks. One statement per call: `run_query` prepares one, so a
+        // caller cannot leak and lock in the same breath.
+        store
+            .query("SET lock_configuration=true")
+            .expect("lane")
+            .expect("DuckDB accepts the lock — this is the residue, measured");
+
+        assert_eq!(
+            next_caller_sees(&store, "memory_limit"),
+            engine_memory,
+            "the lock froze the ENGINE's value, not the previous caller's — \
+             the residue is a denied door, never starvation"
+        );
+        let refusal = store
+            .query("SET memory_limit='2GB'")
+            .expect("lane")
+            .expect_err("after a caller's lock, every SET refuses");
+        assert!(
+            refusal.contains("configuration has been locked"),
+            "DuckDB's own words name the residue: {refusal}"
+        );
+    }
+
+    /// The restore is honest about what it could not put back: it names the
+    /// setting instead of reporting a clean pass. Uses a value `DuckDB` will
+    /// not accept back (`force_variant_shredding` reports `INVALID`, which is
+    /// not a legal input) to drive the unrestorable branch deliberately.
+    #[test]
+    fn the_restore_names_what_it_could_not_put_back() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let conn = store.connection().try_clone().expect("clone");
+
+        // A snapshot claiming a value DuckDB refuses as input. This is the
+        // shape `force_variant_shredding` really has (value `INVALID`), staged
+        // here without depending on that one setting keeping that value.
+        let before = vec![("memory_limit".to_owned(), "not-a-size".to_owned())];
+        let unrestored = restore_global_config(&conn, &before);
+        assert_eq!(
+            unrestored,
+            vec!["memory_limit".to_owned()],
+            "a setting that will not go back is NAMED, not silently dropped"
+        );
+
+        // And the ordinary path reports nothing.
+        let clean = global_config_snapshot(&conn).expect("snapshot");
+        assert!(
+            restore_global_config(&conn, &clean).is_empty(),
+            "an undisturbed instance restores clean"
+        );
     }
 }
