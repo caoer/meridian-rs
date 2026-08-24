@@ -13,7 +13,9 @@
 //!   (driven deterministically via the `MRD_SQL_TEST_MUTATE` hook);
 //! - the ruled DML contract (OQ1): a latest VIEW refuses with the teaching;
 //!   hist DML is accepted and never durable (always-rollback lane);
-//! - `--rebuild` recreates the file at gen 1 (ruling OQ3);
+//! - `--rebuild` recreates the file at gen 1 (ruling OQ3), and refuses (exit
+//!   2, holder + remedy named) rather than degrading to `:memory:` when the
+//!   drawer is HELD — a repair verb that exits 0 rebuilt nothing;
 //! - no cache root ⇒ the `:memory:` lane still answers (writes nothing, base
 //!   tables accept DML that dies with the process);
 //! - `--verify` refuses at the process boundary (dropped published-view flag);
@@ -236,6 +238,84 @@ fn no_cache_root_degrades_to_the_memory_lane() {
     // And it wrote nothing anywhere under the sandbox.
     let stray = walk_count_suffix(sb.tmp.path(), ".duckdb");
     assert_eq!(stray, 0, "the :memory: lane writes no database file");
+}
+
+/// The repair verb never degrades (card
+/// `mrd-sql-rebuild-silent-noop-under-daemon-lock`). With the drawer HELD —
+/// the resident daemon owns it under lifecycle B; an in-test `SqlStore`
+/// stands in for that holder, taking the same `DuckDB` inter-process lock —
+/// `--rebuild` must refuse (exit 2) naming the holder and the verb that WOULD
+/// rebuild, NOT answer from `:memory:` at exit 0 with the drawer untouched:
+/// that success rebuilt nothing, and the caller then measures the OLD drawer
+/// believing it repaired.
+#[test]
+fn rebuild_refuses_while_the_drawer_is_held() {
+    let sb = sandbox();
+    let ws = write_bare_ws(&sb, "held", &[("a.md", "# A\n")]);
+
+    // Cold-build so there IS a drawer file to hold.
+    let cold = sb.run(&ws, &["sql", "--json", "SELECT 1"]);
+    assert!(cold.status.success(), "{}", stderr(&cold));
+    let drawer = walk_find_suffix(&sb.cache_home, "sql.duckdb").expect("the drawer cache file");
+
+    // Hold it for the whole arm; snapshot AFTER the holder opens, so the
+    // comparison sees only what the refused rebuilds did (nothing).
+    let _holder = view::store::SqlStore::open(&drawer).expect("hold the drawer");
+    let before = std::fs::read(&drawer).expect("read the held drawer");
+
+    for args in [
+        &["sql", "--rebuild", "SELECT 1"][..],
+        &["sql", "--rebuild"][..],
+    ] {
+        let out = sb.run(&ws, args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "`mrd {}` under a held drawer must refuse, not exit 0 having rebuilt nothing\nstdout: {}\nstderr: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stdout),
+            stderr(&out),
+        );
+        let err = stderr(&out);
+        assert!(
+            err.contains("nothing was rebuilt"),
+            "the refusal says what did NOT happen: {err}"
+        );
+        assert!(
+            err.contains("Conflicting lock"),
+            "the refusal names the holder (DuckDB's message carries binary + PID): {err}"
+        );
+        assert!(
+            err.contains("mrd unregister"),
+            "the refusal names the verb that WOULD rebuild: {err}"
+        );
+    }
+
+    assert_eq!(
+        std::fs::read(&drawer).expect("re-read the held drawer"),
+        before,
+        "a refused rebuild leaves the drawer byte-identical"
+    );
+}
+
+/// The first file whose name ends in `suffix` anywhere under `dir`.
+fn walk_find_suffix(dir: &Path, suffix: &str) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(hit) = walk_find_suffix(&path, suffix) {
+                return Some(hit);
+            }
+        } else if path
+            .file_name()
+            .and_then(|f| f.to_str())
+            .is_some_and(|f| f.ends_with(suffix))
+        {
+            return Some(path);
+        }
+    }
+    None
 }
 
 /// Count files whose name ends in `suffix` anywhere under `dir` (missing dir ⇒ 0).

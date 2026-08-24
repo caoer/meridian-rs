@@ -102,6 +102,23 @@ impl std::fmt::Display for ViewError {
 
 impl std::error::Error for ViewError {}
 
+impl ViewError {
+    /// Is this the `DuckDB` inter-process file lock — another live process
+    /// (normally the resident daemon, lifecycle B) owns the cache file?
+    ///
+    /// A caller that may degrade around a held file asks nothing; a caller
+    /// that must NOT — `mrd sql --rebuild`, whose whole purpose is to replace
+    /// the file — asks here, so the string test has one definition
+    /// ([`store::is_lock_error`]) instead of one per crate.
+    #[must_use]
+    pub fn is_held(&self) -> bool {
+        match self {
+            ViewError::Duckdb(e) => store::is_lock_error(e),
+            ViewError::Io(_) => false,
+        }
+    }
+}
+
 impl From<duckdb::Error> for ViewError {
     fn from(e: duckdb::Error) -> Self {
         ViewError::Duckdb(e)

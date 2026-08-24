@@ -1198,8 +1198,10 @@ fn fingerprint_version(fingerprint: &str) -> &str {
 }
 
 /// Is this `DuckDB` open error the inter-process file lock (receipt P4)?
-/// A held lock must degrade down the caller's ladder, never delete the file.
-fn is_lock_error(e: &duckdb::Error) -> bool {
+/// A held lock must degrade down the caller's ladder, never delete the file —
+/// except for the repair verb, which refuses instead of degrading
+/// ([`crate::ViewError::is_held`], the one caller outside this module).
+pub(crate) fn is_lock_error(e: &duckdb::Error) -> bool {
     e.to_string().contains("Conflicting lock")
 }
 
