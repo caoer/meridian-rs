@@ -82,11 +82,15 @@ mrd unregister [PATH] drop the daemon entry (if a daemon answers) + the drawer.
  the stale-entry class a sweep leaves behind. A vanished
  path keyed by nothing refuses (exit 2) rather than
  reporting the never-registered clean no-op — and that
- refusal names only what the run checked: the drawer
- always, the registry only when a daemon answered. With
- none answering it says the registry was NOT checked and
- an entry may still be registered, instead of asserting
- an absence nobody looked for
+ refusal names only what the run checked: the registry
+ only when a daemon answered, the drawer only when the
+ cache root resolved and the drawer directory could be
+ probed. An unchecked half is reported as unchecked —
+ "the registry was NOT checked", "the drawer could not
+ be examined (…)" — and the unknown stays open, instead
+ of asserting an absence nobody looked for. `--json`
+ spells that null: `drawer_removed: null` with the
+ reason under `drawer_unexamined`
 mrd resolve [PATH] report how a path resolves — the tier that answered and
  the root it named (read-only; writes nothing). PATH
  also takes the agent-plane `root:path` spelling: a
@@ -393,7 +397,11 @@ mrd reconcile <PRESET> reconcile the tree toward a preset's declared scaffold
 mrd realise <PAGE> the reconciliation loop: observe -> check -> apply
  (only on drift, once) -> re-check
 mrd cache ls list the on-disk cache drawers
-mrd cache clean [--all] reap stale / orphaned / retired drawers
+mrd cache clean [--all] reap stale / orphaned / retired drawers. "Orphaned"
+ means the workspace was OBSERVED gone: a workspace path
+ that could not be examined keeps its drawer and is
+ listed as kept (`skipped_unexaminable` in `--json`),
+ because that lookup authorizes a removal
 mrd daemon run the registry daemon in the foreground
 mrd --version the build identity, one line: package version + the
  tree the build read — a bare commit where that tree
