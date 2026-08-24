@@ -199,12 +199,124 @@ pub fn read_line(
 #[cfg(test)]
 mod tests {
     use std::os::unix::net::UnixListener;
-    use std::sync::mpsc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, mpsc};
     use std::thread;
 
     use super::{
         BufReader, Duration, Instant, PROBE_TIMEOUT, TICK, UnixStream, Write, io, read_line,
     };
+
+    /// How long a test waits before calling a bounded read unbounded.
+    ///
+    /// A BACKSTOP, never a budget: every arm below is expected to finish in a
+    /// few ticks, and the only thing this number decides is whether a
+    /// regression FAILS or hangs the suite forever. Set far above any load
+    /// this suite meets, because a flaky red is worth less than a slow one.
+    const NEVER_RETURNED: Duration = Duration::from_secs(120);
+
+    /// A listener whose accepted connections are held open and mute until the
+    /// test says otherwise.
+    ///
+    /// Holding is a FLAG, not a sleep: a sleeping holder must outlive the
+    /// slowest plausible read (or it closes the socket and the reader sees EOF
+    /// instead of the timeout under test) AND be joined at the end (so the test
+    /// costs that sleep every green run). Both cannot be satisfied by one
+    /// constant. The flag decouples them — the holder lives exactly as long as
+    /// the measurement, on a fast machine and a loaded one alike.
+    struct Mute {
+        done: Arc<AtomicBool>,
+        thread: Option<thread::JoinHandle<()>>,
+    }
+
+    impl Mute {
+        /// Accept forever, answer nothing, hold every connection open.
+        fn holding(listener: UnixListener) -> Self {
+            let done = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&done);
+            listener
+                .set_nonblocking(true)
+                .expect("poll instead of blocking, so the flag is checked");
+            let thread = thread::spawn(move || {
+                let mut held = Vec::new();
+                while !flag.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((stream, _)) => held.push(stream),
+                        Err(_) => thread::sleep(Duration::from_millis(20)),
+                    }
+                }
+            });
+            Mute {
+                done,
+                thread: Some(thread),
+            }
+        }
+
+        /// Accept forever; answer a `pong` on every connection but the first,
+        /// which is held mute. That is a daemon that is demonstrably UP and
+        /// still will not answer the request in flight.
+        fn ponging_after_the_first(listener: UnixListener) -> Self {
+            let done = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&done);
+            listener
+                .set_nonblocking(true)
+                .expect("poll instead of blocking, so the flag is checked");
+            let thread = thread::spawn(move || {
+                let mut held = Vec::new();
+                while !flag.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            if held.is_empty() {
+                                held.push(stream);
+                            } else {
+                                let _ = stream.write_all(b"{\"status\":\"pong\"}\n");
+                                let _ = stream.flush();
+                            }
+                        }
+                        Err(_) => thread::sleep(Duration::from_millis(20)),
+                    }
+                }
+            });
+            Mute {
+                done,
+                thread: Some(thread),
+            }
+        }
+    }
+
+    impl Drop for Mute {
+        fn drop(&mut self) {
+            self.done.store(true, Ordering::SeqCst);
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
+            }
+        }
+    }
+
+    /// Run `read_line` off-thread and answer what it returned, or fail loudly
+    /// if it never did — the shape of the bug under test is a call that does
+    /// not return, and a test that shares its thread cannot report that.
+    fn read_off_thread(
+        sock: &std::path::Path,
+        cap: Duration,
+    ) -> (Result<usize, (io::ErrorKind, String)>, Duration) {
+        let (tx, rx) = mpsc::channel();
+        let dialled = sock.to_owned();
+        thread::spawn(move || {
+            let stream = UnixStream::connect(&dialled).expect("connect");
+            super::bind(&stream, cap).expect("bind the discipline");
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            let started = Instant::now();
+            let outcome = read_line(&mut reader, &dialled, cap, &mut line);
+            let _ = tx.send((
+                outcome.map_err(|e| (e.kind(), e.to_string())),
+                started.elapsed(),
+            ));
+        });
+        rx.recv_timeout(NEVER_RETURNED)
+            .expect("the read returned — a socket with no read timeout never would")
+    }
 
     /// **A daemon that accepts, answers nothing, and cannot be pinged must not
     /// park the caller.** The read is the only thing that can end this wait —
@@ -212,49 +324,26 @@ mod tests {
     /// `read(2)`.
     ///
     /// The mute listener also fails the liveness probe, so this is the
-    /// died-mid-request arm. No upper bound is asserted on the elapsed time:
-    /// the lower bound says the tick is what fired, and load can lengthen a
-    /// wait but never shorten it. The channel timeout exists so a regression
-    /// FAILS instead of hanging the suite forever.
+    /// died-mid-request arm. Only a LOWER bound is asserted on the elapsed
+    /// time: it says the socket's own tick is what fired rather than something
+    /// cheaper, and load can lengthen a wait but never shorten it.
     #[test]
     fn a_mute_unpingable_daemon_aborts_the_read_instead_of_parking() {
         let dir = tempfile::tempdir().expect("tempdir");
         let sock = dir.path().join("daemon.sock");
-        let listener = UnixListener::bind(&sock).expect("bind");
+        let _mute = Mute::holding(UnixListener::bind(&sock).expect("bind"));
 
-        // Accept and hold: the kernel completes the probe's connect, so the
-        // probe fails on its READ, which is the condition under test.
-        let held = thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept");
-            thread::sleep(TICK * 6);
-            drop(stream);
-        });
-
-        let (tx, rx) = mpsc::channel();
-        let dialled = sock.clone();
-        thread::spawn(move || {
-            let stream = UnixStream::connect(&dialled).expect("connect");
-            super::bind(&stream, super::WEDGE_CAP).expect("bind the discipline");
-            let mut reader = BufReader::new(stream);
-            let mut line = String::new();
-            let started = Instant::now();
-            let outcome = read_line(&mut reader, &dialled, super::WEDGE_CAP, &mut line);
-            let _ = tx.send((outcome.map(|_| ()).map_err(|e| e.kind()), started.elapsed()));
-        });
-
-        let (outcome, elapsed) = rx
-            .recv_timeout(TICK * 6)
-            .expect("the read returned — a socket with no deadline never would");
+        let (outcome, elapsed) = read_off_thread(&sock, super::WEDGE_CAP);
+        let (kind, message) = outcome.expect_err("a mute daemon does not answer");
         assert_eq!(
-            outcome,
-            Err(io::ErrorKind::ConnectionAborted),
-            "a mute listener that also fails the liveness probe is gone, not merely slow"
+            kind,
+            io::ErrorKind::ConnectionAborted,
+            "a mute listener that also fails the liveness probe is gone, not merely slow: {message}"
         );
         assert!(
             elapsed >= TICK,
             "the socket's own tick is what fired, not something faster: {elapsed:?}"
         );
-        held.join().expect("the mute listener finishes");
     }
 
     /// **The other arm, which a flat timeout conflates with the first:** the
@@ -266,45 +355,10 @@ mod tests {
     fn a_pinging_daemon_that_never_answers_spends_the_cap_and_says_it_is_wedged() {
         let dir = tempfile::tempdir().expect("tempdir");
         let sock = dir.path().join("daemon.sock");
-        let listener = UnixListener::bind(&sock).expect("bind");
+        let _alive = Mute::ponging_after_the_first(UnixListener::bind(&sock).expect("bind"));
         let cap = TICK + Duration::from_millis(200);
 
-        // Every connection after the first gets a pong; the first is held mute.
-        let serving = thread::spawn(move || {
-            let (held, _) = listener.accept().expect("accept the wedged caller");
-            let deadline = Instant::now() + TICK * 4;
-            listener
-                .set_nonblocking(true)
-                .expect("poll for probe connections");
-            while Instant::now() < deadline {
-                if let Ok((mut probe, _)) = listener.accept() {
-                    let _ = probe.write_all(b"{\"status\":\"pong\"}\n");
-                    let _ = probe.flush();
-                } else {
-                    thread::sleep(Duration::from_millis(20));
-                }
-            }
-            drop(held);
-        });
-
-        let (tx, rx) = mpsc::channel();
-        let dialled = sock.clone();
-        thread::spawn(move || {
-            let stream = UnixStream::connect(&dialled).expect("connect");
-            super::bind(&stream, cap).expect("bind the discipline");
-            let mut reader = BufReader::new(stream);
-            let mut line = String::new();
-            let outcome = read_line(&mut reader, &dialled, cap, &mut line);
-            let _ = tx.send(
-                outcome
-                    .map(|_| String::new())
-                    .map_err(|e| (e.kind(), e.to_string())),
-            );
-        });
-
-        let outcome = rx
-            .recv_timeout(TICK * 5)
-            .expect("the read returned — the cap is what bounds this arm");
+        let (outcome, elapsed) = read_off_thread(&sock, cap);
         let (kind, message) = outcome.expect_err("a wedged daemon does not answer");
         assert_eq!(
             kind,
@@ -315,7 +369,10 @@ mod tests {
             message.contains("wedged, not absent"),
             "the message must separate the wedge from the absence — the remedies differ: {message}"
         );
-        serving.join().expect("the probe listener finishes");
+        assert!(
+            elapsed >= cap,
+            "the CAP is what ended this arm, not the first tick: {elapsed:?}"
+        );
     }
 
     /// The probe is itself bounded: a socket nobody answers must not park the
@@ -324,12 +381,7 @@ mod tests {
     fn the_liveness_probe_is_itself_bounded() {
         let dir = tempfile::tempdir().expect("tempdir");
         let sock = dir.path().join("daemon.sock");
-        let listener = UnixListener::bind(&sock).expect("bind");
-        let held = thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept");
-            thread::sleep(PROBE_TIMEOUT * 3);
-            drop(stream);
-        });
+        let _mute = Mute::holding(UnixListener::bind(&sock).expect("bind"));
 
         let started = Instant::now();
         assert!(
@@ -341,7 +393,6 @@ mod tests {
             elapsed >= PROBE_TIMEOUT,
             "the probe's own timeout is what fired: {elapsed:?}"
         );
-        held.join().expect("the mute listener finishes");
     }
 
     /// An absent socket answers instantly and negatively — the probe must not
@@ -356,5 +407,42 @@ mod tests {
             started.elapsed() < PROBE_TIMEOUT,
             "a refused connect is a verdict, not a wait"
         );
+    }
+
+    /// A daemon that ANSWERS is untouched by the discipline: the round trip
+    /// returns the line, at once, with no probe in between. The bound must cost
+    /// the healthy path nothing — that is what makes it safe to put on every
+    /// door.
+    #[test]
+    fn an_answering_daemon_is_served_immediately_and_never_probed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("daemon.sock");
+        let listener = UnixListener::bind(&sock).expect("bind");
+        let serving = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            stream
+                .write_all(b"{\"status\":\"pong\"}\n")
+                .expect("answer at once");
+            stream.flush().expect("flush");
+            // Held open until the reader has the line, so the assertion cannot
+            // be satisfied by an EOF instead of by the answer.
+            thread::sleep(Duration::from_millis(50));
+        });
+
+        let stream = UnixStream::connect(&sock).expect("connect");
+        super::bind(&stream, super::WEDGE_CAP).expect("bind the discipline");
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        let started = Instant::now();
+        let read = read_line(&mut reader, &sock, super::WEDGE_CAP, &mut line).expect("served");
+        let elapsed = started.elapsed();
+
+        assert!(read > 0, "the answer is bytes, not EOF");
+        assert!(line.contains("pong"), "the line arrives verbatim: {line:?}");
+        assert!(
+            elapsed < TICK,
+            "a healthy round trip never reaches the first tick, so it never probes: {elapsed:?}"
+        );
+        serving.join().expect("the serving listener finishes");
     }
 }
