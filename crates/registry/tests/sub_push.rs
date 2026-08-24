@@ -928,6 +928,7 @@ fn an_armed_sub_with_zero_frames_written_is_dropped_after_the_idle_horizon() {
     config.sub_idle_write_timeout = SUB_IDLE_WRITE_TIMEOUT;
     config.idle_exit = Some(idle_exit);
     config.reap_interval = Duration::from_millis(100);
+    config.activity_park = Some(FOREVER);
     let server = RunningServer::start(config).unwrap();
     // The idle-exit clock is unix whole seconds from DAEMON BIRTH, so a 1s
     // horizon could latch on the reaper's first tick, before this test's
@@ -937,8 +938,10 @@ fn an_armed_sub_with_zero_frames_written_is_dropped_after_the_idle_horizon() {
     // mortality had already latched before the SubGuard existed (card
     // `sub-push-913-latent-false-green`). The park is a FLOOR under the
     // activity clock, so the handshake's own `note_request` bumps cannot
-    // destroy it (card `registry-sweep-rebuild-flake-same-sha-split`).
-    server.registry().park_activity_clock(365 * 24 * 60 * 60);
+    // destroy it (card `registry-sweep-rebuild-flake-same-sha-split`), and it is
+    // BORN with the daemon (`Config::activity_park`) rather than taken on the
+    // handle `start()` returns, so `start()`'s own body is covered too (card
+    // `registry-sweep-poll-flake-instance-1` § F1 full-close).
 
     // Age the daemon PAST the horizon before the subscriber exists. Under the
     // park this is inert; without it the flag latches here every time — which
