@@ -65,14 +65,15 @@ pub(crate) fn clean(all: bool, format: Format) -> Result<(), Fail> {
         for info in list_under(&cache_root)? {
             let probe = Path::new(&info.workspace).try_exists();
             let retired = info.superseded_by.is_some();
-            if !retired && probe.is_err() {
+            if let Err(e) = &probe
+                && !retired
+            {
                 // Kept, and said out loud: a silent skip leaves an operator
                 // watching a cache that never shrinks with nothing to act on.
                 skipped.push(format!(
-                    "{} (workspace {}: {})",
+                    "{} (workspace {}: {e})",
                     info.drawer_dir.display(),
                     info.workspace,
-                    probe.unwrap_err(),
                 ));
                 continue;
             }
