@@ -2177,8 +2177,9 @@ note.)
 
 The grammar is the page grammar reused: flat dotted frontmatter keys carrying a
 cap list. Flat is the reader's law for the KEY, not a preference — the pattern
-is what follows `run.caps.`, and a nested `run:`/` caps:` mapping would put it
-on an indented line where no key exists. The VALUE is the ordinary cap list, in
+is the `<pattern>` in `run.caps.<pattern>`, and a nested `run:`/` caps:` mapping
+would put it on an indented line where no key exists. The VALUE is the ordinary
+cap list, in
 any of the three spellings § *One spelling, both planes* names. A bare
 `run.caps.<pattern>:` declares the EMPTY ceiling, never an absent entry —
 fail-closed, the same direction a broken declaration refuses.
