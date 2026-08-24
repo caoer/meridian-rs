@@ -260,11 +260,16 @@ fn unregister_removes_an_entry_whose_directory_is_gone() {
     );
 }
 
-/// A non-existent path that is keyed by nothing refuses, naming the path.
+/// A non-existent path that is keyed by nothing refuses, naming the path — and
+/// the refusal speaks only what this run checked.
 ///
 /// The clean no-op is for a tree that is PRESENT and was never registered.
 /// With no tree there, exit 0 would report a sweep that removed nothing, and a
 /// typo would read back as success.
+///
+/// The second half is the daemon-absent gate: no daemon answers in this
+/// sandbox, so the registry is never queried and the message may not claim
+/// there is no entry in it.
 #[test]
 fn unregister_refuses_a_vanished_path_that_matches_nothing() {
     let sb = sandbox();
@@ -285,8 +290,33 @@ fn unregister_refuses_a_vanished_path_that_matches_nothing() {
         "the refusal must name the path — got: {err}",
     );
     assert!(
-        err.contains("nothing to unregister"),
+        err.contains("nothing was unregistered"),
         "the refusal must say what did not happen — got: {err}",
+    );
+
+    // …and it must say it about what was CHECKED. This sandbox has an isolated
+    // HOME with no daemon socket, and `unregister` never auto-spawns one, so
+    // the registry was not queried on this run. The retired sentence asserted
+    // "no registry entry or drawer is keyed by that exact path" anyway — an
+    // absence claimed for a lookup that did not happen (card
+    // `unregister-refusal-overclaims-registry-fact`, F4). The wording below is
+    // itself the proof the daemon-absent leg ran: it exists only on that leg.
+    assert!(
+        err.contains("the registry was NOT checked"),
+        "with no daemon answering, the refusal must report the registry as unchecked \
+         — got: {err}",
+    );
+    assert!(
+        err.contains("an entry may still be registered"),
+        "and must leave that unknown open rather than closing it — got: {err}",
+    );
+    assert!(
+        !err.contains("no registry entry or drawer"),
+        "the retired overclaim must be gone — got: {err}",
+    );
+    assert!(
+        err.contains("no drawer is keyed by that exact path"),
+        "the drawer WAS checked on this run, so that half is still asserted — got: {err}",
     );
 }
 
