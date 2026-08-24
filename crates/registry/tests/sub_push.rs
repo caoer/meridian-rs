@@ -924,10 +924,27 @@ fn an_armed_sub_with_zero_frames_written_is_dropped_after_the_idle_horizon() {
     let tmp = TempDir::new().unwrap();
     let ws = write_ws(&tmp.path().join("ws"), &[("plan.md", PLAN)]);
     let mut config = test_config(&tmp);
+    let idle_exit = Duration::from_secs(1);
     config.sub_idle_write_timeout = SUB_IDLE_WRITE_TIMEOUT;
-    config.idle_exit = Some(Duration::from_secs(1));
+    config.idle_exit = Some(idle_exit);
     config.reap_interval = Duration::from_millis(100);
     let server = RunningServer::start(config).unwrap();
+    // The idle-exit clock is unix whole seconds from DAEMON BIRTH, so a 1s
+    // horizon could latch on the reaper's first tick, before this test's
+    // subscriber exists. That is not a red: the terminal assertion below WANTS
+    // the exit, so a premature latch makes it pass earlier and for the wrong
+    // reason — "freeing the SubGuard restores mortality" goes untested whenever
+    // mortality had already latched before the SubGuard existed (card
+    // `sub-push-913-latent-false-green`). The park is a FLOOR under the
+    // activity clock, so the handshake's own `note_request` bumps cannot
+    // destroy it (card `registry-sweep-rebuild-flake-same-sha-split`).
+    server.registry().park_activity_clock(365 * 24 * 60 * 60);
+
+    // Age the daemon PAST the horizon before the subscriber exists. Under the
+    // park this is inert; without it the flag latches here every time — which
+    // is what makes the guard assertion below a measurement rather than a
+    // load-dependent one that a quiet box always passes.
+    std::thread::sleep(idle_exit + Duration::from_millis(500));
 
     // Armed and never written to: the workspace is quiet for the whole test, and
     // this connection is never closed by the client side.
@@ -941,6 +958,19 @@ fn an_armed_sub_with_zero_frames_written_is_dropped_after_the_idle_horizon() {
         ring.has_subscribers(),
         "control: the subscription is armed, so there is something to drop"
     );
+    assert!(
+        !server.idle_exit_requested(),
+        "control: mortality has NOT latched before the subscriber exists — \
+         otherwise the terminal assertion passes on the birth clock and never \
+         tests the SubGuard at all"
+    );
+
+    // Horizon starts HERE, with the sub armed. Release first — the park is a
+    // floor, so `note_liveness` alone could not bring the clock back down out
+    // of the future. From this instant the reaper defers on `has_subscribers`,
+    // so the flag can only be raised after the sub is dropped.
+    server.registry().release_activity_park();
+    server.registry().note_liveness();
 
     let deadline = Instant::now() + PUSH_WAIT;
     while ring.has_subscribers() && Instant::now() < deadline {
