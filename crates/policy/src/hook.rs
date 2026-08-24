@@ -581,8 +581,18 @@ fn load_hook_with_caps(
         ));
     }
 
-    let declared_caps = parsed
-        .caps
+    // Caps come from `model::fm_caps`, the ONE capability grammar — not from a
+    // second `serde_yaml` reading of the same block, for the reason
+    // `register_page` takes its tags from `model::fm_tags`: one key with two
+    // readers drifts, and this one had. The `serde_yaml` parse above keeps
+    // `severity:`/`paths:`/`budget:`/`how:`; it no longer sees `caps:` at all.
+    //
+    // What the shared grammar buys the policy plane specifically: a PLAIN
+    // SCALAR (`caps: proto.send`) now loads. It used to refuse as `invalid
+    // type: string, expected a sequence` while the run plane accepted exactly
+    // that spelling — the opposite half of card
+    // `caps-flow-sequence-faults-at-run-plane`.
+    let declared_caps = model::fm_caps(frontmatter, "caps")
         .ok_or_else(|| malformed("frontmatter must declare `caps:`".to_string()))?;
     let caps = resolve_caps(&declared_caps, allowed_caps)?;
 
@@ -646,15 +656,17 @@ fn load_hook_with_caps(
     })
 }
 
-/// Only the HOOK frontmatter keys the loader reads. Other keys are permitted (a
-/// declaration may carry descriptive frontmatter) and ignored — `kind:` among
-/// them, deliberately: it is checked against the tag at exactly one place,
-/// [`crate::load_rule`]'s kind seam, and a field here would be a second reader.
+/// Only the HOOK frontmatter keys the loader reads THROUGH SERDE. Other keys
+/// are permitted (a declaration may carry descriptive frontmatter) and ignored
+/// — `kind:` among them, deliberately: it is checked against the tag at exactly
+/// one place, [`crate::load_rule`]'s kind seam, and a field here would be a
+/// second reader. `caps:` is absent for the same reason in the other direction:
+/// it has ONE reader, [`model::fm_caps`], shared with the run plane, and a
+/// field here would be the second one it used to have.
 #[derive(serde::Deserialize)]
 struct HookFrontmatter {
     severity: Option<String>,
     paths: Option<Vec<String>>,
-    caps: Option<Vec<String>>,
     budget: Option<EvalBudget>,
     how: Option<serde_yaml::Value>,
 }
