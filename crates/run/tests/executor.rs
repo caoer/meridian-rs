@@ -149,6 +149,46 @@ fn set_field_applies_receipts_and_synthesizes_the_event() {
     assert_eq!(event.depth, 1);
 }
 
+/// FIRE-SPLICE LANE, model rung 3a — the reviewer's own reproduction
+/// (`36637e1a` on PR 214, finding 1): TWO caller effects, NO middleware, both
+/// setting one frontmatter key. The ABSENT-key arm used to land the key TWICE
+/// (`status: todo` is in `PAGE`, so `owner` is the new-key case): both upserts
+/// plan the same zero-width insert at the block's first-key offset, and the
+/// region grain reads zero-width regions at one byte disjoint. Both arms now
+/// refuse, and no byte lands.
+#[test]
+fn same_field_set_twice_in_one_generation_refuses_on_the_fire_lane() {
+    for (field, arm) in [
+        ("owner", "absent key — two zero-width inserts at one point"),
+        ("status", "existing key — two identical replace regions"),
+    ] {
+        let (_tmp, root) = workspace();
+        let now = current_root(&root);
+        let err = apply(
+            &root,
+            &Req {
+                effects: &[set_field(field, "one", 0), set_field(field, "two", 1)],
+                caps: write_caps(),
+                observed: now,
+                receipt: None,
+            },
+        )
+        .expect_err("two set_fields on one key must refuse");
+        let ExecError::Refused { verdict } = err else {
+            panic!("{arm}: expected a validation refusal, got {err:?}");
+        };
+        assert!(
+            verdict.starts_with("Overlap { edits: [0, 1]"),
+            "{arm}: the refusal names the offending pair in batch order — {verdict}"
+        );
+        assert_eq!(
+            page_text(&root),
+            PAGE,
+            "{arm}: refused whole — no byte landed, and the key is not doubled"
+        );
+    }
+}
+
 #[test]
 fn append_section_lands_inside_the_section() {
     let (_tmp, root) = workspace();
