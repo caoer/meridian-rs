@@ -8,9 +8,13 @@
 //!
 //! **The read is bounded** ([`crate::wedge`]). A daemon that accepts a frame
 //! and never answers it used to park the caller forever — a failure with no
-//! symptom and no remedy, and the reason two other clients in this repo refuse
-//! to use [`Client`] at all (`wire_host.rs:45` and `:151`). It now lands as an
-//! `io::Error` on the path that already handled one.
+//! symptom and no remedy, and the reason `mrd`'s script/write door hand-rolled
+//! its own dial rather than use [`Client`] (`script::wire_host`). That reason
+//! is spent: the park now lands as an `io::Error` on the path that already
+//! handled one. What still keeps that door separate is its own wall clock, its
+//! own failure arms, and the recursion it would cause by probing liveness
+//! through a client whose reads are themselves probe-driven — see
+//! `wire_host::PROBE_TIMEOUT`.
 
 use std::io::{self, BufReader, Write};
 use std::os::unix::net::UnixStream;

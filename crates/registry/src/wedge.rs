@@ -42,8 +42,8 @@
 //! # Sibling spelling
 //!
 //! `crates/mrd/src/script/wire_host.rs` holds the same discipline for the
-//! script/write door — `PROBE_TIMEOUT` (:48), `daemon_answers_ping` (:154),
-//! `SocketDoor::greet` (:329). That door carries a script entry's own wall
+//! script/write door — `PROBE_TIMEOUT`, `daemon_answers_ping`,
+//! `SocketDoor::greet`. That door carries a script entry's own wall
 //! clock and its own [`DialFailure`](../../mrd/script/wire_host) arms, so it is
 //! not expressed in terms of this module; the two are kept equal BY HAND, like
 //! the `WALL_CLOCK` / `DEFAULT_WALL_CLOCK` pair. Change one bound, grep for the
@@ -135,21 +135,44 @@ pub fn answers_ping(socket: &Path) -> bool {
 }
 
 /// Read one NDJSON line under the discipline. Drop-in for
-/// [`BufRead::read_line`], with the tick loop around it.
+/// [`BufRead::read_line`] — same append semantics, same `Ok(n)` byte count,
+/// same `Ok(0)` at EOF — with the tick loop around it.
 ///
 /// The request is NOT re-sent on a tick — a second frame on the same connection
-/// is a different request, not a retry. Bytes of a partial line read before a
-/// tick stay in `line`; `read_line` appends.
+/// is a different request, not a retry.
+///
+/// # Bytes accumulate raw; UTF-8 is validated once, when the line is whole
+///
+/// The tick lands wherever the daemon happened to stop writing, so it lands
+/// mid-character routinely on any corpus that is not pure ASCII. Reading
+/// straight into `line` across ticks therefore cannot work: std's
+/// [`BufRead::read_line`] validates the bytes it appended *during that call*
+/// and **truncates all of them** when that slice ends mid-character — and they
+/// have already been consumed from the [`BufReader`], so they are gone. A tick
+/// inside one multi-byte character would destroy a live daemon's complete,
+/// valid answer and report it as [`io::ErrorKind::InvalidData`]: exactly the
+/// class of wrong verdict this module exists to abolish, and reachable only
+/// because the module bounds the read. It also made the count a lie — `Ok(n)`
+/// was the last inner call's bytes, not the line's.
+///
+/// So the bytes land in a `Vec<u8>` via [`BufRead::read_until`], which has no
+/// UTF-8 guard and leaves what it appended in place when the tick fires; the
+/// completed line is validated once and pushed into `line`.
+/// (Regression: `crates/registry/tests/wedge_tick_partial.rs`.)
 ///
 /// `Ok(0)` is EOF and stays the caller's to interpret, exactly as it is on the
-/// bare reader.
+/// bare reader. A partial line then EOF answers `Ok(n)` with those bytes in
+/// `line` and no trailing newline — again exactly as the bare reader does.
 ///
 /// # Errors
+///
+/// On every error `line` is left untouched: a partial answer is not an answer.
 ///
 /// - [`io::ErrorKind::ConnectionAborted`] — the daemon stopped answering
 ///   liveness probes: it died mid-request.
 /// - [`io::ErrorKind::TimedOut`] — it answered probes for the whole `cap` and
 ///   never answered this request: up, and wedged.
+/// - [`io::ErrorKind::InvalidData`] — the completed line is not valid UTF-8.
 /// - Any other transport failure, verbatim.
 pub fn read_line(
     reader: &mut BufReader<UnixStream>,
@@ -158,15 +181,20 @@ pub fn read_line(
     line: &mut String,
 ) -> io::Result<usize> {
     let started = Instant::now();
+    let mut bytes = Vec::new();
     loop {
-        match reader.read_line(line) {
-            Ok(read) => return Ok(read),
+        match reader.read_until(b'\n', &mut bytes) {
+            // The delimiter arrived, or the stream ended. Either way nothing
+            // further is coming for this line, so stop ticking.
+            Ok(_) => break,
             Err(e)
                 if matches!(
                     e.kind(),
                     io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
                 ) =>
             {
+                // Whatever `read_until` appended before the tick fired stays in
+                // `bytes`. That is what makes the resumption lossless.
                 let waited = started.elapsed();
                 if !answers_ping(socket) {
                     return Err(io::Error::new(
@@ -189,11 +217,19 @@ pub fn read_line(
                     ));
                 }
             }
-            // No `Interrupted` arm: `read_until` (which `read_line` calls)
-            // absorbs EINTR itself, so it cannot surface here.
+            // No `Interrupted` arm: `read_until` absorbs EINTR itself, so it
+            // cannot surface here.
             Err(e) => return Err(e),
         }
     }
+    let text = std::str::from_utf8(&bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        )
+    })?;
+    line.push_str(text);
+    Ok(bytes.len())
 }
 
 #[cfg(test)]
