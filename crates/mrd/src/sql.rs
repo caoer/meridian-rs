@@ -11,7 +11,9 @@
 //!    unheld, append the corpus delta, query through the always-rollback
 //!    lane;
 //! 3. **`:memory:`**: the ephemeral build, when no cache root resolves or the
-//!    file is held/unusable.
+//!    file is held/unusable. `--rebuild` never takes this rung: a repair verb
+//!    that degrades exits 0 having rebuilt nothing, so a held or unusable file
+//!    refuses (exit 2) naming the holder and the verb that WOULD rebuild.
 //!
 //! The old `wire-contract.md` §10.4 file-organ drop is knowingly superseded
 //! for sql by the 2026-08-14 lifecycle-B ruling (`view::store` module docs).
@@ -315,7 +317,7 @@ pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
         Ok(loaded) => loaded,
         Err(msg) => return emit(&args, &Frame::no_view(msg)),
     };
-    let mut lane = open_lane(&loaded.root.0, args.rebuild);
+    let mut lane = open_lane(&loaded.root.0, args.rebuild)?;
 
     let Some(_) = &args.query else {
         // `--rebuild` alone: cold-build the cache and report; no query to run.
@@ -547,10 +549,19 @@ enum Lane {
 /// Resolve the lane for `canonical`: the drawer file when a cache root
 /// resolves and the file opens (held/unusable degrades, voiced), else
 /// `:memory:`.
-fn open_lane(canonical: &Path, rebuild: bool) -> Lane {
+///
+/// `--rebuild` does NOT degrade. It is the repair verb: falling to `:memory:`
+/// would answer the query and exit 0 with the drawer untouched — a success
+/// that did nothing, and the caller then measures the OLD drawer believing it
+/// rebuilt. A held or unusable file refuses instead ([`rebuild_blocked`]).
+///
+/// # Errors
+/// `--rebuild` could not recreate the file — most often the resident daemon
+/// holds it (lifecycle B makes the daemon the file's single owner).
+fn open_lane(canonical: &Path, rebuild: bool) -> Result<Lane, Fail> {
     let drawer = cache::CacheDrawer::open(canonical);
     let Some(dir) = drawer.dir() else {
-        return Lane::Memory;
+        return Ok(Lane::Memory);
     };
     // The sentinel is gc bookkeeping; its failure must not cost the answer.
     let _ = drawer.register();
@@ -561,12 +572,35 @@ fn open_lane(canonical: &Path, rebuild: bool) -> Lane {
         SqlStore::open(&file)
     };
     match opened {
-        Ok(store) => Lane::Cache(store),
+        Ok(store) => Ok(Lane::Cache(store)),
+        Err(e) if rebuild => Err(rebuild_blocked(&file, canonical, &e)),
         Err(e) => {
             eprintln!("mrd sql: cache file unavailable ({e}); answering from :memory:");
-            Lane::Memory
+            Ok(Lane::Memory)
         }
     }
+}
+
+/// The `--rebuild` refusal (exit 2): what did not happen, who is in the way,
+/// and the verb that WOULD rebuild. The wire carries no rebuild op, so the
+/// remedy is the daemon-entry drop the wire DOES carry (`mrd unregister`,
+/// admin op `unregister`), which takes the drawer with it — the next `mrd sql`
+/// cold-builds. `DuckDB`'s own lock message names the holding binary and PID,
+/// so it rides verbatim rather than being re-derived here.
+fn rebuild_blocked(file: &Path, workspace: &Path, e: &view::ViewError) -> Fail {
+    let file = file.display();
+    if e.is_held() {
+        return Fail::tool(format!(
+            "cannot rebuild {file}: the drawer is HELD by another process — nothing was rebuilt.\n  \
+             {e}\n  \
+             The resident daemon owns this drawer while it serves the workspace (lifecycle B).\n  \
+             To rebuild it, drop the daemon entry and the drawer, then query: \
+             mrd unregister {ws} && mrd sql --rebuild <query>\n  \
+             (or stop that process and re-run this command).",
+            ws = workspace.display(),
+        ));
+    }
+    Fail::tool(format!("cannot rebuild {file}: {e} — nothing was rebuilt."))
 }
 
 /// Bring `store` to the loaded corpus state (one append transaction, or a
