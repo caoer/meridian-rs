@@ -699,6 +699,10 @@ pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
 /// handshake from a foreign build is `Skew` (0025: refuse, never degrade).
 fn dial_links(socket: &Path, workspace: &Path, path: Option<&str>) -> io::Result<DialedLinks> {
     let stream = UnixStream::connect(socket)?;
+    // Before the clone — the timeouts are socket-level, so both halves inherit
+    // them. Without this the `hello` below waits on a wedged daemon forever and
+    // the caller never reaches its degrade (card `registry-client-read-timeout-absent`).
+    registry::wedge::bind(&stream, registry::wedge::WEDGE_CAP)?;
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
 
@@ -710,7 +714,7 @@ fn dial_links(socket: &Path, workspace: &Path, path: Option<&str>) -> io::Result
         "contract": "v3",
         "workspace": workspace.to_string_lossy(),
     });
-    let greeted = call(&mut writer, &mut reader, &hello)?;
+    let greeted = call(&mut writer, &mut reader, socket, &hello)?;
     if greeted.get("ok").and_then(Value::as_bool) != Some(true) {
         return Ok(DialedLinks::Unusable);
     }
@@ -723,7 +727,7 @@ fn dial_links(socket: &Path, workspace: &Path, path: Option<&str>) -> io::Result
     if let Some(p) = path {
         links["path"] = json!(p);
     }
-    let response = call(&mut writer, &mut reader, &links)?;
+    let response = call(&mut writer, &mut reader, socket, &links)?;
     if response.get("ok").and_then(Value::as_bool) == Some(true) {
         match response.get("body") {
             Some(body) => Ok(DialedLinks::Served(body.clone())),
@@ -962,15 +966,41 @@ fn extras(error: &ErrorBody) -> String {
     out
 }
 
-/// One NDJSON round trip on an open connection: write the request line, read one response line,
-/// parse it. Errors The write fails, the daemon closes without a response, or the response line
-/// is not valid JSON.
+/// Write one NDJSON request line. The half both round trips share; the halves
+/// differ only in what bounds the READ.
+fn write_frame(writer: &mut UnixStream, request: &Value) -> io::Result<()> {
+    let mut line = serde_json::to_string(request).map_err(io::Error::other)?;
+    line.push('\n');
+    writer.write_all(line.as_bytes())?;
+    writer.flush()
+}
+
+/// One NDJSON round trip on an open connection, **under the wedge discipline**
+/// ([`registry::wedge`]): write the request line, read one response line with a
+/// tick that probes the daemon's liveness, parse it.
+///
+/// `socket` is the daemon's own path — the probe dials it a second time, which
+/// is what lets a slow answer be told from a dead one.
+///
+/// Errors The write fails, the daemon closes without a response, the daemon
+/// died mid-request or is wedged ([`registry::wedge::read_line`]), or the
+/// response line is not valid JSON.
 pub(crate) fn call(
     writer: &mut UnixStream,
     reader: &mut BufReader<UnixStream>,
+    socket: &Path,
     request: &Value,
 ) -> io::Result<Value> {
-    let response = call_line(writer, reader, request)?;
+    write_frame(writer, request)?;
+    let mut response = String::new();
+    let read =
+        registry::wedge::read_line(reader, socket, registry::wedge::WEDGE_CAP, &mut response)?;
+    if read == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "daemon closed the connection without a response",
+        ));
+    }
     serde_json::from_str(&response).map_err(io::Error::other)
 }
 
@@ -979,15 +1009,20 @@ pub(crate) fn call(
 /// a parse-then-reserialize would sort the object's keys and normalize its
 /// whitespace — a second commit-fact shape. Callers that only read fields use
 /// [`call`]. Errors The write fails, or the daemon closes without a response.
+///
+/// **Unbounded on purpose, and only because its one caller bounds itself.**
+/// [`crate::script::wire_host::SocketDoor`] owns the script/write door: it sets
+/// the entry's wall clock on the socket at connect and runs its own tick loop
+/// (`call_until_answered`), where a tick prints a notice instead of drawing a
+/// verdict — a write verb past the wire has no honest answer but the daemon's.
+/// Reaching this function from a NEW caller reintroduces the park-forever bug;
+/// use [`call`].
 pub(crate) fn call_line(
     writer: &mut UnixStream,
     reader: &mut BufReader<UnixStream>,
     request: &Value,
 ) -> io::Result<String> {
-    let mut line = serde_json::to_string(request).map_err(io::Error::other)?;
-    line.push('\n');
-    writer.write_all(line.as_bytes())?;
-    writer.flush()?;
+    write_frame(writer, request)?;
 
     let mut response = String::new();
     if reader.read_line(&mut response)? == 0 {

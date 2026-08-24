@@ -42,9 +42,13 @@ use serde_json::{Value, json};
 pub const GREET_CAP: Duration = Duration::from_mins(1);
 
 /// How long a liveness probe may take before we call the daemon unreachable.
-/// Its own bound, because [`registry::Client::request`] sets no read timeout:
-/// probing a wedged daemon through that would park this process forever, which
-/// is a worse failure than the one being fixed.
+///
+/// Its own bound rather than [`registry::Client`]'s. `Client` is no longer
+/// unbounded — every read it does now carries the wedge discipline
+/// ([`registry::wedge`]) — but that discipline is built ON a liveness probe, so
+/// probing through `Client` would re-enter it and ask the wedged question
+/// twice. This door also owns a script entry's own wall clock and its own
+/// [`DialFailure`] arms, which `Client` knows nothing about.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Printed once when the daemon has held the handshake past the socket's read
@@ -148,9 +152,12 @@ impl From<DialFailure> for io::Error {
 /// handshake tick asks the daemon whether it is alive instead of assuming from
 /// a constant that it is not.
 ///
-/// Deliberately NOT [`registry::Client::ping`] — that call sets no read
-/// timeout, so probing a wedged daemon through it would park this process
-/// forever, which is a worse failure than the one being fixed.
+/// Deliberately NOT [`registry::Client::ping`]. That call is bounded now (by
+/// `registry::wedge::PROBE_TIMEOUT`), so it would no longer park — but it
+/// reaches the daemon through `registry::wedge::read_line`, whose every tick
+/// runs a liveness probe of its own. Probing with it would recurse into the
+/// discipline this probe exists to inform. `registry::wedge::answers_ping` is
+/// hand-rolled for the same reason; the two are kept equal BY HAND.
 fn daemon_answers_ping(socket: &Path) -> bool {
     use std::io::{BufRead as _, Write as _};
 
