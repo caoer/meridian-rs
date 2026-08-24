@@ -2326,9 +2326,16 @@ mod spill_tests {
             taught.contains("OUTSIDE your statement's transaction"),
             "the refusal teaches WHY: {taught}"
         );
+        // F2: the sentence must describe the GATE, never what this process
+        // happened to load — a capability claim built from a constant is false
+        // on any host that does not have the extension.
         assert!(
-            taught.contains("LOAD fts and LOAD vss still work"),
+            taught.contains("core extensions are not gated"),
             "and what is NOT taken away: {taught}"
+        );
+        assert!(
+            !taught.contains("Loaded at open"),
+            "no capability claim the process cannot back: {taught}"
         );
     }
 
