@@ -441,7 +441,7 @@ const SPILL_BUDGET: &str = "8GiB";
 ///
 /// **Every caller-SQL door takes it, with no exemptions** — [`SqlStore::open`]
 /// and [`SqlStore::recreate`] (so `SqlStore::query`'s `try_clone` inherits it
-/// by GLOBAL_ONLY scope), `mrd sql`'s `:memory:` lane, and
+/// by `GLOBAL_ONLY` scope), `mrd sql`'s `:memory:` lane, and
 /// `registry::mw_sql`'s middleware projection. The last two have no drawer to
 /// leak into; they are gated anyway, because a door that admits third-party
 /// extension code while its siblings refuse it would make the DOOR, not the
