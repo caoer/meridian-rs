@@ -495,6 +495,86 @@ the ruling calls for would refuse — a grammar in which nothing legal can be wr
 integrity — is parsed strictly, so a malformed *declaration* still fails loud. The opacity is of the
 payload's meaning, never of the block's shape.
 
+## 6a. The `^config` value block — user data, address-reached (v1-additive)
+
+**Ruling (ZT, verbatim):** *"make a new command. mrd config get -> where it is finding the
+^config in the MERIDIAN file. the block is a starlark block. with config function return the config."*
+and *"the config can be anything, we don't limit it."*
+
+`MERIDIAN.md` carries, beside the mount table, whatever machine-local values this machine's tools need.
+The surface is **one block, addressed by the block id `^config`**, whose fence language is `starlark`
+and whose `config()` function returns the value:
+
+The block, written out (fence lines shown as literal text so this example is inert here):
+
+    ```starlark
+    def config():
+        return {"repos_root": "/Users/Shared/projects/coscene-io"}
+    ```
+    ^config
+
+The `^config` line sits on its own line directly below the closing fence — the Obsidian own-line form,
+which the model's host widening (`anchor_host_span`) attaches to the fence itself, so the id keys the
+CODE BLOCK and not an empty paragraph.
+
+| Fact | Law |
+|---|---|
+| Address | the block id `^config` — `Ref::anchor("config")`, the mint-plane lookup (`crates/model/src/lib.rs`, `resolve`) |
+| Fence language | `starlark`, classified by `run::fence::classify` — the same first-token rule §3.1 states |
+| Entry | a zero-argument `config()`; its return value IS the config |
+| Return type | **anything the sandbox can serialize** — mapping, list, string, number, bool, `None`. The engine declares no schema, no key whitelist, no required key |
+| Reader | `mrd config get [KEY]` — bare prints the whole returned value, `KEY` prints one top-level member |
+| Evaluation | the effect kernel's sealed evaluator with the standard globals ONLY — no effect constructors, `load` disabled, `EvalLimits::default()` bounds (`effects::eval_value`). A config block reaches no file, no network, no process |
+
+### 6a.1 Why this does not touch the strict parse
+
+§3 scopes the strict parse to the frontmatter plus the `meridian-*` fenced blocks, and calls every
+other byte prose. **A ```` ```starlark ```` block is prose to that scan and stays prose** — the mount
+parser never sees it, so a broken `config()` can never cost this machine its mount table, and
+`mrd config` binds roots exactly as it did before the block existed.
+
+That is the difference this section turns on: **the mount plane is SCANNED, the config block is
+ADDRESSED.** Nothing hunts for a starlark block; one verb resolves one block id on demand. So the
+namespace argument of §3.1 does not apply — `^config` is not a third engine block-language, it is a
+page address, and the ordinary anchor grammar (`[A-Za-z0-9-]`, `syntax::is_block_id`) already admits
+it.
+
+### 6a.2 The refusal ladder — every rung is loud, none is empty-success
+
+`mrd config get` is a read that either prints a value or refuses with teaching. Each rung names what is
+wrong, where, and the fix; none of them prints an empty line and exits 0 (schema §8's posture, this
+plane's own words):
+
+| Condition | Refusal |
+|---|---|
+| the chain resolved no file (state A) | there is no config to get; name the path and the block to add |
+| no block carries `^config` | name the file and show the block's shape |
+| two blocks carry `^config` | ambiguous — the mint plane never picks; name the count |
+| `^config` does not key a fenced code block | name what it keyed |
+| the fence is not `starlark` | name the language found and the one required |
+| the source will not parse, or faults, or exhausts the budget | the evaluator's own message, verbatim |
+| no `config()` is defined | name the entry the block owes |
+| `config()` returned something unserializable (a function, a lambda) | name it — the config is data |
+| a `KEY` was asked of a non-mapping | name the type returned |
+| the `KEY` is absent | name the keys that ARE there |
+
+**The mount table's state is not a rung.** `mrd config get` reads the config block; it never calls
+`bind()`, so an unbound or missing root refuses `mrd config` (exit 1) and leaves `mrd config get`
+answering normally. The two verbs answer about two different things and are deliberately not coupled.
+
+### 6a.3 What is deliberately NOT specified
+
+- **No key schema.** The ruling is explicit that the config is unlimited. A future engine-read key
+  inside `config()` would reopen §4's misspelled-optional-key hazard and must state how it closes it.
+- **One block, not many.** A second `^config` is ambiguous, not a merge: the mint plane never silently
+  picks, and merging two blocks would need a precedence rule nobody has ruled on.
+- **Top-level `KEY` only.** `mrd config get a.b` addresses no nested member in v1 — a path grammar is a
+  second address language, and this plane already has one (the anchor). Bare `mrd config get` prints
+  the whole value, which is what a nested reader wants a pipe for.
+- **No wire op.** The config block is read by the CLI in the calling process, from the file that
+  process's own chain resolves — the same honesty `mrd config` states about `answered by: this process`.
+  A daemon serving its own `MERIDIAN.md` would be answering about a different machine's config.
+
 ## 7. The self-hosting rev — config is content
 
 ### 7.1 The rev
