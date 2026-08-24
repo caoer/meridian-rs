@@ -2393,12 +2393,10 @@ mod spill_tests {
                      FROM duckdb_tables() ORDER BY 1",
                 )
                 .expect("prepare");
-            let rows = stmt
-                .query_map([], |r| r.get::<_, String>(0))
+            stmt.query_map([], |r| r.get::<_, String>(0))
                 .expect("query")
                 .collect::<Result<Vec<_>, _>>()
-                .expect("rows");
-            rows
+                .expect("rows")
         };
 
         let before = catalog(&store);
