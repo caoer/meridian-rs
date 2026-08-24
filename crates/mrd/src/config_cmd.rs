@@ -13,11 +13,20 @@
 //! binding decided, and prints the canonical path beside the declared one whenever the two
 //! differ: that difference is the symlink the mount law exists to collapse.
 //!
-//! It also names WHOSE resolution this is. Two processes answer mount-table questions through
-//! the same `config::Env::from_process()` call — this CLI, and a serving daemon at
-//! `crates/registry/src/mounts.rs` — each from its own environment, so the table published here
-//! can differ from the one the engine binds. A client `MERIDIAN_CONFIG` never reaches that
-//! daemon. Ruled (a) 2026-08-23, card `serving-daemon-holds-mount-table-ignores-meridian-config`.
+//! It also names WHOSE resolution this is. Both processes read their OWN environment through
+//! `config::Env::from_process()` — this CLI here, and a serving daemon on every mount-addressed
+//! path, not only the `mounts` op:
+//!
+//! | daemon site | serves |
+//! |---|---|
+//! | `registry/src/mounts.rs::serve` | the `mounts` op |
+//! | `wire-serve/src/mount_corpus.rs::load_mounts_where` | `walk` (`registry/src/walk_op.rs`), `sql` (`registry/src/sql_op.rs`) |
+//! | `wire-serve/src/positions.rs::machine_mounts` | cross-root link/position translation on the read plane |
+//! | `wire-serve/src/write.rs::machine_mount_table` | the pin door and the write plane |
+//!
+//! So the table published here can differ from the one the engine binds on ANY of them, not
+//! just on discovery. A client `MERIDIAN_CONFIG` never reaches that daemon. Ruled (a)
+//! 2026-08-23, card `serving-daemon-holds-mount-table-ignores-meridian-config`.
 //!
 //! `mrd read` cannot substitute: it routes through the render face, which elides every
 //! `meridian-*` block (`ToonRenderer::with_meridian_elision`) and leaves no marker, so a reader
@@ -36,15 +45,13 @@ pub(crate) fn run(format: Format) -> Result<(), Fail> {
     let env = config::Env::from_process();
     // The origin is read from the same env the resolution is: the chain's answer to "which rung"
     // is what the resolved path cannot say for itself when both rungs name one file.
-    let rung = config::rung(&env).map_err(|e| Fail::findings(e.to_string()))?;
+    let rung = config::rung(&env).map_err(refused)?;
     // The refusal rides verbatim — it already names what is broken, where, that nothing loaded,
     // and the fix.
-    let resolution = config::resolve(&env).map_err(|e| Fail::findings(e.to_string()))?;
+    let resolution = config::resolve(&env).map_err(refused)?;
     // A bind refusal rides verbatim for the same reason a parse refusal does:
     // it already names the mount, the line, that nothing loaded, and the fix.
-    let table = resolution
-        .bind()
-        .map_err(|e| Fail::findings(e.to_string()))?;
+    let table = resolution.bind().map_err(refused)?;
 
     // The bridge check never changes the exit code: a divergence between an env var and the file
     // is a note, because failing loud here would brick the CLI on every machine that exports it.
@@ -78,6 +85,25 @@ pub(crate) fn run(format: Format) -> Result<(), Fail> {
         table.mounts().len(),
         refusing.join(", ")
     )))
+}
+
+/// A bootstrap-chain refusal, carrying the scope the refusal path would otherwise lose.
+///
+/// The chain's words ride verbatim first — they already name what is broken, where, that
+/// nothing loaded, and the fix. What they cannot say is WHOSE chain refused. Until this
+/// existed the refusal path was silent on that, so an operator reading it concluded the engine
+/// was equally broken, when a serving daemon resolving its own environment may be binding a
+/// table perfectly well (and the converse: this CLI going green proves nothing about that
+/// daemon — the success line already says so).
+///
+/// On **stderr**, with the diagnostic: stdout stays empty on a refusal, which is what "a
+/// refused config publishes NO mount table" means and what `config_e2e.rs` and `mount_e2e.rs`
+/// pin.
+fn refused(e: impl std::fmt::Display) -> Fail {
+    Fail::findings(format!(
+        "{e}\nanswered by: {ANSWERED_BY}, from its own environment — {DAEMON_SCOPE}; this \
+         refusal is THIS process's chain and says nothing about the table a daemon binds"
+    ))
 }
 
 fn state(resolution: &config::Resolution) -> &'static str {
@@ -145,16 +171,26 @@ const ABSENT_LEG: &str = "(none)";
 
 /// Which process resolved the chain that produced this output.
 ///
-/// Two processes answer mount-table questions through the *same* call —
-/// `config::Env::from_process()` here at [`run`], and the daemon's `mounts` op at
-/// `crates/registry/src/mounts.rs` — each reading its own environment. The resolved path cannot
-/// say which one answered, so this does. One spelling across both faces: the human line quotes
-/// it, `--json` carries it at `answered_by`.
+/// Both processes read their own environment through the *same* call —
+/// `config::Env::from_process()` here at [`run`], and a serving daemon at the sites the module
+/// doc tables. The resolved path cannot say which one answered, so this does. One spelling
+/// across both faces: the human line quotes it, `--json` carries it at `answered_by`.
 ///
 /// Note what is NOT frozen in the daemon: the file's *contents*. It re-derives per call on a
 /// blake3 of the bytes (`docs/wire-contract.md` § A.5), so this line is about *which file*,
 /// never about staleness.
 const ANSWERED_BY: &str = "this process";
+
+/// How wide the other answer is — the half a reader acts on.
+///
+/// Naming only the `mounts` op (as this line first shipped) teaches that DISCOVERY diverges and
+/// nothing else, so a reader concludes a wire `walk` or `sql` resolves against the table
+/// printed here. It does not: those paths call
+/// `wire-serve::mount_corpus::load_mounts_where`, which reads the daemon's environment like
+/// every other mount-addressed path (module doc § table). One spelling, three faces — the
+/// success line, the refusal ([`refused`]), and `docs/status.md`.
+const DAEMON_SCOPE: &str = "a serving daemon reads ITS OWN environment on every mount-addressed \
+                            path (`mounts`, `walk`, `sql`, cross-root read and write)";
 
 fn render_human(
     resolution: &config::Resolution,
@@ -189,17 +225,18 @@ fn render_human(
         out.push_str("no config file — single-root behaviour, unchanged\n");
     }
 
-    // WHOSE answer this is. Two processes resolve the same chain through the same call
-    // (`config::Env::from_process()`): this CLI at `config_cmd.rs`, and a serving daemon at
-    // `registry/src/mounts.rs` — each from its OWN environment. So a table published here can
-    // differ from the one the engine binds, and until this line existed nothing in either
+    // WHOSE answer this is, and HOW WIDE the divergence is. Both processes resolve the same
+    // chain through the same call (`config::Env::from_process()`): this CLI at
+    // `config_cmd.rs`, and a serving daemon at every mount-addressed site the module doc
+    // tables — each from its OWN environment. So a table published here can differ from the
+    // one the engine binds on any of them, and until this line existed nothing in either
     // output said which process answered. Printed unconditionally, because the divergence is
     // not limited to the override rung: a daemon started under a different `$HOME` resolves a
     // different rung-2 file with no variable set anywhere.
     let _ = writeln!(
         out,
-        "answered by: {ANSWERED_BY}, from its own environment — a serving daemon answers the \
-         `mounts` op from ITS environment, so a wire client can be served a different table"
+        "answered by: {ANSWERED_BY}, from its own environment — {DAEMON_SCOPE}, so a wire \
+         client can be served a different table"
     );
     if matches!(rung, config::Rung::Override) {
         // Only on the override rung, because this is the case where an operator has

@@ -342,13 +342,19 @@ mrd config the MERIDIAN.md config plane: resolve the bootstrap
  state, origin, rev/fingerprint, the BOUND mount table, and
  declared tools — this verb PUBLISHES the mount table.
  It resolves in THIS process from THIS process's env, and
- says so ("answered by: this process"). A serving daemon
- answers the `mounts` op from ITS OWN env, so a wire client
- can be served a different table; MERIDIAN_CONFIG set for
- this CLI never reaches that daemon. What the daemon is NOT
- frozen on is the file's CONTENTS — it re-derives per call
- on a blake3 of the bytes (wire-contract § A.5), so editing
- the table the daemon already reads rebinds with no restart
+ says so on BOTH faces: the human line "answered by: this
+ process", `--json` at the `answered_by` key. A serving
+ daemon reads ITS OWN env on EVERY mount-addressed path —
+ `mounts`, `walk`, `sql`, cross-root read and write — so a
+ wire client can be served a different table on any of
+ them, not just on discovery; MERIDIAN_CONFIG set for this
+ CLI never reaches that daemon. The refusal path says the
+ same on stderr: a refused `mrd config` is THIS process's
+ chain and says nothing about the table a daemon binds.
+ What the daemon is NOT frozen on is the file's CONTENTS —
+ it re-derives per call on a blake3 of the bytes
+ (wire-contract § A.5), so editing the table the daemon
+ already reads rebinds with no restart
 mrd check [--core] [--staged] [--commit-gate [--require-pins]] [--json]
  the pure READ validity verb: claim drift + the pin
  plane (pin verdicts + blob anchoring); writes nothing,

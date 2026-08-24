@@ -307,6 +307,19 @@ fn a_malformed_config_refuses_on_exit_one_and_publishes_nothing() {
         "a refused config publishes NO mount table: {}",
         stdout(&out)
     );
+
+    // The refusal path carries the SAME scope the success line does. It used to be silent on
+    // it, and a bare refusal reads as "the engine is broken" — false whenever a serving daemon
+    // resolves a different environment. On stderr, so the assertion above still holds.
+    assert!(
+        err.contains("answered by: this process, from its own environment"),
+        "the refusal names WHOSE chain refused: {err}"
+    );
+    assert!(
+        err.contains("says nothing about the table a daemon binds"),
+        "and what the refusal does NOT prove — a daemon under another environment may be \
+         binding a table perfectly well: {err}"
+    );
 }
 
 /// State C: `MERIDIAN_CONFIG` naming a path that is not a readable regular file refuses — it
@@ -572,12 +585,17 @@ fn the_json_face_carries_the_bridge_and_nulls_the_mount_on_divergence() {
     assert!(stdout(&human).contains("CCC_LLM_WIKI_REPOS_ROOT  diverges"));
 }
 
-/// The verb names WHICH PROCESS resolved the chain, and warns only where the operator has
-/// re-pointed it. Two processes answer mount-table questions through the same
-/// `config::Env::from_process()` call — this CLI, and the daemon's `mounts` op
-/// (`crates/registry/src/mounts.rs`) — each from its own environment, so a table published here
-/// can differ from the one the engine binds and nothing used to say so. Ruled (a) 2026-08-23,
-/// card `serving-daemon-holds-mount-table-ignores-meridian-config`.
+/// The verb names WHICH PROCESS resolved the chain and HOW WIDE the divergence is, and warns
+/// only where the operator has re-pointed it. Both processes read their own environment through
+/// the same `config::Env::from_process()` call — this CLI, and a serving daemon on every
+/// mount-addressed path: `registry/src/mounts.rs` (the `mounts` op),
+/// `wire-serve/src/mount_corpus.rs::load_mounts_where` (walk via `registry/src/walk_op.rs`, sql
+/// via `registry/src/sql_op.rs`), `wire-serve/src/positions.rs::machine_mounts` (cross-root read
+/// translation) and `wire-serve/src/write.rs::machine_mount_table` (the pin and write plane). So
+/// a table published here can differ from the one the engine binds on ANY of them, and nothing
+/// used to say so. Ruled (a) 2026-08-23, card
+/// `serving-daemon-holds-mount-table-ignores-meridian-config`; the scope half is the PR-207
+/// follow-up, card `config-answered-by-scope-phrase-followups`.
 ///
 /// The line is UNCONDITIONAL by design, and this test is what stops it being narrowed back to
 /// the override rung: a daemon started under a different `$HOME` resolves a different rung-2
@@ -607,22 +625,23 @@ fn the_verb_names_which_process_answered_and_warns_only_on_the_override_rung() {
             "{label} names the resolving PROCESS, not only the rung: {text}"
         );
         assert!(
-            text.contains("a serving daemon answers the `mounts` op from ITS environment"),
-            "{label} says where the other answer comes from, or the first half teaches nothing: \
-             {text}"
+            text.contains(
+                "a serving daemon reads ITS OWN environment on every mount-addressed path \
+                 (`mounts`, `walk`, `sql`, cross-root read and write)"
+            ),
+            "{label} says where the other answer comes from AND how wide it is — naming only \
+             the `mounts` op teaches that DISCOVERY diverges and nothing else, so a reader \
+             concludes a wire walk or sql resolves against the table printed here: {text}"
         );
     }
 
     // ── the warning is the override rung ONLY ───────────────────────────────
-    let warning = "is read here and never reaches a serving daemon";
+    // The variable is IN the probe: a warning that does not name it cannot be acted on, and
+    // asserting the name separately was the same predicate twice.
+    let warning = "MERIDIAN_CONFIG is read here and never reaches a serving daemon";
     assert!(
         stdout(&stated).contains(warning),
-        "the override rung warns that the variable stops at this process: {}",
-        stdout(&stated)
-    );
-    assert!(
-        stdout(&stated).contains("MERIDIAN_CONFIG is read here"),
-        "the warning NAMES the variable — a warning that does not name it cannot be acted on: {}",
+        "the override rung warns, by name, that the variable stops at this process: {}",
         stdout(&stated)
     );
     assert!(
