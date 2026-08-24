@@ -408,9 +408,25 @@ const SPILL_BUDGET: &str = "8GiB";
 ///   not autoload (a bare `SELECT quack('hello')` answered `Did you mean
 ///   "quarter"?` with `quack` installed and both autoload settings on), and
 ///   `CREATE PROPERTY GRAPH` with no prior `LOAD` is a parser error.
-/// - The `SET` is one-way: `DuckDB` refuses the loosening spelling with
+/// - The `SET` is one-way **by code, not by observation**: at the vendored
+///   v1.5.4, `AllowCommunityExtensionsSetting::Scope =
+///   SettingScopeTarget::GLOBAL_ONLY` (`settings.hpp:144-153`, so it is
+///   DBConfig-level and survives every `try_clone`), and its `OnSet` throws
 ///   `Cannot change allow_community_extensions setting while database is
-///   running`, so a caller cannot re-open what it found shut.
+///   running` for any `true` input once `info.db` is set
+///   (`custom_settings.cpp:153-157`). Tightening at runtime is allowed;
+///   loosening is not.
+/// - **The gate's precondition holds by the same mechanism.** It bites inside
+///   `extension_load.cpp:482-497`, which only runs while
+///   `allow_unsigned_extensions` is false — and that setting is likewise
+///   `GLOBAL_ONLY`, defaults false, and refuses a runtime `true`
+///   (`settings.hpp:198-207`, `custom_settings.cpp:197-201`). We never set it,
+///   so no caller can unlock the branch this gate lives in.
+/// - The knob touches nothing else: its `OnSet` is those four lines. Contrast
+///   `EnableExternalAccessSetting::OnSet` (`custom_settings.cpp:744-767`),
+///   which whitelists the temp dir as it closes and therefore FREEZES
+///   `temp_directory` — the ordering coupling an earlier draft of this gate
+///   introduced, and which this one simply does not have.
 ///
 /// This is a door, not a sandbox: one execution path for every caller, no
 /// per-caller profile, external access untouched, and the configuration NOT
@@ -577,12 +593,13 @@ fn teach(error: &str) -> String {
     {
         return format!(
             "{error}\nThat is the community-extension gate, not the signature \
-             knob: this lane runs no third-party extension code, because an \
-             extension loads onto the shared engine instance OUTSIDE your \
-             statement's transaction and is then free to write the drawer that \
-             every other caller shares (duckpgq's CREATE PROPERTY GRAPH wrote \
-             sql.main.__duckpgq_internal durably). CORE extensions are \
-             unaffected — LOAD fts and LOAD vss still work."
+             knob: this lane runs no COMMUNITY extension, because an extension \
+             loads onto the shared engine instance OUTSIDE your statement's \
+             transaction and is then free to write the drawer that every other \
+             caller shares (duckpgq's CREATE PROPERTY GRAPH wrote \
+             sql.main.__duckpgq_internal durably). The gate is on the community \
+             flag alone: core extensions are not gated, external files are not \
+             gated, and your own SET still works."
         );
     }
 
@@ -2243,6 +2260,23 @@ mod spill_tests {
             "false",
             "the door must be shut at open, not at first query"
         );
+        // The gate lives inside DuckDB's signature branch
+        // (extension_load.cpp:482-497), which only runs while this is false.
+        // If a future change ever turns it on at open, the gate above becomes
+        // decorative and nothing else would say so.
+        assert_eq!(
+            setting(&store, "allow_unsigned_extensions"),
+            "false",
+            "the gate's precondition: unsigned loading must stay off, or the \
+             signature branch the gate lives in never runs"
+        );
+        // F4's ordering coupling, inverted into a guard: the broad knob
+        // (enable_external_access) freezes temp_directory as it closes, this
+        // one does not. If someone swaps the mechanism back, this fails.
+        store
+            .connection()
+            .execute_batch("SET temp_directory='/tmp/mrd-gate-probe';")
+            .expect("the gate must not freeze temp_directory (card sql-spill-config-lockout)");
     }
 
     /// The gate is one-way: a caller cannot re-open the door it found shut.
@@ -2330,6 +2364,56 @@ mod spill_tests {
             )
             .expect("count");
         assert_eq!(leaked, 0, "the drawer holds no extension side table");
+    }
+
+    /// F3, by mechanism rather than by name. An allow-list test can only catch
+    /// the extensions someone remembered to list; THIS catches whatever the
+    /// next duckpgq turns out to be, because it asserts the invariant the card
+    /// is actually about: **a caller query leaves the drawer's catalog exactly
+    /// as it found it.** `sql.main.__duckpgq_internal` appearing is precisely
+    /// what this fails on.
+    #[test]
+    fn a_caller_query_leaves_the_drawer_catalog_identical() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let catalog = |s: &SqlStore| -> Vec<String> {
+            let mut stmt = s
+                .connection()
+                .prepare(
+                    "SELECT database_name || '.' || schema_name || '.' || table_name \
+                     FROM duckdb_tables() ORDER BY 1",
+                )
+                .expect("prepare");
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .expect("query")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("rows");
+            rows
+        };
+
+        let before = catalog(&store);
+        assert!(!before.is_empty(), "the fixture built a catalog to compare");
+
+        // Everything a caller can throw at it, in one batch: the leaking
+        // command's shape, ordinary DDL, DML, and the extension door.
+        for statement in [
+            "LOAD duckpgq",
+            "CREATE OR REPLACE TABLE n AS SELECT path AS id FROM doc",
+            "CREATE SCHEMA IF NOT EXISTS sneaky",
+            "UPDATE hist.doc SET bytes = 0",
+            "SELECT count(*) FROM doc",
+        ] {
+            let _ = store.query(statement).expect("lane");
+        }
+
+        assert_eq!(
+            before,
+            catalog(&store),
+            "a caller query changed the drawer's catalog — that is the whole defect"
+        );
     }
 
     /// The gate must NOT reach past third-party extension code. The NO-SANDBOX
