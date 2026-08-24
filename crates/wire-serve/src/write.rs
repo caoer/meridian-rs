@@ -970,7 +970,24 @@ fn armed_set_members(mw: &MwEmitted, delta: &Delta) -> Vec<wire::ArmedSetMember>
 /// disagree about what is armed.
 #[must_use]
 pub fn middleware_rows(root: &fs::WorkspaceRoot, path: &str) -> Vec<policy::ArmedRule> {
-    let law = crate::armed_disk::resolve_at(root, path);
+    middleware_rows_of(&crate::armed_disk::resolve_at(root, path), path)
+}
+
+/// [`middleware_rows`] over a law the caller ALREADY resolved — the row
+/// selection alone, with the disk read lifted out.
+///
+/// Split out for the run plane, which mounts two armed legs over ONE apply
+/// (middleware at 3b, CHECK at 6c) and must judge both against ONE snapshot:
+/// `run.lock` does not exclude wire writers, so two resolves from disk let a
+/// concurrent splice rewriting `meridian/armed-rules.md` between them have the
+/// two legs of one write evaluating DIFFERENT law. The run plane resolves once
+/// and feeds that snapshot here.
+///
+/// The selection itself stays in this module on purpose — WHICH rows fire at a
+/// path is one law, and a second spelling in `run` is how the two doors would
+/// come to disagree about what is armed. Only the READ moved.
+#[must_use]
+pub fn middleware_rows_of(law: &policy::ArmedLaw, path: &str) -> Vec<policy::ArmedRule> {
     let mut rows: Vec<policy::ArmedRule> = law
         .rules()
         .iter()
