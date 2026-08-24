@@ -45,6 +45,7 @@ mod state;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 mod walk_op;
+pub mod wedge;
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

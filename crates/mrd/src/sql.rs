@@ -40,7 +40,7 @@
 //! post-result fold sets `stale = true|false`; a SQL error yields no rows to
 //! certify, so it reports `live_source=none, stale=null` (`state=UNVERIFIED`).
 
-use std::io::{BufRead as _, BufReader, Write as _};
+use std::io::{BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
@@ -363,10 +363,16 @@ fn rebuild_only(lane: &mut Lane, loaded: &Loaded) -> Result<(), Fail> {
 // ladder rung 1: the resident daemon (§ A.11)
 // ---------------------------------------------------------------------------
 
-/// One NDJSON exchange on an open daemon stream.
+/// One NDJSON exchange on an open daemon stream, under the wedge discipline
+/// ([`registry::wedge`]): the read ticks and each tick probes `socket` for
+/// liveness, so a daemon that accepts the frame and never answers ends this
+/// call instead of parking the process (card
+/// `registry-client-read-timeout-absent`). `None` keeps its meaning — the
+/// caller falls down the ladder and answers locally.
 fn daemon_call(
     writer: &mut UnixStream,
     reader: &mut BufReader<UnixStream>,
+    socket: &Path,
     request: &Value,
 ) -> Option<Value> {
     let mut line = request.to_string();
@@ -374,7 +380,7 @@ fn daemon_call(
     writer.write_all(line.as_bytes()).ok()?;
     writer.flush().ok()?;
     let mut response = String::new();
-    reader.read_line(&mut response).ok()?;
+    registry::wedge::read_line(reader, socket, registry::wedge::WEDGE_CAP, &mut response).ok()?;
     serde_json::from_str(&response).ok()
 }
 
@@ -385,13 +391,17 @@ fn daemon_call(
 fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
     let query = args.query.as_deref()?;
     let client = registry::Client::from_default().ok()?;
-    let stream = UnixStream::connect(client.socket_path()).ok()?;
+    let socket = client.socket_path().to_owned();
+    let stream = UnixStream::connect(&socket).ok()?;
+    // Before the clone: socket-level, so both halves inherit the discipline.
+    registry::wedge::bind(&stream, registry::wedge::WEDGE_CAP).ok()?;
     let mut writer = stream.try_clone().ok()?;
     let mut reader = BufReader::new(stream);
 
     let hello = daemon_call(
         &mut writer,
         &mut reader,
+        &socket,
         &serde_json::json!({
             "op": "hello", "proto": 1, "contract": "v3",
             "workspace": workspace.to_str()?,
@@ -408,9 +418,9 @@ fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
     }
 
     let ask = serde_json::json!({"id": 1, "op": "sql", "query": query});
-    let mut frame = daemon_sql_frame(&daemon_call(&mut writer, &mut reader, &ask)?)?;
+    let mut frame = daemon_sql_frame(&daemon_call(&mut writer, &mut reader, &socket, &ask)?)?;
     if args.fresh && frame.state == QueryState::Stale {
-        frame = daemon_sql_frame(&daemon_call(&mut writer, &mut reader, &ask)?)?;
+        frame = daemon_sql_frame(&daemon_call(&mut writer, &mut reader, &socket, &ask)?)?;
         if frame.state == QueryState::Stale {
             frame.state = QueryState::Raced;
         }

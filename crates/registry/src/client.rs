@@ -5,13 +5,21 @@
 //! daemon listening) surfaces as an [`io::Error`] the caller turns into an
 //! ephemeral degrade — the daemon is an optimization, never a hard dependency
 //! (decision 0001 round 5).
+//!
+//! **The read is bounded** ([`crate::wedge`]). A daemon that accepts a frame
+//! and never answers it used to park the caller forever — a failure with no
+//! symptom and no remedy, and the reason two other clients in this repo refuse
+//! to use [`Client`] at all (`wire_host.rs:45` and `:151`). It now lands as an
+//! `io::Error` on the path that already handled one.
 
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::protocol::{Request, Response, WorkspaceEntry};
 use crate::server::default_socket_path;
+use crate::wedge;
 
 /// A handle to a daemon at a known socket path. Cheap to clone; holds no open
 /// connection between calls.
@@ -44,14 +52,29 @@ impl Client {
         &self.socket_path
     }
 
-    /// Send one request and read one response.
+    /// Send one request and read one response, under the wedge discipline
+    /// ([`crate::wedge`]): the read ticks, each tick asks the daemon whether it
+    /// is still alive, and [`wedge::WEDGE_CAP`] only catches a daemon that
+    /// answers pings forever and never answers this frame.
     ///
     /// # Errors
     ///
     /// Returns an error when the socket cannot be reached (no daemon), the
-    /// write fails, or the response is empty or unparseable.
+    /// write fails, the response is empty or unparseable, or the daemon died
+    /// mid-request / is wedged (see [`wedge::read_line`] for those two kinds
+    /// and why they are kept apart).
     pub fn request(&self, request: &Request) -> io::Result<Response> {
+        self.request_capped(request, wedge::WEDGE_CAP)
+    }
+
+    /// [`Self::request`] with an explicit wedge cap. Private because the cap is
+    /// a property of the QUESTION, not of the caller: a liveness probe that has
+    /// not been answered in a couple of seconds has already answered.
+    fn request_capped(&self, request: &Request, cap: Duration) -> io::Result<Response> {
         let stream = UnixStream::connect(&self.socket_path)?;
+        // Before the clone: the timeouts are socket-level, so both halves
+        // inherit them from this one call.
+        wedge::bind(&stream, cap)?;
         let mut writer = stream.try_clone()?;
         let mut line = serde_json::to_string(request).map_err(io::Error::other)?;
         line.push('\n');
@@ -60,7 +83,7 @@ impl Client {
 
         let mut reader = BufReader::new(stream);
         let mut response_line = String::new();
-        let read = reader.read_line(&mut response_line)?;
+        let read = wedge::read_line(&mut reader, &self.socket_path, cap, &mut response_line)?;
         if read == 0 || response_line.trim().is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -72,13 +95,21 @@ impl Client {
 
     /// Whether the daemon answers a ping.
     ///
+    /// Bounded by [`wedge::PROBE_TIMEOUT`], not the wedge cap: this is the
+    /// liveness question itself, and [`crate::server`]'s spawn-readiness poll
+    /// (`engine::ensure_daemon`, 5 s deadline) depends on a fast negative. A
+    /// ping that spent the full cap would blow that deadline twelve times over.
+    ///
     /// # Errors
     ///
     /// Returns an error only when the request round-trip itself fails; a
     /// running daemon that answers anything other than [`Response::Pong`]
     /// yields `Ok(false)`.
     pub fn ping(&self) -> io::Result<bool> {
-        Ok(matches!(self.request(&Request::Ping)?, Response::Pong))
+        Ok(matches!(
+            self.request_capped(&Request::Ping, wedge::PROBE_TIMEOUT)?,
+            Response::Pong
+        ))
     }
 
     /// Resolve `cwd`: `Some(entry)` when it is inside a registered workspace,
@@ -143,4 +174,100 @@ fn unexpected(op: &str, response: &Response) -> io::Error {
         io::ErrorKind::InvalidData,
         format!("unexpected response to {op}: {response:?}"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::net::UnixListener;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Instant;
+
+    use super::{Client, Request, wedge};
+
+    /// **The whole point of the card.** A daemon that accepts the connection
+    /// and answers nothing used to park every caller of this client forever —
+    /// `mrd`, the MCP face, the daemon's own spawn-readiness poll. The failure
+    /// had no symptom: no error, no exit, no log line, just a process that
+    /// never returned.
+    ///
+    /// Measured here through the PUBLIC door, because that is what callers
+    /// hold. The listener also fails the liveness probe, so the verdict is
+    /// "died mid-request", and the elapsed lower bound proves the socket's own
+    /// tick is what ended the wait rather than something cheaper upstream.
+    #[test]
+    fn a_daemon_that_accepts_and_never_answers_does_not_park_the_client() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("daemon.sock");
+        let listener = UnixListener::bind(&sock).expect("bind");
+        let held = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            thread::sleep(wedge::TICK * 6);
+            drop(stream);
+        });
+
+        let (tx, rx) = mpsc::channel();
+        let client = Client::new(sock.clone());
+        thread::spawn(move || {
+            let started = Instant::now();
+            let outcome = client.request(&Request::List);
+            let _ = tx.send((outcome.is_err(), started.elapsed()));
+        });
+
+        let (refused, elapsed) = rx
+            .recv_timeout(wedge::TICK * 6)
+            .expect("request returned — a socket with no read timeout never would");
+        assert!(
+            refused,
+            "a daemon that answers nothing fails the round trip"
+        );
+        assert!(
+            elapsed >= wedge::TICK,
+            "the socket's own tick is what fired, not something faster: {elapsed:?}"
+        );
+        held.join().expect("the mute listener finishes");
+    }
+
+    /// `ping` carries the probe bound, not the wedge cap: it IS the liveness
+    /// question, and `engine::ensure_daemon` polls it against a 5 s deadline.
+    /// A ping inheriting `WEDGE_CAP` would blow that deadline twelvefold.
+    #[test]
+    fn ping_is_bounded_by_the_probe_timeout_not_the_wedge_cap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("daemon.sock");
+        let listener = UnixListener::bind(&sock).expect("bind");
+        let held = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            thread::sleep(wedge::TICK * 6);
+            drop(stream);
+        });
+
+        let (tx, rx) = mpsc::channel();
+        let client = Client::new(sock.clone());
+        thread::spawn(move || {
+            let _ = tx.send(client.ping().is_err());
+        });
+
+        assert!(
+            rx.recv_timeout(wedge::TICK * 6)
+                .expect("ping returned well inside the wedge cap"),
+            "an unanswering daemon does not pong"
+        );
+        held.join().expect("the mute listener finishes");
+    }
+
+    /// An absent socket still fails at `connect(2)` — instantly, and with the
+    /// kind callers already branch on. The discipline must not turn a cheap
+    /// negative into a wait.
+    #[test]
+    fn an_absent_daemon_still_fails_at_connect() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let client = Client::new(dir.path().join("nothing-here.sock"));
+        let started = Instant::now();
+        assert!(client.request(&Request::List).is_err());
+        assert!(
+            started.elapsed() < wedge::TICK,
+            "no daemon is a refused connect, not a timed-out read"
+        );
+    }
 }
