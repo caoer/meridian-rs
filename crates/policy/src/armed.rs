@@ -2031,6 +2031,77 @@ mod tests {
         assert_eq!(report_rev, red, "one rev law, two faces");
     }
 
+    /// **The per-page read budget, COUNTED rather than timed.** `mrd rules` is
+    /// hook-adjacent — its cost multiplies by every caller — and the drift join
+    /// visits every attested row, so the thing that must hold is one read per
+    /// DISTINCT pinned page, not one per row. Two rows at sibling arm roots
+    /// pinning the same page is the case that separates the two.
+    ///
+    /// A timing budget cannot gate this: the read is a small fraction of the
+    /// verb's total, so a 3× regression in it hides inside the headroom. This
+    /// counts.
+    #[test]
+    fn drift_reads_each_distinct_pinned_page_once() {
+        /// A page source that records every read it serves.
+        struct Counting {
+            inner: Workspace,
+            reads: std::cell::RefCell<Vec<String>>,
+        }
+        impl PageSource for Counting {
+            fn read(&self, page: &str) -> std::io::Result<String> {
+                self.reads.borrow_mut().push(page.to_owned());
+                self.inner.read(page)
+            }
+        }
+
+        // One page, armed at TWO arm roots — two ledger rows, one pinned page.
+        let ws = Workspace::default().hook("h.md", "h");
+        let index = ws.index();
+        let rev = ws.rev("h.md");
+        let mut artifact = arm(
+            &index,
+            &ArmRoot::workspace(),
+            [request("h", Mode::Off, &rev)],
+            &ws,
+            CheckLimits::default(),
+        )
+        .expect("the root arm");
+        artifact
+            .merge(
+                arm(
+                    &index,
+                    &ArmRoot::parse("sub").expect("a legal root"),
+                    [request("h", Mode::Armed, &rev)],
+                    &ws,
+                    CheckLimits::default(),
+                )
+                .expect("the inner arm"),
+            )
+            .expect("distinct row keys merge");
+        assert_eq!(artifact.rows().len(), 2, "two ledger rows");
+
+        let counting = Counting {
+            inner: ws,
+            reads: std::cell::RefCell::new(Vec::new()),
+        };
+        let drifted = counting_drift(&artifact, &counting);
+        assert_eq!(drifted.len(), 2, "both rows answered");
+
+        let reads = counting.reads.borrow();
+        assert_eq!(
+            reads.len(),
+            1,
+            "one read per DISTINCT pinned page, not one per row — served {reads:?}"
+        );
+        assert_eq!(reads[0], "h.md");
+    }
+
+    /// Indirection so the assertion above reads as one call while the borrow of
+    /// `reads` starts after it.
+    fn counting_drift(artifact: &ArmedArtifact, pages: &dyn PageSource) -> Vec<DriftRow> {
+        artifact.drift(pages)
+    }
+
     /// A pinned page that cannot be read is `Missing`, never `Clean` — an
     /// unanswerable join is not a clean answer.
     #[test]

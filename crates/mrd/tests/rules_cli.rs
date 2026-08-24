@@ -2185,12 +2185,19 @@ fn a_small_undecidable_population_is_named_in_full_with_no_remainder() {
 
 /// The CPU budget for one `mrd rules` over a `LEDGER_ROWS`-row ledger.
 ///
-/// Derived, not guessed: measured at this head on the mac lane at ~110 ms and on
-/// the nyc-2 lane at ~150 ms for the whole invocation (resolution included, of
-/// which the drift join is a small part). 1 500 ms carries ≳10× headroom over
-/// the measured value — the same ratio `check_multiroot_cpu.rs` chose — so it
-/// catches a shape change (a read per row per section would be ~3×, a snapshot
-/// of the whole domain ~20×) without failing on runner noise.
+/// MEASURED at `1e72a731`, both lanes, not guessed: **nyc-2 (the CI lane, Linux)
+/// CPU 12 ms / wall 12 ms; the mac lane CPU 303 ms / wall 308 ms** — the whole
+/// invocation, resolution included, of which the drift join is a small part.
+/// 1 500 ms is ~5× the mac number and ~125× the CI one.
+///
+/// ⚠️ **What this bound is and is not.** It is the PERF LAW's receipt — a
+/// regression that changes the SHAPE (a domain snapshot, an unbounded walk)
+/// moves it by an order of magnitude and trips here. It is a poor instrument for
+/// the specific claim "one read per DISTINCT pinned page", because that claim's
+/// cost is a small fraction of the total and 5× headroom would swallow a 3×
+/// regression in it. That claim has its own deterministic, load-independent
+/// gate: `policy::armed::tests::drift_reads_each_distinct_pinned_page_once`
+/// counts the reads instead of timing them.
 const DRIFT_CPU_BUDGET: std::time::Duration = std::time::Duration::from_millis(1_500);
 
 /// Wide enough that a per-row re-read is a multiple, small enough to stay a unit
@@ -2278,10 +2285,11 @@ fn the_drift_column_costs_one_read_per_pinned_page_not_one_per_row() {
     );
     assert!(
         cpu < DRIFT_CPU_BUDGET,
-        "the drift join reads each DISTINCT pinned page once for the whole \
-         answer. Over {LEDGER_ROWS} rows it burned {} ms of CPU against a {} ms \
-         budget — a per-row or per-section re-read is the shape that looks like \
-         this.",
+        "`mrd rules` over {LEDGER_ROWS} ledger rows burned {} ms of CPU against a \
+         {} ms budget. At this magnitude the cause is a SHAPE change — a domain \
+         snapshot, an unbounded walk — not the drift join's per-page read, which \
+         is counted directly by \
+         `policy::armed::tests::drift_reads_each_distinct_pinned_page_once`.",
         cpu.as_millis(),
         DRIFT_CPU_BUDGET.as_millis(),
     );
