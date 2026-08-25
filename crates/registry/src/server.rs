@@ -55,6 +55,30 @@ use crate::{
 /// enough that shutdown is prompt, long enough not to spin a core.
 const ACCEPT_POLL: Duration = Duration::from_millis(20);
 
+/// An op slower than this is named on the daemon log with its `duration_us`.
+///
+/// The engine has always MEASURED per-op duration (U7, `meta.duration_us`) and
+/// always sent it to the caller — but it kept no record of its own, and the
+/// caller that suffers a slow op is precisely the one whose connection died
+/// before the frame carrying that number arrived. So a stall left no trail at
+/// all, and the live trigger for a convoy incident could only ever be
+/// inferred. This is the engine's own trail: which ops ran long, and how long.
+///
+/// **It times DISPATCH, so it names participants and not causes.** A waiter
+/// refused at the `sql` store bound and the long holder that blocked it both
+/// spend their time inside one `dispatch_read` call and both land here, with
+/// the victim's line indistinguishable from the culprit's. Reading a cause out
+/// of this log takes the set of lines over a window — a holder and the waiters
+/// that stack up behind it on the same workspace — never one line alone.
+///
+/// Set below the `sql` store bound on purpose (the ordering is compile-time
+/// enforced in `sql_op`, which owns the bound): an op in the band underneath a
+/// bound is the near miss worth seeing BEFORE it starts refusing, and a corpus
+/// op that reaches seconds is already the long kind. Median measured `sql`
+/// over a 47k-file corpus is 0.4 s, so this names the tail and stays quiet
+/// through ordinary work.
+pub(crate) const SLOW_OP_LOG: Duration = Duration::from_secs(5);
+
 /// The reaper's wake granularity: it sleeps in these steps so shutdown is
 /// prompt even when the reap interval is an hour.
 const REAP_TICK: Duration = Duration::from_millis(200);
@@ -1366,7 +1390,23 @@ fn serve_wire(
             // U7: dispatch call alone (after decode, before render).
             let started = Instant::now();
             let body = dispatch_read(registry, attached, armed, id, op, rev == Rev::V3);
-            let duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            let elapsed = started.elapsed();
+            let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+            // The engine's own trail for a slow op. The frame carrying this
+            // number reaches a client that may already have given up, so the
+            // log is what survives an incident. `duration_us` is total time in
+            // dispatch: a long holder and a waiter refused behind it are both
+            // slow ops and both print here, so the line reports the duration
+            // it measured and leaves attribution to the reader.
+            if elapsed >= SLOW_OP_LOG {
+                eprintln!(
+                    "registry: slow op {} duration_us={duration_us} on {} — total time in \
+                     dispatch, any wait for a contended resource included",
+                    obj.get("op").and_then(Value::as_str).unwrap_or("?"),
+                    attached
+                        .map_or_else(|| "<unattached>".to_string(), |p| p.display().to_string()),
+                );
+            }
             (body, Some(duration_us))
         }
         Err(error) => (Err(error), None),
