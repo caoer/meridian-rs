@@ -213,6 +213,13 @@ fn within_bound<T: Send + 'static>(
 /// reference. The reference therefore always completes, the derived bound is
 /// therefore always finite, and a lock that is never released exceeds every
 /// finite bound. A hang is still a failure; only slowness stopped being one.
+///
+/// **No ceiling is written here, on purpose.** A ceiling is the cliff again,
+/// one constant further out. The case it would reach for — a reference so
+/// large the derived bound is absurd — is an agent that took minutes to do a
+/// sub-millisecond operation, which is not this test's finding to report. The
+/// pipeline's own 60-minute cap is where "this box is broken" belongs, and it
+/// already bounds the runaway.
 fn within_floor<T: Send + 'static>(
     acquire: impl FnOnce() -> T + Send + 'static,
     reference: impl FnOnce(),
