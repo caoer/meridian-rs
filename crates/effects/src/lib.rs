@@ -728,6 +728,38 @@ impl std::fmt::Display for EvalError {
 
 impl std::error::Error for EvalError {}
 
+/// Evaluate a **value block**: run `block`'s module, call its zero-argument
+/// `<entry>()`, and hand back what it returned as JSON.
+///
+/// The fourth kernel entry, and the only one that answers with DATA instead of
+/// effects. Its capability surface is the Starlark standard globals and nothing
+/// else — no effect constructors, no `md.*`, `load` disabled — so a value block
+/// can compute and return, and can reach nothing. Metering, panic containment
+/// and the large eval stack are the same ones every other entry gets.
+///
+/// The block's return value is **unconstrained data**: mapping, list, string,
+/// number, bool, `None`. A value the sandbox cannot serialize (a function, a
+/// lambda, a cycle) is a [`EvalError::Runtime`] naming it, never a silent
+/// `null` — the caller asked for data and must be told when it did not get any.
+///
+/// First consumer: `MERIDIAN.md`'s `^config` block (`mrd config get`,
+/// `docs/meridian-md-schema.md` §6a).
+///
+/// # Errors
+/// [`EvalError::SourceTooLarge`] / [`EvalError::Parse`] before eval;
+/// [`EvalError::MissingEntry`] when no `<entry>` is defined;
+/// [`EvalError::Runtime`] for a fault or an unserializable return;
+/// [`EvalError::Budget`] when the fuel/heap/depth bound is spent.
+pub fn eval_value(
+    block: &Rule,
+    entry: &'static str,
+    limits: EvalLimits,
+) -> Result<serde_json::Value, EvalError> {
+    // Same large-stack thread every other entry runs on: pathologically nested
+    // source must not overflow the native stack (uncatchable abort; issue #66).
+    kernel::on_eval_stack(|| kernel::run_value_entry(block, entry, limits))
+}
+
 /// Evaluate `rules` over one `event` under [`EvalLimits::default`]. See
 /// [`eval_with_limits`].
 ///

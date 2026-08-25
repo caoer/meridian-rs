@@ -484,12 +484,17 @@ fn resolve_binding(doc: &Document, binding: &TaskBinding) -> Result<ResolvedTask
     })
 }
 
-/// The fenced code block an anchor keys. An anchor cannot sit inside a fence
-/// (fence content is masked at parse); the Obsidian own-line form below the
-/// fence resolves to the fence in the MODEL since the F-R4 host widening, so
-/// a block-keying anchor's host span IS the `CodeBlock`'s span — this probe
-/// no longer re-implements the attachment, it recognizes it.
-fn host_code_block(doc: &Document, anchor_span: &ByteSpan) -> Option<(ByteSpan, NodeRev)> {
+/// The fenced code block an anchor keys, with its `node_rev`. An anchor cannot
+/// sit inside a fence (fence content is masked at parse); the Obsidian own-line
+/// form below the fence resolves to the fence in the MODEL since the F-R4 host
+/// widening, so a block-keying anchor's host span IS the `CodeBlock`'s span —
+/// this probe no longer re-implements the attachment, it recognizes it.
+///
+/// Public because the task plane is no longer the only anchor→block reader:
+/// `mrd config get` addresses `MERIDIAN.md`'s `^config` the same way, and one
+/// recognition of the attachment is the point of having it in the first place.
+#[must_use]
+pub fn host_code_block(doc: &Document, anchor_span: &ByteSpan) -> Option<(ByteSpan, NodeRev)> {
     fn find(node: &Node, span: &ByteSpan) -> Option<(ByteSpan, NodeRev)> {
         if matches!(node.kind, NodeKind::CodeBlock { .. }) && node.span == *span {
             return Some((node.span.clone(), node.node_rev.clone()));
