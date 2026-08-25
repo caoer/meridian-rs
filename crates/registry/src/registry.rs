@@ -1272,10 +1272,20 @@ impl Registry {
         // `timeout` rather than the cookie's remainder: a barrier that spent
         // the whole budget without `Seen` is a normal degraded outcome — the
         // floor pass below absorbs it — and must not then fail the write for
-        // want of a millisecond. The arithmetic that matters is the ceiling:
-        // this wait plus the barrier's, plus the arm's own
-        // `domain_cache_within` budget, stay under the caller's per-op
-        // deadline, so the ENGINE is always what ends the call.
+        // want of a millisecond.
+        //
+        // WHAT THIS BOUNDS, EXACTLY: this wait plus the barrier's, plus the
+        // arm's own `domain_cache_within` budget, cap the door's QUEUEING at
+        // 6s — under the caller's 10s per-op deadline. It does NOT bound the
+        // op. The guard taken here is held across the `memo.root()` floor pass
+        // below, which runs on ANY miss — including a barrier that just spent
+        // its full budget without `Seen`, i.e. the contended case — and that
+        // pass is O(corpus): measured 9.5–14.1s at 42,943 files. So a door can
+        // win all three waits and still blow the client's deadline while
+        // WORKING. The ambiguity this bound removes is contention's, not the
+        // floor's (card review by `7f458d05`: two true premises, false
+        // inference — the earlier wording claimed the engine always ends the
+        // call).
         //
         // Unlike the arm's entry wait, this one runs INSIDE the D9 write
         // flock, so an unbounded park here also holds the workspace's one

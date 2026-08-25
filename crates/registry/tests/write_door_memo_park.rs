@@ -68,9 +68,14 @@ const CLIENT_D4_BOUND: Duration = Duration::from_secs(10);
 /// The engine's own per-wait budget at a write door —
 /// `registry::DOOR_COOKIE_TIMEOUT`, the constant the arms already pass to
 /// `door_observation`. A door makes at most three such waits (arm entry,
-/// cookie barrier, door observation), so its worst case is 3×this, and the
-/// property that matters is that the worst case stays under
-/// [`CLIENT_D4_BOUND`]: the ENGINE is always what ends the call.
+/// cookie barrier, door observation), so its worst-case QUEUEING is 3×this and
+/// stays under [`CLIENT_D4_BOUND`].
+///
+/// That bounds queueing, **not the op**. `door_observation` holds its guard
+/// across the `memo.root()` floor pass, which runs on any vouch miss and is
+/// O(corpus) — so a door can win every wait and still exceed the client's
+/// deadline while working. What the bound removes is the ambiguity from
+/// CONTENTION; the floor's is a separate lane.
 const DOOR_BUDGET: Duration = Duration::from_secs(2);
 
 /// How long the competing reader holds the shared memo. Comfortably past
@@ -250,8 +255,10 @@ fn canonical(ws: &Path) -> PathBuf {
 /// that verdict must say the bytes never moved.
 ///
 /// Pre-fix this call does not return at all until the holder lets go: the door
-/// is parked in `observed_root`'s unbounded `lock()`, inside the flock it
-/// already took. What ends it in production is [`CLIENT_D4_BOUND`], which is
+/// is parked in the arm's `patched_cache` entry borrow — UPSTREAM of
+/// `acquire_write_lock`, so no flock is held across it (module header, and the
+/// reading this file's first draft got wrong). What ends it in production is
+/// [`CLIENT_D4_BOUND`], which is
 /// the caller giving up, not the engine answering — and a caller that gave up
 /// cannot tell a lost seal from a landed one.
 #[test]
