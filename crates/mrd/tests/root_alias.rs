@@ -289,6 +289,82 @@ fn a_table_with_neither_refuses_and_teaches_the_alias_line() {
         text.contains("field-notes-sessions"),
         "and enumerate what DOES bind, so a reader can pick the mount to alias:\n{text}",
     );
+    assert!(
+        text.contains(
+            "Or scaffold the implicit default: mkdir -p ~/.local/share/ucc/sessions \
+             && mrd init ~/.local/share/ucc/sessions --name sessions."
+        ),
+        "the refusal must teach the §5.1c scaffold beside the alias line:\n{text}",
+    );
+}
+
+/// Check 5 — the implicit default (schema §5.1c): a machine that maps NOTHING
+/// resolves `sessions:` anyway once `$HOME/.local/share/ucc/sessions` is
+/// scaffolded, and both config faces mark the row implicit.
+#[test]
+fn a_scaffolded_default_answers_the_constant_with_no_declaration_at_all() {
+    // The declared world knows only `field-notes` — nothing claims `sessions`.
+    let sb = sandbox("field-notes", |tree| {
+        format!(
+            "```meridian-mount\nname: field-notes\npath: {}\n```\n",
+            tree.display()
+        )
+    });
+
+    // Scaffold the default tree in the sandbox HOME, exactly as the refusal
+    // teaches (mkdir + declaration; `mrd init` writes the same §4 bytes).
+    let sessions = sb.home.join(".local/share/ucc/sessions");
+    std::fs::create_dir_all(&sessions).expect("scaffold the default tree");
+    std::fs::write(
+        sessions.join("MERIDIAN.md"),
+        "---\ntype: meridian-root\nversion: 1\nname: sessions\n---\n\n# Root\n",
+    )
+    .expect("default declaration");
+    std::fs::write(sessions.join("x.md"), "# X\n\nthe target page.\n").expect("target");
+    let canonical_sessions = std::fs::canonicalize(&sessions).expect("canonical default tree");
+
+    let out = sb.run(&["resolve", "sessions:x.md", "--json"]);
+    assert!(
+        out.status.success(),
+        "the implicit default must resolve the constant: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value = json(&String::from_utf8_lossy(&out.stdout));
+    assert_eq!(value["root"], "sessions", "the default's own name");
+    assert_eq!(
+        value["alias"],
+        serde_json::Value::Null,
+        "the name answered, no alias was involved",
+    );
+    assert_eq!(
+        value["path"],
+        canonical_sessions.join("x.md").display().to_string(),
+        "and it lands in the default tree",
+    );
+
+    // Both config faces carry the provenance the wire deliberately does not.
+    let config = json(&sb.stdout(&["config", "--json"]));
+    let mounts = config["mounts"].as_array().expect("mounts array");
+    let row = mounts
+        .iter()
+        .find(|m| m["name"] == "sessions")
+        .expect("the default row is served");
+    assert_eq!(row["implicit"], true, "--json marks the defaulted row");
+    assert_eq!(row["state"], "bound");
+    let declared = mounts
+        .iter()
+        .find(|m| m["name"] == "field-notes")
+        .expect("the declared row");
+    assert_eq!(
+        declared["implicit"], false,
+        "a declared row never reads implicit"
+    );
+
+    let human = sb.stdout(&["config"]);
+    assert!(
+        human.contains("(implicit default)"),
+        "the human face marks the defaulted row:\n{human}",
+    );
 }
 
 /// Check 4 — an alias equal to any mount's name refuses the WHOLE table.

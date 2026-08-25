@@ -785,12 +785,12 @@ fn absent_and_zero_mount_configs_bind_to_the_same_empty_table() {
     let absent = Resolution::Absent {
         path: PathBuf::from("/nowhere/MERIDIAN.md"),
     }
-    .bind()
+    .bind(&crate::Env::default())
     .expect("state A binds");
     let zero = Resolution::Loaded(parse_config(
         "---\ntype: meridian-config\nversion: 1\n---\n\n# nothing declared\n",
     ))
-    .bind()
+    .bind(&crate::Env::default())
     .expect("state D binds");
 
     assert_eq!(absent, zero, "state A and state D are ONE table");
@@ -799,4 +799,223 @@ fn absent_and_zero_mount_configs_bind_to_the_same_empty_table() {
         absent.is_clear(),
         "an empty table refuses nothing — it is a legitimate statement"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Gate — THE IMPLICIT DEFAULT `sessions` MOUNT (schema §5.1c)
+// ---------------------------------------------------------------------------
+
+/// A fake `$HOME` holding a scaffolded default sessions tree —
+/// `$HOME/.local/share/ucc/sessions` with its own declaration naming
+/// [`DEFAULT_SESSIONS_NAME`] — plus the [`crate::Env`] that names it home.
+fn scaffolded_home() -> (tempfile::TempDir, crate::Env) {
+    let home = tempfile::tempdir().expect("tempdir");
+    let sessions = home.path().join(DEFAULT_SESSIONS_SUBPATH);
+    std::fs::create_dir_all(&sessions).expect("create the default sessions tree");
+    let canonical = std::fs::canonicalize(&sessions).expect("canonicalize the default tree");
+    assert_eq!(
+        workspace::deny_reason(&canonical),
+        None,
+        "the sandboxed default tree must pass the ceiling, or every acceptance below is vacuous"
+    );
+    declare(&sessions, DEFAULT_SESSIONS_NAME);
+    let env = crate::Env {
+        meridian_config: None,
+        home: Some(home.path().display().to_string()),
+    };
+    (home, env)
+}
+
+/// The acceptance: a scaffolded default binds on state A and beside declared
+/// mounts alike, carries nothing but its name and path, and is marked
+/// implicit on the config face's accessor.
+#[test]
+fn the_implicit_default_binds_when_scaffolded_and_nothing_claims_sessions() {
+    let (_home, env) = scaffolded_home();
+
+    // State A — no config at all: a one-row table.
+    let table = Resolution::Absent {
+        path: PathBuf::from("/nowhere/MERIDIAN.md"),
+    }
+    .bind(&env)
+    .expect("state A binds");
+    assert_eq!(
+        table.mounts().len(),
+        1,
+        "state A + scaffold = the default row"
+    );
+    let m = table
+        .by_name(DEFAULT_SESSIONS_NAME)
+        .expect("the default row");
+    assert!(m.implicit(), "the defaulted row says so");
+    assert!(matches!(m.state(), MountState::Bound), "{:?}", m.state());
+    assert!(!m.primary(), "primary stays declared-only (§5.1a)");
+    assert_eq!(m.vault(), None);
+    assert_eq!(m.alias(), None);
+    assert_eq!(m.pin(), None);
+    assert!(table.is_clear(), "a bound default refuses nothing");
+
+    // Beside a declared mount that does not claim the spelling.
+    let (_keep, dir) = root("field-notes");
+    declare(&dir, "field-notes");
+    let table = Resolution::Loaded(parse_config(&config_of(&[mount_block(
+        "field-notes",
+        &dir,
+        None,
+        None,
+    )])))
+    .bind(&env)
+    .expect("the declared world binds");
+    assert_eq!(table.mounts().len(), 2, "declared + the default");
+    assert!(
+        !table.by_name("field-notes").expect("declared").implicit(),
+        "a declared row never reads implicit"
+    );
+    assert!(
+        table
+            .by_name(DEFAULT_SESSIONS_NAME)
+            .expect("default")
+            .implicit()
+    );
+}
+
+/// Declared wins, always: a mount NAMED `sessions`, or one ALIASED `sessions`,
+/// suppresses the default entirely — whatever path it binds.
+#[test]
+fn a_declared_sessions_name_or_alias_suppresses_the_default() {
+    let (_home, env) = scaffolded_home();
+
+    let (_keep, dir) = root("elsewhere");
+    declare(&dir, DEFAULT_SESSIONS_NAME);
+    let table = Resolution::Loaded(parse_config(&config_of(&[mount_block(
+        DEFAULT_SESSIONS_NAME,
+        &dir,
+        None,
+        None,
+    )])))
+    .bind(&env)
+    .expect("the declared world binds");
+    assert_eq!(
+        table.mounts().len(),
+        1,
+        "the declared `sessions` is the only row"
+    );
+    let m = table.by_name(DEFAULT_SESSIONS_NAME).expect("declared");
+    assert!(!m.implicit(), "the declared claimant is not the default");
+    assert_ne!(
+        m.canonical_path().expect("bound"),
+        std::fs::canonicalize(
+            PathBuf::from(env.home.as_deref().expect("home")).join(DEFAULT_SESSIONS_SUBPATH)
+        )
+        .expect("the scaffold canonicalizes")
+        .as_path(),
+        "suppression is by NAME, not by landing on the default path"
+    );
+
+    let (_keep2, dir2) = root("named-otherwise");
+    declare(&dir2, "named-otherwise");
+    let aliased = format!(
+        "```meridian-mount\nname: named-otherwise\npath: {}\nalias: {DEFAULT_SESSIONS_NAME}\n```\n",
+        dir2.display()
+    );
+    let table = Resolution::Loaded(parse_config(&config_of(&[aliased])))
+        .bind(&env)
+        .expect("the aliased world binds");
+    assert_eq!(
+        table.mounts().len(),
+        1,
+        "an alias claimant suppresses the default too"
+    );
+    assert_eq!(
+        table
+            .by_name_or_alias(DEFAULT_SESSIONS_NAME)
+            .expect("the alias answers")
+            .name(),
+        "named-otherwise"
+    );
+}
+
+/// Anything short of a clean bind suppresses SILENTLY: no row, no refusal, no
+/// changed exit — an unscaffolded machine reads exactly as it always did.
+#[test]
+fn an_unscaffolded_default_is_suppressed_silently() {
+    // No home at all.
+    let none = Resolution::Absent {
+        path: PathBuf::from("/nowhere/MERIDIAN.md"),
+    }
+    .bind(&crate::Env::default())
+    .expect("no home binds empty");
+    assert!(none.mounts().is_empty());
+
+    // A home with no default tree.
+    let bare = tempfile::tempdir().expect("tempdir");
+    let env = crate::Env {
+        meridian_config: None,
+        home: Some(bare.path().display().to_string()),
+    };
+    let table = Resolution::Absent {
+        path: PathBuf::from("/nowhere/MERIDIAN.md"),
+    }
+    .bind(&env)
+    .expect("an absent default tree binds empty");
+    assert!(
+        table.mounts().is_empty(),
+        "no grey row for the missing default"
+    );
+    assert!(table.is_clear());
+
+    // The tree exists but declares nothing: still no row — a §5.1c candidate
+    // short of Bound never surfaces as grey.
+    std::fs::create_dir_all(bare.path().join(DEFAULT_SESSIONS_SUBPATH))
+        .expect("create the undeclared tree");
+    let table = Resolution::Absent {
+        path: PathBuf::from("/nowhere/MERIDIAN.md"),
+    }
+    .bind(&env)
+    .expect("an undeclared default tree binds empty");
+    assert!(
+        table.mounts().is_empty(),
+        "undeclared is suppressed, never grey"
+    );
+
+    // The tree declares some OTHER name: a declared-bound mismatch would fail
+    // a declared mount's parse — the implicit candidate just disappears.
+    declare(
+        &bare.path().join(DEFAULT_SESSIONS_SUBPATH),
+        "not-the-default",
+    );
+    let table = Resolution::Absent {
+        path: PathBuf::from("/nowhere/MERIDIAN.md"),
+    }
+    .bind(&env)
+    .expect("a disagreeing declaration suppresses, never refuses");
+    assert!(table.mounts().is_empty());
+}
+
+/// A declared mount holding the default PATH (under any name) wins: the
+/// implicit candidate is always the second occurrence at the uniqueness
+/// gates, and its refusal is suppressed.
+#[test]
+fn a_declared_mount_on_the_default_path_suppresses_the_default() {
+    let (_home, env) = scaffolded_home();
+    let default_path =
+        PathBuf::from(env.home.as_deref().expect("home")).join(DEFAULT_SESSIONS_SUBPATH);
+    // Redeclare the tree under the name this mount binds it as.
+    declare(&default_path, "my-sessions");
+
+    let table = Resolution::Loaded(parse_config(&config_of(&[mount_block(
+        "my-sessions",
+        &default_path,
+        None,
+        None,
+    )])))
+    .bind(&env)
+    .expect("the declared world binds");
+    assert_eq!(
+        table.mounts().len(),
+        1,
+        "one tree, one row — the declared one"
+    );
+    assert!(!table.mounts()[0].implicit());
+    assert_eq!(table.mounts()[0].name(), "my-sessions");
 }

@@ -85,13 +85,15 @@ pub fn load_mounts_for(needed: &BTreeSet<addr::MountName>) -> MountCorpora {
 /// never dropped.
 #[must_use]
 pub fn load_mounts_where(wanted: &dyn Fn(&addr::MountName) -> bool) -> MountCorpora {
-    let Ok(resolution) = config::resolve(&config::Env::from_process()) else {
+    let env = config::Env::from_process();
+    let Ok(resolution) = config::resolve(&env) else {
         return MountCorpora::default();
     };
-    let Some(cfg) = resolution.config() else {
-        return MountCorpora::default();
-    };
-    let Ok(table) = config::mount::bind(cfg) else {
+    // Through `Resolution::bind`, not the declared-only `mount::bind`: the
+    // table walk and sql resolve against must be the SAME table every other
+    // door binds — implicit default `sessions` mount included (schema §5.1c),
+    // and state A (no config) still serves the default when it binds.
+    let Ok(table) = resolution.bind(&env) else {
         return MountCorpora::default();
     };
 

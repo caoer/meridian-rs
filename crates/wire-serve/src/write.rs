@@ -4488,8 +4488,9 @@ pub fn resolve_birth_target(
 /// The machine's bound mount table, or `None` when no config resolves or the
 /// table refuses to bind — the pin door's refusal texts own what that means.
 fn machine_mount_table() -> Option<config::mount::MountTable> {
-    let resolution = config::resolve(&config::Env::from_process()).ok()?;
-    resolution.bind().ok()
+    let env = config::Env::from_process();
+    let resolution = config::resolve(&env).ok()?;
+    resolution.bind(&env).ok()
 }
 
 /// Same physical file across two (root, rel) spellings — the cross-root

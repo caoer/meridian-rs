@@ -60,7 +60,7 @@ pub(crate) fn run(format: Format) -> Result<(), Fail> {
     let resolution = config::resolve(&env).map_err(refused)?;
     // A bind refusal rides verbatim for the same reason a parse refusal does:
     // it already names the mount, the line, that nothing loaded, and the fix.
-    let table = resolution.bind().map_err(refused)?;
+    let table = resolution.bind(&env).map_err(refused)?;
 
     // The bridge check never changes the exit code: a divergence between an env var and the file
     // is a note, because failing loud here would brick the CLI on every machine that exports it.
@@ -391,6 +391,10 @@ fn to_json(
             // majority row, not a missing fact.
             "alias": m.alias(),
             "declared_name": m.declared_name(),
+            // The implicit default `sessions` mount (schema §5.1c): `true`
+            // exactly on the row defaulted in code, `false` on every declared
+            // row — provenance is a config-face fact, not a wire one.
+            "implicit": m.implicit(),
             // The same spelling the human line carries.
             "state": m.state().word(),
             "detail": m.state().detail(),
@@ -532,6 +536,11 @@ fn render_human(
         // cost every reader to state nothing.
         if let Some(alias) = m.alias() {
             let _ = write!(out, "  alias:{alias}");
+        }
+        // The §5.1c marker prints only on the defaulted row, for the same
+        // majority-row economy as the alias column.
+        if m.implicit() {
+            let _ = write!(out, "  (implicit default)");
         }
         let _ = write!(out, "  {}", m.state().word());
         out.push('\n');
