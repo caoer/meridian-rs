@@ -210,7 +210,7 @@ fn v2_session_answers_unknown_op_and_never_advertises_sql() {
 
 /// A statement with no I/O and no corpus in it, whose only job is to occupy
 /// one `sql` call for long enough that a sibling's whole round trip fits
-/// inside it. DuckDB has no `sleep`, so the spin is a recursive CTE.
+/// inside it. `DuckDB` has no `sleep`, so the spin is a recursive CTE.
 ///
 /// **This statement is far more expensive per row than its shape suggests, so
 /// size it by measurement and never by eye.** Measured on a 30-core Linux box,
