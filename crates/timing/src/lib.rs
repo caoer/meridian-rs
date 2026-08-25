@@ -392,21 +392,56 @@ impl Phase {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Clock reads on THIS thread, counted so the off path's central claim is
+    /// assertable. Thread-local rather than global: the test battery runs its
+    /// cases concurrently in one process, and a shared counter would make the
+    /// assertion depend on what some other test did at the same moment.
+    static CLOCK_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The one clock read in this crate, behind a name so a test can COUNT it.
+///
+/// It exists because the off path's claim — *no clock is read* — is invisible
+/// in everything this crate emits: `false.then_some(Instant::now())` reads the
+/// clock and still yields `None`, so `started` is `None` and the bytes are
+/// identical under both spellings. The difference is a cost and nothing else,
+/// and a cost no assertion on a value can reach. Counting the read is what
+/// makes it reachable — the test is `an_off_phase_reads_no_clock`.
+///
+/// In a release build the counter is not compiled at all: this is
+/// `Instant::now` and one inlined call.
+#[inline]
+fn now() -> Instant {
+    #[cfg(test)]
+    CLOCK_READS.with(|reads| reads.set(reads.get() + 1));
+    Instant::now()
+}
+
 /// Start measuring `name`. Off, this reads no clock and allocates nothing.
+///
+/// **`then` and not `then_some`, and a test holds the line.** `then` takes
+/// `FnOnce` and calls it only when the mode is on; `then_some` would take a
+/// VALUE and so read the clock on every pass, on and off alike. Both spellings
+/// typecheck, both emit identical bytes, and the difference is unobservable
+/// from the outside — so the test `an_off_phase_reads_no_clock` counts the
+/// read instead of inspecting the result.
 #[inline]
 pub fn phase(name: &'static str) -> Phase {
     Phase {
         name,
-        started: on().then(Instant::now),
+        started: on().then(now),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Chosen, DEFAULT_LABEL, OFF_WORDS, ON_WORDS, PREFIX, Phase, choose, is_corpus_extension,
-        line, one_line, who,
+        CLOCK_READS, Chosen, DEFAULT_LABEL, OFF_WORDS, ON_WORDS, PREFIX, SINK, Sink, choose,
+        is_corpus_extension, line, on, one_line, phase, who,
     };
+    use std::cell::Cell;
     use std::collections::BTreeSet;
     use std::ffi::OsStr;
     use std::path::Path;
@@ -576,15 +611,46 @@ mod tests {
         assert_eq!(one_line("/tmp/t.log"), "/tmp/t.log");
     }
 
-    /// The off path holds no `Instant`: the switch is read at construction, and
-    /// off construction reads no clock. Stopping it reports nothing.
+    /// **The off path reads no clock — and counting the read is the only way
+    /// to say so.** `false.then_some(Instant::now())` reads the clock and
+    /// still evaluates to `None`, so under either spelling `started` is
+    /// `None`, the emitted bytes are identical and the exit code is
+    /// identical. Nothing this crate produces distinguishes them; the whole
+    /// difference is a cost. So the assertion is on `now`'s counter, not on
+    /// any value — and flipping `then` to `then_some` in `phase` reds this
+    /// test, which is the guard the property never had.
     #[test]
-    fn an_off_phase_holds_no_instant_and_reports_nothing() {
-        let phase = Phase {
-            name: "probe",
-            started: None,
-        };
-        assert!(phase.started.is_none());
-        phase.stop();
+    fn an_off_phase_reads_no_clock() {
+        // The sink is process-wide and resolved once. Pin it OFF here instead
+        // of inheriting whatever `MRD_TIMING` the caller of `cargo test`
+        // happened to export: a case about the off path must ESTABLISH that
+        // it is on the off path, and a precondition that is merely likely
+        // would make a green here mean nothing.
+        let _ = SINK.set(Sink::Off);
+        assert!(
+            !on(),
+            "the sink is not OFF, so this case cannot mean anything"
+        );
+
+        let before = CLOCK_READS.with(Cell::get);
+
+        let span = phase("probe");
+        assert_eq!(
+            CLOCK_READS.with(Cell::get),
+            before,
+            "phase() read the clock with the mode OFF"
+        );
+        assert!(span.started.is_none(), "an off span holds no Instant");
+
+        // Both emitters carry the same claim, so both are held to it here —
+        // a span that read no clock has nothing to report from either one.
+        span.stop();
+        phase("probe").stop_as("renamed");
+
+        assert_eq!(
+            CLOCK_READS.with(Cell::get),
+            before,
+            "stopping an off span read the clock"
+        );
     }
 }
