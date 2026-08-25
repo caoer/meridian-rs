@@ -482,6 +482,12 @@ impl FloorTrigger {
     /// Every trigger, for tests and for anyone enumerating the grammar. A
     /// population, not a grep: a name that falls out of this list is a name no
     /// reader will know to look for.
+    ///
+    /// The array is written by hand and TIED to the variant set by
+    /// [`floor_grammar::all_lists_every_variant_the_enum_declares`], which
+    /// reads this file's own `enum FloorTrigger` declaration. Adding a variant
+    /// without listing it here reddens that law — it does not quietly shrink
+    /// the population every other law in that module iterates.
     #[cfg(test)]
     pub(crate) const ALL: [Self; 6] = [
         Self::NoFeed,
@@ -532,6 +538,11 @@ mod floor_grammar {
     //! rather than by grepping for names — a name that falls out of
     //! [`FloorTrigger::ALL`] is a name no reader will know to look for, and a
     //! grep cannot report an absence it was not asked about.
+    //!
+    //! **The population itself is guarded** by
+    //! [`all_lists_every_variant_the_enum_declares`], so "checked over the
+    //! enumerated set" is a mechanism rather than a convention: the four laws
+    //! below cannot silently start enforcing over six of seven causes.
 
     use super::{DOOR_LOCK_CONTENDED, FloorTrigger};
     use std::collections::BTreeSet;
@@ -646,6 +657,204 @@ mod floor_grammar {
                 "{family:?} is the family prefix and must not also be an emitted name"
             );
         }
+    }
+
+    // ── the population, DERIVED from the declaration it claims to cover ──────
+
+    /// This file's own source. Every law above iterates [`FloorTrigger::ALL`],
+    /// and `ALL` is a hand-written array — a literal wearing a derived costume.
+    /// A seventh variant added to `FloorTrigger` and never listed there is
+    /// invisible to all four: `currency()` and `door()` are exhaustive `match`
+    /// arms, so the compiler DOES force the new names to exist, and
+    /// `all_twenty_four_names_are_distinct_and_carry_no_space` stays green at
+    /// 24 because 24 is computed FROM `ALL` (6 × 4). The coverage shrinks and
+    /// nothing says so.
+    ///
+    /// **The exhaustiveness cannot be a compile-time fact here, and the reason
+    /// is worth stating**: a variant-exhaustive `match` forces an ARM, never an
+    /// array ELEMENT. The author who adds the arm can leave `ALL` untouched and
+    /// the build is clean. Closing it at compile time needs the variant COUNT,
+    /// which stable Rust does not expose (`std::mem::variant_count` is
+    /// nightly-only) and which no crate in this graph provides — `docs/laws.md`
+    /// § Crate charters and `crates/config/Cargo.toml` hold the line against a
+    /// new external dependency. Only an instrument that reads the DECLARATION
+    /// can see a variant that `ALL` omits.
+    ///
+    /// Precedent for reading source in a test:
+    /// `crates/mrd/tests/script_controlled_exits_speak.rs` § the census, and
+    /// `crates/mrd/tests/rules_cli.rs` § `the_cli_layer_holds_no_second_resolver`.
+    const REGISTRY_SOURCE: &str = include_str!("registry.rs");
+
+    /// The line that opens the declaration this census measures.
+    const DECLARATION: &str = "pub(crate) enum FloorTrigger {";
+
+    /// Every variant name in the `enum FloorTrigger` declaration, in source
+    /// order.
+    ///
+    /// Doc comments, attributes and blank lines are dropped before matching, so
+    /// prose naming a cause can neither mint a variant nor hide one — the same
+    /// discipline the script-exit census uses. A variant carrying a payload
+    /// (`Foo(Bar)`) is not a shape this census understands, and it PANICS
+    /// rather than certify a population it cannot read.
+    fn declared_variants() -> Vec<String> {
+        let mut out = Vec::new();
+        let mut inside = false;
+        for line in REGISTRY_SOURCE.lines() {
+            if !inside {
+                inside = line == DECLARATION;
+                continue;
+            }
+            if line == "}" {
+                break;
+            }
+            let token = line.trim();
+            if token.is_empty() || token.starts_with("//") || token.starts_with("#[") {
+                continue;
+            }
+            let name = token.trim_end_matches(',');
+            assert!(
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                "{name:?} is not a bare variant name, and this census only understands bare \
+                 variants — teach it the new shape rather than letting it certify a population \
+                 it cannot read"
+            );
+            out.push(name.to_owned());
+        }
+        out
+    }
+
+    /// **`ALL` is every variant the enum declares, in declaration order.** This
+    /// is the law that makes the module doc's claim true by mechanism: a
+    /// seventh cause cannot leave the four laws above enforcing over six.
+    #[test]
+    fn all_lists_every_variant_the_enum_declares() {
+        let declared = declared_variants();
+
+        // The instrument's own control. A rename or a move of the declaration
+        // would leave `declared` empty, and an empty population compares equal
+        // to nothing — the census must REDDEN when it loses its subject, never
+        // certify silence.
+        assert!(
+            REGISTRY_SOURCE.contains(DECLARATION),
+            "the census lost its subject: {DECLARATION:?} is not in this file any more, so it \
+             is measuring nothing — re-point it at the declaration"
+        );
+        assert!(
+            declared.len() >= 6,
+            "the declaration parsed to {declared:?} — fewer variants than the six this grammar \
+             shipped with, so the census is reading the wrong block"
+        );
+
+        let listed: Vec<String> = FloorTrigger::ALL
+            .iter()
+            .map(|trigger| format!("{trigger:?}"))
+            .collect();
+        assert_eq!(
+            listed, declared,
+            "`FloorTrigger::ALL` and the `enum FloorTrigger` declaration disagree. Every law in \
+             this module iterates `ALL`, so a variant missing from it is a cause whose emitted \
+             names nothing checks — and `all_twenty_four_names_are_distinct_and_carry_no_space` \
+             would stay green at 24 while the real population emitted 28"
+        );
+    }
+
+    // ── the outcome suffix, and the cause names that must not be read as it ──
+
+    /// `docs/run-plane.md`'s own bytes. The operator recipe at § Timing phases
+    /// is the ONLY grain at which an operator meets this grammar, so the law
+    /// below measures the SHIPPED recipe rather than a copy of it that could
+    /// drift the moment the doc is edited.
+    const RUN_PLANE_DOC: &str = include_str!("../../../docs/run-plane.md");
+
+    /// The anchoring the recipe must keep. `[a-z_]+` cannot span a dot, which
+    /// is the whole reason the anchored form separates an ENTRY from a
+    /// REFUSAL when a cause name itself ends in the outcome token.
+    const ANCHORED_RECIPE: &str = "[a-z_]+[.]refused";
+
+    /// The shipped recipe's predicate, by hand: `<family>[a-z_]+[.]refused` at
+    /// the end of the name. Hand-rolled because no crate in this graph is a
+    /// regex engine and the charters refuse a new one — so the predicate is
+    /// kept to exactly the shape the recipe carries, and the assertions below
+    /// prove it is not a tautology.
+    fn anchored_refusal(family: &str, name: &str) -> bool {
+        let Some(rest) = name.strip_prefix(family) else {
+            return false;
+        };
+        let Some(cause) = rest.strip_suffix(".refused") else {
+            return false;
+        };
+        !cause.is_empty() && cause.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+    }
+
+    /// **`.refused` is the OUTCOME suffix and is never read as part of a
+    /// CAUSE.** The design record settled that law in prose and one cause,
+    /// `cookie_refused`, ends in the very token it reserves — so the recipe
+    /// anchors `.refused` as the final component and this law is what keeps
+    /// that anchoring load-bearing.
+    ///
+    /// What it catches that the four laws above do not: they check prefixes and
+    /// distinctness, both of which an unanchored `currency.floor.*refused` read
+    /// satisfies while counting `currency.floor.cookie_refused` — a COMPLETED
+    /// pass — as a refusal. That miscount lands on precisely the number the
+    /// floor grammar exists to keep honest under load.
+    #[test]
+    fn no_cause_segment_can_be_read_as_the_refused_outcome() {
+        // (1) The shipped recipe is still anchored. An unanchored recipe is the
+        // original defect, and it would read green against every other law.
+        assert!(
+            RUN_PLANE_DOC.contains(ANCHORED_RECIPE),
+            "the operator recipe in `docs/run-plane.md` no longer anchors the outcome as \
+             {ANCHORED_RECIPE:?} — an unanchored `.*refused` counts a completed pass whose \
+             CAUSE ends in the outcome token, which is the miscount this law exists to hold shut"
+        );
+
+        // (2) The predicate is not a tautology: it must tell the two apart on
+        // the exact shape that defeats the unanchored read.
+        assert!(
+            !anchored_refusal("currency.floor.", "currency.floor.cookie_refused"),
+            "the predicate counts an ENTRY whose cause merely ends in the outcome token — it is \
+             the unanchored read wearing an anchor"
+        );
+        assert!(
+            anchored_refusal("currency.floor.", "currency.floor.cookie_refused.refused"),
+            "the predicate misses a real refusal, so it under-counts instead of over-counting"
+        );
+
+        // (3) The property that makes the anchoring exact, over the population.
+        let mut refusals = 0;
+        for trigger in FloorTrigger::ALL {
+            for (family, (completed, refused)) in [
+                ("currency.floor.", trigger.currency()),
+                ("door.floor.", trigger.door()),
+            ] {
+                let cause = completed
+                    .strip_prefix(family)
+                    .expect("the family prefix is asserted by the law above");
+                assert!(
+                    !cause.is_empty() && cause.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                    "{trigger:?}: cause segment {cause:?} is outside the recipe's own `[a-z_]+` \
+                     class. A cause carrying a dot would let `[a-z_]+[.]refused` straddle it and \
+                     match the ENTRY line, which is exactly the ambiguity the anchoring removes"
+                );
+                assert!(
+                    !anchored_refusal(family, completed),
+                    "{trigger:?}: the recipe reads completed name {completed:?} as a refusal, so \
+                     the operator's refusal count includes a pass that finished"
+                );
+                assert!(
+                    anchored_refusal(family, refused),
+                    "{trigger:?}: the recipe does not read refusal name {refused:?} as one, so \
+                     the operator's refusal count silently drops a cause"
+                );
+                refusals += 1;
+            }
+        }
+        assert_eq!(
+            refusals,
+            FloorTrigger::ALL.len() * 2,
+            "the recipe must select exactly one refusal per trigger per plane — half the \
+             population, never a name more or less"
+        );
     }
 }
 
