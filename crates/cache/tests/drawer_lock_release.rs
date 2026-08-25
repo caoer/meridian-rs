@@ -582,6 +582,12 @@ fn a_genuinely_held_drawer_lock_still_excludes_both_acquire_modes() {
 /// asks the box how slow it is instead of guessing.
 #[test]
 fn a_slow_operation_is_not_a_held_lock() {
+    // Serialized like every other test here: this one takes no lock and opens
+    // no fd, but it does assert on elapsed time, and a sibling's forked child
+    // is exactly the neighbour that would perturb it.
+    let _serialized = ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let nominal = Duration::from_millis(20);
     let slow = Duration::from_millis(120);
     // How slow this box is right now, as the floor would measure it.
