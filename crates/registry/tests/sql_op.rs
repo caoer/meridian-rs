@@ -212,17 +212,20 @@ fn v2_session_answers_unknown_op_and_never_advertises_sql() {
 /// one `sql` call for long enough that a sibling's whole round trip fits
 /// inside it. DuckDB has no `sleep`, so the spin is a recursive CTE.
 ///
-/// The count is sized to be seconds, not milliseconds — a recursive CTE is
-/// inherently serial, and this one is far more expensive per row than its
-/// shape suggests: 20,000,000 cost 6.5 minutes of wall clock at 210% CPU on a
-/// 30-core Linux box (debug build), so the row count and the runtime are NOT
-/// intuitively related. The assertion below is a happens-BEFORE fact rather
-/// than a duration, so what this constant has to buy is only "long enough for
-/// a sibling's whole round trip to fit inside it, on the slowest box that will
-/// ever run it" — and [`HOLDER_MUST_EXCEED`] fails the test rather than pass it
-/// quietly if a future box, or a faster DuckDB, ever makes that false.
+/// **This statement is far more expensive per row than its shape suggests, so
+/// size it by measurement and never by eye.** Measured on a 30-core Linux box,
+/// debug build: 300,000 rows ran 41.9 s and 20,000,000 ran 6.5 minutes at 210%
+/// CPU. A recursive CTE re-materialises its working set each round, so the row
+/// count and the runtime are not proportional and not guessable.
+///
+/// The gate's verdict is a happens-BEFORE fact, not a duration, so all this
+/// constant must buy is "long enough that a sibling's whole round trip fits
+/// inside it on the slowest box that will ever run it" — a sibling round trip
+/// measured 24 ms. The value below is the smallest one that still clears
+/// [`HOLDER_MUST_EXCEED`] with room, because this gate runs in CI and every
+/// second here is paid on every run.
 const SLOW_SQL: &str = "WITH RECURSIVE spin(i) AS (\
-     SELECT 1 UNION ALL SELECT i + 1 FROM spin WHERE i < 300000\
+     SELECT 1 UNION ALL SELECT i + 1 FROM spin WHERE i < 40000\
      ) SELECT count(*)::BIGINT FROM spin";
 
 /// The floor under [`SLOW_SQL`]'s own runtime. Below this the holder is not
