@@ -185,6 +185,7 @@ fn observed_root(
 /// it replaces a client-side deadline firing with nothing to show for it,
 /// which leaves a caller unable to tell a lost write from a landed one. Any
 /// other I/O failure is the observation itself failing, and stays `io_error`.
+#[must_use]
 pub fn door_memo_refusal(e: &std::io::Error) -> Box<ErrorBody> {
     if e.kind() != ErrorKind::WouldBlock {
         return io_refusal(e.to_string());

@@ -1,4 +1,4 @@
-//! **A write door may not park unboundedly while it holds the D9 flock.**
+//! **A write door owes its own verdict before the caller's deadline.**
 //!
 //! The write door's stated lock discipline (`crates/wire-serve/src/write.rs`,
 //! "Lock discipline") rests on one premise: *"every door touches the cache
@@ -260,7 +260,7 @@ fn a_held_shared_memo_makes_the_write_door_refuse_in_time_instead_of_parking() {
     let ws = write_ws(&tmp, &[("plan.md", PLAN)]);
     let server = RunningServer::start(test_config(&tmp)).expect("daemon");
 
-    let mut conn = Conn::open(&server.socket_path());
+    let mut conn = Conn::open(server.socket_path());
     conn.hello(&ws);
     // Warm first, and mint the frame first: both are reads, and a read is what
     // parks on a held memo.
@@ -317,7 +317,7 @@ fn an_uncontended_write_door_is_untouched_by_the_bound() {
     let ws = write_ws(&tmp, &[("plan.md", PLAN)]);
     let server = RunningServer::start(test_config(&tmp)).expect("daemon");
 
-    let mut conn = Conn::open(&server.socket_path());
+    let mut conn = Conn::open(server.socket_path());
     conn.hello(&ws);
     let frame = splice_frame(&mut conn, "plan.md", "Goals");
 
