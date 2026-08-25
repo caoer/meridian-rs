@@ -43,24 +43,45 @@ fn workspace() -> (tempfile::TempDir, WorkspaceRoot) {
     (tmp, root)
 }
 
-/// Take a directory's permissions away, and PROVE the instrument bites before
-/// any assertion rests on it. A `chmod 000` is a no-op for a privileged user,
-/// and a test that silently passes because its precondition never held is the
-/// green log that means nothing.
-fn lock(dir: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o000)).unwrap();
-    assert!(
-        std::fs::read_dir(dir).is_err(),
-        "PRECONDITION FAILED: {} is still listable at mode 000 — this suite \
-         cannot run as a privileged user, and passing here would test nothing",
-        dir.display()
-    );
+/// An unreadable directory that becomes readable again however the test
+/// leaves — returned value, failed assertion, or panic.
+///
+/// Restoring on the happy path only is not enough: a failing assertion
+/// between the chmod and the restore would leak a mode-000 directory into the
+/// build tree, which `TempDir`'s own cleanup then cannot remove. The next run
+/// inherits litter caused by a test failure, which is the worst moment to add
+/// a second, unrelated symptom.
+struct Locked<'a>(&'a Path);
+
+impl<'a> Locked<'a> {
+    /// Take the directory's permissions away, and PROVE the instrument bites
+    /// before any assertion rests on it. A `chmod 000` is a no-op for a
+    /// privileged user, and a test that silently passes because its
+    /// precondition never held is the green log that means nothing.
+    fn new(dir: &'a Path) -> Locked<'a> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(
+            std::fs::read_dir(dir).is_err(),
+            "PRECONDITION FAILED: {} is still listable at mode 000 — this suite \
+             cannot run as a privileged user, and passing here would test nothing",
+            dir.display()
+        );
+        Locked(dir)
+    }
+
+    /// Give the permissions back early, for a test that must observe the
+    /// engine serving the restored tree.
+    fn unlock(&self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(0o755));
+    }
 }
 
-fn unlock(dir: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+impl Drop for Locked<'_> {
+    fn drop(&mut self) {
+        self.unlock();
+    }
 }
 
 /// Every walk the engine runs over the corpus, named, so a gate that passes
@@ -102,7 +123,7 @@ fn refusals(root: &WorkspaceRoot) -> Vec<(&'static str, io::Error)> {
 fn every_corpus_walk_names_the_directory_it_could_not_list() {
     let (_tmp, root) = workspace();
     let locked = root.0.join("notes/locked");
-    lock(&locked);
+    let locked = Locked::new(&locked);
 
     for (walk, err) in refusals(&root) {
         let said = err.to_string();
@@ -119,7 +140,7 @@ fn every_corpus_walk_names_the_directory_it_could_not_list() {
         );
     }
 
-    unlock(&locked);
+    drop(locked);
 }
 
 /// Negative control for the gate above: on a HEALTHY tree these walks
@@ -146,7 +167,7 @@ fn a_healthy_tree_mints_no_listing_refusal() {
 fn the_locus_is_the_innermost_failing_directory_not_the_root() {
     let (_tmp, root) = workspace();
     let locked = root.0.join("notes/locked/deeper");
-    lock(&locked);
+    let locked = Locked::new(&locked);
 
     for (walk, err) in refusals(&root) {
         let said = err.to_string();
@@ -162,7 +183,7 @@ fn the_locus_is_the_innermost_failing_directory_not_the_root() {
         );
     }
 
-    unlock(&locked);
+    drop(locked);
 }
 
 /// The locus is readable STRUCTURALLY, not only by scraping prose: a face
@@ -172,7 +193,7 @@ fn the_locus_is_the_innermost_failing_directory_not_the_root() {
 fn the_offending_directory_is_readable_off_the_typed_refusal() {
     let (_tmp, root) = workspace();
     let locked = root.0.join("notes/locked");
-    lock(&locked);
+    let locked = Locked::new(&locked);
 
     let err = DomainCache::new().root(&root).expect_err("the hot path");
     let member = fs::corpus_member_error(&err)
@@ -185,7 +206,7 @@ fn the_offending_directory_is_readable_off_the_typed_refusal() {
         member.condition
     );
 
-    unlock(&locked);
+    drop(locked);
 }
 
 /// The card's second Done bullet, engine half: recovery needs no restart.
@@ -201,14 +222,14 @@ fn recovery_needs_no_restart_the_same_warm_cache_serves_again() {
 
     let before = cache.root(&root).expect("warm the cache on a healthy tree");
 
-    lock(&locked);
+    let locked = Locked::new(&locked);
     let refused = cache.root(&root).expect_err("the locked tree refuses");
     assert!(
         refused.to_string().contains("notes/locked"),
         "the refusal names the directory even on a warm cache: {refused}"
     );
 
-    unlock(&locked);
+    drop(locked);
     let after = cache
         .root(&root)
         .expect("the SAME cache serves again — recovery needs no restart");
@@ -224,7 +245,7 @@ fn recovery_needs_no_restart_the_same_warm_cache_serves_again() {
 #[test]
 fn a_locked_root_names_itself_rather_than_nothing() {
     let (_tmp, root) = workspace();
-    lock(&root.0);
+    let locked = Locked::new(&root.0);
 
     let err = fs::walk(&root).expect_err("a locked root refuses");
     assert_eq!(
@@ -233,5 +254,5 @@ fn a_locked_root_names_itself_rather_than_nothing() {
         "the root spells itself, so no refusal names an empty locus"
     );
 
-    unlock(&root.0);
+    drop(locked);
 }

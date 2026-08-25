@@ -21,20 +21,35 @@ fn write(root: &Path, rel: &str, contents: &str) {
     std::fs::write(&p, contents).unwrap();
 }
 
-fn lock(dir: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o000)).unwrap();
-    assert!(
-        std::fs::read_dir(dir).is_err(),
-        "PRECONDITION FAILED: {} is still listable at mode 000 — this gate \
-         cannot run as a privileged user, and passing here would test nothing",
-        dir.display()
-    );
+/// An unreadable directory that becomes readable again however the test
+/// leaves — returned value, failed assertion, or panic. Restoring only on the
+/// happy path would leak a mode-000 directory into the build tree whenever
+/// this gate fails, which `TempDir`'s own cleanup then cannot remove.
+struct Locked<'a>(&'a Path);
+
+impl<'a> Locked<'a> {
+    /// Take the permissions away, and PROVE the instrument bites before any
+    /// assertion rests on it — `chmod 000` is a no-op for a privileged user,
+    /// and a gate that passes because its precondition never held is a green
+    /// log that means nothing.
+    fn new(dir: &'a Path) -> Locked<'a> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(
+            std::fs::read_dir(dir).is_err(),
+            "PRECONDITION FAILED: {} is still listable at mode 000 — this gate \
+             cannot run as a privileged user, and passing here would test nothing",
+            dir.display()
+        );
+        Locked(dir)
+    }
 }
 
-fn unlock(dir: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+impl Drop for Locked<'_> {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(0o755));
+    }
 }
 
 /// A door that observes the corpus refuses `io_error` with the offending
@@ -47,7 +62,7 @@ fn the_wire_io_error_cause_names_the_unlistable_directory() {
     write(&ws, "notes/locked/c.md", "# C\n");
     let root = fs::WorkspaceRoot(std::fs::canonicalize(&ws).unwrap());
     let locked = root.0.join("notes/locked");
-    lock(&locked);
+    let locked = Locked::new(&locked);
 
     let err = wire_serve::write::scope_token(&root, None, None)
         .expect_err("a corpus it cannot walk refuses");
@@ -63,7 +78,7 @@ fn the_wire_io_error_cause_names_the_unlistable_directory() {
          caller hunting the whole tree from outside: {cause:?}"
     );
 
-    unlock(&locked);
+    drop(locked);
 }
 
 /// Negative control: the same door on a healthy corpus mints no refusal, so
