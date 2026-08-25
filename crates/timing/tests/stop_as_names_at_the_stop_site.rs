@@ -13,8 +13,14 @@
 //! whether the mode being OFF reads a clock. That property is not observable
 //! from the emitted bytes — `false.then(Instant::now)` and an eager read that
 //! is thrown away both leave `started: None` and both emit nothing — so an
-//! assertion here would be a tautology wearing the name of a guard. It needs
-//! an injectable clock, which this PR does not add.
+//! assertion here would be a tautology wearing the name of a guard.
+//!
+//! **That property IS guarded, and not here.** The unit test
+//! `an_off_phase_reads_no_clock` in `src/lib.rs` counts the clock reads routed
+//! through the crate's `now()` and asserts the count does not move while the
+//! mode is off. It reaches the property by counting a COST instead of
+//! inspecting a VALUE — which is precisely why the emitted bytes this file
+//! reads cannot see it, and why the assertion belongs there rather than here.
 
 use std::path::PathBuf;
 
