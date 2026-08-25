@@ -1612,7 +1612,8 @@ process completed either way.
 **A failure that is itself worth counting says so in its NAME.** Where a call
 site needs the refusals countable it stops the span under a distinct name
 instead of abandoning it — `currency.floor.<cause>.refused`,
-`door.floor.<cause>.refused`, `door.refused` (`run-plane.md` § Timing phases).
+`door.floor.<cause>.refused`, `door.refused.<cause>` (`run-plane.md` § Timing
+phases).
 That is not a weakening of the rule above: the refusal is a different phase
 name from the success, so the two are never summed by accident, and the reader
 still cannot mistake one for the other. It exists because those particular

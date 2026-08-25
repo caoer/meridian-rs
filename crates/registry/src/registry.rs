@@ -376,6 +376,25 @@ fn apply_pending(
     Some(outcome)
 }
 
+/// The WRITE plane's one pre-arm refusal: the door's memo lock stayed held for
+/// its whole budget, so the observation was refused before either arm could be
+/// chosen.
+///
+/// Named `door.refused.<cause>` rather than bare `door.refused` so the prefix
+/// answers "how many observations never reached an arm" for every cause,
+/// including one added later — and rather than `door.<cause>.refused`, which
+/// would make `door.refused` match nothing and force an operator to know every
+/// cause name before they could ask the question at all.
+///
+/// **The read plane has no counterpart, and that absence is a fact about the
+/// call site rather than an omission here.** Both planes reach the same
+/// [`fs::lock_within`]; the read plane passes a budget of `None`, for which it
+/// returns `Ok` before entering the wait loop, so `WouldBlock` is unreachable
+/// there — [`Registry::patched_cache`] asserts exactly that with an
+/// `unreachable!`. Same callee, same signature, different reachable error set,
+/// decided by one argument at the call site.
+pub(crate) const DOOR_LOCK_CONTENDED: &str = "door.refused.lock_contended";
+
 /// WHICH of the vouch's terms sent a pass to the §6.2 extent-refresh floor.
 ///
 /// The conjunction has four terms but FIVE causes: a single `seen` bool used
@@ -514,8 +533,44 @@ mod floor_grammar {
     //! [`FloorTrigger::ALL`] is a name no reader will know to look for, and a
     //! grep cannot report an absence it was not asked about.
 
-    use super::FloorTrigger;
+    use super::{DOOR_LOCK_CONTENDED, FloorTrigger};
     use std::collections::BTreeSet;
+
+    /// **Three families partition the write-door population**, and an operator
+    /// reads the door by asking each one: `door.vouched` took the fast path,
+    /// `door.floor` fell to the floor, `door.refused` never reached an arm.
+    /// Every emitted door name must sit under exactly one of them, or an
+    /// observation exists that no prefix counts — which is the hole this arm
+    /// was added to close, reopened by a name.
+    #[test]
+    fn every_door_name_sits_under_exactly_one_of_the_three_families() {
+        let families = ["door.vouched", "door.floor", "door.refused"];
+        let mut emitted: Vec<&'static str> = vec!["door.vouched", DOOR_LOCK_CONTENDED];
+        for trigger in FloorTrigger::ALL {
+            let (completed, refused) = trigger.door();
+            emitted.push(completed);
+            emitted.push(refused);
+        }
+        for name in &emitted {
+            let hits: Vec<&str> = families
+                .iter()
+                .copied()
+                .filter(|f| name.starts_with(f))
+                .collect();
+            assert_eq!(
+                hits.len(),
+                1,
+                "{name:?} sits under {hits:?} of the three door families — it must sit under \
+                 exactly one, or the three stop partitioning the population"
+            );
+        }
+        assert!(
+            DOOR_LOCK_CONTENDED.starts_with("door.refused."),
+            "the pre-arm refusal must carry its CAUSE under the `door.refused` prefix, so the \
+             prefix keeps answering 'how many never reached an arm' when a second cause is \
+             added: {DOOR_LOCK_CONTENDED:?}"
+        );
+    }
 
     /// The two properties an operator's grep depends on: the prefix counts
     /// ENTRIES for its family, and the `.refused` suffix separates the passes
@@ -1528,12 +1583,15 @@ impl Registry {
     /// The floor names carry their [`FloorTrigger`] and count entries, exactly
     /// as on the read plane.
     ///
-    /// This plane has one outcome the read plane does not: `phase=door.refused`
-    /// — the memo lock stayed held for its whole budget, so the observation was
-    /// refused BEFORE either arm was chosen. It is counted for the same reason
-    /// the floor's refusals are: it happens under contention, and an
-    /// observation that vanishes under load takes the pair's denominator with
-    /// it.
+    /// This plane has one outcome the read plane does not:
+    /// `phase=door.refused.lock_contended` ([`DOOR_LOCK_CONTENDED`]) — the memo
+    /// lock stayed held for its whole budget, so the observation was refused
+    /// BEFORE either arm was chosen. It is counted for the same reason the
+    /// floor's refusals are: it happens under contention, and an observation
+    /// that vanishes under load takes the pair's denominator with it.
+    ///
+    /// So the door's three families — `door.vouched`, `door.floor`,
+    /// `door.refused` — partition every observation this function makes.
     ///
     /// # Errors
     /// I/O failure on the floor pass (the vouched path does no I/O).
@@ -1599,9 +1657,17 @@ impl Registry {
             // else. Silence here would take the observation out of both halves
             // of the pair — and the pair is the measurement, so a denominator
             // that shrinks under load is the same defect as a numerator that
-            // does. It reports under its own name instead.
+            // does. It reports under its own name instead, with its cause,
+            // like every other name in this grammar.
+            //
+            // The read plane has no counterpart and that ABSENCE is a fact,
+            // not an oversight: it reaches this same `lock_within` through
+            // `patched_cache` with a budget of `None`, which returns `Ok`
+            // before the wait loop is ever entered (guarded there by an
+            // `unreachable!`). Same callee, same signature, different
+            // REACHABLE ERROR SET — decided by one argument at the call site.
             Err(e) => {
-                floor_span.stop_as("door.refused");
+                floor_span.stop_as(DOOR_LOCK_CONTENDED);
                 return Err(e);
             }
         };
