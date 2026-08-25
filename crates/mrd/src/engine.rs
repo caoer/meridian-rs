@@ -585,8 +585,9 @@ fn unresolved_keys(body: &Value) -> impl Iterator<Item = &str> {
 /// config will not resolve or the table will not bind; the caller degrades rather than guess
 /// at a table it cannot read.
 fn declared_mount_set() -> Option<addr::MountSet> {
-    let resolution = config::resolve(&config::Env::from_process()).ok()?;
-    let table = resolution.bind().ok()?;
+    let env = config::Env::from_process();
+    let resolution = config::resolve(&env).ok()?;
+    let table = resolution.bind(&env).ok()?;
     Some(table.projection())
 }
 

@@ -425,6 +425,13 @@ write. `alias:` maps ONE agreed constant, `sessions:`, onto whatever each machin
 without the engine learning the name and without `primary:` acquiring a meaning it never had (ZT,
 2026-08-23: `primary` is not consulted for `sessions`, or for anything else).
 
+**The table may carry the constant's default (schema §5.1c, 2026-08-24).** On a machine where no
+mount is named or aliased `sessions`, the bound table itself gains the implicit default mount —
+`sessions` at `$HOME/.local/share/ucc/sessions`, only when it binds clean. The LOOKUP above is
+untouched: the implicit mount is found by `name`, first rung, same seam. This is the law's own
+"defaulted in code at most" boundary, not a third opinion at a door — a declared name or alias
+suppresses the default entirely, so the engine still learns no name any user has chosen.
+
 **Name-first is what removes the special case.** A machine whose root is already NAMED `sessions`
 declares no alias and resolves `sessions:` anyway — a name is its own alias. The order is never a
 tie-break, because a table where a name and an alias both answer one spelling does not load

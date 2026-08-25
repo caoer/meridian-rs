@@ -420,7 +420,7 @@ fn an_empty_table_is_unchecked_in_both_of_its_shapes() {
     let absent = crate::Resolution::Absent {
         path: PathBuf::from("/nowhere/MERIDIAN.md"),
     }
-    .bind()
+    .bind(&crate::Env::default())
     .expect("the absent table binds empty");
 
     // State D — a clean parse declaring zero mounts.
