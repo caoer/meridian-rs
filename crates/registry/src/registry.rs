@@ -376,6 +376,279 @@ fn apply_pending(
     Some(outcome)
 }
 
+/// The WRITE plane's one pre-arm refusal: the door's memo lock stayed held for
+/// its whole budget, so the observation was refused before either arm could be
+/// chosen.
+///
+/// Named `door.refused.<cause>` rather than bare `door.refused` so the prefix
+/// answers "how many observations never reached an arm" for every cause,
+/// including one added later — and rather than `door.<cause>.refused`, which
+/// would make `door.refused` match nothing and force an operator to know every
+/// cause name before they could ask the question at all.
+///
+/// **The read plane has no counterpart, and that absence is a fact about the
+/// call site rather than an omission here.** Both planes reach the same
+/// [`fs::lock_within`]; the read plane passes a budget of `None`, for which it
+/// returns `Ok` before entering the wait loop, so `WouldBlock` is unreachable
+/// there — [`Registry::patched_cache`] asserts exactly that with an
+/// `unreachable!`. Same callee, same signature, different reachable error set,
+/// decided by one argument at the call site.
+pub(crate) const DOOR_LOCK_CONTENDED: &str = "door.refused.lock_contended";
+
+/// WHICH of the vouch's terms sent a pass to the §6.2 extent-refresh floor.
+///
+/// The conjunction has four terms but SIX causes: a single `seen` bool used
+/// to collapse "no live feed" — a cold start, where vouching is impossible by
+/// construction — into the same value as a feed that answered and refused.
+/// Those are opposite facts about a daemon (one is a lifecycle event, the
+/// other is load), so they are named apart here, and the cookie's own two
+/// refusals are named apart from each other as well.
+///
+/// Produced by [`vouch`] at the branch that decides, so the name a floor line
+/// carries is causally derived from the term that actually failed. There is no
+/// second list of names that could drift from the branches producing them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FloorTrigger {
+    /// No live feed for this workspace, so the cookie barrier could not run at
+    /// all. A COLD START: vouching was impossible, not refused.
+    NoFeed,
+    /// The cookie barrier timed out or hit I/O failure
+    /// ([`feed::CookieOutcome::Unproven`]) — no proof either way. The only
+    /// TIME-BOUNDED trigger, and therefore the only one that rises with load.
+    CookieUnproven,
+    /// The cookie was refused by construction
+    /// ([`feed::CookieOutcome::Refused`]): the rel would enter the hash domain.
+    CookieRefused,
+    /// The applied set collapsed doubt (`Reset` / `Sweep` / `Rebaselined`).
+    Collapse,
+    /// The §6.2 close does not hold the memo trusted.
+    Untrusted,
+    /// The resident overlay could not fold a root.
+    NoOverlay,
+}
+
+impl FloorTrigger {
+    /// This trigger's READ-plane phase names: `(completed, refused)` — the
+    /// floor pass that ran to completion, and the floor pass that was entered
+    /// and refused on I/O.
+    ///
+    /// Every name is a literal, so the whole emitted grammar is greppable in
+    /// this file and no phase name is ever built at runtime. The refused name
+    /// is the completed name plus `.refused`, which is what makes a prefix
+    /// count ENTRIES rather than completions.
+    pub(crate) const fn currency(self) -> (&'static str, &'static str) {
+        match self {
+            Self::NoFeed => ("currency.floor.no_feed", "currency.floor.no_feed.refused"),
+            Self::CookieUnproven => (
+                "currency.floor.cookie_unproven",
+                "currency.floor.cookie_unproven.refused",
+            ),
+            Self::CookieRefused => (
+                "currency.floor.cookie_refused",
+                "currency.floor.cookie_refused.refused",
+            ),
+            Self::Collapse => ("currency.floor.collapse", "currency.floor.collapse.refused"),
+            Self::Untrusted => (
+                "currency.floor.untrusted",
+                "currency.floor.untrusted.refused",
+            ),
+            Self::NoOverlay => (
+                "currency.floor.no_overlay",
+                "currency.floor.no_overlay.refused",
+            ),
+        }
+    }
+
+    /// The same pair on the WRITE plane. A different population — one
+    /// observation per write, against the read plane's one per currency pass —
+    /// so the names are separate and the two are never summed.
+    pub(crate) const fn door(self) -> (&'static str, &'static str) {
+        match self {
+            Self::NoFeed => ("door.floor.no_feed", "door.floor.no_feed.refused"),
+            Self::CookieUnproven => (
+                "door.floor.cookie_unproven",
+                "door.floor.cookie_unproven.refused",
+            ),
+            Self::CookieRefused => (
+                "door.floor.cookie_refused",
+                "door.floor.cookie_refused.refused",
+            ),
+            Self::Collapse => ("door.floor.collapse", "door.floor.collapse.refused"),
+            Self::Untrusted => ("door.floor.untrusted", "door.floor.untrusted.refused"),
+            Self::NoOverlay => ("door.floor.no_overlay", "door.floor.no_overlay.refused"),
+        }
+    }
+
+    /// Every trigger, for tests and for anyone enumerating the grammar. A
+    /// population, not a grep: a name that falls out of this list is a name no
+    /// reader will know to look for.
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 6] = [
+        Self::NoFeed,
+        Self::CookieUnproven,
+        Self::CookieRefused,
+        Self::Collapse,
+        Self::Untrusted,
+        Self::NoOverlay,
+    ];
+}
+
+/// The §6.7 vouch, adjudicated in the conjunction's own order — ONE copy,
+/// shared by the read plane ([`Registry::currency_refresh`]) and the write
+/// door ([`Registry::door_observation`]), so the two planes cannot disagree
+/// about what vouching means or about which term refused it.
+///
+/// `Ok(root)` is the O(1) fast path: no walk, no stat, no byte read.
+/// `Err(trigger)` names the FIRST term that failed — the cause the floor line
+/// that follows must carry.
+///
+/// Short-circuit is preserved exactly as the `&&` chain had it:
+/// `guard_currency` is consulted only once the cookie and the collapse have
+/// passed, and `overlay_root` only after that. No term is evaluated that the
+/// chain would have skipped.
+fn vouch(
+    cookie: Option<feed::CookieOutcome>,
+    collapse: bool,
+    memo: &mut fs::DomainCache,
+) -> Result<model::MerkleRoot, FloorTrigger> {
+    match cookie {
+        None => return Err(FloorTrigger::NoFeed),
+        Some(feed::CookieOutcome::Unproven) => return Err(FloorTrigger::CookieUnproven),
+        Some(feed::CookieOutcome::Refused) => return Err(FloorTrigger::CookieRefused),
+        Some(feed::CookieOutcome::Seen) => {}
+    }
+    if collapse {
+        return Err(FloorTrigger::Collapse);
+    }
+    if !matches!(memo.guard_currency(), fs::stable::GuardCurrency::Trusted) {
+        return Err(FloorTrigger::Untrusted);
+    }
+    memo.overlay_root().map_err(|_| FloorTrigger::NoOverlay)
+}
+
+#[cfg(test)]
+mod floor_grammar {
+    //! The emitted floor grammar, checked over the ENUMERATED trigger set
+    //! rather than by grepping for names — a name that falls out of
+    //! [`FloorTrigger::ALL`] is a name no reader will know to look for, and a
+    //! grep cannot report an absence it was not asked about.
+
+    use super::{DOOR_LOCK_CONTENDED, FloorTrigger};
+    use std::collections::BTreeSet;
+
+    /// **Three families partition the write-door population**, and an operator
+    /// reads the door by asking each one: `door.vouched` took the fast path,
+    /// `door.floor` fell to the floor, `door.refused` never reached an arm.
+    /// Every emitted door name must sit under exactly one of them, or an
+    /// observation exists that no prefix counts — which is the hole this arm
+    /// was added to close, reopened by a name.
+    #[test]
+    fn every_door_name_sits_under_exactly_one_of_the_three_families() {
+        let families = ["door.vouched", "door.floor", "door.refused"];
+        let mut emitted: Vec<&'static str> = vec!["door.vouched", DOOR_LOCK_CONTENDED];
+        for trigger in FloorTrigger::ALL {
+            let (completed, refused) = trigger.door();
+            emitted.push(completed);
+            emitted.push(refused);
+        }
+        for name in &emitted {
+            let hits: Vec<&str> = families
+                .iter()
+                .copied()
+                .filter(|f| name.starts_with(f))
+                .collect();
+            assert_eq!(
+                hits.len(),
+                1,
+                "{name:?} sits under {hits:?} of the three door families — it must sit under \
+                 exactly one, or the three stop partitioning the population"
+            );
+        }
+        assert!(
+            DOOR_LOCK_CONTENDED.starts_with("door.refused."),
+            "the pre-arm refusal must carry its CAUSE under the `door.refused` prefix, so the \
+             prefix keeps answering 'how many never reached an arm' when a second cause is \
+             added: {DOOR_LOCK_CONTENDED:?}"
+        );
+    }
+
+    /// The two properties an operator's grep depends on: the prefix counts
+    /// ENTRIES for its family, and the `.refused` suffix separates the passes
+    /// that finished from the passes that were only entered.
+    #[test]
+    fn every_trigger_names_an_entry_and_its_refusal_under_the_family_prefix() {
+        for trigger in FloorTrigger::ALL {
+            for (family, (completed, refused)) in [
+                ("currency.floor.", trigger.currency()),
+                ("door.floor.", trigger.door()),
+            ] {
+                assert!(
+                    completed.starts_with(family),
+                    "{trigger:?} completed name {completed:?} is outside {family:?}, so a \
+                     `phase={family}` prefix would not count it"
+                );
+                assert_eq!(
+                    refused,
+                    format!("{completed}.refused"),
+                    "{trigger:?}: the refusal must be the completed name plus `.refused`, or \
+                     the family prefix stops counting entries and starts counting completions \
+                     — the bias this grammar exists to remove"
+                );
+            }
+        }
+    }
+
+    /// Distinctness over the whole population. Two triggers sharing a name
+    /// would silently merge two causes back into one number, which is the
+    /// defect the trigger split exists to fix.
+    #[test]
+    fn all_twenty_four_names_are_distinct_and_carry_no_space() {
+        let names: Vec<&'static str> = FloorTrigger::ALL
+            .iter()
+            .flat_map(|t| {
+                let (cc, cr) = t.currency();
+                let (dc, dr) = t.door();
+                [cc, cr, dc, dr]
+            })
+            .collect();
+        assert_eq!(names.len(), 24, "six triggers, two planes, two outcomes");
+        let unique: BTreeSet<&str> = names.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            names.len(),
+            "a duplicated phase name merges two causes into one count: {names:?}"
+        );
+        for name in &names {
+            assert!(
+                !name.contains(' '),
+                "{name:?} carries a space, and the `mrd-timing` line is space-separated — the \
+                 field would mint a grammar the parser does not have"
+            );
+        }
+    }
+
+    /// The family names are PREFIXES, never emitted lines. If a bare
+    /// `currency.floor` were also emitted, the prefix count would double-count
+    /// every pass.
+    #[test]
+    fn the_family_names_are_never_themselves_emitted() {
+        let emitted: BTreeSet<&str> = FloorTrigger::ALL
+            .iter()
+            .flat_map(|t| {
+                let (cc, cr) = t.currency();
+                let (dc, dr) = t.door();
+                [cc, cr, dc, dr]
+            })
+            .collect();
+        for family in ["currency.floor", "door.floor"] {
+            assert!(
+                !emitted.contains(family),
+                "{family:?} is the family prefix and must not also be an emitted name"
+            );
+        }
+    }
+}
+
 impl Registry {
     /// Build a registry seeded with `entries` (loaded from the state file),
     /// persisting to `state` and writing drawer sentinels under `cache_root`.
@@ -792,7 +1065,7 @@ impl Registry {
             // never stands in for the content root.
             // The vouch is still bound to `_` HERE, and that is now a choice
             // rather than an oversight: `currency_refresh` emits the arm it
-            // took on its own (`currency.vouched` / `currency.floor`), so the
+            // took on its own (`currency.vouched` / `currency.floor.*`), so the
             // split is observable for EVERY caller — this one, `sql_op::serve`,
             // and the prewarm sweep that reaches this same function through
             // `warm_or_build`. Surfacing it at this one call site instead would
@@ -1172,15 +1445,26 @@ impl Registry {
     /// full stat sweep), `vouched == false`. The floor re-derives; it never
     /// silently trusts.
     ///
-    /// **Which arm ran is emitted**, one line per completed pass, on the
-    /// `MRD_TIMING` lane: `phase=currency.vouched` or `phase=currency.floor`
-    /// (`docs/run-plane.md` § Timing phases). The pair is the whole point —
-    /// a floor count with no vouched count is a numerator with no
-    /// denominator, and "how often does the floor run" is a RATIO. Emitted
-    /// HERE, at the site that decides, rather than at any one caller: this
-    /// function has three production callers ([`Self::warm_or_build`], the
-    /// prewarm sweep through it, and `sql_op::serve`), and instrumenting one
-    /// of them would undercount by construction. Off, the switch reads no
+    /// **Which arm ran is emitted**, one line per pass, on the `MRD_TIMING`
+    /// lane: `phase=currency.vouched`, or a `phase=currency.floor.*` name that
+    /// says WHICH of the six causes sent the pass to the floor and whether
+    /// the pass completed ([`FloorTrigger`]; `docs/run-plane.md` § Timing
+    /// phases). The pair is the whole point — a floor count with no vouched
+    /// count is a numerator with no denominator, and "how often does the floor
+    /// run" is a RATIO.
+    ///
+    /// **The floor's refusals are counted, not dropped.** A pass that returns
+    /// on I/O failure stops its span under a `.refused` name, so
+    /// `phase=currency.floor` counts every pass that ENTERED the floor and the
+    /// `.refused` suffix separates the ones that finished. Counting only
+    /// completions would make the number FALL exactly when the floor is being
+    /// hit hardest, which is the one condition the instrument exists to
+    /// reveal.
+    ///
+    /// Emitted HERE, at the site that decides, rather than at any one caller:
+    /// this function has three production callers ([`Self::warm_or_build`],
+    /// the prewarm sweep through it, and `sql_op::serve`), and instrumenting
+    /// one of them would undercount by construction. Off, the switch reads no
     /// clock and this costs nothing.
     ///
     /// # Errors
@@ -1195,8 +1479,12 @@ impl Registry {
         // memo borrow) plus the sweep — two spans that started anywhere else
         // would not be comparable. Exactly one is ever stopped; the other
         // goes out of scope unstopped and, by this crate's contract, reports
-        // NOTHING. That is what makes each emitted line mean "this arm ran to
-        // completion" rather than "this arm was entered".
+        // NOTHING.
+        //
+        // The floor span is constructed under the FAMILY name and every stop
+        // REFINES it (`stop_as`), so no bare `currency.floor` line is ever
+        // emitted: each one says which of the six causes sent the pass there
+        // and whether the pass completed.
         let vouched_span = timing::phase("currency.vouched");
         let floor_span = timing::phase("currency.floor");
         let feed = {
@@ -1211,30 +1499,41 @@ impl Registry {
         // before the sentinel write was delivered, so the apply that
         // follows folds in everything this question must see. The wait
         // parks on the feed handle, outside every registry lock.
-        let seen = feed.is_some_and(|feed| {
-            feed.cookie_barrier(workspace, timeout) == feed::CookieOutcome::Seen
-        });
+        //
+        // The outcome is kept UNCOLLAPSED. `None` is "no live feed" — a cold
+        // start; `Unproven` is a two-second timeout under contention. Folding
+        // both into one bool is what left the floor's rate unattributable.
+        let cookie = feed.map(|feed| feed.cookie_barrier(workspace, timeout));
         let (cache, applied) = self.patched_cache(workspace);
         let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
         let collapse = matches!(
             applied,
             Some(feed::Applied::Reset | feed::Applied::Sweep(_) | feed::Applied::Rebaselined(_))
         );
-        if seen
-            && !collapse
-            && matches!(memo.guard_currency(), fs::stable::GuardCurrency::Trusted)
-            && let Ok(root) = memo.overlay_root()
-        {
-            vouched_span.stop();
-            return Ok((root, true));
+        let trigger = match vouch(cookie, collapse, &mut memo) {
+            Ok(root) => {
+                vouched_span.stop();
+                return Ok((root, true));
+            }
+            Err(trigger) => trigger,
+        };
+        // The FALLBACK. A pass that refused is not a pass that RAN — but it is
+        // a pass that was ENTERED, and under I/O pressure the abandoned arm is
+        // the one that grows. Silence there would drop the floor's count
+        // exactly when the floor is being hit hardest, so the refusal reports
+        // under its own name: the two names partition this trigger's entries,
+        // and a `currency.floor` prefix counts every one of them.
+        let (completed, refused) = trigger.currency();
+        match memo.root(&fs::WorkspaceRoot(workspace.to_path_buf())) {
+            Ok(root) => {
+                floor_span.stop_as(completed);
+                Ok((root, false))
+            }
+            Err(e) => {
+                floor_span.stop_as(refused);
+                Err(e)
+            }
         }
-        // The FALLBACK. `?` returns without stopping the span on an I/O
-        // failure, deliberately: a floor pass that refused is not a floor
-        // pass that ran, and counting it would inflate the very number this
-        // instrument exists to make honest.
-        let root = memo.root(&fs::WorkspaceRoot(workspace.to_path_buf()))?;
-        floor_span.stop();
-        Ok((root, false))
     }
 
     /// The §6.7 LATENCY-ONLY quiet check: `true` iff the workspace's feed is
@@ -1276,11 +1575,23 @@ impl Registry {
     /// `root_after` would fold from two different trees.
     ///
     /// **Which arm ran is emitted** on the `MRD_TIMING` lane, as
-    /// `phase=door.vouched` / `phase=door.floor` — the WRITE plane's own pair,
-    /// named apart from `currency.*` because this is a different population:
-    /// one observation per write, inside the D9 flock, against the read
-    /// plane's one per currency pass. Summing the two pairs would answer no
-    /// question either of them asks (`docs/run-plane.md` § Timing phases).
+    /// `phase=door.vouched` / `phase=door.floor.*` — the WRITE plane's own
+    /// pair, named apart from `currency.*` because this is a different
+    /// population: one observation per write, inside the D9 flock, against the
+    /// read plane's one per currency pass. Summing the two pairs would answer
+    /// no question either of them asks (`docs/run-plane.md` § Timing phases).
+    /// The floor names carry their [`FloorTrigger`] and count entries, exactly
+    /// as on the read plane.
+    ///
+    /// This plane has one outcome the read plane does not:
+    /// `phase=door.refused.lock_contended` ([`DOOR_LOCK_CONTENDED`]) — the memo
+    /// lock stayed held for its whole budget, so the observation was refused
+    /// BEFORE either arm was chosen. It is counted for the same reason the
+    /// floor's refusals are: it happens under contention, and an observation
+    /// that vanishes under load takes the pair's denominator with it.
+    ///
+    /// So the door's three families — `door.vouched`, `door.floor`,
+    /// `door.refused` — partition every observation this function makes.
     ///
     /// # Errors
     /// I/O failure on the floor pass (the vouched path does no I/O).
@@ -1290,7 +1601,8 @@ impl Registry {
         cache: &Arc<Mutex<fs::DomainCache>>,
         timeout: Duration,
     ) -> io::Result<model::MerkleRoot> {
-        // Timed from entry, exactly one stopped — see `currency_refresh`.
+        // Timed from entry, exactly one stopped, the floor's name refined at
+        // the branch that decides — see `currency_refresh`.
         let vouched_span = timing::phase("door.vouched");
         let floor_span = timing::phase("door.floor");
         let feed = {
@@ -1308,9 +1620,13 @@ impl Registry {
         // lock — the caller holds the write flock, which serializes
         // cooperating writers only; the watcher thread it waits on never
         // takes that flock.
-        let seen = feed.as_ref().is_some_and(|feed| {
-            feed.cookie_barrier(workspace, timeout) == feed::CookieOutcome::Seen
-        });
+        //
+        // Kept UNCOLLAPSED, as on the read plane: `None` is a cold start,
+        // `Unproven` is a timeout under contention, and they are opposite
+        // facts about the daemon.
+        let cookie = feed
+            .as_ref()
+            .map(|feed| feed.cookie_barrier(workspace, timeout));
         // The door's SECOND bounded wait (card
         // `engine-splice-timeout-hits-rotation-seals`). It gets its own full
         // `timeout` rather than the cookie's remainder: a barrier that spent
@@ -1334,7 +1650,27 @@ impl Registry {
         // Unlike the arm's entry wait, this one runs INSIDE the D9 write
         // flock, so an unbounded park here also holds the workspace's one
         // write token against every other writer.
-        let mut memo = fs::lock_within(cache, Some(timeout))?;
+        let mut memo = match fs::lock_within(cache, Some(timeout)) {
+            Ok(memo) => memo,
+            // Refused BEFORE either arm was chosen: the memo lock stayed held
+            // for its whole budget, which is a CONTENTION outcome and nothing
+            // else. Silence here would take the observation out of both halves
+            // of the pair — and the pair is the measurement, so a denominator
+            // that shrinks under load is the same defect as a numerator that
+            // does. It reports under its own name instead, with its cause,
+            // like every other name in this grammar.
+            //
+            // The read plane has no counterpart and that ABSENCE is a fact,
+            // not an oversight: it reaches this same `lock_within` through
+            // `patched_cache` with a budget of `None`, which returns `Ok`
+            // before the wait loop is ever entered (guarded there by an
+            // `unreachable!`). Same callee, same signature, different
+            // REACHABLE ERROR SET — decided by one argument at the call site.
+            Err(e) => {
+                floor_span.stop_as(DOOR_LOCK_CONTENDED);
+                return Err(e);
+            }
+        };
         let applied = feed
             .as_ref()
             .and_then(|feed| apply_pending(workspace, &mut memo, feed));
@@ -1342,19 +1678,27 @@ impl Registry {
             applied,
             Some(feed::Applied::Reset | feed::Applied::Sweep(_) | feed::Applied::Rebaselined(_))
         );
-        if seen
-            && !collapse
-            && matches!(memo.guard_currency(), fs::stable::GuardCurrency::Trusted)
-            && let Ok(root) = memo.overlay_root()
-        {
-            vouched_span.stop();
-            return Ok(root);
+        let trigger = match vouch(cookie, collapse, &mut memo) {
+            Ok(root) => {
+                vouched_span.stop();
+                return Ok(root);
+            }
+            Err(trigger) => trigger,
+        };
+        // The FALLBACK, on the write plane. As on the read plane, a refused
+        // pass is not a pass that ran — but it was entered, so it reports
+        // under its own name rather than vanishing.
+        let (completed, refused) = trigger.door();
+        match memo.root(&fs::WorkspaceRoot(workspace.to_path_buf())) {
+            Ok(root) => {
+                floor_span.stop_as(completed);
+                Ok(root)
+            }
+            Err(e) => {
+                floor_span.stop_as(refused);
+                Err(e)
+            }
         }
-        // The FALLBACK, on the write plane. As above, a refused pass is not a
-        // pass: only the `Ok` arm stops the span.
-        let root = memo.root(&fs::WorkspaceRoot(workspace.to_path_buf()))?;
-        floor_span.stop();
-        Ok(root)
     }
 
     /// Restore this workspace's §6.5 checkpoint, adjudicating its journal
