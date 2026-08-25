@@ -1379,8 +1379,8 @@ impl SqlStore {
     }
 
     /// Open a caller-owned read on this store's `DuckDB` instance: a fresh
-    /// connection with its `BEGIN` already issued, so the snapshot it will
-    /// answer from is the one visible AT THIS CALL.
+    /// connection whose snapshot is already pinned, so the rows it will
+    /// answer from are the ones visible AT THIS CALL.
     ///
     /// **This is the seam that un-serializes `sql`.** The returned [`SqlRead`]
     /// borrows nothing from the store — it owns its connection, it is `Send`,
@@ -1389,21 +1389,33 @@ impl SqlStore {
     /// and RELEASE THE MUTEX before running the query; the query then costs
     /// other callers nothing but `DuckDB`'s own MVCC.
     ///
-    /// **Why `BEGIN` here and not in [`SqlRead::run`].** The transaction pins
-    /// the read's snapshot, and it must be pinned while the caller still holds
-    /// the store — otherwise a concurrent caller's append could commit between
-    /// the release and the query, and the answer would carry rows NEWER than
-    /// the `as_of` fingerprint the served body reports. Taking the snapshot
-    /// under the lock keeps the served answer exactly as fresh as it claims to
-    /// be (§Q3 honest tense), while the expensive part — the query — runs
-    /// outside it. Pinned by
-    /// `a_read_opened_before_an_append_does_not_see_that_append`.
+    /// **Why the snapshot is taken here and not in [`SqlRead::run`].** It must
+    /// be pinned while the caller still holds the store — otherwise a
+    /// concurrent caller's append could commit between the release and the
+    /// query, and the answer would carry rows NEWER than the `as_of`
+    /// fingerprint the served body reports. Pinning it under the lock keeps
+    /// the served answer exactly as fresh as it claims to be (§Q3 honest
+    /// tense), while the expensive part — the query — runs outside it.
+    ///
+    /// **`BEGIN` ALONE DOES NOT PIN IT, which is measured, not assumed.**
+    /// `DuckDB` starts the transaction at its first real statement, not at
+    /// `BEGIN`, so a `BEGIN`-only read saw an append that landed after it
+    /// (4 rows where 3 were pinned —
+    /// `a_read_opened_before_an_append_does_not_see_that_append`, which failed
+    /// exactly this way before the forcing read below existed). The
+    /// `hist.pin` read is what makes the transaction real: it touches the
+    /// persisted storage the caller's own query will read, so the version it
+    /// resolves is the one the whole transaction keeps. It is one row off the
+    /// smallest table in the file.
     ///
     /// # Errors
-    /// The connection cannot be cloned, or `BEGIN` fails.
+    /// The connection cannot be cloned, or `BEGIN` / the forcing read fails.
     pub fn begin_read(&self) -> Result<SqlRead, ViewError> {
         let conn = self.conn.try_clone()?;
         conn.execute_batch("BEGIN")?;
+        // Not a health check and not a warm-up: this is the statement that
+        // MAKES the snapshot. Removing it silently re-opens the freshness lie.
+        conn.execute_batch("SELECT gen FROM hist.pin LIMIT 1")?;
         Ok(SqlRead {
             conn,
             baseline: Arc::clone(&self.baseline),
@@ -1492,7 +1504,9 @@ impl std::fmt::Debug for SqlRead {
 
 impl SqlRead {
     /// Finish the rollback lane: `statement → collect → ROLLBACK → restore
-    /// config`. The `BEGIN` was issued by [`SqlStore::begin_read`]. One
+    /// config`. The transaction was opened and PINNED by
+    /// [`SqlStore::begin_read`] — see there for why `BEGIN` alone is not
+    /// enough. One
     /// execution path for every caller (the NO-SANDBOX ruling, 2026-08-14): no
     /// profile, no lock — spill containment is already in force instance-wide
     /// from open.
