@@ -1142,6 +1142,16 @@ fn to_line<T: Serialize>(value: &T) -> String {
 }
 
 /// Map one admin request onto a registry operation and its response.
+///
+/// **`ping` touches no registry state, and that is load-bearing.** It is the
+/// evidence [`crate::wedge`] draws its two verdicts from — *died mid-request*
+/// versus *up, and wedged* — so a `ping` that queued behind the map guard would
+/// give a map-stalled daemon the ABSENT verdict and send its reader to the
+/// opposite remedy. [`crate::Client::ping`] carries the same signal into
+/// `engine::ensure_daemon`, which spawns a daemon on a false negative. The
+/// instrument that DOES see a map stall is [`crate::wedge::read_line`]'s
+/// cap-spent arm, which names it wedged rather than gone.
+/// (Gated: `registry::liveness_guard_tests`.)
 fn dispatch_admin(registry: &Registry, request: Request) -> Response {
     match request {
         Request::Ping => Response::Pong,
