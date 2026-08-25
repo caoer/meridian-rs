@@ -335,6 +335,10 @@ fn connect_or_spawn(client: &Client) -> std::io::Result<UnixStream> {
 /// is NOT such a failure: it comes back as [`DaemonRead::Refused`] carrying the engine's frame.
 fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
     let client = Client::from_default().ok()?;
+    // `.ok()?` here on purpose: this failure means nothing was reachable and no daemon came
+    // up, and `engine::ensure_daemon` has already recorded the richer fact — the child's own
+    // dying words. A dial verdict recorded here would overwrite that quote with a connect
+    // error, which is the same fact spelled worse.
     let stream = connect_or_spawn(&client).ok()?;
     let mut writer = stream.try_clone().ok()?;
     let mut reader = BufReader::new(stream);
@@ -345,7 +349,16 @@ fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
         "contract": "v3",
         "workspace": workspace.to_string_lossy(),
     });
-    let greeted = engine::call(&mut writer, &mut reader, client.socket_path(), &hello).ok()?;
+    // `served_or_recorded`, not `.ok()?`: an exchange that fails on the wire has already been
+    // judged by `registry::wedge` — wedged, dead mid-request, or a plain fault — and that
+    // verdict is what `engine::voice_degrade` states below. Dropping it here is what made a
+    // 60-second wedge look like a merely slow, correct answer.
+    let greeted = engine::served_or_recorded(engine::call(
+        &mut writer,
+        &mut reader,
+        client.socket_path(),
+        &hello,
+    ))?;
     if greeted.get("ok").and_then(Value::as_bool) != Some(true) {
         return None;
     }
@@ -355,8 +368,12 @@ fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
         return Some(DaemonRead::Skew(message));
     }
 
-    let response =
-        engine::call(&mut writer, &mut reader, client.socket_path(), &r.request()).ok()?;
+    let response = engine::served_or_recorded(engine::call(
+        &mut writer,
+        &mut reader,
+        client.socket_path(),
+        &r.request(),
+    ))?;
     if response.get("ok").and_then(Value::as_bool) == Some(true) {
         let body = response.get("body")?.clone();
         let mint = match mint_scoped_token(
