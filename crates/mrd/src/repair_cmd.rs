@@ -272,10 +272,11 @@ struct PinSite {
 /// every form-3 row then states, exactly as before the narrowing.
 fn mounted_roots() -> BTreeMap<addr::MountName, PathBuf> {
     let mut out = BTreeMap::new();
-    let Ok(resolution) = config::resolve(&config::Env::from_process()) else {
+    let env = config::Env::from_process();
+    let Ok(resolution) = config::resolve(&env) else {
         return out;
     };
-    let Ok(table) = resolution.bind() else {
+    let Ok(table) = resolution.bind(&env) else {
         return out;
     };
     for mount in table.mounts() {

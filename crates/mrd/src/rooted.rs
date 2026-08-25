@@ -82,6 +82,21 @@ pub(crate) fn alias_teaching(name: &addr::MountName) -> String {
     format!("declare `alias: {name}` on the mount that holds that tree")
 }
 
+/// The default half of the unbound-root refusal, for the ONE defaulted
+/// spelling (`meridian-md-schema.md` § 5.1c): `sessions:` resolves with no
+/// declaration at all once the default tree is scaffolded, so the refusal
+/// names the scaffold beside the alias line. Empty for every other name —
+/// nothing else is defaulted.
+pub(crate) fn default_teaching(name: &addr::MountName) -> String {
+    if name.as_str() != config::mount::DEFAULT_SESSIONS_NAME {
+        return String::new();
+    }
+    format!(
+        " Or scaffold the implicit default: mkdir -p ~/{sub} && mrd init ~/{sub} --name {name}.",
+        sub = config::mount::DEFAULT_SESSIONS_SUBPATH
+    )
+}
+
 /// The peel-then-admit sequence, one call per door: `Ok(None)` for an ambient
 /// spelling — the caller's own §1 admission still applies to it — and
 /// `Ok(Some((rel, rooted)))` for a rooted spelling, resolved through
@@ -169,13 +184,14 @@ pub(crate) fn resolve_name(
     // The table, read fresh per call (the currency law the engine's pin door
     // and the MCP face both hold): a stale table would serve yesterday's
     // topology.
-    let resolution = config::resolve(&config::Env::from_process()).map_err(|e| {
+    let env = config::Env::from_process();
+    let resolution = config::resolve(&env).map_err(|e| {
         refuse(format!(
             "{spelling} names root `{name}`, but this machine's mount table cannot be \
              resolved ({e}), so the name binds to no workspace. {consequence}"
         ))
     })?;
-    let table = resolution.bind().map_err(|e| {
+    let table = resolution.bind(&env).map_err(|e| {
         refuse(format!(
             "{spelling} names root `{name}`, but this machine's mount table refuses to bind \
              ({e}), so the name binds to no workspace. {consequence}"
@@ -198,13 +214,14 @@ pub(crate) fn resolve_name(
             "{spelling} names root `{name}`, which this machine does not bind (bound roots: \
              {}). {consequence} Fix: declare the mount in ~/MERIDIAN.md (name / path), or {} \
              — a root is looked up by name first and only then by alias, so the tree may \
-             already be here under another name; see [[address-grammar]].",
+             already be here under another name; see [[address-grammar]].{}",
             if names.is_empty() {
                 "none".to_owned()
             } else {
                 names.join(", ")
             },
-            alias_teaching(name)
+            alias_teaching(name),
+            default_teaching(name)
         )));
     };
     if mount.state().refuses() {

@@ -51,6 +51,14 @@ pub const DECLARATION_FILENAME: &str = CONFIG_FILENAME;
 /// The `type:` discriminator a root's self-declaration carries.
 pub const DECLARATION_TYPE: &str = "meridian-root";
 
+/// The one defaulted root name (schema §5.1c) — the constant consumers already
+/// spell (§5.1b). The implicit default mount answers to it when no declared
+/// mount is named or aliased this.
+pub const DEFAULT_SESSIONS_NAME: &str = "sessions";
+
+/// The implicit default mount's path, relative to `$HOME` (schema §5.1c).
+pub const DEFAULT_SESSIONS_SUBPATH: &str = ".local/share/ucc/sessions";
+
 /// The declaration's required frontmatter keys, in canonical order. `name` is
 /// the canonical root name the root claims for itself.
 pub const DECLARATION_KEYS: [&str; 3] = ["type", "version", "name"];
@@ -302,6 +310,7 @@ pub struct Mount {
     declared_name: Option<String>,
     fence_line: usize,
     state: MountState,
+    implicit: bool,
 }
 
 impl Mount {
@@ -378,6 +387,15 @@ impl Mount {
     #[must_use]
     pub fn state(&self) -> &MountState {
         &self.state
+    }
+
+    /// True iff this is the implicit default `sessions` mount (schema §5.1c) —
+    /// defaulted in code, not read from the binding file. Config-face
+    /// provenance only: the wire row carries no marker, because an implicit
+    /// mount that bound IS a real bound root.
+    #[must_use]
+    pub fn implicit(&self) -> bool {
+        self.implicit
     }
 }
 
@@ -510,20 +528,73 @@ impl MountTable {
 }
 
 impl Resolution {
-    /// Bind the resolved config's declared mounts.
+    /// Bind the resolved config's declared mounts, then admit the implicit
+    /// default `sessions` mount (schema §5.1c) when nothing declared claims
+    /// that spelling and the default binds clean.
     ///
-    /// State A (absent) and state D (zero mounts) both produce the empty table
-    /// through this one call.
+    /// State A (absent) and state D (zero mounts) both produce the
+    /// declared-empty table through this one call — plus the implicit default
+    /// when it binds, so a fresh machine with a scaffolded
+    /// `$HOME/.local/share/ucc/sessions` holds a one-row table.
+    ///
+    /// `env` is the same value the resolution itself was made from —
+    /// [`crate::Env::from_process`] stays the one place the process is read;
+    /// the default plane consumes its `home`.
     ///
     /// # Errors
-    /// [`MountError`] when a mount may not be bound at all. The refusal fails
-    /// the whole table: there is no partially-bound value to return.
-    pub fn bind(&self) -> Result<MountTable, MountError> {
-        match self {
-            Resolution::Absent { .. } => Ok(MountTable { mounts: Vec::new() }),
-            Resolution::Loaded(config) => bind(config),
-        }
+    /// [`MountError`] when a DECLARED mount may not be bound at all. The
+    /// refusal fails the whole table: there is no partially-bound value to
+    /// return. The implicit default never errors — anything short of a clean
+    /// bind suppresses it silently (§5.1c).
+    pub fn bind(&self, env: &crate::Env) -> Result<MountTable, MountError> {
+        let mut mounts = match self {
+            Resolution::Absent { .. } => Vec::new(),
+            Resolution::Loaded(config) => bind(config)?.mounts,
+        };
+        append_implicit_default(&mut mounts, env);
+        Ok(MountTable { mounts })
     }
+}
+
+/// The implicit default `sessions` mount (schema §5.1c): appended iff no
+/// declared mount is named or aliased [`DEFAULT_SESSIONS_NAME`], `$HOME`
+/// resolves, and the candidate passes every check a declared entry passes —
+/// all the way to [`MountState::Bound`]. Anything short suppresses silently:
+/// the declared world must read exactly as it would without this plane, and a
+/// grey default row on every unscaffolded machine would refuse `mrd config`
+/// forever (the state-A first-run reasoning, §2.2).
+fn append_implicit_default(mounts: &mut Vec<Mount>, env: &crate::Env) {
+    let claimed = mounts.iter().any(|m| {
+        m.name == DEFAULT_SESSIONS_NAME || m.alias.as_deref() == Some(DEFAULT_SESSIONS_NAME)
+    });
+    if claimed {
+        return;
+    }
+    let Some(home) = env.home.as_deref().filter(|h| !h.trim().is_empty()) else {
+        return;
+    };
+    let entry = MountEntry {
+        name: DEFAULT_SESSIONS_NAME.to_owned(),
+        path: Path::new(home)
+            .join(DEFAULT_SESSIONS_SUBPATH)
+            .to_string_lossy()
+            .into_owned(),
+        primary: false,
+        vault: None,
+        pin: None,
+        alias: None,
+        fence_line: 0,
+    };
+    // The source path feeds refusal text only, and every refusal of the
+    // implicit candidate is suppressed rather than surfaced.
+    let Ok(mut mount) = bind_one(&entry, Path::new(""), mounts) else {
+        return;
+    };
+    if !matches!(mount.state, MountState::Bound) {
+        return;
+    }
+    mount.implicit = true;
+    mounts.push(mount);
 }
 
 /// Bind a parsed config's declared mounts into the mount table.
@@ -759,6 +830,7 @@ fn mount_in_state(
         declared_name,
         fence_line: entry.fence_line,
         state,
+        implicit: false,
     }
 }
 

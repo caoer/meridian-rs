@@ -1967,6 +1967,15 @@ law.
 | `primary` | the declared-primary designation, verbatim from the binding file (`meridian-md-schema.md` §5.1a): literal `true` exactly on the designated row, ABSENT everywhere else — absence is the only "not primary" spelling, mirroring the config grammar. At most one row carries it (two designations refuse the whole table, `duplicate-primary-designation` inside `mount_table_invalid`). A binding ROLE for fleet hosts (the primary-root rule set: ccc-statusd `docs/mcp-face.md` §8.1); the engine reports it and never acts on it. Field-only amendment, cap `mounts.primary`; a client that has not read the cap sees an unread key — inert by the tolerant-client law |
 | `alias` | the second spelling this root answers to, verbatim from the binding file (`meridian-md-schema.md` §5.1b): present exactly on a row whose block declares `alias:`, ABSENT everywhere else, mirroring the config grammar. A LOOKUP spelling — a `root:path` resolves by **name first, then alias** (`address-grammar.md` §4.6a), and every canonical echo a client receives back (`name` here, receipts, pins, `mint {…}` paths, `sub` rows) carries `name`, never this. It exists so a client can hard-code ONE constant — `sessions:` — that each machine's table maps; `primary` is NOT consulted for that and means nothing it did not mean before (ZT 2026-08-23). An alias colliding with any `name` or another `alias` refuses the whole table (`alias-shadows-name` inside `mount_table_invalid`), so no two rows can answer one spelling. Field-only amendment, cap `mounts.alias`; a client that has not read the cap sees an unread key — inert by the tolerant-client law |
 
+**The implicit default row (schema §5.1c, 2026-08-24).** On a machine where no
+mount is named or aliased `sessions`, the served table may carry the implicit
+default mount — `sessions` at `$HOME/.local/share/ucc/sessions`, present only
+when it binds clean. The row is shape-identical to a declared one and carries
+no marker at this wire: it IS a real bound root, and its provenance is a
+config-face fact (`mrd config` marks it `(implicit default)`, `--json`
+`"implicit": true`). A declared `sessions` name or alias suppresses it, so no
+call ever serves two claimants for the spelling.
+
 **Freshness — the config-hash rebind law.** Every `mounts` call fingerprints
 `~/MERIDIAN.md` (blake3 over the file bytes) before answering: unchanged hash
 serves the derived table; changed hash re-derives first. No mtime, no TTL, no

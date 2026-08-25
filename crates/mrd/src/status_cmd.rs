@@ -641,9 +641,10 @@ fn store_path(
 /// The bound mount table, or `None` when this machine has none to read. Absence
 /// is not a failure of the gauge — [`store_path`] then says so in words.
 fn load_mount_table() -> Option<config::mount::MountTable> {
-    let resolution = config::resolve(&config::Env::from_process()).ok()?;
-    let cfg = resolution.config()?;
-    config::mount::bind(cfg).ok()
+    let env = config::Env::from_process();
+    let resolution = config::resolve(&env).ok()?;
+    // The one table every door binds — implicit default included (§5.1c).
+    resolution.bind(&env).ok()
 }
 
 /// A git failure while asking one store, with the root named: "not a git
