@@ -99,6 +99,13 @@ view = { workspace = true }
 # keeping it watcher-free makes "guard correctness consults neither journal
 # nor watcher" structural.
 notify = { workspace = true }
+# The §6.7 currency split's production instrument (`docs/run-plane.md` §
+# Timing phases): `currency_refresh` and `door_observation` each choose between
+# the O(1) vouched path and the §6.2 extent-refresh floor, and until this edge
+# existed neither choice left a trace outside `#[cfg(test)]`. A std-only,
+# zero-dependency leaf that reads no clock and allocates nothing when
+# `MRD_TIMING` is off, so the hot path pays for the answer only when asked.
+timing = { workspace = true }
 
 [dev-dependencies]
 # The self-edge is how this crate's OWN integration tests get a lib compiled
