@@ -12,6 +12,17 @@
 //! path, the NO-SANDBOX ruling 2026-08-14) → post-result currency pass
 //! through the workspace's leaf memo, so the answer's freshness state
 //! post-dates its rows (§Q3 honest tense).
+//!
+//! **Where the workspace's store mutex opens and closes.** It covers the
+//! append and the opening of this call's read — [`view::store::SqlStore::sync`]
+//! then [`view::store::SqlStore::begin_read`] — and it is released before the
+//! caller's statement runs. The read owns a connection of its own on the same
+//! `DuckDB` instance, with its snapshot pinned under the lock, so the answer
+//! is as fresh as the `as_of` it reports while the
+//! expensive part costs concurrent callers nothing but `DuckDB`'s MVCC.
+//! Queries on one workspace therefore overlap, across connections and across
+//! seats. What still serializes is the append, which is the one thing that
+//! genuinely needs a single actor.
 
 use std::path::Path;
 use std::path::Path as StdPath;
@@ -32,18 +43,23 @@ use crate::Registry;
 /// That is what makes the refusal safe to hand out — there is no half-done
 /// work to reconcile and no result to discard.
 ///
-/// The value's two edges, both measured rather than guessed, and the window
-/// between them is narrow enough that it is worth saying so:
-/// - **Floor — the legitimate hold.** One holder legitimately occupies the
-///   store for `sync()` + `query()`, because a fingerprint advance makes the
-///   next call fold the delta. Over a 47,185-file corpus under continuous
-///   fleet writes, sampled 720 s (n=795): median 378 ms, **max 5,581 ms**. A
-///   bound under that refuses correct work. Note the tail had NOT converged —
-///   the same measurement over 90 s (n=103) peaked at 4,779 ms, so an eightfold
-///   longer sample moved the floor up 17%. The value below is chosen against
-///   the larger figure, not the first one. That floor is a WARM-INCREMENTAL
-///   figure; the cold-projection hold below is a separate, larger, unbounded
-///   case it does not cover.
+/// The value's two edges, and the window between them:
+/// - **Floor — the legitimate hold.** One holder occupies the store for
+///   `sync()` + [`view::store::SqlStore::begin_read`], because a fingerprint
+///   advance makes the next call fold the delta. The floor on record was
+///   measured against the OLDER, larger hold that also spanned the caller's
+///   query: over a 47,185-file corpus under continuous fleet writes, sampled
+///   720 s (n=795), median 378 ms and **max 5,581 ms** (the tail had not
+///   converged — the same measurement over 90 s, n=103, peaked at 4,779 ms, so
+///   an eightfold longer sample moved it up 17%; the value below is chosen
+///   against the larger figure). The hold this bound now guards is a strict
+///   subset of what that sampled — an append plus a connection clone — so
+///   those figures are an UPPER bound on it and the headroom below is at
+///   least what it says. **The floor at the current grain is unmeasured**, and
+///   a successor moving this constant should measure it rather than read 378
+///   ms and 5,581 ms as if they described today's hold. Both are also
+///   WARM-INCREMENTAL figures; the cold-projection hold below is a separate,
+///   larger, unbounded case they do not cover.
 /// - **Ceiling — the host's own deadline.** `ccc-statusd` gives a request 10 s
 ///   (`internal/registryclient/client.go`) and retires the CONNECTION when it
 ///   expires, failing every op pipelined behind it. The refusal has to land
@@ -54,9 +70,13 @@ use crate::Registry;
 ///   bound, i.e. ~0.6 s of pre-lock work on a debug build.
 ///
 /// So the usable window is roughly 5.6 s to 9 s, and 8 s sits in it at 1.4×
-/// the measured floor with ~2 s under the deadline. **That the window is this
-/// tight is itself the finding**: the bound is a brace, not a repair. The
-/// repair is to stop holding this lock across `query()` at all.
+/// that floor with ~2 s under the deadline. The window being this tight was
+/// the finding that named the repair, and the repair is the one this module
+/// now implements: the lock is not held across the caller's query, so the work
+/// a waiter can queue behind is an append rather than an arbitrary statement.
+/// The bound stays because the append is still exclusive and a cold projection
+/// build still happens inside it — a brace is still wanted where the hold can
+/// still be long.
 ///
 /// **How far these numbers carry.** Both edges are debug-build macOS figures
 /// taken under live fleet load, so 1.4× is a debug-build RATIO, not a
@@ -96,6 +116,12 @@ use crate::Registry;
 /// clean result, and it is the first place to look if legitimate work ever
 /// starts refusing here.
 ///
+/// Taking the caller's query out of the hold shrinks what can pile up — an
+/// arbitrary statement no longer occupies the store, an append does — but it
+/// does not close that gap, and it must not be read as closing it. A pileup of
+/// appends is still a pileup, `try_lock` is still not FIFO, and neither the
+/// summed hold nor the lost races has been measured at this grain.
+///
 /// Engine-internal on purpose, the same as the §3.2 cold gate's
 /// `COLD_BUILD_WAIT` beside it: the contract publishes the bound's ORDER,
 /// never its value. That privacy is why the near-miss band below asserts
@@ -127,16 +153,22 @@ const SQL_STORE_POLL: Duration = Duration::from_millis(10);
 ///
 /// **Why a bound belongs here and not at the op-dispatch seam.** The daemon
 /// serves one connection's ops serially, so the first reading of a slow `sql`
-/// is head-of-line blocking on that connection — but the contention is not
+/// is head-of-line blocking on that connection — but the contention was not
 /// the connection's. Every `sql` on a workspace passes through this one mutex,
-/// so a fresh connection's `sql` on the same workspace waits the same query
-/// out (measured: 350.6 s against a 351.6 s holder, while the same probe on a
-/// DIFFERENT workspace served in 70 ms through the same daemon). A bound
-/// placed at the dispatch seam would therefore refuse ops on every connection
-/// touching that workspace — turning one seat's expensive query into a
-/// fleet-wide refusal storm, which is a worse correlated burst than the one it
-/// set out to cure. Bounding the wait for THIS lock keeps the refusal with the
-/// seat that is actually blocked.
+/// and while the hold spanned the caller's query a fresh connection's `sql` on
+/// the same workspace waited that query out (measured: 350.6 s against a
+/// 351.6 s holder, while the same probe on a DIFFERENT workspace served in
+/// 70 ms through the same daemon — the control that refutes a process-global
+/// lock and CPU saturation alike). A bound placed at the dispatch seam would
+/// therefore refuse ops on every connection touching that workspace — turning
+/// one seat's expensive query into a fleet-wide refusal storm, which is a
+/// worse correlated burst than the one it set out to cure. Bounding the wait
+/// for THIS lock keeps the refusal with the seat that is actually blocked.
+///
+/// That 350.6 s figure is what the hold used to cost a sibling, and it is kept
+/// here because it is what the bound was justified against. [`serve`] now
+/// releases this guard before the caller's statement runs, so the wait a
+/// sibling takes is an append's, not a query's.
 ///
 /// `try_lock` polling is not FIFO: waiters race for each release, so a waiter
 /// can lose turns it would have won under a queue. A bound caps the damage —
@@ -248,20 +280,35 @@ pub(crate) fn serve(
     let store = registry
         .sql_store(ws)
         .map_err(|e| io_error(format!("cannot open the sql cache: {e}")))?;
-    let mut store = lock_store_bounded(&store, ws, SQL_STORE_WAIT)?;
-    store
-        .sync(
-            &engine.docs,
-            &corpus,
-            Some(mounts.set()),
-            Some(&exclusion),
-            &engine.at_fingerprint.0,
-            base.as_ref(),
-        )
-        .map_err(|e| io_error(format!("cannot append to the sql cache: {e}")))?;
+    // THE HOLD, AND ITS END. The mutex covers the append and the opening of
+    // this call's own read — nothing else. `begin_read` clones a connection off
+    // the store's DuckDB instance and issues its `BEGIN` here, under the lock,
+    // so the snapshot the caller will answer from is the one its own `sync`
+    // just produced; the read then owns everything it needs and the store goes
+    // back to the next caller. Before this split the guard lived until the
+    // query returned, so every `sql` on this workspace — on ANY connection —
+    // queued behind the slowest one (measured: 350.6 s against a 351.6 s
+    // holder, while the same probe on a DIFFERENT workspace served in 70 ms
+    // through the same daemon).
+    let read = {
+        let mut store = lock_store_bounded(&store, ws, SQL_STORE_WAIT)?;
+        store
+            .sync(
+                &engine.docs,
+                &corpus,
+                Some(mounts.set()),
+                Some(&exclusion),
+                &engine.at_fingerprint.0,
+                base.as_ref(),
+            )
+            .map_err(|e| io_error(format!("cannot append to the sql cache: {e}")))?;
+        store
+            .begin_read()
+            .map_err(|e| io_error(format!("cannot open a read on the sql cache: {e}")))?
+    };
 
-    let result = store
-        .query(query)
+    let result = read
+        .run(query)
         .map_err(|e| io_error(format!("cannot query the sql cache: {e}")))?;
     let as_of = engine.at_fingerprint.0.clone();
 
