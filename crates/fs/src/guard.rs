@@ -663,14 +663,17 @@ fn walk_strict_dir(
     out: &mut Vec<PathBuf>,
     links: &mut Vec<String>,
 ) -> Result<(), GuardError> {
-    for entry in std::fs::read_dir(abs_dir)? {
-        let entry = entry?;
+    for entry in crate::list_dir(abs_dir, rel_dir)? {
+        let entry =
+            entry.map_err(|e| crate::corpus_listing_refusal(e, rel_dir, "cannot be listed"))?;
         let name = entry.file_name();
         if name.to_string_lossy().starts_with('.') {
             continue; // dot-path gap: outside detection, neither walked nor refused
         }
         let rel = rel_dir.join(&name);
-        let file_type = entry.file_type()?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| crate::corpus_listing_refusal(e, &rel, "cannot be identified"))?;
         // An ignored directory is outside the detection domain, so it is
         // neither walked nor refused. Checked before the symlink refusal, or a
         // corpus carrying a vendored tree would be unrunnable: one link
