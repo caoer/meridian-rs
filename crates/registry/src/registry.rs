@@ -1,8 +1,12 @@
 //! In-memory registry: map keyed by canonical workspace path, plus
 //! register / resolve / unregister / list / reap.
 //!
-//! Map write lock is the serialization point for the MAP, and **no disk I/O
-//! runs under it** — one hash op per take. First-writer-wins for a path is the
+//! Map write lock is the serialization point for MAP MEMBERSHIP — insert,
+//! remove, and the reap sweep that decides on the LRU clock — and **no disk I/O
+//! runs under it**, one hash op per take. Adoption is NOT membership: `resolve`
+//! and `register`-adopt only look a key up and stamp its LRU clock, so they take
+//! the guard SHARED and do not serialize against each other (the clock is an
+//! atomic on the map's value, see [`Slot`]). First-writer-wins for a path is the
 //! DRAWER FLOCK's (`cache::register` holds it and adopts a valid sentinel, so
 //! same-path registrars converge on one identity) plus the insert's re-check.
 //! The sentinel write and the state-file write both run with no map guard held:
@@ -65,6 +69,57 @@ pub enum PinOutcome {
     Error(String),
 }
 
+/// The registry map's value: one registration plus its LRU clock.
+///
+/// Split from the wire [`WorkspaceEntry`] for one reason: the clock is bumped
+/// through a SHARED reference. `resolve` and `register`-adopt look a key up and
+/// stamp `last_use`, nothing else — with the stamp behind an atomic they need
+/// no exclusive access, so they run concurrently with each other instead of
+/// queueing behind one writer on the map every `hello` takes. The wire type
+/// keeps a plain `u64`: this split is internal and reaches neither the protocol
+/// nor the state file.
+#[derive(Debug)]
+struct Slot {
+    /// The canonical workspace path — the map key and the identity.
+    workspace: PathBuf,
+    /// Unix seconds at first registration.
+    registered_at: u64,
+    /// Unix seconds of the most recent adoption. `Relaxed` is the right
+    /// ordering: it carries no other data, and the one reader that ACTS on it
+    /// ([`Registry::reap`]) takes the map guard exclusively, so every toucher's
+    /// read-guard release happens-before the sweep's acquire.
+    last_use: AtomicU64,
+}
+
+impl Slot {
+    fn new(entry: WorkspaceEntry) -> Self {
+        Slot {
+            workspace: entry.workspace,
+            registered_at: entry.registered_at,
+            last_use: AtomicU64::new(entry.last_use),
+        }
+    }
+
+    /// Stamp the LRU clock. `&self`, not `&mut self` — this is what buys the
+    /// shared guard on the adoption paths.
+    fn touch(&self, now: u64) {
+        self.last_use.store(now, Ordering::Relaxed);
+    }
+
+    fn last_use(&self) -> u64 {
+        self.last_use.load(Ordering::Relaxed)
+    }
+
+    /// The wire view of this registration.
+    fn snapshot(&self) -> WorkspaceEntry {
+        WorkspaceEntry {
+            workspace: self.workspace.clone(),
+            registered_at: self.registered_at,
+            last_use: self.last_use(),
+        }
+    }
+}
+
 /// Daemon workspace registry: guarded map, state store, drawer cache root.
 ///
 /// `engines` is resident query state (U1): warm `WorkspaceEngine` per workspace,
@@ -73,7 +128,9 @@ pub enum PinOutcome {
 /// it the §6.4 feed and the resident memo — survives (merkle-spec §6.4).
 #[derive(Debug)]
 pub struct Registry {
-    inner: RwLock<HashMap<PathBuf, WorkspaceEntry>>,
+    /// The registration map. The guard is taken EXCLUSIVELY for membership
+    /// (insert, remove, the reap sweep) and SHARED for adoption — see [`Slot`].
+    inner: RwLock<HashMap<PathBuf, Slot>>,
     engines: RwLock<HashMap<PathBuf, Arc<WorkspaceEngine>>>,
     /// U20b delta plane, one ring per workspace — created on first use,
     /// dropped on idle-reap like [`Self::engines`]. S6: key is canonical
@@ -329,7 +386,7 @@ impl Registry {
     ) -> Self {
         let inner = entries
             .into_iter()
-            .map(|entry| (entry.workspace.clone(), entry))
+            .map(|entry| (entry.workspace.clone(), Slot::new(entry)))
             .collect();
         Registry {
             inner: RwLock::new(inner),
@@ -415,7 +472,8 @@ impl Registry {
     ///
     /// This is the whole lock take on the `hello` path
     /// ([`pin_declared`](Self::pin_declared)): for an already-registered
-    /// workspace, one hash lookup and an LRU touch.
+    /// workspace, one hash lookup and an LRU touch, under a SHARED guard —
+    /// concurrent `hello`s for warm workspaces do not queue behind each other.
     pub fn register(&self, path: &Path) -> RegisterOutcome {
         let canonical = match workspace::canonicalize(path) {
             Ok(canonical) => canonical,
@@ -461,38 +519,45 @@ impl Registry {
             // A concurrent registrar for this same path may have inserted while
             // we wrote the sentinel. Both wrote through the drawer flock, so the
             // identities converged; adopt its entry rather than clobbering it.
-            if let Some(existing) = map.get_mut(&canonical) {
-                existing.last_use = now;
-                return RegisterOutcome::Adopted(existing.clone());
+            if let Some(existing) = map.get(&canonical) {
+                existing.touch(now);
+                return RegisterOutcome::Adopted(existing.snapshot());
             }
-            map.insert(canonical, entry.clone());
+            map.insert(canonical, Slot::new(entry.clone()));
         }
         self.persist();
         RegisterOutcome::Registered(entry)
     }
 
     /// LRU-touch `canonical` when it is registered, returning the adopted entry.
-    /// The guard spans one hash lookup and one field write — never disk.
+    /// The guard spans one hash lookup and one atomic store — never disk, and
+    /// SHARED: this changes no membership, so it must not exclude the readers
+    /// and adopters it used to queue behind it.
     fn touch(&self, canonical: &Path) -> Option<WorkspaceEntry> {
-        let mut map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        let entry = map.get_mut(canonical)?;
-        entry.last_use = now_secs();
-        Some(entry.clone())
+        let map = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        let slot = map.get(canonical)?;
+        slot.touch(now_secs());
+        Some(slot.snapshot())
     }
 
     /// Resolve `cwd` against the registry: canonicalize, then walk it and its
     /// ancestors for the nearest registered workspace. A hit is adopted (its
     /// `last_use` bumped in memory — an LRU touch, not persisted); no hit is a
     /// [`ResolveOutcome::Miss`]. Never registers.
+    ///
+    /// Takes the map guard SHARED: the walk reads, the touch is an atomic store
+    /// on the hit slot, and neither changes membership. Concurrent resolves
+    /// therefore run concurrently — an exclusive take here made the daemon's
+    /// most common map op a serialization point for no invariant.
     pub fn resolve(&self, cwd: &Path) -> ResolveOutcome {
         let Ok(canonical) = workspace::canonicalize(cwd) else {
             return ResolveOutcome::Miss;
         };
-        let mut map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        let map = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         for ancestor in canonical.ancestors() {
-            if let Some(entry) = map.get_mut(ancestor) {
-                entry.last_use = now_secs();
-                return ResolveOutcome::Adopted(entry.clone());
+            if let Some(slot) = map.get(ancestor) {
+                slot.touch(now_secs());
+                return ResolveOutcome::Adopted(slot.snapshot());
             }
         }
         ResolveOutcome::Miss
@@ -1531,7 +1596,7 @@ impl Registry {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .values()
-            .cloned()
+            .map(Slot::snapshot)
             .collect()
     }
 
@@ -1561,6 +1626,14 @@ impl Registry {
     /// are linearized: there is no exemption snapshot a landing claim can
     /// trail. Lock order is `inner` → `rings`; no path takes them the other
     /// way.
+    ///
+    /// The `inner` take is EXCLUSIVE even though the sweep only reads the map:
+    /// that is what makes the cutoff decision and the ring removal one critical
+    /// section against the adopters. `resolve` and `register`-adopt stamp
+    /// `last_use` under a SHARED guard ([`Slot`]), so a read take here would let
+    /// a workspace be adopted between the filter that judged it idle and the
+    /// demotion that acts on it — the sweep would shed the state of a workspace
+    /// in use. Exclusive here, shared there: the pair is the invariant.
     pub fn reap(&self, now: u64, threshold_secs: u64) -> Vec<PathBuf> {
         let cutoff = now.saturating_sub(threshold_secs);
         // Test-only: park here when the gate is armed (see the field docs).
@@ -1582,8 +1655,8 @@ impl Registry {
             let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
             let candidates: Vec<PathBuf> = map
                 .iter()
-                .filter(|(key, entry)| {
-                    entry.last_use <= cutoff
+                .filter(|(key, slot)| {
+                    slot.last_use() <= cutoff
                         && !rings.get(*key).is_some_and(|ring| ring.has_subscribers())
                 })
                 .map(|(key, _)| key.clone())
@@ -1667,8 +1740,10 @@ impl Registry {
     /// [`Self::persist_gate`] serializes the writers, so the last file written
     /// is the last snapshot taken.
     ///
-    /// Callers must hold no `inner` guard: `RwLock` is not reentrant, so a
-    /// caller holding the write guard would deadlock on the read below.
+    /// Callers must hold no `inner` guard — either kind. `RwLock` is not
+    /// reentrant: a caller holding the write guard deadlocks on the read below,
+    /// and a caller holding a READ guard deadlocks too whenever a writer is
+    /// already queued, because the second read then waits behind it.
     fn persist(&self) {
         let _gate = self
             .persist_gate
@@ -1676,7 +1751,7 @@ impl Registry {
             .unwrap_or_else(PoisonError::into_inner);
         let entries: Vec<WorkspaceEntry> = {
             let map = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-            map.values().cloned().collect()
+            map.values().map(Slot::snapshot).collect()
         };
         if let Err(e) = self.state.save(&entries) {
             eprintln!("registry: state save failed ({e}); warm set may not survive restart");
@@ -1687,6 +1762,158 @@ impl Registry {
     /// capture in-memory `last_use` bumps from `resolve`).
     pub(crate) fn flush(&self) {
         self.persist();
+    }
+}
+
+#[cfg(test)]
+mod adoption_guard_tests {
+    //! The map guard's MODE, gated: adoption SHARED, membership EXCLUSIVE.
+    //!
+    //! Guard mode is invisible to a single-threaded caller — both modes return
+    //! the same answer when nothing contends, so no ordinary assertion can see
+    //! the difference. These tests make it visible the only way it shows: the
+    //! test thread holds a READ guard on `inner` and drives one op from another
+    //! thread. A shared take joins the reader and answers; an exclusive take
+    //! waits for the guard to drop. A bounded `recv_timeout` reads that wait.
+    //!
+    //! Card `registry-resolve-takes-write-guard`.
+
+    use super::*;
+    use crate::state::StateStore;
+    use std::fs;
+    use std::sync::mpsc::{self, RecvTimeoutError};
+    use std::thread;
+
+    /// A shared take answers in microseconds. This window is long enough that a
+    /// loaded box is never mistaken for a blocked one.
+    const SERVES: Duration = Duration::from_secs(5);
+    /// The mirror: an op that must NOT proceed. Only a fast answer falsifies it,
+    /// so a short window is the safe direction here.
+    const BLOCKS: Duration = Duration::from_millis(300);
+
+    fn registry_in(home: &Path) -> Arc<Registry> {
+        let cache_root = home.join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        Arc::new(Registry::new(
+            StateStore::new(home.join("state.json")),
+            cache_root,
+            Vec::new(),
+        ))
+    }
+
+    /// A registry with `home/ws` already registered — the warm-workspace state
+    /// every `hello` and every `resolve` lands in.
+    fn warm(home: &Path) -> (Arc<Registry>, PathBuf) {
+        let ws = home.join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        let reg = registry_in(home);
+        assert!(
+            matches!(reg.register(&ws), RegisterOutcome::Registered(_)),
+            "fixture: first register is the first writer"
+        );
+        (reg, ws)
+    }
+
+    /// `resolve` is the daemon's most frequent map op and changes no membership:
+    /// it walks ancestors and stamps an atomic. Under an exclusive take every
+    /// resolve serialized against every other for no invariant.
+    #[test]
+    fn resolve_serves_under_a_held_read_guard() {
+        let home = tempfile::tempdir().unwrap();
+        let (reg, ws) = warm(home.path());
+
+        let held = reg.inner.read().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let worker = {
+            let reg = Arc::clone(&reg);
+            let ws = ws.clone();
+            thread::spawn(move || {
+                let _ = tx.send(reg.resolve(&ws));
+            })
+        };
+
+        let answered = rx.recv_timeout(SERVES);
+        // Release before asserting: a blocked worker must be able to finish, or
+        // the join below outlives the failure it is reporting.
+        drop(held);
+        worker.join().unwrap();
+
+        match answered {
+            Ok(ResolveOutcome::Adopted(entry)) => {
+                assert_eq!(entry.workspace, workspace::canonicalize(&ws).unwrap());
+            }
+            Ok(ResolveOutcome::Miss) => panic!("resolve missed a registered workspace"),
+            Err(RecvTimeoutError::Timeout) => panic!(
+                "resolve blocked behind a held READ guard, so it takes the map guard \
+                 EXCLUSIVELY — an ancestor walk and an LRU stamp change no membership \
+                 and must not shut other readers out"
+            ),
+            Err(e) => panic!("worker died before answering ({e:?})"),
+        }
+    }
+
+    /// The `hello` path for an already-registered workspace: `register` adopts
+    /// through `touch`, which is the same lookup-and-stamp as `resolve` and
+    /// returns before any first-writer work.
+    #[test]
+    fn register_adopt_serves_under_a_held_read_guard() {
+        let home = tempfile::tempdir().unwrap();
+        let (reg, ws) = warm(home.path());
+
+        let held = reg.inner.read().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let worker = {
+            let reg = Arc::clone(&reg);
+            let ws = ws.clone();
+            thread::spawn(move || {
+                let _ = tx.send(reg.register(&ws));
+            })
+        };
+
+        let answered = rx.recv_timeout(SERVES);
+        drop(held);
+        worker.join().unwrap();
+
+        match answered {
+            Ok(RegisterOutcome::Adopted(_)) => {}
+            Ok(other) => panic!("second register of a warm workspace must adopt, got {other:?}"),
+            Err(RecvTimeoutError::Timeout) => panic!(
+                "register-adopt blocked behind a held READ guard, so the `hello` path \
+                 takes the map guard EXCLUSIVELY for one hash lookup and one LRU stamp"
+            ),
+            Err(e) => panic!("worker died before answering ({e:?})"),
+        }
+    }
+
+    /// The other half of the pair, and the one a later shrink would break
+    /// silently: the reap sweep decides on `last_use` and acts on that decision,
+    /// so it must EXCLUDE the adopters that stamp `last_use` under a shared
+    /// guard. If this ever serves, a workspace can be adopted between the filter
+    /// that judged it idle and the demotion that sheds its state.
+    #[test]
+    fn reap_waits_for_a_held_read_guard() {
+        let home = tempfile::tempdir().unwrap();
+        let (reg, _ws) = warm(home.path());
+
+        let held = reg.inner.read().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let worker = {
+            let reg = Arc::clone(&reg);
+            thread::spawn(move || {
+                let _ = tx.send(reg.reap(now_secs() + 1_000_000, 0));
+            })
+        };
+
+        let answered = rx.recv_timeout(BLOCKS);
+        drop(held);
+        worker.join().unwrap();
+
+        assert!(
+            matches!(answered, Err(RecvTimeoutError::Timeout)),
+            "the reap sweep answered while a read guard was held, so it takes the map \
+             guard SHARED — its cutoff decision and the demotion that acts on it are \
+             then no longer one critical section against the adopters"
+        );
     }
 }
 
