@@ -212,13 +212,24 @@ fn v2_session_answers_unknown_op_and_never_advertises_sql() {
 /// one `sql` call for long enough that a sibling's whole round trip fits
 /// inside it. DuckDB has no `sleep`, so the spin is a recursive CTE.
 ///
-/// The count is deliberately far larger than it needs to be. The assertion
-/// below is a happens-BEFORE fact, not a duration, so overshooting costs the
-/// suite a few seconds and buys immunity to how fast the box is; undershooting
-/// would silently turn a control that can fail into one that cannot.
+/// The count is sized to be seconds, not milliseconds — a recursive CTE is
+/// inherently serial, and this one is far more expensive per row than its
+/// shape suggests: 20,000,000 cost 6.5 minutes of wall clock at 210% CPU on a
+/// 30-core Linux box (debug build), so the row count and the runtime are NOT
+/// intuitively related. The assertion below is a happens-BEFORE fact rather
+/// than a duration, so what this constant has to buy is only "long enough for
+/// a sibling's whole round trip to fit inside it, on the slowest box that will
+/// ever run it" — and [`HOLDER_MUST_EXCEED`] fails the test rather than pass it
+/// quietly if a future box, or a faster DuckDB, ever makes that false.
 const SLOW_SQL: &str = "WITH RECURSIVE spin(i) AS (\
-     SELECT 1 UNION ALL SELECT i + 1 FROM spin WHERE i < 20000000\
+     SELECT 1 UNION ALL SELECT i + 1 FROM spin WHERE i < 300000\
      ) SELECT count(*)::BIGINT FROM spin";
+
+/// The floor under [`SLOW_SQL`]'s own runtime. Below this the holder is not
+/// meaningfully occupying anything and the gate proves nothing, so it must
+/// FAIL rather than pass — an instrument that has quietly stopped
+/// discriminating is the failure mode this whole card exists to correct.
+const HOLDER_MUST_EXCEED: Duration = Duration::from_millis(1500);
 
 /// A trivial real-corpus read — the shape a seat actually issues.
 const REAL_SQL: &str = "SELECT path FROM doc ORDER BY path";
@@ -312,7 +323,16 @@ fn a_slow_sql_does_not_convoy_a_sibling_connection_on_the_same_workspace() {
     // and the three numbers are worth having on a PASS, not only on a failure.
     eprintln!("convoy gate: {ledger}");
 
-    // The control first: if the instrument cannot serve a fast `sql` at all
+    // The instrument first. A gate whose "slow" statement stopped being slow
+    // would pass for the wrong reason, forever, and look exactly like a fix.
+    assert!(
+        holder_elapsed > HOLDER_MUST_EXCEED,
+        "SLOW_SQL ran in {holder_elapsed:?}, under the {HOLDER_MUST_EXCEED:?} \
+         floor — the holder is not occupying the store long enough for this \
+         gate to discriminate. Raise the row count; do not relax this. {ledger}"
+    );
+
+    // Then the control: if the instrument cannot serve a fast `sql` at all
     // while the holder runs, nothing below it means anything.
     assert_eq!(
         other_ws["ok"], true,
