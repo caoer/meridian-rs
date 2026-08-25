@@ -278,9 +278,7 @@ mod tests {
         let outcome = lock_store_bounded(&store, Path::new(WS), wait);
         let elapsed = started.elapsed();
 
-        let err = outcome
-            .err()
-            .expect("a held store must refuse, never block");
+        let err = outcome.expect_err("a held store must refuse, never block");
         assert_eq!(err.code, ErrorCode::LockTimeout);
         // Retry, not fix: the caller's request is well-formed and may succeed
         // unchanged once the holder finishes.
