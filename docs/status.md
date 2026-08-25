@@ -365,9 +365,12 @@ mrd config get [KEY] [--json]
  whose `config()` returns this machine's config. Evaluated
  in the sealed kernel (standard globals only, `load`
  disabled, `EvalLimits::default()`); bare prints the whole
- returned value, KEY prints one top-level member. The value
- is ARBITRARY — the engine declares no schema and reads no
- key of it (`meridian-md-schema.md` §6a). It prints the
+ returned value, KEY one member by dot-path
+ (`repos_root.coscene-wiki`), resolved exact-key-first at
+ every level so a member really named `a.b` stays reachable
+ (§6a.3). The value is ARBITRARY — the engine declares no
+ schema and reads no key of it (`meridian-md-schema.md` §6a).
+ It prints the
  value and nothing else, so `r=$(mrd config get repos_root)`
  is the intended use: a string prints bare, any other shape
  prints as JSON, `--json` prints JSON for every shape. This
