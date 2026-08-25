@@ -790,6 +790,14 @@ impl Registry {
             // exactly the pass this half always was. Same root law either
             // way: content digests folded by `served_root` — a stat signature
             // never stands in for the content root.
+            // The vouch is still bound to `_` HERE, and that is now a choice
+            // rather than an oversight: `currency_refresh` emits the arm it
+            // took on its own (`currency.vouched` / `currency.floor`), so the
+            // split is observable for EVERY caller — this one, `sql_op::serve`,
+            // and the prewarm sweep that reaches this same function through
+            // `warm_or_build`. Surfacing it at this one call site instead would
+            // undercount the floor by exactly the passes that never touch a
+            // dispatch frame.
             let (fingerprint, _vouched) = self.currency_refresh(&canonical, DOOR_COOKIE_TIMEOUT)?;
 
             // Warm + unchanged → done. Nothing is copied out of the memo on
@@ -1164,6 +1172,17 @@ impl Registry {
     /// full stat sweep), `vouched == false`. The floor re-derives; it never
     /// silently trusts.
     ///
+    /// **Which arm ran is emitted**, one line per completed pass, on the
+    /// `MRD_TIMING` lane: `phase=currency.vouched` or `phase=currency.floor`
+    /// (`docs/run-plane.md` § Timing phases). The pair is the whole point —
+    /// a floor count with no vouched count is a numerator with no
+    /// denominator, and "how often does the floor run" is a RATIO. Emitted
+    /// HERE, at the site that decides, rather than at any one caller: this
+    /// function has three production callers ([`Self::warm_or_build`], the
+    /// prewarm sweep through it, and `sql_op::serve`), and instrumenting one
+    /// of them would undercount by construction. Off, the switch reads no
+    /// clock and this costs nothing.
+    ///
     /// # Errors
     /// I/O failure on the floor pass (the vouched path does no I/O).
     pub fn currency_refresh(
@@ -1171,6 +1190,15 @@ impl Registry {
         workspace: &Path,
         timeout: Duration,
     ) -> io::Result<(model::MerkleRoot, bool)> {
+        // Both arms are timed FROM ENTRY, because the floor's cost includes
+        // everything the vouched path also pays (barrier, take-and-apply,
+        // memo borrow) plus the sweep — two spans that started anywhere else
+        // would not be comparable. Exactly one is ever stopped; the other
+        // goes out of scope unstopped and, by this crate's contract, reports
+        // NOTHING. That is what makes each emitted line mean "this arm ran to
+        // completion" rather than "this arm was entered".
+        let vouched_span = timing::phase("currency.vouched");
+        let floor_span = timing::phase("currency.floor");
         let feed = {
             let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(FeedSlot::Live(feed)) = feeds.get(workspace) {
@@ -1197,9 +1225,15 @@ impl Registry {
             && matches!(memo.guard_currency(), fs::stable::GuardCurrency::Trusted)
             && let Ok(root) = memo.overlay_root()
         {
+            vouched_span.stop();
             return Ok((root, true));
         }
+        // The FALLBACK. `?` returns without stopping the span on an I/O
+        // failure, deliberately: a floor pass that refused is not a floor
+        // pass that ran, and counting it would inflate the very number this
+        // instrument exists to make honest.
         let root = memo.root(&fs::WorkspaceRoot(workspace.to_path_buf()))?;
+        floor_span.stop();
         Ok((root, false))
     }
 
@@ -1241,6 +1275,13 @@ impl Registry {
     /// its own-write overlay will land in, or `root_before` and
     /// `root_after` would fold from two different trees.
     ///
+    /// **Which arm ran is emitted** on the `MRD_TIMING` lane, as
+    /// `phase=door.vouched` / `phase=door.floor` — the WRITE plane's own pair,
+    /// named apart from `currency.*` because this is a different population:
+    /// one observation per write, inside the D9 flock, against the read
+    /// plane's one per currency pass. Summing the two pairs would answer no
+    /// question either of them asks (`docs/run-plane.md` § Timing phases).
+    ///
     /// # Errors
     /// I/O failure on the floor pass (the vouched path does no I/O).
     pub fn door_observation(
@@ -1249,6 +1290,9 @@ impl Registry {
         cache: &Arc<Mutex<fs::DomainCache>>,
         timeout: Duration,
     ) -> io::Result<model::MerkleRoot> {
+        // Timed from entry, exactly one stopped — see `currency_refresh`.
+        let vouched_span = timing::phase("door.vouched");
+        let floor_span = timing::phase("door.floor");
         let feed = {
             let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(FeedSlot::Live(feed)) = feeds.get(workspace) {
@@ -1303,9 +1347,14 @@ impl Registry {
             && matches!(memo.guard_currency(), fs::stable::GuardCurrency::Trusted)
             && let Ok(root) = memo.overlay_root()
         {
+            vouched_span.stop();
             return Ok(root);
         }
-        memo.root(&fs::WorkspaceRoot(workspace.to_path_buf()))
+        // The FALLBACK, on the write plane. As above, a refused pass is not a
+        // pass: only the `Ok` arm stops the span.
+        let root = memo.root(&fs::WorkspaceRoot(workspace.to_path_buf()))?;
+        floor_span.stop();
+        Ok(root)
     }
 
     /// Restore this workspace's §6.5 checkpoint, adjudicating its journal
