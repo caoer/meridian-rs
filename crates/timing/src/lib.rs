@@ -401,7 +401,22 @@ thread_local! {
     static CLOCK_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// The one clock read in this crate, behind a name so a test can COUNT it.
+/// The clock read on the phase-START path, behind a name so a test can COUNT it.
+///
+/// **What the counter measures: reads routed through THIS function, and nothing
+/// else.** It is not every clock read in the crate. `Phase::stop` and
+/// `Phase::stop_as` each read the clock through `started.elapsed()`, because
+/// `Instant::elapsed` is defined as `Instant::now() - *self`; neither is
+/// counted here. Both sit on the STOP
+/// path, which runs only when a span was actually started, so
+/// `an_off_phase_reads_no_clock` never reaches them and does not claim to.
+///
+/// **The counter's blind spot, stated so nobody has to rediscover it.** A read
+/// spelled `Instant::now()` DIRECTLY, rather than through this function, is
+/// invisible to it. `started: on().then_some(Instant::now())` — the very defect
+/// the test exists to catch — passes a full green suite. The guard is the
+/// spelling `then(now)`, and the counter is what makes that spelling assertable;
+/// it is not a net under every possible way to read a clock.
 ///
 /// It exists because the off path's claim — *no clock is read* — is invisible
 /// in everything this crate emits: `false.then_some(Instant::now())` reads the
