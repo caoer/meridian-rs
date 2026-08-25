@@ -2450,7 +2450,7 @@ pub(crate) mod tests {
     /// trusted: `begin_read`'s `BEGIN` pins the snapshot AT THAT CALL, so an
     /// append committed afterwards is invisible to it.
     ///
-    /// If DuckDB deferred the snapshot to the first statement instead, the
+    /// If `DuckDB` deferred the snapshot to the first statement instead, the
     /// serve path would hand back rows NEWER than the `as_of` fingerprint it
     /// reports — a freshness lie (§Q3 honest tense) that no other test on this
     /// path would catch, because single-caller runs never have a second
