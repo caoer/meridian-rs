@@ -81,8 +81,9 @@ pub enum AddressError {
         reason: String,
     },
     /// The task name is outside the one identifier charset. Names are stamped
-    /// verbatim into run receipts (`task`, `actor` as `run:<name>`), so they
-    /// must not carry markdown-renderable bytes.
+    /// verbatim into run receipts as `task`, and — when the request supplies no
+    /// actor of its own (§9) — as the actor `run:<name>`, so they must not
+    /// carry markdown-renderable bytes.
     InvalidTaskName { name: String },
     /// A binding value references another file (`other.md#^id`) — cross-file
     /// task refs are an S1 NON-GOAL (plan decision #11), refused, not deferred
@@ -156,7 +157,8 @@ impl std::fmt::Display for AddressError {
             AddressError::InvalidTaskName { name } => write!(
                 f,
                 "task name '{name}' is outside the one identifier charset [A-Za-z0-9-] (§2.4, decision 011) — \
-                 a task name is stamped into every run receipt as `task` and as the actor `run:{name}`, \
+                 a task name is stamped into every run receipt as `task`, and as the actor `run:{name}` \
+                 when the request supplies no actor of its own, \
                  so bytes that can render as markdown would forge that record; rename the binding key \
                  `{TASK_PREFIX}{name}` to letters, digits and dashes (`{TASK_PREFIX}fix-drift`)"
             ),
