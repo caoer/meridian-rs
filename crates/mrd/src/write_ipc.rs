@@ -211,14 +211,23 @@ mod tests {
     //! also never exercises the send half at all — no test in the tree makes a
     //! frame fail to go out.
     //!
-    //! So these four bite in two layers, and a swap or a collapse reds at least
+    //! So these five bite in two layers, and a swap or a collapse reds at least
     //! one of them whichever way it is done:
     //!
     //! - **Classification** ([`SocketDoor::call_until_answered`]) — which arm a
-    //!   given transport failure becomes.
+    //!   given transport failure becomes. Three tests, one per reachable arm:
+    //!   the send half, the read half's clean EOF, and the read half's
+    //!   catch-all.
     //! - **Rendering** ([`super::call`]) — what each arm then TELLS the
     //!   operator. Each test asserts its own arm's commit facts AND the absence
     //!   of the other's, so one message cannot satisfy both.
+    //!
+    //! **The layers are not redundant, and the double swap is what shows it.**
+    //! Invert classification and rendering together and the two inversions
+    //! cancel: the operator-facing message comes out correct, so the rendering
+    //! tests cannot see it. Only the classification tests, which assert on the
+    //! enum itself, still bite. A test suite built at the rendering layer alone
+    //! would call that mutant healthy.
     //!
     //! Harness: a hand-rolled listener that completes the identity-matched v3
     //! hello (the shape `script::wire_host`'s own tests drive) and then fails
@@ -227,6 +236,7 @@ mod tests {
     //! has returned, and joins it before writing — so neither arm is reached
     //! by a race.
 
+    use std::io;
     use std::io::{BufRead as _, BufReader, Write as _};
     use std::net::Shutdown;
     use std::os::unix::net::UnixListener;
@@ -283,6 +293,48 @@ mod tests {
             drop(listener);
         });
         (handle, tx)
+    }
+
+    /// A listener that completes the hello, **reads the write frame**, and then
+    /// answers with a line that is not valid UTF-8 — the frame reached the
+    /// daemon whole and what came back is unreadable.
+    ///
+    /// This is the fixture for the read half's THIRD arm. Its neighbour above
+    /// drives the clean-EOF arm (`Ok(0)`); this one drives the catch-all
+    /// `Err(e)`, and the two are different code paths with the same verdict.
+    ///
+    /// **Why unreadable bytes and not a reset.** The obvious way to reach a
+    /// non-EOF read error is a peer that closes with our frame still unread —
+    /// on Linux that is `ECONNRESET`. It is not portable: measured at this
+    /// head, the identical fixture yields `Err(ConnectionReset)` on Linux and
+    /// `Ok(0)` on macOS, so on macOS it would silently exercise the EOF arm
+    /// instead and prove nothing while staying green. `read_line` rejecting
+    /// non-UTF-8 is `InvalidData` on both, which is why the assertion below
+    /// pins the kind: a fixture that drifted onto EOF must fail, not pass.
+    fn daemon_that_answers_with_bytes_that_are_not_a_line(sock: &Path) -> JoinHandle<()> {
+        let listener = UnixListener::bind(sock).expect("bind");
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read the hello");
+            let mut w = stream.try_clone().expect("clone");
+            w.write_all(hello_answer().as_bytes()).expect("answer");
+            w.flush().expect("flush");
+            // The whole request line, newline included: reading it to
+            // completion is what makes this the DELIVERED case.
+            let mut frame = String::new();
+            reader.read_line(&mut frame).expect("read the write frame");
+            assert!(
+                frame.ends_with('\n'),
+                "the fixture must consume a WHOLE frame or it is testing the other arm"
+            );
+            // A newline-terminated answer that is not UTF-8: `read_line` reads
+            // it to the newline and then refuses to decode it.
+            w.write_all(&[0xff, 0xfe, 0x80, b'\n'])
+                .expect("torn answer");
+            w.flush().expect("flush");
+        })
     }
 
     /// A listener that completes the hello, **reads the write frame**, and then
@@ -360,6 +412,50 @@ mod tests {
             matches!(halt, WriteHalt::AnswerLost(_)),
             "a frame the daemon read and never answered is AnswerLost — the outcome is unknown. \
              Classified instead as {halt:?}, which claims nothing was committed"
+        );
+    }
+
+    /// **A delivered frame whose answer is unreadable is `AnswerLost` too.**
+    /// The read half has three arms, not two: a clean EOF (`Ok(0)`), the
+    /// timeout tick, and everything else. Its neighbour above covers the first;
+    /// this covers the catch-all, where a torn or garbled answer arrives after
+    /// the daemon demonstrably had the frame.
+    ///
+    /// The commit fact is the same as EOF's and so is the remedy: the daemon
+    /// read the request and may have committed, so the outcome is UNKNOWN.
+    /// Mapping this arm to `NotSent` would tell an operator a file is untouched
+    /// when the write may already be on disk — **the exact false negative PR
+    /// 236 closed**, reintroduced through a third door.
+    ///
+    /// Red if the catch-all read arm in `script/wire_host.rs` is mapped to
+    /// `NotSent`, and red if the arms are collapsed onto whichever one
+    /// `NotSent` is.
+    #[test]
+    fn a_delivered_frame_whose_answer_is_unreadable_is_classified_answer_lost() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("daemon.sock");
+        let served = daemon_that_answers_with_bytes_that_are_not_a_line(&sock);
+
+        let mut door = SocketDoor::connect(&sock, dir.path(), GREET_CAP).expect("the hello lands");
+
+        let Err(halt) = door.call_until_answered(&big_request(), "notice") else {
+            panic!("an answer that is not valid UTF-8 cannot yield a response line")
+        };
+        served.join().expect("the listener finishes");
+        // Pin the arm, not just the verdict: an EOF would also be AnswerLost,
+        // so without this a fixture that drifted onto `Ok(0)` would pass while
+        // leaving the catch-all as untested as it was before.
+        assert_eq!(
+            halt.error().kind(),
+            io::ErrorKind::InvalidData,
+            "this test must reach the catch-all read arm; kind {:?} means the fixture drifted \
+             onto the EOF arm and the catch-all is still untested",
+            halt.error().kind()
+        );
+        assert!(
+            matches!(halt, WriteHalt::AnswerLost(_)),
+            "a frame the daemon read, answered unreadably, is AnswerLost — the outcome is \
+             unknown. Classified instead as {halt:?}, which claims nothing was committed"
         );
     }
 
