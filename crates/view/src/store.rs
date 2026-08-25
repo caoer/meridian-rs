@@ -2496,6 +2496,14 @@ pub(crate) mod tests {
     /// lock, sync, `begin_read`, RELEASE, then run — and it is asserted
     /// structurally rather than by wall clock, so it cannot pass on a fast box
     /// and fail on a slow one.
+    ///
+    /// The cross-thread, wall-clock form lives one layer up, in `registry`'s
+    /// `sql_op` E2E gates, where it is asserted over two REAL connections
+    /// against a running daemon — the shape the defect actually took. A
+    /// threaded copy here bought no coverage this test does not already give
+    /// and cost minutes of every suite run: occupying a store from another
+    /// thread needs a deliberately-slow recursive CTE, and `DuckDB` charges far
+    /// more for one than its row count suggests.
     #[test]
     fn a_read_in_flight_does_not_hold_the_store() {
         let dir = tempfile::tempdir().expect("tmpdir");
@@ -2516,69 +2524,6 @@ pub(crate) mod tests {
 
         // And it still answers correctly after the store has moved on.
         assert_eq!(count_docs(read), 3, "the read still serves its snapshot");
-    }
-
-    /// The cross-thread form of the property above, on one store: while one
-    /// caller's query is genuinely in flight, another caller takes the store,
-    /// opens its own read and answers — start to finish — and the first is
-    /// still running when it does.
-    ///
-    /// The slow statement is a recursive CTE (no `sleep` in DuckDB), so the
-    /// margin is generous on purpose: the assertion is "the sibling got
-    /// through while the holder ran", never a duration.
-    #[test]
-    fn a_sibling_reads_the_same_store_while_a_slow_query_is_in_flight() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        let dir = tempfile::tempdir().expect("tmpdir");
-        let store = Arc::new(std::sync::Mutex::new(
-            SqlStore::open(&tmp_store(&dir)).expect("open"),
-        ));
-        {
-            let mut guard = store.lock().expect("lock");
-            sync_ambient(&mut guard, &fixture_v1(), "b3b:v1").expect("cold");
-        }
-
-        let running = Arc::new(AtomicBool::new(false));
-        let finished = Arc::new(AtomicBool::new(false));
-        let holder = {
-            let store = Arc::clone(&store);
-            let running = Arc::clone(&running);
-            let finished = Arc::clone(&finished);
-            std::thread::spawn(move || {
-                let read = {
-                    let guard = store.lock().expect("lock");
-                    guard.begin_read().expect("read")
-                };
-                running.store(true, Ordering::SeqCst);
-                let _ = read.run(
-                    "WITH RECURSIVE t(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM t \
-                     WHERE i < 20000000) SELECT count(*)::BIGINT FROM t",
-                );
-                finished.store(true, Ordering::SeqCst);
-            })
-        };
-
-        while !running.load(Ordering::SeqCst) {
-            std::thread::yield_now();
-        }
-        let sibling = {
-            let guard = store
-                .lock()
-                .expect("the store is not held by the in-flight query");
-            guard.begin_read().expect("read")
-        };
-        let docs = count_docs(sibling);
-        let holder_still_running = !finished.load(Ordering::SeqCst);
-
-        holder.join().expect("holder");
-        assert_eq!(docs, 3, "the sibling's own answer is correct");
-        assert!(
-            holder_still_running,
-            "the sibling answered only after the slow query had already \
-             finished — either the store is still serialized, or the slow \
-             statement was not slow enough on this box to prove anything"
-        );
     }
 
     /// A caller's GLOBAL `SET` is put back to the value the ENGINE set at
