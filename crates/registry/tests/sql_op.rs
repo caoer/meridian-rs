@@ -214,9 +214,11 @@ fn v2_session_answers_unknown_op_and_never_advertises_sql() {
 ///
 /// **This statement is far more expensive per row than its shape suggests, so
 /// size it by measurement and never by eye.** Measured on a 30-core Linux box,
-/// debug build: 300,000 rows ran 41.9 s and 20,000,000 ran 6.5 minutes at 210%
-/// CPU. A recursive CTE re-materialises its working set each round, so the row
-/// count and the runtime are not proportional and not guessable.
+/// debug build: 40,000 rows ran 8.9 s, 300,000 ran 41.9 s, and 20,000,000 ran
+/// 6.5 minutes at 210% CPU. A recursive CTE re-materialises its working set
+/// each round, so the row count and the runtime are neither proportional nor
+/// guessable — 500× the rows cost 44× the time. Re-measure before changing it;
+/// do not interpolate.
 ///
 /// The gate's verdict is a happens-BEFORE fact, not a duration, so all this
 /// constant must buy is "long enough that a sibling's whole round trip fits
