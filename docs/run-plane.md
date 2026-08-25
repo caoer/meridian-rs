@@ -2549,7 +2549,9 @@ so on a rehearsal `snapshot` and `eval` sit directly inside `total`, and
 | `currency.floor.<cause>.refused` | — (`cmd=daemon`) | same | the same pass, ENTERED and then refused by an I/O failure in the sweep. Counted, so the prefix stays honest under load (below) |
 | `door.vouched` | — (`cmd=daemon`) | `registry::Registry::door_observation` | a WRITE-door entry observation that took the same fast path, inside the D9 flock |
 | `door.floor.<cause>` · `door.floor.<cause>.refused` | — (`cmd=daemon`) | same | the write plane's floor, same two shapes and the same `<cause>` set |
-| `door.refused` | — (`cmd=daemon`) | same | a write-door observation refused BEFORE either arm was chosen: the memo lock stayed held for its whole budget. A contention outcome, and the write plane's only one |
+| `door.refused.<cause>` | — (`cmd=daemon`) | same | a write-door observation refused BEFORE either arm was chosen. One cause today, `lock_contended`: the memo lock stayed held for its whole budget. **The read plane has no counterpart and that is a fact, not a gap** — it reaches the same `fs::lock_within` with a budget of `None`, which returns `Ok` before the wait loop, so the error is unreachable there (`Registry::patched_cache` asserts it) |
+
+**The door's three families partition its population**: `door.vouched` took the fast path, `door.floor` fell to the floor, `door.refused` never reached an arm. Every emitted `door.*` name sits under exactly one, so the three prefixes add up to every observation the write door makes and none is counted twice.
 
 **`<cause>` is one of six**, and it is the term that failed, not a guess: `no_feed` (no live feed — a COLD START, where vouching is impossible by construction) · `cookie_unproven` (the §6.4 barrier timed out or hit I/O — **the only time-bounded cause, so the only one that rises with load**) · `cookie_refused` (the cookie would enter the hash domain) · `collapse` (the applied set collapsed doubt) · `untrusted` (the §6.2 close does not hold the memo trusted) · `no_overlay` (the resident overlay folded no root). Cold start and load are opposite facts about a daemon; a single `currency.floor` name could not tell them apart, so a quiet box could not falsify "the floor is only a cold-start path" (`registry::FloorTrigger`).
 
@@ -2565,15 +2567,16 @@ dial finished with a verdict (no usable daemon answer), which is not a failed
 phase. The line means the decision completed, not that a daemon answered
 (`status.md` `daemon.dial` Covers).
 
-**The floor's refusals are the second exception, and they are named as
-refusals.** `currency.floor.<cause>.refused`, `door.floor.<cause>.refused` and
-`door.refused` report a pass that was ENTERED and then returned on an error.
-They are counted rather than abandoned because the error path there is
+**The daemon's refusals are the second exception, and they are named as
+refusals.** `currency.floor.<cause>.refused` and `door.floor.<cause>.refused`
+report a floor pass that was ENTERED and then returned on an error;
+`door.refused.<cause>` reports an observation that never reached an arm at all.
+They are counted rather than abandoned because those error paths are
 LOAD-SENSITIVE: the sweep's I/O failure and the memo lock's exhausted budget
-both arrive under pressure, so dropping them would make the floor's count fall
-exactly when the floor is being hit hardest. The suffix is what keeps the two
-readings separate — the prefix counts entries, the suffix counts the entries
-that did not finish.
+both arrive under pressure, so dropping them would make the count fall exactly
+when the thing being counted is happening most. The suffix is what keeps the
+two floor readings separate — the prefix counts entries, the suffix counts the
+entries that did not finish.
 
 **And a phase whose GATE did not fire never ran.** The `snapshot` set is the
 one with a gate: the fold is lazy, and its trigger differs by tense (§ The run
@@ -2623,9 +2626,9 @@ load is the one bias that keeps that escalation from ever firing.
 
 **A `.refused` line still means the span reached its stop.** Nothing is
 inferred from silence: a pass that crashes or is killed reports neither name,
-and `door.refused` covers the write plane's one pre-arm refusal (the memo lock
-budget) so an observation lost to contention does not quietly leave the
-denominator.
+and `door.refused.lock_contended` covers the write plane's one pre-arm refusal
+(the memo lock budget) so an observation lost to contention does not quietly
+leave the denominator.
 
 #### The `snapshot` set can repeat, and which lane you are on decides
 
