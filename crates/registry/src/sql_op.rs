@@ -75,8 +75,8 @@ use crate::Registry;
 /// drawer's `sql.duckdb` on first use, and `sql` is its ONLY opener. A
 /// workspace that ordinary `read`/`put` traffic has made engine-warm therefore
 /// passes the cold gate, takes this lock, and — when the projection file is
-/// absent, was dropped by the idle reaper's demotion, or is recreated inside
-/// `sync()` on a fingerprint version-prefix change — meets an empty manifest
+/// absent or is recreated inside `sync()` on a fingerprint version-prefix
+/// change — meets an empty manifest
 /// and projects the WHOLE corpus, inline, under this mutex, unbounded and not
 /// backgrounded. Measured on 10,000 synthetic files (debug, macOS): a
 /// warm-engine/cold-projection run costs the same as a fully cold one, ~2 s
