@@ -1729,7 +1729,7 @@ pub(crate) mod tests {
             .map(|(p, raw)| {
                 (
                     (*p).to_string(),
-                    std::sync::Arc::new(model::build((*raw).to_string(), syntax::parse(raw))),
+                    Arc::new(model::build((*raw).to_string(), syntax::parse(raw))),
                 )
             })
             .collect()
@@ -2468,7 +2468,7 @@ pub(crate) mod tests {
         let mut v2 = v1.clone();
         v2.insert(
             "late.md".to_owned(),
-            std::sync::Arc::new(model::build(
+            Arc::new(model::build(
                 "# Late\nappended after the read opened\n".to_owned(),
                 syntax::parse("# Late\nappended after the read opened\n"),
             )),
@@ -2531,7 +2531,7 @@ pub(crate) mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         let dir = tempfile::tempdir().expect("tmpdir");
-        let store = std::sync::Arc::new(std::sync::Mutex::new(
+        let store = Arc::new(std::sync::Mutex::new(
             SqlStore::open(&tmp_store(&dir)).expect("open"),
         ));
         {
@@ -2539,8 +2539,8 @@ pub(crate) mod tests {
             sync_ambient(&mut guard, &fixture_v1(), "b3b:v1").expect("cold");
         }
 
-        let running = std::sync::Arc::new(AtomicBool::new(false));
-        let finished = std::sync::Arc::new(AtomicBool::new(false));
+        let running = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
         let holder = {
             let store = std::sync::Arc::clone(&store);
             let running = std::sync::Arc::clone(&running);
@@ -2596,7 +2596,7 @@ pub(crate) mod tests {
         let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
         sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
 
-        let engine_value = setting(&store, "memory_limit");
+        let engine_value = global_setting(&store, "memory_limit");
 
         // A caller moves it, and — the concurrency case — a SECOND read is
         // opened while that value is the one in force on the instance.
@@ -2612,11 +2612,24 @@ pub(crate) mod tests {
         overlapping.run("SELECT 1").expect("lane").expect("select");
 
         assert_eq!(
-            setting(&store, "memory_limit"),
+            global_setting(&store, "memory_limit"),
             engine_value,
             "an overlapping read restored a concurrent caller's SET as if it \
              were the engine's value"
         );
+    }
+
+    /// One GLOBAL setting's live value, read on the store's own base
+    /// connection so it is never the read lane's own answer about itself.
+    fn global_setting(store: &SqlStore, name: &str) -> String {
+        store
+            .connection()
+            .query_row(
+                &format!("SELECT current_setting('{name}')::VARCHAR"),
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap_or_else(|e| panic!("setting {name}: {e}"))
     }
 }
 
