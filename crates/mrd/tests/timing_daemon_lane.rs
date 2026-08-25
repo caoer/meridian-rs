@@ -650,3 +650,140 @@ fn two_ops_on_one_cold_workspace_share_one_fold() {
         "one contested workspace is one fold, so one new emitter — got {added:?}\n{text}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The §6.7 currency split (card `vouched-floor-split-unobservable-in-production`)
+// ---------------------------------------------------------------------------
+
+/// How long [`the_currency_split_is_visible_on_the_daemons_lane`] gives the
+/// vouched arm to appear. Longer than [`SETTLE`] on purpose: the fast path
+/// needs the workspace's §6.4 feed to be LIVE and its memo `Trusted`, which is
+/// a kernel watcher coming up (FSEvents/inotify), not just a file being
+/// written. A failure prints the whole sink, so a machine that genuinely never
+/// vouches is distinguishable from one that was merely slow.
+const VOUCH_SETTLE: Duration = Duration::from_secs(30);
+
+/// Poll `path` until `done` accepts it or `deadline_in` elapses.
+fn wait_upto(path: &Path, deadline_in: Duration, done: impl Fn(&str) -> bool) -> String {
+    let deadline = Instant::now() + deadline_in;
+    loop {
+        let text = read(path);
+        if done(&text) || Instant::now() >= deadline {
+            return text;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The daemon-side phases emitted under `cmd=daemon`, as a set.
+fn daemon_phases(text: &str) -> BTreeSet<String> {
+    measurements(text)
+        .into_iter()
+        .filter(|m| m.cmd == "daemon")
+        .map(|m| m.phase)
+        .collect()
+}
+
+/// **The §6.2 extent-refresh floor is a second execution path, and until this
+/// gate existed it left NO trace outside `#[cfg(test)]`.**
+///
+/// `DomainCache::sweeps` counts sweeps and has a getter, but every reader of
+/// that getter is inside a `#[cfg(test)]` module or a `tests/` file — verified
+/// by brace extent, not by "after the last top-level `cfg(test)`", because
+/// `wire-serve/src/write.rs` carries SEVEN `cfg(test)` items and one of them
+/// sits AFTER the readers. So an operator could not answer "how often does the
+/// fallback run", and ZT's fallback test — zero in steady state means delete
+/// it, above zero means it is not a fallback — had no number to be applied to.
+///
+/// What this gate holds: the floor is REACHABLE and COUNTED in a real daemon.
+/// A cold workspace has no live feed yet, so the cookie barrier cannot return
+/// `Seen` and the pass floors — deterministically, which is why the cold call
+/// is the one that proves the numerator exists.
+#[test]
+fn the_currency_floor_is_counted_on_the_daemons_lane() {
+    let sb = Sandbox::new();
+    let sink_dir = tempfile::tempdir().expect("sink dir");
+    let sink = sink_dir.path().join("timing.log");
+    let arg = sink.to_str().expect("utf-8 sink").to_owned();
+
+    let out = sb
+        .links(&sb.workspace_named("cold"), &arg)
+        .wait_with_output()
+        .expect("mrd links exits");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the cold links failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let text = wait_upto(&sink, SETTLE, |text| {
+        daemon_phases(text).contains("currency.floor")
+    });
+    let phases = daemon_phases(&text);
+    assert!(
+        phases.contains("currency.floor"),
+        "a cold workspace has no live feed, so its currency pass MUST floor — \
+         and the floor must say so. Daemon phases seen: {phases:?}\nlane: {text}"
+    );
+}
+
+/// The other half of the pair, and the half that makes the number a RATIO
+/// rather than a bare count: the DESIGNED path is counted too.
+///
+/// A floor count with no vouched count cannot tell a daemon that vouched a
+/// million times and floored twice from one that floored twice out of three —
+/// and those two answer ZT's fallback test in opposite directions. So the
+/// vouched arm is a gate, not a nicety.
+///
+/// Driven by repeated calls on ONE warm workspace: once the §6.4 feed is live
+/// and the memo `Trusted`, the cookie barrier returns `Seen` and the pass
+/// serves from the resident overlay with no walk and no stat.
+#[test]
+fn the_currency_vouched_arm_is_counted_too() {
+    let sb = Sandbox::new();
+    let sink_dir = tempfile::tempdir().expect("sink dir");
+    let sink = sink_dir.path().join("timing.log");
+    let arg = sink.to_str().expect("utf-8 sink").to_owned();
+    let ws = sb.workspace_named("warm");
+
+    // The first call is the cold one (it floors). Keep asking until the feed
+    // is live and the fast path answers — each call is one currency pass.
+    let deadline = Instant::now() + VOUCH_SETTLE;
+    let mut calls = 0_u32;
+    loop {
+        let out = sb
+            .links(&ws, &arg)
+            .wait_with_output()
+            .expect("mrd links exits");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "a links call failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        calls += 1;
+        if daemon_phases(&read(&sink)).contains("currency.vouched") || Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    let text = read(&sink);
+    let phases = daemon_phases(&text);
+    assert!(
+        phases.contains("currency.vouched"),
+        "{calls} calls on one warm workspace and the O(1) fast path never \
+         reported — either it never ran (in which case the floor is not a \
+         fallback, it is the designed path) or it ran unobserved, which is the \
+         defect this card exists to close. Daemon phases seen: {phases:?}\n\
+         lane: {text}"
+    );
+
+    // Both arms, one population: the ratio the fallback test needs.
+    assert!(
+        phases.contains("currency.floor"),
+        "the vouched arm reported but the cold call's floor did not — a \
+         denominator without its numerator: {phases:?}\nlane: {text}"
+    );
+}
