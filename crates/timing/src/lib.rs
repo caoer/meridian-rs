@@ -34,11 +34,16 @@
 //!
 //! # A line means the phase COMPLETED
 //!
-//! [`Phase::stop`] is the only emitter. There is no `Drop` impl: a span that
-//! goes out of scope without `stop` — the `?` on a failed load, an early
-//! `return Err` — reports NOTHING. A failed page load costing 312 us and a
-//! successful one costing 312 us are not the same fact, and a mode that
-//! printed both identically would be inviting the reader to add them up.
+//! [`Phase::stop`] and [`Phase::stop_as`] are the only emitters. There is no
+//! `Drop` impl: a span that goes out of scope without one of them — the `?` on
+//! a failed load, an early `return Err` — reports NOTHING. A failed page load
+//! costing 312 us and a successful one costing 312 us are not the same fact,
+//! and a mode that printed both identically would be inviting the reader to
+//! add them up.
+//!
+//! An error path that IS worth counting says so by stopping the span under
+//! its own name ([`Phase::stop_as`]), which is a line that means "this arm was
+//! entered and refused" — never silence, and never the completed arm's name.
 //!
 //! `cmd=` names the PROCESS's entry verb (set once by [`label`]), never one
 //! request — a daemon serving many ops reports `cmd=daemon` for all of them.
@@ -57,11 +62,16 @@
 //! request's server-side total the honest number is still the wire frame's
 //! `meta.duration_us`.
 //!
-//! **A dotted name marks a PART of the phase it prefixes** (`snapshot.walk` is
-//! inside `snapshot`). It is not the whole containment rule: `dispatch`
-//! contains `snapshot`, `eval` and `apply` with no dot in sight, and `total`
-//! contains everything. Do not sum the lines. Which phase contains which is a
-//! table: `docs/run-plane.md` § Timing phases.
+//! **A dot means one of two things, and the table says which.** Most dotted
+//! names mark a PART of the phase they prefix (`snapshot.walk` is inside
+//! `snapshot`), and those do not sum — containment is not even the whole rule
+//! there, since `dispatch` contains `snapshot`, `eval` and `apply` with no dot
+//! in sight, and `total` contains everything. The floor names (`currency.floor.*`,
+//! `door.floor.*`) are the other kind: they PARTITION one population by which
+//! cause sent the pass there and whether it completed, so no bare
+//! `currency.floor` line is ever emitted and those lines DO sum — a prefix
+//! counts every pass under it. Which a name is, is a table: `docs/run-plane.md`
+//! § Timing phases.
 //!
 //! Adding a phase is two lines at the site that owns it — the second one is
 //! where the phase COMPLETED, which is the whole point:
@@ -337,25 +347,47 @@ fn emit(phase: &str, elapsed: Duration) {
     }
 }
 
-/// One phase being measured. Report it with [`Phase::stop`], AT THE POINT IT
-/// COMPLETED — there is no `Drop` impl, so a span abandoned on an error path
-/// says nothing.
+/// One phase being measured. Report it with [`Phase::stop`] or
+/// [`Phase::stop_as`], AT THE POINT IT COMPLETED — there is no `Drop` impl, so
+/// a span abandoned on an error path says nothing.
 ///
 /// When the mode is off it holds no [`Instant`] — nothing was read, so nothing
 /// can be reported.
 #[derive(Debug)]
-#[must_use = "a phase reports only where you call .stop(); dropping it measures nothing"]
+#[must_use = "a phase reports only where you call .stop() or .stop_as(); dropping it measures nothing"]
 pub struct Phase {
     name: &'static str,
     started: Option<Instant>,
 }
 
 impl Phase {
-    /// Report this phase as COMPLETED, here.
+    /// Report this phase as COMPLETED, here, under the name it was
+    /// constructed with.
     #[inline]
     pub fn stop(self) {
         if let Some(started) = self.started {
             emit(self.name, started.elapsed());
+        }
+    }
+
+    /// Report this phase as COMPLETED, here, under `name` INSTEAD of the name
+    /// it was constructed with.
+    ///
+    /// For a measurement whose NAME is not knowable where its CLOCK must
+    /// start: begin the span where the cost begins, refine the name at the
+    /// branch that knows. The alternative — one span per possible name,
+    /// started up front — decides the names *before* the branch runs, which
+    /// makes the name set a parallel declaration that can silently drift from
+    /// the branches producing it. Here the name is causally derived from the
+    /// path actually taken, so there is no second list to fall out of sync.
+    ///
+    /// `&'static str` like [`phase`], deliberately: a phase name is a
+    /// compile-time constant, so the emitted grammar stays a closed set that
+    /// greps, and no name is ever built at runtime.
+    #[inline]
+    pub fn stop_as(self, name: &'static str) {
+        if let Some(started) = self.started {
+            emit(name, started.elapsed());
         }
     }
 }

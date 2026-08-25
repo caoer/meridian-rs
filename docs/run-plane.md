@@ -2515,6 +2515,13 @@ phase it prefixes, but `dispatch` contains three undotted phases and `total`
 contains everything — so the `us` column does not sum. Read the "inside" column
 before adding anything up.
 
+**One family of dots means the other thing, and it is the only one: the floor
+names.** `currency.floor.*` and `door.floor.*` do not NEST inside a
+`currency.floor` — no such line is emitted. They PARTITION one population by
+which cause sent the pass there and whether it completed, so their counts DO
+sum and a prefix counts every pass beneath it. Containment is `snapshot.walk`;
+partition is `currency.floor.no_feed`.
+
 The "inside" column is the LIVE run's shape. **`--dry` has no `dispatch` span at
 all** — [`rehearse`] composes the chain itself instead of calling `dispatch` —
 so on a rehearsal `snapshot` and `eval` sit directly inside `total`, and
@@ -2538,9 +2545,15 @@ so on a rehearsal `snapshot` and `eval` sit directly inside `total`, and
 | `cascade` | `total` | `run::runner` | the cascade loop — vacuous under the empty S1 ruleset, so a near-zero `us` here is the expected reading, not a missing measurement |
 | `report.render` | `total` | `mrd::run_cmd` | the U9 report render |
 | `currency.vouched` | — (`cmd=daemon`) | `registry::Registry::currency_refresh` | a READ-plane §6.7 currency pass that took the O(1) cookie fast path: no walk, no stat, no byte read |
-| `currency.floor` | — (`cmd=daemon`) | same | a read-plane currency pass that MISSED the vouch and fell to the §6.2 extent-refresh floor — the full stat sweep |
+| `currency.floor.<cause>` | — (`cmd=daemon`) | same | a read-plane currency pass that MISSED the vouch and fell to the §6.2 extent-refresh floor — the full stat sweep. `<cause>` NAMES the term that missed (below). **A bare `currency.floor` is never emitted**; it is the family prefix |
+| `currency.floor.<cause>.refused` | — (`cmd=daemon`) | same | the same pass, ENTERED and then refused by an I/O failure in the sweep. Counted, so the prefix stays honest under load (below) |
 | `door.vouched` | — (`cmd=daemon`) | `registry::Registry::door_observation` | a WRITE-door entry observation that took the same fast path, inside the D9 flock |
-| `door.floor` | — (`cmd=daemon`) | same | a write-door observation that fell to the floor |
+| `door.floor.<cause>` · `door.floor.<cause>.refused` | — (`cmd=daemon`) | same | the write plane's floor, same two shapes and the same `<cause>` set |
+| `door.refused.<cause>` | — (`cmd=daemon`) | same | a write-door observation refused BEFORE either arm was chosen. One cause today, `lock_contended`: the memo lock stayed held for its whole budget. **The read plane has no counterpart and that is a fact, not a gap** — it reaches the same `fs::lock_within` with a budget of `None`, which returns `Ok` before the wait loop, so the error is unreachable there (`Registry::patched_cache` asserts it) |
+
+**The door's three families partition its population**: `door.vouched` took the fast path, `door.floor` fell to the floor, `door.refused` never reached an arm. Every emitted `door.*` name sits under exactly one, so the three prefixes add up to every observation the write door makes and none is counted twice.
+
+**`<cause>` is one of six**, and it is the term that failed, not a guess: `no_feed` (no live feed — a COLD START, where vouching is impossible by construction) · `cookie_unproven` (the §6.4 barrier timed out or hit I/O — **the only time-bounded cause, so the only one that rises with load**) · `cookie_refused` (the cookie would enter the hash domain) · `collapse` (the applied set collapsed doubt) · `untrusted` (the §6.2 close does not hold the memo trusted) · `no_overlay` (the resident overlay folded no root). Cold start and load are opposite facts about a daemon; a single `currency.floor` name could not tell them apart, so a quiet box could not falsify "the floor is only a cold-start path" (`registry::FloorTrigger`).
 
 **A phase reports only where it COMPLETED.** A phase that never ran emits no
 line — `--dry` never reaches `apply` or `cascade`, `--list` reaches neither
@@ -2553,6 +2566,17 @@ because the process is what it measures. One completed-degrade exception:
 dial finished with a verdict (no usable daemon answer), which is not a failed
 phase. The line means the decision completed, not that a daemon answered
 (`status.md` `daemon.dial` Covers).
+
+**The daemon's refusals are the second exception, and they are named as
+refusals.** `currency.floor.<cause>.refused` and `door.floor.<cause>.refused`
+report a floor pass that was ENTERED and then returned on an error;
+`door.refused.<cause>` reports an observation that never reached an arm at all.
+They are counted rather than abandoned because those error paths are
+LOAD-SENSITIVE: the sweep's I/O failure and the memo lock's exhausted budget
+both arrive under pressure, so dropping them would make the count fall exactly
+when the thing being counted is happening most. The suffix is what keeps the
+two floor readings separate — the prefix counts entries, the suffix counts the
+entries that did not finish.
 
 **And a phase whose GATE did not fire never ran.** The `snapshot` set is the
 one with a gate: the fold is lazy, and its trigger differs by tense (§ The run
@@ -2572,18 +2596,39 @@ times and floored twice from one that floored twice out of three.
 
 ```bash
 MRD_TIMING=/var/log/mrd-timing.log   # on the daemon's environment
-grep -c 'phase=currency.floor'   /var/log/mrd-timing.log   # the fallback
-grep -c 'phase=currency.vouched' /var/log/mrd-timing.log   # the designed path
+L=/var/log/mrd-timing.log
+grep -c 'phase=currency.floor'          "$L"   # the fallback — every pass that ENTERED it
+grep -c 'phase=currency.vouched'        "$L"   # the designed path
+grep -cE 'phase=currency[.]floor[.][a-z_]+[.]refused( |$)' "$L"   # of those, the ones that did not finish — the `.refused` OUTCOME must be anchored as the final component, because a CAUSE name can itself end in `refused` (`cookie_refused`) and an unanchored `.*refused` counts its ENTRY line too
+grep -o 'phase=currency\.floor\.[a-z_]*' "$L" | sort | uniq -c   # by cause
 ```
 
-Read `cmd=` first — these four are emitted only by the engine process, so they
+Read `cmd=` first — these are emitted only by the engine process, so they
 always carry `cmd=daemon`. **Do not add the two pairs together.** They count
 different populations: one currency pass per read-plane warm, versus one entry
 observation per write. Their denominators are unrelated.
 
-**A line means the arm ran to COMPLETION.** The floor's `?` on an I/O failure
-abandons the span, so a refused sweep is not counted — which is what keeps the
-ratio a fact about work done rather than about work attempted.
+**The floor prefix counts ENTRIES, and that is deliberate.** The floor's error
+path returns under a `.refused` name instead of abandoning its span, so
+`grep -c 'phase=currency.floor'` answers "how often did a pass fall to the
+floor" — the question the ratio is for. Counting only completions would answer
+a narrower question while looking like the same number, and it would answer it
+WRONG in one specific direction: the sweep's I/O failure arrives under I/O
+pressure, so the abandoned arm is the one that grows under load. A
+completions-only numerator therefore FALLS as the floor is hit harder, and the
+instrument reads healthiest exactly when the fallback is worst.
+
+**Which is why the fallback test needs this number and not the older one.** A
+second execution path is a claim that the first fails silently, and the test
+that resolves it — zero in steady state means delete it, above zero means it is
+not a fallback — runs on the measured run-count. A numerator biased downward by
+load is the one bias that keeps that escalation from ever firing.
+
+**A `.refused` line still means the span reached its stop.** Nothing is
+inferred from silence: a pass that crashes or is killed reports neither name,
+and `door.refused.lock_contended` covers the write plane's one pre-arm refusal
+(the memo lock budget) so an observation lost to contention does not quietly
+leave the denominator.
 
 #### The `snapshot` set can repeat, and which lane you are on decides
 
