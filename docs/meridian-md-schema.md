@@ -371,7 +371,8 @@ alias: sessions
 
 **`primary:` is NOT consulted** (ZT, 2026-08-23). The designation stays exactly what §5.1a says it
 is — a role parsed, reported, and never acted on. A table with no mount named or aliased `sessions`
-refuses `sessions:` as an unbound root, and the refusal teaches the one line that would fix it:
+falls to the implicit default mount when that binds (§5.1c); with the default unscaffolded it
+refuses `sessions:` as an unbound root, and the refusal teaches the lines that would fix it:
 
 ```text
 declare `alias: sessions` on the mount that holds that tree
@@ -395,6 +396,48 @@ name wins) or ambiguous (two mounts claim it), and neither is a state a mount ta
 This is a second v1-additive amendment in the shape §12 boundary 2 anticipates, and it inherits the
 closed-schema guarantee with it: `alais: sessions` refuses as `unknown-field` at parse, so the
 silent-typo hazard §4 names is closed by construction here too.
+
+### 5.1c The implicit default `sessions` mount (v1-additive, 2026-08-24)
+
+When no mount is **named or aliased `sessions`**, the bound table gains one implicit mount:
+
+```text
+name: sessions
+path: $HOME/.local/share/ucc/sessions
+```
+
+The motive completes §5.1b's constant (ZT direction, 2026-08-24): a consumer hard-codes ONE
+spelling, `sessions:`; §5.1b maps it per machine; this section answers the machine that has
+mapped nothing — a fresh host needs a sessions tree before anyone has authored a config. The
+no-baked-names law (`laws.md`) draws this exact boundary itself: *"a directory a user is expected
+to author into is a value read from their markdown, **defaulted in code at most**"* — the constant
+is a fallback, the user's declaration is the answer, the `preset::DEFAULT_ROOT_RECORD` shape.
+
+The rules, each load-bearing:
+
+- **Declared wins, always.** Any mount named or aliased `sessions` — whatever its path —
+  suppresses the implicit mount entirely. So does any declared mount whose path equals, contains,
+  or is contained by the default path (the INV-2/INV-4 checks run with the declared table already
+  bound, and the implicit candidate is always the second occurrence).
+- **It appears only when it binds.** The implicit candidate passes through the same per-entry
+  checks a declared block does — canonicalize, the deny ceiling, uniqueness and nesting, the
+  root's own declaration naming `sessions` (§4). Anything short of `bound` suppresses it
+  SILENTLY: no grey row, no refusal, no changed exit code. A grey default row on every
+  unscaffolded machine would put `mrd config` at exit 1 forever — the §2.2 state-A "failing would
+  brick first run" reasoning, applied here.
+- **Nothing else is defaulted.** The implicit mount carries no `primary:` (the designation stays
+  declared-only — §5.1a, and ZT 2026-08-23: `primary` is not consulted), no `vault:`, no
+  `alias:`, no `pin:`.
+- **Scaffolding is explicit.** The engine never creates the directory or its declaration —
+  effects live in verbs. One line, once per machine:
+  `mkdir -p ~/.local/share/ucc/sessions && mrd init ~/.local/share/ucc/sessions --name sessions`.
+  The unbound-`sessions:` refusal teaches it (`address-grammar.md` §4.6a).
+- **A refusing declared table still refuses whole.** The default enters only a table that loads
+  clean — state A included: an absent config plus a scaffolded default yields a one-row table.
+- **Faces.** Both config faces mark the row (`mrd config` prints `(implicit default)`, `--json`
+  carries `"implicit": true`); the `mounts` wire row is unchanged in shape — an implicit row
+  rides as a real bound root (`wire-contract.md` §A.5), because it is one; provenance is a
+  config-face fact.
 
 ### 5.2 The canonical root-name charset
 

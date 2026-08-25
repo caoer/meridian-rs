@@ -543,10 +543,11 @@ pub(crate) fn may_carry_stored(text: &str) -> bool {
 /// projection a cross-root wikilink refuses with [`TranslateError::Unmounted`]
 /// and every ordinary write is untouched.
 pub(crate) fn machine_mounts() -> MountSet {
-    let Ok(resolution) = config::resolve(&config::Env::from_process()) else {
+    let env = config::Env::from_process();
+    let Ok(resolution) = config::resolve(&env) else {
         return MountSet::default();
     };
-    let Ok(table) = resolution.bind() else {
+    let Ok(table) = resolution.bind(&env) else {
         return MountSet::default();
     };
     table.projection()

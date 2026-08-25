@@ -74,7 +74,7 @@ pub(crate) fn serve(cache: &MountsCache) -> Result<ResponseBody, Box<ErrorBody>>
     // caches nothing — the fix is editing the binding file, not re-dialing.
     let resolution = config::resolve(&env).map_err(|e| invalid(&e.path, &e.to_string()))?;
     let table = resolution
-        .bind()
+        .bind(&env)
         .map_err(|e| invalid(&e.path, &e.to_string()))?;
     let derived = Derived {
         path,
