@@ -864,7 +864,8 @@ pub struct ReceiptFacts {
     pub task: String,
     /// Caller-supplied invocation id.
     pub invocation: String,
-    /// `run:<task>`.
+    /// The identity fact this receipt attests, resolved by its own §9 law:
+    /// the supplied actor verbatim, else the plane's `run:<task>` self-label.
     pub actor: String,
     /// Caller-supplied time fact; absent stays absent.
     #[serde(skip_serializing_if = "Option::is_none")]
