@@ -20,7 +20,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::engine::{WarmOutcome, WorkspaceEngine};
 use crate::feed;
@@ -996,6 +996,27 @@ impl Registry {
         self.patched_cache(workspace).0
     }
 
+    /// [`Self::domain_cache`] bounded by `budget` — the WRITE door's entry.
+    ///
+    /// Borrowing this memo applies the feed's pending set under its lock, so
+    /// the borrow itself can park behind any other holder: a read's
+    /// [`Self::currency_refresh`] holds it across [`fs::DomainCache::root`],
+    /// the §6.2 extent-refresh floor, from OUTSIDE the write flock. Unbounded,
+    /// that park runs past the caller's per-op deadline and the client times
+    /// out with no verdict — which cannot distinguish a lost seal from a
+    /// landed one. Bounded, the door refuses first and the refusal is exact:
+    /// no byte has moved at this point in the door.
+    ///
+    /// # Errors
+    /// [`io::ErrorKind::WouldBlock`] when the memo stayed held for `budget`.
+    pub fn domain_cache_within(
+        &self,
+        workspace: &Path,
+        budget: Duration,
+    ) -> io::Result<Arc<Mutex<fs::DomainCache>>> {
+        Ok(self.patched_cache_within(workspace, Some(budget))?.0)
+    }
+
     /// [`Self::domain_cache`] plus the borrow's feed outcome (`None`:
     /// nothing was pending). The currency fast path
     /// ([`Self::currency_refresh`]) needs the distinction — a doubt collapse
@@ -1029,6 +1050,40 @@ impl Registry {
         &self,
         workspace: &Path,
     ) -> (Arc<Mutex<fs::DomainCache>>, Option<feed::Applied>) {
+        // `None` is the unbounded acquisition this function always made, and
+        // `fs::lock_within` returns `Ok` unconditionally for it — the read
+        // plane's behaviour is unchanged, and the error arm is unreachable.
+        self.patched_cache_within(workspace, None)
+            .unwrap_or_else(|e| unreachable!("an unbounded memo acquisition cannot expire: {e}"))
+    }
+
+    /// [`Self::patched_cache`] with a bound on how long it may wait for this
+    /// workspace's memo — the WRITE plane's entry (card
+    /// `engine-splice-timeout-hits-rotation-seals`).
+    ///
+    /// The write door must not make an unbounded wait: past the caller's own
+    /// per-op deadline the client is what ends the call, and a client that
+    /// gave up cannot say whether the write landed. That ambiguity is the
+    /// continuity risk — a rotation SEAL put is how a seat hands its state to
+    /// a successor. With a bound, the engine owes its own verdict first, and
+    /// at this point in the door nothing has been written, so the verdict can
+    /// state that.
+    ///
+    /// `None` restores the unbounded wait (reads, prewarm, the feed).
+    ///
+    /// # Errors
+    /// [`io::ErrorKind::WouldBlock`] when `budget` elapsed with the memo still
+    /// held — mapped at the wire edge to the same `workspace_busy` refusal a
+    /// contended flock already produces.
+    fn patched_cache_within(
+        &self,
+        workspace: &Path,
+        budget: Option<Duration>,
+    ) -> io::Result<(Arc<Mutex<fs::DomainCache>>, Option<feed::Applied>)> {
+        // ONE deadline for the whole call: two acquisitions that each got the
+        // full budget would let the door wait twice over it.
+        let started = Instant::now();
+        let left = || budget.map(|b| b.saturating_sub(started.elapsed()));
         let cache = {
             let mut caches = self
                 .domain_caches
@@ -1049,10 +1104,7 @@ impl Registry {
         };
         // The feed reports into the memo's generation cell so the §6.2 fence
         // and the rescan-loss ledger are one instrument.
-        let feed_cell = cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .feed_gen();
+        let feed_cell = fs::lock_within(&cache, left())?.feed_gen();
         let feed = {
             let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
             match feeds
@@ -1075,7 +1127,7 @@ impl Registry {
         // touched — both leaf mutexes no path holds while acquiring a memo.
         let mut applied = None;
         {
-            let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut memo = fs::lock_within(&cache, left())?;
             if let Some(feed) = &feed {
                 applied = apply_pending(workspace, &mut memo, feed);
             }
@@ -1093,7 +1145,7 @@ impl Registry {
                 None => memo.unbind_stamps(),
             }
         }
-        (cache, applied)
+        Ok((cache, applied))
     }
 
     /// The workspace's current root at the cheapest lawful grain (merged
@@ -1215,7 +1267,30 @@ impl Registry {
         let seen = feed.as_ref().is_some_and(|feed| {
             feed.cookie_barrier(workspace, timeout) == feed::CookieOutcome::Seen
         });
-        let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        // The door's SECOND bounded wait (card
+        // `engine-splice-timeout-hits-rotation-seals`). It gets its own full
+        // `timeout` rather than the cookie's remainder: a barrier that spent
+        // the whole budget without `Seen` is a normal degraded outcome — the
+        // floor pass below absorbs it — and must not then fail the write for
+        // want of a millisecond.
+        //
+        // WHAT THIS BOUNDS, EXACTLY: this wait plus the barrier's, plus the
+        // arm's own `domain_cache_within` budget, cap the door's QUEUEING at
+        // 6s — under the caller's 10s per-op deadline. It does NOT bound the
+        // op. The guard taken here is held across the `memo.root()` floor pass
+        // below, which runs on ANY miss — including a barrier that just spent
+        // its full budget without `Seen`, i.e. the contended case — and that
+        // pass is O(corpus): measured 9.5–14.1s at 42,943 files. So a door can
+        // win all three waits and still blow the client's deadline while
+        // WORKING. The ambiguity this bound removes is contention's, not the
+        // floor's (card review by `7f458d05`: two true premises, false
+        // inference — the earlier wording claimed the engine always ends the
+        // call).
+        //
+        // Unlike the arm's entry wait, this one runs INSIDE the D9 write
+        // flock, so an unbounded park here also holds the workspace's one
+        // write token against every other writer.
+        let mut memo = fs::lock_within(cache, Some(timeout))?;
         let applied = feed
             .as_ref()
             .and_then(|feed| apply_pending(workspace, &mut memo, feed));
@@ -2256,7 +2331,7 @@ mod engine_tests {
     /// well past `COLD_BUILD_WAIT` (pipelines 1098/1101). The client contract
     /// is `recovery: retry` until the drawer is warm.
     fn wait_serve(reg: &Registry, ws: &Path) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             match reg.cold_gate(ws).unwrap() {
                 ColdGate::Serve => return,
@@ -2265,7 +2340,7 @@ mod engine_tests {
                 }
                 ColdGate::Warming => {
                     assert!(
-                        std::time::Instant::now() < deadline,
+                        Instant::now() < deadline,
                         "drawer rebuild did not land within 30s"
                     );
                     std::thread::sleep(Duration::from_millis(20));
@@ -2745,7 +2820,7 @@ mod engine_tests {
 
         // The parent create is delivered; the child may not be. Wait for
         // the named doubt the parent must raise, then refresh.
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         while start.elapsed() < Duration::from_secs(10) {
             if reg.feed_stats(&canonical).is_some_and(|s| s.all_dirty) {
                 break;
