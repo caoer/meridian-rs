@@ -14,19 +14,124 @@
 //! post-dates its rows (§Q3 honest tense).
 
 use std::path::Path;
-use std::sync::PoisonError;
+use std::path::Path as StdPath;
+use std::sync::{Mutex, MutexGuard, TryLockError};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use wire::{ErrorBody, ErrorCode, ResponseBody, SqlCol};
 
 use crate::Registry;
 
+/// How long a `sql` call waits for the workspace's `SqlStore` before refusing
+/// `lock_timeout`.
+///
+/// **What it bounds is the WAIT, never the work.** The holder is not
+/// interrupted and its query is not cancelled: a waiter that gives up here
+/// leaves a correct in-flight query alone and loses nothing but its own turn.
+/// That is what makes the refusal safe to hand out — there is no half-done
+/// work to reconcile and no result to discard.
+///
+/// The value's two edges, both measured rather than guessed, and the window
+/// between them is narrow enough that it is worth saying so:
+/// - **Floor — the legitimate hold.** One holder legitimately occupies the
+///   store for `sync()` + `query()`, because a fingerprint advance makes the
+///   next call fold the delta. Over a 47,185-file corpus under continuous
+///   fleet writes, sampled 720 s (n=795): median 378 ms, **max 5,581 ms**. A
+///   bound under that refuses correct work. Note the tail had NOT converged —
+///   the same measurement over 90 s (n=103) peaked at 4,779 ms, so an eightfold
+///   longer sample moved the floor up 17%. The value below is chosen against
+///   the larger figure, not the first one.
+/// - **Ceiling — the host's own deadline.** `ccc-statusd` gives a request 10 s
+///   (`internal/registryclient/client.go`) and retires the CONNECTION when it
+///   expires, failing every op pipelined behind it. The refusal has to land
+///   with room to spare, or the bound buys nothing: the burst it exists to
+///   prevent happens anyway, one layer up. The op's own pre-lock work (domain
+///   load, mount corpus, base walk) runs BEFORE this wait, so a refusal costs
+///   the caller that plus the bound — measured at 7,628 ms total against a 7 s
+///   bound, i.e. ~0.6 s of pre-lock work on a debug build.
+///
+/// So the usable window is roughly 5.6 s to 9 s, and 8 s sits in it with 1.4×
+/// over the measured floor and ~2 s under the deadline. **That the window is
+/// this tight is itself the finding**: the bound is a brace, not a repair. The
+/// repair is to stop holding this lock across `query()` at all.
+///
+/// Engine-internal on purpose, the same as the §3.2 cold gate's
+/// `COLD_BUILD_WAIT` beside it: the contract publishes the bound's ORDER,
+/// never its value.
+const SQL_STORE_WAIT: Duration = Duration::from_secs(8);
+
+/// Re-check cadence while waiting for the store. Coarse against a multi-second
+/// bound and far finer than the contention it measures, so it costs nothing to
+/// be wrong about.
+const SQL_STORE_POLL: Duration = Duration::from_millis(10);
+
+/// Acquire the workspace's `SqlStore` under [`SQL_STORE_WAIT`], or refuse
+/// `lock_timeout` (retry class — "same request may succeed", v2 §8).
+///
+/// **Why a bound belongs here and not at the op-dispatch seam.** The daemon
+/// serves one connection's ops serially, so the first reading of a slow `sql`
+/// is head-of-line blocking on that connection — but the contention is not
+/// the connection's. Every `sql` on a workspace passes through this one mutex,
+/// so a fresh connection's `sql` on the same workspace waits the same query
+/// out (measured: 350.6 s against a 351.6 s holder, while the same probe on a
+/// DIFFERENT workspace served in 70 ms through the same daemon). A bound
+/// placed at the dispatch seam would therefore refuse ops on every connection
+/// touching that workspace — turning one seat's expensive query into a
+/// fleet-wide refusal storm, which is a worse correlated burst than the one it
+/// set out to cure. Bounding the wait for THIS lock keeps the refusal with the
+/// seat that is actually blocked.
+///
+/// `try_lock` polling is not FIFO: waiters race for each release. Under a
+/// bound they all refuse at the same horizon, and legitimate contention is
+/// short (8 concurrent seats measured a 37 ms spread), so the unfairness has
+/// nothing to bite.
+///
+/// `wait` is a parameter rather than a read of the constant so the contention
+/// path can be gated in milliseconds instead of the production bound's
+/// seconds; the one production caller passes [`SQL_STORE_WAIT`].
+fn lock_store_bounded<'s, T>(
+    store: &'s Mutex<T>,
+    ws: &StdPath,
+    wait: Duration,
+) -> Result<MutexGuard<'s, T>, Box<ErrorBody>> {
+    let deadline = Instant::now() + wait;
+    loop {
+        match store.try_lock() {
+            Ok(guard) => return Ok(guard),
+            // A poisoned store is the pre-existing contract on this path: a
+            // panicked holder never leaves the cache half-appended, because
+            // every query runs always-rollback.
+            Err(TryLockError::Poisoned(p)) => return Ok(p.into_inner()),
+            Err(TryLockError::WouldBlock) => {
+                if Instant::now() >= deadline {
+                    let mut e = ErrorBody::new(ErrorCode::LockTimeout);
+                    e.message = Some(format!(
+                        "another sql call has held this workspace's projection cache for \
+                         longer than the {:.1}s service bound, so this call gave up its turn \
+                         rather than hold the connection past the host's request deadline. \
+                         The other call is still running and was not disturbed; its own \
+                         answer is unaffected. Transient — the same request may succeed. \
+                         Workspace: {}",
+                        wait.as_secs_f32(),
+                        ws.display()
+                    ));
+                    return Err(Box::new(e));
+                }
+                thread::sleep(SQL_STORE_POLL);
+            }
+        }
+    }
+}
+
 /// Serve one `sql` call. The caller has warmed the workspace already.
 ///
 /// # Errors
 /// `io_error` when the cache file cannot be opened/appended or the corpus
-/// cannot be read for the currency pass; the caller's own SQL failing is a
-/// SUCCESS body with `error` set and `state: UNVERIFIED` — their register,
-/// not ours.
+/// cannot be read for the currency pass; `lock_timeout` (retry) when another
+/// `sql` call held this workspace's projection cache past [`SQL_STORE_WAIT`];
+/// the caller's own SQL failing is a SUCCESS body with `error` set and
+/// `state: UNVERIFIED` — their register, not ours.
 pub(crate) fn serve(
     registry: &Registry,
     ws: &Path,
@@ -80,7 +185,7 @@ pub(crate) fn serve(
     let store = registry
         .sql_store(ws)
         .map_err(|e| io_error(format!("cannot open the sql cache: {e}")))?;
-    let mut store = store.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut store = lock_store_bounded(&store, ws, SQL_STORE_WAIT)?;
     store
         .sync(
             &engine.docs,
@@ -147,4 +252,94 @@ fn io_error(cause: String) -> Box<ErrorBody> {
     let mut e = ErrorBody::new(ErrorCode::IoError);
     e.cause = Some(cause);
     Box::new(e)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SQL_STORE_WAIT, lock_store_bounded};
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+    use wire::{ErrorCode, Recovery};
+
+    const WS: &str = "/tmp/ws-under-test";
+
+    /// The contended path refuses at the bound instead of waiting the holder
+    /// out — the whole point of the leg. A held lock is exactly the state a
+    /// slow `sql` puts the store in.
+    #[test]
+    fn a_held_store_refuses_lock_timeout_at_the_bound() {
+        let store = Arc::new(Mutex::new(()));
+        let held = Arc::clone(&store);
+        let guard = held.lock().unwrap();
+
+        let wait = Duration::from_millis(120);
+        let started = Instant::now();
+        let outcome = lock_store_bounded(&store, Path::new(WS), wait);
+        let elapsed = started.elapsed();
+
+        let err = outcome.err().expect("a held store must refuse, never block");
+        assert_eq!(err.code, ErrorCode::LockTimeout);
+        // Retry, not fix: the caller's request is well-formed and may succeed
+        // unchanged once the holder finishes.
+        assert_eq!(err.code.recovery(), Recovery::Retry);
+        // It waited the bound rather than refusing instantly — a bound that
+        // refuses on first contention would refuse ordinary overlap too.
+        assert!(
+            elapsed >= wait,
+            "refused after {elapsed:?}, before the {wait:?} bound"
+        );
+        // The refusal names the workspace, so a fleet log attributes the stall.
+        assert!(
+            err.message.as_deref().unwrap_or_default().contains(WS),
+            "refusal must name the workspace: {:?}",
+            err.message
+        );
+        drop(guard);
+    }
+
+    /// The control that keeps the test above honest: the SAME call on an
+    /// UNCONTENDED store must succeed promptly. Without it, a helper that
+    /// refused unconditionally would pass the contention test.
+    #[test]
+    fn an_uncontended_store_is_acquired_and_not_refused() {
+        let store = Mutex::new(());
+        let started = Instant::now();
+        let outcome = lock_store_bounded(&store, Path::new(WS), SQL_STORE_WAIT);
+        let elapsed = started.elapsed();
+
+        assert!(
+            outcome.is_ok(),
+            "an uncontended store must be acquired, not refused"
+        );
+        // It must not have sat out the production bound to get there.
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "uncontended acquisition took {elapsed:?}"
+        );
+    }
+
+    /// A holder that releases inside the bound is waited for, not refused —
+    /// the ordinary-overlap case that must NOT become a refusal. This is the
+    /// case that fails if the bound is ever set below legitimate hold time.
+    #[test]
+    fn a_holder_that_releases_inside_the_bound_is_served() {
+        let store = Arc::new(Mutex::new(()));
+        let held = Arc::clone(&store);
+        let handle = std::thread::spawn(move || {
+            let guard = held.lock().unwrap();
+            std::thread::sleep(Duration::from_millis(80));
+            drop(guard);
+        });
+        // Let the thread take the lock first, so this really is contended.
+        std::thread::sleep(Duration::from_millis(20));
+
+        let outcome = lock_store_bounded(&store, Path::new(WS), Duration::from_secs(5));
+        assert!(
+            outcome.is_ok(),
+            "a holder releasing inside the bound must be waited for, not refused"
+        );
+        drop(outcome);
+        handle.join().unwrap();
+    }
 }

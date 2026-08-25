@@ -55,6 +55,22 @@ use crate::{
 /// enough that shutdown is prompt, long enough not to spin a core.
 const ACCEPT_POLL: Duration = Duration::from_millis(20);
 
+/// An op slower than this is named on the daemon log with its `duration_us`.
+///
+/// The engine has always MEASURED per-op duration (U7, `meta.duration_us`) and
+/// always sent it to the caller — but it kept no record of its own, and the
+/// caller that suffers a slow op is precisely the one whose connection died
+/// before the frame carrying that number arrived. So a stall left no trail
+/// naming which op caused it, and the live trigger for a convoy incident could
+/// only ever be inferred. This is the engine's own trail.
+///
+/// Set below the `sql` store bound (`sql_op::SQL_STORE_WAIT`) on purpose: an
+/// op in the band underneath a bound is the near miss worth seeing BEFORE it
+/// starts refusing, and a corpus op that reaches seconds is already the long
+/// kind. Median measured `sql` over a 47k-file corpus is 0.4 s, so this names
+/// the tail and stays quiet through ordinary work.
+const SLOW_OP_LOG: Duration = Duration::from_secs(5);
+
 /// The reaper's wake granularity: it sleeps in these steps so shutdown is
 /// prompt even when the reap interval is an hour.
 const REAP_TICK: Duration = Duration::from_millis(200);
@@ -1366,7 +1382,20 @@ fn serve_wire(
             // U7: dispatch call alone (after decode, before render).
             let started = Instant::now();
             let body = dispatch_read(registry, attached, armed, id, op, rev == Rev::V3);
-            let duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            let elapsed = started.elapsed();
+            let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+            // The engine's own trail for a slow op. The frame carrying this
+            // number reaches a client that may already have given up, so the
+            // log is what survives an incident.
+            if elapsed >= SLOW_OP_LOG {
+                eprintln!(
+                    "registry: slow op {} duration_us={duration_us} on {} — this op held its \
+                     connection, and every op pipelined behind it waited",
+                    obj.get("op").and_then(Value::as_str).unwrap_or("?"),
+                    attached
+                        .map_or_else(|| "<unattached>".to_string(), |p| p.display().to_string()),
+                );
+            }
             (body, Some(duration_us))
         }
         Err(error) => (Err(error), None),
