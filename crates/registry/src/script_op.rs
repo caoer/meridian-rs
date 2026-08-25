@@ -927,7 +927,21 @@ fn commit(
     // One armed path is the single §4.4 splice; N paths are the §4.4 SET form
     // (`splice.set`) — one sealed commit under the entry guard, per
     // run-plane.md § One COMMIT per attempt.
-    let cache = registry.domain_cache(ws);
+    // Entry borrow bounded like the wire arms' (card
+    // `engine-splice-timeout-hits-rotation-seals`, review by `7f458d05`). Safe
+    // on THIS seam precisely because a pure-transaction script is atomic: a
+    // refusal here means nothing was issued, so re-submitting the identical
+    // program is free. The live-effects seam is a different decision — its
+    // `run()` effects have already fired and cannot be re-run — and is carded
+    // separately, not bounded here.
+    let Ok(cache) = registry.domain_cache_within(ws, crate::registry::DOOR_COOKIE_TIMEOUT) else {
+        return CommitLeg::Refused(Refusal::minted(
+            Recovery::Retry,
+            "the workspace's shared domain memo stayed held for this door's whole budget, so NO \
+             splice was issued — nothing was sent, nothing landed, no fingerprint advanced. \
+             retry: re-run the entry",
+        ));
+    };
     let observe = || registry.door_observation(ws, &cache, crate::registry::DOOR_COOKIE_TIMEOUT);
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if let [path] = paths.as_slice() {
