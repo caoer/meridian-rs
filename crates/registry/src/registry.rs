@@ -622,7 +622,16 @@ mod floor_grammar {
                 [cc, cr, dc, dr]
             })
             .collect();
-        assert_eq!(names.len(), 24, "six triggers, two planes, two outcomes");
+        // Two planes x two outcomes per trigger. The `24` is a hard literal on
+        // purpose: computing it from `ALL` would make this assertion follow the
+        // population it is supposed to watch, and a shrunken `ALL` would read
+        // green. A legitimately grown population REDDENS here — re-derive the
+        // number by hand rather than deriving it from `ALL`.
+        assert_eq!(
+            names.len(),
+            24,
+            "the emitted population is no longer the one this law was pinned to: {names:?}"
+        );
         let unique: BTreeSet<&str> = names.iter().copied().collect();
         assert_eq!(
             unique.len(),
@@ -667,8 +676,10 @@ mod floor_grammar {
     /// invisible to all four: `currency()` and `door()` are exhaustive `match`
     /// arms, so the compiler DOES force the new names to exist, and
     /// `all_twenty_four_names_are_distinct_and_carry_no_space` stays green at
-    /// 24 because 24 is computed FROM `ALL` (6 × 4). The coverage shrinks and
-    /// nothing says so.
+    /// 24 — its population is built FROM `ALL`, which is still six, and the
+    /// `24` it checks against is a hard literal standing for that same six.
+    /// Both sides are pinned at six independently, so neither one notices the
+    /// seventh variant. The coverage shrinks and nothing says so.
     ///
     /// **The exhaustiveness cannot be a compile-time fact here, and the reason
     /// is worth stating**: a variant-exhaustive `match` forces an ARM, never an
@@ -730,14 +741,19 @@ mod floor_grammar {
     fn all_lists_every_variant_the_enum_declares() {
         let declared = declared_variants();
 
-        // The instrument's own control. A rename or a move of the declaration
-        // would leave `declared` empty, and an empty population compares equal
-        // to nothing — the census must REDDEN when it loses its subject, never
-        // certify silence.
+        // The instrument's own control, phrased in the parser's OWN predicate:
+        // `declared_variants` opens on a WHOLE LINE equal to `DECLARATION`, so
+        // this guard tests whole lines too. A `contains` here would be
+        // satisfied forever by the `const DECLARATION` line a few lines up —
+        // the file reads itself, so the literal occurs twice and the const's
+        // own copy certifies the census even after the declaration is gone.
+        // A rename or a move leaves `declared` empty, and an empty population
+        // compares equal to nothing — the census must REDDEN when it loses its
+        // subject, never certify silence.
         assert!(
-            REGISTRY_SOURCE.contains(DECLARATION),
-            "the census lost its subject: {DECLARATION:?} is not in this file any more, so it \
-             is measuring nothing — re-point it at the declaration"
+            REGISTRY_SOURCE.lines().any(|line| line == DECLARATION),
+            "the census lost its subject: no line in this file IS {DECLARATION:?} any more, so \
+             it is measuring nothing — re-point it at the declaration"
         );
         assert!(
             declared.len() >= 6,
@@ -820,8 +836,15 @@ mod floor_grammar {
             "the predicate misses a real refusal, so it under-counts instead of over-counting"
         );
 
-        // (3) The property that makes the anchoring exact, over the population.
-        let mut refusals = 0;
+        // (3) The property that makes the anchoring exact, over the population:
+        // at EVERY trigger and plane the recipe selects the refusal and NOT the
+        // entry — exactly one name out of each pair, which is what makes an
+        // operator's refusal count half the emitted population instead of a
+        // number that drifts with a cause name. The two guards below are what
+        // measure it, one pair at a time. A counter incremented once per loop
+        // turn and compared against `ALL.len() * 2` would only re-derive the
+        // loop's own bounds, and would carry this sentence on an assertion that
+        // cannot fail.
         for trigger in FloorTrigger::ALL {
             for (family, (completed, refused)) in [
                 ("currency.floor.", trigger.currency()),
@@ -839,22 +862,17 @@ mod floor_grammar {
                 assert!(
                     !anchored_refusal(family, completed),
                     "{trigger:?}: the recipe reads completed name {completed:?} as a refusal, so \
-                     the operator's refusal count includes a pass that finished"
+                     the operator's refusal count includes a pass that finished, and stops being \
+                     one selection per trigger per plane"
                 );
                 assert!(
                     anchored_refusal(family, refused),
                     "{trigger:?}: the recipe does not read refusal name {refused:?} as one, so \
-                     the operator's refusal count silently drops a cause"
+                     the operator's refusal count silently drops a cause, and stops being one \
+                     selection per trigger per plane"
                 );
-                refusals += 1;
             }
         }
-        assert_eq!(
-            refusals,
-            FloorTrigger::ALL.len() * 2,
-            "the recipe must select exactly one refusal per trigger per plane — half the \
-             population, never a name more or less"
-        );
     }
 }
 
