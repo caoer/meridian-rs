@@ -2599,7 +2599,7 @@ MRD_TIMING=/var/log/mrd-timing.log   # on the daemon's environment
 L=/var/log/mrd-timing.log
 grep -c 'phase=currency.floor'          "$L"   # the fallback — every pass that ENTERED it
 grep -c 'phase=currency.vouched'        "$L"   # the designed path
-grep -c 'phase=currency.floor.*refused' "$L"   # of those, the ones that did not finish
+grep -cE 'phase=currency[.]floor[.][a-z_]+[.]refused( |$)' "$L"   # of those, the ones that did not finish — the `.refused` OUTCOME must be anchored as the final component, because a CAUSE name can itself end in `refused` (`cookie_refused`) and an unanchored `.*refused` counts its ENTRY line too
 grep -o 'phase=currency\.floor\.[a-z_]*' "$L" | sort | uniq -c   # by cause
 ```
 
