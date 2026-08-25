@@ -1843,6 +1843,66 @@ pub(crate) mod tests {
         dir.path().join(SQL_CACHE_FILENAME)
     }
 
+    /// [`SqlStore::open`] with a config baseline `DuckDB` reports back
+    /// UNCHANGED — the opener for every test that asserts a GLOBAL setting's
+    /// value comes back.
+    ///
+    /// `SqlStore::open` records the strings `DuckDB` reports, and for four of
+    /// its 134 GLOBAL settings the reported string is not one `DuckDB` reports
+    /// back identically after it has been `SET` again (measured on `DuckDB`
+    /// v1.5.4: `memory_limit`, its alias `max_memory`, the derived
+    /// `write_buffer_row_group_memory_limit`, and `default_order`, which
+    /// reports `ASCENDING` and takes `ASC`). Byte sizes are formatted to one
+    /// decimal, so a host whose value is not on that grid loses the
+    /// remainder: 128 `GiB` of RAM → 80% default `102.400 GiB` → reported
+    /// `102.3 GiB` → set back → `102.2 GiB`.
+    ///
+    /// A test that reads the setting at open and then asserts the restore
+    /// reproduces THAT STRING is asserting on `DuckDB`'s own formatter, not on
+    /// whose value came back, and it REDs on such a host with nothing wrong —
+    /// which is what these tests did (card
+    /// `duckdb-reported-global-setting-values-are-not-always-fixed-points`).
+    /// Starting from settled values keeps the assertions EXACT — no tolerance,
+    /// no ignored name — and makes them say the thing they are named for. On a
+    /// host whose values already are fixed points, this is a no-op.
+    pub(crate) fn open_settled(file: &Path) -> Result<SqlStore, ViewError> {
+        let mut store = SqlStore::open(file)?;
+        store.baseline = Arc::new(settle_global_config(store.connection()));
+        Ok(store)
+    }
+
+    /// Drive one instance's GLOBAL config onto values `DuckDB` reports back
+    /// unchanged, and hand back the snapshot of them.
+    ///
+    /// Bounded on purpose: a setting that never reaches a fixed point makes
+    /// this panic by name instead of turning the suite flaky. Three passes is
+    /// the most `memory_limit` has needed here (`102.3` → `102.2` → `102.1` →
+    /// `102.0 GiB`, each pass re-reading what the last one landed on).
+    pub(crate) fn settle_global_config(conn: &Connection) -> Vec<(String, String)> {
+        let mut snap = global_config_snapshot(conn).expect("config snapshot");
+        for _ in 0..8 {
+            for (name, was) in &snap {
+                // One-way by `DuckDB`'s design; a settle pass has no business
+                // touching that door (see `restore_global_config`'s residue).
+                if name == "lock_configuration" {
+                    continue;
+                }
+                let value = was.replace('\'', "''");
+                // The names `DuckDB` refuses as input are exactly the ones
+                // `restore_global_config` returns unrestored; they cannot
+                // drift either, so ignoring the refusal here is the same
+                // best-effort contract.
+                let _ = conn.execute_batch(&format!("SET \"{name}\"='{value}';"));
+            }
+            let now = global_config_snapshot(conn).expect("config snapshot");
+            if now == snap {
+                return now;
+            }
+            snap = now;
+        }
+        panic!("a GLOBAL setting never reached a fixed point of DuckDB's own SET");
+    }
+
     /// The dogfood-shaped fixture: frontmatter tags + alias, links (resolved,
     /// dangling, embed), tasks (document-level and governed), the `['']`
     /// heading hazard, and a card-shaped doc.
@@ -2549,32 +2609,60 @@ pub(crate) mod tests {
     /// made permanent — which is what a per-call `before` snapshot would do
     /// the moment two reads overlap (card
     /// `sql-set-config-cross-caller-starvation`, re-opened by concurrency).
+    ///
+    /// **The caller's `SET` is issued on the base connection, and that is the
+    /// whole arrangement.** [`SqlRead::run`] does statement, rollback and
+    /// restore in ONE step, so two `begin_read`s alone can never leave one
+    /// caller's value standing for the other to meet: the first read's
+    /// restore has already put the engine's value back before the second read
+    /// starts. Measured — with the caller's `SET` made through the lane, two
+    /// mutations that swap [`SqlStore::baseline`] for a per-call snapshot (at
+    /// `begin_read`, and again at `run`) BOTH leave this test green, so it
+    /// could not fail for the reason it is named for. A `SET` standing on the
+    /// shared instance is what a concurrent caller really presents, and it is
+    /// the only arrangement in which a per-call `before` could capture it.
     #[test]
     fn the_restore_baseline_is_the_engines_values_not_a_concurrent_callers() {
         let dir = tempfile::tempdir().expect("tmpdir");
-        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let mut store = open_settled(&tmp_store(&dir)).expect("open");
         sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
 
         let engine_value = global_setting(&store, "memory_limit");
 
-        // A caller moves it, and — the concurrency case — a SECOND read is
-        // opened while that value is the one in force on the instance.
-        let hostile = store.begin_read().expect("read");
+        // A read already in flight — the topology this repair makes possible.
+        let in_flight = store.begin_read().expect("read");
+
+        // A concurrent caller's GLOBAL `SET`, still standing because that
+        // caller's own call has not reached its restore yet.
+        store
+            .connection()
+            .execute_batch("SET memory_limit='123MB';")
+            .expect("a concurrent caller's GLOBAL SET on the shared instance");
+        assert_ne!(
+            global_setting(&store, "memory_limit"),
+            engine_value,
+            "precondition: the caller's value, not the engine's, is the one \
+             in force — without this the test cannot fail"
+        );
+
+        // A read opened AND run entirely under that value: both ends at which
+        // a per-call `before` could be taken see the caller's value, and the
+        // restore must still land on the ENGINE's.
         let overlapping = store.begin_read().expect("read");
-        hostile
-            .run("SET memory_limit='123MB'")
-            .expect("lane")
-            .expect("set");
-
-        // The overlapping read was opened under the hostile value; its own
-        // restore must still land on the ENGINE's, never on '123MB'.
         overlapping.run("SELECT 1").expect("lane").expect("select");
-
         assert_eq!(
             global_setting(&store, "memory_limit"),
             engine_value,
             "an overlapping read restored a concurrent caller's SET as if it \
              were the engine's value"
+        );
+
+        // And so must the one that was already in flight when it landed.
+        in_flight.run("SELECT 1").expect("lane").expect("select");
+        assert_eq!(
+            global_setting(&store, "memory_limit"),
+            engine_value,
+            "a read in flight when a concurrent SET landed restored it too"
         );
     }
 
@@ -2951,7 +3039,7 @@ mod spill_tests {
 /// daemon's whole life).
 #[cfg(test)]
 mod config_scope_tests {
-    use super::tests::{fixture_v1, sync_ambient, tmp_store};
+    use super::tests::{fixture_v1, open_settled, sync_ambient, tmp_store};
     use super::*;
 
     /// One setting as the NEXT caller would find it — through the query lane,
@@ -2971,7 +3059,7 @@ mod config_scope_tests {
     #[test]
     fn a_caller_set_does_not_reach_the_next_caller() {
         let dir = tempfile::tempdir().expect("tmpdir");
-        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let mut store = open_settled(&tmp_store(&dir)).expect("open");
         sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
 
         let engine_memory = next_caller_sees(&store, "memory_limit");
@@ -3012,7 +3100,7 @@ mod config_scope_tests {
     #[test]
     fn restoring_config_reapplies_the_engines_spill_bound_not_duckdbs_default() {
         let dir = tempfile::tempdir().expect("tmpdir");
-        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let mut store = open_settled(&tmp_store(&dir)).expect("open");
         sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
 
         let engine_temp = next_caller_sees(&store, "temp_directory");
@@ -3052,7 +3140,7 @@ mod config_scope_tests {
     #[test]
     fn derived_settings_come_back_with_the_setting_they_derive_from() {
         let dir = tempfile::tempdir().expect("tmpdir");
-        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let mut store = open_settled(&tmp_store(&dir)).expect("open");
         sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
 
         let before: Vec<(String, String)> = ["max_memory", "write_buffer_row_group_memory_limit"]
@@ -3094,7 +3182,7 @@ mod config_scope_tests {
     #[test]
     fn the_error_path_is_not_a_place_config_can_hide() {
         let dir = tempfile::tempdir().expect("tmpdir");
-        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let mut store = open_settled(&tmp_store(&dir)).expect("open");
         sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
         let engine_threads = next_caller_sees(&store, "threads");
 
@@ -3138,7 +3226,7 @@ mod config_scope_tests {
     #[test]
     fn a_caller_lock_is_the_one_residue_and_it_freezes_engine_values() {
         let dir = tempfile::tempdir().expect("tmpdir");
-        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let mut store = open_settled(&tmp_store(&dir)).expect("open");
         sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
 
         let engine_memory = next_caller_sees(&store, "memory_limit");
