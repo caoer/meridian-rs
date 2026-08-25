@@ -203,6 +203,34 @@ fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
+/// The phases a CORPUS FOLD emits. The attribution gates below are about folds
+/// — "three workspaces, three folds, three emitters" — and the daemon emits
+/// other phases from other threads (`currency.*`, one per §6.7 currency pass),
+/// so grouping by `who=` over EVERY daemon line answers a different question
+/// than the one those gates ask. Naming the set here keeps that distinction
+/// explicit rather than resting on "the daemon only ever folds", which was
+/// true once and is not a claim any gate here makes.
+const FOLD_PHASES: [&str; 5] = [
+    "snapshot",
+    "snapshot.walk",
+    "snapshot.read",
+    "snapshot.fold",
+    "corpus.build",
+];
+
+fn is_fold_phase(phase: &str) -> bool {
+    FOLD_PHASES.contains(&phase)
+}
+
+/// The distinct daemon threads that emitted a FOLD phase — one per fold.
+fn fold_emitters(text: &str) -> BTreeSet<String> {
+    measurements(text)
+        .into_iter()
+        .filter(|m| m.cmd == "daemon" && is_fold_phase(&m.phase))
+        .map(|m| m.who)
+        .collect()
+}
+
 /// Poll `path` until `done` accepts its contents, or [`SETTLE`] elapses.
 /// Returns the last contents read either way — a failing assertion then prints
 /// what the daemon DID say, which is the whole diagnostic value of this file.
@@ -524,15 +552,7 @@ fn concurrent_ops_on_one_daemon_are_attributable() {
         );
     }
 
-    let text = wait_for(&sink, |text| {
-        measurements(text)
-            .iter()
-            .filter(|m| m.cmd == "daemon")
-            .map(|m| m.who.clone())
-            .collect::<BTreeSet<_>>()
-            .len()
-            >= 3
-    });
+    let text = wait_for(&sink, |text| fold_emitters(text).len() >= 3);
     let all = measurements(&text);
     let served: Vec<&Measurement> = all.iter().filter(|m| m.cmd == "daemon").collect();
     assert!(
@@ -546,8 +566,10 @@ fn concurrent_ops_on_one_daemon_are_attributable() {
         1,
         "one resident daemon should have served all three calls: {daemon_pids:?}\n{text}"
     );
+    // Grouped over FOLD lines only — see `FOLD_PHASES`. A currency pass is not
+    // a fold and its thread is not a fold's emitter.
     let mut by_who: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for m in &served {
+    for m in served.iter().filter(|m| is_fold_phase(&m.phase)) {
         by_who
             .entry(m.who.as_str())
             .or_default()
@@ -621,11 +643,9 @@ fn two_ops_on_one_cold_workspace_share_one_fold() {
         "the warm-up links failed: {}",
         String::from_utf8_lossy(&warm.stderr)
     );
-    let before: BTreeSet<String> = measurements(&read(&sink))
-        .into_iter()
-        .filter(|m| m.cmd == "daemon")
-        .map(|m| m.who)
-        .collect();
+    // FOLD emitters only — see `FOLD_PHASES`. This gate counts folds, and the
+    // daemon's currency passes run on their own threads.
+    let before = fold_emitters(&read(&sink));
 
     let contested = sb.workspace_named("contested");
     let (left, right) = (sb.links(&contested, &arg), sb.links(&contested, &arg));
@@ -640,15 +660,11 @@ fn two_ops_on_one_cold_workspace_share_one_fold() {
     }
 
     let text = wait_for(&sink, |text| {
-        measurements(text)
-            .iter()
-            .filter(|m| m.cmd == "daemon")
-            .any(|m| !before.contains(&m.who))
+        fold_emitters(text).iter().any(|who| !before.contains(who))
     });
-    let added: BTreeSet<String> = measurements(&text)
+    let added: BTreeSet<String> = fold_emitters(&text)
         .into_iter()
-        .filter(|m| m.cmd == "daemon" && !before.contains(&m.who))
-        .map(|m| m.who)
+        .filter(|who| !before.contains(who))
         .collect();
     assert_eq!(
         added.len(),
