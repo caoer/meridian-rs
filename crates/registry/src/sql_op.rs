@@ -85,12 +85,16 @@ use crate::Registry;
 /// giving the projection build its own gate, the way the engine drawer already
 /// has one, is.
 ///
-/// **What the floor does NOT cover: a pileup.** It is the tail of ONE
-/// legitimate hold. A waiter experiences the SUM of the holds ahead of it plus
-/// the turns it loses to `try_lock`'s races, and headroom over the floor is
-/// 2.4 s — less than one median-plus-tail pileup. At a 378 ms median that is
-/// rare rather than absent, and it is the regime to check first if legitimate
-/// work ever starts refusing here.
+/// **What the floor does NOT cover: a pileup, and it is UNMEASURED.** The
+/// floor is the tail of ONE legitimate hold, which is what the bound is
+/// justified against. What a waiter actually absorbs is the SUM of the holds
+/// ahead of it plus the turns it loses to `try_lock`'s races, and headroom
+/// over the floor is 2.4 s — less than one median-plus-tail pileup would
+/// consume. No measurement in this record probes that regime: the concurrency
+/// that was measured is short-op load, which cannot queue past a deadline
+/// whatever the lock discipline. So this is a gap in the evidence, not a
+/// clean result, and it is the first place to look if legitimate work ever
+/// starts refusing here.
 ///
 /// Engine-internal on purpose, the same as the §3.2 cold gate's
 /// `COLD_BUILD_WAIT` beside it: the contract publishes the bound's ORDER,
@@ -135,13 +139,16 @@ const SQL_STORE_POLL: Duration = Duration::from_millis(10);
 /// seat that is actually blocked.
 ///
 /// `try_lock` polling is not FIFO: waiters race for each release, so a waiter
-/// can lose several turns before the bound expires. Under a bound they all
-/// refuse at the same horizon, which caps the damage but does not distribute
-/// it: what a waiter actually experiences is the SUM of the holds ahead of it
-/// plus the turns it loses, while the bound is justified against a SINGLE
-/// legitimate hold. At a 378 ms median that pileup is rare rather than
-/// impossible, and it — not ordinary concurrent load — is the regime where
-/// the unfairness bites.
+/// can lose turns it would have won under a queue. A bound caps the damage —
+/// every waiter refuses at the same horizon — but it does not distribute it,
+/// and the horizon is justified against a SINGLE legitimate hold while a
+/// waiter absorbs the sum of the holds ahead of it plus its lost races.
+/// **Whether that sum stays under the bound is not known.** The only
+/// concurrency measured here was eight seats running sub-second ops, which
+/// cannot queue past a deadline whatever the lock discipline and so says
+/// nothing about the long-hold regime where the unfairness would bite. Stated
+/// as a gap rather than a reassurance on purpose: this is exactly the shape of
+/// evidence the bound exists to stop trusting.
 ///
 /// `wait` is a parameter rather than a read of the constant so the contention
 /// path can be gated in milliseconds instead of the production bound's
