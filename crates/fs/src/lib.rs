@@ -674,6 +674,59 @@ impl StatKey {
 /// answers the fast-path fact; the EVENT-STREAM vouch that makes a stamp
 /// answer legal (merkle-spec §6.3/§6.4 — cookie barrier, loss-free feed) is
 /// the caller's to establish, never assumed here.
+/// How often a bounded acquisition re-tries before its deadline. Short enough
+/// that a freed mutex is taken promptly, long enough that a contended one does
+/// not spin a core; the wait is measured in seconds, so this costs at most a
+/// few hundred polls per door.
+const LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// Acquire `mutex`, waiting at most `budget` — `None` waits as long as it
+/// takes (the read plane's existing, unbounded behaviour).
+///
+/// # Why a bound exists at all
+///
+/// A door that holds a caller's deadline cannot also make an unbounded wait:
+/// when the wait outlives the deadline, the CLIENT is what ends the call, and
+/// a client that gave up cannot say whether the write landed. The workspace
+/// write flock already refuses rather than waits for exactly this reason
+/// ([`WriteLock::acquire`] is `LOCK_NB` — *"it never waits, so a hung holder
+/// can never make callers hang"*). This is the same discipline for the other
+/// resource a write door must take: the shared [`DomainCache`] mutex.
+///
+/// A poisoned mutex is adopted ([`PoisonError::into_inner`]), matching every
+/// other acquisition of these memos: the data is a cache, and a panicking
+/// holder leaves it stale, never torn.
+///
+/// # Errors
+/// [`io::ErrorKind::WouldBlock`] when `budget` elapsed without the mutex
+/// coming free — the same kind the flock refuses with, so one mapping at the
+/// wire edge serves both.
+pub fn lock_within<T>(
+    mutex: &std::sync::Mutex<T>,
+    budget: Option<std::time::Duration>,
+) -> io::Result<std::sync::MutexGuard<'_, T>> {
+    let Some(budget) = budget else {
+        return Ok(mutex.lock().unwrap_or_else(PoisonError::into_inner));
+    };
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        match mutex.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(e)) => return Ok(e.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        format!("the mutex stayed held for the whole {budget:?} budget"),
+                    ));
+                }
+                std::thread::sleep(LOCK_POLL.min(left));
+            }
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct DomainCache {
     leaves: BTreeMap<PathBuf, LeafSeen>,
