@@ -142,7 +142,7 @@ pub(crate) fn voice_degrade(source: &EngineSource) {
 /// first line of [`voice_degrade`] already names the fact, and a guess is worth less than
 /// silence.
 ///
-/// Two causes, in the order an operator can act on them:
+/// Three causes, in the order an operator can act on them:
 ///
 /// 1. **A socket path that cannot fit in `sun_path`** — silent, and not fixed by starting a
 ///    daemon, so it outranks anything a spawn attempt reports (under it, a spawn is bound to
@@ -152,7 +152,11 @@ pub(crate) fn voice_degrade(source: &EngineSource) {
 ///    reaches this — only a pathological base (deep `HOME`, or a missing one forcing the
 ///    in-root fallback) still can.
 /// 2. **A daemon this process spawned and never heard from** — its own dying words, read back
-///    off its lane ([`SPAWN_FAILURE`]). This is not a guess: it is the child's own text.
+///    off its lane ([`record_spawn_failure`]). This is not a guess: it is the child's own text.
+/// 3. **A daemon this process REACHED, which then failed the exchange** — wedged, dead
+///    mid-request, or a plain transport fault, as `registry::wedge` judged it on the wire
+///    ([`record_dial_failure`]). Also not a guess: it is the wedge discipline's own verdict,
+///    the one the read path paid `registry::wedge::WEDGE_CAP` to compute.
 ///
 /// A refused handshake and a daemon somebody else's process failed to start are still covered
 /// by the first line alone.
@@ -171,11 +175,11 @@ pub(crate) fn degrade_reason() -> Option<String> {
             socket.display()
         ));
     }
-    spawn_failure()
+    recorded_fact()
 }
 
-/// The last words of a daemon THIS process auto-spawned and never heard from — set by
-/// [`ensure_daemon`], read by [`degrade_reason`].
+/// Why the daemon path did not serve THIS process, in this process's own words — set by
+/// [`record_spawn_failure`] or [`record_dial_failure`], read by [`degrade_reason`].
 ///
 /// A process-wide cell rather than a return value, because the five lanes that need this fact
 /// do not share a call shape: two swallow `ensure_daemon`'s error into a degrade
@@ -184,20 +188,60 @@ pub(crate) fn degrade_reason() -> Option<String> {
 /// already consult, so the fact is recorded once and stated once, in one voice, wherever the
 /// run ends up surfacing it.
 ///
+/// **Two writers, one voice, and they cannot race for a single run.** A lane that records a
+/// spawn failure has no daemon left to dial ([`try_daemon_links`] returns before `dial_links`;
+/// `read_cmd::connect_or_spawn` reaches [`ensure_daemon`] only when the connect ALREADY
+/// failed), so a dial verdict never overwrites the richer spawn quote.
+///
 /// Last writer wins: a process that spawns twice is reporting on its latest attempt.
-static SPAWN_FAILURE: Mutex<Option<String>> = Mutex::new(None);
+static DEGRADE_FACT: Mutex<Option<String>> = Mutex::new(None);
 
-/// Record why the spawn this process just attempted left it with no daemon.
-fn record_spawn_failure(reason: String) {
-    if let Ok(mut slot) = SPAWN_FAILURE.lock() {
+/// Store `reason` as this process's degrade fact. A poisoned lock drops it: a diagnostic is
+/// never worth a panic on a path whose whole job is to keep the run alive.
+fn record(reason: String) {
+    if let Ok(mut slot) = DEGRADE_FACT.lock() {
         *slot = Some(reason);
     }
 }
 
-/// The recorded spawn failure, if this process attempted one and it failed. A poisoned lock
-/// answers `None`: a diagnostic is never worth a panic on the degrade path.
-fn spawn_failure() -> Option<String> {
-    SPAWN_FAILURE.lock().ok()?.clone()
+/// Record why the spawn this process just attempted left it with no daemon.
+fn record_spawn_failure(reason: String) {
+    record(reason);
+}
+
+/// Record why a daemon this process REACHED then failed to serve it.
+///
+/// The sentence is the transport error's own, verbatim. `registry::wedge` has already decided
+/// WHICH failure this is — up-and-wedged, dead mid-request, or a plain fault — and already
+/// wrote the remedy, in the same voice the write half speaks
+/// ([`crate::script::wire_host::DialFailure`]). Minting a second wording here would be worse
+/// than the silence it replaces, so this adds one attributive clause and nothing else.
+///
+/// The verdict is not cheap: reaching the wedged arm costs `registry::wedge::WEDGE_CAP`. It
+/// was computed on every such run already and thrown away, which from outside the process is
+/// indistinguishable from never computing it.
+fn record_dial_failure(error: &io::Error) {
+    record(format!(
+        "The daemon was reached and the exchange failed: {error}"
+    ));
+}
+
+/// `Some` on success; on failure record the verdict for the degrade and answer `None` — the
+/// read lanes' `.ok()?`, with the fact kept instead of dropped.
+pub(crate) fn served_or_recorded<T>(outcome: io::Result<T>) -> Option<T> {
+    match outcome {
+        Ok(value) => Some(value),
+        Err(error) => {
+            record_dial_failure(&error);
+            None
+        }
+    }
+}
+
+/// The recorded degrade fact, if this process produced one. A poisoned lock answers `None`:
+/// a diagnostic is never worth a panic on the degrade path.
+fn recorded_fact() -> Option<String> {
+    DEGRADE_FACT.lock().ok()?.clone()
 }
 
 /// What to say when a daemon we launched never bound its socket: QUOTE it. Its stderr is the
@@ -605,7 +649,22 @@ fn try_daemon_links(workspace: &Path, path: Option<&str>) -> Result<Option<Value
     }
     match dial_links(client.socket_path(), workspace, path) {
         Ok(DialedLinks::Served(body)) => Ok(Some(body)),
-        Ok(DialedLinks::Unusable) | Err(_) => Ok(None),
+        // The daemon is up and TALKING — it answered, with an op error. There is no
+        // transport verdict to state and no operator act to name, so the degrade's first
+        // line stands alone rather than gaining a guess. (That an op-level refusal melts
+        // into the degrade at all is a different defect on a different lane; the §1
+        // admission check in `dispatch_links` is its partial answer.)
+        Ok(DialedLinks::Unusable) => Ok(None),
+        // The exchange failed on the WIRE, which is not the same event. `registry::wedge`
+        // has already judged which failure it is and written the remedy — up-and-wedged
+        // says "restart the daemon", dead-mid-request says the outcome is unknown — and
+        // this arm used to drop that verdict on the floor, so a user paid the full
+        // `WEDGE_CAP`, got a correct in-process answer, and was never told a daemon is
+        // wedged. Record it; `voice_degrade` states it.
+        Err(error) => {
+            record_dial_failure(&error);
+            Ok(None)
+        }
         Ok(DialedLinks::Skew(message)) => Err(Fail::tool(message)),
     }
 }
