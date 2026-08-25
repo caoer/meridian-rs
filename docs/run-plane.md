@@ -2537,6 +2537,10 @@ so on a rehearsal `snapshot` and `eval` sit directly inside `total`, and
 | `apply` | `dispatch` | `run::dispatch_starlark` | the executor's one md.\* batch (absent when the block emitted none) |
 | `cascade` | `total` | `run::runner` | the cascade loop — vacuous under the empty S1 ruleset, so a near-zero `us` here is the expected reading, not a missing measurement |
 | `report.render` | `total` | `mrd::run_cmd` | the U9 report render |
+| `currency.vouched` | — (`cmd=daemon`) | `registry::Registry::currency_refresh` | a READ-plane §6.7 currency pass that took the O(1) cookie fast path: no walk, no stat, no byte read |
+| `currency.floor` | — (`cmd=daemon`) | same | a read-plane currency pass that MISSED the vouch and fell to the §6.2 extent-refresh floor — the full stat sweep |
+| `door.vouched` | — (`cmd=daemon`) | `registry::Registry::door_observation` | a WRITE-door entry observation that took the same fast path, inside the D9 flock |
+| `door.floor` | — (`cmd=daemon`) | same | a write-door observation that fell to the floor |
 
 **A phase reports only where it COMPLETED.** A phase that never ran emits no
 line — `--dry` never reaches `apply` or `cascade`, `--list` reaches neither
@@ -2556,6 +2560,30 @@ plane) — any effect under `--dry`, an md.\* effect live. So an effect-free run
 reaches no `snapshot` in either tense, and a live `notice`-only run reaches none
 either. That absence is the reading: a `snapshot` line on a live `notice`-only
 run is the lazy gate broken.
+
+#### The currency pair answers "how often does the floor run"
+
+`currency.*` and `door.*` are **pairs, and the pair is the measurement.** The
+§6.2 extent-refresh floor is a second execution path behind the §6.7 vouched
+one, and a second path is a claim that the first fails silently — so the only
+honest question about it is a RATIO, not a count. A floor count alone is a
+numerator with no denominator: it cannot tell a daemon that vouched a million
+times and floored twice from one that floored twice out of three.
+
+```bash
+MRD_TIMING=/var/log/mrd-timing.log   # on the daemon's environment
+grep -c 'phase=currency.floor'   /var/log/mrd-timing.log   # the fallback
+grep -c 'phase=currency.vouched' /var/log/mrd-timing.log   # the designed path
+```
+
+Read `cmd=` first — these four are emitted only by the engine process, so they
+always carry `cmd=daemon`. **Do not add the two pairs together.** They count
+different populations: one currency pass per read-plane warm, versus one entry
+observation per write. Their denominators are unrelated.
+
+**A line means the arm ran to COMPLETION.** The floor's `?` on an I/O failure
+abandons the span, so a refused sweep is not counted — which is what keeps the
+ratio a fact about work done rather than about work attempted.
 
 #### The `snapshot` set can repeat, and which lane you are on decides
 
@@ -2646,7 +2674,7 @@ tenses).
 | CLI mount — script entry | `crates/mrd::script::cmd` — the same client edge; its human-mode face is non-normative |
 | in-process script serve (§ A.7) | `crates/registry` (the op arm: entry world, host, threading, commit) over `crates/effects` (kernel, trace, digest) — added 2026-08-12 |
 | wire run serve (§ A.8) + script effects mode | `crates/registry` (`run_op`: per-target loop, §9 threading; `script_op`: the live host) over `crates/run` (the plane, unchanged) — added 2026-08-13 |
-| per-phase timing (`MRD_TIMING`) | `crates/timing` (the switch, the sink, the span) — the phase call sites are `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`, `fs::domain_fold`; § Timing phases — added 2026-08-22 |
+| per-phase timing (`MRD_TIMING`) | `crates/timing` (the switch, the sink, the span) — the phase call sites are `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`, `fs::domain_fold`, `registry::Registry::currency_refresh`, `registry::Registry::door_observation`; § Timing phases |
 | root-at-eval observation (the lazy fold) | `crates/run::dispatch_starlark::observe_if_emitted` — ONE owner of the per-tense gate; `runner::rehearse` calls it directly, the live leg calls it inside `dispatch_starlark::dispatch`. `evaluate` returns `Unobserved`, so neither can skip it and still compile; § The run plane (`RunCtx`) — added 2026-08-22 |
 
 ---

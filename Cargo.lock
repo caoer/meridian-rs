@@ -2887,6 +2887,7 @@ dependencies = [
  "serde_json",
  "syntax",
  "tempfile",
+ "timing",
  "transport",
  "view",
  "wire",
