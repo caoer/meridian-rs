@@ -1868,8 +1868,9 @@ vanishes from it.
 The one page-eager guard is the task **NAME** charset (§2.4, ruling 011): a key
 outside `[A-Za-z0-9-]` refuses the whole page, including `--list`. Its reason is
 not addressing but forgery — a name is stamped verbatim into every run receipt
-(`task`, and the actor `run:<name>`), and listing it would print the forged
-bytes it exists to keep out.
+as `task`, and as the actor `run:<name>` whenever the request supplies no actor
+of its own (§9), and listing it would print the forged bytes it exists to keep
+out.
 
 ## Capabilities — deny-by-default (verdict ruling 3, decision #15)
 
