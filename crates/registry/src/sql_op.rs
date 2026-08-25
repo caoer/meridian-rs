@@ -17,8 +17,8 @@
 //! append and the opening of this call's read — [`view::store::SqlStore::sync`]
 //! then [`view::store::SqlStore::begin_read`] — and it is released before the
 //! caller's statement runs. The read owns a connection of its own on the same
-//! `DuckDB` instance, with its snapshot pinned by the `BEGIN` taken under the
-//! lock, so the answer is as fresh as the `as_of` it reports while the
+//! `DuckDB` instance, with its snapshot pinned under the lock, so the answer
+//! is as fresh as the `as_of` it reports while the
 //! expensive part costs concurrent callers nothing but `DuckDB`'s MVCC.
 //! Queries on one workspace therefore overlap, across connections and across
 //! seats. What still serializes is the append, which is the one thing that
