@@ -41,7 +41,9 @@ use crate::Registry;
 ///   bound under that refuses correct work. Note the tail had NOT converged —
 ///   the same measurement over 90 s (n=103) peaked at 4,779 ms, so an eightfold
 ///   longer sample moved the floor up 17%. The value below is chosen against
-///   the larger figure, not the first one.
+///   the larger figure, not the first one. That floor is a WARM-INCREMENTAL
+///   figure; the cold-projection hold below is a separate, larger, unbounded
+///   case it does not cover.
 /// - **Ceiling — the host's own deadline.** `ccc-statusd` gives a request 10 s
 ///   (`internal/registryclient/client.go`) and retires the CONNECTION when it
 ///   expires, failing every op pipelined behind it. The refusal has to land
@@ -51,15 +53,65 @@ use crate::Registry;
 ///   the caller that plus the bound — measured at 7,628 ms total against a 7 s
 ///   bound, i.e. ~0.6 s of pre-lock work on a debug build.
 ///
-/// So the usable window is roughly 5.6 s to 9 s, and 8 s sits in it with 1.4×
-/// over the measured floor and ~2 s under the deadline. **That the window is
-/// this tight is itself the finding**: the bound is a brace, not a repair. The
+/// So the usable window is roughly 5.6 s to 9 s, and 8 s sits in it at 1.4×
+/// the measured floor with ~2 s under the deadline. **That the window is this
+/// tight is itself the finding**: the bound is a brace, not a repair. The
 /// repair is to stop holding this lock across `query()` at all.
+///
+/// **How far these numbers carry.** Both edges are debug-build macOS figures
+/// taken under live fleet load, so 1.4× is a debug-build RATIO, not a
+/// production margin; a release build moves the floor and the pre-lock work
+/// down together, which is the favourable direction but not a measured one. A
+/// successor who wants to move this constant should re-measure both edges on
+/// the build that ships rather than treat 5,581 ms and 378 ms as given.
+///
+/// **What the floor does NOT cover: a cold projection cache.** Two caches sit
+/// on this path and only one of them is gated. The ENGINE drawer has its own
+/// cold gate ahead of this call ([`crate::Registry::cold_gate`], keyed on
+/// engine residency alone) which bounds its rebuild at `COLD_BUILD_WAIT`,
+/// backgrounds it, and refuses `corpus_warming` — so engine coldness never
+/// converts into time held here. The SQL PROJECTION cache is a different
+/// artifact with no gate of its own: [`crate::Registry::sql_store`] opens the
+/// drawer's `sql.duckdb` on first use, and `sql` is its ONLY opener. A
+/// workspace that ordinary `read`/`put` traffic has made engine-warm therefore
+/// passes the cold gate, takes this lock, and — when the projection file is
+/// absent, was dropped by the idle reaper's demotion, or is recreated inside
+/// `sync()` on a fingerprint version-prefix change — meets an empty manifest
+/// and projects the WHOLE corpus, inline, under this mutex, unbounded and not
+/// backgrounded. Measured on 10,000 synthetic files (debug, macOS): a
+/// warm-engine/cold-projection run costs the same as a fully cold one, ~2 s
+/// per 10 k files above warm. Concurrent `sql` on that workspace refuses
+/// `lock_timeout` for the duration. Raising this bound is not the answer —
+/// giving the projection build its own gate, the way the engine drawer already
+/// has one, is.
+///
+/// **What the floor does NOT cover: a pileup.** It is the tail of ONE
+/// legitimate hold. A waiter experiences the SUM of the holds ahead of it plus
+/// the turns it loses to `try_lock`'s races, and headroom over the floor is
+/// 2.4 s — less than one median-plus-tail pileup. At a 378 ms median that is
+/// rare rather than absent, and it is the regime to check first if legitimate
+/// work ever starts refusing here.
 ///
 /// Engine-internal on purpose, the same as the §3.2 cold gate's
 /// `COLD_BUILD_WAIT` beside it: the contract publishes the bound's ORDER,
-/// never its value.
+/// never its value. That privacy is why the near-miss band below asserts
+/// against [`crate::server::SLOW_OP_LOG`] here rather than exporting this
+/// value to `server`.
 const SQL_STORE_WAIT: Duration = Duration::from_secs(8);
+
+/// The near-miss band is a compile-time fact, not a comment.
+///
+/// The slow-op log exists to name the tail BEFORE it starts refusing, which is
+/// only true while it fires strictly under this bound. The two constants live
+/// in different modules with nothing but prose between them, so lowering the
+/// bound or raising the log would silently invert the band and no test would
+/// fail. This is that test, and it costs one line.
+const _: () = assert!(
+    crate::server::SLOW_OP_LOG.as_millis() < SQL_STORE_WAIT.as_millis(),
+    "SLOW_OP_LOG must fire strictly below SQL_STORE_WAIT: as written, a `sql` \
+     refused at the bound would be the FIRST thing the slow-op log ever names, \
+     and the near-miss warning it exists to give would arrive too late to be one"
+);
 
 /// Re-check cadence while waiting for the store. Coarse against a multi-second
 /// bound and far finer than the contention it measures, so it costs nothing to
@@ -82,10 +134,14 @@ const SQL_STORE_POLL: Duration = Duration::from_millis(10);
 /// set out to cure. Bounding the wait for THIS lock keeps the refusal with the
 /// seat that is actually blocked.
 ///
-/// `try_lock` polling is not FIFO: waiters race for each release. Under a
-/// bound they all refuse at the same horizon, and legitimate contention is
-/// short (8 concurrent seats measured a 37 ms spread), so the unfairness has
-/// nothing to bite.
+/// `try_lock` polling is not FIFO: waiters race for each release, so a waiter
+/// can lose several turns before the bound expires. Under a bound they all
+/// refuse at the same horizon, which caps the damage but does not distribute
+/// it: what a waiter actually experiences is the SUM of the holds ahead of it
+/// plus the turns it loses, while the bound is justified against a SINGLE
+/// legitimate hold. At a 378 ms median that pileup is rare rather than
+/// impossible, and it — not ordinary concurrent load — is the regime where
+/// the unfairness bites.
 ///
 /// `wait` is a parameter rather than a read of the constant so the contention
 /// path can be gated in milliseconds instead of the production bound's
