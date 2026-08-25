@@ -2542,9 +2542,9 @@ pub(crate) mod tests {
         let running = Arc::new(AtomicBool::new(false));
         let finished = Arc::new(AtomicBool::new(false));
         let holder = {
-            let store = std::sync::Arc::clone(&store);
-            let running = std::sync::Arc::clone(&running);
-            let finished = std::sync::Arc::clone(&finished);
+            let store = Arc::clone(&store);
+            let running = Arc::clone(&running);
+            let finished = Arc::clone(&finished);
             std::thread::spawn(move || {
                 let read = {
                     let guard = store.lock().expect("lock");
