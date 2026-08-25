@@ -254,12 +254,14 @@ fn config_block(doc: &model::Document, path: &std::path::Path) -> Result<String,
 /// config does carry. A KEY is a mapping's member — no path grammar, no
 /// silent `null` for an absent key.
 fn member(value: Value, key: &str, path: &std::path::Path) -> Result<Value, Fail> {
+    // Named before the match: the pattern below moves `value`, and the shape it
+    // was is exactly what the refusal has to say.
+    let shape = type_word(&value);
     let Value::Object(mut map) = value else {
         return Err(Fail::findings(format!(
-            "{}#^{CONFIG_ANCHOR}: `{CONFIG_ENTRY}()` returned {}, not a mapping, so `{key}` \
+            "{}#^{CONFIG_ANCHOR}: `{CONFIG_ENTRY}()` returned {shape}, not a mapping, so `{key}` \
              addresses nothing. Fix: run `mrd config get` with no KEY to see the whole value.",
-            path.display(),
-            type_word(&value)
+            path.display()
         )));
     };
     map.remove(key).ok_or_else(|| {
