@@ -208,6 +208,143 @@ fn v2_session_answers_unknown_op_and_never_advertises_sql() {
     assert_eq!(refused["error"]["code"], "unknown_op", "{refused}");
 }
 
+/// A statement with no I/O and no corpus in it, whose only job is to occupy
+/// one `sql` call for long enough that a sibling's whole round trip fits
+/// inside it. DuckDB has no `sleep`, so the spin is a recursive CTE.
+///
+/// The count is deliberately far larger than it needs to be. The assertion
+/// below is a happens-BEFORE fact, not a duration, so overshooting costs the
+/// suite a few seconds and buys immunity to how fast the box is; undershooting
+/// would silently turn a control that can fail into one that cannot.
+const SLOW_SQL: &str = "WITH RECURSIVE spin(i) AS (\
+     SELECT 1 UNION ALL SELECT i + 1 FROM spin WHERE i < 20000000\
+     ) SELECT count(*)::BIGINT FROM spin";
+
+/// A trivial real-corpus read — the shape a seat actually issues.
+const REAL_SQL: &str = "SELECT path FROM doc ORDER BY path";
+
+/// **The convoy gate.** A slow `sql` on one connection must not cost a sibling
+/// connection on the SAME workspace its turn.
+///
+/// Every `sql` on a workspace passes through one `Mutex<SqlStore>`. While that
+/// mutex was held across the caller's query, a fresh connection's `sql` on the
+/// same workspace waited the slow query out — measured at 350,574 ms against a
+/// 351,582 ms holder, while the same probe on a DIFFERENT workspace served in
+/// 70 ms through the same daemon. `sql_op::serve` now releases the store after
+/// the append and the read's `BEGIN`, so the query runs outside it.
+///
+/// **The other-workspace leg is the control, and it is here because it CAN
+/// fail.** If it came back slow too, the finding would be a process-global
+/// lock or a saturated box, not this mutex — and the first reading of this
+/// defect was taken on `mounts`, which never reaches the workspace engine and
+/// therefore could never have come back slow. A control that cannot fail is
+/// what hid this the first time.
+///
+/// The verdict is `holder_in_flight`: a happens-before fact, not a threshold,
+/// so it keeps discriminating whatever `SQL_STORE_WAIT` is set to and whatever
+/// the box costs. Serialized, the sibling can only answer after the holder
+/// releases — later than the holder's own answer, or refused `lock_timeout` at
+/// the bound. Either way this fails.
+#[test]
+fn a_slow_sql_does_not_convoy_a_sibling_connection_on_the_same_workspace() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Instant;
+
+    let tmp = TempDir::new().unwrap();
+    let held = tmp.path().join("ws-held");
+    let other = tmp.path().join("ws-other");
+    write(&held, "a.md", "# A\n\nsee [[b]]\n");
+    write(&held, "b.md", "# B\n");
+    write(&other, "a.md", "# A\n");
+
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let socket = server.socket_path().to_path_buf();
+
+    // Warm BOTH projections first. A cold projection cache is built inline
+    // inside the append, under this same mutex, so an unwarmed workspace would
+    // let a first-use build masquerade as the convoy this gate is about.
+    for ws in [&held, &other] {
+        let mut warm = Conn::open(&socket);
+        assert_eq!(warm.hello_v3(ws)["ok"], true);
+        assert_eq!(warm.sql(1, REAL_SQL)["ok"], true, "warm {}", ws.display());
+    }
+
+    let done = Arc::new(AtomicBool::new(false));
+    let holder = {
+        let (socket, ws, done) = (socket.clone(), held.clone(), Arc::clone(&done));
+        std::thread::spawn(move || {
+            let mut conn = Conn::open(&socket);
+            conn.hello_v3(&ws);
+            let started = Instant::now();
+            let answer = conn.sql(1, SLOW_SQL);
+            done.store(true, Ordering::SeqCst);
+            (started.elapsed(), answer)
+        })
+    };
+
+    // Let the holder get past its pre-lock work (domain load, mount corpus,
+    // base walk) and actually take the store, so the siblings below are
+    // genuinely contended rather than merely concurrent.
+    std::thread::sleep(Duration::from_millis(750));
+
+    let mut sibling = Conn::open(&socket);
+    assert_eq!(sibling.hello_v3(&held)["ok"], true);
+    let started = Instant::now();
+    let same_ws = sibling.sql(2, REAL_SQL);
+    let same_elapsed = started.elapsed();
+    let holder_in_flight = !done.load(Ordering::SeqCst);
+
+    let mut control = Conn::open(&socket);
+    assert_eq!(control.hello_v3(&other)["ok"], true);
+    let started = Instant::now();
+    let other_ws = control.sql(3, REAL_SQL);
+    let other_elapsed = started.elapsed();
+    let control_in_flight = !done.load(Ordering::SeqCst);
+
+    let (holder_elapsed, holder_answer) = holder.join().unwrap();
+    let ledger = format!(
+        "holder {holder_elapsed:?} (ok={}), same-workspace sibling {same_elapsed:?}, \
+         other-workspace control {other_elapsed:?}",
+        holder_answer["ok"]
+    );
+    // Hidden unless the run asks (`--nocapture`): this gate is a measurement,
+    // and the three numbers are worth having on a PASS, not only on a failure.
+    eprintln!("convoy gate: {ledger}");
+
+    // The control first: if the instrument cannot serve a fast `sql` at all
+    // while the holder runs, nothing below it means anything.
+    assert_eq!(
+        other_ws["ok"], true,
+        "the other-workspace control refused — this reading cannot separate \
+         the per-workspace mutex from a process-global lock or a saturated \
+         box: {other_ws}. {ledger}"
+    );
+    assert!(
+        control_in_flight,
+        "the other-workspace control answered only after the slow query \
+         finished, so the slow query is not what this gate thinks it is. \
+         {ledger}"
+    );
+
+    assert_eq!(
+        same_ws["ok"], true,
+        "a sibling connection's sql on the held workspace was refused while \
+         another connection's query ran: {same_ws}. {ledger}"
+    );
+    assert!(
+        holder_in_flight,
+        "the same-workspace sibling answered only after the holder's own \
+         query returned — every seat on this workspace is still serialized \
+         behind the slowest one. {ledger}"
+    );
+    assert_eq!(
+        same_ws["body"]["rows"],
+        json!([["a.md"], ["b.md"]]),
+        "the sibling's answer is its own workspace's rows: {ledger}"
+    );
+}
+
 /// The strict field wall: a `sql` frame carrying any field beyond `query`
 /// refuses `bad_request` — cwd and row bounds are host concerns.
 #[test]
