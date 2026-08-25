@@ -397,7 +397,7 @@ pub(crate) const DOOR_LOCK_CONTENDED: &str = "door.refused.lock_contended";
 
 /// WHICH of the vouch's terms sent a pass to the §6.2 extent-refresh floor.
 ///
-/// The conjunction has four terms but FIVE causes: a single `seen` bool used
+/// The conjunction has four terms but SIX causes: a single `seen` bool used
 /// to collapse "no live feed" — a cold start, where vouching is impossible by
 /// construction — into the same value as a feed that answered and refused.
 /// Those are opposite facts about a daemon (one is a lifecycle event, the
@@ -1447,7 +1447,7 @@ impl Registry {
     ///
     /// **Which arm ran is emitted**, one line per pass, on the `MRD_TIMING`
     /// lane: `phase=currency.vouched`, or a `phase=currency.floor.*` name that
-    /// says WHICH of the five causes sent the pass to the floor and whether
+    /// says WHICH of the six causes sent the pass to the floor and whether
     /// the pass completed ([`FloorTrigger`]; `docs/run-plane.md` § Timing
     /// phases). The pair is the whole point — a floor count with no vouched
     /// count is a numerator with no denominator, and "how often does the floor
@@ -1483,7 +1483,7 @@ impl Registry {
         //
         // The floor span is constructed under the FAMILY name and every stop
         // REFINES it (`stop_as`), so no bare `currency.floor` line is ever
-        // emitted: each one says which of the five causes sent the pass there
+        // emitted: each one says which of the six causes sent the pass there
         // and whether the pass completed.
         let vouched_span = timing::phase("currency.vouched");
         let floor_span = timing::phase("currency.floor");
