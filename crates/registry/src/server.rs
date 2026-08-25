@@ -1537,8 +1537,9 @@ fn dispatch_read(
             let ring = registry.ring(ws);
             // Same memo the feed patches; the door observes it through the
             // §6.4 vouch at entry (`door_observation`) — a drained dirty set
-            // alone never authorizes the overlay.
-            let cache = registry.domain_cache(ws);
+            // alone never authorizes the overlay. Bounded: a write door owes
+            // its own verdict before the caller's deadline (`write_door_memo`).
+            let cache = write_door_memo(registry, ws)?;
             let observe = || registry.door_observation(ws, &cache, DOOR_COOKIE_TIMEOUT);
             let out = wire_serve::write::splice(
                 &ws_root,
@@ -1582,7 +1583,7 @@ fn dispatch_read(
             };
             // Sink records inside the flock (`SeqSink::committed`) — see `Op::Splice`.
             let ring = registry.ring(ws);
-            let cache = registry.domain_cache(ws);
+            let cache = write_door_memo(registry, ws)?;
             let observe = || registry.door_observation(ws, &cache, DOOR_COOKIE_TIMEOUT);
             let out = wire_serve::write::splice_set_with_cache(
                 &ws_root,
@@ -1624,7 +1625,7 @@ fn dispatch_read(
             // Birth is a root advance — owes the chain a seq. Sink records
             // inside the flock (`SeqSink::committed`) — see `Op::Splice`.
             let ring = registry.ring(ws);
-            let cache = registry.domain_cache(ws);
+            let cache = write_door_memo(registry, ws)?;
             let observe = || registry.door_observation(ws, &cache, DOOR_COOKIE_TIMEOUT);
             let out = wire_serve::write::create_with_cache(
                 &ws_root,
@@ -1662,7 +1663,7 @@ fn dispatch_read(
             // Death is a root advance — owes the chain a seq. Sink records
             // inside the flock (`SeqSink::committed`) — see `Op::Splice`.
             let ring = registry.ring(ws);
-            let cache = registry.domain_cache(ws);
+            let cache = write_door_memo(registry, ws)?;
             let observe = || registry.door_observation(ws, &cache, DOOR_COOKIE_TIMEOUT);
             let out = wire_serve::write::remove_with_cache(
                 &ws_root,
@@ -1870,6 +1871,28 @@ fn composed_read_warm(
 ///
 /// What the leaf memo changed is the COST of the pass, never its scope
 /// (`docs/run-plane.md` § What an entry costs).
+/// The write door's bounded entry on this workspace's shared memo (card
+/// `engine-splice-timeout-hits-rotation-seals`).
+///
+/// Borrowing the memo applies the feed's pending set under its lock, so the
+/// borrow parks behind any other holder — and the READ plane holds this same
+/// memo from outside the write flock (`Registry::currency_refresh` spans
+/// `DomainCache::root`, the full stat sweep). Unbounded, that park outlives
+/// the caller's per-op deadline, and a caller whose own deadline ended the
+/// call cannot tell a lost write from a landed one. Bounded, the engine owes
+/// the verdict, and here it is exact: no byte has moved yet.
+///
+/// Reads keep the unbounded borrow. A read that parks costs latency only —
+/// nothing was committed either way, so there is no ambiguity to remove.
+fn write_door_memo(
+    registry: &Registry,
+    ws: &Path,
+) -> Result<Arc<std::sync::Mutex<fs::DomainCache>>, Box<ErrorBody>> {
+    registry
+        .domain_cache_within(ws, DOOR_COOKIE_TIMEOUT)
+        .map_err(|e| wire_serve::write::door_memo_refusal(&e))
+}
+
 fn warm_engine_read<R>(
     registry: &Registry,
     canonical: &Path,

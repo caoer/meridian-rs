@@ -148,8 +148,13 @@ fn observed_root(
     let result = if let Some(observe) = door.observe {
         observe()
             .map(|folded| Root(folded.0))
-            .map_err(|e| io_refusal(e.to_string()))
+            .map_err(|e| door_memo_refusal(&e))
     } else {
+        // The in-process fallback needs no bound: `WRITE_CACHES` is reached
+        // only by callers with no registry, and they touch it only inside the
+        // flock — for THIS memo the module's lock discipline holds, so it
+        // cannot be contended. The resident memo is the one the read plane
+        // also locks, from outside the flock, which is why that arm is bounded.
         let mut cache = door.cache.lock().unwrap_or_else(PoisonError::into_inner);
         cache
             .root(root)
@@ -165,6 +170,32 @@ fn observed_root(
         });
     }
     result
+}
+
+/// The door-entry observation's typed refusal (card
+/// `engine-splice-timeout-hits-rotation-seals`).
+///
+/// A [`ErrorKind::WouldBlock`] means the shared domain memo stayed held for
+/// the door's whole budget — the SAME contention shape the workspace flock
+/// already refuses with, so it gets the same code: `workspace_busy`,
+/// transient, retry. Callers need no new vocabulary.
+///
+/// The message states what happened to the bytes, and can: `observed_root`
+/// runs before any byte moves. That statement is the point of the refusal —
+/// it replaces a client-side deadline firing with nothing to show for it,
+/// which leaves a caller unable to tell a lost write from a landed one. Any
+/// other I/O failure is the observation itself failing, and stays `io_error`.
+pub fn door_memo_refusal(e: &std::io::Error) -> Box<ErrorBody> {
+    if e.kind() != ErrorKind::WouldBlock {
+        return io_refusal(e.to_string());
+    }
+    let mut w = ErrorBody::new(ErrorCode::WorkspaceBusy);
+    w.message = Some(
+        "the workspace's shared domain memo stayed held for this door's whole budget — \
+         nothing was committed; transient, retry"
+            .into(),
+    );
+    Box::new(w)
 }
 
 /// `root_after` from the commit's own overlay — no walk, no stat, no byte
