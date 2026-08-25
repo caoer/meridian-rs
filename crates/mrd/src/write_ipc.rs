@@ -191,3 +191,263 @@ pub(crate) fn project_body(body: &Value) -> Value {
         .and_then(|obj| obj.remove("body"))
         .unwrap_or(Value::Null)
 }
+
+#[cfg(test)]
+mod tests {
+    //! **The two halts have opposite commit facts, and nothing held them
+    //! apart.** PR 236 split [`WriteHalt`] into `NotSent` and `AnswerLost`
+    //! precisely because one voice for both sent an operator to distrust a file
+    //! the daemon was never asked to touch. Nothing then tested the split:
+    //! measured at `77a95b70`, `NotSent`/`AnswerLost` appear in no `.rs` file in
+    //! this repository outside `script/wire_host.rs` and this module's parent —
+    //! not in `crates/mrd/tests/` (98 integration files), not in any of the 25
+    //! `#[cfg(test)]` modules under `crates/mrd/src/`.
+    //!
+    //! `tests/put_waits_for_the_daemon.rs` does drive a lost answer end to end
+    //! (`Splice::Vanish`) and asserts the UNKNOWN wording, so a one-sided SWAP
+    //! of the render arms already reds there. What it cannot see is the
+    //! dangerous direction: **a collapse onto the lost-answer voice** leaves
+    //! that test green while restoring the exact false negative 236 closed. It
+    //! also never exercises the send half at all — no test in the tree makes a
+    //! frame fail to go out.
+    //!
+    //! So these four bite in two layers, and a swap or a collapse reds at least
+    //! one of them whichever way it is done:
+    //!
+    //! - **Classification** ([`SocketDoor::call_until_answered`]) — which arm a
+    //!   given transport failure becomes.
+    //! - **Rendering** ([`super::call`]) — what each arm then TELLS the
+    //!   operator. Each test asserts its own arm's commit facts AND the absence
+    //!   of the other's, so one message cannot satisfy both.
+    //!
+    //! Harness: a hand-rolled listener that completes the identity-matched v3
+    //! hello (the shape `script::wire_host`'s own tests drive) and then fails
+    //! the round trip in one of the two ways. Ordering is handshake-then-fail
+    //! by construction — the test signals the listener only after `connect`
+    //! has returned, and joins it before writing — so neither arm is reached
+    //! by a race.
+
+    use std::io::{BufRead as _, BufReader, Write as _};
+    use std::net::Shutdown;
+    use std::os::unix::net::UnixListener;
+    use std::path::Path;
+    use std::sync::mpsc::{self, Sender};
+    use std::thread::{self, JoinHandle};
+
+    use serde_json::{Value, json};
+
+    use super::call;
+    use crate::script::wire_host::{GREET_CAP, SocketDoor, WriteHalt};
+
+    /// A hello answer carrying THIS build's identity — the 0025 socket law
+    /// refuses an identity-less local hello, and these tests measure the halt
+    /// arms, not that law.
+    fn hello_answer() -> String {
+        format!(
+            "{{\"ok\":true,\"body\":{{\"proto\":1,\"server\":\"fake\",\"caps\":[],\
+             \"identity\":{{\"build\":\"{}\"}}}}}}\n",
+            env!("MRD_BUILD_SHA")
+        )
+    }
+
+    /// The request under test. The body is a mebibyte so the send cannot be
+    /// swallowed whole by a socket buffer on any platform: with the peer gone,
+    /// `wedge::write_all` must reach a transport error rather than return `Ok`
+    /// and let the failure surface on the READ half — which would be the other
+    /// arm, and would make the send-half test prove nothing.
+    fn big_request() -> Value {
+        json!({"op": "splice", "path": "doc.md", "body": "x".repeat(1024 * 1024)})
+    }
+
+    /// A listener that completes the hello and then **closes the connection**
+    /// on the test's signal. Send on the returned channel once `connect` has
+    /// returned, then `join` the handle: after that the peer is provably gone,
+    /// so the next frame cannot leave whole.
+    fn daemon_that_closes_after_the_hello(sock: &Path) -> (JoinHandle<()>, Sender<()>) {
+        let listener = UnixListener::bind(sock).expect("bind");
+        let (tx, rx) = mpsc::channel::<()>();
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read the hello");
+            let mut w = stream.try_clone().expect("clone");
+            w.write_all(hello_answer().as_bytes()).expect("answer");
+            w.flush().expect("flush");
+            rx.recv()
+                .expect("the test signals once the handshake is done");
+            stream.shutdown(Shutdown::Both).expect("shutdown");
+            drop(reader);
+            drop(w);
+            drop(stream);
+            drop(listener);
+        });
+        (handle, tx)
+    }
+
+    /// A listener that completes the hello, **reads the write frame**, and then
+    /// vanishes without answering — the frame reached the daemon whole and the
+    /// answer never came back.
+    fn daemon_that_vanishes_after_reading_the_frame(sock: &Path) -> JoinHandle<()> {
+        let listener = UnixListener::bind(sock).expect("bind");
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read the hello");
+            let mut w = stream.try_clone().expect("clone");
+            w.write_all(hello_answer().as_bytes()).expect("answer");
+            w.flush().expect("flush");
+            // The whole request line, newline included: reading it to
+            // completion is what makes this the DELIVERED case.
+            let mut frame = String::new();
+            reader.read_line(&mut frame).expect("read the write frame");
+            assert!(
+                frame.ends_with('\n'),
+                "the fixture must consume a WHOLE frame or it is testing the other arm"
+            );
+        })
+    }
+
+    /// **A frame that never went out is `NotSent`.** The peer is provably gone
+    /// before the send starts, so no newline can have arrived and the daemon
+    /// cannot have parsed a request.
+    ///
+    /// Red if `call_until_answered`'s send half is mapped to `AnswerLost`
+    /// (`script/wire_host.rs`, the `map_err` on `wedge::write_all`), and red if
+    /// the arms are collapsed to whichever one `AnswerLost` is.
+    #[test]
+    fn a_frame_that_never_leaves_is_classified_not_sent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("daemon.sock");
+        let (served, go) = daemon_that_closes_after_the_hello(&sock);
+
+        let mut door = SocketDoor::connect(&sock, dir.path(), GREET_CAP)
+            .expect("the hello completes before the connection is closed");
+        go.send(()).expect("release the listener");
+        served.join().expect("the listener closes the connection");
+
+        let Err(halt) = door.call_until_answered(&big_request(), "notice") else {
+            panic!("a write into a closed connection cannot succeed")
+        };
+        assert!(
+            matches!(halt, WriteHalt::NotSent(_)),
+            "a frame that could not go out is NotSent — nothing was committed. \
+             Classified instead as {halt:?}, which claims the daemon received it"
+        );
+    }
+
+    /// **A delivered frame whose answer is lost is `AnswerLost`.** The fixture
+    /// reads the whole request line and only then vanishes, so the daemon
+    /// demonstrably had the frame: what landed is genuinely unknown.
+    ///
+    /// Red if the read half's EOF is mapped to `NotSent`, and red if the arms
+    /// are collapsed to whichever one `NotSent` is. Together with its
+    /// neighbour, no single arm can satisfy both.
+    #[test]
+    fn a_delivered_frame_whose_answer_is_lost_is_classified_answer_lost() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("daemon.sock");
+        let served = daemon_that_vanishes_after_reading_the_frame(&sock);
+
+        let mut door = SocketDoor::connect(&sock, dir.path(), GREET_CAP).expect("the hello lands");
+
+        let Err(halt) = door.call_until_answered(&big_request(), "notice") else {
+            panic!("a daemon that never answers cannot yield a response line")
+        };
+        served.join().expect("the listener finishes");
+        assert!(
+            matches!(halt, WriteHalt::AnswerLost(_)),
+            "a frame the daemon read and never answered is AnswerLost — the outcome is unknown. \
+             Classified instead as {halt:?}, which claims nothing was committed"
+        );
+    }
+
+    /// **The `NotSent` face reports a KNOWN nothing.** The operator is told the
+    /// file is untouched and owed no read-back — the opposite of the
+    /// lost-answer remedy, and the reason the arms exist.
+    ///
+    /// The forbidden list is the bite: it is exactly the lost-answer voice, so
+    /// this reds if the render arms in `write_ipc::call` are swapped AND if
+    /// they are collapsed onto the `AnswerLost` wording — the collapse
+    /// `put_waits_for_the_daemon.rs` cannot see, and the precise regression
+    /// PR 236 closed.
+    #[test]
+    fn the_not_sent_face_says_nothing_was_committed_and_never_the_unknown_voice() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("daemon.sock");
+        let (served, go) = daemon_that_closes_after_the_hello(&sock);
+
+        let mut door = SocketDoor::connect(&sock, dir.path(), GREET_CAP).expect("the hello lands");
+        go.send(()).expect("release the listener");
+        served.join().expect("the listener closes the connection");
+
+        let Err(err) = call(&mut door, &big_request()) else {
+            panic!("a write into a closed connection cannot succeed")
+        };
+        let message = err.message.unwrap_or_default();
+        for want in [
+            "was never delivered",
+            "NOTHING was committed",
+            "is untouched",
+            "no read-back is owed",
+            "not the lost-answer case",
+        ] {
+            assert!(
+                message.contains(want),
+                "{want:?} missing — an undelivered write must report a KNOWN nothing:\n{message}"
+            );
+        }
+        for forbidden in ["UNKNOWN", "Read the file back", "may have committed"] {
+            assert!(
+                !message.contains(forbidden),
+                "{forbidden:?} is the LOST-ANSWER voice: it sends an operator to re-read a file \
+                 the daemon was never asked to touch — the false negative inverted:\n{message}"
+            );
+        }
+    }
+
+    /// **The `AnswerLost` face reports an UNKNOWN outcome.** The write may have
+    /// landed, so the remedy is a read-back before any re-send.
+    ///
+    /// The forbidden list is this test's bite in the other direction: a
+    /// collapse onto the `NotSent` wording would tell an operator that a write
+    /// which may be on disk is not, and reds here.
+    #[test]
+    fn the_answer_lost_face_says_unknown_and_never_claims_the_file_is_untouched() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("daemon.sock");
+        let served = daemon_that_vanishes_after_reading_the_frame(&sock);
+
+        let mut door = SocketDoor::connect(&sock, dir.path(), GREET_CAP).expect("the hello lands");
+
+        let Err(err) = call(&mut door, &big_request()) else {
+            panic!("a daemon that never answers cannot yield a response line")
+        };
+        served.join().expect("the listener finishes");
+        let message = err.message.unwrap_or_default();
+        for want in [
+            "was lost",
+            "may have committed",
+            "UNKNOWN",
+            "Read the file back",
+        ] {
+            assert!(
+                message.contains(want),
+                "{want:?} missing — a lost answer leaves the outcome unknown:\n{message}"
+            );
+        }
+        for forbidden in [
+            "was never delivered",
+            "NOTHING was committed",
+            "is untouched",
+            "no read-back is owed",
+        ] {
+            assert!(
+                !message.contains(forbidden),
+                "{forbidden:?} claims a commit fact nobody has after a lost answer — the write \
+                 may be on disk:\n{message}"
+            );
+        }
+    }
+}
