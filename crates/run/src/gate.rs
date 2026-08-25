@@ -131,8 +131,8 @@ pub fn resolve_at(root: &fs::WorkspaceRoot, at_path: &str) -> policy::ArmedLaw {
 /// planned model edits; `actor` is the §9-resolved identity
 /// (`ApplyRequest::actor` — supplied verbatim, else `run:<task>`), the SAME
 /// value the middleware leg, the birth door, the delta sink and the receipt
-/// carry. It was `run:<task>` unconditionally until 2026-08-24, which is why a
-/// CHECK keyed on `change.actor` could not see the caller on a fire.
+/// carry. Threading that one resolved value here is what lets a CHECK keyed on
+/// `change.actor` see the caller on a fire.
 ///
 /// `law` is the apply's OWN snapshot, resolved once by the caller (at `page` —
 /// [`resolve_at`]) and shared with the middleware leg (see this module's
