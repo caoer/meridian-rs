@@ -2810,7 +2810,7 @@ mod engine_tests {
 
         // The parent create is delivered; the child may not be. Wait for
         // the named doubt the parent must raise, then refresh.
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         while start.elapsed() < Duration::from_secs(10) {
             if reg.feed_stats(&canonical).is_some_and(|s| s.all_dirty) {
                 break;
