@@ -3219,6 +3219,142 @@ fn dispatch_entry<'v>(
     }
 }
 
+/// The value plane's globals: the Starlark standard library and NOTHING else.
+///
+/// Not [`effect_globals`]: a value block answers with data, so granting it the
+/// effect constructors would let a config page arm `md.*` descriptors that no
+/// caller of [`crate::eval_value`] reads — a capability with no consumer is a
+/// capability waiting for a consumer. The stdlib carries no file/net/os/clock
+/// surface (module § Purity), so this is the smallest surface that can still
+/// compute a value.
+fn value_globals() -> Globals {
+    GlobalsBuilder::standard().build()
+}
+
+/// Run one value block metered: evaluate the module under [`rule_dialect`],
+/// look `entry` up, call it with NO arguments, and serialize what it returned.
+///
+/// Same metering contract as [`metered_eval`] — coarse `set_max_*` guards abort
+/// runaways, exact post-eval ticks/heap is authoritative, and
+/// [`std::panic::catch_unwind`] turns a resource-overflow panic into a budget
+/// fault. It is a separate body rather than a fourth [`EvalEntry`] because the
+/// two differ in both directions: this entry injects no argument (an
+/// argument-taking `config(ctx)` would be a different contract) and answers with
+/// a value instead of an effect store, so sharing [`dispatch_entry`]'s fixed
+/// one-positional call would mean faulting every correct block.
+///
+/// Callers reach it through [`crate::eval_value`], which supplies the large
+/// eval stack.
+pub(crate) fn run_value_entry(
+    block: &Rule,
+    entry: &'static str,
+    limits: EvalLimits,
+) -> Result<serde_json::Value, EvalError> {
+    check_source_size(block, limits)?;
+    check_nesting_depth(block)?;
+
+    let globals = value_globals();
+    let step_guard = limits.fuel.max(1);
+    let mem_guard = usize::try_from(limits.mem).unwrap_or(usize::MAX).max(1);
+
+    // AssertUnwindSafe: nothing crosses the boundary but the returned Result —
+    // a panic discards the module unread and answers budget.
+    let evaluated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        Module::with_temp_heap(|module| {
+            let mut eval = Evaluator::new(&module);
+            // GC OFF for the same reason the hooked planes disable it
+            // (card `mw-splice-engine-eof`): the value this entry carries
+            // out lives in a Rust local across the `eval_function` boundary and
+            // is not a GC root. `set_max_heap_size` still caps the arena and the
+            // temp heap drops whole at scope end.
+            eval.disable_gc();
+            if let Err(e) = eval.set_max_tick_count(step_guard) {
+                return Err(runtime(block, e));
+            }
+            if let Err(e) = eval.set_max_heap_size(mem_guard) {
+                return Err(runtime(block, e));
+            }
+            if let Err(e) = eval.set_max_callstack_size(limits.max_call_depth.max(1)) {
+                return Err(runtime(block, e));
+            }
+
+            let ast = match AstModule::parse(&block.id, block.source.clone(), &rule_dialect()) {
+                Ok(ast) => ast,
+                Err(e) => {
+                    return Err(EvalError::Parse {
+                        rule_id: block.id.clone(),
+                        reason: e.to_string(),
+                    });
+                }
+            };
+
+            let mut depth_overflow = false;
+            let outcome = match eval.eval_module(ast, &globals) {
+                Err(e) => {
+                    depth_overflow = is_depth_overflow(&e);
+                    Err(fault(block, &e))
+                }
+                Ok(_) => match module.get(entry) {
+                    None => Err(EvalError::MissingEntry {
+                        rule_id: block.id.clone(),
+                        expected: entry,
+                        wrong_plane: None,
+                    }),
+                    Some(f) => match eval.eval_function(f, &[], &[]) {
+                        Err(e) => {
+                            depth_overflow = is_depth_overflow(&e);
+                            Err(fault(block, &e))
+                        }
+                        // Serialized INSIDE the heap's scope: the returned
+                        // `Value` borrows the temp heap, which drops at the end
+                        // of this closure.
+                        Ok(returned) => returned.to_json_value().map_err(|e| EvalError::Runtime {
+                            rule_id: block.id.clone(),
+                            reason: format!("`{entry}()` returned a value that is not data: {e}"),
+                            line: None,
+                        }),
+                    },
+                },
+            };
+
+            // Exact post-eval accounting is the authoritative bound — the coarse
+            // `set_max_*` guards above only stop a runaway early.
+            let used_steps = eval.get_total_tick_count();
+            let used_mem = heap_bytes(module.heap());
+            drop(eval);
+            let over_budget = used_steps > limits.fuel || used_mem > limits.mem;
+            match outcome {
+                // A fault that is really the ceiling is budget, not a block
+                // fault — the same discrimination `metered_eval` makes.
+                Err(EvalError::Runtime { .. }) if over_budget || depth_overflow => {
+                    Err(budget(limits))
+                }
+                Ok(_) if over_budget => Err(budget(limits)),
+                other => other,
+            }
+        })
+    }));
+
+    match evaluated {
+        Ok(outcome) => outcome,
+        // Only reachable panic: resource-overflow assert → budget at ceiling.
+        Err(_panic) => Err(budget(limits)),
+    }
+}
+
+/// A starlark eval error as a typed runtime fault, carrying the 1-based source
+/// line when the error attributed a span (the read-record convention; the
+/// resolver is 0-based).
+fn fault(rule: &Rule, e: &starlark::Error) -> EvalError {
+    EvalError::Runtime {
+        rule_id: rule.id.clone(),
+        reason: e.to_string(),
+        line: e
+            .span()
+            .map(|span| u32::try_from(span.resolve_span().begin.line + 1).unwrap_or(u32::MAX)),
+    }
+}
+
 /// Whether a Starlark eval error is a call-stack-depth overflow (the recursion
 /// guard tripping) — classified as budget, not a rule fault.
 fn is_depth_overflow(e: &starlark::Error) -> bool {

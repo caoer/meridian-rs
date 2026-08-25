@@ -359,6 +359,25 @@ mrd config the MERIDIAN.md config plane: resolve the bootstrap
  it re-derives per call on a blake3 of the bytes
  (wire-contract § A.5), so editing the table the daemon
  already reads rebinds with no restart
+mrd config get [KEY] [--json]
+ the config plane's VALUE face: the same bootstrap chain,
+ then the `^config` block in that file — a `starlark` fence
+ whose `config()` returns this machine's config. Evaluated
+ in the sealed kernel (standard globals only, `load`
+ disabled, `EvalLimits::default()`); bare prints the whole
+ returned value, KEY one member by dot-path
+ (`repos_root.coscene-wiki`), resolved exact-key-first at
+ every level so a member really named `a.b` stays reachable
+ (§6a.3). The value is ARBITRARY — the engine declares no
+ schema and reads no key of it (`meridian-md-schema.md` §6a).
+ It prints the
+ value and nothing else, so `r=$(mrd config get repos_root)`
+ is the intended use: a string prints bare, any other shape
+ prints as JSON, `--json` prints JSON for every shape. This
+ verb never binds roots — an unbound root refuses `mrd
+ config` and leaves this one answering. Exits: 0 value
+ printed / 1 the chain, the block, the eval, or the key
+ refused / 2 bad invocation
 mrd check [--core] [--staged] [--commit-gate [--require-pins]] [--json]
  the pure READ validity verb: claim drift + the pin
  plane (pin verdicts + blob anchoring); writes nothing,

@@ -462,6 +462,22 @@ usage:
                            (render face elides meridian-* blocks, so mrd read
                            shows prose only). Exits: 0 every root bound / 1
                            config or root refused / 2 bad invocation.
+  mrd config get [KEY] [--json]
+                           the config plane's VALUE face: same bootstrap chain,
+                           then the ^config block in that file — a starlark
+                           fence whose config() returns this machine's config,
+                           evaluated in the sealed kernel (stdlib globals only,
+                           no load, no I/O). Bare prints the whole value, KEY
+                           one member by dot-path (repos_root.coscene-wiki),
+                           resolved exact-key-first so a member really named
+                           a.b stays reachable. The value is ARBITRARY: no
+                           schema, no key the engine reads. Prints the VALUE
+                           and nothing else, so r=$(mrd config get repos_root)
+                           is the intended use — a string bare, any other shape
+                           as JSON, --json as JSON always. Binds no roots: an
+                           unbound root refuses mrd config and leaves this one
+                           answering. Exits: 0 value printed / 1 chain, block,
+                           eval or key refused / 2 bad invocation.
   mrd check [--core] [--staged] [--commit-gate [--require-pins]] [--json]
                            pure READ validity (what lies?). Layer-0 core: claim
                            plane (pinned content drift) + retrieval plane
@@ -830,10 +846,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "arm" => arm_cmd::dispatch(&args[1..]),
         "check" => check_cmd::dispatch(&args[1..]),
         "skill" => skill_cmd::dispatch(&args[1..]),
-        "config" => {
-            let p = Parsed::parse(&args[1..], NO_PATH, NO_ALL)?;
-            config_cmd::run(p.format())
-        }
+        "config" => dispatch_config(&args[1..]),
         "retire" => retire_cmd::dispatch(&args[1..]),
         "cache" => dispatch_cache(&args[1..]),
         "sql" => sql::run(&args[1..]),
@@ -850,6 +863,29 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
             daemon::run()
         }
         other => Err(Fail::usage(format!("unknown subcommand: {other}"))),
+    }
+}
+
+/// `mrd config` publishes the mount table; `mrd config get [KEY]` reads the
+/// `^config` block's value. Two legs of one plane, and the bare verb keeps the
+/// meaning it always had — a positional there is still an exit-2, now with the
+/// sub-verb named.
+fn dispatch_config(args: &[String]) -> Result<(), Fail> {
+    match args.first().map(String::as_str) {
+        Some("get") => {
+            let p = Parsed::parse(&args[1..], ALLOW_PATH, NO_ALL)?;
+            config_cmd::run_get(p.positional.as_deref(), p.format())
+        }
+        // A bare word here is a reach for a sub-verb, so it is answered as one:
+        // `mrd config repos_root` is the typo `mrd config get repos_root`, and
+        // "unexpected argument" would leave the reader to guess which.
+        Some(other) if !other.starts_with('-') => Err(Fail::usage(format!(
+            "unknown config subcommand: {other} (the config plane's one sub-verb is `get`)"
+        ))),
+        _ => {
+            let p = Parsed::parse(args, NO_PATH, NO_ALL)?;
+            config_cmd::run(p.format())
+        }
     }
 }
 
@@ -1181,6 +1217,7 @@ mod help {
             assert_eq!(
                 found,
                 vec![
+                    vec!["config", "get"],
                     vec!["skill", "hook"],
                     vec!["cache", "ls"],
                     vec!["cache", "clean"],
@@ -1227,7 +1264,7 @@ mod help {
                 "marked as writers:\n{}",
                 marked.join("\n")
             );
-            assert_eq!(blocks().len(), 30, "verb blocks in the listing");
+            assert_eq!(blocks().len(), 31, "verb blocks in the listing");
         }
 
         /// Every option that names an owner names a verb that exists.
