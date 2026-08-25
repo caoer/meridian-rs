@@ -365,6 +365,89 @@ fn a_slow_sql_does_not_convoy_a_sibling_connection_on_the_same_workspace() {
     );
 }
 
+/// **The hazard the split introduces, gated before it can bite.** A caller's
+/// read now holds an OPEN `DuckDB` transaction for the whole of its query,
+/// outside the store mutex. A sibling whose corpus has moved must APPEND, and
+/// an append is a write on the same instance while that read transaction is
+/// still open.
+///
+/// If a long read blocked a concurrent append, the convoy would not be gone —
+/// it would have moved from the mutex into `DuckDB`, where no bound watches
+/// it. The gate above cannot see this: its sibling's corpus never moves, so
+/// its `sync` is a no-op and no write is attempted. This one moves the corpus
+/// on purpose, so the sibling takes the append path with the reader in flight.
+#[test]
+fn a_slow_read_does_not_block_a_siblings_append_on_the_same_workspace() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Instant;
+
+    let tmp = TempDir::new().unwrap();
+    let ws = tmp.path().join("ws");
+    write(&ws, "a.md", "# A\n");
+    write(&ws, "b.md", "# B\n");
+
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let socket = server.socket_path().to_path_buf();
+    {
+        let mut warm = Conn::open(&socket);
+        assert_eq!(warm.hello_v3(&ws)["ok"], true);
+        assert_eq!(warm.sql(1, REAL_SQL)["ok"], true, "warm the projection");
+    }
+
+    let done = Arc::new(AtomicBool::new(false));
+    let holder = {
+        let (socket, ws, done) = (socket.clone(), ws.clone(), Arc::clone(&done));
+        std::thread::spawn(move || {
+            let mut conn = Conn::open(&socket);
+            conn.hello_v3(&ws);
+            let started = Instant::now();
+            let answer = conn.sql(1, SLOW_SQL);
+            done.store(true, Ordering::SeqCst);
+            (started.elapsed(), answer)
+        })
+    };
+    std::thread::sleep(Duration::from_millis(750));
+
+    // The corpus MOVES while the read is in flight, so the sibling's `sync`
+    // is a real delta append and not a no-op.
+    write(&ws, "c.md", "# C\n");
+
+    let mut sibling = Conn::open(&socket);
+    assert_eq!(sibling.hello_v3(&ws)["ok"], true);
+    let started = Instant::now();
+    let appended = sibling.sql(2, REAL_SQL);
+    let append_elapsed = started.elapsed();
+    let holder_in_flight = !done.load(Ordering::SeqCst);
+
+    let (holder_elapsed, _) = holder.join().unwrap();
+    let ledger = format!("holder {holder_elapsed:?}, sibling append+read {append_elapsed:?}");
+    eprintln!("append-under-read gate: {ledger}");
+
+    assert!(
+        holder_elapsed > HOLDER_MUST_EXCEED,
+        "SLOW_SQL ran in {holder_elapsed:?}, under the {HOLDER_MUST_EXCEED:?} \
+         floor — the read was not in flight long enough to test anything. \
+         {ledger}"
+    );
+    assert_eq!(
+        appended["ok"], true,
+        "a sibling's delta append was refused while another caller's read \
+         transaction was open: {appended}. {ledger}"
+    );
+    assert!(
+        holder_in_flight,
+        "the sibling's append completed only after the reader finished — an \
+         open read transaction is blocking writers, so the convoy moved from \
+         the store mutex into DuckDB rather than going away. {ledger}"
+    );
+    assert_eq!(
+        appended["body"]["rows"],
+        json!([["a.md"], ["b.md"], ["c.md"]]),
+        "the appending sibling sees the moved corpus, at its own pin: {ledger}"
+    );
+}
+
 /// The strict field wall: a `sql` frame carrying any field beyond `query`
 /// refuses `bad_request` — cwd and row bounds are host concerns.
 #[test]
