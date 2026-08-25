@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! mrd config [--json]            the plane: path, state, rev, mount table, tools
-//! mrd config get [KEY] [--json]  the value: what the `^config` block's config() returned
+//! mrd config get [KEY] [--json]  the value: what the `^config` block's config() returned,
+//!                                whole, or the member KEY's dot-path addresses
 //! ```
 //!
 //! They read one file and answer about different things. The bare verb answers about the MOUNT
@@ -138,7 +139,8 @@ const BLOCK_SHAPE: &str =
 
 /// Run `mrd config get [KEY] [--json]`: resolve the same bootstrap chain, read
 /// the `^config` block out of the file it names, evaluate it, and print what
-/// `config()` returned — the whole value, or the top-level member `key` names.
+/// `config()` returned — the whole value, or the member `key` addresses.
+/// KEY is a dot-path ([`member`] owns its grammar).
 ///
 /// The value is arbitrary data (`docs/meridian-md-schema.md` §6a): this door
 /// declares no schema and reads no key of it. It prints the VALUE and no
@@ -250,32 +252,88 @@ fn config_block(doc: &model::Document, path: &std::path::Path) -> Result<String,
     Ok(block.source)
 }
 
-/// One top-level member of the returned config, or the refusal naming what the
-/// config does carry. A KEY is a mapping's member — no path grammar, no
-/// silent `null` for an absent key.
+/// The member a KEY addresses, or the refusal naming where the walk stopped and
+/// what the config does carry there. No silent `null` for an absent key.
+///
+/// KEY is a dot-path, and the rule at every level is **exact key first, then the
+/// dot is a separator**: a config that really has a member named `a.b` is
+/// reachable by that name, and only when no such member exists does `a.b` mean
+/// "`b` inside `a`". Two rules, one sentence, and no key in an arbitrary config
+/// can become unaddressable.
+///
+/// Nesting is not a convenience: the first real config keys `repos_root` by wiki
+/// (`{"repos_root": {"coscene-wiki": …, "field-notes": …}}`), because a repos root
+/// is a fact about a wiki and not about a machine. A top-level-only KEY would
+/// have made the correct shape the unreadable one.
+///
+/// A list index is NOT a segment. Addressing into a list would need a second
+/// grammar (and a rule for a mapping whose key is `0`); bare `mrd config get`
+/// prints the whole value for a caller that wants to walk it.
 fn member(value: Value, key: &str, path: &std::path::Path) -> Result<Value, Fail> {
-    // Named before the match: the pattern below moves `value`, and the shape it
-    // was is exactly what the refusal has to say.
-    let shape = type_word(&value);
-    let Value::Object(mut map) = value else {
-        return Err(Fail::findings(format!(
-            "{}#^{CONFIG_ANCHOR}: `{CONFIG_ENTRY}()` returned {shape}, not a mapping, so `{key}` \
-             addresses nothing. Fix: run `mrd config get` with no KEY to see the whole value.",
-            path.display()
-        )));
-    };
-    map.remove(key).ok_or_else(|| {
-        let keys: Vec<&str> = map.keys().map(String::as_str).collect();
-        Fail::findings(format!(
-            "{}#^{CONFIG_ANCHOR}: the config has no `{key}`. Fix: it declares {}.",
-            path.display(),
-            if keys.is_empty() {
-                "no keys at all".to_owned()
-            } else {
-                format!("[{}]", keys.join(", "))
-            }
-        ))
-    })
+    let mut cursor = value;
+    let mut remaining = key;
+    // The segments already taken — what a refusal needs to say WHERE it stopped.
+    let mut walked = String::new();
+    loop {
+        // Named before the match: the pattern below moves `cursor`, and the
+        // shape it was is exactly what the refusal has to say.
+        let shape = type_word(&cursor);
+        let Value::Object(mut map) = cursor else {
+            return Err(Fail::findings(format!(
+                "{}#^{CONFIG_ANCHOR}: {} is {shape}, not a mapping, so `{remaining}` addresses \
+                 nothing. Fix: run `mrd config get` with no KEY to see the whole value.",
+                path.display(),
+                if walked.is_empty() {
+                    format!("what `{CONFIG_ENTRY}()` returned")
+                } else {
+                    format!("`{walked}`")
+                }
+            )));
+        };
+        // The exact key wins over the split — a member really named `a.b` is
+        // addressable by its own name.
+        if let Some(found) = map.remove(remaining) {
+            return Ok(found);
+        }
+        let Some((head, tail)) = remaining.split_once('.') else {
+            return Err(no_such_key(path, remaining, &walked, &map));
+        };
+        let Some(next) = map.remove(head) else {
+            return Err(no_such_key(path, head, &walked, &map));
+        };
+        if !walked.is_empty() {
+            walked.push('.');
+        }
+        walked.push_str(head);
+        cursor = next;
+        remaining = tail;
+    }
+}
+
+/// The absent-key refusal: what was asked for, where it was asked, and the keys
+/// that ARE there — the reader's next move belongs in the refusal, not in a
+/// second command.
+fn no_such_key(
+    path: &std::path::Path,
+    segment: &str,
+    walked: &str,
+    map: &serde_json::Map<String, Value>,
+) -> Fail {
+    let keys: Vec<&str> = map.keys().map(String::as_str).collect();
+    Fail::findings(format!(
+        "{}#^{CONFIG_ANCHOR}: {} has no `{segment}`. Fix: it declares {}.",
+        path.display(),
+        if walked.is_empty() {
+            "the config".to_owned()
+        } else {
+            format!("`{walked}`")
+        },
+        if keys.is_empty() {
+            "no keys at all".to_owned()
+        } else {
+            format!("[{}]", keys.join(", "))
+        }
+    ))
 }
 
 /// The human spelling of one value: a string rides BARE so a shell can capture

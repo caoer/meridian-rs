@@ -306,6 +306,97 @@ fn a_key_against_a_non_mapping_refuses() {
     );
 }
 
+/// The shape the first real config has: `repos_root` keyed BY WIKI, because a repos root is a fact
+/// about a wiki and not about a machine. A dot-path reaches the member; the bare key prints the
+/// mapping.
+#[test]
+fn a_dot_path_reaches_a_nested_member() {
+    let home = tempfile::tempdir().expect("tempdir");
+    write_home(
+        home.path(),
+        &page(&block(
+            "def config():\n    return {\"repos_root\": {\"coscene-wiki\": \"/Users/Shared/projects/coscene-io\", \"field-notes\": \"/Users/Shared/repos\"}}",
+        )),
+    );
+
+    let out = run(home.path(), &["repos_root.coscene-wiki"]);
+    assert_eq!(out.status.code(), Some(0), "clean: {}", stderr(&out));
+    assert_eq!(stdout(&out), "/Users/Shared/projects/coscene-io\n");
+
+    let out = run(home.path(), &["repos_root.field-notes"]);
+    assert_eq!(out.status.code(), Some(0), "clean: {}", stderr(&out));
+    assert_eq!(stdout(&out), "/Users/Shared/repos\n");
+
+    let out = run(home.path(), &["repos_root"]);
+    assert_eq!(out.status.code(), Some(0), "clean: {}", stderr(&out));
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout(&out)).expect("the branch prints as JSON");
+    assert_eq!(value["coscene-wiki"], "/Users/Shared/projects/coscene-io");
+}
+
+/// The walk has no depth limit of its own — a path is as deep as the config is.
+#[test]
+fn a_dot_path_walks_as_deep_as_the_config_goes() {
+    let home = tempfile::tempdir().expect("tempdir");
+    write_home(
+        home.path(),
+        &page(&block(
+            "def config():\n    return {\"a\": {\"b\": {\"c\": {\"d\": \"bottom\"}}}}",
+        )),
+    );
+
+    let out = run(home.path(), &["a.b.c.d"]);
+    assert_eq!(out.status.code(), Some(0), "clean: {}", stderr(&out));
+    assert_eq!(stdout(&out), "bottom\n");
+}
+
+/// The rule that keeps every key reachable: the EXACT key wins over the split, so a config whose
+/// member is really named `a.b` is addressable by its own name. A split-first grammar would have
+/// made that key unaddressable and said nothing.
+#[test]
+fn an_exact_key_wins_over_the_split() {
+    let home = tempfile::tempdir().expect("tempdir");
+    write_home(
+        home.path(),
+        &page(&block(
+            "def config():\n    return {\"a.b\": \"literal\", \"a\": {\"b\": \"nested\"}}",
+        )),
+    );
+
+    let out = run(home.path(), &["a.b"]);
+    assert_eq!(out.status.code(), Some(0), "clean: {}", stderr(&out));
+    assert_eq!(stdout(&out), "literal\n");
+}
+
+/// A dot-path that dies mid-walk says WHERE it stopped and what that level does carry — the
+/// difference between "no such key" and "no such key HERE" is the reader's next move.
+#[test]
+fn a_dot_path_that_dies_names_where_it_stopped() {
+    let home = tempfile::tempdir().expect("tempdir");
+    write_home(
+        home.path(),
+        &page(&block(
+            "def config():\n    return {\"repos_root\": {\"coscene-wiki\": \"/co\", \"field-notes\": \"/home\"}}",
+        )),
+    );
+
+    let out = run(home.path(), &["repos_root.team-wiki"]);
+    assert_eq!(out.status.code(), Some(1), "refused: {}", stdout(&out));
+    assert!(stdout(&out).is_empty(), "no empty-success line");
+    let text = stderr(&out);
+    assert!(text.contains("`repos_root` has no `team-wiki`"), "{text}");
+    assert!(text.contains("coscene-wiki"), "names what is there: {text}");
+
+    // …and a segment asked of a leaf names the leaf, not the whole config.
+    let out = run(home.path(), &["repos_root.field-notes.deeper"]);
+    assert_eq!(out.status.code(), Some(1), "refused: {}", stdout(&out));
+    let text = stderr(&out);
+    assert!(
+        text.contains("`repos_root.field-notes` is a string, not a mapping"),
+        "{text}"
+    );
+}
+
 /// A starlark block that is NOT the config block is prose to this door and to the mount parser
 /// alike: nothing scans for a fence, one id is addressed.
 #[test]

@@ -468,7 +468,9 @@ usage:
                            fence whose config() returns this machine's config,
                            evaluated in the sealed kernel (stdlib globals only,
                            no load, no I/O). Bare prints the whole value, KEY
-                           one top-level member. The value is ARBITRARY: no
+                           one member by dot-path (repos_root.coscene-wiki),
+                           resolved exact-key-first so a member really named
+                           a.b stays reachable. The value is ARBITRARY: no
                            schema, no key the engine reads. Prints the VALUE
                            and nothing else, so r=$(mrd config get repos_root)
                            is the intended use — a string bare, any other shape

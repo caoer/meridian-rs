@@ -509,7 +509,12 @@ The block, written out (fence lines shown as literal text so this example is ine
 
     ```starlark
     def config():
-        return {"repos_root": "/Users/Shared/projects/coscene-io"}
+        return {
+            "repos_root": {
+                "coscene-wiki": "/Users/Shared/projects/coscene-io",
+                "field-notes": "/Users/Shared/repos",
+            },
+        }
     ```
     ^config
 
@@ -523,7 +528,7 @@ CODE BLOCK and not an empty paragraph.
 | Fence language | `starlark`, classified by `run::fence::classify` — the same first-token rule §3.1 states |
 | Entry | a zero-argument `config()`; its return value IS the config |
 | Return type | **anything the sandbox can serialize** — mapping, list, string, number, bool, `None`. The engine declares no schema, no key whitelist, no required key |
-| Reader | `mrd config get [KEY]` — bare prints the whole returned value, `KEY` prints one top-level member |
+| Reader | `mrd config get [KEY]` — bare prints the whole returned value, `KEY` a dot-path to one member (§6a.3) |
 | Evaluation | the effect kernel's sealed evaluator with the standard globals ONLY — no effect constructors, `load` disabled, `EvalLimits::default()` bounds (`effects::eval_value`). A config block reaches no file, no network, no process |
 
 ### 6a.1 Why this does not touch the strict parse
@@ -555,22 +560,45 @@ plane's own words):
 | the source will not parse, or faults, or exhausts the budget | the evaluator's own message, verbatim |
 | no `config()` is defined | name the entry the block owes |
 | `config()` returned something unserializable (a function, a lambda) | name it — the config is data |
-| a `KEY` was asked of a non-mapping | name the type returned |
-| the `KEY` is absent | name the keys that ARE there |
+| a `KEY` segment was asked of a non-mapping | name the type found and where the walk stopped |
+| a `KEY` segment is absent | name where it stopped and the keys that ARE there |
 
 **The mount table's state is not a rung.** `mrd config get` reads the config block; it never calls
 `bind()`, so an unbound or missing root refuses `mrd config` (exit 1) and leaves `mrd config get`
 answering normally. The two verbs answer about two different things and are deliberately not coupled.
 
-### 6a.3 What is deliberately NOT specified
+### 6a.3 `KEY` — the dot-path, and the one rule that keeps every key reachable
+
+A `KEY` addresses a member of the returned value. It is a dot-path, resolved with **exact key first,
+then the dot as a separator**, at every level:
+
+1. Does this mapping have a member named by the WHOLE remaining key? Then that member is the answer.
+2. Otherwise split at the first `.`: the head must be a member, descend into it, repeat with the tail.
+
+The order is what makes the grammar safe on an arbitrary config. A config really carrying a member
+named `a.b` stays addressable by its own name, and only a config with no such member reads `a.b` as
+"`b` inside `a`" — so no key an author can write becomes unaddressable, which a split-first rule would
+have done silently.
+
+**Nesting is not a convenience.** The first real config keys `repos_root` BY WIKI, because a repos root
+is a fact about a wiki and not about a machine:
+
+    mrd config get repos_root.coscene-wiki   -> /Users/Shared/projects/coscene-io
+    mrd config get repos_root.field-notes      -> /Users/Shared/repos
+    mrd config get repos_root                -> the mapping, as JSON
+
+A top-level-only `KEY` would have made the correct shape the one nobody could read, and the flat
+machine-wide spelling — the one that is wrong for every wiki but one — the convenient one.
+
+### 6a.4 What is deliberately NOT specified
 
 - **No key schema.** The ruling is explicit that the config is unlimited. A future engine-read key
   inside `config()` would reopen §4's misspelled-optional-key hazard and must state how it closes it.
 - **One block, not many.** A second `^config` is ambiguous, not a merge: the mint plane never silently
   picks, and merging two blocks would need a precedence rule nobody has ruled on.
-- **Top-level `KEY` only.** `mrd config get a.b` addresses no nested member in v1 — a path grammar is a
-  second address language, and this plane already has one (the anchor). Bare `mrd config get` prints
-  the whole value, which is what a nested reader wants a pipe for.
+- **No list index.** A KEY segment addresses a mapping's member and nothing else. Indexing into a list
+  would need a second grammar and a rule for a mapping whose key is `0`; bare `mrd config get` prints
+  the whole value for a caller that wants to walk it.
 - **No wire op.** The config block is read by the CLI in the calling process, from the file that
   process's own chain resolves — the same honesty `mrd config` states about `answered by: this process`.
   A daemon serving its own `MERIDIAN.md` would be answering about a different machine's config.
