@@ -1597,16 +1597,27 @@ measurements and nothing else.
 
 #### A line means the phase COMPLETED
 
-There is no line for a phase that failed. A span abandoned on an error path —
-the `?` on a page that does not exist, an early refusal — reports nothing,
-because a failed page load costing 312 us and a successful one costing 312 us
-are not the same fact, and printing both identically invites the reader to add
-them up. `mrd run missing.md` under the switch reports `workspace.resolve`, then
-the refusal, then `total`: no `page.load` line, because there was no page load.
+There is no line for a phase that failed SILENTLY. A span abandoned on an error
+path — the `?` on a page that does not exist, an early refusal — reports
+nothing, because a failed page load costing 312 us and a successful one costing
+312 us are not the same fact, and printing both identically invites the reader
+to add them up. `mrd run missing.md` under the switch reports
+`workspace.resolve`, then the refusal, then `total`: no `page.load` line,
+because there was no page load.
 
 `total` is the one phase that reports on a refusal, and for the same reason
 rather than an exception to it: what `total` measures is the PROCESS, and the
 process completed either way.
+
+**A failure that is itself worth counting says so in its NAME.** Where a call
+site needs the refusals countable it stops the span under a distinct name
+instead of abandoning it — `currency.floor.<cause>.refused`,
+`door.floor.<cause>.refused`, `door.refused` (`run-plane.md` § Timing phases).
+That is not a weakening of the rule above: the refusal is a different phase
+name from the success, so the two are never summed by accident, and the reader
+still cannot mistake one for the other. It exists because those particular
+error paths are LOAD-SENSITIVE — dropping them would make the count fall
+exactly when the thing being counted is happening most.
 
 Lines print in **completion order**, so a contained phase prints before the
 phase containing it and `total` prints last.

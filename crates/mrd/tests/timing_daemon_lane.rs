@@ -709,8 +709,15 @@ fn daemon_phases(text: &str) -> BTreeSet<String> {
 /// A cold workspace has no live feed yet, so the cookie barrier cannot return
 /// `Seen` and the pass floors — deterministically, which is why the cold call
 /// is the one that proves the numerator exists.
+///
+/// **And it holds the number's ATTRIBUTION.** A cold start and a two-second
+/// cookie timeout under contention are opposite facts about a daemon — one is
+/// a lifecycle event, the other is load — and a single `currency.floor` name
+/// could not tell them apart, so a quiet box could not falsify "the floor is
+/// only a cold-start path". The cold call must report `no_feed` SPECIFICALLY,
+/// which is the one trigger a quiet box can prove.
 #[test]
-fn the_currency_floor_is_counted_on_the_daemons_lane() {
+fn the_currency_floor_is_counted_and_attributed_on_the_daemons_lane() {
     let sb = Sandbox::new();
     let sink_dir = tempfile::tempdir().expect("sink dir");
     let sink = sink_dir.path().join("timing.log");
@@ -728,13 +735,29 @@ fn the_currency_floor_is_counted_on_the_daemons_lane() {
     );
 
     let text = wait_upto(&sink, SETTLE, |text| {
-        daemon_phases(text).contains("currency.floor")
+        daemon_phases(text).contains("currency.floor.no_feed")
     });
     let phases = daemon_phases(&text);
     assert!(
-        phases.contains("currency.floor"),
-        "a cold workspace has no live feed, so its currency pass MUST floor — \
-         and the floor must say so. Daemon phases seen: {phases:?}\nlane: {text}"
+        phases.contains("currency.floor.no_feed"),
+        "a cold workspace has no live feed, so its currency pass MUST floor and MUST say \
+         which cause sent it there. Daemon phases seen: {phases:?}\nlane: {text}"
+    );
+    assert!(
+        !phases.contains("currency.floor"),
+        "`currency.floor` is the FAMILY prefix, never an emitted name — a bare line here \
+         would be double-counted by every prefix grep. Daemon phases seen: {phases:?}\n\
+         lane: {text}"
+    );
+    // The discrimination, stated as an assertion rather than as a hope: on a
+    // quiet box the load-sensitive trigger must NOT be what fired. This is the
+    // check the single collapsed name could not express, and it is the one
+    // that would catch a `seen` bool creeping back in.
+    assert!(
+        !phases.contains("currency.floor.cookie_unproven"),
+        "a cold, idle sandbox reported the TIME-BOUNDED trigger — either the barrier is \
+         timing out where no feed exists at all, or the two causes have been collapsed back \
+         into one name. Daemon phases seen: {phases:?}\nlane: {text}"
     );
 }
 
@@ -790,9 +813,11 @@ fn the_currency_vouched_arm_is_counted_too() {
          lane: {text}"
     );
 
-    // Both arms, one population: the ratio the fallback test needs.
+    // Both arms, one population: the ratio the fallback test needs. The floor
+    // half arrives under its trigger name — the first call on this workspace
+    // was the cold one, so the cause is `no_feed`.
     assert!(
-        phases.contains("currency.floor"),
+        phases.contains("currency.floor.no_feed"),
         "the vouched arm reported but the cold call's floor did not — a \
          denominator without its numerator: {phases:?}\nlane: {text}"
     );
