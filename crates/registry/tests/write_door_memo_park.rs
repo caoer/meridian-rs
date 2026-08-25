@@ -276,8 +276,9 @@ fn a_held_shared_memo_makes_the_write_door_refuse_in_time_instead_of_parking() {
         elapsed < CLIENT_D4_BOUND,
         "the door parked {elapsed:?} on a memo it does not own, past the client's own \
          {CLIENT_D4_BOUND:?} deadline — so the only thing that ends this call in production is \
-         the caller giving up, and a caller that gave up cannot tell a lost seal from a landed \
-         one. The door holds the D9 flock across this park; response was: {resp}"
+         the caller giving up. Read the response: the write LANDS, later. A caller that gave up \
+         at the deadline is therefore asking an unanswerable question about its own seal, and \
+         the answer changes after it stops listening. Response was: {resp}"
     );
     assert_eq!(
         resp["ok"],
