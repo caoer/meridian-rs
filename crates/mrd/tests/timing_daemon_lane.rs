@@ -706,16 +706,26 @@ fn daemon_phases(text: &str) -> BTreeSet<String> {
 /// it, above zero means it is not a fallback — had no number to be applied to.
 ///
 /// What this gate holds: the floor is REACHABLE and COUNTED in a real daemon.
-/// A cold workspace has no live feed yet, so the cookie barrier cannot return
-/// `Seen` and the pass floors — deterministically, which is why the cold call
-/// is the one that proves the numerator exists.
+/// A cold workspace floors deterministically, which is why the cold call is the
+/// one that proves the numerator exists.
 ///
-/// **And it holds the number's ATTRIBUTION.** A cold start and a two-second
-/// cookie timeout under contention are opposite facts about a daemon — one is
-/// a lifecycle event, the other is load — and a single `currency.floor` name
-/// could not tell them apart, so a quiet box could not falsify "the floor is
-/// only a cold-start path". The cold call must report `no_feed` SPECIFICALLY,
-/// which is the one trigger a quiet box can prove.
+/// **And it holds the number's ATTRIBUTION — which caught a false sentence in
+/// this very comment the moment the name could carry one.** The previous
+/// revision said the cold pass floors because *"a cold workspace has no live
+/// feed yet, so the cookie barrier cannot return `Seen`"*. IT DOES RETURN
+/// `Seen`. The daemon starts the feed first; the pass floors because no
+/// observation has landed in the memo yet, so the §6.2 close does not hold it
+/// trusted. Measured as `currency.floor.untrusted`, in two independent test
+/// processes, with `no_feed` never appearing. The single collapsed
+/// `currency.floor` name could not tell the two apart, so the wrong mechanism
+/// sat in this file for exactly as long as the instrument was blind to it —
+/// which is the case for naming the arm, made by the arm.
+///
+/// So the assertion is the DISCRIMINATING one rather than one exact name: a
+/// quiet box must floor for a COLD-START cause and must not report the
+/// time-bounded one. `cookie_unproven` is the only trigger that rises with
+/// load; an idle sandbox reporting it is either timing out where nothing is
+/// contended or has had its causes collapsed back into one name.
 #[test]
 fn the_currency_floor_is_counted_and_attributed_on_the_daemons_lane() {
     let sb = Sandbox::new();
@@ -734,14 +744,13 @@ fn the_currency_floor_is_counted_and_attributed_on_the_daemons_lane() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let text = wait_upto(&sink, SETTLE, |text| {
-        daemon_phases(text).contains("currency.floor.no_feed")
-    });
+    let text = wait_upto(&sink, SETTLE, |text| !cold_floor_causes(text).is_empty());
     let phases = daemon_phases(&text);
+    let cold = cold_floor_causes(&text);
     assert!(
-        phases.contains("currency.floor.no_feed"),
-        "a cold workspace has no live feed, so its currency pass MUST floor and MUST say \
-         which cause sent it there. Daemon phases seen: {phases:?}\nlane: {text}"
+        !cold.is_empty(),
+        "a cold workspace MUST floor and MUST say which cause sent it there — one of \
+         {COLD_START_CAUSES:?}. Daemon phases seen: {phases:?}\nlane: {text}"
     );
     assert!(
         !phases.contains("currency.floor"),
@@ -755,10 +764,26 @@ fn the_currency_floor_is_counted_and_attributed_on_the_daemons_lane() {
     // that would catch a `seen` bool creeping back in.
     assert!(
         !phases.contains("currency.floor.cookie_unproven"),
-        "a cold, idle sandbox reported the TIME-BOUNDED trigger — either the barrier is \
-         timing out where no feed exists at all, or the two causes have been collapsed back \
-         into one name. Daemon phases seen: {phases:?}\nlane: {text}"
+        "an idle sandbox reported the TIME-BOUNDED trigger — either the barrier is timing \
+         out where nothing is contended, or the causes have been collapsed back into one \
+         name. Cold causes seen: {cold:?}. Daemon phases seen: {phases:?}\nlane: {text}"
     );
+}
+
+/// The floor causes a QUIET box can produce, and the whole set of them: no feed
+/// started yet, or a feed that answered `Seen` into a memo that has had no
+/// observation land. Both are lifecycle facts. Every other cause means
+/// something happened — and `cookie_unproven` means LOAD.
+const COLD_START_CAUSES: [&str; 2] = ["currency.floor.no_feed", "currency.floor.untrusted"];
+
+/// Which cold-start causes this lane actually reported.
+fn cold_floor_causes(text: &str) -> BTreeSet<String> {
+    let phases = daemon_phases(text);
+    COLD_START_CAUSES
+        .iter()
+        .filter(|c| phases.contains(**c))
+        .map(|c| (*c).to_owned())
+        .collect()
 }
 
 /// The other half of the pair, and the half that makes the number a RATIO
@@ -814,10 +839,11 @@ fn the_currency_vouched_arm_is_counted_too() {
     );
 
     // Both arms, one population: the ratio the fallback test needs. The floor
-    // half arrives under its trigger name — the first call on this workspace
-    // was the cold one, so the cause is `no_feed`.
+    // half arrives under its cause — the first call on this workspace was the
+    // cold one, so the cause is a cold-start cause (measured: `untrusted`, the
+    // feed being live by then; see the sibling gate's comment).
     assert!(
-        phases.contains("currency.floor.no_feed"),
+        !cold_floor_causes(&text).is_empty(),
         "the vouched arm reported but the cold call's floor did not — a \
          denominator without its numerator: {phases:?}\nlane: {text}"
     );
