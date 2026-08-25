@@ -334,7 +334,11 @@ pub fn user_rule_pages(anchor: &Path) -> io::Result<DomainFiles> {
                 ),
             ));
         };
-        let bytes = fs::read(user_scope.join(&rel))?;
+        // Named for the same reason the non-UTF-8 arm above names its page:
+        // the rung reads a whole tree, so an unnamed errno here indicts every
+        // rule page at once.
+        let bytes = fs::read(user_scope.join(&rel))
+            .map_err(|e| corpus_listing_refusal(e, &rel, "cannot be read"))?;
         pages.push((rel_str.to_owned(), bytes));
     }
     Ok(pages)
