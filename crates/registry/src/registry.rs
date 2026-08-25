@@ -1918,6 +1918,135 @@ mod adoption_guard_tests {
 }
 
 #[cfg(test)]
+mod liveness_guard_tests {
+    //! `ping` is MAP-FREE, and the wedge's two verdicts rest on it.
+    //!
+    //! [`crate::wedge`] separates two daemon failures whose remedies are
+    //! opposite — *died mid-request* ([`std::io::ErrorKind::ConnectionAborted`])
+    //! and *up, and wedged* ([`std::io::ErrorKind::TimedOut`]) — from ONE piece
+    //! of evidence: whether a second connection still answers `{"op":"ping"}`.
+    //! A `ping` that queued behind the map guard would hand a map-stalled
+    //! daemon the ABSENT verdict, sending a reader to the opposite remedy.
+    //! `mrd` reads the same signal a second way: [`crate::Client::ping`] is
+    //! bounded by [`crate::wedge::PROBE_TIMEOUT`] and `engine::ensure_daemon`
+    //! spawns a daemon when it comes back false, so a map-taking ping would
+    //! also launch a second daemon against the live one's singleton flock.
+    //!
+    //! Guard-freedom is invisible to a single-threaded caller: `ping` answers
+    //! the same whether or not it takes the guard, so no ordinary assertion can
+    //! see it. It shows only under contention. These tests hold the map guard
+    //! EXCLUSIVELY on the test thread and drive one frame from another (the
+    //! [`super::adoption_guard_tests`] idiom), and the PAIR is the measurement:
+    //! `ping` answers, and a map op through the same door does not.
+    //!
+    //! Card `ping-reads-walled-daemon-healthy`.
+
+    use super::*;
+    use crate::state::StateStore;
+    use std::io::{BufReader, Cursor};
+    use std::sync::mpsc::{self, RecvTimeoutError};
+    use std::thread;
+
+    /// A map-free answer arrives in microseconds. This window is long enough
+    /// that a loaded box is never mistaken for a blocked one.
+    const SERVES: Duration = Duration::from_secs(5);
+    /// The mirror: a frame that must NOT proceed. Only a fast answer falsifies
+    /// it, so a short window is the safe direction here.
+    const BLOCKS: Duration = Duration::from_millis(300);
+
+    fn registry_in(home: &Path) -> Arc<Registry> {
+        let cache_root = home.join("cache");
+        std::fs::create_dir_all(&cache_root).unwrap();
+        Arc::new(Registry::new(
+            StateStore::new(home.join("state.json")),
+            cache_root,
+            Vec::new(),
+        ))
+    }
+
+    /// Drive ONE request line through the daemon's real line dialogue and
+    /// return the response line. This is the door [`crate::wedge::answers_ping`]
+    /// talks to: `serve_lines` is transport-generic, so the frame layer is
+    /// exercised without a socket, and a bare `ping` needs no `hello` first —
+    /// exactly as the probe sends it.
+    fn serve_one(registry: &Registry, request: &str) -> String {
+        let mut out: Vec<u8> = Vec::new();
+        crate::server::serve_lines(
+            registry,
+            BufReader::new(Cursor::new(format!("{request}\n"))),
+            &mut out,
+            None,
+        )
+        .expect("an in-memory transport has no I/O failure to report");
+        String::from_utf8(out).expect("the daemon answers UTF-8")
+    }
+
+    #[test]
+    fn ping_serves_under_a_held_map_write_guard() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+
+        let held = reg.inner.write().unwrap_or_else(PoisonError::into_inner);
+        let (tx, rx) = mpsc::channel();
+        let worker = {
+            let reg = Arc::clone(&reg);
+            thread::spawn(move || {
+                let _ = tx.send(serve_one(&reg, r#"{"op":"ping"}"#));
+            })
+        };
+
+        let answered = rx.recv_timeout(SERVES);
+        // Release before asserting: a blocked worker must be able to finish, or
+        // the join below outlives the failure it is reporting.
+        drop(held);
+        worker.join().unwrap();
+
+        match answered {
+            Ok(line) => assert!(
+                line.contains(r#""status":"pong""#),
+                "the liveness door answered something other than a pong: {line}"
+            ),
+            Err(RecvTimeoutError::Timeout) => panic!(
+                "`ping` blocked behind the map guard, so the liveness probe now queues \
+                 behind a map stall. `wedge::answers_ping` then reads a WEDGED daemon as \
+                 an ABSENT one: `read_line` answers ConnectionAborted (\"it died \
+                 mid-request; the outcome of this call is unknown\") where it must answer \
+                 TimedOut (\"up, and wedged; restart the daemon\") — opposite remedies. \
+                 `engine::ensure_daemon` reads the same false negative and spawns a \
+                 second daemon against the live one's singleton flock"
+            ),
+            Err(e) => panic!("worker died before answering ({e:?})"),
+        }
+    }
+
+    #[test]
+    fn a_map_op_blocks_behind_the_same_held_write_guard() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+
+        let held = reg.inner.write().unwrap_or_else(PoisonError::into_inner);
+        let (tx, rx) = mpsc::channel();
+        let worker = {
+            let reg = Arc::clone(&reg);
+            thread::spawn(move || {
+                let _ = tx.send(serve_one(&reg, r#"{"op":"list"}"#));
+            })
+        };
+
+        let answered = rx.recv_timeout(BLOCKS);
+        drop(held);
+        worker.join().unwrap();
+
+        assert!(
+            matches!(answered, Err(RecvTimeoutError::Timeout)),
+            "`list` answered through the same door while the map guard was held \
+             EXCLUSIVELY, so this fixture does not wall the map at all and the ping \
+             test above measures nothing about guard-freedom"
+        );
+    }
+}
+
+#[cfg(test)]
 mod engine_tests {
     //! U1 resident-engine gates: warm reuse, one rebuild on change, query serve, reap.
 
