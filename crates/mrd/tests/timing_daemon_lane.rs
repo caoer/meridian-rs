@@ -207,7 +207,13 @@ fn read(path: &Path) -> String {
 /// Returns the last contents read either way — a failing assertion then prints
 /// what the daemon DID say, which is the whole diagnostic value of this file.
 fn wait_for(path: &Path, done: impl Fn(&str) -> bool) -> String {
-    let deadline = Instant::now() + SETTLE;
+    wait_upto(path, SETTLE, done)
+}
+
+/// [`wait_for`] with the deadline named at the call site — for the one gate
+/// whose subject (a kernel watcher coming up) is slower than [`SETTLE`].
+fn wait_upto(path: &Path, within: Duration, done: impl Fn(&str) -> bool) -> String {
+    let deadline = Instant::now() + within;
     loop {
         let text = read(path);
         if done(&text) || Instant::now() >= deadline {
@@ -662,18 +668,6 @@ fn two_ops_on_one_cold_workspace_share_one_fold() {
 /// written. A failure prints the whole sink, so a machine that genuinely never
 /// vouches is distinguishable from one that was merely slow.
 const VOUCH_SETTLE: Duration = Duration::from_secs(30);
-
-/// Poll `path` until `done` accepts it or `deadline_in` elapses.
-fn wait_upto(path: &Path, deadline_in: Duration, done: impl Fn(&str) -> bool) -> String {
-    let deadline = Instant::now() + deadline_in;
-    loop {
-        let text = read(path);
-        if done(&text) || Instant::now() >= deadline {
-            return text;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
 
 /// The daemon-side phases emitted under `cmd=daemon`, as a set.
 fn daemon_phases(text: &str) -> BTreeSet<String> {
