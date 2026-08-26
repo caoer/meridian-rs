@@ -2295,6 +2295,68 @@ fn the_drift_column_costs_one_read_per_pinned_page_not_one_per_row() {
     );
 }
 
+/// Card `mrd-cli-corpus-fail-names-no-path`: the chain walk's refusal reaches
+/// the OPERATOR naming the directory it could not list, not a bare errno.
+///
+/// The walk itself is gated directly in `rules_cmd`'s unit tests, where the
+/// locked directory can sit mid-chain and every throw is reachable. This gate
+/// answers the other half — that the locus survives the conversion into `Fail`,
+/// the process boundary, and stderr, which is the only surface a reader has.
+/// A mint that names the path and a face that drops it look identical from
+/// inside the function.
+#[test]
+fn a_governing_directory_that_cannot_be_listed_is_named_on_stderr() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let s = populated();
+    let locked = s.ws.join("sessions/s1");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod 000");
+    // PROVE the instrument bites: `chmod 000` is a no-op for a privileged user,
+    // and a gate that passes because its precondition never held is the green
+    // log that means nothing. Restored below however this test leaves.
+    let blocked = std::fs::read_dir(&locked).is_err();
+    let out = s.run(&["rules", "sessions/s1"]);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("restore");
+
+    assert!(
+        blocked,
+        "PRECONDITION FAILED: {} is still listable at mode 000 — this gate \
+         cannot run as a privileged user",
+        locked.display()
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an unreadable corpus is a tool failure: {stderr}"
+    );
+    assert!(
+        stderr.contains("sessions/s1 cannot be listed"),
+        "the operator must be told WHICH directory refused — a bare errno sends \
+         them hunting the whole tree from outside: {stderr:?}"
+    );
+}
+
+/// Negative control for the gate above: the SAME fixture and the SAME argument,
+/// unlocked, exits 0 and prints the chain. Without this, an assertion on a
+/// refusal proves nothing about whether the refusal was caused by the lock.
+#[test]
+fn the_same_query_on_a_readable_tree_answers_instead_of_refusing() {
+    let s = populated();
+    let out = s.run(&["rules", "sessions/s1"]);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("sessions/s1/notify.md"),
+        "the control must walk the very directory the gate locks: {stdout}"
+    );
+}
+
 impl Drop for Sandbox {
     fn drop(&mut self) {
         // Reap the daemon this sandbox auto-spawned (common::reap_daemon documents
