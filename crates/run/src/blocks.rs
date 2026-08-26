@@ -94,8 +94,11 @@ impl BlockError {
 ///
 /// An anchor that keys something other than a fence is simply not a block and
 /// does not appear — a page's prose anchors are not the load's business. A
-/// DUPLICATE anchor is different: it is an authoring fault the author needs
-/// told about, so it appears as an [`Err`] rather than vanishing.
+/// DUPLICATE anchor is that same question asked twice: it is an authoring fault
+/// the author needs told about, and appears as an [`Err`] rather than
+/// vanishing, WHEN A BLOCK IS AMONG WHAT IT DUPLICATES — there the load cannot
+/// say which block it would run. A duplicated id that keys only prose is still
+/// prose, and leaves with the rest of the prose.
 #[must_use]
 pub fn anchored_blocks(doc: &Document) -> Vec<Result<AnchoredBlock, BlockError>> {
     let bindings = task_bindings(doc);
@@ -111,11 +114,39 @@ pub fn anchored_blocks(doc: &Document) -> Vec<Result<AnchoredBlock, BlockError>>
             // Not a fence at all: prose anchors are not blocks, and a load
             // that reported them would answer with noise.
             Err(BlockError::NotACodeBlock { .. } | BlockError::NoBlock { .. }) => {}
+            // `block_at` resolves the anchor BEFORE it asks whether the target
+            // is a fence, so a duplicated PROSE id refuses at resolve and never
+            // reaches the arm above. Ask the fence question the resolve
+            // pre-empted: with no block among the candidates this is the same
+            // noise, and duplicate prose ids are ordinary on real pages — a
+            // load that kept them would refuse on prose fleet-wide.
+            Err(BlockError::AmbiguousAnchor { .. })
+                if !any_candidate_hosts_a_block(doc, &anchor) => {}
             other => out.push(other),
         }
         seen.push(anchor);
     }
     out
+}
+
+/// Whether any of a duplicated anchor's candidates hosts a fenced code block —
+/// what makes the duplication a BLOCK fault rather than a fact about prose.
+///
+/// This re-resolves what [`block_at`] already resolved. That is deliberate: it
+/// costs a walk only on the anchors that already refused as ambiguous, and it
+/// keeps the narrowing inside the enumerator. Folding the test into `block_at`
+/// would re-type the fire path's refusal too, and a fire named ITS anchor —
+/// "^x is minted twice" is the answer it asked for.
+fn any_candidate_hosts_a_block(doc: &Document, anchor: &str) -> bool {
+    let Ok(r#ref) = Ref::anchor(anchor.to_owned()) else {
+        return false;
+    };
+    match model::resolve(doc, &r#ref) {
+        Err(ResolveError::Ambiguous(candidates)) => candidates
+            .iter()
+            .any(|target| host_code_block(doc, &target.span).is_some()),
+        _ => false,
+    }
 }
 
 /// Resolve ONE anchor to its block — the fire path's addressing, which asks
@@ -324,6 +355,76 @@ y = 2
             }
         );
         assert_eq!(error.class(), "ambiguous_anchor");
+    }
+
+    #[test]
+    fn a_duplicated_prose_anchor_is_not_the_loads_business() {
+        let page = "\
+# Page
+
+Some prose.
+^dup
+
+More prose.
+^dup
+";
+        assert_eq!(
+            anchored_blocks(&doc(page)),
+            Vec::new(),
+            "no candidate under ^dup hosts a code block, so the duplication \
+             is not a block fault and a load must not price it"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_with_one_block_candidate_still_refuses() {
+        let page = "\
+# Page
+
+Some prose.
+^mixed
+
+```starlark
+x = 1
+```
+^mixed
+";
+        let refusals = anchored_blocks(&doc(page));
+        assert_eq!(refusals.len(), 1, "one authoring fault, told once");
+        let error = refusals[0]
+            .clone()
+            .expect_err("a block IS among the candidates, so the ambiguity is real");
+        assert_eq!(
+            error,
+            BlockError::AmbiguousAnchor {
+                anchor: "mixed".to_owned(),
+                count: 2
+            }
+        );
+        assert_eq!(error.class(), "ambiguous_anchor");
+    }
+
+    #[test]
+    fn the_fire_path_still_names_a_prose_duplicate_as_ambiguous() {
+        let page = "\
+# Page
+
+Some prose.
+^dup
+
+More prose.
+^dup
+";
+        // The load drops it as noise because a load never asked about ^dup in
+        // particular. A fire DID ask, so it keeps the more diagnostic refusal:
+        // narrowing the enumerator must not narrow the addressing.
+        assert_eq!(
+            block(&doc(page), "dup").expect_err("a duplicate addresses none"),
+            BlockError::AmbiguousAnchor {
+                anchor: "dup".to_owned(),
+                count: 2
+            }
+        );
     }
 
     #[test]
