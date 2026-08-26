@@ -108,6 +108,23 @@ impl Peer {
                     thread::spawn(move || {
                         let mut stream = stream;
                         let mut bytes = Vec::new();
+                        // The accepted stream inherits the LISTENER's
+                        // non-blocking flag on BSD/macOS — the same fact the
+                        // daemon's own accept loop states and handles
+                        // (`server.rs`, `spawn_accept`'s dispatch arm). Without
+                        // this reset the drain is non-blocking, `SO_RCVTIMEO`
+                        // below never applies, and the first `read` past the
+                        // socket buffer returns `WouldBlock` — which the `Err(_)`
+                        // arm treats as end-of-frame. The drain then RETURNS and
+                        // drops the stream, so the writer under test gets a
+                        // truthful `BrokenPipe` from a peer this harness killed.
+                        // Measured on Darwin: 32 KiB drained of 2 MiB, then EPIPE.
+                        // A no-op on Linux, where accept(2) does not pass file
+                        // status flags to the new socket — which is why CI stayed
+                        // green while every mac run failed 3/3.
+                        stream
+                            .set_nonblocking(false)
+                            .expect("the drain must BLOCK — see above");
                         stream
                             .set_read_timeout(Some(Duration::from_secs(30)))
                             .expect("bounded drain");
