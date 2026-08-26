@@ -22,9 +22,10 @@
 //! [`RunningServer`], started once and never restarted, and one socket
 //! connection carrying all three calls: serve → refuse → serve. On top of
 //! that the workspace's `tree_instance` is read before the poisoning and
-//! after the recovery and asserted IDENTICAL. That token is the engine's own
-//! answer to "is this the same warm tree" — the wire contract changes it on a
-//! daemon restart or an idle reap (`crates/wire/src/lib.rs`, `engine_gone`).
+//! after the recovery and asserted IDENTICAL. That token is the RING's
+//! identity, not the engine's — the wire contract mints it fresh per ring
+//! epoch and changes it on a daemon restart or an idle reap
+//! (`crates/wire/src/lib.rs`, `sub_dead_instance_teaching`).
 //! Equality therefore rules out the two ways the resident can be REPLACED
 //! under the assertions: a restarted daemon, and a reap-and-rebirth. Both
 //! mint a fresh ring, and `tree_instance` is that ring's identity.
