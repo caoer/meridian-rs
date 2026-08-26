@@ -107,12 +107,12 @@ pub fn walk(root: &WorkspaceRoot) -> io::Result<Vec<PathBuf>> {
 
 fn walk_dir(abs_dir: &Path, rel_dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
     for entry in list_dir(abs_dir, rel_dir)? {
-        let entry = entry.map_err(|e| corpus_listing_refusal(e, rel_dir, "cannot be listed"))?;
+        let entry = entry.map_err(|e| corpus_listing_refusal(&e, rel_dir, "cannot be listed"))?;
         let name = entry.file_name();
         let rel = rel_dir.join(&name);
         let file_type = entry
             .file_type()
-            .map_err(|e| corpus_listing_refusal(e, &rel, "cannot be identified"))?;
+            .map_err(|e| corpus_listing_refusal(&e, &rel, "cannot be identified"))?;
         if file_type.is_dir() {
             walk_dir(&entry.path(), &rel, out)?;
         } else if file_type.is_file()
@@ -161,10 +161,10 @@ fn declined_dir(
 ) -> io::Result<()> {
     let rel_path = Path::new(rel_dir);
     for entry in list_dir(abs_dir, rel_path)? {
-        let entry = entry.map_err(|e| corpus_listing_refusal(e, rel_path, "cannot be listed"))?;
+        let entry = entry.map_err(|e| corpus_listing_refusal(&e, rel_path, "cannot be listed"))?;
         let name = entry.file_name();
         let file_type = entry.file_type().map_err(|e| {
-            corpus_listing_refusal(e, &rel_path.join(&name), "cannot be identified")
+            corpus_listing_refusal(&e, &rel_path.join(&name), "cannot be identified")
         })?;
         let Some(name) = name.to_str() else { continue };
         // Before the is_dir branch, so a dot FILE and a dot DIRECTORY are
@@ -229,12 +229,12 @@ pub fn dot_declined_markdown(root: &WorkspaceRoot) -> io::Result<Vec<String>> {
 /// the user rung's own discipline.
 fn dot_declined_dir(abs_dir: &Path, rel_dir: &Path, declined: &mut Vec<PathBuf>) -> io::Result<()> {
     for entry in list_dir(abs_dir, rel_dir)? {
-        let entry = entry.map_err(|e| corpus_listing_refusal(e, rel_dir, "cannot be listed"))?;
+        let entry = entry.map_err(|e| corpus_listing_refusal(&e, rel_dir, "cannot be listed"))?;
         let name = entry.file_name();
         let rel = rel_dir.join(&name);
         let file_type = entry
             .file_type()
-            .map_err(|e| corpus_listing_refusal(e, &rel, "cannot be identified"))?;
+            .map_err(|e| corpus_listing_refusal(&e, &rel, "cannot be identified"))?;
         let Some(name_str) = name.to_str() else {
             continue;
         };
@@ -338,7 +338,7 @@ pub fn user_rule_pages(anchor: &Path) -> io::Result<DomainFiles> {
         // the rung reads a whole tree, so an unnamed errno here indicts every
         // rule page at once.
         let bytes = fs::read(user_scope.join(&rel))
-            .map_err(|e| corpus_listing_refusal(e, &rel, "cannot be read"))?;
+            .map_err(|e| corpus_listing_refusal(&e, &rel, "cannot be read"))?;
         pages.push((rel_str.to_owned(), bytes));
     }
     Ok(pages)
@@ -419,12 +419,12 @@ fn walk_user_rules_dir(
     declined: &mut Vec<PathBuf>,
 ) -> io::Result<()> {
     for entry in list_dir(abs_dir, rel_dir)? {
-        let entry = entry.map_err(|e| corpus_listing_refusal(e, rel_dir, "cannot be listed"))?;
+        let entry = entry.map_err(|e| corpus_listing_refusal(&e, rel_dir, "cannot be listed"))?;
         let name = entry.file_name();
         let rel = rel_dir.join(&name);
         let file_type = entry
             .file_type()
-            .map_err(|e| corpus_listing_refusal(e, &rel, "cannot be identified"))?;
+            .map_err(|e| corpus_listing_refusal(&e, &rel, "cannot be identified"))?;
         let is_markdown = Path::new(&name)
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("md"));
@@ -457,12 +457,12 @@ fn collect_declined_markdown(
     declined: &mut Vec<PathBuf>,
 ) -> io::Result<()> {
     for entry in list_dir(abs_dir, rel_dir)? {
-        let entry = entry.map_err(|e| corpus_listing_refusal(e, rel_dir, "cannot be listed"))?;
+        let entry = entry.map_err(|e| corpus_listing_refusal(&e, rel_dir, "cannot be listed"))?;
         let name = entry.file_name();
         let rel = rel_dir.join(&name);
         let file_type = entry
             .file_type()
-            .map_err(|e| corpus_listing_refusal(e, &rel, "cannot be identified"))?;
+            .map_err(|e| corpus_listing_refusal(&e, &rel, "cannot be identified"))?;
         if file_type.is_dir() {
             collect_declined_markdown(&entry.path(), &rel, declined)?;
         } else if file_type.is_file()
@@ -505,12 +505,12 @@ fn walk_domain_dir(
     out: &mut Vec<PathBuf>,
 ) -> io::Result<()> {
     for entry in list_dir(abs_dir, rel_dir)? {
-        let entry = entry.map_err(|e| corpus_listing_refusal(e, rel_dir, "cannot be listed"))?;
+        let entry = entry.map_err(|e| corpus_listing_refusal(&e, rel_dir, "cannot be listed"))?;
         let name = entry.file_name();
         let rel = rel_dir.join(&name);
         let file_type = entry
             .file_type()
-            .map_err(|e| corpus_listing_refusal(e, &rel, "cannot be identified"))?;
+            .map_err(|e| corpus_listing_refusal(&e, &rel, "cannot be identified"))?;
         if file_type.is_dir() {
             // Dot-segment: structurally outside the hash domain at any depth.
             if domain::dot_segment(&name.to_string_lossy()) {
@@ -1744,7 +1744,7 @@ fn scan_dir(
         root.join(rel_dir)
     };
     let key = StatKey::of_path(&abs_dir)
-        .map_err(|e| corpus_listing_refusal(e, rel_dir, "cannot be identified"))?;
+        .map_err(|e| corpus_listing_refusal(&e, rel_dir, "cannot be identified"))?;
     let remembered = key.and_then(|key| {
         prior
             .get(rel_dir)
@@ -1757,9 +1757,9 @@ fn scan_dir(
         let mut entries = Vec::new();
         for entry in list_dir(&abs_dir, rel_dir)? {
             let entry =
-                entry.map_err(|e| corpus_listing_refusal(e, rel_dir, "cannot be listed"))?;
+                entry.map_err(|e| corpus_listing_refusal(&e, rel_dir, "cannot be listed"))?;
             let file_type = entry.file_type().map_err(|e| {
-                corpus_listing_refusal(e, &rel_dir.join(entry.file_name()), "cannot be identified")
+                corpus_listing_refusal(&e, &rel_dir.join(entry.file_name()), "cannot be identified")
             })?;
             entries.push(DirEntryKind {
                 is_dir: file_type.is_dir(),
@@ -2031,7 +2031,7 @@ fn member_identities(
             // A stat that FAILS names its member for the same reason the
             // vanished arm below does: the sweep runs over the whole domain,
             // so an unnamed errno here indicts every file at once.
-            .map_err(|e| corpus_listing_refusal(e, rel, "cannot be identified"))?
+            .map_err(|e| corpus_listing_refusal(&e, rel, "cannot be identified"))?
             .ok_or_else(|| {
                 // Walked a moment ago and gone now: a corpus-scoped refusal
                 // names its member, like every other one here.
@@ -2596,7 +2596,7 @@ impl std::error::Error for CorpusMemberError {}
 /// `kind` is preserved through [`corpus_member_refusal`], so the
 /// `e.kind() == NotFound` splits that steer control flow across this crate
 /// keep reading the same fact.
-fn corpus_listing_refusal(e: io::Error, rel_dir: &Path, condition: &str) -> io::Error {
+fn corpus_listing_refusal(e: &io::Error, rel_dir: &Path, condition: &str) -> io::Error {
     let locus = display_name(hash_name(rel_dir));
     let locus = if locus.is_empty() { "." } else { &locus };
     corpus_member_refusal(e.kind(), locus, format!("{condition} ({e})"))
@@ -2607,7 +2607,7 @@ fn corpus_listing_refusal(e: io::Error, rel_dir: &Path, condition: &str) -> io::
 /// names itself at the throw rather than reaching a face as a bare errno.
 /// `rel_dir` is the directory's workspace-relative path (empty at the root).
 fn list_dir(abs_dir: &Path, rel_dir: &Path) -> io::Result<fs::ReadDir> {
-    fs::read_dir(abs_dir).map_err(|e| corpus_listing_refusal(e, rel_dir, "cannot be listed"))
+    fs::read_dir(abs_dir).map_err(|e| corpus_listing_refusal(&e, rel_dir, "cannot be listed"))
 }
 
 /// Mint the corpus-member refusal for `member` — the ONE constructor, so the
