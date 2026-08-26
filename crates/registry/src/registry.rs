@@ -3012,7 +3012,14 @@ mod engine_tests {
 
     /// §3.2: a fast-failing rebuild surfaces its cause TO THE KICKING ASK
     /// (the failure lands inside the bounded wait) — warming never masks a
-    /// broken corpus — and every later ask kicks afresh and learns the same.
+    /// broken corpus — and a later ask reports the same cause.
+    ///
+    /// That the later ask reaches that cause by kicking AFRESH, rather than by
+    /// re-serving a memo, is asserted by
+    /// [`a_fast_failure_served_to_the_kicker_recovers_once_the_corpus_is_repaired`]
+    /// and [`a_served_failure_memo_is_consumed_so_the_next_ask_kicks_afresh`]:
+    /// on this fixture both spellings produce the SAME cause string, so the
+    /// cause alone cannot tell a fresh read from a stale one.
     #[test]
     fn cold_gate_failed_build_surfaces_cause_to_the_kicker() {
         let home = tempfile::tempdir().unwrap();
@@ -3030,7 +3037,70 @@ mod engine_tests {
         let ColdGate::Failed(again) = reg.cold_gate(&ws).unwrap() else {
             panic!("a later ask kicks afresh and learns the same cause");
         };
-        assert!(!again.is_empty());
+        assert_eq!(again, cause, "the later ask reports the same cause");
+    }
+
+    /// §3.2: the cold gate CONSUMES the failure memo it serves, so a corpus
+    /// that is no longer broken recovers with no restart.
+    ///
+    /// This covers the LATER-ASK read (`Self::cold_gate`, the `builds.failed`
+    /// read before the kick) — the lane that every corpus too large to rebuild
+    /// inside [`COLD_BUILD_WAIT`] takes, because such a rebuild always outlives
+    /// its kicker's bounded wait and the memo is still there when the next ask
+    /// arrives. Seeding that memo is how the lane is reached without a
+    /// multi-second build: it is exactly the state [`ColdGate::Failed`]
+    /// documents as "recorded by an earlier one".
+    #[test]
+    fn a_served_failure_memo_is_consumed_so_the_next_ask_kicks_afresh() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_shared_in(home.path());
+        // A HEALTHY corpus: the only thing between it and `Serve` is the memo.
+        let ws = write_ws(home.path(), &[("a.md", "# A\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.cold_builds
+            .lock()
+            .unwrap()
+            .failed
+            .insert(canonical, "an earlier rebuild broke".to_owned());
+
+        assert_eq!(
+            reg.cold_gate(&ws).unwrap(),
+            ColdGate::Failed("an earlier rebuild broke".to_owned()),
+            "the ask that finds a recorded failure serves its cause"
+        );
+
+        // Serving it consumed it, so this ask kicks a fresh rebuild and the
+        // healthy corpus lands. A NON-CLEARING read re-serves that same cause
+        // here instead, and keeps refusing until the daemon restarts.
+        wait_serve(&reg, &ws);
+    }
+
+    /// §3.2: the KICKER's own read of the memo consumes it too, so a corpus
+    /// repaired after a fast failure recovers with no restart.
+    ///
+    /// Distinct call site from
+    /// [`a_served_failure_memo_is_consumed_so_the_next_ask_kicks_afresh`]: a
+    /// failure landing INSIDE the bounded wait is served by the kicker on its
+    /// way out of that wait and never reaches the later-ask read, so neither
+    /// test covers the other's site.
+    #[test]
+    fn a_fast_failure_served_to_the_kicker_recovers_once_the_corpus_is_repaired() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_shared_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n")]);
+        // Two domain configs — the one deterministic warm refusal.
+        fs::write(ws.join("mdfs_config.yaml"), "ignore: []\n").unwrap();
+        fs::create_dir_all(ws.join("meridian")).unwrap();
+        fs::write(ws.join("meridian/domain.md"), "# Domain\n").unwrap();
+
+        let ColdGate::Failed(_) = reg.cold_gate(&ws).unwrap() else {
+            panic!("the kicking ask absorbs the fast failure and serves its cause");
+        };
+
+        // Repair the corpus in place: same registry, same process, no restart.
+        fs::remove_file(ws.join("mdfs_config.yaml")).unwrap();
+
+        wait_serve(&reg, &ws);
     }
 
     /// §3.2: a small drawer lands inside the kicker's bounded wait — first
