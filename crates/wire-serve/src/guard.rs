@@ -490,7 +490,7 @@ pub fn validity_gate(
 /// premise" facts — a row's rev is an exact-section (or doc-root) premise.
 fn plan_rows_carry_a_rev(plan_edits: &[PlanEdit]) -> bool {
     plan_edits.iter().any(|row| match row {
-        PlanEdit::SetProperty { rev, .. } => rev.is_some(),
+        PlanEdit::SetProperty { rev, .. } | PlanEdit::RemoveProperty { rev, .. } => rev.is_some(),
         PlanEdit::Create { rev, .. }
         | PlanEdit::Match { rev, .. }
         | PlanEdit::ReplaceSection { rev, .. }
@@ -586,23 +586,28 @@ fn plan_demands(doc: &model::Document, plan_edits: &[PlanEdit], out: &mut Vec<De
         match row {
             // Frontmatter is file-scoped, so the guard is the doc-root token —
             // a key-line rev would guard a grain the semantics do not live at.
-            PlanEdit::SetProperty { key, rev, .. } => match rev.as_deref() {
-                None => out.push(Demand {
-                    subject: format!("frontmatter key \"{key}\""),
-                    unmet: Unmet::NoGuard {
-                        grain: Grain::File,
-                        slot: Slot::PlanFileRev,
-                    },
-                }),
-                Some(got) if got != file_rev => out.push(Demand {
-                    subject: format!("frontmatter key \"{key}\""),
-                    unmet: Unmet::StaleFileRev {
-                        expected: got.to_owned(),
-                        actual: file_rev.to_owned(),
-                    },
-                }),
-                Some(_) => {}
-            },
+            // `remove_property` sits in the SAME arm on purpose: it is the same
+            // plane at the same grain, and a retire that guarded differently
+            // from the set it undoes would be two laws over one key.
+            PlanEdit::SetProperty { key, rev, .. } | PlanEdit::RemoveProperty { key, rev, .. } => {
+                match rev.as_deref() {
+                    None => out.push(Demand {
+                        subject: format!("frontmatter key \"{key}\""),
+                        unmet: Unmet::NoGuard {
+                            grain: Grain::File,
+                            slot: Slot::PlanFileRev,
+                        },
+                    }),
+                    Some(got) if got != file_rev => out.push(Demand {
+                        subject: format!("frontmatter key \"{key}\""),
+                        unmet: Unmet::StaleFileRev {
+                            expected: got.to_owned(),
+                            actual: file_rev.to_owned(),
+                        },
+                    }),
+                    Some(_) => {}
+                }
+            }
             // A birth: guarded by absence — and, at an occurrence-addressed
             // parent, by the caller's parent rev. `{h, n}` binds by position
             // among identical texts, and the absence check below resolves the

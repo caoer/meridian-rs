@@ -389,15 +389,16 @@ fn render_ref(r: &Ref) -> String {
     }
 }
 
-/// `"match"` or `"put"` for an edit kind.
+/// `"match"`, `"put"` or `"remove"` for an edit kind.
 fn edit_kind_str(e: &EditKind) -> &'static str {
     match e {
         EditKind::Match { .. } => "match",
         EditKind::Put { .. } => "put",
+        EditKind::Remove => "remove",
     }
 }
 
-/// The put position string, or `None` for a match edit.
+/// The put position string, or `None` for an edit shape that has no position.
 fn put_at_str(e: &EditKind) -> Option<&'static str> {
     match e {
         EditKind::Put { at, .. } => Some(match at {
@@ -406,7 +407,9 @@ fn put_at_str(e: &EditKind) -> Option<&'static str> {
             PutAt::End => "end",
             PutAt::Upsert => "upsert",
         }),
-        EditKind::Match { .. } => None,
+        // Neither shape writes at a position: `match` finds its own region,
+        // `remove` strikes the whole node (§ A.6.6).
+        EditKind::Match { .. } | EditKind::Remove => None,
     }
 }
 

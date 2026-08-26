@@ -136,8 +136,10 @@ fn tripped<'a>(doc: &model::Document, edits: &'a [Edit]) -> Option<Rungs<'a>> {
             baseline: match &edit.edit {
                 EditShape::Match { old, .. } => Some(old.as_str()),
                 // `put` states what to write, not what the caller believed was
-                // there — no baseline; rung 2 is the honest answer.
-                EditShape::Put { .. } => None,
+                // there — no baseline; rung 2 is the honest answer. `remove`
+                // states even less: it asserts the key EXISTS and nothing about
+                // what it held, so it has no baseline to offer either.
+                EditShape::Put { .. } | EditShape::Remove {} => None,
             },
             new_fingerprint: NodeRev(resolved.node_rev.0.clone()),
             frontmatter_key: match &edit.target {

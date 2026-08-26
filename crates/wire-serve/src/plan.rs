@@ -298,21 +298,54 @@ pub fn lower(
 
     // Properties first (host order); last value per key wins; keys sorted.
     let mut props: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+    let mut removed: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for e in plan_edits {
-        if let wire::PlanEdit::SetProperty { key, value, .. } = e {
-            props.insert(key, value);
+        match e {
+            wire::PlanEdit::SetProperty { key, value, .. } => {
+                props.insert(key, value);
+            }
+            wire::PlanEdit::RemoveProperty { key, .. } => {
+                removed.insert(key);
+            }
+            _ => {}
         }
+    }
+    // One key, one intent. Setting and removing the same key in one batch is
+    // incoherent, and the two lowered regions overlap — so the kernel WOULD
+    // refuse it, with the generic overlap remedy. Refuse here instead, naming
+    // the contradiction: a caller who wrote both wants to know which one the
+    // engine could not honour, not which byte ranges collided.
+    if let Some(key) = removed.iter().find(|k| props.contains_key(**k)) {
+        return Err(bad_request(format!(
+            "plan_edits both set and remove frontmatter key {} — one key carries one intent per \
+             batch. Send the set or the remove, not both.",
+            policy::defs::go_quote(key)
+        )));
     }
     let mut edits = if props.is_empty() {
         Vec::new()
     } else {
         lower_property_group(doc, &idx, &props)?
     };
+    // The retire group, after the set group and sorted by key — the same
+    // deterministic order, so a mixed batch's armed rows are stable. Each lowers
+    // to the native identity shape on its own `fm_key`, which is what gives the
+    // retire side a per-key armed fact (§ A.6.6). An absent key meets
+    // `ref_not_found` at the native door: removal is not idempotent.
+    for key in &removed {
+        edits.push(Edit {
+            target: SecRef::FmKey {
+                fm_key: (*key).to_string(),
+            },
+            edit: EditShape::Remove {},
+            if_node_rev: None,
+        });
+    }
     let mut born: Vec<Option<Born>> = vec![None; edits.len()];
 
     for e in plan_edits {
         match e {
-            wire::PlanEdit::SetProperty { .. } => {}
+            wire::PlanEdit::SetProperty { .. } | wire::PlanEdit::RemoveProperty { .. } => {}
             wire::PlanEdit::Append { hpath, body, rev } => {
                 edits.push(lower_append(&idx, doc, hpath, body, rev.as_deref())?);
                 born.push(None);
@@ -1062,7 +1095,7 @@ mod tests {
     fn put_text(e: &wire::Edit) -> (&PutAt, &str) {
         match &e.edit {
             EditShape::Put { at, text } => (at, text),
-            EditShape::Match { .. } => panic!("expected put"),
+            other => panic!("expected put, got {other:?}"),
         }
     }
 

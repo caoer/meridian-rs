@@ -223,6 +223,19 @@ pub(crate) fn strip_candidate(
                         .to_owned(),
                 });
             }
+            // `remove` carries NO text, so no scan can attribute a token to it
+            // and the loop's empty-ranges guard has already skipped it. Reaching
+            // here means the scan found a range in an edit that has no bytes —
+            // the grammar moved under this code. Refuse rather than invent a
+            // payload to strip.
+            EditKind::Remove => {
+                return Err(ExecError::FpClaim {
+                    page: page.to_owned(),
+                    cause: "an @fp token attributes to a `remove` edit, which carries no text to \
+                            strip"
+                        .to_owned(),
+                });
+            }
         };
         *payload = remove_ranges(payload, ranges);
     }

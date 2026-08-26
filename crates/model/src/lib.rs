@@ -1112,6 +1112,84 @@ fn plan_fm_upsert(doc: &Document, key: &str, value: &str, synth: FmBlockSynth) -
     }
 }
 
+/// The byte region a `remove` on an `fm_key` replaces: the key's resolved grain
+/// span PLUS its line terminator (§ A.6.6).
+///
+/// **The one shape whose region is wider than its target's span, and the width
+/// is the point.** A leaf's span excludes its terminator (§1), so striking the
+/// span alone would leave that byte standing as a blank line inside the block —
+/// the key gone, a byte of it still there. The scan is clamped to the
+/// frontmatter block, so it can never eat the closing fence: `fm_line_end`
+/// stops at the first `\n` at or after the grain end, which for a well-formed
+/// block is the key line's own terminator. `\r\n` is carried whole, because
+/// `fm_key_grain_span` trims both bytes.
+///
+/// **The LAST key takes the block with it, and that is measured rather than
+/// stylistic.** `---\n---\n` is NOT frontmatter to this engine: `syntax::parse`
+/// mints a `Frontmatter` node only from a pulldown `MetadataBlock` event, which
+/// an empty block does not raise. Leaving bare fences behind would therefore
+/// leave a document whose `---` lines are ordinary markdown, and the very next
+/// property write would synthesize a SECOND block at byte 0 above them
+/// (`plan_fm_upsert`'s blockless arm) — corruption that only shows up one write
+/// later. So a removal that empties the block carries the fences too, and the
+/// document becomes a legitimately blockless one, which every door already
+/// handles. **Exact mirror of the create arm:** `FmBlockSynth::Whole` births the
+/// block for a document that has none; this buries it for a document that no
+/// longer needs one. The blank line that followed the block is NOT carried — it
+/// was never the block's, and taking it would be a second change nobody asked
+/// for.
+///
+/// A document with no frontmatter, or a target that is not an `fm_key`, has no
+/// terminator to carry: the region is the span verbatim, which makes the shape
+/// degrade to exactly `put{at:"all"}` with empty text — the same bytes, the same
+/// `target_identity` refusal. The dispatch write door refuses a non-`fm_key`
+/// target before it reaches here (§ A.6.6); this is the kernel's honest floor,
+/// not a second door.
+fn fm_remove_region(doc: &Document, span: &ByteSpan) -> ByteSpan {
+    let Some(fm) = find_frontmatter(&doc.root) else {
+        return span.clone();
+    };
+    if span.end >= fm.span.end {
+        return span.clone();
+    }
+    let bytes = doc.raw.as_bytes();
+    let line = span.start..fm_line_end(bytes, span.end, fm.span.end);
+    if fm_block_has_key_outside(bytes, &fm.span, &line) {
+        return line;
+    }
+    // Emptied: carry the fences. The node span may or may not already include
+    // the closing fence's terminator, so the byte decides — never an assumption
+    // about which end the span law trims here.
+    let mut end = fm.span.end;
+    if end > fm.span.start && bytes[end - 1] != b'\n' {
+        end = fm_line_end(bytes, end, doc.raw.len());
+    }
+    fm.span.start..end
+}
+
+/// Whether any top-level frontmatter key line survives once `removed` is struck
+/// out of `block`.
+///
+/// Walks the block with the SAME line loop [`resolve_fm_key_resolved`] reads
+/// keys through, so the two can never disagree about what counts as a key: the
+/// `---` fences carry no colon and are skipped by construction, and an indented
+/// continuation line is not a key. A shadowed duplicate (§ A.6.3a — `fm_key`
+/// addresses the first occurrence) counts as a survivor: after the first is
+/// struck the second becomes the reachable key, so the block is not empty.
+fn fm_block_has_key_outside(bytes: &[u8], block: &ByteSpan, removed: &ByteSpan) -> bool {
+    let mut line_start = block.start;
+    while line_start < block.end {
+        let line_end = fm_line_end(bytes, line_start, block.end);
+        let is_key = !matches!(bytes.get(line_start), Some(b' ' | b'\t'))
+            && bytes[line_start..line_end].contains(&b':');
+        if is_key && !(removed.start <= line_start && line_start < removed.end) {
+            return true;
+        }
+        line_start = line_end;
+    }
+    false
+}
+
 /// The byte offset just past a frontmatter block's opening `---\n` fence — where
 /// a new key line inserts (first-key position, keeping the block well-formed).
 /// The block always opens with `---` + a terminator (the syntax fm gate); a
@@ -1170,7 +1248,7 @@ pub enum PutAt {
     Upsert,
 }
 
-/// The two edit shapes (contract §4.4).
+/// The three edit shapes (contract §4.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditKind {
     /// Edit-exact: `old` must occur exactly once in the target's full span
@@ -1179,6 +1257,14 @@ pub enum EditKind {
     Match { old: String, new: String },
     /// Whole-slot write at a [`PutAt`] position.
     Put { at: PutAt, text: String },
+    /// Strike a frontmatter key line out of the block (§ A.6.6) — the one
+    /// IDENTITY shape, valid only on a [`Ref::FmKey`] target (the dispatch
+    /// write door refuses every other target before it reaches here).
+    ///
+    /// Planned by [`plan_fm_remove`]: the region is the key's grain span PLUS
+    /// its line terminator, replaced by nothing. An absent key refuses
+    /// [`SpliceVerdict::RefNotFound`] through the ordinary resolve gate.
+    Remove,
 }
 
 /// One edit in a batch: a target ref, the edit shape, an optional per-node CAS
@@ -1552,6 +1638,11 @@ pub fn validate_batch(
                 };
                 (region, text.clone())
             }
+            // The identity shape (§ A.6.6): the grain span plus its terminator,
+            // replaced by nothing. Resolve ran above, so an absent key already
+            // refused `ref_not_found` — removal is not idempotent, so a typo'd
+            // key and a finished job never return the same frame.
+            EditKind::Remove => (fm_remove_region(doc, &resolved.span), String::new()),
         };
         // Write-side multibyte guarantor (§1): the replaced region must fall on
         // char boundaries.
@@ -1559,7 +1650,19 @@ pub fn validate_batch(
             return v;
         }
         planned.push(PlannedEdit { region, text });
-        guarded.push(Some((edit.target.clone(), resolved.node_rev.clone())));
+        // The write-past-its-span guard asks "did the node you named receive
+        // the bytes?" — a question a REMOVAL has no answer to, because it names
+        // a node it means to end. Left armed it would misfire on exactly one
+        // shape: a SHADOWED duplicate whose two lines are byte-identical
+        // (§ A.6.3a — `fm_key` addresses the first occurrence). Striking the
+        // first leaves an identical-bytes node at the same address, so the
+        // guard reads "rev did not move" and refuses a removal that landed
+        // correctly. Same premise-exemption the armed-facts door makes, and
+        // the same precedent: the `fm_key` upsert door pushes `None` here too.
+        guarded.push(match &edit.edit {
+            EditKind::Remove => None,
+            _ => Some((edit.target.clone(), resolved.node_rev.clone())),
+        });
     }
 
     // 2b. The engine-minted span edit joins the planned set after the caller's

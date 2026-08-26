@@ -1433,7 +1433,7 @@ fn decode_plan_edits(v: &Value) -> Result<Vec<PlanEdit>, Box<ErrorBody>> {
         };
         if e.len() != 1 {
             return Err(bad_request(
-                "a plan edit must carry exactly one of `append`/`match`/`replace_section`/`create`/`set_property`",
+                "a plan edit must carry exactly one of `append`/`match`/`replace_section`/`create`/`set_property`/`remove_property`",
             ));
         }
         let (tag, body_v) = e.iter().next().expect("len checked");
@@ -1489,9 +1489,21 @@ fn decode_plan_edits(v: &Value) -> Result<Vec<PlanEdit>, Box<ErrorBody>> {
                     rev: opt_str(b, "set_property", "rev")?,
                 }
             }
+            // The retire row (§ A.6.6). No `value` field — and the wall says so
+            // by name, because a caller sending one means `set_property` and
+            // silently ignoring it would remove a key where a set was intended.
+            "remove_property" => {
+                plan_fields(b, "remove_property", &["key", "rev"])?;
+                PlanEdit::RemoveProperty {
+                    key: req_str(b, "remove_property", "key")?,
+                    // The same file-grain doc-root token `set_property` takes:
+                    // one plane, one grain, whichever direction the write runs.
+                    rev: opt_str(b, "remove_property", "rev")?,
+                }
+            }
             other => {
                 return Err(bad_request(format!(
-                    "unknown plan edit shape `{other}` — one of append/match/replace_section/create/set_property"
+                    "unknown plan edit shape `{other}` — one of append/match/replace_section/create/set_property/remove_property"
                 )));
             }
         });
@@ -1621,17 +1633,41 @@ pub fn decode_edits(v: &Value, laws: Laws) -> Result<Vec<wire::Edit>, Box<ErrorB
     Ok(edits)
 }
 
-/// Exactly two edit shapes (§4.4): externally tagged `match` / `put`.
+/// Exactly three edit shapes (§4.4): externally tagged `match` / `put` /
+/// `remove`.
 fn decode_edit_shape(v: &Value) -> Result<wire::EditShape, Box<ErrorBody>> {
     let Value::Object(shape) = v else {
         return Err(bad_request("`edit` must be an object"));
     };
     for key in shape.keys() {
-        if !["match", "put"].contains(&key.as_str()) {
+        if !["match", "put", "remove"].contains(&key.as_str()) {
             return Err(bad_request(format!(
-                "unknown field `{key}` in `edit` — legal fields are `match`, `put`"
+                "unknown field `{key}` in `edit` — legal fields are `match`, `put`, `remove`"
             )));
         }
+    }
+    // The identity shape (§ A.6.6) carries no fields — it writes no value, so
+    // there is nothing to encode and nothing to spell. The wall is loud here
+    // for the same reason it is loud everywhere: a `text` inside `remove` is a
+    // caller who means `put`, and silently dropping it would write a removal
+    // where a set was intended.
+    if let Some(r) = shape.get("remove") {
+        if shape.len() > 1 {
+            return Err(bad_request(
+                "`edit` must carry exactly one of `match`/`put`/`remove`",
+            ));
+        }
+        let Value::Object(fields) = r else {
+            return Err(bad_request("`remove` must be an object — send `{}`"));
+        };
+        if let Some(key) = fields.keys().next() {
+            return Err(bad_request(format!(
+                "unknown field `{key}` in `remove` — it takes no fields: `remove` strikes the \
+                 frontmatter key line, it writes no value. To SET a value use \
+                 `put{{at:\"upsert\"}}`."
+            )));
+        }
+        return Ok(wire::EditShape::Remove {});
     }
     match (shape.get("match"), shape.get("put")) {
         (Some(Value::Object(m)), None) => {

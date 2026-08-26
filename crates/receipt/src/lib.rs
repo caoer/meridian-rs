@@ -349,5 +349,9 @@ pub(crate) fn shape_display(shape: &wire::EditShape) -> &'static str {
             wire::PutAt::End => "put:end",
             wire::PutAt::Upsert => "put:upsert",
         },
+        // The identity shape (§ A.6.6). One token, no `:` scope — `remove` has
+        // no position to write at, which is what makes it a shape and not a
+        // fourth `PutAt`.
+        wire::EditShape::Remove {} => "remove",
     }
 }

@@ -736,7 +736,7 @@ mod tests {
                 assert_eq!(p, "other.md");
                 match &b.edits[0].edit {
                     EditKind::Match { new, .. } => new.as_str(),
-                    other @ EditKind::Put { .. } => panic!("backlink edit is a match: {other:?}"),
+                    other => panic!("backlink edit is a match: {other:?}"),
                 }
             })
             .collect();
