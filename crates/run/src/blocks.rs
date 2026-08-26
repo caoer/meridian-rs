@@ -99,6 +99,13 @@ impl BlockError {
 /// vanishing, WHEN A BLOCK IS AMONG WHAT IT DUPLICATES — there the load cannot
 /// say which block it would run. A duplicated id that keys only prose is still
 /// prose, and leaves with the rest of the prose.
+///
+/// That is a statement about ENUMERATING, and only about enumerating. A page
+/// that NAMES such an id still meets it: an `exec(block = ...)` declaration
+/// resolves through [`block`], which does not narrow, so a LOAD of that page
+/// still faults `ambiguous_anchor` — reported against the declaration that
+/// named the id (§ 3.4 step 3, [`crate::modes`]). Naming is not enumerating,
+/// and that difference is the whole seam.
 #[must_use]
 pub fn anchored_blocks(doc: &Document) -> Vec<Result<AnchoredBlock, BlockError>> {
     let bindings = task_bindings(doc);
@@ -135,8 +142,9 @@ pub fn anchored_blocks(doc: &Document) -> Vec<Result<AnchoredBlock, BlockError>>
 /// This re-resolves what [`block_at`] already resolved. That is deliberate: it
 /// costs a walk only on the anchors that already refused as ambiguous, and it
 /// keeps the narrowing inside the enumerator. Folding the test into `block_at`
-/// would re-type the fire path's refusal too, and a fire named ITS anchor —
-/// "^x is minted twice" is the answer it asked for.
+/// would re-type the refusal on every path that NAMES an anchor — a fire, and
+/// an `exec(block = ...)` declaration resolved at load — and a caller that
+/// named ITS anchor asked a question "^x is minted twice" answers.
 fn any_candidate_hosts_a_block(doc: &Document, anchor: &str) -> bool {
     let Ok(r#ref) = Ref::anchor(anchor.to_owned()) else {
         return false;
