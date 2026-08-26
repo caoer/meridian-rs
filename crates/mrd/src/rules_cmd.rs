@@ -604,6 +604,45 @@ impl RulesReport {
 
 // ── building it ───────────────────────────────────────────────────────────────
 
+/// The chain walk's refusal, naming WHERE it failed — the client-side twin of
+/// the engine's own listing refusal. `rel` is the workspace-relative path of
+/// the directory or entry that refused, `condition` states what failed in the
+/// engine's vocabulary (`cannot be listed` · `cannot be identified` · `cannot
+/// be read`), and the OS error rides inside it. `std::fs` errors carry no
+/// path, so an unnamed errno here indicts the whole workspace and sends the
+/// reader hunting a tree for a fact one word of path collapses to one `ls`.
+///
+/// The locus is spelled through [`fs::hash_name`] + [`fs::display_name`] — the
+/// engine's own display law — so a name with no UTF-8 spelling is escaped
+/// (`\` doubled, each invalid byte as `\xNN`) rather than lossily decoded: it
+/// never collapses to U+FFFD, and it never collides with another non-UTF-8
+/// name. The workspace root's workspace-relative path is empty and spells
+/// itself `.`: a refusal must never name nothing.
+///
+/// The escape is injective AMONG non-UTF-8 names, and that is the whole of the
+/// guarantee. It does NOT separate the two branches from each other: a name
+/// that IS valid UTF-8 is returned verbatim, backslashes not doubled, so a
+/// valid name literally containing `\xFF` renders exactly as the escaped form
+/// of the raw `0xFF` byte. Both are legal POSIX filenames and both mint the
+/// same refusal text. Stated because the stronger sentence — "a refusal can
+/// never name the wrong member" — is what this comment used to claim, and it
+/// is false; the collision lives in `fs::display_name`, is the engine's to
+/// close, and is filed rather than papered over here.
+///
+/// MINTED here rather than inherited, deliberately. The engine's enumerator,
+/// which already attaches this locus, is private to `crates/fs`; the public
+/// walks that carry it read the WHOLE domain, which is the cost the module
+/// docs above record (37k files / 219 MB, ~2.5 CPU-s and 548 MB peak RSS per
+/// invocation) and the reason this chain is enumerated rather than walked. So
+/// the vocabulary and the spelling are shared with the engine; the walk is not.
+fn corpus_fail(rel: &Path, condition: &str, e: &std::io::Error) -> Fail {
+    let locus = fs::display_name(fs::hash_name(rel));
+    let locus = if locus.is_empty() { "." } else { &locus };
+    Fail::tool(format!(
+        "cannot read the workspace corpus: {locus} {condition} ({e})"
+    ))
+}
+
 /// The workspace pages that could govern `at`, as `(path, bytes)` — the § 3
 /// chain, ENUMERATED rather than walked: the direct files of each
 /// [`policy::governing_dirs`] directory, gated by the hash-domain predicate
@@ -625,10 +664,9 @@ fn chain_pages(
     domain: &fs::domain::Domain,
     at: &str,
 ) -> Result<fs::DomainFiles, Fail> {
-    let corpus_fail =
-        |e: std::io::Error| Fail::tool(format!("cannot read the workspace corpus: {e}"));
     let mut files = fs::DomainFiles::new();
     for dir in policy::governing_dirs(at) {
+        let rel_dir = Path::new(&dir);
         let abs = if dir.is_empty() {
             workspace.to_path_buf()
         } else {
@@ -637,13 +675,22 @@ fn chain_pages(
         if !abs.is_dir() {
             continue;
         }
-        for entry in std::fs::read_dir(&abs).map_err(corpus_fail)? {
-            let entry = entry.map_err(corpus_fail)?;
+        let listing =
+            std::fs::read_dir(&abs).map_err(|e| corpus_fail(rel_dir, "cannot be listed", &e))?;
+        for entry in listing {
+            let entry = entry.map_err(|e| corpus_fail(rel_dir, "cannot be listed", &e))?;
+            // Taken before the `file_type` throw, so that throw can name the
+            // ENTRY rather than fall back to the directory around it.
+            let name = entry.file_name();
+            let rel_entry = rel_dir.join(&name);
             // `file_type` does not follow symlinks — the walk's own law.
-            if !entry.file_type().map_err(corpus_fail)?.is_file() {
+            if !entry
+                .file_type()
+                .map_err(|e| corpus_fail(&rel_entry, "cannot be identified", &e))?
+                .is_file()
+            {
                 continue;
             }
-            let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
             let rel = if dir.is_empty() {
                 name.to_owned()
@@ -653,7 +700,8 @@ fn chain_pages(
             if !domain.contains(Path::new(&rel)) {
                 continue;
             }
-            let bytes = std::fs::read(entry.path()).map_err(corpus_fail)?;
+            let bytes = std::fs::read(entry.path())
+                .map_err(|e| corpus_fail(&rel_entry, "cannot be read", &e))?;
             files.push((rel, bytes));
         }
     }
@@ -1987,6 +2035,277 @@ rules at sessions/s1
                 .expect_err("no such folder")
                 .code,
             2
+        );
+    }
+
+    // ── the chain walk names WHERE it failed ──────────────────────────────
+    //
+    // Card `mrd-cli-corpus-fail-names-no-path`: this walk refused `cannot read
+    // the workspace corpus: Permission denied (os error 13)` with no path, in a
+    // loop that holds the governing directory and the entry name at every
+    // throw. The pathless twin of it engine-side cost an outside seat a
+    // six-minute discriminator hunt.
+    //
+    // Gated HERE rather than only through the binary: `chain_pages` is the
+    // whole subject, and driving it directly lets the locked directory sit
+    // mid-chain with readable governing scopes both above and below it. One
+    // gate through the real process boundary lives in
+    // `crates/mrd/tests/rules_cli.rs`, so the claim covers the surface an
+    // operator actually reads as well as the function.
+
+    /// An unreadable path that becomes readable again however the test leaves —
+    /// returned value, failed assertion, or panic. Restoring on the happy path
+    /// alone would leak a mode-000 entry that `TempDir`'s own cleanup then
+    /// cannot remove, so a failing assertion would litter the build tree.
+    struct Locked(PathBuf);
+
+    impl Locked {
+        /// Take the permissions away, and PROVE the instrument bites before any
+        /// assertion rests on it. `chmod 000` is a no-op for a privileged user,
+        /// and a test that passes because its precondition never held is the
+        /// green log that means nothing.
+        fn dir(path: &Path) -> Locked {
+            let locked = Locked::chmod(path);
+            assert!(
+                std::fs::read_dir(path).is_err(),
+                "PRECONDITION FAILED: {} is still listable at mode 000 — this \
+                 suite cannot run as a privileged user, and passing here would \
+                 test nothing",
+                path.display()
+            );
+            locked
+        }
+
+        /// The same precondition for a FILE: `read` must actually refuse.
+        fn file(path: &Path) -> Locked {
+            let locked = Locked::chmod(path);
+            assert!(
+                std::fs::read(path).is_err(),
+                "PRECONDITION FAILED: {} is still readable at mode 000 — this \
+                 suite cannot run as a privileged user, and passing here would \
+                 test nothing",
+                path.display()
+            );
+            locked
+        }
+
+        fn chmod(path: &Path) -> Locked {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000))
+                .expect("chmod 000");
+            Locked(path.to_path_buf())
+        }
+    }
+
+    impl Drop for Locked {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    /// A workspace with rule pages at three depths, so a locked directory is
+    /// genuinely MID-chain: readable governing scopes sit above and below it.
+    fn chain_workspace() -> (tempfile::TempDir, PathBuf, fs::domain::Domain) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+        for rel in ["top.md", "sessions/mid.md", "sessions/s1/leaf.md"] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+            std::fs::write(&path, "---\ntags: [type/rule]\nid: x\n---\n\n# x\n").expect("write");
+        }
+        // Loaded BEFORE anything is locked: the domain config is the engine's
+        // read, and this suite is about the chain walk, not about that read.
+        let domain =
+            fs::domain::Domain::load(&fs::WorkspaceRoot(root.clone())).expect("domain loads");
+        (tmp, root, domain)
+    }
+
+    /// The card's first Done bullet: a governing directory the walk cannot list
+    /// is NAMED. Without this the reader gets a bare errno for a workspace-wide
+    /// scope and has to hunt the tree from outside.
+    #[test]
+    fn a_governing_directory_that_cannot_be_listed_is_named() {
+        let (_tmp, root, domain) = chain_workspace();
+        let locked = Locked::dir(&root.join("sessions/s1"));
+
+        let err = chain_pages(&root, &domain, "sessions/s1/leaf.md")
+            .expect_err("a governing directory that cannot be listed");
+        assert_eq!(err.code, 2, "an unreadable corpus is a tool failure");
+        assert!(
+            err.message.contains("sessions/s1"),
+            "the refusal must name the directory it could not list: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("cannot be listed"),
+            "the condition states the LISTING failed, not a member read: {}",
+            err.message
+        );
+
+        drop(locked);
+    }
+
+    /// The `fs::read` throw, whose locus is the ENTRY rather than the directory
+    /// around it: the walk read the chain page and the page is the fact.
+    #[test]
+    fn a_chain_page_that_cannot_be_read_is_named() {
+        let (_tmp, root, domain) = chain_workspace();
+        let locked = Locked::file(&root.join("sessions/s1/leaf.md"));
+
+        let err = chain_pages(&root, &domain, "sessions/s1/leaf.md")
+            .expect_err("a chain page that cannot be read");
+        assert_eq!(err.code, 2);
+        assert!(
+            err.message.contains("sessions/s1/leaf.md"),
+            "the refusal must name the PAGE, not the directory holding it: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("cannot be read"),
+            "the condition states the member read failed: {}",
+            err.message
+        );
+
+        drop(locked);
+    }
+
+    /// Negative control for the two gates above: on a HEALTHY tree this walk
+    /// succeeds and returns the chain, so those assertions discriminate rather
+    /// than matching a refusal every run would produce anyway.
+    #[test]
+    fn a_healthy_chain_mints_no_refusal() {
+        let (_tmp, root, domain) = chain_workspace();
+        let pages = chain_pages(&root, &domain, "sessions/s1/leaf.md")
+            .expect("a healthy chain walks clean");
+        let names: Vec<&str> = pages.iter().map(|(page, _)| page.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["sessions/mid.md", "sessions/s1/leaf.md", "top.md"],
+            "the control must exercise the same throws — a walk that read \
+             nothing would pass this test while proving nothing"
+        );
+    }
+
+    /// The workspace root has an EMPTY workspace-relative path, and a refusal
+    /// that names nothing is the defect this card is about. It spells itself
+    /// `.`, exactly as the engine's own listing refusal does.
+    #[test]
+    fn a_locked_workspace_root_names_itself_rather_than_nothing() {
+        let (_tmp, root, domain) = chain_workspace();
+        let locked = Locked::dir(&root);
+
+        let err =
+            chain_pages(&root, &domain, "sessions/s1/leaf.md").expect_err("a locked root refuses");
+        assert_eq!(
+            err.message,
+            "cannot read the workspace corpus: . cannot be listed \
+             (Permission denied (os error 13))",
+            "the root spells itself, so no refusal names an empty locus"
+        );
+
+        drop(locked);
+    }
+
+    /// The mint itself, at the two conditions above plus the one the OS will
+    /// not produce on demand.
+    ///
+    /// APERTURE: `DirEntry::file_type` is answered from the dirent on both
+    /// platforms this ships to, so no fixture reliably drives that throw. It is
+    /// gated at the mint — the same function the two OS-driven gates above
+    /// prove reaches the operator — and by construction at the call site, which
+    /// passes the entry's own path. That is weaker evidence than a live throw
+    /// and is stated rather than implied.
+    #[test]
+    fn the_mint_names_the_locus_and_the_condition_at_every_throw() {
+        let denied = || std::io::Error::from_raw_os_error(13);
+        for condition in ["cannot be listed", "cannot be identified", "cannot be read"] {
+            let fail = corpus_fail(Path::new("sessions/s1/leaf.md"), condition, &denied());
+            assert_eq!(fail.code, 2);
+            assert_eq!(
+                fail.message,
+                format!(
+                    "cannot read the workspace corpus: sessions/s1/leaf.md \
+                     {condition} (Permission denied (os error 13))"
+                )
+            );
+        }
+        assert!(
+            corpus_fail(Path::new(""), "cannot be listed", &denied())
+                .message
+                .contains(": . cannot be listed"),
+            "an empty workspace-relative path spells itself `.`"
+        );
+    }
+
+    /// A name with no UTF-8 spelling is ESCAPED, never lossily decoded — the
+    /// engine's display law, reused here rather than re-invented.
+    ///
+    /// The rationale is stated exactly as far as it holds. A lossy decode maps
+    /// EVERY invalid byte to one U+FFFD, so it collapses whole families of
+    /// distinct names onto one spelling; the escape does not, and the second
+    /// gate below shows two non-UTF-8 names staying apart. What this does NOT
+    /// claim is that a refusal can never name the wrong member — see
+    /// `two_names_that_render_alike_are_a_known_engine_collision`, which pins
+    /// the case where that is false.
+    #[test]
+    fn a_non_utf8_entry_name_is_escaped_rather_than_decoded_lossily() {
+        use std::os::unix::ffi::OsStrExt;
+        let name = |bytes: &[u8]| {
+            corpus_fail(
+                Path::new(std::ffi::OsStr::from_bytes(bytes)),
+                "cannot be read",
+                &std::io::Error::from_raw_os_error(13),
+            )
+            .message
+        };
+        let message = name(b"sessions/\xFF.md");
+        assert!(
+            message.contains("sessions/\\xFF.md"),
+            "the invalid byte is escaped, not replaced by U+FFFD: {message}"
+        );
+        assert!(
+            !message.contains('\u{FFFD}'),
+            "a lossy decode would collapse every invalid byte onto one \
+             spelling: {message}"
+        );
+        // Within the escape branch the spelling DOES separate distinct names —
+        // the property the paragraph above actually rests on. A lossy decode
+        // would render these two identically.
+        assert_ne!(
+            name(b"a\\b\xFF"),
+            name(b"a\\\\b\xFF"),
+            "two non-UTF-8 names must not share a refusal spelling"
+        );
+    }
+
+    /// The limit of the guarantee above, pinned so nobody re-derives the
+    /// stronger claim from the weaker one.
+    ///
+    /// `fs::display_name` returns a VALID UTF-8 name verbatim — backslashes not
+    /// doubled — and doubles them only on the escape path. So a valid name that
+    /// literally contains `\xFF` renders exactly as the escaped form of the raw
+    /// `0xFF` byte, and the two mint byte-identical refusals. Both are legal
+    /// POSIX filenames.
+    ///
+    /// This test asserts the collision rather than the absence of one: it is a
+    /// live engine defect (`crates/fs`, fenced off by this card and filed as
+    /// its own finding), and an author's comment claiming injectivity outright
+    /// is exactly what a reviewer disproved here. If someone closes the engine
+    /// gap, this test fails — and that failure is the signal to delete it and
+    /// restore the stronger sentence, not to weaken the assertion.
+    #[test]
+    fn two_names_that_render_alike_are_a_known_engine_collision() {
+        use std::os::unix::ffi::OsStrExt;
+        let spell = |bytes: &[u8]| {
+            fs::display_name(fs::hash_name(Path::new(std::ffi::OsStr::from_bytes(bytes))))
+        };
+        let valid_utf8_literal = spell(br"sessions/\xFF.md");
+        let raw_invalid_byte = spell(b"sessions/\xFF.md");
+        assert_eq!(
+            valid_utf8_literal, raw_invalid_byte,
+            "if these now differ the engine collision is closed — delete this \
+             test and restore the injectivity claim in `corpus_fail`'s doc"
         );
     }
 }
