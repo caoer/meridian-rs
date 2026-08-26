@@ -25,10 +25,17 @@
 //! after the recovery and asserted IDENTICAL. That token is the engine's own
 //! answer to "is this the same warm tree" — the wire contract changes it on a
 //! daemon restart or an idle reap (`crates/wire/src/lib.rs`, `engine_gone`).
-//! Equality therefore rules out the two ways a corpus can appear to heal
-//! without healing: a restarted daemon, and a silently re-warmed engine.
-//! Without it a passing test would be consistent with the resident having
-//! been rebuilt underneath the assertions.
+//! Equality therefore rules out the two ways the resident can be REPLACED
+//! under the assertions: a restarted daemon, and a reap-and-rebirth. Both
+//! mint a fresh ring, and `tree_instance` is that ring's identity.
+//!
+//! **It does not discriminate an in-place engine rebuild — which is what this
+//! test's own recovery performs.** `crates/registry/src/registry.rs` replaces
+//! the engines map in place under a stable ring; only reap removes the ring;
+//! and a `WorkspaceRing` is constructed solely on first use. So a pass here
+//! pins "not restarted, not reaped". It does not pin "not rebuilt", and a
+//! passing gate stays consistent with the engine having been rebuilt
+//! underneath the assertions.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
