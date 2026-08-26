@@ -1124,20 +1124,29 @@ fn plan_fm_upsert(doc: &Document, key: &str, value: &str, synth: FmBlockSynth) -
 /// block is the key line's own terminator. `\r\n` is carried whole, because
 /// `fm_key_grain_span` trims both bytes.
 ///
-/// **The LAST key takes the block with it, and that is measured rather than
-/// stylistic.** `---\n---\n` is NOT frontmatter to this engine: `syntax::parse`
-/// mints a `Frontmatter` node only from a pulldown `MetadataBlock` event, which
-/// an empty block does not raise. Leaving bare fences behind would therefore
-/// leave a document whose `---` lines are ordinary markdown, and the very next
-/// property write would synthesize a SECOND block at byte 0 above them
-/// (`plan_fm_upsert`'s blockless arm) — corruption that only shows up one write
-/// later. So a removal that empties the block carries the fences too, and the
-/// document becomes a legitimately blockless one, which every door already
-/// handles. **Exact mirror of the create arm:** `FmBlockSynth::Whole` births the
-/// block for a document that has none; this buries it for a document that no
-/// longer needs one. The blank line that followed the block is NOT carried — it
-/// was never the block's, and taking it would be a second change nobody asked
-/// for.
+/// **A removal that would EMPTY the block refuses instead — measured, and the
+/// measurement overturned this function's first design.** Neither outcome is
+/// available: leaving bare fences is corrupting (`---\n---\n` is NOT frontmatter
+/// to this engine — `syntax::parse` mints a `Frontmatter` node only from a
+/// pulldown `MetadataBlock`, which an empty block does not raise, so the very
+/// next property write synthesizes a SECOND block above them); and carrying the
+/// fences leaves a blockless document, which the def plane refuses outright
+/// (`policy::defs::check::record_meta` reports `unreadable frontmatter: <nil>`
+/// for ANY document with no frontmatter, and that refusal is "never forceable").
+///
+/// So the emptying removal cannot commit either way, and the only question was
+/// WHERE it dies. It dies here, naming the block's last key — rather than three
+/// layers down in a conformance message about NESTED frontmatter, which is a
+/// misdiagnosis of the write that drew it. The door checks
+/// [`fm_remove_empties_block`] and refuses (§ A.6.6).
+///
+/// The region is therefore always the key's grain span PLUS its line terminator.
+/// A leaf's span excludes its terminator (§1), and `fm_key`'s grain span covers
+/// the key line and every indented continuation line of a block value (§4.4);
+/// striking the span alone would leave that terminator standing as a blank line
+/// inside the block — the key gone, a byte of it still there. This is the one
+/// shape whose replaced region is deliberately WIDER than its target's span.
+/// `\r\n` is carried whole, because `fm_key_grain_span` trims both bytes.
 ///
 /// A document with no frontmatter, or a target that is not an `fm_key`, has no
 /// terminator to carry: the region is the span verbatim, which makes the shape
@@ -1152,19 +1161,26 @@ fn fm_remove_region(doc: &Document, span: &ByteSpan) -> ByteSpan {
     if span.end >= fm.span.end {
         return span.clone();
     }
+    span.start..fm_line_end(doc.raw.as_bytes(), span.end, fm.span.end)
+}
+
+/// Whether removing `key` would leave the frontmatter block with no top-level
+/// key — the fact the write door refuses on (§ A.6.6).
+///
+/// `false` when the key does not resolve at all: that is `ref_not_found`'s to
+/// answer, and a predicate that claimed "it would empty the block" for a key
+/// the block never held would send the caller to fix the wrong thing.
+#[must_use]
+pub fn fm_remove_empties_block(doc: &Document, key: &str) -> bool {
+    let Some(fm) = find_frontmatter(&doc.root) else {
+        return false;
+    };
+    let Ok(resolved) = resolve_fm_key_resolved(doc, key) else {
+        return false;
+    };
     let bytes = doc.raw.as_bytes();
-    let line = span.start..fm_line_end(bytes, span.end, fm.span.end);
-    if fm_block_has_key_outside(bytes, &fm.span, &line) {
-        return line;
-    }
-    // Emptied: carry the fences. The node span may or may not already include
-    // the closing fence's terminator, so the byte decides — never an assumption
-    // about which end the span law trims here.
-    let mut end = fm.span.end;
-    if end > fm.span.start && bytes[end - 1] != b'\n' {
-        end = fm_line_end(bytes, end, doc.raw.len());
-    }
-    fm.span.start..end
+    let removed = resolved.span.start..fm_line_end(bytes, resolved.span.end, fm.span.end);
+    !fm_block_has_key_outside(bytes, &fm.span, &removed)
 }
 
 /// Whether any top-level frontmatter key line survives once `removed` is struck

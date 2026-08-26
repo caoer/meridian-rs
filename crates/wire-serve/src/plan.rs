@@ -1026,17 +1026,18 @@ fn lower_property_group(
         keyed.insert(key, v);
     }
 
+    // A blockless document SYNTHESIZES, on this lane exactly as on the native
+    // one (ruling `decisions/blockless-property-set-synthesizes-on-every-lane`,
+    // 2026-08-26). This lane used to refuse — "add a '---' block first" — while
+    // `put{at:"upsert"}` on the same document created the block and committed:
+    // one plane, two answers, so a caller's recovery quality was a function of
+    // which door they entered (§ A.6.3a, "Uniform means the WORDS too"). The
+    // refusal protected nothing the kernel does not already handle: the absent
+    // arm below lowers to `PutAt::Upsert`, and `plan_fm_upsert`'s blockless arm
+    // composes the fences through `FmBlockSynth`, counting batch-mates so N
+    // creates compose ONE well-formed block rather than N stacked ones.
     let fm_key_set: std::collections::HashSet<&str> =
         idx.fm_keys.iter().map(String::as_str).collect();
-    if idx.fm_keys.is_empty() {
-        for k in keyed.keys() {
-            if !fm_key_set.contains(k.as_str()) {
-                return Err(bad_request(
-                    "cannot set a new property — the file has no frontmatter to anchor it (add a '---' block first)",
-                ));
-            }
-        }
-    }
     let mut quoted: std::collections::BTreeMap<policy::defs::SafeKey<'_>, String> =
         std::collections::BTreeMap::new();
     for (k, v) in &keyed {
@@ -1538,10 +1539,18 @@ mod tests {
         assert_eq!(put_text(&edits[2]), (&PutAt::Upsert, "1"));
     }
 
-    /// No frontmatter to anchor a new key refuses.
+    /// A blockless document SYNTHESIZES on this lane, the same as on the native
+    /// one (ruling `blockless-property-set-synthesizes-on-every-lane`).
+    ///
+    /// This test previously pinned the OPPOSITE — a refusal reading "the file
+    /// has no frontmatter to anchor it (add a '---' block first)" — while
+    /// `put{at:"upsert"}` on the same document created the block and committed.
+    /// The refusal protected nothing: the lowering below already reaches the
+    /// kernel arm that synthesizes. It now pins the UNIFORM behaviour, so the
+    /// day a lane diverges again this fails and says which one.
     #[test]
-    fn property_no_frontmatter_refuses() {
-        let err = super::lower(
+    fn property_on_a_blockless_document_lowers_to_the_synthesizing_arm() {
+        let edits = super::lower(
             &doc("# A\n\nx\n"),
             &[PlanEdit::SetProperty {
                 key: "status".into(),
@@ -1549,13 +1558,45 @@ mod tests {
                 rev: None,
             }],
         )
-        .expect_err("no fm refuses");
+        .expect("a blockless document synthesizes rather than refusing");
+        assert_eq!(edits.edits.len(), 1);
         assert_eq!(
-            err.message.as_deref(),
-            Some(
-                "cannot set a new property — the file has no frontmatter to anchor it (add a '---' block first)"
-            )
+            put_text(&edits.edits[0]),
+            (&PutAt::Upsert, "open"),
+            "the absent arm — `plan_fm_upsert`'s blockless branch composes the fences"
         );
+    }
+
+    /// N creates on a blockless document compose ONE block, not N stacked ones
+    /// — the `FmBlockSynth` counting the uniform lane now depends on. Every
+    /// upsert plans against the same pre-batch bytes, so leaving them
+    /// independent would stack N fence pairs and only the first would parse.
+    #[test]
+    fn several_properties_on_a_blockless_document_compose_one_block() {
+        let edits = super::lower(
+            &doc("# A\n\nx\n"),
+            &[
+                PlanEdit::SetProperty {
+                    key: "status".into(),
+                    value: "open".into(),
+                    rev: None,
+                },
+                PlanEdit::SetProperty {
+                    key: "owner".into(),
+                    value: "zt".into(),
+                    rev: None,
+                },
+            ],
+        )
+        .expect("a blockless document synthesizes");
+        assert_eq!(edits.edits.len(), 2);
+        for e in &edits.edits {
+            assert_eq!(
+                put_text(e).0,
+                &PutAt::Upsert,
+                "every create takes the synthesizing arm: {e:?}"
+            );
+        }
     }
 
     /// Values with `: ` quote through shared `yaml_safe_value` predicate — in

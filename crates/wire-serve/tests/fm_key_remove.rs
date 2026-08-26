@@ -9,8 +9,8 @@
 //! liveness screen testing for absence read them as present.
 //!
 //! These tests pin the door's laws, not its convenience: the region carries the
-//! terminator, the LAST key carries the fences, an absent key REFUSES, a
-//! non-`fm_key` target refuses, and the armed fact names the key that died.
+//! terminator, the LAST key refuses, an absent key refuses, a non-`fm_key`
+//! target refuses, and the armed fact names the key that died.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -138,81 +138,57 @@ fn the_armed_fact_names_the_key_and_arms_the_no_node_token() {
     );
 }
 
-/// **The measured hazard.** `---\n---\n` is NOT frontmatter to this engine
-/// (`syntax::parse` mints a `Frontmatter` node only from a pulldown
-/// `MetadataBlock`, which an empty block does not raise). Leaving bare fences
-/// would leave a document whose next property write synthesizes a SECOND block
-/// above them. So the last key carries the fences — and the proof is that a
-/// following upsert lands ONE block, not two.
+/// **The last key REFUSES, and the measurement is why.** Neither outcome was
+/// available. Leaving bare fences: `---\n---\n` is NOT frontmatter to this
+/// engine (`syntax::parse` mints a `Frontmatter` node only from a pulldown
+/// `MetadataBlock`, which an empty block does not raise), so the next property
+/// write synthesizes a SECOND block above them. Carrying the fences: the def
+/// plane refuses any blockless document outright — `unreadable frontmatter:
+/// <nil>`, "never forceable".
+///
+/// So the emptying removal could not commit either way, and the only question
+/// was where it dies. It dies at the door naming the last key, instead of three
+/// layers down in a conformance message about NESTED frontmatter that
+/// misdiagnoses the write that drew it.
 #[test]
-fn the_last_key_carries_the_fences_and_the_next_write_finds_no_stray_block() {
+fn removing_the_last_key_refuses_and_names_it_as_the_last() {
     let (dir, root) = ws(&[("card.md", "---\nonly: me\n---\n\n# Goals\n\n- ship\n")]);
-    splice(
+    let before = std::fs::read_to_string(dir.path().join("card.md")).expect("seed");
+    let err = splice(
         &root,
         None,
         &args(vec![remove("only")], Vec::new()),
         &[],
         None,
     )
-    .expect("the removal commits");
-
-    let after = std::fs::read_to_string(dir.path().join("card.md")).expect("reads back");
-    assert_eq!(
-        after, "\n# Goals\n\n- ship\n",
-        "emptying the block takes the fences with it — a document with no frontmatter, \
-         which every door already handles"
+    .expect_err("the block's last key refuses");
+    assert_eq!(err.code, wire::ErrorCode::BadRequest, "{err:?}");
+    let msg = err.message.clone().unwrap_or_default();
+    assert!(msg.contains("only"), "the refusal names the key: {msg}");
+    assert!(
+        msg.contains("only key") && msg.contains("op:\"remove\""),
+        "it names WHY (last key) and the executable escape (retire the record): {msg}"
     );
     assert!(
-        !after.contains("---"),
-        "bare fences left behind are not frontmatter and corrupt the NEXT write:\n{after}"
+        !msg.contains("nested"),
+        "the door's own refusal, not the conformance plane's misdiagnosis: {msg}"
     );
-
-    // The discriminator, and the reason this test is not just a string compare:
-    // a document the engine reads as BLOCKLESS gets exactly one SYNTHESIZED
-    // block on the next upsert. Bare fences left standing would make this two.
-    splice(
-        &root,
-        None,
-        &args(
-            vec![Edit {
-                target: SecRef::FmKey {
-                    fm_key: "fresh".into(),
-                },
-                edit: EditShape::Put {
-                    at: wire::PutAt::Upsert,
-                    text: "v".into(),
-                },
-                if_node_rev: None,
-            }],
-            Vec::new(),
-        ),
-        &[],
-        None,
-    )
-    .expect("the follow-up upsert commits");
-    let after2 = std::fs::read_to_string(dir.path().join("card.md")).expect("reads back");
     assert_eq!(
-        after2.matches("---").count(),
-        2,
-        "exactly ONE `---` block (two fences) after the follow-up write — two blocks would \
-         mean the fences had been left standing and the engine had synthesized above them:\n{after2}"
+        std::fs::read_to_string(dir.path().join("card.md")).expect("reads back"),
+        before,
+        "a refused batch writes nothing"
     );
-    assert!(after2.starts_with("---\nfresh: v\n---\n"), "{after2}");
 }
 
-/// **A stated limit, not a silent one.** The PLAN lane refuses to set a
-/// property on a document with no frontmatter (`property_no_frontmatter_refuses`
-/// pins that rule), while the NATIVE upsert door synthesizes the block. Both
-/// were true before `remove` existed; `remove` makes the blockless state
-/// reachable by a new path, so the divergence is now reachable by one too: strip
-/// a card's LAST key and the plan lane can no longer add one back, though
-/// `edits[]` can.
-///
-/// This test does not endorse the divergence — it PINS it, so the day someone
-/// rules on which door is right, this fails and says so.
+/// The same removal COMMITS the moment the block holds a second key — so the
+/// refusal above is the last-key rule biting, not `remove` being broken for
+/// single-key records generally.
 #[test]
-fn after_the_block_empties_the_plan_lane_refuses_where_the_native_door_commits() {
-    let (dir, root) = ws(&[("card.md", "---\nonly: me\n---\n\n# G\n\nx\n")]);
+fn the_same_key_removes_cleanly_once_the_block_holds_another() {
+    let (dir, root) = ws(&[(
+        "card.md",
+        "---\nonly: me\nkeep: yes\n---\n\n# Goals\n\n- ship\n",
+    )]);
     splice(
         &root,
         None,
@@ -220,43 +196,61 @@ fn after_the_block_empties_the_plan_lane_refuses_where_the_native_door_commits()
         &[],
         None,
     )
-    .expect("the removal commits");
+    .expect("with a survivor present the removal commits");
+    let after = std::fs::read_to_string(dir.path().join("card.md")).expect("reads back");
+    assert_eq!(
+        after, "---\nkeep: yes\n---\n\n# Goals\n\n- ship\n",
+        "{after}"
+    );
+}
 
-    let err = splice(
+/// **The uniformity witness** (ruling
+/// `blockless-property-set-synthesizes-on-every-lane`, 2026-08-26). A blockless
+/// document takes a property SET on BOTH lanes — the plan lane and the native
+/// `at:"upsert"` door — and lands one well-formed block either way.
+///
+/// This test began as the pin on the OPPOSITE fact: the plan lane refused where
+/// the native door committed, and I escalated the divergence rather than
+/// overturning a ruled rule from an implementation seat. It now witnesses the
+/// ruling. If a lane diverges again, this fails and says which one.
+#[test]
+fn a_blockless_document_takes_a_property_set_on_both_lanes() {
+    // Lane 1: the plan lane, which used to refuse here.
+    let (dir, root) = ws(&[("card.md", "# Goals\n\n- ship\n")]);
+    splice(
         &root,
         None,
         &args(
             Vec::new(),
             vec![PlanEdit::SetProperty {
-                key: "fresh".into(),
-                value: "v".into(),
+                key: "status".into(),
+                value: "open".into(),
                 rev: None,
             }],
         ),
         &[],
         None,
     )
-    .expect_err("the plan lane refuses a blockless set");
-    assert!(
-        err.message
-            .as_deref()
-            .unwrap_or_default()
-            .contains("no frontmatter to anchor it"),
-        "{err:?}"
+    .expect("the plan lane synthesizes the block");
+    let plan_lane = std::fs::read_to_string(dir.path().join("card.md")).expect("reads back");
+    assert_eq!(
+        plan_lane, "---\nstatus: open\n---\n# Goals\n\n- ship\n",
+        "{plan_lane}"
     );
 
-    // The same intent through the native door COMMITS — one plane, two answers.
+    // Lane 2: the native door, on an identical blockless document.
+    let (dir2, root2) = ws(&[("card.md", "# Goals\n\n- ship\n")]);
     splice(
-        &root,
+        &root2,
         None,
         &args(
             vec![Edit {
                 target: SecRef::FmKey {
-                    fm_key: "fresh".into(),
+                    fm_key: "status".into(),
                 },
                 edit: EditShape::Put {
                     at: wire::PutAt::Upsert,
-                    text: "v".into(),
+                    text: "open".into(),
                 },
                 if_node_rev: None,
             }],
@@ -265,9 +259,13 @@ fn after_the_block_empties_the_plan_lane_refuses_where_the_native_door_commits()
         &[],
         None,
     )
-    .expect("the native door synthesizes the block the plan lane says cannot exist");
-    let after = std::fs::read_to_string(dir.path().join("card.md")).expect("reads back");
-    assert!(after.starts_with("---\nfresh: v\n---\n"), "{after}");
+    .expect("the native door synthesizes the block");
+    let native = std::fs::read_to_string(dir2.path().join("card.md")).expect("reads back");
+
+    assert_eq!(
+        plan_lane, native,
+        "one plane, one answer — the two lanes must land the SAME bytes, not merely both succeed"
+    );
 }
 
 /// A SHADOWED duplicate counts as a survivor. § A.6.3a records that `fm_key`

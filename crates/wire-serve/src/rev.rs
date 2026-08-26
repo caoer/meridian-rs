@@ -462,6 +462,7 @@ mod tests {
                 "run.input",
                 "walk",
                 "sql",
+                "splice.remove",
                 "scoped-guards"
             ])
         );

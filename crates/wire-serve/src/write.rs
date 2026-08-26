@@ -5859,23 +5859,7 @@ fn model_edits_and_before_facts(
         // its domain: the target must be an `fm_key`, and the value must be
         // single-line — the server composes `{key}: {value}`, so a newline would
         // forge extra frontmatter lines.
-        // The identity shape is fenced to the frontmatter plane (§ A.6.6). A
-        // section and an anchor already retire through the parent's content
-        // slot (§4.4 `target_identity`), so a `remove` there would be a SECOND
-        // spelling of a capability that exists — the thing this contract
-        // forbids. The frontmatter plane is the one plane that doctrine cannot
-        // reach: §2.1's grammar cannot name the `---` block, so an `fm_key`
-        // leaf has no addressable parent to write through.
-        if matches!(edit.edit, EditShape::Remove {}) && upsert_key.is_none() {
-            return Err(bad_request(format!(
-                "`remove` is valid only on an fm_key target — `{}` is a {}, and a {} retires \
-                 through its parent's content slot, not through a shape of its own. Only a \
-                 frontmatter key has no addressable parent to write through.",
-                target_display(&edit.target),
-                sec_ref_plane(&edit.target),
-                sec_ref_plane(&edit.target),
-            )));
-        }
+        remove_fence(doc, edit, upsert_key.as_deref())?;
         let before = if let EditShape::Put {
             at: PutAt::Upsert,
             text,
@@ -6236,6 +6220,52 @@ fn target_display(sec: &SecRef) -> String {
         SecRef::Anchor { anchor } => format!("^{anchor}"),
         SecRef::FmKey { fm_key } => fm_key.clone(),
     }
+}
+
+/// The two fences on the identity shape (§ A.6.6), lifted out of the lowering
+/// loop so each carries its own reason.
+///
+/// 1. **`fm_key` targets only.** A section and an anchor already retire through
+///    the parent's content slot NAMING that parent (§4.4 `target_identity`), so
+///    a `remove` there would be a SECOND spelling of a capability that exists —
+///    the thing this contract forbids. The refusal says which plane the target
+///    is, so the caller learns the rule rather than the row.
+/// 2. **Not the block's last key.** Neither downstream outcome is available and
+///    both die worse: bare fences are not frontmatter to this engine (the next
+///    property write synthesizes a second block above them), and a blockless
+///    document is refused outright by the def plane (`unreadable frontmatter:
+///    <nil>`, never forceable) — three layers down, in a message about NESTED
+///    frontmatter that misdiagnoses the write that drew it.
+///
+/// # Errors
+/// `bad_request` on either fence, naming the target or the key.
+fn remove_fence(
+    doc: &model::Document,
+    edit: &Edit,
+    upsert_key: Option<&str>,
+) -> Result<(), Box<ErrorBody>> {
+    if !matches!(edit.edit, EditShape::Remove {}) {
+        return Ok(());
+    }
+    let Some(key) = upsert_key else {
+        return Err(bad_request(format!(
+            "`remove` is valid only on an fm_key target — `{}` is a {}, and a {} retires through \
+             its parent's content slot, not through a shape of its own.",
+            target_display(&edit.target),
+            sec_ref_plane(&edit.target),
+            sec_ref_plane(&edit.target),
+        )));
+    };
+    if model::fm_remove_empties_block(doc, key) {
+        return Err(bad_request(format!(
+            "`{key}` is the only key in this record's frontmatter, and removing it would leave \
+             the record with no frontmatter block — which the def plane refuses as `unreadable \
+             frontmatter: <nil>`. A record's frontmatter is its identity surface, so striking its \
+             last key is not a property edit. Fix: set another key first if the record should \
+             live, or retire the whole record with `op:\"remove\"` if it should not."
+        )));
+    }
+    Ok(())
 }
 
 /// The plane a target addresses, named for a refusal that has to say why the
