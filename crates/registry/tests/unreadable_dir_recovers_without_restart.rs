@@ -182,7 +182,11 @@ fn an_unreadable_dir_names_the_path_and_recovery_needs_no_restart() {
 
     let mut conn = Conn::open(&socket);
     let bound = conn.hello(&ws);
-    assert_eq!(bound["ok"], json!(true), "the healthy corpus binds: {bound}");
+    assert_eq!(
+        bound["ok"],
+        json!(true),
+        "the healthy corpus binds: {bound}"
+    );
     let healthy = conn.read("a.md");
     assert_eq!(
         healthy["ok"],
@@ -220,12 +224,13 @@ fn an_unreadable_dir_names_the_path_and_recovery_needs_no_restart() {
     // ---- clause (b): recovery needs no restart --------------------------
     locked.unlock();
 
-    let served = conn.read("a.md");
+    let after_unlock = conn.read("a.md");
     assert_eq!(
-        served["ok"],
+        after_unlock["ok"],
         json!(true),
         "CLAUSE (b): the SAME resident, on the SAME connection, must serve \
-         again once the directory is readable — nothing was restarted: {served}"
+         again once the directory is readable — nothing was restarted: \
+         {after_unlock}"
     );
     let after = tree_instance(&socket, &ws);
     assert_eq!(
