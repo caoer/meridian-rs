@@ -8,7 +8,7 @@
 //! one face and quietly regress on the other.
 //!
 //! What the caller saw during the 2026-08-24 incident, verbatim:
-//!     io_error: Permission denied (os error 13)
+//!     `io_error`: Permission denied (os error 13)
 //! — for a mode-000 directory that could have been anywhere under the root.
 
 use std::path::Path;
