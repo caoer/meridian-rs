@@ -2586,8 +2586,9 @@ impl std::error::Error for CorpusMemberError {}
 /// root spells itself `.`, since its workspace-relative path is empty and a
 /// refusal must never name nothing.
 ///
-/// Minted at the LEAF throw and carried up: an error that already names a
-/// locus passes through untouched. The walks recurse, and a wrap applied on
+/// Minted at the LEAF throw and carried up: this mint is reached only from a
+/// raw `std::fs` failure, and every frame above the throw propagates with `?`,
+/// so the locus the deepest frame wrote survives the return. A wrap applied on
 /// the way up would rename the innermost failing directory after each of its
 /// ancestors in turn — the deepest frame is the only one that knows which
 /// directory refused, so it mints and every frame above it carries.
@@ -2596,9 +2597,6 @@ impl std::error::Error for CorpusMemberError {}
 /// `e.kind() == NotFound` splits that steer control flow across this crate
 /// keep reading the same fact.
 fn corpus_listing_refusal(e: io::Error, rel_dir: &Path, condition: &str) -> io::Error {
-    if corpus_member_error(&e).is_some() {
-        return e;
-    }
     let locus = display_name(hash_name(rel_dir));
     let locus = if locus.is_empty() { "." } else { &locus };
     corpus_member_refusal(e.kind(), locus, format!("{condition} ({e})"))
