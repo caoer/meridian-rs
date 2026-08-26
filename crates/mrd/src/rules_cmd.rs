@@ -614,9 +614,20 @@ impl RulesReport {
 ///
 /// The locus is spelled through [`fs::hash_name`] + [`fs::display_name`] — the
 /// engine's own display law — so a name with no UTF-8 spelling is escaped
-/// injectively rather than lossily decoded, and a refusal can never name the
-/// wrong member. The workspace root's workspace-relative path is empty and
-/// spells itself `.`: a refusal must never name nothing.
+/// (`\` doubled, each invalid byte as `\xNN`) rather than lossily decoded: it
+/// never collapses to U+FFFD, and it never collides with another non-UTF-8
+/// name. The workspace root's workspace-relative path is empty and spells
+/// itself `.`: a refusal must never name nothing.
+///
+/// The escape is injective AMONG non-UTF-8 names, and that is the whole of the
+/// guarantee. It does NOT separate the two branches from each other: a name
+/// that IS valid UTF-8 is returned verbatim, backslashes not doubled, so a
+/// valid name literally containing `\xFF` renders exactly as the escaped form
+/// of the raw `0xFF` byte. Both are legal POSIX filenames and both mint the
+/// same refusal text. Stated because the stronger sentence — "a refusal can
+/// never name the wrong member" — is what this comment used to claim, and it
+/// is false; the collision lives in `fs::display_name`, is the engine's to
+/// close, and is filed rather than papered over here.
 ///
 /// MINTED here rather than inherited, deliberately. The engine's enumerator,
 /// which already attaches this locus, is private to `crates/fs`; the public
@@ -2227,26 +2238,74 @@ rules at sessions/s1
         );
     }
 
-    /// A name with no UTF-8 spelling is escaped INJECTIVELY, never lossily
-    /// decoded — the engine's display law, reused here rather than re-invented,
-    /// so a CLI refusal can no more name the wrong member than an engine one.
+    /// A name with no UTF-8 spelling is ESCAPED, never lossily decoded — the
+    /// engine's display law, reused here rather than re-invented.
+    ///
+    /// The rationale is stated exactly as far as it holds. A lossy decode maps
+    /// EVERY invalid byte to one U+FFFD, so it collapses whole families of
+    /// distinct names onto one spelling; the escape does not, and the second
+    /// gate below shows two non-UTF-8 names staying apart. What this does NOT
+    /// claim is that a refusal can never name the wrong member — see
+    /// `two_names_that_render_alike_are_a_known_engine_collision`, which pins
+    /// the case where that is false.
     #[test]
     fn a_non_utf8_entry_name_is_escaped_rather_than_decoded_lossily() {
         use std::os::unix::ffi::OsStrExt;
-        let rel = Path::new(std::ffi::OsStr::from_bytes(b"sessions/\xFF.md"));
-        let message = corpus_fail(
-            rel,
-            "cannot be read",
-            &std::io::Error::from_raw_os_error(13),
-        )
-        .message;
+        let name = |bytes: &[u8]| {
+            corpus_fail(
+                Path::new(std::ffi::OsStr::from_bytes(bytes)),
+                "cannot be read",
+                &std::io::Error::from_raw_os_error(13),
+            )
+            .message
+        };
+        let message = name(b"sessions/\xFF.md");
         assert!(
             message.contains("sessions/\\xFF.md"),
             "the invalid byte is escaped, not replaced by U+FFFD: {message}"
         );
         assert!(
             !message.contains('\u{FFFD}'),
-            "a lossy decode would let two different names print the same: {message}"
+            "a lossy decode would collapse every invalid byte onto one \
+             spelling: {message}"
+        );
+        // Within the escape branch the spelling DOES separate distinct names —
+        // the property the paragraph above actually rests on. A lossy decode
+        // would render these two identically.
+        assert_ne!(
+            name(b"a\\b\xFF"),
+            name(b"a\\\\b\xFF"),
+            "two non-UTF-8 names must not share a refusal spelling"
+        );
+    }
+
+    /// The limit of the guarantee above, pinned so nobody re-derives the
+    /// stronger claim from the weaker one.
+    ///
+    /// `fs::display_name` returns a VALID UTF-8 name verbatim — backslashes not
+    /// doubled — and doubles them only on the escape path. So a valid name that
+    /// literally contains `\xFF` renders exactly as the escaped form of the raw
+    /// `0xFF` byte, and the two mint byte-identical refusals. Both are legal
+    /// POSIX filenames.
+    ///
+    /// This test asserts the collision rather than the absence of one: it is a
+    /// live engine defect (`crates/fs`, fenced off by this card and filed as
+    /// its own finding), and an author's comment claiming injectivity outright
+    /// is exactly what a reviewer disproved here. If someone closes the engine
+    /// gap, this test fails — and that failure is the signal to delete it and
+    /// restore the stronger sentence, not to weaken the assertion.
+    #[test]
+    fn two_names_that_render_alike_are_a_known_engine_collision() {
+        use std::os::unix::ffi::OsStrExt;
+        let spell = |bytes: &[u8]| {
+            fs::display_name(fs::hash_name(Path::new(std::ffi::OsStr::from_bytes(bytes))))
+        };
+        let valid_utf8_literal = spell(br"sessions/\xFF.md");
+        let raw_invalid_byte = spell(b"sessions/\xFF.md");
+        assert_eq!(
+            valid_utf8_literal, raw_invalid_byte,
+            "if these now differ the engine collision is closed — delete this \
+             test and restore the injectivity claim in `corpus_fail`'s doc"
         );
     }
 }
