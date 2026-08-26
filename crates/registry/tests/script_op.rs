@@ -592,11 +592,25 @@ fn fuel_exhaustion_answers_a_budget_fault_and_the_daemon_survives() {
 }
 
 /// A second content path arms a §4.4 SET — and a member that cannot validate
-/// (`logs/receipts.md` has no frontmatter for `set_property`) refuses the set
-/// WHOLE: the refusal names the measuring member, both armed rows stay traced
-/// not-committed, and the fingerprint does not move (validate-all-then-apply;
-/// the arm-time single-write-file law is retired — run-plane.md § One COMMIT
-/// per attempt).
+/// refuses the set WHOLE: the refusal names the measuring member AND why it
+/// could not validate, both armed rows stay traced not-committed, and the
+/// fingerprint does not move (validate-all-then-apply; the arm-time
+/// single-write-file law is retired — run-plane.md § One COMMIT per attempt).
+///
+/// **What makes member 1 invalid: D11, the multi-line value law.** A `\n`
+/// inside a frontmatter value would forge a second key out of the value's own
+/// bytes, so `policy::defs::yaml_safe_value` refuses it at every value-plane
+/// door — never sanitizes, never truncates. The refusal is raised inside
+/// `validate_set_member` (`plan::lower` → `lower_property_group`), which is
+/// precisely the validate-all-then-apply seam this test exists to gate.
+///
+/// The property gated here is ATOMICITY, not the member's defect: member 0 is
+/// a perfectly valid property set on `doc.md` that would commit on its own,
+/// and it must NOT land because member 1 could not validate. The positive
+/// control at the bottom is what makes "the fingerprint did not move" mean
+/// something — without it the assertion is also satisfied by an edit that was
+/// never going to move the fingerprint, and the test reads green over an
+/// ungated property.
 #[test]
 fn a_set_member_that_cannot_validate_refuses_the_whole_set() {
     let tmp = TempDir::new().unwrap();
@@ -608,7 +622,7 @@ fn a_set_member_that_cannot_validate_refuses_the_whole_set() {
 
     let resp = conn.call(&script(
         17,
-        "a = read(\"doc.md\")\nb = read(\"logs/receipts.md\")\nput(\"doc.md\", props={\"status\": \"done\"})\nput(\"logs/receipts.md\", props={\"status\": \"done\"})\n",
+        "a = read(\"doc.md\")\nb = read(\"logs/receipts.md\")\nput(\"doc.md\", props={\"status\": \"done\"})\nput(\"logs/receipts.md\", props={\"status\": \"done\\nowner: forged\"})\n",
     ));
     let trace = trace_of(&resp);
     assert_eq!(trace["outcome"], json!("refused"), "trace: {trace}");
@@ -618,6 +632,13 @@ fn a_set_member_that_cannot_validate_refuses_the_whole_set() {
             && reason.contains("logs/receipts.md")
             && reason.contains("nothing landed"),
         "the whole-set refusal names the measuring member: {trace}"
+    );
+    // The reason is pinned as well as the outcome: a refusal for some OTHER
+    // cause would keep this test green while the fixture no longer arranges
+    // the defect it documents.
+    assert!(
+        reason.contains("newline"),
+        "the refusal names WHY member 1 could not validate (D11): {trace}"
     );
     let armed: Vec<_> = trace["trace"]
         .as_array()
@@ -631,6 +652,25 @@ fn a_set_member_that_cannot_validate_refuses_the_whole_set() {
         "no armed row claims a commit: {trace}"
     );
     assert_eq!(conn.fingerprint(), before, "nothing landed");
+
+    // Positive control: member 0's edit, alone, from the same entry state,
+    // commits and moves the fingerprint. So the set above withheld a write
+    // that was otherwise ready to land — which is the atomicity claim.
+    let resp = conn.call(&script(
+        18,
+        "put(\"doc.md\", props={\"status\": \"done\"})\n",
+    ));
+    let trace = trace_of(&resp);
+    assert_eq!(
+        trace["outcome"],
+        json!("committed"),
+        "member 0's edit is valid on its own: {trace}"
+    );
+    assert_ne!(
+        conn.fingerprint(),
+        before,
+        "the control landed — so the set's unmoved fingerprint was atomicity, not a no-op"
+    );
 }
 
 /// § A.7 patterns: a `files[]` member carrying `*` expands at entry against

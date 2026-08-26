@@ -171,6 +171,14 @@ pub fn project_response(frame: &mut Value) {
                 // Corpus SQL at op grain (§ A.11, the same precedent — no
                 // dotted sql.<field> at birth).
                 caps.push(Value::String("sql".to_string()));
+                // The identity edit shape (§ A.6.6), dotted per §3.2's
+                // field-amendment convention. DISCOVERY only — there is no
+                // un-negotiated-use trap to gate against: an engine without
+                // the shape refuses it by name at §3.2's strict wall, so the
+                // failure is loud and local. `scoped-guards` below had to be
+                // negotiated for the opposite reason — it changes the MEANING
+                // of a field a client already sends.
+                caps.push(Value::String("splice.remove".to_string()));
                 // The scoped-premise family, LAST and family-whole (§3.2 /
                 // §5.4): decode, coverage, scoped fold, mint arm, refusal
                 // `scope` are all served when this string is present.
@@ -454,6 +462,7 @@ mod tests {
                 "run.input",
                 "walk",
                 "sql",
+                "splice.remove",
                 "scoped-guards"
             ])
         );

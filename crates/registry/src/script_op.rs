@@ -1146,7 +1146,13 @@ fn thread_entry(
         .map(|arm| {
             let mut arm = arm.clone();
             match &mut arm.edit {
+                // Both frontmatter rows carry the same file-grain token, so
+                // they thread identically — a retire that threaded differently
+                // from the set it undoes would be two laws over one key.
                 PlanEdit::SetProperty {
+                    rev: rev @ None, ..
+                }
+                | PlanEdit::RemoveProperty {
                     rev: rev @ None, ..
                 } => {
                     *rev = entry_toc(world, ws, root, &arm.path).map(|facts| facts.rev);

@@ -331,21 +331,22 @@ request object: send the value of its "edits" field (id / op / path are argv's
 here)`, exit 2 before any engine contact). The
 request shape shown here is the WIRE's; it is not a stdin template.
 
-Edit shapes — exactly two:
+Edit shapes — exactly three. `match` and `put` are VALUE/CONTENT shapes: they say what bytes a node carries. `remove` is the one IDENTITY shape: it says the node is not there. *(Amended 2026-08-26 — the shape count was two until `remove` landed; the reason it had to is § A.6.6.)*
 
 | Shape | Semantics |
 |---|---|
 | `match{old,new}` | Edit-exact: `old` must occur exactly once in the target's full span bytes; replaced by `new`. Zero occurrences → `no_match`; two+ → `not_unique{matches}` |
-| `put{at,text}` | whole-slot writes: `at:"all"` (replace full span, heading included), `at:"content"` (replace content span, heading preserved), `at:"end"` (insert `text` at the span-end byte — the append verb; **raw byte concatenation, no synthesized separator**, Edit-model exact, so `text` that must begin a new line carries its own leading `\n` — against a terminator-less final line a separator-less `text` is the caller's to get right, and a result that loses containment refuses `would_corrupt`, batch laws below) |
+| `put{at,text}` | whole-slot writes: `at:"all"` (replace full span, heading included), `at:"content"` (replace content span, heading preserved), `at:"end"` (insert `text` at the span-end byte — the append verb; **raw byte concatenation, no synthesized separator**, Edit-model exact, so `text` that must begin a new line carries its own leading `\n` — against a terminator-less final line a separator-less `text` is the caller's to get right, and a result that loses containment refuses `would_corrupt`, batch laws below), `at:"upsert"` (set a frontmatter key, create-or-replace — `fm_key` targets only, § A.6.3a) |
+| `remove{}` | **`fm_key` targets only** — strike the key line out of the frontmatter block, moving the key to R4's ABSENT state. No fields; no `text`, because it writes no value. An absent key refuses `ref_not_found`; a `hpath`/`anchor` target refuses `bad_request`. § A.6.6 |
 
-Batch laws: batch-only, ONE response shape; all targets and guards resolve against the **pre-batch** state; the edits' **replaced regions** must be pairwise disjoint (`bad_request{"overlap":…}` otherwise, and the refusal names the offending edits and a remedy). The replaced region is what the edit rewrites — `match` the matched bytes, `put at:"all"/"content"` that span, `put at:"end"` the zero-width insertion point — so edits whose *targets* nest compose legally when their regions touch different bytes: an append to a section plus a sibling-section birth under its parent is ONE batch. Zero-width regions at the same byte are disjoint and apply in request order. The batch commits atomically through one reparse — a post-apply parse in which some identity does not survive refuses `would_corrupt`, in the two families below. `dry:true` runs everything except disk: same response shape, `fingerprint_after:null`, no receipt written. *(Amended 2026-08-06: the disjointness grain was previously the target's full span, containment included — which refused any mixed append + section-birth batch under one tree, contradicting the batch-only law's own premise. The overlap refusal's `bad_request{"overlap":…}` extra is unchanged.)* *(Dogfood F8 disposition, verified 2026-08-06: a same-region double-replace — two `replace_section`s on one section — refuses overlap; the replace + `at:"end"` pair that sequenced is a zero-width insert at the region boundary composing legally — this grain working, not a missed refusal.)*
+Batch laws: batch-only, ONE response shape; all targets and guards resolve against the **pre-batch** state; the edits' **replaced regions** must be pairwise disjoint (`bad_request{"overlap":…}` otherwise, and the refusal names the offending edits and a remedy). The replaced region is what the edit rewrites — `match` the matched bytes, `put at:"all"/"content"` that span, `put at:"end"` the zero-width insertion point, `remove` the key's grain span **plus its line terminator** (§ A.6.6 — the one shape whose region is wider than its target's span, because a node's span excludes the terminator by §1 and leaving that byte behind would leave a blank line where the key was) — so edits whose *targets* nest compose legally when their regions touch different bytes: an append to a section plus a sibling-section birth under its parent is ONE batch. Zero-width regions at the same byte are disjoint and apply in request order. The batch commits atomically through one reparse — a post-apply parse in which some identity does not survive refuses `would_corrupt`, in the two families below. `dry:true` runs everything except disk: same response shape, `fingerprint_after:null`, no receipt written. *(Amended 2026-08-06: the disjointness grain was previously the target's full span, containment included — which refused any mixed append + section-birth batch under one tree, contradicting the batch-only law's own premise. The overlap refusal's `bad_request{"overlap":…}` extra is unchanged.)* *(Dogfood F8 disposition, verified 2026-08-06: a same-region double-replace — two `replace_section`s on one section — refuses overlap; the replace + `at:"end"` pair that sequenced is a zero-width insert at the region boundary composing legally — this grain working, not a missed refusal.)*
 
 **The `would_corrupt` families (amended 2026-08-09).** One code covers the post-reparse armed-facts deaths, and the refusal body discriminates them with `family` — a caller dispatches on `family`, never on which extras happen to be present:
 
 | `family` | Extras | What died | The remedy the refusal teaches |
 |---|---|---|---|
 | `containment_lost` | `lost:[hpath…]` | a section **byte-disjoint from every edit** no longer resolves after the reparse | computed from `cause` (below) |
-| `target_identity` | `target` (the offending edit's ref, §2.1 grammar) | the **edit's own target** no longer resolves after the reparse, so its armed facts are unrepresentable | re-supply the identity the slot destroys — a section heading for `at:"all"`, a line-final block id for `at:"end"` on an anchor; to retire an identity, write through the parent's content slot |
+| `target_identity` | `target` (the offending edit's ref, §2.1 grammar) | the **edit's own target** no longer resolves after the reparse, so its armed facts are unrepresentable | re-supply the identity the slot destroys — a section heading for `at:"all"`, a line-final block id for `at:"end"` on an anchor; to retire an identity, name it: `remove` on an `fm_key`, the parent's content slot on a section or an anchor |
 | `transition_unrepresentable` | `target` (the offending edit's ref, §2.1 grammar) | the edit **wrote past the span it named** — bytes it placed fall outside the target's post-batch span, so the node the edit addressed never received them and its `node_rev` cannot move | drop the trailing separator from `text`, or aim the write at the enclosing section, whose span contains the bytes you meant to add |
 
 **Why `transition_unrepresentable` is a corruption family and not a reporting nicety (added 2026-08-09).** `node_rev` is defined as a function of the node's span bytes (node-rev-merkle-spec §2), and §4.4 makes the target's span the region an edit rewrites. A node whose span **excludes its line terminator** — every anchor block-leaf (§1) and every `fm_key` leaf (§4.4) — therefore has its own extent END on that terminator, so a `text` carrying a separator there writes a byte the node never covers. Arming that commit states a transition that did not happen, and it silently disarms the caller's guard: `if_node_rev` then compares a value the write can never move, so two callers holding the same rev both write, both succeed, and neither is told. Repeated writes land at one fixed offset and accumulate — appends in REVERSE order, rewrites as a blank line per run.
@@ -353,6 +354,8 @@ Batch laws: batch-only, ONE response shape; all targets and guards resolve again
 **The family is keyed on the MECHANISM, never on the `at:` scope (ruling `decisions/0018`, 2026-08-09).** The test is one sentence: **a real byte change whose target's `node_rev` did not move is refused.** Containment — the bytes an edit writes lying within its target's post-batch span — is the EXPLANATION of that test and not the test itself, and the two are not equivalent. A write MAY place bytes outside its target and still move that target's rev: an `at:"end"` section append whose `text` opens a sibling heading shrinks the section and grows it by the separator, and that write is truthful, its guard is live, and nothing is owed. What cannot stand is a changed file over a rev that did not move — the node never received the bytes at all, `if_node_rev` then compares a constant, and two callers holding that rev both write, both succeed, and neither is told. A caller MAY NOT hand a terminator-excluding leaf a `text` that ends in a separator — the two readings that would have permitted it converge on this same refusal, because a rev whose bytes are untouched by construction cannot move, so "let it commit but move the rev" is not an executable outcome.
 
 ⚠️ **Scope-keying this family would be a defect, and that is measured rather than argued.** The same escape is reachable through `put{at:"end"}`, `put{at:"all"}`, `put{at:"content"}` **and `match`** — and `match` is not an `at:` scope at all, so any guard enumerating scopes misses it by construction. Six cells escaped at v1.0.0 across the anchor-leaf and `fm_key` doors; only the containment and identity families sit ahead of this one, and all three are measured on the same single reparse — never inferred from the edit text.
+
+**`remove` does not draw `target_identity`, and that is a PREMISE exemption, not a scope exemption (2026-08-26).** The guard above refuses because *"the armed facts are unrepresentable"* — that premise is FALSE for `remove`, whose facts are exactly representable: `node_rev_before` is the key line's real rev, `node_rev_after` is the no-node token `blake3("")[:16]`, and `span_after` is the zero-width point the line vacated. This is A.6.3a′'s create arm read backwards, sharing its token and its teaching — **the token is a claim about no node standing at the address, never about direction; a consumer reads the OP for direction.** The distinction matters because ruling `decisions/0018` forbids keying this family on the `at:` scope, and it forbids it *for a reason* — the escape it guards is reachable through many scopes, so a scope enumeration misses cells by construction. Nothing is exempted here by its spelling: the mechanism test ("a real byte change whose target's `node_rev` did not move") is unweakened for every shape that carries one, and `remove`'s target has no post-batch rev to stand still. A future shape earns this exemption only by representing its own death, never by being new.
 
 `containment_lost` carries one more discriminator, `cause`, because the containment refusal is the one place where two unlike mistakes produce the same lost hpath:
 
@@ -2685,6 +2688,169 @@ what empty means; they may not disagree about which SPELLING of it is real.
 
 Deliberately not empty: whitespace, `0`, `false`, an empty list. Those are
 values a caller authored. This is a predicate about absence, never truthiness.
+
+**A.6.5a Every value-plane door SETS; none of them REMOVES.** `set_property`,
+`put{at:"upsert"}`, `put{at:"end"}` and `match` on an `fm_key`, and the preset
+birth door all compose `{key}: {encoded}` — and A.6.3b's uniform create shape
+means the encoder **never returns empty bytes**, so no value a caller can send
+through any of them makes the key line go away. In particular
+`properties {"k": ""}` and `put{at:"upsert"}` with `text:""` land `k: ""` — a
+PRESENT key holding the empty string. That is R4's EMPTY, and A.6.5 above rules
+it distinct from ABSENT. **Removal is § A.6.6's `remove` shape and nothing
+else** — a caller reaching for emptiness to mean absence writes the third state
+by hand.
+
+### A.6.6 `remove` — the identity-plane door on `fm_key` (2026-08-26)
+
+**The gap this closes, stated as a count.** R4 ratifies THREE frontmatter
+states — `absent ≠ empty ≠ set` — and three planes already discriminate all
+three: the read face serves a key's row or serves none; `fingerprint.rs`
+digests `=A` / `=N` / `=S`; the def plane judges them (A.6.5). The write plane
+reached **two** *at key grain*. `Scalar` is reachable through any value-plane
+door; `Absent` was reachable only by rewriting the whole document (below), which
+names no key and arms no fact about one. So an order of the form *"strip key
+K"* had no shape that could **say so** — and the fleet did what a fleet does
+when the sanctioned face cannot express the order: it wrote the nearest
+reachable state instead. **Emptying is what stripping degrades into.** Measured
+on one live corpus (`field-notes-sessions`, the `frontmatter` projection, values
+trimming to ``, `""` or `''`): **5,700+ rows standing in that third state**, led
+by `manifest` (2,222), `status` (1,957) and `owner` (768) — an upper bound on
+the substitution, since a template may legitimately birth a key blank, but a
+count no liveness screen testing for ABSENCE reads correctly.
+
+**The parent slot IS reachable, and that is the argument — not its absence.**
+§4.4's `target_identity` remedy carries a general retire doctrine: *write
+through the parent's content slot*. For a frontmatter key that parent is the
+DOCUMENT: `{"hpath":[]}` resolves to the document node (zero segments = the
+root), and `put{at:"all"}` there rewrites the whole file. *(Measured against
+`a1946f3b`: guarded with the document's `file_rev` as `if_node_rev`, a root
+`at:"all"` carrying a shortened frontmatter block COMMITTED, exit 0, and the key
+was gone. The enclosing SECTION is not that parent — a section-grain `at:"all"`
+carrying a shortened block refuses `transition_unrepresentable`, because the
+frontmatter lies outside the section's span.)* So a delete was never
+*impossible*; it was **unnameable**, and those are different defects with
+different costs:
+
+| What the root slot makes the caller do | Cost |
+|---|---|
+| resend the WHOLE document to strike one line | any concurrent edit to any other node is silently reverted — whole-file last-writer-wins |
+| guard at ROOT grain | the `prop_rev` the read face serves for that key cannot guard the write that removes it; two agents stripping two DIFFERENT keys from one record clobber each other and **nothing refuses**, because each moved the root truthfully |
+| name no key | the armed fact reads `target:{"hpath":[]}` with the file's own rev transition. **Nothing in it says `hooks` was removed** |
+| include-by-omission | there is no key to typo, so a mis-transcribed block cannot be refused — the removal is a side effect of bytes you left out |
+
+The third row is the one this contract already ruled on, from the other
+direction. A.6.3a′ made the CREATE arm emit one edit per key *because* "armed
+facts carry op, target identities and rev transitions (§6.1) … so a fact must
+name the key that moved", and it called the old collapsed lowering
+"unauditable" for exactly this reason. **The retire side carried the identical
+defect and nobody had named it.** `remove` is therefore not a new capability —
+it is the retire side finally getting the per-key armed identity the create side
+has had since 2026-08-09.
+
+**A `remove` on a `hpath` or `anchor` target refuses `bad_request`.** There the
+retire doctrine is reachable AND per-node — a section retires through its
+parent's content slot naming that parent, an anchor through its enclosing
+section — so a `remove` shape would be a second spelling of a capability that
+already carries its own identity. That is the thing this contract forbids, and
+the refusal says so in those words.
+
+*(Not to be confused with `op:"remove"`, the page-grain death of a whole
+document. Same word, different grain and different object: one names a key
+inside a record, the other names the record. A delta reports the first as a
+`removed` NODE entry and the second as a deleted FILE with no node entries.)*
+
+**Not a value-plane door.** § A.6.3a's five doors write a VALUE, so the encoder
+owns them. `remove` writes none — it carries no `text` field to encode, and the
+multi-line refusal has nothing to refuse. It is the value plane's peer, not its
+member: the value plane answers *what does this key hold*, `remove` answers
+*is this key here*.
+
+**The region is the grain span PLUS its terminator.** A leaf's span excludes
+its line terminator (§1), and `fm_key`'s grain span covers the key line and
+every indented continuation line of a block value (§4.4). Striking the span
+alone would leave the terminator behind as a blank line inside the block — the
+key gone, a byte of it still standing. This is the one shape whose replaced
+region is deliberately WIDER than its target's span; §4.4's disjointness runs
+over that wider region, so a `remove` and an `upsert` naming one key overlap
+and refuse, as two writes to one node must.
+
+**An absent key refuses `ref_not_found` — removal is not idempotent, on
+purpose.** The tempting alternative is success-on-absent, and it is the exact
+failure this door exists to end: a verb that reports success for a key it never
+saw cannot be distinguished from a verb that worked, so a typo'd key name and a
+finished job return the same frame. A caller sweeping N records reads first —
+revs and rows are ambient after any read — and removes only what it saw. Same
+call `rm` already makes for a page that is not there.
+
+**Removing the LAST key carries the fences with it — measured, not stylistic.**
+`---\n---\n` is **not frontmatter to this engine**: `syntax::parse` mints a
+`Frontmatter` node only from a pulldown `MetadataBlock` event, and an empty
+block raises none. *(Measured against the deployed engine at `a1946f3b`: an
+`at:"upsert"` against a file opening `---\n---\n` SYNTHESIZED A SECOND BLOCK at
+byte 0 above the bare fences — `plan_fm_upsert`'s blockless arm, which only runs
+when `find_frontmatter` returns `None`. The read face's empty `props[]` alone
+does not discriminate an empty block from no block; the synthesis does.)* So
+leaving the fences would leave a document whose `---` lines are ordinary
+markdown and whose next property write corrupts it — one write later, where
+nobody would look. The removal that empties the block therefore takes the
+fences, and the document becomes a legitimately blockless one that every door
+already handles. **Exact mirror of the create arm:** A.6.3a′'s upsert births the
+block for a document that has none; `remove` buries it for a document that no
+longer needs one. The blank line that followed the block is not carried — it was
+never the block's.
+
+A shadowed duplicate key counts as a survivor. § A.6.3a records that `fm_key`
+addresses the FIRST occurrence, so striking it makes the second reachable: the
+block still has a key, and the write un-shadows a line rather than emptying a
+block. Two BYTE-IDENTICAL shadow lines are the case that needs the
+premise-exemption twice over: striking the first leaves an identical-bytes node
+at the same address, so the write-past-its-span guard would read "the rev did
+not move" and refuse a removal that landed exactly right.
+
+⚠️ **Stated limit — the two doors disagree about a blockless document, and
+`remove` makes that reachable.** The PLAN lane refuses to set a property on a
+document with no frontmatter (*"cannot set a new property — the file has no
+frontmatter to anchor it"*, a pinned rule); the NATIVE `at:"upsert"` door
+SYNTHESIZES the block. Both were already true, and blocklessness was already
+reachable — a document can simply be born without a block. `remove` adds a
+second path to it: strip a record's LAST key and the plan lane can no longer add
+one back, though `edits[]` can. This is not ruled here, because it is not this
+door's rule to change: A.6.3a's *"Uniform means the WORDS too"* already names the
+class (one law refused in two dialects is two laws to the callers who meet it)
+and the divergence is older than `remove`. It is pinned by a test so that
+whoever rules on it is told.
+
+**Armed facts.** `node_rev_before` = the key line's real pre-batch rev, so
+`if_node_rev` guards a removal exactly as it guards a set. `node_rev_after` =
+`blake3("")[:16]`, the no-node token A.6.3a′ arms on the create arm; `span_after`
+= the zero-width post-batch point the line vacated. The receipt renders the
+caller's shape as `remove`. See the `target_identity` premise-exemption note in
+§4.4 for why this door does not draw that refusal.
+
+**The delta plane needed nothing.** `collect_removed`'s frontmatter arm already
+mints a `removed` NODE entry for a key that resolved before and does not
+resolve after — `node_rev_before` set, both after-facts `null`, and only on a
+PROVEN `NotFound` (an `Ambiguous` is dropped rather than fabricated). It was
+written for a transition no verb could produce; `remove` is what finally
+produces it. A feed reader sees `{"fm_key":"K","change":"removed",
+"node_rev_before":"…"}` and needs no new case.
+
+**Reaching it from the plan lane.** `plan_edits[]` carries
+`{"remove_property":{"key":…,"rev"?:…}}` beside `{"set_property":{…}}` — the
+door the `properties` map, `mrd script`'s `put(props=)` and every host face
+enter through. It is a SEPARATE plan edit on purpose: the `properties` map is
+`{key: string}` at every one of those faces (the Starlark form is literally
+`BTreeMap<String, String>`), so expressing removal inside it would demand a
+sentinel value — and a sentinel value standing for absence is the exact
+confusion, one layer up, that this whole section exists to end. A removal is
+named, or it is not expressed.
+
+**Discovery.** v3 sessions carry `splice.remove` in `caps` (§3.2's dotted
+`op.field` convention). No un-negotiated-use trap exists to gate against: an
+engine without the shape refuses it by name at §3.2's strict wall (*"unknown
+field `remove` in `edit`"*), so the failure is loud and local — unlike
+`scoped-guards`, which had to be negotiated because it changes the MEANING of a
+field a client already sends.
 
 ### A.7 `script` — in-process script submission (docs-first, 2026-08-12, phase-2 script-plane ruling)
 

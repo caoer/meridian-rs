@@ -316,8 +316,12 @@ pub struct Edit {
     pub if_node_rev: Option<NodeRev>,
 }
 
-/// Exactly two edit shapes (v2 §4.4) — externally tagged on the wire
-/// (`{"match":{…}}` / `{"put":{…}}`).
+/// Exactly three edit shapes (§4.4) — externally tagged on the wire
+/// (`{"match":{…}}` / `{"put":{…}}` / `{"remove":{}}`).
+///
+/// `Match` and `Put` are VALUE/CONTENT shapes — they say what bytes a node
+/// carries. [`EditShape::Remove`] is the one IDENTITY shape — it says the node
+/// is not there.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EditShape {
@@ -327,9 +331,29 @@ pub enum EditShape {
     Match { old: String, new: String },
     /// Whole-slot write at a [`PutAt`] position.
     Put { at: PutAt, text: String },
+    /// Strike a frontmatter key out of the block, moving it to R4's ABSENT
+    /// state (§ A.6.6). **`SecRef::FmKey` targets only** — a `hpath` or
+    /// `anchor` target refuses `bad_request`, because a section and an anchor
+    /// already retire through the parent's content slot (§4.4
+    /// `target_identity`) and a second spelling of that is what this contract
+    /// forbids. The frontmatter plane is the one plane that doctrine cannot
+    /// reach: §2.1's grammar cannot name the `---` block, so a `fm_key` leaf
+    /// has no addressable parent.
+    ///
+    /// No fields, and no `text` in particular: this shape writes no VALUE, so
+    /// the § A.6.3a encoder does not own it. The replaced region is the key's
+    /// grain span PLUS its line terminator — the one shape whose region is
+    /// wider than its target's span, because §1 excludes the terminator from a
+    /// leaf's span and leaving it behind would leave a blank line where the
+    /// key was.
+    ///
+    /// An absent key refuses `ref_not_found`: removal is NOT idempotent, so a
+    /// typo'd key and a finished job never return the same frame (§ A.6.6).
+    Remove {},
 }
 
-/// The three put positions (v2 §4.4).
+/// The four put positions (§4.4). `All`/`Content`/`End` are the general
+/// whole-slot writes; `Upsert` is the `fm_key`-only property set door.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PutAt {
@@ -504,6 +528,28 @@ pub enum PlanEdit {
         /// The file-grain guard: frontmatter semantics are file-scoped, so a
         /// key-line rev would guard the wrong grain; this carries the
         /// document's `file_rev`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rev: Option<String>,
+    },
+    /// Frontmatter REMOVE — the plan lane's door onto [`EditShape::Remove`]
+    /// (§ A.6.6). Lowers to a native `remove` on the key's `fm_key` target.
+    ///
+    /// **A separate plan edit, never a spelling inside a `properties` map.**
+    /// Every face that reaches [`PlanEdit::SetProperty`] carries that map as
+    /// `{key: string}` — the Starlark `put(props=)` form is literally
+    /// `BTreeMap<String, String>` and cannot hold a null — so expressing
+    /// removal there would demand a SENTINEL value standing for absence. That
+    /// is the confusion § A.6.6 exists to end, one layer up: the fleet already
+    /// wrote `""` meaning "gone" precisely because absence had no name. A
+    /// removal is named, or it is not expressed.
+    ///
+    /// An absent key refuses `ref_not_found` — the same non-idempotence the
+    /// native shape carries, for the same reason (§ A.6.6).
+    RemoveProperty {
+        key: String,
+        /// The file-grain guard, identical to [`PlanEdit::SetProperty`]'s:
+        /// frontmatter semantics are file-scoped, so this carries the
+        /// document's `file_rev`, not the key line's rev.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rev: Option<String>,
     },

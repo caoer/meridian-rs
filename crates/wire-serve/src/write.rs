@@ -5291,6 +5291,17 @@ fn strip_fp_candidate(
             }
             model::EditKind::Put { text, .. } => text,
             model::EditKind::Match { new, .. } => new,
+            // `remove` carries no text, so no scan can attribute a token to it
+            // and the loop's empty-ranges guard has already skipped it. Reaching
+            // here means the scan found a range in an edit with no bytes — the
+            // grammar moved under this code.
+            model::EditKind::Remove => {
+                return Err(bad_request(format!(
+                    "refused: an @fp token attributed to a `remove` edit in {} — it carries no \
+                     text to strip",
+                    path.0
+                )));
+            }
         };
         *payload = remove_ranges(payload, ranges);
     }
@@ -5500,6 +5511,17 @@ fn translate_stored_candidate(
             }
             model::EditKind::Put { text, .. } => text,
             model::EditKind::Match { new, .. } => new,
+            // `remove` carries no text, so no scan can attribute an address to
+            // it and the loop's empty-ranges guard has already skipped it.
+            // Reaching here means the scan found a range in an edit with no
+            // bytes — the grammar moved under this code.
+            model::EditKind::Remove => {
+                return Err(bad_request(format!(
+                    "refused: a cross-root address attributed to a `remove` edit in {} — it \
+                     carries no text to translate",
+                    path.0
+                )));
+            }
         };
         *payload = crate::positions::to_stored(payload, &mounts)
             .map_err(|e| bad_request(format!("{e} (in {})", path.0)))?;
@@ -5691,7 +5713,10 @@ fn fm_value_scope<'a>(
             text,
         } => Some(FmValueScope::Append(text)),
         EditShape::Match { old, new } => Some(FmValueScope::Match { old, new }),
-        EditShape::Put { .. } => None,
+        // `remove` is the IDENTITY shape, not a value scope (§ A.6.6): it
+        // carries no value, so the § A.6.3a encoder has nothing to own and the
+        // door has nothing to compose.
+        EditShape::Put { .. } | EditShape::Remove {} => None,
     }
 }
 
@@ -5834,6 +5859,7 @@ fn model_edits_and_before_facts(
         // its domain: the target must be an `fm_key`, and the value must be
         // single-line — the server composes `{key}: {value}`, so a newline would
         // forge extra frontmatter lines.
+        remove_fence(doc, edit, upsert_key.as_deref())?;
         let before = if let EditShape::Put {
             at: PutAt::Upsert,
             text,
@@ -5878,6 +5904,11 @@ fn model_edits_and_before_facts(
                     &scope,
                 )?,
                 None => match &edit.edit {
+                    // The identity shape lowers straight through: no value, no
+                    // encode, no composition. The kernel plans the region —
+                    // the key's grain span PLUS its terminator, and the whole
+                    // block when this was its last key (§ A.6.6).
+                    EditShape::Remove {} => model::EditKind::Remove,
                     EditShape::Match { old, new } => model::EditKind::Match {
                         old: syntax::strip_fp(old).into_owned(),
                         new: new.clone(),
@@ -5963,6 +5994,32 @@ fn simulate_armed_edits(
             armed_edits.push(born_armed_edit(after_doc, sealed, i, edit, birth)?);
             continue;
         }
+        // The identity shape arms its own death (§ A.6.6). The
+        // `target_identity` refusal below rests on the premise "the armed
+        // facts are unrepresentable" — FALSE here, and that PREMISE is what
+        // exempts this shape, never its spelling: `node_rev_before` is the key
+        // line's real rev, `node_rev_after` is the no-node token A.6.3a′ arms
+        // on the create arm, and `span_after` is the zero-width point the line
+        // vacated. Ruling `decisions/0018` forbids keying this family on the
+        // `at:` scope because a scope enumeration misses cells; nothing is
+        // missed here, because a removal's target has no post-batch rev that
+        // could stand still.
+        if matches!(edit.edit, EditShape::Remove {}) && matches!(edit.target, SecRef::FmKey { .. })
+        {
+            // The zero-width point the struck line vacated. A batch that could
+            // not place it (an impossible negative shift) falls back to the
+            // pre-batch start rather than refusing a write that DID commit —
+            // the removal is a fact on disk, and a fact is never withheld for
+            // an offset.
+            let point = landed_offset(sealed, i).unwrap_or(before.span.start) as u64;
+            armed_edits.push(ArmedEdit {
+                target: edit.target.clone(),
+                node_rev_before: NodeRev(before.node_rev.0.clone()),
+                node_rev_after: NodeRev(model::born_before_rev().0),
+                span_after: Span(point, point),
+            });
+            continue;
+        }
         let target = to_model_ref(&edit.target)?;
         let after = model::resolve(after_doc, &target).map_err(|_| {
             // A target whose identity does not survive its own edit (e.g. a
@@ -6030,18 +6087,7 @@ fn born_armed_edit(
         .iter()
         .position(|e| e.index == batch_index)
         .ok_or_else(refuse)?;
-    // The length shift of every sealed edit ordered before this one, kept as
-    // unsigned added/removed totals — the difference can be negative, and the
-    // final position cannot (a landed offset below zero is an impossibility
-    // the checked_sub turns into the loud refusal).
-    let (added, removed) = sealed.edits[..pos]
-        .iter()
-        .fold((0usize, 0usize), |(a, r), e| {
-            (a + e.text.len(), r + e.span.len())
-        });
-    let landed = (sealed.edits[pos].span.start + added)
-        .checked_sub(removed)
-        .ok_or_else(refuse)?;
+    let landed = landed_offset(sealed, batch_index).ok_or_else(refuse)?;
     // The stated offset must point at a heading opener in the sealed text; a
     // sealed text rewritten out of shape refuses rather than misplacing the
     // birth.
@@ -6059,6 +6105,30 @@ fn born_armed_edit(
         node_rev_after: NodeRev(after.node_rev.0.clone()),
         span_after: Span(after.span.start as u64, after.span.end as u64),
     })
+}
+
+/// The POST-batch byte offset that batch edit `batch_index`'s region start
+/// lands at — the pre-batch start shifted by the net length change of every
+/// sealed edit ordered before it.
+///
+/// Exact, not a heuristic: the sealed edits are disjoint and their order is the
+/// pre-batch offset order (same-point inserts keep request order under the
+/// seal's stable sort), so every earlier edit's shift is fully applied and no
+/// later edit's is. The totals are kept as unsigned added/removed halves
+/// because the DIFFERENCE can be negative while the final position cannot — a
+/// landed offset below zero is an impossibility, which the `checked_sub` turns
+/// into `None` for the caller to refuse on rather than a wrapped number.
+///
+/// Two readers: a birth (which heading position to read the born node from) and
+/// a `remove` (the zero-width point the struck line vacated, § A.6.6).
+fn landed_offset(sealed: &model::ValidatedBatch, batch_index: usize) -> Option<usize> {
+    let pos = sealed.edits.iter().position(|e| e.index == batch_index)?;
+    let (added, removed) = sealed.edits[..pos]
+        .iter()
+        .fold((0usize, 0usize), |(a, r), e| {
+            (a + e.text.len(), r + e.span.len())
+        });
+    (sealed.edits[pos].span.start + added).checked_sub(removed)
 }
 
 /// The birth's own `target_identity` refusal: the batch commits nothing, and
@@ -6149,6 +6219,63 @@ fn target_display(sec: &SecRef) -> String {
         SecRef::Hpath { hpath } => crate::display_hpath(hpath),
         SecRef::Anchor { anchor } => format!("^{anchor}"),
         SecRef::FmKey { fm_key } => fm_key.clone(),
+    }
+}
+
+/// The two fences on the identity shape (§ A.6.6), lifted out of the lowering
+/// loop so each carries its own reason.
+///
+/// 1. **`fm_key` targets only.** A section and an anchor already retire through
+///    the parent's content slot NAMING that parent (§4.4 `target_identity`), so
+///    a `remove` there would be a SECOND spelling of a capability that exists —
+///    the thing this contract forbids. The refusal says which plane the target
+///    is, so the caller learns the rule rather than the row.
+/// 2. **Not the block's last key.** Neither downstream outcome is available and
+///    both die worse: bare fences are not frontmatter to this engine (the next
+///    property write synthesizes a second block above them), and a blockless
+///    document is refused outright by the def plane (`unreadable frontmatter:
+///    <nil>`, never forceable) — three layers down, in a message about NESTED
+///    frontmatter that misdiagnoses the write that drew it.
+///
+/// # Errors
+/// `bad_request` on either fence, naming the target or the key.
+fn remove_fence(
+    doc: &model::Document,
+    edit: &Edit,
+    upsert_key: Option<&str>,
+) -> Result<(), Box<ErrorBody>> {
+    if !matches!(edit.edit, EditShape::Remove {}) {
+        return Ok(());
+    }
+    let Some(key) = upsert_key else {
+        return Err(bad_request(format!(
+            "`remove` is valid only on an fm_key target — `{}` is a {}, and a {} retires through \
+             its parent's content slot, not through a shape of its own.",
+            target_display(&edit.target),
+            sec_ref_plane(&edit.target),
+            sec_ref_plane(&edit.target),
+        )));
+    };
+    if model::fm_remove_empties_block(doc, key) {
+        return Err(bad_request(format!(
+            "`{key}` is the only key in this record's frontmatter, and removing it would leave \
+             the record with no frontmatter block — which the def plane refuses as `unreadable \
+             frontmatter: <nil>`. A record's frontmatter is its identity surface, so striking its \
+             last key is not a property edit. Fix: set another key first if the record should \
+             live, or retire the whole record with `op:\"remove\"` if it should not."
+        )));
+    }
+    Ok(())
+}
+
+/// The plane a target addresses, named for a refusal that has to say why the
+/// target is the wrong KIND rather than the wrong name (§ A.6.6's `remove`
+/// fence).
+fn sec_ref_plane(sec: &SecRef) -> &'static str {
+    match sec {
+        SecRef::Hpath { .. } => "section",
+        SecRef::Anchor { .. } => "block anchor",
+        SecRef::FmKey { .. } => "frontmatter key",
     }
 }
 
