@@ -84,7 +84,13 @@ impl Peer {
             while !flag.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        if first.is_none() {
+                        // `first.take()` at drain start leaves first==None.
+                        // Without the draining gate the next accept — an
+                        // answers_ping probe — is captured as a new first and
+                        // never ponged, so write_all reports ConnectionAborted
+                        // about a peer this harness silenced (card
+                        // wedge-peer-harness-two-latent-defects).
+                        if first.is_none() && !draining {
                             first = Some(stream);
                         } else if pong {
                             let _ = stream.write_all(b"{\"status\":\"pong\"}\n");
@@ -131,10 +137,19 @@ impl Peer {
                         let mut buf = vec![0u8; 64 * 1024];
                         while bytes.len() < OVERSIZED {
                             match stream.read(&mut buf) {
-                                // EOF, or the drain's own bound: either way no
-                                // more of this frame is coming.
-                                Ok(0) | Err(_) => break,
+                                Ok(0) => break, // EOF — the only legitimate early exit
                                 Ok(n) => bytes.extend_from_slice(&buf[..n]),
+                                Err(e)
+                                    if e.kind() == std::io::ErrorKind::WouldBlock
+                                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                                {
+                                    // The drain's own bound, not end-of-frame.
+                                    // Breaking here used to return a short
+                                    // buffer, drop the stream, and EPIPE the
+                                    // writer — a live peer the harness killed.
+                                    continue;
+                                }
+                                Err(_) => break, // transport failure; writer sees the drop
                             }
                         }
                         let _ = sink.send(bytes);
