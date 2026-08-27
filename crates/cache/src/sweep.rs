@@ -128,12 +128,18 @@ pub(crate) fn gc_at(cache_root: &Path, threshold: Duration, now: u64) -> io::Res
 /// Remove one drawer directory (for `unregister` / `clean`), taking the
 /// per-drawer lock first. A missing drawer is a no-op success.
 ///
+/// `Path::exists` is not used: it folds EACCES/ELOOP/ESTALE into `false`, so an
+/// unreadable drawer would report as a successful removal. `try_exists`
+/// distinguishes "not there" from "could not look".
+///
 /// # Errors
 ///
-/// Propagates I/O errors from locking or removal.
+/// Propagates I/O errors from the existence probe, locking, or removal.
 pub fn remove_drawer(drawer_dir: &Path) -> io::Result<()> {
-    if !drawer_dir.exists() {
-        return Ok(());
+    match drawer_dir.try_exists() {
+        Ok(false) => return Ok(()),
+        Ok(true) => {}
+        Err(e) => return Err(e),
     }
     let _lock = DrawerLock::acquire(drawer_dir)?;
     fs::remove_dir_all(drawer_dir)?;
@@ -273,6 +279,18 @@ mod tests {
         remove_drawer(&dir).unwrap();
         assert!(!dir.exists());
         remove_drawer(&dir).unwrap(); // missing → no-op success
+    }
+
+    // Path::exists folds "could not look" into false. A regular file used as a
+    // parent makes try_exists return Err (ENOTDIR); that must not become Ok.
+    #[test]
+    fn remove_drawer_unexaminable_is_err() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("not-a-dir");
+        fs::write(&file, b"x").unwrap();
+        let nested = file.join("drawer");
+        let err = remove_drawer(&nested).expect_err("unexaminable path must not report removed");
+        assert_ne!(err.kind(), io::ErrorKind::NotFound);
     }
 
     #[test]
