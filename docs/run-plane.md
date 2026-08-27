@@ -2552,6 +2552,10 @@ so on a rehearsal `snapshot` and `eval` sit directly inside `total`, and
 | `door.floor.<cause>` · `door.floor.<cause>.refused` | — (`cmd=daemon`) | same | the write plane's floor, same two shapes and the same `<cause>` set |
 | `door.refused.<cause>` | — (`cmd=daemon`) | same | a write-door observation refused BEFORE either arm was chosen. One cause today, `lock_contended`: the memo lock stayed held for its whole budget. **The read plane has no counterpart and that is a fact, not a gap** — it reaches the same `fs::lock_within` with a budget of `None`, which returns `Ok` before the wait loop, so the error is unreachable there (`Registry::patched_cache` asserts it) |
 
+The three envelope / `cmd=links` phases `json.render`, `json.write`, and
+`links.read` are in `status.md` § The timing mode (same table shape). They
+are not run-plane phases.
+
 **The door's three families partition its population**: `door.vouched` took the fast path, `door.floor` fell to the floor, `door.refused` never reached an arm. Every emitted `door.*` name sits under exactly one, so the three prefixes add up to every observation the write door makes and none is counted twice.
 
 **`<cause>` is one of six**, and it is the term that failed, not a guess: `no_feed` (no live feed — a COLD START, where vouching is impossible by construction) · `cookie_unproven` (the §6.4 barrier timed out or hit I/O — **the only time-bounded cause, so the only one that rises with load**) · `cookie_refused` (the cookie would enter the hash domain) · `collapse` (the applied set collapsed doubt) · `untrusted` (the §6.2 close does not hold the memo trusted) · `no_overlay` (the resident overlay folded no root). Cold start and load are opposite facts about a daemon; a single `currency.floor` name could not tell them apart, so a quiet box could not falsify "the floor is only a cold-start path" (`registry::FloorTrigger`).

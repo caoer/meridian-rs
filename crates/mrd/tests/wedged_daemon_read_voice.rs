@@ -60,6 +60,10 @@ const OWN_BUILD: &str = env!("MRD_BUILD_SHA");
 /// How long the fake waits on one connection's next frame before giving up on
 /// it. Only bounds a client that connects and says nothing; every client here
 /// writes its frame immediately.
+///
+/// Numerically equal to `registry::wedge::TICK` by coincidence. This constant
+/// is the test double's `set_read_timeout`; `TICK` bounds the code under test.
+/// They stay independent so a `TICK` change cannot hide inside this fixture.
 const REQUEST_SLICE: Duration = Duration::from_secs(2);
 
 /// The fake's accept-loop idle poll — it runs non-blocking so the stop flag is

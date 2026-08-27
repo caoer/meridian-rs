@@ -405,9 +405,9 @@ thread_local! {
 ///
 /// **What the counter measures: reads routed through THIS function, and nothing
 /// else.** It is not every clock read in the crate. `Phase::stop` and
-/// `Phase::stop_as` each read the clock through `started.elapsed()`, because
-/// `Instant::elapsed` is defined as `Instant::now() - *self`; neither is
-/// counted here. Both sit on the STOP
+/// `Phase::stop_as` each read the clock through `started.elapsed()`; `elapsed()`
+/// reads the clock to compute the interval, and neither call is counted here.
+/// Both sit on the STOP
 /// path, which runs only when a span was actually started, so
 /// `an_off_phase_reads_no_clock` never reaches them and does not claim to.
 ///
@@ -453,8 +453,8 @@ pub fn phase(name: &'static str) -> Phase {
 #[cfg(test)]
 mod tests {
     use super::{
-        CLOCK_READS, Chosen, DEFAULT_LABEL, OFF_WORDS, ON_WORDS, PREFIX, SINK, Sink, choose,
-        is_corpus_extension, line, on, one_line, phase, who,
+        choose, is_corpus_extension, line, on, one_line, phase, who, Chosen, Sink, CLOCK_READS,
+        DEFAULT_LABEL, OFF_WORDS, ON_WORDS, PREFIX, SINK,
     };
     use std::cell::Cell;
     use std::collections::BTreeSet;

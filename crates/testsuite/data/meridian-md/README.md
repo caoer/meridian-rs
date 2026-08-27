@@ -96,9 +96,11 @@ of which fails silently if missed:
 2. **Register the test module in `crates/testsuite/tests/main.rs`.** `crates/testsuite/Cargo.toml`
    sets `autotests = false`, so a stray `tests/meridian_md.rs` is **never compiled and never runs** —
    a green board that measured nothing.
-3. **Assert the case count** (`assert_eq!(checked, 37, …)`), the way `gt_parse.rs:98` pins its ten GT
-   files. Directory-scan discovery plus a cardinality assertion is what stops an empty replay from
-   passing vacuously.
+3. **Assert the case count** against the pack's own named consts (`ACCEPTANCES`,
+   `REFUSALS`, `EXPECT_NOT_CASES` in `tests/meridian_md.rs`), the way `gt_parse.rs`
+   pins its GT files. Directory-scan discovery plus a cardinality assertion is
+   what stops an empty replay from passing vacuously. A literal in this README
+   is not the owner.
 
 Disagreements between this pack and the spec are findings: neither is silently adjusted to match the
 other. Route them through the stage-3 leader.

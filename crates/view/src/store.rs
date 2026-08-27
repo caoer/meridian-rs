@@ -1496,6 +1496,13 @@ pub struct SqlRead {
     baseline: Arc<Vec<(String, String)>>,
 }
 
+// The `Send` claim above is a compiler fact, not prose. A field that is not
+// `Send` fails this compilation; the comment cannot outlive the bound.
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<SqlRead>();
+};
+
 impl std::fmt::Debug for SqlRead {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SqlRead").finish_non_exhaustive()

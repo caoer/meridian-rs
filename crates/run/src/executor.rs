@@ -28,8 +28,8 @@ use std::time::{Duration, Instant};
 
 use effects::{ArgValue, ChangeEvent, Domain, Effect, EffectKind, EventFacts, Provenance};
 use model::{
-    Document, Edit, EditKind, HpathSeg, MerkleRoot, NodeKind, NodeRev, PutAt, ReceiptAppend, Ref,
-    SpliceRequest, SpliceVerdict, delta,
+    delta, Document, Edit, EditKind, HpathSeg, MerkleRoot, NodeKind, NodeRev, PutAt, ReceiptAppend,
+    Ref, SpliceRequest, SpliceVerdict,
 };
 use serde::{Deserialize, Serialize};
 
@@ -60,7 +60,7 @@ pub struct ApplyRequest<'a> {
     /// The page the effects apply to (workspace-relative).
     pub page: &'a str,
     /// The task name — the plane's self-label is `run:<task>`, the fallback
-    /// half of the §9 actor law ([`ApplyRequest::actor`]).
+    /// half of the §9 actor law (the public `actor` field; `None` keeps `run:<task>`).
     pub task: &'a str,
     /// The addressed task block's `node_rev` at eval/address time — the
     /// procedure-hash the receipt attests (WHICH code ran, not just the
