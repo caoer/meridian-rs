@@ -534,11 +534,20 @@ fn is_markdown(p: &Path) -> bool {
 /// Read a file that may legitimately not exist. `None` is absence; every other
 /// I/O failure stays an error rather than degrading into "no config", which
 /// would silently widen the attested surface on an unreadable file.
-fn read_optional(path: &Path) -> io::Result<Option<String>> {
+///
+/// Non-`NotFound` failures mint a [`crate::CorpusMemberError`] naming `member`
+/// — the workspace-relative path — so a face never has to guess which of the
+/// two config files refused. `kind()` is the raw OS kind, so the `NotFound`
+/// arm above still steers control flow.
+fn read_optional(path: &Path, member: &str) -> io::Result<Option<String>> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e),
+        Err(e) => Err(crate::corpus_member_refusal(
+            e.kind(),
+            member,
+            format!("cannot be read ({e})"),
+        )),
     }
 }
 
@@ -612,8 +621,8 @@ impl Scope {
     /// I/O failure reading an existing config file, or both configs present
     /// (the dual-config ambiguity [`Domain::load`] documents).
     pub fn load(root: &WorkspaceRoot) -> io::Result<Scope> {
-        let md = read_optional(&root.0.join(DOMAIN_CONFIG_PATH))?;
-        let yaml = read_optional(&root.0.join(CONFIG_FILE_NAME))?;
+        let md = read_optional(&root.0.join(DOMAIN_CONFIG_PATH), DOMAIN_CONFIG_PATH)?;
+        let yaml = read_optional(&root.0.join(CONFIG_FILE_NAME), CONFIG_FILE_NAME)?;
         match (md, yaml) {
             (Some(_), Some(_)) => Err(io::Error::other(format!(
                 "two domain configs are present: {DOMAIN_CONFIG_PATH} and {CONFIG_FILE_NAME}. \

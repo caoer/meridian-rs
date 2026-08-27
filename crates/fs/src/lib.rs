@@ -2482,10 +2482,18 @@ pub fn hash_name(rel: &Path) -> &[u8] {
 }
 
 /// Display spelling for a member name in refusal prose (merkle-spec §9 display
-/// law): a valid-UTF-8 name verbatim (identity — two-way, zero loss); a name
-/// with no UTF-8 spelling escaped injectively — `\` doubled, each invalid byte
-/// as `\xNN` — so a refusal can never name the wrong member. Takes the raw
-/// name bytes ([`hash_name`]'s output).
+/// law). Two branches, each injective inside itself:
+///
+/// - a valid-UTF-8 name is returned verbatim (identity — two-way, zero loss);
+///   backslashes are not doubled on this branch.
+/// - a name with no UTF-8 spelling is escaped — `\` doubled, each invalid byte
+///   as `\xNN`.
+///
+/// The branches' codomains overlap, so the union is not injective: the
+/// valid-UTF-8 name `sessions/\xFF.md` (backslash, x, F, F) and the raw-byte
+/// name `sessions/` + 0xFF + `.md` both render as `sessions/\xFF.md`. A
+/// refusal can therefore name a different member than the one that failed.
+/// Takes the raw name bytes ([`hash_name`]'s output).
 #[must_use]
 pub fn display_name(name: &[u8]) -> String {
     if let Ok(s) = std::str::from_utf8(name) {
