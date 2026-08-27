@@ -41,3 +41,8 @@ your worktree — `/Users/Shared/repos/field-notes-sessions/sop/worker.md`
 - **Docs-first (binding):** accurate design lives in `docs/`. **Doc correct >
   code correct.** Material changes update the correct doc **before** code. Do
   not re-derive dual addresses or teach DuckDB/`view_path` as agent core.
+- **Cross-file cites are `path:line § name`, name on the SAME line as the cite.**
+  The line half drifts by construction; the name does not. Opportunistic on new
+  and touched cites, never a bulk rewrite. A cite-repair commit goes LAST in a
+  PR, after every commit that can move a line. A mechanical gate stays deferred
+  until same-line named cites are the majority.
