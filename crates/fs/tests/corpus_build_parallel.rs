@@ -42,9 +42,16 @@ fn parallel_build_matches_the_serial_law_member_for_member() {
     // Every member landed in exactly one of docs/unserved — nothing dropped,
     // nothing doubled, whatever chunk it rode.
     assert_eq!(docs.len() + unserved.len(), expected_members);
-    assert_eq!(unserved.len(), 2, "exactly the two non-UTF-8 members degrade");
+    assert_eq!(
+        unserved.len(),
+        2,
+        "exactly the two non-UTF-8 members degrade"
+    );
     for (rel, condition) in &unserved {
-        assert!(rel.starts_with("bad/"), "degraded member is the planted one: {rel}");
+        assert!(
+            rel.starts_with("bad/"),
+            "degraded member is the planted one: {rel}"
+        );
         assert!(
             condition.contains("is not UTF-8"),
             "the condition names the refusal, not a generic error: {condition}"
@@ -66,11 +73,15 @@ fn parallel_build_matches_the_serial_law_member_for_member() {
     // the duplicate-basename order is the docs map's own path order — the
     // one-index-constructor law that keeps build paths from disagreeing.
     assert_eq!(
-        index.resolve_linkpath("note-123", "dir0/other.md").as_deref(),
+        index
+            .resolve_linkpath("note-123", "dir0/other.md")
+            .as_deref(),
         Some("dir4/note-123.md")
     );
     assert_eq!(
-        index.resolve_linkpath("alpha/shared", "elsewhere.md").as_deref(),
+        index
+            .resolve_linkpath("alpha/shared", "elsewhere.md")
+            .as_deref(),
         Some("alpha/shared.md"),
         "qualified linkpath picks its own directory"
     );
@@ -110,5 +121,8 @@ fn a_small_corpus_builds_identically_on_the_serial_path() {
         BTreeMap::from([("b.md".to_owned(), unserved["b.md"].clone())]),
         "only the non-UTF-8 member degrades"
     );
-    assert_eq!(index.resolve_linkpath("d", "a.md").as_deref(), Some("c/d.md"));
+    assert_eq!(
+        index.resolve_linkpath("d", "a.md").as_deref(),
+        Some("c/d.md")
+    );
 }
