@@ -2650,26 +2650,86 @@ pub fn build_corpus(
     let building = timing::phase("corpus.build");
     let mut docs = model::Docs::new();
     let mut unserved = BTreeMap::new();
-    for (rel, bytes) in files {
-        match String::from_utf8(bytes) {
-            Ok(text) => {
-                // Parse borrowing, then MOVE the text into the document. The
-                // obvious spelling — `model::build(text.clone(), parse(&text))`
-                // — copies every member's whole text, because Rust evaluates
-                // the clone before the borrow that made it look necessary. On
-                // the 37 800-member / 212 MiB root that is a second copy of the
-                // entire corpus, allocated and dropped, inside `corpus.build`.
-                let nodes = syntax::parse(&text);
-                docs.insert(rel, std::sync::Arc::new(model::build(text, nodes)));
+    for (rel, parsed) in parse_members(files) {
+        match parsed {
+            Ok(doc) => {
+                docs.insert(rel, std::sync::Arc::new(doc));
             }
-            Err(e) => {
-                unserved.insert(rel, format!("is not UTF-8 ({})", e.utf8_error()));
+            Err(condition) => {
+                unserved.insert(rel, condition);
             }
         }
     }
     let out = (corpus_index_of(&docs), docs, unserved);
     building.stop();
     out
+}
+
+/// Members below this count parse on the caller's thread — thread spawn only
+/// where the corpus is wide enough to pay for it (the [`PARALLEL_READ_FLOOR`]
+/// posture, same value).
+const PARALLEL_PARSE_FLOOR: usize = 64;
+
+/// Parse every member, in input order — CHUNKED ACROSS WORKER THREADS above
+/// [`PARALLEL_PARSE_FLOOR`], because this is the whole-corpus rebuild's
+/// serial half: on a large root the one-member-at-a-time loop was the single
+/// largest CPU phase of a daemon cold start, paid while every read refuses
+/// `corpus_warming`.
+///
+/// Order-preserving contiguous chunks, merged in spawn order, so the returned
+/// rows match the serial loop exactly; the maps built from them cannot tell
+/// the difference (`corpus_build_parallel.rs` holds that law). Clamped at 8
+/// like the stat sweep, not the read's 4: parse is pure CPU on bytes already
+/// in memory — there is no kernel open/read path to contend on. A worker
+/// panic resumes on the caller (the [`member_identities`] posture).
+fn parse_members(files: DomainFiles) -> Vec<(String, Result<model::Document, String>)> {
+    if files.len() < PARALLEL_PARSE_FLOOR {
+        return files.into_iter().map(parse_member).collect();
+    }
+    let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 8));
+    let chunk = files.len().div_ceil(workers);
+    let mut chunks: Vec<DomainFiles> = Vec::with_capacity(workers);
+    let mut rest = files;
+    while rest.len() > chunk {
+        let tail = rest.split_off(chunk);
+        chunks.push(rest);
+        rest = tail;
+    }
+    chunks.push(rest);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .into_iter()
+            .map(|chunk| {
+                scope.spawn(move || chunk.into_iter().map(parse_member).collect::<Vec<_>>())
+            })
+            .collect();
+        let mut rows = Vec::with_capacity(handles.len().saturating_mul(chunk));
+        for handle in handles {
+            match handle.join() {
+                Ok(chunk_rows) => rows.extend(chunk_rows),
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+        rows
+    })
+}
+
+/// One member's parse — the loop body [`build_corpus`] always had, factored
+/// so the serial and chunked paths cannot drift.
+fn parse_member((rel, bytes): (String, Vec<u8>)) -> (String, Result<model::Document, String>) {
+    match String::from_utf8(bytes) {
+        Ok(text) => {
+            // Parse borrowing, then MOVE the text into the document. The
+            // obvious spelling — `model::build(text.clone(), parse(&text))`
+            // — copies every member's whole text, because Rust evaluates
+            // the clone before the borrow that made it look necessary. On
+            // the 37 800-member / 212 MiB root that is a second copy of the
+            // entire corpus, allocated and dropped, inside `corpus.build`.
+            let nodes = syntax::parse(&text);
+            (rel, Ok(model::build(text, nodes)))
+        }
+        Err(e) => (rel, Err(format!("is not UTF-8 ({})", e.utf8_error()))),
+    }
 }
 
 /// The corpus name index over `docs`, in the docs map's own (path) order —

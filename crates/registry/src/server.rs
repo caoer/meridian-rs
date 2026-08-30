@@ -214,6 +214,9 @@ impl Config {
         if let Some(raw) = std::env::var_os(DRAIN_COLD_BUILDS_ENV) {
             config.drain_cold_builds = parse_drain_cold_builds(&raw)?;
         }
+        if let Some(raw) = std::env::var_os(IDLE_EXIT_ENV) {
+            config.idle_exit = parse_idle_exit(&raw)?;
+        }
         Ok(config)
     }
 
@@ -303,6 +306,49 @@ fn parse_drain_cold_builds(raw: &std::ffi::OsStr) -> io::Result<Duration> {
                      unset it for the {}s default, or set it to the fixture budget (30)",
                     raw,
                     crate::DEFAULT_DRAIN_COLD_BUILDS.as_secs()
+                ),
+            )
+        })
+}
+
+/// The environment variable that overrides [`Config::idle_exit`], in **whole
+/// seconds** — the unit [`DEFAULT_IDLE_EXIT`] is written in, so the name
+/// carries no unit suffix (the [`DRAIN_COLD_BUILDS_ENV`] naming law). `0`
+/// disables the idle exit entirely (`Config::idle_exit = None`).
+///
+/// Why a spawner would raise it: G11's default horizon is sized for daemons
+/// nobody manages — isolated runs whose only alternative to the horizon is
+/// immortality. A MANAGED resident (a supervisor that spawns, health-checks
+/// and remediates the daemon itself) pays a whole-corpus engine rebuild on
+/// every respawn — the parsed corpus is RAM-only; the §6.5 checkpoint
+/// persists the trust memo, never the engine — so on a large corpus the
+/// exit-and-respawn cycle costs far more than the residency it reclaims.
+/// Such a manager raises the horizon and owns the daemon's death itself.
+///
+/// Read at exactly one site, [`Config::resolve`].
+pub const IDLE_EXIT_ENV: &str = "MRD_IDLE_EXIT";
+
+/// Parse [`IDLE_EXIT_ENV`]'s value as whole seconds; `0` is the documented
+/// disable spelling, not a failure.
+///
+/// Refuses loudly on anything else, naming the variable and echoing the bytes
+/// it saw — the [`parse_drain_cold_builds`] posture: a malformed knob must
+/// never silently fall back to the very default it was set to escape.
+// `{:?}` on the `OsStr` for the same reason as `parse_drain_cold_builds`:
+// the message exists to SHOW a value the parser could not read.
+#[allow(clippy::unnecessary_debug_formatting)]
+fn parse_idle_exit(raw: &std::ffi::OsStr) -> io::Result<Option<Duration>> {
+    raw.to_str()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(|secs| (secs != 0).then(|| Duration::from_secs(secs)))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{IDLE_EXIT_ENV} must be a whole number of seconds (0 disables the idle \
+                     exit), got {:?} — unset it for the {}s default",
+                    raw,
+                    DEFAULT_IDLE_EXIT.as_secs()
                 ),
             )
         })
@@ -3050,6 +3096,58 @@ mod socket_placement_tests {
             let msg = err.to_string();
             assert!(
                 msg.contains(DRAIN_COLD_BUILDS_ENV),
+                "the refusal names the variable: {msg}"
+            );
+            assert!(
+                msg.contains(&format!("{bad:?}")),
+                "the refusal echoes the bytes it saw: {msg}"
+            );
+        }
+    }
+
+    /// The idle-exit knob parses whole seconds, `0` spelling DISABLE — the
+    /// managed-resident contract: a supervisor that owns the daemon's death
+    /// raises or removes the horizon; every other daemon keeps the default.
+    ///
+    /// On the parser, not the environment, for the same process-global-race
+    /// reason as the drain knob's test.
+    #[test]
+    fn the_idle_exit_knob_parses_whole_seconds_and_zero_disables() {
+        use super::parse_idle_exit;
+        use std::ffi::OsStr;
+
+        assert_eq!(
+            parse_idle_exit(OsStr::new("86400")).unwrap(),
+            Some(Duration::from_hours(24))
+        );
+        assert_eq!(
+            parse_idle_exit(OsStr::new(" 900\n")).unwrap(),
+            Some(Duration::from_mins(15)),
+            "surrounding space is what a shell or CI block hands over"
+        );
+        assert_eq!(
+            parse_idle_exit(OsStr::new("0")).unwrap(),
+            None,
+            "0 is the disable spelling: Config::idle_exit = None, the immortal-daemon \
+             opt-in a manager makes knowingly"
+        );
+    }
+
+    /// A malformed idle-exit knob REFUSES; it never falls back to the default
+    /// — same law as the drain knob, same reason: the variable exists to
+    /// escape the default, so silently restoring it is the one wrong answer.
+    #[test]
+    fn a_malformed_idle_exit_knob_refuses_and_names_what_it_saw() {
+        use super::{IDLE_EXIT_ENV, parse_idle_exit};
+        use std::ffi::OsStr;
+
+        for bad in ["15m", "", "never", "-1", "1.5"] {
+            let err = parse_idle_exit(OsStr::new(bad))
+                .expect_err(&format!("{bad:?} is not whole seconds"));
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+            let msg = err.to_string();
+            assert!(
+                msg.contains(IDLE_EXIT_ENV),
                 "the refusal names the variable: {msg}"
             );
             assert!(
