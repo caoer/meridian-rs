@@ -3118,11 +3118,11 @@ mod socket_placement_tests {
 
         assert_eq!(
             parse_idle_exit(OsStr::new("86400")).unwrap(),
-            Some(Duration::from_secs(86400))
+            Some(Duration::from_hours(24))
         );
         assert_eq!(
             parse_idle_exit(OsStr::new(" 900\n")).unwrap(),
-            Some(Duration::from_secs(900)),
+            Some(Duration::from_mins(15)),
             "surrounding space is what a shell or CI block hands over"
         );
         assert_eq!(
