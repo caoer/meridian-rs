@@ -360,7 +360,8 @@ fn an_unreadable_declaration_greys_rather_than_failing_the_table() {
 
     // A declaration whose `type:` names something else is the same class.
     declare_raw(&dir, "---\ntype: meridian-config\nversion: 1\n---\n");
-    let bound = table(&config_of(&[vault_block("field-notes", &dir)])).expect("still not a failure");
+    let bound =
+        table(&config_of(&[vault_block("field-notes", &dir)])).expect("still not a failure");
     assert_eq!(
         bound.mounts()[0].state().word(),
         "grey(declaration-unreadable)"

@@ -598,7 +598,8 @@ mod tests {
     fn mounts() -> MountSet {
         let sessions = addr::MountName::parse("sessions").expect("a name");
         let assets = addr::MountName::parse("assets").expect("a name");
-        MountSet::new([sessions.clone(), assets.clone()]).with_vault(sessions, "field-notes-sessions")
+        MountSet::new([sessions.clone(), assets.clone()])
+            .with_vault(sessions, "field-notes-sessions")
         // `assets` is bound WITHOUT a vault name — the plain-folder row.
     }
 
