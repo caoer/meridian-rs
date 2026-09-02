@@ -255,8 +255,11 @@ fn g1_deep_cache_root_still_binds_and_serves_warm() {
 
 /// A stale socket at the OLD in-root placement is dead to the client: even a
 /// LIVE daemon bound there is never dialled — the client derives only the
-/// short hash-keyed path. If the client still dialled the old path, the
-/// answer would come back warm and this gate would catch the regression.
+/// short hash-keyed path, and an old-binary resident PUBLISHED nothing (the
+/// publication postdates the short-sock law; a daemon that does publish is
+/// the lock holder and is dialled by design — `registry_published_socket.rs`).
+/// If the client still dialled the old path unbidden, the answer would come
+/// back warm and this gate would catch the regression.
 #[test]
 fn g1_stale_daemon_at_the_old_path_is_not_dialled() {
     let sb = sandbox();
@@ -275,6 +278,10 @@ fn g1_stale_daemon_at_the_old_path_is_not_dialled() {
     config.build_sha = Some(env!("MRD_BUILD_SHA").to_owned());
     config.drain_cold_builds = Duration::from_secs(30);
     let server = registry::RunningServer::start(config).expect("old-path daemon binds");
+    // An old binary never published its socket; this build's in-process daemon
+    // just did, so take the publication away to model the stale predecessor.
+    std::fs::remove_file(sb.cache_root.join("registry").join("daemon.sock-path"))
+        .expect("the current build publishes its socket; an old one did not");
 
     let out = sb.run_degraded(&ws, &["read", "doc.md", "--json"]);
     server.shutdown();

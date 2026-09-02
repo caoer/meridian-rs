@@ -17,6 +17,21 @@
 //! mode 0700; a **world-writable** one is refused (a hostile peer must not be
 //! able to swap the socket or state file).
 //!
+//! # The published socket path
+//! The socket's BASE is env-derived (`XDG_RUNTIME_DIR` set or not) while the
+//! singleton lock below is keyed on the cache root alone, so two environments
+//! over one cache root derive two socket paths and share one lock. Measured
+//! (2026-09-02): a client without `XDG_RUNTIME_DIR` spawned the daemon under
+//! `$HOME/.cache/mrd-run/`, and every client WITH it dialled the absent
+//! `$XDG_RUNTIME_DIR/mrd/<12hex>.sock`, spawned a successor, and was refused
+//! "already running" by the lock holder it could not reach. So the daemon
+//! publishes the socket it bound: `<cache-root>/registry/daemon.sock-path`
+//! ([`SOCKET_PATH_NAME`], the lock's own directory) carries the socket's
+//! absolute path, written atomically after the bind and the pidfile and
+//! before the accept loop serves, removed on a clean shutdown. A client whose
+//! derived path is absent reads it ([`published_socket_path`]) and dials the
+//! published socket instead; the auto-spawn ladder pings it before spawning.
+//!
 //! # Singleton
 //! The daemon takes an exclusive `flock` on the registry directory (reusing
 //! `cache::DrawerLock`) for its whole lifetime. A second daemon fails to
@@ -95,6 +110,11 @@ const REGISTRY_DIR: &str = "registry";
 const SOCKET_NAME: &str = "daemon.sock";
 /// The state file name.
 const STATE_NAME: &str = "state.json";
+/// The published socket path's file name, beside the state file in the
+/// registry directory — the lock's directory, so it is keyed exactly as the
+/// lock is and never as the socket's env-derived base is (module docs § The
+/// published socket path).
+const SOCKET_PATH_NAME: &str = "daemon.sock-path";
 
 /// Where and how a daemon runs. Construct with [`Config::resolve`] for the
 /// production layout, or build the fields directly to place everything under a
@@ -409,6 +429,31 @@ pub fn default_socket_path() -> io::Result<PathBuf> {
     Ok(socket_path_for_cache_root(&cache::cache_root()?))
 }
 
+/// The socket path the resident daemon for `cache_root` PUBLISHED when it
+/// bound — read from `<cache-root>/registry/daemon.sock-path` (module docs §
+/// The published socket path). `None` when no daemon has published one
+/// (absent, unreadable, empty, or not absolute): the caller keeps the derived
+/// path. The file is a claim, never a proof — a `SIGKILL`ed daemon removes
+/// nothing — so a caller that acts on it still has to dial.
+#[must_use]
+pub fn published_socket_path(cache_root: &Path) -> Option<PathBuf> {
+    let file = cache_root.join(REGISTRY_DIR).join(SOCKET_PATH_NAME);
+    let text = std::fs::read_to_string(file).ok()?;
+    let path = Path::new(text.trim());
+    if path.as_os_str().is_empty() || !path.is_absolute() {
+        return None;
+    }
+    Some(path.to_path_buf())
+}
+
+/// [`published_socket_path`] for the env-resolved cache root, for a client
+/// that has no [`Config`] — `None` when no cache root resolves, exactly as
+/// [`default_socket_path`] fails then.
+#[must_use]
+pub fn default_published_socket_path() -> Option<PathBuf> {
+    published_socket_path(&cache::cache_root().ok()?)
+}
+
 /// A running daemon: the accept loop and reaper thread, the shared registry,
 /// and the singleton lock. Drop or [`RunningServer::shutdown`] to stop it.
 #[derive(Debug)]
@@ -422,6 +467,9 @@ pub struct RunningServer {
     prewarm: Option<JoinHandle<()>>,
     registry: Arc<Registry>,
     socket_path: PathBuf,
+    /// Where this daemon published `socket_path` (module docs § The published
+    /// socket path) — removed on a clean shutdown, after the socket.
+    socket_path_file: PathBuf,
     drain_cold_builds: Duration,
     // The singleton flock, held for the daemon's whole lifetime; dropping it
     // releases the guard so a successor can start.
@@ -513,6 +561,22 @@ impl RunningServer {
                 pid_file.display()
             );
         }
+        // The published socket path rides the pidfile's contract exactly:
+        // after the flock (the winner alone claims it, overwriting a
+        // predecessor's), before the accept loop (no pong precedes it, so a
+        // client holding a pong reads the serving daemon's socket), advisory
+        // (a daemon that cannot publish still serves). It lives in the
+        // REGISTRY directory — the lock's, keyed on the cache root alone —
+        // because the whole point is to be findable from an environment that
+        // derives a different socket base (module docs § The published socket
+        // path).
+        let socket_path_file = dir.join(SOCKET_PATH_NAME);
+        if let Err(e) = write_socket_path(&socket_path_file, &config.socket_path) {
+            eprintln!(
+                "registry: cannot publish the socket path in {} ({e})",
+                socket_path_file.display()
+            );
+        }
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let exit_requested = Arc::new(AtomicBool::new(false));
@@ -549,6 +613,7 @@ impl RunningServer {
             prewarm: Some(prewarm),
             registry,
             socket_path: config.socket_path,
+            socket_path_file,
             drain_cold_builds: config.drain_cold_builds,
             _singleton: singleton,
         })
@@ -619,6 +684,9 @@ impl RunningServer {
         // finds the file already gone.
         let _ = std::fs::remove_file(&self.socket_path);
         let _ = std::fs::remove_file(self.socket_path.with_extension("pid"));
+        // The publication goes with the socket it names: a successor publishes
+        // its own, and a client that finds none keeps its derived path.
+        let _ = std::fs::remove_file(&self.socket_path_file);
     }
 }
 
@@ -654,6 +722,18 @@ fn prepare_dir(dir: &Path) -> io::Result<()> {
 fn write_pidfile(path: &Path) -> io::Result<()> {
     let tmp = path.with_extension("pid.tmp");
     std::fs::write(&tmp, format!("{}\n", std::process::id()))?;
+    std::fs::rename(&tmp, path)
+}
+
+/// Publish `socket` — made absolute, so a reader in any cwd dials the same
+/// file — at `path`, atomically for the same reason [`write_pidfile`] is: a
+/// client reads this on the strength of a failed dial and must never see an
+/// empty or half-written path. The flock serializes writers, so the fixed
+/// temp name cannot race itself.
+fn write_socket_path(path: &Path, socket: &Path) -> io::Result<()> {
+    let socket = std::path::absolute(socket)?;
+    let tmp = path.with_extension("sock-path.tmp");
+    std::fs::write(&tmp, format!("{}\n", socket.display()))?;
     std::fs::rename(&tmp, path)
 }
 
