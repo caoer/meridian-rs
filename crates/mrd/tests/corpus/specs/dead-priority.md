@@ -1,7 +1,7 @@
 ---
 corpus_test: reviewer-and-priority-dead-priority
 rule: ../rules/reviewer-and-priority.md
-corpus: ../tree
+corpus: ../governed
 ---
 
 # dead-priority (two-citation rule page, exit 1)
@@ -19,13 +19,13 @@ lower-priority
 ```
 
 ```case
-{ "name": "r3a-self-close", "doc": "tasks/r3a-impl-plan.md", "actor": "agent:alice", "set": {"owner": "agent:alice", "status": "closed"}, "expect": "reviewer-close" }
+{ "name": "r3a-self-close", "doc": "tasks/plan-index.md", "actor": "agent:alice", "set": {"owner": "agent:alice", "status": "closed"}, "expect": "reviewer-close" }
 ```
 
 ```case
-{ "name": "b3-reviewer-close", "doc": "tasks/b3-impl-plan.md", "actor": "agent:bob", "set": {"owner": "agent:alice", "status": "closed"}, "expect": "pass" }
+{ "name": "b3-reviewer-close", "doc": "tasks/plan-dialect.md", "actor": "agent:bob", "set": {"owner": "agent:alice", "status": "closed"}, "expect": "pass" }
 ```
 
 ```case
-{ "name": "c-self-close", "doc": "tasks/c-impl-plan.md", "actor": "agent:erin", "set": {"owner": "agent:erin", "status": "closed"}, "expect": "reviewer-close" }
+{ "name": "c-self-close", "doc": "tasks/plan-walker.md", "actor": "agent:erin", "set": {"owner": "agent:erin", "status": "closed"}, "expect": "reviewer-close" }
 ```

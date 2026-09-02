@@ -1,7 +1,7 @@
 # ground-truth law
 
-10 files: 8 corpus (each `*.expected.json`'s `file` field names its fixture
-under `corpus/`) + 2 adversarial (`anchor-edge-cases.md`, `callout-vs-quote.md`).
+10 files: 8 samples (each `*.expected.json`'s `file` field names its fixture
+under `samples/`) + 2 adversarial (`anchor-edge-cases.md`, `callout-vs-quote.md`).
 Structure: `{"file": <fixture-relpath>, "nodes": [{kind, hpath?, span:[start,end), text_prefix_16b}]}`.
 
 ## Span convention (uniform, bytes)
@@ -35,5 +35,14 @@ Inline nodes are also extracted inside block nodes (inline code in headings,
 wikilinks in callout bodies, anchors on heading/task lines). Nodes are ordered
 by span start; overlapping spans are correct, not a bug.
 
-Disagreements are findings: flag to 5bb58f0e — lane 0 gates corrections; do
-not silently adjust your parser or this ground truth.
+Disagreements are findings; do not silently adjust your parser or this ground
+truth.
+
+## Regeneration
+
+`mdref.py` is the reference extractor — the law above in code — and
+`gen_ground_truth.py` runs it over the 10 files (`python3 gen_ground_truth.py`
+from anywhere). The expected JSON is never hand-edited: a sample change is
+followed by a regeneration, and a parser divergence is never silenced by one.
+The samples are synthetic documents shaped like session and wiki pages
+(fictional hosts, ids and paths); the adversarial pair pins parser edge cases.

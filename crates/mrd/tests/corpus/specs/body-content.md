@@ -1,7 +1,7 @@
 ---
 corpus_test: a-case-drives-a-content-reading-check
 rule: ../rules/no-smuggled-heading.md
-corpus: ../tree
+corpus: ../governed
 ---
 
 # body-content (fixture spec, exit 0)
@@ -19,10 +19,10 @@ structural-write
 
 ```case
 { "name": "smuggle-a-heading",
-  "doc": "tasks/b3-gatecheck.md",
+  "doc": "tasks/gate-check.md",
   "actor": "agent:alice",
   "edits": [
-    { "target": {"hpath": [{"h": "Task: b3-gatecheck"}, {"h": "Quality Gates"}]},
+    { "target": {"hpath": [{"h": "Task: gate-check"}, {"h": "Quality Gates"}]},
       "edit": {"put": {"at": "end", "text": "\n## Smuggled\n\nrestructured under cover of a section edit.\n"}} }
   ],
   "expect": "structural-write" }
@@ -30,10 +30,10 @@ structural-write
 
 ```case
 { "name": "plain-section-append",
-  "doc": "tasks/b3-gatecheck.md",
+  "doc": "tasks/gate-check.md",
   "actor": "agent:alice",
   "edits": [
-    { "target": {"hpath": [{"h": "Task: b3-gatecheck"}, {"h": "Quality Gates"}]},
+    { "target": {"hpath": [{"h": "Task: gate-check"}, {"h": "Quality Gates"}]},
       "edit": {"put": {"at": "end", "text": "\n- every receipt names the command that produced it.\n"}} }
   ],
   "expect": "pass" }

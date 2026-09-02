@@ -1,0 +1,30 @@
+{
+ "file": "samples/sessions/year=2026/month=04/08-01-format-tuning/rosters/0001-worker-formatter.md",
+ "nodes": [
+  {
+   "kind": "frontmatter",
+   "span": [
+    0,
+    196
+   ],
+   "text_prefix_16b": "---\ntype: roster"
+  },
+  {
+   "kind": "heading",
+   "hpath": "worker-formatter",
+   "span": [
+    198,
+    216
+   ],
+   "text_prefix_16b": "# worker-formatt"
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    329,
+    349
+   ],
+   "text_prefix_16b": "[[editor-formatt"
+  }
+ ]
+}

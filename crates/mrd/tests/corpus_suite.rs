@@ -1,5 +1,5 @@
 //! End-to-end gates for `mrd test --corpus` — the U1.5 tier-2 corpus runner. Drives the real
-//! `mrd` binary over committed corpus-test specs and the governed tree (`tests/corpus/tree/`)
+//! `mrd` binary over committed corpus-test specs and the governed tree (`tests/corpus/governed/`)
 //! and asserts the signals the pre-arming gate rests on: fire-where-expected, dead-rule
 //! reporting, and quiescence.
 
@@ -752,7 +752,7 @@ fn malformed_spec_is_a_tool_failure() {
 /// `message` — which is the common case, `no_match` included.
 ///
 /// Measured before the fix: `production splice refused counterfactual write to
-/// tasks/b3-gatecheck.md: NoMatch: ` — 9 characters of reason, ending on a colon that promises
+/// tasks/gate-check.md: NoMatch: ` — 9 characters of reason, ending on a colon that promises
 /// one. The same refusal at the `put` door served 347 characters naming the count, the law and
 /// the remedy. Same engine, same error body, two renderings.
 #[test]

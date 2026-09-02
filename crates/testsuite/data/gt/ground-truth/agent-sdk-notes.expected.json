@@ -1,0 +1,242 @@
+{
+ "file": "samples/wiki/effects/skills/agent-sdk-notes.md",
+ "nodes": [
+  {
+   "kind": "frontmatter",
+   "span": [
+    0,
+    569
+   ],
+   "text_prefix_16b": "---\nname: agent-"
+  },
+  {
+   "kind": "heading",
+   "hpath": "agent-sdk-notes (effect/skill)",
+   "span": [
+    571,
+    603
+   ],
+   "text_prefix_16b": "# agent-sdk-note"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    625,
+    642
+   ],
+   "text_prefix_16b": "`agent-sdk-notes"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    849,
+    865
+   ],
+   "text_prefix_16b": "`draws-from: []`"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    888,
+    898
+   ],
+   "text_prefix_16b": "`effects/` is th"
+  },
+  {
+   "kind": "heading",
+   "hpath": "agent-sdk-notes (effect/skill)/Contract",
+   "span": [
+    942,
+    953
+   ],
+   "text_prefix_16b": "## Contract\n\n| F"
+  },
+  {
+   "kind": "table",
+   "span": [
+    955,
+    1367
+   ],
+   "text_prefix_16b": "| Field | Value "
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1007,
+    1050
+   ],
+   "text_prefix_16b": "`git@git.example"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1065,
+    1071
+   ],
+   "text_prefix_16b": "`main` |\n| Commi"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1085,
+    1127
+   ],
+   "text_prefix_16b": "`0123456789abcde"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1143,
+    1168
+   ],
+   "text_prefix_16b": "`skills/agent-sd"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1184,
+    1226
+   ],
+   "text_prefix_16b": "`89abcdef0123456"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1262,
+    1286
+   ],
+   "text_prefix_16b": "`skill-forge/ins"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1296,
+    1321
+   ],
+   "text_prefix_16b": "`skills/agent-sd"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1326,
+    1365
+   ],
+   "text_prefix_16b": "`~/.local/share/"
+  },
+  {
+   "kind": "heading",
+   "hpath": "agent-sdk-notes (effect/skill)/Contract/Checksum computation",
+   "span": [
+    1369,
+    1393
+   ],
+   "text_prefix_16b": "### Checksum com"
+  },
+  {
+   "kind": "fence",
+   "span": [
+    1458,
+    1564
+   ],
+   "text_prefix_16b": "```bash\ngit -C <"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1744,
+    1763
+   ],
+   "text_prefix_16b": "`find … | shas"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1768,
+    1790
+   ],
+   "text_prefix_16b": "`git archive | s"
+  },
+  {
+   "kind": "heading",
+   "hpath": "agent-sdk-notes (effect/skill)/Contract/Staleness detection",
+   "span": [
+    1858,
+    1881
+   ],
+   "text_prefix_16b": "### Staleness de"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1897,
+    1923
+   ],
+   "text_prefix_16b": "`git cat-file -t"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1953,
+    1963
+   ],
+   "text_prefix_16b": "`location` match"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1990,
+    1998
+   ],
+   "text_prefix_16b": "`commit` trigger"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    2068,
+    2076
+   ],
+   "text_prefix_16b": "`commit` + `chec"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    2079,
+    2089
+   ],
+   "text_prefix_16b": "`checksum` + a c"
+  },
+  {
+   "kind": "heading",
+   "hpath": "agent-sdk-notes (effect/skill)/Changelog",
+   "span": [
+    2118,
+    2130
+   ],
+   "text_prefix_16b": "## Changelog\n\n- "
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    2212,
+    2229
+   ],
+   "text_prefix_16b": "`agent-sdk-notes"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    2246,
+    2281
+   ],
+   "text_prefix_16b": "`effects/skills/"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    2301,
+    2310
+   ],
+   "text_prefix_16b": "`0123456`. (sess"
+  }
+ ]
+}

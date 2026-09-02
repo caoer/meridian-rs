@@ -24,7 +24,7 @@ Two non-forward moves are admitted, each for a reason the tree states:
   be able to send the card back for rework.
 - The ESCALATION pair `in-progress ↔ blocked`. `blocked` is where in-flight work
   parks while someone else clears the way — the corpus card
-  `mrd/tests/corpus/tree/tasks/r3a-impl-plan.md` states the entry rule ("DD
+  `mrd/tests/corpus/governed/tasks/plan-index.md` states the entry rule ("DD
   conflict with repo reality → card blocked + message leader; never silently
   deviate"), `policy/src/reaction.rs:237` exercises `in-progress → blocked` as an
   ordinary transition, and `reaction.rs:393` hangs `blocked_by:` on an

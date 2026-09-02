@@ -1,0 +1,137 @@
+{
+ "file": "samples/wiki/health/tags/domain/rover.md",
+ "nodes": [
+  {
+   "kind": "frontmatter",
+   "span": [
+    0,
+    267
+   ],
+   "text_prefix_16b": "---\ntags: [meta/"
+  },
+  {
+   "kind": "heading",
+   "hpath": "`domain/rover`",
+   "span": [
+    269,
+    285
+   ],
+   "text_prefix_16b": "# `domain/rover`"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    271,
+    285
+   ],
+   "text_prefix_16b": "`domain/rover`\n\n"
+  },
+  {
+   "kind": "callout",
+   "span": [
+    287,
+    540
+   ],
+   "text_prefix_16b": "> [!WARNING] Mis"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    440,
+    454
+   ],
+   "text_prefix_16b": "`description:`, "
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    493,
+    509
+   ],
+   "text_prefix_16b": "`status: active`"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    521,
+    538
+   ],
+   "text_prefix_16b": "`status: missing"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    556,
+    575
+   ],
+   "text_prefix_16b": "`tag: domain/rov"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    589,
+    618
+   ],
+   "text_prefix_16b": "`health/tags/dom"
+  },
+  {
+   "kind": "heading",
+   "hpath": "`domain/rover`/When to use",
+   "span": [
+    642,
+    656
+   ],
+   "text_prefix_16b": "## When to use\n\n"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    708,
+    722
+   ],
+   "text_prefix_16b": "`domain/rover`.\n"
+  },
+  {
+   "kind": "heading",
+   "hpath": "`domain/rover`/Tagged pages",
+   "span": [
+    725,
+    740
+   ],
+   "text_prefix_16b": "## Tagged pages\n"
+  },
+  {
+   "kind": "embed",
+   "span": [
+    742,
+    768
+   ],
+   "text_prefix_16b": "![[TAG-FILES.bas"
+  },
+  {
+   "kind": "heading",
+   "hpath": "`domain/rover`/Related",
+   "span": [
+    770,
+    780
+   ],
+   "text_prefix_16b": "## Related\n\n- [["
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    784,
+    797
+   ],
+   "text_prefix_16b": "[[tags/TAGS]]\n- "
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    800,
+    844
+   ],
+   "text_prefix_16b": "[[tag-taxonomy-e"
+  }
+ ]
+}

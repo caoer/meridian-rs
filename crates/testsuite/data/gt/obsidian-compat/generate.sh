@@ -3,8 +3,9 @@
 #
 #   ./generate.sh
 #
-# Preconditions: the Obsidian desktop app is open on the `field-notes-sessions`
-# vault, the `obsidian` CLI is on PATH, and the `probe-bridge` plugin is present
+# Preconditions: the Obsidian desktop app is open on a vault that carries a
+# byte-identical copy of `walkvault/` at its root (the `WV` path in oracle.js),
+# the `obsidian` CLI is on PATH, and the `probe-bridge` plugin is present
 # (this script enables it). Every answer is produced by the live resolver — this
 # pack is DATA, never hand-written (gate-1 ruling 7; contract §4.5, §13.4).
 #

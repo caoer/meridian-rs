@@ -1,0 +1,80 @@
+{
+ "file": "samples/sessions/year=2026/month=03/14-01-adhoc/SESSION.md",
+ "nodes": [
+  {
+   "kind": "frontmatter",
+   "span": [
+    0,
+    144
+   ],
+   "text_prefix_16b": "---\ntype: sessio"
+  },
+  {
+   "kind": "callout",
+   "span": [
+    146,
+    296
+   ],
+   "text_prefix_16b": "> [!info] Update"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Ad-hoc: declarative rebuild support for foreign hosts",
+   "span": [
+    298,
+    353
+   ],
+   "text_prefix_16b": "# Ad-hoc: declar"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Ad-hoc: declarative rebuild support for foreign hosts/Pipeline",
+   "span": [
+    451,
+    462
+   ],
+   "text_prefix_16b": "## Pipeline\n- [ "
+  },
+  {
+   "kind": "task",
+   "span": [
+    463,
+    521
+   ],
+   "text_prefix_16b": "- [ ] work (infe"
+  },
+  {
+   "kind": "task",
+   "span": [
+    522,
+    534
+   ],
+   "text_prefix_16b": "- [ ] review\n- ["
+  },
+  {
+   "kind": "task",
+   "span": [
+    535,
+    560
+   ],
+   "text_prefix_16b": "- [x] compound ("
+  },
+  {
+   "kind": "heading",
+   "hpath": "Ad-hoc: declarative rebuild support for foreign hosts/Inferred scope",
+   "span": [
+    562,
+    579
+   ],
+   "text_prefix_16b": "## Inferred scop"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    620,
+    644
+   ],
+   "text_prefix_16b": "`fleet rebuild -"
+  }
+ ]
+}

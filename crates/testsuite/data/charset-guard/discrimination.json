@@ -48,10 +48,6 @@
   "exemption": {
     "policy": "assert-by-listing, never migrate (decision 011 § Addendum)",
     "in_repo_fixture": "data/gt/obsidian-compat/walkvault/blocks.md line 7 `^under-probe_x` + resolution.expected.json WX-6 — kept verbatim; they pin `_`-rejection behavior and the app's legacy-`_` answer",
-    "tournament_fixtures_out_of_repo": [
-      "18-02-meridian-rs/probes/zzprobe-anchors-a.md ^a_04",
-      "18-02-meridian-rs/results/fixture-pack/inputs/underscore-anchors.md ^my_block",
-      "18-02-meridian-rs/results/contract-v2-tournament/team-f/scratch/w3.md ^ok_1"
-    ]
+    "fixtures_out_of_repo": "three `_`-bearing probe anchors in the authoring session's scratch (not shipped) stay as authored; the in-repo listing above is the complete shipped exemption set"
   }
 }

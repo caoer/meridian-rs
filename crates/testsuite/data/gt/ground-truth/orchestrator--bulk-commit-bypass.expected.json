@@ -1,0 +1,56 @@
+{
+ "file": "samples/sessions/year=2026/month=04/15-02-lint-fix/decisions/orchestrator--bulk-commit-bypass.md",
+ "nodes": [
+  {
+   "kind": "frontmatter",
+   "span": [
+    0,
+    123
+   ],
+   "text_prefix_16b": "---\nstatus: reso"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Bulk commit with --no-verify",
+   "span": [
+    124,
+    154
+   ],
+   "text_prefix_16b": "# Bulk commit wi"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Bulk commit with --no-verify/Resolution",
+   "span": [
+    751,
+    764
+   ],
+   "text_prefix_16b": "## Resolution\nCo"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Bulk commit with --no-verify/Addendum: pre-push bypass (18:2x)",
+   "span": [
+    956,
+    992
+   ],
+   "text_prefix_16b": "## Addendum: pre"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1013,
+    1025
+   ],
+   "text_prefix_16b": "`wiki check` und"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1129,
+    1141
+   ],
+   "text_prefix_16b": "`wiki check` exi"
+  }
+ ]
+}
