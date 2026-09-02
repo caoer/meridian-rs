@@ -548,11 +548,7 @@ fn an_out_of_band_edit_moves_the_rev_and_the_home_limit_still_holds() {
         .to_string();
 
     // The out-of-band edit: a human changes the file behind the engine's back.
-    std::fs::write(
-        &file,
-        SINGLE.replace("/srv/vaults", "/Volumes/wiki"),
-    )
-    .expect("edit");
+    std::fs::write(&file, SINGLE.replace("/srv/vaults", "/Volumes/wiki")).expect("edit");
 
     let after = resolve(&env).expect("still loads");
     let after_rev = after.file_rev().expect("rev").to_string();
@@ -665,7 +661,8 @@ vault: field-notes
 /// block, so a build that half-loads looks healthy.
 #[test]
 fn a_refused_config_publishes_nothing() {
-    let valid_block = "```meridian-mount\nname: field-notes\npath: /srv/vaults/field-notes\nvault: field-notes\n```\n";
+    let valid_block =
+        "```meridian-mount\nname: field-notes\npath: /srv/vaults/field-notes\nvault: field-notes\n```\n";
     for (label, raw) in [
         (
             "no frontmatter",
