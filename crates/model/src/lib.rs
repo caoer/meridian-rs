@@ -1397,7 +1397,7 @@ pub enum SpliceVerdict {
         cause: Option<CorruptCause>,
     },
     /// An edit wrote past the span it named →
-    /// `would_corrupt{transition_unrepresentable}` (§4.4, `decisions/0018`).
+    /// `would_corrupt{transition_unrepresentable}` (§4.4).
     /// §4.4 makes the target's span the region an edit rewrites and §1 excludes
     /// a leaf's line terminator from that span, so a `text` ending in a
     /// separator places bytes the node never covers. Those bytes cannot move
@@ -1734,8 +1734,8 @@ pub fn validate_batch(
         return SpliceVerdict::WouldCorrupt { lost, cause };
     }
 
-    // 4b. An edit must write INSIDE the span it named (decisions/0018; §4.4
-    // with node-rev-merkle-spec §2). A leaf's span excludes its line
+    // 4b. An edit must write INSIDE the span it named (§4.4 with
+    // node-rev-merkle-spec §2). A leaf's span excludes its line
     // terminator (§1, and §4.4 for `fm_key`), so its extent ends there and a
     // `text` carrying a separator writes a byte the node never covers. Those
     // bytes cannot change the node's bytes, so `node_rev` cannot move and
@@ -1910,7 +1910,7 @@ fn would_corrupt(
 
 /// The first caller edit that changed bytes yet left its own target's
 /// `node_rev` standing still, as that edit's ref — the write-past-the-named-span
-/// guard (`decisions/0018`; node-rev-merkle-spec §2 with §4.4). `None` when
+/// guard (node-rev-merkle-spec §2 with §4.4). `None` when
 /// every byte-changing edit moved the rev of the node it named.
 ///
 /// **The test is the UNMOVED REV, and containment is its explanation rather
@@ -2687,7 +2687,7 @@ impl CorpusIndex {
 
 /// One mounted root's corpus, as the resolver sees it: its documents and its
 /// own name index. Every mounted root is the same shape — the kind taxonomy
-/// left the schema (ZT 2026-08-13), and a mounted tree's documents are parsed
+/// left the schema, and a mounted tree's documents are parsed
 /// wherever they came from.
 #[derive(Debug)]
 pub struct MountedRoot<'a> {
@@ -3129,17 +3129,15 @@ fn block_header(remainder: &str) -> Option<BlockHeader> {
 
 /// **The frontmatter block-scalar reader** — the ONE decoder both published
 /// faces call, so `read`'s `props[]` and `sql`'s `frontmatter` cannot answer
-/// differently (card `mrd-frontmatter-block-scalar-decoder-gap`).
+/// differently.
 ///
 /// Before this, both faces served a block scalar as its INDICATOR BYTE: a page
 /// carrying `description: >` and six indented lines published `">"` on `read`
 /// and `">"` in `sql`, while `PyYAML` read the whole 459-character text.
 ///
-/// Engine-measured corpus-wide: **63 pages / 71 key rows across four roots** —
-/// sessions 37/45, ccc-statusd 15/15, mrd-experiments 8/8, field-notes 3/3
-/// (codespace and meridian-rs carry none). The sessions figure alone is 45
-/// rows, and quoting it without the root reads as a corpus total. The pages
-/// are valid YAML — this was a decoder gap, never corpus damage.
+/// Measured across the live corpora that surfaced it, dozens of pages carried
+/// such a scalar. The pages are valid YAML — this was a decoder gap, never
+/// corpus damage.
 ///
 /// Serde-free by the crate law (`testsuite/tests/yaml_confinement.rs`): the
 /// folding is written here against YAML 1.2 § 8.1.2-8.1.3 and pinned against
@@ -4763,8 +4761,7 @@ mod tests {
     /// so no future narrowing can quietly drop one. `at:"end"`, `at:"all"`,
     /// `at:"content"` and `match` all place a byte past a leaf's span when
     /// their text ends in a separator — and `match` is NOT an `at:` scope, so
-    /// a guard enumerating scopes would miss it by construction
-    /// (`decisions/0018`).
+    /// a guard enumerating scopes would miss it by construction.
     #[test]
     fn every_scope_that_writes_past_a_leaf_span_refuses() {
         let raw = "- item one ^li-1\n- item two\n";
@@ -4920,8 +4917,8 @@ mod tests {
         );
     }
 
-    /// Regression (2026-08-22, run-plane `set_field` of an existing key then a
-    /// NEW key): the first-key replace region `4..16` and the new key's
+    /// Regression (run-plane `set_field` of an existing key then a NEW key):
+    /// the first-key replace region `4..16` and the new key's
     /// zero-width insert `4..4` share a start byte. `first_overlap` reads them
     /// disjoint under (start, end) order; the apply pass must use the SAME
     /// order, or the replace applies first and the cursor runs past the insert

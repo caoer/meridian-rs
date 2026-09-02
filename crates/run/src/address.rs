@@ -19,7 +19,7 @@ pub const RESERVED_SUFFIXES: [&str; 3] = ["caps", "args", "env"];
 /// The task name a page elects for paramless execution: with TASK omitted and
 /// several bindings declared, a binding named `default` runs instead of the
 /// list-and-refuse. Election is by NAME, declared by the page's author — the
-/// plane still never guesses (2026-08-19 default-task amendment,
+/// plane still never guesses (the default-task amendment,
 /// `docs/run-plane.md`).
 pub const DEFAULT_TASK: &str = "default";
 

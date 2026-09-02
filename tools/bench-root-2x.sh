@@ -1,20 +1,17 @@
 #!/bin/bash
 # Build and stamp a 2x wall-clock bench root.
 #
-# THE TRAP THIS EXISTS TO CLOSE (2026-08-08, all three wave-1 implementers hit
-# it independently): building a scaled root by nesting a copy of the 1x tree
-# (dup/, mirror-b/, root2x/a+b) escapes the ROOT-RELATIVE ignore rules in the
-# root's domain config. Members the 1x domain excludes — including non-UTF-8
-# fixtures — re-enter at their nested paths, where no rule matches them.
+# THE TRAP THIS EXISTS TO CLOSE: building a scaled root by nesting a copy of
+# the 1x tree (dup/, mirror-b/, root2x/a+b) escapes the ROOT-RELATIVE ignore
+# rules in the root's domain config. Members the 1x domain excludes — including
+# non-UTF-8 fixtures — re-enter at their nested paths, where no rule matches
+# them.
 #
-# THE TRAP IS QUIETER NOW THAN WHEN IT WAS FIRST HIT. During wave 1 an escaped
-# non-UTF-8 member made the whole corpus unservable at hello (loud, caught by
-# seat vigilance three times). On current main the engine refuses invalid_utf8
-# PER FILE at read time — the corpus serves, zero-reads answer no_effect, and
-# only a program touching the escaped member refuses. Nothing announces the
-# escape at serve time any more, and a mis-scaled root distorts figures
-# silently either way. A mechanical stamp is therefore the ONLY detector left;
-# eyeballing hello is no longer evidence of a valid root.
+# THE TRAP IS QUIET. The engine refuses invalid_utf8 PER FILE at read time —
+# the corpus serves, zero-reads answer no_effect, and only a program touching
+# the escaped member refuses. Nothing announces the escape at serve time, and a
+# mis-scaled root distorts figures silently either way. A mechanical stamp is
+# therefore the ONLY detector; eyeballing hello is not evidence of a valid root.
 #
 # THE SAFE RECIPE: never copy trees. `construct` asks the engine for the 1x
 # domain member list (the same hash_domain the daemon folds) and copies exactly
@@ -25,7 +22,7 @@
 # THE STAMP: `stamp` is the mandatory rig receipt, emitted BEFORE any
 # measurement. Four legs, all required:
 #   1. member ratio — 2x/1x within 2.00 +/- 0.01, by the engine's own
-#      enumeration (the advisor-ordered floor; catches gross mis-scale);
+#      enumeration (the floor; catches gross mis-scale);
 #   2. exact member set — the 2x list must be PRECISELY a/<m> + b/<m> over the
 #      1x list. The load-bearing leg: the live escape added 2 members (ratio
 #      2.0001, inside any usable tolerance — field-valid roots measured
@@ -35,8 +32,8 @@
 #      the measurement that follows);
 #   4. engine identity — the socket holder resolved via lsof must be the MRD
 #      binary under test, so a receipt can never silently come from the
-#      fleet's frozen engine (fired live on this rig's own first run, when an
-#      ambient XDG_CACHE_HOME routed the receipt to the fleet daemon).
+#      user's installed engine (an ambient XDG_CACHE_HOME routes the receipt
+#      to the resident daemon).
 # The stamp FILE is written either way — on failure it is the refusal receipt,
 # and the exit code refuses the measurement. It lives BESIDE the root, never
 # inside it: an extra .md inside would join the domain and skew the count.
@@ -54,9 +51,9 @@
 #                   defaults to <2x-root>.xdg — a sibling, outside the root.
 #                   The ambient XDG_CACHE_HOME is deliberately IGNORED: it is
 #                   set in nearly every user shell, and inheriting it sends the
-#                   receipt through the FLEET's registry socket, where the
-#                   frozen fleet engine answers instead of the binary under
-#                   test (fired live 2026-08-08 on this rig's first run)
+#                   receipt through the user's resident registry socket, where
+#                   the installed engine answers instead of the binary under
+#                   test
 set -euo pipefail
 
 die() {
@@ -106,7 +103,7 @@ stamp() {
     local one=$1 two=$2
     local file=${3:-$two.stamp.md}
     need_members_bin
-    [ -n "${MRD:-}" ] && [ -x "$MRD" ] || die "MRD must name the seat's prebuilt mrd binary"
+    [ -n "${MRD:-}" ] && [ -x "$MRD" ] || die "MRD must name a prebuilt mrd binary"
     [ -d "$one" ] || die "1x root not found: $one"
     [ -d "$two" ] || die "2x root not found: $two"
     case "$file" in
@@ -145,9 +142,9 @@ stamp() {
     fi
     rm -f "$one_list" "$two_list" "$expect_list"
 
-    # The seat's own daemon on the seat's own socket: never the fleet's cache
-    # root, and never the AMBIENT XDG_CACHE_HOME — it is set in nearly every
-    # user shell and resolves the fleet's registry socket. A cold 47k-file
+    # This run's own daemon on its own socket: never the user's cache root,
+    # and never the AMBIENT XDG_CACHE_HOME — it is set in nearly every user
+    # shell and resolves the resident registry socket. A cold 47k-file
     # corpus build can outlive the client's spawn-ready timeout, so retry
     # rather than record a spawn failure as a refusal.
     export XDG_CACHE_HOME="${BENCH_XDG:-$two.xdg}"

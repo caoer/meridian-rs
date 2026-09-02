@@ -12,7 +12,7 @@ is regenerated from state that still exists. Your bytes are the only copy.
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/projects/field-notes
-paths: /Users/Shared/projects/field-notes-sessions
+path: /srv/vaults/field-notes
+paths: /srv/vaults/field-notes-sessions
 vault: field-notes
 ```

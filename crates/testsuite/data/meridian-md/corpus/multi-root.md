@@ -19,7 +19,7 @@ The wiki: domains, decisions, effects. This is where law lives.
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/projects/field-notes
+path: /srv/vaults/field-notes
 vault: field-notes
 ```
 
@@ -28,7 +28,7 @@ month. Also an Obsidian vault, under a different vault name than its root name.
 
 ```meridian-mount
 name: sessions
-path: /Users/Shared/projects/field-notes-sessions
+path: /srv/vaults/field-notes-sessions
 vault: field-notes-sessions
 ```
 
@@ -36,5 +36,5 @@ Archived assets. A plain git folder — no `vault:` leg.
 
 ```meridian-mount
 name: archive
-path: /Users/Shared/repos/archive
+path: /srv/repos/archive
 ```

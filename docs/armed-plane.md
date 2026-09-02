@@ -2,8 +2,7 @@
 type: spec
 id: armed
 status: standing
-updated: 2026-08-18
-description: Normative spec for the floor-convention arming ladder (U4.4) and the `gate()` seam (U4.2).
+description: Normative spec for the floor-convention arming ladder and the `gate()` seam.
 owns: [the arming ladder, the gate() seam]
 ---
 
@@ -11,14 +10,14 @@ owns: [the arming ladder, the gate() seam]
 
 > **Standing:** Design law is `wire-contract.md` (one contract). Mint addresses = segments only. Receipts = armed wire facts. DuckDB/`view_path` not agent core. **Doc correct > code correct; docs first.** See `README.md`.
 
-Status: normative for the floor-convention arming ladder (U4.4) and the U4.2 `gate()` seam.
+Status: normative for the floor-convention arming ladder and the `gate()` seam.
 Law also: `laws.md` § policy gate; refusal taxonomy in `wire-contract.md` § A.2 / §8.
 
 ---
 
-# Part A — Arming from zero (U4.4)
+# Part A — Arming from zero
 
-Status: normative for the floor-convention arming ladder. Law: U4.4;
+Status: normative for the floor-convention arming ladder. Law:
 `laws.md` § policy gate; `wire-contract.md` § A.2 (block-is-a-feature, refusal
 taxonomy, genesis-epoch grey).
 
@@ -30,16 +29,15 @@ default would attest bytes nobody read). This page is the ladder a maintainer
 climbs to take a workspace from **never-armed** (the gate is a bit-for-bit
 no-op) to **steady state** (the door enforces the armed floor).
 
-The floor rules this ladder arms are the U4.4 suite: `reviewer-not-owner`,
+The floor rules this ladder arms are the floor suite: `reviewer-not-owner`,
 `claim-cas`, `close-verdict`, `decoy-close`, `verdict-reviewer-bind`, and the
 `meta-convention` (which guards arming itself). Each is a real rule PAGE that
 registers by carrying `rules/check` in its `tags:` and an `id:` — it lives
-wherever its author put it, and no folder name or filename is load-bearing
-(registration ruling § 1; the `conventions/<slug>/` folder loader is retired).
+wherever its author put it, and no folder name or filename is load-bearing.
 
 ## The two states the marker separates
 
-The once-armed marker (`meridian/attested`, defined U4.2) is the pivot. Its
+The once-armed marker (`meridian/attested`) is the pivot. Its
 **presence** — not its bytes — records that a workspace has EVER been armed
 (`crates/fs/src/domain.rs`, `ATTESTED_MARKER_PATH`). The gate reads it to tell
 two worlds apart:
@@ -63,20 +61,21 @@ transition; rung 5 is steady state.
 ### 1. Fill the slot
 
 Author the rule PAGE. It registers by carrying `rules/check` (a law) and/or
-`rules/hook` (a reaction) in its `tags:`, plus an `id:` per the § 2 grammar; one
+`rules/hook` (a reaction) in its `tags:`, plus an `id:` in the rule-id grammar
+(`crates/policy/src/registration.rs`, `RuleId`); one
 page may carry both legs, sharing one fenced block distinguished by entry point
 (`check_change` / `on_change`). A `kind:` key may restate the tag and may be
 absent — absent DERIVES from the tag — but it may never contradict it. The check
 leg keeps its fixed refusal ceiling; the hook leg may emit only its declared
-caps, with slice 1 pinned to `proto.send`. FIX and VIEW remain named
+caps, pinned to `proto.send`. FIX and VIEW remain named
 deferrals.
 
 **The page must sit inside the workspace hash domain** (`wire-contract.md`
 §12.1): a rules-tagged page on a dot-segment path (`.hidden/rules/x.md`,
 anything under a dot directory), or one excluded by a `meridian/domain.md`
 ignore rule, registers as NOTHING — law that cannot be hashed cannot be
-attested. The exclusion is never silent (§12.1 enumerator clause; card
-rules-silent-nonregistration): `mrd rules` voices such registration candidates
+attested. The exclusion is never silent (§12.1 enumerator clause):
+`mrd rules` voices such registration candidates
 in one bounded line (complete list on the `not_offered.workspace_dot` key of
 its `--json`, exit-neutral), and `mrd arm <ID>` on an id whose only carrier is
 domain-excluded refuses naming the file and the exclusion reason. Watch the
@@ -94,10 +93,10 @@ them.
 
 ### 3. Test the tiers
 
-Before arming, prove the convention against all three `mrd test` tiers — the
+Before arming, prove the convention against both `mrd test` tiers — the
 pre-arming gate:
 
-- **`--corpus`** (`mrd test --corpus <spec>`, U1.5) — fire-where-expected over a
+- **`--corpus`** (`mrd test --corpus <spec>`) — fire-where-expected over a
   governed tree, **zero dead rules**, fuel/heap p50/p99, and FIX/HOOK quiescence
   by a reachable trigger graph plus bounded counterfactual chaining. This tier
   alone may admit `md.*` counterfactuals; it does not widen the armed caps.
@@ -106,28 +105,19 @@ pre-arming gate:
   the production atomic batch executor. **The isolation is the corpus, not the
   code:** every counterfactual generation lands in a throwaway proof workspace, so
   the governed tree is read-only and the triggering write is never touched.
-- **`--history`** (`mrd test --history <ws> --rule <page> [--spec <page>]`, U1.6) — reconstruct
+- **`--history`** (`mrd test --history <ws> --rule <page> [--spec <page>]`) — reconstruct
   the workspace's own past, report the exact journal span examined, and require
   zero UNDECLARED refusals against the `golden` fence of the spec page named by
   `--spec`.
 
-> The **scenario** tier retired with the folder loader. Its atomic unit was a
-> convention FOLDER's `scenarios/` directory, and a rule page has no folder to
-> hold one. Its coverage was not dropped: each scenario either ports to a
-> corpus-tier spec case or is named redundant against a specific surviving test,
-> in the accounting delivered at the cutover's gate.
+Passing both tiers is **pre-arm qualification**, not armability. The tiers prove
+the reaction; they do not invent the attestation contract.
 
-Passing both tiers is **pre-arm qualification**, not armability. C6a proves
-the reaction; it does not invent the attestation contract.
-
-That contract is settled and wired: attestation pins the PAGE rev, so a hook page
+That contract: attestation pins the PAGE rev, so a hook page
 is attestable on exactly the same terms as a check page, the activation field is
-`off|armed`, and armed rows of both kinds now reach their surface — check rows the
-write door, hook rows the reaction feeder. The legacy surface that pinned
-`blake3(CHECK.md)` and left a HOOK-only convention permanently fail-closed is
-retired. The composed `pin` axis of `mrd status` (`status.md` § The
-composed status line) rolls up exactly this PAGE-rev drift — it ships no
-`CHECK.md`-rev surface.
+`off|armed`, and armed rows of both kinds reach their surface — check rows the
+write door, hook rows the reaction feeder. The composed `pin` axis of `mrd status`
+(`status.md` § The composed status line) rolls up exactly this PAGE-rev drift.
 
 A rule that has not passed the tiers is not qualified for arming review.
 
@@ -142,15 +132,13 @@ approval is refused, never silently armed.
 **The attested rev is the PAGE rev, uniformly.** `armed-rev = page_rev(page
 bytes) = blake3(bytes)[:16]` (`crates/policy/src/registration.rs`,
 `node-rev-merkle-spec.md`). There is no per-kind fingerprint: check pages and
-hook pages are attested by the same function. This is the grain that closed the
-original attestation blocker — under the retired special-casing the pinned rev was
-a specific FILE's hash, so a reaction-only convention had nothing to hash and could
-not be attested at all.
+hook pages are attested by the same function. A reaction-only convention is
+therefore attestable on exactly the same terms as a check.
 
 #### What the ARM act attests
 
 The tag-indexed artifact (`crates/policy/src/armed.rs`, written to
-`meridian/armed-rules.md`) is the INDEX's successor. One artifact per workspace,
+`meridian/armed-rules.md`) is the attestation record. One artifact per workspace,
 one row per **(id, arm root)**:
 
 | column | content |
@@ -158,7 +146,7 @@ one row per **(id, arm root)**:
 | `id` | the page's frontmatter `id:` |
 | `page` | workspace path of the RESOLVED page — the override winner |
 | `rev` | the page rev the row is attested at |
-| `scope` | the ARM ROOT: the root the resolution was narrowed to — a workspace-relative DIRECTORY, `.` for the workspace root. The resolver's `layer:depth` spelling (`workspace:0` in old `mrd rules` receipts) is refused at parse with a teaching: a head segment carrying `:` is the address grammar's `root:` qualifier (§ 4.1 colon law), never a workspace path. *(Citation moved from §4.2 D11 when D11 was re-ruled, 2026-08-18: the arm root is a DIRECTORY scope, not a page reference, so it sits outside the rooted-lane door family — address-grammar § 4.6 — and this refusal stands.)* |
+| `scope` | the ARM ROOT: the root the resolution was narrowed to — a workspace-relative DIRECTORY, `.` for the workspace root. A resolver-style `layer:depth` spelling (`workspace:0`) is refused at parse with a teaching: a head segment carrying `:` is the address grammar's `root:` qualifier (`address-grammar.md` § 4.1 colon law), never a workspace path. The arm root is a DIRECTORY scope, not a page reference, so it sits outside the rooted-lane door family (`address-grammar.md` § 4.6) and this refusal stands. |
 | `mode` | checks `off\|warn\|block` · hooks `off\|armed` |
 
 The act is one indivisible step — narrow to the arm root's chain, resolve through
@@ -181,13 +169,12 @@ Four properties the runbook depends on:
   is refused at the act, so no artifact can render one.
 - **A row that will FIRE must LOAD.** Registration (tag + `id:`) and declaration
   (`severity:`, `caps:`, `budget:`, the block's entry point) are two layers, and
-  arming used to attest only the first — so a page missing a declaration key
-  armed at exit 0 and pinned a row that could never fire, with no complaint
-  before a later red verdict on the fire path. The act now loads the winner
+  arming attests both: the act loads the winner
   through `policy::rule::load_rule` — the same loader `armed_law::resolve_armed_law`
   runs on the fire path — and refuses `ArmFault::Unloadable`, naming the loader's
-  own fault, **before anything is written to `meridian/armed-rules.md`**.
-  `policy` still performs no I/O: the winner's bytes arrive through the injected
+  own fault, **before anything is written to `meridian/armed-rules.md`**. A page
+  missing a declaration key therefore never pins a row that could not fire.
+  `policy` performs no I/O: the winner's bytes arrive through the injected
   `PageSource`, under the caller's `CheckLimits`.
 
 The load gate runs on the modes that FIRE, never on `off`. Attesting a page `off`
@@ -209,9 +196,8 @@ send an operator hunting a declaration bug in a healthy page.
 
 #### The disk edge (wired), and what is still deferred
 
-The door and the reaction feeder are BOTH re-keyed onto the artifact, and the
-folder loader is gone — that was the loader-cutover card. Both armed-law surfaces
-now pivot on the `meridian/attested` marker through one shared reader, so the
+The door and the reaction feeder are BOTH keyed onto the artifact. Both armed-law
+surfaces pivot on the `meridian/attested` marker through one shared reader, so the
 workspace cannot disagree with itself about whether it is armed.
 
 The ARM act's DISK EDGE is `wire_serve::armed_disk::ArmSession` (`mrd arm`
@@ -233,8 +219,8 @@ Two deferrals stay open, by name:
   on direct writes, and nothing could arm the meta-convention before the verb
   existed. Wiring the armed `meta-convention` into `mrd arm`'s re-arm leg is
   the follow-up rung.
-- **The redesigned `mrd realise --truth` convergence** over the artifact+marker
-  pair keeps its own owner (the remainder of `[[arm-disk-edge]]`).
+- **The `mrd realise --truth` convergence** over the artifact+marker pair is a
+  separate design.
 
 The **first** arming write is special, and its specialness is permanent:
 
@@ -242,15 +228,11 @@ The **first** arming write is special, and its specialness is permanent:
   marker does not yet exist), so `gate()` is a no-op. The first-arming write
   therefore lands UNGATED — it cannot be gated by the law it is installing.
 - **its permanence is the pair itself** — the attested row pins the page and
-  rev, and the marker pins the epoch, permanently. (An earlier revision
-  promised a receipt-journal row here; the journal era is retired — its
-  producer side is deleted, and nothing replaces it.)
+  rev, and the marker pins the epoch, permanently.
 - **grey on the enforcement axis, never green** — a never-armed write carries NO
   enforcement verdict (`t.result.verdicts` is empty). Grey is the ABSENCE of a
   green enforcement verdict, not a token. The genesis epoch renders grey; refusal
-  never retroactively makes it green (ATTACK-034 scoping; refusal-amendment §
-  non-refusing renders — "genesis-epoch write … grey on the enforcement axis,
-  never green").
+  never retroactively makes it green (§ What arming does NOT claim).
 
 The `meta-convention` guards this rung once it is itself armed: an arming
 proposal must pin attested evidence (P@R), declare a structural `cites:` join,
@@ -270,7 +252,7 @@ attested page drifts off its pinned `armed-rev` fails CLOSED (`armed_drift`) —
 re-arm at the live rev, or revert the law. `--force` is the only escape, and it
 is loud: journaled AND rendered.
 
-## What arming does NOT claim (ATTACK-034 scoping)
+## What arming does NOT claim
 
 Refusal makes violations "unrepresentable through an armed change plane" — never
 a stronger claim. The genesis epoch renders grey, never green. Out-of-band
@@ -280,13 +262,12 @@ it is a named residual — it is never rendered green by refusal.
 
 ---
 
-# Part A2 — Middleware on the write door (2026-08-17, mw-engine)
+# Part A2 — Middleware on the write door
 
-Status: normative for the `rules/middleware` plane. Authority: session
-`17-10-field-notes-rework` `results/draft-put-as-starlark.md` +
-`results/plan-middleware.md`. Wire shape: `wire-contract.md` § A.2.1.
+Status: normative for the `rules/middleware` plane. Wire shape:
+`wire-contract.md` § A.2.1.
 
-CHECK is yes/no in front of the door. HOOK reacted after commit and could only
+CHECK is yes/no in front of the door. HOOK reacts after commit and can only
 `proto.send`. **Middleware is the third kind: check plus transform on the
 door itself.** One Starlark eval per armed in-scope middleware page, after CAS
 and batch validation, before bytes land. Its outputs:
@@ -297,9 +278,9 @@ and batch validation, before bytes land. Its outputs:
 | `set_field(path=, key=, value=)` on THIS file | this put's own batch | engine |
 | `set_field` on OTHER files | **same sealed set** as this put | engine |
 | `create(path=, body=)` | birth in the same sealed set | engine |
-| `send(to=, body=)` | never disk — an **intent** on the response | **host realizes** (ccc-statusd) |
+| `send(to=, body=)` | never disk — an **intent** on the response | **host realizes** |
 
-The middleware `create` is **its own constructor** and takes no `props=`: its births ride this put's sealed set, not the create door, so the door-side frontmatter serializer (D6, `run-plane.md` § the machinery floor) is not reachable from here. Middleware frontmatter is `set_field` on the born path, or body bytes.
+The middleware `create` is **its own constructor** and takes no `props=`: its births ride this put's sealed set, not the create door, so the door-side frontmatter serializer (`run-plane.md` § the machinery floor) is not reachable from here. Middleware frontmatter is `set_field` on the born path, or body bytes.
 
 One caller put may become many disk edits: that is middleware compiling a
 batch, not the caller folding payloads. The set is **validate-all-then-apply**
@@ -310,7 +291,7 @@ never marks it delivered (`armed.intents[]`, § A.2.1).
 ## Registration and arming
 
 - A page registers by carrying `rules/middleware` in `tags:` plus an `id:`
-  (§ 2 grammar) — exactly like the other two kinds; no folder or filename is
+  (the rule-id grammar) — exactly like the other two kinds; no folder or filename is
   load-bearing. Required frontmatter: `paths:` (scope globs). The leg's entry
   point is `def middleware(ctx)` in the fenced ```starlark block.
 - **Mode vocabulary: `off | block`.** Middleware is door law — it can refuse
@@ -368,28 +349,28 @@ on a door with no backend fails CLOSED — the write refuses naming the gap.
   (`splice.set`) and the **remove door** evaluate no middleware in V1.
 - **Delete: not built.** No `remove` emit exists.
 
-## What retired
+## Hook scope beside the middleware door
 
-The put-path HOOK feed is dead. `splice`/`splice.set`/`create` no longer
-evaluate `rules/hook` pages and their responses carry no reaction envelopes
-(`armed.effects` stays in the shape, empty on this path) — send is not an
-engine rule, and the silent-send lane it fed is exactly what middleware
-intents replace. `rules/hook` still fires on the external-change detector
-(`watch`), where there is no caller to answer. `rules/check` is untouched:
+`splice`/`splice.set`/`create` evaluate no `rules/hook` pages and their
+responses carry no reaction envelopes (`armed.effects` stays in the shape,
+empty on this path) — send is not an engine rule; middleware intents are the
+one send lane on the put path. `rules/hook` fires on the external-change
+detector (`watch`), where there is no caller to answer. `rules/check` is
 refuse-only, same vocabulary, same tests.
 
-`mrd arm` remains the attester. First-arm `meridian/attested` is still a
-plane-wide permanent flip — arming the production sessions root stays parked
-(product call, not this plane's).
+`mrd arm` is the attester. First-arm `meridian/attested` is a plane-wide
+permanent flip — arming a production workspace is a deployment decision, not
+this plane's.
 
 ---
 
-# Part B — Gate byte landing (U4.2)
+# Part B — Gate byte landing
 
-Status: enforcement doc for the U4.2 `gate()` seam. Law: U4.2; `wire-contract.md` § A.2; `laws.md` § the policy gate.
+Status: enforcement doc for the `gate()` seam. Law: `wire-contract.md` § A.2; `laws.md` § the policy gate.
 
-**Measured at `7a22e00a`, 2026-08-12.** This page states a law and describes an
-instrument. It contains no census — see § Why the census is gone.
+**Measured at `7a22e00a`.** This page states a law and describes an
+instrument. It contains no census: the predicate a census would need — *lands
+bytes, gated or exempt* — is not the predicate the instrument derives.
 
 ## The law
 
@@ -434,7 +415,7 @@ against the tree:
 
 - **Which function in a file mints.** The set comparison keeps the file column
   and discards the function column, so every `file::function` row is prose. It
-  is accurate prose, written by U12; it is not a check.
+  is accurate prose; it is not a check.
 - **A new mint inside a file already on the list.** The scan records a file once
   and stops reading it. A ninth mint added to `write.rs` changes the derived set
   not at all.
@@ -446,23 +427,7 @@ against the tree:
   file does not fail it.
 
 Gate coverage is therefore **not stated on this page and not derived anywhere**.
-Determining it is a source-reading exercise whose result rots; the standing gap
-is recorded with the Core lane rather than restated here as prose nobody checks.
-
-## Why the census is gone
-
-This page carried a six-row prose census whose load-bearing claim was that the
-list was complete. It was last measured at `340c4de6` (2026-07-23) and carried
-no measurement stamp. By `b7c92d5a` it had rotted past repair: one row named
-`wire_serve::write::pin_lock` and a `crates/pin` crate, **neither of which
-exists** (see `crates/mrd/tests/retired_verbs.rs`); another row's migrate kit
-has no crate in-tree; the anchor promotion in `write.rs` and the `realise`
-deploy door were never in it; and it dismissed `wire_serve::write::commit_batch`
-as *"not a separate byte-lander"* on the strength of a **caller count** — a
-criterion the code itself has since rejected in `commit_batch`'s own comment.
-
-**Re-derive or strike, no third state** (standing-rule). The predicate this page
-needed — *lands bytes, gated or exempt* — is not the predicate the instrument
-derives, and re-deriving it means building a second instrument. So the census is
-struck rather than restated, relocated, or re-pinned in another form. What
-survives above is the law, and an honest description of what one test checks.
+Determining it is a source-reading exercise whose result rots, so it is not
+restated here as prose nobody checks. **Re-derive or strike, no third state:**
+what this page carries is the law, and an honest description of what one test
+checks.

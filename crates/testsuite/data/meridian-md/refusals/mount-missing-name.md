@@ -10,6 +10,6 @@ vault, pin — so `path` arriving first is reported as the missing required fiel
 not as a field out of order.
 
 ```meridian-mount
-path: /Users/Shared/projects/field-notes
+path: /srv/vaults/field-notes
 vault: field-notes
 ```

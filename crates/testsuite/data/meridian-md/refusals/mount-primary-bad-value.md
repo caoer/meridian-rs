@@ -12,7 +12,7 @@ fact instead.
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/projects/field-notes
+path: /srv/vaults/field-notes
 primary: false
 vault: field-notes
 ```

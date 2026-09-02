@@ -201,7 +201,6 @@ fn the_target_field_set_is_still_closed_and_refuses_by_name() {
 /// mint arm), so a non-v3 session is judged against the SHIPPED fields and
 /// meets the wall first. The feature was never ungated — what was false was
 /// the published mechanism, and this test is what would have caught it.
-/// (Reviewer `fa5da9ec`; advisor `ea317a27`, design conformance.)
 #[test]
 fn an_unnegotiated_mode_refuses_by_name_at_the_closed_set() {
     let tmp = TempDir::new().unwrap();
@@ -480,9 +479,9 @@ declare(on = \"PreToolUse\", match = \"Bash\")
 /// there"*), so the lookup key was the empty string, it missed, and the row
 /// came back `bad_path: no such page in the pinned corpus: ` naming nothing.
 /// The draft path existed in `modes::mode_row` and NO WIRE CALLER COULD REACH
-/// IT: `ccc-statusd hooks check --file <draft>` — the one shipped consumer —
+/// IT: the MCP face's hooks-check consumer — the one shipped consumer —
 /// answered that refusal, `verdict: the check COULD NOT RUN`, exit 2, for
-/// every draft ever passed to it (daemon 9def8084, engine f3b586ae).
+/// every draft ever passed to it.
 ///
 /// The whole `source` target form had no test on either lane. This is the
 /// wire half.

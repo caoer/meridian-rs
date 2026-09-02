@@ -3,10 +3,8 @@
 //!
 //! The shapes are [`wire::PlanEdit`] **verbatim** — the engine never re-types
 //! what the wire owns, so a new plan verb costs this module nothing. That is the
-//! whole content of ruling (B′)
-//! (`decisions/2026-08-07-script-put-builtin-edit-grammar.md`): `put()` speaks
-//! the wire's second edit dialect, so no third grammar is minted and the wire
-//! schema is untouched.
+//! whole content of ruling (B′): `put()` speaks the wire's second edit dialect,
+//! so no third grammar is minted and the wire schema is untouched.
 
 use wire::{HPATH_SEG_V1_REFUSAL, HpathSeg, PlanEdit, ReadSel};
 
@@ -93,8 +91,7 @@ pub(crate) enum SectionArg {
 /// `props`-less, body-less call, an `append` with no `section`, or a `section=`
 /// whose address is a block anchor or a dewey ordinal ([`section_segments`]). A bare
 /// `append` has no wire target — `PlanEdit::Append` carries an hpath and an
-/// empty one refuses `NotFound` in both dialects
-/// (`decisions/2026-08-07-script-bare-append-target.md`).
+/// empty one refuses `NotFound` in both dialects.
 pub(crate) fn plan_items(
     props: &[(String, String)],
     section: Option<&SectionArg>,

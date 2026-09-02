@@ -938,7 +938,7 @@ fn a_non_integer_id_is_refused_with_id_raw_at_the_daemon_door() {
 }
 
 /// Contract §3.1: the same request is a `bad_request` echoing `id_raw`.
-/// Served since the door scan landed (2026-08-12) — the R3a gap this test was
+/// Served since the door scan landed — the R3a gap this test was
 /// ignored for is closed; row 9's disposition is this refusal.
 #[test]
 fn contract_3_1_a_non_integer_id_is_refused_with_id_raw() {

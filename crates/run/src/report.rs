@@ -261,7 +261,7 @@ impl Report {
         let mut s = String::new();
         // A guarantee word renders only where it is POSITIVE (`hermetic`).
         // There is no sandbox, so `(unsandboxed)` names an alternative that
-        // does not exist (ZT ruling, 2026-08-15); `effects: undeclared` below
+        // does not exist (`docs/laws.md` § Amendment); `effects: undeclared` below
         // carries the bash fact. The `--json` `guarantee` field is unchanged.
         if self.guarantee == crate::fence::GuaranteeClass::Unsandboxed.as_str() {
             let _ = writeln!(s, "task: {}", self.task);

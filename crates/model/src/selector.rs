@@ -105,8 +105,8 @@ pub enum Color {
     Green,
     /// The ledger **does not** verify this edge; the reason names why.
     ///
-    /// The noun is deliberately wider than *cannot* (ruled 2026-08-09, session
-    /// decision 0034): most greys mean **blindness** — outside sight, the engine
+    /// The noun is deliberately wider than *cannot*: most greys mean
+    /// **blindness** — outside sight, the engine
     /// could not look — but [`GreyReason::OutsideHashDomain`] and
     /// [`GreyReason::ImmutableRoot`] mean **policy** — the engine can see the
     /// target and declines to hash it. Both are the same absence of a measure,
@@ -205,16 +205,16 @@ pub enum RedReason {
     /// [`GreyReason::Unmounted`]). Not [`SelectorUnresolved`], which asserts the
     /// page resolved and the selector failed.
     ///
-    /// **"The engine looked" is a claim about the DOMAIN, not the corpus map**
-    /// (ruled 2026-08-09, session decision 0034). Absent-from-the-corpus is
+    /// **"The engine looked" is a claim about the DOMAIN, not the corpus map.**
+    /// Absent-from-the-corpus is
     /// evidence of absence only for paths the hash domain holds; for a path it
     /// excludes, the engine never looked and the honest verdict is
     /// [`GreyReason::OutsideHashDomain`], checked first. Colouring an
     /// out-of-domain target red asserted evidence the engine did not have — the
     /// defect this note exists to keep fixed.
     ///
-    /// **And absence outranks domain membership** (ruled 2026-08-09, session
-    /// decision 0049). The clause above is scoped to a target that EXISTS and
+    /// **And absence outranks domain membership.** The clause above is scoped
+    /// to a target that EXISTS and
     /// cannot be hashed. When the engine READS the named path and the disk holds
     /// nothing there, the miss is measured and this red is the verdict whether
     /// or not the domain would have excluded it — a grey "not in the hash

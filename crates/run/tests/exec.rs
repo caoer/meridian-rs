@@ -79,8 +79,8 @@ fn the_project_root_is_exported_to_the_step() {
     assert_eq!(r.stdout, project.path().as_os_str().as_encoded_bytes());
 }
 
-/// Run-env ruling (2026-08-16, ZT: "run must not strip the daemon's
-/// environment") — the inversion of the retired `env_clear` law: the
+/// Run-env law (run must not strip the daemon's
+/// environment) — the inversion of the retired `env_clear` law: the
 /// parent's env passes through undeclared, and the declared key arrives too.
 #[test]
 fn the_daemon_env_passes_through_to_the_child() {

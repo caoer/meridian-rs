@@ -1,4 +1,4 @@
-# CI image for the Woodpecker fleet runner (.woodpecker.yaml).
+# CI image for the Woodpecker runner (.woodpecker/ci.yaml).
 #
 # Bakes every per-lane setup step into the image so pipelines start at the
 # verdict, not at apt/rustup/binstall:
@@ -8,16 +8,15 @@
 #   - mold                    (linker for every compiling lane; RUSTFLAGS below)
 #   - cargo-deny + sccache    (was: binstall download+install in the deny lane)
 #
-# Built and rebuilt BY HAND on the runner (workstation-nyc-2); the steps
+# Built and rebuilt BY HAND on the runner host (`just ci-image`); the steps
 # reference it with pull: false, so there is no registry round-trip:
 #
-#   docker build -f Dockerfile.ci -t meridian-ci:2026-08-10 .
+#   docker build -f Dockerfile.ci -t meridian-ci:<date> .
 #
-# Recut = build a NEW tag and bump &rust_image in .woodpecker.yaml, so a
+# Recut = build a NEW tag and bump &rust_image in .woodpecker/ci.yaml, so a
 # pipeline can only ever run against the recipe it names. rust:1-bookworm
-# keeps the toolchain on rolling stable — parity with the GH lane's
-# dtolnay/rust-toolchain@stable — but the move happens at image rebuild
-# time, not by floating pull mid-pipeline.
+# keeps the toolchain on rolling stable, but the move happens at image
+# rebuild time, not by floating pull mid-pipeline.
 FROM rust:1-bookworm
 
 RUN rustup component add rustfmt clippy

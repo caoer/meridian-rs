@@ -6,7 +6,7 @@
 
 use crate::Fail;
 
-/// The preset lane's rooted-ref refusal (2026-08-18 rooted-refs-everywhere):
+/// The preset lane's rooted-ref refusal:
 /// `unfold` / `reconcile` / `new` take a def-page token — a page position — but
 /// are NOT YET converted to the rooted lane. They write through the in-process
 /// preset lane with no daemon dial, so a foreign tree's armed gates would not

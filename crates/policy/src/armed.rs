@@ -1226,12 +1226,11 @@ impl Redness {
 /// **Not a redness and not a gate.** [`Redness`] answers *may this row fire on
 /// these bytes*, so [`verify_rows`] never asks it of a row that does not fire —
 /// correct, and the reason an `off` row that is then edited is invisible to
-/// every redness reader (measured 2026-08-23 on the live sessions root:
-/// `rules/010` pinned `a3f19a9dbb15ea8d`, live `5d6ebb468c85d8ee`, `redness`
-/// null). This type answers the strictly weaker question *did the pinned bytes
-/// move*, which is meaningful for a row that fires and a row that does not
-/// alike. Advisor `4dab0746` 2026-08-23 02:27 EDT: the redness contract STANDS —
-/// the gap is observability, not enforcement — closed additively by a per-row
+/// every redness reader (measured on a live root: an `off` rule pinned at one
+/// rev, live at another, `redness` null). This type answers the strictly weaker
+/// question *did the pinned bytes move*, which is meaningful for a row that
+/// fires and a row that does not alike. The redness contract STANDS — the gap
+/// is observability, not enforcement — and closes additively by a per-row
 /// drift column for every ledger row, with `off-drifted` for the `off` case,
 /// "not a redness state and trips no gate".
 ///

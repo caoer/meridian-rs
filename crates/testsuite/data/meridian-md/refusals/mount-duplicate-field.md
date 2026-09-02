@@ -11,7 +11,7 @@ both lines.
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/projects/field-notes
-path: /Users/Shared/repos/field-notes
+path: /srv/vaults/field-notes
+path: /srv/repos/field-notes
 vault: field-notes
 ```

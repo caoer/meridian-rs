@@ -125,7 +125,7 @@ impl Sandbox {
     /// fresh workspace makes the daemon FOLD it, which is the only thing the
     /// daemon emits phases for.
     ///
-    /// Measured on workstation-nyc-2, 2026-08-23: three `links` calls on three
+    /// Measured on one build host: three `links` calls on three
     /// fresh workspaces produced three complete folds (`who=…t1/t2/t3`), while
     /// three `script` calls on three fresh workspaces produced exactly ONE.
     /// The `script` asymmetry is UNEXPLAINED, and this note keeps only the
@@ -504,8 +504,8 @@ fn the_mode_off_still_gives_the_daemon_a_lane_but_no_measurements() {
 /// ONE workspace would correctly yield ONE `who=`, which is
 /// [`two_ops_on_one_cold_workspace_share_one_fold`].
 ///
-/// **Why `links` and not `script`.** The card's receipt named two concurrent
-/// `script` calls. Measured on workstation-nyc-2 2026-08-23, three `script`
+/// **Why `links` and not `script`.** The original receipt named two concurrent
+/// `script` calls. Measured on one build host, three `script`
 /// calls on three fresh workspaces produced ONE daemon fold, so there was no
 /// second daemon-side line to attribute and this gate failed on that. **Why is
 /// not established.** A pattern-less `mrd script` evaluates client-side

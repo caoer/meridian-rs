@@ -251,7 +251,7 @@ fn null_and_nested_spellings_still_re_encode_on_a_text_equal_write_back() {
     }
 }
 
-/// **The indicator class, measured not enumerated** (2026-08-23, card 17).
+/// **The indicator class, measured not enumerated.**
 ///
 /// The § A.6.3 rule is "emit plain when the plain form decodes back to exactly
 /// the caller's string". Until this landed, that question was asked only of the
@@ -284,7 +284,7 @@ fn plain_scalars_that_no_yaml_parser_can_read_are_quoted() {
         "|block",
         // an INTERIOR tab: `serde_yaml` reads it, `PyYAML` dies on the whole
         // block ("while scanning for the next token"), so the parser oracle
-        // alone never flagged it (2026-08-23, measured over the live root)
+        // alone never flagged it (measured over a live root)
         "a\tb",
     ] {
         let emitted = yaml_safe_value(value).expect("single-line values encode");
@@ -334,7 +334,7 @@ fn safe_plain_scalars_are_still_emitted_plain() {
     }
 }
 
-// ── the number/bool class (2026-08-23, card `all-digit-short-ids-read-as-int`) ─
+// ── the number/bool class (all-digit short ids must not read back as ints) ─────
 
 /// Every all-digit 8-hex agent short id that already sits BARE in the live
 /// sessions root's frontmatter (37 distinct, under `session`, `agent`, `from`,
@@ -427,9 +427,10 @@ fn an_id_already_stored_plain_is_still_preserved_on_a_no_op_write_back() {
 }
 
 /// **The 1.1 blind spot, pinned.** `serde_yaml` resolves the YAML **1.2** core
-/// schema; `PyYAML` and go-yaml (`gopkg.in/yaml.v3`, which `ccc-statusd` links)
-/// resolve **1.1**, and both of them answer 576 648 for `02146210`. Deferring to the 1.2 parser alone left the WORSE half of
-/// the id defect standing: `02146210` is the string `"02146210"` to
+/// schema; `PyYAML` and go-yaml (`gopkg.in/yaml.v3`) resolve **1.1**, and both
+/// of them answer 576 648 for `02146210`. Deferring to the 1.2 parser alone
+/// left the WORSE half of the id defect standing: `02146210` is the string
+/// `"02146210"` to
 /// `serde_yaml` — a leading zero is not a 1.2 integer — and the integer 576 648
 /// to `PyYAML`, which reads a leading-zero digit run as octal. The law is the
 /// union of the schemas, so these quote even though `serde_yaml` is content.
@@ -457,7 +458,7 @@ fn the_yaml_1_1_only_typed_spellings_are_quoted_too() {
         // The radix ints. `0x1f`/`0o17` are 1.2 integers the parser oracle
         // already catches; the UNDERSCORE spellings and every `0b…` are
         // 1.1-only — `0x1_f` is 31 and `0b1_010` is 10 to `PyYAML`, and plain
-        // strings to `serde_yaml` (measured 2026-08-23).
+        // strings to `serde_yaml` (measured).
         "0b1010",
         "0b1_010",
         "0x1f",

@@ -3,8 +3,8 @@
 //! completion receipt through the executor choke point, and the U8 stdout
 //! record riding the exec — plus the U6b detection gates (the wired
 //! `ExecBracket`: #14 cheat detection, the phase-2 gate, ruling-2
-//! never-roll-back). Bash has NO effect channel (the effect-shim fd is
-//! deleted — ZT ruling 2026-08-21): every phase-2 commit is an empty batch.
+//! never-roll-back). Bash has NO effect channel (there is no effect-shim
+//! fd): every phase-2 commit is an empty batch.
 
 use std::collections::BTreeMap;
 use std::time::Duration;

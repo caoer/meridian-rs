@@ -2,7 +2,6 @@
 type: spec
 id: body-projection
 status: standing
-updated: 2026-08-15
 description: How section body text projects into the sql face — the exclusive-chunk law, the split body relation, and the content-addressed cache protocol that keeps the append-only file from re-storing unchanged text.
 owns: [the body relation, the exclusive-chunk law, the body_text content-address protocol]
 ---
@@ -18,12 +17,10 @@ the ephemeral `:memory:` build and the `sql.duckdb` cache). Law also:
 `node-rev-merkle-spec.md` (node_rev, content span), `laws.md` § crate charters,
 `view::store` module docs (cache protocol).
 
-Mandate (ZT, 2026-08-15, verbatim): *"do 3. if you look at other sql card.
-body is one of the most important field we need to add"* — the unpark-and-build
-ruling on the parked body-in-projection row. The 2026-08-14 measurements stay
-on record and shape this HOW: structure-only projection 25 MB; naive
-body-plus-FTS file 174 MB; FTS index build over doc+section bodies 5.83 s;
-raw bodies 35.9 MB; out-of-engine full-corpus body read 0.52 s.
+Body text is one of the most important fields the sql projection serves. The
+measurements on the measuring corpus shape this HOW: structure-only projection
+25 MB; naive body-plus-FTS file 174 MB; FTS index build over doc+section bodies
+5.83 s; raw bodies 35.9 MB; out-of-engine full-corpus body read 0.52 s.
 
 ## §1 The grain — chunks, not documents
 
@@ -132,8 +129,8 @@ precisely because `.base` bytes are outside the fingerprint).
   the measured 3.36–5.83 s rebuild would ride the daemon's per-save append
   path. Search on the face today is LIKE/regexp over `body.text`; a caller may
   build a per-call FTS index in the rollback lane at its measured cost. A
-  persistent, disposable side-artifact index is a future design with its own
-  card, taken only if per-call friction shows.
+  persistent, disposable side-artifact index is a separate future design,
+  taken only if per-call friction shows.
 
 ## §6 Costs, named
 
@@ -147,9 +144,8 @@ precisely because `.base` bytes are outside the fingerprint).
   measuring corpus — a small fraction of the lane's standing full-corpus
   fold+parse; `mrd sql` remains a slow operator tool by design.
 - **Schema:** `SCHEMA_VERSION`, `CACHE_SCHEMA_VERSION`, and `SCHEMA_SALT`
-  each advance one past the wave-2 chain's previously landed value
-  (editset-n-column → base-projection → body); delete-don't-migrate covers
-  both lanes (a mismatched cache file cold-rebuilds).
+  each advance by one; delete-don't-migrate covers both lanes (a mismatched
+  cache file cold-rebuilds).
 
 ## §7 Rollout
 
@@ -182,14 +178,12 @@ dedup protocol) + `CACHE_SCHEMA_VERSION` note; `crates/cache` `SCHEMA_SALT`;
 
 Landing the code changes the sql face's answer set: new relation `body` (and
 `hist.body` / `hist.body_text` in the catalog), new `information_schema` rows,
-`SCHEMA_VERSION` 7. Conformance re-records ride the daemon's pin bump
-(deploy single-writer), armed by the landing's mandatory-tier flag. Downstream
-teaching surfaces outside this repo (the sql tool's skill, the daemon's
-refusal text) follow the served face after landing.
+`SCHEMA_VERSION` 7. Conformance re-records ride the same landing. Downstream
+clients' teaching surfaces follow the served face after landing.
 
 ### §7.4 Out of scope, named
 
-- FTS/BM25 index persistence (§5, future card).
+- FTS/BM25 index persistence (§5, future design).
 - Whole-document text reconstruction (out-of-engine `mrd read` stays the
   answer).
 - Wire surface: none. The sql face is a non-wire operator face; no door

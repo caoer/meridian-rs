@@ -261,8 +261,8 @@ fn process_timeout(world: &ModeWorld<'_>, target: &wire::RunTarget) -> std::time
 /// first finding a doc. Its pinned corpus has none to find — the wall relaxes
 /// `page` for a `source` target, so a corpus lookup keyed on `page` looks up
 /// the empty string, misses, and answers `bad_path` naming nothing. That is
-/// exactly what `ccc-statusd hooks check --file <draft>` got for every draft
-/// on daemon 9def8084 / engine f3b586ae: the draft path existed in
+/// exactly what the MCP face's hooks-check consumer got for every draft:
+/// the draft path existed in
 /// [`mode_row`] and no wire caller could reach it.
 pub struct DraftWorld<'a> {
     /// The workspace root the effects apply against.
@@ -1012,8 +1012,8 @@ fn door_class(e: &ExecError) -> &'static str {
 /// | a create AFTER it | `not_applied` | the loop stopped before reaching it |
 /// | every edit | `not_applied` | the splice never ran — a refusal from the birth lane or the armed gate is before the commit |
 ///
-/// A refusal naming NO descriptor renders BY STAGE (advisor `1161daf7`,
-/// 2026-08-23), because the splice runs after the birth lane and a uniform
+/// A refusal naming NO descriptor renders BY STAGE,
+/// because the splice runs after the birth lane and a uniform
 /// `refused` would say a file that exists is not there:
 ///
 /// - **pre-birth** (the workspace lock, taken before anything runs) — every
@@ -1819,8 +1819,7 @@ mod tests {
         }
     }
 
-    /// **The by-stage rendering, post-birth half** (advisor `1161daf7`,
-    /// 2026-08-23; PR 195 pass-2 fixture 3).
+    /// **The by-stage rendering, post-birth half.**
     ///
     /// The page load runs at `apply_under` step 2 — AFTER the birth lane — so
     /// a page that will not load fails with every birth already on disk. The

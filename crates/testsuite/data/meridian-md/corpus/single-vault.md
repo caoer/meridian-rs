@@ -14,6 +14,6 @@ The wiki I write in.
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/projects/field-notes
+path: /srv/vaults/field-notes
 vault: field-notes
 ```

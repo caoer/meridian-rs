@@ -5,9 +5,8 @@
 # first-writer property, and the no-`latest` rule are ruled there, not here.
 #
 # WHERE THIS RUNS, and what follows from it. The `platform` label selects a
-# darwin/arm64 agent — today `zmax`, a workstation running the agent with the
-# LOCAL backend (hosts/zmax/woodpecker.nix in osfiles). Consequences, none of
-# them optional:
+# darwin/arm64 agent — a workstation running the agent with the LOCAL backend.
+# Consequences, none of them optional:
 #   - `image:` names the SHELL, not a container. `bash` runs bash.
 #   - steps execute as a real user on a real machine, with that user's PATH,
 #     HOME and caches. Nothing here may assume a clean container, and nothing
@@ -26,16 +25,16 @@ when:
 # THE GATE. No release binary for a commit whose suite never ran or ran red.
 # `ci.yaml` runs on `refs/tags/v*` too, and Woodpecker does not start a workflow
 # until every named dependency SUCCEEDED — a red `ci` leaves this workflow
-# skipped and `publish` never-run (measured: pipeline 1195).
+# skipped and `publish` never-run.
 #
 # NOT `optional: true`. Optional means "enforced only if `ci` is part of the
 # pipeline", so a `ci` filtered out by its own `when` would silently let a
-# release publish ungated — the exact hole this card exists to close.
+# release publish ungated — the exact hole this gate exists to close.
 #
-# It is landable only because PR 200 replaced the parse-time OAuth netrc with a
+# It is landable only because the parse-time OAuth netrc was replaced with a
 # non-rotating PAT (the `clone:` block below): `depends_on` is precisely what
 # makes this workflow start ~18 min late, and a late clone used to die at
-# exit 128. Card: 22-18/tasks/meridian-rs-tag-lanes-not-gated.
+# exit 128.
 depends_on:
   - ci
 
@@ -43,12 +42,12 @@ labels:
   platform: darwin/arm64
 
 # Non-rotating clone credential; mechanism + traps: ci.yaml's clone block.
-# BACKEND NOTE: this lane runs the LOCAL backend (zmax), which IGNORES a
-# clone step's image/commands and runs its own plugin-git binary — but it
-# writes $HOME/.netrc from THIS step's environment (backend/local/clone.go
-# writeNetRC), because isolated-home defaults ON and zmax does not disable
-# it. So the env below is the whole delivery path on this backend; the image
-# line satisfies the schema and is not pulled.
+# BACKEND NOTE: this lane runs the LOCAL backend, which IGNORES a clone
+# step's image/commands and runs its own plugin-git binary — but it writes
+# $HOME/.netrc from THIS step's environment (backend/local/clone.go
+# writeNetRC), because isolated-home defaults ON and this agent does not
+# disable it. So the env below is the whole delivery path on this backend; the
+# image line satisfies the schema and is not pulled.
 clone:
   - name: git
     image: docker.io/woodpeckerci/plugin-git:2.9.2
@@ -80,10 +79,10 @@ steps:
         set -eu
         mkdir -p "$${CI_WORKSPACE}/.ci" "$${CARGO_TARGET_DIR}"
         # PEEL THE SHA TO A COMMIT. On a `tag` event CI_COMMIT_SHA is the
-        # ANNOTATED TAG OBJECT, not the commit — measured 2026-08-17, pipeline
-        # 848: `2358c5007e13…` for tag v0.0.0-ci-probe whose commit is
-        # `ef7c15e6b590…`. Keying on it would publish bytes at an address no
-        # consumer can reach (`git rev-list -n 1 <tag>` answers the COMMIT,
+        # ANNOTATED TAG OBJECT, not the commit — observed on an annotated probe
+        # tag: the CI sha named the tag object, `git rev-list -n 1 <tag>` the
+        # commit. Keying on it would publish bytes at an address no consumer
+        # can reach (`git rev-list -n 1 <tag>` answers the COMMIT,
         # docs/release.md §5.4) and would stamp the binary with a sha that is
         # not a commit at all (§5.1). `^{commit}` peels a tag object and is a
         # no-op on a commit sha, so both event shapes agree afterwards.
@@ -109,14 +108,14 @@ steps:
       # this build is attributable to HEAD, and --no-optional-locks so the
       # probe cannot write the index under a concurrent git. Measured why it
       # matters: with a bare `git status --porcelain`, THIS STEP'S OWN .ci/
-      # scratch dir reads as a divergence, and the lane published
-      # d3accfbe4e28…-dirty for a tree that matched HEAD exactly. A supplied
+      # scratch dir reads as a divergence, and the lane published a `-dirty`
+      # release for a tree that matched HEAD exactly. A supplied
       # MRD_BUILD_SHA rides verbatim — the supplier owns the claim — so a
       # sloppy probe here is a lie the binary then tells forever.
       #
       # IT REFUSES, IT DOES NOT WARN — and it is TRI-STATE. Both halves came
-      # from ci.yaml (PR 199) and belong here MORE than there, because what
-      # this lane publishes is a RELEASE:
+      # from ci.yaml and belong here MORE than there, because what this lane
+      # publishes is a RELEASE:
       #   - a WARNING that never fails is ceremony. ci.yaml's warned on TEN
       #     consecutive main heads and stopped nothing.
       #   - `if [ -n "$(git …)" ]` FAILS OPEN: a git exiting non-zero with
@@ -126,12 +125,12 @@ steps:
       #     substitution in an `if` condition. Reproduced with a stub git
       #     exiting 128. On THIS backend the risk is not hypothetical: steps
       #     run as a real user on a real workstation, so a git that is missing,
-      #     shadowed, or parked mid-exec is a live shape here — zmax's nix
-      #     `git` sat unrunnable under Gatekeeper for ~24 min on 2026-08-23.
+      #     shadowed, or parked mid-exec is a live shape here — this agent's
+      #     nix `git` has sat unrunnable under Gatekeeper for ~24 min.
       # The engine is deliberately tri-state for the same reason: build_git.rs
       # returns None on a non-zero exit, build.rs collapses that to `unknown`,
       # under its own rule that "I could not tell" and "it was clean" are
-      # opposite answers. Card: 22-18/tasks/tag-lanes-still-publish-dirty-releases.
+      # opposite answers.
       - |
         set -eu
         . "$${CI_WORKSPACE}/.ci/lane.env"
@@ -146,7 +145,7 @@ steps:
           printf '%s\n' "$porcelain"
           exit 1
         fi
-        # THE FOURTH STATE (F7): the probe above measures divergence from HEAD;
+        # THE FOURTH STATE: the probe above measures divergence from HEAD;
         # the stamp names $rev. Assert they are the same tree, tri-state.
         if ! head="$(git rev-parse HEAD)"; then
           echo "rev-parse FAILED — cannot attest which tree was built"
@@ -185,10 +184,10 @@ steps:
           # RETRIES, and the append-only store is what makes them safe: an
           # upload that actually landed answers 409 on the next attempt, never
           # a second copy, so a retry can neither duplicate nor replace bytes.
-          # Measured 2026-08-17 (pipeline 845): the ~53 MB binary PUT from this
-          # host answered `524` — Cloudflare's origin-timeout, raised in front
-          # of the forge, after the build had already succeeded. The upload is
-          # the fragile leg here, not the build.
+          # The ~53 MB binary PUT from this host has answered `524` —
+          # Cloudflare's origin-timeout, raised in front of the forge — after
+          # the build had already succeeded. The upload is the fragile leg
+          # here, not the build.
           put() {
             for delay in 0 15 45; do
               [ "$delay" = 0 ] || sleep "$delay"

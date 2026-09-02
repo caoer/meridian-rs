@@ -1,7 +1,7 @@
 //! The watch plane's G11 twin: a quiet detect cycle must run zero full-corpus
 //! folds (`fs::fold_count`), and concurrent subscribers must share ONE cycle.
 //!
-//! Deploy-7 live incident (2026-08-14): 23 subscribed connections each ran a
+//! The motivating live incident: 23 subscribed connections each ran a
 //! full-tree re-digest per detect cycle — `push_loop → WorkspaceRing::detect →
 //! cycle → domain_snapshot → read_and_digest_members` — continuously, because
 //! the pre-check re-read every domain byte and the coalescing gate only looks

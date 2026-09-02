@@ -4,7 +4,7 @@
 //! spans/nodes (wire `invalid_utf8` law). Integrity coverage and span service
 //! are independent properties."
 //!
-//! The motivating incident (dogfood 2026-08-08, P1): one poison member
+//! The motivating incident (a P1 in live use): one poison member
 //! (non-UTF-8 bytes) landed in a live corpus and the daemon refused the ENTIRE
 //! workspace at `hello` — every `mrd script` fleet-wide died "cannot dial the
 //! daemon" until the file was hunted down and removed. The ruled degradation

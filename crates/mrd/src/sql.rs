@@ -51,7 +51,7 @@ use crate::resolve::resolve_runtime;
 use crate::{Fail, current_dir};
 
 /// The buffered top-level JSON document's schema version (OD9).
-/// v2 (2026-08-14, NO-SANDBOX ruling): the `execution_profile` key is gone —
+/// v2 (the NO-SANDBOX ruling): the `execution_profile` key is gone —
 /// it existed only for the deleted profile split.
 const JSON_SCHEMA_VERSION: u32 = 2;
 
@@ -67,7 +67,7 @@ struct SqlArgs {
     rebuild: bool,
     cwd: Option<PathBuf>,
     /// `--root NAME`: the projection workspace by canonical root name, from
-    /// the machine mount table (2026-08-18 rooted-refs-everywhere addendum:
+    /// the machine mount table (rooted-refs-everywhere addendum:
     /// the runtime cwd should not be a factor). Mutually exclusive with
     /// `--cwd` — both select the workspace.
     root: Option<String>,
@@ -278,7 +278,7 @@ impl Frame {
 pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
     let args = SqlArgs::parse(tail)?;
     // `--root NAME` selects the projection workspace by canonical root name
-    // (2026-08-18 rooted-refs-everywhere addendum): the mount table is the
+    // (rooted-refs-everywhere addendum): the mount table is the
     // whole authority, the cwd plays no part, and an unbound name refuses
     // enumerating what does bind — the rooted seam's own refusal family.
     let workspace = if let Some(name_raw) = &args.root {

@@ -12,11 +12,11 @@
 //! two must agree byte for byte. That is what makes a hand-rolled YAML reader
 //! trustworthy — not the unit tests beside it in `model`.
 //!
-//! ZT-ruled (a) 2026-08-23, relayed by leader `73c3fab5`: `props[].value`
-//! carries the real newlines. This is the FIRST widening of that plane, and it
-//! is a widening for BOTH indicators — clip chomping (the default, and what
-//! every one of those pages uses) leaves a trailing `\n` on a FOLDED scalar
-//! too, so there is no "folded is the safe case" split.
+//! Ruling (a): `props[].value` carries the real newlines. This is the FIRST
+//! widening of that plane, and it is a widening for BOTH indicators — clip
+//! chomping (the default, and what every one of those pages uses) leaves a
+//! trailing `\n` on a FOLDED scalar too, so there is no "folded is the safe
+//! case" split.
 //!
 //! **These assertions drive the WIRE FACE, not the model.** The first version
 //! of this file called `model`'s flat map directly and passed while the
@@ -212,7 +212,7 @@ fn a_folded_clip_scalar_still_ends_in_a_newline() {
     assert_eq!(face_a, pyyaml(&page(fm), "description"));
 }
 
-/// The regression fixture the advisor named: the live page's own bytes, copied
+/// The regression fixture: the live page's own bytes, copied
 /// (the live page is read-only). 459 characters, ending in a newline.
 #[test]
 fn the_live_regression_fixture_reads_back_whole() {
@@ -257,8 +257,7 @@ fn the_live_regression_fixture_reads_back_whole() {
 /// asymmetry is the contract (`docs/wire-contract.md` § A.6.1′ — *a list value
 /// is read off the BLOCK, for every key*; cited by SECTION because the range
 /// this comment used to name has since drifted onto A.6.1a's chomping text),
-/// not a bug —
-/// changing it needs ZT's amendment (advisor ruling 2026-08-23).
+/// not a bug — changing it needs an amendment to the contract.
 #[test]
 fn a_block_list_is_untouched_by_this_card() {
     let (dir, rel) = fixture("skills:\n  - obsidian-md\n  - other\n");

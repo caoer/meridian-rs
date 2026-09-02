@@ -24,6 +24,6 @@ would publish a mount table this file's outcome says must never exist.
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/projects/field-notes
+path: /srv/vaults/field-notes
 vault: field-notes
 ```

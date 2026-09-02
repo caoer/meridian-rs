@@ -1344,8 +1344,8 @@ fn hello(
     }
 }
 
-/// Pin + bind for a `hello` declared workspace — config-grade (§3.2, ruled
-/// 2026-08-16, roots-hello-starved).
+/// Pin + bind for a `hello` declared workspace — config-grade (§3.2: a hello
+/// never starves behind another client's cold build).
 ///
 /// Workspace-less hello: version handshake only (proto + caps). With a target:
 /// exact pin via [`Registry::pin_declared`] (never cwd-shaped widening),
@@ -2542,7 +2542,7 @@ mod arm_time_exemption_tests {
     }
 }
 
-/// The §3.2 config-grade hello law (ruled 2026-08-16, roots-hello-starved):
+/// The §3.2 config-grade hello law:
 /// one client's cold whole-corpus build must never hold another client's
 /// `hello`. Deterministic via the disclosed `pause_before_insert` seam — the
 /// build parks mid-flight (snapshot taken, insert pending), exactly the
@@ -2790,7 +2790,7 @@ mod hello_config_grade_tests {
         server.shutdown();
     }
 
-    /// The second seam the live probe caught (2026-08-16, sessions corpus):
+    /// The second seam the live probe caught on a real corpus:
     /// a `links` serve computes its whole map INSIDE the engines read lock,
     /// a rebuild insert queues behind it, and from that moment every
     /// ordinary reader parks behind the queued writer. hello reads the
@@ -2998,7 +2998,7 @@ mod socket_placement_tests {
     use std::time::Duration;
 
     /// Production drain default must sit under the tightest client flock-wait
-    /// (mrd CLI 5 s, ccc-statusd 15 s, kicker 2 s).
+    /// (mrd CLI 5 s, MCP face 15 s, kicker 2 s).
     #[test]
     fn drain_cold_builds_default_is_two_seconds() {
         let cfg = Config::for_cache_root(std::path::PathBuf::from("/cache"));

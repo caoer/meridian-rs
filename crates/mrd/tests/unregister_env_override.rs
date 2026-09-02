@@ -43,8 +43,7 @@
 //! that stayed open this test was `#[ignore]`d — turning a description of an
 //! unruled defect into a gate would have prescribed the answer.
 //!
-//! **Ruled 2026-08-23**, `19-20-mrd-statusd-integration/decisions/unregister-env-override-vs-explicit-path.md`,
-//! **D with C's shape**: an explicit PATH argument outranks the env override,
+//! **The ruling — D with C's shape**: an explicit PATH argument outranks the env override,
 //! for the WHOLE ladder, fixed in `workspace::resolve_with_override` and never
 //! as a per-verb bypass. The `#[ignore]` came off with that fix. Every
 //! assertion below is unchanged from the description this file shipped as.

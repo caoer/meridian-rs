@@ -1,7 +1,6 @@
 //! The resident merkle tree (`docs/node-rev-merkle-spec.md` §6.1) — the
 //! interior folds [`model`]'s law-1 recursion computes and throws away, kept
-//! addressable and updatable, radix-256 from birth (§4.2; ruled by
-//! `decisions/2026-08-15-width-sharding-now.md`).
+//! addressable and updatable, radix-256 from birth (§4.2).
 //!
 //! One instance holds ONE workspace's directory nodes, keyed by
 //! workspace-relative path bytes. Per node (§6.1): the §4.2 child map (a

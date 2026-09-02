@@ -61,9 +61,9 @@ pub(crate) enum RuntimeResolveError {
     /// longer passes the defined-root test (no `.git` entry, no valid
     /// `MERIDIAN.md` root declaration). A leftover registry row is a hint,
     /// not a root — trusting it re-opened the corpus walk the refusal law
-    /// closed (advisor gate 2026-08-20: a pre-fix walk's row served a
-    /// 75-repo parent for 22.93 s while a fresh unmarked dir refused in
-    /// 0.01 s). Same exit-2 leg, same milliseconds.
+    /// closed (a pre-fix walk's row once served a 75-repo parent for 22.93 s
+    /// while a fresh unmarked dir refused in 0.01 s). Same exit-2 leg, same
+    /// milliseconds.
     StaleDaemonRoot {
         /// The path being resolved.
         path: PathBuf,
@@ -121,8 +121,8 @@ impl Resolved {
 /// every corpus verb takes. A tree outside every defined root refuses
 /// ([`RuntimeResolveError::OutsideWorkspace`], exit 2 at the callers) instead
 /// of adopting the bare cwd and walking a corpus that was never a workspace
-/// (measured 2026-08-20: `mrd rules` in an unmarked 75-repo parent adopted it
-/// and walked 46k files for ~21 s to report nothing).
+/// (`mrd rules` in an unmarked 75-repo parent once adopted it and walked 46k
+/// files for ~21 s to report nothing).
 ///
 /// The [`Base`] is the door's answer to "did the operator name this path?" —
 /// [`workspace::Base::Named`] for a PATH argument, [`workspace::Base::Cwd`] for

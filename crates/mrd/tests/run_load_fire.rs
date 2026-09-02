@@ -833,7 +833,7 @@ fn several_pages_load_as_several_rows_in_one_call() {
     assert_eq!(targets[1]["loaded"][0]["block"], "only");
 }
 
-/// **The positional rule** (A8, as ruled 2026-08-23) — the half a uniform
+/// **The positional rule** (A8) — the half a uniform
 /// "nothing landed" gets WRONG.
 ///
 /// Births realize before the page splice, sequentially, in emission order,

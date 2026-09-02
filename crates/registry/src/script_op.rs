@@ -1415,7 +1415,7 @@ impl ScriptHost for EntryWorldHost {
         };
         // The kernel's `section=` boundary already parsed the one selector
         // grammar; the shared resolver serves it — the dewey lane is served
-        // here since the read-alignment ruling (2026-08-13): one
+        // here too, under the read-alignment law: one
         // `selector_matches` resolution, every door.
         let doc = self.doc_for(path, Some(&display), armed)?;
         let sec = wire_serve::read::selector_to_secref(&doc, section).map_err(&fault)?;
@@ -2218,7 +2218,7 @@ mod tests {
     /// LIVE — it serves from a single-file disk load on every read, so a
     /// foreign mid-program change to it IS visible, exactly as the entry
     /// fingerprint never covered its bytes. The wire lane serves what the
-    /// CLI lane serves (ruled 2026-08-12: "mrd mcp should be same as cli").
+    /// CLI lane serves: `mrd mcp` behaves the same as the CLI.
     #[test]
     fn an_out_of_domain_path_serves_live_from_disk() {
         let tmp = tempfile::tempdir().unwrap();

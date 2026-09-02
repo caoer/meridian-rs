@@ -1237,7 +1237,7 @@ def on_change(event):
 
     /// An unrecognized key under `how:` is CARRIED, not refused. Refusing it would be
     /// the engine ruling on a vocabulary it does not own — `how:` is opaque data and
-    /// `ccc-statusd` is its only reader.
+    /// the MCP face is its only reader.
     #[test]
     fn an_unknown_how_key_is_carried_not_refused() {
         let page = FOUNDING_HOOK.replace(

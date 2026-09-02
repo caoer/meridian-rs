@@ -452,7 +452,7 @@ fn root_mismatch_scope_drop_deviation_fixture() {
     assert!(!keys.contains(&"scope"));
     let mut sorted = keys.clone();
     sorted.sort_unstable();
-    // `changed` STRUCK 2026-08-10 (§18 row 2; ZT decision 19). The frozen
+    // `changed` is STRUCK (§18 row 2; U25 implemented-absent). The frozen
     // baseline moves AS DATA with its ruling pointer — a freeze is satisfied by
     // a visible ruled diff, never by immutability forever. This fixture was the
     // ONLY thing in the workspace that ever set the field.

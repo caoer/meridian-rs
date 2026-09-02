@@ -2,11 +2,9 @@
 //! the single-CONTENT-path law, and the armed-edit ceiling.
 //!
 //! Authority: `docs/run-plane.md` § The script entry ("One CONTENT path per
-//! commit (v1 law)", "Recorded-read purity") and
-//! `decisions/2026-08-07-script-put-builtin-edit-grammar.md` § RULING (B′) —
-//! `put()` speaks the wire's second dialect, `splice.plan_edits[]`, so no third
-//! edit grammar is minted. The bare-`append=` target detail is settled at
-//! `decisions/2026-08-07-script-bare-append-target.md`.
+//! commit (v1 law)", "Recorded-read purity") and ruling (B′) — `put()` speaks
+//! the wire's second dialect, `splice.plan_edits[]`, so no third edit grammar
+//! is minted. A bare `append=` has no wire target and refuses.
 
 use std::collections::BTreeMap;
 
@@ -233,8 +231,8 @@ fn a_dewey_section_refuses_as_a_positional_address() {
 
 #[test]
 fn a_bare_append_refuses_naming_the_missing_section() {
-    // decisions/2026-08-07-script-bare-append-target.md: an empty hpath refuses
-    // NotFound in both dialects, so a document-grain append has no wire target.
+    // A bare append: an empty hpath refuses NotFound in both dialects, so a
+    // document-grain append has no wire target.
     let eval = run(r#"put("tasks/0011.md", append="- a line\n")"#);
     let Err(EvalError::Runtime { reason, .. }) = &eval.outcome else {
         panic!("expected a runtime refusal, got {:?}", eval.outcome);

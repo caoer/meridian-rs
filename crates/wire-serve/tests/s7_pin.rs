@@ -556,8 +556,8 @@ fn the_gate_refuses_an_unproven_pin_and_admits_it_with_the_reads_own_token() {
         "the refusal teaches: {:?}",
         err.message
     );
-    // No surface carries a `mode` parameter (MCP: removed ZT 08-12; wire:
-    // `sections` presence IS the mode; CLI: `--section`) — the remedy must
+    // No surface carries a `mode` parameter (MCP: none; wire: `sections`
+    // presence IS the mode; CLI: `--section`) — the remedy must
     // not teach one.
     assert!(
         err.message
@@ -566,7 +566,7 @@ fn the_gate_refuses_an_unproven_pin_and_admits_it_with_the_reads_own_token() {
         "the remedy names a mode parameter no surface carries: {:?}",
         err.message
     );
-    // F-R3 face-wide law (stale-teaching sweep, ZT 2026-08-14): a teaching
+    // F-R3 face-wide law (the stale-teaching sweep): a teaching
     // never joins target#selector — the retired fragment grammar refuses at
     // every tool's ref door, so a refusal that spells it hands the caller an
     // invalid address. The selector is named on its own.

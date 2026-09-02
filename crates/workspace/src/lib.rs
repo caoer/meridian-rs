@@ -79,8 +79,7 @@ pub const MAX_WALK_DEPTH: usize = 64;
 /// standing in the process working directory says [`Base::Cwd`]. It is a type,
 /// not a flag, so a new door cannot forget to answer: the compiler asks.
 ///
-/// Why it exists (advisor ruling 2026-08-23, `unregister-env-override-vs-explicit-path`,
-/// D with C's shape): `MERIDIAN_WORKSPACE=victim mrd unregister target` removed
+/// Why it exists: `MERIDIAN_WORKSPACE=victim mrd unregister target` removed
 /// VICTIM. The override returned at rung 1 before the argument was ever
 /// canonicalized, so the operand the operator typed was discarded — on a
 /// DESTRUCTIVE verb. The operator's word for THIS invocation is the argument;
@@ -370,8 +369,8 @@ fn has_git(dir: &Path) -> bool {
 /// The rung-2 marker test, exposed for callers that must re-verify a RECORDED
 /// root: a daemon registry row is a hint, not a marker, and a leftover
 /// registration of an unmarked tree must not read as a defined root
-/// (measured 2026-08-20: a pre-refusal walk registered a 75-repo projects
-/// parent, and every later invocation served it).
+/// (a pre-refusal walk once registered a 75-repo projects parent, and every
+/// later invocation served it).
 #[must_use]
 pub fn is_git_root(dir: &Path) -> bool {
     has_git(dir)

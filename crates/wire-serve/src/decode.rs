@@ -237,10 +237,10 @@ fn decode_walk(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
 /// § A.7 `script` field set — the entry's own inputs and nothing else. No
 /// budgets field at birth: the CLI entry exposes none either, and a future
 /// override arrives as a dotted `script.<field>` cap, never by loosening this
-/// wall. `effects`/`invocation` are the script-effects ruling's two fields
-/// (2026-08-13); `token_count_endpoint` is the `token_count` ruling's leg-B
-/// field (same day) — the harness measuring endpoint, riding exactly when
-/// the `token_count` effect is declared.
+/// wall. `effects`/`invocation` are the script-effects contract's two fields;
+/// `token_count_endpoint` is the `token_count` effect's leg-B field — the
+/// harness measuring endpoint, riding exactly when the `token_count` effect
+/// is declared.
 pub(crate) const SCRIPT_FIELDS: [&str; 14] = [
     "source",
     "args",
@@ -502,7 +502,6 @@ fn decode_run(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
     // the six target additions sat in the unconditional sets, so a v2 client
     // could never see the refusal the docs promise and a v3 client always has
     // the caps. The acceptance gate tests for those exact bytes.
-    // (PR 195 review, fa5da9ec; advisor ea317a27, design conformance.)
     if rev == Rev::V3 {
         check_fields(obj, op, &RUN_FIELDS)?;
     } else {

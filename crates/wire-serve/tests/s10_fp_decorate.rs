@@ -486,7 +486,7 @@ fn the_wire_decoder_strips_before_its_own_mint_guard() {
 /// Well-formed `@fp` on address strips before `Ref::anchor` and resolves to stored spelling.
 ///
 /// The `text` carries NO trailing newline, and that is load-bearing rather than
-/// cosmetic (`decisions/0018`, 2026-08-09). A leaf block's span EXCLUDES its
+/// cosmetic (node-rev-merkle-spec §4.4). A leaf block's span EXCLUDES its
 /// line terminator, so a trailing separator here would place a byte outside the
 /// node this edit names — the engine refuses that now, and it committed it at
 /// v1.0.0 with a `node_rev` that could not move. This fixture previously

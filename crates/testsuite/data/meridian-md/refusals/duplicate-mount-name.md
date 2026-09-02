@@ -15,11 +15,11 @@ and is U7's, not this schema's. Name uniqueness is decidable from the bytes.
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/projects/field-notes
+path: /srv/vaults/field-notes
 vault: field-notes
 ```
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/repos/archive
+path: /srv/repos/archive
 ```

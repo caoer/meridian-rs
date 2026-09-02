@@ -49,13 +49,13 @@ An indented code block is not a fenced block:
 ## Decoy 4 — inline code and bare prose
 
 Writing `meridian-mount` in inline code does not open a block, and neither does
-saying that my archive lives at /Users/Shared/repos/archive with kind:
+saying that my archive lives at /srv/repos/archive with kind:
 git-folder in an ordinary sentence.
 
 ## The one real root
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/projects/field-notes
+path: /srv/vaults/field-notes
 vault: field-notes
 ```

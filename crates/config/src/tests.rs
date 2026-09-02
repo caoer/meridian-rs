@@ -17,7 +17,7 @@ version: 1
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/projects/field-notes
+path: /srv/vaults/field-notes
 vault: field-notes
 ```
 ";
@@ -36,7 +36,7 @@ fn fm(body: &str) -> String {
     format!("---\ntype: meridian-config\nversion: 1\n---\n\n{body}")
 }
 
-/// The kind sweep (ZT 2026-08-13): `kind:` left the mount schema — vault-ness
+/// The kind sweep: `kind:` left the mount schema — vault-ness
 /// is carried by `vault:` presence alone, and the primary designation is
 /// legal on any mount. A config still carrying the field refuses through the
 /// unknown-field door, naming the line and the removal — no silent tolerance,
@@ -81,7 +81,7 @@ version: 1
 
 ```meridian-mount
 name: field-notes-sessions
-path: /Users/Shared/projects/field-notes-sessions
+path: /srv/vaults/field-notes-sessions
 vault: field-notes-sessions
 alias: sessions
 ```
@@ -193,8 +193,8 @@ The mount below carries a field the engine does not read.
 
 ```meridian-mount
 name: field-notes
-paths: /Users/Shared/projects/field-notes-sessions
-path: /Users/Shared/projects/field-notes
+paths: /srv/vaults/field-notes-sessions
+path: /srv/vaults/field-notes
 vault: field-notes
 ```
 ";
@@ -202,7 +202,7 @@ vault: field-notes
     // and the pinned string cannot drift apart silently.
     assert_eq!(
         raw.lines().nth(13),
-        Some("paths: /Users/Shared/projects/field-notes-sessions")
+        Some("paths: /srv/vaults/field-notes-sessions")
     );
 
     let err = refuse(raw);
@@ -550,7 +550,7 @@ fn an_out_of_band_edit_moves_the_rev_and_the_home_limit_still_holds() {
     // The out-of-band edit: a human changes the file behind the engine's back.
     std::fs::write(
         &file,
-        SINGLE.replace("/Users/Shared/projects", "/Volumes/wiki"),
+        SINGLE.replace("/srv/vaults", "/Volumes/wiki"),
     )
     .expect("edit");
 
@@ -651,7 +651,7 @@ kind: git-folder in a sentence.
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/projects/field-notes
+path: /srv/vaults/field-notes
 vault: field-notes
 ```
 ";
@@ -665,7 +665,7 @@ vault: field-notes
 /// block, so a build that half-loads looks healthy.
 #[test]
 fn a_refused_config_publishes_nothing() {
-    let valid_block = "```meridian-mount\nname: field-notes\npath: /Users/Shared/projects/field-notes\nvault: field-notes\n```\n";
+    let valid_block = "```meridian-mount\nname: field-notes\npath: /srv/vaults/field-notes\nvault: field-notes\n```\n";
     for (label, raw) in [
         (
             "no frontmatter",

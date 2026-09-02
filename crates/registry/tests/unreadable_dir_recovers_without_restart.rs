@@ -1,11 +1,9 @@
-//! Card `engine-io-error-names-no-path`, **leg 2**: an unreadable directory
-//! mid-corpus, gated on the two clauses the card's § Done binds together —
+//! An unreadable directory mid-corpus, gated on two clauses together —
 //! the refusal **names the path**, and recovery **needs no restart**.
 //!
-//! Receipt (2026-08-24 ≈01:39–01:46Z, field-notes-sessions): one mode-000
-//! session directory made every face refuse `io_error: Permission denied (os
-//! error 13)`, workspace-wide, naming nothing. The incident memo
-//! (`agents/36336bf0/memos/transient-workspace-eacces-clean-tree.md`) records
+//! The motivating incident: one mode-000
+//! directory made every face refuse `io_error: Permission denied (os
+//! error 13)`, workspace-wide, naming nothing. The incident record notes
 //! that it "cleared with no intervention" — nobody restarted the daemon. Both
 //! halves of that sentence are behaviour, and until this file neither was
 //! gated at the daemon.
@@ -180,7 +178,7 @@ impl Drop for Locked<'_> {
     }
 }
 
-/// Leg 2's gate, both clauses against ONE never-restarted resident.
+/// The gate, both clauses against ONE never-restarted resident.
 #[test]
 fn an_unreadable_dir_names_the_path_and_recovery_needs_no_restart() {
     let tmp = TempDir::new().unwrap();
@@ -307,7 +305,7 @@ fn the_tree_instance_token_moves_across_a_restart_so_equality_discriminates() {
 /// about time passing: while the directory stays unreadable the refusal must
 /// persist. Without this, a gate could pass on an engine that simply forgot
 /// the failure after one call — which would be a different bug wearing
-/// recovery's clothes, and the one the card's "cache/state" wording feared.
+/// recovery's clothes, and the one a "cache/state" reading would fear.
 #[test]
 fn the_refusal_persists_while_the_directory_stays_unreadable() {
     let tmp = TempDir::new().unwrap();

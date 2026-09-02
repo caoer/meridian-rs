@@ -55,7 +55,7 @@ const OWN_BUILD: &str = env!("MRD_BUILD_SHA");
 /// the fleet's skew grammar (`child:… daemon:… SKEW`): both identities, the
 /// verdict, the reason, and fitted suggestions.
 ///
-/// The teaching register (ZT ruling 2026-08-14): explain WHY, then suggest
+/// The teaching register: explain WHY, then suggest
 /// fixes each under its applicability condition — never demand one command,
 /// because no single command applies to every caller (a caller who does not
 /// own the resident must not kill it; a managed install owns its own restart).

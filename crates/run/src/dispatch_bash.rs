@@ -22,8 +22,8 @@
 //!     never re-read after (#19) and never compared (no world pin).
 //! ```
 //!
-//! **Bash has NO governed-tree effect channel** (the effect-shim fd is
-//! deleted — ZT ruling 2026-08-21): a bash block observes and reports;
+//! **Bash has NO governed-tree effect channel** (there is no effect-shim
+//! fd): a bash block observes and reports;
 //! governed writes ride the wire faces (MCP `put`) or a starlark task. Phase
 //! 2 commits the completion receipt only — an empty batch, always.
 //!

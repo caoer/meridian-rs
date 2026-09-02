@@ -28,16 +28,16 @@ when:
 # THE GATE. No release binary for a commit whose suite never ran or ran red.
 # `ci.yaml` runs on `refs/tags/v*` too, and Woodpecker does not start a workflow
 # until every named dependency SUCCEEDED — a red `ci` leaves this workflow
-# skipped and `publish` never-run (measured: pipeline 1195).
+# skipped and `publish` never-run.
 #
 # NOT `optional: true`. Optional means "enforced only if `ci` is part of the
 # pipeline", so a `ci` filtered out by its own `when` would silently let a
-# release publish ungated — the exact hole this card exists to close.
+# release publish ungated — the exact hole this gate exists to close.
 #
-# It is landable only because PR 200 replaced the parse-time OAuth netrc with a
+# It is landable only because the parse-time OAuth netrc was replaced with a
 # non-rotating PAT (the `clone:` block below): `depends_on` is precisely what
 # makes this workflow start ~18 min late, and a late clone used to die at
-# exit 128 (pipeline 1204). Card: 22-18/tasks/meridian-rs-tag-lanes-not-gated.
+# exit 128.
 depends_on:
   - ci
 
@@ -45,12 +45,11 @@ labels:
   hostname: workstation-nyc-2
 
 # Non-rotating clone credential — the fix for exactly this lane's recorded
-# failure (pipeline 1204: clone 18 min after `ci`, "could not read Username",
-# exit 128). Mechanism + traps: the long comment in ci.yaml's clone block.
+# failure (a clone 18 min after `ci`: "could not read Username", exit 128).
+# Mechanism + traps: the long comment in ci.yaml's clone block.
 # PLUGIN_TAGS replicates what the server's default clone sets ONLY on tag
 # events (compiler.go cloneSettings["tags"]) — without it the tag object is
-# absent and the `git rev-parse "$CI_COMMIT_SHA^{commit}"` peel breaks
-# (measured, pipeline 848).
+# absent and the `git rev-parse "$CI_COMMIT_SHA^{commit}"` peel breaks.
 clone:
   - name: git
     image: docker.io/woodpeckerci/plugin-git:2.9.2
@@ -89,13 +88,13 @@ steps:
         # container did not create.
         git config --global --add safe.directory "$${CI_WORKSPACE}"
         # PEEL THE SHA TO A COMMIT. On a `tag` event CI_COMMIT_SHA is the
-        # ANNOTATED TAG OBJECT, not the commit — measured 2026-08-17, pipeline
-        # 848: `2358c5007e13…` for tag v0.0.0-ci-probe whose commit is
-        # `ef7c15e6b590…`. Keying on it publishes bytes at an address no
-        # consumer can reach (`git rev-list -n 1 <tag>` answers the COMMIT,
-        # docs/release.md §5.4) and stamps the binary with a sha that is not a
-        # commit at all (§5.1). `^{commit}` peels a tag object and is a no-op
-        # on a commit sha, so push, manual and tag events all agree afterwards.
+        # ANNOTATED TAG OBJECT, not the commit — observed on an annotated probe
+        # tag: the CI sha named the tag object, `git rev-list -n 1 <tag>` the
+        # commit. Keying on it publishes bytes at an address no consumer can
+        # reach (`git rev-list -n 1 <tag>` answers the COMMIT, docs/release.md
+        # §5.4) and stamps the binary with a sha that is not a commit at all
+        # (§5.1). `^{commit}` peels a tag object and is a no-op on a commit
+        # sha, so push, manual and tag events all agree afterwards.
         rev="$(git rev-parse "$${CI_COMMIT_SHA}^{commit}")"
         echo "$${rev}" > /tmp/rev
         echo "publishing under commit $${rev} (CI sha: $${CI_COMMIT_SHA})"
@@ -117,22 +116,20 @@ steps:
       # worktree_dirty): --untracked-files=no, --no-optional-locks. A bare probe
       # would read this step's own `.ci` scratch dir as a divergence and stamp a
       # lie that a supplied MRD_BUILD_SHA then carries verbatim into the pin —
-      # it did exactly that once, publishing d3accfbe4e28…-dirty for a tree that
+      # it did exactly that once, publishing a `-dirty` release for a tree that
       # matched HEAD.
       #
       # THIS LANE DOES NOT SHARE A WORKSPACE WITH ci.yaml's LANES. Two earlier
-      # revisions of this comment said it did, and PR 199 edited the sentence
-      # without noticing the claim. Woodpecker workflows share no files by
-      # design, and it is measured: in pipeline 1328 this lane's clone printed
+      # revisions of this comment said it did. Woodpecker workflows share no
+      # files by design, and it is measured: this lane's clone prints
       # `Initialized empty Git repository in /woodpecker/src/…/meridian-rs/.git/`
-      # at the SAME PATH ci had cloned into 392 s earlier — same path, different
+      # at the SAME PATH ci cloned into minutes earlier — same path, different
       # volume. So `target-ci` was never visible here; the untracked path this
-      # lane must not trip over is its own `.ci`. Found by binding reviewer
-      # 26340fc2 on PR 199.
+      # lane must not trip over is its own `.ci`.
       #
       # IT REFUSES, IT DOES NOT WARN — and it is TRI-STATE. Both halves came
-      # from ci.yaml (PR 199) and belong here MORE than there, because what
-      # this lane publishes is a RELEASE:
+      # from ci.yaml and belong here MORE than there, because what this lane
+      # publishes is a RELEASE:
       #   - a WARNING that never fails is ceremony. ci.yaml's warned on TEN
       #     consecutive main heads and stopped nothing. `-dirty` means a lane
       #     wrote a TRACKED file mid-pipeline, and the pin would then name
@@ -146,7 +143,7 @@ steps:
       # The engine is deliberately tri-state for the same reason: build_git.rs
       # returns None on a non-zero exit, build.rs collapses that to `unknown`,
       # under its own rule that "I could not tell" and "it was clean" are
-      # opposite answers. Card: 22-18/tasks/tag-lanes-still-publish-dirty-releases.
+      # opposite answers.
       - |
         set -eu
         . /tmp/lane.env
@@ -161,7 +158,7 @@ steps:
           printf '%s\n' "$porcelain"
           exit 1
         fi
-        # THE FOURTH STATE (F7): the probe above measures divergence from HEAD;
+        # THE FOURTH STATE: the probe above measures divergence from HEAD;
         # the stamp names $rev. Assert they are the same tree, tri-state.
         if ! head="$(git rev-parse HEAD)"; then
           echo "rev-parse FAILED — cannot attest which tree was built"
@@ -197,7 +194,7 @@ steps:
           echo "$${sha}  mrd-linux-amd64" > /tmp/mrd-linux-amd64.sha256
           # RETRIES, safe because the store is append-only: an upload that
           # landed answers 409 next time, never a second copy. The darwin
-          # sibling measured a `524` (Cloudflare origin-timeout) on the same
+          # sibling has seen a `524` (Cloudflare origin-timeout) on the same
           # PUT; this lane's path to the forge is shorter but not immune.
           put() {
             for delay in 0 15 45; do

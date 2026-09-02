@@ -12,9 +12,9 @@ owns: [process, standing corrections, inventory, reading order]
 
 1. **Doc correct > code correct.** These files teach the accurate design. If code, goldens, or MCP schemas disagree, the **document wins**.
 2. **Docs first.** Material change updates the correct doc **before** code.
-3. **One standing wire contract:** `wire-contract.md` only (no v2/v3 stack).
-4. **Self-contained tree.** Standing docs cite **only other files in this directory** (plus in-repo `crates/` paths for implementers). No wiki decisions, session result files, or out-of-tree markdown as authorities.
-5. **Optional log:** `worker-log.md` holds time-sensitive provenance. **Safe to delete** — design docs must read correctly without it.
+3. **One standing wire contract:** `wire-contract.md` only (no v2/v3 stack). It is authored in this file — edit it directly, docs-first.
+4. **Self-contained tree.** Standing docs cite **only other files in this directory** (plus in-repo `crates/` paths for implementers). No out-of-tree markdown as an authority.
+5. **No dated markers.** State the current fact in positive form; history lives in git.
 
 ## Standing corrections (always on)
 
@@ -49,15 +49,12 @@ owns: [process, standing corrections, inventory, reading order]
 | `body-projection.md` | Section body text in the sql face: exclusive-chunk law, `body` relation, content-addressed cache protocol |
 | `run-plane.md` | Run plane + preset/session birth |
 | `status.md` | CLI / build **descriptive** snapshot |
-| `worker-log.md` | **Optional** history / provenance — deletable |
+| `doc-system.md` | How this directory is organized and maintained |
 
 ## Reading order
 
 1. This README  
 2. `wire-contract.md`  
 3. `laws.md` if editing crates  
-4. Task SPECs as needed  
-5. `status.md` only for “what the binary exposes today”  
-6. `release.md` only when cutting or consuming a release  
-
-Do **not** start from `worker-log.md`.
+4. `status.md` only for “what the binary exposes today”  
+5. `release.md` only when cutting or consuming a release  

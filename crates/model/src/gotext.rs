@@ -1,9 +1,9 @@
 //! Frozen Go-text heading predicate — sole engine owner.
 //!
 //! `sanitize_heading` is the address law for every heading-derived name.
-//! Byte-for-byte with meridian-go `sanitizeHeading` / `sanitizeHeadingHost`
-//! (`map.go`, `readsidecar.go:350`): `TrimSpace`, `/`→`-`, ASCII space→`-`,
-//! empty→`"untitled"`. Frozen — reproduced, not improved.
+//! Byte-for-byte with the Go-side `sanitizeHeading` / `sanitizeHeadingHost`
+//! the parity fixtures were captured from: `TrimSpace`, `/`→`-`, ASCII
+//! space→`-`, empty→`"untitled"`. Frozen — reproduced, not improved.
 //!
 //! Lives in `model` (not `wire-map`) so its three consumers —
 //! `wire-map::facts`, `policy::defs::rebuild`, the Go host mirror — cannot
@@ -95,10 +95,9 @@ mod tests {
         assert_eq!(sanitize_heading(" / "), "-");
     }
 
-    /// Every heading of the Go-side drift-guard corpus
-    /// (`ccc-statusd/internal/mcpserver/testdata/parity/corpus`, 61 headings
-    /// over 14 roots), paired with the real Go `sanitizeHeadingHost`
-    /// (`puttoc.go:144`) output over the same input.
+    /// Every heading of the drift-guard corpus (the frozen parity corpus under
+    /// `testsuite/data/parity/corpus`, 61 headings over 14 roots), paired with
+    /// the Go-side `sanitizeHeadingHost` output over the same input.
     const DRIFT_GUARD_CORPUS: &[(&str, &str)] = &[
         ("Tasks", "Tasks"),                                 // authz/agents/other999.md:6
         ("Handoff", "Handoff"),                             // authz/agents/other999.md:10

@@ -1542,9 +1542,9 @@ pub struct CheckWriteRepair {
 /// One `mounts` row (§ A.5): what this machine can say about one declared
 /// root. Word fields are open strings on the wire — the tolerant-client law
 /// covers each; the engine's own closed type (`MountState`) lives in
-/// `config` and is projected here verbatim. The `kind` field is retired
-/// (kind-sweep, ZT 2026-08-13): the taxonomy left the schema, and a row
-/// field nobody can act on is a field the wire does not carry.
+/// `config` and is projected here verbatim. There is no `kind` field: the
+/// taxonomy left the schema, and a row field nobody can act on is a field
+/// the wire does not carry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MountRow {
     /// The canonical `MountName` — the bindable layer's spelling, lowercase
@@ -2507,8 +2507,8 @@ pub enum ErrorCode {
     /// v2 §8/§5.1: a failed world guard (`if_root`) — the plan is invalid,
     /// not one node's picture. Extras: `expected`/`actual` (roots).
     ///
-    /// `changed` was STRUCK 2026-08-10 (§18 row 2; ZT decision 19, U25
-    /// implemented-absent). It was contracted and minted by NOTHING: the world
+    /// `changed` is STRUCK (§18 row 2; U25 implemented-absent). It was
+    /// contracted and minted by NOTHING: the world
     /// guard holds two opaque roots and a merkle root is not invertible, so the
     /// door cannot name the files that drifted. `recovery: resync` already
     /// instructs the full re-read that is the set's only honest recovery.

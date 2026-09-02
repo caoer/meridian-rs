@@ -838,8 +838,8 @@ pub fn multi_line_value_refusal(key: &str) -> String {
 ///
 /// [`needs_quoting`] carries the enumerated triggers. ONE spelling stays
 /// VERBATIM: a one-level flow list (`[a, b]`), the only way this string plane
-/// can author a list. **The typed-scalar carve-out is RETIRED** (2026-08-23,
-/// card `all-digit-short-ids-read-as-int`): `true`, `7` and every all-digit
+/// can author a list. **There is no typed-scalar carve-out**: `true`, `7` and
+/// every all-digit
 /// agent short id used to emit plain, so a caller string like `19895504` read
 /// back as an INTEGER in every foreign parser, and `02146210` read back as
 /// 576648 (YAML 1.1 octal, `PyYAML`) — on `owner`, `session`, `agent`, `from`,
@@ -1054,7 +1054,7 @@ fn needs_quoting(val: &str) -> bool {
     }
     // …and then the same question asked of a REAL YAML parser, because the
     // classifier above is the engine's own and is measurably more permissive
-    // than YAML (2026-08-23, card 17, `props=` hostile table).
+    // than YAML (the `props=` hostile table below is the measurement).
     //
     // Measured with `PyYAML` on `k: <val>`: a value opening `- `, `? `, `,`,
     // `[`-that-is-not-a-flow-list, `*`, `&`, `%`, `@`, `` ` `` or an
@@ -1073,10 +1073,9 @@ fn needs_quoting(val: &str) -> bool {
 /// The YAML **1.1** scalar classes that a 1.2 parser leaves as strings — the
 /// blind spot of the `serde_yaml` oracle above.
 ///
-/// The fleet reads this frontmatter with `PyYAML` and with go-yaml
-/// (`gopkg.in/yaml.v3`, which `ccc-statusd` links) as well as with this engine,
-/// and both of those resolve the 1.1 schema. Measured 2026-08-23 (card
-/// `all-digit-short-ids-read-as-int`), each library into an untyped target: the
+/// Foreign readers parse this frontmatter with `PyYAML` and with go-yaml
+/// (`gopkg.in/yaml.v3`) as well as with this engine, and both of those resolve
+/// the 1.1 schema. Measured, each library into an untyped target: the
 /// agent short id `02146210` is the STRING `"02146210"` to `serde_yaml` — a
 /// leading zero is not a 1.2 integer — and the INTEGER 576 648 to BOTH 1.1
 /// readers, which take a leading-zero digit run as octal. Deferring to the 1.2
@@ -1185,9 +1184,9 @@ fn reads_typed_in_yaml_1_1(val: &str) -> bool {
 /// single shape this string plane cannot otherwise author (§ A.6.3). Everything
 /// else quotes, `serde_yaml`'s verdict deciding.
 ///
-/// The `Bool | Int | Float | Timestamp` arm that used to sit beside `List` was
-/// removed 2026-08-23 (card `all-digit-short-ids-read-as-int`): it let a value
-/// the caller spelled as a string be emitted as a number or a boolean. 203 of
+/// No `Bool | Int | Float | Timestamp` arm sits beside `List`: such an arm
+/// would let a value the caller spelled as a string be emitted as a number or a
+/// boolean. 203 of
 /// 8 125 distinct 8-hex ids on the live sessions root (2.5 %) are all-digit,
 /// and 37 of them already sit bare in frontmatter under `session`, `agent`,
 /// `from`, `owner`, `author` — read as integers by every foreign parser.

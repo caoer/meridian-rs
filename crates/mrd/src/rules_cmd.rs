@@ -32,8 +32,8 @@
 //! page), the user rung, and the declined enumerations, and calls pure
 //! functions over the bytes: no arm, no receipt, no cap spend, no write path.
 //! It does NOT snapshot the whole domain: a full `fs::domain_snapshot` read and
-//! digested 37k files / 219 MB per invocation (measured 2026-08-19, ~2.5 CPU-s
-//! and 548 MB peak RSS) to answer about a dozen chain pages, and this verb is
+//! digested 37k files / 219 MB per invocation (~2.5 CPU-s and 548 MB peak
+//! RSS) to answer about a dozen chain pages, and this verb is
 //! hook-adjacent — its cost multiplies by every caller.
 //!
 //! # Registered here vs armed here
@@ -321,15 +321,14 @@ impl ArmedCell {
 /// **The drift column** — one per LEDGER ROW: does the pinned page still read at
 /// the rev the row was attested at?
 ///
-/// Ruled by advisor `4dab0746` 2026-08-23 02:27 EDT (card
-/// `rules-drift-invisible-on-off-rows`): the redness contract STANDS, so
-/// [`policy::armed::verify_rows`] keeps answering nothing for an `off` row and
-/// `armed=` keeps its vocabulary. The gap it leaves is OBSERVABILITY — a rule
-/// flipped off and then edited rendered `armed=off` and nothing else, on a
-/// surface that printed the ledger's row count four lines above — and it closes
-/// additively, here: every ledger row carries this cell, and the `off` case has
-/// its own word, `off-drifted`, which **is not a redness state and trips no
-/// gate** ([`RulesReport::findings`] never reads this field).
+/// The redness contract STANDS, so [`policy::armed::verify_rows`] keeps
+/// answering nothing for an `off` row and `armed=` keeps its vocabulary. The
+/// gap it leaves is OBSERVABILITY — a rule flipped off and then edited rendered
+/// `armed=off` and nothing else, on a surface that printed the ledger's row
+/// count four lines above — and it closes additively, here: every ledger row
+/// carries this cell, and the `off` case has its own word, `off-drifted`, which
+/// **is not a redness state and trips no gate** ([`RulesReport::findings`]
+/// never reads this field).
 ///
 /// The join is [`policy::armed::ArmedArtifact::drift`] — one rev law with the
 /// gate, so this column and the `armed=` redness cannot disagree about a row
@@ -1301,8 +1300,8 @@ fn render_human(report: &RulesReport) -> String {
         }
         // `none` is the whole honest answer. Where an armed set WOULD live is
         // teaching, and teaching lives in docs on demand — never a footnote
-        // charged to every invocation (ZT ruling 4, 2026-08-15). The present
-        // and corrupt arms keep their path: there it is the diagnostic.
+        // charged to every invocation. The present and corrupt arms keep their
+        // path: there it is the diagnostic.
         ArmedSource::Absent { .. } => {
             let _ = writeln!(out, "  armed-set  none");
         }

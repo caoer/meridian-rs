@@ -199,10 +199,9 @@ fn g1_warm_is_silent_and_stdout_is_byte_identical_to_the_degrade() {
 }
 
 // ---------------------------------------------------------------------------
-// Gate 4 (rewritten by the short-sock law, 2026-08-20): a DEEP cache root no
-// longer kills the socket — the daemon binds the hash-keyed short path and
-// serves WARM. The exact hazard G1 was found through, closed at the root
-// instead of voiced.
+// Gate 4 (the short-sock law): a DEEP cache root does not kill the socket —
+// the daemon binds the hash-keyed short path and serves WARM. The exact
+// hazard G1 was found through, closed at the root instead of voiced.
 // ---------------------------------------------------------------------------
 
 /// An `XDG_CACHE_HOME` long enough that the OLD in-root socket placement

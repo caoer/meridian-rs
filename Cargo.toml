@@ -42,6 +42,7 @@ version = "1.1.0"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/caoer/meridian-rs"
 publish = false
 
 [workspace.dependencies]
@@ -50,7 +51,7 @@ publish = false
 # deps, under every layer — `fs`, `run` and `mrd` take it, and an instrument
 # that knows nothing about them can sit beneath all three without a cycle.
 timing = { path = "crates/timing", version = "1.1.0" }
-# The agent-plane address leaf (stage 3, D4): `std`-only, zero deps, UPSTREAM of
+# The agent-plane address leaf: `std`-only, zero deps, UPSTREAM of
 # `syntax` — an address becomes a value here, so nothing downstream re-splits a
 # string (docs/address-grammar.md § 7.1).
 addr = { path = "crates/addr", version = "1.1.0" }
@@ -75,10 +76,10 @@ view = { path = "crates/view", version = "1.1.0" }
 lock = { path = "crates/lock", version = "1.1.0" }
 preset = { path = "crates/preset", version = "1.1.0" }
 check = { path = "crates/check", version = "1.1.0" }
-# The git plumbing organ (S5): shell-out content-addressing + reachability. A
+# The git plumbing organ: shell-out content-addressing + reachability. A
 # std-only leaf, so `mrd`/`wire-serve`/`view` can each take the edge.
 git = { path = "crates/git", version = "1.1.0" }
-# The MERIDIAN.md config plane (stage 3, D4): the one entry point parsed as
+# The MERIDIAN.md config plane: the one entry point parsed as
 # content. Downstream of `model` — it is the markdown engine's own parser that
 # gives the config a rev, which is what "config is content" means.
 config = { path = "crates/config", version = "1.1.0" }
@@ -107,8 +108,8 @@ starlark_syntax = "=0.14.2"
 anyhow = "1"
 # sha256 over canonical-path bytes = the cache drawer key (crates/cache).
 sha2 = "0.10"
-# Linker-assembled registration, used by `lock` for the engine-emits property
-# (#8 §1, U36): each canonical writer declares its own block language next to
+# Linker-assembled registration, used by `lock` for the engine-emits property:
+# each canonical writer declares its own block language next to
 # itself, so the engine-emitted SET is collected by the linker and no list of
 # names exists anywhere to silently omit a new member. Already in the lock via
 # starlark's own tree — this makes the existing edge direct, not new.
@@ -133,7 +134,7 @@ hdrhistogram = "7"
 # guard correctness structurally cannot consult the feed (§6.4 guard-plane
 # law).
 notify = "8"
-# Kernel test stack (decisions/0003 § Testing methodology): insta = golden
+# Kernel test stack: insta = golden
 # descriptor snapshots; proptest = invariants (determinism, fuel bounds, no
 # panic on any event). Dev-only; the plain `cargo test` path drives both (no
 # extra cargo subcommand needed — cargo-insta is optional review sugar).
@@ -155,5 +156,5 @@ pedantic = { level = "warn", priority = -1 }
 # edges. Fork version stays equal to upstream's; merge-from-upstream on branch
 # `obsidian`; each rev bump gets a comment naming its upstream PR.
 [patch.crates-io]
-# obsidian HEAD 2026-07-18 (pre-Step-0 fork point; repin as ENABLE_OBSIDIAN_* lands)
+# obsidian HEAD 2026-07-18 (fork point; repin as ENABLE_OBSIDIAN_* lands)
 pulldown-cmark = { git = "https://github.com/caoer/pulldown-cmark", rev = "bc5df96c23da33283ef53c1a8dcfc53d7b6cd4fb" }

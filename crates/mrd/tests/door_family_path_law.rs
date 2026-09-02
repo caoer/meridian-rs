@@ -2,8 +2,8 @@
 //! names a path at (`docs/wire-contract.md` §12.1, line 878: "The rule binds a
 //! DOOR FAMILY, and the family is every door the caller NAMES A PATH AT").
 //!
-//! The defect this gate exists to prevent, measured 2026-08-15 at `073d184f1`
-//! and re-measured at `cac5bc8b`: handed the identical absolute path the read
+//! The defect this gate exists to prevent, measured at `073d184f1` and
+//! re-measured at `cac5bc8b`: handed the identical absolute path the read
 //! door refuses by §1, `walk` WALKED it, `links` SERVED it, `repair` accepted
 //! it and scanned 0, `realise` OPENED it, and `run` EXECUTED it — including a
 //! page entirely OUTSIDE the workspace, writing the receipt into the

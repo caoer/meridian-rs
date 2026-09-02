@@ -1,5 +1,5 @@
 //! The script entry through the REAL door with a poison member present —
-//! the P1 dogfood incident (2026-08-08), held to node-rev-merkle-spec §3
+//! the poison-member incident, held to node-rev-merkle-spec §3
 //! line 52: non-UTF-8 files "still get leaf hashes … and participate in the
 //! root; they simply serve no spans/nodes (wire `invalid_utf8` law)".
 //!

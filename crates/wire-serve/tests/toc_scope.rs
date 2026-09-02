@@ -1,5 +1,4 @@
-//! The `toc` scope's ruled semantics (F-R3, ZT 2026-08-13; dogfood-fresh
-//! findings § ZT rulings item 5): the read op's subtree scope is ONE tagged
+//! The `toc` scope's semantics (F-R3): the read op's subtree scope is ONE tagged
 //! selector with every position meaning one thing — a heading path or a dewey
 //! ordinal resolves to one section and scopes the shape table to that
 //! subtree; the anchor arm refuses (a block has no subtree); a bare duplicate

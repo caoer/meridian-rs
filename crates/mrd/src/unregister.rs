@@ -63,9 +63,8 @@ pub(crate) fn run(target_arg: Option<&str>, format: Format) -> Result<(), Fail> 
     } else {
         // The operand decides. `MERIDIAN_WORKSPACE` used to answer this rung
         // before the argument was ever canonicalized, so a live override made
-        // this door remove the tree the operator did NOT name (advisor ruling
-        // 2026-08-23, `unregister-env-override-vs-explicit-path`). With no PATH
-        // the cwd is ambient and the override still answers, as it always did.
+        // this door remove the tree the operator did NOT name. With no PATH the
+        // cwd is ambient and the override still answers, as it always did.
         let ladder_base = match target_arg {
             Some(_) => workspace::Base::Named(&base),
             None => workspace::Base::Cwd(&base),

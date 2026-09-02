@@ -1,7 +1,7 @@
 //! The mechanical downgrade fence — dormant B-03 mechanism.
 //!
-//! Standing law (ZT on the b03 card, 2026-08-15): B-03 is not a cutover
-//! blocker. There are no old-binary users. The tombstone never activates.
+//! Standing law: B-03 is not a cutover blocker. There are no old-binary
+//! users. The tombstone never activates.
 //! No-return is the durable B-04 record. This module ships the mechanism
 //! built and tested; [`activate`] has no production caller.
 //!

@@ -15,7 +15,7 @@
 //!    loaded.
 //!
 //! `primary:` is deliberately absent from every fixture but the one that proves
-//! it is not consulted (ZT 475): the designation means exactly what it meant
+//! it is not consulted: the designation means exactly what it meant
 //! before, and no derivation reads it for `sessions`.
 
 use std::path::{Path, PathBuf};
@@ -226,7 +226,7 @@ fn an_aliased_mount_answers_the_constant_and_echoes_the_name() {
 ///
 /// The no-special-case half of § 5.1b: name-first-then-alias means a name is its
 /// own alias, so the machine that already calls its root `sessions` writes
-/// nothing new. Also the `primary:` half of ZT 475 — the designation sits on a
+/// nothing new. Also the `primary:` half of the law — the designation sits on a
 /// DIFFERENT mount here, and nothing derives `sessions` from it.
 #[test]
 fn a_name_is_its_own_alias_and_primary_is_not_consulted() {

@@ -6000,7 +6000,7 @@ fn simulate_armed_edits(
         // exempts this shape, never its spelling: `node_rev_before` is the key
         // line's real rev, `node_rev_after` is the no-node token A.6.3a′ arms
         // on the create arm, and `span_after` is the zero-width point the line
-        // vacated. Ruling `decisions/0018` forbids keying this family on the
+        // vacated. Node-rev-merkle-spec §4.4 forbids keying this family on the
         // `at:` scope because a scope enumeration misses cells; nothing is
         // missed here, because a removal's target has no post-batch rev that
         // could stand still.
@@ -8786,9 +8786,8 @@ mod create_props_door {
         );
     }
 
-    /// **The former named residual, now closed** (2026-08-23, card
-    /// `all-digit-short-ids-read-as-int`). A props scalar whose text is a typed
-    /// YAML scalar used to land verbatim and read back typed. It quotes now, at
+    /// **The typed-scalar residual, closed.** A props scalar whose text is a
+    /// typed YAML scalar used to land verbatim and read back typed. It quotes now, at
     /// this door and at every other, because the same carve-out emitted the
     /// all-digit agent short id `19895504` as an INTEGER — ids are the fleet's
     /// join key. `props` is a STRING plane: what the caller spells as a string

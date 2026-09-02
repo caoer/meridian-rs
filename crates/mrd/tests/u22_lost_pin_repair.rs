@@ -520,7 +520,7 @@ fn a_corpus_with_nothing_lost_states_its_population() {
 
 // ── the residency family: HOLDER x TARGET are INDEPENDENT axes ───────────────
 //
-// The per-pin TARGET ASSESSMENT is a DOOR (decisions/0045 over 0043): the pin
+// The per-pin TARGET ASSESSMENT is a DOOR: the pin
 // row names ONE target, so repair READS it from disk — corpus residency is
 // never a read admission test (§12.1, wire-contract.md:465, :813). An intact
 // target means the pin is NOT LOST, so the row stays byte-identical as the

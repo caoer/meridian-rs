@@ -1,6 +1,5 @@
 //! The §6.5 checkpoint's storage site and replay adjudication — the disk half
-//! of [`fs::checkpoint`] (merkle-spec §6.5; ruled by
-//! `decisions/2026-08-15-restart-index-allowed.md`).
+//! of [`fs::checkpoint`] (merkle-spec §6.5).
 //!
 //! One file per workspace in its cache drawer, beside `sql.duckdb` and the run
 //! plane's digest memo — outside every hash domain by construction, so the
@@ -71,15 +70,14 @@ pub struct CheckpointReceipt {
     /// cold event's alarm channel).
     pub warm_rebaseline: Option<String>,
     /// Member `stat`s paid by the PRE-SERVE sweep, before this memo was
-    /// published (`decisions/2026-08-16-gate11-stat-floor.md`). Equals the
+    /// published (the gate-11 stat floor). Equals the
     /// member count on the unjournaled arm — exactly one sweep over the full
     /// set — and is 0 on the journal-covered arm, where the law demands zero
     /// unchanged members statted.
     pub stats_before_serve: u64,
     /// Member byte reads paid before this memo was published. Each read is
     /// hashed exactly once by construction (`model::leaf_digest` on the bytes
-    /// just read), so this is the hash count too. The law's equation
-    /// (`decisions/2026-08-16-gate11-stat-floor.md`, Repair 2):
+    /// just read), so this is the hash count too. The gate-11 equation:
     /// `reads = hashes = movers + watermark-window re-reads`.
     pub reads_before_serve: u64,
     /// Rows re-read because the §6.2 watermark refused them even though their
@@ -289,7 +287,7 @@ fn adjudicate(
     }
 }
 
-/// **The pre-serve barrier** (`decisions/2026-08-16-gate11-stat-floor.md`).
+/// **The pre-serve barrier** (the gate-11 stat floor).
 ///
 /// Restored rows are HYPOTHESES, never state. Across an unjournaled gap — any
 /// process death today, since §7.1 persists no epoch fact — no restored row
@@ -481,8 +479,8 @@ mod tests {
         );
     }
 
-    /// **Gate 11, unjournaled arm** — the behavioral acceptance gate of
-    /// `decisions/2026-08-16-gate11-stat-floor.md`, encoded.
+    /// **Gate 11, unjournaled arm** — the stat floor's behavioral acceptance
+    /// gate, encoded.
     ///
     /// Across a gap no journal covers (any process death today), restored rows
     /// serve ONLY after the pre-serve §6.2 sweep completes. Counters published

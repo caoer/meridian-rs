@@ -13,8 +13,7 @@ allow = [
     # → hashbrown); zlib/libpng-family permissive
     "Zlib",
 ]
-# Per-crate scoped exceptions (strict default stays). All OSI-permissive;
-# pre-existing on branch, surfaced during ws-foundation gating.
+# Per-crate scoped exceptions (strict default stays). All OSI-permissive.
 exceptions = [
     # via policy → starlark → debugserver-types → schemafy
     { crate = "Inflector", allow = ["BSD-2-Clause"] },
@@ -45,10 +44,10 @@ exceptions = [
 ]
 
 [advisories]
-# Fetch the RustSec DB from our own forge mirror (pull-mirrored from
+# Fetch the RustSec DB from the CI forge's public mirror (pull-mirrored from
 # github.com/rustsec/advisory-db, synced hourly), not from GitHub directly:
 # CI clones it fresh per run, so the fetch must be LAN-cheap and must not
-# depend on GitHub rate limits. The mirror is public — no credentials.
+# depend on GitHub rate limits. No credentials needed.
 db-urls = ["https://git.0xdao.app/caoer115/advisory-db"]
 # Unmaintained-only advisories, all transitive via policy → starlark 0.14.2
 # (the pinned reference interpreter). Revisit at any starlark bump.
@@ -63,7 +62,7 @@ ignore = [
 # Benign transitive duplicates warn; the fork law is the hard gate below.
 multiple-versions = "warn"
 deny = [
-    # ONE pulldown-cmark copy graph-wide (workspace root, axis B) — enforced.
+    # ONE pulldown-cmark copy graph-wide ([patch.crates-io] at the workspace root) — enforced.
     { crate = "pulldown-cmark", deny-multiple-versions = true },
 ]
 

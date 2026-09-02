@@ -55,9 +55,8 @@ use tempfile::TempDir;
 
 mod common;
 
-/// The per-op deadline every MCP caller rides into this engine: ccc-statusd
-/// `internal/registryclient/client.go:25`,
-/// `DefaultRequestTimeout = 10 * time.Second` — *"the D4 per-op bound: 10s on
+/// The per-op deadline every MCP caller rides into this engine: the MCP face's
+/// request timeout of 10 s — *"the per-op bound: 10s on
 /// both the read and the write side of every request op."*
 ///
 /// It is a CLIENT constant, and that is the whole point: when it is the thing

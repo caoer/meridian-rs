@@ -177,7 +177,7 @@ fn rows_of(resp: &Value) -> Vec<Value> {
 }
 
 // ---------------------------------------------------------------------------
-// The ZT requirement, engine half: a LIST, per-target rows, nothing halts.
+// The requirement, engine half: a LIST, per-target rows, nothing halts.
 // ---------------------------------------------------------------------------
 
 /// Three targets — a starlark apply, a missing page, a bash step. Rows come
@@ -716,8 +716,7 @@ fn under_a_live_subscriber_every_run_frame_stays_attributed() {
 }
 
 // ---------------------------------------------------------------------------
-// No guard on this door (card effects-lane; ruled
-// `decisions/2026-08-15-no-guard-on-effects.md`; wire-contract § A.8; plan
+// No guard on this door (wire-contract § A.8; plan
 // §4.10 / §7): run exposes no guard requiredness, a supplied guard field is
 // rejected as inapplicable at the §3.2 strict wall (codex gate 15), and an
 // effects write still advances the folds other writers' premises compare

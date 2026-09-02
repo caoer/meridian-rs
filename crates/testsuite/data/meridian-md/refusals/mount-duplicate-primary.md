@@ -12,14 +12,14 @@ either choice would silently retarget when the file is next edited.
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/projects/field-notes
+path: /srv/vaults/field-notes
 primary: true
 vault: field-notes
 ```
 
 ```meridian-mount
 name: sessions
-path: /Users/Shared/projects/field-notes-sessions
+path: /srv/vaults/field-notes-sessions
 primary: true
 vault: field-notes-sessions
 ```

@@ -749,8 +749,8 @@ fn arm(s: &Sandbox, requests: &[(&str, &str, &str)]) {
 /// **P9** — with no artifact every armed cell reads `-` and the header reads
 /// `none`, ALONE: registered here, armed nowhere.
 ///
-/// The header once footnoted `(meridian/armed-rules.md absent)`. ZT ruling 4
-/// (2026-08-15): `none` is the whole honest answer — where an armed set would
+/// The header once footnoted `(meridian/armed-rules.md absent)`. The report-voice
+/// law: `none` is the whole honest answer — where an armed set would
 /// live is teaching, and teaching lives in docs, not restated by every
 /// invocation. The present and corrupt arms keep their path (the diagnostic).
 #[test]
@@ -1676,8 +1676,8 @@ fn an_armed_page_leaving_the_domain_is_named_not_dropped() {
 /// ⛔ ASSERTION RE-POINTED TWICE, NOT DELETED. F11 (fp b3b:a9616651,
 /// 2026-08-15, card `rules-caveat-scope`) turned the original naming OFF: the
 /// caveat scan had entered dot directories the projection refuses to serve,
-/// and a dot-named snapshot dir produced 16 of 20 caveat lines. Card
-/// `rules-silent-nonregistration` (2026-08-17, mw-face live e2e) turns it
+/// and a dot-named snapshot dir produced 16 of 20 caveat lines. The
+/// silent-nonregistration fix turns it
 /// back on NARROWLY: the silence made a registration CANDIDATE — a rules tag
 /// plus id under a dot dir — read as working law while governing nothing. The
 /// candidate population is voiced in ONE capped line (registrar-narrowed —

@@ -166,7 +166,7 @@
     "mounts": [
      {
       "name": "field-notes",
-      "path": "/Users/Shared/projects/field-notes",
+      "path": "/srv/vaults/field-notes",
       "vault": "field-notes",
       "pin": null
      }
@@ -186,19 +186,19 @@
     "mounts": [
      {
       "name": "field-notes",
-      "path": "/Users/Shared/projects/field-notes",
+      "path": "/srv/vaults/field-notes",
       "vault": "field-notes",
       "pin": null
      },
      {
       "name": "sessions",
-      "path": "/Users/Shared/projects/field-notes-sessions",
+      "path": "/srv/vaults/field-notes-sessions",
       "vault": "field-notes-sessions",
       "pin": null
      },
      {
       "name": "archive",
-      "path": "/Users/Shared/repos/archive",
+      "path": "/srv/repos/archive",
       "vault": null,
       "pin": null
      }
@@ -219,13 +219,13 @@
     "mounts": [
      {
       "name": "field-notes",
-      "path": "/Users/Shared/projects/field-notes",
+      "path": "/srv/vaults/field-notes",
       "vault": "field-notes",
       "pin": "fp1.span2.b3.40b167ed9b42a2beadb7c441b214efdc93069ef443a1cc2b5ae2ccda4cf03152"
      },
      {
       "name": "archive",
-      "path": "/Users/Shared/repos/archive",
+      "path": "/srv/repos/archive",
       "vault": null,
       "pin": null
      }
@@ -245,7 +245,7 @@
     "mounts": [
      {
       "name": "field-notes",
-      "path": "/Users/Shared/projects/field-notes",
+      "path": "/srv/vaults/field-notes",
       "vault": "field-notes",
       "pin": null
      }
@@ -656,21 +656,21 @@
     "mounts": [
      {
       "name": "field-notes",
-      "path": "/Users/Shared/projects/field-notes",
+      "path": "/srv/vaults/field-notes",
       "vault": "field-notes",
       "pin": null,
       "primary": false
      },
      {
       "name": "sessions",
-      "path": "/Users/Shared/projects/field-notes-sessions",
+      "path": "/srv/vaults/field-notes-sessions",
       "vault": "field-notes-sessions",
       "pin": null,
       "primary": true
      },
      {
       "name": "archive",
-      "path": "/Users/Shared/repos/archive",
+      "path": "/srv/repos/archive",
       "vault": null,
       "pin": null,
       "primary": false

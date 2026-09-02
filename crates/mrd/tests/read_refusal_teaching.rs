@@ -249,7 +249,7 @@ fn warm_read_of_a_poison_member_surfaces_the_daemons_teaching_frame() {
 // ---------------------------------------------------------------------------
 // Gate 3 — the cwd respelling: a ref that exists relative to the caller's cwd
 // refuses with the workspace-relative spelling, computed and copy-pasteable.
-// ZT hit this twice in 15 minutes (card mrd-cwd-relative-refs); the second hit
+// A user hit this twice in 15 minutes; the second hit
 // came AFTER the correct form had been described in prose, which is why the
 // refusal must name the exact spelling and not gesture at its shape.
 // ---------------------------------------------------------------------------

@@ -16,7 +16,7 @@ different codec and must still parse.
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/projects/field-notes
+path: /srv/vaults/field-notes
 vault: field-notes
 pin: fp1.span2.b3
 ```

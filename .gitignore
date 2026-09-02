@@ -1,8 +1,6 @@
 /target
-# the CI test lane's own CARGO_TARGET_DIR (.woodpecker/ci.yaml). It is a build
-# dir like /target and was simply missing here, so it showed up as `?? target-ci/`
-# in a shared CI workspace — enough to make the publish step's tree probe read
-# the tree as dirty on four consecutive main heads.
+# the CI test lane's own CARGO_TARGET_DIR (.woodpecker/ci.yaml): a build dir
+# like /target; untracked it makes the publish step's tree probe read dirty.
 /target-ci
 /.claude/worktrees
 # per-run history: CI artifacts carry it; only the current table + latest.json are tracked
@@ -19,8 +17,8 @@
 # the bare `.meridian/cookie` matches the root drawer and nothing under
 # `crates/`. Named rather than ignoring the nested drawer: those drawers carry
 # TRACKED fixtures (`stable-read.probe`) and the parity pack is a byte-exact
-# copy of ccc-statusd's testdata that must not be edited around. A local test
-# run put 11 of these into a commit once.
+# copy of an upstream corpus that must not be edited around. A local test run
+# otherwise puts these into a commit.
 # Verify, do not assume: `git check-ignore -v <a nested cookie path>`.
 **/.meridian/cookie
 # seat scratch: lives beside the worktree, never in the tree

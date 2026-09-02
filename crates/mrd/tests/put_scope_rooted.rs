@@ -8,10 +8,10 @@
 //! exist — and the refusal surfaced as the §5.5 "no premise covers" coverage
 //! answer, teaching the stripped spelling only inside a parenthetical. An
 //! unbound root degraded into the SAME coverage refusal, so every root name,
-//! real or typo'd, misclassified as a coverage fault (measured 2026-08-17 at
-//! `fcb32381`, dry and commit legs alike).
+//! real or typo'd, misclassified as a coverage fault (dry and commit legs
+//! alike).
 //!
-//! The law under gate (ruled Option 1, session 15-14-fingerprint-grain):
+//! The law under gate (the fingerprint-grain ruling):
 //! - the token and its own echoed scope, copied verbatim from one
 //!   `mrd fingerprint` call into one `mrd put`, never refuse on the pair —
 //!   measured on BOTH the `--dry` and the commit leg;

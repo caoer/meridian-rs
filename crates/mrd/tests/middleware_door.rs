@@ -521,7 +521,7 @@ fn create_door_transforms_the_born_bytes_and_carries_intents() {
     assert!(FsPath::new("tasks/born.md").is_relative());
 }
 
-/// The birth-stamp regression (2026-08-18): THREE `set_field` emits on a
+/// The birth-stamp regression: THREE `set_field` emits on a
 /// frontmatterless birth land ONE `---` block with every key parsing — the
 /// broken door compiled each upsert against the pre-edit blockless snapshot
 /// and stacked three blocks, so only `created` survived the parse. A birth

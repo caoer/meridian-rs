@@ -17,7 +17,7 @@ config becomes invalid by removing a tool.
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/projects/field-notes
+path: /srv/vaults/field-notes
 vault: field-notes
 ```
 

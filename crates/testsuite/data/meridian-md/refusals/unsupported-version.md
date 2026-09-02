@@ -11,6 +11,6 @@ guess a future format — `LockError::UnsupportedVersion`'s own law
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/projects/field-notes
+path: /srv/vaults/field-notes
 vault: field-notes
 ```

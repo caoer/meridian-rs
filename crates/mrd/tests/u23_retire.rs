@@ -2,7 +2,7 @@
 //! REAL binary over its process boundary. Each gate names the MUTATION that must
 //! redden it in its own doc comment, and most carry a VACUITY CONTROL in the same
 //! test: a second arm proving the assertion can still fail when the world
-//! changes. `tools/u23-mutation-proof.py` executes the mutations.
+//! changes. The named mutations are applied by hand when the gate is audited.
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -84,7 +84,7 @@ fn json(out: &Output) -> Value {
 
 /// The reason words present in a `--json` report — the closed set a refusal gate
 /// must assert on. Asserting a SENTENCE would make a reworded RIGHT refusal and
-/// a caught WRONG refusal look identical (all-hands #2).
+/// a caught WRONG refusal look identical.
 fn reasons(v: &Value) -> Vec<String> {
     v["refusals"]
         .as_array()
@@ -990,7 +990,7 @@ fn vault_with_excluded(sb: &Sandbox) -> PathBuf {
 /// carries the rest — while `files_excluded` stays the COMPLETE population, dot
 /// paths included, because this verb certifies absence (decision 0017).
 /// *Mutation:* restore the uncapped `excluded.join(", ")` and the line grows
-/// with the root — the 2026-08-10 3.1M-character shape.
+/// with the root — the 3.1M-character shape this cap was added against.
 #[test]
 fn the_outside_domain_line_samples_the_paths_while_the_json_key_stays_complete() {
     let sb = sandbox();

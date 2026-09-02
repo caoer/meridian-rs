@@ -347,7 +347,7 @@ fn echo_and_quiet_reads_carry_distinct_kinds_and_armed_follows_in_arm_order() {
     );
 }
 
-/// The result-echo ruling (2026-08-13, F-S1+F-S3): a successful evaluation's
+/// The result-echo law (F-S1+F-S3): a successful evaluation's
 /// top-level bindings ride the trace as `bindings` — name → Starlark repr —
 /// so the face can render the values the run computed. The kernel captured
 /// them all along (`ScriptFacts::bindings`); the assembler used to drop them,

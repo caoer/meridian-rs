@@ -1027,8 +1027,7 @@ fn lower_property_group(
     }
 
     // A blockless document SYNTHESIZES, on this lane exactly as on the native
-    // one (ruling `decisions/blockless-property-set-synthesizes-on-every-lane`,
-    // 2026-08-26). This lane used to refuse — "add a '---' block first" — while
+    // one. This lane used to refuse — "add a '---' block first" — while
     // `put{at:"upsert"}` on the same document created the block and committed:
     // one plane, two answers, so a caller's recovery quality was a function of
     // which door they entered (§ A.6.3a, "Uniform means the WORDS too"). The

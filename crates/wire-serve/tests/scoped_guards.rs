@@ -2,7 +2,7 @@
 //! fingerprint-grain family's engine substrate, exercised through the
 //! in-process surface (the wire decode joins under the `scoped-guards` cap).
 //!
-//! The ruling's acceptance shape (decisions/2026-08-16-fp-grain-ruling):
+//! The acceptance shape (`docs/laws.md` § Amendment — the one state owner):
 //! a single-file put pinned on the FILE's own token survives a disjoint
 //! sibling's birth, and a write that moves the planned scope still refuses,
 //! naming the scope. Bare `if_fingerprint` stays the root premise (§5.1) —

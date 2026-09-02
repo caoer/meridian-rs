@@ -38,7 +38,7 @@ use crate::record::{ExecRecord, ExecRecordSink};
 
 /// The run plane's receipt file — ONE convention, whichever door invoked the
 /// plane (the CLI entry and the § A.8 wire arm both append here). Promoted
-/// from the CLI (2026-08-13, § A.8) so the convention has one home.
+/// from the CLI (§ A.8) so the convention has one home.
 pub const RECEIPT_FILE: &str = "receipts/run.md";
 
 /// Where the run receipt lands: a workspace-relative file (appended) and the
@@ -113,10 +113,10 @@ pub struct ApplyRequest<'a> {
     /// CLI entry — its commits stay external change, exactly as `delta`.
     pub birth_seq: Option<&'a dyn wire_serve::seq::SeqSink>,
     /// The caller's ambient directory, workspace-relative (md-create-ambient-
-    /// paths ruling, shape (c), 2026-08-18): the DEFAULT resolution base a
+    /// paths law, shape (c)): the DEFAULT resolution base a
     /// baseless `md.create` path lands under ([`resolve_birth_targets`]), and
-    /// the coordinate frame [`admit`] judges page edits in (ZT ruling
-    /// 2026-08-19 #2 — the boundary is data). `None` (the CLI entry, hosts
+    /// the coordinate frame [`admit`] judges page edits in (the boundary is
+    /// data). `None` (the CLI entry, hosts
     /// predating cap `run.ambient`) keeps the bare-door law:
     /// workspace-root-relative.
     pub ambient: Option<&'a str>,
@@ -549,10 +549,10 @@ pub enum ExecError {
 impl ExecError {
     /// Stamp WHICH descriptor of the batch this refusal is about.
     ///
-    /// The advisor's ruling on A8 (2026-08-23): *"the refusal must say WHICH
-    /// descriptor the door refused (index + reason token) … adding the index
-    /// to the refusal variant is the whole executor change and the atomicity
-    /// story is unchanged verbatim."* It is a LOCATOR, not new state: it
+    /// The A8 rule: the refusal must say WHICH descriptor the door refused
+    /// (index + reason token); adding the index to the refusal variant is the
+    /// whole executor change and the atomicity story is unchanged. It is a
+    /// LOCATOR, not new state: it
     /// records WHICH descriptor a refusal is about and changes nothing about
     /// what landed. It does **not** say "nothing landed" — the enum header
     /// above states what actually holds (no EDIT landed; births before the
@@ -653,8 +653,8 @@ impl std::fmt::Display for ExecError {
                 ..
             } => {
                 write!(f, "capability denied: {kind} on '{target}'")?;
-                // The matching coordinate is the ADDRESSED one (ZT ruling
-                // 2026-08-19 #2) — when the page was judged relative to the
+                // The matching coordinate is the ADDRESSED one — when the
+                // page was judged relative to the
                 // caller's ambient, name its workspace path too, so the
                 // refusal reads against the bytes the caller can see.
                 if let Some(resolved) = resolved {
@@ -982,7 +982,7 @@ pub fn apply(root: &fs::WorkspaceRoot, req: &ApplyRequest<'_>) -> Result<Applied
     apply_under(&lock, root, req)
 }
 
-/// The coordinate an EDIT authorizes in (ZT ruling 2026-08-19 #2 — the
+/// The coordinate an EDIT authorizes in (the
 /// boundary is DATA, never a layout pattern): the page path relative to the
 /// caller's ambient directory when the page lies under it — literal prefix
 /// arithmetic on the ambient the frame carried — else the page's
@@ -999,7 +999,7 @@ fn edit_coordinate<'a>(page: &'a str, ambient: Option<&str>) -> &'a str {
 
 /// THE CHOKE POINT, one owner for both tenses: md.* only, each effect
 /// admitted by the block's authority (verb + path, so scoped caps bind for
-/// real). It judges DECLARED coordinates (ZT ruling 2026-08-19 #2): an
+/// real). It judges DECLARED coordinates: an
 /// `md.create` matches the `path` argument exactly as the block declared it —
 /// the resolution base (`base` arg / `ambient`) is a separate axis this gate
 /// never joins in — and an `md.edit` matches the page in the coordinates it
@@ -1055,8 +1055,8 @@ pub fn admit(
 /// flock cannot re-acquire on a second fd, so a self-locking call under a
 /// held lock would refuse itself as busy.
 ///
-/// The birth lane (`md.create`, the declared-task birth cap — ruled
-/// 2026-08-18): every birth goes through the CREATE DOOR, so occupied-path
+/// The birth lane (`md.create`, the declared-task birth cap): every birth
+/// goes through the CREATE DOOR, so occupied-path
 /// refusal (`cas_mismatch`), armed middleware stamps (`ctx.fields` =
 /// `req.fields` verbatim) and checks are the door's own, never
 /// re-implemented here. Births realize BEFORE the declaring-page batch,
@@ -1144,7 +1144,7 @@ fn create_waiting_out_busy(
 
 /// Resolve every `md.create` birth target in `effects` to the workspace-
 /// relative path it will LAND at — the face path law carried onto the birth
-/// lane, with the boundary carried as DATA (ZT ruling 2026-08-19 #2): the
+/// lane, with the boundary carried as DATA: the
 /// declared `path` composes under the descriptor's own `base` when one rides
 /// it, under the caller's ambient directory otherwise
 /// (md-create-ambient-paths, shape (c)), and stays workspace-root-relative
@@ -1846,7 +1846,7 @@ fn plan_edit(doc: &Document, effect: &Effect) -> Result<PlannedEdit, ExecError> 
             let field = str_arg(effect, "field")?;
             let value = str_arg(effect, "value")?;
             let before = model::fm_upsert_before(doc, &field);
-            // ⑤-F2 (2026-08-17): PRESERVATION ONLY. A value-identical write —
+            // ⑤-F2: PRESERVATION ONLY. A value-identical write —
             // the stored spelling already decodes (§ A.6.1) to exactly the
             // caller's string — keeps the STORED spelling, quotes included,
             // so its bytes, and with them the field hash and `prop_rev`, do

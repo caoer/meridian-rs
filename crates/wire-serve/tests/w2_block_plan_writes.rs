@@ -375,8 +375,8 @@ fn plan_match_at_missing_anchor_keeps_the_miss_teaching() {
 }
 
 /// A task-hosted id is inside the face's anchor law since F-R4 — readable,
-/// therefore writeable, door symmetry in the widened direction (ZT ruled the
-/// old task/paragraph/table exclusion an under-implementation of Obsidian's
+/// therefore writeable, door symmetry in the widened direction (the old
+/// task/paragraph/table exclusion was an under-implementation of Obsidian's
 /// own block semantics).
 #[test]
 fn plan_match_at_task_hosted_anchor_writes_since_the_widening() {
@@ -551,7 +551,7 @@ fn plan_match_at_anchor_equals_the_native_anchor_edit() {
     assert_eq!(aa.edits, ab.edits, "armed rows 1:1");
 }
 
-// --- ZT-directed fixtures (card fix-w2-block-write § ZT-directed test fixtures) ---
+// --- directed fixtures: the two live shapes the W-2 fix was measured against ---
 
 /// Fixture A — the probe scratch's own shape (`inbox/_unstaged/
 /// mrd-mcp-probe-scratch.md` `^probe-anchor`): a toc-listed plain-list anchor
@@ -612,7 +612,7 @@ fn fixture_a_probe_anchor_writes_and_survives() {
 
 /// Fixture B — `health/runtime.md` `^check`: the Obsidian own-line form
 /// below a code fence. Under W-2 this shape was host-excluded and the
-/// fixture pinned the refusal + section+find workaround; F-R4 ruled that
+/// fixture pinned the refusal + section+find workaround; F-R4 found that
 /// exclusion an under-implementation, and the anchor now attaches to the
 /// FENCE (the block Obsidian's own cache assigns) — toc-listed, readable,
 /// therefore writeable. Both halves now land the same version-pin edit:

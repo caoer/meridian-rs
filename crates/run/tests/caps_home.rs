@@ -1,6 +1,6 @@
 //! The rehomed convention plane (marker-retirement ruling): the caps table is
 //! declared by the ROOT ITSELF in `<root>/MERIDIAN.md`, never by a marker
-//! file. Contract: `decisions/2026-07-26-run-caps-contract.md`.
+//! file. Contract: `docs/run-plane.md`.
 
 use run::caps::{self, Cap, CapSet, CapSource, CapsError, ConventionSource, Conventions};
 
@@ -187,8 +187,8 @@ fn a_pattern_may_contain_a_dot() {
 ///
 /// It used to refuse (`invalid capability '[md.edit'`), and refusing was the
 /// right shape while a bracket was unreadable here: an unread ceiling that
-/// became the empty table would be the widening. The caps-one-parser ruling
-/// (2026-08-23) made a flow sequence a LEGAL spelling of a cap list on both
+/// became the empty table would be the widening. The caps-one-parser law
+/// made a flow sequence a LEGAL spelling of a cap list on both
 /// planes, so the bracket is now read, and the invariant this test exists for
 /// is satisfied more directly — the ceiling in force is the one the author
 /// wrote. What must never happen, and is what is asserted, is `[md.edit]`

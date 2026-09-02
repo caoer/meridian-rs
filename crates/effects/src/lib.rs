@@ -134,8 +134,8 @@ pub enum EffectKind {
     /// middleware stamps, and checks are the DOOR's, never re-implemented.
     /// Args: `path` (the declared RELATIVE landing coordinate — the string
     /// the `md.create` cap glob judges), `body`, optional `base` (the
-    /// resolution base — ZT ruling 2026-08-19 #2: targeting is data, carried
-    /// beside the path, never pre-joined into it), optional `message`.
+    /// resolution base — targeting is data, carried beside the path, never
+    /// pre-joined into it), optional `message`.
     Create,
     /// `daemon.refresh_view` — mark a resident view stale.
     RefreshView,

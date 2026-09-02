@@ -167,7 +167,7 @@ pub(crate) fn reap_daemon(home: &Path, cache_home: &Path) -> Option<i32> {
     let pid = text.trim().parse::<i32>().ok()?;
     // A suite that runs the daemon IN-PROCESS (`registry::RunningServer::start`
     // inside the test binary) writes its own pid here — reaping that would
-    // SIGTERM the test (measured 2026-08-22 on `s2fix_cross_surface`).
+    // SIGTERM the test (`s2fix_cross_surface` does exactly this).
     if pid <= 0 || pid == std::process::id().cast_signed() || !pid_alive(pid) {
         return None;
     }

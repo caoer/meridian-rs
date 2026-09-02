@@ -1,7 +1,7 @@
 //! The one wire door, in-process.
 //!
-//! The stdio sidecar host was ruled DROP (hosts ruling, `docs/wire-contract.md`
-//! §3.3, 2026-08-06): the registry daemon's unix socket is the only wire door,
+//! The stdio sidecar host was ruled DROP (`docs/wire-contract.md` §3.3): the
+//! registry daemon's unix socket is the only wire door,
 //! speaking the same NDJSON one-frame-per-line dialogue. The frame-layer tests
 //! that drove the sidecar's serve loop byte-for-byte now drive the registry
 //! host's connection-serve path (`registry::serve_lines` — the socket's own

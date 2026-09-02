@@ -28,7 +28,7 @@ use crate::Fail;
 /// absolute, no `.`/`..`/empty segment, no root separator in the head. This
 /// was a hand-copy once, and it drifted on exactly the head-colon arm — the
 /// wire refused `root:page` while the CLI doors misread it as a literal
-/// filename (measured 2026-08-18 at `72099f257`).
+/// filename.
 pub(crate) fn violates_path_law(path: &str) -> bool {
     !addr::confined(path)
 }

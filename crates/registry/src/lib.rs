@@ -112,7 +112,7 @@ pub const DEFAULT_PREWARM_QUIET_MAX: Duration = Duration::from_secs(60);
 /// before releasing the singleton flock. Must stay **under** the tightest client
 /// SIGTERM/respawn budget so a successor is not refused:
 /// - mrd CLI `SPAWN_READY_TIMEOUT` = 5 s (`crates/mrd/src/engine.rs`)
-/// - ccc-statusd `DefaultSpawnTimeout` = 15 s (`internal/registryclient/lifecycle.go`)
+/// - MCP-face spawn timeout = 15 s
 /// - engine kicker wait (`COLD_BUILD_WAIT`) = 2 s (unpublished)
 ///
 /// Default is 2 s — the engine kicker's own `COLD_BUILD_WAIT`

@@ -327,7 +327,7 @@ impl StatusReport {
         use std::fmt::Write as _;
         let mut out = String::new();
         let _ = writeln!(out, "status  {} ({})", self.workspace, self.source);
-        // `rules:`, not `armed-rules:` — ZT ruling 5 (2026-08-15): the line
+        // `rules:`, not `armed-rules:` — the report-voice law: the line
         // states the rules facts; `armed-rules` is the storage artifact's
         // name, and the report does not narrate storage. The `--json` keys
         // are shape-stable and keep `armed_rules`.
@@ -336,7 +336,7 @@ impl StatusReport {
         // axis names exactly what is not tracked, the WHY is teaching that
         // lives in `mrd --help` and on the `--json` face
         // (`forced_since_realise.why`), never a footnote charged to every
-        // invocation (report-voice pass, ZT rulings 3–5).
+        // invocation (the report-voice law).
         let _ = writeln!(
             out,
             "  rules: {} armed · {} drifted · forced-since-realise: {FORCED_NOT_TRACKED}",

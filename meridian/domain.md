@@ -30,17 +30,13 @@ reported by **every corpus-wide walk in this repo, permanently**: the discovery
 sweep, the ARM act, and the cutover sweep. `mrd rules` on meridian-rs itself
 exited 1 from every path, naming a test fixture.
 
-Ruled and approved:
+Two facts make the exclusion the right fix:
 
-- The § 3 **"Refusal scoping"** amendment (2026-08-01) in the registration/arming
-  ruling narrows refusals exactly like rules, which stops an off-chain refusal
-  reddening a *scoped* query. It deliberately does **not** touch corpus-wide
-  walks: those report ALL refusals they encounter, always — fail-loud survives
-  where enforcement lives.
-- So the walks keep biting until the fixture leaves the domain. The advisor
-  approved this exclusion **on independent grounds** (it bites every corpus-wide
-  walk), and the leader ruled its shape; the work is the `refusal-scoping` card
-  of session `30-19-subscribe-notify-impl`.
+- Refusal scoping (`docs/status.md`) narrows refusals exactly like rules,
+  which stops an off-chain refusal reddening a *scoped* query. It deliberately
+  does **not** touch corpus-wide walks: those report ALL refusals they
+  encounter, always — fail-loud survives where enforcement lives.
+- So the walks keep biting until the fixture leaves the domain.
 
 The rule names the **directory, not the one file**, because the ground is about
 the class: a fixture whose whole purpose is to be malformed does not belong in the
@@ -51,18 +47,17 @@ is not ours to keep well-formed: see the entry below.**
 
 ## `crates/testsuite/data/parity/**`
 
-The U0 read/put parity pack is a **byte-exact copy of another repository's
-corpus** — `ccc-statusd internal/mcpserver/testdata/parity/`, captured at
-`50b15ae`. `crates/testsuite/data/parity/README.md` sets the discipline: *"the
+The read/put parity pack is a **byte-exact copy of another repository's
+corpus** — the upstream MCP server's `testdata/parity/`.
+`crates/testsuite/data/parity/README.md` sets the discipline: *"the
 corpus bytes ARE the test; never normalize line endings or whitespace"*, and
 *"On re-capture, re-copy — disagreements between this pack and the harness are
 findings, not things to edit around."*
 
 `corpus/meridian-block/corpus/meridian-block.md` carries a ` ```meridian-lock `
 block reading `version: 1`, and the pin plane refuses it. **It has never been a
-readable lock in any engine:** the v1-capable reader refused it too, as
-`malformed at line 3: unrecognized line` (measured 2026-07-26), and the v2-only
-reader only changed the wording. Its purpose was never locking — the pack tests
+readable lock in any engine** — every reader refuses it as malformed. Its
+purpose was never locking — the pack tests
 that reserved blocks survive read/put verbatim, so the lock body is incidental
 payload. Because the hash domain is what every corpus-wide walk sweeps, that one
 fixture held `mrd check` at exit 1 **permanently, on every path**, exactly as
@@ -88,9 +83,9 @@ doc corpus is attested; it is evidence there is nothing to attest yet.
 
 ## `target/**`
 
-Cargo's build tree. On a working machine it is enormous — measured 2026-08-20
-on the primary mac checkout: **99 GB, ~477,000 files**, of which exactly 2 are
-`.md` (dependency fixtures, not this repository's corpus). The ground is the
+Cargo's build tree. On a working machine it is enormous — a full workspace
+build measured at **99 GB, ~477,000 files**, of which exactly 2 are `.md`
+(dependency fixtures, not this repository's corpus). The ground is the
 parity-pack one, stronger still: **build output is not corpus.** Attesting it
 would couple the workspace root to compiler cadence — every `cargo build` a
 fingerprint move for a reason that has nothing to do with the documents.
@@ -102,8 +97,8 @@ stat-signature (`fs::domain_stat_signature`), which re-walks the domain on a
 backoff. Un-pruned, one sweep traversed the full ~477k entries (~2 s of
 `readdir`/`lstat` syscalls) — the sweep could never finish inside its own
 interval, so `mrd daemon` held **more than one core pinned continuously**
-(measured 2026-08-20: 116 CPU-minutes in 89 wall-minutes, the sample pinned on
-`walk_domain_dir` under `Registry::prewarm`), and the per-sweep allocation
+(116 CPU-minutes in 89 wall-minutes, the sample pinned on `walk_domain_dir`
+under `Registry::prewarm`), and the per-sweep allocation
 churn left ~4 GB of freed-but-unreclaimed allocator pages in RSS.
 
 The rule prunes the traversal, not just the two files: `Domain::prunes_dir`

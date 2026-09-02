@@ -1,5 +1,4 @@
-//! The kind gate's EXTINCTION pin (kind-sweep, ZT 2026-08-13; the daemon's
-//! mountgate carries the same pin on its side since 2026-08-12).
+//! The kind gate's EXTINCTION pin.
 //!
 //! `kind` left the schema: mounts have no taxonomy, every mounted root is the
 //! same shape to the resolver, and its documents are parsed wherever they

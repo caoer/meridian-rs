@@ -289,7 +289,7 @@ fn the_upsert_door_stores_one_line_shape_on_every_colon_shape() {
 /// comment rule) mints `zt" # is "them` — a string that appears in neither the
 /// stored bytes nor any parser's reading of them. This engine serves the value
 /// decoded to ITSELF instead. The review gate named the stricter half as the
-/// one to keep (2026-08-08); this pins it so no later merge loosens it
+/// one to keep; this pins it so no later merge loosens it
 /// silently.
 #[test]
 fn malformed_quoting_decodes_to_itself() {

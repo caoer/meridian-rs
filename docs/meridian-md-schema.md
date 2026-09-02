@@ -33,30 +33,27 @@ required, and the refusal on violation. Every rule has at least one fixture in
 | Which bytes of the page are a **machine surface** and which are prose | — |
 | Frontmatter keys the engine reads: name, type, required, refusal | — |
 | The `meridian-mount` block grammar: fields, types, order, refusals | **Mount table SEMANTICS — implementation**: canonicalization at bind, `deny_reason`, equal-or-nested refusal, declared-vs-bound checking, the grey classes |
-| The `meridian-tool` block grammar: its engine-read half and its opaque half | Tool semantics — no unit in stage 3; deliberately unowned |
+| The `meridian-tool` block grammar: its engine-read half and its opaque half | Tool semantics — deliberately unowned |
 | That a mount entry **may pin the root it declares**, and what a well-formed pin token is | What the pin's target file is, and how the claim is checked — **implementation** |
 | The self-hosting rev: which bytes, which hash law, what it is spelled | Drift reporting and the verb that shows it — **implementation** |
 | The canonical root-**name** charset (the floor) | The `root:` **address** grammar, prefix-vs-literal-path ambiguity, `resolve_linkpath` — see `address-grammar.md` |
 | The refusal shape: reason words, and where a refusal points | The engine implementation and its crate placement (D4) — **implementation** |
 
 **Not specified, deliberately.** Project-local walk-up discovery (nearest-ancestor `MERIDIAN.md`) is
-**deferred by the ratifying decision** (§2: *"Deferred, not rejected … it adds a resolution ambiguity
-v1 does not need"*). Building it here would be over-completion (bound discipline). The resolution chain in §2 is
-exactly two rungs and has no third.
+**deferred, not rejected** — it adds a resolution ambiguity v1 does not need. Building it here would
+be over-completion. The resolution chain in §2 is exactly two rungs and has no third.
 
 Two boundaries are flagged rather than assumed, in §12.
 
 ## 1. The precedent this EXTENDS — `meridian/armed-rules.md`
 
 The attested armed-rules artifact is markdown-as-config **shipping today**: engine-managed, inside the
-hash domain, drift-tracked by a pinned rev. The MERIDIAN.md ruling's self-hosting model therefore
+hash domain, drift-tracked by a pinned rev. The self-hosting model therefore
 already ships once; this schema extends a proven pattern rather than introducing one.
 
-> The precedent was originally `conventions/INDEX.md`, a checkbox list keyed by convention folder
-> slug. The registration cutover retired the folder loader and the INDEX with it; the artifact is its
-> successor and carries the same properties on a different grain — a table keyed by `(rule id, arm
-> root)` rather than a checklist keyed by slug. Every row of the table below was re-verified against
-> the successor, because a precedent cited at a deleted `file:line` teaches nothing.
+> The artifact is a table keyed by `(rule id, arm root)`; this document calls it **the INDEX** for
+> short. Every row of the table below is verified against `crates/policy/src/armed.rs`, because a
+> precedent cited at a wrong `file:line` teaches nothing.
 
 ### 1.1 The existing mechanism, stated
 
@@ -64,7 +61,7 @@ already ships once; this schema extends a proven pattern rather than introducing
 |---|---|---|
 | In-file shape | fixed H1 title + free prose preamble + a markdown TABLE; **no frontmatter, no fenced blocks** | `crates/policy/src/armed.rs` (`ARTIFACT_TITLE` / `ARTIFACT_HEADER`, `ArmedArtifact::render`) |
 | Row grammar | five `|`-separated columns — id · page · pinned rev · arm root (scope) · mode. Backtick-quoted cells, and `|`/backtick/control characters are **unrepresentable** rather than escaped | `crates/policy/src/armed.rs` (`ArmedRow::render`, `validate_workspace_path`) |
-| One reader, on purpose | `parse_artifact` is the **only** reader and is fail-closed. The INDEX shipped two (a tolerant `armed_from_index` and a strict `parse_index_strict`); two readers of one attestation is two answers to one question, so the successor keeps the strict one | `crates/policy/src/armed.rs` (`parse_artifact`) |
+| One reader, on purpose | `parse_artifact` is the **only** reader and is fail-closed. Two readers of one attestation (a tolerant one beside a strict one) would be two answers to one question, so there is exactly the strict one | `crates/policy/src/armed.rs` (`parse_artifact`) |
 | Strictness scope | the **title** and the **column header** must match exactly; every data row must parse; the **preamble is not byte-checked** | `crates/policy/src/armed.rs` (`parse_artifact`) |
 | Pinned rev | `rev` = `page_rev(page bytes)` = `blake3(bytes)[:16]`, 16 lowercase hex — the same rev law the world model mints (contract §1), now applied to the RULE PAGE rather than to one file inside a folder | `crates/policy/src/registration.rs` (`page_rev`) |
 | Drift | at the door, `page_rev(live page) != row.rev` → `ArmedFault::Red(Redness::Drifted)` → the write refuses (check) or the fault is reported (hook) | `crates/policy/src/armed.rs` (`verify_rows`), `crates/policy/src/armed_law.rs` |
@@ -94,12 +91,12 @@ already ships once; this schema extends a proven pattern rather than introducing
 
 | # | INDEX does | `MERIDIAN.md` does | Why the difference is required |
 |---|---|---|---|
-| D-a | **Engine is sole writer**; a hand edit is a refused `BindingBreak` | **Human is sole author**; the engine never writes it | The INDEX is a generated attestation artifact. `MERIDIAN.md` is *"a new user's first contact … one readable file"* (ruling §1). A binding-break guard on a file the engine does not write would refuse every legitimate edit |
+| D-a | **Engine is sole writer**; a hand edit is a refused `BindingBreak` | **Human is sole author**; the engine never writes it | The INDEX is a generated attestation artifact. `MERIDIAN.md` is *"a new user's first contact … one readable file"*. A binding-break guard on a file the engine does not write would refuse every legitimate edit |
 | D-b | **Middot-separated checklist rows** | **`key: value` lines inside a fenced block** | Row grammar is cheap to *generate* and hostile to *hand-write* — a missing ` · ` is invisible in an editor. `key: value` is the grammar the repo already hand-authors (`crates/lock`, lock/def frontmatter, `meridian/domain.md` domain frontmatter) |
 | D-c | **No frontmatter** | **Required frontmatter** (`type`, `version`) | The INDEX is found at one reserved path, so its identity is positional. `MERIDIAN.md` can be aimed anywhere by `MERIDIAN_CONFIG`, so it must be able to say *what it is* and *which schema it speaks* — otherwise a mis-set env var half-loads an unrelated page |
-| D-d | Malformed row names the row **text** (`{line:?}`), never its **number** (`crates/policy/src/armed.rs:1039`, `parse_row`) | Every refusal carries a **1-based file line** | The ratified requirement is a refusal *"naming what is broken **and where**"*. The INDEX precedent cannot satisfy it. The in-repo model that can is `crates/lock` — `LockError::Malformed { line, reason: &'static str }` (`crates/lock/src/lib.rs:390`) — so §8 extends **lock's** error shape, not the INDEX's |
+| D-d | Malformed row names the row **text** (`{line:?}`), never its **number** (`crates/policy/src/armed.rs:1039`, `parse_row`) | Every refusal carries a **1-based file line** | The requirement is a refusal *"naming what is broken **and where**"*. The INDEX precedent cannot satisfy it. The in-repo model that can is `crates/lock` — `LockError::Malformed { line, reason: &'static str }` (`crates/lock/src/lib.rs:390`) — so §8 extends **lock's** error shape, not the INDEX's |
 | D-e | Absent-vs-malformed pivots on a **separate marker file** | Absent and malformed are decided by **the file alone** | The once-armed marker exists because disarming must not be silent. `MERIDIAN.md` has no such asymmetry: there is nothing to disarm, and every machine legitimately starts with no file (D6) |
-| D-f | Round-trip was **lossy** — the scope column was rendered and never read back (the retired INDEX; the successor's `parse_row` reads all five columns, `crates/policy/src/armed.rs:1039`) | Every declared field is **read**; an unread field is refused as unknown | A lossy round-trip is tolerable when the engine regenerates the file. Here the human's bytes are the only source, so a silently-ignored field is a silently-ignored intent |
+| D-f | A lossy round-trip would do no harm — the engine regenerates the file (`parse_row` does read all five columns, `crates/policy/src/armed.rs`) | Every declared field is **read**; an unread field is refused as unknown | A lossy round-trip is tolerable when the engine regenerates the file. Here the human's bytes are the only source, so a silently-ignored field is a silently-ignored intent |
 
 ## 2. Resolution — the bootstrap chain and the FOUR states
 
@@ -121,8 +118,8 @@ the absent case: the absent case means *the default path was resolved and nothin
 | # | State | Required behaviour | Reason word | Why it is named |
 |---|---|---|---|---|
 | **A** | **Absent** — the chain resolved a path and no file exists there (rung 2 only) | **Current single-root behaviour, unchanged.** Not an error, not a warning | *(no refusal)* | Every machine starts here. Failing would brick the CLI on first run. Matches the house posture across all three shipped config formats: absent → silent default |
-| **B** | **Present but malformed** | **Fail loud.** A teaching refusal naming what is broken and **where**. **NO partial mount table. NO default-root fallback** | one of §8's classes | Ratified fail-loud (§4 of the ruling) is about a *broken* config. A partial load would make the system's own definition half-true |
-| **C** | **`MERIDIAN_CONFIG` set to a path that is not a readable regular file** — absent, a directory, or unreadable | **Fail loud** | `config-path-unusable` | **This is NOT state A.** The operator stated an intent that cannot be honoured; silently falling back to `~/MERIDIAN.md` would mask it. D6 ruled two states; this is the third |
+| **B** | **Present but malformed** | **Fail loud.** A teaching refusal naming what is broken and **where**. **NO partial mount table. NO default-root fallback** | one of §8's classes | Fail-loud is about a *broken* config. A partial load would make the system's own definition half-true |
+| **C** | **`MERIDIAN_CONFIG` set to a path that is not a readable regular file** — absent, a directory, or unreadable | **Fail loud** | `config-path-unusable` | **This is NOT state A.** The operator stated an intent that cannot be honoured; silently falling back to `~/MERIDIAN.md` would mask it. D6 names two states; this is the third |
 | **D** | **Parses clean and declares ZERO mounts** | **Treated as state A** — current single-root behaviour. **Not an error** | *(no refusal)* | An empty mount table is a legitimate statement. Named because "empty" and "absent" reaching different code paths is how a nil-vs-empty bug is born |
 
 **State D is a behavioural identity, not a similarity.** A zero-mount config and an absent config MUST
@@ -130,9 +127,9 @@ produce the same mount table (the empty one) and the same resolution behaviour. 
 (§7) still exists in state D and does not in state A — that is the only permitted difference, and it
 is an observation, never a branch.
 
-**The green-path control (parse-acceptance(c)).** State B's refusals are only meaningful beside the acceptances:
-states A and D leave behaviour unchanged, and a well-formed multi-mount config in
-`the multi-root fixture case` loads every entry it declares. A build that refused every config would satisfy
+**The green-path control.** State B's refusals are only meaningful beside the acceptances:
+states A and D leave behaviour unchanged, and a well-formed multi-mount config
+(`corpus/multi-root.md`) loads every entry it declares. A build that refused every config would satisfy
 state B alone. `cases.json` carries acceptance cases and refusal cases in one manifest for exactly
 this reason.
 
@@ -162,11 +159,11 @@ agree, as `the_armed_rules_artifact_has_one_spelling` does for `meridian/armed-r
 shipped today in its successor: the artifact pins its title and its rows and leaves its preamble free
 (`crates/policy/src/armed.rs:996`, `parse_artifact`).
 Without this scoping, adding a sentence of documentation to your own config could break your system —
-which would defeat the entire "one readable file that explains itself" purpose the ruling states.
+which would defeat the entire "one readable file that explains itself" purpose.
 
 **Corollary, and it is load-bearing:** a fenced block that is *not* an engine block-language — a
 ` ```yaml ` example, a ` ```text ` diagram, an indented snippet — is prose, **even if its contents look
-exactly like a mount block.** Fixture `the prose-decoy fixture case` is the anti-vacuity case: it carries
+exactly like a mount block.** Fixture `corpus/prose-decoys.md` is the anti-vacuity case: it carries
 three convincing decoys beside one real mount and must yield exactly one mount.
 
 ### 3.1 The engine block-language namespace — reused, not invented
@@ -199,27 +196,24 @@ trailing string (` ```meridian-mount the wiki `) is tolerated and ignored.
 
 ### 3.2 The consequence of the namespace that MUST be named
 
-One shipped behaviour governs how the namespace renders, and U36 narrowed it from per-namespace to
-per-language:
+One shipped behaviour governs how the namespace renders, per-language rather than per-namespace:
 
 1. **The render face elides ENGINE-EMITTED languages only.** `ToonRenderer::with_meridian_elision`
  drops the blocks `lock::is_engine_emitted` names (`crates/render/src/lib.rs:194-209`): a
  `meridian-lock` is machine-written and elides, while a `meridian-mount` or `meridian-tool` is
  user-authored and **renders**. The raw `cat` face rides everything verbatim either way.
 
-The former second behaviour — the form-2 chain reader skipping engine blocks — left the tree with
-the retired `^inputs` plane, so there is no chain reader left to mis-read a mount block. What still
+No other reader skips engine blocks, so nothing mis-reads a mount block. What
 makes the namespace the correct home is §3.1 itself: it is the one predicate the strict parse scopes
 on, and per-language elision means a human-authored block in it is never hidden from its author.
 
-**The verification trap this section was written to name is therefore gone in its old form, and the
-requirement survives for the honest remainder.** An agent running `mrd read ~/MERIDIAN.md` today
-sees the prose **and** the mount blocks, so the old false conclusion — "no mount blocks visible, the
-parse failed" — cannot happen. What the rendered face still never shows is the parse **verdict**: a
-mount block's bytes render whether or not the config parser accepted them. **The user-reachable
-verb that publishes the parsed mount table must therefore still not be the rendered read face.**
-Implementation owns which verb it is; this spec's requirement is only that criterion 1's evidence
-not be measured on a surface that shows the block's bytes but never its acceptance.
+**The verification requirement.** A reader running `mrd read ~/MERIDIAN.md`
+sees the prose **and** the mount blocks, so "no mount blocks visible, the parse failed" is not a
+conclusion the rendered face can produce. What the rendered face never shows is the parse
+**verdict**: a mount block's bytes render whether or not the config parser accepted them. **The
+user-reachable verb that publishes the parsed mount table must therefore not be the rendered read
+face.** Implementation owns which verb it is; this spec's requirement is only that acceptance
+evidence not be measured on a surface that shows the block's bytes but never its acceptance.
 
 ## 4. Frontmatter keys
 
@@ -293,16 +287,12 @@ the rest of the line with trailing whitespace trimmed.
 | 5 | `pin` | fingerprint CID-token (§5.3) | no | present and not a well-formed token → `bad-value` |
 | 6 | `alias` | canonical root name (§5.2) — the second lookup spelling (§5.1b) | no | present and empty → `bad-value`. Charset violation → `bad-value`, naming the offending character. Equal to any mount's `name`, or to another mount's `alias` → `alias-shadows-name`, refusing the whole table |
 
-> **`kind` is RETIRED (kind-sweep, ZT 2026-08-13).** The field paired with
-> `vault:` (`kind: vault` required it, `git-folder` forbade it), gated
-> `primary:` off git-folder mounts, and got printed — nothing on any serve
-> path ever branched on it. Both pairing rules died WITH the field: vault-ness
-> is `vault:` presence alone, and `primary: true` is legal on any mount (the
-> primary root is where the fleet daemon writes, which does not require an
-> Obsidian vault registration). A `kind:` line on an engine at or past the
-> sweep refuses through the ordinary `unknown-field` door — no compatibility
-> window; the remedy is the door's own: remove the line. The
-> `field-not-permitted-for-kind` reason word is retired with its two rules.
+> **There is no `kind` field.** Vault-ness is `vault:` presence alone, and
+> `primary: true` is legal on any mount (the primary root is where a host
+> daemon writes, which does not require an Obsidian vault registration) —
+> nothing on any serve path branches on a mount's kind. A `kind:` line
+> refuses through the ordinary `unknown-field` door, with the door's own
+> remedy: remove the line.
 
 Structural refusals over the block as a whole:
 
@@ -329,28 +319,27 @@ at bind, inherit `workspace::deny_reason`, refuse equal-or-nested mounts (canoni
 this schema does not also test paths lexically, because two owners disagreeing about "same path" is a
 worse failure than one owner deciding late.
 
-### 5.1a `primary:` — the declared-primary designation (v1-additive, 2026-08-12)
+### 5.1a `primary:` — the declared-primary designation (v1-additive)
 
 An optional `primary: true` line designates its mount as the **primary root** — a binding ROLE
-consumed by fleet hosts (the one tree their single-root consumers anchor: change feed, watch loop,
-journal placement — the rule set lives with the host, ccc-statusd `docs/mcp-face.md` §8.1). The
+consumed by hosts (the one tree their single-root consumers anchor: change feed, watch loop,
+journal placement — the rule set lives with the host). The
 engine's own duty is mechanism only: parse the designation, refuse its illegal shapes (the §5.1
 rows above), and report it verbatim on the `mounts` wire row (`wire-contract.md` §A.5) and both
 config faces. **The engine never acts on the designation** — no engine behavior branches on it.
 
 Grammar consequences, each a §5.1 row: the value is the literal `true` and nothing else, because
 absence is the only "not primary" spelling — admitting `primary: false` would mint a second
-spelling for one fact. A `git-folder` mount may not carry it — the primary root is where a fleet
-daemon writes, and a git-folder root binds a source repo. Two designations refuse the whole table
+spelling for one fact. Two designations refuse the whole table
 (`duplicate-primary-designation`, the `duplicate-mount-name` class): the designation is DECLARED,
 never derived, so the parser never picks between two claimants — and no consumer may fall back to
 `mounts[0]`, the only vault, or any other derivation when it is absent.
 
-This is the v1-additive amendment §12 boundary 2 anticipates ("the field would be optional and
+This is a v1-additive field of the shape §12 boundary 2 anticipates ("the field would be optional and
 new"): mount blocks are closed-schema, so `primry: true` refuses as `unknown-field` at parse — the
 silent-typo hazard §4 names is closed by construction.
 
-### 5.1b `alias:` — the second lookup spelling (v1-additive, 2026-08-23)
+### 5.1b `alias:` — the second lookup spelling (v1-additive)
 
 An optional `alias:` line gives its mount a **second name callers may spell**. It exists for one
 problem: a skill, a doc or a daemon wants to hard-code ONE constant — `sessions:` — but every
@@ -369,7 +358,7 @@ alias: sessions
 > "default", no fallback, and no special case. The order is not a tie-break between two candidates:
 > `alias-shadows-name` means a table where both could answer cannot load.
 
-**`primary:` is NOT consulted** (ZT, 2026-08-23). The designation stays exactly what §5.1a says it
+**`primary:` is NOT consulted.** The designation stays exactly what §5.1a says it
 is — a role parsed, reported, and never acted on. A table with no mount named or aliased `sessions`
 falls to the implicit default mount when that binds (§5.1c); with the default unscaffolded it
 refuses `sessions:` as an unbound root, and the refusal teaches the lines that would fix it:
@@ -393,11 +382,11 @@ alias is `alias-shadows-name`, carrying §8.3's no-partial-load clause like ever
 refusal. The parser never picks between two claimants; a shadowed alias is either unreachable (the
 name wins) or ambiguous (two mounts claim it), and neither is a state a mount table may be in.
 
-This is a second v1-additive amendment in the shape §12 boundary 2 anticipates, and it inherits the
+This is a second v1-additive field in the shape §12 boundary 2 anticipates, and it inherits the
 closed-schema guarantee with it: `alais: sessions` refuses as `unknown-field` at parse, so the
 silent-typo hazard §4 names is closed by construction here too.
 
-### 5.1c The implicit default `sessions` mount (v1-additive, 2026-08-24)
+### 5.1c The implicit default `sessions` mount (v1-additive)
 
 When no mount is **named or aliased `sessions`**, the bound table gains one implicit mount:
 
@@ -406,7 +395,7 @@ name: sessions
 path: $HOME/.local/share/ucc/sessions
 ```
 
-The motive completes §5.1b's constant (ZT direction, 2026-08-24): a consumer hard-codes ONE
+The motive completes §5.1b's constant: a consumer hard-codes ONE
 spelling, `sessions:`; §5.1b maps it per machine; this section answers the machine that has
 mapped nothing — a fresh host needs a sessions tree before anyone has authored a config. The
 no-baked-names law (`laws.md`) draws this exact boundary itself: *"a directory a user is expected
@@ -426,7 +415,7 @@ The rules, each load-bearing:
   unscaffolded machine would put `mrd config` at exit 1 forever — the §2.2 state-A "failing would
   brick first run" reasoning, applied here.
 - **Nothing else is defaulted.** The implicit mount carries no `primary:` (the designation stays
-  declared-only — §5.1a, and ZT 2026-08-23: `primary` is not consulted), no `vault:`, no
+  declared-only — §5.1a; `primary` is not consulted), no `vault:`, no
   `alias:`, no `pin:`.
 - **Scaffolding is explicit.** The engine never creates the directory or its declaration —
   effects live in verbs. One line, once per machine:
@@ -455,18 +444,18 @@ agent-plane address `[root:]path[#selector]`, lock `ref:` and `objects:` keys, a
 grammar's operator set** — `:` `#` `@` `/` `.` `%` and whitespace are excluded because each already
 carries meaning in an address, so **no legal name can ever collide with an address operator.** Case is
 folded out because names travel through URIs and case-insensitive filesystems. `_` is excluded to match
-the CHARSET-GUARD ruling that refuses legacy underscore ids at every mint position
+the charset guard that refuses underscore ids at every mint position
 (`crates/testsuite/data/charset-guard/discrimination.json`), and the result is exactly the lowercase-
 kebab convention this repo already uses for its own fixture families.
 
-**This is a FLOOR for implementation, not a ceiling.** implementation owns the address grammar and may narrow what a `root:`
-prefix accepts; it must not widen it past this charset, because a name outside this charset cannot be
+**This is a FLOOR for the address grammar, not a ceiling.** `address-grammar.md` owns the address
+grammar and may narrow what a `root:` prefix accepts; it must not widen it past this charset, because a name outside this charset cannot be
 *bound* and so could never resolve.
 
 ### 5.3 `pin:` — mount-as-claim (canonicalize-at-bind, load-bearing)
 
-The ratifying decision §3: *"Mounts can be claims. A mount entry may pin the root it declares (e.g.,
-the fingerprint of that root's entry page)."* canonicalize-at-bind makes this load-bearing rather than a nicety —
+Mounts can be claims: a mount entry may pin the root it declares (e.g., the fingerprint of that
+root's entry page). Canonicalize-at-bind makes this load-bearing rather than a nicety —
 `~/MERIDIAN.md` cannot itself be attested (§9), so a mount's pin is **the sole mechanism by which the
 mount table's own integrity is checkable.**
 
@@ -481,20 +470,20 @@ parser can test:
 minted by newer codecs/hash-fns still parse; whether this build can verify one is
 `verify_content`'s question"* (`crates/model/src/fingerprint.rs:68-70`). This schema
 therefore constrains the **token shape only**. It does not constrain the codec, which matters because a
-`git-folder` root's pin grain is the file and a `vault` root's is a parsed span
-(cross-root-addressing §3) — those are different codecs, and pinning one here would forbid the other.
+plain-folder root's pin grain is the file and a vault root's is a parsed span
+(§12, boundary 2) — those are different codecs, and pinning one here would forbid the other.
 
 **What the pin's target is, and how the claim is checked, is implementation's** (§12, boundary 2). This spec
 requires only that a build which cannot verify a pin says so; it must never treat an unverifiable pin
-as verified — *outside sight never renders as verified* (R26), and under grey-exit-1 a grey refuses on
+as verified — *outside sight never renders as verified*, and under grey-exit-1 a grey refuses on
 exit 1 with its own reason word.
 
 ## 6. The `meridian-tool` block grammar
 
-The ruling §1 gives `MERIDIAN.md` *"the declarations for tooling built on top — agent-facing efficiency
-layers and imperative user-facing tools alike."* **No stage-3 unit owns tool semantics, and
-`tag-based-mounting` — the design input that would shape them — is still `resolution: open`.** Designing
-a tool system here would be over-completion (bound discipline). So this schema specifies the **grammar and the
+`MERIDIAN.md` also carries *"the declarations for tooling built on top — agent-facing efficiency
+layers and imperative user-facing tools alike."* **Nothing owns tool semantics yet, and the design
+input that would shape them (tag-based mounting) is open.** Designing
+a tool system here would be over-completion. So this schema specifies the **grammar and the
 posture**, and no semantics.
 
 ```meridian-tool
@@ -523,16 +512,16 @@ Structural rules are §5.1's, with two additions:
 **The engine validates that the payload is present and indented; it never interprets a byte of it.**
 The payload belongs to the tool the `kind` names.
 
-**Why this does not contradict the strictest-parse ruling.** Fail-loud is about a *broken* config
-(ruling §4: *"A broken `MERIDIAN.md` (bad frontmatter, malformed mount block)"*). A tool declaration
+**Why this does not contradict the strictest-parse law.** Fail-loud is about a *broken* config
+(bad frontmatter, a malformed mount block). A tool declaration
 for a tool this machine has not installed is **not broken** — it is a statement addressed to someone
 else. Refusing it would mean a config becomes invalid by *removing* a tool, which is the opposite of
 fail-loud's intent. The shipped analogue is the wire's tolerant-code law: *"Clients treat unrecognized
 codes as `recovery`-dispatched"* (`crates/wire/src/lib.rs:1350-1353`), and `laws.md` § Additivity.
 
 **Rejected alternative, named so it is not restored:** *"define a closed set of tool kinds in v1 and
-refuse the rest."* v1 would then define **zero** kinds (no unit owns any), so every tool declaration
-the ruling calls for would refuse — a grammar in which nothing legal can be written. Rejected.
+refuse the rest."* v1 would then define **zero** kinds (nothing owns any), so every tool declaration
+would refuse — a grammar in which nothing legal can be written. Rejected.
 
 **What is NOT deferred:** the engine's half — `name`, `kind`, uniqueness, and the block's structural
 integrity — is parsed strictly, so a malformed *declaration* still fails loud. The opacity is of the
@@ -540,9 +529,9 @@ payload's meaning, never of the block's shape.
 
 ## 6a. The `^config` value block — user data, address-reached (v1-additive)
 
-**Ruling (ZT, verbatim):** *"make a new command. mrd config get -> where it is finding the
-^config in the MERIDIAN file. the block is a starlark block. with config function return the config."*
-and *"the config can be anything, we don't limit it."*
+**The rule:** `mrd config get` finds the `^config` block in the `MERIDIAN.md` file; the block is a
+starlark block whose `config` function returns the config; and the config can be anything — it is
+not limited.
 
 `MERIDIAN.md` carries, beside the mount table, whatever machine-local values this machine's tools need.
 The surface is **one block, addressed by the block id `^config`**, whose fence language is `starlark`
@@ -554,8 +543,8 @@ The block, written out (fence lines shown as literal text so this example is ine
     def config():
         return {
             "repos_root": {
-                "coscene-wiki": "/Users/Shared/projects/coscene-io",
-                "field-notes": "/Users/Shared/repos",
+                "work-wiki": "/path/to/work/repos",
+                "field-notes": "/path/to/home/repos",
             },
         }
     ```
@@ -626,8 +615,8 @@ have done silently.
 **Nesting is not a convenience.** The first real config keys `repos_root` BY WIKI, because a repos root
 is a fact about a wiki and not about a machine:
 
-    mrd config get repos_root.coscene-wiki   -> /Users/Shared/projects/coscene-io
-    mrd config get repos_root.field-notes      -> /Users/Shared/repos
+    mrd config get repos_root.work-wiki      -> /path/to/work/repos
+    mrd config get repos_root.field-notes      -> /path/to/home/repos
     mrd config get repos_root                -> the mapping, as JSON
 
 A top-level-only `KEY` would have made the correct shape the one nobody could read, and the flat
@@ -635,7 +624,7 @@ machine-wide spelling — the one that is wrong for every wiki but one — the c
 
 ### 6a.4 What is deliberately NOT specified
 
-- **No key schema.** The ruling is explicit that the config is unlimited. A future engine-read key
+- **No key schema.** The config is unlimited by rule. A future engine-read key
   inside `config()` would reopen §4's misspelled-optional-key hazard and must state how it closes it.
 - **One block, not many.** A second `^config` is ambiguous, not a merge: the mint plane never silently
   picks, and merging two blocks would need a precedence rule nobody has ruled on.
@@ -675,7 +664,7 @@ that gets us.
 
 ### 7.3 What the rev is FOR, and the honest scope of "renders as ordinary drift"
 
-Criterion 1's last clause requires that *"the file itself carries a rev, so editing it out of band
+The requirement is that *"the file itself carries a rev, so editing it out of band
 renders as ordinary drift."* The precise, satisfiable reading:
 
 - **The rev is reported.** Any surface that publishes the loaded config reports its `config_rev`, so
@@ -690,7 +679,7 @@ renders as ordinary drift."* The precise, satisfiable reading:
 **Drift that IS a verdict is the mount pins' (§5.3), not the config's own rev's.** A mount entry's
 `pin` names a root's entry page — which lives *inside* an attestable root — so `pin` vs the live
 fingerprint is an ordinary comparison on ordinary machinery, exactly as an armed row's pinned `rev` vs
-`page_rev(live page)` is (`crates/policy/src/armed.rs`, `verify_rows`). That is the ratified mitigation
+`page_rev(live page)` is (`crates/policy/src/armed.rs`, `verify_rows`). That is the mitigation
 working, and it is the only place in this plane where "drift" is a checkable claim rather than a
 reported number.
 
@@ -773,8 +762,8 @@ table was loaded; the config is not partially applied. Fix: remove the line or
 spell the field you meant.
 ```
 
-**Three clauses are mandatory and each closes a specific failure:** naming the line (the ratified
-"and where"); stating **"no mount table was loaded"** (the ratified no-partial-load, made visible so a
+**Three clauses are mandatory and each closes a specific failure:** naming the line (the
+"and where"); stating **"no mount table was loaded"** (the no-partial-load law, made visible so a
 reader cannot assume a partial config took effect); and a `Fix:` naming the legal form (the shipped
 rule that a refusal cites the passing scenario — `crates/policy/src/check_eval.rs:502-513`, where
 `refuse(message, passing)` makes it structurally impossible to refuse without it).
@@ -794,10 +783,10 @@ domain, and is a **denied workspace path** (`DenyReason::HomeDir`,
 Therefore:
 
 - **The single authority for every cross-root ref is the one artifact the attestation plane cannot
- attest.** The plan's §5 row that once called drift on it *"an ordinary red on the ordinary
- machinery"* was false and is corrected there; this spec does not restore it.
+ attest.** Drift on it is not *"an ordinary red on the ordinary machinery"*, and this spec does
+ not pretend it is.
 - The config's own rev is a **reported number**, never a verdict (§7.3).
-- The ratified mitigation is mount-as-claim (§5.3): a mount's `pin` is checkable because its target
+- The mitigation is mount-as-claim (§5.3): a mount's `pin` is checkable because its target
  lives inside an attestable root.
 
 **The residual that mitigation does NOT close, stated exactly.** A mount's pin protects the root that
@@ -810,14 +799,14 @@ attested.** No v1 mechanism closes it, and this schema does not pretend one does
 
 ## 10. The fixture corpus
 
-`crates/testsuite/data/meridian-md/` — the corpus implementation and implementation consume.
+`crates/testsuite/data/meridian-md/` — the corpus the implementation consumes.
 
 | Path | Carries |
 |---|---|
 | `README.md` | the corpus law: what each case must state, and the escalation clause |
 | `cases.json` | **every case paired with its required outcome** — the manifest is the pairing |
-| `corpus fixture cases` | well-formed configs (the acceptances) |
-| `refusal fixture cases` | malformed configs, one per malformed class (the refusals) |
+| `corpus/` | well-formed configs (the acceptances) |
+| `refusals/` | malformed configs, one per malformed class (the refusals) |
 
 Cases with no file — state A, state C, the env-var cases — **cannot be fixtures**, because a file
 cannot express its own absence. They live in `cases.json` with `"fixture": null` and an `env` block.
@@ -830,13 +819,13 @@ anti-vacuity discipline, written into the data rather than trusted to the reader
 
 ## 11. Rejected alternatives, with reasons
 
-- **The mount table in frontmatter (`mounts:` as a YAML list).** Rejected: the ratifying decision asks
+- **The mount table in frontmatter (`mounts:` as a YAML list).** Rejected: the design asks
  for *"prose beside machine sections"*, and a frontmatter list admits no prose beside any entry. It
  also puts the mount table under the frontmatter parser, whose in-repo error type carries no
  structured location (§1.3 D-d) — so "and where" would be unobtainable for the very grammar most
  likely to be mis-typed.
 - **One `meridian-mount` block holding a table of all entries.** Rejected: it forfeits prose-beside-
- each-mount (the literate pattern the ruling names), and it makes a mount's own pin (§5.3) a row
+ each-mount (the literate pattern), and it makes a mount's own pin (§5.3) a row
  field rather than a statement beside the root it claims. The per-block form also gives refusals a
  natural coarse address (*which* block) beside the fine one (which line).
 - **INDEX-style middot checklist rows.** Rejected: §1.3 D-b. The INDEX's row grammar is generated by
@@ -844,28 +833,27 @@ anti-vacuity discipline, written into the data rather than trusted to the reader
 - **A closed set of tool kinds in v1.** Rejected: §6.1 — v1 owns zero kinds, so the grammar would admit
  nothing.
 - **Making `MERIDIAN.md` authoritative for canonical root names.** Rejected — and named so it is not
- restored: it contradicts *"MERIDIAN.md binds, it doesn't baptize"* (cross-root-addressing §1a) and
- reintroduces the one-machine-only name that section exists to prevent. `name:` in a mount block is a
- **binding**, and implementation checks it against the root's own declaration.
+ restored: it contradicts *"MERIDIAN.md binds, it doesn't baptize"* (`address-grammar.md` § 3,
+ INV-5) and reintroduces the one-machine-only name that law exists to prevent. `name:` in a mount
+ block is a **binding**, and implementation checks it against the root's own declaration.
 - **A declared `expected_rev:` key for self-drift.** Rejected: self-referential and unsatisfiable
  (§7.3).
-- **Project-local walk-up discovery.** Not rejected — **deferred by the ratifying decision** (§0). Not
- built here.
+- **Project-local walk-up discovery.** Not rejected — **deferred** (§0). Not built here.
 
 ## 12. Boundaries flagged, not assumed
 
-**Boundary 1 — the root-name charset, shared with implementation.** §5.2 fixes the charset a name may use *in the
-file*, derived as the complement of the address grammar's operator set. Implementation owns the address grammar and
-must accept exactly the names this schema admits. **A consequence implementation should know it inherits:** because
-a name cannot contain `:`, the `sessions:notes.md` prefix-vs-literal-path ambiguity (plan §6, ruled to
-implementation) becomes decidable as *"is the pre-colon token a **bound** mount name?"* — which requires the mount
+**Boundary 1 — the root-name charset, shared with the address grammar.** §5.2 fixes the charset a name may use *in the
+file*, derived as the complement of the address grammar's operator set. `address-grammar.md` owns the address grammar and
+must accept exactly the names this schema admits. **A consequence the address grammar inherits:** because
+a name cannot contain `:`, the `sessions:notes.md` prefix-vs-literal-path ambiguity (`address-grammar.md`
+§ 4) becomes decidable as *"is the pre-colon token a **bound** mount name?"* — which requires the mount
 table at resolve time, i.e. exactly D4a's injection into `model::CorpusIndex::resolve_ref`. Stated as a
 consequence, **not ruled here.**
 
 **Boundary 2 — the pin's target, shared with implementation.** §5.3 fixes what a well-formed `pin` token *is*. It
 does not fix **which file** a mount's pin names (the root's self-declaration entry page, whose location
-is the D7/implementation seeding question) nor **what bytes** it covers (whole file for `git-folder`, a parsed span
-for `vault` — different codecs, cross-root-addressing §3). If implementation needs a second field to name the pin's
+is the D7 seeding question) nor **what bytes** it covers (whole file for a plain-folder root, a parsed span
+for a vault root — different codecs). If implementation needs a second field to name the pin's
 target explicitly, adding it is a v1 schema amendment, not a v2 bump — the field would be optional and
 new, and §4's rule about optional engine-read keys applies to it.
 
