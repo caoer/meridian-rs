@@ -85,7 +85,10 @@ fn shutdown_removes_the_pointer() {
     let config = test_config(&tmp);
     let cache_root = config.cache_root.clone();
     let server = RunningServer::start(config).unwrap();
-    assert!(socket_pointer_path(&cache_root).exists(), "written at start");
+    assert!(
+        socket_pointer_path(&cache_root).exists(),
+        "written at start"
+    );
     server.shutdown();
     assert!(
         !socket_pointer_path(&cache_root).exists(),

@@ -176,7 +176,10 @@ fn a_client_with_a_different_derivation_is_served_by_the_published_holder() {
         "the first client is served warm by the daemon it spawned: {}",
         stdout(&first)
     );
-    assert!(pid.is_some(), "the daemon published its socket and claimed the pidfile beside it");
+    assert!(
+        pid.is_some(),
+        "the daemon published its socket and claimed the pidfile beside it"
+    );
     assert_eq!(
         registry::published_socket_path(&sb.cache_root).as_deref(),
         Some(sb.derived_socket(&a).as_path()),

@@ -57,7 +57,8 @@ pub use protocol::{DenyKind, Request, Response, WorkspaceEntry};
 pub use registry::{RegisterOutcome, Registry, ResolveOutcome};
 pub use server::{
     Config, DRAIN_COLD_BUILDS_ENV, IDLE_EXIT_ENV, RunningServer, ServeOutcome, default_socket_path,
-    in_process_registry, serve_lines, socket_path_for_cache_root, socket_path_under_home,
+    in_process_registry, published_socket_path, reachable_socket_path, serve_lines,
+    socket_path_for_cache_root, socket_path_under_home, socket_pointer_path,
 };
 #[cfg(feature = "test-support")]
 pub use test_support::TestServer;

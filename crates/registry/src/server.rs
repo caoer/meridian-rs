@@ -17,6 +17,20 @@
 //! mode 0700; a **world-writable** one is refused (a hostile peer must not be
 //! able to swap the socket or state file).
 //!
+//! The derivation is the LAW; the daemon also publishes the FACT. Client and
+//! daemon derive through one function, but each derives from ITS OWN
+//! environment, and one cache root is reachable from environments that
+//! disagree: on workstation-nyc-2 a systemd-started process carried
+//! `XDG_RUNTIME_DIR=/run/user/1000` while a non-interactive ssh shell had it
+//! unset (the directory existed either way), so the two derived different
+//! sockets for one cache root — the shell's spawn lost the flock and exited,
+//! and the holder was unreachable from that shell. So the bound path is also
+//! PUBLISHED at `<cache-root>/registry/socket` ([`socket_pointer_path`]) —
+//! keyed by the cache root alone, written under the flock in the pidfile's
+//! order, removed at shutdown — and a client whose own derivation is not what
+//! was published dials the published path when a daemon answers there
+//! ([`reachable_socket_path`]).
+//!
 //! # Singleton
 //! The daemon takes an exclusive `flock` on the registry directory (reusing
 //! `cache::DrawerLock`) for its whole lifetime. A second daemon fails to
@@ -95,6 +109,9 @@ const REGISTRY_DIR: &str = "registry";
 const SOCKET_NAME: &str = "daemon.sock";
 /// The state file name.
 const STATE_NAME: &str = "state.json";
+/// The published socket pointer's name, inside the registry directory (module
+/// header § Socket placement).
+const SOCKET_POINTER_NAME: &str = "socket";
 
 /// Where and how a daemon runs. Construct with [`Config::resolve`] for the
 /// production layout, or build the fields directly to place everything under a
@@ -398,6 +415,46 @@ fn non_empty_env(key: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// Where the daemon for `cache_root` publishes the socket it bound:
+/// `<cache-root>/registry/socket`, beside the state file and the singleton
+/// flock — keyed by the cache root alone, so a reader finds it whatever its
+/// own environment would derive (module header § Socket placement). Assumes
+/// the production layout ([`Config::for_cache_root`]), as
+/// [`default_socket_path`] does.
+#[must_use]
+pub fn socket_pointer_path(cache_root: &Path) -> PathBuf {
+    cache_root.join(REGISTRY_DIR).join(SOCKET_POINTER_NAME)
+}
+
+/// The socket path the daemon for `cache_root` published, or `None` when no
+/// pointer is present (no daemon has bound there, or the last one shut down
+/// cleanly), or it is empty or unreadable. Presence is not liveness: a
+/// `SIGKILL`ed daemon removes nothing, so a reader that means to dial asks
+/// [`reachable_socket_path`], which does.
+#[must_use]
+pub fn published_socket_path(cache_root: &Path) -> Option<PathBuf> {
+    let raw = std::fs::read_to_string(socket_pointer_path(cache_root)).ok()?;
+    let line = raw.lines().next()?.trim();
+    (!line.is_empty()).then(|| PathBuf::from(line))
+}
+
+/// The socket a client dials for `cache_root`: the path this environment
+/// derives ([`socket_path_for_cache_root`]), unless the daemon published a
+/// DIFFERENT one and a listener answers there — then the published path,
+/// because that is where the flock holder is. A stale pointer (no listener)
+/// falls back to the derivation, so the client's spawn takes the flock and
+/// republishes. When published and derived agree nothing is dialed here.
+#[must_use]
+pub fn reachable_socket_path(cache_root: &Path) -> PathBuf {
+    let derived = socket_path_for_cache_root(cache_root);
+    match published_socket_path(cache_root) {
+        Some(published) if published != derived && UnixStream::connect(&published).is_ok() => {
+            published
+        }
+        _ => derived,
+    }
+}
+
 /// The default per-user RPC socket path, for a client that has no [`Config`]:
 /// [`socket_path_for_cache_root`] of the env-resolved cache root — the same
 /// mapping the daemon binds.
@@ -422,6 +479,9 @@ pub struct RunningServer {
     prewarm: Option<JoinHandle<()>>,
     registry: Arc<Registry>,
     socket_path: PathBuf,
+    /// The published socket pointer this daemon wrote (module header § Socket
+    /// placement); removed at shutdown.
+    socket_pointer: PathBuf,
     drain_cold_builds: Duration,
     // The singleton flock, held for the daemon's whole lifetime; dropping it
     // releases the guard so a successor can start.
@@ -513,6 +573,17 @@ impl RunningServer {
                 pid_file.display()
             );
         }
+        // The published FACT beside the law (module header § Socket
+        // placement): the bound path, in the registry directory, under the
+        // pidfile's order — after the flock, before the accept loop — and
+        // advisory the same way.
+        let socket_pointer = dir.join(SOCKET_POINTER_NAME);
+        if let Err(e) = write_socket_pointer(&socket_pointer, &config.socket_path) {
+            eprintln!(
+                "registry: cannot publish the socket path at {} ({e})",
+                socket_pointer.display()
+            );
+        }
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let exit_requested = Arc::new(AtomicBool::new(false));
@@ -549,6 +620,7 @@ impl RunningServer {
             prewarm: Some(prewarm),
             registry,
             socket_path: config.socket_path,
+            socket_pointer,
             drain_cold_builds: config.drain_cold_builds,
             _singleton: singleton,
         })
@@ -619,6 +691,9 @@ impl RunningServer {
         // finds the file already gone.
         let _ = std::fs::remove_file(&self.socket_path);
         let _ = std::fs::remove_file(self.socket_path.with_extension("pid"));
+        // The pointer last: it names a socket that is now gone, and a reader
+        // that dials it finds no listener and falls back to the law.
+        let _ = std::fs::remove_file(&self.socket_pointer);
     }
 }
 
@@ -655,6 +730,14 @@ fn write_pidfile(path: &Path) -> io::Result<()> {
     let tmp = path.with_extension("pid.tmp");
     std::fs::write(&tmp, format!("{}\n", std::process::id()))?;
     std::fs::rename(&tmp, path)
+}
+
+/// Publish the bound `socket` at `pointer` atomically — the pidfile's
+/// temp + rename discipline, for the same reader-side reason.
+fn write_socket_pointer(pointer: &Path, socket: &Path) -> io::Result<()> {
+    let tmp = pointer.with_extension("tmp");
+    std::fs::write(&tmp, format!("{}\n", socket.display()))?;
+    std::fs::rename(&tmp, pointer)
 }
 
 /// The deadlines that keep a push subscription mortal — see [`push_loop`].
