@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::protocol::{Request, Response, WorkspaceEntry};
-use crate::server::default_socket_path;
+use crate::server::{published_socket_path, socket_path_for_cache_root};
 use crate::wedge;
 
 /// A handle to a daemon at a known socket path. Cheap to clone; holds no open
@@ -41,13 +41,39 @@ impl Client {
 
     /// A client for the default per-user socket — the short hash-keyed path
     /// derived from the env-resolved cache root
-    /// ([`crate::socket_path_for_cache_root`]).
+    /// ([`crate::socket_path_for_cache_root`]), or the socket the resident
+    /// daemon published when that path is absent ([`Client::for_cache_root`]).
     ///
     /// # Errors
     ///
     /// Returns [`io::ErrorKind::NotFound`] when no cache root resolves.
     pub fn from_default() -> io::Result<Self> {
-        Ok(Client::new(default_socket_path()?))
+        Ok(Client::for_cache_root(&cache::cache_root()?))
+    }
+
+    /// A client for `cache_root`'s daemon: the derived socket path when it
+    /// EXISTS, else the path the daemon published
+    /// ([`crate::published_socket_path`]) when that names a different socket
+    /// that exists — the lock holder bound under a base this environment does
+    /// not derive (`crate::server` § The published socket path) — else the
+    /// derived path, the spawn target, unchanged.
+    ///
+    /// Two `stat`s at most and no dial: the warm path (the derived socket is
+    /// there) pays one `stat` and nothing else, so the one-dial discipline the
+    /// read lanes measure stays intact. Whether the published socket ANSWERS
+    /// is the caller's dial to learn — a stale one fails there exactly as an
+    /// absent derived one always has, and the auto-spawn ladder that follows
+    /// polls the derived path, where the child it launches binds.
+    #[must_use]
+    pub fn for_cache_root(cache_root: &Path) -> Self {
+        let derived = socket_path_for_cache_root(cache_root);
+        if derived.exists() {
+            return Client::new(derived);
+        }
+        match published_socket_path(cache_root) {
+            Some(published) if published != derived && published.exists() => Client::new(published),
+            _ => Client::new(derived),
+        }
     }
 
     /// The socket path this client dials.
@@ -192,7 +218,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use super::{Client, Request, wedge};
+    use super::{Client, Request, socket_path_for_cache_root, wedge};
 
     /// A BACKSTOP, never a budget — see `wedge::tests::NEVER_RETURNED`. It only
     /// decides whether a regression FAILS or hangs the suite forever.
@@ -317,6 +343,78 @@ mod tests {
         assert!(
             started.elapsed() < wedge::TICK,
             "no daemon is a refused connect, not a timed-out read"
+        );
+    }
+
+    /// Publish `socket` for `cache_root` by hand, exactly where the daemon
+    /// writes it (`server::SOCKET_PATH_NAME` in the registry directory).
+    fn publish(cache_root: &std::path::Path, socket: &std::path::Path) {
+        let dir = cache_root.join("registry");
+        std::fs::create_dir_all(&dir).expect("registry dir");
+        std::fs::write(
+            dir.join("daemon.sock-path"),
+            format!("{}\n", socket.display()),
+        )
+        .expect("publish");
+    }
+
+    /// The fallback itself (`server` § The published socket path): the
+    /// derived socket is ABSENT, the daemon published a different socket that
+    /// exists, so that is the one this client dials — the lock holder bound
+    /// under a base this environment does not derive.
+    #[test]
+    fn an_absent_derived_socket_falls_back_to_the_published_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache_root = dir.path().join("cache");
+        let derived = socket_path_for_cache_root(&cache_root);
+        assert!(
+            !derived.exists(),
+            "a fresh cache root derives a socket nobody bound: {}",
+            derived.display()
+        );
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("socket dir");
+        let published = elsewhere.join("daemon.sock");
+        let _held = UnixListener::bind(&published).expect("bind");
+        publish(&cache_root, &published);
+
+        let client = Client::for_cache_root(&cache_root);
+        assert_eq!(
+            client.socket_path(),
+            published,
+            "an absent derived path yields to the published socket"
+        );
+    }
+
+    /// A publication is a claim, not a proof: one naming a socket that is
+    /// gone from disk (a clean shutdown removes both; a reboot sweeps
+    /// `$XDG_RUNTIME_DIR`) leaves the client on its derived path — the spawn
+    /// target — rather than dialling a name with nothing behind it.
+    #[test]
+    fn a_published_socket_that_is_gone_keeps_the_derived_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache_root = dir.path().join("cache");
+        let derived = socket_path_for_cache_root(&cache_root);
+        publish(&cache_root, &dir.path().join("elsewhere").join("gone.sock"));
+
+        let client = Client::for_cache_root(&cache_root);
+        assert_eq!(
+            client.socket_path(),
+            derived,
+            "a stale publication does not move the client off the derived path"
+        );
+    }
+
+    /// No publication at all — the cold case, and the common one — is the
+    /// derived path, exactly as before the publication existed.
+    #[test]
+    fn no_publication_keeps_the_derived_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache_root = dir.path().join("cache");
+        let client = Client::for_cache_root(&cache_root);
+        assert_eq!(
+            client.socket_path(),
+            socket_path_for_cache_root(&cache_root)
         );
     }
 }
