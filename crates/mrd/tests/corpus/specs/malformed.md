@@ -1,7 +1,7 @@
 ---
 corpus_test: malformed-case-json
 rule: ../rules/reviewer-not-owner.md
-corpus: ../tree
+corpus: ../governed
 ---
 
 # malformed (exit 2)
@@ -11,5 +11,5 @@ A `case` block whose JSON will not parse. A malformed spec is a tool failure
 scenario runner's malformed-scenario exit.
 
 ```case
-{ "doc": "tasks/r3a-impl-plan.md", "actor": "agent:alice", "expect": }
+{ "doc": "tasks/plan-index.md", "actor": "agent:alice", "expect": }
 ```

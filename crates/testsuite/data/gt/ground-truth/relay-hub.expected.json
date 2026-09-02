@@ -1,0 +1,252 @@
+{
+ "file": "samples/wiki/domains/net/network/relay-hub.md",
+ "nodes": [
+  {
+   "kind": "frontmatter",
+   "span": [
+    0,
+    126
+   ],
+   "text_prefix_16b": "---\ntags: [domai"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Relay-Hub",
+   "span": [
+    128,
+    139
+   ],
+   "text_prefix_16b": "# Relay-Hub\n\nPro"
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    304,
+    325
+   ],
+   "text_prefix_16b": "[[sources/relay-"
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    338,
+    371
+   ],
+   "text_prefix_16b": "[[Relay-Hub/rela"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Relay-Hub/Deployment",
+   "span": [
+    384,
+    397
+   ],
+   "text_prefix_16b": "## Deployment\n\n|"
+  },
+  {
+   "kind": "table",
+   "span": [
+    399,
+    888
+   ],
+   "text_prefix_16b": "| Field | Value "
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    437,
+    465
+   ],
+   "text_prefix_16b": "`https://relay.e"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    582,
+    594
+   ],
+   "text_prefix_16b": "`edge-agent`, in"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    604,
+    624
+   ],
+   "text_prefix_16b": "`relay.example.t"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    636,
+    653
+   ],
+   "text_prefix_16b": "`/data/relay-hub"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    669,
+    689
+   ],
+   "text_prefix_16b": "`/var/lib/relay-"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    704,
+    738
+   ],
+   "text_prefix_16b": "`fleet/hosts/nod"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    753,
+    774
+   ],
+   "text_prefix_16b": "`relay-hub.bundl"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    857,
+    867
+   ],
+   "text_prefix_16b": "`preStart` (Vue "
+  },
+  {
+   "kind": "heading",
+   "hpath": "Relay-Hub/Deployment/DNS Setup (manual, one-time)",
+   "span": [
+    890,
+    922
+   ],
+   "text_prefix_16b": "### DNS Setup (m"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    976,
+    990
+   ],
+   "text_prefix_16b": "`example.test` z"
+  },
+  {
+   "kind": "fence",
+   "span": [
+    998,
+    1089
+   ],
+   "text_prefix_16b": "```\nrelay.exampl"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Relay-Hub/Deployment/Rebuild Frontend",
+   "span": [
+    1091,
+    1111
+   ],
+   "text_prefix_16b": "### Rebuild Fron"
+  },
+  {
+   "kind": "fence",
+   "span": [
+    1113,
+    1200
+   ],
+   "text_prefix_16b": "```bash\nssh node"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Relay-Hub/Role in Proxy Infrastructure",
+   "span": [
+    1202,
+    1233
+   ],
+   "text_prefix_16b": "## Role in Proxy"
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    1257,
+    1292
+   ],
+   "text_prefix_16b": "[[sources/mesh-c"
+  },
+  {
+   "kind": "table",
+   "span": [
+    1312,
+    1673
+   ],
+   "text_prefix_16b": "|  | Relay-Hub |"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1519,
+    1542
+   ],
+   "text_prefix_16b": "`registry/server"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Relay-Hub/Format Support",
+   "span": [
+    1864,
+    1881
+   ],
+   "text_prefix_16b": "## Format Suppor"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Relay-Hub/See Also",
+   "span": [
+    2120,
+    2131
+   ],
+   "text_prefix_16b": "## See Also\n\n- ["
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    2135,
+    2156
+   ],
+   "text_prefix_16b": "[[sources/relay-"
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    2178,
+    2201
+   ],
+   "text_prefix_16b": "[[sources/mesh-c"
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    2239,
+    2259
+   ],
+   "text_prefix_16b": "[[legacy-convert"
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    2304,
+    2334
+   ],
+   "text_prefix_16b": "[[proxy-config-p"
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    2356,
+    2371
+   ],
+   "text_prefix_16b": "[[gui-clients]] "
+  }
+ ]
+}

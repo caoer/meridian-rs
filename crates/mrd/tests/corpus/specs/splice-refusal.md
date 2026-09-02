@@ -1,7 +1,7 @@
 ---
 corpus_test: a-case-whose-production-edit-the-engine-refuses
 rule: ../rules/no-smuggled-heading.md
-corpus: ../tree
+corpus: ../governed
 ---
 
 # splice-refusal (fixture spec, exit 2)
@@ -20,10 +20,10 @@ structural-write
 
 ```case
 { "name": "old-that-does-not-occur",
-  "doc": "tasks/b3-gatecheck.md",
+  "doc": "tasks/gate-check.md",
   "actor": "agent:alice",
   "edits": [
-    { "target": {"hpath": [{"h": "Task: b3-gatecheck"}, {"h": "Quality Gates"}]},
+    { "target": {"hpath": [{"h": "Task: gate-check"}, {"h": "Quality Gates"}]},
       "edit": {"match": {"old": "a string that is nowhere in this document at all", "new": "x"}} }
   ],
   "expect": "pass" }

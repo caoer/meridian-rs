@@ -1,7 +1,7 @@
 ---
 corpus_test: reviewer-not-owner-fire-mismatch
 rule: ../rules/reviewer-not-owner.md
-corpus: ../tree
+corpus: ../governed
 ---
 
 # fire-mismatch (load-bearing negative, exit 1)
@@ -18,9 +18,9 @@ reviewer-close
 ```
 
 ```case
-{ "name": "wrong-expect-pass", "doc": "tasks/r3a-impl-plan.md", "actor": "agent:alice", "set": {"owner": "agent:alice", "status": "closed"}, "expect": "pass" }
+{ "name": "wrong-expect-pass", "doc": "tasks/plan-index.md", "actor": "agent:alice", "set": {"owner": "agent:alice", "status": "closed"}, "expect": "pass" }
 ```
 
 ```case
-{ "name": "correct-self-close", "doc": "tasks/b3-impl-plan.md", "actor": "agent:carol", "set": {"owner": "agent:carol", "status": "closed"}, "expect": "reviewer-close" }
+{ "name": "correct-self-close", "doc": "tasks/plan-dialect.md", "actor": "agent:carol", "set": {"owner": "agent:carol", "status": "closed"}, "expect": "reviewer-close" }
 ```

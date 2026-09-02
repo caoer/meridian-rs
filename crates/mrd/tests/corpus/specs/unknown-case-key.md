@@ -1,7 +1,7 @@
 ---
 corpus_test: an-unknown-case-key-is-a-hard-fault
 rule: ../rules/no-smuggled-heading.md
-corpus: ../tree
+corpus: ../governed
 ---
 
 # unknown-case-key (fixture spec, exit 2)
@@ -17,7 +17,7 @@ structural-write
 
 ```case
 { "name": "author-reaches-for-a-verb-that-does-not-exist",
-  "doc": "tasks/b3-gatecheck.md",
+  "doc": "tasks/gate-check.md",
   "actor": "agent:alice",
   "append_section": {"Quality Gates": "## Smuggled"},
   "expect": "structural-write" }

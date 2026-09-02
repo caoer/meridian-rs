@@ -1,7 +1,7 @@
 ---
 corpus_test: reviewer-not-owner-surprise-rule
 rule: ../rules/reviewer-not-owner.md
-corpus: ../tree
+corpus: ../governed
 ---
 
 # surprise-rule (undeclared rule fires, exit 1)
@@ -16,9 +16,9 @@ declared)" and exits 1, so an under-declared manifest cannot pass silently.
 ```
 
 ```case
-{ "name": "r3a-self-close", "doc": "tasks/r3a-impl-plan.md", "actor": "agent:alice", "set": {"owner": "agent:alice", "status": "closed"}, "expect": "reviewer-close" }
+{ "name": "r3a-self-close", "doc": "tasks/plan-index.md", "actor": "agent:alice", "set": {"owner": "agent:alice", "status": "closed"}, "expect": "reviewer-close" }
 ```
 
 ```case
-{ "name": "b3-reviewer-close", "doc": "tasks/b3-impl-plan.md", "actor": "agent:bob", "set": {"owner": "agent:alice", "status": "closed"}, "expect": "pass" }
+{ "name": "b3-reviewer-close", "doc": "tasks/plan-dialect.md", "actor": "agent:bob", "set": {"owner": "agent:alice", "status": "closed"}, "expect": "pass" }
 ```

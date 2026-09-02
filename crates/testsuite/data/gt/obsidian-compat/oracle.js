@@ -23,9 +23,10 @@
 // the same UTF-16->UTF-8 transcode the parity ruling assigns to the harness,
 // performed once at generation so the recorded offsets are byte-coherent.
 (function () {
-  // Live-vault path to the pack corpus. The pack's own walkvault/ copy is
-  // byte-identical; answers are recorded pack-corpus-relative (WV stripped).
-  var WV = "year=2026/month=07/18-02-meridian-rs/results/contract-v2-tournament/gate-3/adversarial-harness/fixtures/walkvault/";
+  // Vault-relative path of the walkvault/ copy the open vault carries (see
+  // generate.sh preconditions); answers are recorded pack-corpus-relative
+  // (WV stripped), so the copy's location in the vault never enters the pack.
+  var WV = "walkvault/";
 
   var probes = [
     { id: "WL-1", from: "walk.md", ref: "#B#Beta", law: "anywhere-after: closed B/C/A boundaries never stop the walk" },

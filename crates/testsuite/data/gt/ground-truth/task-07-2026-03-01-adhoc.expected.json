@@ -1,0 +1,172 @@
+{
+ "file": "samples/sessions/year=2026/month=03/20-02-compound-sweep/tasks/task-07-2026-03-01-adhoc.md",
+ "nodes": [
+  {
+   "kind": "frontmatter",
+   "span": [
+    0,
+    141
+   ],
+   "text_prefix_16b": "---\ntype: task\ns"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Worker Task 7: compound `2026-03-01-adhoc`",
+   "span": [
+    143,
+    187
+   ],
+   "text_prefix_16b": "# Worker Task 7:"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    169,
+    187
+   ],
+   "text_prefix_16b": "`2026-03-01-adho"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    217,
+    227
+   ],
+   "text_prefix_16b": "`a1b2c3d4`.\n\n## "
+  },
+  {
+   "kind": "heading",
+   "hpath": "Worker Task 7: compound `2026-03-01-adhoc`/Target",
+   "span": [
+    230,
+    239
+   ],
+   "text_prefix_16b": "## Target\n`/srv/"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    240,
+    297
+   ],
+   "text_prefix_16b": "`/srv/vaults/exa"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Worker Task 7: compound `2026-03-01-adhoc`/Profile",
+   "span": [
+    299,
+    309
+   ],
+   "text_prefix_16b": "## Profile\n- **N"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    363,
+    401
+   ],
+   "text_prefix_16b": "`large-memory-in"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    412,
+    432
+   ],
+   "text_prefix_16b": "`hardware/infere"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Worker Task 7: compound `2026-03-01-adhoc`/Mode",
+   "span": [
+    434,
+    441
+   ],
+   "text_prefix_16b": "## Mode\n**Memo-O"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Worker Task 7: compound `2026-03-01-adhoc`/Critical reminders",
+   "span": [
+    564,
+    585
+   ],
+   "text_prefix_16b": "## Critical remi"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    600,
+    622
+   ],
+   "text_prefix_16b": "`2026-03-20-<slu"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Worker Task 7: compound `2026-03-01-adhoc`/Workflow",
+   "span": [
+    626,
+    637
+   ],
+   "text_prefix_16b": "## Workflow\n1. `"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    641,
+    657
+   ],
+   "text_prefix_16b": "`load /compound`"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    683,
+    774
+   ],
+   "text_prefix_16b": "`/srv/vaults/exa"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    838,
+    851
+   ],
+   "text_prefix_16b": "`wiki ingest`.\n6"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    879,
+    889
+   ],
+   "text_prefix_16b": "`a1b2c3d4` and `"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    894,
+    915
+   ],
+   "text_prefix_16b": "`killme --close-"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Worker Task 7: compound `2026-03-01-adhoc`/Reporting format",
+   "span": [
+    918,
+    937
+   ],
+   "text_prefix_16b": "## Reporting for"
+  },
+  {
+   "kind": "fence",
+   "span": [
+    938,
+    1122
+   ],
+   "text_prefix_16b": "```\nCOMPOUND 7 D"
+  }
+ ]
+}

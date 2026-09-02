@@ -1,0 +1,105 @@
+{
+ "file": "samples/sessions/year=2026/month=04/02-03-skill-refresh/agents/b2c3d4e5.md",
+ "nodes": [
+  {
+   "kind": "frontmatter",
+   "span": [
+    0,
+    156
+   ],
+   "text_prefix_16b": "---\ntype: agent\n"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Memo",
+   "span": [
+    158,
+    164
+   ],
+   "text_prefix_16b": "# Memo\n\n# Todo\n\n"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Todo",
+   "span": [
+    166,
+    172
+   ],
+   "text_prefix_16b": "# Todo\n\n- [x] Fi"
+  },
+  {
+   "kind": "task",
+   "span": [
+    174,
+    243
+   ],
+   "text_prefix_16b": "- [x] Fix phase:"
+  },
+  {
+   "kind": "task",
+   "span": [
+    244,
+    281
+   ],
+   "text_prefix_16b": "- [x] Report cle"
+  },
+  {
+   "kind": "task",
+   "span": [
+    282,
+    408
+   ],
+   "text_prefix_16b": "- [x] Cross-revi"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Notes",
+   "span": [
+    410,
+    417
+   ],
+   "text_prefix_16b": "# Notes\n\n## plan"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Notes/plan skill audit result: CLEAN (zero changes, no commit)",
+   "span": [
+    419,
+    478
+   ],
+   "text_prefix_16b": "## plan skill au"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    655,
+    665
+   ],
+   "text_prefix_16b": "`thinking` all l"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    704,
+    726
+   ],
+   "text_prefix_16b": "`## Thinking Pat"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    779,
+    795
+   ],
+   "text_prefix_16b": "`status: active`"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1084,
+    1122
+   ],
+   "text_prefix_16b": "`plan/references"
+  }
+ ]
+}

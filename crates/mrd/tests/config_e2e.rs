@@ -120,8 +120,10 @@ fn the_verb_publishes_the_parsed_mount_table_and_the_config_rev() {
     assert!(text.contains("mounts (2):"), "{text}");
     let roots = home.path().join("roots");
     assert!(
-        text.contains(&format!("field-notes  {}", roots.join("field-notes").display()))
-            && text.contains("vault:field-notes  bound"),
+        text.contains(&format!(
+            "field-notes  {}",
+            roots.join("field-notes").display()
+        )) && text.contains("vault:field-notes  bound"),
         "the vault root, with its Obsidian vault name and its bound state: {text}"
     );
     assert!(

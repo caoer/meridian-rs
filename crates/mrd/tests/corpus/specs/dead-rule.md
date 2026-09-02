@@ -1,7 +1,7 @@
 ---
 corpus_test: reviewer-not-owner-dead-rule
 rule: ../rules/reviewer-not-owner.md
-corpus: ../tree
+corpus: ../governed
 ---
 
 # dead-rule (fixture rule page, exit 1)
@@ -19,17 +19,17 @@ reviewer-close
 ```
 
 ```case
-{ "name": "r3a-reviewer-close", "doc": "tasks/r3a-impl-plan.md", "actor": "agent:bob", "set": {"owner": "agent:alice", "status": "closed"}, "expect": "pass" }
+{ "name": "r3a-reviewer-close", "doc": "tasks/plan-index.md", "actor": "agent:bob", "set": {"owner": "agent:alice", "status": "closed"}, "expect": "pass" }
 ```
 
 ```case
-{ "name": "b3-reviewer-close", "doc": "tasks/b3-impl-plan.md", "actor": "agent:dave", "set": {"owner": "agent:carol", "status": "closed"}, "expect": "pass" }
+{ "name": "b3-reviewer-close", "doc": "tasks/plan-dialect.md", "actor": "agent:dave", "set": {"owner": "agent:carol", "status": "closed"}, "expect": "pass" }
 ```
 
 ```case
-{ "name": "c-external-edit", "doc": "tasks/c-impl-plan.md", "set": {"owner": "agent:erin", "status": "closed"}, "expect": "pass" }
+{ "name": "c-external-edit", "doc": "tasks/plan-walker.md", "set": {"owner": "agent:erin", "status": "closed"}, "expect": "pass" }
 ```
 
 ```case
-{ "name": "decision-out-of-scope", "doc": "decisions/001-package-cut.md", "actor": "agent:zt", "set": {"owner": "agent:zt", "status": "closed"}, "expect": "pass" }
+{ "name": "decision-out-of-scope", "doc": "decisions/001-crate-cut.md", "actor": "agent:zt", "set": {"owner": "agent:zt", "status": "closed"}, "expect": "pass" }
 ```
