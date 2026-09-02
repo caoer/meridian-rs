@@ -1,8 +1,8 @@
 //! PATH outside every defined root refuses fast (exit 2) — the help's own
 //! triad leg ("2 bad invocation or PATH outside workspace") — instead of
 //! adopting the bare cwd as a workspace and walking whatever sits under it
-//! (measured 2026-08-20: an unmarked 75-repo parent walked 46k files for
-//! ~21 s to report zero rules).
+//! (an unmarked 75-repo parent once walked 46k files for ~21 s to report zero
+//! rules).
 //!
 //! Defined roots are: the env override, a `.git` ancestor, an ancestor
 //! `MERIDIAN.md` root declaration (`mrd init`), or a daemon-registered root.

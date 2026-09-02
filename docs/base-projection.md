@@ -2,7 +2,6 @@
 type: spec
 id: base-projection
 status: standing
-updated: 2026-08-15
 description: How `.base` (Obsidian Bases) files project into the sql face — membership, relations, references, and the two-witness freshness frame. View-lane only; no wire surface.
 owns: [the base projection relations, the base membership rule, the base_fold witness, link.exclusion_path]
 ---
@@ -16,12 +15,11 @@ ephemeral `:memory:` build and the `sql.duckdb` cache). Law also:
 `wire-contract.md` §10.3–§10.4 (view topology), §12 (hash domain);
 `node-rev-merkle-spec.md` §4 (leaf/interior encoding); `laws.md` § crate charters.
 
-Mandate (ZT, 2026-08-14, verbatim): *"need to add consideration of .base file in
-mrd. the .base file is effectively yaml file, or similar to md file with only
-frontmatter. it defined important query for different uses."* The 2026-08-14
-exclusion ruling (bare-name fallback + `dangling … AND exclusion IS NULL`) was
-the stopgap that stopped the dangling census lying; this spec is the
-understanding the ask names. The ruling's mechanics stand untouched (§5.1).
+A `.base` file is effectively a YAML file — a markdown file with only
+frontmatter — and it defines important queries for different uses; this spec
+is that understanding. The exclusion rule (bare-name fallback + `dangling …
+AND exclusion IS NULL`) is what keeps the dangling census honest, and its
+mechanics stand untouched (§5.1).
 
 ## §1 What a `.base` file is
 
@@ -37,26 +35,25 @@ content. Exactly four top-level keys occur, all optional:
 | `properties` | map `property → display config` | display metadata (`displayName`, …) |
 | `views` | list of view objects (`type`, `name`, own `filters`, `groupBy`, `order`, `sort`, `limit`, `columnSize`, …) | the saved views themselves |
 
-Census, measured 2026-08-15 on the two live corpora this engine dogfoods: 832
-member `.base` files (812 in the sessions tree, 20 in the wiki). The two
-numbers do different jobs and are labeled so: the 812 is mostly four standing
-templates instantiated per session (`TASKS.base` / `FLEET.base` /
-`DECISIONS.base` / `BOARD.base` — distinct content is roughly two dozen
-files), so it is the WALK-COST number (§9) and the embed-join population
-(§5.1), while the wiki's 20 hand-authored bases and the template set are the
-definition-variety evidence. Key frequencies across every `.base` found
-(snapshots included, 1521 files): `views` 1509, `filters` 1495, `formulas`
-1085, `properties` 491.
+Census on the two measuring corpora: 832 member `.base` files (812 in a large
+template-stamped tree, 20 in a hand-authored vault). The two numbers do
+different jobs and are labeled so: the 812 is mostly four standing templates
+instantiated per directory (`TASKS.base` / `FLEET.base` / `DECISIONS.base` /
+`BOARD.base` — distinct content is roughly two dozen files), so it is the
+WALK-COST number (§9) and the embed-join population (§5.1), while the 20
+hand-authored bases and the template set are the definition-variety evidence.
+Key frequencies across every `.base` found (snapshots included, 1521 files):
+`views` 1509, `filters` 1495, `formulas` 1085, `properties` 491.
 The census also found **aliens**: files carrying the `.base` extension that are
 not Bases YAML at all — shell scripts (`gpurun.base`), backup-suffix markdown
 (`AGENTS.md.base`). The extension is not proof of the format, and §4.4 is
-where that honesty lands. (The 2026-08-14 census's `abc.BASE` is a different
-animal — a link-target TYPO naming no file at all; it stays dangling, §3/§5.1.)
+where that honesty lands. (`abc.BASE` is a different animal — a link-target
+TYPO naming no file at all; it stays dangling, §3/§5.1.)
 
 Two corpus facts drive the reference design (§5):
 
 - **Bases are embedded, parameterized by context.** `![[TAG-FILES.base]]`
-  appears 367 times on the measuring corpus (the 2026-08-14 dangling census);
+  appears 367 times on the measuring corpus (the dangling census);
   the embedded file filters by `this.note["tag"]` — the SAME file means a
   DIFFERENT query at every embed site. A base's meaning is not a property of
   the file alone.
@@ -68,7 +65,7 @@ Two corpus facts drive the reference design (§5):
 ## §2 The two laws this design lives under
 
 1. **The hash domain does not move** (`wire-contract.md` §12.1). The md-only
-   floor is structural and ratified; `.base` bytes never enter the workspace
+   floor is structural; `.base` bytes never enter the workspace
    fingerprint, no prefix bumps, no pin/receipt/attestation surface changes.
    This projection is a **read-model** of `.base` content, not an admission of
    `.base` into the attested corpus.
@@ -95,7 +92,7 @@ A file is a member of the base projection iff:
 
 1. its final extension is exactly `.base`, **case-exact** against the name
    read from the directory (`abc.BASE` is not a member — the case law the
-   2026-08-14 ruling ratified for the probe's fallback arm, applied here for
+   probe's fallback arm applies, applied here for
    the same reason: a case-folding match would canonize typos on APFS);
 2. it passes the SAME ignore rules the hash domain applies — the dot-segment
    floor and the `meridian/domain.md` custom ignore list — with the md-only
@@ -241,7 +238,7 @@ as a YAML mapping at all.** Modeling never destroys data it declines to lift.
 
 ### §5.1 md → `.base`: the probe's path, projected
 
-The 2026-08-14 ruling stands unchanged: a wikilink/embed whose target is a
+The exclusion rule stands unchanged: a wikilink/embed whose target is a
 real `.base` file on disk stamps `exclusion = 'non-md'` (literal arm, or
 case-exact bare-name fallback with the shortest-path-then-lexicographic
 tie-break), and `dangling` excludes explained rows. This spec adds the fact
@@ -268,14 +265,14 @@ case-insensitive filesystem that probe answers true through case-folding — so
 `[[bases/tasks.base]]` over on-disk `bases/TASKS.base` would stamp a path
 `base` does not contain (a join key that misses), and `[[abc.base]]` over
 on-disk `abc.BASE` would stamp a genuine typo as deliberate — the exact
-canonization the 2026-08-14 ruling's case-exact guard exists to prevent, on
+canonization the case-exact guard exists to prevent, on
 the arm the guard did not yet reach. So the literal arm verifies its final
 segment against the parent directory's entries case-exactly; a spelling that
 reaches bytes only through filesystem case-folding is NOT verified, stays
-unstamped, and remains honestly dangling. The probe is the ruling's shared
+unstamped, and remains honestly dangling. The probe is the shared
 mint, so the `exclusion` WORD inherits the same sharpening wherever it is
-served — that is the ruling's own one-mint design carried to its stated
-intent, and §10.3 names it as served-content motion.
+served — one mint, carried to its stated intent — and §10.3 names it as
+served-content motion.
 
 No new vocabulary word, no change to `dangling`'s definition, and stamping
 narrows only where case-folding was lying. The wire `links` door
@@ -327,9 +324,9 @@ caller), which is "not asked", never "empty".
 
 **An UNREADABLE member (§4.4) contributes
 `varint(len(path)) ‖ path ‖ 0x01 ‖ [0u8; 32]`** — the same slot, the §4 type
-byte flipped, a zero leaf where no leaf exists (amendment 2026-08-15, ruled by
-the board at implementation: the recipe above covers only members whose bytes
-were read). It is the one encoding that keeps the three states DISTINCT in the
+byte flipped, a zero leaf where no leaf exists (the recipe above covers only
+members whose bytes were read). It is the one encoding that keeps the three
+states DISTINCT in the
 witness: readable (`0x00` + its leaf), unreadable-but-seen (`0x01` + zeroes),
 and absent (no contribution at all). Omitting the member instead would fold an
 unreadable member and a deleted one to the same value — the §12.1 absence lie
@@ -344,8 +341,8 @@ no job here and the prefix never advances. It shares no prefix space with
 `fingerprint` by construction: a `bf:` value can never compare equal to a
 `b3…:` value.
 
-This is not a G14 repeat, stated because `build_memory`'s own doc comment
-(`crates/view/src/lib.rs`) forbids locally-computed folds: that rule guards
+This does not conflict with `build_memory`'s own doc comment
+(`crates/view/src/lib.rs`), which forbids locally-computed folds: that rule guards
 the FINGERPRINT, whose fold must ride the domain filter and `version` prefix
 from `fs::domain_snapshot`. `base_fold` is computed by the SAME `fs` walk
 that defines base membership (§3) and handed in beside the bytes; `view`
@@ -450,19 +447,19 @@ every other projection table:
   forces a kind-filter into every existing query forever, and re-creates the
   coverage lie with a marker column as apology.
 - **Admission into the hash domain.** Attestation over Bases is not the ask —
-  queryability is — and the md-only floor is structural, ratified, and
+  queryability is — and the md-only floor is structural and
   prefix-laddered. Rejected without prejudice: an attestation ask over `.base`
   is its own ruling on §12, not a projection detail.
 - **Parsing the expression language / minting edges.** §5.2. The `this.*`
   parameterization makes file-alone interpretation FALSE, not merely fragile.
-- **`LIKE '%.base'` query-side filtering** was already rejected by the
-  2026-08-14 ruling (hides genuine rot, drifts per query); this spec is the
-  structural continuation of that ruling's direction.
+- **`LIKE '%.base'` query-side filtering** is rejected (hides genuine rot,
+  drifts per query); this spec is the structural continuation of the exclusion
+  rule's direction.
 
 ## §9 Costs, named
 
 - **`:memory:` lane, per query:** one extra walk over the tree for members
-  (812 on the measuring sessions corpus), one blake3 + one serde_yaml parse
+  (812 on the measuring corpus), one blake3 + one serde_yaml parse
   per member (Bases files are tens of lines). The md fold already walks and hashes
   the ENTIRE md corpus per query; the base walk is a small fraction of that
   standing cost. `mrd sql` remains, by design, a slow operator tool (README
@@ -528,26 +525,25 @@ The §5.1 mint rule is also served-CONTENT motion beyond the sql face: on a
 case-insensitive volume, `exclusion` words that previously stamped through
 case-folding stop stamping (rows return to `dangling`, and the §4.6 door's
 map shrinks by the same rows). Shape everywhere is unchanged; the content
-motion is the ruling's case-exact guard reaching the literal arm, and it is
+motion is the case-exact guard reaching the literal arm, and it is
 named here so the landing flags it rather than discovering it.
 
 ### §10.4 Out of scope, named
 
 - The wire `links` door §4.6 map stays word-only (§5.1); widening it is a wire
-  amendment with its own card.
+  amendment of its own.
 - Door behavior (`toc`/`cat`/`read`/`splice`/…) on `.base` paths: unchanged,
   whatever it is today.
 - No Bases EVALUATION: the engine projects definitions; it does not run the
   queries. Compiling Bases filters to SQL over this projection is a real
   future direction and a separate design.
-- Downstream teaching surfaces outside this repo (the sql tool's skill) follow
-  the served face after landing.
+- Downstream clients' teaching surfaces follow the served face after landing.
 - `hist` coverage for non-`.base` exclusion inputs: stays the disclosed
   approximation (§7).
 
 ## §11 The worked gate
 
-Measured target (sessions corpus, `bases/TASKS.base`, 2026-08-15):
+Measured target (`bases/TASKS.base` on the measuring corpus):
 
 ```yaml
 filters:

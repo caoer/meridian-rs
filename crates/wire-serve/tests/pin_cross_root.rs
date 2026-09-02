@@ -1,5 +1,4 @@
-//! Cross-root pin — the WRITE half (ruled design D-A..D-D, session
-//! 12-04-f2-mrd-integration `results/pin-cross-root-design.md`).
+//! Cross-root pin — the WRITE half (design points D-A..D-D).
 //!
 //! D-A: `PinSpec.target` carries the ruled `name:rel` spelling; the lock row's
 //! `object` receives it verbatim minus `.md`. D-B (round 2): anchor promotion

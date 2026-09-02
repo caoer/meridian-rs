@@ -11,7 +11,7 @@ it keeps the block grammar at one spelling per fact.
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/projects/field-notes
+path: /srv/vaults/field-notes
 
 vault: field-notes
 ```

@@ -1,6 +1,5 @@
 //! Merkle law 2 — the fixed-256 radix child map (`docs/node-rev-merkle-spec.md`
-//! §4.2; ruled by `decisions/2026-08-15-width-sharding-now.md`: fixed-256 from
-//! the first scoped-token version, deferral rejected).
+//! §4.2): fixed-256 from the first scoped-token version, deferral rejected.
 //!
 //! One instance holds ONE directory's child set `C` — entries of
 //! `(name bytes, kind, 32-byte hash)` — as the canonical radix trie of §4.2.1,

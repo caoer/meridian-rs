@@ -332,8 +332,8 @@ pub struct ScriptTrace {
     pub armed_digest: Option<String>,
     /// The module's top-level bindings after a SUCCESSFUL evaluation — name →
     /// Starlark repr, in name order (the map's own order, not statement
-    /// order). This is the result-echo half the ruling restored (2026-08-13,
-    /// F-S1+F-S3): the face renders values from here, which is what makes the
+    /// order). This is the result-echo half the F-S1+F-S3 ruling restored:
+    /// the face renders values from here, which is what makes the
     /// kernel's own teaching — "bind it to a name to echo it" — true.
     ///
     /// Three names never appear (the kernel's capture law,

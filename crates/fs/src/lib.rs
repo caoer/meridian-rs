@@ -3532,7 +3532,7 @@ fn fsync_dir(dir: &Path) -> io::Result<()> {
 }
 
 /// The ruled durability class (`docs/laws.md` § Amendment — the fsync
-/// class; ZT ruling 2026-08-16): plain `fsync(2)` on every platform, never
+/// class): plain `fsync(2)` on every platform, never
 /// `F_FULLFSYNC`. Drive cache is accepted — no power-loss or platter claim.
 /// On macOS std's `sync_all`/`sync_data` are `fcntl(F_FULLFSYNC)`, so the
 /// class requires `libc::fsync` directly; elsewhere `sync_all` IS

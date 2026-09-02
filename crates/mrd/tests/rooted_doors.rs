@@ -1,5 +1,5 @@
-//! The §4.6 family gates for the doors converted by rooted-refs-everywhere
-//! (2026-08-18): every page-taking door RESOLVES a `root:page` ref instead of
+//! The §4.6 family gates for the doors converted by rooted-refs-everywhere:
+//! every page-taking door RESOLVES a `root:page` ref instead of
 //! refusing or misreading it. Two gates per converted door, modeled on
 //! `read_rooted_ref.rs`:
 //!

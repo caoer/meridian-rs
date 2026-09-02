@@ -367,7 +367,7 @@ fn non_md_effect_is_a_dispatch_bug_refused_loud() {
     assert!(matches!(err, ExecError::NonMdEffect { .. }));
 }
 
-/// The no-guard law at this seam (2026-08-15 ruling): a stale observation —
+/// The no-guard law at this seam: a stale observation —
 /// the corpus advanced since the effects were produced — commits anyway.
 /// The former `root_mismatch` premise refusal is RETIRED; the full F3
 /// fixture lives in `tests/no_guard_on_effects.rs`.
@@ -925,7 +925,7 @@ fn cap_denial_on_an_empty_grant_says_the_task_declares_none() {
     );
 }
 
-/// ⑤-F2 regression (2026-08-17). A value-identical `md.set_field` keeps the
+/// ⑤-F2 regression. A value-identical `md.set_field` keeps the
 /// STORED spelling — quotes included — so the composed line's bytes, and with
 /// them the field hash / `prop_rev` / corpus root, do not move.
 ///

@@ -44,15 +44,15 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// The acceptance, and the shape ZT asked for: a `^config` block whose `config()` returns a
-/// mapping, one key addressed by name, printed BARE so a shell can capture it.
+/// The acceptance, and the shape the verb was designed for: a `^config` block whose `config()`
+/// returns a mapping, one key addressed by name, printed BARE so a shell can capture it.
 #[test]
 fn a_key_prints_its_value_bare() {
     let home = tempfile::tempdir().expect("tempdir");
     write_home(
         home.path(),
         &page(&block(
-            "def config():\n    return {\"repos_root\": \"/Users/Shared/projects/coscene-io\"}",
+            "def config():\n    return {\"repos_root\": \"/srv/vaults/coscene-io\"}",
         )),
     );
 
@@ -60,7 +60,7 @@ fn a_key_prints_its_value_bare() {
     assert_eq!(out.status.code(), Some(0), "clean: {}", stderr(&out));
     assert_eq!(
         stdout(&out),
-        "/Users/Shared/projects/coscene-io\n",
+        "/srv/vaults/coscene-io\n",
         "the value alone, unquoted — `r=$(mrd config get repos_root)` is the point of the verb"
     );
 }
@@ -148,13 +148,13 @@ fn the_block_is_starlark_and_may_compute() {
     write_home(
         home.path(),
         &page(&block(
-            "ROOT = \"/Users/Shared/projects\"\n\ndef config():\n    return {\"repos_root\": ROOT + \"/coscene-io\"}",
+            "ROOT = \"/srv/vaults\"\n\ndef config():\n    return {\"repos_root\": ROOT + \"/coscene-io\"}",
         )),
     );
 
     let out = run(home.path(), &["repos_root"]);
     assert_eq!(out.status.code(), Some(0), "clean: {}", stderr(&out));
-    assert_eq!(stdout(&out), "/Users/Shared/projects/coscene-io\n");
+    assert_eq!(stdout(&out), "/srv/vaults/coscene-io\n");
 }
 
 /// The evaluator is the sealed kernel: no `load`, no ambient I/O, no unbound reach. A block that
@@ -315,23 +315,23 @@ fn a_dot_path_reaches_a_nested_member() {
     write_home(
         home.path(),
         &page(&block(
-            "def config():\n    return {\"repos_root\": {\"coscene-wiki\": \"/Users/Shared/projects/coscene-io\", \"field-notes\": \"/Users/Shared/repos\"}}",
+            "def config():\n    return {\"repos_root\": {\"coscene-wiki\": \"/srv/vaults/coscene-io\", \"field-notes\": \"/srv/repos\"}}",
         )),
     );
 
     let out = run(home.path(), &["repos_root.coscene-wiki"]);
     assert_eq!(out.status.code(), Some(0), "clean: {}", stderr(&out));
-    assert_eq!(stdout(&out), "/Users/Shared/projects/coscene-io\n");
+    assert_eq!(stdout(&out), "/srv/vaults/coscene-io\n");
 
     let out = run(home.path(), &["repos_root.field-notes"]);
     assert_eq!(out.status.code(), Some(0), "clean: {}", stderr(&out));
-    assert_eq!(stdout(&out), "/Users/Shared/repos\n");
+    assert_eq!(stdout(&out), "/srv/repos\n");
 
     let out = run(home.path(), &["repos_root"]);
     assert_eq!(out.status.code(), Some(0), "clean: {}", stderr(&out));
     let value: serde_json::Value =
         serde_json::from_str(&stdout(&out)).expect("the branch prints as JSON");
-    assert_eq!(value["coscene-wiki"], "/Users/Shared/projects/coscene-io");
+    assert_eq!(value["coscene-wiki"], "/srv/vaults/coscene-io");
 }
 
 /// The walk has no depth limit of its own — a path is as deep as the config is.

@@ -13,8 +13,8 @@
 //! both halves are driven here through the real binary, over its process
 //! boundary — the only place an auto-spawn is observable at all.
 //!
-//! **Why it belongs to this card.** The precondition the advisor and the leader
-//! both demanded before the local transaction could be deleted was: *name the
+//! **Why these tests exist.** The precondition review demanded before the
+//! local transaction could be deleted was: *name the
 //! state the local lane existed for, and show it survives*. The answer was that
 //! it never served a daemonless case — `engine::ensure_daemon` and the socket
 //! dial both sit ABOVE the lane split (`script/cmd.rs`), so every lane this verb

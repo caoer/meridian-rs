@@ -883,10 +883,10 @@ pub fn read_root_declaration(root: &Path) -> Result<Declaration, DeclarationFaul
 /// holds a `.git` entry, or a valid `MERIDIAN.md` root declaration. A daemon
 /// registry row must re-pass this test at serve time — a leftover
 /// registration of an unmarked tree is not a defined root, however it got
-/// into the registry (measured 2026-08-20: a pre-refusal walk registered a
-/// 75-repo projects parent; the row outlived the fix and every later
-/// invocation adopted it). Two stats and at most one small file parse —
-/// milliseconds, never a corpus walk.
+/// into the registry (a pre-refusal walk once registered a 75-repo projects
+/// parent; the row outlived the fix and every later invocation adopted it).
+/// Two stats and at most one small file parse — milliseconds, never a corpus
+/// walk.
 #[must_use]
 pub fn is_defined_root(dir: &Path) -> bool {
     workspace::is_git_root(dir) || read_root_declaration(dir).is_ok()

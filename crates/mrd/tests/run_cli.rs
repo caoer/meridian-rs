@@ -64,7 +64,7 @@ def run(ctx):
 ";
 
 /// A many-task page with a `default` binding — the TASK-omitted election leg
-/// (2026-08-19 default-task amendment).
+/// (the default-task amendment).
 const DEFAULT_PAGE: &str = "\
 ---
 task.default: \"[[#^def-1]]\"
@@ -135,7 +135,7 @@ fn code(out: &Output) -> i32 {
 /// `--list` names every task with language, contract, and — where capabilities
 /// apply — its caps. Exit 0. The bash row reads `effects: undeclared`, with NO
 /// guarantee word: a class renders only where positive (`hermetic`) — there is
-/// no sandbox, so `unsandboxed` names nothing (ZT ruling, 2026-08-15).
+/// no sandbox, so `unsandboxed` names nothing.
 #[test]
 fn list_shows_every_task_with_class_and_caps() {
     let ws = Ws::new();
@@ -207,7 +207,7 @@ fn task_omitted_single_runs_it() {
 }
 
 /// TASK omitted on a many-task page WITH a `default` binding: the election
-/// runs `default` — no list, exit 0 (2026-08-19 default-task amendment).
+/// runs `default` — no list, exit 0 (the default-task amendment).
 #[test]
 fn task_omitted_many_with_default_runs_default() {
     let ws = Ws::new();
@@ -338,7 +338,7 @@ fn dry_bash_shows_block_and_refuses_exec() {
     let text = stdout(&out);
     assert!(text.contains("NOT executed"), "{text}");
     assert!(text.contains("touch pwned-by-fix-drift"), "{text}");
-    // No guarantee word for bash (ZT ruling, 2026-08-15): `effects:
+    // No guarantee word for bash (`docs/laws.md` § Amendment): `effects:
     // undeclared` is the fact; a negation naming no real sandbox is not.
     assert!(!text.contains("unsandboxed"), "{text}");
     assert!(text.contains("effects: undeclared"), "{text}");

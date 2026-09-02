@@ -2,7 +2,6 @@
 type: reference
 id: status
 status: standing
-updated: 2026-08-18
 description: What the binary exposes and verifies today, reproducible from the commands shown. Also the home of R12, the armed-plane exit reading.
 owns: [what the binary exposes today, R12 — the armed-plane exit reading]
 ---
@@ -23,10 +22,10 @@ See `README.md` for process.
 ## Build
 
 - Toolchain: Rust edition 2024, `rust-version = 1.96`.
-- `cargo build` builds the twenty-six default members (the engine planes plus
+- `cargo build` builds the twenty-seven default members (the engine planes plus
  the `workspace` / `cache` / `registry` / `mrd` CLI foundation, and attestation's
- `git` plumbing leaf); `perfsuite` is out of default-members (27 is the total
- member count) and builds under `cargo build -p perfsuite`.
+ `git` plumbing leaf); `perfsuite` is out of default-members (28 is the total
+ member count under `crates/`) and builds under `cargo build -p perfsuite`.
 - Fork: `pulldown-cmark` is consumed via a `[patch.crates-io]` rev pin (the
  `obsidian` branch); see the workspace `Cargo.toml`.
 
@@ -41,8 +40,8 @@ write), `fingerprint`, `diff`, `sub`, plus standing additives (`plan_edits`,
 **As shipped (may lag design — treat gaps as debt, not law):**
 
 The daemon answers protocol 1 as `meridian-daemon/1.1.0` (derived:
-`concat!("meridian-daemon/", env!("CARGO_PKG_VERSION"))`); the stdio sidecar
-host is DROPPED (wire-contract §3.3, 2026-08-06). Live binaries still
+`concat!("meridian-daemon/", env!("CARGO_PKG_VERSION"))`); the daemon socket is
+the only host — there is no stdio sidecar (wire-contract §3.3). Live binaries still
 carry a dual negotiation path and some legacy `root` / `if_root` spellings in
 code and caps tables; **standing emission and agent teaching use
 `fingerprint` / `if_fingerprint` / segments** per `wire-contract.md`.
@@ -75,7 +74,7 @@ not address law**.
 mrd init [PATH] [--name NAME]
  declare the root (PATH's own MERIDIAN.md,
  `type: meridian-root`), register its drawer, reconcile
- shadowed descendant drawers (amendment M2)
+ shadowed descendant drawers
 mrd unregister [PATH] drop the daemon entry (if a daemon answers) + the drawer.
  A PATH whose directory is already gone is matched as
  given — `Registry::unregister`'s own fallback key, and
@@ -94,8 +93,7 @@ mrd unregister [PATH] drop the daemon entry (if a daemon answers) + the drawer.
 mrd resolve [PATH] report how a path resolves — the tier that answered and
  the root it named (read-only; writes nothing). PATH
  also takes the agent-plane `root:path` spelling: a
- rooted ref answers WHERE THE REF LANDS, the MCP
- resolve face's answer ported — the physical path, the
+ rooted ref answers WHERE THE REF LANDS — the physical path, the
  rooted lane, the bound root and its workspace, and
  the canonical `root:path` spelling — resolved through
  the read door's seam with no existence check and no
@@ -114,7 +112,7 @@ mrd read <PATH>[#FRAG] [--section SEL]
  §4.1 colon law): a rooted ref binds to the named
  root's workspace from the machine mount table
  (~/MERIDIAN.md, read fresh per call — the same
- name→workspace binding the MCP face and the engine's
+ name→workspace binding a wire client and the engine's
  pin-cross-root lane resolve), then reads the rel half
  inside that root, warm and degrade alike. The root
  reading wins unconditionally — a head colon is never
@@ -123,7 +121,7 @@ mrd read <PATH>[#FRAG] [--section SEL]
  refusal family, exit 1, {workspace,error} under
  --json) instead of degrading into an ambient lookup.
  The rooted lane spans EVERY page-taking door
- (address-grammar §4.6, amended 2026-08-18): read,
+ (address-grammar §4.6): read,
  fingerprint, resolve, links, walk, repair, realise,
  run, rules, put (TARGET and --scope),
  rm, pin (PAGE; TARGET was already cross-root), and
@@ -132,9 +130,7 @@ mrd read <PATH>[#FRAG] [--section SEL]
  (unfold/reconcile/new) refuses rooted refs with a
  teaching until it rides the daemon (§4.6, the stated
  exception); non-page arguments (arm --at, sql,
- test --history, status --cwd) stay as they are. A
- binary predating the amendment refuses or misreads
- rooted refs at the converted doors. SEL is a
+ test --history, status --cwd) stay as they are. SEL is a
  heading chain, a `^id`, or a dewey ordinal — the
  chain joins on `/` and that delimiter is dead for
  heading text (§ the joined selector coat). A section
@@ -210,15 +206,14 @@ mrd fingerprint [PATH | --scope-bytes B64] [--json]
  triad: 0 minted / 1 engine refusal / 2 bad invocation
 mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
  [--if-fingerprint FP] [--scope PATH | --scope-bytes B64]
- [--receipt PATH#ANCHOR] [--json]
+ [--receipt PATH#ANCHOR] [--field K=V]... [--json]
  the batch write: the edits ride stdin as a BARE JSON
  array — the VALUE of the wire §4.4 `edits` field, not
  the request object around it (id / op / path are
  argv's here) — as a wire `splice` to the running
  daemon (authenticated IPC; no direct-publication
  fallback). The daemon must come up (`mrd daemon`, or
- the next call auto-spawns it). Scripts that used to
- write with no daemon now need the daemon up. A
+ the next call auto-spawns it). A
  guardless put is a wire client: fingerprint-or-force
  applies (`--force` or `if_node_rev`). `--scope PATH`
  narrows the `--if-fingerprint` premise to the named
@@ -241,9 +236,7 @@ mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
  under --json, the seam's refusal family) — a rooted
  scope never surfaces as the §5.5 "no premise covers"
  coverage refusal. The write TARGET takes the rooted
- spelling too (re-ruled 2026-08-18, address-grammar
- §4.6 — superseded: "§4.5 D11: a rooted PATH still
- refuses at the write door"): a rooted put resolves to
+ spelling too (address-grammar §4.6): a rooted put resolves to
  the named root's workspace and writes there under
  that tree's law; the wire still carries the rel half
  only. The pair law is
@@ -331,7 +324,7 @@ mrd retire <report|mark> [--id ID] [--dry-run] [--expect-root ROOT]
  the type-2 retirement DSL: report labels measured vs
  declared; mark sweeps the `~~term~~ replacer (retired: ID)`
  markers over meridian-retire blocks (idempotent; REQUIRES
- --expect-root unless --dry-run — quiesce the fleet and
+ --expect-root unless --dry-run — quiesce other writers and
  commit the vault first)
 mrd walk <PAGE> [--down] [--depth N]
  the context-assembly listing over the pin graph;
@@ -341,6 +334,12 @@ mrd rules [PATH] [--workspace | --user] [--json]
  after id-based override resolution — winner first, the
  pages it shadows beneath it, plus a separate armed
  column read from the attested armed set (read-only)
+mrd arm <ID> --mode <off|warn|block|armed> --rev <16HEX> [--at DIR] [--json]
+ the ARM act: resolve ID at the arm root (--at, a
+ workspace-relative directory, default `.`), admit the
+ attestation only if the live page rev equals --rev,
+ and pin the winner into meridian/armed-rules.md. A
+ check arms off|warn|block, a hook off|armed
 mrd config the MERIDIAN.md config plane: resolve the bootstrap
  (MERIDIAN_CONFIG, then $HOME/MERIDIAN.md) and print path,
  state, origin, rev/fingerprint, the BOUND mount table, and
@@ -385,17 +384,26 @@ mrd check [--core] [--staged] [--commit-gate [--require-pins]] [--json]
  CHECKED, never grey) — the engine keeps no memory;
  green means the world still matches the pins, not how
  it got there
-mrd status [--cwd PATH] the bare drift + freshness summary (pure-local,
+mrd skill hook emit the commit-fence contract to stdout: the markdown
+ IS the contract, the reader places it; writes no file,
+ has no --json face (see § mrd skill hook)
+mrd status [--cwd PATH] [--json]
+ the bare drift + freshness summary (pure-local,
  O(armed), fetch-less)
-mrd sql <QUERY> **operator face** — SQL over an ephemeral in-process
- `:memory:` projection of the corpus (NOT agent core;
- see § Operator SQL face below)
+mrd sql <QUERY> [--fresh] [--rebuild] [--cwd PATH | --root NAME] [--json]
+ **operator face** — SQL over an in-process projection
+ of the corpus, served from the drawer's `sql.duckdb`
+ cache when a cache root resolves, else an ephemeral
+ `:memory:` build (NOT agent core; see § Operator SQL
+ face below)
 mrd test --corpus <SPEC> the pre-arming corpus runner over synthetic changes
 mrd test --history <WS> --rule <PAGE> [--spec <PAGE>]
  the same law replayed against the workspace's own past;
  --spec names the spec page whose ```golden fence
  declares the exceptions (its `rule:` must name <PAGE>)
-mrd run <PAGE> [TASK] run a task block declared in the page's frontmatter
+mrd run <PAGE> [TASK] [-- ARGS]
+ run a task block declared in the page's frontmatter
+ (`--env K=V`, `--dry`, `--list`, `--json`)
 mrd script [--json] [--expect-armed DIGEST]
  the script entry of the run plane: caller-supplied
  inline source on stdin, run as the caller through the
@@ -404,16 +412,17 @@ mrd script [--json] [--expect-armed DIGEST]
  `--expect-armed` refuses BEFORE the splice unless what
  this run armed hashes to DIGEST — the commit half of
  the arm/commit split a gating host runs. BY DESIGN
- (D-04) this door carries no `--scope`/`--scope-bytes`:
+ this door carries no `--scope`/`--scope-bytes`:
  the caller's `--if-fingerprint` stays the world-grain
  entry token, and the finer grain is the run plane's
- own automatic touch-set premises (PR-2); wire callers
+ own automatic touch-set premises; wire callers
  may still send `guards[]` on the `script` op (§5.4)
 mrd new <KIND> <ID> file birth: fill the def's template, validate, birth
  the first rev through the guarded create
 mrd unfold <PRESET> materialize a preset's declared scaffold
 mrd reconcile <PRESET> reconcile the tree toward a preset's declared scaffold
-mrd realise <PAGE> the reconciliation loop: observe -> check -> apply
+mrd realise <PAGE> [--dry] [--json]
+ the reconciliation loop: observe -> check -> apply
  (only on drift, once) -> re-check
 mrd cache ls list the on-disk cache drawers
 mrd cache clean [--all] reap stale / orphaned / retired drawers. "Orphaned"
@@ -437,15 +446,14 @@ never re-computed at all, because it was built from artifacts seeded out of
 another tree whose git paths its freshness still watches. That reads as outcome
 one, in a clean tree at porcelain 0, and `(read, never invented)` is exactly the
 reassurance it defeats — the value WAS read faithfully, from a stale artifact of
-a repository you cannot see. (Measured 2026-08-09; the demonstrated instance is
-preserved at `/Users/Shared/scratch/act1-019e7ce2/{W2,Z2}`.)
+a repository you cannot see.
 
 And the probe is not the only producer: `build.rs` takes the value from the
 environment first (`env_sha()`, falling back to the probe), so **`MRD_BUILD_SHA`
 rides verbatim with no probe at all** — a supported input that can name a commit
 unrelated to the tree, independently of any stale artifact. Supplying it to make a
 gate agree invents the answer the pin exists to give; the supplier owns that
-claim. Read at `crates/mrd/build.rs`, HEAD `b8fe2a43`.
+claim. Read at `crates/mrd/build.rs`.
 
 ⛔ **So the first rung is the environment, not the stamp.** A supplied value
 passes the sha match, the ancestor discriminator AND the watch-list grep — every
@@ -471,22 +479,6 @@ THE SAME REPOSITORY sits inside your common dir and is exactly the hazard, so
 also the one check that fires at SEED TIME: a foreign worktree name is wrong
 immediately, before the receiving tree's HEAD has moved and while the sha still
 agrees.
-
-📌 **Predicate provenance, because this one moved faster than the page.** Derive
-the rate rather than trusting this sentence: the `ts:` frontmatter of the fleet
-notices that retired each form gives **three predicates in 5.2 minutes**, and
-**8.6 minutes** to the fourth revision that also replaced the file this section
-tells you to read (`all-hands/0015` `16:18:29Z` → `0018` `16:23:44Z` → `0020`
-`16:27:05Z`).
-The form above is the one measured into fleet law on 2026-08-09, superseding a
-common-dir-only test and, before that, a bare *any absolute path* test — each
-retired for admitting or flagging the wrong population. **A detector that young
-rots faster than the page around it**, so treat this paragraph as the last form
-this document SAW, not as proof it is the last form there is: if a later fleet
-notice sharpens it, that notice is current and this line is how you know to go
-looking. The stable half of this section — that the commit names the tree the
-build READ, that a fourth state exists which no output distinguishes, and that
-builds after `2500a4be` cannot enter it — does not move with the predicate.
 
 Do not tighten it into *any absolute path*, either — **a linked worktree's own
 refs genuinely live in the common dir, so absolute paths there are expected.**
@@ -519,7 +511,7 @@ and an ABSOLUTE `…/.git/worktrees/<name>/HEAD` in a linked worktree, and
 `git merge-base --is-ancestor <baked-sha> HEAD` splits the readings: YES is
 ordinary staleness (truthful about an earlier state of its own history). **NO is
 NOT yet the hazard — a third rung decides it**, because a CHERRY-PICKED landing
-puts your content under a NEW sha, so a seat that did everything the build-order
+puts your content under a NEW sha, so a tree that did everything the build-order
 law asks finds its baked sha is no longer an ancestor of `main` the moment its
 own work lands:
 
@@ -544,7 +536,7 @@ test:
 | `is-ancestor NO` + `+` + no such reflog entry | the foreign-checkout **HAZARD** stands |
 
 **No wording fix reaches this** — it is why the middle row cites the reflog
-rather than a sharper reading of `+`. Receipt: a card declared `5312ea1b` while
+rather than a sharper reading of `+`. Receipt: a handover note declared `5312ea1b` while
 its dir sat at `f6ed1aa7`, `+` with genuinely different patch-ids, and the
 reflog named `commit (amend)`. `+` was TRUE and its stated meaning was FALSE.
 
@@ -564,13 +556,13 @@ hazard — while `patch-id` is `b4c15235…` for both it and its landing `f42ace
 and `git cherry` prints `-`.** Tree said hazard, patch equivalence said landed,
 and the second is right. Tree identity is a SPECIAL CASE of patch equivalence and
 must not be used alone. **Without this rung the detector fires hardest on the
-seats whose work just landed correctly** — the failure mode that retires a
-detector fastest, and the reason this paragraph has now been sharpened twice.
+trees whose work just landed correctly** — the failure mode that retires a
+detector fastest.
 
 ⚠️ Run the first check against the binary in that
 directory's own `target/`, never a PATH-resolved `mrd` — the installed engine is
-held BEHIND the tree by design, so it disagrees with HEAD for every seat and
-that is the pin working, not a defect. For an installed release compare the TAG
+held BEHIND the tree by design, so it disagrees with HEAD in every development
+tree and that is the pin working, not a defect. For an installed release compare the TAG
 (`git rev-parse v1.0.0^{commit}`).
 
 **Builds after `2500a4be` cannot enter this state**: the identity probe watches
@@ -602,8 +594,7 @@ doing so converts an engine refusal into a bad-invocation report and blanks the
 ### Teaching rows — five true facts about this face an agent would not predict
 
 Each row is scoping, not defect: the CLI face is lawful and its behaviour still
-surprises a reader who arrived from `wire-contract.md`. Recorded 2026-08-09
-from the v1.0.0 dogfood sweep.
+surprises a reader who arrived from `wire-contract.md`.
 
 **`<PATH>#FRAG` is a MAP FILTER, never a body read.** `mrd read
 notes/plan.md#Goals/Q3` serves the SUBTREE'S TOC ROW — its address, span and
@@ -617,48 +608,44 @@ They talk to the running daemon over authenticated IPC (the same hello +
 socket-law identity check the script entry already uses). There is no direct-publication fallback: a down daemon is a taught refusal (exit 2),
 never a local write. Auto-spawn still runs; if the daemon cannot come up
 the face names that fact and the recovery (`mrd daemon`, shorten
-`XDG_CACHE_HOME` when sun_path is the cause). A guardless put is now
+`XDG_CACHE_HOME` when sun_path is the cause). A guardless put is
 inside § A.1's fingerprint-or-force demand — pass `--force` or
-`if_node_rev`. `--dry` is the daemon rehearsal; the old in-process
-unified candidate-diff was never a wire field and does not ride. The
-old `workspace_busy` class (LOCK_EX|LOCK_NB on the CLI process) left
-this path with the direct lane. A commit now rides the daemon epoch, so
-`seq` is the ring's, not `0`.
+`if_node_rev`. `--dry` is the daemon rehearsal; no in-process
+candidate-diff rides, because none is a wire field. A commit rides the
+daemon epoch, so `seq` is the ring's, never `0`.
 
-**A `--json` face answers `{workspace, error}` on EVERY leg that can refuse
-(settled 2026-08-09; was an open asymmetry).** `mrd put --json` already did;
-`mrd read --json` answered EMPTY stdout plus the human stderr line on every
-refusal leg (all-fail, ambiguous, duplicate-anchor, unaddressable-host,
-§2.4 charset, ambiguous-domain). **An absent frame is indistinguishable, to a
-parsing agent, from success with no output** — which is why this is a defect and
-not a face preference: the caller cannot tell "refused" from "nothing to say"
-without reading a sentence off stderr. So the refusal envelope is the law of the
-`--json` face itself, not of one verb: the engine's §8 error body in the v3
-vocabulary, on stdout, beside the unchanged human stderr line and exit triad.
-A.3's `reason` vocabulary and its `candidates` arrays reach a machine consumer
-at the leg the plane was invented to structure.
+**A `--json` face answers `{workspace, error}` on EVERY leg that can refuse.**
+`mrd read --json` answers the envelope on every refusal leg (all-fail,
+ambiguous, duplicate-anchor, unaddressable-host, §2.4 charset,
+ambiguous-domain), exactly as `mrd put --json` does. **An absent frame is
+indistinguishable, to a parsing agent, from success with no output** — which is
+why an empty stdout would be a defect and not a face preference: the caller
+cannot tell "refused" from "nothing to say" without reading a sentence off
+stderr. So the refusal envelope is the law of the `--json` face itself, not of
+one verb: the engine's §8 error body in the v3 vocabulary, on stdout, beside the
+unchanged human stderr line and exit triad. A.3's `reason` vocabulary and its
+`candidates` arrays reach a machine consumer at the leg the plane was invented
+to structure.
 
-**Two MEASURED instances, which is what makes this a class and not an
-anecdote.** The rule is stated once above rather than per-verb because the
-defect arrived twice, from two unrelated directions:
+**Two legs make this a class and not an anecdote.** The rule is stated once
+above rather than per-verb because the same failure shape arises from two
+unrelated directions:
 
-| # | leg | what `--json` stdout served |
+| # | leg | what an envelope-less `--json` stdout would serve |
 |---|---|---|
 | 1 | the ambiguous-domain refusal (`io_error`, two domain configs) | **EMPTY** — §8's `{cause}` and its remedy swallowed on both faces |
-| 2 | the §2.4 charset violation at the unified decoder | **NOTHING** — where v1.0.0 had served a structured frame carrying `code` and `recovery` |
+| 2 | the §2.4 charset violation at the unified decoder | **NOTHING** — where a structured frame carrying `code` and `recovery` is owed |
 
-Instance 1 is the s10 dogfood fragment; instance 2 was measured during
-verification of the `edit-object` card, where a candidate REGRESSED a frame the
-release binary served. One instance reads as a verb's oversight and gets fixed
-in that verb. Two instances from unrelated legs read as what they are — the
-face never held the invariant — and the fix belongs at the face.
+One instance reads as a verb's oversight and gets fixed in that verb. Two
+instances from unrelated legs read as what they are — an invariant of the face
+— and the guarantee belongs at the face.
 
 **`io_error` carries its `{cause}` onto the human face.** §8 computes
 `io_error{cause}` and the engine composes real prose into it — the
-ambiguous-domain refusal names both config files and which one to delete. The
-CLI printed the bare token `mrd: io_error`, so the one refusal whose remedy is
-genuinely non-obvious was the one whose teaching was swallowed. The cause is
-rendered verbatim; nothing is invented beside it.
+ambiguous-domain refusal names both config files and which one to delete. A
+CLI that printed the bare token `mrd: io_error` would swallow the teaching of
+the one refusal whose remedy is genuinely non-obvious. The cause is rendered
+verbatim; nothing is invented beside it.
 
 **The human read face carries no VALUE plane.** The composed read's `props`
 rows (A.3) are machine-face facts. `mrd read`'s human output is the rendered
@@ -693,10 +680,9 @@ reserved by ruling (`laws.md` D-1).
  are **not** wire ops and must not be taught as the agent path.
 - Nothing on the agent path assumes SQL/DB. No wire op, field, or error
  **names DuckDB** (§10.4).
-- **RULED — DROP (§10.4, 2026-08-06):** the `view_path` wire op, the
- daemon-published `view.duckdb` file, and `mrd view status` (whose subject
- was that file's freshness) are deleted. The former "keep / reshape / drop"
- line is closed.
+- There is no `view_path` wire op, no daemon-published `view.duckdb` file,
+ and no `mrd view` verb (§10.4): the projection is the sql face's own, built
+ per query or served from the drawer's `sql.duckdb` cache.
 - The sql face also projects **`.base` (Obsidian Bases) files** — the `base`,
  `base_view` and `base_formula` relations, plus `link.exclusion_path`
  (`docs/base-projection.md`). They are view-lane only and carry NO wire
@@ -704,13 +690,14 @@ reserved by ruling (`laws.md` D-1).
  `base_fold` witness, which the freshness frame reports as a SECOND plane
  (`base_plane` in `--json`, its own banner line in human mode) so "the corpus
  moved" and "the base plane moved" stay different sentences.
-- `mrd sql` is **operator convenience**: it builds an ephemeral `:memory:`
- projection of the corpus per query, writes nothing to disk, and folds
- post-result for an honest freshness frame. It is **not** a peer of
- `mrd read` / `mrd put` / wire `splice`, and its per-query build cost is
- O(corpus) — on a large tree it is a slow operator tool, by design.
+- `mrd sql` is **operator convenience**: it serves from the drawer's
+ append-only `sql.duckdb` cache when a cache root resolves (`--rebuild`
+ recreates it), else builds an ephemeral `:memory:` projection of the corpus
+ per query, and folds post-result for an honest freshness frame. It is
+ **not** a peer of `mrd read` / `mrd put` / wire `splice`, and a cold build
+ is O(corpus) — on a large tree it is a slow operator tool, by design.
 
-### `mrd repair` — lost-pin repair (U22 / H1)
+### `mrd repair` — lost-pin repair
 
 A pin carries two planes that fail independently: the CLAIM plane (its `fp1.…`
 fingerprint, verified against the live target) and the RETRIEVAL plane (its
@@ -744,7 +731,7 @@ recorded-blob bullet).
 - **`--dry`** is the skip-the-final-write rehearsal (the walk runs, the lock
  write does not), never a diff face. Progress counts ride stderr, so `--json`
  on stdout stays machine-clean.
-- **The write** goes through the existing guarded `lock_write` door, so the U12
+- **The write** goes through the existing guarded `lock_write` door, so the
  byte-landing door census is unchanged.
 - **Exit triad:** 0 nothing lost or all repaired (or `--dry` rehearsed) / 1 at
  least one TRUE LOSS / 2 bad invocation or a tool failure.
@@ -804,7 +791,7 @@ every other write uses: one flock, one rename (`wire-contract.md`
  an armed gate refusal — the engine's verbatim message) / 2
  bad invocation (including a down daemon). The write is IPC, same as `mrd put`.
 
-A pin written through the resident daemon or MCP carries its own proof: the
+A pin written through the resident daemon by a wire client carries its own proof: the
 `fingerprint` the caller's sections read served for that exact selector rides
 the pin, and the engine recomputes the live token under the write flock and
 compares (wire-contract § A.3, the proof law). "You cannot attest content that
@@ -818,7 +805,7 @@ supplied.
 `mrd rules [PATH] [--workspace | --user] [--json]`. Registration by tag plus
 id-based override makes the effective rule set a **computed quantity**, and a
 computed quantity the engine cannot show is one nobody can trust. This verb shows
-it (registration ruling § 7).
+it.
 
 ```text
 rules at sessions/s1
@@ -857,7 +844,7 @@ vocabularies produced hand-armed rows that parsed clean and governed nothing
 - **The `armed-set` header states what is, never the engine's storage.** An
  unarmed workspace reads `armed-set none` — the whole honest answer. Where an
  armed set would live is teaching, and teaching lives in docs on demand, never
- as a parenthetical charged to every invocation (ZT ruling 4, 2026-08-15). A
+ as a parenthetical charged to every invocation. A
  present or corrupt artifact still names its path: there the path is the
  diagnostic, not a footnote.
 - **`armed=` is a separate column**, read from the attested armed set
@@ -876,31 +863,29 @@ vocabularies produced hand-armed rows that parsed clean and governed nothing
  beside the word, so a reader re-derives it instead of parsing the ledger table.
 - **`off-drifted` IS NOT A REDNESS AND TRIPS NO GATE.** An `off` row is not
  armed, so no `⚠ page-drift` is owed and `redness` stays null on it — the
- documented contract, and it STANDS (advisor `4dab0746`, 2026-08-23). But "no
- page-drift marker" means "no ARMED row drifted", never "no row drifted": a rule
- flipped off and then edited was invisible to every redness-based reader
- (measured on the live sessions root 2026-08-23, `rules/010` pinned
- `a3f19a9dbb15ea8d` against a live `5d6ebb468c85d8ee`, `redness` null). The gap
- is observability, not enforcement, so it closes additively — the word is
- printed, the exit code is not touched. `mrd rules` exits 0 on an `off-drifted`
- row and 1 on a `drifted` one, before this column and after it.
+ documented contract. But "no page-drift marker" means "no ARMED row
+ drifted", never "no row drifted": a rule flipped off and then edited is
+ invisible to every redness-based reader. The gap is observability, not
+ enforcement, so the column closes it additively — the word is printed, the
+ exit code is not touched. `mrd rules` exits 0 on an `off-drifted` row and 1
+ on a `drifted` one.
 - **`armed=-` names one thing only: nothing governs HERE.** An armed row whose
  arm root does not contain PATH is not squeezed into that cell — it prints
  beneath the rows under `armed rows counted above whose arm root does NOT
- contain this path:`, naming its mode, its arm root, and its pinned page. Before
- this, `-` spelled both "armed nowhere" and "armed elsewhere" while the header
- counted a row the reader could not find, and a row that was BOTH out of scope
- and drifted rendered only the silent half at exit 0. The law: **containment is
+ contain this path:`, naming its mode, its arm root, and its pinned page. A
+ `-` that spelled both "armed nowhere" and "armed elsewhere" would leave the
+ header counting a row the reader could not find, and a row that was BOTH out
+ of scope and drifted rendering only the silent half at exit 0. The law: **containment is
  a fact and reddens nothing** (arming a sibling scope is normal), **redness is a
  fault wherever it lives** and is named and counted — so this verb and `mrd
  status` never disagree about one artifact.
 - **One resolver, two consumers.** The verb calls `policy`'s own
  `RuleIndex::discover` → `narrowed_to` → `resolve` and
  `ArmedArtifact::verify_at` — the ONE composition of select-then-verify, not
- `select_at` + `verify` assembled at the call site (C3 gate finding F-4). The
+ `select_at` + `verify` assembled at the call site. The
  elsewhere population is the same rule: `ArmedArtifact::verify_elsewhere_at` is
  one composed call in `policy`, because a containment predicate written at the
- CLI would be exactly the second resolver F-4 removed. The
+ CLI would be exactly a second resolver. The
  CLI layer holds no override law, and a test asserts that structurally. A second
  resolver here could report a law the write door does not enforce — the exact
  failure the verb exists to prevent.
@@ -915,14 +900,12 @@ vocabularies produced hand-armed rows that parsed clean and governed nothing
  answers the hypothetical exactly. The refusal only declines to dress a typo
  as an answer.
 
-**Refusal scoping — LANDED.** The registration ruling's § 3 "Refusal scoping"
-amendment (2026-08-01) rules that refusals are narrowed exactly like rules, and
-they now are: a scoped query reddens only for **on-chain** refusals — the exact
-subtree the refused page would have governed — while every corpus-wide walk
-(discovery sweep, ARM act, cutover sweep) reports ALL refusals it encounters,
-always. Off-chain reddening re-couples siblings through diagnostics, the denial
-shape the narrowing amendment already rejected for rules; fail-loud survives
-where enforcement lives.
+**Refusal scoping.** Refusals are narrowed exactly like rules: a scoped query
+reddens only for **on-chain** refusals — the exact subtree the refused page
+would have governed — while every corpus-wide walk (discovery sweep, ARM act,
+cutover sweep) reports ALL refusals it encounters, always. Off-chain reddening
+would re-couple siblings through diagnostics, the denial shape narrowing
+rejects for rules; fail-loud survives where enforcement lives.
 
 - **`RegisterError` carries its own mount scope**, path-derived: `mount_dir`
  needs no frontmatter, so "cannot be answered" applies to the page's
@@ -930,55 +913,53 @@ where enforcement lives.
  same mount question a registered one does — through the same `mount_dir_of`,
  `rules/`-parent lift included. **One mount law, not two.**
 - **`narrowed_to` filters refusals through the same predicate it filters rules
- through.** The CLI gained no split of its own — § 7's no-mount-arithmetic-in-
- the-CLI rule is intact, and the verb prints what `policy` handed it.
+ through.** The CLI holds no split of its own — no mount arithmetic lives in
+ the CLI, and the verb prints what `policy` handed it.
 - **Fail-CLOSED on the refusal itself is unchanged:** a page whose frontmatter
  does not parse never registers, from any path. Scoping decides who HEARS about
  a broken rule page, never whether it is enforced.
-- **`mrd rules` on meridian-rs itself now exits 0**, and a named e2e gate
+- **`mrd rules` on meridian-rs itself exits 0**, and a named e2e gate
  (`meridian_rs_itself_is_clean_while_a_refusal_still_reddens_its_own_subtree`)
  measures that on the real repo alongside the other half — a refusal still
  reddening its own subtree, and the corpus-wide walk still naming it. Narrowing
- alone could not have delivered the repo half: walks report every refusal
+ alone could not deliver the repo half: walks report every refusal
  always, so the testsuite's deliberately-malformed schema fixture
- (`meridian-md refusal fixtures`) had
- to leave the **hash domain**, which it did through a declared, documented
- ignore in `meridian/domain.md`. The fixture is still on disk and still tested
- by the schema pack; it is simply no longer attested content that every
+ (`meridian-md refusal fixtures`) sits
+ outside the **hash domain**, through a declared, documented
+ ignore in `meridian/domain.md`. The fixture is on disk and tested
+ by the schema pack; it is simply not attested content that every
  discovery consumer sweeps.
 
-**Exclusion consistency — LANDED (dogfood F11, 2026-08-15).** The declined
+**Exclusion consistency.** The declined
 voices — `not offered to registration` and `cannot be answered` — enumerate by
 the projection's own walk law: a dot-prefixed segment is never entered, one
 shared predicate (`fs::domain::dot_segment`) spelling §12.1 rule 2 for the
 hash-domain walk, the link fallback index, and this scan alike. So `mrd rules`
-can never caveat a path the record projection refuses to serve (measured: 16 of
-20 caveat lines and their noise came from a dot-named snapshot directory the
-projection holds zero records for). The custom-ignore class stays voiced,
-exit-neutral: an operator-declared `meridian/domain.md` exclusion is
-vault-visible content whose silent drop is the defect session decision 0017
-ended — the repo's own excluded schema fixture is the standing example, named
-under `cannot be answered` at exit 0. Findings, and exit 1 with them, are
+can never caveat a path the record projection refuses to serve. The
+custom-ignore class stays voiced, exit-neutral: an operator-declared
+`meridian/domain.md` exclusion is vault-visible content, and an enumerator may
+exclude what its attestation cannot reach but never SILENTLY — the repo's own
+excluded schema fixture is the standing example, named under `cannot be
+answered` at exit 0. Findings, and exit 1 with them, are
 attributable only to served-corpus conditions: collisions, on-chain refusals,
 red armed rows, unreadable in-domain files, an unreadable armed set. The USER
 rung is untouched — it has no projection to be consistent with, and its
 dot-declined pages stay named (two feeds, two sentences).
 
-**Extended to the domain-excluded note (2026-08-15, card
-voice-excluded-walk-consistency).** The stderr note the in-process enumerating
+**The domain-excluded note.** The stderr note the in-process enumerating
 faces voice — `mrd sql`, `mrd walk --down`, `mrd check`, pageless `mrd repair`
 — enumerates through the same walk law (`fs::declined_markdown`; a
 dot-prefixed segment is never entered, one predicate `fs::domain::dot_segment`
 spelling §12.1 rule 2). Its count and sample therefore name the custom-ignore
 class only, and the note can never voice a dot-prefixed path the record
-projection refuses to serve — the same disease F11 measured on `mrd rules`,
-closed at this face. The custom-ignore class stays voiced and exit-neutral
-(decision 0017). The machine channel is untouched: the `excluded` key of bare
-`mrd links --json` stays the complete §12.1 outside-domain enumeration (§4.6),
-so capping the voice to the declined class silences no machine consumer.
+projection refuses to serve — the same guarantee `mrd rules` holds. The
+custom-ignore class stays voiced and exit-neutral. The machine channel is
+untouched: the `excluded` key of bare `mrd links --json` stays the complete
+§12.1 outside-domain enumeration (§4.6), so capping the voice to the declined
+class silences no machine consumer.
 
-**Extended to the `links` face itself (2026-08-15, card walk-law-audit).** The
-stderr note bare `mrd links` voices keeps riding the answer's own `excluded`
+**The `links` face itself.** The
+stderr note bare `mrd links` voices rides the answer's own `excluded`
 key — the door/face split: the face never re-derives by a second disk walk —
 but projects that key through the same one predicate before voicing: a member
 with a dot-prefixed segment (`fs::domain::dot_segment`) leaves the count and
@@ -987,24 +968,22 @@ faces print (full count, `EXCLUDED_SHOWN` sample, remainder clause, machine
 pointer). On this face the pointer is self-serving in the good sense: the
 complete list it names — the `excluded` key of `mrd links --json` — is this
 very verb's own machine answer, which stays the complete §12.1 enumeration
-(§4.6), byte-identical. Before this, the face voiced the wire key verbatim
-and uncapped: dot paths in the voice (the F11 disease) and unbounded prose
-(the 2026-08-10 3.1M-character measurement's shape), both closed here.
+(§4.6), byte-identical. Voicing the wire key verbatim and uncapped would put
+dot paths in the voice and unbounded prose on stderr — one failed `walk` over a
+large vault can enumerate tens of thousands of files into a consumer's error
+payload — which is what the cap forecloses.
 
-**Extended to the `mrd retire` human render (2026-08-15, card
-retire-cmd-cap-join).** This one is the CAP class only, never the walk-law
-class: `retire` certifies absence, so its outside-domain population is
+**The `mrd retire` human render.** This one is the CAP class only, never the
+walk-law class: `retire` certifies absence, so its outside-domain population is
 lawfully COMPLETE — dot paths included — and stays so on `files_excluded`,
-byte-identical. What was uncapped was the human line, which joined that whole
-population into prose. It now names the same `EXCLUDED_SHOWN` sample with the
+byte-identical. The human line names the same `EXCLUDED_SHOWN` sample with the
 same remainder clause as every other face (one spelling, `capped_sample`), and
 points at `files_excluded` on this verb's own `--json` as the complete list.
 The count stays the full population: capping the sample bounds the prose, it
 never re-scopes what was excluded.
 
-**Extended to the `mrd rules` undecidable line (2026-08-15, card
-rules-undecidable-carrier).** The CAP class again, and the last uncapped
-human-face join in this verb. `cannot be answered` is the one declined voice
+**The `mrd rules` undecidable line.** The CAP class again.
+`cannot be answered` is the one declined voice
 whose population is genuinely UNBOUNDED: `register` splits frontmatter and
 refuses on `FrontmatterUnparsed` **before** any tag is read
 (`policy/src/registration.rs`), so every excluded file with a malformed
@@ -1012,43 +991,33 @@ frontmatter block lands here whether or not it ever meant to carry a rule — no
 registrar narrowing stands between it and a generated corpus. Its two
 neighbours (`not offered to registration`, both feeds) are narrowed to pages
 that OFFER THEMSELVES to registration (`rule_pages_among`) and are bounded by
-construction; they are not in this class and are not capped. The line now
+construction; they are not in this class and are not capped. The line
 prints the full count, the same `EXCLUDED_SHOWN` sample and remainder clause as
 every other face (one spelling, `capped_sample`), and points at
-`not_offered.undecidable` on this verb's own `--json` as the complete list.
+`not_offered.undecidable` on this verb's own `--json` as the complete list —
+`not_offered` carries all three declined populations complete.
 
-**The carrier was already there** — `not_offered` has carried all three
-declined populations complete since 2026-08-09, `--json` untouched by this
-card. A prior audit (card cap-convention-audit) read only the top-level keys of
-`to_json`, missed the nested block, and therefore ruled this site
-"REPORT, do not land" for want of a machine carrier. The verdict was right for
-the wrong reason: the site needed the cap, and nothing needed minting. Its
-Reason 1 — the other two declined voices are registrar-narrowed, hence out of
-the class — is independent and stands.
-
-**Amended for registration candidates (2026-08-17, card
-rules-silent-nonregistration).** A rules-tagged + `id:` page under a dot
-directory registered as NOTHING with no note anywhere: `mrd rules` printed
-`(no rules in effect)` at exit 0 and `mrd arm` refused with the generic
-`resolves to nothing` — silent non-registration reading as working law
-(measured live on the mw-face e2e: `.hidden/rules/x.md`; also the
+**Registration candidates under a dot directory.** A rules-tagged + `id:` page
+under a dot directory registers as NOTHING (the same holds for the
 enclosing-root shape, where a workspace whose own MERIDIAN.md sits on a dot
-path resolves to the enclosing root and its every page is out of domain).
-F11's walk-law guard is amended NARROWLY: `mrd rules` now voices the
+path resolves to the enclosing root and its every page is out of domain), and
+silent non-registration — `(no rules in effect)` at exit 0, `mrd arm` refusing
+with a bare `resolves to nothing` — would read as working law. So
+`mrd rules` voices the
 workspace's dot-declined REGISTRATION CANDIDATES — registrar-narrowed
 (`rule_pages_among`, the same offers-itself law as its two sibling feeds),
 enumerated by the addressable walk filtered through the one dot predicate
 (`fs::dot_declined_markdown`), one bounded line (full count, `EXCLUDED_SHOWN`
-sample, remainder clause), complete list on the new `not_offered.workspace_dot`
+sample, remainder clause), complete list on the `not_offered.workspace_dot`
 key of this verb's `--json`. Dot-tree pages whose frontmatter does not parse
-join `cannot be answered`. What F11 ruled otherwise stands: the population is
+join `cannot be answered`. The walk-law guard otherwise stands: the population is
 candidates, never "all dot markdown" (the wrong-population guard); the voice
 is exit-neutral — findings and exit 1 stay attributable only to served-corpus
 conditions; the other enumerating faces' voices are untouched. The projection
-still serves none of these paths — which is exactly why the line exists: its
+serves none of these paths — which is exactly why the line exists: its
 one reader is the operator whose law is invisible. The other half is
 `mrd arm <ID>`: an `Unresolved` refusal whose id a domain-excluded candidate
-carries now names the file and the exclusion reason (a dot-prefixed path
+carries names the file and the exclusion reason (a dot-prefixed path
 segment / a `meridian/domain.md` ignore rule) — the hard stop an operator hits
 before believing a door armed.
 
@@ -1069,7 +1038,7 @@ there. Every face carries the `write_history: not-assessed` disclosure naming
 the narrowing — what the green stopped covering, and that the answer lives in
 git. The disclosure states the narrowed CLAIM, never the engine's mechanism:
 the WHY above is this document's to teach, on demand, not a footnote charged
-to every invocation (the report-voice law, ZT rulings 3–5, 2026-08-15).
+to every invocation (the report-voice law).
 
 **The interval this verb spans.** The `worktree` interval — the bytes on disk
 — is always assessed. `--staged` adds the interval a commit records: git
@@ -1101,11 +1070,10 @@ away believing the corpus clean once the reds are fixed. Grey findings sort afte
 red ones and keep their own reason word; the count is the count of everything
 listed.
 
-(Measured against v1.0.0, `mrd-dogfood` s14-70: a grey pin beside four red
-findings was neither counted nor named — "4 findings" while five questions stood.
-Unmasked at s14-40 the same grey WAS the one-finding list. One unverifiable pin
-may not hide inside a green fleet; it may not hide inside a red fleet's findings
-list either.)
+(The case this forecloses: a grey pin beside four red findings, neither counted
+nor named — "4 findings" while five questions stand — when the same grey, alone,
+WOULD be the one-finding list. One unverifiable pin may not hide inside a green
+fleet; it may not hide inside a red fleet's findings list either.)
 
 #### Two independent axes: WHICH BYTES, and WHICH QUESTION
 
@@ -1161,7 +1129,7 @@ custom ignore list reproduces it identically.
 HASHING and never addressing: a pin whose TARGET the domain excludes stays
 `grey(outside-hash-domain)`, reported and never gated, exactly as before
 (`wire-contract.md` §12.1, verdict-plane clause). Holder and target are
-independent axes (session decision 0045). Widening the population of pin SOURCES
+independent axes. Widening the population of pin SOURCES
 does not widen the corpus that resolves pin TARGETS, and the excluded holder's
 bytes never enter the merkle root.
 
@@ -1202,13 +1170,13 @@ pin green · lock none · anchor at-tip (anchor as-known) · armed off · vibe-d
 
 | axis | answers | values |
 |---|---|---|
-| `pin` | the ARMED SET's evidence drift — each armed row's live PAGE rev against the `rev` its armed-rules row attested (PAGE rev uniformly, `armed-plane.md` §4; the pinned-`armed_rev` `CHECK.md` surface is retired) | `green` · `red content-drifted` |
+| `pin` | the ARMED SET's evidence drift — each armed row's live PAGE rev against the `rev` its armed-rules row attested (PAGE rev uniformly, `armed-plane.md` §4) | `green` · `red content-drifted` |
 | `lock` | every `meridian-lock` pin's FINGERPRINT verdict, rolled up | `none` · `<color> [N pins]` · `unreadable (<why>)` |
-| `anchor` | how current the working copy is against origin's tip, plus the trust of that knowledge | `at-tip` / `behind`, qualified — see the colors amendment § The anchor axis |
+| `anchor` | how current the working copy is against origin's tip, plus the trust of that knowledge | `at-tip` / `behind`, qualified by how the tip is known (`anchor as-known`) |
 | `armed` | whether armed law refuses this change | `off` · `warn` · `block` · `armed` (hook mode) |
 | `vibe-debt` | how much of the retrieval plane is held by this machine alone | `N blobs (M bytes)` · `unknown (<why>)` |
 
-Two axes are new in stage 2, and both are read wrong by default:
+Two axes are read wrong by default:
 
 **`lock` is orthogonal to `pin` and neither subsumes the other.** `pin` rolls up
 the armed set; `lock` rolls up fingerprint verdicts. The `lock` roll-up is
@@ -1217,11 +1185,10 @@ roll-up that let one unverifiable pin hide inside a green fleet would render the
 exact false green the color law forbids.
 
 **A green `lock` axis does NOT imply the tree is current. Currency lives on the
-`anchor` axis.** The plan text listed "origin tip-compare currency" inside the
-drift-color unit; the shipped code deliberately does not fold it into the pin
-tone. Currency is a REPOSITORY-level fact, while a pin verdict is per-pin and
-content-addressed. Folding them would merge two axes of the composed legend, and
-it would re-root a computation that D12 requires to be root-independent. So
+`anchor` axis.** Origin tip-compare currency is deliberately not folded into
+the pin tone. Currency is a REPOSITORY-level fact, while a pin verdict is per-pin
+and content-addressed. Folding them would merge two axes of the composed legend,
+and it would re-root a computation that must stay root-independent. So
 `lock` says whether the pinned content still matches the working copy, and
 `anchor` says how current that working copy is against origin. Read together,
 never multiplied.
@@ -1247,12 +1214,12 @@ spellings:
 
 | axis | moves the exit | |
 |---|---|---|
-| the ARMED plane — an armed rule drifted, or the armed-rules artifact faulted | **yes** ⇒ exit 1 | the `pin` axis and the `rules:` line (label per ZT ruling 5, 2026-08-15: the line states the RULES facts; `armed-rules` is the artifact's name, not the report's voice) |
+| the ARMED plane — an armed rule drifted, or the armed-rules artifact faulted | **yes** ⇒ exit 1 | the `pin` axis and the `rules:` line (the line states the RULES facts; `armed-rules` is the artifact's name, not the report's voice) |
 | `lock` | **no** — `red …`, `grey …` and `unreadable (<why>)` all exit 0 | a READING, not a gate |
 | `anchor` | no | freshness, and `status` cannot fetch |
 | `vibe-debt` | no | a meter, never a gate (above) |
 
-**This is R12, and it is ratified design, not debt.** The lock roll-up is
+**This is R12, and it is design, not debt.** The lock roll-up is
 rendered so a reader sees it; it is not a verdict the shell may branch on.
 THREE in-repo gate files assert it by name — `crates/mrd/tests/u14_check_pin_plane.rs`
 ("`mrd status`'s exit triad does NOT change — the rollup is a reading, not a
@@ -1270,8 +1237,8 @@ plane makes it refuse.
 
 Read the composed line, not the exit, for the lock verdict. The roll-up's
 worst-of law (grey above green) governs what is RENDERED — it never promised an
-exit code, and none of the three lock verdicts has ever produced one (measured on
-v1.0.0 three ways: `mrd-dogfood` s14-70 red, s14-40 grey, s14-43 lock-refused).
+exit code, and none of the three lock verdicts (red, grey, lock-refused)
+produces one.
 
 Output is JSON under `--json`, a human table otherwise; exit codes are 0 clean /
 1 findings (the armed plane, per the table above) / 2 tool failure. The workspace it ran over is printed with the tier
@@ -1281,9 +1248,9 @@ to guess which root it judged.
 
 ### The resolution ladder — three rungs, and every answer names itself
 
-`workspace::resolve` has **three** rungs, and the marker tier is gone
-(marker-retirement ruling, 2026-07-26). **A `.meridian.toml` or
-`.meridian.yaml` still sitting in a tree is inert** — no code path in this
+`workspace::resolve` has **three** rungs, and there is no marker tier.
+**A `.meridian.toml` or
+`.meridian.yaml` sitting in a tree is inert** — no code path in this
 engine reads either file, so one left on disk anchors nothing, grants no
 `[run.caps]`, and changes no answer below. Removing them is an operator's
 choice, not this engine's business:
@@ -1294,10 +1261,9 @@ choice, not this engine's business:
 | `git-root` | where the version-control boundary is | the **nearest** ancestor `.git` (directory or worktree pointer file) |
 | `cwd-default` | nothing — a convenience default | the canonical cwd |
 
-**An explicitly NAMED path outranks the override** (ruling 2026-08-23,
-`unregister-env-override-vs-explicit-path`, D with C's shape). The rungs are
-still three and the tier words are unchanged; what the ruling added is a gate
-in front of rung 1. `workspace::resolve` takes a `workspace::Base` — `Named(p)`
+**An explicitly NAMED path outranks the override.** The rungs are three and
+the tier words are the ones above; a gate stands in front of rung 1.
+`workspace::resolve` takes a `workspace::Base` — `Named(p)`
 when the operator typed the path on this invocation (`mrd unregister PATH`,
 `mrd resolve PATH`, `mrd init PATH`, `mrd status --cwd PATH`, `mrd sql --cwd
 PATH`), `Cwd(p)` when it is the ambient working directory — and rung 1 answers
@@ -1306,15 +1272,15 @@ exactly as it always did with no override set, and `MERIDIAN_WORKSPACE` still
 fills every invocation that names nothing, so override-driven scripting is
 untouched.
 
-The fact that forced it: `MERIDIAN_WORKSPACE=victim mrd unregister target`
-removed VICTIM. The override returned at rung 1 before the argument was ever
-canonicalized, so a destructive verb discarded the operand it was given. The
-gate lives in the shared resolver, never as a per-verb bypass — `Base` is a
-type, so a new door has to answer the question rather than inherit the old
-order by omission.
+The case the gate forecloses: without it, `MERIDIAN_WORKSPACE=victim mrd
+unregister target` would remove VICTIM — the override would return at rung 1
+before the argument was ever canonicalized, so a destructive verb would discard
+the operand it was given. The gate lives in the shared resolver, never as a
+per-verb bypass — `Base` is a type, so a new door has to answer the question
+rather than inherit an ordering by omission.
 
 **Every resolution states which tier answered and which root it named** — this
-is the ruling's requirement, not a rendering preference, and it is enforced by
+is the ladder's requirement, not a rendering preference, and it is enforced by
 the type: `Answer` has no public path field, `root` returns `None` on
 `cwd-default`, and reaching the defaulted path takes the greppable
 `root_or_cwd`. `mrd resolve` prints both (`source:` plus the path); `mrd status`
@@ -1326,8 +1292,8 @@ named the root, the refusal appends both facts:
 `page not found: <ref> (workspace <root>, source: env-override)` — same form
 for `git-root`. The ref is the part of the invocation most likely to be
 correct; the root is the part the environment may have swapped underneath it
-(a sticky `MERIDIAN_WORKSPACE` from an earlier shell is the field case —
-dogfood F6), so a miss that hides the root points diagnosis at the wrong
+(a sticky `MERIDIAN_WORKSPACE` from an earlier shell is the field case),
+so a miss that hides the root points diagnosis at the wrong
 suspect. A `cwd-default` miss stays bare: `root` is `None` there — a defaulted
 cwd is not a workspace, and the refusal does not promote it to one.
 
@@ -1337,7 +1303,7 @@ ephemeral, per-invocation store that writes nothing — it is never silently
 registered. The adopted daemon may be a different build than the caller: the
 adoption itself exchanges only a registration record, and any content that
 follows rides a v3 connection where the socket law
-(`docs/wire-contract.md` §A.3, 0025) compares `hello.identity.build` at connect
+(`docs/wire-contract.md` §A.3) compares `hello.identity.build` at connect
 and refuses across builds.
 
 The CLI's word for a `cwd-default` answer is therefore the **refinement**, not
@@ -1349,13 +1315,13 @@ happened after the ladder fell through is the fact an operator needs.
 
 **A root's `MERIDIAN.md` self-declaration is NOT a rung.** It is read by
 `crates/config` (mount binding, and `crates/run`'s `run.caps.*` /
-`run.timeout_secs`), never by the ladder: existence-only detection is what the
-retired marker did wrong, since it cannot tell a `meridian-root` declaration
-from a `meridian-config`. So `mrd init` below a git root declares that directory
+`run.timeout_secs`), never by the ladder: existence-only detection cannot tell
+a `meridian-root` declaration from a `meridian-config`, so it is not a rung.
+So `mrd init` below a git root declares that directory
 a root **and still resolves to the git root** — init says so, and names the two
 ways to change the answer (`MERIDIAN_WORKSPACE`, or address the root by name
-through the mount table). Whoever used a marker to carve a sub-root uses one of
-those, or registers the tree with the daemon.
+through the mount table). To carve a sub-root, use one of
+those, or register the tree with the daemon.
 ### `mrd skill hook` — the commit fence, as a DOCUMENT
 
 `mrd skill hook` prints one markdown document to stdout and does nothing else:
@@ -1365,15 +1331,15 @@ how to verify — and the agent reading it does the placing. Exits 0 (the docume
 was written) or 2 (bad invocation). There is no `--json` face: a JSON envelope
 around a markdown string is a second contract for the same bytes.
 
-**The install plane was deleted, not shimmed** (2026-07-29; `mrd hook` no longer
-parses, and USAGE names the successor). A verb that wrote into `$GIT_DIR` had to
+**There is no install verb, by design** (`mrd hook` is not a subcommand). A
+verb that wrote into `$GIT_DIR` would have to
 carry an uninstaller that refused a foreign file, an `flock` held across a
 read-decide-write section spawning `git` three times inside it, a downgrade guard
 with its own environment escape, and a partial-coverage migration state — four
 planes of imperative machinery encoding rules that are, in the end, prose. They
-are now legible content of the emitted document instead of code paths that have
+are legible content of the emitted document instead of code paths that have
 to be trusted, and the one thing that cannot be prose — reading bytes off a disk
-to say what generation is standing there — is what stayed, as `mrd check`'s
+to say what generation is standing there — lives in code, as `mrd check`'s
 `fence:` line.
 
 **The door set is three, and that is a claim about coverage.** `pre-commit`,
@@ -1410,7 +1376,7 @@ no-membership-test design rests on. A fresh clone being unfenced is a supported
 state, which is why `mrd check` says so unasked.
 
 **Escapes at commit time**, both named in every refusal the fence prints:
-`MRD_HOOK_FORCE=1 git commit …` (the ratified `--force`, in the spelling a hook
+`MRD_HOOK_FORCE=1 git commit …` (the fence's `--force`, in the spelling a hook
 that receives no arguments can carry) and git's own `git commit --no-verify`.
 
 **`MRD_HOOK_FORCE` is a two-sided grammar with a loud third leg.** The value is
@@ -1468,13 +1434,11 @@ merely looked at comes away byte-identical, including the roots that refuse.
 
 ## Tests
 
-`cargo test --workspace` — full suite green. The attestation integration branch
-`stage2-core` gates every merge, most recently **1267 passed / 0 failed / 2
-ignored** (M1 shipped at 1117). Export `CARGO_PROFILE_TEST_DEBUG=0` before the
-run: a full-debug `target/` in this workspace costs ~26G, and it is the repo's
-own CI lever. The
+`cargo test --workspace` — full suite green; CI gates every merge on it. Export
+`CARGO_PROFILE_TEST_DEBUG=0` before the run: a full-debug `target/` in this
+workspace costs ~26G, and it is the repo's own CI lever. The
 `testsuite` crate carries the frozen ground-truth pack (rung-1 parse truth:
-every node reproduced byte-for-byte) plus the U0 read/put parity pack
+every node reproduced byte-for-byte) plus the read/put parity pack
 (`data/parity/`, captured from the live host face): `u0_read_parity`
 (addressing facts), `u4a1_render_parity` (rendered text), and
 `u4a2_composed_read` (the composed op through the live serve loop, refusal
@@ -1486,25 +1450,23 @@ texts included) replay it. The CLI foundation's end-to-end gates live in
 Green tests on **tiny synthetic workspaces** are not a claim that every surface
 is proven on a **real corpus**. In particular:
 
-- the operator SQL face (`mrd sql`, an ephemeral DuckDB projection) rebuilds
- the whole corpus per query — slow on production trees, by design (the
- published-view organ was dropped by ruling, §10.4 2026-08-06);
+- the operator SQL face (`mrd sql`, a DuckDB projection) cold-builds the
+ whole corpus when no drawer cache serves it — slow on production trees, by
+ design (§10.4);
 - address and write paths must be verified against segment form and armed
  receipts, not against display-joined strings that only appear in harness
  fixtures.
 
-Do not claim “proven end-to-end” without that caveat. Session pressure that
-forced this wording: `05-19-meridian-socket-mcp-leg` (read→write address break;
-view organ vs real corpus).
+Do not claim “proven end-to-end” without that caveat.
 
 ## Performance
 
 `perfsuite` carries a claims registry (`crates/perfsuite/claims.toml`) whose
 verdicts are computed, not asserted, and written to
-`crates/perfsuite/`. Current tally: **2 PASS, 7 MEASURED, 14
-UNTESTED** over 23 claims — the untested claims are perf rungs whose baselines
-land on the first fleet run; the passing ones cover cold ingest and codec bulk
-cost. Run the benches to refresh:
+`crates/perfsuite/results/` (`latest.json`, `RESULTS.md`). Tally there: **2 PASS,
+7 MEASURED, 14 UNTESTED** over 23 claims — the untested claims are perf rungs
+whose baselines land on the first baseline run; the passing ones cover cold
+ingest and codec bulk cost. Run the benches to refresh:
 
 ```sh
 cargo bench -p perfsuite
@@ -1528,10 +1490,10 @@ The VALUE is the sink. It is **trimmed and matched case-insensitively**, so
 | any other value | that path (trimmed), opened append, created if absent |
 
 The off words are spelled out, and the case/whitespace folding exists, because
-the fallback arm CREATES A FILE. Measured on the release binary before this was
-fixed: `MRD_TIMING=OFF` wrote a file named `OFF` into the working directory, and
-`MRD_TIMING="1 "` — a trailing space from a `.env` line or a `docker -e` — wrote
-one named `1 `. In a multi-agent tree that file gets committed.
+the fallback arm CREATES A FILE. Without the folding, `MRD_TIMING=OFF` would
+write a file named `OFF` into the working directory, and `MRD_TIMING="1 "` — a
+trailing space from a `.env` line or a `docker -e` — one named `1 `. In a
+multi-agent tree that file gets committed.
 
 Two paths are **refused, loudly, and degrade to stderr**:
 
@@ -1633,8 +1595,8 @@ plus the stdout byte-identity gate in `crates/mrd/tests/timing_mode.rs` — it i
 `perf.yml`'s lane, never the PR lane.
 
 **Two lanes, and only one of them is the caller's.** `mrd run` executes in the
-calling process, so its phases land on the caller's sink. `mrd script` and the
-MCP face hand the work to the resident daemon: those phases happen in the
+calling process, so its phases land on the caller's sink. `mrd script` and
+wire clients hand the work to the resident daemon: those phases happen in the
 DAEMON's process and land on the DAEMON's sink. Nothing rides back on the wire
 — a timing array in a response frame would be a new host-facing type, and Law 2
 puts those in `wire` and `wire-contract.md`, not in an instrument. What a client
@@ -1648,14 +1610,13 @@ environment it started with, so restart it (or let the idle horizon do it).
 
 #### The daemon's own lane — `<socket-stem>.log`
 
-A detached daemon has no terminal, so `spawn_detached` gave it null stdio — and
-that null made the mode deaf on the one lane the file sink exists for. Both
-refusals above speak on stderr, and `MRD_TIMING=1` IS stderr, so an operator who
-pointed a daemon at `ws/x.md` or at an unwritable path got no complaint AND no
-measurements: the "the code never ran there" answer this instrument must never
-fake (card `mrd-timing-daemon-lane-sink`, from PR #176 round-2 finding N1). The
-same null swallowed everything ELSE the daemon said, which is why the lane is no
-longer gated on this mode at all.
+A detached daemon has no terminal; null stdio would make the mode deaf on the
+one lane the file sink exists for. Both refusals above speak on stderr, and
+`MRD_TIMING=1` IS stderr, so an operator who pointed a mute daemon at `ws/x.md`
+or at an unwritable path would get no complaint AND no measurements: the "the
+code never ran there" answer this instrument must never fake. The same null
+would swallow everything ELSE the daemon said, which is why the lane is not
+gated on this mode at all.
 
 **The auto-spawn gives the daemon a voice**: its stderr is `<socket-stem>.log`,
 opened append beside the socket and the pidfile that already key off the same
@@ -1665,13 +1626,12 @@ shutdown lines, any refusal or panic it dies with, the registry's operational
 diagnostics — and, while the mode is on, every `mrd-timing:` diagnostic, every
 measurement that degraded to stderr, and the `MRD_TIMING=1` form.
 
-- **The lane is unconditional; the MEASUREMENTS are the gate.** It was gated on
-  the mode when this section was written, and that gate was also the mechanism
-  by which an auto-spawned daemon that died at startup was silent everywhere:
-  the client polls 5 s, degrades to the ephemeral engine and never refuses, so
-  a panic, an unresolvable layout, an unbindable socket and a poisoned state
-  file all present as "5 seconds slower" (card
-  `auto-spawned-daemon-dies-silently`).
+- **The lane is unconditional; the MEASUREMENTS are the gate.** A lane gated
+  on the mode would also be the mechanism by which an auto-spawned daemon that
+  died at startup is silent everywhere: the client polls 5 s, degrades to the
+  ephemeral engine and never refuses, so a panic, an unresolvable layout, an
+  unbindable socket and a poisoned state file would all present as "5 seconds
+  slower".
 - **What a run that did not ask for the mode pays**: one file beside the socket,
   gaining a handful of lines per daemon LIFETIME — not per operation. The
   per-operation firehose is still yours to switch on.
@@ -1740,12 +1700,11 @@ on every other caller of those functions (`run-plane.md` § Timing phases — re
  is a served wire cap (`wire-contract.md` §10.2; release §2.1), but
  `mrd links --require-fingerprint` answers `unknown flag`, exit 2. The §10.2
  posture — refuse with `stale_view` instead of answering in an unnamed tense
- — is reachable at the socket only, never from the operator face (dogfood
- 2026-08-09, s9).
+ — is reachable at the socket only, never from the operator face.
 - **CLI-committed writes advance the fingerprint, never `changes_seq`.** An
  `mrd put` commit moves the workspace fingerprint the daemon serves
  immediately, and mints no Delta, so `changes_seq` reads the same value
- before and after (dogfood 2026-08-09, s9; declared at `wire-contract.md`
+ before and after (declared at `wire-contract.md`
  §18 row 12). A consumer polling `changes_seq` as a change monotone misses
  every CLI-lane write — diff by fingerprint (§4.7) instead.
 
@@ -1768,8 +1727,6 @@ Accepted residuals (attestation surfaces) — documented, not prevented. Full st
  Accepted for the core loop because the promotion is rev-neutral; the fence and
  the authz tightening are stage-3.
 
-Also stage-3, and NOT shipped: the defsarm bridge-legs drop, and full-document
-re-attest. (The former third item here — unifying the read-mint ledger's
-representation with the persisted `^receipt` projection — is dead, not
-deferred: the ledger was deleted 2026-08-16 when pin proof moved onto the
-request, wire-contract § A.3.)
+Also stage-3, and NOT shipped: full-document re-attest. There is no read-mint
+ledger to unify with the persisted `^receipt` projection — pin proof rides the
+request (wire-contract § A.3) and the engine records no reads.

@@ -42,17 +42,17 @@ families). The planes differ on **domain** and **job**, never on family:
 
 `node_rev` and the workspace merkle are UNCHANGED by this spec — their laws
 stay `node-rev-merkle-spec.md` §2–§4. The CAS plane hashes raw bytes on
-purpose: an anchor promotion (#6 §2) genuinely moves bytes on disk, so a
+purpose: an anchor promotion genuinely moves bytes on disk, so a
 concurrent writer's CAS token MUST invalidate (spans shifted), while the same
-promotion must NOT move the fingerprint (no false drift — #4 §4). One physical
+promotion must NOT move the fingerprint (no false drift). One physical
 edit, two planes, opposite obligations — both fixtured (§5).
 
 ## 2. The fingerprint token
 
 ### 2.1 Grammar
 
-One token, four dot-joined fields, all lowercase (#4 §1 `{version, codec,
-hash-fn, digest}`):
+One token, four dot-joined fields, all lowercase — `{version, codec,
+hash-fn, digest}`:
 
 ```
 token = version "." codec "." hashfn "." digest
@@ -62,7 +62,7 @@ hashfn = 1*(a-z / 0-9) ; hash family + width (§2.3)
 digest = lowercase hex, length fixed by hashfn
 ```
 
-Example (the only M1-live prefix; this is the fixtures' `X0` golden token —
+Example (the only live prefix; this is the fixtures' `X0` golden token —
 the fingerprint of `"# A\nintro\n\n# B\nbody\n"`):
 
 ```
@@ -74,28 +74,28 @@ fp1.span2.b3.40b167ed9b42a2beadb7c441b214efdc93069ef443a1cc2b5ae2ccda4cf03152
  (not a fingerprint token at all).
 - The prefix (`version.codec.hashfn`) fully determines interpretation. Hash or
  normalization migration = a NEW prefix; old tokens stay verifiable forever —
- migration lives inside the identifier, never beside it (#4 §1).
+ migration lives inside the identifier, never beside it.
 - The token needs no escaping in any YAML context (dots and hex only); the
- lock's canonical form still QUOTES it like every scalar (#8 §2,
- `fingerprint: "<CID>"` — the `crates/lock` render law). Full-length tokens
- appear only in lock blocks and receipts (pin-count objects, #4 §5); render
+ lock's canonical form still QUOTES it like every scalar
+ (`fingerprint: "<CID>"` — the `crates/lock` render law). Full-length tokens
+ appear only in lock blocks and receipts (pin-count objects); render
  planes abbreviate.
-- Display short form (render/wire view, #6 §4): `@` + a digest prefix
+- Display short form (render/wire view): `@` + a digest prefix
  (e.g. `@40b167ed`, 8 hex). Non-normative here — the `@fp` grammar belongs to
  the claim-link view plane; it always abbreviates the DIGEST field.
 
 ### 2.2 Codec registry
 
 The codec names the byte domain AND its normalization version — one slot, one
-registry entry, per #4 §1 ("raw span bytes at a named normalization version, a
-composed tree node, or a receipt envelope"):
+registry entry: raw span bytes at a named normalization version, a composed
+tree node, or a receipt envelope:
 
 | Codec | Status | Domain |
 |---|---|---|
-| `span2` | **live (M1)** | the node's span bytes (contract §1 span laws, selector axis §3), canonicalized by norm-v2 (§4) |
+| `span2` | **live** | the node's span bytes (contract §1 span laws, selector axis §3), canonicalized by norm-v2 (§4) |
 | `props1` | **live** | frontmatter property bytes — the canonical keyed map (sorted keys, length-prefixed `len:key`, three-state values `=A` absent / `=N` null / `=S` scalar), domain-separated by the `props1\n` prefix (wire-contract §A.6.2) |
-| `node1` | reserved | composed dag-node encoding (own-hash + ordered child `(ref, fingerprint)` list) — the #4 §5 upgrade path, stage 2+ |
-| `rcpt1` | reserved | receipt envelope — stage 2+ |
+| `node1` | reserved | composed dag-node encoding (own-hash + ordered child `(ref, fingerprint)` list) — the composition upgrade path |
+| `rcpt1` | reserved | receipt envelope |
 | `tree1` | reserved | workspace file-tree merkle domain — reserved for the future migration of the wire `fingerprint`/root spelling off `b3:` |
 
 `span2`'s "2" is the norm version: norm-v1 is the raw-bytes non-normalization
@@ -121,48 +121,47 @@ reinterpretation of `span2`.
  malformed and from red; it renders grey (`superseded-algo` family), never
  green, never red.
 - Not tokens (never parse as fingerprints): bare 16-hex (`node_rev`),
- `b3:` + 64hex (the workspace-merkle wire spelling — unchanged in M1; its
- migration onto `tree1` is a stage-2 wire amendment).
+ `b3:` + 64hex (the workspace-merkle wire spelling; its migration onto
+ `tree1` is a future wire amendment).
 
 ## 3. What bytes enter the hash — the selector axis
 
 The selector axis (WHICH span) and the canonicalization axis (HOW bytes become
-a hash) never conflate (#4 §4). `span2` composes with any selector:
+a hash) never conflate. `span2` composes with any selector:
 
 - **fingerprint(node)** = `b3( norm2( raw[span.start..span.end) ) )` where
  `span` is the node's contract-§1 span exactly as the model mints it
  (sections heading-inclusive and newline-inclusive; leaf blocks
  terminator-exclusive; frontmatter fence-to-fence; document = whole file).
-- **own-hash(node)** (#4 §2) = `b3( norm2( own bytes ) )`:
+- **own-hash(node)** = `b3( norm2( own bytes ) )`:
  - Section → its heading LINE (the heading leaf span, terminator-exclusive);
  - Document → its frontmatter block span when present, else empty;
- - any leaf → its own span. **For a leaf, own-hash = fingerprint** (#4 §2).
+ - any leaf → its own span. **For a leaf, own-hash = fingerprint.**
  Same codec `span2` — own-hash differs from fingerprint on the selector axis
  only.
 - **No embed expansion.** `span2` hashes the span's own bytes: an `![[embed]]`
  contributes its LINK bytes, never the embedded content. Cross-document
- transitivity is carried by lock-is-content (#8 §5): A's fingerprint covers
+ transitivity is carried by lock-is-content: A's fingerprint covers
  A's `meridian-lock` block (it is inside A's span), which holds B's
  fingerprint — drift propagates by construction, at pin-update time, not at
- hash time. This supersedes `compose_rev`'s hash-time embed expansion (§6).
+ hash time (§6).
 - Structural descendants need no explicit fold: a section's span contains
  every descendant's bytes, so any descendant edit moves the section
- fingerprint — span-hashing is fingerprint-v1's composition (#4 §5).
+ fingerprint — span-hashing is the composition.
 
 ## 4. norm-v2 — the exact rule set
 
 norm-v2 is the identity transform except for **anchor-token removal**. It
 performs NO other change: no newline canonicalization (CRLF stays CRLF), no
 trailing-whitespace trim, no NFC/NFD, no case folding, no BOM handling. Two
-inputs differing in any non-anchor byte hash differently. (U2's Go-exact
-heading sanitization is the ADDRESSING plane — selector derivation — and has
-no bearing on hashed bytes.)
+inputs differing in any non-anchor byte hash differently. (Heading
+sanitization is the ADDRESSING plane — selector derivation — and has no
+bearing on hashed bytes.)
 
 ### 4.1 What is an anchor token
 
 The one normative grammar is the syntax crate's block-anchor lexer
-(`syntax::parse` → `DialectKind::Anchor`, ruling 011 / contract §2.4),
-restated:
+(`syntax::parse` → `DialectKind::Anchor`, contract §2.4), restated:
 
 - The marker is `^` + id, id = 1+ chars of `[A-Za-z0-9-]` (app-exact; `_` is
  outside the charset, so `^b_1` is NOT an anchor).
@@ -188,7 +187,7 @@ For each anchor marker `M` (file coordinates), classify by its line: let
  `M.start`): remove `[M.start − 1, M.end)` — the marker plus exactly ONE
  immediately-preceding space or tab. Bytes after the id (trailing
  spaces/tabs, `\r`) are untouched. Exactly one separator is removed because
- promotion (#6 §2) inserts exactly one: `text` → `text ^goal` → `text`. A
+ promotion inserts exactly one: `text` → `text ^goal` → `text`. A
  hand-written `text ^goal` normalizes to `text ` — deterministic; only the
  promotion path carries a neutrality obligation.
 - **R2 — own-line anchor** (only spaces/tabs, possibly none, between
@@ -232,12 +231,12 @@ future parser fix is a VISIBLE codec decision (§2.2), not silent drift.
 
 ## 5. Rev-neutrality — the theorem the fixtures pin
 
-For any pin promotion per #6 §2 (insert one ` ^id` at a block's line tail, or
+For any pin promotion (insert one ` ^id` at a block's line tail, or
 one `^id` own line after a block, id in charset):
 
 1. `fingerprint(node)` is UNCHANGED for every node whose span contains the
  promotion site, at every grain (block, section, document) — no false drift
- (#4 §4, the honesty doctrine).
+ (the honesty doctrine).
 2. `node_rev(node)` MOVES for every such node, and the workspace root moves —
  the CAS/guard planes see the real byte change (§1).
 
@@ -247,16 +246,11 @@ deterministically but claim no inverse-image guarantee.
 
 ## 6. Supersedes — the compose_rev scheme
 
-The `compose_rev` scheme this spec replaces (the pre-marathon
-22-01 design; its `compose.rs` implementation was deleted from
-`crates/model/src/`): leaf = `blake3("L" ‖ node_rev-hex-string)` (a hash of a hash's
-hex spelling), hash-time `![[embed]]` expansion with cycle sentinel and
-dangling refusal, 16-hex truncated `ComposeRev`, bare un-prefixed spelling.
-Replaced by `fp1.span2.b3.<64hex>` over norm-v2 span bytes: no hash-of-hex
-indirection, no hash-time graph walk (no cycles or dangling composes can
-exist — the span is always complete), full-width digest, self-describing
-prefix. `RevClass` maps: `Content` → fingerprint-token verify (parse →
-codec dispatch → recompute → compare); `Object` → git-oid equality, unchanged
+The content fingerprint is `fp1.span2.b3.<64hex>` over norm-v2 span bytes: no
+hash-of-hex indirection, no hash-time graph walk (no cycles or dangling
+composes can exist — the span is always complete), full-width digest,
+self-describing prefix. `RevClass` maps: `Content` → fingerprint-token verify
+(parse → codec dispatch → recompute → compare); `Object` → git-oid equality
 (git remains the only second family, never computed by the engine).
 
 ## 7. Fixture manifest

@@ -79,11 +79,11 @@ const LADDER: [u64; 11] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
 /// How many attempts each rung of the ladder gets before the search moves on.
 ///
 /// One attempt per rung is a coin toss, because the window's position depends on
-/// what else the box is doing, not only on the box. Measured 2026-08-23 on
-/// workstation-nyc-2: the search found its window at 1 ms in isolation and again
-/// on a whole-file rerun, and exhausted a single-try ladder once during a full
-/// `-p mrd` run at 5-minute loadavg 47. A rung that is right on average must be
-/// allowed to prove it.
+/// what else the box is doing, not only on the box. Measured on one build host:
+/// the search found its window at 1 ms in isolation and again on a whole-file
+/// rerun, and exhausted a single-try ladder once during a full `-p mrd` run at
+/// 5-minute loadavg 47. A rung that is right on average must be allowed to
+/// prove it.
 const TRIES_PER_RUNG: usize = 3;
 
 // ── the corpus ───────────────────────────────────────────────────────────────
@@ -397,10 +397,10 @@ fn describe(probe: &Probe) -> String {
 /// commit's own live observation carrying the moved world.
 ///
 /// **Why each rung is tried more than once.** The window's position is a
-/// property of the machine AND of what else the machine is doing. Measured
-/// 2026-08-23 on workstation-nyc-2: this search found its window at 1 ms in
-/// isolation and again on a second full-file run, and exhausted a single-try
-/// ladder once during a whole `-p mrd` run at loadavg 47. One attempt per rung
+/// property of the machine AND of what else the machine is doing. Measured on
+/// one build host: this search found its window at 1 ms in isolation and again
+/// on a second full-file run, and exhausted a single-try ladder once during a
+/// whole `-p mrd` run at loadavg 47. One attempt per rung
 /// is a coin toss under load; a rung that is right on average must be allowed to
 /// prove it.
 ///

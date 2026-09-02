@@ -307,7 +307,7 @@ fn a_bare_birth_resolves_under_the_callers_ambient() {
     );
 }
 
-/// Admission judges the DECLARED path (ZT ruling 2026-08-19 #2) — the
+/// Admission judges the DECLARED path — the
 /// ambient never joins the matched string, so the refusal names exactly what
 /// the block wrote, on whichever board it would have landed.
 #[test]

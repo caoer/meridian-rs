@@ -273,8 +273,8 @@ CREATE VIEW tag_all AS                             -- B2: the union — inline +
 /// sql-hpath-read-grammar, dogfood r8 § D5).
 ///
 /// `6`: `section.n` added — the row's own occurrence index, served beside the
-/// `hpath` that already carries it (`wire-contract.md` § A.11, ZT ruling
-/// 2026-08-15 "Rule: add n"). Additive; no existing column re-grained.
+/// `hpath` that already carries it (`wire-contract.md` § A.11, "Rule: add
+/// n"). Additive; no existing column re-grained.
 ///
 /// `7`: the `.base` projection (`docs/base-projection.md`) — the three `base`
 /// relations, `link.exclusion_path`, and `_meridian_view.base_fold`. The

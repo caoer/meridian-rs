@@ -1,6 +1,5 @@
 //! The six golden scenarios (`inbox/run-golden.html` v9) run through `mrd
-//! script` against a LIVE daemon, held to ONE law (CAS relaxation, ruling
-//! 2026-08-13):
+//! script` against a LIVE daemon, held to ONE law (CAS relaxation):
 //!
 //! > **Every write row reaches the wire door carrying a CAS token** — threaded
 //! > from the script's own reads when they cover the target, minted at commit
@@ -228,10 +227,9 @@ const TABLE: &[Scenario] = &[
     },
     Scenario {
         // Golden v9 depicted this arming REFUSED (`multi_file_write_set`).
-        // That arm-time law retired with the §4.4 set form (ruling
-        // 2026-08-14): the same script now arms every dead-owned card and
-        // commits them as ONE sealed set — one splice, one fingerprint
-        // advance. 2b's host fan-out remains legal, no longer required.
+        // Under the §4.4 set form the same script arms every dead-owned card
+        // and commits them as ONE sealed set — one splice, one fingerprint
+        // advance. 2b's host fan-out is legal but not required.
         id: "2a · the naive arming — one set commit",
         source: S2A_NAIVE,
         files: true,
@@ -466,9 +464,9 @@ fn scenario_3b_reads_the_board_before_it_claims_the_round() {
 ///
 /// History, both rulings. Golden v8's 3A appended to `status/round-7.md`
 /// having read only `files[]`; the append row went out `rev: null` and the
-/// live daemon refused the batch. The Advisor (`d1f489b5`, 2026-08-07) ruled
-/// the engine right and gave v9's 3A its read. ZT's CAS-relaxation ruling
-/// (2026-08-13, dissolves F-S2) supersedes that direction: appends go
+/// live daemon refused the batch. The first ruling held the engine right and
+/// gave v9's 3A its read. The later CAS-relaxation ruling (dissolving F-S2)
+/// supersedes that direction: appends go
 /// rev-free for the AUTHOR (put parity — append cannot clobber), the lane
 /// mints the token itself at commit time, and consistency enforcement lives
 /// at the commit's entry fingerprint — never as a read-the-section-first

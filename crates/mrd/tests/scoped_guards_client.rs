@@ -2,8 +2,8 @@
 //! PR-4 flip). Cap-aware: `--scope` and the §4.7 mint ride only when
 //! hello advertised the family.
 //!
-//! Law under test (wire-contract §3.2/§5.4/§4.7; ruling
-//! `decisions/2026-08-16-fp-grain-ruling.md` items 3 and 6):
+//! Law under test (wire-contract §3.2/§5.4/§4.7; the fingerprint-grain
+//! ruling, `docs/laws.md` § Amendment — the one state owner):
 //!
 //! - `mrd put --scope` sends the §5.4 singular `scope` beside `if_fingerprint`
 //!   ONLY when the connect-time hello advertised `scoped-guards`; against a

@@ -89,8 +89,8 @@ const SCRIPT_CONSEQUENCE: &str = "Nothing was evaluated and nothing was written.
 /// members all resolve to the ambient workspace itself (the bare form under
 /// another name — one name per thing).
 ///
-/// The one-root law is the customer face's (ccc-statusd MCP script tool,
-/// verbatim): "Every entry must share one declared root. Inside the program
+/// The one-root law is the MCP face's (its script tool, verbatim): "Every
+/// entry must share one declared root. Inside the program
 /// each entry is that root-relative path." Members landing in two workspaces
 /// — two roots, or a bare member beside a foreign-rooted one — refuse loud.
 ///
@@ -176,11 +176,11 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
-    // The rooted lane on `--files` (§4.1 colon law, 2026-08-18
-    // rooted-refs-everywhere), under the customer face's one-root law — the
-    // ccc-statusd MCP script tool, verbatim: "Every files[] entry resolves
-    // through one root; that root is the workspace; in-program paths are
-    // relative to it." Rooted members resolve here, the ONE workspace they
+    // The rooted lane on `--files` (§4.1 colon law, rooted-refs-everywhere),
+    // under the MCP face's one-root law — its script tool, verbatim: "Every
+    // files[] entry resolves through one root; that root is the workspace;
+    // in-program paths are relative to it." Rooted members resolve here, the
+    // ONE workspace they
     // share binds the connection at the hello, and the rel halves ride the
     // wire — a rooted glob member expands engine-side in that workspace,
     // exactly as a bare glob does in the ambient one. Members landing in two

@@ -184,7 +184,7 @@ fn read_section_selects_and_serves_content() {
 }
 
 // ---------------------------------------------------------------------------
-// read face v2 (ZT 2026-08-04) — the dogfood G2/G3/G4/G8 gates
+// read face v2 — the dogfood G2/G3/G4/G8 gates
 // ---------------------------------------------------------------------------
 
 /// A page whose deep heading has a title distinct from every spelling of its PATH: the

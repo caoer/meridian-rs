@@ -1,12 +1,11 @@
-# PR lane: correctness + harness bit-rot, timing-insensitive — hosted runners
-# are fine here. Wall-time numbers are NEVER gated in this lane (shared-runner
-# noise); that's perf.yml's job on the pinned fleet runner.
+# CI runs on Woodpecker (.woodpecker/ci.yaml); this GitHub Actions lane is manual-only.
+# Correctness + harness bit-rot, timing-insensitive — hosted runners are fine
+# here. Wall-time numbers are NEVER gated in this lane (shared-runner noise);
+# that's perf.yml's job on a pinned runner.
 name: ci
 
 on:
-  push:
-    branches: [main, "candidate/**"]
-  pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always

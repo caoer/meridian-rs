@@ -113,7 +113,7 @@ fn claims_nothing(surface: &str, what: &str) {
 
 /// `--list` describes a bash task as a shell with undeclared effects, and says
 /// nothing about capabilities — and no guarantee word: `unsandboxed` names a
-/// sandbox that does not exist (ZT ruling, 2026-08-15). The starlark row on the
+/// sandbox that does not exist (`docs/laws.md` § Amendment). The starlark row on the
 /// same page still carries its caps — the law is scoped to bash, not a deletion.
 #[test]
 fn list_row_for_bash_claims_no_capability() {
@@ -170,7 +170,7 @@ fn run_report_for_bash_claims_no_capability() {
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let text = stdout(&out);
     claims_nothing(&text, "run report");
-    // No `unsandboxed` token on the human face (ZT ruling, 2026-08-15).
+    // No `unsandboxed` token on the human face.
     assert!(!text.contains("unsandboxed"), "{text}");
     assert!(text.contains("effects: undeclared"), "{text}");
 }
@@ -195,15 +195,15 @@ fn dry_bash_claims_no_capability() {
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let text = stdout(&out);
     claims_nothing(&text, "--dry report");
-    // No `unsandboxed` token on the human face (ZT ruling, 2026-08-15).
+    // No `unsandboxed` token on the human face.
     assert!(!text.contains("unsandboxed"), "{text}");
     assert!(text.contains("effects: undeclared"), "{text}");
 }
 
 // ── Half 2: no resolution runs underneath the silence ───────────────────────
 
-/// A bash block has no effect channel at all (the effect-shim fd is deleted —
-/// ZT ruling 2026-08-21): the run completes, and the governed tree is
+/// A bash block has no effect channel at all (there is no effect-shim fd):
+/// the run completes, and the governed tree is
 /// byte-identical. There is nothing for a capability to govern.
 #[test]
 fn a_bash_block_has_no_effect_channel() {

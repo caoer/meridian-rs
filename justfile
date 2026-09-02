@@ -1,4 +1,4 @@
-# meridian-rs — mrd CLI (verbs mirror meridian-go's justfile)
+# meridian-rs — mrd CLI
 
 default:
     @just --list
@@ -8,8 +8,8 @@ build:
     cargo build --release -p mrd
 
 # Build and install to ~/.local/bin/mrd (cargo-tracked, lockfile-pinned).
-# Whoever installs a build restarts the resident daemon (0025 pipeline duty —
-# the engine refuses across builds and never restarts anything itself): TERM
+# Whoever installs a build restarts the resident daemon (the engine refuses
+# across builds and never restarts anything itself): TERM
 # the pidfile's daemon; the next call auto-starts the new build. Pidfiles are
 # hash-keyed beside the short socks (`<12hex>.pid` under $XDG_RUNTIME_DIR/mrd
 # on Linux, else $HOME/.cache/mrd-run); the legacy in-root pidfile line stays
@@ -31,8 +31,8 @@ test:
 clean:
     cargo clean
 
-# Recut the CI image (run ON the fleet runner, workstation-nyc-2), then bump
-# &rust_image in .woodpecker.yaml to the new tag — a pipeline only ever runs
+# Recut the CI image (run ON the Woodpecker runner host), then bump
+# &rust_image in .woodpecker/ci.yaml to the new tag — a pipeline only ever runs
 # against the recipe it names.
 ci-image tag=`date +%F`:
     docker build -f Dockerfile.ci -t meridian-ci:{{tag}} .

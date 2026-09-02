@@ -1,8 +1,8 @@
 //! Served `root_mismatch` wire shape — read from the daemon socket.
 //!
 //! The contract (`docs/wire-contract.md` §5.1, §8, §18 row 2) names
-//! `root_mismatch{expected,actual}`. `changed` was STRUCK 2026-08-10 — this
-//! file's own assertion, and its citation of ZT decision 19, were RIGHT AND
+//! `root_mismatch{expected,actual}`. `changed` was STRUCK — this
+//! file's own assertion, and its citation of decision 19, were RIGHT AND
 //! ALONE for the field's whole life: `world_guard` sees two root hashes, a
 //! merkle root is not invertible, and computing "what drifted" would need
 //! inter-lock history that decision 19 forbids. The contract, two doc comments

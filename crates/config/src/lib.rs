@@ -221,7 +221,7 @@ impl std::error::Error for ConfigError {}
 /// `path` is carried verbatim: canonicalization happens once, at bind, in the
 /// mount table.
 ///
-/// There is no `kind` field: the taxonomy left the schema (ZT 2026-08-13).
+/// There is no `kind` field: the taxonomy left the schema.
 /// Vault-ness is carried by `vault:` presence alone — present names the
 /// Obsidian vault, absent means the mount is not one — and nothing else ever
 /// branched on it at serve time.
@@ -1227,8 +1227,7 @@ fn parse_mount_alias<'f>(
 // The vault name (schema §5.1 field 4): optional — presence IS vault-ness.
 // A block that carries `vault:` names its Obsidian vault (the mount table's
 // three-way map: canonical name, Obsidian vault name, local path); a block
-// without one is not a vault, and no second field restates that fact
-// (kind-sweep, ZT 2026-08-13).
+// without one is not a vault, and no second field restates that fact.
 fn parse_mount_vault(fields: &Fields<'_>, path: &Path) -> Result<Option<String>, ConfigError> {
     match fields.get("vault") {
         Some((vault_line, vault_name)) => {
@@ -1252,7 +1251,7 @@ fn parse_mount_vault(fields: &Fields<'_>, path: &Path) -> Result<Option<String>,
 // absence is the one "not primary" spelling, so `primary: false` refuses
 // rather than becoming a second spelling for the same fact. Legal on any
 // mount: the primary root is where a fleet daemon writes, which does not
-// require an Obsidian vault registration (kind-sweep, ZT 2026-08-13).
+// require an Obsidian vault registration.
 // Returns the designation's FILE line when present and legal.
 fn parse_mount_primary(fields: &Fields<'_>, path: &Path) -> Result<Option<usize>, ConfigError> {
     let Some((primary_line, value)) = fields.get("primary") else {

@@ -1,8 +1,8 @@
-# Perf lane: full criterion sweep + claim measurements on CONSISTENT hardware.
-# Requires a self-hosted runner registered with labels [self-hosted, bench]
-# (pinned fleet host) — wall-time baselines are only meaningful when the
-# machine doesn't change under them. Until that runner exists this workflow
-# simply queues; registering it is an infra-ops task, not a repo change.
+# Perf lane (manual-only): full criterion sweep + claim measurements on
+# CONSISTENT hardware. Requires a self-hosted runner registered with labels
+# [self-hosted, bench] — wall-time baselines are only meaningful when the
+# machine doesn't change under them. Without that runner a dispatched run
+# simply queues; registering it is an infra task, not a repo change.
 #
 # Baseline discipline (criterion + critcmp):
 #   - every run saves baseline "run-<sha7>"
@@ -19,8 +19,6 @@ on:
         description: "critcmp baseline name to compare against"
         default: "main"
         required: false
-  schedule:
-    - cron: "17 6 * * 1" # Mondays 06:17 UTC
 
 env:
   CARGO_TERM_COLOR: always
@@ -57,7 +55,7 @@ jobs:
             critcmp.txt
             claim-verdicts.md
             crates/perfsuite/results/
-      # The `mrd status` <1s wall-time budget (1000 ms, U3.6). It lived in the
+      # The `mrd status` <1s wall-time budget (1000 ms). It lived in the
       # correctness suite until an A/B interleave proved it was measuring machine
       # contention there — shipped main blew it 3/3 under load — so it moved to the
       # home this repo already named for wall-time. LAST step on purpose: the sweep
@@ -67,9 +65,8 @@ jobs:
         run: cargo test -p mrd --features perf-walltime --test status_walltime -- --nocapture
       # The multi-root profile — the same verb with a POPULATED mount table, the
       # input the step above deliberately deletes and therefore cannot bound.
-      # Gated on CPU, not wall: this runner is pinned but not exclusive, and the
-      # W2 investigation measured a 0.01 s-CPU command taking 5.3 s of wall under
-      # load. `--nocapture` prints the measured CPU (and the ungated wall) into
+      # Gated on CPU, not wall: this runner is pinned but not exclusive, and a
+      # 0.01 s-CPU command was measured taking 5.3 s of wall under load. `--nocapture` prints the measured CPU (and the ungated wall) into
       # the log. Rationale and the red/green control: the test file's header.
       - name: status multi-root CPU gate (600 ms, populated mount table)
         run: cargo test -p mrd --features perf-walltime --test status_multiroot_cpu -- --nocapture
@@ -89,7 +86,6 @@ jobs:
       # Belt: reap any residual resident whose argv is exactly the mrd binary
       # this job built. Field-exact shape only — never pgrep -f (matches agent
       # prompts; misses live daemons). Census is the proof, not kill exits.
-      # Reference: results/reap/reap-daemons.sh + dogfood reap-mine.sh.
       - name: reap residual perf-lane daemons (census-proved)
         shell: bash
         run: |

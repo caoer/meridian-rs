@@ -2,8 +2,8 @@
 //! socket's serving interval.
 //!
 //! Three consumers treat `daemon.pid` as the kill handle for the SERVING
-//! daemon and read it on the strength of a pong: ccc-statusd's
-//! `attestKillTarget` (its remediation ladder), `just install`'s 0025 restart
+//! daemon and read it on the strength of a pong: an MCP client's
+//! remediation ladder (attest the kill target), `just install`'s restart
 //! duty (`pkill -TERM -F …/daemon.pid mrd`), and the skew-refusal remedy text
 //! a human follows. A daemon that answers its first ping before the pidfile
 //! names it hands all three an empty — or worse, a crashed predecessor's
@@ -79,7 +79,7 @@ fn start_returns_with_the_pidfile_already_written() {
 
 /// The consumer contract verbatim: a client that has its first pong in hand
 /// reads a pidfile naming the daemon that served it. This is the exact
-/// attest-at-first-pong sequence ccc-statusd's remediation ladder runs.
+/// attest-at-first-pong sequence a client's remediation ladder runs.
 #[test]
 fn a_pong_proves_the_pidfile() {
     let tmp = TempDir::new().unwrap();

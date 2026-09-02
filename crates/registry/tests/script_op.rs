@@ -266,7 +266,7 @@ fn an_armed_target_reads_back_its_own_armed_content_and_commits_once() {
     );
 }
 
-/// The CAS relaxation (ZT ruling 2026-08-13, dissolves F-S2): a destructive
+/// The CAS relaxation (dissolves F-S2): a destructive
 /// row whose target the attempt never read is auto-guarded by the entry
 /// fingerprint the commit already carries — its token threads from the ENTRY
 /// world, no read ritual licenses it, and it commits on an unmoved world.
@@ -369,7 +369,7 @@ fn a_later_attempt_enters_at_the_moved_world() {
 
 // ---------------------------------------------------------------------------
 // §12.1 addressability: out-of-domain paths serve on this lane as on the CLI
-// lane (ruled 2026-08-12: "mrd mcp should be same as cli").
+// lane: `mrd mcp` behaves the same as the CLI.
 // ---------------------------------------------------------------------------
 
 /// A real file under the root but outside the hash domain — a dot-directory

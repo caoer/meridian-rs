@@ -474,8 +474,8 @@ fn step_selector(src: &str, edge: &LockItem) -> String {
 /// construction (`root:path` absent from ambient keys).
 ///
 /// Display rides the live grammar — `path §selector`, never the retired
-/// `path#selector` join (ZT ruling 2026-08-14, walk-wire boundary: ONE
-/// grammar everywhere, display values included).
+/// `path#selector` join (the walk-wire boundary: ONE grammar everywhere,
+/// display values included).
 fn edge_address(edge: &LockItem) -> String {
     let canonical = display_ref(&edge.to_path, &edge.to_sel);
     match &edge.to_root {
@@ -895,7 +895,7 @@ mod tests {
         assert_eq!(
             report.entries,
             vec![WalkEntry {
-                // Live grammar (2026-08-14 ruling): the SERVED row spells
+                // Live grammar: the SERVED row spells
                 // `path §selector`; the `#` in the pin spelling above is the
                 // stored plane's and stays.
                 selector: "22-01-session.md §seq-160".to_string(),
@@ -1039,8 +1039,8 @@ mod tests {
             .into_string()
     }
 
-    /// The served row's display grammar (ZT ruling 2026-08-14, walk-wire
-    /// boundary): a section-scoped claim spells `path §selector` — the
+    /// The served row's display grammar (the walk-wire boundary): a
+    /// section-scoped claim spells `path §selector` — the
     /// retired `path#selector` join never rides a served entry, whatever the
     /// stored pin spelled.
     #[test]

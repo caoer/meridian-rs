@@ -1,10 +1,11 @@
 [package]
 name = "mrd"
-description = "The mrd CLI: wires the workspace / cache / registry foundation into the settled verb surface (init, unregister, resolve, cache ls, cache clean, daemon). Hand-rolled subcommand parsing, no clap; tier-4 ephemeral degrade and Cargo-model last-use auto-GC."
+description = "The mrd CLI: the operator surface over the engine (init, resolve, read, put, pin, check, status, run, script, sql, cache, daemon, … — `mrd help`). Hand-rolled subcommand parsing, no clap; tier-4 ephemeral degrade and Cargo-model last-use auto-GC."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 publish.workspace = true
 
 [lints]

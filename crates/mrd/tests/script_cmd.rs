@@ -395,7 +395,7 @@ fn a_moved_touch_set_yields_conflict_with_the_scope_bearing_extras_verbatim() {
         "the touch-set refusal names the moved premise's scope (§5.7). A refusal \
          with no scope is the world-grain guard this card deleted: {commit}"
     );
-    // `changed` is STRUCK (§18 row 2, ruled 2026-08-10): no producer ever
+    // `changed` is STRUCK (§18 row 2): no producer ever
     // minted it, so the old assertion here passed forever over a shape no
     // daemon can emit. Asserting its ABSENCE is what a re-introduction would
     // have to answer for.

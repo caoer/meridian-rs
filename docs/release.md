@@ -2,7 +2,6 @@
 type: contract
 id: release
 status: standing
-updated: 2026-08-17
 description: What a meridian-rs release promises, and the stamp + tag mechanics that make the promise cuttable.
 owns: [what a release promises, stamp and tag mechanics, what a tag publishes]
 ---
@@ -110,7 +109,7 @@ specifies, at `hello` with `contract:"v3"`.
 | **`node_rev` is 16 lowercase hex over the node's full span bytes**; `fingerprint` is `b3:` + 64 hex, never truncated | §1 |
 | **The hash domain is md-only** with the dot-segment default ignore and `meridian/domain.md` as the only standing custom-ignore surface; a domain-rule change bumps the prefix | §12 |
 | **Span law** — sections newline-inclusive to the next boundary, leaf blocks exclude the final terminator, a span splitting a multi-byte character refuses | §1 |
-| **The frontmatter scalar law** — decode on every read seam, canonical encode at every value-plane write door, and the def plane reads absent/null/empty-string as empty | § A.6; § A.6.5 (**RATIFIED** by ZT, 2026-08-08, relayed via `2c47b75e`) |
+| **The frontmatter scalar law** — decode on every read seam, canonical encode at every value-plane write door, and the def plane reads absent/null/empty-string as empty | § A.6; § A.6.5 |
 | **The cross-root address grammar** and the mount states' closed vocabulary | `address-grammar.md`; `meridian-md-schema.md` |
 | **The CLI exit triad** — 0 done, 1 the engine refusing, 2 the CLI's own refusal, across the engine-backed verbs | `status.md` § Workspace CLI |
 | **`mrd help` is the authoritative CLI surface** — flags, refusal legs, per-verb exit codes | `status.md` § Workspace CLI |
@@ -144,8 +143,8 @@ that they hold and are surfaced, not that they are absent.
 
 | Surface | Where ruled |
 |---|---|
-| SQL / DuckDB / a view organ as agent core — `mrd sql` is an operator face over an ephemeral `:memory:` build | §10.3–§10.4 (**RULED — DROP**, ZT, 2026-08-06, session `06-05-meridian-mcp-leg-2`); `README.md` standing C |
-| A second wire door — the stdio sidecar is deleted | §3.3 (**RULED — DROP**, ZT, 2026-08-06, session `06-00-adhoc`) |
+| SQL / DuckDB / a view organ as agent core — `mrd sql` is an operator face over an ephemeral `:memory:` build | §10.3–§10.4; `README.md` standing C |
+| A second wire door — the daemon's unix socket is the only one | §3.3 |
 | Orientation surfaces as wire ops (dashboards, counts, trees) | §10.3, §16 |
 | In-process `mrd` paths as a wire surface — a CLI is not a wire door | §3.3, § A.1 |
 | Rust crate APIs — nothing is published; no crate carries a semver promise (§5.1) | `Cargo.toml`; `laws.md` § Additivity governs shape, not API stability |
@@ -160,14 +159,14 @@ built to preserve — and promises nothing about how long it is served.
 
 **v2 retirement is an open fork.** This file does not rule it, and no reader may
 take "served and frozen" as a promise of permanence or as a schedule for
-removal. `README.md` § A.4's "no dual wire constitutions for agents" is a
+removal. `wire-contract.md` § A.4's "one constitution for agents" is a
 TEACHING law — agents learn one constitution — never a claim that the frozen
 dialect is unserved.
 
 ### §4.5 Multi-root addressing is NOT promised
 
 The `roots` surface advertises every bound root, while `read` serves one. That
-disagreement is a single defect family — the stage-2 reserved-prefix face
+disagreement is a single defect family — the reserved-prefix face
 shadows the registered-root lane — and this release does **not** promise
 cross-root addressing through it.
 
@@ -214,10 +213,10 @@ narrows a promise row; recording them is what keeps §1's two-key rule honest.
 
 | Recorded | What it says |
 |---|---|
-| **G10** | At production corpus scale the 7 s script wall binds **before** the 64-read ceiling — the read-count limit is not the operative one. Reads with §7 |
-| **D4** | The surface enumerates **paths**, not mount names |
-| **D6** | Structurally unreachable in this deployment shape — both admitted roots are `kind: vault`, so the other branch has no way to arise here |
-| **D5** | **SKIPPED with reason.** Staging an unmounted root touches `~/MERIDIAN.md` — ZT's own floor — while he is dogfooding on it. Ruled post-cut, in an advisor-coordinated window outside his active hours |
+| **The script wall** | At production corpus scale the 7 s script wall binds **before** the 64-read ceiling — the read-count limit is not the operative one. Reads with §7 |
+| **Mount enumeration** | The surface enumerates **paths**, not mount names |
+| **Non-vault root kind** | Structurally unreachable in the measured deployment shape — both admitted roots are `kind: vault`, so the other branch has no way to arise there |
+| **Unmounted-root staging** | **Not exercised at cut time.** Staging an unmounted root rewrites the operator's live `~/MERIDIAN.md`, so it is exercised only in a coordinated maintenance window, never on a mount registry in active use |
 
 ## §5 Stamp mechanics
 
@@ -232,7 +231,7 @@ two reader-visible surfaces:
 | `mrd --version` | `mrd {CARGO_PKG_VERSION} (git {MRD_BUILD_SHA})` | the sha is read at compile time, never invented |
 | `hello.identity.build` | the build sha, or `unknown` | § A.3; sha only — the version does not ride here |
 
-#### The sha token states the TREE, not only the commit *(2026-08-09)*
+#### The sha token states the TREE, not only the commit
 
 `MRD_BUILD_SHA` is a sha with an optional marker, not a bare sha. It reads
 `<sha>` where the build's worktree matched HEAD, `<sha>-dirty` where tracked
@@ -263,7 +262,7 @@ not a design.** The answer is a function of the working tree, so the build
 script re-runs on EVERY build — it names a sentinel path that never exists,
 which is cargo's way of saying always. A stamp that outlives its tree is the
 defect this closes, and a watch list keyed on HEAD cannot see an uncommitted
-edit. Measured 2026-08-09 at `440245b3`, five runs each: `git rev-parse HEAD`
+edit. Measured at `440245b3`, five runs each: `git rev-parse HEAD`
 20 ms, `git status --porcelain --untracked-files=no --no-optional-locks` 20 ms —
 per cargo invocation, plus one relink of `mrd` at each clean↔dirty transition,
 where the binary's identity genuinely did change. `--no-optional-locks` keeps
@@ -283,22 +282,11 @@ renames the other.** A release numbered 1 ships contract rev v3. Renaming the
 contract rev to match a release number would break every client that negotiates
 `contract:"v3"` — it is not a tidying, it is a wire break, and it is refused.
 
-**The `server` string is DERIVED, and that closed a drift class** *(done at the
-v1 stamp, 2026-08-09)*. It used to be a hardcoded `meridian-daemon/0.1`
-(`crates/registry/src/server.rs`) independent of the workspace version, so a
-release numbered 1 would have announced `0.1` to its own customer. §3.2 makes
-the string informational — no version sniffing, ever — so nothing broke while it
-disagreed, and nothing breaks now that it agrees: it was a reader-facing drift,
-never a contract one.
-
-It is now `concat!("meridian-daemon/", env!("CARGO_PKG_VERSION"))`, so the
-string cannot drift from the stamp again. The repair rode WITH the version bump
-because it is a code change on a downstream-visible string — it belonged to
-whoever ruled the stamp, never to a doc edit alone. It was safe to make in the
-same change because the value's only readers were checked first: in
-`ccc-statusd`, this engine's customer, `meridian-daemon/0.1` appears **only in
-test fixtures** (the `registryclient` `client_test` / `lifecycle_test` /
-`pool_test` fake responses) — no production code parses the field's value.
+**The `server` string is DERIVED.** It is
+`concat!("meridian-daemon/", env!("CARGO_PKG_VERSION"))`
+(`crates/registry/src/server.rs`), so the string cannot drift from the stamp.
+§3.2 makes the string informational — no version sniffing, ever — so no client
+may parse its value; a client that does takes on its own risk (§1).
 
 A third reader-visible surface therefore joins the two above:
 
@@ -322,10 +310,9 @@ distinguishable from a component tag at a glance.
 ### §5.3 Release notes
 
 The **annotated tag message** carries the release notes. `docs/` stays the
-standing law and grows no per-release pile: `README.md` § 5 keeps history
-optional and deletable, and `wire-contract.md` § B forbids reintroducing
-versioned contract files or amendment piles. A CHANGELOG file would be exactly
-that pile under another name.
+standing law and grows no per-release pile: `wire-contract.md` § B forbids
+reintroducing versioned contract files or amendment piles. A CHANGELOG file
+would be exactly that pile under another name.
 
 Notes state what the release promises that the previous one did not, in the
 vocabulary of §2 and §3 — caps added, law amended — and cite sections, never
@@ -356,17 +343,12 @@ out by its own `when` wave a release through ungated.
 Two consequences worth knowing before you cut one:
 
 - **A tag pipeline is slow by construction.** The tag lanes start after the
-  whole suite, ~18 minutes in. That lateness is *expected* to be survivable, and
-  it is not yet proven. The mechanism is real: every workflow here clones with a
-  non-rotating PAT rather than the server's parse-time OAuth netrc, which was
-  stamped once at parse and died on its own clock — before that fix a late clone
-  hit `exit 128`. The evidence is one observation, pre-gate: pipeline 1328's
-  `tag-linux-amd64` clone started **1171 s after parse** and succeeded. Under
-  the gate no tag lane has cloned at all — the one gated tag pipeline (1330) was
-  refused by a red `ci`, so both tag workflows were **skipped, `started=null`**,
-  and never reached their clone step. The first real `v*` release is the proof;
-  the watch lives on card `22-18/tasks/meridian-rs-tag-lanes-not-gated`
-  § GREEN HALF. If it does fail, it fails closed: no release, never a bad one.
+  whole suite, ~18 minutes in. What makes that lateness survivable: every
+  workflow here clones with a non-rotating PAT (the `clone:` block, woodpecker
+  secret `forgejo_clone_token`) rather than the server's parse-time OAuth
+  netrc, which is stamped once at parse and expires on its own clock — a late
+  clone on the server credential dies with `exit 128`. If a late clone does
+  fail, it fails closed: no release, never a bad one.
 - **The lane refuses a tree it cannot attest.** If the probe fails, or tracked
   content diverges from the commit, the lane exits 1 rather than stamping
   `-dirty` and publishing — §5.1's stamp is a claim, and an unverifiable clean
@@ -378,8 +360,7 @@ consumer resolves the tag to its commit once (`git rev-list -n 1 <tag>`) and
 records the pair above.
 
 **Both sides must peel the same way, and CI's sha does not.** On a `tag` event
-the CI sha is the **annotated tag object**, not the commit — measured 2026-08-17
-(pipeline 848: `2358c5007e13…` for a tag whose commit is `ef7c15e6b590…`). Keyed
+the CI sha (`CI_COMMIT_SHA`) is the **annotated tag object**, not the commit. Keyed
 on that, the bytes would sit at an address the consumer's `rev-list` never names,
 and the §5.1 stamp would carry a sha that is not a commit at all. Each lane
 therefore peels with `git rev-parse <sha>^{commit}` before it keys, stamps, or
@@ -394,13 +375,12 @@ invalidating a digest a consumer already recorded.
 *And not because the build is inherently nondeterministic — held every input, it
 reproduced exactly.* The measurement is one commit on one platform with one image
 tag and a warm sccache shard; it does not license a general claim in either
-direction, and an earlier revision of this paragraph made the opposite general
-claim on no measurement at all. Measured 2026-08-23: a
-`git archive` of `4640044e0`, rebuilt in the CI image on `workstation-nyc-2`
-with the same sccache shard, the same `MRD_BUILD_SHA` and the same target-dir
-**path**, reproduced the published `mrd-linux-amd64` byte for byte (sha256
+direction. Measured at `4640044e0`: a `git archive` of that commit, rebuilt in
+the CI image on the CI runner with the same sccache shard, the same
+`MRD_BUILD_SHA` and the same target-dir **path**, reproduced the published
+`mrd-linux-amd64` byte for byte (sha256
 `0098356f0f9ac63af221128459595138f1600eb7aabf4f15a7e04f4306129ce0`, 54151480
-bytes). An earlier revision of this paragraph claimed the opposite. What makes a
+bytes). What makes a
 rebuild differ is an **input** drifting, and none of them is pinned: the same
 source built into a different target-dir path came out 64 bytes smaller —
 `OUT_DIR` strings reach the binary through build scripts — and the image tag,
@@ -412,8 +392,8 @@ commit main already published is a fast no-op that re-prints the pin.
 
 | Artifact | Agent | Backend |
 |---|---|---|
-| `mrd-linux-amd64` | `workstation-nyc-2` | docker, the `Dockerfile.ci` image |
-| `mrd-darwin-arm64` | `zmax` | local — steps run on the host, against its own toolchain |
+| `mrd-linux-amd64` | the Linux runner `tag-linux-amd64.yaml` selects by `labels` | docker, the `Dockerfile.ci` image |
+| `mrd-darwin-arm64` | a `platform: darwin/arm64` agent (`tag-darwin-arm64.yaml` `labels`) | local — steps run on the host, against its own toolchain |
 
 A mac artifact needs a mac: no container on any Linux agent can produce one,
 which is why the darwin lane runs on a workstation agent with the local backend
@@ -429,9 +409,9 @@ the §5.1 stamp is checked against the commit being built before any upload —
 and each lane's dirty probe is the **engine's own**, flag for flag
 (`--untracked-files=no`, `--no-optional-locks`; `crates/mrd/build_git.rs`). A
 lane that supplies `MRD_BUILD_SHA` owns the claim, so a looser probe there
-publishes a divergence §5.1 says does not exist. Measured 2026-08-17: a bare
-`git status --porcelain` counted the lane's own scratch directory and stamped
-`-dirty` on a tree that matched HEAD exactly.
+publishes a divergence §5.1 says does not exist: a bare
+`git status --porcelain` counts the lane's own scratch directory and stamps
+`-dirty` on a tree that matches HEAD exactly.
 
 ## §6 How the promise changes after a release
 
@@ -455,27 +435,25 @@ operator's process wall**, and a reader who confuses the two will infer headroom
 that does not exist and pressure that is not there.
 
 The budget binds at **three layers inside the engine**, each named in the
-constants' own doc comments and in `run-plane.md` § Where the budgets bind.
-*(Amended 2026-08-23, card `script-door-commit-premise-world-grain-vs-touch-set`:
-the whole attempt became one § A.7 `script` frame, so two of the three layers
-moved out of the CLI process and into the daemon. The rows below name what each
-one replaced — a table that still named `WireHost::ask` would name a function
-this repo no longer contains.)*
+constants' own doc comments and in `run-plane.md` § Where the budgets bind. The
+whole attempt is one § A.7 `script` frame, so two of the three layers live in
+the daemon.
 
-| Layer | Where it binds | Process | Replaced |
-|---|---|---|---|
-| read | before every read the program makes, against the pinned entry world (`registry::script_op`) | daemon | `ask` — before every round trip (`WireHost::ask`) |
-| connect | on the socket itself (`SocketDoor::connect`) | `mrd` | unchanged; it now bounds the single `script` round trip |
-| commit | before the commit is issued (`registry::script_op`) | daemon | `run` — the same check, on the CLI side of the deleted local transaction |
+| Layer | Where it binds | Process |
+|---|---|---|
+| read | before every read the program makes, against the pinned entry world (`registry::script_op`) | daemon |
+| connect | on the socket itself (`SocketDoor::connect`); it bounds the single `script` round trip | `mrd` |
+| commit | before the commit is issued (`registry::script_op`) | daemon |
 
-**Startup and teardown sit outside all three.** The MCP host's bound on the
-child process is a **fourth** layer, and it lives in the other repo — it is not
+**Startup and teardown sit outside all three.** A host's bound on the `mrd`
+child process is a **fourth** layer, and it lives in the host — it is not
 this budget and this file does not rule it.
 
-Consequence for reading measurements: **the decisive cell in the fuse report is
-ENGINE ms.** Two of three write-bearing runs crossed 7 s of PROCESS wall while
-committing correctly, precisely because the process wall is not what the budget
-bounds. No door headroom may be inferred from that cell in either direction.
+Consequence for reading measurements: **the decisive cell is ENGINE ms.** A
+write-bearing run can cross 7 s of PROCESS wall while committing correctly,
+precisely because the process wall is not what the budget bounds. No door
+headroom may be inferred from process wall in either direction.
 
-**G10 rides here** (§4.7): at production corpus scale this wall binds before the
-64-read ceiling, so a program's operative limit is time, not read count.
+**The §4.7 script-wall record rides here**: at production corpus scale this wall
+binds before the 64-read ceiling, so a program's operative limit is time, not
+read count.

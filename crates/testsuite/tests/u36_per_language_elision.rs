@@ -107,7 +107,7 @@ fn mixed_page() -> String {
     let new_engine_block = lock::EngineEmitted::emit_canonical(&TestJournal { ts: "2026-07-26" });
     format!(
         "# Roots\n\nprose the reader keeps\n\n{lock_block}\n\n{new_engine_block}\n\n\
-         ```{mount}\nname: field-notes\npath: /Users/Shared/projects/field-notes\nvault: field-notes\n```\n\n\
+         ```{mount}\nname: field-notes\npath: /srv/vaults/field-notes\nvault: field-notes\n```\n\n\
          ```{tool}\nname: t\nkind: mcp\n```\n\n\
          ```{unclaimed}\nwhatever: 1\n```\n\n\
          ```rust\nfn main() {{}}\n```\n",

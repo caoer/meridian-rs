@@ -95,8 +95,8 @@ fn remove_strikes_the_key_line_and_its_terminator() {
 
 /// The armed fact NAMES THE KEY THAT DIED — the whole reason this shape exists
 /// rather than a whole-document rewrite (which arms `target:{"hpath":[]}` and
-/// says nothing about any key). A.6.3a′ ruled this for the create side in 2026-08;
-/// this is the retire side finally carrying the same identity.
+/// says nothing about any key). A.6.3a′ settled this for the create side; this is
+/// the retire side finally carrying the same identity.
 #[test]
 fn the_armed_fact_names_the_key_and_arms_the_no_node_token() {
     let (dir, root) = ws(&[("card.md", CARD)]);

@@ -416,7 +416,7 @@ fn execute_row(
             let obj = row.as_object_mut().expect("a report is an object");
             obj.insert("page".to_owned(), json!(target.page));
             obj.insert("invocation".to_owned(), json!(invocation));
-            // Live grammar (ZT ruling 2026-08-14, walk-wire boundary): the
+            // Live grammar (the walk-wire boundary): the
             // pointer names the anchor as the file carries it (`^r-…`) and
             // joins with `§`, never the retired `#` — the spelling every
             // face teaching speaks. The path stays workspace-root-relative.

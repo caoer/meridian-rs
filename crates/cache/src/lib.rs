@@ -55,7 +55,7 @@ pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 /// `view::store::CACHE_SCHEMA_VERSION` on any projection or hist DDL change:
 /// the old drawer path simply stops resolving and `gc` reaps it.
 ///
-/// `s2`: the dangling-base-exclusion ruling (2026-08-14) — `dangling` view
+/// `s2`: the dangling-base-exclusion ruling — `dangling` view
 /// narrowed and the exclusion mint's fallback restamped `link.exclusion`.
 ///
 /// `s3`: `frontmatter.prop_rev` — the per-key CAS token

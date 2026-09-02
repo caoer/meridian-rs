@@ -1,4 +1,4 @@
-//! 0025 socket law — version mismatch = refuse (session ruling, 2026-08-12).
+//! The socket law — version mismatch = refuse.
 //!
 //! Measured defect (receipt `839fdb38`): a caller got an answer computed by an
 //! engine it did not build, with no error and no way to tell — a foreign
@@ -10,7 +10,7 @@
 //! `hello.identity.build` (already on the hello frame it receives) against its
 //! own baked `MRD_BUILD_SHA`, whole token. Equal → serve. Anything else —
 //! a different token, or no identity published — refuses, naming both builds,
-//! the reason, and fitted suggestions (ZT ruling 2026-08-14: a teaching
+//! the reason, and fitted suggestions (the teaching register: a teaching
 //! explains WHY and offers suggestions by applicability, never one demanded
 //! command). Zero extra round trips: the comparison is in-memory on a frame
 //! the single dial already parsed.
@@ -156,7 +156,7 @@ fn read_refuses_on_foreign_identity_and_names_both_builds() {
     );
 }
 
-/// ZT ruling (2026-08-14): a refusal teaching explains WHY and offers fitted
+/// The teaching register: a refusal teaching explains WHY and offers fitted
 /// suggestions — never a single demanded command, because one imperative does
 /// not apply to all callers (a caller who does not own the resident, or is on
 /// a foreign cache root, must not kill it; a managed install owns its own

@@ -210,9 +210,9 @@ fn drift_revs(fault: &policy::ArmedFault) -> Option<(String, String)> {
 /// and cites its passing case (the legal path).
 ///
 /// The sentence speaks the CALLER's vocabulary — rules refused the change —
-/// never the attestation plane's (card p2-face-honesty, 2026-08-18: "armed"
-/// is how a rule comes to be in force, plumbing a refused agent cannot act
-/// on; the rule name and its legal path are what it can). Hosts forward this
+/// never the attestation plane's ("armed" is how a rule comes to be in force,
+/// plumbing a refused agent cannot act on; the rule name and its legal path
+/// are what it can). Hosts forward this
 /// message verbatim, so the register is fixed at this mint.
 fn render_violations(violations: &[policy::GateViolation]) -> String {
     let body = violations

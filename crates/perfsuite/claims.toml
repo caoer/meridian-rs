@@ -99,7 +99,7 @@ metric = "ms"
 direction = "lower"
 baseline = 22200.0
 threshold = 2220000.0 # 100x: the broken-detector, not a regression gate
-baseline_provenance = "first run 2026-07-18, zmax (arm64 M4 Max): 1086 MB / 180k files in 22.2 s (49 MB/s — file-open syscalls dominate)"
+baseline_provenance = "first run, arm64 Apple M4 Max: 1086 MB / 180k files in 22.2 s (49 MB/s — file-open syscalls dominate)"
 harness = "benches/cold_ingest.rs"
 recipe = "vault-1gb seed=1 files=180000"
 note = "walk+read today; syntax::parse joins the pass at rung 1"
@@ -111,7 +111,7 @@ metric = "ms"
 direction = "lower"
 baseline = 1780.0
 threshold = 178000.0 # 100x
-baseline_provenance = "first run 2026-07-18, zmax (arm64 M4 Max): 1130 MB encoded in 1.78 s (634 MB/s)"
+baseline_provenance = "first run, arm64 Apple M4 Max: 1130 MB encoded in 1.78 s (634 MB/s)"
 harness = "benches/cold_ingest.rs"
 recipe = "vault-1gb seed=1 files=180000"
 note = "the untyped seam's real bulk cost: JSON string escaping both ways. Frames pre-built outside the timed window"

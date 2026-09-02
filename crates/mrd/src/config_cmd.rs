@@ -524,9 +524,9 @@ fn render_human(
             let _ = write!(out, "  -> {}", canonical.display());
         }
         // The vault leg always prints, with the marker when absent: `Mount::vault` is `Some` iff
-        // the block declared `vault:` — presence IS vault-ness since the kind sweep
-        // (ZT 2026-08-13). Dropping the cell would be byte-identical to a build that lost
-        // the name after the parser.
+        // the block declared `vault:` — presence IS vault-ness since the kind sweep.
+        // Dropping the cell would be byte-identical to a build that lost the name after
+        // the parser.
         let _ = write!(out, "  vault:{}", m.vault().unwrap_or(ABSENT_LEG));
         if let Some(pin) = m.pin() {
             let _ = write!(out, "  pin:{pin}");

@@ -2,7 +2,6 @@
 type: contract
 id: wire
 status: standing
-updated: 2026-08-18
 description: Standing wire constitution. One document. Docs define law; code may lag.
 owns: [the wire constitution — nouns, ops, guards, receipts, errors]
 ---
@@ -36,7 +35,7 @@ Intents here are **ordered goals with direction**, never co-equal absolute laws.
 
 **GOAL 2 — must-work-in-Obsidian (the compatibility floor).** Everything we mint and emit works in the Obsidian app. This is one-way: we never promise to reproduce the app's behavior on inputs outside our own grammar. `resolve` walks the app's grammar best-effort (§4.5); out-of-grammar inputs (e.g. `_`-bearing anchors) refuse loudly. Goal 2 never overrides Goal 1 — where they meet, the ruled grammar wins, surfaced never silent.
 
-### §0.2 Formerly open gates — all RULED (nothing silently resolved)
+### §0.2 Ruled gates (nothing silently resolved)
 
 | Item | Ruling | Where in this contract |
 |---|---|---|
@@ -45,7 +44,7 @@ Intents here are **ordered goals with direction**, never co-equal absolute laws.
 | Rung-5 view organ | optional; no engine-named wire elements | §10.3–§10.4 |
 | `_` block-id charset | two-plane split VETOED — one app-exact charset | §2.4 |
 
-The base design carried each of these as a conditional with both outcomes designed; the ruled outcome is now the contract text and the not-taken branches live in the decision records, not here. Deviations and waivers: §18.
+The base design carried each of these as a conditional with both outcomes designed; the ruled outcome is the contract text. Deviations and waivers: §18.
 
 ### §0.3 The worked fixture (all examples run against this)
 
@@ -80,7 +79,7 @@ ship by August
 - blocked on [[roadmap]]
 ```
 
-The remaining fixture bytes (every file this document hashes is printed — at S0 in this section, and the S1/S2 receipt entries in §6.3, whose two lines ARE the fixture's bytes since the 2026-08-09 template rebaseline. The declared exception §18 row 10 carried is CLOSED; the row records how it closed):
+The remaining fixture bytes (every file this document hashes is printed — at S0 in this section, and the S1/S2 receipt entries in §6.3, whose two lines ARE the fixture's bytes):
 
 - `receipts/2026-07-18.md` at S0, exact bytes (26 B — the `—` is 3-byte UTF-8): `# Receipts — 2026-07-18` + LF.
 - `.github/README.md`, exact bytes (11 B): `# CI notes` + LF.
@@ -127,7 +126,7 @@ The wire has exactly five nouns. Four carry forward from `crates/wire` vocabular
 | `Fingerprint` | `"b3:" + 64 hex`, full width | algorithm+domain prefixed; prefix bumps on domain-rule change (§12.3); never truncated |
 | `Delta` | the change-fact object, §7 | node-grain at birth; stable shape; replay ≡ live |
 
-**Span sub-laws (carried from contract v1 §2):** section (heading) nodes are newline-inclusive to the next boundary — a section's span ends at the next heading of level ≤ its own (else EOF); strictly-deeper headings are contained within it — heading-inclusive, no trim (the node-rev-merkle-spec §5 fixture pins stay live); leaf block nodes exclude the final line terminator; inline nodes include their delimiters; a request naming a span that splits a multi-byte character is refused (`bad_request`) — the guarantor is parser token discipline on reads and the reparse gate on writes (§15).
+**Span sub-laws:** section (heading) nodes are newline-inclusive to the next boundary — a section's span ends at the next heading of level ≤ its own (else EOF); strictly-deeper headings are contained within it — heading-inclusive, no trim (the node-rev-merkle-spec §5 fixture pins stay live); leaf block nodes exclude the final line terminator; inline nodes include their delimiters; a request naming a span that splits a multi-byte character is refused (`bad_request`) — the guarantor is parser token discipline on reads and the reparse gate on writes (§15).
 
 **Rev sub-laws:** `node_rev` is minted over the node's **full span bytes** — heading-inclusive for sections, so a heading rename deliberately invalidates the token. `content_span` starts at the first byte after the heading line's terminator and runs to the section span's end; it mints **no** rev — there is exactly one rev per node and it is the full-span hash (§5.1 states the CAS comparison rule). File-grain `file_rev` = `blake3(whole file bytes)[:16]`, same family, same width.
 
@@ -135,15 +134,15 @@ The wire has exactly five nouns. Four carry forward from `crates/wire` vocabular
 
 ### §1.1 Replaceability test (zero consumer concepts)
 
-Per noun and per field: *can a non-ccc consumer replace the convention without touching engine code?*
+Per noun and per field: *can a consumer outside the reference host replace the convention without touching engine code?*
 
 | Noun/field | Verdict |
 |---|---|
-| `Path` | any UTF-8 relative path; no ccc naming baked in |
+| `Path` | any UTF-8 relative path; no host naming baked in |
 | `Span` | raw byte math; no convention at all |
 | `NodeRev`/`Fingerprint` | opaque tokens; algorithm swap = domain-prefix bump (§12.3), engine mechanism unchanged for consumers |
-| `Delta` | generic node-change facts; no ccc vocabulary in any field |
-| `actor` | opaque string, engine never parses it — `agent:b0864fb2` is a ccc *convention*, the field takes anything (§9) |
+| `Delta` | generic node-change facts; no host vocabulary in any field |
+| `actor` | opaque string, engine never parses it — `agent:b0864fb2` is a host *convention*, the field takes anything (§9) |
 | `now` | RFC 3339 string supplied by the caller; engine validates format, never generates (§9) |
 | `receipt` address | any md path + anchor; the receipt *rendering* is a shipped default template, the armed facts on the wire are the normative content (§6.4) |
 | rule packs | pack data behind a generic manifest; no evaluator hard-coded (§11) |
@@ -151,16 +150,16 @@ Per noun and per field: *can a non-ccc consumer replace the convention without t
 
 ## §2 One address grammar, two planes — and the verb IS the plane
 
-This contract requires one fleet grammar. This schema enforces it **structurally**: the strict mint plane and the Obsidian interop walk are carried by *different verbs with different response types*, and the walk-plane response type **has no rev field to return**. A ref cannot arm a write because the op that accepts refs is incapable of minting — the mint partition.
+This contract requires one address grammar. This schema enforces it **structurally**: the strict mint plane and the Obsidian interop walk are carried by *different verbs with different response types*, and the walk-plane response type **has no rev field to return**. A ref cannot arm a write because the op that accepts refs is incapable of minting — the mint partition.
 
-### §2.1 The strict mint plane (the ONE fleet grammar)
+### §2.1 The strict mint plane (the ONE grammar)
 
 Write targets and strict reads name nodes by **exact name only** — three forms, used in `cat`, `splice`, and echoed in `toc`/receipts/deltas:
 
 | Form | Shape | Semantics |
 |---|---|---|
 | hpath | `{"hpath":[{"h":"Goals"},{"h":"Q3"}]}` | per-segment **byte-equality** against the real containment tree; optional occurrence `{"h":"Beta","n":2}` (1-based, document order among identical raw texts at that position). No join string exists — the `#A#a/b` vs `#A#a#b` ambiguity is unrepresentable. **Zero segments (`[]`) address the document node** (file span `0..len`) — the parent of every top-level heading; the create door's empty `parent_hpath` is this address |
-| anchor | `{"anchor":"r-000042"}` | block id, exact match; the resolved node is the id's HOST BLOCK under the Obsidian attachment law (F-R4, `model::anchor_host_span`: a tail id keys its enclosing block — the whole paragraph run, callout or table, a list ITEM line, a heading line; an own-line id attaches to the nearest preceding block through blanks, or joins a directly-adjacent paragraph/list item; a document-start orphan and a frontmatter caret keep the marker's own line). Duplicate id in one file → the mint plane refuses `ambiguous_ref` (loud), while the walk plane follows the app (last wins, silent) — the silent-last-wins mint death mode is closed |
+| anchor | `{"anchor":"r-000042"}` | block id, exact match; the resolved node is the id's HOST BLOCK under the Obsidian attachment law (`model::anchor_host_span`: a tail id keys its enclosing block — the whole paragraph run, callout or table, a list ITEM line, a heading line; an own-line id attaches to the nearest preceding block through blanks, or joins a directly-adjacent paragraph/list item; a document-start orphan and a frontmatter caret keep the marker's own line). Duplicate id in one file → the mint plane refuses `ambiguous_ref` (loud), while the walk plane follows the app (last wins, silent) — the silent-last-wins mint death mode is closed |
 | fm_key | `{"fm_key":"title"}` | top-level frontmatter key; the node is the full key line (frontmatter plane is nodes, never ref grammar — `#:key` is dead) |
 
 Stale names fail loud (`ref_not_found`); every ref-carrying wire surface — `cat`/`splice` targets and the echoes in `toc` rows, receipts, deltas, and verdicts — uses this grammar and no other.
@@ -171,17 +170,17 @@ Stale names fail loud (`ref_not_found`); every ref-carrying wire surface — `ca
 
 ### §2.3 Layering, not collision
 
-The strict grammar is THE fleet grammar; the Obsidian algebra is a syntactically disjoint, read-only compatibility input. Our extensions (revs, fingerprints, occurrence index, domain config) never appear inside the walk grammar; `[[##`/`[[^^` search syntaxes are UI, out of scope.
+The strict grammar is THE grammar; the Obsidian algebra is a syntactically disjoint, read-only compatibility input. Our extensions (revs, fingerprints, occurrence index, domain config) never appear inside the walk grammar; `[[##`/`[[^^` search syntaxes are UI, out of scope.
 
 ### §2.4 The block-id charset — ONE charset, both planes
 
-Block ids match `[A-Za-z0-9-]+` — Obsidian app-exact — on BOTH planes. This is the single normative statement of the charset; every other section references it. No `_` in newly minted block ids anywhere; a `_`-bearing anchor is outside the strict-plane grammar (`bad_request`). No organic live `_` block ids exist in any fleet corpus — an empirical corpus finding, true as of the survey behind it, never a standing invariant — so a corpus-wide re-id migration costs ZERO and none ships; what remains is a mint-guard enforcing this charset going forward plus a frozen-fixture exemption, **owned by the phase-2 impl-taskpack, not this document** (§13.8). The `_`-bearing probe stays frozen in the `obsidian-compat@1.12.7` pack so the app's actual treatment of legacy `_` ids is pinned, not assumed.
+Block ids match `[A-Za-z0-9-]+` — Obsidian app-exact — on BOTH planes. This is the single normative statement of the charset; every other section references it. No `_` in newly minted block ids anywhere; a `_`-bearing anchor is outside the strict-plane grammar (`bad_request`). No corpus-wide re-id migration ships; what remains is a mint-guard enforcing this charset going forward plus a frozen-fixture exemption, **owned by the implementation, not this document** (§13.8). The `_`-bearing probe stays frozen in the `obsidian-compat@1.12.7` pack so the app's actual treatment of legacy `_` ids is pinned, not assumed.
 
 ## §3 Frame layer, correlation, discovery
 
 ### §3.1 Frames
 
-NDJSON, one JSON object per line, on the one wire door — the daemon's unix socket (§3.3): the socket carries frames only, logs go to the daemon's stderr (`echo '{"id":1,"op":"hello",…}' | nc -U "$SOCKET"` debuggability is a contract property — the pipe test outlived the sidecar's DROP because the socket speaks the same line dialogue). Three frame types, classified by the **raw** `id` key:
+NDJSON, one JSON object per line, on the one wire door — the daemon's unix socket (§3.3): the socket carries frames only, logs go to the daemon's stderr (`echo '{"id":1,"op":"hello",…}' | nc -U "$SOCKET"` debuggability is a contract property: the socket speaks a plain line dialogue). Three frame types, classified by the **raw** `id` key:
 
 - key `id` present → Request/Response (correlated)
 - key `id` absent → Notification (§7 deltas ride here)
@@ -200,7 +199,7 @@ NDJSON, one JSON object per line, on the one wire door — the daemon's unix soc
 
 A non-conforming id cannot be echoed as a valid id: the error frame carries `id:null` plus the offending lexeme verbatim in `id_raw` (string). Under the null-id corruption law a pipelining client treats any `id:null` frame as corruption — fail all outstanding, respawn — which is the *correct* outcome for a client whose id generation is broken; single-shot clients read `id_raw`.
 
-Correlation: one response per request, id echoed by value; in-flight uniqueness required. *(Amended 2026-08-12, §18 row 14: the `MAX_FRAME_BYTES = 256 MiB` corruption bound is STRUCK. It was a protobuf varint length-prefix bound standing from `crates/transport-proto`, a crate deleted 2026-08-03 (8a57a3da — Law 1.4 keeps the seam JSON-only). The seam is NDJSON — newline-delimited lines, no length prefix (`crates/transport` NdjsonCodec) — and serves no frame-size bound; none is invented here. Whether NDJSON wants a line-length cap is an open question, recorded at §18 row 14.)*
+Correlation: one response per request, id echoed by value; in-flight uniqueness required. The seam is NDJSON — newline-delimited lines, no length prefix (`crates/transport` NdjsonCodec) — and serves no frame-size bound; none is invented here. Whether NDJSON wants a line-length cap is an open question (§18 row 14).
 
 ### §3.2 hello / caps (proto-1 retained)
 
@@ -213,11 +212,11 @@ Correlation: one response per request, id echoed by value; in-flight uniqueness 
   "fingerprint":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9"}}
 ```
 
-`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed twenty more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `pin-cross-root`, `splice.pin.proof`, `splice.set`, `splice.fields`, `splice.create_rev`, `create`, `remove`, `mounts`, `mounts.primary`, `mounts.alias`, `hello.identity`, `script`, `run`, `walk`, `sql`, `scoped-guards` (§A.3/§A.5/§A.7/§A.8/§A.10/§A.11/§5.4) — thirty-six caps in all. The engine's push list (`wire-serve/src/rev.rs`) is the authority and its own test pins the full ordered enumeration; this sentence is a reader's copy, so a count here that disagrees with that test is this sentence's defect. Field-only amendments ship as dotted `op.field` strings (`mounts.primary` and `mounts.alias` are two: the mounts row's declared-primary designation and its root alias, §A.5; `splice.fields` is the §A.2.1 opaque middleware passthrough); `pin-cross-root` is a behavior cap on the existing `splice.pin` field (§A.3). `scoped-guards` is a behavior cap in the `pin-cross-root` pattern covering the whole scoped-premise family at once — the `guards[]` list (each entry's `scope`/`scope_bytes` premise pair), the singular `scope` field on `splice` (single and set form) and `script`, and the `fingerprint` op's mint arm with its own `scope`/`scope_bytes` pair (§4.7, §5.4–§5.7; `scope_bytes` is a top-level field on no door — §5.4's field matrix): one family, one flag. A frozen v2 session is never pushed it, and un-negotiated use of any guard-family field refuses `bad_request` loudly at this section's strict wall — never silence. `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
+`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap core of the base set; the daemon's base set (`crates/registry/src/server.rs` `CAPS`) adds `splice.fields`, `run.fields` and `run.ambient` — nineteen (the v2 spelling is byte-identical minus the fingerprint renames). A negotiated v3 session is pushed twenty-three more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `pin-cross-root`, `splice.pin.proof`, `splice.set`, `splice.fields`, `splice.create_rev`, `create`, `remove`, `mounts`, `mounts.primary`, `mounts.alias`, `hello.identity`, `script`, `run`, `run.mode`, `run.input`, `walk`, `sql`, `splice.remove`, `scoped-guards` (§A.3/§A.5/§A.6.6/§A.7/§A.8/§A.10/§A.11/§5.4). The engine's push list (`wire-serve/src/rev.rs`) is the authority and its own test pins the full ordered enumeration; this sentence is a reader's copy, so a count here that disagrees with that test is this sentence's defect. Field-only amendments ship as dotted `op.field` strings (`mounts.primary` and `mounts.alias` are two: the mounts row's declared-primary designation and its root alias, §A.5; `splice.fields` is the §A.2.1 opaque middleware passthrough); `pin-cross-root` is a behavior cap on the existing `splice.pin` field (§A.3). `scoped-guards` is a behavior cap in the `pin-cross-root` pattern covering the whole scoped-premise family at once — the `guards[]` list (each entry's `scope`/`scope_bytes` premise pair), the singular `scope` field on `splice` (single and set form) and `script`, and the `fingerprint` op's mint arm with its own `scope`/`scope_bytes` pair (§4.7, §5.4–§5.7; `scope_bytes` is a top-level field on no door — §5.4's field matrix): one family, one flag. A frozen v2 session is never pushed it, and un-negotiated use of any guard-family field refuses `bad_request` loudly at this section's strict wall — never silence. `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
 
-**Hello is config-grade (ruled 2026-08-16, roots-hello-starved).** A workspace `hello` pins storage, validates the domain CONFIG (an ambiguous or unreadable config still refuses `io_error{cause}` at the handshake), and binds the connection — it never walks the corpus, never builds the engine, and never queues behind corpus-scoped work (the resident fold is read without waiting; under lock contention the field is absent, the same honest answer as cold). `fingerprint` is therefore present exactly when a resident engine holds a fold that is readable this instant; a cold workspace answers without it, and the first corpus read *starts* the warm (next paragraph). Why ruled: `hello`'s former inline warm let one client's cold whole-corpus build hold every other client's `hello` — and `mounts` behind it, the op § A.5 defines precisely for the caller that knows no root yet — past the face's own deadline (dogfood 2026-08-16: `roots` timed out while one cold `links` scan ran). A discovery op answers at config cost.
+**Hello is config-grade.** A workspace `hello` pins storage, validates the domain CONFIG (an ambiguous or unreadable config still refuses `io_error{cause}` at the handshake), and binds the connection — it never walks the corpus, never builds the engine, and never queues behind corpus-scoped work (the resident fold is read without waiting; under lock contention the field is absent, the same honest answer as cold). `fingerprint` is therefore present exactly when a resident engine holds a fold that is readable this instant; a cold workspace answers without it, and the first corpus read *starts* the warm (next paragraph). Why: an inline warm in `hello` would let one client's cold whole-corpus build hold every other client's `hello` — and `mounts` behind it, the op § A.5 defines precisely for the caller that knows no root yet — past the face's own deadline. A discovery op answers at config cost.
 
-**The cold build never blocks the read door for minutes (ruled 2026-08-16, post-promote-corpus-warm).** An op that serves from the warm engine — the read family, `sql`, the `script` entry pass — against a workspace with NO resident engine (the state every workspace is in right after a daemon restart) starts the drawer rebuild in the BACKGROUND (one rebuild per workspace, however many callers ask) and gives it a short bounded wait. A small drawer lands inside the wait and the read SERVES on first contact — first contact with an ordinary workspace never changes shape. A drawer still rebuilding when the wait expires refuses `corpus_warming` (§8, retry), and every further corpus read while that rebuild runs refuses the same in milliseconds; the first read after the rebuild lands serves from it. The wait's value is engine-internal and deliberately unpublished (host deadlines stay host knowledge, §8.1) — the guarantee is its ORDER: bounded well under any sane op deadline, never minutes. A rebuild that FAILS surfaces its cause as `io_error{cause}` (env) — to the read that kicked it when the failure lands inside the wait, else to the next corpus read — and warming never masks a broken corpus: a later read starts a fresh rebuild. A WARM workspace's currency pass is unchanged in scope: it stays inline at every read, served at the vouched grade (`node-rev-merkle-spec.md` §6.7 — O(dirty) through the event feed's cookie proof; the extent-refresh floor, O(domain) in `stat`s, O(delta) in parses, answers any named miss; `run-plane.md` § What an entry costs), so only the cold whole-corpus build leaves the read door. Why ruled: the inline cold build read as a hung product — after an install restart every corpus read blocked for minutes (a `toc` timed out at 20 s twice) while `hello`/`mounts` answered in milliseconds, so the green config plane said "up" over an unservable corpus (dogfood 2026-08-16). The refusal makes the drawer's state a wire fact instead of a timeout guess. In-process registries (the CLI's direct lane and test fixtures) keep the inline build: with no daemon and no deadline on the other end, blocking IS the honest answer there.
+**The cold build never blocks the read door for minutes.** An op that serves from the warm engine — the read family, `sql`, the `script` entry pass — against a workspace with NO resident engine (the state every workspace is in right after a daemon restart) starts the drawer rebuild in the BACKGROUND (one rebuild per workspace, however many callers ask) and gives it a short bounded wait. A small drawer lands inside the wait and the read SERVES on first contact — first contact with an ordinary workspace never changes shape. A drawer still rebuilding when the wait expires refuses `corpus_warming` (§8, retry), and every further corpus read while that rebuild runs refuses the same in milliseconds; the first read after the rebuild lands serves from it. The wait's value is engine-internal and deliberately unpublished (host deadlines stay host knowledge, §8.1) — the guarantee is its ORDER: bounded well under any sane op deadline, never minutes. A rebuild that FAILS surfaces its cause as `io_error{cause}` (env) — to the read that kicked it when the failure lands inside the wait, else to the next corpus read — and warming never masks a broken corpus: a later read starts a fresh rebuild. A WARM workspace's currency pass is unchanged in scope: it stays inline at every read, served at the vouched grade (`node-rev-merkle-spec.md` §6.7 — O(dirty) through the event feed's cookie proof; the extent-refresh floor, O(domain) in `stat`s, O(delta) in parses, answers any named miss; `run-plane.md` § What an entry costs), so only the cold whole-corpus build leaves the read door. Why: an inline cold build reads as a hung product — after a restart every corpus read blocks for minutes while `hello`/`mounts` answer in milliseconds, so the green config plane says "up" over an unservable corpus. The refusal makes the drawer's state a wire fact instead of a timeout guess. In-process registries (the CLI's direct lane and test fixtures) keep the inline build: with no daemon and no deadline on the other end, blocking IS the honest answer there.
 
 **Rev-presence law:** `node_rev` is MUST on every `toc`/`cat`/`extract` node whenever `splice ∈ caps`.
 
@@ -227,20 +226,20 @@ Correlation: one response per request, id echoed by value; in-flight uniqueness 
 
 ### §3.3 Hosts — one wire door
 
-**RULED — DROP (ZT, 2026-08-06, session `06-00-adhoc`).** The stdio sidecar host (`crates/sidecar`, deployed `ccc-sidecar`) is deleted; the daemon's unix socket is the **only** wire door. ZT, verbatim: *"there is no reason to have sidecar ever existed. debugability is lie, sending data over socket do the same job."* This executes R3b ("sidecar death row", session `05-19-meridian-socket-mcp-leg`), whose precondition — ccc-statusd's markdown ops moved off the exec'd sidecar onto the registry socket — shipped 2026-08-05.
+The daemon's unix socket is the **only** wire door — one binary, one transport: a second door would buy no observability the socket lacks, and sending data over the socket does the same job.
 
-- The socket speaks the same NDJSON line dialogue (§3.1), so pipe debuggability transfers whole; a second binary bought no observability the socket lacks.
-- Identity was never the door's job: `actor` rides each frame as data (§9) on either transport, so removing a door removes no attribution. One resident server, connection-scoped transport, per-frame identity — the topology herdr (single UDS) and shellkit (identity injection at the server) already run.
-- `daemon_only` (§8) retires with the host: every wire door is now daemon-backed, so no wire deployment lacks the resident corpus index.
-- In-process paths (`mrd` over the engine crates) remain out of wire scope (§ A.1) — a CLI is not a wire door.
+- The socket speaks the NDJSON line dialogue (§3.1), so pipe debuggability is a property of the door itself.
+- Identity is not the door's job: `actor` rides each frame as data (§9), so attribution is independent of transport. One resident server, connection-scoped transport, per-frame identity.
+- `daemon_only` (§8) is unmintable: every wire door is daemon-backed, so no wire deployment lacks the resident corpus index.
+- In-process paths (`mrd` over the engine crates) are out of wire scope (§ A.1) — a CLI is not a wire door.
 
-Consequences are threaded at §3.1 (pipe debuggability restated at the socket), §3.2 (hello `server` names the daemon), §8 (`daemon_only` retired), §13 (crate row), § A.1 (one-door enumeration).
+Consequences are threaded at §3.1 (pipe debuggability at the socket), §3.2 (hello `server` names the daemon), §8 (`daemon_only` unmintable), § A.1 (one-door enumeration).
 
 ## §4 The op surface
 
 Eleven ops in this table (the § A.3 standing additions `read`, `create` and `remove`, and the § A.7 `script` op, land on top, not re-tabled here). The five-verb interface maps onto the original ten 1:1 (§4.8). Read ops are classified by the wire-op criterion: feeds-an-action → wire fact op; feeds-orientation → dashboard-only, NOT on this wire.
 
-| Op | Rung (panel ladder) | Class |
+| Op | Rung (the rung ladder) | Class |
 |---|---|---|
 | `hello` | 1 | discovery |
 | `toc`, `cat`, `extract` | 2 | single-file facts — the **mint surface** |
@@ -252,7 +251,7 @@ Eleven ops in this table (the § A.3 standing additions `read`, `create` and `re
 | `diff` | 3 (reserved shape, standing) | replay (§7) |
 | `sub` | 5 | delta transport (§7) — SERVED at the daemon door (§4.7) |
 
-The v1 §6.4 `Guard{root,path}` reserved op is **dropped**: the integrity surface is `root` + `splice.if_fingerprint` + `diff` — the mined commit-guard idiom gets its wire story without a second guard grammar: one construct, one grammar.
+There is no separate `Guard` op: the integrity surface is `fingerprint` + `splice.if_fingerprint` + `diff` — the commit-guard idiom gets its wire story without a second guard grammar: one construct, one grammar.
 
 ### §4.1 toc — the map, revs riding along free
 
@@ -291,7 +290,7 @@ toc is the complete write kit: hpath + `node_rev` per section, anchors with thei
    "node_rev":"60bbee70d4a63a48","text_prefix_16b":"- splice notes/p"}]}}
 ```
 
-The `^r-000042` block echoes as a `list_item` node keyed by its `anchor` ref (§2.1) carrying its own `node_rev` over the block-leaf span (terminator excluded — `[26,286]`, byte-identical to the receipt facts armed in §4.4; §6.3's E3 line IS these 260 bytes since the 2026-08-09 rebaseline, no longer illustrative shape — §6.3, §18 row 10); the lone top-level heading spans the whole file, so its `node_rev` equals `file_rev` (`51ad6428f5b5a898`). An anchor becomes a write target by the same one-hop path as a section.
+The `^r-000042` block echoes as a `list_item` node keyed by its `anchor` ref (§2.1) carrying its own `node_rev` over the block-leaf span (terminator excluded — `[26,286]`, byte-identical to the receipt facts armed in §4.4; §6.3's E3 line IS these 260 bytes — §6.3); the lone top-level heading spans the whole file, so its `node_rev` equals `file_rev` (`51ad6428f5b5a898`). An anchor becomes a write target by the same one-hop path as a section.
 
 ### §4.2 cat — read one section, not the disk
 
@@ -305,7 +304,7 @@ What you read is exactly what is hashed: `cat` returns the **full span bytes** (
 
 ### §4.3 extract — the extract surface, stands
 
-`{"op":"extract","path":…,"kinds":[…]}` stands as specified (`crates/wire` §5): full node objects, 11-variant kind enum whose declaration order is the sort-tiebreak ordinal, per-kind `info`, `text_prefix_16b` (implemented + tested in `crates/wire-map`), total node order (span.start asc, span.end desc, kind ordinal). One decision this schema makes: **an unknown value in `kinds` is `bad_request{"unknown_kinds":[…]}`, loud** — the strict-server evolution law applied to values, killing the typo-silently-returns-nothing trap. This diverges from v1's "not an error"; decided once, here.
+`{"op":"extract","path":…,"kinds":[…]}` stands as specified (`crates/wire` §5): full node objects, 11-variant kind enum whose declaration order is the sort-tiebreak ordinal, per-kind `info`, `text_prefix_16b` (implemented + tested in `crates/wire-map`), total node order (span.start asc, span.end desc, kind ordinal). One decision this schema makes: **an unknown value in `kinds` is `bad_request{"unknown_kinds":[…]}`, loud** — the strict-server evolution law applied to values, killing the typo-silently-returns-nothing trap. Decided once, here.
 
 ### §4.4 splice — the only write op (batch-only, one response shape)
 
@@ -331,7 +330,7 @@ request object: send the value of its "edits" field (id / op / path are argv's
 here)`, exit 2 before any engine contact). The
 request shape shown here is the WIRE's; it is not a stdin template.
 
-Edit shapes — exactly three. `match` and `put` are VALUE/CONTENT shapes: they say what bytes a node carries. `remove` is the one IDENTITY shape: it says the node is not there. *(Amended 2026-08-26 — the shape count was two until `remove` landed; the reason it had to is § A.6.6.)*
+Edit shapes — exactly three. `match` and `put` are VALUE/CONTENT shapes: they say what bytes a node carries. `remove` is the one IDENTITY shape: it says the node is not there (why it exists: § A.6.6).
 
 | Shape | Semantics |
 |---|---|
@@ -339,9 +338,9 @@ Edit shapes — exactly three. `match` and `put` are VALUE/CONTENT shapes: they 
 | `put{at,text}` | whole-slot writes: `at:"all"` (replace full span, heading included), `at:"content"` (replace content span, heading preserved), `at:"end"` (insert `text` at the span-end byte — the append verb; **raw byte concatenation, no synthesized separator**, Edit-model exact, so `text` that must begin a new line carries its own leading `\n` — against a terminator-less final line a separator-less `text` is the caller's to get right, and a result that loses containment refuses `would_corrupt`, batch laws below), `at:"upsert"` (set a frontmatter key, create-or-replace — `fm_key` targets only, § A.6.3a) |
 | `remove{}` | **`fm_key` targets only** — strike the key line out of the frontmatter block, moving the key to R4's ABSENT state. No fields; no `text`, because it writes no value. An absent key refuses `ref_not_found`; a `hpath`/`anchor` target refuses `bad_request`. § A.6.6 |
 
-Batch laws: batch-only, ONE response shape; all targets and guards resolve against the **pre-batch** state; the edits' **replaced regions** must be pairwise disjoint (`bad_request{"overlap":…}` otherwise, and the refusal names the offending edits and a remedy). The replaced region is what the edit rewrites — `match` the matched bytes, `put at:"all"/"content"` that span, `put at:"end"` the zero-width insertion point, `remove` the key's grain span **plus its line terminator** (§ A.6.6 — the one shape whose region is wider than its target's span, because a node's span excludes the terminator by §1 and leaving that byte behind would leave a blank line where the key was) — so edits whose *targets* nest compose legally when their regions touch different bytes: an append to a section plus a sibling-section birth under its parent is ONE batch. Zero-width regions at the same byte are disjoint and apply in request order. The batch commits atomically through one reparse — a post-apply parse in which some identity does not survive refuses `would_corrupt`, in the two families below. `dry:true` runs everything except disk: same response shape, `fingerprint_after:null`, no receipt written. *(Amended 2026-08-06: the disjointness grain was previously the target's full span, containment included — which refused any mixed append + section-birth batch under one tree, contradicting the batch-only law's own premise. The overlap refusal's `bad_request{"overlap":…}` extra is unchanged.)* *(Dogfood F8 disposition, verified 2026-08-06: a same-region double-replace — two `replace_section`s on one section — refuses overlap; the replace + `at:"end"` pair that sequenced is a zero-width insert at the region boundary composing legally — this grain working, not a missed refusal.)*
+Batch laws: batch-only, ONE response shape; all targets and guards resolve against the **pre-batch** state; the edits' **replaced regions** must be pairwise disjoint (`bad_request{"overlap":…}` otherwise, and the refusal names the offending edits and a remedy). The replaced region is what the edit rewrites — `match` the matched bytes, `put at:"all"/"content"` that span, `put at:"end"` the zero-width insertion point, `remove` the key's grain span **plus its line terminator** (§ A.6.6 — the one shape whose region is wider than its target's span, because a node's span excludes the terminator by §1 and leaving that byte behind would leave a blank line where the key was) — so edits whose *targets* nest compose legally when their regions touch different bytes: an append to a section plus a sibling-section birth under its parent is ONE batch. Zero-width regions at the same byte are disjoint and apply in request order. The batch commits atomically through one reparse — a post-apply parse in which some identity does not survive refuses `would_corrupt`, in the two families below. `dry:true` runs everything except disk: same response shape, `fingerprint_after:null`, no receipt written. The grain is the replaced region, never the target's full span with containment — that would refuse any mixed append + section-birth batch under one tree, contradicting the batch-only law's own premise. Worked: a same-region double-replace — two `replace_section`s on one section — refuses overlap; a replace plus an `at:"end"` on that section is a zero-width insert at the region boundary and composes legally — this grain working, not a missed refusal.
 
-**The `would_corrupt` families (amended 2026-08-09).** One code covers the post-reparse armed-facts deaths, and the refusal body discriminates them with `family` — a caller dispatches on `family`, never on which extras happen to be present:
+**The `would_corrupt` families.** One code covers the post-reparse armed-facts deaths, and the refusal body discriminates them with `family` — a caller dispatches on `family`, never on which extras happen to be present:
 
 | `family` | Extras | What died | The remedy the refusal teaches |
 |---|---|---|---|
@@ -349,13 +348,13 @@ Batch laws: batch-only, ONE response shape; all targets and guards resolve again
 | `target_identity` | `target` (the offending edit's ref, §2.1 grammar) | the **edit's own target** no longer resolves after the reparse, so its armed facts are unrepresentable | re-supply the identity the slot destroys — a section heading for `at:"all"`, a line-final block id for `at:"end"` on an anchor; to retire an identity, name it: `remove` on an `fm_key`, the parent's content slot on a section or an anchor |
 | `transition_unrepresentable` | `target` (the offending edit's ref, §2.1 grammar) | the edit **wrote past the span it named** — bytes it placed fall outside the target's post-batch span, so the node the edit addressed never received them and its `node_rev` cannot move | drop the trailing separator from `text`, or aim the write at the enclosing section, whose span contains the bytes you meant to add |
 
-**Why `transition_unrepresentable` is a corruption family and not a reporting nicety (added 2026-08-09).** `node_rev` is defined as a function of the node's span bytes (node-rev-merkle-spec §2), and §4.4 makes the target's span the region an edit rewrites. A node whose span **excludes its line terminator** — every anchor block-leaf (§1) and every `fm_key` leaf (§4.4) — therefore has its own extent END on that terminator, so a `text` carrying a separator there writes a byte the node never covers. Arming that commit states a transition that did not happen, and it silently disarms the caller's guard: `if_node_rev` then compares a value the write can never move, so two callers holding the same rev both write, both succeed, and neither is told. Repeated writes land at one fixed offset and accumulate — appends in REVERSE order, rewrites as a blank line per run.
+**Why `transition_unrepresentable` is a corruption family and not a reporting nicety.** `node_rev` is defined as a function of the node's span bytes (node-rev-merkle-spec §2), and §4.4 makes the target's span the region an edit rewrites. A node whose span **excludes its line terminator** — every anchor block-leaf (§1) and every `fm_key` leaf (§4.4) — therefore has its own extent END on that terminator, so a `text` carrying a separator there writes a byte the node never covers. Arming that commit states a transition that did not happen, and it silently disarms the caller's guard: `if_node_rev` then compares a value the write can never move, so two callers holding the same rev both write, both succeed, and neither is told. Repeated writes land at one fixed offset and accumulate — appends in REVERSE order, rewrites as a blank line per run.
 
-**The family is keyed on the MECHANISM, never on the `at:` scope (ruling `decisions/0018`, 2026-08-09).** The test is one sentence: **a real byte change whose target's `node_rev` did not move is refused.** Containment — the bytes an edit writes lying within its target's post-batch span — is the EXPLANATION of that test and not the test itself, and the two are not equivalent. A write MAY place bytes outside its target and still move that target's rev: an `at:"end"` section append whose `text` opens a sibling heading shrinks the section and grows it by the separator, and that write is truthful, its guard is live, and nothing is owed. What cannot stand is a changed file over a rev that did not move — the node never received the bytes at all, `if_node_rev` then compares a constant, and two callers holding that rev both write, both succeed, and neither is told. A caller MAY NOT hand a terminator-excluding leaf a `text` that ends in a separator — the two readings that would have permitted it converge on this same refusal, because a rev whose bytes are untouched by construction cannot move, so "let it commit but move the rev" is not an executable outcome.
+**The family is keyed on the MECHANISM, never on the `at:` scope.** The test is one sentence: **a real byte change whose target's `node_rev` did not move is refused.** Containment — the bytes an edit writes lying within its target's post-batch span — is the EXPLANATION of that test and not the test itself, and the two are not equivalent. A write MAY place bytes outside its target and still move that target's rev: an `at:"end"` section append whose `text` opens a sibling heading shrinks the section and grows it by the separator, and that write is truthful, its guard is live, and nothing is owed. What cannot stand is a changed file over a rev that did not move — the node never received the bytes at all, `if_node_rev` then compares a constant, and two callers holding that rev both write, both succeed, and neither is told. A caller MAY NOT hand a terminator-excluding leaf a `text` that ends in a separator — the two readings that would have permitted it converge on this same refusal, because a rev whose bytes are untouched by construction cannot move, so "let it commit but move the rev" is not an executable outcome.
 
-⚠️ **Scope-keying this family would be a defect, and that is measured rather than argued.** The same escape is reachable through `put{at:"end"}`, `put{at:"all"}`, `put{at:"content"}` **and `match`** — and `match` is not an `at:` scope at all, so any guard enumerating scopes misses it by construction. Six cells escaped at v1.0.0 across the anchor-leaf and `fm_key` doors; only the containment and identity families sit ahead of this one, and all three are measured on the same single reparse — never inferred from the edit text.
+⚠️ **Scope-keying this family would be a defect, and that is measured rather than argued.** The same escape is reachable through `put{at:"end"}`, `put{at:"all"}`, `put{at:"content"}` **and `match`** — and `match` is not an `at:` scope at all, so any guard enumerating scopes misses it by construction (six such cells were measured across the anchor-leaf and `fm_key` doors). Only the containment and identity families sit ahead of this one, and all three are measured on the same single reparse — never inferred from the edit text.
 
-**`remove` does not draw `target_identity`, and that is a PREMISE exemption, not a scope exemption (2026-08-26).** The guard above refuses because *"the armed facts are unrepresentable"* — that premise is FALSE for `remove`, whose facts are exactly representable: `node_rev_before` is the key line's real rev, `node_rev_after` is the no-node token `blake3("")[:16]`, and `span_after` is the zero-width point the line vacated. This is A.6.3a′'s create arm read backwards, sharing its token and its teaching — **the token is a claim about no node standing at the address, never about direction; a consumer reads the OP for direction.** The distinction matters because ruling `decisions/0018` forbids keying this family on the `at:` scope, and it forbids it *for a reason* — the escape it guards is reachable through many scopes, so a scope enumeration misses cells by construction. Nothing is exempted here by its spelling: the mechanism test ("a real byte change whose target's `node_rev` did not move") is unweakened for every shape that carries one, and `remove`'s target has no post-batch rev to stand still. A future shape earns this exemption only by representing its own death, never by being new.
+**`remove` does not draw `target_identity`, and that is a PREMISE exemption, not a scope exemption.** The guard above refuses because *"the armed facts are unrepresentable"* — that premise is FALSE for `remove`, whose facts are exactly representable: `node_rev_before` is the key line's real rev, `node_rev_after` is the no-node token `blake3("")[:16]`, and `span_after` is the zero-width point the line vacated. This is A.6.3a′'s create arm read backwards, sharing its token and its teaching — **the token is a claim about no node standing at the address, never about direction; a consumer reads the OP for direction.** The distinction matters because this contract forbids keying this family on the `at:` scope, and it forbids it *for a reason* — the escape it guards is reachable through many scopes, so a scope enumeration misses cells by construction. Nothing is exempted here by its spelling: the mechanism test ("a real byte change whose target's `node_rev` did not move") is unweakened for every shape that carries one, and `remove`'s target has no post-batch rev to stand still. A future shape earns this exemption only by representing its own death, never by being new.
 
 `containment_lost` carries one more discriminator, `cause`, because the containment refusal is the one place where two unlike mistakes produce the same lost hpath:
 
@@ -364,7 +363,7 @@ Batch laws: batch-only, ONE response shape; all targets and guards resolve again
 | `heading_destroyed` | the lost section's heading line no longer parses as a heading at all | carry your own newlines — `at:"end"` is raw byte concatenation, so text that runs up against a following heading must end with `\n` |
 | `reparented` | the heading still parses, at its own level, but its ancestry moved — so its hpath no longer resolves | the text you wrote introduces a heading at a level that adopts the following sections; deepen that heading's level, or aim the edit at the parent whose subtree you meant to rewrite |
 
-`cause` is **absent** when the lost sections do not share one cause, and absent from the `target_identity` family entirely. **A refusal never teaches a remedy for a cause it did not measure:** with no `cause` the refusal names what would be lost and stops, rather than emitting a fixed remedy string that may misdiagnose. *(Amendment rationale, measured against the v1.0.0 artifact: `target_identity` previously served generic `bad_request` — one documented code for two families, indistinguishable at the caller — and the containment remedy was hardwired to the `heading_destroyed` cause, so a `reparented` refusal taught a fix that could not repair the batch that drew it. Both codes are recovery class `fix` (§8), so the discriminator refines within one class and no client's dispatch-on-`recovery` path changes. No §18 row is owed: the engine moves to this text in the same change, so nothing stands deviant.)*
+`cause` is **absent** when the lost sections do not share one cause, and absent from the `target_identity` family entirely. **A refusal never teaches a remedy for a cause it did not measure:** with no `cause` the refusal names what would be lost and stops, rather than emitting a fixed remedy string that may misdiagnose. Both families are recovery class `fix` (§8), so the discriminator refines within one class and no client's dispatch-on-`recovery` path changes.
 
 Response (S0→S1, all values computed):
 
@@ -381,14 +380,14 @@ Response (S0→S1, all values computed):
  "seq":1,"verdicts":[]}}
 ```
 
-**Teaching row — `at:"end"` on a LINE-grain anchor host always refuses; two families split which way it dies (family split measured 2026-08-09; grain qualifier added by F-R4, 2026-08-13).** A block-leaf span excludes its terminator, so the insertion point sits on it, and an end-append to an `{"anchor":id}` target whose host is a LINE (a list item, a heading line) lands one of two refusals — never a commit:
+**Teaching row — `at:"end"` on a LINE-grain anchor host always refuses; two families split which way it dies.** A block-leaf span excludes its terminator, so the insertion point sits on it, and an end-append to an `{"anchor":id}` target whose host is a LINE (a list item, a heading line) lands one of two refusals — never a commit:
 
 | the `text` you send | what the reparse measures | `family` |
 |---|---|---|
 | carries no newline (` tail`) | the appended bytes join the line, so the id is no longer line-final: the target stops resolving | `target_identity` |
 | carries a newline (`\nX`) | the first newline terminates the host line, so the bytes land in a NEW line outside the node: the target still resolves and its rev cannot move | `transition_unrepresentable` |
 
-Since F-R4 an anchor's host is the attached/enclosing BLOCK, not always one line, and the refusal pair is defined over the SPAN LAW, not the door: an end-append whose bytes stay INSIDE the host block — a paragraph run growing a continuation line, a table absorbing a row — changes the node's bytes, arms a true rev transition, and commits. The remedy on the refusing shapes is unchanged: an append to a line-grain anchor must re-supply the id line-final in its own `text`, and an append that means to add a LINE belongs to the enclosing section, not to the anchor. *(Correction rationale: this row previously read "the `target_identity` family is the WHOLE of `at:"end"` on an anchor". The refusal it required stands and is unweakened; its single-family attribution was wrong, and the newline half was measured COMMITTING at v1.0.0 `93184797` and at `b1fcc6e3` — silently, exit 0, with a null rev transition. The same escape was measured on `fm_key` targets, whose leaf span excludes its terminator by the same §4.4 law. The 2026-08-09 measurement "host block kind is NOT the discriminator" held while every host was line-grain; F-R4's block-grain hosts made GRAIN the discriminator — the span law itself is unchanged.)*
+An anchor's host is the attached/enclosing BLOCK, not always one line, and the refusal pair is defined over the SPAN LAW, not the door: an end-append whose bytes stay INSIDE the host block — a paragraph run growing a continuation line, a table absorbing a row — changes the node's bytes, arms a true rev transition, and commits. The remedy on the refusing shapes: an append to a line-grain anchor must re-supply the id line-final in its own `text`, and an append that means to add a LINE belongs to the enclosing section, not to the anchor. GRAIN is the discriminator, never the host block's kind; the same escape exists on `fm_key` targets, whose leaf span excludes its terminator by the same §4.4 law.
 
 The response carries what the write **ARMED** — target identities, rev transitions, spans after, the receipt fact, the root transition — never delivery claims. `verdicts` is the rules-as-data surface (§11). Spans appear in *responses* freely: the wire's business, never argv's.
 
@@ -414,7 +413,7 @@ The append verb is the same op:
  "seq":2,"verdicts":[]}}
 ```
 
-Note the guardless request: legal at the wire forever — the mined call record shows zero organic rev use, and guards stay optional at the wire by design. Whether a scope *requires* `if_node_rev`/`if_fingerprint`/`actor` is host policy (§5.3), never wire schema.
+Note the guardless request: legal at the wire forever — guards stay optional at the wire by design. Whether a scope *requires* `if_node_rev`/`if_fingerprint`/`actor` is host policy (§5.3), never wire schema.
 
 Frontmatter-plane write, dry (fm_key node = the full key line, computed: span `[4,15]` = `title: Plan`):
 
@@ -431,13 +430,13 @@ Frontmatter-plane write, dry (fm_key node = the full key line, computed: span `[
  "fingerprint_after":null,"dry":true,"verdicts":[]}}
 ```
 
-**The set form (dotted cap `splice.set`, v3-only; ruled 2026-08-14 — OQ1: any
-v3 client holding the cap).** A splice request MAY carry
+**The set form (dotted cap `splice.set`, v3-only; any v3 client holding the
+cap).** A splice request MAY carry
 `files:[{path, edits|plan_edits}, …]` instead of `path` + `edits`/`plan_edits`
 — strictly one form or the other (`bad_request` at decode when both or
 neither appear; the same wall as `edits` vs `plan_edits` today). Two or more
 entries; paths pairwise distinct; one request-level `if_fingerprint` (or
-`guards[]` — scoped premises, §5.4, 2026-08-15),
+`guards[]` — scoped premises, §5.4),
 `actor`, `now`, `receipt`, `dry`, `force`. Per-edit guards ride inside each
 entry unchanged; no `pin` (the pin rides the single form, whose `path` is the
 pinning page). The batch laws of this section apply per file (pre-batch
@@ -455,29 +454,26 @@ ARRAY of per-file armed groups (`[{path, file_rev_after, edits:[…]}, …]`,
 request order), one `fingerprint_before`/`fingerprint_after` pair, one
 `seq`. Crash posture — including the case where the in-memory restore
 ITSELF fails — is §6.5, the set paragraph; this document commands no
-journal on any set path (ruled 2026-08-14, and folded through rather than
-appended). The cap ships by the §3.2 evolution law (the
+journal on any set path. The cap ships by the §3.2 evolution law (the
 `splice.plan_edits`/`splice.pin` precedent); v2 sessions and cap-less v3
 sessions are byte-identical to today.
 
-**Two ceilings, named separately, because they bound different audiences
-(amended 2026-08-15, adversarial review F1).** The wire set cap and the
+**Two ceilings, named separately, because they bound different
+audiences.** The wire set cap and the
 script arm budget are not one number read twice:
 
 | ceiling | binds | value |
 |---|---|---|
-| **wire set cap** | any v3 client holding `splice.set` — the widest audience OQ1 opened | **the corpus is the bound (ruled 2026-08-14): no engine-minted numeric cap.** A set names existing, pairwise-distinct corpus files, so the corpus's own file count is the ceiling |
+| **wire set cap** | any v3 client holding `splice.set` — the widest audience | **the corpus is the bound: no engine-minted numeric cap.** A set names existing, pairwise-distinct corpus files, so the corpus's own file count is the ceiling |
 | **script arm budget** | the in-process script evaluator only (§A.7) | `max_armed_edits` = 64 — arming past it faults the ATTEMPT, never a transport limit, and a wire client passes through no evaluator at all |
 
 Both are stated because the face-honesty clause requires it: a limit that
 can refuse must be discoverable before it refuses. Reading only the script
 number under-builds the wire caller — the first real batch anyone ran was
-103 files, so 64 fails on contact at that door. **Moving the wire bound is
-ZT's alone (overrule window open);** the measurement below prices the ruled
-bound and proposes no cap.
+103 files, so 64 fails on contact at that door. The measurement below prices
+the ruled bound and proposes no cap.
 
-**The price, measured end-to-end rather than projected (amended 2026-08-15,
-review F1/F2 against the live set form).** Hold ≈ per-attempt term(corpus)
+**The price, measured end-to-end rather than projected.** Hold ≈ per-attempt term(corpus)
 + N × per-member marginal, and the two terms behave differently:
 
 - **The per-attempt term is O(corpus), not O(N):** ~57 ms at 200 docs,
@@ -505,18 +501,15 @@ review F1/F2 against the live set form).** Hold ≈ per-attempt term(corpus)
   N=1024 holds ~242 s across 1024 windows each offering an interleave; the
   set holds ~11.4 s in ONE window. Hosts ratchet stricter per §5.3; the wire
   stays permissive.
-- **Levels are quiet-darwin claims** (M4 Max/APFS, load 5.3–5.9, KB-scale
-  members); the shape claims — linearity, the corpus-independent marginal,
-  wall = hold, immediate refusal — are the load-robust ones. Curve,
-  instruments, weaknesses and refutation commands:
-  `12-04-f2-mrd-integration` `results/splice-set-batch-bound-measure.md`
-  (engine `fcd4b7a1`); fold half: `results/sqlwrite-fold-evidence.md`.
+- **Levels are quiet-machine claims** (Apple M4 Max/APFS, load 5.3–5.9,
+  KB-scale members); the shape claims — linearity, the corpus-independent
+  marginal, wall = hold, immediate refusal — are the load-robust ones.
 
 No knee exists anywhere on that curve, so a finite N minted here would name
 a boundary the mechanism does not have. The bound stays where it was ruled.
 
-**Sweep composition — what the set form does NOT seal (added 2026-08-15,
-review F3).** Sealing is per ATTEMPT. The workloads that motivate
+**Sweep composition — what the set form does NOT seal.** Sealing is per
+ATTEMPT. The workloads that motivate
 corpus-wide write-back are 5827 and 2635 files; a sweep that does not fit
 one attempt's tolerable span is k sealed sets plus at most one refusal, and
 **cross-set atomicity does not exist** — the world may move between sets.
@@ -526,7 +519,7 @@ Three facts a first caller otherwise rediscovers by refusal:
    corpus-enumeration op by design, and content predicates ("docs missing
    `created_at`") are not glob-expressible, so `files[]` arrives from an
    enumeration plane — §A.11 `sql`, or the caller's own. Patterns in
-   `files[]` (§A.7, ruled 2026-08-14 OQ3) expand NAMES, never contents.
+   `files[]` (§A.7) expand NAMES, never contents.
 2. **The script lane faults at arm 65.** A glob matching 200 files does not
    chunk itself; the attempt dies inside the evaluator's budget, above.
 3. **The sweep loop, written once so it is not re-derived:** sets in sorted
@@ -538,8 +531,7 @@ Three facts a first caller otherwise rediscovers by refusal:
    readable because ONE receipt entry names every file of its set, which no
    consumer can confuse with N per-file entries.
 
-**Visibility is a lane property, not a set property (added 2026-08-15,
-review F4).** One `seq` and one Delta are minted where a daemon serves the
+**Visibility is a lane property, not a set property.** One `seq` and one Delta are minted where a daemon serves the
 write. On in-process lanes there is no seq sink: the commit answers
 `seq: 0` and mints no Delta, so a sealed set — however large — is invisible
 to every watch-plane consumer. That is §18 row 12's declared debt read at
@@ -548,7 +540,7 @@ set grain, not a second defect; cross-lane catchup stays diff-by-root
 
 ### §4.5 resolve — the walk plane: where things are, never a handle
 
-`resolve` is **best-effort app-compatible walking**, two-stage: within the ruled grammar it walks the way the app walks — `parseLinktext` → stage 1 `getFirstLinkpathDest(linkpath, from)` (basename index, frontmatter aliases, case-insensitive, source-relative shortest-unambiguous, unresolved first-class) → stage 2 subpath walk (case-insensitive · first-match-wins on duplicates, silent · strictly-deeper-level · anywhere-after · generation-skipping). These empirical walk-law properties are carried verbatim as the **behavior spec**; their ruled **status** is a one-way compatibility floor (everything we mint and emit walks in the app), not a binding two-way parity law. The ruled grammar always wins: an input outside it (e.g. a `_`-bearing anchor, §2.4) refuses loudly (`bad_request`) — conforming behavior, never a deviation to ledger, because we never promised to reproduce the app's walk on inputs outside our own grammar. The `obsidian-compat@1.12.7` pack (§13.4) is the **regression fixture set** that pins the app's actual walk against version drift, alongside the six-probe walk law; hand-frozen resolution fixtures are dead.
+`resolve` is **best-effort app-compatible walking**, two-stage: within the ruled grammar it walks the way the app walks — `parseLinktext` → stage 1 `getFirstLinkpathDest(linkpath, from)` (basename index, frontmatter aliases, case-insensitive, source-relative shortest-unambiguous, unresolved first-class) → stage 2 subpath walk (case-insensitive · first-match-wins on duplicates, silent · strictly-deeper-level · anywhere-after · generation-skipping). These empirical walk-law properties are carried verbatim as the **behavior spec**; their ruled **status** is a one-way compatibility floor (everything we mint and emit walks in the app), not a binding two-way parity law. The ruled grammar always wins: an input outside it (e.g. a `_`-bearing anchor, §2.4) refuses loudly (`bad_request`) — conforming behavior, never a deviation to ledger, because we never promised to reproduce the app's walk on inputs outside our own grammar. The `obsidian-compat@1.12.7` pack (§13.4) is the **regression fixture set** that pins the app's actual walk against version drift, alongside the six-probe walk law; it replaces hand-frozen resolution fixtures.
 
 **The response type has no rev field.** This is the mint partition as a type-level fact, not a discipline.
 
@@ -572,9 +564,9 @@ set grain, not a second defect; cross-lane catchup stays diff-by-root
 
 (Values at S2; ids 70/71 demonstrate case-insensitivity on computed spans.) `dest` rides every stage-2 outcome, success or failure — the failing stage is observable in every transcript. `content:true` additionally returns the fragment bytes — still no rev. The strict plane errors `ambiguous_ref` where the walk would silently pick (never-silently-picks on the extension plane; the walk itself mirrors the app best-effort, silence included). `from` is mandatory: resolution is source-relative, and the vault name/alias index this implies arrives at rung 2.
 
-### §4.6 links — the 188-call oracle audit, one call per file
+### §4.6 links — the oracle audit, one call per file
 
-The mined record's biggest read pattern (`read`-as-oracle, 188×) becomes a fact op. Corpus-wide ⇒ it carries the staleness triple (§10):
+The dominant read pattern of corpus tooling (`read`-as-link-oracle) becomes a fact op. Corpus-wide ⇒ it carries the staleness triple (§10):
 
 ```json
 {"id":80,"op":"links","path":"notes/plan.md"}
@@ -589,7 +581,7 @@ The mined record's biggest read pattern (`read`-as-oracle, 188×) becomes a fact
 
 Shape mirrors the app's `resolvedLinks`/`unresolvedLinks` — per-edge counts; dangling refs first-class. `path` absent → whole-corpus edge map. Opt-in `require_fingerprint` → `stale_view` refusal (§10.2).
 
-**An unresolved edge may carry `unresolved_reason` (session decision 0034).** Four distinct facts used to collapse to the single word `unresolved` — the three §12.1 exclusion classes and a plain broken link — which left a deliberately unhashed file INDISTINGUISHABLE FROM A TYPO at every face. The map keys a subset of `unresolved` by the same linkpath and carries the §12.1 rule word that decided it: `non-md`, `dot-segment`, or `custom-ignore`.
+**An unresolved edge may carry `unresolved_reason`.** Four distinct facts would otherwise collapse to the single word `unresolved` — the three §12.1 exclusion classes and a plain broken link — leaving a deliberately unhashed file INDISTINGUISHABLE FROM A TYPO at every face. The map keys a subset of `unresolved` by the same linkpath and carries the §12.1 rule word that decided it: `non-md`, `dot-segment`, or `custom-ignore`.
 
 ```json
  "files":{"notes/plan.md":{
@@ -604,7 +596,7 @@ Three properties are load-bearing, in the order they matter:
 2. **`resolved` and `unresolved` do not move.** The edge stays unresolved, `resolved` stays a bool, the human word is unchanged: **the app mirror above is preserved intact**. This map is read BESIDE the edge, never instead of it, and is omitted when empty.
 3. **The word is minted once** (`fs::domain::LinkTargetProbe`) and the `sql link` projection's `exclusion` column asks through the same mint, so the two edge-map faces cannot name one rule differently.
 
-**The bare-name fallback (ruling 2026-08-14).** A target with no `/` that misses the literal probe resolves by exact basename over the out-of-domain files — an excluded file is absent from the corpus index by construction, so the ambient basename search cannot answer for it, and without the fallback every `[[TAG-FILES.base]]`-style link read as a plain miss. Two guards are part of the ruling: the match is **case-exact** (`abc.BASE` never matches `abc.base` — a case-folding probe would stamp a genuine typo as deliberate), and an ambiguous basename takes the **deterministic tie-break** shortest path then lexicographic. A PATHED spelling never falls back: `git/GIT.base` written where only `sources/git/GIT.base` exists is genuine rot, and a suffix walk would stamp it as deliberate. Stated limit, not left to be discovered: a pathed spelling only a suffix walk could find (a subfolder attachment written with a partial path) stays bare and keeps reading as a plain miss.
+**The bare-name fallback.** A target with no `/` that misses the literal probe resolves by exact basename over the out-of-domain files — an excluded file is absent from the corpus index by construction, so the ambient basename search cannot answer for it, and without the fallback every `[[TAG-FILES.base]]`-style link read as a plain miss. Two guards are part of the ruling: the match is **case-exact** (`abc.BASE` never matches `abc.base` — a case-folding probe would stamp a genuine typo as deliberate), and an ambiguous basename takes the **deterministic tie-break** shortest path then lexicographic. A PATHED spelling never falls back: `git/GIT.base` written where only `sources/git/GIT.base` exists is genuine rot, and a suffix walk would stamp it as deliberate. Stated limit, not left to be discovered: a pathed spelling only a suffix walk could find (a subfolder attachment written with a partial path) stays bare and keeps reading as a plain miss.
 
 **`path` present is a DOOR; `path` absent is an ENUMERATION, and they answer under different rules (§12.1).** Named, the op serves the page even when the hash domain excludes it — a real file outside the domain comes back with its edges resolved against the corpus it is not in, and only a path with no file under the root is `file_not_found`. Absent, the op speaks for the whole corpus and carries **`excluded`**: the workspace-relative markdown under the root that the hash domain does not hold, absent from `files` and named here rather than left to be inferred (§12.1 enumerator clause). The key is omitted when the list is empty, so a workspace whose domain is its whole md tree is unchanged on the wire.
 
@@ -616,7 +608,7 @@ Three properties are load-bearing, in the order they matter:
  "fingerprint":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0","seq":2}}
 ```
 
-**The scoped mint arm (`scoped-guards` cap — §5.4; ruled base: D-04).** Under the cap, `fingerprint` takes an optional `scope` (a `Path`, §1) or `scope_bytes` (base64url over the raw path bytes, for names the UTF-8 `Path` noun cannot carry) — exactly one of the two; both absent is the root mint above, byte-identical to v2; both supplied refuses `bad_request` — a mint names ONE node (bounce-2 closure, 2026-08-15; teaching: §8.2, the mint-pair text — the broken-premise-pair text cannot fit this door, since a mint supplies no fingerprint to pair). The op mints the NAMED node's token: the workspace root, a folder, or a file leaf — `fingerprint {scope}` is the one mint home for every premise the §5.4 guard family accepts. A lawful path with no node answers the reserved non-hex value `absent` (§5.6); an unlawful path refuses `scope_unresolved` (§5.6, §8). The response echoes the request's scope pair beside the token, so a caller can never desync what it minted from where. Worked scoped-token *spellings* are the engine's: this document prints no hex an engine did not compute (the interior encoding moves under the width ruling, `node-rev-merkle-spec.md`); the served shape is `{fingerprint, seq, scope}` or `{fingerprint, seq, scope_bytes}`, and `fingerprint: "absent"` is a legal body.
+**The scoped mint arm (`scoped-guards` cap — §5.4).** Under the cap, `fingerprint` takes an optional `scope` (a `Path`, §1) or `scope_bytes` (base64url over the raw path bytes, for names the UTF-8 `Path` noun cannot carry) — exactly one of the two; both absent is the root mint above, byte-identical to v2; both supplied refuses `bad_request` — a mint names ONE node (teaching: §8.2, the mint-pair text — the broken-premise-pair text cannot fit this door, since a mint supplies no fingerprint to pair). The op mints the NAMED node's token: the workspace root, a folder, or a file leaf — `fingerprint {scope}` is the one mint home for every premise the §5.4 guard family accepts. A lawful path with no node answers the reserved non-hex value `absent` (§5.6); an unlawful path refuses `scope_unresolved` (§5.6, §8). The response echoes the request's scope pair beside the token, so a caller can never desync what it minted from where. Worked scoped-token *spellings* are the engine's: this document prints no hex an engine did not compute (the interior encoding moves under the width ruling, `node-rev-merkle-spec.md`); the served shape is `{fingerprint, seq, scope}` or `{fingerprint, seq, scope_bytes}`, and `fingerprint: "absent"` is a legal body.
 
 `diff` is reserved AT the integrity rung with its shape standing now — the compound front door:
 
@@ -628,7 +620,7 @@ Three properties are load-bearing, in the order they matter:
                                           to the live notification frames */ ]}}
 ```
 
-Replay ≡ live (§7.3). A fingerprint range outside the retained history → `fingerprint_unknown` → full resync (honest bound: §13.5). `sub` (rung 5) is **served** at the daemon door (`crates/registry/src/server.rs`), and its anchor carries cursor identity (B-01, docs-first 2026-08-15; ring `seq` is per-tree-instance — merkle spec §6.3 — so a number alone can never prove position):
+Replay ≡ live (§7.3). A fingerprint range outside the retained history → `fingerprint_unknown` → full resync (honest bound: §13.5). `sub` (rung 5) is **served** at the daemon door (`crates/registry/src/server.rs`), and its anchor carries cursor identity (ring `seq` is per-tree-instance — merkle spec §6.3 — so a number alone can never prove position):
 
 - **Live subscribe:** `{"op":"sub"}` — no cursor → ack `{"root":…,"seq":N,"tree_instance":I}` — the baseline root, so the first push frame's `root_before` matches — then the connection converts to push and carries Notification frames, each one Delta batch, starting after the acked `seq`. The ack is where a client learns its resumption cursor: `{tree_instance, seq}`, `seq` advanced by each delivered frame.
 - **Resumption:** `{"op":"sub","tree_instance":I,"from_seq":N}` — instance is evaluated BEFORE any sequence compare. A dead instance (a daemon restart, an idle reap) refuses `root_unknown` with the diff-by-root remedy, sequence never consulted — a previous-epoch number can never anchor when the new ring's counter reaches it again. A live-instance `from_seq` outside the retained ring refuses `root_unknown` exactly as before.
@@ -657,7 +649,7 @@ Requests never require revs; receipts always return them — after any read or w
 
 `if_fingerprint` compares against the current workspace fingerprint and is checked FIRST — world-grain, cheapest, fails the whole batch (`fingerprint_mismatch{expected,actual}` → re-plan); then per-edit `if_node_rev` (node-grain, `cas_mismatch{expected,actual}` → refresh). Merkle-spec §7 semantics carried; Rust computes hashes; hosts only compare opaque tokens.
 
-*(Amended 2026-08-15 — scoped guards, §5.4.)* `if_fingerprint` with no `scope` keeps exactly this meaning: the root premise, byte-identical to v2. Under the `scoped-guards` cap it is the one-premise sugar for `guards:[{scope?, fingerprint}]`, and the order generalizes without changing what any v2 caller observes: coverage at admission (§5.5) → every supplied premise (§5.4; a scoped refusal names its premise — `fingerprint_mismatch{expected,actual,scope}`) → per-edit `if_node_rev`. A premise refusal still fails the whole batch before any byte lands.
+Under the `scoped-guards` cap (§5.4), `if_fingerprint` with no `scope` keeps exactly this meaning: the root premise, byte-identical to v2. There it is the one-premise sugar for `guards:[{scope?, fingerprint}]`, and the order generalizes without changing what any v2 caller observes: coverage at admission (§5.5) → every supplied premise (§5.4; a scoped refusal names its premise — `fingerprint_mismatch{expected,actual,scope}`) → per-edit `if_node_rev`. A premise refusal still fails the whole batch before any byte lands.
 
 ### §5.2 The failure split (the adoption carrot, on the wire)
 
@@ -697,23 +689,23 @@ Without `if_node_rev`, `no_match` is ambiguous between typo and moved world — 
 
 ### §5.3 Geography: where mandatoriness lives
 
-The wire is permissive forever: unguarded, actor-less, receipt-less splices are legal wire frames. Requiredness — "shared scopes need `if_node_rev`", "this tree needs `actor`", "receipts mandatory under `results/`" — lives in **host/client policy** (the geography law), not in wire schema: the wire always accepts the frame. Tightening requiredness after adoption is host work.
+The wire is permissive forever: unguarded, actor-less, receipt-less splices are legal wire frames. Requiredness — "shared scopes need `if_node_rev`", "this tree needs `actor`", "receipts mandatory under `reports/`" — lives in **host/client policy** (the geography law), not in wire schema: the wire always accepts the frame. Tightening requiredness after adoption is host work.
 
-**Scope grammar (bound here):** a ratchet scope is expressed in the fleet vocabulary and no other — a `Path`-set selector (path globs, config data that never rides the wire) plus, where a scope names nodes, strict-plane refs per §2.1. No second address grammar exists in policy config, and the §11.3 pack manifest carries no scope field by design: packs bind rules to the world model; the ratchet binds requiredness to scopes on the host side. (Fix-at-freeze, §18 row 1.)
+**Scope grammar (bound here):** a ratchet scope is expressed in this contract's vocabulary and no other — a `Path`-set selector (path globs, config data that never rides the wire) plus, where a scope names nodes, strict-plane refs per §2.1. No second address grammar exists in policy config, and the §11.3 pack manifest carries no scope field by design: packs bind rules to the world model; the ratchet binds requiredness to scopes on the host side. (Fix-at-freeze, §18 row 1.)
 
-### §5.4 Scoped guards — the premise list (served 2026-08-16; ruled base: D-04, fingerprint-grain plan §4.4)
+### §5.4 Scoped guards — the premise list
 
 *The family is served behind the `scoped-guards` cap: decode, §5.5 coverage, the scoped fold, the §4.7 mint arm, and refusal `scope` (§5.7). Worked hex tokens are the engine's — the interior encoding changes under the width ruling (`node-rev-merkle-spec.md`) — so the shapes below still carry ellipsis tokens on purpose.*
 
-**Any legal token in the tree is a legal guard (ruling D-04).** A write's world premise is no longer root-only: a premise names any addressable PATH node — the workspace root, a folder, a file leaf — or holds the reserved value `absent` (§5.6). The engine checks every premise the caller supplies. Interior sharding structure below a path node (the radix buckets of the hash law) is never addressable as a scope — premises name path nodes only.
+**Any legal token in the tree is a legal guard.** A write's world premise is not root-only: a premise names any addressable PATH node — the workspace root, a folder, a file leaf — or holds the reserved value `absent` (§5.6). The engine checks every premise the caller supplies. Interior sharding structure below a path node (the radix buckets of the hash law) is never addressable as a scope — premises name path nodes only.
 
 **Shape: a list.** `guards:[{scope?, scope_bytes?, fingerprint}, …]` rides `splice` (single and set form) and `script` — because "I read B and I am writing A" is two premises, and their common ancestor over-covers: two literals under `a/` LCA to `a/`, so a neighbor creating `a/3.md` — a file the plan never bound — would refuse. Singular `if_fingerprint` (+ optional `scope`) stays as sugar for the one-premise case and for v2 continuity; wire `splice` is single-file, so the sugar is sufficient for most put calls. A premise with neither `scope` nor `scope_bytes` is the root premise — the v2 world guard as a list entry.
 
 **`scope` is a JSON field beside the token, never a token encoding** — settled by this section's own geography law (§5.3): requiredness binds to host-side PATH scopes ("`results/**` requires a premise"), and hosts never parse tokens — a path buried inside an opaque token is invisible to the exact plane that applies the policy. The field keeps the token opaque and the geography composable. Pair-validation is atomic at the door: `scope` without `fingerprint` refuses `bad_request` with teaching, so the one-string form's advantage (hash and path cannot desync) is preserved by construction. An `@`-form (`<token>@<scope>`) remains available to FACES as display spelling only — it is never a wire spelling, and no wire surface parses or emits it.
 
-**Raw-byte names are addressable.** `scope_bytes` (base64url over the raw path bytes) rides beside the UTF-8 `scope` convenience — exactly one of the two per premise; mint (§4.7) and guard serve both. This closes the declared non-UTF-8 gap: "integrity-covered but unaddressable" is no longer the posture (`node-rev-merkle-spec.md` §9, amended in step — the UTF-8 read-face serving limits stand there).
+**Raw-byte names are addressable.** `scope_bytes` (base64url over the raw path bytes) rides beside the UTF-8 `scope` convenience — exactly one of the two per premise; mint (§4.7) and guard serve both. There is no "integrity-covered but unaddressable" class of names (`node-rev-merkle-spec.md` §9 — the UTF-8 read-face serving limits stand there).
 
-**The field matrix — one law at every strict wall (bounce-1 closure, 2026-08-15).** Top level, per door: `splice` (single and set form) and `script` take `if_fingerprint` (+ optional `scope`) as the one-premise sugar, and `guards[]` as the list. **`scope_bytes` is a top-level field on NO door**: a raw-byte premise rides a `guards[]` entry, and the raw-byte mint rides the `fingerprint` op (§4.7) — the § A.7 field wall (12 → 14: `guards`, `scope`) is this matrix applied, and no fifteenth field exists. Sugar and list supplied together are legal: the sugar desugars to one more entry in the premise list, and the engine checks every premise. Per premise (a `guards[]` entry): `{scope?, scope_bytes?, fingerprint}` — exactly one of `scope`/`scope_bytes`, or neither for the root premise; `fingerprint` is required and holds a token or `absent` (§5.6). Pair violations — `scope` or `scope_bytes` without its `fingerprint`, both spellings in one premise, sugar `scope` without `if_fingerprint` — refuse `bad_request` with teaching (§8.2); the mint door's own pair violation — both spellings on one `fingerprint` request — refuses `bad_request` at §4.7 with its own fitted text (§8.2, bounce-2 closure). Effects doors take NO guard-family field (`if_fingerprint`, `guards`, `scope`, `scope_bytes` alike): inapplicable on `run` and beside `effects` on `script` — `bad_request` at the strict wall (§ A.7/§ A.8; teaching: §8.2).
+**The field matrix — one law at every strict wall.** Top level, per door: `splice` (single and set form) and `script` take `if_fingerprint` (+ optional `scope`) as the one-premise sugar, and `guards[]` as the list. **`scope_bytes` is a top-level field on NO door**: a raw-byte premise rides a `guards[]` entry, and the raw-byte mint rides the `fingerprint` op (§4.7) — the § A.7 field wall (12 → 14: `guards`, `scope`) is this matrix applied, and no fifteenth field exists. Sugar and list supplied together are legal: the sugar desugars to one more entry in the premise list, and the engine checks every premise. Per premise (a `guards[]` entry): `{scope?, scope_bytes?, fingerprint}` — exactly one of `scope`/`scope_bytes`, or neither for the root premise; `fingerprint` is required and holds a token or `absent` (§5.6). Pair violations — `scope` or `scope_bytes` without its `fingerprint`, both spellings in one premise, sugar `scope` without `if_fingerprint` — refuse `bad_request` with teaching (§8.2); the mint door's own pair violation — both spellings on one `fingerprint` request — refuses `bad_request` at §4.7 with its own fitted text (§8.2). Effects doors take NO guard-family field (`if_fingerprint`, `guards`, `scope`, `scope_bytes` alike): inapplicable on `run` and beside `effects` on `script` — `bad_request` at the strict wall (§ A.7/§ A.8; teaching: §8.2).
 
 **Guard-path freshness.** At check time the engine refreshes the named premise's own extent: guard one file, pay one file; guard a folder, pay the folder; guard the world, pay the world. Refusals narrow because the PREMISE narrows, never because the engine looked less hard.
 
@@ -721,14 +713,12 @@ The wire is permissive forever: unguarded, actor-less, receipt-less splices are 
 
 ### §5.5 The Coverage Law — legality is not sufficiency
 
-*(Amended 2026-08-15, bounce-1 closure — the sufficiency quantifier re-drawn over the CALLER-AUTHORED write set; ruled: ZT, Arm B, `decisions/2026-08-15-coverage-quantifier-deviation.md`. A recorded deviation from the frozen plan: cite fingerprint-grain plan §4.4 WITH that deviation record.)*
-
 Two different questions, two laws:
 
-- **Legality (D-04):** every addressable node of the tree is a legal premise — root, any folder, any file leaf, and `absent`. The engine checks every premise the caller supplies.
+- **Legality:** every addressable node of the tree is a legal premise — root, any folder, any file leaf, and `absent`. The engine checks every premise the caller supplies.
 - **Sufficiency (the Coverage Law):** legality does not satisfy requiredness. Let `W` be the caller-authored write set (every path the caller's own edits publish) and `G` the premise list — purely the caller's premises, everywhere this law speaks; no engine premise ever enters `G`. Requiredness holds iff **for every `w` in `W` there exists at least one `g` in `G` whose scope is ancestor-or-self of `w`** (an exact-section or absence premise covering `w` also suffices). A premise need not cover every target. A premise that covers no target is legal WIDENING — checked, strictest wins, never sufficient alone. Failure refuses `scope_does_not_cover` naming the UNCOVERED caller-authored target set; the engine never silently promotes the request to one common ancestor (LCA) or to root.
 - **Placement:** coverage is enforced at transaction/set ADMISSION — the door seam where the complete `W` and the complete `G` exist, before any per-member validation or byte move.
-- **Door scope** *(added 2026-08-15, bounce-2 closure — ruled execution class)*: the sufficiency demand binds exactly the doors under A.1's pure-write demand — the ops that land content by DECLARING their write set in the request (`splice` in every form, `create`, `remove`). The script door (§ A.7) is admitted by its own law, not this one: its commit premise is the engine-computed touch set — which always contains the armed writes — so a guardless pure script is admitted by construction, with an empty `G` and no uncovered set to name; caller premises there stay legal as WIDENING only (R3, `decisions/2026-08-15-plan-rulings-final.md`). Effects doors hold no premise at all (`decisions/2026-08-15-no-guard-on-effects.md`). Law source: fingerprint-grain plan §4.6, cited WITH `decisions/2026-08-15-coverage-quantifier-deviation.md` (standing citation law).
+- **Door scope:** the sufficiency demand binds exactly the doors under A.1's pure-write demand — the ops that land content by DECLARING their write set in the request (`splice` in every form, `create`, `remove`). The script door (§ A.7) is admitted by its own law, not this one: its commit premise is the engine-computed touch set — which always contains the armed writes — so a guardless pure script is admitted by construction, with an empty `G` and no uncovered set to name; caller premises there stay legal as WIDENING only. Effects doors hold no premise at all (§ A.8).
 - **Engine-generated writes, outside `W`** (the receipt rider, which crosses scopes inside one commit): the engine's own commit act covers them — the engine verifies them against the live tree at commit; the caller's `G` must cover the caller-authored targets.
 
 Consequences at the doors, stated so nothing is silently reinterpreted: a single-file `splice` whose every content edit carries `if_node_rev` is covered at those edits — an exact-section premise covers the mutation it guards, so A.1's demand is unchanged in effect; the set form's natural cover is each target file's own leaf token — one copyable token per file, membership-safe within the file; a root premise covers everything (today's `if_fingerprint`, unchanged); disjoint extra premises are legal as widening only.
@@ -749,9 +739,9 @@ Never one word for two facts. Three states, three recoveries:
 
 The version vocabulary inside the cursor family stays split (§12.3): a token from a KNOWN RETIRED hash-law family refuses `fingerprint_version_retired` with re-mint teaching — never `fingerprint_mismatch`, which would lie (the premise did not move; the LAW moved). A token from an UNKNOWN FUTURE family refuses `fingerprint_version_unsupported` — distinct, because "your token is past my law" and "the law moved past your token" demand different acts. Register-law texts for the whole family: §8.2.
 
-*(Amended 2026-08-16 — the malformed premise value; dogfood break #7.)* A fourth fact is the REQUEST, not the world: a supplied premise value that is neither the reserved `absent` (§5.6) nor a grammatical `Root`-family token (the merkle-spec §4.2 spelling — `b3` + bijective-base-26 suffix + `:` + 64 lowercase hex) refuses `bad_request` (recovery `fix`) at the premise rung, before any fold is compared. The teaching quotes the raw bytes debug-quoted, so damage the prose renders invisible — one leading space on an otherwise valid token, the measured case — shows as a byte. Comparing a damaged spelling instead would answer `fingerprint_mismatch` with an expected/live pair that can render character-identical and a re-read remedy that loops: the re-read returns the same value the caller already holds. `fingerprint_mismatch` therefore claims exactly one thing: a WELL-FORMED token was compared against the live fold and differed. This wall touches no version family (§12.3) — a grammatical token from a retired or future family is never malformed — and it is value grammar at the existing rung, never a permission plane.
+A fourth fact is the REQUEST, not the world: a supplied premise value that is neither the reserved `absent` (§5.6) nor a grammatical `Root`-family token (the merkle-spec §4.2 spelling — `b3` + bijective-base-26 suffix + `:` + 64 lowercase hex) refuses `bad_request` (recovery `fix`) at the premise rung, before any fold is compared. The teaching quotes the raw bytes debug-quoted, so damage the prose renders invisible — one leading space on an otherwise valid token, the measured case — shows as a byte. Comparing a damaged spelling instead would answer `fingerprint_mismatch` with an expected/live pair that can render character-identical and a re-read remedy that loops: the re-read returns the same value the caller already holds. `fingerprint_mismatch` therefore claims exactly one thing: a WELL-FORMED token was compared against the live fold and differed. This wall touches no version family (§12.3) — a grammatical token from a retired or future family is never malformed — and it is value grammar at the existing rung, never a permission plane.
 
-*(Amended 2026-08-16 — the token premise at a node-less scope; dogfood break #6.)* A WELL-FORMED token premise whose scope holds no live node refuses `scope_does_not_cover` (recovery `fix`; the refusal carries `scope`, and `uncovered` stays §5.5's target-set extra — this mint home names no target set) — never `fingerprint_mismatch`, and never `scope_unresolved` (§5.6 bars it: lawful absence is not an unresolvable path). From `(token, absent)` the engine cannot tell "the node was removed since the mint" from "the caller paired a real token with a scope that never held one" — the measured break was the second — and the retired absent-actual teaching narrated the first as fact ("it was emptied or removed") with a `resync` remedy that re-reads a path that serves nothing, so the recovery could not terminate. What the engine KNOWS is coverage vocabulary: no node lives at the scope, so no token premise can hold there — a node-less scope's one lawful premise is `absent` (§5.6). The remedy is the mint, and it serves both worlds: `fingerprint{scope}` answers what the scope holds NOW (`absent` for lawful emptiness), and the caller re-pairs the premise or fixes the scope — one act, terminating whether the node was removed or never existed. A door that would narrate removal must actually know the history; no door today does, so a genuine post-mint removal draws this same refusal (register text: §8.2). The reverse seam is untouched: an `absent` premise against a live node stays `fingerprint_mismatch` (§5.6's creation-guard collision) — there both compared facts are live, and the re-read the teaching orders serves a node that exists.
+A WELL-FORMED token premise whose scope holds no live node refuses `scope_does_not_cover` (recovery `fix`; the refusal carries `scope`, and `uncovered` stays §5.5's target-set extra — this mint home names no target set) — never `fingerprint_mismatch`, and never `scope_unresolved` (§5.6 bars it: lawful absence is not an unresolvable path). From `(token, absent)` the engine cannot tell "the node was removed since the mint" from "the caller paired a real token with a scope that never held one" — and a teaching that narrated the first as fact ("it was emptied or removed") with a `resync` remedy would re-read a path that serves nothing, so the recovery could not terminate. What the engine KNOWS is coverage vocabulary: no node lives at the scope, so no token premise can hold there — a node-less scope's one lawful premise is `absent` (§5.6). The remedy is the mint, and it serves both worlds: `fingerprint{scope}` answers what the scope holds NOW (`absent` for lawful emptiness), and the caller re-pairs the premise or fixes the scope — one act, terminating whether the node was removed or never existed. A door that would narrate removal must actually know the history; no door today does, so a genuine post-mint removal draws this same refusal (register text: §8.2). The reverse seam is untouched: an `absent` premise against a live node stays `fingerprint_mismatch` (§5.6's creation-guard collision) — there both compared facts are live, and the re-read the teaching orders serves a node that exists.
 
 ## §6 Receipts — outcome as fact
 
@@ -769,7 +759,7 @@ A receipt **cannot contain the root it produces**: `fingerprint_after` covers th
 
 **Normative content is the armed-fact set on the wire response** (§4.4), not any particular md line shape. Target identity is always §2.1 form — e.g. `{"hpath":[{"h":"Goals"},{"h":"Q3"}]}` — never a joined string.
 
-The default receipt line, byte-exact (segment target only) — these are the fixture's own S1/S2 receipt bytes, not an illustration of them (rebaselined 2026-08-09; see the arithmetic below):
+The default receipt line, byte-exact (segment target only) — these are the fixture's own S1/S2 receipt bytes, not an illustration of them (see the arithmetic below):
 
 ```markdown
 - splice notes/plan.md id=42 actor=agent:b0864fb2 now=2026-07-18T20:31:04Z fingerprint_before=b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9 edits=1 target.hpath=[{"h":"Goals"},{"h":"Q3"}] match 33d5b0e1b27cb48b->41f643f034e5681f ^r-000042
@@ -781,13 +771,11 @@ E4 append via `put{at:"end"}`:
 - splice notes/plan.md id=57 actor=agent:b0864fb2 now=2026-07-18T20:33:41Z fingerprint_before=b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12 edits=1 target.hpath=[{"h":"Goals"},{"h":"Q4"}] put:end 4b8bc385a58da0e0->f43203a1f0b4c9a3 ^r-000043
 ```
 
-**Do not re-teach** pretty joins (`Goals>Q3`). Template replaceability (D-C10) is not permission for a second address grammar.
+**Do not re-teach** pretty joins (`Goals>Q3`). Template replaceability (§6.4) is not permission for a second address grammar.
 
-**Byte arithmetic, and the two lines above now close it (REBASELINED 2026-08-09).** The two lines measure **260 B** and **262 B** on the node basis, and those are the widths the fixture's own S1/S2 receipt entries carry: the spans `[26,286]` and `[287,549]` (§4.4, §7.1) and the receipts file's 26 → 287 → 550 B growth (§0.3) require exactly these numbers, terminator excluded per the leaf-block span law (§1). **The gap between this section's lines and the fixture's bytes is 0 B.** R1, R2 and every S1/S2-anchored value are therefore reconstructable from this document — the printing debt §18 row 10 declared is closed, and the row records how.
+**Byte arithmetic.** The two lines measure **260 B** and **262 B** on the node basis, and those are the widths the fixture's own S1/S2 receipt entries carry: the spans `[26,286]` and `[287,549]` (§4.4, §7.1) and the receipts file's 26 → 287 → 550 B growth (§0.3) require exactly these numbers, terminator excluded per the leaf-block span law (§1). **The gap between this section's lines and the fixture's bytes is 0 B.** R1, R2 and every S1/S2-anchored value are therefore reconstructable from this document (§18 row 10).
 
-**What moved, so the closure is auditable rather than asserted.** Until this rebaseline the template wrote two deviations from this document's own law, worth 38 B per line: `root_before=` where §6.1's standing noun is `fingerprint_before=` (**7 B**), and the target joined as `Goals>Q3` where §2.1 form is mandatory (**31 B**) — the pretty join this section forbids in its own words two paragraphs up. Closing them moved receipt bytes, which is why it was a FIXTURE act and not an edit to this section: receipts are ordinary markdown inside the hash domain (§6.1), so the receipt node rev moved, the workspace fingerprint moved with it, and R1 and R2 were recomputed rather than re-typed. The superseded values are not scrubbed — they are the pre-rebaseline R1 `b3:10769ae1…` and R2 `b3:83b4ba59…`, recorded here and in §18 row 10.
-
-**The lane width — what the shipped template writes with no request id (2026-08-09).** Replaying E3 **through the CLI lane (`mrd put`)** under this section's own `actor` and `now`, so deterministic, the template writes **254 B node bytes** (**255 B line**, terminator included — the form the dogfood step reports, s15-70). Every width COMPARED in this section — 260/262 and the 254 — is **node bytes, terminator excluded, per the leaf-block span law (§1)**; the line figure carries its own label because the two bases differ by exactly the terminator, and mixing them is what made this arithmetic wrong by 1 B until it was measured on both.
+**The lane width — what the shipped template writes with no request id.** Replaying E3 **through the CLI lane (`mrd put`)** under this section's own `actor` and `now`, so deterministic, the template writes **254 B node bytes** (**255 B line**, terminator included). Every width COMPARED in this section — 260/262 and the 254 — is **node bytes, terminator excluded, per the leaf-block span law (§1)**; the line figure carries its own label because the two bases differ by exactly the terminator, and mixing them is what made this arithmetic wrong by 1 B until it was measured on both.
 
 **The 254 is a LANE width, not the template's.** The **same shipped template writes the fixture's 260 B exactly** when the request carries an id — gated byte-for-byte, not inferred, by `crates/receipt/tests/frozen_receipts.rs :: e3_receipt_line_byte_exact`, which renders `id: Some(42)` and asserts both this section's E3 line and `line.len() == 286 - 26`. A CLI invocation is not a wire request and mints no request id, so §9's absent-inputs law makes writing no `id=` token the **correct** rendering, not a defect. **The 254 and the 260 are two lanes of one template, never two templates.**
 
@@ -796,37 +784,37 @@ One gap remains, and it is ruled rather than owed:
 | gap | width | causes |
 |---|---|---|
 | shipped CLI lane 254 → fixture / this section 260 | **6 B** | `id=` alone — **ruled, not a defect** (§9, lane) |
-| fixture 260 → this section's lines 260 | **0 B** | closed by the 2026-08-09 rebaseline (was 38 B) |
+| fixture 260 → this section's lines 260 | **0 B** | the lines printed here are the fixture's bytes |
 
 `254 + 6 = 260` closes to the byte. **The consequence of the surviving 6 B is unchanged and stays stated:** R1 and R2 are WIRE-lane values, so replaying the fixture through the CLI lane still cannot land on them — the receipt node differs by the `id=` token alone, and a different receipt node is a different fingerprint. That is a lane mismatch, not an engine shortfall, and it is why the CLI lane's own timeline is not the published one.
 
 **The target form is written by the TEMPLATE, and its escaping is §6.7's.** Every `[`, `]`, `{`, `}`, `"`, `:` and `,` in `target.hpath=…` above is template text; only the heading text is interpolated, through the segment renderer §6.7 rule 2 mandates. `Goals`, `Q3` and `Q4` are receipt-identifier text carrying no `"`, so the escape is the identity on them and the widths above are unmoved by it.
 
-### §6.4 Replaceability (D-C10 — facts are the contract)
+### §6.4 Replaceability (facts are the contract)
 
-The md *rendering* is a shipped default template; a non-ccc consumer replaces it freely — the normative receipt content is the armed-fact set, defined by the wire response shape. The engine mechanism is generic: "append these facts at this address with this anchor". "No intent past-due without a receipt" is lintable: a rules pack can assert every splice-bearing transcript row has its receipt anchor resolvable (§11).
+The md *rendering* is a shipped default template; any consumer replaces it freely — the normative receipt content is the armed-fact set, defined by the wire response shape. The engine mechanism is generic: "append these facts at this address with this anchor". "No intent past-due without a receipt" is lintable: a rules pack can assert every splice-bearing transcript row has its receipt anchor resolvable (§11).
 
 ### §6.5 Crash honesty
 
 The batch writes two files via tmp+fsync+rename each; a crash between renames can land content without receipt. Recovery is re-derive (cold rebuild → correct root, never wrong data) and the missing receipt is exactly what the lint finds — the failure is loud in the world model, not hidden in engine state. Stated as a limit (§13.6).
 
-**A set commit (§4.4 set form) widens the sequence and keeps the posture — in-memory rollback, no journal (ruled 2026-08-14: "effect-less script should be only in memory state, simple is better").** The commit stages every file, verifies every pre-image, then renames member order with the receipt LAST. A rename FAILURE mid-sequence (process alive) restores every member already renamed from its held pre-image bytes — the same tmp+fsync+rename discipline run backwards — and the error names what failed and what restored. Two stated limits, both named rather than silent: a CRASH mid-rename-sequence can land a prefix of the set (each file still fully-old-or-fully-new — atomic renames never tear; cold rebuild yields the correct root of whatever landed); and the restore can ITSELF fail, in which case the error lists exactly which files hold the new bytes, so recovery is a statement, never a guess. Receipt-rename-LAST is load-bearing: in every reachable state a resolvable receipt anchor implies the whole set landed, so the §6.6 collision door remains the lost-answer probe for the entire set. The multi-file atomic commit this section previously deferred as a "rung-3 amendment candidate" is THIS mechanism — delivered by the set form, with the crash window stated instead of journaled away.
+**A set commit (§4.4 set form) widens the sequence and keeps the posture — in-memory rollback, no journal.** The commit stages every file, verifies every pre-image, then renames member order with the receipt LAST. A rename FAILURE mid-sequence (process alive) restores every member already renamed from its held pre-image bytes — the same tmp+fsync+rename discipline run backwards — and the error names what failed and what restored. Two stated limits, both named rather than silent: a CRASH mid-rename-sequence can land a prefix of the set (each file still fully-old-or-fully-new — atomic renames never tear; cold rebuild yields the correct root of whatever landed); and the restore can ITSELF fail, in which case the error lists exactly which files hold the new bytes, so recovery is a statement, never a guess. Receipt-rename-LAST is load-bearing: in every reachable state a resolvable receipt anchor implies the whole set landed, so the §6.6 collision door remains the lost-answer probe for the entire set. The multi-file atomic commit is THIS mechanism — the set form, with the crash window stated instead of journaled away.
 
-### §6.6 The anchor is the caller's to mint, and a mint that collides is a defect (2026-08-09)
+### §6.6 The anchor is the caller's to mint, and a mint that collides is a defect
 
-§6.4 states the mechanism — "append these facts at this address with this anchor" — so the anchor arrives from the caller and the engine appends what it is given. That leaves one obligation unstated until now, and a host met it wrongly in the field (dogfood 2026-08-09, s13): **an anchor MUST be unique within the receipt file it names.**
+§6.4 states the mechanism — "append these facts at this address with this anchor" — so the anchor arrives from the caller and the engine appends what it is given. That leaves one obligation to state: **an anchor MUST be unique within the receipt file it names.**
 
 The obligation is not stylistic. §6.1 promises a receipt resolvable via `#^anchor`; §2.1 resolves an anchor ref by exact block id and A.3 refuses `ambiguous` when a file carries the id twice. A writer that repeats an id inside one file therefore publishes a receipt no strict door can address — the receipt exists, is hashed, and is unreachable. **Published-but-unusable, minted by the writer, in obedience to no rule it broke.**
 
-**The engine polices the anchor of the write in front of it (amended 2026-08-09, dogfood pass 1 f02).** This section first said the engine polices nothing here, because an append carries no cross-invocation memory. That holds for anchors a caller mints as ordinary content — the engine has no memory of them and never inspects them. It does not hold for the REQUESTED receipt anchor: the receipt file is named by the request and read in the same act, so a collision between that anchor and the bytes on disk is visible before anything is written. **The splice door resolves the requested receipt anchor against the receipt file FIRST, and refuses `bad_request` with zero bytes moved when the anchor already stands there** — the byte-untouched shape every other target refusal at this door already has. The caller re-sends under an unused anchor; because nothing landed, the re-send appends its content exactly once.
+**The engine polices the anchor of the write in front of it.** An append carries no cross-invocation memory, so anchors a caller mints as ordinary content are never inspected — the engine has no memory of them. That does not hold for the REQUESTED receipt anchor: the receipt file is named by the request and read in the same act, so a collision between that anchor and the bytes on disk is visible before anything is written. **The splice door resolves the requested receipt anchor against the receipt file FIRST, and refuses `bad_request` with zero bytes moved when the anchor already stands there** — the byte-untouched shape every other target refusal at this door already has. The caller re-sends under an unused anchor; because nothing landed, the re-send appends its content exactly once.
 
-The red this closes, measured at the release pin and again at `b1fcc6e3`: a `put --receipt <file>#<anchor>` naming an anchor the receipt file already carried committed BOTH files, minted the duplicate, then failed to resolve its own anchor and reported *"committed receipt anchor did not resolve — receipt corrupt"*. The refusal had already written — zero armed facts over two changed files — and the `recovery:"fix"` it taught duplicated the caller's content on the re-send. **The engine detected its own §6.6 violation after committing it and reported the symptom;** the ordering is the fix, not the message.
+Without this ordering, a `put --receipt <file>#<anchor>` naming an anchor the receipt file already carried commits BOTH files, mints the duplicate, then fails to resolve its own anchor and reports *"committed receipt anchor did not resolve — receipt corrupt"*. That refusal has already written — zero armed facts over two changed files — and the `recovery:"fix"` it teaches duplicates the caller's content on the re-send. **An engine that detects its own §6.6 violation after committing it reports the symptom;** the ordering is the fix, not the message.
 
 The derived rule for a host that appends many receipts to ONE shared file across invocations: **derive the anchor from the invocation identity, never from a counter that restarts.** A per-invocation counter (`^r-000001`, `^r-000002`, …) is unique only within its own process; the second invocation against the same file re-mints the first id. Derive from a monotonic file-scoped counter (read the file, continue past its last id) or from the caller's invocation id plus an in-run sequence — the second costs no read and is what `mrd run` already does (`r-<invocation-id>`).
 
 A host that derives from a caller-supplied id inherits that id's charset duty: the mint routes through the block-id door (`[A-Za-z0-9-]`, §2.4) and refuses loudly rather than publishing an unaddressable anchor.
 
-### §6.7 The rendering law — structure comes from the TEMPLATE, never from the data (2026-08-09)
+### §6.7 The rendering law — structure comes from the TEMPLATE, never from the data
 
 §6.4 makes the md rendering replaceable. It does not make it free. Every template that renders the armed facts into markdown carries one obligation, and it is a §6.1 obligation rather than a stylistic one: a receipt is ordinary markdown inside the hash domain, so a line that READS as a different structure than the facts it carries is a receipt that misreports the write — the facts were armed, the bytes say something else. Heading text is user content; a receipt whose structure can be moved by user content is not a receipt.
 
@@ -844,11 +832,7 @@ The output therefore carries no `"`, and no backslash that does not open a compl
 
 **Why the segment renderer must exist separately, stated so it is not re-derived as redundant.** Rule 1's charset excludes `[` and `]`, so routing a whole JSON array through rule 1 escapes the array itself into a code span — the address stops being an address. The brackets must come from the template, and that hands the template the quotes as well. But rule 1's charset **permits** `"`. A heading carrying a double quote, interpolated between template quotes, closes the string early and forges the object: the receipt then names a structurally different target than the write actually took, which is precisely the §6.1 misreport this section exists to forbid — minted by a heading any user is entitled to write.
 
-**This law is escape-only and byte-neutral on conforming text.** A heading whose characters are all receipt-identifier text and not `"` renders identically with and without it — §6.3's `Goals` and `Q3` among them, so §6.3's byte arithmetic and §18 row 10's figures are unmoved by this section. Adopting the law changes no published byte; it bounds what an unpublished one can be.
-
-**Sequencing (2026-08-09), and it held.** When this section was written the shipped default template did not write the §2.1 form at all — it wrote the pretty join §6.3 forbids, which was §18 row 10's 38 B debt and was carded separately as a fixture act. The segment renderer was that card's PREREQUISITE and landed ahead of it, at `b1fcc6e3`, because the forging hazard is created the moment the JSON form is emitted: the escape must exist before the emission, never alongside it. The emission lands in the commit carrying this sentence, so rule 2 is now law over shipped bytes rather than a rule waiting for its subject.
-
-**A note on this paragraph's tense, because it was nearly written wrong.** The forward-looking version above was authored before either card landed, and an edit that flipped it to past tense was staged into the shared tree while HEAD still contained neither — which would have put a false history into the constitution itself. Law may be written ahead of its subject; a claim that the subject arrived may not, because that claim has an instrument and `git log` is it. The tense turns in the same commit that earns it.
+**This law is escape-only and byte-neutral on conforming text.** A heading whose characters are all receipt-identifier text and not `"` renders identically with and without it — §6.3's `Goals` and `Q3` among them, so §6.3's byte arithmetic and §18 row 10's figures are unmoved by this section. Adopting the law changes no published byte; it bounds what an unpublished one can be. The segment renderer is a PREREQUISITE of emitting the JSON form: the forging hazard is created the moment the form is emitted, so the escape must exist before the emission, never alongside it.
 
 ## §7 The Delta noun — the fifth noun, stable at birth
 
@@ -856,8 +840,8 @@ The output therefore carries no `"`, and no backslash that does not open a compl
 
 One Delta = one batch = one fingerprint advance. A §4.4 SET commit mints ONE
 Delta whose `files[]` carries every content file plus the receipt —
-cardinality is data, and a consumer that assumed ≤2 files was reading the
-old single-content world. E3's delta, every value computed:
+cardinality is data, and a consumer must not assume ≤2 files. E3's delta,
+every value computed:
 
 ```json
 {"delta":{
@@ -897,7 +881,7 @@ E4's delta, in full (every value computed):
              "node_rev_after":"5c6ca7ec00ae279e","span_after":[287,549]}]}]}}
 ```
 
-Laws: `seq` is a monotone per-workspace batch counter (the `changes_seq` of §10), **per-daemon-epoch** — a daemon restart resets it (memory is disposable and disk is markdown-only, §14, so no counter survives on disk to reload), which means `from_seq`/`changes_seq` catchup is valid only within one epoch and cross-epoch catchup is diff-by-root (§4.7), the root being the only restart-durable handle — so the `sub` resumption anchor carries `{tree_instance, from_seq}`, instance evaluated before sequence (B-01, §4.7); file `change ∈ {created, modified, deleted, renamed, unattested}` (renamed carries `from_path`; `unattested` is § A.9's re-scope honesty word — the file LEFT THE ATTESTED SET while its bytes remain on disk, v3-only, demoted to `deleted` for a frozen v2 session); node `change ∈ {added, edited, removed, anchored}` (`anchored` is the attestation-honesty word — the node moved SOLELY by gaining an anchor id, so it was attested to and not rewritten; it is a byte verdict, never an intent, and a write that changes content and mints an anchor in the same node stays `edited`; v3-only, demoted to `edited` for a frozen v2 session, the node's rev having genuinely moved); node entries name the **deepest section containing each changed byte range** — ancestor section revs change implicitly (rev = span hash) and are re-readable via `toc`, never duplicated into the delta. External changes (a human editing in Obsidian) produce deltas with `actor`/`now` **absent** — the engine never invents identity or time it wasn't given; `seq` is assigned at detection.
+Laws: `seq` is a monotone per-workspace batch counter (the `changes_seq` of §10), **per-daemon-epoch** — a daemon restart resets it (memory is disposable and disk is markdown-only, §14, so no counter survives on disk to reload), which means `from_seq`/`changes_seq` catchup is valid only within one epoch and cross-epoch catchup is diff-by-root (§4.7), the root being the only restart-durable handle — so the `sub` resumption anchor carries `{tree_instance, from_seq}`, instance evaluated before sequence (§4.7); file `change ∈ {created, modified, deleted, renamed, unattested}` (renamed carries `from_path`; `unattested` is § A.9's re-scope honesty word — the file LEFT THE ATTESTED SET while its bytes remain on disk, v3-only, demoted to `deleted` for a frozen v2 session); node `change ∈ {added, edited, removed, anchored}` (`anchored` is the attestation-honesty word — the node moved SOLELY by gaining an anchor id, so it was attested to and not rewritten; it is a byte verdict, never an intent, and a write that changes content and mints an anchor in the same node stays `edited`; v3-only, demoted to `edited` for a frozen v2 session, the node's rev having genuinely moved); node entries name the **deepest section containing each changed byte range** — ancestor section revs change implicitly (rev = span hash) and are re-readable via `toc`, never duplicated into the delta. External changes (a human editing in Obsidian) produce deltas with `actor`/`now` **absent** — the engine never invents identity or time it wasn't given; `seq` is assigned at detection.
 
 ### §7.2 Node-grain at birth
 
@@ -925,26 +909,26 @@ Every error frame carries `code` + `recovery` from the CLOSED six-class enum; ea
 | `resync` | your picture of the world is stale; re-plan | `fingerprint_mismatch{expected,actual,scope?}`, `fingerprint_unknown`, `fingerprint_version_retired` (§5.7, §12.3 — the token's hash-law family is retired; re-mint at the same scope), `fingerprint_version_unsupported` (§5.7 — the token's family is unknown and newer than the serving law) |
 | `respawn` | the channel itself is broken | `bad_frame`, `unsupported_proto`, `internal` |
 
-W4 dispositions: v1's `not_found` is **retired** — `file_not_found` (env: the file is gone) is distinct from `ref_not_found` (refresh: the name dangles), and `io_error` carries its cause. `ref_not_found.stage` makes the two-stage decomposition observable in every failure (1 = vault-namespace miss, no `dest`; 2 = subpath miss, `dest` present — §4.5). `budget_exceeded` is deliberately NOT here: it is a typed *finding* inside `verdicts` (§11), never a wire error. **`daemon_only`** (env class) is **RETIRED** (hosts ruling, §3.3, 2026-08-06): it named the one deployment gap — a corpus-class rules pack, one whose WHEN needs the resident corpus name index (e.g. `link_resolves`, §11.2), loaded against a sidecar-mode engine with no resident index (the `BudgetClass::Corpus` law, §11.3). With the sidecar host deleted, every wire door is daemon-backed and the resident index is always reachable, so the code is unmintable; the `BudgetClass::Corpus` law stands, now gating nothing at the wire. Null-id frames: §3.1. Three declared deltas from the ruled class table (previously undeclared, now fixed): `fingerprint_mismatch` rebound refresh→`resync` (a failed world guard invalidates the plan, not one node's picture — §5.1's split), `unsupported_proto` rebound fix→`respawn` (a protocol mismatch is a channel property; no request edit repairs it), and `bad_id` dropped (folded into `bad_request` + `id:null`/`id_raw`, §3.1 — one malformed-envelope code, not two). All three are behavior-preserving relabelings, now declared. Deviation-from-v1 rows: `not_found` retirement (this table), unknown-`kinds` rejection (§4.3) — each with its rationale at the cited section; the consolidated ledger is §18.
+There is no bare `not_found`: `file_not_found` (env: the file is gone) is distinct from `ref_not_found` (refresh: the name dangles), and `io_error` carries its cause. `ref_not_found.stage` makes the two-stage decomposition observable in every failure (1 = vault-namespace miss, no `dest`; 2 = subpath miss, `dest` present — §4.5). `budget_exceeded` is deliberately NOT here: it is a typed *finding* inside `verdicts` (§11), never a wire error. **`daemon_only`** (env class) is unmintable (§3.3): it names a corpus-class rules pack — one whose WHEN needs the resident corpus name index (e.g. `link_resolves`, §11.2) — loaded against an engine with no resident index (the `BudgetClass::Corpus` law, §11.3). Every wire door is daemon-backed and the resident index is always reachable, so nothing mints the code; the `BudgetClass::Corpus` law stands, gating nothing at the wire. Null-id frames: §3.1. Three declared deltas from the ruled class table: `fingerprint_mismatch` bound to `resync`, not refresh (a failed world guard invalidates the plan, not one node's picture — §5.1's split), `unsupported_proto` bound to `respawn`, not fix (a protocol mismatch is a channel property; no request edit repairs it), and no `bad_id` code (folded into `bad_request` + `id:null`/`id_raw`, §3.1 — one malformed-envelope code, not two). Deviation rows: no bare `not_found` (this table), unknown-`kinds` rejection (§4.3) — each with its rationale at the cited section; the consolidated ledger is §18.
 
-*(Amended 2026-08-15 — the scoped-guard family, §5.4–§5.7.)* Four codes join the closed enum, each statically bound to exactly one class as the table now shows: `scope_does_not_cover{uncovered}` (fix), `scope_unresolved` (fix), `fingerprint_version_retired` (resync), `fingerprint_version_unsupported` (resync). The closed-enum law is unchanged — a client that doesn't recognize a code still dispatches on `recovery` alone. `fingerprint_mismatch` regains `scope` (optional; absent = the root premise, the exact v2 shape): §18 row 2's return clause FIRED — the scoped world guard arrived by amendment, and `scope` returns with it, as that row promised. The version split is law, not labeling: a retired-family token must NEVER answer `fingerprint_mismatch` — the premise did not move, the LAW moved (§5.7, §12.3).
+The scoped-guard family (§5.4–§5.7) contributes four codes to the closed enum, each statically bound to exactly one class as the table shows: `scope_does_not_cover{uncovered}` (fix), `scope_unresolved` (fix), `fingerprint_version_retired` (resync), `fingerprint_version_unsupported` (resync). The closed-enum law is unchanged — a client that doesn't recognize a code still dispatches on `recovery` alone. `fingerprint_mismatch` carries `scope` (optional; absent = the root premise, the exact v2 shape — §18 row 2). The version split is law, not labeling: a retired-family token must NEVER answer `fingerprint_mismatch` — the premise did not move, the LAW moved (§5.7, §12.3).
 
-### §8.1 The no-answer case — transport loss is not a class (RULED 2026-08-08)
+### §8.1 The no-answer case — transport loss is not a class
 
-The six classes ride **error frames** — cases where the daemon answered. A request whose answer never arrives — the client's own op deadline expired, or the connection died with the op in flight — is a **transport loss**, not a wire error: no frame arrived, so no `recovery` class exists, and for a `splice` **persistence is UNKNOWN**. The batch may have committed before the loss (observed 2026-08-08: a splice committed while the client's 10 s op deadline lapsed under a parallel build hold; the daemon answered a health probe in milliseconds — a slow op is not a hung daemon).
+The six classes ride **error frames** — cases where the daemon answered. A request whose answer never arrives — the client's own op deadline expired, or the connection died with the op in flight — is a **transport loss**, not a wire error: no frame arrived, so no `recovery` class exists, and for a `splice` **persistence is UNKNOWN**. The batch may have committed before the loss (observed: a splice committed while the client's 10 s op deadline lapsed under a parallel build hold, and the daemon answered a health probe in milliseconds — a slow op is not a hung daemon).
 
 Two consequences, both **client law** — the wire cannot rule on frames it never served, so this subsection binds clients and hosts, not the engine:
 
-- **The op deadline is a hang detector, never a safety mechanism.** Its value is host-chosen and MAY be op-class-aware (ccc-statusd's D4 bounds: 10 s per op; 60 s for `hello`, sized when `hello` still paid a cold whole-corpus build — since §3.2's config-grade law it no longer can, and the cold build no longer rides inside ANY op's deadline: a cold workspace's first corpus read starts it in the background, absorbs at most a short bounded wait, and refuses `corpus_warming` past it (§3.2); warm-cost classes are host knowledge, the engine publishes neither). It does not scale with load — the engine publishes no load surface, and orientation is not a wire op (§10.3) — and no finite value closes the ambiguity window: any deadline can expire after the commit landed. Correctness comes from the retry discipline below, never from the number.
+- **The op deadline is a hang detector, never a safety mechanism.** Its value is host-chosen and MAY be op-class-aware (a host might bound ordinary ops at 10 s; `hello` is config-grade under §3.2 and never pays a cold whole-corpus build, and the cold build never rides inside ANY op's deadline: a cold workspace's first corpus read starts it in the background, absorbs at most a short bounded wait, and refuses `corpus_warming` past it (§3.2); warm-cost classes are host knowledge, the engine publishes neither). It does not scale with load — the engine publishes no load surface, and orientation is not a wire op (§10.3) — and no finite value closes the ambiguity window: any deadline can expire after the commit landed. Correctness comes from the retry discipline below, never from the number.
 - **Re-read before retry.** After a lost `splice` answer the client's picture of the world is gone. Before any re-send, re-read the target and check whether the lost write **already landed** — checking content, not just tokens. The ordinary conflict path (`cas_mismatch` → refresh → re-apply with the fresh rev) is WRONG here: it re-applies a write that may already be in the file, and the ordinary teachings mislead — a post-loss `no_match` reads as "provably your typo" (§5.2) when the truth is "your first send landed and consumed the anchor".
 
 A **blind re-send without `force` cannot double-apply** — the wire-origin guard demand (A.1, A.3) refuses every arm: a guarded edit's token re-derives against post-commit bytes (`cas_mismatch`, §5.1), a birth's subject now exists (`cas_mismatch`, absence guard), an unguarded content edit never reaches the write (`guard_required`). The refusal it draws is still ambiguous between "my lost write landed" and "a foreign write landed" — which is why the read comes first — but nothing applies twice while the client finds out. This is §5.2's adoption carrot extended: the guard demand is also what makes loss recovery safe. **`force` strips the node-grain tokens (A.1) and reopens the double-apply; a post-loss re-send MUST NOT carry `force`.**
 
 Reads are idempotent: after a lost answer, re-send freely.
 
-### §8.2 Register-law refusal texts — the scoped-guard family (docs-first, 2026-08-15)
+### §8.2 Register-law refusal texts — the scoped-guard family
 
-Refusal teaching speaks the register law: **reason first, fitted remedy, never session rules.** The texts below are carried from the fingerprint-grain merged plan's Appendix C (k3's F-12 redrafted form) byte-for-byte; the additions are `fingerprint_version_unsupported` and the three `bad_request` guard-family texts (bounce-1 closure, 2026-08-15), each drafted HERE in the same register because Appendix C carried no text for them — recorded, not slipped in. Bounce-2 closure (2026-08-15), same drafted-here provenance: the mint-pair text joins, and the broken-premise-pair remedy is re-worded — its old teaching ("one scope spelling PLUS its token — exactly one spelling") contradicted the LEGAL bare-root premise `{"fingerprint": …}` with no scope spelling (§5.4). Break #6 closure (2026-08-16), recorded, not slipped in: the Appendix-C absent-actual `fingerprint_mismatch` entry is RETIRED and its slot re-minted under `scope_does_not_cover` — the retired text stated as fact a deletion ("it was emptied or removed") the engine cannot know, and it contradicted `scope_unresolved`'s own entry two rows below: a lawful path with no node mints "absent", a legal premise, not a deletion (§5.6, §5.7's amended arm).
+Refusal teaching speaks the register law: **reason first, fitted remedy, never session rules.** The texts below are normative. Two constraints they honor: the broken-premise-pair remedy admits the LEGAL bare-root premise `{"fingerprint": …}` with no scope spelling (§5.4); and no text narrates a deletion ("it was emptied or removed") the engine cannot know — a lawful path with no node mints "absent", a legal premise, not a deletion (§5.6, §5.7).
 
 ```
 fingerprint_mismatch (scoped):
@@ -961,12 +945,7 @@ scope_unresolved:
    file/dir kind conflict with an existing entry, or is not encodable.
    A lawful path that simply has no node mints "absent" — that is a
    legal premise, not this error."
-scope_does_not_cover — token premise at a node-less scope (re-minted
-2026-08-16, dogfood break #6; supersedes the RETIRED absent-actual
-fingerprint_mismatch entry that stood here, whose text stated as fact a
-deletion — "it was emptied or removed" — the engine cannot know, and
-whose resync remedy re-read a path that serves nothing; §5.7's amended
-arm):
+scope_does_not_cover — token premise at a node-less scope (§5.7):
   "the premise at <scope> holds a token, but no node lives at <scope> —
    a token premise cannot hold where there is no node (a node-less
    scope's one lawful premise is "absent", §5.6), so this premise covers
@@ -979,19 +958,17 @@ fingerprint_version_retired:
   "this token was minted under a retired hash law. The premise did not
    move — the law did. Re-mint at the same scope
    (fingerprint{scope: "<scope>"}) and re-plan once."
-fingerprint_version_unsupported (drafted here — no Appendix C source):
+fingerprint_version_unsupported:
   "this token was minted under a hash law this engine does not know —
    the token is newer than the law being served. Re-mint at the same
    scope (fingerprint{scope: "<scope>"}) to proceed under the serving
    law; to keep the newer tokens, upgrade the engine, not the token."
-bad_request — guard family, un-negotiated (drafted here — no Appendix C
-source):
+bad_request — guard family, un-negotiated:
   "this session did not negotiate scoped-guards, so <field> cannot ride
    this request. Reconnect and negotiate the scoped-guards cap in hello,
    or drop the field — the v2 forms (root if_fingerprint, if_node_rev)
    are fully served without it."
-bad_request — guard family, broken premise pair (drafted here — no
-Appendix C source; remedy re-worded bounce-2 to admit the root form):
+bad_request — guard family, broken premise pair:
   "<detail — one of: <spelling> carries no fingerprint; both scope and
    scope_bytes in one premise; scope without if_fingerprint>. A premise
    is a token plus at most ONE scope spelling — the token is required,
@@ -999,14 +976,12 @@ Appendix C source; remedy re-worded bounce-2 to admit the root form):
    To scope a premise, mint the pair together
    (fingerprint{scope: "<scope>"}) and send both; to guard the world,
    send the token alone."
-bad_request — mint pair, both spellings on one fingerprint request
-(drafted here — no Appendix C source; bounce-2 closure):
+bad_request — mint pair, both spellings on one fingerprint request:
   "this mint names its node twice — scope and scope_bytes in one
    fingerprint request. A mint names ONE node: keep the one spelling
    that names your path (scope for UTF-8 names, scope_bytes for raw
    bytes) and re-send; both absent mints the root."
-bad_request — guard family, malformed premise value (drafted here — no
-Appendix C source; dogfood break #7, 2026-08-16):
+bad_request — guard family, malformed premise value:
   "<the premise at <scope> | the world premise> holds <raw bytes,
    debug-quoted>, which is not a premise token — a premise holds an
    engine-minted b3…:<64-hex> token or the reserved "absent", and the
@@ -1014,9 +989,8 @@ Appendix C source; dogfood break #7, 2026-08-16):
    NOT compared: fix the spelling, not the plan. Paste the token exactly
    as the engine served it, or re-mint it (fingerprint{scope: "<scope>"},
    §4.7) and send that."
-refused trace, recovery fix — script door, malformed entry pin (drafted
-here — no Appendix C source; dogfood break #7, script door, 2026-08-16;
-engine-minted, so it rides the trace's fault triple with no §8 code —
+refused trace, recovery fix — script door, malformed entry pin
+(engine-minted, so it rides the trace's fault triple with no §8 code —
 § A.7 response law):
   "the script entry pin holds <raw bytes, debug-quoted>, which is not an
    entry fingerprint — the pin holds an engine-minted b3…:<64-hex> token,
@@ -1026,8 +1000,7 @@ engine-minted, so it rides the trace's fault triple with no §8 code —
    (fingerprint{}, §4.7) and send that. The reserved "absent" is premise
    vocabulary (§5.6, guards[]), never an entry pin — a script evaluates
    against the world that exists."
-bad_request — guard family, effects door (drafted here — no Appendix C
-source):
+bad_request — guard family, effects door:
   "<field> was supplied on an unguarded door: run and script-with-effects
    hold no premise — a guard here would promise what execution cannot
    keep (no-guard ruling). Drop the guard fields; to guard content
@@ -1064,13 +1037,13 @@ Anything view-shaped — today `links`, tomorrow any corpus-wide fact op — dec
 
 ### §10.3 View topology (structural)
 
-Nothing on the agent path assumes SQL/DB access: every op in §4 is served from the world model (parse + hash of disk bytes). Facts API (this wire, agents) and any view face (humans) are two faces of ONE projection; deciding-from-a-view is a misclassified projection. Orientation surfaces (dashboards, counts, trees) are deliberately NOT wire ops — the mined kill/merge rows (`debt`, `domains tree`, `status`) stay dead (§16).
+Nothing on the agent path assumes SQL/DB access: every op in §4 is served from the world model (parse + hash of disk bytes). Facts API (this wire, agents) and any view face (humans) are two faces of ONE projection; deciding-from-a-view is a misclassified projection. Orientation surfaces (dashboards, counts, trees) are deliberately NOT wire ops — `debt`, `domains tree`, `status` are not ops (§16).
 
 ### §10.4 The rung-5 view organ — optional, wire-agnostic
 
 Nothing on this contract **names DuckDB** (or any SQL engine). A view organ, if present, is implementation under §10.3: orientation is not a wire op.
 
-**RULED — DROP (ZT, 2026-08-06, session `06-05-meridian-mcp-leg-2`).** The former "keep, reshape, or drop" question is closed. `Op::ViewPath`, its reply shape, and the daemon-published `view.duckdb` file are deleted from the wire surface and from both hosts — the op violated this contract twice (it returned an engine-named artifact path, and it put an orientation surface on the wire), and on a real corpus its synchronous rebuild could never meet a request deadline (measured ~6 min at 22k files, non-convergent while the fleet writes; session `05-19`, task `g5c`). Any future view organ returns as a **non-wire face** — an operator surface over its own build — never as a wire op. The daemonless `:memory:` build behind `mrd sql` is such a face and carries no wire vocabulary.
+No `view_path` op and no daemon-published `view.duckdb` file exist on the wire surface: such an op would violate this contract twice (an engine-named artifact path returned on the wire, and an orientation surface put on the wire), and on a real corpus a synchronous rebuild cannot meet a request deadline (~6 min at 22k files, non-convergent under concurrent writes). Any view organ is a **non-wire face** — an operator surface over its own build — never a wire op. The daemonless `:memory:` build behind `mrd sql` is such a face and carries no wire vocabulary.
 
 ## §11 Rules as data — the compatibility surface
 
@@ -1114,28 +1087,28 @@ Which files' bytes enter the workspace **fingerprint** (merkle content hash):
 
 1. **md-only floor** — only `*.md` files hash. Non-md paths never enter the domain.
 2. **Default ignore (one rule)** — any path with a **dot-prefixed segment** is ignored (`.github/…`, `.obsidian/…`, `.trash/…`). Structural: custom re-includes cannot lift this floor for non-md or for the dot rule's intent on editor noise.
-3. **Custom ignore** — optional rules on the **standing declaration page** `meridian/domain.md` (frontmatter carries `version` and `ignore` list; body may explain). Pattern semantics are gitignore-style (block list, last match wins, `!` re-includes) — and gitignore-style includes the **trailing-slash law**: a pattern ending in `/` names a DIRECTORY, so it excludes the files beneath a matching directory segment and never a bare FILE whose own basename fits the pattern body (`scratch*/` excludes `results/scratch-r4/venv.md`, not `tasks/scratch-cleanup.md`; `git check-ignore` rules the same pair). Stated because a build compiled the trailing slash into a zero-or-more suffix that also matched the file's own segment: a card file named `scratch-….md` silently left the hash domain, so the sql projection census undercounted a live board by one while every named-path door served the file (dogfood 2026-08-15, card record-reproject-on-put).
+3. **Custom ignore** — optional rules on the **standing declaration page** `meridian/domain.md` (frontmatter carries `version` and `ignore` list; body may explain). Pattern semantics are gitignore-style (block list, last match wins, `!` re-includes) — and gitignore-style includes the **trailing-slash law**: a pattern ending in `/` names a DIRECTORY, so it excludes the files beneath a matching directory segment and never a bare FILE whose own basename fits the pattern body (`scratch*/` excludes `results/scratch-r4/venv.md`, not `tasks/scratch-cleanup.md`; `git check-ignore` rules the same pair). Stated because a build compiled the trailing slash into a zero-or-more suffix that also matched the file's own segment: a card file named `scratch-….md` silently left the hash domain, so the sql projection census undercounted a live board by one while every named-path door served the file.
 
 **Hash domain ⊂ addressable domain — one answer at every door.** A path outside the hash domain (an ignored `.md`, a dot-segment path) is still `toc`/`cat`/`read`/`extract`/`check_write`/`splice` by explicit path, at the READ door and the WRITE door alike: the read door serves its spans and mints its `file_rev` exactly as for a domain member, the write door commits to it, and its bytes simply do not move the fingerprint (`fingerprint_before == fingerprint_after` across such a write). The domain filter gates HASHING, not load — corpus residency is never a read admission test, so a door that refuses an out-of-domain path is a door defect, not domain law.
 
-Two consequences, stated because a v1.0.0 build inverted exactly this (dogfood 2026-08-09, s10 — the warm read door refused what the write door committed): a guarded write's CAS token (`node_rev_before` / `file_rev`) for an out-of-domain page is mintable at the read door like any other, never only by the write door itself; and `file_not_found` means exactly one thing at every door — **no such file under the workspace root** — so its teaching must not offer domain exclusion as a second reading of the miss.
+Two consequences, stated because a build once inverted exactly this — the warm read door refused what the write door committed: a guarded write's CAS token (`node_rev_before` / `file_rev`) for an out-of-domain page is mintable at the read door like any other, never only by the write door itself; and `file_not_found` means exactly one thing at every door — **no such file under the workspace root** — so its teaching must not offer domain exclusion as a second reading of the miss.
 
-**The rule binds a DOOR FAMILY, and the family is every door the caller NAMES A PATH AT** — not the read/write pair the paragraph above happens to enumerate. `links <PATH>`, `walk <PAGE>` and `repair <PAGE>` take a path from the caller exactly as `cat` does, so each serves an out-of-domain path or is a door defect by the sentence above. Stated because a build served two of them and refused three, which reads as one law with an exception and is instead one law with three defects (dogfood 2026-08-09, f06 — the four-door reading of this paragraph was itself a subset of a nine-door family). The same predicate bounds the rooted-ref lane (2026-08-18): every door the caller names a PAGE at resolves the agent-plane `[root:]path` spelling at the door — § A.12, `address-grammar.md` § 4.6.
+**The rule binds a DOOR FAMILY, and the family is every door the caller NAMES A PATH AT** — not the read/write pair the paragraph above happens to enumerate. `links <PATH>`, `walk <PAGE>` and `repair <PAGE>` take a path from the caller exactly as `cat` does, so each serves an out-of-domain path or is a door defect by the sentence above. Stated because a build served two of them and refused three, which reads as one law with an exception and is instead one law with three defects. The same predicate bounds the rooted-ref lane: every door the caller names a PAGE at resolves the agent-plane `[root:]path` spelling at the door — § A.12, `address-grammar.md` § 4.6.
 
-**Enumerators are the other half, and they are NOT bound to admit — they are bound to SAY** (ruled 2026-08-09, session decision 0017). A whole-corpus enumeration — `retire`'s sweep, the `sql` projection, `check`, bare `links` — stamps its answer `as_of` a fingerprint that an out-of-domain file's bytes cannot move, so carrying such a row under that stamp would publish a claim the stamp does not cover. An enumerator therefore MAY exclude what its attestation cannot reach, and **never silently: the exclusion is named in the output, and an enumeration that certifies ABSENCE either refuses or names what it did not see.** The engine already holds this shape for its neighbouring exclusion class — the unserved-member voice ("the file serves no spans/nodes … this scan does not see inside it") and `retire`'s refusal to certify over a partial corpus — and this rule is that reasoning carried to the domain-excluded case. The two halves compose: **a door that is asked about one path ADMITS; an enumeration that speaks for the whole corpus NAMES what it left out.**
+**Enumerators are the other half, and they are NOT bound to admit — they are bound to SAY.** A whole-corpus enumeration — `retire`'s sweep, the `sql` projection, `check`, bare `links` — stamps its answer `as_of` a fingerprint that an out-of-domain file's bytes cannot move, so carrying such a row under that stamp would publish a claim the stamp does not cover. An enumerator therefore MAY exclude what its attestation cannot reach, and **never silently: the exclusion is named in the output, and an enumeration that certifies ABSENCE either refuses or names what it did not see.** The engine already holds this shape for its neighbouring exclusion class — the unserved-member voice ("the file serves no spans/nodes … this scan does not see inside it") and `retire`'s refusal to certify over a partial corpus — and this rule is that reasoning carried to the domain-excluded case. The two halves compose: **a door that is asked about one path ADMITS; an enumeration that speaks for the whole corpus NAMES what it left out.**
 
-**The VERDICT plane is the third half, and it is bound to say WHAT IT DID NOT LOOK AT** (ruled 2026-08-09, session decision 0034). The colour plane — `walk`, `check`, `status` — states a verdict about a pin's TARGET, a path the caller never named. Its corpus is the hash domain, so an out-of-domain target is absent from it for a reason that has nothing to do with the target: **the engine did not look.** A red there asserts evidence the engine does not hold — and because the taught response to a red is to fix the target or drop the pin, a false red drives a caller to destroy an attestation the engine itself minted (`pin` returns rc=0 on an out-of-domain path and writes its anchor to disk; §12.1's first paragraph is why). **So an out-of-domain target THAT EXISTS ON DISK renders `grey(outside-hash-domain)`, never red** — R-3, grey outranks red — and the reason word is what distinguishes *policy: seen but not hashed* from the greys that mean *blindness: could not look*. In-domain targets are untouched by this rule: a pin whose target the domain holds still colours green, or red on real drift or a real miss.
+**The VERDICT plane is the third half, and it is bound to say WHAT IT DID NOT LOOK AT.** The colour plane — `walk`, `check`, `status` — states a verdict about a pin's TARGET, a path the caller never named. Its corpus is the hash domain, so an out-of-domain target is absent from it for a reason that has nothing to do with the target: **the engine did not look.** A red there asserts evidence the engine does not hold — and because the taught response to a red is to fix the target or drop the pin, a false red drives a caller to destroy an attestation the engine itself minted (`pin` returns rc=0 on an out-of-domain path and writes its anchor to disk; §12.1's first paragraph is why). **So an out-of-domain target THAT EXISTS ON DISK renders `grey(outside-hash-domain)`, never red** — grey outranks red — and the reason word is what distinguishes *policy: seen but not hashed* from the greys that mean *blindness: could not look*. In-domain targets are untouched by this rule: a pin whose target the domain holds still colours green, or red on real drift or a real miss.
 
-**The qualifier is load-bearing: "never red" binds a path that EXISTS but cannot be hashed** (ruled 2026-08-09, session decision 0049). **Absence outranks domain membership, because the order of questions is the order of facts: does the named path exist on disk, and only then, can the domain assess it.** Existence is a fact about the DISK; the domain filter is a fact about what the FINGERPRINT covers, and it is never a fact about what the disk holds. So the verdict plane answers the existence question by READING THE NAMED PATH — the same domain-independent read every named-path door owes (session decision 0045) — and **a named path that is absent from disk stays `red(file-not-found)` whether or not the domain would have excluded it.** This is the paragraph above about `file_not_found` meaning exactly one thing at every door, carried onto the verdict plane: a grey *"not in the hash domain"* over a file that is not there is a false sentence — the file is not anywhere, let alone outside the domain — and it fails in the certifying direction, because grey reads as intended exclusion and stops a reader looking. **The two states get two verdicts: out-of-domain and PRESENT is grey `outside-hash-domain`; out-of-domain and ABSENT is red `file-not-found`.**
+**The qualifier is load-bearing: "never red" binds a path that EXISTS but cannot be hashed.** **Absence outranks domain membership, because the order of questions is the order of facts: does the named path exist on disk, and only then, can the domain assess it.** Existence is a fact about the DISK; the domain filter is a fact about what the FINGERPRINT covers, and it is never a fact about what the disk holds. So the verdict plane answers the existence question by READING THE NAMED PATH — the same domain-independent read every named-path door owes — and **a named path that is absent from disk stays `red(file-not-found)` whether or not the domain would have excluded it.** This is the paragraph above about `file_not_found` meaning exactly one thing at every door, carried onto the verdict plane: a grey *"not in the hash domain"* over a file that is not there is a false sentence — the file is not anywhere, let alone outside the domain — and it fails in the certifying direction, because grey reads as intended exclusion and stops a reader looking. **The two states get two verdicts: out-of-domain and PRESENT is grey `outside-hash-domain`; out-of-domain and ABSENT is red `file-not-found`.**
 
-**The ordering binds BOTH planes: an absent page is `file-not-found` WHEREVER it is absent** (ruled 2026-08-09, session decision 0054, extending 0049 at the same seam rather than widening it). The paragraph above scopes its two verdicts to a target the domain EXCLUDES, because that is the plane the finding arrived on. The existence question is not scoped that way: **it is asked of the disk, and the disk does not know the domain.** So an IN-DOMAIN target that is absent from disk is `red(file-not-found)` too, on the same two grounds the exclusion class gets it on:
+**The ordering binds BOTH planes: an absent page is `file-not-found` WHEREVER it is absent** (the same seam as the paragraph above, not a widening). The paragraph above scopes its two verdicts to a target the domain EXCLUDES, because that is the plane the finding arrived on. The existence question is not scoped that way: **it is asked of the disk, and the disk does not know the domain.** So an IN-DOMAIN target that is absent from disk is `red(file-not-found)` too, on the same two grounds the exclusion class gets it on:
 
 1. **The verdict word's own claim is false in this case.** `selector-unresolved` is documented as *the page resolved and the selector failed*, and `dangling-anchor` as *the page's anchor vanished* — both assert a resolution. With the page gone there is no page to resolve, and the emptiness of the rendered detail is the structural proof: the candidate list a resolution red carries is drawn from the live doc, and there is no live doc to draw it from, so the caller gets the LEAST informative form of the red exactly where the cause is largest. **A verdict may not assert a resolution that did not occur.** `file-not-found`'s documented meaning — *root reached, path genuinely absent* — fits this case as written.
 2. **Two worlds share one sentence, and the collapse defeats the caller.** Page-present-heading-moved (candidates listed) and page-gone (empty detail) arrive under one word, and their recoveries DIFFER — fix the selector versus restore or re-pin the file. A caller told the heading moved hunts a heading in a file that is not there.
 
 That an in-domain target's absence from the corpus map is real evidence — the engine truly did look — is true and does not save the word: **looking and finding nothing is what `file-not-found` MEANS.** So the verdict plane asks its questions in one order on both planes: **does the named path exist on disk → absent is `file-not-found`; present → can the domain assess it → out-of-domain is grey `outside-hash-domain`; in-domain → the address and fingerprint questions as before.** Because the existence question runs ahead of every address question, it displaces the resolution reds for EVERY selector class on an absent page, the block class included.
 
-Scope, stated because the states are told apart by different mechanisms: the existence question is answerable only for the AMBIENT root today (a mounted root's corpus is built by its own workspace's filter and no face carries those filters across, and a disk read there is not the corpus builder's to answer), so the existence read runs where the domain arm runs. **A miss inside a MOUNTED root is measured by resolution as before and is unchanged by these rules** — it already renders `file-not-found`, naming its root. A face that supplies no disk gets `cannot say` and keeps its pre-0049 verdict rather than a guess, exactly as a face that supplies no domain does.
+Scope, stated because the states are told apart by different mechanisms: the existence question is answerable only for the AMBIENT root today (a mounted root's corpus is built by its own workspace's filter and no face carries those filters across, and a disk read there is not the corpus builder's to answer), so the existence read runs where the domain arm runs. **A miss inside a MOUNTED root is measured by resolution as before and is unchanged by these rules** — it already renders `file-not-found`, naming its root. A face that supplies no disk gets `cannot say` and keeps its resolution verdict rather than a guess, exactly as a face that supplies no domain does.
 
 **Standing surface:** `meridian/domain.md` only.  
 **Legacy filename (not design):** `mdfs_config.yaml` may still be *read* by the engine when it is the **only** domain config present (old workspaces). Do not create it; do not teach it. Two domain configs at once is an error (ambiguous domain), not a precedence rule. See `crates/fs/src/domain.rs`.
@@ -1155,7 +1128,7 @@ Leaf = blake3(whole raw file), full 32 B. Interior = blake3 over children sorted
 
 An ignore-list (or algorithm) change re-defines the domain, so the token prefix advances: `b3:` → `b3a:` → … The domain `version` field rides **`meridian/domain.md`** with the ignore list so domain definition and prefix travel together.
 
-Worked at **S0**, writing `meridian/domain.md` in the forms §0.3 prints. `drafts/tmp.md` may be on disk for **rows 3–5 only** — each of those declares an ignore list covering it, so its presence moves nothing there. **Rows 1 and 2 require it ABSENT**: they declare no ignore list, so a `drafts/` file joins the domain and neither row's value is served. The config is markdown, so **its own bytes are in the domain it declares** — that is why v0 and v1 differ in hex over the same member set. Every value is measured against the shipped engine, 2026-08-09:
+Worked at **S0**, writing `meridian/domain.md` in the forms §0.3 prints. `drafts/tmp.md` may be on disk for **rows 3–5 only** — each of those declares an ignore list covering it, so its presence moves nothing there. **Rows 1 and 2 require it ABSENT**: they declare no ignore list, so a `drafts/` file joins the domain and neither row's value is served. The config is markdown, so **its own bytes are in the domain it declares** — that is why v0 and v1 differ in hex over the same member set. Every value is measured against the shipped engine:
 
 | `meridian/domain.md` | Files hashed | Fingerprint |
 |---|---|---|
@@ -1165,25 +1138,20 @@ Worked at **S0**, writing `meridian/domain.md` in the forms §0.3 prints. `draft
 | v1 — ignore `drafts/**`, `meridian/**` | plan, receipts | `b3a:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9` |
 | v2 — same ignore list | plan, receipts | `b3b:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9` |
 
-Two laws read straight off the table. **The prefix tracks the domain RULES, never the member set** — row 2 adds a file and stays at `b3:`, because declaring `version: 0` with no ignore list changes no rule; rows 3–5 advance because the rules moved. And **the same surviving hex can never compare equal across prefixes**: rows 1, 4 and 5 carry one 64-hex value under three different tokens, by design — receipts must not silently match a redefined domain.
+Two laws read straight off the table. **The prefix tracks the domain RULES, never the member set** — row 2 adds a file and stays at `b3:`, because declaring `version: 0` with no ignore list changes no rule; rows 3–5 advance because the rules moved. And **the same surviving hex can never compare equal across prefixes**: rows 1, 4 and 5 carry one 64-hex value under three different tokens, by design — receipts must not silently match a redefined domain. The table is computed over the standing `meridian/domain.md` surface, whose own bytes are in the domain it declares — a pair computed through the legacy non-md `mdfs_config.yaml`, whose bytes stay out, would not close (§18 row 11).
 
-**Amendment, 2026-08-09.** Before this date §12.3 published a pair anchored at S2 — v0 `b3:05f0c6192308db5937c3e1352d1f9a6fc31b89b1a57175c8af6ce7903525aa4a`, v1 `b3a:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68`. Those values close arithmetically only if the domain config's own bytes stay OUT of the domain, which is true of the legacy non-md `mdfs_config.yaml` and false of the standing `meridian/domain.md`. The published worked example was therefore reproducible only through the surface §12.1 says do not create and do not teach. Ruled (advisor, 2026-08-09): the table recomputes over the standing surface. §12.1 stands untouched — the legacy filename stays forbidden — and the superseded values are printed here rather than scrubbed. §18 row 11.
-
-**Hash-law retirement rides the same ladder (docs-first 2026-08-15; ruled: `decisions/2026-08-15-width-sharding-now.md`, GO per `decisions/2026-08-15-plan-rulings-final.md` R1).** The one-time interior-encoding cutover (fixed-256 radix child maps — `node-rev-merkle-spec.md`) changes the hash LAW, so the prefix advances exactly as this section's ladder already guarantees: old tokens never silently compare equal. What this section adds is the refusal law at the boundary, three facts never flattened (§5.7, §8.2):
+**Hash-law retirement rides the same ladder.** The one-time interior-encoding cutover (fixed-256 radix child maps — `node-rev-merkle-spec.md`) changes the hash LAW, so the prefix advances exactly as this section's ladder already guarantees: old tokens never silently compare equal. What this section adds is the refusal law at the boundary, three facts never flattened (§5.7, §8.2):
 
 - A held token from a KNOWN RETIRED family refuses `fingerprint_version_retired` with re-mint teaching — never `fingerprint_mismatch`, which would lie: the premise did not move, the LAW moved.
 - A token from an UNKNOWN FUTURE family refuses `fingerprint_version_unsupported` — distinct, taught apart.
 - Only a current-family unequal digest is the normal scoped mismatch.
 
-**When retirement begins is the cutover's no-return boundary** (stated as law
-in `node-rev-merkle-spec.md` §4.2.5, bounce-1 closure; amended 2026-08-16):
-before the boundary the old law is still serving and nothing refuses
-`fingerprint_version_retired`; the boundary is crossed by the durable B-04
-cutover record alone — the downgrade-fence tombstone NEVER activates (ZT
-standing law 2026-08-15: no old-binary users, the fence landed dormant;
-`node-rev-merkle-spec.md` §4.2.5 amendment carries the verbatim law) — and
-the non-serving shadow build is not implemented (`B_cutover` answered — pay
-once).
+**When retirement begins is the cutover's no-return boundary** (law in
+`node-rev-merkle-spec.md` §4.2.5): before the boundary the old law is still
+serving and nothing refuses `fingerprint_version_retired`; the boundary is
+crossed by the durable cutover record alone — the downgrade fence never
+activates (there are no old-binary users; `node-rev-merkle-spec.md` §4.2.5
+carries the law) — and no non-serving shadow build exists (pay once).
 
 **No dual-hash serving window exists**: the engine never serves two hash laws at once — the honest price is one typed, taught re-plan event per workspace at cutover, not permanent double maintenance. `sub` re-baselines at the cutover with a labeled epoch boundary, never a silent chain break.
 
@@ -1192,35 +1160,34 @@ once).
 1. **16-hex rev truncation:** ≈2^32 birthday work on attacker-fed content forges a rev collision. The mitigation is the trusted-local boundary — this wire serves local, trusted workspaces; any "adversary-proof" claim is dead. Full-width `fingerprint` and `file_rev`-over-whole-file are the honest escalation ladder for wider guarantees.
 2. **Staleness:** no lag bounds, ever (§10.1). `as_of_fingerprint` may trail `live_fingerprint` at any moment; `require_fingerprint` is refusal, not synchronization.
 3. **Storage re-probe posture:** on major dependency bumps (pulldown-cmark fork rebase, blake3 major, any ratified view engine's format), the conformance packs and measured envelopes are re-probed, never assumed to carry (extends the app-oracle re-probe rule to every measured claim).
-4. **Conformance unknowns are pack-pinned, never asserted:** stage-1 duplicate-basename tie-break, embed depth-cap constant, app version drift — pinned as `obsidian-compat@1.12.7` answers at default settings, re-generated per app version via the live oracle (`obsidian eval`). The pack and its regeneration operating manual live in-repo at `crates/testsuite/data/gt/obsidian-compat/` (see pack notes under that path). Hand-frozen resolution fixtures are dead.
+4. **Conformance unknowns are pack-pinned, never asserted:** stage-1 duplicate-basename tie-break, embed depth-cap constant, app version drift — pinned as `obsidian-compat@1.12.7` answers at default settings, re-generated per app version via the live oracle (`obsidian eval`). The pack and its regeneration operating manual live in-repo at `crates/testsuite/data/gt/obsidian-compat/` (see pack notes under that path). The pack replaces hand-frozen resolution fixtures.
 5. **Root-history ring bound 256:** older ranges answer `fingerprint_unknown` → full resync. Re-derive, never wrong data.
 6. **Crash window in two-file batches** (§6.5): content-without-receipt is possible; loud via lint, recovered via re-root.
 7. **No-self-rooting** (§6.2): receipts structurally cannot carry their own `fingerprint_after`.
-8. **`_` block ids:** the ruled single charset (§2.4) makes any `_`-bearing id unaddressable as a strict anchor (loud `bad_request`). Empirically none exist in live corpora — the re-id migration is priced at zero; the phase-2 implementation package owns the forward-looking mint-guard plus the tournament-fixture exemption, and the app's own treatment of legacy-form ids stays pack-pinned, never assumed.
+8. **`_` block ids:** the ruled single charset (§2.4) makes any `_`-bearing id unaddressable as a strict anchor (loud `bad_request`). No re-id migration ships; the implementation owns the forward-looking mint-guard plus the frozen-fixture exemption, and the app's own treatment of legacy-form ids stays pack-pinned, never assumed.
 
 ## §14 Repo grounding — speced ON TOP of meridian-rs
 
-Sequencing below uses the **panel ladder** numbering (dialect → facts/check parity → integrity+diff → write/CAS → subscribe → policy packs); the repo's own rung comments differ (write/CAS is repo rung 2, subscribe repo rung 4) — one numbering, said once. What stands vs what changes, per crate:
+Sequencing below uses the **rung ladder** numbering (dialect → facts/check parity → integrity+diff → write/CAS → subscribe → policy packs); the repo's own rung comments differ (write/CAS is repo rung 2, subscribe repo rung 4) — one numbering, said once. What stands vs what changes, per crate:
 
 | Crate seam | Stands | Changes under this schema |
 |---|---|---|
 | `crates/syntax` | the single entry `parse(&str) -> Vec<DialectNode>`, 11-variant dialect vocabulary, fork-pin law | nothing — implement the `todo!()` |
-| `crates/wire` | all four noun newtypes; standing `Toc`/`Extract`/`Hello`; `Node` + kind ordinal; `ErrorBody` typed extras; strict/tolerant obligations | +`Delta` noun; +ops `cat`/`links`/`fingerprint`/`diff`/`sub` and reshaped `resolve`/`splice` via rung-freezing amendments; `ErrorCode` grows the §8 splits; `not_found` retired; §6.4 `Guard` op dropped |
-| `crates/transport` | `NdjsonCodec` (implemented, tested), raw-id frame classification seam, null-id serialization test | raw-lexeme validation added at this seam (before typed decode) |
-| `crates/transport-proto` | **DELETED** (8a57a3da, 2026-08-03) — Law 1.4 keeps the seam JSON-only; the varint framing, the wire-agreement drift pin, and the `MAX_FRAME_BYTES` bound died with the crate (§18 row 14) | — |
+| `crates/wire` | all four noun newtypes; standing `Toc`/`Extract`/`Hello`; `Node` + kind ordinal; `ErrorBody` typed extras; strict/tolerant obligations | +`Delta` noun; +ops `cat`/`links`/`fingerprint`/`diff`/`sub` and reshaped `resolve`/`splice` via rung-freezing amendments; `ErrorCode` grows the §8 splits; no bare `not_found`; no `Guard` op |
+| `crates/transport` | `NdjsonCodec` (implemented, tested), raw-id frame classification seam, null-id serialization test | raw-lexeme validation added at this seam (before typed decode); the seam is JSON-only — no length-prefixed framing and no frame-size bound (§18 row 14) |
 | `crates/model` | `build`, richer NodeKind, no-serde law, **sealed `ValidatedSplice` capability discipline** (an unvalidated write cannot reach disk by construction), `merkle_root` seam | `SpliceRequest{span, if_node_rev, text}` reshaped to match-based (`target + match/put` — §4.4); `resolve` stays but serves the strict plane only; hash algorithm decided = blake3 (the "rung-2 wire amendment" the model doc reserved — §1) |
 | `crates/fs` | `load`/`walk`/`apply_splice` seams, tmp+fsync+rename, no-storage law ("the moment memory can't be thrown away, the architecture has been violated") | `apply_splice` takes the batch (content + receipt append, one commit — §6.1); walk gains the §12 domain filter |
 | `crates/wire-map` | `prefix_16b` (implemented, contract examples as passing tests), the one model+wire projection seam | `project` implements the superset-by-embedding predicates (§15) |
 | `crates/policy` | `Violation`/`Severity`/`RulesetPin`/`CompiledRuleset`/`CompileError` — already this schema's §11 shapes; `policy::gate` stays deferred off the splice path (actor is a wire input, not an engine gate — §9) | `evaluate` output rides splice responses as `verdicts` |
 | `crates/query` | `backlinks` seam | serves `links` with the §10 triple |
-| `crates/sidecar` | **DELETED** — hosts ruling (§3.3, 2026-08-06): the daemon socket is the one wire door; the registry host serves §4 | — |
+| `crates/registry` | the daemon host — the one wire door (§3.3) | serves §4 over the unix socket |
 | `crates/testsuite` / GT | consolidated test binary, GT pack + provenance | GT regenerated from THIS contract: lane pack demoted; resolution GT = app-generated `obsidian-compat@1.12.7`; every deviation row ships a fixture the deviated-from dialect FAILS (the discrimination law); `wsfix/` values join as fixtures |
 
 The draft implementation plan sequenced against this table is a downstream deliverable; this section is its contract.
 
 ## §15 Structural guarantees index I — construct-level guarantees
 
-*Every guarantee below is a standalone structural claim: what the contract guarantees, and the § where it is guaranteed. Which reviewer finding each one answers is recorded in the citation footnotes of the master.*
+*Every guarantee below is a standalone structural claim: what the contract guarantees, and the § where it is guaranteed.*
 
 - **Every dialect construct is wire-representable, no lossy projection.** The `wire-map` projection seam is superset-by-embedding as law, restated as four wire-observable predicates: every dialect construct is representable (11-kind enum incl. Comment/InlineCode); wikilink information is carried whole; an unterminated fence surfaces as `unterminated` on the wire; frontmatter key order is preserved in `keys` (§4.1). Any divergence is a projection compile error, not a runtime loss (§14).
 - **Ids are validated as raw lexemes before typed decode.** The raw-lexeme id law runs before typed decode, with the full discrimination set worked incl. `3e0` and the 2^53 boundary pair (§3.1).
@@ -1228,7 +1195,7 @@ The draft implementation plan sequenced against this table is a downstream deliv
 - **One rev per node, and client spans have no expressible form.** The CAS rule is explicit and singular: one rev per node, full-span bytes, re-derived at execution; `content_span` mints nothing; client spans are unrepresentable — the miswrite trap has no expressible form (§5.1).
 - **The mint/walk partition is enforced as a type law.** The walk-plane response has no rev field; interop refs pay one toc hop; stale names fail `ref_not_found` (§2, §4.5).
 - **One grammar per plane, advertise-nothing-resolve-nothing.** One block-id charset on both planes, stated once (§2.4); extract emits ⇔ resolve resolves; duplicate ids: mint refuses loud, walk stays app-silent (§2.1).
-- **`not_found` is retired; each error class is statically bound to one recovery.** `file_not_found` (env) ≠ `ref_not_found` (refresh, +`stage`); `io_error{cause}` is split out (§8).
+- **No bare `not_found`; each error class is statically bound to one recovery.** `file_not_found` (env) ≠ `ref_not_found` (refresh, +`stage`); `io_error{cause}` is split out (§8).
 - **Op discovery is complete; there is no version sniffing.** Dotted `op.field` caps strings; the capability set is discovered whole; no version sniffing (§3.2).
 - **The hash domain is md-only, config-declared, with a counterfactual root pair worked.** md-only domain + `meridian/domain.md`; one-rule default ignore; the hash domain is a subset of the addressable domain; a counterfactual root pair is computed; a domain-rule change bumps the root prefix to `b3a:` (§12).
 
@@ -1236,7 +1203,7 @@ The draft implementation plan sequenced against this table is a downstream deliv
 
 ## §16 Structural guarantees index II — usage-pattern coverage
 
-*This index states, for every mined usage pattern, where the contract serves it structurally. **Matched** = this wire serves the pattern as a fact op; **Above-wire** = deliberately served by a consumer built on named wire facts, not by a wire op; **Dead** = removed, with the mined evidence as the justification. The originating usage inventory and its per-row counts are recorded in the citation footnotes of the master.*
+*This index states, for every surveyed usage pattern, where the contract serves it structurally. **Matched** = this wire serves the pattern as a fact op; **Above-wire** = deliberately served by a consumer built on named wire facts, not by a wire op; **Dead** = not served, by usage evidence.*
 
 | Pattern | Disposition |
 |---|---|
@@ -1249,14 +1216,14 @@ The draft implementation plan sequenced against this table is a downstream deliv
 | `skill render` | Above-wire: actor capability; wire serves cat/extract |
 | `rules ls` | Above-wire: pack manifest is data (§11.3); loaded-pack listing is a consumer surface |
 | `schema` | Above-wire; the write half is fm_key nodes (§4.4 dry example) |
-| `llm-wiki check` | Above-wire (SOP layer) |
+| corpus-level `check` | Above-wire (procedure layer) |
 | `encode` | Above-wire: pure grammar library; no wire surface (grammar defined once, §2) |
 | `fix` | Above-wire mutation policy over `dry:true` + per-file batches (§4.4); see the mass-mutation friction row below |
 | `debug` | Above-wire (rule dev tooling over §11 verdicts) |
 | `attest` | Above-wire effects layer; dry seam + fm_key handles underneath (§4.4) |
 | `mv` | Loudly alternativized: corpus move+link-rewrite is a composed consumer op — `links` (§4.6) + `fileToLinktext` emission algebra (the app's, not ours) + per-file splices; multi-file atomicity honestly absent (§6.5) |
 | `status` | Dead as op; liveness is the daemon's; the change feed is `sub` (§4.7) |
-| `watch` | Dead CLI; superseded by the Delta noun + `sub` reservation + recovery law (§7) |
+| `watch` | Dead as CLI; the Delta noun + `sub` + recovery law serve it (§7) |
 | `resolve` CLI | Matched: `resolve` op (§4.5) |
 | `append` | Matched: `put{at:"end"}` with full receipts — the worked append exchange (§4.4) |
 | `toc` | Matched: `toc` with rev/write-kit per node (§4.1) |
@@ -1264,7 +1231,7 @@ The draft implementation plan sequenced against this table is a downstream deliv
 | `edit-section` | Matched: THE flagship — `match` edit + CAS; conflict recovery costs one `cat` (§4.4, §5.2) |
 | `set-prop` | Matched: fm_key splice (§4.4 dry example); `#:key` grammar dead (§2.1) |
 | `chain promote` | Above-wire effects layer |
-| `debt` | Dead (decaying, mined) — orientation, not action (§10.3) |
+| `debt` | Dead — orientation, not action (§10.3) |
 | `domains tree` | Dead — orientation (§10.3) |
 | `rules check` | Dead as op; fixtures-as-load-gate does its job structurally (§11.3) |
 | `def check/census` | Above-wire per vision; def-conformance = named amendment candidate riding `dry` |
@@ -1272,7 +1239,7 @@ The draft implementation plan sequenced against this table is a downstream deliv
 | `def fix` | Dead |
 | `cache stats/clean` | Dead as CLI; cache is implicit engine state (no-storage law, §14 fs row) |
 | MCP `read`/`put`/`pipe` | Matched by vision: the MCP face is a wire client (§4.8 mapping is face-agnostic) |
-| friction: mass-mutation whole-tree write (~1,347 files) | Structurally inexpressible: every splice names ONE path + explicit targets; no glob/whole-tree write grammar exists in §4.4 — the strongest mined gate, honored by omission |
+| friction: mass-mutation whole-tree write (~1,347 files) | Structurally inexpressible: every splice names explicit paths + explicit targets; no glob/whole-tree write grammar exists in §4.4 — the strongest gate, honored by omission |
 | friction: JSON-arg dead ends | `caps` + loud echoing rejections (§3.2, §4.3) |
 | friction: exit codes leak through pipes | In-band `ok` per correlated frame; the wire has no exit codes (§3.1) |
 | friction: resolver/linter divergence | ONE resolver: the app's two-stage algebra, app-oracle GT; rules read the same facts (§4.5, §11.2) |
@@ -1280,11 +1247,11 @@ The draft implementation plan sequenced against this table is a downstream deliv
 | friction: unregistered-check spam | An op is in `caps` or answers `unknown_op`; packs admit via fixtures or don't load — no ambient noise (§3.2, §11.3) |
 | friction: no machine-readable check output | Frames-only stdout, logs stderr (§3.1); verdicts typed (§11.1) |
 
-**Cross-cutting mined facts honored:** the zero-organic-rev reality is served by a permissive wire + ambient revs + a host policy ratchet (§4.4, §5.3); invisible in-process consumers become wire clients (the MCP row above; an existing engine-linked consumer is transition-tolerated only, ruled out by panel law); zero-use flags are not carried; unknown request fields reject loudly (§3.2) — with the corrected heading-read count honored via `resolve.content`.
+**Cross-cutting facts honored:** low organic rev use is served by a permissive wire + ambient revs + a host policy ratchet (§4.4, §5.3); in-process consumers become wire clients (the MCP row above; an engine-linked consumer is transition-tolerated only); zero-use flags are not carried; unknown request fields reject loudly (§3.2); heading reads ride `resolve.content`.
 
 ## §17 Structural guarantees index III — top-level requirement coverage
 
-*This index states where each top-level requirement of the contract is answered. The requirement labels are the last-gate checklist item names; their sourcing is recorded in the citation footnotes of the master.*
+*This index states where each top-level requirement of the contract is answered. The requirement labels are the review checklist item names.*
 
 | Requirement | Where answered |
 |---|---|
@@ -1299,37 +1266,34 @@ The draft implementation plan sequenced against this table is a downstream deliv
 | Rules-as-data (A9) | §11 (verdicts, WHEN/HOW, budgets+fixtures manifest, Starlark ratified §11.4, evaluator-free wire) |
 | View topology (A10) | §10 (triple, `stale_view` worked, no lag bounds, optional wire-agnostic view organ — no engine-named wire elements) |
 | Honest limits (A11) | §13 (register of 8) + honesty statements inline throughout |
-| Repo grounding (A12) | §14 (stands/changes per crate seam; panel-ladder numbering declared; feeds the downstream impl-plan) |
-| Skill doc + HTML page (A13, A14) | Downstream deliverables (skill doc, HTML page) — bound to this contract + this contract; not claimed here |
+| Repo grounding (A12) | §14 (stands/changes per crate seam; rung-ladder numbering declared; feeds the downstream impl-plan) |
+| Skill doc + HTML page (A13, A14) | Downstream deliverables, bound to this contract; not claimed here |
 
-**Rulings attest:** the formerly open rows are ruled and folded — node-grain deltas (§7.4), Starlark (§11.4), optional wire-agnostic view organ (§10.4), the single block-id charset (§2.4); deviations and waivers are consolidated in §18. **Tool attest:** blake3 over this document's §0.3 fixture bytes; offsets from byte math; zero invented values.
+**Rulings attest:** the §0.2 gates are ruled and folded — node-grain deltas (§7.4), Starlark (§11.4), optional wire-agnostic view organ (§10.4), the single block-id charset (§2.4); deviations and waivers are consolidated in §18. **Tool attest:** blake3 over this document's §0.3 fixture bytes; offsets from byte math; zero invented values.
 
 ## §18 Deviation & waiver ledger (fix-at-freeze)
 
-The fix-at-freeze rule requires each reviewer-flagged debt fixed or waived with reason, here, never silently. Rows 1–5 are the winner-pick fix list; rows 6–7 consolidate the v1 deviations already declared in the body; rows 9–13 are measured against the shipped v1 artifact and this document's own arithmetic (dogfood, 2026-08-09).
+The fix-at-freeze rule requires each reviewer-flagged debt fixed or waived with reason, here, never silently. Rows 1–5 are the review fix list; rows 6–7 consolidate the deviations declared in the body; rows 9–14 are measured against shipped artifacts and this document's own arithmetic.
 
-**Rows 9 and 12 are a different KIND of row, and the difference is load-bearing.** Rows 1–7 and 11 record where this DOCUMENT departed from ruled law. Rows 9 and 12 record where the shipped ARTIFACT departs from this document — and **row 10 carried BOTH legs and is now CLOSED** (rebaselined 2026-08-09): a printing debt in this document, since discharged, and beside it the width the artifact actually writes — measured at the v1 cut against the built binary, not read off the source. Recording it is what §15's assumption-audit law demands: a deviation found without a row here is a contract bug, so the row FIXES that bug by this contract's own procedure. **Declaring is not legislating.** The law a row names stays in force, unamended, and the row is the observation — never a licence. (The contrast that fixes the rule: amending the constitution to legalize an implementation's behavior is breach; recording non-conformance while the law stands is this ledger working as designed.)
+**Rows 9–14 are a different KIND of row, and the difference is load-bearing.** Rows 1–7 record where this DOCUMENT departed from ruled law. Rows 9–14 record where a shipped ARTIFACT departed from this document — measured against the built binary, not read off the source — and how each departure stands. Recording it is what §15's assumption-audit law demands: a deviation found without a row here is a contract bug, so the row FIXES that bug by this contract's own procedure. **Declaring is not legislating.** The law a row names stays in force, unamended, and the row is the observation — never a licence. (The contrast that fixes the rule: amending the constitution to legalize an implementation's behavior is breach; recording non-conformance while the law stands is this ledger working as designed.)
 
 | # | Item | Disposition |
 |---|---|---|
 | 1 | Policy-scope grammar was unbound to the strict plane (ratchet scopes lived as host-side prose; the pack manifest has no scope field) | **FIXED** — §5.3 now binds scope grammar: `Path`-set selectors + strict-plane refs (§2.1), no second grammar; the manifest's scope-field absence is declared deliberate |
-| 2 | The repo's reserved `fingerprint_mismatch` shape (`crates/wire` §6.5 reserved-codes note) carries extra fields `expected/actual/scope/changed`; this contract ships `{expected,actual}` — the `scope` and `changed` drops are declared here | **WAIVED, declared** — the only world-grain guard is `if_fingerprint` (§5.1); no scoped-fingerprint construct exists for `scope` to describe. If a scoped world guard ever arrives by amendment, `scope` returns with it. *(Return clause FIRED 2026-08-15: the scoped world guard arrived — §5.4 — and `scope` returns with it, `fingerprint_mismatch{expected,actual,scope?}` (§5.7, §8). `changed` stays struck; its 2026-08-10 strike below is untouched.)* *(Amended 2026-08-10: `changed` STRUCK. It was promised here and MINTED BY NOTHING — the only assignment in the whole workspace was a hand-written conformance fixture, while both real producers set `expected`/`actual` only. Measured against a real daemon: the set is NOT derivable by the caller — an intruding write to a file the caller never read and never armed moves the workspace-wide root and the caller's premise cannot name it — but the doors cannot hold it either: the daemon's root-history ring is out of scope at both doors, RAM-only per epoch, and bounded at 256 with eviction, so it would be UNAVAILABLE EXACTLY WHEN THE CALLER IS MOST STALE. A field a door cannot always honestly fill is manufactured, not aligned; `resync` already instructs the full re-read that is the set's only honest recovery. Zero wire change — no producer ever emitted it.)* |
-| 3 | The frontmatter node's span `[0,20]` is terminator-inclusive, against the v1 §5.2 / merkle-spec §2 leaf-block law (exclude the final terminator) — previously undeclared | **WAIVED, declared** — the frontmatter node is a fence-to-fence container, span-lawed with the section (newline-inclusive) family, not the leaf-block family; the `fm_key` leaf inside it (`[4,15]`, §4.4) excludes its terminator, consistent with the leaf law. All hashes stand |
+| 2 | The repo's reserved `fingerprint_mismatch` shape once named extra fields `expected/actual/scope/changed`; this contract ships `{expected,actual,scope?}` — the `changed` drop is declared here | **`scope` served, `changed` STRUCK.** `scope` rides with the scoped world guard (§5.4): `fingerprint_mismatch{expected,actual,scope?}` (§5.7, §8), absent = the root premise. `changed` is MINTED BY NOTHING: the set is NOT derivable by the caller — an intruding write to a file the caller never read and never armed moves the workspace-wide root and the caller's premise cannot name it — and the doors cannot hold it either: the daemon's root-history ring is RAM-only per epoch and bounded at 256 with eviction, so it would be UNAVAILABLE EXACTLY WHEN THE CALLER IS MOST STALE. A field a door cannot always honestly fill is manufactured, not aligned; `resync` already instructs the full re-read that is the set's only honest recovery |
+| 3 | The frontmatter node's span `[0,20]` is terminator-inclusive, against the §1 / merkle-spec §2 leaf-block law (exclude the final terminator) | **WAIVED, declared** — the frontmatter node is a fence-to-fence container, span-lawed with the section (newline-inclusive) family, not the leaf-block family; the `fm_key` leaf inside it (`[4,15]`, §4.4) excludes its terminator, consistent with the leaf law. All hashes stand |
 | 4 | Two silent rebinds vs the ruled failure-class table plus one dropped code | **FIXED, declared** — §8 now declares all three deltas with rationale: `fingerprint_mismatch`→`resync`, `unsupported_proto`→`respawn`, `bad_id` folded into `bad_request` + `id:null`/`id_raw`. Behavior-preserving |
-| 5 | The base packet's A6 self-claim "replay ≡ live stated and tested" — nothing executable tests it today | **FIXED, restated honestly** — executed: the fixture recomputation behind every worked value (§17 tool attest). NOT executed: any replay ≡ live test, any conformance-pack run — both are impl-rung deliverables in the impl-plan (rung-4 test; GT regeneration). The word "tested" is retracted |
-| 6 | v1 `not_found` retired | Declared at §8 with rationale (split into `file_not_found` env / `ref_not_found` refresh) |
-| 7 | v1's frozen "unknown `kinds` match nothing" reversed to loud `bad_request` | Declared at §4.3 with rationale (the strict-server evolution law applied to values) |
-| 9 | **The v1 artifact deviates from the raw-lexeme id law (§3.1).** §3.1 fixes valid ids as JSON integer lexemes in `[0, 2^53)` and requires a non-conforming lexeme to be refused with `id:null` plus the offending lexeme verbatim in `id_raw`. Measured at the v1 cut against the built release binary over a live socket: every non-conforming lexeme — `"1"`, `-1`, `1.5`, `true`, `null` — is silently nulled and **the request is SERVED**. No refusal, and `id_raw` is never emitted. A conforming integer echoes correctly (`{"id":7}` → `id:7`). Not op-specific: on `mounts`, `{"id":5}` echoes while `{"id":"5"}` answers `id:null` — same frame, same op, only the lexeme differs | **CLOSED 2026-08-12 — this row is now the RECORD of a closed debt, not a declaration of an open one.** The conformance this row owed is SERVED: the daemon door scans the raw `id` lexeme at frame classification, BEFORE decode/dispatch (`transport::scan_id` at the `crates/registry` door — the one wire door, §3.3), and a non-conforming lexeme is refused `bad_request` with `id:null` plus the verbatim lexeme in `id_raw` — never served, never reclassified as a notification (`2^64` pinned at the door). The error's `recovery` is `fix` (§8's static binding for `bad_request`; the respawn consequence stays client-side law keyed off the `id:null` frame header, not this field). §3.1 STANDS UNAMENDED — the artifact now serves it. Gated by `crates/registry/tests/v3_key_set_pins.rs`: `contract_3_1_a_non_integer_id_is_refused_with_id_raw` (un-ignored — its R3a premise, "no host serves it", is dead), the flipped served-behavior pin `a_non_integer_id_is_refused_with_id_raw_at_the_daemon_door`, and `an_out_of_range_id_is_refused_never_reclassified_as_notification` |
-| 10 | **The fixture's S1/S2 receipt bytes were printed nowhere.** §6.3's receipt lines measured 260 B / 262 B against the 222 B / 224 B the fixture's own spans and file sizes required: 38 B per line unprinted (dogfood 2026-08-09, s10). §0.3's promise that "every file this document hashes is printed in this section" did not hold for S1/S2 | **CLOSED 2026-08-09 by rebaseline — this row is now the RECORD of a closed debt, not a declaration of an open one.** The two causes were deviations from this document's own law and were fixed in the TEMPLATE, not waived in the text: `root_before=` where §6.1's standing noun is `fingerprint_before=` (**7 B**), and the `Goals>Q3` pretty join where §2.1 form is mandatory and §6.3 says in its own words not to re-teach it (**31 B**). **This was a FIXTURE act, which is why it took a rebaseline and not an edit.** Receipts are ordinary markdown inside the hash domain (§6.1), so moving receipt bytes moved the receipt node rev, which advanced the workspace fingerprint. R1 and R2 were RECOMPUTED by the engine over the new fixture bytes, never re-typed: R1 `b3:10769ae1…` → `b3:7f3b4437…`, R2 `b3:83b4ba59…` → `b3:6e866e13…`, receipts `file_rev@S1` `2731acfa…` → `51ad6428…`, `file_rev@S2` `9167b12b…` → `6cb0e939…`, the `r-000042` leaf `[26,248]`/`639a2dca…` → `[26,286]`/`60bbee70…`, the `r-000043` leaf `[249,473]`/`c912d457…` → `[287,549]`/`5c6ca7ec…`, and the receipts file 26 → 249 → 474 B → 26 → 287 → 550 B. Every one is gated by recomputation in `crates/testsuite/tests/pf_frozen_sweep.rs`, which derives them from the committed S0 bytes rather than transcribing them — so a wrong value fails a test instead of shipping. **§0.3's promise now holds without exception**: §6.3 prints the S1/S2 receipt bytes, and they ARE the fixture's. **What did NOT close, and is not owed:** the shipped CLI lane writes **254 B** node (**255 B** line) because a CLI invocation is not a wire request and mints no request id — `id=` is 6 B of §9's absent-inputs law working, ruled not a defect, and the same template writes the fixture's 260 B byte-for-byte when a request carries one (gated: `crates/receipt/tests/frozen_receipts.rs :: e3_receipt_line_byte_exact`). Live S1/S2 therefore still leave the published R1/R2 timeline on the CLI lane, by lane and not by shortfall. **The escaping this form now requires is §6.7 rule 2**, landed ahead of this rebaseline for a reason stated there: the forging hazard is created by emitting the JSON form, so the escape had to exist before the emission, never alongside it |
-| 11 | **§12.3's worked table taught its arithmetic through a forbidden surface.** The published S2-anchored v0/v1 pair closes only if the domain config's own bytes stay out of the domain — true of the legacy non-md `mdfs_config.yaml`, false of the standing `meridian/domain.md`, which self-hashes by design (`crates/fs/src/domain.rs`). §12.3's values therefore contradicted §0.3's own "participates when present" note and were unreachable from the surface §12.1 mandates (dogfood 2026-08-09, s10) | **FIXED** — §12.3 recomputes over the standing `meridian/domain.md` with engine-measured values, §0.3 prints that file's v0 and v1 bytes, and the superseded pair is printed at §12.3 rather than scrubbed. §12.1 stands unamended: the legacy filename remains do-not-create, do-not-teach. **The S0 file set did not move** — `meridian/domain.md` is ABSENT at S0, R0 unchanged, and printing a file's bytes never makes it a member (proved on a fresh fixture: absent → R0, v0 present → `b3:23421037…`, removed → R0 returns). Ruled 2026-08-09, advisor scope |
-| 12 | **CLI-lane commits advance the fingerprint and mint no Delta.** §7.1 laws one Delta per batch per fingerprint advance and §10.1's `changes_seq` is that counter. Measured at the v1 cut (dogfood 2026-08-09, s9): an `mrd put` commit moves the fingerprint the same daemon serves immediately, while `changes_seq` reads 0 before AND after | **DECLARED, not waived; §7.1 and §10.1 STAND UNAMENDED.** A consumer using `changes_seq` as a change monotone misses every CLI-lane write, silently — the answer is in an honest tense but the counter under it never moved. The fingerprint is the only monotone covering both lanes today, so cross-lane catchup is diff-by-root (§4.7), the same answer §7.1 already gives for cross-epoch catchup. Minting the delta on the CLI lane is owed |
+| 5 | The base packet's A6 self-claim "replay ≡ live stated and tested" — nothing executable tests it | **FIXED, restated honestly** — executed: the fixture recomputation behind every worked value (§17 tool attest). NOT executed: any replay ≡ live test, any conformance-pack run — both are implementation deliverables (rung-4 test; GT regeneration). The word "tested" is retracted |
+| 6 | No bare `not_found` | Declared at §8 with rationale (split into `file_not_found` env / `ref_not_found` refresh) |
+| 7 | "Unknown `kinds` match nothing" reversed to loud `bad_request` | Declared at §4.3 with rationale (the strict-server evolution law applied to values) |
+| 9 | **The raw-lexeme id law (§3.1) at the daemon door.** §3.1 fixes valid ids as JSON integer lexemes in `[0, 2^53)` and requires a non-conforming lexeme to be refused with `id:null` plus the offending lexeme verbatim in `id_raw`. An artifact that silently nulls a non-conforming lexeme — `"1"`, `-1`, `1.5`, `true`, `null` — and SERVES the request deviates, and the deviation is not op-specific: on `mounts`, `{"id":5}` echoes while `{"id":"5"}` answers `id:null` — same frame, same op, only the lexeme differs | **SERVED.** The daemon door scans the raw `id` lexeme at frame classification, BEFORE decode/dispatch (`transport::scan_id` at the `crates/registry` door — the one wire door, §3.3), and a non-conforming lexeme is refused `bad_request` with `id:null` plus the verbatim lexeme in `id_raw` — never served, never reclassified as a notification (`2^64` pinned at the door). The error's `recovery` is `fix` (§8's static binding for `bad_request`; the respawn consequence stays client-side law keyed off the `id:null` frame header, not this field). §3.1 STANDS UNAMENDED — the artifact serves it. Gated by `crates/registry/tests/v3_key_set_pins.rs`: `contract_3_1_a_non_integer_id_is_refused_with_id_raw`, `a_non_integer_id_is_refused_with_id_raw_at_the_daemon_door`, and `an_out_of_range_id_is_refused_never_reclassified_as_notification` |
+| 10 | **The fixture's S1/S2 receipt bytes must be printed.** §0.3 promises that every file this document hashes is printed; §6.3's receipt lines must therefore be the fixture's own bytes, byte-exact, at the widths the fixture's spans and file sizes require | **CLOSED — the row RECORDS how the two lines hold.** §6.3's lines measure 260 B / 262 B on the node basis, matching the spans `[26,286]` / `[287,549]` and the receipts file's 26 → 287 → 550 B growth. Two template deviations from this document's own law would each move those widths: `root_before=` where §6.1's standing noun is `fingerprint_before=` (**7 B**), and a `Goals>Q3` pretty join where §2.1 form is mandatory (**31 B**) — receipts are ordinary markdown inside the hash domain (§6.1), so a receipt-byte change moves the receipt node rev and the workspace fingerprint with it, which is why R1 and R2 are RECOMPUTED by the engine, never re-typed. Every S1/S2 value is gated by recomputation in `crates/testsuite/tests/pf_frozen_sweep.rs`, which derives them from the committed S0 bytes rather than transcribing them — so a wrong value fails a test instead of shipping. **What is not owed:** the shipped CLI lane writes **254 B** node (**255 B** line) because a CLI invocation is not a wire request and mints no request id — `id=` is 6 B of §9's absent-inputs law working, ruled not a defect, and the same template writes the fixture's 260 B byte-for-byte when a request carries one (gated: `crates/receipt/tests/frozen_receipts.rs :: e3_receipt_line_byte_exact`). Live S1/S2 therefore leave the published R1/R2 timeline on the CLI lane, by lane and not by shortfall. **The escaping this form requires is §6.7 rule 2**: the forging hazard is created by emitting the JSON form, so the escape exists before the emission, never alongside it |
+| 11 | **§12.3's worked table must compute over the standing surface.** The domain config's own bytes are in the domain it declares (`meridian/domain.md` self-hashes by design, `crates/fs/src/domain.rs`); a pair computed through the legacy non-md `mdfs_config.yaml`, whose bytes stay out, would contradict §0.3's "participates when present" note and be reachable only through the surface §12.1 says do not create and do not teach | **HELD** — §12.3 computes over the standing `meridian/domain.md` with engine-measured values, and §0.3 prints that file's v0 and v1 bytes. §12.1 stands: the legacy filename remains do-not-create, do-not-teach. **The S0 file set is unmoved** — `meridian/domain.md` is ABSENT at S0, R0 unchanged, and printing a file's bytes never makes it a member (proved on a fresh fixture: absent → R0, v0 present → `b3:23421037…`, removed → R0 returns) |
+| 12 | **CLI-lane commits advance the fingerprint and mint no Delta.** §7.1 laws one Delta per batch per fingerprint advance and §10.1's `changes_seq` is that counter. Measured: an `mrd put` commit moves the fingerprint the same daemon serves immediately, while `changes_seq` reads 0 before AND after | **DECLARED, not waived; §7.1 and §10.1 STAND UNAMENDED.** A consumer using `changes_seq` as a change monotone misses every CLI-lane write, silently — the answer is in an honest tense but the counter under it never moved. The fingerprint is the only monotone covering both lanes today, so cross-lane catchup is diff-by-root (§4.7), the same answer §7.1 already gives for cross-epoch catchup. Minting the delta on the CLI lane is owed |
+| 13 | **`hello.identity.build` must state the `-dirty` half of §A.3's identity token.** §A.3 laws the token as `sha \| sha-dirty \| unknown`, where a bare sha asserts the build came from a WHOLE commit; a build that bakes `git rev-parse HEAD` with no cleanliness probe publishes a bare sha for a dirty-worktree build — an assertion it never measured. The reader-visible consequence is NOT merely a missing refusal: measured, a foreign resident daemon adopted a brand-new workspace and answered `read` with wording that does not exist in the caller's tree — a wrong served result, no error | **SERVED.** The build stamp probes worktree cleanliness and publishes `<sha>-dirty` where tracked content diverges from HEAD (`crates/mrd/build.rs`), and the socket law (§A.3) has the local client compare `hello.identity.build` at connect and refuse across builds — the refusal exists, so the wrong-served-result class is closed at the serve door. §A.3 STANDS as written |
+| 14 | **No frame-size bound exists.** A `MAX_FRAME_BYTES` corruption bound would be a length-prefix concept; the NDJSON seam (`crates/transport` NdjsonCodec) reads newline-delimited lines with no length prefix and no size cap, so a reader implementing the wire must find no bound nothing serves | **HELD — nothing enforced.** A corruption bound nothing serves is not law, and this contract invents none (§3.1, §14). **Open question, deliberately NOT answered here:** whether the NDJSON seam wants a corruption bound (a line-length cap) is a fresh design decision, not a ratification. A cap declared by this row would be a law with no implementation behind it. If a cap is ruled later, it amends §3.1 forward and lands in `crates/transport` with its tests |
 
-| 13 | **The shipped v1.0.0 artifact cannot state the `-dirty` half of §A.3's identity token.** §A.3, amended 2026-08-09, laws `hello.identity.build` as `sha \| sha-dirty \| unknown`, where a bare sha asserts the build came from a WHOLE commit. `93184797` (= v1.0.0) bakes `git rev-parse HEAD` with no cleanliness probe, so it publishes a bare sha for a dirty-worktree build — an assertion it never measured | **DISPOSITION RESCINDED 2026-08-12 (0025); §A.3 STANDS as written.** The prior disposition declared rather than blocked on the stated premise that *"the reader-visible consequence is a missing refusal, never a wrong served result."* **That premise is measured false** (receipt `839fdb38`): a foreign resident daemon adopted a brand-new workspace and answered `read` with wording that does not exist in the caller's tree — a wrong served result, no error, following the documented contract. A declared divergence is P2 only while its stated reasoning holds; a disposition whose factual premise is refuted by measurement is void, and the item re-grades on what was measured. The re-grade is served by the socket law (§A.3): the tree's client now compares `hello.identity.build` at connect and refuses across builds — the missing refusal exists, so the wrong-served-result class is closed at the serve door. The `-dirty` half itself remains a snapshot of the pinned v1.0.0 artifact and still closes when the engine is next cut |
-| 14 | **§3.1's `MAX_FRAME_BYTES = 256 MiB` "stands from `crates/transport-proto`", and §14 tabled that crate as standing — both ghosts.** The bound was a protobuf varint length-prefix bound; the crate was deleted 2026-08-03 (8a57a3da — Law 1.4 keeps the seam JSON-only), and no `MAX_FRAME_BYTES` exists anywhere in the tree: the NDJSON seam (`crates/transport` NdjsonCodec) reads newline-delimited lines with no length prefix and no size cap. A reader implementing the wire found a bound nothing serves, anchored to a crate that does not exist. The deletion commit measured these citations and deferred their rewrite as "Amendment-3: Leader's call" | **FIXED 2026-08-12 — AMENDED, nothing enforced (ZT ruling, 2026-08-12).** §3.1's "stands from" claim is struck and §14's crate row is marked DELETED (the sidecar-row pattern): a corruption bound nothing serves is not law, and this contract invents none — the ruling chose amendment over enforcement. **Open question, deliberately NOT answered here:** whether the NDJSON seam wants a NEW corruption bound (a line-length cap) is a fresh design decision, not a ratification. A cap declared by this row would be a law with no implementation behind it — the same defect this row removes. If a cap is ruled later, it amends §3.1 forward and lands in `crates/transport` with its tests |
-
-Row 8 is **not reused**: the paragraph below refers to the dissolved row by that number, so retiring it keeps the record unambiguous.
-
-The former row 8 (walk-plane charset/parity "collision") is **dissolved by the one-way-floor ruling:** parity is a one-way compatibility floor, not law, so a `_`-bearing anchor refusing loudly (§2.4, §4.5) is conforming behavior — there is no deviation to declare and no veto pending. Nothing else in this document knowingly deviates from ruled law; a deviation found without a row here is a contract bug (the assumption-audit law, §15).
+Row 8 is **not used**: a `_`-bearing anchor refusing loudly (§2.4, §4.5) is conforming behavior under the one-way compatibility floor — parity is a floor, not law — so there is no walk-plane charset deviation to declare. Nothing else in this document knowingly deviates from ruled law; a deviation found without a row here is a contract bug (the assumption-audit law, §15).
 
 
 
@@ -1344,9 +1308,9 @@ These are **current law**, not optional history. Detail that only implements cod
 
 Content-mutating writes on the **wire door** (the daemon socket — the only door, §3.3) require fingerprint match **or** `force`. Guard fields stay **schema-optional** (a guardless frame still **decodes**). A content-mutating write with neither fingerprint nor `force` is refused **after decode** as `guard_required` (recovery: `fix`) — semantic refusal, not a frame rejection. `force` is any client's refuse→rewrite path; MCP is not a separate trust plane. In-process paths (`mrd` without the wire door) are out of this ruling's reach by **scope**, not trust.
 
-*(Amended 2026-08-15 — coverage, §5.5.)* The demand's satisfying set is the §5.4 premise vocabulary: any legal tree token, judged by the Coverage Law at admission. `guard_required` keeps its exact meaning — a content-mutating write carrying NO premise at all and no `force`; a write carrying premises that fail coverage refuses `scope_does_not_cover{uncovered}` instead (§5.5, §8.2). Where the demand was already satisfiable it still is, unchanged in effect: per-edit `if_node_rev` covers its own edit, and `if_fingerprint` covers everything.
+The demand's satisfying set is the §5.4 premise vocabulary: any legal tree token, judged by the Coverage Law at admission. `guard_required` keeps its exact meaning — a content-mutating write carrying NO premise at all and no `force`; a write carrying premises that fail coverage refuses `scope_does_not_cover{uncovered}` instead (§5.5, §8.2). Where the demand was already satisfiable it still is, unchanged in effect: per-edit `if_node_rev` covers its own edit, and `if_fingerprint` covers everything.
 
-*(Amended 2026-08-15, bounce-1 closure — requiredness limited to the PURE write doors; ruled: `decisions/2026-08-15-no-guard-on-effects.md`.)* The demand above binds every op that lands content by DECLARING its write set in the request — `splice` in every form with its composed fields (§ A.3/§ A.5), `create`, `remove`. It does NOT bind the effects lane: `run` (§ A.8) and `script` carrying `effects` (§ A.7) are unguarded by ruling — no CAS premise, no fingerprint requiredness, no synthesized touch-set guard — because on execution whose consequences mrd cannot bound, a guard promises what it cannot keep. A guard field supplied on those doors refuses `bad_request` at the §3.2 strict wall (inapplicable to the op — § A.8; teaching: §8.2), never `guard_required`; `guard_required` is a pure-write-door refusal only. `script` WITHOUT `effects` stays inside the demand and satisfies it by construction: its commit premise is the engine-computed touch set (§ A.7), caller premises legal as widening. The section title is amended with this paragraph ("every wire door" → "every pure write door"); the one-door transport law (§3.3) is untouched — the limit is op scope, not transport scope.
+The demand above binds every op that lands content by DECLARING its write set in the request — `splice` in every form with its composed fields (§ A.3/§ A.5), `create`, `remove`. It does NOT bind the effects lane: `run` (§ A.8) and `script` carrying `effects` (§ A.7) are unguarded by ruling — no CAS premise, no fingerprint requiredness, no synthesized touch-set guard — because on execution whose consequences mrd cannot bound, a guard promises what it cannot keep. A guard field supplied on those doors refuses `bad_request` at the §3.2 strict wall (inapplicable to the op — § A.8; teaching: §8.2), never `guard_required`; `guard_required` is a pure-write-door refusal only. `script` WITHOUT `effects` stays inside the demand and satisfies it by construction: its commit premise is the engine-computed touch set (§ A.7), caller premises legal as widening. The one-door transport law (§3.3) is untouched — the limit is op scope, not transport scope.
 
 ### A.2 Armed change plane (block is a feature)
 
@@ -1364,10 +1328,10 @@ When a workspace is **armed** (attested INDEX present), after CAS and before byt
 | `armed_drift{armed_rev,report_rev}` | refresh | armed law drifted |
 | `cas_mismatch{expected,actual}` | refresh | node or create/remove CAS failed |
 
-#### A.2.1 Middleware on the write door (2026-08-17, mw-engine)
+#### A.2.1 Middleware on the write door
 
-*(Amends A.2 — the armed plane's third kind. Full doctrine: `armed-plane.md`
-Part A2. This section is the wire shape only.)*
+*(The armed plane's third kind. Full doctrine: `armed-plane.md` Part A2. This
+section is the wire shape only.)*
 
 - **`rules/middleware`** pages evaluate ON the write door — after CAS and
   batch validation, before bytes land — in `id`-ascending order, mode
@@ -1379,7 +1343,7 @@ Part A2. This section is the wire shape only.)*
 - **Request field `fields`** (splice single form + create): an optional
   `{string: string}` object, opaque to the engine — no key is interpreted, no
   key is required. It is delivered to middleware verbatim as `ctx.fields`.
-  Hosts put caller context here (ccc-statusd: `created`, session, agent id);
+  Hosts put caller context here (a creation stamp, a session id, an agent id);
   `actor`/`now` remain the §9 envelope inputs, not `fields` keys. Absent
   `fields` decodes as the empty map. The set form (`splice.set`) does not
   carry it (no middleware evaluates there in V1 — a `fields` key on that form
@@ -1390,16 +1354,16 @@ Part A2. This section is the wire shape only.)*
   never absent. V1 items are exactly:
 
   ```json
-  { "kind": "send", "to": ["<seat-or-channel>", …], "body": "<text>", "rule_id": "<middleware id>" }
+  { "kind": "send", "to": ["<recipient-or-channel>", …], "body": "<text>", "rule_id": "<middleware id>" }
   ```
 
   `kind` is closed (V1: `send` only). The engine never marks an intent
-  delivered — realization is the host's (ccc-statusd), and a host must not
+  delivered — realization is the host's, and a host must not
   return its caller a bare success while an intent's realization result is
   missing. An intent failure after commit names itself on the host's response;
   the disk set STAYS (send is not this write).
-- **Response field `armed.set`** (splice, single form; 2026-08-18, card
-  p2-face-honesty): on every non-dry successful write through a door that
+- **Response field `armed.set`** (splice, single form): on every non-dry
+  successful write through a door that
   evaluates middleware, an ARRAY — possibly empty, never absent — naming
   every OTHER file the sealed set committed. The caller's own path never
   appears (its facts are the response's existing `armed` group). V1 rows
@@ -1420,9 +1384,9 @@ Part A2. This section is the wire shape only.)*
   write's real cross-file effects on its agent-facing receipt: without it a
   dependent file flipped in the same commit is visible only to a later
   read, and the write's own face under-reports what it did.
-- **The put-path HOOK feed retired with this section.** Write responses carry
-  no reaction envelopes (`armed.effects` serializes empty on this path);
-  `rules/hook` + `proto.send` still ride the external-change detector only.
+- **Write responses carry no reaction envelopes** (`armed.effects` serializes
+  empty on this path); `rules/hook` + `proto.send` ride the external-change
+  detector only.
   A middleware refusal refuses `convention_fault` naming the rule id and its
   passing scenario, exactly as a check refusal does; middleware armed-law
   faults (red / unloadable / unevaluable rows) fail closed under the same
@@ -1435,49 +1399,49 @@ Part A2. This section is the wire shape only.)*
 | `read` | Addressing + content + render + frontmatter props at one snapshot; section selectors use §2.1 segments (or anchor / dewey). Not a joined string address. |
 | `check_write` | Standalone write pre-flight: the splice verdict computed without writing. Read-only. |
 | `mounts` | Mount-table discovery: the live root registry, machine-scoped. Read-only (§ A.5). |
-| `splice.plan_edits` | Plan-level batch shapes; addresses are **segment arrays** — a heading path, or a `^id` block ref as the array's single segment (W-2, 2026-08-12: the plan lane resolves the read face's OWN anchor plane, so a toc-listed anchor is writeable by its id and a host-excluded or absent id misses on both doors alike; F-R4, 2026-08-13: that plane carries every body host Obsidian addresses — paragraph, list item, task, callout, table, fence, heading — leaving the frontmatter caret the one host-excluded miss; `match` edits inside the block-leaf bytes, `replace_section` replaces the block's content and preserves the `^id` marker by construction — the section arm's heading-preservation mirror — and `append` keeps refusing toward the containing section). |
+| `splice.plan_edits` | Plan-level batch shapes; addresses are **segment arrays** — a heading path, or a `^id` block ref as the array's single segment (the plan lane resolves the read face's OWN anchor plane, so a toc-listed anchor is writeable by its id and a host-excluded or absent id misses on both doors alike; that plane carries every body host Obsidian addresses — paragraph, list item, task, callout, table, fence, heading — leaving the frontmatter caret the one host-excluded miss; `match` edits inside the block-leaf bytes, `replace_section` replaces the block's content and preserves the `^id` marker by construction — the section arm's heading-preservation mirror — and `append` keeps refusing toward the containing section). |
 | `splice.pin` | Pin rides the write choke-point; selector is segments/anchor. |
-| `pin-cross-root` | `splice.pin.target` admits the ruled `name:rel` rooted spelling (address-grammar A-4/P5): the target is loaded, gated, promoted and blob-written in the NAMED mounted root under that root's own `LOCK_NB` write flock; the lock row's `object` carries `name:rel` minus `.md` verbatim; the proof compare (`splice.pin.proof`) runs against the TARGET root's live bytes under that same flock. A face keeps its own cross-root refusal until this cap is present, so an old engine refuses with its taught message instead of `pin_target_missing` on a spelling it cannot parse. |
+| `pin-cross-root` | `splice.pin.target` admits the ruled `name:rel` rooted spelling (`address-grammar.md`): the target is loaded, gated, promoted and blob-written in the NAMED mounted root under that root's own `LOCK_NB` write flock; the lock row's `object` carries `name:rel` minus `.md` verbatim; the proof compare (`splice.pin.proof`) runs against the TARGET root's live bytes under that same flock. A face keeps its own cross-root refusal until this cap is present, so an old engine refuses with its taught message instead of `pin_target_missing` on a spelling it cannot parse. |
 | `splice.pin.proof` | Pin proof rides the request (the proof law, below): `splice.pin` carries `fingerprint` (required for a session actor) and optional `sec_rev`, both from the caller's own sections read; the composed read serves a `fingerprint` per section row; a session-actor pin without proof refuses `pin_proof_required`. No server-side read state exists behind this cap. |
 | `create` | File birth through the guarded door; full body bytes (this op carries no `props` field — the starlark birth lane's `props=` dict is serialized by this same door, § A.8). Refuses `bad_path` when the landing carries an engine machinery segment — `.git`, `.meridian`, `meridian`, `receipts` — at any depth, ASCII-case-insensitively, whatever the caps admit; the hash-domain config `meridian/domain.md` is the one carve-out (`run-plane.md` § the machinery floor). |
 | `remove` | File death through the guarded door; refuses `remove_refused` while anything in the corpus still references the record (the remove-door law, below). |
-| `hello.identity` | Optional `{build: sha \| sha-dirty \| unknown}` for deploy identity. The `-dirty` marker rides the sha TOKEN (git-describe convention), so this stays one field: `sha` = built from a whole commit, `sha-dirty` = built from a worktree diverging from that commit, `unknown` = no attributable identity was readable. A caller matching a declared sha matches the WHOLE token, never a substring — a decorated sha is a different build and must refuse (`docs/release.md` §5.1). *(2026-08-09: the marker is new; the field, its optionality, and its v3-only rule are unchanged.)* |
+| `hello.identity` | Optional `{build: sha \| sha-dirty \| unknown}` for deploy identity. The `-dirty` marker rides the sha TOKEN (git-describe convention), so this stays one field: `sha` = built from a whole commit, `sha-dirty` = built from a worktree diverging from that commit, `unknown` = no attributable identity was readable. A caller matching a declared sha matches the WHOLE token, never a substring — a decorated sha is a different build and must refuse (`docs/release.md` §5.1). The field is optional and v3-only |
 
-**The socket law (0025, 2026-08-12): a local client refuses a cross-build daemon.** The socket is keyed on the cache root alone — one cache root ⇒ one socket ⇒ one resident daemon, whatever binary bound it first (since the short-sock law, 2026-08-20, the socket PATH is `hash(cache_root)` under a short per-user base — `$XDG_RUNTIME_DIR/mrd/<12hex>.sock` on Linux, else `$HOME/.cache/mrd-run/<12hex>.sock`, `<12hex> = sha256(cache_root bytes)[:12]`, pidfile beside it as `<12hex>.pid`; state and registry stay at `<cache-root>/registry/`. The keying is unchanged — the mapping is injective per cache root — only the placement moved, because the old in-root path `<cache-root>/registry/daemon.sock` overflowed `sun_path` under a merely long `XDG_CACHE_HOME`) — so an upgrade-in-place leaves a stale build serving every caller until someone restarts it. Measured (receipt `839fdb38`, session `09-11-mentor-8h-perfection-loop`): a caller following this contract got an answer computed by an engine it did not build — wording that does not exist in the caller's tree — with no error and no way to tell.
+**The socket law: a local client refuses a cross-build daemon.** The socket is keyed on the cache root alone — one cache root ⇒ one socket ⇒ one resident daemon, whatever binary bound it first (the socket PATH is `hash(cache_root)` under a short per-user base — `$XDG_RUNTIME_DIR/mrd/<12hex>.sock` on Linux, else `$HOME/.cache/mrd-run/<12hex>.sock`, `<12hex> = sha256(cache_root bytes)[:12]`, pidfile beside it as `<12hex>.pid`; state and registry stay at `<cache-root>/registry/`. The mapping is injective per cache root, and the short base keeps the path inside `sun_path` under a long `XDG_CACHE_HOME`) — so an upgrade-in-place leaves a stale build serving every caller until someone restarts it. Measured: a caller following this contract got an answer computed by an engine it did not build — wording that does not exist in the caller's tree — with no error and no way to tell.
 
 - **Scope: LOCAL clients only.** A client dialing the derived socket on its **own cache root** MUST compare `hello.identity.build` against its own baked build identity, whole token (§A.3 above), at connect. Equal → serve. A different token, or **no identity published** (a build predating the identity token) → refuse. `hello.identity` stays **optional on the wire**: a remote peer, or a caller on a foreign cache root, is not bound by this law and must not over-apply it.
 - **Cost: zero additional round trips.** The comparison is an in-memory equality on the hello frame the client's single dial already receives and parses. The one-dial discipline (connect-is-the-liveness-proof, measured 40.2→20.1 ms) is unchanged.
-- **The refusal is client-minted, one voice.** It is not a §8 engine frame — the engine never sees the refused call — and no wire error code exists for it. It speaks on stderr (CLI exit 2, an environment refusal minted before the operation is sent) in the fleet's skew grammar: both build identities, the `SKEW` verdict, the reason, and fitted suggestions. Skew never degrades to the in-process engine: a silent degrade would serve a correct answer while hiding the stale resident from every other caller forever.
-- **The remedy speaks the teaching register (ZT ruling 2026-08-14): reason first, then suggestions by applicability — never one demanded command.** The teaching explains WHY the refusal exists (the cache-root keying above, and that a resident survives an upgrade until something restarts it), then offers each fix under the condition that makes it the right one: *when you own the resident* — restart it (kill the pid in the named pidfile; the next call auto-starts the current build); *when an install or deploy pipeline manages the daemon* — rerun its install step (that step owns the restart duty, per "Mechanism only" below); *when neither is yours* — report the skew to the daemon's operator, quoting both builds. No single imperative applies to every caller — a caller on a foreign cache root must not kill a resident it does not own — so a bare command is the wrong shape. The engine teaches users, not only the dev team: conditions are applicability ("when you own…"), never authority ("only the owner may…"), and whichever fitted suggestion applies is the caller's to run, report-after.
+- **The refusal is client-minted, one voice.** It is not a §8 engine frame — the engine never sees the refused call — and no wire error code exists for it. It speaks on stderr (CLI exit 2, an environment refusal minted before the operation is sent) in the skew grammar: both build identities, the `SKEW` verdict, the reason, and fitted suggestions. Skew never degrades to the in-process engine: a silent degrade would serve a correct answer while hiding the stale resident from every other caller forever.
+- **The remedy speaks the teaching register: reason first, then suggestions by applicability — never one demanded command.** The teaching explains WHY the refusal exists (the cache-root keying above, and that a resident survives an upgrade until something restarts it), then offers each fix under the condition that makes it the right one: *when you own the resident* — restart it (kill the pid in the named pidfile; the next call auto-starts the current build); *when an install or deploy pipeline manages the daemon* — rerun its install step (that step owns the restart duty, per "Mechanism only" below); *when neither is yours* — report the skew to the daemon's operator, quoting both builds. No single imperative applies to every caller — a caller on a foreign cache root must not kill a resident it does not own — so a bare command is the wrong shape. The engine teaches users, not only the dev team: conditions are applicability ("when you own…"), never authority ("only the owner may…"), and whichever fitted suggestion applies is the caller's to run, report-after.
 - **Mechanism only.** The engine carries no version ordering, no replace/supersede machinery, and no restart duty: whoever installs a binary restarts the daemon — that duty lives in the install pipeline (`justfile` `install`), never in Rust. Known limit, stated: two `unknown` tokens compare equal and assert nothing — the discipline that keeps this vacuous case rare is the sha stamp itself (`build.rs`).
 
-**Pin proof rides the request (2026-08-16, card `pin-receipt-request-proof`; ZT's semantic verbatim: "in put, the pin supplies `node_rev` or fingerprint — the agent proves it read the content by carrying the token from its own read. In script, no verification at all").** The engine holds NO server-side record of who read what — no read-receipt ledger, no journal, nothing minted by a read, nothing to persist, nothing a restart can lose. A read is identity-free and side-effect-free as a type-level fact: the composed `read` op carries no `actor` field. What replaces the dead ledger is a proof the request itself carries:
+**Pin proof rides the request.** In `put`, the pin supplies `node_rev` or fingerprint — the agent proves it read the content by carrying the token from its own read; in `script`, no verification at all. The engine holds NO server-side record of who read what — no read-receipt ledger, no journal, nothing minted by a read, nothing to persist, nothing a restart can lose. A read is identity-free and side-effect-free as a type-level fact: the composed `read` op carries no `actor` field. What replaces the dead ledger is a proof the request itself carries:
 
 - **The read serves the token.** A sections-mode composed read serves, on every resolved section row, the section's own `fp1.…` fingerprint (the content-identity CID-token over that section's span, anchor-lines excluded — the same token a pin of that section mints as `pin.fingerprint`) beside its `sec_rev`. The toc serves neither content nor fingerprints — a map does not prove a read.
 - **The pin spends it.** `splice.pin` takes two request fields: `fingerprint` — the proof half, the `fp1.…` token from the caller's own read of the pinned section — and `sec_rev` — the write-conflict half, optional, the section CAS token the same read served. The engine recomputes the live fingerprint over the resolved target span under the write flock `splice` already holds (the TARGET root's flock for a cross-root pin) and compares. Equal → the caller demonstrably held these exact bytes, and they are current — the pin proceeds. The promotion marker is invisible to the compare (anchor removals), so a re-pin after promotion needs no refreshed token.
 - **Requiredness follows the door.** A splice carrying a real session `actor` (daemon/MCP) must carry `fingerprint`; absent refuses `pin_proof_required` (fix class: read the exact selector in a sections read, carry the served `fingerprint`, pin again). The bare CLI door (`actor` absent) stays local-operator-trusted and may pin proofless — but a proof it DOES supply is still verified: trust excuses absence, never a wrong token.
 - **The mismatch split speaks two causes apart.** A failed compare with a supplied `sec_rev` that differs from the live section's is `write_conflict{expected: caller's, actual: live}` (refresh class — the world moved since the read; re-read, pin again). A failed compare with `sec_rev` matching, or absent, is `pin_proof_required` naming both possibilities honestly (the content moved since the read, or the token is not from a read of this section) with the same one-round-trip remedy. Bad input is never spoken as a moved world (§ A.7 precedent).
 - **Script verifies nothing.** The script lane carries no pin and no proof vocabulary — a script's commit premise is the engine-computed touch set (§ A.7), and no read-verification exists anywhere in that lane, by ruling.
-- **What died with the ledger (2026-08-16):** the `read_mint_required` refusal, the per-actor per-workspace receipt store and its restart/reap evaporation class, the cross-root foreign-ledger consult, and the D16 receipt refresh after anchor promotion. Proof is content-bound, not identity-bound: identity decides only whether proof is REQUIRED, never whose read satisfies it — carrying another session's token is carrying the content, exactly as being handed the bytes is.
+- **Proof is content-bound, not identity-bound:** identity decides only whether proof is REQUIRED, never whose read satisfies it — carrying another session's token is carrying the content, exactly as being handed the bytes is.
 
-**Composed-`read` selector resolution (2026-08-06, dogfood F4–F6):**
+**Composed-`read` selector resolution:**
 
 - A section selector matching **more than one** node refuses `ambiguous_ref` naming each candidate's machine address (its `n`-carrying segment array) — §2.1's "the strict plane never silently picks" applies to strict reads exactly as to `cat` and `splice`. Never a silent first match, never `ref_not_found`.
 - When **all** selectors fail, the refusal names **every** failed selector with its own reason (no match / ambiguous), symmetric with the partial-read `notice`, which names them the same way.
-- Refusal **remedies speak the operation, not one host's tool name**: the recovery clause names the toc read in each surface's own dialect (MCP: a read with `sections[]` omitted, CLI: `--section`-less read) and never prescribes a binary the caller may not have. *(Ruled 2026-08-06, dogfood F5: dual-dialect IS this spec, not a partial fix — a remedy leads with the caller's surface (the MCP spelling first) and MAY carry a labeled CLI alternative in the same sentence.)* *(2026-08-12: the MCP spelling was `mode:"toc"` until the `mode` parameter left the MCP read face (ZT ruling, executed daemon-side at ccc-statusd 3b68e37a); the MCP toc read is now a read with `sections[]` omitted.)*
+- Refusal **remedies speak the operation, not one host's tool name**: the recovery clause names the toc read in each surface's own dialect (MCP: a read with `sections[]` omitted, CLI: `--section`-less read) and never prescribes a binary the caller may not have. Dual-dialect IS this spec: a remedy leads with the caller's surface (the MCP spelling first) and MAY carry a labeled CLI alternative in the same sentence.
 
-**The `toc` scope (F-R3, ZT 2026-08-13; executed 2026-08-14):**
+**The `toc` scope:**
 
 - The composed read's whole-call subtree scope is the `toc` field: **ONE tagged
-  §2.1 selector**, not a segment array. It replaces `frag` — the retired field
-  name refuses at the strict decode like any unknown field, and no `#fragment`
-  concept survives anywhere on the wire (every position one meaning: `path` =
-  which file, `sections` = which content, `toc` = which subtree map).
+  §2.1 selector**, not a segment array. There is no `frag` field — it refuses
+  at the strict decode like any unknown field — and no `#fragment` concept
+  exists anywhere on the wire (every position one meaning: `path` = which
+  file, `sections` = which content, `toc` = which subtree map).
 - Resolution precedes serving, through the same `selector_matches` the
   sections plane uses: a heading path or a **dewey ordinal** resolves to one
   row and the scope is that row's subtree-inclusive span (rows and the
-  `anchors` plane are bounded by byte containment — the segment-prefix scope
-  is retired, since it silently merged same-named siblings' subtrees).
+  `anchors` plane are bounded by byte containment, never by segment prefix,
+  which would silently merge same-named siblings' subtrees).
 - The **anchor arm refuses** `bad_request`: a block has no subtree, so no map
   exists under it; the refusal teaches the `sections` lane that serves a
   block's content.
@@ -1490,37 +1454,36 @@ Part A2. This section is the wire shape only.)*
 - `toc` beside `sections` refuses `bad_request` **"pass one"** — the map and
   the content are two questions, and one call answers one.
 
-**The read plane's own budget (2026-08-15, card `read-budget-refusal-missing`; dogfood r9 § F1):**
+**The read plane's own budget:**
 
 - A `sections[]` read carries **two bounds of its own**, both enforced in `wire-serve`'s `composed_read` so the wire door and the CLI door answer identically: at most **20 000 words served per call** (`READ_MAX_WORDS`) and at most **64 distinct selectors per call** (`READ_MAX_SELECTORS`). Over either, the read refuses `bad_request` — **refused, never truncated**, nothing read and no rev minted — and the refusal names the measured number, the ceiling, and its fitted `→` recovery.
 - **The unit is WORDS, not bytes, and that is the discoverability half of the face-honesty law (clause 2).** The face already publishes `words_total` and a `words` on every toc row and every served section, so a caller reads what a section costs *before* asking for it and never learns the ceiling by tripping it. A byte bound would be invisible until refused. The number is a product knob, sized to fire *before* an MCP host clips the result (hosts clip near ~25k tokens ≈ 18–19k words); it is one named constant so a re-tune is a one-line diff.
 - **The section map is never word-bounded.** It is the recovery the size refusal points at, and a refusal must point at a door that answers (clause 3) — so a toc read of any document, at any size, always serves.
 - **Repeated identical selectors are collapsed, and the collapse is stated** (clause 1): a repeat resolves to the same node, so its row, its bytes and its `sec_rev` are identical, and serving it N times is waste, not N answers. Identity is the selector's serialized spelling — two *different* spellings that land on one node stay two rows, because the row carries the caller's own `sel` back. The 64 ceiling is applied to the collapsed set, so a caller who repeats themselves is never refused for a fan-out they did not ask for.
-- The defect this closes, measured: one section of 223 137 words was served whole and the **host** clipped it — the caller got a host truncation with no engine banner, no marker, no `→` line, and the answer lost; the same call with 65 identical selectors served 65 byte-identical copies. The run plane already refused cleanly at the same count, so the deploy-13 "budget refusals on all three planes" claim held for runs alone.
+- The defect this closes, measured: one section of 223 137 words was served whole and the **host** clipped it — the caller got a host truncation with no engine banner, no marker, no `→` line, and the answer lost; the same call with 65 identical selectors served 65 byte-identical copies.
 
-**Door symmetry over duplicate headings (2026-08-06, fix-write-dup-symmetry):**
+**Door symmetry over duplicate headings:**
 
 - An `n`-less address that matches more than one node refuses `ambiguous_ref`-class at **every** door — read and write alike (`splice.plan_edits`, and any host lowering onto it). No door may pick an occurrence the caller did not name: the write-door refusal names each candidate's machine address (its `n`-carrying segment array) and teaches `n`, the same evidence the read door gives. Two doors, one answer — a selector one door refuses as ambiguous, no other door resolves.
 - The published loop is untouched: addresses the read face publishes carry `n` exactly where the document is ambiguous, so read → verbatim address → write always lands.
-- **The PROSE is symmetric too (2026-08-09, dogfood s4).** The machine bodies already matched while the sentences did not: the read door taught *"pin one occurrence by its machine address, or its dewey ordinal from the toc"*, and the write door taught *"address the duplicate by block id or node index"* — which never names `n`, and whose "block id" prescribes minting an id on a heading the caller may not own. The write door speaks the read door's remedy: **pin one occurrence by its `n`-carrying machine address, or by its dewey ordinal from the toc.** Renaming a duplicate heading stays a legitimate, secondary fix and is named as one — it edits the document, where the `n` address does not.
-- ⛔ **Neither ambiguity refusal ends in a wikilink.** `[[selector-grammar]]` inside a machine-facing message is a vault-local address the caller cannot dereference — it names a page without saying how to reach it, and it survives into logs and agent transcripts as literal brackets. Both ambiguity remedies are self-contained (an `n` address, a dewey ordinal, a distinct block id), so the citation bought nothing it was paying for. *Scoped to the ambiguity pair: the `see [[address-grammar]]` tail on the `crates/addr` refusals is the same class and is NOT swept here — recorded as a finding rather than changed under a card that did not measure it.*
+- **The PROSE is symmetric too.** Matching machine bodies under differing sentences is still two laws: a write door teaching *"address the duplicate by block id or node index"* never names `n`, and its "block id" prescribes minting an id on a heading the caller may not own. Both doors speak one remedy: **pin one occurrence by its `n`-carrying machine address, or by its dewey ordinal from the toc.** Renaming a duplicate heading stays a legitimate, secondary fix and is named as one — it edits the document, where the `n` address does not.
+- ⛔ **Neither ambiguity refusal ends in a wikilink.** `[[selector-grammar]]` inside a machine-facing message is a vault-local address the caller cannot dereference — it names a page without saying how to reach it, and it survives into logs and agent transcripts as literal brackets. Both ambiguity remedies are self-contained (an `n` address, a dewey ordinal, a distinct block id), so the citation bought nothing it was paying for. *Scoped to the ambiguity pair: the `see [[address-grammar]]` tail on the `crates/addr` refusals is the same class and is not swept here — a recorded finding.*
 
-**Door symmetry over duplicate block ids (2026-08-08, dogfood-p1-read-ambiguous-ref):**
+**Door symmetry over duplicate block ids:**
 
 - An anchor selector (`^id`) whose id appears on more than one block refuses `ambiguous_ref` at **every** strict-plane door — the composed read's `sections[]`, `cat`, `pin`, and `splice` alike (§2.1's duplicate-anchor row). Never a silent first match: a read that picks one occurrence hands the caller a `sec_rev` the write door then refuses, so read-then-write on a duplicated anchor is unserviceable — the exact death mode §2.1 closes for writes.
 - Duplicate ids share one spelling, and the anchor grammar carries no occurrence index (`n` disambiguates hpath segments; `{"anchor":id}` has no `n` slot), so **no machine address exists per candidate**: the refusal's `candidates` stays `[]` and the message names how many blocks carry the id. The map stays honest evidence: `toc`'s `anchors[]` publishes every occurrence with its span, duplicates included.
 - The remedy **speaks the anchor grammar, never the heading one**: give each duplicate block a distinct id (a block id addresses exactly one block in its file), or address the enclosing section by heading path. "Rename one heading" is the heading-duplicate remedy and never appears on an anchor refusal.
 
-**Teaching row — the anchor host-kind gate is a READ-face law, and the write door does not carry it (2026-08-09; F-R4 2026-08-13 widened the plane):** `unaddressable_host` and the set `anchors[]` publishes are both scoped to the block kinds this read face addresses — since F-R4 that is every body host Obsidian's block references cover (paragraph, list item, task, callout, table, fence, heading; the anchor's host span is the attached block per the Obsidian attachment law in `model::anchor_host_span`), leaving the frontmatter caret the one unpublished host. The native write door has no host-kind gate: even a frontmatter-hosted `^id` that the read door refuses `unaddressable_host` is still a legal `{"anchor":id}` splice target on the strict plane and arms a rev transition normally (the PLAN lane, by contrast, resolves against the face plane — door symmetry, A.3). Read this in one direction only: the map remains honest about its OWN door — every address it publishes, it serves — but it is not an index of the native write plane, and absence from `anchors[]` is not evidence that a native write will refuse.
+**Teaching row — the anchor host-kind gate is a READ-face law, and the write door does not carry it:** `unaddressable_host` and the set `anchors[]` publishes are both scoped to the block kinds this read face addresses — that is every body host Obsidian's block references cover (paragraph, list item, task, callout, table, fence, heading; the anchor's host span is the attached block per the Obsidian attachment law in `model::anchor_host_span`), leaving the frontmatter caret the one unpublished host. The native write door has no host-kind gate: even a frontmatter-hosted `^id` that the read door refuses `unaddressable_host` is still a legal `{"anchor":id}` splice target on the strict plane and arms a rev transition normally (the PLAN lane, by contrast, resolves against the face plane — door symmetry, A.3). Read this in one direction only: the map remains honest about its OWN door — every address it publishes, it serves — but it is not an index of the native write plane, and absence from `anchors[]` is not evidence that a native write will refuse.
 
-**`check_write` — the standalone pre-flight (recorded 2026-08-07: the deployed host consumes this op on every guarded put):**
+**`check_write` — the standalone pre-flight (a host consumes this op on every guarded put):**
 
-- Request: `{"op":"check_write","path":…,"target":…,"actor":…,"now":…,"edits":[…]}`, strict-decoded, v3-only at dispatch (`crates/wire-serve/src/decode.rs:226-259`); advertised in v3 `caps` (`crates/wire-serve/src/rev.rs:103`). Each edit is `{op, at, find?, body?, rev?, all?}`; `at` is the §2.1 segment array (`{h, n?}`), the same shape the committer takes — the single-segment forms carry a block `^id` or a frontmatter key (`crates/wire/src/lib.rs:842-861`). `path` addresses the file under the workspace root; `target` is the raw host path that labels refusal strings.
-- Reply body: `{"refuse":…?, "repairs":[…], "forced":[…]}` (`crates/wire/src/lib.rs:990-999`). `refuse` absent = the write may proceed. `refuse` is `{class, code, message, remedy?}`; `class` picks the host's render template — `rebuild` (the candidate could not be built) vs `verdict` (the severity ladder refused). `repairs` are `{key, value}` autofill property sets the host folds into the same atomic write; `forced` echoes overridden warn rule-ids. `repairs`/`forced` always serialize, so the body is never shapeless.
-- Read-only over the warm engine (`crates/registry/src/server.rs:1232-1243`); a path with no file under the workspace root is `file_not_found`. A real file outside the hash domain is served from disk on the same snapshot (§12.1 addressability) — corpus residency is not the admission test. Mandatoriness stays host policy (§5.3): the engine computes the verdict, the host decides to refuse on it. `splice` re-runs the same verdict inside its own flock (`crates/wire-serve/src/write.rs:320-330`), closing the check→apply TOCTOU gap — the standalone op is the host's pre-flight and error-rendering surface; the splice-internal run is the law.
+- Request: `{"op":"check_write","path":…,"target":…,"actor":…,"now":…,"edits":[…]}`, strict-decoded, v3-only at dispatch (`crates/wire-serve/src/decode.rs`); advertised in v3 `caps` (`crates/wire-serve/src/rev.rs`). Each edit is `{op, at, find?, body?, rev?, all?}`; `at` is the §2.1 segment array (`{h, n?}`), the same shape the committer takes — the single-segment forms carry a block `^id` or a frontmatter key (`crates/wire/src/lib.rs`). `path` addresses the file under the workspace root; `target` is the raw host path that labels refusal strings.
+- Reply body: `{"refuse":…?, "repairs":[…], "forced":[…]}` (`crates/wire/src/lib.rs`). `refuse` absent = the write may proceed. `refuse` is `{class, code, message, remedy?}`; `class` picks the host's render template — `rebuild` (the candidate could not be built) vs `verdict` (the severity ladder refused). `repairs` are `{key, value}` autofill property sets the host folds into the same atomic write; `forced` echoes overridden warn rule-ids. `repairs`/`forced` always serialize, so the body is never shapeless.
+- Read-only over the warm engine (`crates/registry/src/server.rs`); a path with no file under the workspace root is `file_not_found`. A real file outside the hash domain is served from disk on the same snapshot (§12.1 addressability) — corpus residency is not the admission test. Mandatoriness stays host policy (§5.3): the engine computes the verdict, the host decides to refuse on it. `splice` re-runs the same verdict inside its own flock (`crates/wire-serve/src/write.rs`), closing the check→apply TOCTOU gap — the standalone op is the host's pre-flight and error-rendering surface; the splice-internal run is the law.
 
-**Law A-1 at the create door — `create.rev` (docs-first, 2026-08-07, August
-team-e multi-root contract, L3 end state):**
+**Law A-1 at the create door — `create.rev`:**
 
 - The `create` plan-edit shape becomes
   `{"create":{"parent_hpath":[…],"title":…,"body":…,"rev":…?}}`. `rev` is the
@@ -1554,8 +1517,8 @@ team-e multi-root contract, L3 end state):**
   honored (CAS) wherever it is present; whether it is *demanded* beyond the
   occurrence class is the §5.3 ratchet — a named future-amendment candidate,
   not this law. Do not widen the demand here.
-- **The armed fact names the BIRTH (2026-08-12, create-armed-fact fix;
-  A.6.3a′ is the precedent and the law is plan.rs's own §6.1/§7.1 citation):**
+- **The armed fact names the BIRTH (A.6.3a′ is the precedent; the law is
+  §6.1/§7.1):**
   a `create` row's armed edit carries the **born section** — `target` = the
   address the read face publishes for it (`n` exactly where the document is
   ambiguous, so read-back lands), `node_rev_before` = the empty-input hash
@@ -1575,8 +1538,8 @@ team-e multi-root contract, L3 end state):**
   `put:end` door is untouched: a native append addressed the parent, and its
   fact keeps naming the parent.
 
-- **Empty `parent_hpath` is the top-level birth door (docs-first, 2026-08-22,
-  card `put-no-top-level-section-birth`):** `create` with `parent_hpath: []`
+- **Empty `parent_hpath` is the top-level birth door:** `create` with
+  `parent_hpath: []`
   births a level-1 heading at document end. Lowering runs the § A.3 hygiene
   composition over the document's full span — `put{at:"end"}` when that is a
   pure extension (insert at EOF), `put{at:"content"}` when trailing whitespace
@@ -1596,9 +1559,7 @@ team-e multi-root contract, L3 end state):**
   line shape. Opening a heading via `append` at a non-final section remains
   `would_corrupt{containment_lost}` — that is not this door; use `create`.
 
-**The remove door — guarded file death (docs-first, 2026-08-15, card
-`engine-delete-door`; shape ZT-ruled, four selections recorded verbatim on the
-card):**
+**The remove door — guarded file death:**
 
 - **Why this op exists — the write model was incomplete.** The write model
   governs two of the three mutations a corpus member can undergo: birth
@@ -1640,9 +1601,8 @@ card):**
   corpus grain). Those instruments read parsed documents: the door lists
   the hash domain (`fs::hash_domain`) and reads member bytes for
   `fs::build_corpus` only. It does not call `domain_snapshot` — the
-  fingerprint and the referential parse are different reads (card
-  `bug-remove-corpus-snapshot`; the leftover that kept the retired ~1.5 s
-  two-read mechanism on this door). Any inbound edge refuses
+  fingerprint and the referential parse are different reads. Any inbound
+  edge refuses
   `remove_refused` (fix) — the unlink never runs. Self-edges are excluded (a
   record cannot hold itself alive); a dangling inbound spelling resolves to
   nothing and does not block.
@@ -1706,8 +1666,7 @@ card):**
   on a vanished path is its own engine question, priced on the run-plane
   lane, not changed here.
 
-**The `replace_section` containment law (docs-first, 2026-08-12; ZT-ratified
-spec `replace-section-containment`, session 12-04-f2-mrd-integration):**
+**The `replace_section` containment law:**
 
 - **The invariant:** after `replace_section(target)`, every byte outside the
   target's subtree is identical, and the target's subtree is exactly the
@@ -1724,9 +1683,9 @@ spec `replace-section-containment`, session 12-04-f2-mrd-integration):**
   heading law applies (ATX only, ≤3 indent). `#`-lines inside a fenced code
   block are code, never headings. A setext underline is not a dialect
   heading: a setext-shaped payload splices contained as body text — the
-  engine/CommonMark divergence this leaves (Obsidian renders an h2) is
-  recorded in the ratified spec (case 9); the engine-side define is pending
-  and is NOT this law.
+  engine/CommonMark divergence this leaves (Obsidian renders an h2) is a
+  known divergence; the engine-side definition is pending and is NOT this
+  law.
 - **The one normalization:** a payload whose FIRST line echoes the target's
   own heading — same level, same title — is the caller repeating the address
   ("replace the whole section including its heading" is the dominant mental
@@ -1748,13 +1707,13 @@ spec `replace-section-containment`, session 12-04-f2-mrd-integration):**
   never describe bytes that landed outside the target's subtree.
 - **Scope:** this law binds the plan door's `replace_section`. The native
   `edits` face stays byte-exact Edit-model (§4.4 unchanged, including the
-  truthful-transition law for sibling-opening appends). The ratified spec
-  expects the same containment for the plan door's `append` and
-  `create_section` bodies (untested there today); until that lands, those
-  ops rely on the §4.4 post-reparse families alone.
+  truthful-transition law for sibling-opening appends). The same containment
+  is expected for the plan door's `append` and `create_section` bodies
+  (untested there today); until that lands, those ops rely on the §4.4
+  post-reparse families alone.
 
-**Splice hygiene at the plan doors (docs-first, 2026-08-12, N-1 — the
-ZT-ratified companion of the replace_section containment spec):**
+**Splice hygiene at the plan doors (the companion of the `replace_section`
+containment law):**
 
 - The plan-level body verbs — `append`, `replace_section`, `create` — compose
   their lowered bytes so every boundary the splice touches is canonical:
@@ -1764,7 +1723,7 @@ ZT-ratified companion of the replace_section containment spec):**
   exception is itself a boundary rule: a payload whose first content line is
   a list item, appended to a section whose last block is a list, joins that
   list flush — a blank line there is a paragraph break splitting one list
-  into two (CommonMark loose-list), which is the measured N-1 defect, not a
+  into two (CommonMark loose-list), which is the measured defect, not a
   boundary. The payload's interior bytes stay the caller's, verbatim;
   hygiene governs boundaries only, so the payload's own leading and trailing
   blank lines collapse into the canonical separators.
@@ -1779,21 +1738,15 @@ ZT-ratified companion of the replace_section containment spec):**
   fact; target and rev transition are identical either way.
 - The native §4.4 ops are untouched: `at:"end"` stays raw byte concatenation
   and a native caller owns its separators. Hygiene is plan-door composition
-  law only. Byte-faithfulness to the deleted Go host arms is superseded for
-  these three doors by this law; everywhere else the lowering stays
-  byte-faithful.
-- History (measured 2026-08-12, mrd-mcp probe N-1, fixture preserved at the
-  probe scratch page): an `append` after a trailing list minted a paragraph
-  break because the insert point sat past the section's trailing separator;
-  an `append` at a section boundary landed flush against the next heading;
-  `replace_section` consumed both the blank line under its own heading and
-  the separator before the next heading. Spec of record: session
-  `12-04-f2-mrd-integration` `results/replace-section-containment-spec.md`
-  § Splice hygiene companion.
+  law only; everywhere else the lowering stays byte-faithful to the caller's
+  bytes.
+- The defects this closes, measured: an `append` after a trailing list
+  minted a paragraph break because the insert point sat past the section's
+  trailing separator; an `append` at a section boundary landed flush against
+  the next heading; `replace_section` consumed both the blank line under its
+  own heading and the separator before the next heading.
 
-**Frontmatter-properties plane on the composed `read` (docs-first,
-2026-08-07, the mcp-face §3.3 wire demand — engine leg of the props
-deferral):**
+**Frontmatter-properties plane on the composed `read`:**
 
 - The composed-read reply gains a `props` plane: the document's top-level
   frontmatter key facts, served at the SAME engine snapshot as every other
@@ -1811,9 +1764,8 @@ deferral):**
     the colon remainder, whitespace-trimmed, then unquoted when it is a
     well-formed quoted scalar. A block value (indented continuation lines)
     serves the key line's own remainder — empty when that line carries none.
-    **Amended 2026-08-07 (§ A.6): this bullet formerly read "quotes kept",
-    which made the plane serve source bytes where every reader expects a
-    value; the superseded wording and why it failed are recorded at § A.6.**
+    Quotes are never kept: the plane serves a value, not source bytes
+    (§ A.6).
   - `prop_rev` — the key's CAS token: blake3 over the full key grain span
     bytes (the key line plus its indented continuation lines), 16 hex —
     the SAME token `cat` on the `fm_key` node serves and `if_node_rev`
@@ -1835,8 +1787,7 @@ deferral):**
   plane (§7.2 — one projection, three tenses); §7.4's ruled node-grain and
   its named future-only `keys` amendment path are untouched.
 
-**Per-selector unresolved facts on the composed `read` (docs-first,
-2026-08-08, engine leg of the 07-05 miss-facts card):**
+**Per-selector unresolved facts on the composed `read`:**
 
 - The composed-read reply gains an `unresolved` plane: one row per section
   selector that resolved to no served section, in request order. This is the
@@ -1856,24 +1807,23 @@ deferral):**
     `ambiguous` (a heading or dewey selector matched more than one node) ·
     `duplicate_anchor` (more than one block carries the `^id`) ·
     `unaddressable_host` (the id exists on the page, but its host is outside
-    the face's anchor plane — since F-R4 the frontmatter caret alone, every
-    body host being addressable; the P2-c truth-telling row, distinct from
-    `no_match` because the honest remedy differs).
+    the face's anchor plane — the frontmatter caret alone, every body host
+    being addressable; distinct from `no_match` because the honest remedy
+    differs).
   - `candidates` — `ambiguous` only: each candidate's machine address as the
     §2.1 `n`-carrying segment array (actual arrays, never encoded strings),
     in the order the refusal names them. Always serialized; `[]` on every
     other reason — including `duplicate_anchor`, where no per-candidate
-    machine address exists (the 2026-08-08 door-symmetry law above).
+    machine address exists (the door-symmetry law above).
   - `count` — `duplicate_anchor` only: how many blocks carry the id.
   - `host` — `unaddressable_host` only: the true host kind (`frontmatter`
-    in practice since F-R4; the field stays the same open string the toc
+    in practice; the field stays the same open string the toc
     anchor row echoes, never a fallback).
   - `nearest` — anchor-`no_match` only: the nearest live ids as
     `{anchor, kind}` rows. **The candidate pool spans every `^id` on the
-    page, non-addressable hosts included** (season-1b addendum: a typo one
-    character short of a paragraph-hosted id refused with no candidate,
-    because the pool held face-addressable ids only — excluding exactly the
-    ids that would explain the miss). `kind` is the host kind, so a render
+    page, non-addressable hosts included** (a pool of face-addressable ids
+    only would refuse a typo one character short of a paragraph-hosted id
+    with no candidate — excluding exactly the ids that explain the miss). `kind` is the host kind, so a render
     teaches the host-kind gate on a non-addressable candidate instead of
     implying absence. Empty when the page carries no `^id` at all. Always
     serialized.
@@ -1890,18 +1840,16 @@ deferral):**
   byte-identical. No new cap: a response-side additive field under the
   tolerant-client law (§3.2) — the `words`/`anchors`/`props` precedent.
 
-**The counting law — one `words` number per rev, every face (2026-08-13,
-session `12-04-f2-mrd-integration` card `two-faces-word-count`; dogfood
-F-S4 and D-USER r2 F3):**
+**The counting law — one `words` number per rev, every face:**
 
 - A `words` value is always `strings.Fields` over the RAW bytes of the range
   it names, and is NEVER assembled by summing other rows.
   - `words_total` (both modes, and the script toc face's `words`) names the
     FILE: fields over the whole document, frontmatter included — the number
-    `wc -w` prints. It was formerly the sum of the toc rows, which counted
-    every descendant once per ancestor level and published ~2x on any nested
-    document; a reader budgeting a read from the banner was sent the wrong
-    way (MISSION.md banner 10,504 on a ~5,240-word file).
+    `wc -w` prints. A sum of the toc rows would count every descendant once
+    per ancestor level and publish ~2x on any nested document, sending a
+    reader budgeting from the banner the wrong way (measured: a banner of
+    10,504 on a ~5,240-word file).
   - `toc[].words` names a SECTION SUBTREE, unchanged: fields over the
     heading-excluded, subtree-inclusive content span. Rows therefore do not
     sum to the banner, and that is the law, not a defect — each number
@@ -1927,10 +1875,6 @@ CLI inventory (descriptive): `status.md`. Cross-root agent address grammar: `add
 
 ### A.5 `mounts` — mount-table discovery (the live root registry)
 
-*Docs-first (2026-08-07, August team-e multi-root contract, W20): this section
-lands before its code. Strict decode, dispatch, caps push, and tests are the
-implementation card's.*
-
 The one new engine surface multi-root addressing adds. Read-only; machine-
 scoped; v3-only at dispatch, advertised at op grain as cap `mounts` (the
 `create` precedent — no dotted `mounts.<field>` at birth). A v2 session
@@ -1947,30 +1891,28 @@ call it.
 {"id":7,"ok":true,"body":{
  "config_rev":"9f27a2814b517681",
  "mounts":[
-  {"name":"field-notes","state":"bound",
-   "workspace":"/Users/Shared/repos/field-notes"},
-  {"name":"field-notes-sessions","state":"bound",
-   "workspace":"/Users/Shared/projects/field-notes-sessions","primary":true,
+  {"name":"wiki","state":"bound",
+   "workspace":"/home/me/wiki"},
+  {"name":"agent-sessions","state":"bound",
+   "workspace":"/home/me/agent-sessions","primary":true,
    "alias":"sessions"},
   {"name":"assets","state":"grey(path-unseeable)"}]}}
 ```
 
-Row shape `{name, state, workspace?, primary?, alias?}` — the `kind` field is RETIRED
-(kind-sweep, ZT 2026-08-13): the taxonomy left the config schema
-(`meridian-md-schema.md` §5.1), nothing on the serve path ever branched on it,
-and a row field nobody can act on is a field the wire does not carry. A client
-that still decodes `kind` sees an absent key — inert by the tolerant-client
-law.
+Row shape `{name, state, workspace?, primary?, alias?}` — no `kind` field: the
+config schema carries no mount taxonomy (`meridian-md-schema.md` §5.1), nothing
+on the serve path branches on one, and a row field nobody can act on is a field
+the wire does not carry.
 
 | Field | Law |
 |---|---|
 | `name` | the canonical `MountName` — the bindable layer's spelling, lowercase `[a-z0-9-]` (`address-grammar.md` § 4.3) |
 | `state` | the `MountState` reason word verbatim, ONE spelling across the human line, `--json`, and this wire: `bound` · `grey(path-unseeable)` · `grey(undeclared)` · `grey(declaration-unreadable)` · `grey(claim-unverifiable)` · `red(content-drifted)`. Every word but `bound` refuses: a client gates on `state == "bound"` and treats an unrecognized word as not-bound — the tolerant-client law applied to an open-for-amendment word set |
 | `workspace` | the canonical bound path, post-canonicalization — the same handle `hello` returns as `workspace`. Present exactly when the binding canonicalized; absent at least on `grey(path-unseeable)` |
-| `primary` | the declared-primary designation, verbatim from the binding file (`meridian-md-schema.md` §5.1a): literal `true` exactly on the designated row, ABSENT everywhere else — absence is the only "not primary" spelling, mirroring the config grammar. At most one row carries it (two designations refuse the whole table, `duplicate-primary-designation` inside `mount_table_invalid`). A binding ROLE for fleet hosts (the primary-root rule set: ccc-statusd `docs/mcp-face.md` §8.1); the engine reports it and never acts on it. Field-only amendment, cap `mounts.primary`; a client that has not read the cap sees an unread key — inert by the tolerant-client law |
-| `alias` | the second spelling this root answers to, verbatim from the binding file (`meridian-md-schema.md` §5.1b): present exactly on a row whose block declares `alias:`, ABSENT everywhere else, mirroring the config grammar. A LOOKUP spelling — a `root:path` resolves by **name first, then alias** (`address-grammar.md` §4.6a), and every canonical echo a client receives back (`name` here, receipts, pins, `mint {…}` paths, `sub` rows) carries `name`, never this. It exists so a client can hard-code ONE constant — `sessions:` — that each machine's table maps; `primary` is NOT consulted for that and means nothing it did not mean before (ZT 2026-08-23). An alias colliding with any `name` or another `alias` refuses the whole table (`alias-shadows-name` inside `mount_table_invalid`), so no two rows can answer one spelling. Field-only amendment, cap `mounts.alias`; a client that has not read the cap sees an unread key — inert by the tolerant-client law |
+| `primary` | the declared-primary designation, verbatim from the binding file (`meridian-md-schema.md` §5.1a): literal `true` exactly on the designated row, ABSENT everywhere else — absence is the only "not primary" spelling, mirroring the config grammar. At most one row carries it (two designations refuse the whole table, `duplicate-primary-designation` inside `mount_table_invalid`). A binding ROLE for hosts; the engine reports it and never acts on it. Field-only amendment, cap `mounts.primary`; a client that has not read the cap sees an unread key — inert by the tolerant-client law |
+| `alias` | the second spelling this root answers to, verbatim from the binding file (`meridian-md-schema.md` §5.1b): present exactly on a row whose block declares `alias:`, ABSENT everywhere else, mirroring the config grammar. A LOOKUP spelling — a `root:path` resolves by **name first, then alias** (`address-grammar.md` §4.6a), and every canonical echo a client receives back (`name` here, receipts, pins, `mint {…}` paths, `sub` rows) carries `name`, never this. It exists so a client can hard-code ONE constant — `sessions:` — that each machine's table maps; `primary` is NOT consulted for that. An alias colliding with any `name` or another `alias` refuses the whole table (`alias-shadows-name` inside `mount_table_invalid`), so no two rows can answer one spelling. Field-only amendment, cap `mounts.alias`; a client that has not read the cap sees an unread key — inert by the tolerant-client law |
 
-**The implicit default row (schema §5.1c, 2026-08-24).** On a machine where no
+**The implicit default row (schema §5.1c).** On a machine where no
 mount is named or aliased `sessions`, the served table may carry the implicit
 default mount — `sessions` at `$HOME/.local/share/ucc/sessions`, present only
 when it binds clean. The row is shape-identical to a declared one and carries
@@ -1996,11 +1938,11 @@ serves the previous table as if current:
 ```json
 {"id":8,"ok":false,"error":{"code":"mount_table_invalid","recovery":"env",
  "path":"~/MERIDIAN.md",
- "message":"two mounts bind the canonical path /Users/Shared/repos/field-notes (duplicate-mount-path)"}}
+ "message":"two mounts bind the canonical path /home/me/wiki (duplicate-mount-path)"}}
 ```
 
 `env` class: the binding file is an environment fact the caller must change.
-The refusal names the offending entry (Law A-3c: scope + offending member).
+The refusal names the offending entry (scope + offending member).
 Per-root grey states are NOT this refusal — an absent, undeclared, or drifted
 root is a served row carrying its state word; only a table-level parse/bind
 failure refuses the op. And a table that FAILS to re-derive while unchanged
@@ -2020,18 +1962,17 @@ op.
 
 ### A.6 The frontmatter scalar law — decode on read, encode on write
 
-*Docs-first (2026-08-07, dogfood season 1 findings 1 and 2). One law, two
-directions: what the engine PUBLISHES as a property value is the decoded
+*One law, two directions: what the engine PUBLISHES as a property value is the decoded
 string, and what the engine WRITES for a property value is a YAML scalar that
 decodes back to exactly the caller's string. Read and write are inverses, and
 nothing between them is quote-tolerant.*
 
 **The defect this closes.** Every property value plane on this wire is a plane
 of STRINGS — `props[].value`, the `fm_key` `cat` remainder, and the
-`set_property` value are all `string`, never a YAML node. Before this law the
-engine served the value's SOURCE BYTES on the read side and wrote the caller's
-string as SOURCE BYTES on the write side, so quoting was in neither
-direction's contract and the two ends disagreed with the corpus:
+`set_property` value are all `string`, never a YAML node. An engine that serves
+the value's SOURCE BYTES on the read side and writes the caller's string as
+SOURCE BYTES on the write side has quoting in neither direction's contract, and
+the two ends disagree with the corpus:
 
 - **Read, fail-INERT.** `owner: "3f9a1c07"` served `"3f9a1c07"` — 10 bytes with
   the quotes — so a comparison against `3f9a1c07` was false, no rule armed, and
@@ -2040,13 +1981,10 @@ direction's contract and the two ends disagreed with the corpus:
   `owner: [[b1892b5a]]`, which is a list-of-list, so the I4 substrate law
   refused the write and blamed the caller's value for a nesting the EMITTER
   manufactured.
-- Net: the engine could read the fleet-canonical `owner: "[[b1892b5a]]"` and
-  could not write it. Superseded wording, § A.3 `value` bullet, verbatim:
-  *"the key line's value as stored: the colon remainder, whitespace-trimmed,
-  quotes kept … The engine re-serializes nothing (no YAML library — honest
-  limit, stated not worked around)."* The limit was honest about the library
-  and wrong about the plane: unquoting a scalar is not a YAML library, and
-  serving source bytes where the schema says `string` is not an honest limit.
+- Net: such an engine can read the canonical quoted `owner: "[[b1892b5a]]"`
+  and cannot write it. "No YAML library" is not a defense: unquoting a scalar
+  is not a YAML library, and serving source bytes where the schema says
+  `string` is not an honest limit.
 
 **A.6.1 Decode (every read seam).** A value is unquoted when — and only when —
 it is a **well-formed** quoted scalar: `'…'` with interior `'` only as `''`, or
@@ -2057,8 +1995,7 @@ plain scalars, flow collections (`[a, b]`), and **malformed quoting, which no
 reader may guess at**. A quoted scalar is a STRING in every schema — the
 decode is the quoting layer only, never type inference.
 
-**A.6.1a Block scalars (amended 2026-08-23, card
-`mrd-frontmatter-block-scalar-decoder-gap`).** A key line may carry a YAML
+**A.6.1a Block scalars.** A key line may carry a YAML
 **block-scalar header** instead of a value — `>` or `|`, an optional chomping
 indicator (`-` strip, `+` keep, default clip) and an optional indentation
 digit — with the value on the following indented lines. Both published faces
@@ -2067,30 +2004,24 @@ digit — with the value on the following indented lines. Both published faces
 becomes *k* newlines, a break adjacent to a more-indented line is kept, and
 chomping owns the trailing breaks.
 
-**Widened to the compared-value seams (2026-08-23, card
-`scalar-text-trims-config-key-block-scalars`).** The amendment above landed at
-the two published faces; the COMPARED-value seams in the table below still read
-the flat map through `model::scalar::text`, whose decode opens with
+**The compared-value seams decode block scalars too.** `preset`'s
+`^properties` rule check and `realise`'s `FieldEquals` — BOTH halves, the
+declared `realise.expected` read at the page edge and the observed field —
+publish through `model::fm_doc_publish`, the one `Document`-grain door over
+`fm_publish`, never through `model::scalar::text`, whose decode opens with
 `value.trim()` — correct for a key line's colon remainder, wrong for
 block-scalar text the map already stores decoded, because it eats the newline
 clip chomping just produced, the newline a leading blank produced, and the
-leading spaces an explicit indentation digit preserved. `preset`'s
-`^properties` rule check and `realise`'s `FieldEquals` — BOTH halves, the
-declared `realise.expected` read at the page edge and the observed field — now
-publish through `model::fm_doc_publish`, the one `Document`-grain door over
-`fm_publish`. The reachability is not bounded by key shape: `preset` compares
-`rule.key` and `realise` watches `realise.field`, both **arbitrary
-author-declared keys**, and `status` / `description` / `manifest` carry block
-scalars on live pages today. What keeps the class dormant is that no
-`type: preset` page and no `realise.field` declaration exists in any bound root
-yet, so the first one written opens it. Until this amendment both faces published
-the INDICATOR BYTE (`">"`), mis-serving **71 key rows across 63 live pages on
-four bound roots** (sessions 37/45, ccc-statusd 15/15, mrd-experiments 8/8,
-field-notes 3/3) that were valid YAML throughout — a decoder gap, never corpus
-damage. Each of those roots rebuilds its own drawer at the accompanying
+leading spaces an explicit indentation digit preserved. The reachability is not
+bounded by key shape: `preset` compares `rule.key` and `realise` watches
+`realise.field`, both **arbitrary author-declared keys**, and `status` /
+`description` / `manifest` commonly carry block scalars on live pages. A seam
+that publishes the INDICATOR BYTE (`">"`) for a block scalar mis-serves rows
+that are valid YAML throughout — a decoder gap, never corpus damage — and a root
+whose projection carried such rows rebuilds its drawer at the accompanying
 `SCHEMA_SALT` bump.
 
-**Consequence, ruled by ZT: `props[].value` may now carry `\n`.** It is the
+**Consequence: `props[].value` may carry `\n`.** It is the
 first value on that plane that can, and it is true of BOTH indicators — clip
 chomping leaves one trailing newline on a FOLDED scalar too, so there is no
 single-line case to carve out. A face that renders values on one line escapes
@@ -2103,7 +2034,7 @@ author — stated here rather than discovered on a round trip.
 The law binds the VALUE seams — every seam that publishes a frontmatter value
 to a consumer, or compares one against a caller-supplied string. One owner
 implements it (`model::scalar`) so the def checker and the read seams cannot
-drift into two dialects. The enumerated set, audited 2026-08-08:
+drift into two dialects. The enumerated set:
 
 | Seam | Plane |
 |---|---|
@@ -2114,16 +2045,14 @@ drift into two dialects. The enumerated set, audited 2026-08-08:
 | `realise`'s `FieldEquals` — BOTH halves: the page's declared `realise.expected` and the observed field | compared value |
 | the view projection's `frontmatter.value` column — and the `record` pivot and B2 tag parse riding it | published value |
 
-**A.6.1a carve-out: the run plane's binding values (2026-08-23, card
-`scalar-text-trims-config-key-block-scalars`).** The binding row above stays
+**A.6.1a carve-out: the run plane's binding values.** The binding row above stays
 bound by § A.6.1 — a quoted binding still decodes, and `task.build: "[[#^x]]"`
 must unquote exactly as before. **§ A.6.1a alone does not reach it: a
 block-scalar binding is NOT published verbatim, and routing this seam through
 `model::fm_doc_publish` for consistency would be a regression, not a fix.**
 
 The mechanism, and it is the whole justification — a carve-out asserted without
-one is the shape of the false `read_inputs_grain` claim this card deleted. A
-binding VALUE's grammar is `[[#^id]]`, so surrounding whitespace is never
+one is an unverifiable claim. A binding VALUE's grammar is `[[#^id]]`, so surrounding whitespace is never
 content. `run::address::parse_binding_value` strips `[[` and `]]` as a
 **matched pair**, and it does so BEFORE the value is trimmed again downstream.
 A `>`-folded binding is stored already decoded as `"[[#^id]]\n"` — clip
@@ -2139,23 +2068,19 @@ scalar there is either accepted through the trim or refused by the grammar —
 never mis-served. Pinned by `crates/run/tests/binding_block_scalar.rs`, which
 asserts both directions and the `PyYAML` reading of the fixture.
 
-**Why the last two rows joined (2026-08-08).** They read a value and compare it
+**Why the compared-value rows are bound.** They read a value and compare it
 against a caller-supplied string, which is exactly the shape § A.6's read-half
-defect took: a fleet-canonical `status: "done"` compared raw against `done` is
+defect takes: a canonical quoted `status: "done"` compared raw against `done` is
 false, no rule fires, and the face renders a legitimate-looking "no violation".
 A silent false in a reconciliation loop is the same defect as a silent false in
 a script condition, so the same law governs it. Both halves of a comparison
 must decode, or the decode moves the mismatch instead of closing it.
 
-**Why the view row joined (2026-08-08, the d5654f18 non-scope follow-up).**
-This paragraph formerly named "the `view` index rows" in the stays-raw list
-below; superseded wording, verbatim: *"`lock` (guard tokens), the `view` index
-rows, and `policy::change`'s `diff_fields` all answer questions ABOUT THE
-STORED BYTES."* The reasoning was right for `lock` and `diff_fields` and wrong
-for this column: the view's `frontmatter.value` consumers — the `record` board
-pivot over `type`/`status`/`owner`/`session` (named `card` until the s4
-rename), `mrd sql` operator and agent
-queries, the B2 tag parse — all ask VALUE questions, and a board predicate
+**Why the view row is bound.** The stays-raw reasoning below is right for
+`lock` and `diff_fields` and wrong for this column: the view's
+`frontmatter.value` consumers — the `record` board pivot over
+`type`/`status`/`owner`/`session`, `mrd sql` operator and agent queries, the
+tag parse — all ask VALUE questions, and a board predicate
 `owner = '3f9a1c07'` compared against raw `"3f9a1c07"` is the read-half
 silent false wearing a WHERE clause. The stored-bytes questions the view DOES
 answer live in its locator and rev columns (`span_start`/`span_end`,
@@ -2163,14 +2088,12 @@ answer live in its locator and rev columns (`span_start`/`span_end`,
 The `value` column was the only column serving bytes where its own schema
 comment says value.
 
-**A.6.1′ A list value is read off the BLOCK, for every key (2026-08-21, card
-`fm-block-list-sql-empty`).** The flat map behind the value seams keeps only
-the key LINE's remainder, and a YAML **block sequence** puts every item on a
-following line — so `agents:` followed by indented `- <id>` lines published
-the empty string. Measured on the fleet corpus at engine `39dd8ccc8`: 50 of 50
-`agents` rows were `''`, and a sql absence claim over any list-valued key read
-clean while proving nothing. `model::fm_tags` had closed exactly this for
-`tag`/`tags` (card `tag-all-block-form-blindness`) and no other key.
+**A.6.1′ A list value is read off the BLOCK, for every key.** The flat map
+behind the value seams keeps only the key LINE's remainder, and a YAML **block
+sequence** puts every item on a following line — so `agents:` followed by
+indented `- <id>` lines would publish the empty string. Measured on a live
+corpus without this rule: 50 of 50 `agents` rows read `''`, and a sql absence
+claim over any list-valued key read clean while proving nothing.
 
 The rule, universal and not an `agents:` carve-out: the view projection's
 `frontmatter.value` for a key whose line carries no scalar and whose block
@@ -2188,26 +2111,20 @@ tag lane and the value lane cannot disagree about where a sequence ends.
 
 Named residual, not silently left: the other seams in the table above still
 read the flat map and still serve `''` for a block sequence — `props[].value`,
-a script's `fm`, and (since 2026-08-23, card
-`scalar-text-trims-config-key-block-scalars`) `preset`'s `^properties` check
-and `realise`'s `FieldEquals` in BOTH halves, which joined the list when they
-were routed through `model::fm_doc_publish`. That door is block-SCALAR aware
-and block-SEQUENCE blind: it answers from the flat map's stored text plus a
-key-line header test, where `model::fm_value` — the reader the view row uses,
-thirty lines away in the same file — walks the block and handles sequences too.
-Measured on one page at engine `40fad579b`: `sql` served
-`tags=[alpha, beta]` where `read`'s `props[]` served `tags=` empty. It matters
-because `preset`'s `rule.key` and `realise`'s `field` are arbitrary
-author-declared keys and `tags:` / `aliases:` / `agents:` are block sequences
-on live pages, so a rule pinning a list-valued key compares its def string
-against `''`. **This is not a regression** — those seams served `''` before
-that card too — and it is not that card's to fix: this amendment binds the
-view row only (ZT's GO was scoped to the projection) and the disposition sits
-inside ZT's open block-list question, pinned by
+a script's `fm`, and `preset`'s `^properties` check and `realise`'s
+`FieldEquals` in BOTH halves (routed through `model::fm_doc_publish`). That
+door is block-SCALAR aware and block-SEQUENCE blind: it answers from the flat
+map's stored text plus a key-line header test, where `model::fm_value` — the
+reader the view row uses, in the same file — walks the block and handles
+sequences too. Measured on one page: `sql` served `tags=[alpha, beta]` where
+`read`'s `props[]` served `tags=` empty. It matters because `preset`'s
+`rule.key` and `realise`'s `field` are arbitrary author-declared keys and
+`tags:` / `aliases:` / `agents:` are commonly block sequences on live pages, so
+a rule pinning a list-valued key compares its def string against `''`. The
+rule above binds the view row only; the residual is pinned by
 `crates/testsuite/tests/props_plane.rs`'s
 `a_block_value_serves_the_key_line_remainder_and_the_full_grain` — the TEST
-NAME, not a line range, because a range is a drift generator and this one had
-already drifted once.
+NAME, not a line range, because a range is a drift generator.
 
 The run plane's bindings are deliberately NOT in that list and are no longer
 described here as a published-value seam: per § A.6.1a's carve-out they read a
@@ -2241,9 +2158,9 @@ string.
 **A.6.3 Encode (every value-plane write door).** The emitted line is
 `{key}: {encoded}`, and the encoding is the inverse of A.6.1: **emit the plain form when the plain form decodes back to
 exactly the caller's string; otherwise emit a double-quoted scalar** (`\` and
-`"` escaped). The quoted form is the fleet-canonical one — the spelling
-`ccc-cli task claim` writes — so a value this engine writes and a value the
-fleet writes are the same bytes. Concretely, a value is quoted when it:
+`"` escaped). The quoted form is the canonical one for hosts that write
+frontmatter beside this engine, so a value this engine writes and a value a
+host writes are the same bytes. Concretely, a value is quoted when it:
 
 - is empty, or is a null spelling (`~`, `null`, `Null`, `NULL`) — the plane has
   no null, so emitting one would forge a type the caller cannot express;
@@ -2272,26 +2189,21 @@ back as exactly the caller's string. A newline in a value is still REFUSED,
 never sanitized: a single-line frontmatter value cannot carry one, and an
 escaped-scalar workaround leaks.
 
-**The typed-scalar carve-out is RETIRED** (2026-08-23, card
-`all-digit-short-ids-read-as-int`, from PR 185's review finding F2). `true` and
-`7` used to emit verbatim as "the only way this string plane can author a
-non-string value". The price was the fleet's join key: an agent short id is
-8 hex, 203 of the 8 125 distinct ids in the live sessions root's frontmatter
-(2.5 %) are all digits, and `owner: 19895504` read back as the INTEGER
-19 895 504 in every foreign parser while `session: 02146210` read back as
-576 648 in PyYAML. 37 such ids already sit bare under `session`, `agent`,
-`from`, `owner`, `author`, `worker`, `leader`, `created_by`; 8-hex git shas
-share the shape. A value the caller spelled as a string is now written so that
-PyYAML, `serde_yaml` and `gopkg.in/yaml.v3` all read that same string back.
+**There is no typed-scalar carve-out: `true` and `7` are quoted.** Emitting
+them plain as "the only way this string plane can author a non-string value"
+destroys a join key: an 8-hex short id is all digits about 2.5 % of the time
+(203 of 8 125 distinct ids on one live root), and `owner: 19895504` reads back
+as the INTEGER 19 895 504 in every foreign parser while `session: 02146210`
+reads back as 576 648 in PyYAML; 8-hex git shas share the shape. A value the
+caller spelled as a string is written so that PyYAML, `serde_yaml` and
+`gopkg.in/yaml.v3` all read that same string back.
 
 **Named residual:** no door can author the integer `7` through the value plane
-any more — `create(props=…)`'s `PropValue::List` is the one typed arm left — so
-a def-declared `int`/`bool` property (`shape.rs` `SHAPE_INT`/`SHAPE_BOOL`) must
-be born in the record's own body bytes. No live def on the sessions root
-declares one.
+— `create(props=…)`'s `PropValue::List` is the one typed arm — so a
+def-declared `int`/`bool` property (`shape.rs` `SHAPE_INT`/`SHAPE_BOOL`) must
+be born in the record's own body bytes.
 
-**Second residual — timestamps and dates are deliberately left PLAIN.** Ruled
-2026-08-23 (leader `a68417af`, card `all-digit-short-ids-read-as-int`), written
+**Second residual — timestamps and dates are deliberately left PLAIN**, written
 down because an undocumented exclusion is indistinguishable from an oversight,
 and the next reviewer would re-derive the sweep to find out which it was.
 
@@ -2315,18 +2227,12 @@ plain date into a `date` / `time.Time` value and writes it back in its own
 formatting, so the stored spelling drifts with nobody editing the value.
 
 The reason no such writer exists here is NOT that our readers see a string —
-**both 1.1 readers decode a plain date into a date object** (corrected
-2026-08-23 in review, advisor `c6426434`: an earlier draft of this section
-claimed go-yaml reads a date as a string, and that is false for an untyped
-target). It is narrower and load-bearing: this engine reads frontmatter through
-`serde_yaml`, which resolves the 1.2 core schema and has no timestamp type; and
-`ccc-statusd` unmarshals into **typed `string` struct fields** — ALL FOUR of
-its non-test yaml decode sites target a typed struct (`internal/registry`
-`check.go` ×2 and `mrdsource.go`, all three into `hookPageFM` whose every field
-is `string`/`[]string`, plus `internal/mcpserver/notifyhow.go`'s anonymous
-string-valued struct), with zero `map[string]any` yaml targets and no
-`yaml.NewDecoder` site in the repo (surveyed at `8bde5792`). There `yaml.v3`
-hands back the source text (`created="2026-08-23"`, measured) and **the
+**both 1.1 readers decode a plain date into a date object** (for an untyped
+target; a claim that go-yaml reads a date as a string is false there). It is
+narrower and load-bearing: this engine reads frontmatter through `serde_yaml`,
+which resolves the 1.2 core schema and has no timestamp type; and a Go host
+that unmarshals frontmatter into **typed `string` struct fields** gets the
+source text back from `yaml.v3` (`created="2026-08-23"`, measured) — **the
 timestamp resolver never fires**. The safety comes from the TARGET TYPE, not
 from the resolver — so the failure scenario is precise: **the next reader that
 decodes frontmatter into `map[string]any`**.
@@ -2334,63 +2240,59 @@ decodes frontmatter into `map[string]any`**.
 rewrite every date in the corpus** — if one appears, this is the line it must
 read first.
 
-*Aperture of that absence claim* (2026-08-23): the writers surveyed were this
-engine through every § A.6.3a door, `ccc-statusd` (`yaml.v3` into typed string
-fields, plus its own line-level `frontmatter.SetField`), and the armed rules,
-which write through the engine. **Obsidian's property editor also writes
-frontmatter in this vault and was NOT measured** — a JS front-matter writer is
-the likeliest place a date-object round trip would appear, and nobody has
-looked. "None exists" means "none in the three surveyed writers", not "none
-anywhere". And the instrument caveat above generalises: a claim about a READER
-must be measured against the library a program links, not against a CLI that
-wraps it.
+*Aperture of that absence claim:* the writers surveyed were this engine through
+every § A.6.3a door, a Go host (`yaml.v3` into typed string fields, plus its
+own line-level field setter), and the armed rules, which write through the
+engine. **Obsidian's property editor also writes frontmatter and was NOT
+measured** — a JS front-matter writer is the likeliest place a date-object
+round trip would appear, and nobody has looked. "None exists" means "none in
+the three surveyed writers", not "none anywhere". And the instrument caveat
+above generalises: a claim about a READER must be measured against the library
+a program links, not against a CLI that wraps it.
 
-**The no-op claim is measured, not asserted** (same card): 1 196 live records —
-every one carrying a value this amendment re-spells, plus 600 random controls —
-10 369 top-level keys, each written back through the real splice door with the
-value the read law serves. Base `361f248d3` and head produce **byte-identical
-reports**: 90 files moved, 14 refused, the same rows at both revs. The 90 are
-the standing § A.6.3c exclusions (79 bare-key `null` → `""`, the rest stored
-block-scalar markers and `[[…]]` nesting), so this change adds **zero** no-op
-re-spelling. Receipts: `.scratch/noop-base.txt`, `noop-head.txt`,
-`noop_list.txt`.
+**The no-op claim is measured, not asserted:** 1 196 live records — every one
+carrying a value this rule re-spells, plus 600 random controls — 10 369
+top-level keys, each written back through the real splice door with the value
+the read law serves. With and without the rule the reports are
+**byte-identical**: 90 files moved, 14 refused, the same rows. The 90 are the
+standing § A.6.3c exclusions (79 bare-key `null` → `""`, the rest stored
+block-scalar markers and `[[…]]` nesting), so this rule adds **zero** no-op
+re-spelling.
 
-**The trigger list above is NOT closed** (amended 2026-08-23, card
-`hook-17-mrd-create-props`). It enumerates the fast, teachable cases; the LAW is
-the sentence in bold, and the last trigger asks a real YAML parser
-(`serde_yaml`) whether the plain line reads back as exactly the caller's string.
-It was closed until measurement said otherwise: the engine's own classifier is
-more permissive than YAML, so a value opening `- `, `? `, `,`, `*`, `&`, `%`,
-`@`, `` ` ``, `]`, `}`, or carrying an unterminated `[[a]] and [[b]]`, emitted
-PLAIN from every door and produced bytes **no YAML parser can read** — the whole
-frontmatter block dies, not one key (measured with PyYAML over the live sessions
-root: 47 unreadable blocks, 6 of them in a spelling this encoder emits). `!t`,
-`>` and `|` parsed to something the caller never wrote. A door adds no trigger
-of its own: the parser is the trigger, and the list is documentation of what it
-catches. ONE carve-out survives it — a plain form that parses as a NON-string is
-legal exactly when the checker's classifier reads it as a one-level flow list.
-Measured churn across the live root at that amendment: **14 of 29 377 distinct
-plain-spelled values change spelling (0.048 %), all plain→quoted, none
-quoted→plain**, and a same-value write-back stays byte-identical (§ A.6.3c
-preservation), so no record is rewritten by the change alone.
+**The trigger list above is NOT closed.** It enumerates the fast, teachable
+cases; the LAW is the sentence in bold, and the last trigger asks a real YAML
+parser (`serde_yaml`) whether the plain line reads back as exactly the caller's
+string. The engine's own classifier is more permissive than YAML: a value
+opening `- `, `? `, `,`, `*`, `&`, `%`, `@`, `` ` ``, `]`, `}`, or carrying an
+unterminated `[[a]] and [[b]]`, emitted PLAIN, produces bytes **no YAML parser
+can read** — the whole frontmatter block dies, not one key (measured with
+PyYAML over a live root: 47 unreadable blocks, 6 of them in a spelling a
+classifier-only encoder emits). `!t`, `>` and `|` parse to something the caller
+never wrote. A door adds no trigger of its own: the parser is the trigger, and
+the list is documentation of what it catches. ONE carve-out survives it — a
+plain form that parses as a NON-string is legal exactly when the checker's
+classifier reads it as a one-level flow list. Measured churn across a live
+root: **14 of 29 377 distinct plain-spelled values change spelling (0.048 %),
+all plain→quoted, none quoted→plain**, and a same-value write-back stays
+byte-identical (§ A.6.3c preservation), so no record is rewritten by the rule
+alone.
 
-**`serde_yaml` is not the whole oracle** (2026-08-23, card
-`all-digit-short-ids-read-as-int`). It resolves YAML **1.2**; PyYAML and
-go-yaml (`gopkg.in/yaml.v3` — what `ccc-statusd` and most of the fleet's
-non-Rust readers link) resolve **1.1**, and the schemas disagree:
+**`serde_yaml` is not the whole oracle.** It resolves YAML **1.2**; PyYAML and
+go-yaml (`gopkg.in/yaml.v3` — what Go hosts link) resolve **1.1**, and the
+schemas disagree:
 `02146210` is the string `"02146210"` to `serde_yaml` — a leading zero is not a
 1.2 integer — and the integer 576 648 to PyYAML. Deferring to the 1.2 parser
 alone would have left the worse half of the id defect standing (a value change,
 not a type change), so the law is the UNION of the schemas, and the 1.1 classes
-are the enumerated trigger above. Measured churn for the retirement plus the
-union, over the same instrument: **810 of 29 270 distinct plain-spelled values
+are the enumerated trigger above. Measured churn for the union, over the same
+instrument: **810 of 29 270 distinct plain-spelled values
 change spelling (2.767 %) — 515 ints, 245 floats, 37 all-digit short ids, 7
 booleans, 1 sexagesimal, 1 interior tab, 4 in the radix / resolver-tag classes
 — all plain→quoted, none quoted→plain, none refused**, and PyYAML reads every
 one of the 810 changed emits back as exactly the caller's string.
 
 **Why the id class had to be closed and the timestamp class did not**, measured
-2026-08-23 on one file, each reader run as a LIBRARY into an untyped target
+on one file, each reader run as a LIBRARY into an untyped target
 (`serde_yaml::Value`, PyYAML `safe_load`, `gopkg.in/yaml.v3` into
 `interface{}`):
 
@@ -2407,8 +2309,7 @@ the caller spelled as a string is silently a DIFFERENT INTEGER to both of the
 non-Rust readers in this stack, while `serde_yaml` alone still sees the string.
 The join key is destroyed, not merely retyped.
 
-*Correction, measured 2026-08-23 (daemon-lane probe, seat `3d072ae8`; card
-`wire-contract-go-yaml-11-claim-overstated`):* **go-yaml's 1.1 resolution is
+*Qualification, measured on the daemon lane:* **go-yaml's 1.1 resolution is
 PARTIAL**, and calling it "1.1" without qualification overstates it. It
 resolves the integer classes (including the octal-looking ids above) and
 dates — the rows in the table, which were measured correctly — but it keeps
@@ -2420,7 +2321,7 @@ already quotes the union of both readers' classes, which is a superset of
 either. What it changes is what a reader of this table may conclude about a
 value go-yaml did NOT resolve.
 
-*Instrument note, because it cost a wrong sentence in review:* the **`yq` CLI**
+*Instrument note:* the **`yq` CLI**
 (mikefarah v4.53.3) answers `2146210` for that same line — a third number, and
 neither library's. A CLI is not the library it embeds; the rows above are the
 libraries, which is what programs in this stack actually link.
@@ -2433,7 +2334,7 @@ property
 every Obsidian view sorts on. § A.6.3c preservation is untouched, so the 37 ids
 already on disk keep their bytes until a write CHANGES their value.
 
-**A.6.3′ The KEY half of the composed line (2026-08-14, dogfood r3 f6).** The
+**A.6.3′ The KEY half of the composed line.** The
 emitted line is `{key}: {encoded}`, so an unvalidated KEY forges frontmatter
 exactly as an unvalidated value does. **A property key is dotted segments of
 `[A-Za-z0-9_-]+`** — the flat dotted spelling run-plane.md mandates for the
@@ -2445,16 +2346,15 @@ call site that composes a key without discharging the `Result` does not
 compile.
 
 Both write doors (the rebuild committer and the wire splice face) speak ONE
-refusal, minted at `policy::defs::invalid_property_key_refusal` — it was two
-literals until 2026-08-14, which made a caller's recovery quality a function of
-which door they entered. **Why this widened:** the patch face refused
-`task.index` while the SAME page's birth landed `task.index.caps` and this
-contract's run plane mandated the dotted spelling — three surfaces, two laws,
-and every task-contract iteration paid for it with an out-of-band disk edit.
-The forgery surface is unchanged: a dot carries no `: `, no newline, no `---`.
+refusal, minted at `policy::defs::invalid_property_key_refusal` — two literals
+would make a caller's recovery quality a function of which door they entered.
+**Why dotted:** the run plane mandates the dotted spelling and the birth door
+writes it (`task.index.caps`); a patch face refusing `task.index` on the same
+page is three surfaces under two laws, paid for with out-of-band disk edits.
+The forgery surface is unchanged by the dot: it carries no `: `, no newline,
+no `---`.
 
-**A.6.3a The write doors this encoder owns (2026-08-08; the birth door and the
-two caller-facing `fm_key` value scopes added 2026-08-09).** FIVE doors write a
+**A.6.3a The write doors this encoder owns.** FIVE doors write a
 frontmatter VALUE, and all five encode:
 
 | Door | Path |
@@ -2473,11 +2373,10 @@ blaming the caller for nesting the emitter manufactured. **All five doors
 refuse a multi-line value** — the encoder's `MultiLineValue` refusal, uniform at
 every value-plane write door. A newline is refused, never sanitized.
 
-**Why the birth door joined (2026-08-09, dogfood pass 1 f03).** It was the
-door that had never been named here, and the omission was measurable: `mrd new
---actor $'zt\nstatus: closed'` against a template carrying `owner: {{actor}}`
-interpolated the caller's SOURCE BYTES, so the born record carried `status:`
-TWICE. § A.3's props plane serves one row per key, first occurrence wins, so
+**Why the birth door is a value door.** Left out, the omission is measurable:
+`mrd new --actor $'me\nstatus: closed'` against a template carrying
+`owner: {{actor}}` interpolated the caller's SOURCE BYTES, so the born record
+carried `status:` TWICE. § A.3's props plane serves one row per key, first occurrence wins, so
 disk said `closed` while every read door served `open` — and no governed edit
 could reach the shadow line (`fm_key` addresses the first occurrence; a `match`
 needle over the served value finds 0 occurrences). The birth door wrote bytes
@@ -2491,7 +2390,7 @@ single-line scalar cannot carry a newline and an escaped-scalar workaround
 leaks. Together: **encode what is representable, refuse what is not, alter
 nothing.** A multi-line `--actor` therefore REFUSES THE BIRTH (`bad_request` /
 `fix`, the uniform sentence plus the placeholder that carried the newline), and
-a representable value — `zt: closed`, `[[b1892b5a]]` — is born quoted and
+a representable value — `me: closed`, `[[b1892b5a]]` — is born quoted and
 decodes back to exactly the caller's string.
 
 **Byte-level consequence, stated rather than discovered later:** a born value
@@ -2501,12 +2400,11 @@ DECODED value is unchanged, the plain form is still emitted whenever it decodes
 back to the caller's string, and the encoder is the shared one — a birth-door
 dialect of its own is exactly the drift this section exists to prevent.
 
-**The rule the table's silence used to leave (2026-08-09, ruling
-`0021-fmkey-value-grain-ruling`).** The table enumerated its doors one by one and said nothing
-about the OTHER scopes reaching an `fm_key`, so `at:"end"` and `match` wrote
-raw: `owner: seedhand: x` at exit 0, YAML that no external parser accepts, and
-`hand #c` committing with the comment silently dropped. v1.0.0 behaviour at four
-engines. **The line that decides every future scope, so the next one falls under
+**The rule that decides every scope reaching an `fm_key`.** A table that
+enumerates its doors one by one and says nothing about the OTHER scopes leaves
+`at:"end"` and `match` writing raw: `owner: seedhand: x` at exit 0, YAML that no
+external parser accepts, and `hand #c` committing with the comment silently
+dropped. **The line that decides every future scope, so the next one falls under
 a rule instead of a silence:**
 
 > **A CALLER-FACING value scope on an `fm_key` target is VALUE-grain — the
@@ -2530,17 +2428,16 @@ encoder" is not an available shape — encoding the fragment yields
 engine-internal mechanism, exactly as `set_property`'s lowering renders today
 (A.6.3a′ precedent). Armed facts state true before/after revs regardless.
 
-**Uniform means the WORDS too (2026-08-09, dogfood s7).** One law refused in two
-dialects is two laws to the callers who meet it: the `set_property` door named
-the offending key and taught the executable escape (*"frontmatter values are
-single-line in v1; put multi-line content in a body section"*), while the upsert
-door said only *"put at:upsert value must be single-line (no newline)"* — no key,
-no remedy. Recovery quality became a function of which door the caller happened
-to enter. Both doors now carry the same sentence: the key by name, the v1
-single-line rule, and the body-section escape.
+**Uniform means the WORDS too.** One law refused in two dialects is two laws to
+the callers who meet it — a door that names the offending key and teaches the
+executable escape (*"frontmatter values are single-line in v1; put multi-line
+content in a body section"*) beside a door that says only *"value must be
+single-line (no newline)"* makes recovery quality a function of which door the
+caller happened to enter. Both doors carry the same sentence: the key by name,
+the v1 single-line rule, and the body-section escape.
 
 **A.6.3a′ One armed fact per key — the `set_property` CREATE arm is the upsert
-door (2026-08-09, dogfood s11-40/s11-50).** The plan lowering emits ONE edit per
+door.** The plan lowering emits ONE edit per
 key, each targeting its OWN `fm_key`: an existing key as `put{at:"all"}` over
 its line, an **absent key as `put{at:"upsert"}`**, which is the only shape that
 addresses a key the document does not carry yet. It is therefore the same door
@@ -2549,14 +2446,15 @@ row above, reached by lowering rather than by a caller, and it encodes there —
 
 Why the grain is law and not style: armed facts carry *op, target identities and
 rev transitions* (§6.1) and a node entry names the deepest node containing each
-changed byte range (§7.1), so a fact must name the key that moved. The former
-lowering folded every create onto the **last existing key** with `put{at:"end"}`
-— a batch setting `owner` and `status` over frontmatter holding `title` armed
-and receipted `title put:end <rev>-><same rev>`: an identity the batch never
-wrote, an op nobody asked for, a transition claiming nothing changed while two
-keys landed, and a count two short of the intents. Facts are the normative
-receipt content (§6.4), so the collapse made every props write unauditable and a
-§11 lint asserting receipts against intents would false-negative on all of them.
+changed byte range (§7.1), so a fact must name the key that moved. A lowering
+that folds every create onto the **last existing key** with `put{at:"end"}` —
+a batch setting `owner` and `status` over frontmatter holding `title` arming
+and receipting `title put:end <rev>-><same rev>` — states an identity the batch
+never wrote, an op nobody asked for, a transition claiming nothing changed while
+two keys landed, and a count two short of the intents. Facts are the normative
+receipt content (§6.4), so the collapse makes every props write unauditable and
+a §11 lint asserting receipts against intents would false-negative on all of
+them.
 
 Consequence carried deliberately: a created key lands at the upsert door's
 insertion point (first-key position) rather than after the last key. Key
@@ -2585,24 +2483,24 @@ shares its owner. There the separator guard — the one that inserts the space i
 `{key}: {value}` over a stored bare `key:` line — must test the ENCODED bytes,
 not the caller's string.
 
-*(Located precisely, 2026-08-08: the WIRE's own `set_property` lowering
-composes the full `{key}: {value}` line and never reaches this guard, so a
-wire-door test cannot cover it and a wire-door matrix that passes says nothing
-about it. Coverage belongs at the `rebuild` door — measured, and
-mutation-proven there.)* The two differ exactly where this law bites:
+*(The WIRE's own `set_property` lowering composes the full `{key}: {value}`
+line and never reaches this guard, so a wire-door test cannot cover it and a
+wire-door matrix that passes says nothing about it. Coverage belongs at the
+`rebuild` door — measured, and mutation-proven there.)* The two differ exactly
+where this law bites:
 the empty string encodes to `""`, so a guard on the caller's value sees "empty,
 no separator needed" and emits `note:""` — which no external YAML parser reads
 as a property. One malformed line voids the whole frontmatter block for
-yaml.v3, PyYAML, Obsidian and `ccc-cli` alike, so the failure is not local to
-the key that was set.
+yaml.v3, PyYAML and Obsidian alike, so the failure is not local to the key
+that was set.
 
-For the same reason a CREATE has ONE line shape, `{key}: {encoded}\n`. The
-former empty-value special case emitted a bare `{key}:\n` — a YAML null, the
-type A.6.3 says this plane cannot express, forged by the engine out of a
-caller's empty string. The encoder never returns empty bytes, so the uniform
-shape needs no special case to be correct.
+For the same reason a CREATE has ONE line shape, `{key}: {encoded}\n`. An
+empty-value special case emitting a bare `{key}:\n` would forge a YAML null —
+the type A.6.3 says this plane cannot express — out of a caller's empty
+string. The encoder never returns empty bytes, so the uniform shape needs no
+special case to be correct.
 
-**A.6.3c Spelling preservation on a semantic no-op (2026-08-08).** An UPDATE
+**A.6.3c Spelling preservation on a semantic no-op.** An UPDATE
 whose stored spelling already decodes to the caller's string keeps the stored
 bytes: when `decode(stored)` (§ A.6.1) equals the caller's value, and the
 stored spelling classifies as neither `Nested` nor `Null`, the door keeps the
@@ -2610,9 +2508,9 @@ stored value bytes verbatim instead of re-encoding. The read-modify-write of
 an untouched value is therefore byte-stable — `owner: "3f9a1c07"` reads as
 `3f9a1c07` and writes back as `owner: "3f9a1c07"` — and nothing computed over
 SOURCE BYTES moves: `prop_rev`, `span`, the `props1` fingerprint, and any pin
-held over the key survive the no-op. The two writers § A.6.3 names stop
-oscillating: the fleet's quoted spelling and the engine's plain emit are each
-fixed points under the other's write-back. ONE owner implements the predicate,
+held over the key survive the no-op. The two writers § A.6.3 names cannot
+oscillate: a host's quoted spelling and the engine's plain emit are each fixed
+points under the other's write-back. ONE owner implements the predicate,
 beside the encoder, and every § A.6.3a door consults it on update — the
 value-span splice keeps the span bytes; the line-composing doors keep the
 value spelling inside the one `{key}: {spelling}` line shape.
@@ -2636,18 +2534,14 @@ stored geometry (a doubled separator space) normalizes once at a line-composing
 door and is byte-stable thereafter.
 
 **A.6.4 What conformance means here.** Round-trip is the test, per direction and
-composed: a fleet-canonical quoted value reads back without its quote bytes, and
+composed: a canonical quoted value reads back without its quote bytes, and
 a `set_property` of an `[[id]]`-shaped value lands quoted and reads back as the
 caller's string. A quote-tolerant comparison ANYWHERE — in a host, a caller, or
 a second engine seam — is a defect against this section, not a compatibility
 measure.
 
 **A write-back that CHANGES the value may RE-SPELL; a semantic no-op may not**
-*(amended 2026-08-08 by § A.6.3c. This paragraph formerly opened "A write-back
-may RE-SPELL, and that is not a byte no-op" and closed "Making the round trip
-byte-stable is a separate change to the encoder's canonical form, carded on
-its own; this section does not claim it" — that card landed as § A.6.3c)*.
-Decode and encode are inverses on the VALUE, not on the bytes: a write that
+(§ A.6.3c). Decode and encode are inverses on the VALUE, not on the bytes: a write that
 lands a DIFFERENT value emits the encoder's spelling, and anything computed
 over SOURCE BYTES moves with it — `prop_rev`, `span`, the `props1`
 fingerprint, and any pin held over the key (§ A.6.2's planes are exactly the
@@ -2664,12 +2558,12 @@ the frontmatter block for everyone else. A test that asserts the value and not
 the line is the escape hatch the A.6.3b defect hid behind. The bytes are the
 contract; the round trip only proves the engine agrees with itself.
 
-**A.6.5 R4 binds the DEF plane too — the empty string is empty**
-*(**RATIFIED** by ZT, 2026-08-08, relayed via `2c47b75e`)*. A.6.3 makes every value-plane write door emit `key: ""`
-for an empty value. The def plane reads the TYPED frontmatter value, where that
-lands as a string rather than the YAML null, so every emptiness predicate
-written against the null alone silently reads a released card as still set.
-Measured before the repair: `set_property(owner, "")` on a card whose def marks
+**A.6.5 R4 binds the DEF plane too — the empty string is empty.** A.6.3 makes
+every value-plane write door emit `key: ""` for an empty value. The def plane
+reads the TYPED frontmatter value, where that lands as a string rather than the
+YAML null, so every emptiness predicate written against the null alone silently
+reads a released card as still set. Measured without the rule:
+`set_property(owner, "")` on a card whose def marks
 `owner` required returned `ok`, landed `owner: ""`, and PASSED conformance — the
 bare-null spelling refused the identical write. `closed_at: ""` satisfied the
 terminal biconditional, so a card reached a terminal status carrying no close
@@ -2700,7 +2594,7 @@ it distinct from ABSENT. **Removal is § A.6.6's `remove` shape and nothing
 else** — a caller reaching for emptiness to mean absence writes the third state
 by hand.
 
-### A.6.6 `remove` — the identity-plane door on `fm_key` (2026-08-26)
+### A.6.6 `remove` — the identity-plane door on `fm_key`
 
 **The gap this closes, stated as a count.** R4 ratifies THREE frontmatter
 states — `absent ≠ empty ≠ set` — and three planes already discriminate all
@@ -2709,12 +2603,12 @@ digests `=A` / `=N` / `=S`; the def plane judges them (A.6.5). The write plane
 reached **two** *at key grain*. `Scalar` is reachable through any value-plane
 door; `Absent` was reachable only by rewriting the whole document (below), which
 names no key and arms no fact about one. So an order of the form *"strip key
-K"* had no shape that could **say so** — and the fleet did what a fleet does
-when the sanctioned face cannot express the order: it wrote the nearest
-reachable state instead. **Emptying is what stripping degrades into.** Measured
-on one live corpus (`field-notes-sessions`, the `frontmatter` projection, values
-trimming to ``, `""` or `''`): **5,700+ rows standing in that third state**, led
-by `manifest` (2,222), `status` (1,957) and `owner` (768) — an upper bound on
+K"* had no shape that could **say so** — and callers do what callers do when
+the sanctioned face cannot express the order: they write the nearest reachable
+state instead. **Emptying is what stripping degrades into.** Measured on one
+live corpus (the `frontmatter` projection, values trimming to ``, `""` or
+`''`): **5,700+ rows standing in that third state**, led by `manifest`
+(2,222), `status` (1,957) and `owner` (768) — an upper bound on
 the substitution, since a template may legitimately birth a key blank, but a
 count no liveness screen testing for ABSENCE reads correctly.
 
@@ -2722,8 +2616,8 @@ count no liveness screen testing for ABSENCE reads correctly.
 §4.4's `target_identity` remedy carries a general retire doctrine: *write
 through the parent's content slot*. For a frontmatter key that parent is the
 DOCUMENT: `{"hpath":[]}` resolves to the document node (zero segments = the
-root), and `put{at:"all"}` there rewrites the whole file. *(Measured against
-`a1946f3b`: guarded with the document's `file_rev` as `if_node_rev`, a root
+root), and `put{at:"all"}` there rewrites the whole file. *(Measured: guarded with the
+document's `file_rev` as `if_node_rev`, a root
 `at:"all"` carrying a shortened frontmatter block COMMITTED, exit 0, and the key
 was gone. The enclosing SECTION is not that parent — a section-grain `at:"all"`
 carrying a shortened block refuses `transition_unrepresentable`, because the
@@ -2744,8 +2638,8 @@ facts carry op, target identities and rev transitions (§6.1) … so a fact must
 name the key that moved", and it called the old collapsed lowering
 "unauditable" for exactly this reason. **The retire side carried the identical
 defect and nobody had named it.** `remove` is therefore not a new capability —
-it is the retire side finally getting the per-key armed identity the create side
-has had since 2026-08-09.
+it is the retire side getting the per-key armed identity the create side
+already has.
 
 **A `remove` on a `hpath` or `anchor` target refuses `bad_request`.** There the
 retire doctrine is reachable AND per-node — a section retires through its
@@ -2785,8 +2679,8 @@ call `rm` already makes for a page that is not there.
 **Removing the LAST key carries the fences with it — measured, not stylistic.**
 `---\n---\n` is **not frontmatter to this engine**: `syntax::parse` mints a
 `Frontmatter` node only from a pulldown `MetadataBlock` event, and an empty
-block raises none. *(Measured against the deployed engine at `a1946f3b`: an
-`at:"upsert"` against a file opening `---\n---\n` SYNTHESIZED A SECOND BLOCK at
+block raises none. *(Measured against the deployed engine: an `at:"upsert"`
+against a file opening `---\n---\n` SYNTHESIZED A SECOND BLOCK at
 byte 0 above the bare fences — `plan_fm_upsert`'s blockless arm, which only runs
 when `find_frontmatter` returns `None`. The read face's empty `props[]` alone
 does not discriminate an empty block from no block; the synthesis does.)* So
@@ -2852,18 +2746,16 @@ field `remove` in `edit`"*), so the failure is loud and local — unlike
 `scoped-guards`, which had to be negotiated because it changes the MEANING of a
 field a client already sends.
 
-### A.7 `script` — in-process script submission (docs-first, 2026-08-12, phase-2 script-plane ruling)
+### A.7 `script` — in-process script submission
 
-*The run plane's script entry (`run-plane.md` § The script entry) becomes
+*The run plane's script entry (`run-plane.md` § The script entry) is
 submittable over the wire: one request carries the whole program, the daemon
-evaluates it in-process, and the response body is the trace. Ruled 2026-08-12
-(phase-2 script plane): in-process Starlark evaluation in the engine daemon
-plus a wire script-submission verb, superseding subprocess-per-call as
-architecture. This section is the op's contract. The entry's own semantics —
-budgets, the trace shape, echo/quiet, the armed law, the entry-world read
-law — stay normative in `run-plane.md` and are not restated here. Like § A.5,
-this section lands before its code: strict decode, dispatch, caps push, and
-tests are the implementation card's.*
+evaluates it in-process, and the response body is the trace — in-process
+Starlark evaluation in the engine daemon plus a wire script-submission verb,
+never subprocess-per-call. This section is the op's contract. The entry's own
+semantics — budgets, the trace shape, echo/quiet, the armed law, the
+entry-world read law — stay normative in `run-plane.md` and are not restated
+here.*
 
 **Request** — the entry's own inputs, as one frame on the bound workspace
 (the §3.2 binding guard applies exactly as at every other op):
@@ -2889,7 +2781,7 @@ tests are the implementation card's.*
   and a host-substituted order would land edits on the wrong document
   silently. The trace opens with one `{kind:"bound", index, path}` row per
   member, so the binding is visible, never inferred.
-- **Patterns in `files[]` (ruled 2026-08-14, OQ3).** A member containing `*`
+- **Patterns in `files[]`.** A member containing `*`
   is a pattern in the one scope glob grammar (`**` spans whole segments, `*`
   a non-`/` run within one, everything else literal); other members stay
   literal paths. The daemon expands patterns at ENTRY against the entry
@@ -2908,14 +2800,13 @@ tests are the implementation card's.*
   surface. The CLI lane (`mrd script --files`) forwards a pattern-carrying
   attempt through THIS op — the engine expands, never a CLI-private glob —
   so one expansion semantics exists in the system.
-- **Literals first (ruled 2026-08-15, card `script-files-glob-index-stability`).**
-  A list where a PATTERN member stands before a LITERAL member is refused at
+- **Literals first.** A list where a PATTERN member stands before a LITERAL member is refused at
   ENTRY — dry and armed alike — with zero evaluation, nothing armed and the
   workspace unchanged (`files_member_order`, recovery `fix`). Expansion in
   place means every member after a pattern binds at an index that moves with
   the day's match count: measured, a zero-match pattern rebound the literal
   the caller addressed as `files[1]` to `files[0]` and armed mode applied the
-  retargeted write (dogfood r8 § B3). Under the order law a literal's index is
+  retargeted write. Under the order law a literal's index is
   its own member ordinal, computable from the call alone. Order inside the
   pattern region stays the host's by declaration, so no call-order index
   exists there to protect; an over-long index on a zero-match day is an
@@ -2936,8 +2827,7 @@ tests are the implementation card's.*
   needs an override, it arrives as a dotted `script.<field>` cap through the
   §3.2 evolution law, not by loosening this shape now.
 
-*(Amended 2026-08-16 — the malformed entry pin; dogfood break #7, script
-door.)* The pre-eval fast-fail inherits §5.7's malformed arm: a supplied
+The pre-eval fast-fail inherits §5.7's malformed arm: a supplied
 `if_fingerprint` that is not a grammatical `Root`-family token (the
 merkle-spec §4.2 spelling) refuses as a REFUSED trace (recovery `fix`,
 engine-minted — the fault triple, no §8 code) **before any compare** — never
@@ -2975,8 +2865,7 @@ this op's clients unchanged.
 
 **Dispatch:** v3-only; op-grain cap `script` (the `create`/`mounts`
 precedent — no dotted fields at birth). A v2 session answers `unknown_op`;
-the frozen v2 caps stay byte-identical. §3.2's v3 push was ten caps at this
-section's landing, eleven with § A.8 — twenty-seven in all.
+the frozen v2 caps stay byte-identical. The complete v3 push is §3.2's.
 
 **The entry world (this op's read law, normative detail in
 `run-plane.md`).** The currency pass runs ONCE, at entry: the daemon proves
@@ -2990,8 +2879,7 @@ that content's own rev — what you read is exactly what is hashed (§4.2), on
 the overlay too. Foreign mid-program changes are INVISIBLE to reads **within
 the hash domain — the surface the entry pin covers**: the program reads the
 pinned entry generation for the whole attempt (that is what frozen view IS —
-visibility from the pin, rewritten in place 2026-08-15, bounce-1 closure),
-disk moves only at commit, and commit authority is the TOUCH SET — the
+visibility from the pin), disk moves only at commit, and commit authority is the TOUCH SET — the
 engine verifies entry-vs-live at exactly the nodes the program read and
 armed (the commit-premise amendment below), plus any caller premises as
 widening (§5.4). Foreign churn outside the touch set neither becomes
@@ -3026,28 +2914,21 @@ locking — so a long evaluation never parks another connection's op.
 **Zero delta everywhere else.** Every §4 op, every § A.3/§ A.5 addition,
 every v2 byte: unchanged. The CLI subprocess entry (`mrd script`,
 wire-client mode) stays functional and byte-compatible — its removal is a
-separate ruling this section does not make. The 0025 socket law (§ A.3) is
+separate ruling this section does not make. The socket law (§ A.3) is
 untouched: this op rides the same one door behind the same connect-time
 identity comparison, and the CLI lanes' skew refusals are unaffected.
 Because this lane's commit is issued daemon-side, its landed change advances
 the delta ring like any wire splice — §18 row 12's CLI-lane delta gap does
 not extend to this op.
 
-**The 08-06 QUEUED question, answered.** The queued decision
-`wall-clock-a7-doc-grain-serve-QUEUED.md` (session `08-06-triple-impl-wave1`)
-asked whether the corpus-scoped refusal at the non-script door should become
-amendable contract, unlocking doc-grain O(1) serves. Disposition:
-**SUPERSEDED** by this section plus the entry-world ruling. The flat-curve
-mechanism enters as corpus-grain-at-entry — the pass runs once, the
-program's reads serve O(1) from the pinned root — NOT as doc-grain per-read
-narrowing; the corpus-grain proof is kept and moved to entry; the non-script
-doors' refusal scope is untouched. It enters via the authorized amendment
-route as its own change with its own gates, inheriting nothing from the
-race — exactly the port plan that file names.
+**Corpus-grain at entry, not doc-grain per read.** The flat-curve mechanism
+enters as corpus-grain-at-entry — the pass runs once, the program's reads
+serve O(1) from the pinned root — NOT as doc-grain per-read narrowing; the
+corpus-grain proof is kept and moved to entry; the non-script doors' refusal
+scope is untouched.
 
-**Effects mode (added 2026-08-13, script-effects ruling — supersedes the
-same-day armed-run design, under which no code shipped).** The op gains two
-request fields (the field wall grows 9 → 11): `effects:[…]` and
+**Effects mode.** The op gains two request fields (the field wall grows
+9 → 11): `effects:[…]` and
 `invocation`. Absent `effects` = the pure script above, byte-identical —
 provably pure by default. Present = the LIVE PROGRAM model (`run-plane.md`
 § Effects mode is normative): `read()` serves the live disk at call time;
@@ -3055,15 +2936,15 @@ provably pure by default. Present = the LIVE PROGRAM model (`run-plane.md`
 structural validation intact, the guard's own `force` bypass — no rev, no
 snapshot, no CAS; `run()` (admitted by naming it in the list) executes the
 § A.8 lane at call time and returns its row as a value — run-then-decide.
-The ruled principle, verbatim: *"the rev is a leash for the agent stale
+The principle: *"the rev is a leash for the agent stale
 context, not a property of writes. A script reads at execution time — its
 own read is the freshest possible; guarding a millisecond gap means nothing.
 Effects cannot be refused (out-of-world), so the transaction promise is
 unkeepable there — no half-promises, no chimera."* Accepted tradeoff ON
 RECORD: two effect-scripts can last-writer-wins each other on one section,
 same as two shell scripts; the flock keeps files structurally intact;
-exclusivity belongs to the coordination layer (a `mutex()` builtin mirroring
-fleet make-mutex is recorded DO-NOT-BUILD).
+exclusivity belongs to the coordination layer (no `mutex()` builtin ships,
+by ruling).
 
 Combination walls, all `bad_request` at decode: `effects` beside `dry`,
 `if_fingerprint`, or `expect_armed` (a live program cannot rehearse and
@@ -3073,8 +2954,7 @@ omit the field); an unknown effect name (the closed set today is `run`,
 without `invocation` (§9 — run identity derives host-minted: per-call ids
 are `<invocation>-r<K>`, K the 0-based `run()` call ordinal).
 
-**The `token_count` effect (added 2026-08-13, token_count ruling leg B —
-the batch ruling's script seat).** The op gains one more OPTIONAL request
+**The `token_count` effect.** The op gains one more OPTIONAL request
 field (the field wall grows 11 → 12): `token_count_endpoint`, a unix-socket
 path. Declaring `effects:["token_count"]` admits the builtin
 `token_count(text) -> int` — the text's real token cost, measured NOW.
@@ -3082,12 +2962,11 @@ ONE measurement law: the string argument is measured VERBATIM — the tool
 face's `{text}` arm; the builtin resolves no refs and no sections, so the
 tool face's stored-vs-served split cannot enter it (a program measures
 exactly what its own `read()` served, or what it built). The
-engine never counts tokens (no tokenizer, no credentials — the
-architecture constraint of the parent ruling): the live host is an NDJSON
-socket client dialing the endpoint per call with the consumer daemon's own
-`token_count` verb frame, identityless, so the daemon's optional-session
-default picks the measuring instrument and the parent ruling's tokenizer
-provenance mechanism answers. A frame carrying the endpoint without the
+engine never counts tokens (no tokenizer, no credentials — an architecture
+constraint): the live host is an NDJSON socket client dialing the endpoint
+per call with the endpoint daemon's own `token_count` verb frame,
+identityless, so the endpoint picks the measuring instrument and answers for
+tokenizer provenance. A frame carrying the endpoint without the
 effect, or an explicit empty endpoint, refuses `bad_request` at decode; the
 effect declared with NO endpoint decodes — the builtin then faults
 "unbound" at call time, which is every lane that has no harness (the
@@ -3107,14 +2986,11 @@ it got. The outcome vocabulary grows exactly this one word; the pure path's
 five words and their meanings are untouched; v2 unchanged. Delta honesty:
 live `put()`s ride the wire choke-point and advance the ring like any
 splice; `run()`s mint per committed batch through the run plane's delta
-sink, exactly as at § A.8 (run-delta ruling, 2026-08-14).
+sink, exactly as at § A.8.
 
-**The commit premise — AMENDED to the touch set (docs-first 2026-08-15,
-fingerprint-grain plan §4.6; read visibility RULED frozen view,
-`decisions/2026-08-15-pre-merge-rulings.md` ruling 2).** The engine's
-secret whole-corpus entry pin dies: commit authority is no longer a
-re-pinned entry ROOT. In its place **the premise is the touch set — the
-engine computes it; the caller declares nothing:**
+**The commit premise is the touch set.** Commit authority is never a
+re-pinned entry ROOT — no secret whole-corpus entry pin. **The premise is the
+touch set — the engine computes it; the caller declares nothing:**
 
 - The pure lane already records everything: `toc`/`cat` point reads, armed
   write targets, `files[]` literal and pattern expansions, sql reads. Point
@@ -3124,7 +3000,7 @@ engine computes it; the caller declares nothing:**
   `node-rev-merkle-spec.md`). Commit verifies entry-vs-live at exactly
   those nodes — O(touch set), never O(corpus). Foreign churn outside the
   touch set stops causing retries at all. **Zero new caller fields are
-  required on this door** — ZT's "EASIER, not stricter", mechanically.
+  required on this door** — easier, not stricter, mechanically.
 - **An explicit caller premise stays legal as WIDENING** (strictest wins)
   and can never drop write coverage: the touch-set floor always contains
   the armed writes. `if_fingerprint` (+ optional `scope`) and `guards[]`
@@ -3132,16 +3008,11 @@ engine computes it; the caller declares nothing:**
   field wall grows 12 → 14 (`guards`, `scope`). `effects` excludes
   `guards`/`scope` exactly as it excludes `if_fingerprint` (the
   combination wall above) — a live program holds no premise.
-- **Read visibility is UNCHANGED — FROZEN VIEW, kept** (pre-merge
-  ruling 2): the entry-world read law above stands. A
-  running script sees the world exactly as it was when it started; foreign
-  mid-run changes stay invisible until the next run; the ratified A.7
-  read-stability promise is KEPT and existing tests keep their meaning.
-  (Bounce-1 closure, 2026-08-15: the entry-world paragraph's former
-  root-CAS commit sentence — `if_fingerprint` = the entry fingerprint,
-  refusing on anything foreign — was rewritten in place to this
-  amendment's touch set; the READ law stands, only the commit clause
-  moved, so the two passages now speak one law.)
+- **Read visibility is FROZEN VIEW:** the entry-world read law above
+  stands. A running script sees the world exactly as it was when it
+  started; foreign mid-run changes stay invisible until the next run. The
+  read law and the commit premise are two clauses of one law: reads serve
+  the pin, commit verifies the touch set.
 - `expect_armed` is orthogonal and stays: it proves the host authorized
   THIS set; the touch-set verify proves the world did not move under the
   premise. One gates set identity, the other set freshness.
@@ -3149,26 +3020,22 @@ engine computes it; the caller declares nothing:**
   recorded premise set.
 - Retry budget: unchanged host policy; it now spends only on genuine
   same-subtree contention.
-- **Host requiredness (R3 — `decisions/2026-08-15-plan-rulings-final.md`):**
-  the host-policy ratchet that forced callers to hand-copy a fingerprint
-  token onto script doors (`require_if_fingerprint`) is RETIRED. The
-  protection it bought — no silent under-guarding — is now by
-  construction: the touch-set premise guards exactly what the script
-  touched. A caller-passed token remains legal as a widening guard (D-04
-  unchanged). Host-policy change; the engine mechanism is identical either
-  way.
+- **Host requiredness:** no host-policy ratchet need force callers to
+  hand-copy a fingerprint token onto script doors. The protection such a
+  ratchet would buy — no silent under-guarding — is by construction: the
+  touch-set premise guards exactly what the script touched. A caller-passed
+  token remains legal as a widening guard. Host policy; the engine mechanism
+  is identical either way.
 
-### A.8 `run` — page-task execution over the wire (docs-first, 2026-08-13, run-crossing ruling)
+### A.8 `run` — page-task execution over the wire
 
-*The run plane's task entry (`mrd run`, `run-plane.md`) becomes invocable
-over the wire. Ruled 2026-08-13 (ZT: KEY FEATURE — a list of targets, and
-callable from inside `script()`); this op is also the transport of the ruled
-production ARMING door (2026-08-12: "use mrd run to run it") — arming gets
-NO surface of its own here: a rule page's activation task is a task like any
-other, and the receipt is the arming record. The run plane's own semantics —
-addressing, contracts, capability resolution, fence languages, the exit
-triad's meaning, receipts — stay normative in `run-plane.md` and are not
-restated. Like § A.7, this section lands before its code.*
+*The run plane's task entry (`mrd run`, `run-plane.md`) is invocable over
+the wire: a list of targets, callable from inside `script()`. This op is also
+the transport of the production ARMING door — arming gets NO surface of its
+own here: a rule page's activation task is a task like any other, and the
+receipt is the arming record. The run plane's own semantics — addressing,
+contracts, capability resolution, fence languages, the exit triad's meaning,
+receipts — stay normative in `run-plane.md` and are not restated.*
 
 **Request** — a LIST of targets on the bound workspace (the §3.2 binding
 guard applies exactly as at every other op):
@@ -3197,24 +3064,22 @@ guard applies exactly as at every other op):
 - `actor`/`now` ride per §9, optional, absent stays absent. The supplied
   actor threads into the run receipt's `actor` fact; the CLI entry, its own
   host, keeps minting its `run:<task>` self-label when no actor exists.
-- `fields{}` string→string, optional (cap `run.fields`; birth cap,
-  2026-08-18): § A.2.1 opaque passthrough delivered verbatim as middleware
+- `fields{}` string→string, optional (cap `run.fields`): § A.2.1 opaque
+  passthrough delivered verbatim as middleware
   `ctx.fields` on every `md.create` birth this run commits — the stamped
   lane for born-identity `created`/`session`/`spawned-by`. The engine
   interprets NO key. A host attaches it only when hello advertises the cap;
   an older engine's strict wall refuses the unknown field.
-- `ambient` string, optional (cap `run.ambient`; md-create-ambient-paths,
-  shape (c), 2026-08-18): the caller's ambient directory,
-  workspace-relative, path-law-validated at the strict wall (a confined DIR
-  path — never a `root:` ref, never absolute). A BARE `md.create` path this
-  run births resolves under it — the face path law ("a bare path stays
-  ambient in your session directory") on the birth lane; explicit targeting
-  rides the descriptor's separate `base` argument (a rooted ref or a
-  confined dir; caps-redesign 2026-08-19), with precedence descriptor
-  `base` > frame `ambient` > workspace root. The birth lane carries it (engine
-  `6c960b7c4`) as the starlark kernel's `create(path=, body=, base=,
-  message=, props=)` — the bash effect-shim lane is DELETED (2026-08-21): bash has no
-  effect channel. **`props=` (D6, card 17) is the newborn's frontmatter as a
+- `ambient` string, optional (cap `run.ambient`): the caller's ambient
+  directory, workspace-relative, path-law-validated at the strict wall (a
+  confined DIR path — never a `root:` ref, never absolute). A BARE `md.create`
+  path this run births resolves under it — the face path law (a bare path
+  stays ambient in the caller's own directory) on the birth lane; explicit
+  targeting rides the descriptor's separate `base` argument (a rooted ref or
+  a confined dir), with precedence descriptor `base` > frame `ambient` >
+  workspace root. The birth lane carries it as the starlark kernel's
+  `create(path=, body=, base=, message=, props=)`; bash has no effect
+  channel. **`props=` is the newborn's frontmatter as a
   DICT — string keys to strings or lists of strings — and THE DOOR serializes
   it**: key grammar, value quoting and the one-line flow spelling of a list are
   the door's, sharing the § A.6.3 value-plane encoders with the patch face, so
@@ -3224,9 +3089,9 @@ guard applies exactly as at every other op):
   own frontmatter fence while `props` is inhabited — two spellings of one
   block, so the door refuses instead of choosing. Keys land sorted; a props
   scalar that would read back as a COLLECTION is quoted, and so is one that
-  would read back as a NUMBER or a BOOL (`"7"` lands `"7"`, card
-  `all-digit-short-ids-read-as-int` — the typed-scalar carve-out is retired at
-  every door). **The one deliberate asymmetry with the patch face**
+  would read back as a NUMBER or a BOOL (`"7"` lands `"7"` — there is no
+  typed-scalar carve-out at any door, § A.6.3). **The one deliberate
+  asymmetry with the patch face**
   (§ A.6.3): the flow-list carve-out does NOT apply here, because this door has
   a typed list arm and that one does not — so the string `[a, b]` lands quoted
   when born through `props=` and plain when written through `properties`. A
@@ -3247,15 +3112,14 @@ guard applies exactly as at every other op):
   timeout, or code field: authority resolves from the page + declaring-root
   conventions, the timeout from the declaring root's config, and only
   corpus-declared task blocks run — the wire carries names, never code.
-  *(Two of these are AMENDED for mode-bearing targets only — see "The
-  amendment" below: `timeout_ms`/`budget` ride as caller CEILINGS, and
+  *(Two of these differ for mode-bearing targets only — see "The modes"
+  below: `timeout_ms`/`budget` ride as caller CEILINGS, and
   `source` carries draft bytes that force `dry`. A task target keeps every
   absence exactly as written here.)*
 
-**The amendment — `mode: load|fire` (hook-support design, ratified
-2026-08-23; caps `run.mode`, `run.input`).** No new op enters the wire: this
-one gains two modes. The law the amendment carries, stated because amending
-a shipped authority surface widens it silently otherwise:
+**The modes — `mode: load|fire` (caps `run.mode`, `run.input`).** No new op
+enters the wire: this one carries two modes. The law they carry, stated
+because widening an authority surface must be explicit:
 
 > **`run` executes what the page declares: `task.<name>` in frontmatter or
 > `declare()` in the block, never an undeclared block.**
@@ -3329,12 +3193,12 @@ one refuses `not_declared` at the door.
    "telemetry":{"steps":812,"mem":20480,"wall_ms":3}}
   ```
 
-  The `applied[]` vocabulary is amended (**A8**): `born` is a birth, `edited`
+  The `applied[]` vocabulary: `born` is a birth, `edited`
   an edit, `refused` the ONE descriptor a door judged (with its `class`), and
   `not_applied` its siblings — POSITIONALLY, on the refusal's own descriptor
   index: births realize sequentially BEFORE the atomic page splice, so a create
-  before the refused index reads `born` (it is on disk — decision #14 does not
-  roll it back), a create after it reads `not_applied`, and every edit reads
+  before the refused index reads `born` (it is on disk — nothing rolls it
+  back), a create after it reads `not_applied`, and every edit reads
   `not_applied` because the splice never ran. There is no `exists` arm: an occupied path REFUSES at
   the create door. **A door refusal is that effect's row and never the fire
   row's** — the fire row keeps `result:"ok"` and its `value`, which is the
@@ -3343,7 +3207,8 @@ one refuses `not_declared` at the door.
 
   The fault union above is the one the ENGINE can emit: `runtime` is the
   catch-all a caller will meet in production, `corpus_race` is the warm→pin
-  race, `bad_path` is A2's, and `impl_type` is typed (a downcast, not prose).
+  race, `bad_path` is the create door's (§ A.3), and `impl_type` is typed (a
+  downcast, not prose).
 
   A **load row**: `{page, rev:{file}, loaded:[{block, rev, result,
   declarations, entry_kind, fault?}]}`. `result` on a fire row is an
@@ -3368,11 +3233,9 @@ one refuses `not_declared` at the door.
   published verbatim — the engine interprets no key of it. **It is ONE dict or
   `null`, never `{}`**: a block that declares nothing publishes `null`, and
   `{}` is what a `declare()` with no keys publishes, so the two must stay
-  distinguishable — the consumer law is presence (`Declares() != nil`,
-  `resolve.go:183`), and an engine emitting `{}` for a non-declaring block
-  would arm it. (Card `wire-contract-a8-null-vs-empty-clause`; the law lived
-  in the design, in `docs/run-plane.md` and in the CLI fixture, and not in the
-  one document the daemon lane reads.) A door refusal
+  distinguishable — the consumer law is presence (a non-null declarations
+  dict arms the block), and an engine emitting `{}` for a non-declaring
+  block would arm it. A door refusal
   during realization is that effect row's `result:"refused"` with the door's
   reason; the fire row's own `result` stays `ok`.
 - **What the modes do NOT gain, on purpose:** no `rev` to attest
@@ -3417,8 +3280,8 @@ op reached the plane. No aggregate boolean exists anywhere in the body:
   `class:"invocation"` for the CLI's exit-2 family (addressing, contract
   violation, authoring faults — `declared_tasks[]` rides the several-tasks
   listing), `class:"run"` for the exit-1 family that refused before a
-  report existed (workspace busy, timeout; the former foreign-edit and
-  root-mismatch legs are RETIRED — the no-guard amendment below),
+  report existed (workspace busy, timeout — execution refusals only; there
+  are no foreign-edit or root-mismatch legs, the no-guard law below),
   `reason` verbatim from the plane's typed error.
 - `dry` rows carry the plane's dry legs unchanged: a starlark dry answers
   the full effect set with `applied:false`; a bash dry answers the block
@@ -3428,24 +3291,20 @@ op reached the plane. No aggregate boolean exists anywhere in the body:
   addressing, contract (arity, env declarations), capability admission
   through the executor's own choke point — so a gate-refused rehearsal
   answers the refusal row the live call would answer, byte-identical
-  (`runner::rehearse`, one seam both doors consume; dogfood r2 F2:
-  dry-green predicts live-green, and a contract fault never reaches eval,
+  (`runner::rehearse`, one seam both doors consume: dry-green predicts
+  live-green, and a contract fault never reaches eval,
   so no interpreter traceback can stand in for the typed refusal).
 - §8 `ok:false` frames answer only what never reached the plane:
   `bad_request` (strict-decode failure, empty or oversize `targets[]`, no
   workspace bound), `unknown_op` (v2 session). Once rows answer, every
   claim in them is the engine's own.
 
-**Dispatch:** v3-only; op-grain cap `run` (the `create`/`mounts`/`script`
-precedent — no dotted fields at birth). A v2 session answers `unknown_op`;
-the frozen v2 caps stay byte-identical.
-
-*Amended 2026-08-23:* "no dotted fields at birth" was the BIRTH posture, and
-this op has outgrown it — `run.fields` and `run.ambient` ship dotted today,
-and the mode amendment adds **`run.mode`** and **`run.input`** to the v3
-push, per §3.2's own convention ("Field-only amendments ship as dotted
-`op.field` strings"). Discovery stays whole and unsniffed: a client that has
-not seen `run.mode` in the hello does not send it, and an old server
+**Dispatch:** v3-only; op-grain cap `run`, plus four dotted field caps per
+§3.2's convention ("Field-only amendments ship as dotted `op.field`
+strings"): `run.fields` and `run.ambient` in the base set, **`run.mode`** and
+**`run.input`** in the v3 push. A v2 session answers `unknown_op`; the frozen
+v2 caps stay byte-identical. Discovery stays whole and unsniffed: a client
+that has not seen `run.mode` in the hello does not send it, and an old server
 receiving it anyway refuses by name at this section's strict wall. The
 complete served set and its count are §3.2's; this section names only its
 own four.
@@ -3454,17 +3313,13 @@ own four.
 wire arm drives the same runner seam as the CLI: capability resolution
 deny-by-default on starlark, the bash-fence convention refusals, the
 declaring root's configured timeout with process-group kill past deadline,
-the inherited task environment *(amended 2026-08-16, run-env ruling — ZT,
-verbatim: "run must not strip the daemon's environment". The superseded law
-read "the scrubbed task environment (`env_clear` + exactly the declared
-contract pairs and the plane's own variables)" — that strip was the defect,
-not this page: a task whose `^env` gate needs a daemon-held variable, e.g.
-`CCC_LLM_WIKI_PATH`, could never pass through the run face. The step now
+the inherited task environment *(`run` must not strip the daemon's
+environment — a scrubbed environment would make a task whose `^env` gate
+needs a daemon-held variable unpassable through the run face. The step
 inherits the daemon's environment; declared contract pairs and the plane's
 own variables overlay it — declared pairs shadow inherited values, and the
-plane's own `MERIDIAN_PROJECT_ROOT` shadows everything. `MD_EFFECT_FD` is
-retired with the bash effect shim, 2026-08-21)*.
-One stated amendment to U16: the CLI's
+plane's own `MERIDIAN_PROJECT_ROOT` shadows everything)*.
+One stated difference from the CLI entry: the CLI's
 "the step runs where `mrd` runs" was written for a local entry whose cwd is
 the caller's context; a daemon has no meaningful cwd, so ON THIS OP the task
 step's working directory IS the bound workspace root — deterministic, and
@@ -3472,16 +3327,16 @@ narrower than the CLI. A long-running target parks only its own connection
 (§ A.7's containment posture); the plane's `run.lock` refusals answer as
 `class:"run"` rows, never hangs.
 
-**Delta honesty (amended 2026-08-14, run-delta ruling — the § A.8 half of
-the row-12 debt is DISCHARGED).** Run applies on THIS op mint Deltas like
+**Delta honesty (the § A.8 half of §18 row 12 is discharged).** Run applies
+on THIS op mint Deltas like
 every other daemon-side write: the plane's executor commits through its own
 seam (`fs::apply_batch`, unchanged), and at each committed batch the serve
 arm's delta sink assembles one frame at the §7.3 single constructor and
 advances the workspace ring **under the workspace WRITE flock, held as a
-bracket around the commit and the mint** (amended 2026-08-14b: the run
-plane's own `run.lock` does not exclude the detector — run applies and wire
-splices do not otherwise serialize — so the bracket takes `write.lock`, the
-detector's and the choke-point's serialization point). One committed batch =
+bracket around the commit and the mint** (the run plane's own `run.lock`
+does not exclude the detector — run applies and wire splices do not
+otherwise serialize — so the bracket takes `write.lock`, the detector's and
+the choke-point's serialization point). One committed batch =
 one root advance = one Delta (§7.1), the content page and the receipt file
 as two entries of ONE frame's `files`. Because the detector reconciles under
 the same flock, a detect cycle can never observe a half-landed run commit or
@@ -3491,7 +3346,7 @@ the frame carries the plane's own `run:<task>` self-label, the same fact the
 receipt's actor field attests — a governed run is never unattributable, so
 `actor`-absent still means exactly "edited outside the face". `now` is the
 caller's or absent, never invented. A mid-run fault mints frames for the
-batches that committed and none for what refused (no rollback, ruling 2).
+batches that committed and none for what refused (no rollback).
 The CLI entry (`mrd run`) is a separate process with no ring in reach: its
 commits stay under §18 row 12 exactly as CLI-lane `put` commits do — that
 half of the debt stands, and this section does not silently discharge it.
@@ -3499,11 +3354,10 @@ half of the debt stands, and this section does not silently discharge it.
 **Zero delta everywhere else.** Every §4 op, § A.3/§ A.5/§ A.7, every v2
 byte: unchanged. The CLI entry (`mrd run`) stays functional and
 byte-compatible — same runner, same receipts, its own host-minted identity.
-The 0025 socket law (§ A.3) is untouched: this op rides the same one door
+The socket law (§ A.3) is untouched: this op rides the same one door
 behind the same connect-time identity comparison.
 
-**No guard on this door — RULED
-(`decisions/2026-08-15-no-guard-on-effects.md`).** `run` is NOT guarded: no
+**No guard on this door.** `run` is NOT guarded: no
 CAS premise, no fingerprint requiredness, no synthesized touch-set guard —
 on execution whose consequences mrd cannot bound, a guard PROMISES what it
 cannot keep and buys complexity and slowness for the false promise.
@@ -3518,9 +3372,9 @@ Consequences on this op, each stated:
 - **`task_rev` is TARGETING, never CAS.** A task-selection pin chooses WHAT
   to execute — which task bytes the plane resolved; it is never a world
   premise, and no refusal on this door is a premise refusal.
-- **The `class:"run"` family loses its premise legs** (the row list above):
-  the plane's self-pinned corpus root (root mismatch) and the per-target
-  pin-and-verify (foreign edit) RETIRE. A foreign advance re-derives and
+- **The `class:"run"` family has no premise legs** (the row list above): no
+  self-pinned corpus root (root mismatch) and no per-target pin-and-verify
+  (foreign edit). A foreign advance re-derives and
   proceeds; a vanished unrelated record drops from view and never fails
   another target. What remains in `class:"run"` is execution refusals —
   workspace busy, timeout. Normative detail: `run-plane.md` § the no-guard
@@ -3530,9 +3384,9 @@ Consequences on this op, each stated:
   premises compare against, and mints Deltas exactly as the delta-honesty
   paragraph above states. That is tree maintenance, not a guard.
 
-### A.9 Re-scope honesty on the delta plane (docs-first, 2026-08-14, dogfood r3 f9)
+### A.9 Re-scope honesty on the delta plane
 
-**The defect this ratifies away.** A domain re-scope (the §12 config changed — `meridian/domain.md` landed on a live root) flooded the feed as one batch of 1,010 `deleted` file rows. Every one was false at the file grain: the files remained on disk; they left the ATTESTED SET. A watcher acting on `deleted` (cleaning up references, say) would act on 1,010 falsehoods, and the enumeration itself was undeliverable — the transport cap that finally bit was a consumer-side token cap with no drain-cursor semantics. Three amendments, all additive:
+**The defect this closes.** Without these rules a domain re-scope (the §12 config changed — `meridian/domain.md` landed on a live root) floods the feed as one batch of `deleted` file rows — 1,010 in the measured case. Every one is false at the file grain: the files remain on disk; they left the ATTESTED SET. A watcher acting on `deleted` (cleaning up references, say) acts on 1,010 falsehoods, and the enumeration itself is undeliverable — the cap that finally bites is a consumer-side token cap with no drain-cursor semantics. Three rules, all additive:
 
 **1. The `unattested` file-change word (v3-only).** A path in the previous attested set and absent from the current one, whose file still exists on disk (any filesystem object at that path — probed at classification, never inferred), mints `change:"unattested"`: `file_rev_before` present when the departed bytes still parse, `file_rev_after` absent (no attested post-state exists), no node entries (the content did not change — nothing node-grain happened). `deleted` now claims exactly what it says: the path is gone from disk. Consequences carried with it: a still-on-disk path can never be claimed by the `renamed` pairing (a rename asserts the origin left the disk), and a frozen v2 session receives such a row demoted to `deleted` — v2 keeps its birth vocabulary, the honesty split is v3's.
 
@@ -3542,7 +3396,7 @@ Consequences on this op, each stated:
 {"delta":{…},"rescope":{"cause":"meridian/domain.md","unattested":1010,"attested":2}}
 ```
 
-`cause` names the config file whose change re-scoped the set (on a config switch, the file now in effect; on a config removal, the departed one). Under a `rescope`, membership-only changes COLLAPSE into the counts and are not enumerated per file: `unattested` counts paths that left the set while remaining on disk, `attested` counts paths that entered it (whether an entering path is also new on disk is unknowable at the set grain during a re-scope — re-read, never guess). Rows that state disk-true or content facts still ride: the cause file's own row **first in the batch** (config-change-rides-first, now law rather than sort-order luck), genuine `deleted` rows (path gone from disk), `modified` rows in full node grain, `renamed` pairs. The consumer's disposition is `resync`'s (§8): the attested set was re-planned; re-derive what you watch, then continue from the cursor. Replay ≡ live holds — the ring stores the collapsed frame, `diff` replays it byte-identical (§7.3).
+`cause` names the config file whose change re-scoped the set (on a config switch, the file now in effect; on a config removal, the departed one). Under a `rescope`, membership-only changes COLLAPSE into the counts and are not enumerated per file: `unattested` counts paths that left the set while remaining on disk, `attested` counts paths that entered it (whether an entering path is also new on disk is unknowable at the set grain during a re-scope — re-read, never guess). Rows that state disk-true or content facts still ride: the cause file's own row **first in the batch** (config-change-rides-first is law, not sort-order luck), genuine `deleted` rows (path gone from disk), `modified` rows in full node grain, `renamed` pairs. The consumer's disposition is `resync`'s (§8): the attested set was re-planned; re-derive what you watch, then continue from the cursor. Replay ≡ live holds — the ring stores the collapsed frame, `diff` replays it byte-identical (§7.3).
 
 **3. The `overflow` marker — the feed bounds itself before any transport does.** A frame's file enumeration is bounded at assembly (`MAX_DELTA_FILES`, 128 — sized against the measured storm: ≈158 chars per rendered row, a ≈25k-token consumer cap ≈ 630 rows per drain, so a 128-row frame keeps several frames deliverable per drain). Rows past the bound — deterministic order: cause first, then path-sorted — are dropped and counted:
 
@@ -3554,7 +3408,7 @@ An `overflow` frame is an explicit honesty mark: the enumeration below the bound
 
 The consumer-side half (a drain face bounding rows per answer with partial-cursor semantics) is the consumer's own contract to amend; this section governs what the engine emits.
 
-### A.10 `walk` — pin-graph context assembly (2026-08-14, parity-map crossing orders)
+### A.10 `walk` — pin-graph context assembly
 
 The CLI walk plane crosses to the wire: up (default) = what a page draws
 from, transitively; `down: true` = who pins it — the dependents listing and
@@ -3586,7 +3440,7 @@ color/reason/detail.
 |---|---|
 | `page` | the walked page, echoed at page grain. Named `page`, not the walk plane's `root`: on this wire the body-level `root` key IS the fingerprint slot (the v3 projection renames it), and a page path is not a fingerprint |
 | `depth_bound` | the bound in effect, echoed; absent = unbounded |
-| `entries[]` | BFS order, ascending depth then discovery; `{depth, selector, rev?, color, reason?, detail?, teaching?}`. `selector` is the lock row's canonical address, `root:`-qualified when the claim crosses roots; a section-scoped claim spells `path §selector` — the live grammar, never the retired `path#selector` join (ruling 2026-08-14: one grammar everywhere, display values included; the `#` spelling survives only on the stored/lock plane). `color` is the tone (`green`/`red`/`grey`); `reason` the stable word, absent exactly on green; `teaching` present only for colors that teach — the field never invents advice |
+| `entries[]` | BFS order, ascending depth then discovery; `{depth, selector, rev?, color, reason?, detail?, teaching?}`. `selector` is the lock row's canonical address, `root:`-qualified when the claim crosses roots; a section-scoped claim spells `path §selector` — the live grammar, never a `path#selector` join (one grammar everywhere, display values included; the `#` spelling survives only on the stored/lock plane). `color` is the tone (`green`/`red`/`grey`); `reason` the stable word, absent exactly on green; `teaching` present only for colors that teach — the field never invents advice |
 | `revs_read[]` | `{path, doc_rev}` — the docs the listing rests on, path order. The listing is falsifiable against exactly these revs |
 | `excluded[]` | §12.1 enumerator clause, DOWN walks only: the blast-radius census names the markdown the hash domain left out instead of publishing a partial population as whole. Omitted when empty, and always on up — up drops nothing, naming an excluded ancestor by its correct path at a red edge |
 
@@ -3597,30 +3451,29 @@ unserved member refuses `invalid_utf8`; an in-snapshot cycle refuses
 `walk_cycle` (env class — the workspace's own pin graph is broken, not one
 request), naming the loop. An unreadable hash domain fails the door
 (`io_error`): degrading to the default domain would claim every path is
-hashed — the false-red fail-open decision 0034 ruled out.
+hashed — the false-red fail-open §12.1 rules out.
 
 **The staleness triple does not apply.** The walk serves from the warm
 engine's projection at one borrow — current-tense by construction, and the
 per-row `rev` plus `revs_read` already carry the falsifiability a caller
 needs. Do not bolt the triple on.
 
-### A.11 `sql` — corpus SQL over the resident projection cache (2026-08-14, lifecycle-B ruling)
+### A.11 `sql` — corpus SQL over the resident projection cache
 
 One SQL statement over the workspace's fingerprint-pinned, append-only
-`sql.duckdb` projection cache (`view::store`; session design
-`results/sql-duckdb-append-cache-design.md`), served by the resident engine.
-This KNOWINGLY supersedes §10.4's close for sql, and only for sql: the
-daemon is the cache file's single owner and its one append actor, and the
-wire carries **results, never a file path** — §10.4's "never as a wire op"
-close was about publishing a view file's path; no path crosses here.
+`sql.duckdb` projection cache (`view::store`), served by the resident engine.
+This is the one wire op over the view organ, and §10.4's close holds beside
+it: the daemon is the cache file's single owner and its one append actor, and
+the wire carries **results, never a file path** — §10.4's "never as a wire
+op" close is about publishing a view file's path; no path crosses here.
 Workspace-bound; v3-only at dispatch, advertised at op grain as cap `sql`
 (the `create` precedent). A v2 session answers `unknown_op`; the frozen v2
 caps stay byte-identical.
 
 Request `{query}` and nothing else (strict field wall): cwd and row bounds
 are host concerns — result bounding belongs to faces (the MCP face's
-`max_rows` + output-file law). One execution path, no profile split (the
-NO-SANDBOX ruling, 2026-08-14): the query runs exactly as the CLI lane runs
+`max_rows` + output-file law). One execution path, no profile split: the
+query runs exactly as the CLI lane runs
 it, spill-bounded and always rolled back, nothing locked or disabled.
 
 Serve shape per call: warm engine snapshot → pre-query pin check + delta
@@ -3628,7 +3481,7 @@ append (O(changed files), the cache-as-manifest protocol) → always-rollback
 query (`BEGIN → statement → collect → ROLLBACK`) → post-result currency
 through the workspace's resident memo at the vouched grade
 (`node-rev-merkle-spec.md` §6.7; the leaf-memo stat sweep is the floor on a
-named miss), so `state` post-dates the rows (§Q3 honest tense).
+named miss), so `state` post-dates the rows (§10.1 honest tense).
 
 ```json
 {"id":13,"op":"sql","query":"SELECT path FROM doc ORDER BY path"}
@@ -3644,16 +3497,16 @@ named miss), so `state` post-dates the rows (§Q3 honest tense).
 | `live` | the post-result currency fingerprint; absent exactly on UNVERIFIED |
 | `state` | `FRESH_AT_SAMPLE` \| `STALE` \| `UNVERIFIED` — UNVERIFIED iff `error` is set (a failed query certifies nothing) |
 | `columns[]` | `{name, type}` as `DuckDB` reports them — the same pair the CLI `--json` frame carries |
-| `rows[]` | row-major JSON cells; list cells are real arrays per row (the F1 fix), never column dumps. Booleans and numerics ride as JSON numbers/bools; every other scalar family — timestamp (tz-aware columns marked `+00`), date, time, interval, decimal, enum, struct, map — is a string speaking `DuckDB`'s own `::VARCHAR` text, never a `Debug` repr (r6 S1); a union cell is its member's cell |
+| `rows[]` | row-major JSON cells; list cells are real arrays per row, never column dumps. Booleans and numerics ride as JSON numbers/bools; every other scalar family — timestamp (tz-aware columns marked `+00`), date, time, interval, decimal, enum, struct, map — is a string speaking `DuckDB`'s own `::VARCHAR` text, never a `Debug` repr; a union cell is its member's cell |
 | `error` | the caller's own SQL failing is a SUCCESS body with the engine's words verbatim (faces render their `SQL:` register from it) — plus the teaching arms below. Never a wire error: `ok:false` frames are the door's own faults (`io_error`, `bad_request`, `unknown_op`) |
 
 **Teaching arms on a refusal (reason first, then a suggestion that fits).**
 The engine's words lead; three arms may extend or trim them:
 
-1. **View-DML** (ruling OQ1): the remedy names the `hist.*` lane.
-2. **A retired face name** names the name that replaced it — `card` was
-   renamed to `record`, and the rename shipped with NO compat alias, so this
-   refusal is the whole migration path for a caller who learned the old face.
+1. **View-DML**: the remedy names the `hist.*` lane.
+2. **A retired face name** names the name that replaced it — `card` →
+   `record`; there is no compat alias, so this refusal is the whole migration
+   path for a caller who learned the old name.
 3. **A Did-you-mean fitted to a catalog internal is dropped.** `DuckDB`'s
    suggestion is pure edit distance over the whole catalog, so a face name can
    land on metadata by accident (`card` → `pg_attrdef`, `board_drift` →
@@ -3668,8 +3521,8 @@ executes, is visible to its own statement, and dies at ROLLBACK — the
 "writes nothing durable" contract on a persistent file. Nothing else is
 guarded: trust posture, no statement classifier, no auth.
 
-**The occurrence index is SERVED as a column, never re-derived (ruled
-2026-08-15 — ZT, verbatim: "Rule: add n").** The projection's `section`
+**The occurrence index is SERVED as a column, never re-derived.** The
+projection's `section`
 relation publishes `n`: the section's own 1-based occurrence among the
 same-parent, same-raw-text sibling sections — §2.1's occurrence index, the
 one this document already laws — and it is **NULL exactly where the
@@ -3698,19 +3551,17 @@ corpus-wide sweep and must not be read as one.
 
 **The CLI ladder.** `mrd sql` asks the resident daemon FIRST (this op),
 opens the drawer file directly when unheld, and answers from `:memory:`
-last. ONE ladder for every caller (the NO-SANDBOX ruling, 2026-08-14,
-which retired OQ5's profile distinction); only `--rebuild` goes direct,
+last. ONE ladder for every caller, no profile distinction; only `--rebuild`
+goes direct,
 because repair needs the file itself.
 
-### A.12 Rooted refs resolve at every page-taking door (docs-first, 2026-08-18, rooted-refs-everywhere)
+### A.12 Rooted refs resolve at every page-taking door
 
 Every agent-facing door at which the caller names a page resolves the agent-plane `[root:]path`
-spelling through the one rooted lane. The law, its ratification receipt, the authority ruling
-(the page's tree governs — conventions, caps, and receipts follow the PAGE's workspace), the
-door-family snapshot, the preset-lane exception, and the superseded D11 wording all live in
-`address-grammar.md` § 4.6; the full record is llm-wiki
-`decisions/2026-08-18-rooted-refs-everywhere.md`. **On THIS contract the amendment changes
-nothing structural**, and that is the point worth stating here:
+spelling through the one rooted lane. The law, the authority rule (the page's tree governs —
+conventions, caps, and receipts follow the PAGE's workspace), the door family, and the
+preset-lane exception live in `address-grammar.md` § 4.6. **On THIS contract the rooted lane
+changes nothing structural**, and that is the point worth stating here:
 
 - **Resolution happens at the door; the wire carries the rel half only.** The §1 `Path` law and
   its head-colon confinement arm (`addr::confined`) stand unchanged — a raw `root:` head
@@ -3724,11 +3575,10 @@ nothing structural**, and that is the point worth stating here:
   carries `name:rel` on the wire (pin-cross-root, § A.3).
 - **`run` over the wire (§ A.8) follows the authority law:** a rooted invocation executes under
   the page's tree — its conventions, its caps ceiling, its workspace for receipts.
-- **The `script` lane's one-declared-root rule is convergence, not invention:** the customer
-  face (ccc-statusd MCP `script`) already states it verbatim — *"Every files[] entry resolves
-  through one root; that root is the workspace; in-program paths are relative to it."* Face
-  grammars still differ deliberately: the MCP face admits absolute and session-relative refs;
-  the mrd §1 path law does not, and this amendment does not harmonize them.
+- **The `script` lane's one-declared-root rule:** every `files[]` entry resolves through one
+  root; that root is the workspace; in-program paths are relative to it. Face grammars may
+  differ deliberately: an MCP face may admit absolute and session-relative refs; the §1 path
+  law does not, and this section does not harmonize them.
 
 ---
 
@@ -3736,5 +3586,4 @@ nothing structural**, and that is the point worth stating here:
 
 1. Edit this file (or the relevant SPEC under `docs/`) **before** code.  
 2. Do not reintroduce versioned contract files or amendment piles.  
-3. Optional history only: `worker-log.md` (deletable).  
-4. **UNVERIFIED** when evidence is missing.
+3. **UNVERIFIED** when evidence is missing.

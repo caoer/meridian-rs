@@ -155,7 +155,7 @@ fn the_depth_cap_is_a_generic_withheld_state() {
     );
 }
 
-/// ZT ruling, 2026-08-15: there is no sandbox, so no human line says
+/// `docs/laws.md` § Amendment: there is no sandbox, so no human line says
 /// `unsandboxed` — the `task:` line renders bare for bash and `effects:
 /// undeclared` carries the fact. A POSITIVE guarantee (`hermetic`) still
 /// renders, and `--json` keeps the `guarantee` class on both.

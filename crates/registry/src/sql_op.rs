@@ -1,6 +1,6 @@
 //! The `sql` op (`docs/wire-contract.md` § A.11): one SQL statement over the
 //! workspace's fingerprint-pinned projection cache, served by the resident
-//! engine — the ruled lifecycle B (2026-08-14), which knowingly supersedes
+//! engine — the ruled lifecycle B, which knowingly supersedes
 //! §10.4's no-view-organ close for sql. The wire carries results, never a
 //! file path: the daemon is the cache file's single owner (`DuckDB`'s own
 //! lock excludes every other process), and this module is the one append
@@ -60,9 +60,9 @@ use crate::Registry;
 ///   ms and 5,581 ms as if they described today's hold. Both are also
 ///   WARM-INCREMENTAL figures; the cold-projection hold below is a separate,
 ///   larger, unbounded case they do not cover.
-/// - **Ceiling — the host's own deadline.** `ccc-statusd` gives a request 10 s
-///   (`internal/registryclient/client.go`) and retires the CONNECTION when it
-///   expires, failing every op pipelined behind it. The refusal has to land
+/// - **Ceiling — the host's own deadline.** The MCP face gives a request 10 s
+///   and retires the CONNECTION when it expires, failing every op pipelined
+///   behind it. The refusal has to land
 ///   with room to spare, or the bound buys nothing: the burst it exists to
 ///   prevent happens anyway, one layer up. The op's own pre-lock work (domain
 ///   load, mount corpus, base walk) runs BEFORE this wait, so a refusal costs

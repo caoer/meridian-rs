@@ -71,11 +71,11 @@ struct Topology {
     /// Kept alive for the fixture's lifetime — dropping it removes the tree —
     /// and read directly for paths outside the two roots.
     dir: tempfile::TempDir,
-    /// The wiki's real directory — `/Users/Shared/projects/field-notes`.
+    /// The wiki's real directory — `/srv/vaults/field-notes`.
     real_wiki: PathBuf,
-    /// The repos root — `/Users/Shared/repos`.
+    /// The repos root — `/srv/repos`.
     repos_root: PathBuf,
-    /// The symlink into the repos root — `/Users/Shared/repos/field-notes`.
+    /// The symlink into the repos root — `/srv/repos/field-notes`.
     linked_wiki: PathBuf,
     /// The wiki path as the env var spells it — real path, trailing slash.
     slashed_wiki: String,
@@ -412,8 +412,8 @@ fn the_public_entry_point_latches_process_wide() {
 #[test]
 fn an_empty_table_is_unchecked_in_both_of_its_shapes() {
     let env = BridgeEnv {
-        wiki_path: Some("/Users/Shared/projects/field-notes/".to_string()),
-        repos_root: Some("/Users/Shared/repos".to_string()),
+        wiki_path: Some("/srv/vaults/field-notes/".to_string()),
+        repos_root: Some("/srv/repos".to_string()),
     };
 
     // State A — no file at all.

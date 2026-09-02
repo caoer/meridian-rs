@@ -1,8 +1,8 @@
 //! B-03 crash-phase × filesystem matrix — the pinned-old-binary process cells.
 //!
-//! The fence landed dormant (ZT 2026-08-15: not a cutover blocker; no
-//! old-binary users; leftover bin = delete it; never activate on downgrade
-//! grounds). These cells still prove the mechanism against the current `mrd`
+//! The fence is dormant by design (not a cutover blocker; no old-binary
+//! users; a leftover bin is deleted, never activated on downgrade grounds).
+//! These cells still prove the mechanism against the current `mrd`
 //! (`CARGO_BIN_EXE_mrd`, sha256 printed per run) over its process boundary.
 //! CLI writes route over IPC; the fence still holds because the daemon
 //! publish path opens `.meridian/write.lock` (interim flock until

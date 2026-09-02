@@ -11,7 +11,7 @@ block looks healthy on every other acceptance and fails only here.
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/projects/field-notes
+path: /srv/vaults/field-notes
 vault: field-notes
 ```
 
@@ -20,7 +20,7 @@ single-root consumers (change feed, watch loop, journal) anchor.
 
 ```meridian-mount
 name: sessions
-path: /Users/Shared/projects/field-notes-sessions
+path: /srv/vaults/field-notes-sessions
 primary: true
 vault: field-notes-sessions
 ```
@@ -30,5 +30,5 @@ accept proves coexistence.
 
 ```meridian-mount
 name: archive
-path: /Users/Shared/repos/archive
+path: /srv/repos/archive
 ```

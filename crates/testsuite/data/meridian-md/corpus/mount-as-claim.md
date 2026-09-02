@@ -18,12 +18,12 @@ constrain the codec.
 
 ```meridian-mount
 name: field-notes
-path: /Users/Shared/projects/field-notes
+path: /srv/vaults/field-notes
 vault: field-notes
 pin: fp1.span2.b3.40b167ed9b42a2beadb7c441b214efdc93069ef443a1cc2b5ae2ccda4cf03152
 ```
 
 ```meridian-mount
 name: archive
-path: /Users/Shared/repos/archive
+path: /srv/repos/archive
 ```

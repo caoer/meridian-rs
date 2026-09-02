@@ -1,5 +1,5 @@
-//! Card `effects-lane` — the no-guard-on-effects ruling
-//! (`decisions/2026-08-15-no-guard-on-effects.md`; plan §4.10; run-plane.md
+//! The no-guard-on-effects law
+//! (plan §4.10; run-plane.md
 //! § the no-guard amendment): `run` holds NO world pin, and no refusal on
 //! this door is a premise refusal.
 //!

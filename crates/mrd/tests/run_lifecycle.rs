@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// Lifecycle fixture workspace: a starlark fix task, a plain bash task (bash has no effect
-/// channel — the effect-shim fd is deleted, ZT ruling 2026-08-21), a bash task that writes an
+/// channel — there is no effect-shim fd), a bash task that writes an
 /// md file directly, and a bash task that rewrites `mdfs_config.yaml` mid-run (the widening
 /// attack).
 const PAGE: &str = "\
@@ -134,7 +134,7 @@ fn bash_task_records_the_run_and_changes_nothing() {
     assert!(receipts.contains(".meridian/runs/"), "{receipts}");
     assert!(receipts.contains("sha256"), "{receipts}");
     // No class label for bash — a guarantee word renders only where positive
-    // (ZT ruling, 2026-08-15; `docs/laws.md` § Amendment). The brackets verdict
+    // (`docs/laws.md` § Amendment). The brackets verdict
     // still renders, on the out-of-band-delta line below.
     assert!(!stdout(&out).contains("unsandboxed"), "{}", stdout(&out));
     assert!(

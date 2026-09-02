@@ -135,10 +135,10 @@ fn no_repo_fence(root: &Path) -> serde_json::Value {
     })
 }
 
-/// The MANDATORY disclosure line, verbatim, spelled once (U5 § 6; advisor gate 1 §2). Every
-/// render assert below carries it, so deleting the line fails this file rather than silently
-/// returning a reader to the old, wider green. The line states the narrowing and the pointer
-/// only; the mechanism WHY is docs/`--help` teaching (report-voice pass, ZT rulings 3–5).
+/// The MANDATORY disclosure line, verbatim, spelled once (U5 § 6). Every render assert below
+/// carries it, so deleting the line fails this file rather than silently returning a reader
+/// to the old, wider green. The line states the narrowing and the pointer only; the mechanism
+/// WHY is docs/`--help` teaching (the report states what is, teaching is on demand).
 fn write_history_line() -> String {
     format!(
         "  write_history: {} — chain continuity and last-receipt-vs-live are not checked; \

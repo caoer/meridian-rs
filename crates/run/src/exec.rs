@@ -216,7 +216,7 @@ where
         }
     }
     cmd
-        // Run-env ruling (2026-08-16): the child INHERITS the daemon's
+        // Run-env law: the child INHERITS the daemon's
         // environment — no `env_clear`. A task whose `^env` gate needs a
         // daemon-held variable must see it without redeclaring it.
         .envs(spec.env)

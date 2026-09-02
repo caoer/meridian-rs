@@ -157,7 +157,7 @@ fn a_pure_submission_has_no_run_builtin() {
 }
 
 // ---------------------------------------------------------------------------
-// The ZT requirement, script half: run() at call time, results observable.
+// The requirement, script half: run() at call time, results observable.
 // ---------------------------------------------------------------------------
 
 /// `run()` executes at call time and returns its row as a value the program
@@ -396,10 +396,10 @@ fn the_combination_walls_refuse_before_anything_runs() {
 }
 
 // ---------------------------------------------------------------------------
-// token_count — leg B of the token_count ruling (2026-08-13). The builtin is
+// token_count — leg B of the token_count design. The builtin is
 // a socket call wearing a function: the engine holds no tokenizer and no
 // credentials, so `token_count(text)` dials the NDJSON endpoint the frame's
-// `token_count_endpoint` names (the ccc-statusd daemon.sock token_count verb,
+// `token_count_endpoint` names (the MCP face's `token_count` verb,
 // identityless default) and answers the count as an int.
 // ---------------------------------------------------------------------------
 

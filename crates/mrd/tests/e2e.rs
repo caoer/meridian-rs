@@ -189,8 +189,8 @@ fn e2e_m2_spares_a_descendant_that_is_its_own_git_root() {
 
 // ---------------------------------------------------------------------------
 // Gate: cwd-default, no daemon → OUTSIDE a workspace: exit 2, NOTHING written
-// under the cache root (2026-08-20: the ephemeral adopt walked a 75-repo
-// parent for ~21 s; strict resolution refuses instead)
+// under the cache root (the ephemeral adopt once walked a 75-repo parent for
+// ~21 s; strict resolution refuses instead)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -474,8 +474,8 @@ fn e2e_daemon_serves_resolve_adopt_and_shuts_down() {
 // ---------------------------------------------------------------------------
 // Gate: a leftover registry row for an UNMARKED tree is not a defined root —
 // strict-lane verbs refuse (exit 2, milliseconds) instead of serving the
-// adoption (advisor gate 2026-08-20: a pre-refusal walk's row served a
-// 75-repo parent for ~23 s, and serving kept refreshing the row).
+// adoption (a pre-refusal walk's row once served a 75-repo parent for ~23 s,
+// and serving kept refreshing the row).
 // ---------------------------------------------------------------------------
 
 #[test]

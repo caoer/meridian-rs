@@ -1,5 +1,5 @@
 //! S1 gate: the composed read carries the authz facts — canonical hpaths,
-//! byte spans, and the `^id` anchors — so ccc-statusd's put authz derives
+//! byte spans, and the `^id` anchors — so the MCP face's put authz derives
 //! governing sections from the engine's facts instead of its own markdown
 //! mirror.
 //!
@@ -13,7 +13,7 @@
 //! `rendered_text` never grows an anchor row.
 //!
 //! The anchors ride their own always-emitted `anchors[]`, never the `toc`
-//! array: ccc-statusd's `readText` indents by `depth-1` and panics on a
+//! array: the MCP face's `readText` indents by `depth-1` and panics on a
 //! depth-0 row.
 
 use model::gotext::sanitize_heading;

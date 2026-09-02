@@ -2,7 +2,6 @@
 type: convention
 id: docsys
 status: standing
-updated: 2026-08-09
 description: How this corpus is structured, addressed, cited and locked. The rules every docs/ file obeys.
 owns: [doc-id registry, citation grammar, one-law-one-home, anchor policy, pin policy]
 draws_from: []
@@ -28,7 +27,7 @@ two properties were lost on the way.
 grep -hE '^#{1,6} +(§ ?)?[0-9]+' docs/*.md
 ```
 
-Four files answer to a heading numbered `4.4`. Nine answer to `1`. So a bare
+Several files answer to a heading numbered `4.4`, and more to `1`. So a bare
 `§4.4` names a section only by convention, and a convention cannot be measured.
 
 **A law restated outside its home is invisible.** A citation index finds a law
@@ -57,8 +56,9 @@ file's own frontmatter and listed here; the two must agree.
 | `fp` | `fingerprint-norm-spec.md` | the fingerprint CID token + norm-v2 |
 | `armed` | `armed-plane.md` | the arming ladder + the `gate()` seam |
 | `run` | `run-plane.md` | the run plane, preset and session birth |
+| `base-projection` | `base-projection.md` | the `.base` projection relations, membership, `base_fold` |
+| `body-projection` | `body-projection.md` | the `body` relation, the chunk law, the `body_text` cache protocol |
 | `status` | `status.md` | what the binary exposes today (descriptive only) |
-| `log` | `worker-log.md` | time-sensitive provenance (optional, deletable) |
 
 A new file claims a new id in the same act that creates it. An id is never
 reused and never renamed — citations outlive filenames.
@@ -73,7 +73,7 @@ reused and never renamed — citations outlive filenames.
 
 **Bare `§N` is deprecated for new writing and reads as `wire §N`.** That reading
 is not a preference; it is what every existing bare citation in this repo and in
-the dogfood kit already means. Declaring it is the compatible move: the tokens
+downstream clients already means. Declaring it is the compatible move: the tokens
 resting on the wire contract keep resolving, and nothing outside this corpus has
 to change. Never "fix" an existing bare citation by re-pointing it — qualify it
 to `wire §N` or leave it.
@@ -113,7 +113,7 @@ after it. An anchor is not.
 
 Minting an anchor writes to the target's heading line, which is inside that
 section's own rev span — so it changes the section's `node_rev`. On a section
-that external expectations rest on, mint with the seat that owns those
+that external expectations rest on, coordinate the mint with whoever owns those
 expectations, never alone.
 
 ## §6 Locked, not merely written

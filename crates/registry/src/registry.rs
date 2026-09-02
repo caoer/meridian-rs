@@ -250,7 +250,7 @@ pub struct Registry {
 /// contact serves; a drawer still rebuilding past it is the long kind the
 /// refusal exists for. Engine-internal on purpose — the contract publishes
 /// the bound's ORDER, never its value: well under any sane host op deadline
-/// (ccc-statusd's D4 floor is 10 s), well over a small corpus build.
+/// (an MCP client's per-request floor is 10 s), well over a small corpus build.
 const COLD_BUILD_WAIT: Duration = Duration::from_secs(2);
 
 /// §3.2 cold-read state: which workspaces have a background drawer rebuild
@@ -3901,8 +3901,8 @@ mod engine_tests {
     /// vouch — the same box-vs-sweep confusion as `daemon_idle_exit.rs`
     /// § `a_changed_corpus_is_still_rebuilt_on_the_sweep` and
     /// § `prewarm_absorbs_the_change_so_the_next_query_parses_nothing`, both
-    /// already converted to this instrument. Instrumented on the build box
-    /// (2026-08-24), the loop ran **zero** iterations at all four call sites
+    /// already converted to this instrument. Instrumented on the build box,
+    /// the loop ran **zero** iterations at all four call sites
     /// (~5 µs each): the state it waited for is the state
     /// [`Registry::warm_or_build`] has already left behind, because the
     /// currency pass at the head of its own loop IS this proof. What the

@@ -184,7 +184,7 @@ pub fn is_glob_pattern(member: &str) -> bool {
 }
 
 /// The first `files[]` member-order fault: a PATTERN member standing before a
-/// LITERAL member (§ A.7 literals-first, ruled 2026-08-15). Returns
+/// LITERAL member (§ A.7 literals-first). Returns
 /// `(pattern_index, literal_index)` — the two members the refusal names — or
 /// `None` when the list is legal.
 ///

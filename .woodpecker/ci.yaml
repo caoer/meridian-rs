@@ -28,10 +28,10 @@
 #     never a wrong artifact (entries are content-addressed and decoded on
 #     read). sccache wraps COMPILES only; linking is mold's job (RUSTFLAGS).
 #   - The workspace is SHARED: any lane that writes a TRACKED file races
-#     every lane that reads the tree (build_identity asserts tree state —
-#     pipeline #25). Lanes write untracked paths — target dirs, /tmp, the
-#     /ci-cache mount — WITH ONE EXCEPTION THAT IS NOW LOAD-BEARING: the test
-#     lane rewrites 11 TRACKED files every run. crates/fs/src/stable.rs
+#     every lane that reads the tree (build_identity asserts tree state).
+#     Lanes write untracked paths — target dirs, /tmp, the /ci-cache mount —
+#     WITH ONE EXCEPTION THAT IS NOW LOAD-BEARING: the test lane rewrites 11
+#     TRACKED files every run. crates/fs/src/stable.rs
 #     touch() does File::create + write_all(b"stable-read probe\n"), and
 #     calibrate()/watermark() fire on every workspace open, so each
 #     crates/testsuite/data/parity/corpus/*/.meridian/stable-read.probe is
@@ -40,7 +40,7 @@
 #     Since `publish mrd` now REFUSES a tracked divergence instead of warning,
 #     changing that probe string reds main immediately — and the symptom
 #     points at the publish step and 11 fixtures, not at the crate that
-#     changed. Found by reviewer 0af9c1b3 on PR 199; verified by md5 here.
+#     changed.
 #   - The deny lane keeps NO shared state: cargo-deny's advisory DB is a git
 #     working copy, which a killed run leaves half-written and unrepairable by
 #     any lock, so that lane runs on a container-local CARGO_HOME and clones
@@ -68,16 +68,15 @@ when:
   #
   # THIS WAS WITHDRAWN ONCE, ON EVIDENCE, AND IT IS BACK BECAUSE THE EVIDENCE
   # CHANGED. Gating makes the tag workflows start ~18 min after `ci`, and a late
-  # workflow used to lose its clone credential (pipeline 1204: `could not read
-  # Username`, exit 128, on BOTH a docker and a local agent). That was never a
-  # property of `depends_on` — the netrc was the repo user's OAuth access token
-  # stamped once at pipeline parse, and it died on its own clock. PR 200 gave
-  # every workflow here a non-rotating PAT (see the `clone:` block below), which
-  # is what makes this gate landable. Landable, not proven safe: one tag-lane
-  # clone has run late and survived (1328, +1171 s from parse) and it was
-  # pre-gate, while under the gate none has cloned at all — 1330 was refused red
-  # and both tag workflows skipped, `started=null`. The first real `v*` release
-  # is the proof. Card: 22-18/tasks/meridian-rs-tag-lanes-not-gated.
+  # workflow used to lose its clone credential (`could not read Username`, exit
+  # 128, on BOTH a docker and a local agent). That was never a property of
+  # `depends_on` — the netrc was the repo user's OAuth access token stamped once
+  # at pipeline parse, and it died on its own clock. Every workflow here now
+  # clones with a non-rotating PAT (see the `clone:` block below), which is what
+  # makes this gate landable. Landable, not proven safe: a tag-lane clone has
+  # run ~20 min after parse and survived, but that was pre-gate; under the gate
+  # a red `ci` leaves both tag workflows skipped, never cloned. The first real
+  # `v*` release is the proof.
   - event: tag
     ref: refs/tags/v*
 
@@ -88,10 +87,9 @@ labels:
 # netrc password is the repo user's OAuth access token, stamped into the
 # workflow ONCE at pipeline parse (v3.17.0 server/pipeline/items.go); Forgejo
 # expires it hourly, so a workflow whose clone starts late presents a dead
-# credential and dies with "could not read Username" / exit 128 (pipelines
-# 810, 1204 — both backends). This step pins a non-rotating read:repository
-# PAT instead (woodpecker secret `forgejo_clone_token`, PAT `woodpecker-clone`,
-# sops copy: field-notes-secrets infra/svc/common.sops.yaml).
+# credential and dies with "could not read Username" / exit 128 (seen on both
+# backends). This step pins a non-rotating read:repository PAT instead
+# (woodpecker secret `forgejo_clone_token`).
 #
 # LOAD-BEARING, do not "clean up":
 #   - `environment:` is the whole mechanism: a clone step with any
@@ -111,10 +109,9 @@ clone:
     environment:
       PLUGIN_DEPTH: "0" # the server default clone's own setting — same fetch shape
       # ci now runs on tag events too (the v* gate); the default clone only fetched tags there, so
-      # fetch them always — the mirror is local, cost ~nil. (Hunk authored by e860ada5, who owns
-      # this block, and handed to this PR so the lanes are touched once: without it, a `ci` running
-      # on a v* tag clones WITHOUT the tag object, and anything that peels or describes the tag
-      # breaks silently — compiler.go set cloneSettings["tags"] only on tag events.)
+      # fetch them always — the mirror is local, cost ~nil. Without it, a `ci` running on a v* tag
+      # clones WITHOUT the tag object, and anything that peels or describes the tag breaks
+      # silently — compiler.go set cloneSettings["tags"] only on tag events.
       PLUGIN_TAGS: "true"
       CI_NETRC_MACHINE: git.0xdao.app
       CI_NETRC_USERNAME: caoer115
@@ -134,7 +131,7 @@ variables:
   # crate, so this also bounds the parallel cc1plus instances compiling the
   # bundled DuckDB amalgamation (~1.5 GB each). Unbounded on the 30-core /
   # 58 GB runner, two lanes building DuckDB concurrently OOM-killed cc1plus
-  # (pipeline #20: "error: Killed signal terminated program cc1plus").
+  # ("error: Killed signal terminated program cc1plus").
   - &build_jobs "8"
   # Cap per-lane sccache shard. The bundled-DuckDB objects dominate a warm
   # shard; 30G is ~10x that. If --show-stats shows evictions, raise the test
@@ -207,9 +204,9 @@ steps:
       # below is then obviously absent rather than buried.
       - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci cargo test --workspace --locked --no-run -q
       # --no-fail-fast: one failing test binary must not trade away the other
-      # binaries' verdicts (pipeline #25 lost ~80% of the suite's evidence to
-      # a single red binary). Inner bash for pipefail — tee must not mask
-      # cargo's exit code; the outer step shell stays POSIX.
+      # binaries' verdicts (one red binary once cost ~80% of the suite's
+      # evidence). Inner bash for pipefail — tee must not mask cargo's exit
+      # code; the outer step shell stays POSIX.
       #
       # The evidence count runs in the SAME command as the suite: a failing
       # command aborts a step's remaining commands, so a separate gate line
@@ -221,14 +218,13 @@ steps:
       #
       # -q does BOTH jobs: it suppresses cargo's per-crate `Fresh`/`Running`
       # restamp AND forwards --quiet to libtest (one character per test).
-      # Writing `-q -- --quiet` as well is what pipeline #30 died of —
-      # "error: Option 'quiet' given more than once", every binary red, zero
-      # evidence lines. Do not add it back. Neither flag touches the
-      # evidence: `^test result` lines print in both modes, so the gate below
-      # counts exactly what it counted before, and a FAILING test still prints
-      # its name, its panic, and its captured output in full. The trade
-      # accepted (ZT, 2026-08-10): suite.log keeps binary-level counts, not the
-      # name of every passing test.
+      # Writing `-q -- --quiet` as well is fatal — "error: Option 'quiet' given
+      # more than once", every binary red, zero evidence lines. Do not add it
+      # back. Neither flag touches the evidence: `^test result` lines print in
+      # both modes, so the gate below counts exactly what it counted before,
+      # and a FAILING test still prints its name, its panic, and its captured
+      # output in full. The trade accepted: suite.log keeps binary-level
+      # counts, not the name of every passing test.
       - |
         set +e
         setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci bash -o pipefail -c 'cargo test --workspace --locked --no-fail-fast -q 2>&1 | tee target-ci/suite.log'
@@ -329,14 +325,13 @@ steps:
     pull: false
     environment:
       # NOT the shared *cargo_home: the advisory DB is a git working copy, and
-      # a SHARED one has no safe state after a killed run — pipelines 115/116
-      # were killed mid-fetch and wedged the clone for everyone
-      # ("fatal: shallow file has changed since we read it", still red at
-      # 118/119, fixed only by deleting the directory on the host). A flock
-      # serializes writers but cannot repair a dead writer's half-written
-      # tree. This CARGO_HOME lives inside the step container, so it cannot
-      # outlive the run and no run can inherit another's corruption; the
-      # advisory DB is cloned fresh each time from our forge mirror
+      # a SHARED one has no safe state after a killed run — two runs killed
+      # mid-fetch once wedged the clone for everyone ("fatal: shallow file has
+      # changed since we read it", red until the directory was deleted on the
+      # host). A flock serializes writers but cannot repair a dead writer's
+      # half-written tree. This CARGO_HOME lives inside the step container, so
+      # it cannot outlive the run and no run can inherit another's corruption;
+      # the advisory DB is cloned fresh each time from our forge mirror
       # (deny.toml [advisories] db-urls — ~6 MB, seconds on the LAN).
       CARGO_HOME: /tmp/deny-cargo
     commands:
@@ -364,7 +359,7 @@ steps:
       # lane is --locked; without this flag the deny lane could refresh the lock
       # early enough that the --locked lanes then find it current — and the tree
       # gate would red main from the publish step with the symptom naming the
-      # wrong lane. Card: 22-18/tasks/ci-tree-gate-blind-spots.
+      # wrong lane.
       - cargo deny --locked --log-level error check -s
 
   # Harness bit-rot catches, not perf gates: one iteration per bench target,
@@ -395,15 +390,14 @@ steps:
       # --results redirects the renderings into the ignored target dir. The
       # default results/ dir is GIT-TRACKED, and lanes share one workspace:
       # rewriting it mid-pipeline dirtied the tree under the test lane, whose
-      # build_identity test asserts binary identity == git state (pipeline
-      # #25 — a race the bench lane won only when its cache was warm). The
-      # table still prints to stdout for the CI log.
+      # build_identity test asserts binary identity == git state (a race the
+      # bench lane won only when its cache was warm). The table still prints
+      # to stdout for the CI log.
       - cargo run -q --locked --release -p perfsuite --bin bench-report -- --results target/ci-results
       - sccache --show-stats || echo "WARNING sccache stats unavailable — caching may be inoperative"
 
-  # PUBLISH the engine. Downstream repos gate on a LIVE `mrd` (ccc-statusd's
-  # internal/mcpserver, internal/registryclient, internal/cutover — no-skip by
-  # design, MERIDIAN_MRD_BIN or fail), and no CI anywhere could run those lanes
+  # PUBLISH the engine. Downstream repos gate on a LIVE `mrd` (no-skip by
+  # design: MERIDIAN_MRD_BIN or fail), and no CI anywhere could run those lanes
   # because this repo produced no consumable artifact. It does now.
   #
   # The pin a consumer records is (COMMIT, SHA256) and the URL is derived from
@@ -419,19 +413,16 @@ steps:
   # THIS BUILD REPRODUCED BIT-FOR-BIT ONCE, WITH EVERY INPUT HELD — one commit,
   # linux-amd64, this image tag, a warm shard. That is what was measured and all
   # that is claimed; the previous revision of this comment asserted the opposite
-  # in general, which was also more than it knew. Measured 2026-08-23: a `git
-  # archive` of 4640044e0, built in
-  # this image on this runner with the same sccache shard, the same
-  # MRD_BUILD_SHA and the same target-dir PATH, reproduced the published
-  # mrd-linux-amd64 byte for byte — sha256
-  # 0098356f0f9ac63af221128459595138f1600eb7aabf4f15a7e04f4306129ce0, 54151480
-  # bytes. So the 409 is NOT protection against inherent nondeterminism. It is
-  # protection against an INPUT drifting, and the inputs are not pinned: the
-  # same source built into a different target-dir path came out 64 bytes
-  # smaller (OUT_DIR strings reach the binary through build scripts), and the
-  # image tag, toolchain and RUSTFLAGS can all move. That is the honest reason
-  # the FIRST bytes must win, and it is a better reason than the one it
-  # replaces. Card: 19-20/tasks/main-publish-stamps-dirty-on-every-head.
+  # in general, which was also more than it knew. A `git archive` of a published
+  # commit, built in this image on this runner with the same sccache shard, the
+  # same MRD_BUILD_SHA and the same target-dir PATH, reproduced the published
+  # mrd-linux-amd64 byte for byte — identical sha256, all 54151480 bytes. So
+  # the 409 is NOT protection against inherent nondeterminism. It is protection
+  # against an INPUT drifting, and the inputs are not pinned: the same source
+  # built into a different target-dir path came out 64 bytes smaller (OUT_DIR
+  # strings reach the binary through build scripts), and the image tag,
+  # toolchain and RUSTFLAGS can all move. That is the honest reason the FIRST
+  # bytes must win, and it is a better reason than the one it replaces.
   #
   # main + manual only: a PR's engine is not a thing anyone should pin.
   #
@@ -439,14 +430,14 @@ steps:
   # VERDICT lanes: they must not mask each other, so none of them waits. This
   # step produces no verdict — it produces the artifact downstream repos PIN —
   # and with `depends_on: []` it started alongside the verdict lanes and often
-  # finished first, so a red main push published its bytes anyway. Same class as
-  # ccc-statusd pipeline 821 (2026-08-23: go-test FAILURE / deploy SUCCESS),
-  # fixed there by a workflow-level `depends_on: [{name: ci, optional: true}]`;
-  # here the lanes live in this same workflow, so the dependency is step-level.
-  # Woodpecker skips a step whose dependency failed, so a red lane now leaves
-  # this step never-run. EVERY lane is named on purpose: the artifact must not
-  # ship on a tree that failed any check we run, and a lane added tomorrow has
-  # to be added here too. Card: 22-18/tasks/meridian-rs-publish-not-gated.
+  # finished first, so a red main push published its bytes anyway. Downstream
+  # repos that pin a live mrd hit the same class of defect (tests FAILURE beside
+  # deploy SUCCESS) and closed it with a workflow-level
+  # `depends_on: [{name: ci, optional: true}]`; here the lanes live in this same
+  # workflow, so the dependency is step-level. Woodpecker skips a step whose
+  # dependency failed, so a red lane now leaves this step never-run. EVERY lane
+  # is named on purpose: the artifact must not ship on a tree that failed any
+  # check we run, and a lane added tomorrow has to be added here too.
   - name: publish mrd (forgejo generic package, keyed by commit)
     depends_on:
       - test (cargo test --workspace --locked)
@@ -479,9 +470,9 @@ steps:
       # two rules). The script's own git probe answers `unknown` in this
       # container (the workspace is not the probe's to trust: other lanes run as
       # other uids in it), and a daemon that publishes `unknown` fails every
-      # consumer gate that asks WHICH build answered — measured downstream:
-      # ccc-mcp-server TestColdDaemonIsSpawnedAndVerified, "the tree build must
-      # publish a named identity, got unknown".
+      # consumer gate that asks WHICH build answered — downstream repos that pin
+      # a live mrd assert that a spawned daemon publishes a named identity, and
+      # refuse `unknown`.
       #
       # So CI supplies the claim and OWNS it: the sha Woodpecker checked out,
       # plus `-dirty` if this workspace actually diverges from it. Both halves
@@ -496,21 +487,17 @@ steps:
       # CARGO_TARGET_DIR, untracked, sharing this workspace) read as divergence
       # and every main head shipped a `-dirty` pin. TEN of them — every main
       # push from the gating commit to the fix, each log carrying exactly one
-      # porcelain line, `?? target-ci/`: 1228 `171280b46`, 1234 `40fad579b`,
-      # 1244 `3259343e1`, 1258 `612a4550e`, 1259 `0d60d29be`, 1262 `ed15def72`,
-      # 1275 `4640044e0`, 1284 `f249db4b9`, 1294 `165ba87a8`, 1311 `f3b586aec`.
-      # (This comment said NINE when it was written and the run was still open:
-      # 1311 landed after it. First CLEAN main stamp: 1335, `4ac5acbc6`.)
+      # porcelain line, `?? target-ci/`.
       #
-      # It is DETERMINISTIC, not flaky, and `db71afc11` is where it starts —
-      # the commit that gated this step on all six lanes. Before that gate the
-      # step had `depends_on: []`, started beside the lanes and probed the tree
-      # BEFORE the test lane had created `target-ci/`; it won that race (1220,
-      # at a descendant of the commit that introduced `target-ci`, published
-      # clean). Gating it made it wait, so now it loses the race every time.
-      # The tag lanes already probe this way after the same defect bit them
-      # (d3accfbe4e28…-dirty). --no-optional-locks keeps the probe from writing
-      # the index under a concurrent git in the shared workspace.
+      # It is DETERMINISTIC, not flaky, and it starts at the commit that gated
+      # this step on all six lanes. Before that gate the step had
+      # `depends_on: []`, started beside the lanes and probed the tree BEFORE
+      # the test lane had created `target-ci/`; it won that race and published
+      # clean. Gating it made it wait, so now it loses the race every time.
+      # The tag lanes already probe this way after the same defect bit them (a
+      # `-dirty` release stamped on a tree that matched HEAD).
+      # --no-optional-locks keeps the probe from writing the index under a
+      # concurrent git in the shared workspace.
       #
       # AND IT FAILS, it does not warn. `-dirty` here means a lane wrote a
       # TRACKED file mid-pipeline — the pin would name bytes no sha can recover
@@ -530,8 +517,7 @@ steps:
       # reason (build_git.rs returns None on a non-zero exit; build.rs collapses
       # that to `unknown`): "I could not tell" and "it was clean" are opposite
       # answers. Matching the FLAGS without matching that is how a gate fails
-      # open. Found by reviewer 0af9c1b3 with a stub git exiting 128.
-      # Card: 19-20/tasks/main-publish-stamps-dirty-on-every-head.
+      # open. Reproduced with a stub git exiting 128.
       - |
         set -eu
         git config --global --add safe.directory "$CI_WORKSPACE"
@@ -544,7 +530,7 @@ steps:
           printf '%s\n' "$porcelain"
           exit 1
         fi
-        # THE FOURTH STATE (F7, binding review of PR 199): the probe above answers
+        # THE FOURTH STATE: the probe above answers
         # "does TRACKED content diverge from HEAD" — but the stamp names
         # CI_COMMIT_SHA, which came from the environment and was never read from
         # the tree. Nothing else compares them: a lane that moves HEAD (none does

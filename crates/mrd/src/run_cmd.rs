@@ -10,7 +10,7 @@
 //! # Exit triad
 //! - **0** — clean: `--list`, a completed `--dry`, a clean run. A foreign write landing
 //!   BEFORE the exec window is reported (`pre-exec delta:` line), never refused — a
-//!   foreign advance re-derives and proceeds (2026-08-15 no-guard amendment,
+//!   foreign advance re-derives and proceeds (the no-guard amendment,
 //!   `docs/run-plane.md`; the former `--fatal-preexec` opt-in is RETIRED with the
 //!   plane's premise refusals).
 //! - **1** — the run plane refused or failed: eval fault, a bash fence under a read-only
@@ -865,8 +865,8 @@ fn list_tasks(
                         let lang = resolved.block.lang.as_str();
                         // The class cell renders only where the guarantee is
                         // POSITIVE (`hermetic`) — `unsandboxed` names a sandbox
-                        // that does not exist (ZT ruling, 2026-08-15). The
-                        // `--json` `guarantee` key is unchanged.
+                        // that does not exist. The `--json` `guarantee` key is
+                        // unchanged.
                         let class = resolved.block.lang.guarantee_class();
                         let mut line = if class == GuaranteeClass::Unsandboxed {
                             format!("  {}  {lang}", b.name)
@@ -1010,7 +1010,7 @@ fn dry_bash(parsed: &RunArgs, task: &str, source: &str) {
         }
         Format::Human => {
             // No guarantee word for bash: there is no sandbox, so the negation
-            // names nothing (ZT ruling, 2026-08-15). `--json` keeps the class.
+            // names nothing. `--json` keeps the class.
             println!("dry run: task '{task}' (bash) — NOT executed");
             println!("effects: {}", caps::UNDECLARED_EFFECTS);
             println!("--- block ---");

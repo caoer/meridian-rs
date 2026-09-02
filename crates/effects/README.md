@@ -2,9 +2,8 @@
 
 Pure Starlark evaluation: **rules in, effect descriptors out. Zero I/O, zero
 integration. Advisory-only.** The engine's organ for the `on_change` hook, in
-its own crate (decisions/0003, decision #7 rename-and-demote). Runs parallel to
-the resident-daemon spine and touches nothing it owns — no splice choke point,
-no wire, no daemon — and never will.
+its own crate. Runs parallel to the resident-daemon spine and touches nothing
+it owns — no splice choke point, no wire, no daemon — and never will.
 
 ```rust
 use effects::{eval, ChangeEvent, Rule};
@@ -71,7 +70,7 @@ consumer executes; the kernel never applies one.
 > freeze** — alignment with the fused stage-2 winner may rename them (0003 §
 > reserved). Delete-don't-migrate makes that cheap; build no migration layer.
 
-## Effect domains & capability routing (0003 §2, §5)
+## Effect domains & capability routing
 
 Effects are namespaced by executor: `md.*` (engine applies to the tree,
 depth-capped), `daemon.*` (resident powers), `proto.*` (wire-client advisory
@@ -79,7 +78,7 @@ feedback). `eval` emits ALL effects; a consumer's `CapabilitySet` is the
 downstream filter (`route(effects) -> (admitted, rejected)`), kept separate so
 `eval` stays pure.
 
-## Acknowledged limitation — cursor replay collapses transitions (0003 §4)
+## Acknowledged limitation — cursor replay collapses transitions
 
 At-least-once delivery is fingerprint-cursor replay, not a queue. An outage
 between a consumer's cursor and live replays the **net** diff: `todo→review→done`
@@ -101,7 +100,7 @@ disk carries the history the wire never does.
   resolve to a typed `EvalError`; provenance (`rule_id`) is kernel-stamped and
   cannot be forged.
 
-## Tests (decisions/0003 § Testing methodology)
+## Tests
 
 | Layer | Tool | Run |
 |---|---|---|
@@ -119,10 +118,10 @@ mutation/coverage tools are the deeper CI gates.
 
 ## Not in this crate
 
-**Dead — never coming here (decision #7 rename-and-demote):** the splice-point
+**Dead — never coming here:** the splice-point
 carve-in. This kernel is advisory-only by charter; it will never gain a
 correctness path.
 
-**Elsewhere or reserved (0003 § reserved):** the wire `effects[]` field, the
+**Elsewhere or reserved:** the wire `effects[]` field, the
 executor, and cursor replay (consumer-side). The kernel exposes the pure `eval`
 primitive those build on.

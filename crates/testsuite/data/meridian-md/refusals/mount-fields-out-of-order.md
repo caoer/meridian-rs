@@ -13,5 +13,5 @@ teaches the order.
 ```meridian-mount
 name: field-notes
 vault: field-notes
-path: /Users/Shared/projects/field-notes
+path: /srv/vaults/field-notes
 ```

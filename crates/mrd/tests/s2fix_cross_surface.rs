@@ -374,8 +374,8 @@ fn board_rows(ws: &Path) -> Vec<BoardRow> {
 /// `selector-unresolved` (the page resolves, the heading does not) and
 /// `file-not-found` (the page is not on disk at all).
 ///
-/// **The third used to be spelled `selector-unresolved` here, and session
-/// decision 0054 ruled that word false over a page that is gone** — with no page
+/// **The third used to be spelled `selector-unresolved` here, and that word
+/// was ruled false over a page that is gone** — with no page
 /// there is no resolution to assert. The state did not disappear when the word
 /// moved, so the corpus gained a cell rather than trading one: `unresolved.md`
 /// now dangles a HEADING on a page that EXISTS, which is where the word is true.

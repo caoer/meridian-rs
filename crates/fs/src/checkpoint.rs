@@ -1,6 +1,4 @@
-//! The §6.5 disposable checkpoint — FORMAT ONLY (merkle-spec §6.5; ruled by
-//! `decisions/2026-08-15-restart-index-allowed.md`, superseding the
-//! memory-only direction).
+//! The §6.5 disposable checkpoint — FORMAT ONLY (merkle-spec §6.5).
 //!
 //! Serializes the resident memo ([`crate::DomainCache`]'s leaf rows — path,
 //! [`crate::StatKey`], §6.2 watermark, §12.2 leaf digest) under the identity
@@ -187,11 +185,11 @@ impl fmt::Display for Discard {
 #[must_use]
 pub fn serialize(cache: &mut DomainCache, identity: &SaveIdentity) -> Option<Vec<u8>> {
     let domain_version = cache.domain_seen.as_ref()?.version();
-    // The §6.2 smudge (`decisions/2026-08-16-gate11-stat-floor.md` Repair 2,
-    // format consequence). `StatKey` alone can miss a same-instant, same-size,
-    // in-place write, so a row that is RACILY CLEAN at save — its recorded
-    // stamps inside one calibrated granularity unit of its own observation
-    // watermark — must never be trusted on a stat-match after restore.
+    // The §6.2 smudge (a format consequence of the stat floor). `StatKey`
+    // alone can miss a same-instant, same-size, in-place write, so a row that
+    // is RACILY CLEAN at save — its recorded stamps inside one calibrated
+    // granularity unit of its own observation watermark — must never be
+    // trusted on a stat-match after restore.
     //
     // Of the two mechanisms the law allows, this format takes the SMUDGE
     // (git's): such rows serialize with their watermark spoiled, so the

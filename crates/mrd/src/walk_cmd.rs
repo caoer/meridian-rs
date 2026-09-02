@@ -285,8 +285,8 @@ fn parse_depth(raw: &str) -> Result<u32, Fail> {
 /// the colour plane so it can tell an excluded target from a missing one.
 ///
 /// An unreadable domain config FAILS the door. Degrading to the default domain
-/// would claim every path is hashed, which is exactly the false red decision
-/// 0034 ruled out — a fail-open in the plane whose job is to be believed.
+/// would claim every path is hashed, which is exactly the false red the grey
+/// verdict law rules out — a fail-open in the plane whose job is to be believed.
 pub(crate) fn load_domain(workspace: &Path) -> Result<fs::domain::Domain, Fail> {
     let canonical = workspace::canonicalize(workspace).map_err(|e| {
         Fail::tool(format!(

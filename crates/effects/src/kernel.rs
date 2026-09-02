@@ -633,8 +633,8 @@ pub enum FaultClass {
     /// The caller's `prelude` is invalid — its code faulted, **or** it carried
     /// CONSENT MATERIAL (a `declare()` or an `exec()` value).
     ///
-    /// One class, not two (advisor `ea317a27`, 2026-08-23, A10 — an earlier
-    /// `consent_in_prelude` was withdrawn before it was written): the caller's
+    /// One class, not two (an earlier `consent_in_prelude` was withdrawn
+    /// before it was written): the caller's
     /// remedy is the same in both cases — fix your prelude — and the REASON
     /// string names which invalidity it was. Consent is page-authored by law,
     /// and a prelude is caller source: a declaration there would make every
@@ -896,12 +896,12 @@ fn effect_api(builder: &mut GlobalsBuilder) {
     /// `md.create` — birth the file at `path` with `body` as its whole bytes,
     /// with an optional advisory `message`. Realized through the create door
     /// (occupied path refuses, armed middleware stamps, checks) — the birth
-    /// cap for declared tasks (SCHEMA §5, ruled 2026-08-18).
+    /// cap for declared tasks (SCHEMA §5).
     ///
     /// `path` is the RELATIVE landing coordinate as declared — the string
     /// the `md.create` capability glob judges — and admits no rooted
-    /// spelling. Targeting rides the optional `base` (ZT ruling 2026-08-19
-    /// #2: the boundary is data, never a glued string): a rooted
+    /// spelling. Targeting rides the optional `base` (the boundary is data,
+    /// never a glued string): a rooted
     /// `root:<dir>` ref or a confined workspace-relative directory the path
     /// resolves under. Absent `base`, the caller's ambient directory is the
     /// default base; absent both, the path lands workspace-root-relative.

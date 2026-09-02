@@ -428,8 +428,8 @@ fn retire_report_serves_the_envelope_on_its_corpus_leg() {
 /// ⛔ WHETHER THIS LEG SHOULD BE EXIT 1 IS A LAW QUESTION AND IS DELIBERATELY NOT SETTLED HERE.
 /// `docs/status.md:317` scopes the engine-refusal-is-exit-1 triad to *"read / put / pin"* BY
 /// NAME, and `links` declares no triad of its own anywhere in `crates/mrd/src` — so the claim
-/// that this leg is misclassified has no named law behind it yet. Charter 03 routes that to the
-/// advisor rather than to a fix directive. THE FRAME IS OWED EITHER WAY, which is why closing
+/// that this leg is misclassified has no named law behind it yet. That is a law question, not
+/// a fix directive. THE FRAME IS OWED EITHER WAY, which is why closing
 /// the envelope does not wait on the exit question.
 #[test]
 fn links_serves_the_envelope_when_the_corpus_read_refuses() {

@@ -1,13 +1,12 @@
-//! Card `engine-io-error-names-no-path`: a corpus walk that cannot enumerate
-//! a directory must name WHICH directory, engine-side.
+//! A corpus walk that cannot enumerate a directory must name WHICH directory,
+//! engine-side.
 //!
-//! Receipt (2026-08-24 ≈01:39–01:46Z, field-notes-sessions): one mode-000
-//! session directory made every face refuse `io_error: Permission denied (os
-//! error 13)` — workspace-wide, with no path. The failing entry can be
-//! anywhere under the root, so the refusal sent an outside seat on a
-//! six-minute discriminator hunt (disk-vs-engine, cross-corpus, full-tree
-//! effective-`open()`, daemon `ps`) for a fact one word of path collapses to
-//! one `ls`.
+//! The incident: one mode-000 session directory made every face refuse
+//! `io_error: Permission denied (os error 13)` — workspace-wide, with no path.
+//! The failing entry can be anywhere under the root, so the refusal sent an
+//! operator on a six-minute discriminator hunt (disk-vs-engine, cross-corpus,
+//! full-tree effective-`open()`, daemon `ps`) for a fact one word of path
+//! collapses to one `ls`.
 //!
 //! `crates/fs` is the only place the fact exists: `std::fs` errors carry no
 //! path, so by the time a refusal reaches the wire seam or the CLI the

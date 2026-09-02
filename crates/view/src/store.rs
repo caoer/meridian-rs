@@ -1,6 +1,5 @@
 //! `sql.duckdb` — the fingerprint-pinned, append-only `DuckDB` cache of the
-//! sql projection (session design `results/sql-duckdb-append-cache-design.md`,
-//! ZT-ruled 2026-08-14).
+//! sql projection.
 //!
 //! One file per root, living in the engine's per-workspace cache drawer. Two
 //! namespaces inside it:
@@ -400,8 +399,8 @@ const SPILL_BUDGET: &str = "8GiB";
 /// override included) onto every later caller of that root.
 ///
 /// **The line is third-party code, and it is drawn where this codebase
-/// already draws it.** The NO-SANDBOX ruling (2026-08-14) accepted the
-/// caller's own reach — `read_csv('/etc/hosts')` answers rows, not a refusal,
+/// already draws it.** The NO-SANDBOX posture accepts the caller's own
+/// reach — `read_csv('/etc/hosts')` answers rows, not a refusal,
 /// because every caller already holds a shell (`registry/tests/sql_op.rs`
 /// `sql_lifecycle_over_the_wire`). That posture is about what a caller may do
 /// TO ITSELF. It says nothing about unaudited third-party code writing the
@@ -468,9 +467,8 @@ pub fn apply_extension_gate(conn: &Connection) -> duckdb::Result<()> {
 /// Every GLOBAL-scope setting `DuckDB` reports, `(name, value)`, sorted by
 /// name. LOCAL-scope settings are deliberately absent: they live on the
 /// connection, and `SqlStore::query`'s clone dies at the end of the call, so
-/// they cannot reach the next caller (measured 2026-08-23 on
-/// `hnsw_enable_experimental_persistence`, card
-/// `sql-set-config-cross-caller-starvation`). A `NULL` value is skipped —
+/// they cannot reach the next caller (measured on
+/// `hnsw_enable_experimental_persistence`). A `NULL` value is skipped —
 /// there is nothing to put back and `SET x=NULL` is not the way to say it.
 fn global_config_snapshot(conn: &Connection) -> duckdb::Result<Vec<(String, String)>> {
     let mut stmt = conn.prepare(
@@ -499,11 +497,11 @@ const RESTORE_PASSES: usize = 2;
 /// connection on that SAME instance, and a GLOBAL `SET` writes the `DBConfig`
 /// they share — so `SET memory_limit='1MB'` starved every later caller of a
 /// fleet-shared root until the daemon restarted. `BEGIN … ROLLBACK` cannot
-/// reach it: that is a transaction, and engine config is not in one. The
-/// advisor's ruling (2026-08-24) took this shape over locking the
-/// configuration precisely because it takes NOTHING away — the NO-SANDBOX
-/// ruling (2026-08-14) answered "may a caller do X?", and this defect asks
-/// "may a caller's X outlive its call and bind every OTHER caller?".
+/// reach it: that is a transaction, and engine config is not in one. The fix
+/// took this shape over locking the configuration precisely because it takes
+/// NOTHING away — the NO-SANDBOX posture answers "may a caller do X?", and
+/// this defect asks "may a caller's X outlive its call and bind every OTHER
+/// caller?".
 ///
 /// **Snapshot-and-re-`SET`, never `RESET`.** `RESET temp_directory` would
 /// restore `DuckDB`'s default, not [`apply_spill_containment`]'s value, and
@@ -2904,8 +2902,8 @@ mod spill_tests {
     /// [`a_caller_cannot_reopen_the_extension_gate`], which read a setting
     /// whose `DefaultValue` is `"true"`; do not let this test be counted twice.
     ///
-    /// **Verified by mutation, not asserted** (2026-08-24, duckpgq-stocked
-    /// build box): commenting out both `apply_extension_gate` call sites in
+    /// **Verified by mutation, not asserted** (on a duckpgq-stocked build):
+    /// commenting out both `apply_extension_gate` call sites in
     /// [`SqlStore::open`] and [`SqlStore::recreate`] fails FOUR tests — this
     /// one, `the_extension_gate_is_in_force_at_open`,
     /// `a_caller_cannot_reopen_the_extension_gate` and
@@ -3176,7 +3174,7 @@ mod config_scope_tests {
     ///
     /// This test is deliberately NOT the guard for the lane wiring — it stays
     /// green if the restore call is deleted from
-    /// [`SqlStore::query`] (measured 2026-08-24). The wiring is guarded by
+    /// [`SqlStore::query`] (measured by mutation). The wiring is guarded by
     /// `a_caller_set_does_not_reach_the_next_caller` and the two beside it,
     /// which go RED under that mutation.
     #[test]
