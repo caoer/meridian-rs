@@ -19,8 +19,13 @@
 //! the reap DEMOTES — warm engine, ring, read-mint ledger, and sql handle drop;
 //! the entry, the §6.4 event feed, and the resident memo survive (merkle-spec
 //! §6.4 registration-lifetime law — the feed's dirty set is what makes the next
-//! warm O(dirty)). Drawer sentinel (`cache` `registered.json`) drives 30-day
-//! last-use GC. Only `unregister` ends a registration — and the feed with it.
+//! warm O(dirty)). The resident-document budget
+//! ([`DEFAULT_MAX_RESIDENT_DOCS`], [`Registry::reap_to_budget`]) bounds what
+//! idleness cannot: over budget, the least-recently-used workspaces are
+//! EVICTED whole — feed and memo included, a full-walk re-warm being the
+//! deliberate trade — while the registration still survives. Drawer sentinel
+//! (`cache` `registered.json`) drives 30-day last-use GC. Only `unregister`
+//! ends a registration.
 
 mod checkpoint;
 mod client;
@@ -56,9 +61,10 @@ pub use feed::{FeedStats, RescanCause};
 pub use protocol::{DenyKind, Request, Response, WorkspaceEntry};
 pub use registry::{RegisterOutcome, Registry, ResolveOutcome};
 pub use server::{
-    Config, DRAIN_COLD_BUILDS_ENV, IDLE_EXIT_ENV, RunningServer, ServeOutcome, default_socket_path,
-    in_process_registry, published_socket_path, reachable_socket_path, serve_lines,
-    socket_path_for_cache_root, socket_path_under_home, socket_pointer_path,
+    Config, DRAIN_COLD_BUILDS_ENV, IDLE_EXIT_ENV, MAX_RESIDENT_DOCS_ENV, RunningServer,
+    ServeOutcome, default_socket_path, in_process_registry, published_socket_path,
+    reachable_socket_path, serve_lines, socket_path_for_cache_root, socket_path_under_home,
+    socket_pointer_path,
 };
 #[cfg(feature = "test-support")]
 pub use test_support::TestServer;
@@ -74,6 +80,27 @@ pub const DEFAULT_IDLE_REAP: Duration = Duration::from_secs(60 * 60);
 /// Reaper scan cadence. Must be well under [`DEFAULT_IDLE_EXIT`].
 #[allow(clippy::duration_suboptimal_units)]
 pub const DEFAULT_REAP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Resident-document budget: the ceiling on the SUM of parsed documents
+/// across every warm workspace engine. The budget sweep
+/// ([`Registry::reap_to_budget`]) runs beside the idle reap and evicts whole
+/// workspaces LRU-first until the warm set fits; `0` is unbounded.
+///
+/// The unit is DOCUMENTS because resident cost tracks document count on real
+/// markdown: ~26 KB per resident document, corroborated on two differently
+/// shaped real corpora. The true driver is NODE count — every node carries
+/// its whole heading-chain hpath plus a rev string — and documents stand in
+/// only because real markdown holds a stable nodes-per-doc distribution. A
+/// corpus of very few, very large documents is the shape that defeats the
+/// proxy: few docs, many nodes, a warm set far heavier than the budget
+/// predicts.
+///
+/// At 150,000 documents the warm set costs ~3.8 GB, which admits the largest
+/// single workspace on the measuring fleet (a sessions root at ~50,000
+/// documents) plus a working set of roughly a dozen worktrees, and holds the
+/// daemon well under the 10 GB line at which an unbounded warm set forces
+/// operator restarts.
+pub const DEFAULT_MAX_RESIDENT_DOCS: u64 = 150_000;
 
 /// Idle-exit horizon (G11): no client request for this long ⇒ shut down.
 /// Detached daemons are reparented to init; without this they are immortal.

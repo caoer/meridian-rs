@@ -151,18 +151,22 @@ pub struct Registry {
     /// whole corpus. Registration-lifetime under a live §6.4 feed: it
     /// survives the idle-reap (the feed's dirty set covers the cold gap, so
     /// the re-warm is O(dirty)); with no live feed it drops on reap as it
-    /// always did. Each entry is its own `Arc<Mutex<…>>` so the run plane
+    /// always did, and the budget sweep ([`Self::reap_to_budget`]) drops it
+    /// with everything else its victims hold. Each entry is its own `Arc<Mutex<…>>` so the run plane
     /// can borrow ONE workspace's memo for its bracket observations (card
     /// run-observation-unification) without holding the map — and so one
     /// workspace's pass never serializes another's.
     domain_caches: Mutex<HashMap<PathBuf, Arc<Mutex<fs::DomainCache>>>>,
     /// The §6.4 event feed per workspace (kernel watcher + registry-held
-    /// dirty set). Registration-lifetime (kimi D1): created with the
-    /// workspace's first resident state, kept across every idle-reap,
-    /// dropped at `unregister` — which is exactly what makes retaining
-    /// [`Self::domain_caches`] across a reap sound: the feed covers the cold
-    /// gap. A slot that failed to start is sticky-Failed, loud once; that
-    /// workspace keeps the pre-feed semantics (memo drops on reap).
+    /// dirty set). Registration-lifetime (kimi D1), bounded by the resident
+    /// budget: created with the workspace's first resident state, kept
+    /// across every idle-reap, dropped at `unregister` and by the budget
+    /// sweep ([`Self::reap_to_budget`], which forfeits gap coverage for its
+    /// victims on purpose). Keeping it across the idle-reap is exactly what
+    /// makes retaining [`Self::domain_caches`] across that reap sound: the
+    /// feed covers the cold gap. A slot that failed to start is
+    /// sticky-Failed, loud once; that workspace keeps the pre-feed
+    /// semantics (memo drops on reap).
     feeds: Mutex<HashMap<PathBuf, FeedSlot>>,
     /// § A.11 resident sql caches: the open `sql.duckdb` handle per
     /// workspace, this daemon being each file's single owner. The CONNECTION
@@ -2425,6 +2429,146 @@ impl Registry {
         demoted.into_iter().collect()
     }
 
+    /// Budget sweep: evict whole warm workspaces, LRU by `last_use` oldest
+    /// first, until the SUM of resident parsed documents across warm engines
+    /// is within `max_resident_docs` (`0`: unbounded, never evicts). Runs
+    /// beside the idle reap on the reaper thread — the idle reap demotes
+    /// what nobody uses; this sweep bounds what everybody uses, because a
+    /// fleet-touched workspace never reaches the idle horizon and the warm
+    /// set otherwise grows by one parsed corpus per workspace served.
+    /// Documents are the unit ([`crate::DEFAULT_MAX_RESIDENT_DOCS`] carries
+    /// the calibration and the proxy's limit).
+    ///
+    /// An eviction is TOTAL where the idle reap DEMOTES: engine, resident
+    /// memo, ring, sql handle, module cache, pre-warm signature, and the
+    /// §6.4 feed all drop; only the registration (`inner`) survives, so a
+    /// later `hello` rebuilds the state from disk. Dropping the feed
+    /// forfeits §6.4 gap coverage for that workspace — its next warm is a
+    /// full corpus walk, not O(dirty). That is the deliberate trade under
+    /// budget pressure (merkle-spec §6.4, watcher lifecycle): bounded
+    /// residency outranks gap coverage for the least-recently-used
+    /// workspace. Do not restore a feed or memo exemption here.
+    ///
+    /// The exemption is NARROW: a workspace is exempt only while a live sub
+    /// cursor rides it — the same `has_subscribers` test the idle reap
+    /// uses, decided under the same `inner` → `rings` critical section, so
+    /// a claim landing in the sweep window keeps its workspace and its ring
+    /// (evicting a subscribed ring would fork the per-workspace seq, §4.7).
+    /// When every warm workspace is subscribed the budget cannot be met:
+    /// log and carry on, never panic.
+    pub fn reap_to_budget(&self, max_resident_docs: u64) -> Vec<PathBuf> {
+        if max_resident_docs == 0 {
+            return Vec::new();
+        }
+        // Doc-count snapshot OUTSIDE the map guards: an engine that warms
+        // between this read and the decision below is missed by one sweep
+        // and caught by the next — cheaper than nesting the engines guard
+        // inside `inner`, which no other path does.
+        let mut resident: Vec<(PathBuf, u64)> = {
+            let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
+            engines
+                .iter()
+                .map(|(key, engine)| (key.clone(), engine.docs.len() as u64))
+                .collect()
+        };
+        let total: u64 = resident.iter().map(|(_, docs)| docs).sum();
+        if total <= max_resident_docs {
+            return Vec::new();
+        }
+        let mut over = total - max_resident_docs;
+        // Decide + ring removal in ONE critical section, the reap's own
+        // discipline (`inner` EXCLUSIVE, then `rings`): an adopter cannot
+        // stamp `last_use` mid-decision, and a sub claim cannot land
+        // between the exemption check and the ring's death.
+        let victims: Vec<PathBuf> = {
+            let map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+            let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+            // LRU order. A warm engine with no registration has no clock
+            // and sorts oldest.
+            resident.sort_by_key(|(key, _)| map.get(key).map_or(0, Slot::last_use));
+            let mut victims = Vec::new();
+            for (key, docs) in resident {
+                if over == 0 {
+                    break;
+                }
+                if rings.get(&key).is_some_and(|ring| ring.has_subscribers()) {
+                    continue;
+                }
+                rings.remove(&key);
+                over = over.saturating_sub(docs);
+                victims.push(key);
+            }
+            if over > 0 {
+                eprintln!(
+                    "registry: resident-document budget ({max_resident_docs}) cannot be met — \
+                     every remaining warm workspace holds a live sub cursor ({over} documents \
+                     over)"
+                );
+            }
+            victims
+        };
+        if victims.is_empty() {
+            return victims;
+        }
+        {
+            let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
+            for key in &victims {
+                engines.remove(key);
+            }
+        }
+        // Feed and memo leave their maps under the locks and die OUTSIDE
+        // them: the feed's Drop releases a kernel stream, and unbinding a
+        // memo's stamps takes the memo lock — no path takes a memo lock
+        // while holding a map lock (the patched_cache discipline).
+        let feeds: Vec<FeedSlot> = {
+            let mut map = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+            victims.iter().filter_map(|key| map.remove(key)).collect()
+        };
+        let caches: Vec<Arc<Mutex<fs::DomainCache>>> = {
+            let mut map = self
+                .domain_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            victims.iter().filter_map(|key| map.remove(key)).collect()
+        };
+        for cache in &caches {
+            // The stamp plane names the ring this sweep killed, and an
+            // in-flight holder may still borrow the memo privately: no
+            // stamp may answer across the eviction.
+            cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .unbind_stamps();
+        }
+        {
+            let mut stores = self
+                .sql_stores
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            for key in &victims {
+                stores.remove(key);
+            }
+        }
+        {
+            let mut modules = self.modules.lock().unwrap_or_else(PoisonError::into_inner);
+            for key in &victims {
+                modules.remove(key);
+            }
+        }
+        {
+            let mut signatures = self
+                .prewarm_signatures
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            for key in &victims {
+                signatures.remove(key);
+            }
+        }
+        drop(caches);
+        drop(feeds);
+        victims
+    }
+
     /// Persist the current map to the state file, logging (never failing) on a
     /// write error — a lost persist only costs a warm registration across
     /// restart.
@@ -3290,7 +3434,10 @@ mod engine_tests {
             "LRU first, and only enough to fit"
         );
 
-        assert!(!reg.engines.read().unwrap().contains_key(&w1), "engine gone");
+        assert!(
+            !reg.engines.read().unwrap().contains_key(&w1),
+            "engine gone"
+        );
         assert!(
             !reg.domain_caches.lock().unwrap().contains_key(&w1),
             "resident memo gone"
