@@ -249,6 +249,16 @@ pub fn parse(input: &str) -> Vec<DialectNode> {
                         embed = true;
                         wrange.start -= 1;
                     }
+                    // A `|` inside a markdown table cell is written `\|` — the
+                    // form Obsidian mints for a link in a table. The fork
+                    // splits the alias at that pipe and leaves the escape at
+                    // the end of the dest, where it belongs to the table, not
+                    // to the address: strip it before anything downstream
+                    // reads a target that would resolve nowhere.
+                    let dest = match dest.strip_suffix('\\') {
+                        Some(unescaped) if has_pothole => unescaped.to_owned(),
+                        _ => dest,
+                    };
                     let (target, heading, block) = split_wikilink_target(&dest);
                     let alias = has_pothole.then_some(alias);
                     let kind = if embed {
@@ -1035,6 +1045,54 @@ mod tests {
             nodes.iter().any(
                 |n| matches!(&n.kind, DialectKind::Embed { target, .. } if target == "img.png")
             )
+        );
+    }
+
+    /// The alias pipe escaped for a table cell (`[[t\|a]]`) is the same link:
+    /// the backslash belongs to the table, so the target drops it — with or
+    /// without a fragment — while the span still covers the escape byte.
+    #[test]
+    fn a_table_cell_escapes_the_alias_pipe_and_the_target_drops_it() {
+        let src = "| tool | note |\n|---|---|\n| [[browsers/parsez/PARSEZ\\|parsez]] | \
+                   [[Other#Head\\|h]] |\n";
+        let nodes = parse(src);
+        let wl: Vec<_> = nodes
+            .iter()
+            .filter_map(|n| match &n.kind {
+                DialectKind::Wikilink {
+                    target,
+                    heading,
+                    alias,
+                    ..
+                }
+                | DialectKind::Embed {
+                    target,
+                    heading,
+                    alias,
+                    ..
+                } => Some((target.clone(), heading.clone(), alias.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            wl,
+            vec![
+                (
+                    "browsers/parsez/PARSEZ".to_owned(),
+                    None,
+                    Some("parsez".to_owned())
+                ),
+                (
+                    "Other".to_owned(),
+                    Some("Head".to_owned()),
+                    Some("h".to_owned())
+                ),
+            ]
+        );
+        assert_eq!(
+            first_span(src, 5),
+            "[[browsers/parsez/PARSEZ\\|parsez]]",
+            "the span still covers the escape byte the author wrote"
         );
     }
 

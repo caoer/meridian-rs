@@ -400,6 +400,53 @@ fn an_immutable_prefix_is_skipped_and_reported() {
     assert!(ws.join("sources/rec.md").exists());
 }
 
+// ── a table cell's escaped alias pipe ────────────────────────────────────────
+
+#[test]
+fn a_table_cell_link_is_rewritten_with_its_escape_and_alias_kept() {
+    let sb = sandbox();
+    let ws = sb.corpus();
+    let table = "# Tools\n\n| page | note |\n|---|---|\n| [[docs/notes\\|the notes]] | \
+                 escaped pipe, the form a table cell takes |\n| [[notes]] | plain |\n";
+    write(&ws, "table.md", table);
+    commit_all(&ws, "a table that links");
+
+    let out = sb.run(
+        &ws,
+        &["move", "docs/notes.md", "docs/notes-v2.md", "--json"],
+    );
+    assert_eq!(code(&out), 0, "{}", said(&out));
+    let v = frame(&out);
+    let table_rewrite = v["move"]["rewrites"]
+        .as_array()
+        .expect("rewrites")
+        .iter()
+        .find(|r| r["path"] == "table.md")
+        .unwrap_or_else(|| panic!("the table page is rewritten: {v}"))
+        .clone();
+    assert_eq!(
+        table_rewrite["wikilinks"],
+        Value::from(2),
+        "both cells are links — the escaped one is not invisible: {v}"
+    );
+    assert_eq!(
+        v["move"]["links"]["before"]["dangling"],
+        Value::from(0),
+        "an escaped alias pipe is not a dangling link: {v}"
+    );
+    assert_eq!(
+        v["move"]["links"]["read_back"]["dangling"],
+        Value::from(0),
+        "and the read-back finds none either: {v}"
+    );
+    assert_eq!(
+        read(&ws, "table.md"),
+        "# Tools\n\n| page | note |\n|---|---|\n| [[docs/notes-v2\\|the notes]] | \
+         escaped pipe, the form a table cell takes |\n| [[notes-v2]] | plain |\n",
+        "the path slot moved; the escape byte and the alias stayed"
+    );
+}
+
 // ── --immutable: prose frozen, the lock row still repointed ──────────────────
 
 #[test]

@@ -64,7 +64,11 @@ Four reference classes, all inside the caller's root:
 
 1. **Body wikilinks and embeds** — `[[t]]`, `[[t#Heading]]`, `[[t#^block]]`,
    `[[t|alias]]`, `![[t…]]`: the link nodes the parse yields. Only the bytes
-   of the target slot change; fragment and alias are byte-untouched.
+   of the target slot change; fragment and alias are byte-untouched. Inside a
+   markdown table cell the alias pipe is written `\|` — that backslash is the
+   table's byte, not the address's, so `syntax` keeps it out of the target
+   (`laws.md`, the `syntax` charter) and the rewrite lands on the path slot
+   before it, leaving the escape and the alias as the author wrote them.
 2. **Frontmatter wikilinks** — every `[[…]]` inside the frontmatter block, in a
    scalar value (`owner: "[[USER]]"`), a flow list or a block list. The body
    parse yields no node for these (the ground-truth law keeps frontmatter
