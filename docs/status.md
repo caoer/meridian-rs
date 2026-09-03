@@ -306,6 +306,28 @@ mrd rm <PAGE> --rev <FILE_REV> [--if-fingerprint FP] [--dry] [--actor A]
  {workspace, rm}; an engine refusal {workspace, error}.
  Exit triad: 0 removed|dry / 1 refused / 2 bad
  invocation
+mrd move <OLD> <NEW> [--dry] [--immutable PREFIX]... [--json]
+ the move door (`move.md`): rename or move a page or a
+ directory inside ONE root and rewrite every reference
+ the resolver says would break — body wikilinks and
+ embeds (the target slot only; fragment and alias kept),
+ frontmatter wikilinks, frontmatter rooted strings
+ naming this root, and meridian-lock `object:` rows —
+ in-process, never a wire op. A reference that still
+ resolves is byte-untouched; a rewrite keeps the class
+ the author wrote (full path / shortest unique suffix /
+ bare name). NEW ending in `/` or naming an existing
+ directory lands OLD under it. `--immutable PREFIX`
+ (repeatable): files under it are never written; their
+ breaking references are reported with path, line, old
+ and new spelling. `--dry` prints the whole plan and
+ writes nothing; the real run prints the same plan as
+ its receipt plus the link census read back from disk.
+ Refuses NEW occupied, a cross-root pair, OLD or NEW
+ under an immutable prefix, and a bare link the move
+ would leave ambiguous — every pair named, nothing
+ written. Exit triad: 0 moved|dry / 1 refused / 2 bad
+ invocation
 mrd pin <PAGE> <TARGET>#<SELECTOR> [--fingerprint TOKEN] [--vibe] [--dry] [--json]
  mint a meridian-lock pin: PAGE records the claim,
  TARGET#SELECTOR is the content being attested

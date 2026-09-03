@@ -20,6 +20,7 @@
 //! fragments never split an edge.
 
 pub mod provenance;
+pub mod relocate;
 
 use std::collections::BTreeMap;
 

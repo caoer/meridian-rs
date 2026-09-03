@@ -288,8 +288,9 @@ reference (`run` / `put` / `pin` / `realise` / …) resolves it.
 
 Members, as measured at the seam: rooted — `read`, `fingerprint`, `resolve`, `put --scope`;
 `run`, `walk`, `repair`, `realise`, `links`, `rules` (the read side); `put` (the write
-TARGET), `rm`, `pin` (the PAGE position; the TARGET is cross-root too), and `script --files`
-(each entry `root:path`-capable under the
+TARGET), `rm`, `pin` (the PAGE position; the TARGET is cross-root too), `move` (both
+operands, which must name ONE root — a second root refuses `cross_root`, `move.md` §1), and
+`script --files` (each entry `root:path`-capable under the
 one-declared-root convergence below). In the family but NOT YET converted — the preset lane
 (`unfold`, `reconcile`, `new`): see the stated exception below. Outside the family by predicate
 — arguments that name no page: `arm --at` (a directory scope, `armed-plane.md`), `test
@@ -346,6 +347,11 @@ head-colon `Path` arriving on the wire is an address that missed its door, and r
 > ruling's motive — these three doors stay cwd-determined until then — never as a lane
 > correctly cwd-bound forever. The named route is the preset lane riding the daemon write path;
 > when it does, the family predicate already covers it.
+>
+> `move` is in-process too and is NOT this exception: it has no daemon route to await
+> (`wire-contract.md` §16 rules it above-wire), the armed plane fires on neither of its
+> spellings, so the rooted spelling adds no bypass the ambient one lacks — it selects the
+> workspace exactly as a `cd` would (`move.md` §8).
 
 **Convergence, not invention.** A client's multi-file `script` face states the same rule for
 its own door: *"Every files[] entry resolves
