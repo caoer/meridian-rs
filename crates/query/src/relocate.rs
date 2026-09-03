@@ -284,7 +284,7 @@ pub fn plan(index: &CorpusIndex, docs: &Docs, canvases: &Canvases, spec: &MoveSp
                 plan.before
                     .tally(index.resolve_linkpath(&occ.target, path).is_some());
             }
-            let spelled_after = match ctx.decide(path, &occ.target) {
+            let spelled_after = match ctx.decide(path, &src_after, &occ.target) {
                 Decision::Keep => occ.target.clone(),
                 Decision::Rewrite(new) => {
                     if frozen {
@@ -397,7 +397,11 @@ pub fn plan(index: &CorpusIndex, docs: &Docs, canvases: &Canvases, spec: &MoveSp
     // wikilinks take class 1's rules with the canvas as their source.
     for (path, bytes) in canvases {
         let frozen = spec.immutable.iter().any(|p| under_prefix(p, path));
-        let src_after = mapped(&mapping, path);
+        // A canvas is not in the mapping — that is corpus members only — so
+        // where THIS file lands is the move applied to its own path. A canvas
+        // inside a moved directory travels with it, and its bare links must be
+        // judged from the directory it will sit in.
+        let src_after = map_string_path(spec, path).unwrap_or_else(|| path.clone());
         let Ok(raw) = std::str::from_utf8(bytes) else {
             plan.canvas_unreadable.push(path.clone());
             continue;
@@ -456,7 +460,7 @@ pub fn plan(index: &CorpusIndex, docs: &Docs, canvases: &Canvases, spec: &MoveSp
                     plan.before
                         .tally(index.resolve_linkpath(&link.target, path).is_some());
                 }
-                let spelled_after = match ctx.decide(path, &link.target) {
+                let spelled_after = match ctx.decide(path, &src_after, &link.target) {
                     Decision::Keep => link.target.clone(),
                     Decision::Rewrite(new) => {
                         if frozen {
@@ -586,7 +590,12 @@ impl Ctx<'_> {
         self.index.resolve_linkpath(spelling, from)
     }
 
-    fn decide(&self, src: &str, target: &str) -> Decision {
+    /// `src_after` is where the REFERRING file lands, which the caller owns:
+    /// a corpus member's is read off the mapping, and a `.canvas` carrier's is
+    /// the move applied to its path — a canvas is not in the mapping, so a
+    /// moving canvas asked from its old path would have its bare links judged
+    /// by the wrong directory.
+    fn decide(&self, src: &str, src_after: &str, target: &str) -> Decision {
         if addr::head_carries_root_separator(target) {
             return self.decide_rooted(src, target);
         }
@@ -594,12 +603,11 @@ impl Ctx<'_> {
             return Decision::Keep;
         };
         let expected = mapped(self.mapping, &pre);
-        let src_after = mapped(self.mapping, src);
         let (key, has_md) = split_md(target);
         let expected_key = strip_md(&expected);
 
         if key.contains('/') {
-            if self.after.resolve_linkpath(target, &src_after).as_deref() == Some(expected.as_str())
+            if self.after.resolve_linkpath(target, src_after).as_deref() == Some(expected.as_str())
             {
                 return Decision::Keep;
             }
@@ -631,7 +639,7 @@ impl Ctx<'_> {
             }
             return Decision::Ambiguous(candidates);
         }
-        if self.after.resolve_linkpath(target, &src_after).as_deref() == Some(expected.as_str()) {
+        if self.after.resolve_linkpath(target, src_after).as_deref() == Some(expected.as_str()) {
             return Decision::Keep;
         }
         Decision::Ambiguous(self.after.linkpath_candidates(target))
@@ -988,6 +996,35 @@ mod tests {
     /// markdown classes.
     fn plan_md(index: &CorpusIndex, docs: &Docs, spec: &MoveSpec) -> MovePlan {
         plan(index, docs, &Canvases::new(), spec)
+    }
+
+    fn canvases(files: &[(&str, &str)]) -> Canvases {
+        files
+            .iter()
+            .map(|(path, raw)| ((*path).to_owned(), raw.as_bytes().to_vec()))
+            .collect()
+    }
+
+    /// A canvas travels with the directory it sits in, so its bare links are
+    /// judged from the directory it will sit in — not the one it left. Here
+    /// `[[x]]` keeps naming the twin in its own folder across the move; asked
+    /// from the canvas's OLD path the resolver's tie-break would fall to the
+    /// shorter `x.md` at the root and the whole move would refuse as ambiguous.
+    #[test]
+    fn a_moving_canvas_is_asked_from_the_directory_it_lands_in() {
+        let (index, docs) = corpus(&[("a/x.md", "# X\n"), ("x.md", "# Root X\n")]);
+        let carriers = canvases(&[(
+            "a/atlas.canvas",
+            "{\"nodes\":[{\"type\":\"text\",\"text\":\"see [[x]]\"}]}",
+        )]);
+        let plan = plan(&index, &docs, &carriers, &spec("a", "b", true));
+        assert!(
+            plan.ambiguous.is_empty(),
+            "the link still names the twin beside it: {plan:#?}"
+        );
+        assert!(plan.canvases.is_empty(), "nothing to rewrite: {plan:#?}");
+        assert_eq!(plan.before, plan.after);
+        assert_eq!(plan.after.dangling, 0);
     }
 
     fn rewrites_of<'a>(plan: &'a MovePlan, path: &str) -> &'a FileRewrite {
