@@ -644,10 +644,9 @@ options:
                            author wrote; each breaking wikilink, embed,
                            frontmatter link, rooted string or canvas node slot
                            is reported with its line, old and new spelling
-                           (repeatable). Its
-                           meridian-lock object: rows are repointed there as
-                           anywhere else — the path only, never a re-pin. OLD
-                           or NEW under PREFIX refuses.
+                           (repeatable). Its meridian-lock object: rows are
+                           repointed there as anywhere else — the path only,
+                           never a re-pin. OLD or NEW under PREFIX refuses.
   --dry                    (run) starlark: evaluate hermetically, print full
                            effect set, apply nothing; bash: show block + caps,
                            refuse to exec.

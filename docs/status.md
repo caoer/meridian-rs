@@ -324,9 +324,9 @@ mrd move <OLD> <NEW> [--dry] [--immutable PREFIX]... [--json]
  author wrote — a breaking wikilink, embed, frontmatter
  link, rooted string or canvas node slot is reported
  with path, line, old and new spelling and left as
- written. Its meridian-lock
- `object:` rows are repointed there as anywhere else —
- the path only, engine bookkeeping, never a re-pin.
+ written. Its meridian-lock `object:` rows are
+ repointed there as anywhere else — the path only,
+ engine bookkeeping, never a re-pin.
  `--dry` prints the whole plan and
  writes nothing; the real run prints the same plan as
  its receipt plus the link census read back from disk.
