@@ -3240,6 +3240,40 @@ mod socket_placement_tests {
         }
     }
 
+    /// The resident-doc budget knob: `0` is the documented unbounded
+    /// spelling, a whole number is the budget, and anything else REFUSES —
+    /// never falls back to the default it was set to escape (the
+    /// [`parse_idle_exit`] law).
+    #[test]
+    fn a_malformed_max_resident_docs_knob_refuses_and_names_what_it_saw() {
+        use super::{MAX_RESIDENT_DOCS_ENV, parse_max_resident_docs};
+        use std::ffi::OsStr;
+
+        assert_eq!(
+            parse_max_resident_docs(OsStr::new("0")).unwrap(),
+            0,
+            "0 is the unbounded spelling"
+        );
+        assert_eq!(
+            parse_max_resident_docs(OsStr::new("150000")).unwrap(),
+            150_000
+        );
+        for bad in ["150k", "", "unbounded", "-1", "1.5"] {
+            let err = parse_max_resident_docs(OsStr::new(bad))
+                .expect_err(&format!("{bad:?} is not a whole document count"));
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+            let msg = err.to_string();
+            assert!(
+                msg.contains(MAX_RESIDENT_DOCS_ENV),
+                "the refusal names the variable: {msg}"
+            );
+            assert!(
+                msg.contains(&format!("{bad:?}")),
+                "the refusal echoes the bytes it saw: {msg}"
+            );
+        }
+    }
+
     #[test]
     fn same_cache_root_derives_the_same_socket() {
         let home = Path::new("/u/h");

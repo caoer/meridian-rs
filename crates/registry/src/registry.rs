@@ -3234,6 +3234,152 @@ mod engine_tests {
         );
     }
 
+    /// A workspace `home/<name>` seeded with two documents, registered and
+    /// warmed, every resident plane populated, and its LRU clock set to
+    /// `stamp` — the whole-second `register` stamp cannot order same-second
+    /// registrations, so the budget tests set the clock directly.
+    fn warm_ws_stamped(reg: &Registry, home: &Path, name: &str, stamp: u64) -> PathBuf {
+        let ws = home.join(name);
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("a.md"), "# A\n").unwrap();
+        fs::write(ws.join("b.md"), "# B\n").unwrap();
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        assert_eq!(
+            reg.warm_or_build(&canonical).unwrap(),
+            WarmOutcome::Built { docs: 2 }
+        );
+        // Seed every resident plane a budget eviction must clear.
+        let _ = reg.domain_cache(&canonical);
+        let _ = reg.ring(&canonical);
+        let _ = reg.modules(&canonical);
+        reg.sql_store(&canonical)
+            .expect("the sql cache opens in the drawer");
+        reg.prewarm_signatures
+            .lock()
+            .unwrap()
+            .insert(canonical.clone(), 7);
+        reg.inner
+            .read()
+            .unwrap()
+            .get(&canonical)
+            .expect("registered")
+            .touch(stamp);
+        canonical
+    }
+
+    /// The resident-document budget: serving more resident docs than
+    /// `MRD_MAX_RESIDENT_DOCS` admits sheds warm workspaces LRU-first —
+    /// oldest `last_use` first — until the warm set fits. An eviction is
+    /// TOTAL for its workspace: engine, memo, ring, sql handle, module
+    /// cache, pre-warm signature, and the §6.4 feed all drop; only the
+    /// registration survives, so the next `hello` rebuilds from disk.
+    #[test]
+    fn budget_sweep_evicts_lru_first_until_the_warm_set_fits() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let w1 = warm_ws_stamped(&reg, home.path(), "w1", 100);
+        let w2 = warm_ws_stamped(&reg, home.path(), "w2", 200);
+        let w3 = warm_ws_stamped(&reg, home.path(), "w3", 300);
+
+        // 6 resident docs against a budget of 4: exactly the oldest goes.
+        let evicted = reg.reap_to_budget(4);
+        assert_eq!(
+            evicted,
+            vec![w1.clone()],
+            "LRU first, and only enough to fit"
+        );
+
+        assert!(!reg.engines.read().unwrap().contains_key(&w1), "engine gone");
+        assert!(
+            !reg.domain_caches.lock().unwrap().contains_key(&w1),
+            "resident memo gone"
+        );
+        assert!(!reg.rings.lock().unwrap().contains_key(&w1), "ring gone");
+        assert!(
+            !reg.sql_stores.lock().unwrap().contains_key(&w1),
+            "sql handle gone"
+        );
+        assert!(
+            !reg.modules.lock().unwrap().contains_key(&w1),
+            "module cache gone"
+        );
+        assert!(
+            !reg.prewarm_signatures.lock().unwrap().contains_key(&w1),
+            "pre-warm signature gone"
+        );
+        assert!(
+            !reg.feeds.lock().unwrap().contains_key(&w1),
+            "the feed drops with the eviction — §6.4 gap coverage is the \
+             deliberate trade under budget pressure, so the next warm is a \
+             full walk"
+        );
+        assert!(
+            matches!(reg.resolve(&w1), ResolveOutcome::Adopted(_)),
+            "the registration survives — a later hello rebuilds the state"
+        );
+
+        let resident: usize = reg
+            .engines
+            .read()
+            .unwrap()
+            .values()
+            .map(|e| e.docs.len())
+            .sum();
+        assert!(resident <= 4, "warm set within budget: {resident} docs");
+        for survivor in [&w2, &w3] {
+            assert!(
+                reg.engines.read().unwrap().contains_key(*survivor),
+                "younger workspaces stay warm"
+            );
+        }
+
+        // Within budget: nothing to do. Zero: unbounded, never evicts.
+        assert!(reg.reap_to_budget(4).is_empty());
+        assert!(reg.reap_to_budget(0).is_empty());
+    }
+
+    /// The exemption is NARROW: only a live sub cursor spares a workspace
+    /// (evicting it would fork the per-workspace seq — §4.7). The subscribed
+    /// LRU survives the sweep, which moves on to the next-oldest; when every
+    /// warm workspace is subscribed the budget cannot be met — the sweep
+    /// sheds nothing and carries on, never panics.
+    #[test]
+    fn a_live_sub_cursor_exempts_the_lru_from_the_budget_sweep() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let w1 = warm_ws_stamped(&reg, home.path(), "w1", 100);
+        let w2 = warm_ws_stamped(&reg, home.path(), "w2", 200);
+
+        let guard = reg.subscribe(&w1);
+
+        // 4 resident docs against a budget of 2: the LRU is subscribed, so
+        // the next-oldest goes instead.
+        let evicted = reg.reap_to_budget(2);
+        assert_eq!(
+            evicted,
+            vec![w2.clone()],
+            "the sub cursor exempts the LRU; the next-oldest goes"
+        );
+        assert!(
+            reg.engines.read().unwrap().contains_key(&w1),
+            "the subscribed workspace keeps its engine"
+        );
+
+        // Only the subscribed workspace remains, still over budget: the
+        // budget cannot be met — shed nothing, carry on.
+        let evicted = reg.reap_to_budget(1);
+        assert!(
+            evicted.is_empty(),
+            "an all-subscribed warm set cannot be forced under budget: {evicted:?}"
+        );
+        assert!(reg.engines.read().unwrap().contains_key(&w1));
+
+        // Dropping the cursor restores mortality.
+        drop(guard);
+        assert_eq!(reg.reap_to_budget(1), vec![w1.clone()]);
+    }
+
     /// THE card receipt (quality gate 1): after an engine reap, members
     /// edited while cold are re-derived at O(dirty) — the counters prove the
     /// re-warm read exactly the dirty members, never the corpus, and the
