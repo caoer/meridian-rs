@@ -40,7 +40,8 @@ root refuses `cross_root` with nothing moved. The §1 path law of `addr`
 - A directory OLD moves its whole subtree: every file under it, markdown or
   not, in or out of the hash domain (`wire §12.1`). References are computed for
   the corpus members; the other files move with their directory and are
-  counted (`moved_outside_domain`), never rewritten toward.
+  counted (`moved_outside_domain`), never rewritten toward. One kind of
+  non-member is rewritten *from* — a `.canvas` file, §4 class 5.
 
 Refusals, each exit 1 with nothing written: OLD absent (`file_not_found`); NEW
 occupied — a file already there, or the into-form landing on an existing path
@@ -60,7 +61,9 @@ exactly that field and nothing else.
 
 ## §4 What is rewritten, and the form-preserving rule
 
-Four reference classes, all inside the caller's root:
+Five reference classes, all inside the caller's root. Four live in markdown
+pages; the fifth lives in a `.canvas` file, which is a carrier and never a
+corpus member:
 
 1. **Body wikilinks and embeds** — `[[t]]`, `[[t#Heading]]`, `[[t#^block]]`,
    `[[t|alias]]`, `![[t…]]`: the link nodes the parse yields. Only the bytes
@@ -86,6 +89,36 @@ Four reference classes, all inside the caller's root:
    byte-stable for every engine-written block. Pins made FROM a moved page
    travel with it inside its own bytes; anchors minted IN a moved page are
    untouched. This is the one class an immutable prefix does not freeze (§6).
+5. **`.canvas` node references** — a JSON Canvas holds two reference slots per
+   node: `file`, the vault-relative path a file node points at, and the
+   wikilinks inside a text node's `text`. Both are rewritten. The canvas is
+   found by the hash domain's own walk with the md-only floor lifted for this
+   one extension, so an ignored or dot-prefixed directory holds none.
+
+   - **`file` is a path, not a link**: it is mapped across the move by path —
+     OLD itself, or anything under a directory OLD — whether or not it names a
+     corpus member, so a file node pointing at an image inside a moved
+     directory follows it too. It is never re-minted to a shorter spelling: a
+     canvas carries the full path Obsidian writes there.
+   - **`text` wikilinks take class 1's rules exactly**, resolved with the
+     canvas's own path as the source page, including the §5 ambiguity refusal.
+     They are found by the wikilink grammar scanned over the node's text — the
+     scan class 2 runs inside frontmatter — because a text node is a fragment
+     of markdown, not a page the corpus parse owns. A `[[…]]` inside a fence
+     in a text node is therefore rewritten; a page's is not.
+   - **`subpath` is a fragment** (`"#Philosophy"`), never a path: untouched,
+     like the fragment of a wikilink. Edges carry no paths at all.
+   - **Every other byte of the JSON is preserved exactly** — key order,
+     indentation, whitespace, escapes. Nothing is re-serialized: the slots are
+     located structurally in the raw bytes and replaced span-exact, the
+     discipline classes 1–3 take, so the diff of a rewritten canvas is its
+     changed paths and nothing else.
+   - A canvas that is not UTF-8, is not one JSON object, or carries a `nodes`
+     that is not an array is **reported** (`canvas_unreadable`) and left alone
+     — the door never guesses at a file it could not read. A canvas with no
+     `nodes` key is not that: Obsidian writes a bare `{}` for a canvas just
+     created, and a file with nothing to rewrite was not a file the door
+     failed to read.
 
 **The would-break law.** A reference is rewritten iff the address owner's
 answer changes: `CorpusIndex::resolve_linkpath` (`wire §4.5` stage 1; the
@@ -128,10 +161,13 @@ the corpus's standing state, not this door's finding.
 ## §6 `--immutable PREFIX` (repeatable)
 
 A file under an immutable prefix keeps every word its author wrote. No body
-wikilink or embed, no frontmatter wikilink, no rooted string in it is
-rewritten; each one that would break is reported instead — path, line, kind,
-the spelling as written, the spelling the door would have minted — and left as
-written, so the operator can file it where their own law keeps such things.
+wikilink or embed, no frontmatter wikilink, no rooted string, no `.canvas` node
+slot in it is rewritten; each one that would break is reported instead — path,
+line, kind, the spelling as written, the spelling the door would have minted —
+and left as written, so the operator can file it where their own law keeps such
+things. A canvas node is authored content, drawn by hand in Obsidian, so the
+prefix freezes it as it freezes prose — the lock row of §4 class 4 is the one
+exception, and it is engine bookkeeping, not authorship.
 OLD or NEW under an immutable prefix refuses: a move into, out of, or across a
 frozen tree is a write to it.
 
@@ -158,18 +194,26 @@ operator owns.
 
 `--dry` prints the whole plan and writes nothing. The real run prints the same
 plan as its receipt, plus the reading back from disk. The plan is: the renames
-(one row per corpus member), per-file rewrite counts by class, every immutable
-skip, the out-of-domain count, and the link census — links that resolve and
-links that dangle, before and after. After a real run the `after` census is
+(one row per corpus member), per-file rewrite counts by class — canvases listed
+among the rewritten files, counted under `canvas` — every immutable skip, the
+out-of-domain count, and the link census. After a real run the `after` census is
 re-read from disk, never copied from the plan; a delta larger than the reported
 immutable skips is printed as such and exits 1 — the bytes landed, the plan was
 wrong, and the receipt says so.
 
+**The census counts canvas node references beside the corpus's own links**, so
+a canvas the door left stale reads as a loss instead of as no change. Counted:
+every ambient body and frontmatter link of a corpus page, every wikilink in a
+canvas text node, and every canvas `file` node naming a markdown path. Not
+counted: a canvas `file` node naming a non-markdown file — those are rewritten
+but stand outside the md-only link projection (`wire §12.1`), where a
+`![[diagram.png]]` embed already stands.
+
 `--json` is one frame: `{workspace, move: {dry, old, new, kind, renames[],
-rewrites[], immutable[], counts{}, links{before{resolved, dangling},
-after{resolved, dangling}}}}`. A refusal answers `{workspace, error}` with the
-§5 pairs beside it under `move.ambiguous` — the `--json` envelope law of the
-face (`status.md` § Teaching rows).
+rewrites[], immutable[], canvas_unreadable[], counts{}, links{before{resolved,
+dangling}, after{resolved, dangling}}}}`. A refusal answers `{workspace, error}`
+with the §5 pairs beside it under `move.ambiguous` — the `--json` envelope law
+of the face (`status.md` § Teaching rows).
 
 ## §8 Why the daemon is not in the path
 
@@ -214,6 +258,16 @@ would have left the origin gone with no command that converges.
   link projection is md-only (`wire §12.1`).
 - **Markdown-link URLs** (`[t](root:path)`, `addr §9` position 2) and prose
   mentions of a path are not addresses this door reads.
+- **`.base` files are not parsed.** An Obsidian Base is a YAML view whose
+  filters select notes by folder path, so a moved directory leaves its views
+  selecting nothing — and, unlike a canvas, silently: a Base that matches no
+  note renders as an empty table, not as a broken link. There is no address in
+  it this door owns, and inventing one would mean interpreting a query
+  language. Sweep them by hand after a move:
+
+  ```text
+  grep -rln 'domains/knowledge/meridian' --include='*.base' .
+  ```
 - **Performance.** One corpus parse for the plan, one for the read-back; a
   directory move over a ten-thousand-file corpus is bounded by those two
   parses, never by the reference count.

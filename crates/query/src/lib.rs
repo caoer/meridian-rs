@@ -19,6 +19,7 @@
 //! app's `resolvedLinks` counts a link toward its destination file; heading/block
 //! fragments never split an edge.
 
+pub mod canvas;
 pub mod provenance;
 pub mod relocate;
 

@@ -312,7 +312,9 @@ mrd move <OLD> <NEW> [--dry] [--immutable PREFIX]... [--json]
  the resolver says would break — body wikilinks and
  embeds (the target slot only; fragment and alias kept),
  frontmatter wikilinks, frontmatter rooted strings
- naming this root, and meridian-lock `object:` rows —
+ naming this root, meridian-lock `object:` rows, and
+ `.canvas` node slots (a file node's path and a text
+ node's wikilinks; every other byte of the JSON kept) —
  in-process, never a wire op. A reference that still
  resolves is byte-untouched; a rewrite keeps the class
  the author wrote (full path / shortest unique suffix /
@@ -320,8 +322,9 @@ mrd move <OLD> <NEW> [--dry] [--immutable PREFIX]... [--json]
  directory lands OLD under it. `--immutable PREFIX`
  (repeatable): a file under it keeps every word its
  author wrote — a breaking wikilink, embed, frontmatter
- link or rooted string is reported with path, line, old
- and new spelling and left as written. Its meridian-lock
+ link, rooted string or canvas node slot is reported
+ with path, line, old and new spelling and left as
+ written. Its meridian-lock
  `object:` rows are repointed there as anywhere else —
  the path only, engine bookkeeping, never a re-pin.
  `--dry` prints the whole plan and

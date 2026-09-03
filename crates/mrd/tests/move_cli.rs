@@ -499,7 +499,7 @@ fn a_lock_row_under_an_immutable_prefix_is_repointed_and_the_prose_is_not() {
         frozen_rewrite,
         serde_json::json!({
             "path": "sources/pinned.md", "wikilinks": 0, "embeds": 0,
-            "frontmatter": 0, "rooted": 0, "lock_rows": 1
+            "frontmatter": 0, "rooted": 0, "canvas": 0, "lock_rows": 1
         }),
         "{v}"
     );
@@ -662,6 +662,189 @@ fn a_dry_run_prints_the_whole_plan_and_writes_nothing() {
     assert!(!ws.join("docs/notes-v2.md").exists());
 }
 
+/// A JSON Canvas, in the bytes an Obsidian editor writes: tab indentation, one
+/// node per line, key order as drawn. Four nodes — a file node under the moved
+/// directory with a `subpath`, a non-markdown file node under it, a file node
+/// outside it, and a text node whose embed carries a fragment and an alias.
+const CANVAS: &str = "{\n\t\"nodes\":[\n\t\t{\"id\":\"n1\",\"type\":\"file\",\"file\":\"data/duckdb/tips.md\",\"subpath\":\"#Top\",\"x\":-120,\"y\":40},\n\t\t{\"id\":\"n2\",\"type\":\"file\",\"file\":\"data/duckdb/chart.png\",\"x\":0,\"y\":0},\n\t\t{\"id\":\"n3\",\"type\":\"file\",\"file\":\"docs/notes.md\",\"x\":80,\"y\":0},\n\t\t{\"id\":\"n4\",\"type\":\"text\",\"text\":\"map\\n\\n![[data/duckdb/tips#Top|tips]]\",\"x\":9,\"y\":9}\n\t],\n\t\"edges\":[{\"id\":\"e1\",\"fromNode\":\"n1\",\"toNode\":\"n4\"}]\n}\n";
+
+/// The fifth carrier (`move.md` §4 class 5): a canvas file node under the moved
+/// directory follows it — markdown or not — a wikilink in a text node follows
+/// it by class 1's rules with its fragment and alias untouched, a node naming
+/// an unmoved path is byte-identical, and every other byte of the JSON survives
+/// exactly, so the file is still a canvas afterwards. A canvas that does not
+/// parse is reported and left alone.
+#[test]
+fn a_canvas_file_node_and_a_text_wikilink_follow_the_move() {
+    let sb = sandbox();
+    let ws = sb.corpus();
+    write(&ws, "maps/atlas.canvas", CANVAS);
+    write(&ws, "maps/broken.canvas", "{ not json at all");
+    write(&ws, "data/duckdb/chart.png", "not really a png\n");
+
+    let out = sb.run(
+        &ws,
+        &["move", "data/duckdb", "data/warehouse/duckdb", "--json"],
+    );
+    assert_eq!(code(&out), 0, "{}", said(&out));
+    let v = frame(&out);
+    let m = &v["move"];
+
+    // Three slots moved, and the whole file is otherwise byte-identical: the
+    // only difference from the pre-image is the moved prefix, three times.
+    assert_eq!(
+        read(&ws, "maps/atlas.canvas"),
+        CANVAS.replace("data/duckdb", "data/warehouse/duckdb"),
+        "{v}"
+    );
+    let after: Value =
+        serde_json::from_str(&read(&ws, "maps/atlas.canvas")).expect("still valid JSON");
+    assert_eq!(after["nodes"].as_array().expect("nodes").len(), 4);
+    assert_eq!(after["nodes"][0]["subpath"], Value::from("#Top"));
+    assert_eq!(after["nodes"][2]["file"], Value::from("docs/notes.md"));
+
+    let row = m["rewrites"]
+        .as_array()
+        .expect("rewrites")
+        .iter()
+        .find(|r| r["path"] == "maps/atlas.canvas")
+        .unwrap_or_else(|| panic!("the canvas is a rewritten file: {v}"));
+    assert_eq!(row["canvas"], Value::from(3), "{v}");
+    assert_eq!(row["wikilinks"], Value::from(0), "{v}");
+    assert_eq!(m["counts"]["canvas_nodes_rewritten"], Value::from(3), "{v}");
+    assert_eq!(
+        m["canvas_unreadable"],
+        serde_json::json!(["maps/broken.canvas"]),
+        "{v}"
+    );
+    assert_eq!(
+        read(&ws, "maps/broken.canvas"),
+        "{ not json at all",
+        "an unreadable canvas is never guessed at"
+    );
+    assert_eq!(
+        m["links"]["after"], m["links"]["read_back"],
+        "the disk agrees with the plan: {v}"
+    );
+    assert!(
+        ws.join("data/warehouse/duckdb/chart.png").exists(),
+        "the non-markdown node's file moved with its directory"
+    );
+}
+
+/// The census counts canvas node references: the same corpus with and without
+/// one canvas differs by exactly its countable nodes — the two markdown file
+/// nodes and the text node's wikilink. The `.png` node is rewritten and not
+/// counted (the md-only link projection). This is the meter that read a broken
+/// canvas as no change.
+#[test]
+fn the_census_counts_canvas_node_references() {
+    let bare = sandbox();
+    let bare_ws = bare.corpus();
+    let with = sandbox();
+    let with_ws = with.corpus();
+    write(&with_ws, "maps/atlas.canvas", CANVAS);
+
+    let plan = |sb: &Sandbox, ws: &Path| {
+        let out = sb.run(
+            ws,
+            &[
+                "move",
+                "data/duckdb",
+                "data/warehouse/duckdb",
+                "--dry",
+                "--json",
+            ],
+        );
+        assert_eq!(code(&out), 0, "{}", said(&out));
+        frame(&out)
+    };
+    let without = plan(&bare, &bare_ws);
+    let carried = plan(&with, &with_ws);
+
+    let resolved = |v: &Value, when: &str| {
+        v["move"]["links"][when]["resolved"]
+            .as_u64()
+            .expect("a resolved count")
+    };
+    assert_eq!(
+        resolved(&carried, "before") - resolved(&without, "before"),
+        3,
+        "before: {carried}"
+    );
+    assert_eq!(
+        resolved(&carried, "after") - resolved(&without, "after"),
+        3,
+        "after: {carried}"
+    );
+    assert_eq!(
+        carried["move"]["links"]["before"], carried["move"]["links"]["after"],
+        "the rewritten canvas costs the corpus nothing: {carried}"
+    );
+}
+
+/// A canvas under an immutable prefix keeps every node its author drew: each
+/// stale reference is reported with its line and left as written, and the
+/// census predicts the loss — the move that reads as no change is exactly the
+/// failure this class exists to end.
+#[test]
+fn a_canvas_under_an_immutable_prefix_is_reported_and_the_census_shows_the_loss() {
+    let sb = sandbox();
+    let ws = sb.corpus();
+    write(&ws, "sources/frozen.canvas", CANVAS);
+
+    let out = sb.run(
+        &ws,
+        &[
+            "move",
+            "data/duckdb",
+            "data/warehouse/duckdb",
+            "--immutable",
+            "sources",
+            "--json",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", said(&out));
+    let v = frame(&out);
+    let m = &v["move"];
+
+    assert_eq!(
+        read(&ws, "sources/frozen.canvas"),
+        CANVAS,
+        "the frozen canvas is byte-untouched: {v}"
+    );
+    let skips: Vec<&Value> = m["immutable"]
+        .as_array()
+        .expect("immutable")
+        .iter()
+        .filter(|s| s["path"] == "sources/frozen.canvas")
+        .collect();
+    assert_eq!(skips.len(), 3, "{v}");
+    for skip in &skips {
+        assert_eq!(skip["kind"], Value::from("canvas"), "{v}");
+        assert!(skip["line"].as_u64().expect("a line") >= 3, "{v}");
+    }
+    assert_eq!(skips[0]["old"], Value::from("data/duckdb/tips.md"), "{v}");
+    assert_eq!(
+        skips[0]["new"],
+        Value::from("data/warehouse/duckdb/tips.md"),
+        "{v}"
+    );
+
+    // Two of the three frozen slots are counted references, and both dangle
+    // after the move; the third is the `.png`, outside the projection.
+    let dangling = |when: &str| {
+        m["links"][when]["dangling"]
+            .as_u64()
+            .expect("a dangling count")
+    };
+    assert_eq!(dangling("after"), dangling("before") + 2, "{v}");
+    assert_eq!(
+        m["links"]["after"], m["links"]["read_back"],
+        "the predicted loss is the loss the disk reads: {v}"
+    );
+}
+
 #[test]
 fn the_json_frame_has_one_shape() {
     let sb = sandbox();
@@ -691,6 +874,7 @@ fn the_json_frame_has_one_shape() {
         [
             "ambiguous",
             "applied",
+            "canvas_unreadable",
             "counts",
             "dry",
             "immutable",
@@ -723,14 +907,14 @@ fn the_json_frame_has_one_shape() {
     );
     assert_eq!(
         rewrites[1],
-        serde_json::json!({"path": "guide.md", "wikilinks": 2, "embeds": 1, "frontmatter": 0, "rooted": 0, "lock_rows": 0})
+        serde_json::json!({"path": "guide.md", "wikilinks": 2, "embeds": 1, "frontmatter": 0, "rooted": 0, "canvas": 0, "lock_rows": 0})
     );
     assert_eq!(rewrites[2]["lock_rows"], Value::from(1), "{v}");
     assert_eq!(
         m["counts"],
         serde_json::json!({
             "files_rewritten": 4, "links_rewritten": 5, "lock_rows_rewritten": 1,
-            "immutable_skips": 0, "moved_outside_domain": 0
+            "canvas_nodes_rewritten": 0, "immutable_skips": 0, "moved_outside_domain": 0
         }),
         "{v}"
     );
