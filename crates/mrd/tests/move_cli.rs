@@ -400,6 +400,84 @@ fn an_immutable_prefix_is_skipped_and_reported() {
     assert!(ws.join("sources/rec.md").exists());
 }
 
+// ── --immutable: prose frozen, the lock row still repointed ──────────────────
+
+#[test]
+fn a_lock_row_under_an_immutable_prefix_is_repointed_and_the_prose_is_not() {
+    let sb = sandbox();
+    let ws = sb.corpus();
+    let hash = git_in(&ws, &["hash-object", "docs/notes.md"]);
+    let frozen = format!(
+        "# Frozen record\n\nit still says [[notes]]\n\n## Inputs\n\n{}",
+        lock_block("docs/notes", hash.trim(), &live_fingerprint(NOTES))
+    );
+    write(&ws, "sources/pinned.md", &frozen);
+    commit_all(&ws, "a frozen page that pins");
+    assert_eq!(
+        pin_colours(&sb, &ws),
+        (Value::Array(vec![]), Value::Array(vec![])),
+        "green before"
+    );
+
+    let out = sb.run(
+        &ws,
+        &[
+            "move",
+            "docs/notes.md",
+            "docs/notes-v2.md",
+            "--immutable",
+            "sources/",
+            "--json",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", said(&out));
+    let v = frame(&out);
+
+    assert_eq!(
+        v["move"]["immutable"],
+        serde_json::json!([
+            {"path": "sources/pinned.md", "line": 3, "kind": "wikilink", "old": "notes", "new": "notes-v2"},
+            {"path": "sources/rec.md", "line": 3, "kind": "wikilink", "old": "notes", "new": "notes-v2"}
+        ]),
+        "only prose is skipped, and no skip is a lock row: {v}"
+    );
+    let frozen_rewrite = v["move"]["rewrites"]
+        .as_array()
+        .expect("rewrites")
+        .iter()
+        .find(|r| r["path"] == "sources/pinned.md")
+        .unwrap_or_else(|| panic!("the frozen page is rewritten for its lock row: {v}"))
+        .clone();
+    assert_eq!(
+        frozen_rewrite,
+        serde_json::json!({
+            "path": "sources/pinned.md", "wikilinks": 0, "embeds": 0,
+            "frontmatter": 0, "rooted": 0, "lock_rows": 1
+        }),
+        "{v}"
+    );
+    assert_eq!(v["move"]["counts"]["lock_rows_rewritten"], Value::from(2));
+    assert_eq!(v["move"]["counts"]["immutable_skips"], Value::from(2));
+
+    assert_eq!(
+        read(&ws, "sources/pinned.md"),
+        frozen.replace("[[docs/notes]]", "[[docs/notes-v2]]"),
+        "the object path moved and not one byte more — the prose link stayed [[notes]]"
+    );
+    assert_eq!(
+        read(&ws, "sources/rec.md"),
+        REC,
+        "prose-only page untouched"
+    );
+
+    let (red, grey) = pin_colours(&sb, &ws);
+    assert_eq!(
+        (red, grey),
+        (Value::Array(vec![]), Value::Array(vec![])),
+        "the pin plane reads green through a frozen tree"
+    );
+}
+
 // ── refusals: ambiguity, cross-root ──────────────────────────────────────────
 
 #[test]

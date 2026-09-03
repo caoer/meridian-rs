@@ -318,9 +318,13 @@ mrd move <OLD> <NEW> [--dry] [--immutable PREFIX]... [--json]
  the author wrote (full path / shortest unique suffix /
  bare name). NEW ending in `/` or naming an existing
  directory lands OLD under it. `--immutable PREFIX`
- (repeatable): files under it are never written; their
- breaking references are reported with path, line, old
- and new spelling. `--dry` prints the whole plan and
+ (repeatable): a file under it keeps every word its
+ author wrote — a breaking wikilink, embed, frontmatter
+ link or rooted string is reported with path, line, old
+ and new spelling and left as written. Its meridian-lock
+ `object:` rows are repointed there as anywhere else —
+ the path only, engine bookkeeping, never a re-pin.
+ `--dry` prints the whole plan and
  writes nothing; the real run prints the same plan as
  its receipt plus the link census read back from disk.
  Refuses NEW occupied, a cross-root pair, OLD or NEW

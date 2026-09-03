@@ -638,10 +638,13 @@ usage:
 options:
   --json                   emit JSON instead of a human table.
   --env KEY=VALUE          (run) supply one declared env entry (repeatable).
-  --immutable PREFIX       (move) never write a file under PREFIX; every
-                           reference in it that would break is reported with
-                           its line, old and new spelling (repeatable). OLD or
-                           NEW under PREFIX refuses.
+  --immutable PREFIX       (move) a file under PREFIX keeps every word its
+                           author wrote; each breaking wikilink, embed,
+                           frontmatter link or rooted string is reported with
+                           its line, old and new spelling (repeatable). Its
+                           meridian-lock object: rows are repointed there as
+                           anywhere else — the path only, never a re-pin. OLD
+                           or NEW under PREFIX refuses.
   --dry                    (run) starlark: evaluate hermetically, print full
                            effect set, apply nothing; bash: show block + caps,
                            refuse to exec.

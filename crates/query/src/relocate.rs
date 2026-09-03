@@ -8,8 +8,9 @@
 //! path), and only a reference whose answer changed is rewritten. The new
 //! spelling is minted at the class the author wrote (full path / shortest
 //! unique suffix / bare name), a bare name the move would leave between two
-//! files of one basename is the ambiguity refusal, and a file under an
-//! immutable prefix is reported instead of rewritten.
+//! files of one basename is the ambiguity refusal, and a link in a file under
+//! an immutable prefix is reported instead of rewritten — its `meridian-lock`
+//! rows excepted, which the prefix does not reach (`move.md` §6).
 
 use std::collections::BTreeMap;
 
@@ -33,7 +34,10 @@ pub struct MoveSpec {
     pub root_names: Vec<String>,
 }
 
-/// The reference classes a move rewrites (`move.md` §4).
+/// The link classes a move rewrites in place (`move.md` §4 classes 1–3). The
+/// fourth class, a `meridian-lock` row, is not a link slot: it is re-rendered
+/// as a whole block ([`LockRewrite`]) and is never a [`Skip`], because an
+/// immutable prefix does not reach it (§6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RefKind {
     Wikilink,
@@ -42,8 +46,6 @@ pub enum RefKind {
     Frontmatter,
     /// A plain `root:path` string inside the frontmatter block naming this root.
     Rooted,
-    /// A `meridian-lock` row's `object:`.
-    LockRow,
 }
 
 impl RefKind {
@@ -55,7 +57,6 @@ impl RefKind {
             RefKind::Embed => "embed",
             RefKind::Frontmatter => "frontmatter",
             RefKind::Rooted => "rooted",
-            RefKind::LockRow => "lock",
         }
     }
 }
@@ -326,7 +327,11 @@ pub fn plan(index: &CorpusIndex, docs: &Docs, spec: &MoveSpec) -> MovePlan {
             }
         }
 
-        // Class 4 — lock rows.
+        // Class 4 — lock rows. An immutable prefix does not reach them
+        // (`move.md` §6): the row's claim is `hash:` + `fingerprint:`, which
+        // the move leaves intact, and `object:` is a pointer this engine mints
+        // and owns — so it is repointed in a frozen file exactly as anywhere
+        // else, the path slot and nothing more.
         match lock::find(doc) {
             Ok(Some(found)) => {
                 let mut updated = found.lock.clone();
@@ -339,24 +344,11 @@ pub fn plan(index: &CorpusIndex, docs: &Docs, spec: &MoveSpec) -> MovePlan {
                     pin.object = new_object;
                 }
                 if !rows.is_empty() {
-                    if frozen {
-                        let line = line_of(&doc.raw, found.span.start);
-                        for (old, new) in rows {
-                            plan.immutable.push(Skip {
-                                path: path.clone(),
-                                line,
-                                kind: RefKind::LockRow,
-                                old,
-                                new,
-                            });
-                        }
-                    } else {
-                        file.lock = Some(LockRewrite {
-                            span: found.span.clone(),
-                            text: lock::render(&updated),
-                            rows,
-                        });
-                    }
+                    file.lock = Some(LockRewrite {
+                        span: found.span.clone(),
+                        text: lock::render(&updated),
+                        rows,
+                    });
                 }
             }
             Ok(None) => {}
@@ -1053,6 +1045,46 @@ mod tests {
         assert_eq!(
             plan.after.dangling, 1,
             "the frozen link is predicted to dangle"
+        );
+    }
+
+    /// An immutable prefix freezes prose, not bookkeeping (`move.md` §6): the
+    /// frozen page's wikilink is reported and left, its lock row is repointed
+    /// in the same page, and the row's other keys do not move.
+    #[test]
+    fn an_immutable_prefix_freezes_the_prose_and_repoints_the_lock_row() {
+        let mut lock = lock::Lock::new();
+        lock.upsert_pin(lock::PinEntry::new(
+            "a/x",
+            "9ae3f1deadbeef",
+            lock::Selector::Path(vec!["Top".to_owned()]),
+            "fp1.span2.b3.a8222f5a",
+        ));
+        let frozen_page = format!("# Rec\n\nline three [[x]]\n\n{}\n", lock::render(&lock));
+        let (index, docs) = corpus(&[
+            ("a/x.md", "# X\n\n## Top\n"),
+            ("sources/rec.md", frozen_page.as_str()),
+        ]);
+        let mut s = spec("a/x.md", "a/y.md", false);
+        s.immutable = vec!["sources".to_owned()];
+        let plan = plan(&index, &docs, &s);
+
+        assert_eq!(plan.immutable.len(), 1, "{plan:#?}");
+        let skip = &plan.immutable[0];
+        assert_eq!(skip.kind, RefKind::Wikilink);
+        assert_eq!((skip.old.as_str(), skip.new.as_str()), ("x", "y"));
+
+        let file = rewrites_of(&plan, "sources/rec.md");
+        assert!(
+            file.links.is_empty(),
+            "no prose slot is rewritten: {file:#?}"
+        );
+        assert_eq!(plan.lock_rows_rewritten(), 1);
+        let applied = file.apply(&docs["sources/rec.md"].raw);
+        assert_eq!(
+            applied,
+            frozen_page.replace("object: \"[[a/x]]\"", "object: \"[[a/y]]\""),
+            "the object path moved and not one byte more"
         );
     }
 
