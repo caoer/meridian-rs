@@ -601,11 +601,14 @@ fn the_arithmetic_closes_and_no_class_is_empty() {
          parse (P4); with it gone `lock_write` is again the only lock door",
     );
     assert_eq!(
-        outside, 2,
-        "the run plane's candidate, and the attest path's disk edge \
+        outside, 3,
+        "the run plane's candidate, the attest path's disk edge \
          (ArmSession::commit — `mrd arm`'s byte-lander, joined 2026-08-15: the \
          arm act's own faults are its law, discharged before the session \
-         opens) — stated, not absorbed. WAS 1 before the attest path; WAS 3 \
+         opens), and the move door (`wire_serve::relocate::relocate`, `move.md` \
+         §8: one candidate per referring page, its own guard discharge measured \
+         by `move_cli`) — stated, not absorbed. WAS 2 before the move door; WAS \
+         1 before the attest path; WAS 3 \
          further back: G2's two genesis mints left this count with the verb \
          and the ledger it reset (journal retirement, U6), the same way the \
          two `realise --truth` doors left it with the flag itself \
