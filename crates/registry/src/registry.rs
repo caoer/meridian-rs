@@ -151,18 +151,22 @@ pub struct Registry {
     /// whole corpus. Registration-lifetime under a live §6.4 feed: it
     /// survives the idle-reap (the feed's dirty set covers the cold gap, so
     /// the re-warm is O(dirty)); with no live feed it drops on reap as it
-    /// always did. Each entry is its own `Arc<Mutex<…>>` so the run plane
+    /// always did, and the budget sweep ([`Self::reap_to_budget`]) drops it
+    /// with everything else its victims hold. Each entry is its own `Arc<Mutex<…>>` so the run plane
     /// can borrow ONE workspace's memo for its bracket observations (card
     /// run-observation-unification) without holding the map — and so one
     /// workspace's pass never serializes another's.
     domain_caches: Mutex<HashMap<PathBuf, Arc<Mutex<fs::DomainCache>>>>,
     /// The §6.4 event feed per workspace (kernel watcher + registry-held
-    /// dirty set). Registration-lifetime (kimi D1): created with the
-    /// workspace's first resident state, kept across every idle-reap,
-    /// dropped at `unregister` — which is exactly what makes retaining
-    /// [`Self::domain_caches`] across a reap sound: the feed covers the cold
-    /// gap. A slot that failed to start is sticky-Failed, loud once; that
-    /// workspace keeps the pre-feed semantics (memo drops on reap).
+    /// dirty set). Registration-lifetime (kimi D1), bounded by the resident
+    /// budget: created with the workspace's first resident state, kept
+    /// across every idle-reap, dropped at `unregister` and by the budget
+    /// sweep ([`Self::reap_to_budget`], which forfeits gap coverage for its
+    /// victims on purpose). Keeping it across the idle-reap is exactly what
+    /// makes retaining [`Self::domain_caches`] across that reap sound: the
+    /// feed covers the cold gap. A slot that failed to start is
+    /// sticky-Failed, loud once; that workspace keeps the pre-feed
+    /// semantics (memo drops on reap).
     feeds: Mutex<HashMap<PathBuf, FeedSlot>>,
     /// § A.11 resident sql caches: the open `sql.duckdb` handle per
     /// workspace, this daemon being each file's single owner. The CONNECTION
@@ -2425,6 +2429,157 @@ impl Registry {
         demoted.into_iter().collect()
     }
 
+    /// Budget sweep: evict whole warm workspaces, LRU by `last_use` oldest
+    /// first, until the warm set's ESTIMATED resident bytes —
+    /// [`crate::RESIDENT_BYTES_PER_RAW_BYTE`] times each engine's raw
+    /// markdown bytes — are within `max_resident_bytes` (`0`: unbounded,
+    /// never evicts). Runs beside the idle reap on the reaper thread — the
+    /// idle reap demotes what nobody uses; this sweep bounds what everybody
+    /// uses, because a fleet-touched workspace never reaches the idle
+    /// horizon and the warm set otherwise grows by one parsed corpus per
+    /// workspace served.
+    ///
+    /// Estimated bytes, not documents: per-document resident cost varies
+    /// 67x with document size, so a document budget is defeated by exactly
+    /// the corpus shapes it must bound; the multiplier is the measured
+    /// worst-case parse blow-up (shapes span 1.54x to 6.01x of raw bytes),
+    /// so the estimate never under-counts
+    /// ([`crate::DEFAULT_MAX_RESIDENT_BYTES`] carries the calibration).
+    ///
+    /// An eviction is TOTAL where the idle reap DEMOTES: engine, resident
+    /// memo, ring, sql handle, module cache, pre-warm signature, and the
+    /// §6.4 feed all drop; only the registration (`inner`) survives, so a
+    /// later `hello` rebuilds the state from disk. Dropping the feed
+    /// forfeits §6.4 gap coverage for that workspace — its next warm is a
+    /// full corpus walk, not O(dirty). That is the deliberate trade under
+    /// budget pressure (merkle-spec §6.4, watcher lifecycle): bounded
+    /// residency outranks gap coverage for the least-recently-used
+    /// workspace. Do not restore a feed or memo exemption here.
+    ///
+    /// The exemption is NARROW: a workspace is exempt only while a live sub
+    /// cursor rides it — the same `has_subscribers` test the idle reap
+    /// uses, decided under the same `inner` → `rings` critical section, so
+    /// a claim landing in the sweep window keeps its workspace and its ring
+    /// (evicting a subscribed ring would fork the per-workspace seq, §4.7).
+    /// When every warm workspace is subscribed the budget cannot be met:
+    /// log and carry on, never panic.
+    pub fn reap_to_budget(&self, max_resident_bytes: u64) -> Vec<PathBuf> {
+        if max_resident_bytes == 0 {
+            return Vec::new();
+        }
+        // Estimate snapshot OUTSIDE the map guards: an engine that warms
+        // between this read and the decision below is missed by one sweep
+        // and caught by the next — cheaper than nesting the engines guard
+        // inside `inner`, which no other path does. O(docs) per sweep: the
+        // raw bytes ride each parsed document already in memory.
+        let mut resident: Vec<(PathBuf, u64)> = {
+            let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
+            engines
+                .iter()
+                .map(|(key, engine)| {
+                    let raw: u64 = engine.docs.values().map(|doc| doc.raw.len() as u64).sum();
+                    (key.clone(), raw * crate::RESIDENT_BYTES_PER_RAW_BYTE)
+                })
+                .collect()
+        };
+        let total: u64 = resident.iter().map(|(_, estimated)| estimated).sum();
+        if total <= max_resident_bytes {
+            return Vec::new();
+        }
+        let mut over = total - max_resident_bytes;
+        // Decide + ring removal in ONE critical section, the reap's own
+        // discipline (`inner` EXCLUSIVE, then `rings`): an adopter cannot
+        // stamp `last_use` mid-decision, and a sub claim cannot land
+        // between the exemption check and the ring's death.
+        let victims: Vec<PathBuf> = {
+            let map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+            let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+            // LRU order. A warm engine with no registration has no clock
+            // and sorts oldest.
+            resident.sort_by_key(|(key, _)| map.get(key).map_or(0, Slot::last_use));
+            let mut victims = Vec::new();
+            for (key, estimated) in resident {
+                if over == 0 {
+                    break;
+                }
+                if rings.get(&key).is_some_and(|ring| ring.has_subscribers()) {
+                    continue;
+                }
+                rings.remove(&key);
+                over = over.saturating_sub(estimated);
+                victims.push(key);
+            }
+            if over > 0 {
+                eprintln!(
+                    "registry: resident budget ({max_resident_bytes} estimated bytes) cannot \
+                     be met — every remaining warm workspace holds a live sub cursor ({over} \
+                     estimated bytes over)"
+                );
+            }
+            victims
+        };
+        if victims.is_empty() {
+            return victims;
+        }
+        {
+            let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
+            for key in &victims {
+                engines.remove(key);
+            }
+        }
+        // Feed and memo leave their maps under the locks and die OUTSIDE
+        // them: the feed's Drop releases a kernel stream, and unbinding a
+        // memo's stamps takes the memo lock — no path takes a memo lock
+        // while holding a map lock (the patched_cache discipline).
+        let feeds: Vec<FeedSlot> = {
+            let mut map = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+            victims.iter().filter_map(|key| map.remove(key)).collect()
+        };
+        let caches: Vec<Arc<Mutex<fs::DomainCache>>> = {
+            let mut map = self
+                .domain_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            victims.iter().filter_map(|key| map.remove(key)).collect()
+        };
+        for cache in &caches {
+            // The stamp plane names the ring this sweep killed, and an
+            // in-flight holder may still borrow the memo privately: no
+            // stamp may answer across the eviction.
+            cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .unbind_stamps();
+        }
+        {
+            let mut stores = self
+                .sql_stores
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            for key in &victims {
+                stores.remove(key);
+            }
+        }
+        {
+            let mut modules = self.modules.lock().unwrap_or_else(PoisonError::into_inner);
+            for key in &victims {
+                modules.remove(key);
+            }
+        }
+        {
+            let mut signatures = self
+                .prewarm_signatures
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            for key in &victims {
+                signatures.remove(key);
+            }
+        }
+        drop(caches);
+        drop(feeds);
+        victims
+    }
+
     /// Persist the current map to the state file, logging (never failing) on a
     /// write error — a lost persist only costs a warm registration across
     /// restart.
@@ -3232,6 +3387,165 @@ mod engine_tests {
             reg.reap(u64::MAX, 0).is_empty(),
             "an already-cold workspace is not re-demoted every sweep"
         );
+    }
+
+    /// One workspace's estimated resident bytes as [`warm_ws_stamped`]
+    /// builds it: 8 raw markdown bytes ("# A\n" + "# B\n") at the 6x
+    /// parse blow-up multiplier.
+    const WS_ESTIMATE: u64 = 6 * 8;
+
+    /// A workspace `home/<name>` seeded with two documents (8 raw markdown
+    /// bytes — [`WS_ESTIMATE`] once warm), registered and warmed, every
+    /// resident plane populated, and its LRU clock set to `stamp` — the
+    /// whole-second `register` stamp cannot order same-second
+    /// registrations, so the budget tests set the clock directly.
+    fn warm_ws_stamped(reg: &Registry, home: &Path, name: &str, stamp: u64) -> PathBuf {
+        let ws = home.join(name);
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("a.md"), "# A\n").unwrap();
+        fs::write(ws.join("b.md"), "# B\n").unwrap();
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        assert_eq!(
+            reg.warm_or_build(&canonical).unwrap(),
+            WarmOutcome::Built { docs: 2 }
+        );
+        // Seed every resident plane a budget eviction must clear.
+        let _ = reg.domain_cache(&canonical);
+        let _ = reg.ring(&canonical);
+        let _ = reg.modules(&canonical);
+        reg.sql_store(&canonical)
+            .expect("the sql cache opens in the drawer");
+        reg.prewarm_signatures
+            .lock()
+            .unwrap()
+            .insert(canonical.clone(), 7);
+        reg.inner
+            .read()
+            .unwrap()
+            .get(&canonical)
+            .expect("registered")
+            .touch(stamp);
+        canonical
+    }
+
+    /// The resident budget: a warm set whose estimated resident bytes (6x
+    /// raw markdown bytes) exceed `MRD_MAX_RESIDENT_BYTES` sheds warm
+    /// workspaces LRU-first — oldest `last_use` first — until it fits. An
+    /// eviction is TOTAL for its workspace: engine, memo, ring, sql handle,
+    /// module cache, pre-warm signature, and the §6.4 feed all drop; only
+    /// the registration survives, so the next `hello` rebuilds from disk.
+    #[test]
+    fn budget_sweep_evicts_lru_first_until_the_warm_set_fits() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let w1 = warm_ws_stamped(&reg, home.path(), "w1", 100);
+        let w2 = warm_ws_stamped(&reg, home.path(), "w2", 200);
+        let w3 = warm_ws_stamped(&reg, home.path(), "w3", 300);
+
+        // Three workspaces of estimated 48 bytes each against a budget that
+        // admits exactly two: the oldest goes.
+        let evicted = reg.reap_to_budget(2 * WS_ESTIMATE);
+        assert_eq!(
+            evicted,
+            vec![w1.clone()],
+            "LRU first, and only enough to fit"
+        );
+
+        assert!(
+            !reg.engines.read().unwrap().contains_key(&w1),
+            "engine gone"
+        );
+        assert!(
+            !reg.domain_caches.lock().unwrap().contains_key(&w1),
+            "resident memo gone"
+        );
+        assert!(!reg.rings.lock().unwrap().contains_key(&w1), "ring gone");
+        assert!(
+            !reg.sql_stores.lock().unwrap().contains_key(&w1),
+            "sql handle gone"
+        );
+        assert!(
+            !reg.modules.lock().unwrap().contains_key(&w1),
+            "module cache gone"
+        );
+        assert!(
+            !reg.prewarm_signatures.lock().unwrap().contains_key(&w1),
+            "pre-warm signature gone"
+        );
+        assert!(
+            !reg.feeds.lock().unwrap().contains_key(&w1),
+            "the feed drops with the eviction — §6.4 gap coverage is the \
+             deliberate trade under budget pressure, so the next warm is a \
+             full walk"
+        );
+        assert!(
+            matches!(reg.resolve(&w1), ResolveOutcome::Adopted(_)),
+            "the registration survives — a later hello rebuilds the state"
+        );
+
+        let estimated: u64 = reg
+            .engines
+            .read()
+            .unwrap()
+            .values()
+            .map(|e| e.docs.values().map(|d| d.raw.len() as u64).sum::<u64>() * 6)
+            .sum();
+        assert!(
+            estimated <= 2 * WS_ESTIMATE,
+            "warm set within budget: {estimated} estimated bytes"
+        );
+        for survivor in [&w2, &w3] {
+            assert!(
+                reg.engines.read().unwrap().contains_key(survivor),
+                "younger workspaces stay warm"
+            );
+        }
+
+        // Within budget: nothing to do. Zero: unbounded, never evicts.
+        assert!(reg.reap_to_budget(2 * WS_ESTIMATE).is_empty());
+        assert!(reg.reap_to_budget(0).is_empty());
+    }
+
+    /// The exemption is NARROW: only a live sub cursor spares a workspace
+    /// (evicting it would fork the per-workspace seq — §4.7). The subscribed
+    /// LRU survives the sweep, which moves on to the next-oldest; when every
+    /// warm workspace is subscribed the budget cannot be met — the sweep
+    /// sheds nothing and carries on, never panics.
+    #[test]
+    fn a_live_sub_cursor_exempts_the_lru_from_the_budget_sweep() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let w1 = warm_ws_stamped(&reg, home.path(), "w1", 100);
+        let w2 = warm_ws_stamped(&reg, home.path(), "w2", 200);
+
+        let guard = reg.subscribe(&w1);
+
+        // Two workspaces against a budget that admits one: the LRU is
+        // subscribed, so the next-oldest goes instead.
+        let evicted = reg.reap_to_budget(WS_ESTIMATE);
+        assert_eq!(
+            evicted,
+            vec![w2.clone()],
+            "the sub cursor exempts the LRU; the next-oldest goes"
+        );
+        assert!(
+            reg.engines.read().unwrap().contains_key(&w1),
+            "the subscribed workspace keeps its engine"
+        );
+
+        // Only the subscribed workspace remains, still over budget: the
+        // budget cannot be met — shed nothing, carry on.
+        let evicted = reg.reap_to_budget(WS_ESTIMATE / 2);
+        assert!(
+            evicted.is_empty(),
+            "an all-subscribed warm set cannot be forced under budget: {evicted:?}"
+        );
+        assert!(reg.engines.read().unwrap().contains_key(&w1));
+
+        // Dropping the cursor restores mortality.
+        drop(guard);
+        assert_eq!(reg.reap_to_budget(WS_ESTIMATE / 2), vec![w1.clone()]);
     }
 
     /// THE card receipt (quality gate 1): after an engine reap, members

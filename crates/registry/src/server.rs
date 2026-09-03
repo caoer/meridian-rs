@@ -176,6 +176,12 @@ pub struct Config {
     /// three client budgets that cap it. Fixtures raise this so a `TempDir`
     /// outlives a parked builder.
     pub drain_cold_builds: Duration,
+    /// Ceiling on ESTIMATED resident bytes summed across warm workspace
+    /// engines ([`crate::RESIDENT_BYTES_PER_RAW_BYTE`] times their raw
+    /// markdown bytes) — the [`Registry::reap_to_budget`] sweep's budget.
+    /// `0` disables the budget (unbounded warm set). See
+    /// [`crate::DEFAULT_MAX_RESIDENT_BYTES`] for the calibration.
+    pub max_resident_bytes: u64,
 }
 
 impl Config {
@@ -203,6 +209,7 @@ impl Config {
             // Production never parks: an unset floor is 0.
             activity_park: None,
             drain_cold_builds: crate::DEFAULT_DRAIN_COLD_BUILDS,
+            max_resident_bytes: crate::DEFAULT_MAX_RESIDENT_BYTES,
         }
     }
 
@@ -233,6 +240,9 @@ impl Config {
         }
         if let Some(raw) = std::env::var_os(IDLE_EXIT_ENV) {
             config.idle_exit = parse_idle_exit(&raw)?;
+        }
+        if let Some(raw) = std::env::var_os(MAX_RESIDENT_BYTES_ENV) {
+            config.max_resident_bytes = parse_max_resident_bytes(&raw)?;
         }
         Ok(config)
     }
@@ -366,6 +376,40 @@ fn parse_idle_exit(raw: &std::ffi::OsStr) -> io::Result<Option<Duration>> {
                      exit), got {:?} — unset it for the {}s default",
                     raw,
                     DEFAULT_IDLE_EXIT.as_secs()
+                ),
+            )
+        })
+}
+
+/// The environment variable that overrides [`Config::max_resident_bytes`],
+/// in whole ESTIMATED RESIDENT BYTES — the unit the budget is defined in
+/// ([`crate::DEFAULT_MAX_RESIDENT_BYTES`], which carries the calibration;
+/// the estimate is [`crate::RESIDENT_BYTES_PER_RAW_BYTE`] times raw markdown
+/// bytes). `0` disables the budget (unbounded warm set).
+///
+/// Read at exactly one site, [`Config::resolve`].
+pub const MAX_RESIDENT_BYTES_ENV: &str = "MRD_MAX_RESIDENT_BYTES";
+
+/// Parse [`MAX_RESIDENT_BYTES_ENV`]'s value as a whole byte count; `0` is
+/// the documented unbounded spelling, not a failure.
+///
+/// Refuses loudly on anything else, naming the variable and echoing the bytes
+/// it saw — the [`parse_drain_cold_builds`] posture: a malformed knob must
+/// never silently fall back to the very default it was set to escape.
+// `{:?}` on the `OsStr` for the same reason as `parse_drain_cold_builds`:
+// the message exists to SHOW a value the parser could not read.
+#[allow(clippy::unnecessary_debug_formatting)]
+fn parse_max_resident_bytes(raw: &std::ffi::OsStr) -> io::Result<u64> {
+    raw.to_str()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{MAX_RESIDENT_BYTES_ENV} must be a whole number of estimated resident \
+                     bytes (0 disables the budget), got {:?} — unset it for the {} default",
+                    raw,
+                    crate::DEFAULT_MAX_RESIDENT_BYTES
                 ),
             )
         })
@@ -533,7 +577,25 @@ impl RunningServer {
         };
 
         let store = StateStore::new(config.state_path.clone());
-        let entries = store.load();
+        // A registration whose directory is gone is not reloaded — HYGIENE,
+        // not memory: a registration is ~150 bytes and warms nothing by
+        // itself, but the set only ever grows, `list` reports workspaces
+        // that cannot exist, and every sweep iterates candidates that can
+        // never warm. A gone directory cannot be adopted (resolve
+        // canonicalizes through it), so the entry is dropped here and falls
+        // out of the state file at the next persist. A temporarily-unmounted
+        // volume therefore loses its registration and gets it back on the
+        // next `hello` — acceptable and intended.
+        let (entries, gone): (Vec<_>, Vec<_>) = store
+            .load()
+            .into_iter()
+            .partition(|entry| entry.workspace.is_dir());
+        if !gone.is_empty() {
+            eprintln!(
+                "registry: not reloading {} registration(s) whose directory is gone",
+                gone.len()
+            );
+        }
         // Born parked when the fixture asked for it: the floor goes up inside
         // the constructor, so no wall time exists between the activity clock
         // starting and the park — the reaper spawned below cannot observe an
@@ -603,6 +665,7 @@ impl RunningServer {
             config.idle_threshold,
             config.reap_interval,
             config.idle_exit,
+            config.max_resident_bytes,
             exit_requested.clone(),
         );
         let prewarm = spawn_prewarm(
@@ -828,13 +891,17 @@ fn accept_loop(
 }
 
 /// Spawn the reaper: wake every [`REAP_TICK`], and once `reap_interval` has
-/// elapsed drop idle entries. Exits promptly on the shutdown flag.
+/// elapsed drop idle entries, then evict over the resident budget
+/// ([`Registry::reap_to_budget`] — the idle pass first, so the budget sweep
+/// only pays for what idleness alone could not shed). Exits promptly on the
+/// shutdown flag.
 fn spawn_reaper(
     registry: Arc<Registry>,
     shutdown: Arc<AtomicBool>,
     idle_threshold: Duration,
     reap_interval: Duration,
     idle_exit: Option<Duration>,
+    max_resident_bytes: u64,
     exit_requested: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
@@ -850,6 +917,14 @@ fn spawn_reaper(
             let reaped = registry.reap(now_secs(), threshold_secs);
             if !reaped.is_empty() {
                 eprintln!("registry: idle-reaped {} workspace(s)", reaped.len());
+            }
+            let evicted = registry.reap_to_budget(max_resident_bytes);
+            if !evicted.is_empty() {
+                eprintln!(
+                    "registry: budget-evicted {} workspace(s) — estimated resident bytes over \
+                     {max_resident_bytes}",
+                    evicted.len()
+                );
             }
             // G11 idle exit. The reaper raises the flag only; the process's own
             // loop owns the teardown, because shutting the threads down from
@@ -3231,6 +3306,40 @@ mod socket_placement_tests {
             let msg = err.to_string();
             assert!(
                 msg.contains(IDLE_EXIT_ENV),
+                "the refusal names the variable: {msg}"
+            );
+            assert!(
+                msg.contains(&format!("{bad:?}")),
+                "the refusal echoes the bytes it saw: {msg}"
+            );
+        }
+    }
+
+    /// The resident-budget knob: `0` is the documented unbounded spelling,
+    /// a whole number of estimated resident bytes is the budget, and
+    /// anything else REFUSES — never falls back to the default it was set
+    /// to escape (the [`parse_idle_exit`] law).
+    #[test]
+    fn a_malformed_max_resident_bytes_knob_refuses_and_names_what_it_saw() {
+        use super::{MAX_RESIDENT_BYTES_ENV, parse_max_resident_bytes};
+        use std::ffi::OsStr;
+
+        assert_eq!(
+            parse_max_resident_bytes(OsStr::new("0")).unwrap(),
+            0,
+            "0 is the unbounded spelling"
+        );
+        assert_eq!(
+            parse_max_resident_bytes(OsStr::new("5368709120")).unwrap(),
+            5 * 1024 * 1024 * 1024
+        );
+        for bad in ["5G", "", "unbounded", "-1", "1.5"] {
+            let err = parse_max_resident_bytes(OsStr::new(bad))
+                .expect_err(&format!("{bad:?} is not a whole byte count"));
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+            let msg = err.to_string();
+            assert!(
+                msg.contains(MAX_RESIDENT_BYTES_ENV),
                 "the refusal names the variable: {msg}"
             );
             assert!(
