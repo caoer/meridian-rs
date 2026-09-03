@@ -509,6 +509,38 @@ fn a_dry_run_prints_the_whole_plan_and_writes_nothing() {
     );
     assert!(text.contains("dry run: nothing written."), "{text}");
 
+    let json = sb.run(
+        &ws,
+        &[
+            "move",
+            "docs/notes.md",
+            "docs/notes-v2.md",
+            "--dry",
+            "--json",
+        ],
+    );
+    assert_eq!(code(&json), 0, "{}", said(&json));
+    assert_eq!(
+        frame(&json)["move"]["links"]["read_back"],
+        Value::Null,
+        "a dry run reads nothing back"
+    );
+
+    for (rel, bytes) in &snapshot {
+        assert_eq!(
+            &read(&ws, rel),
+            bytes,
+            "{rel} is byte-identical after a dry run"
+        );
+    }
+    assert!(ws.join("docs/notes.md").exists());
+    assert!(!ws.join("docs/notes-v2.md").exists());
+}
+
+#[test]
+fn the_json_frame_has_one_shape() {
+    let sb = sandbox();
+    let ws = sb.corpus();
     let out = sb.run(
         &ws,
         &[
@@ -586,14 +618,4 @@ fn a_dry_run_prints_the_whole_plan_and_writes_nothing() {
         Value::Null,
         "a dry run reads nothing back"
     );
-
-    for (rel, bytes) in &snapshot {
-        assert_eq!(
-            &read(&ws, rel),
-            bytes,
-            "{rel} is byte-identical after a dry run"
-        );
-    }
-    assert!(ws.join("docs/notes.md").exists());
-    assert!(!ws.join("docs/notes-v2.md").exists());
 }

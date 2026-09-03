@@ -755,8 +755,10 @@ fn frontmatter_rooted(raw: &str, fm: ByteSpan, root_names: &[String]) -> Vec<Roo
         if !root_names.iter().any(|n| n == root.as_str()) {
             continue;
         }
-        let end = token.find('#').unwrap_or(token.len());
-        if end <= colon + 1 {
+        // The path slot is what `addr` parsed, located in the token verbatim —
+        // the grammar owns the split (`address-grammar.md` §4.1).
+        let end = colon + 1 + parsed.path().len();
+        if parsed.path().is_empty() || token.get(colon + 1..end) != Some(parsed.path()) {
             continue;
         }
         out.push(RootedOcc {

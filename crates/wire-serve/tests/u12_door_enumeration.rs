@@ -213,6 +213,19 @@ const DOORS: &[DoorPin] = &[
         label: "the attest path (ArmSession::commit, the arm act's disk edge)",
         class: Door::OutsideThisUnit,
     },
+    // The in-process move door (`docs/move.md` §8–§9): one candidate per
+    // referring page, composed from spellings the corpus already holds and
+    // passed through `stored_form_guard_lazy` in the same body before any
+    // byte lands. Outside this unit's files, so the enumeration records the
+    // door and leaves the discharge to `move.md`'s own gates (`move_cli`).
+    DoorPin {
+        file: "crates/wire-serve/src/relocate.rs",
+        door_fn: "relocate",
+        mint_fn: "relocate",
+        guard_fn: None,
+        label: "the move door (wire_serve::relocate::relocate, the rename plus reference rewrite)",
+        class: Door::OutsideThisUnit,
+    },
     // ---- wire-serve/watch.rs — the reaction feeder, a mint that is NOT a
     // door. `external_effects` needs each externally-changed document to carry
     // its own path (a HOOK matches `paths:` against it); the candidate is read
