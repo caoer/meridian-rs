@@ -48,6 +48,7 @@ owns: [process, standing corrections, inventory, reading order]
 | `base-projection.md` | `.base` (Obsidian Bases) projection into the sql face: membership, relations, `base_fold` witness |
 | `body-projection.md` | Section body text in the sql face: exclusive-chunk law, `body` relation, content-addressed cache protocol |
 | `run-plane.md` | Run plane + preset/session birth |
+| `move.md` | The move door: `mrd move` — rename plus reference rewrite, in-process, never a wire op |
 | `status.md` | CLI / build **descriptive** snapshot |
 | `doc-system.md` | How this directory is organized and maintained |
 

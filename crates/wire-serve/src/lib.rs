@@ -23,6 +23,7 @@ pub(crate) mod positions;
 pub mod publish;
 pub mod reaction;
 pub mod read;
+pub mod relocate;
 pub mod rev;
 pub mod ring;
 pub mod seq;

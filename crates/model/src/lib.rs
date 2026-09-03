@@ -2543,6 +2543,21 @@ impl CorpusIndex {
     /// deterministic source-relative-then-shortest pick, not an oracle answer.
     #[must_use]
     pub fn resolve_linkpath(&self, linkpath: &str, from: &str) -> Option<String> {
+        pick_source_relative(&self.linkpath_candidates(linkpath), from)
+    }
+
+    /// The stage-1 candidate set behind [`CorpusIndex::resolve_linkpath`],
+    /// BEFORE the source-relative pick: every vault path the linkpath names
+    /// under the same rules (case-insensitive, `.md` optional, a subdir
+    /// qualifier matched on whole segments, alias fallback). Empty when the
+    /// linkpath dangles or carries a root separator.
+    ///
+    /// One owner for the candidate rule: `resolve_linkpath` is this set plus
+    /// the pick. A consumer that must know whether a spelling is UNIQUE — the
+    /// move plan minting a new spelling, `move.md` §4 — reads the set; a
+    /// consumer that wants the app's answer takes the pick.
+    #[must_use]
+    pub fn linkpath_candidates(&self, linkpath: &str) -> Vec<String> {
         // C-3 (address-grammar § 5.1): a `linkpath` whose head carries a `:`
         // must be root-peeled by the caller first — otherwise the basename
         // fallback turns `sessions:24-01-retro/notes.md` into `notes` and
@@ -2551,7 +2566,7 @@ impl CorpusIndex {
         // rule only, not the wider `addr::confined`: a `..` spelling is a vault
         // address this seam answers correctly.
         if addr::head_carries_root_separator(linkpath) {
-            return None;
+            return Vec::new();
         }
         let key = linkpath.trim().trim_end_matches(".md").to_lowercase();
         let base = key.rsplit('/').next().unwrap_or(key.as_str()).to_string();
@@ -2579,16 +2594,16 @@ impl CorpusIndex {
                     .cloned()
                     .collect();
                 if !narrowed.is_empty() {
-                    return pick_source_relative(&narrowed, from);
+                    return narrowed;
                 }
             }
-            return pick_source_relative(self.by_alias.get(&key)?, from);
+            return self.by_alias.get(&key).cloned().unwrap_or_default();
         }
-        let candidates = self
-            .by_basename
+        self.by_basename
             .get(&base)
-            .or_else(|| self.by_alias.get(&key))?;
-        pick_source_relative(candidates, from)
+            .or_else(|| self.by_alias.get(&key))
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Sole address owner: resolve a ref spelling (`meridian-lock` ref,

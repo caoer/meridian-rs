@@ -2691,7 +2691,9 @@ pub fn remove_with_cache(
 /// The inbound instruments are [`query::backlinks`] and
 /// [`query::lock_pin_referrers`]; this is only their corpus input. A new
 /// reverse-link index is a different card. Not counted by [`fs::fold_count`].
-fn referential_files(root: &fs::WorkspaceRoot) -> Result<fs::DomainFiles, Box<ErrorBody>> {
+pub(crate) fn referential_files(
+    root: &fs::WorkspaceRoot,
+) -> Result<fs::DomainFiles, Box<ErrorBody>> {
     let domain = fs::domain::Domain::load(root).map_err(|e| io_refusal(e.to_string()))?;
     let rels = fs::hash_domain(root, &domain).map_err(|e| io_refusal(e.to_string()))?;
     let mut files = Vec::with_capacity(rels.len());
@@ -3433,7 +3435,7 @@ fn pin_row(
 /// An `io_error` refusal carrying its cause — the shape [`blob_oid`]'s `--vibe`
 /// arm already refuses with, reused so the two git-cannot-answer doors speak
 /// with one voice.
-fn io_refusal(cause: String) -> Box<ErrorBody> {
+pub(crate) fn io_refusal(cause: String) -> Box<ErrorBody> {
     let mut err = ErrorBody::new(ErrorCode::IoError);
     err.cause = Some(cause);
     Box::new(err)
@@ -4079,7 +4081,9 @@ fn locate_lock(doc: &model::Document) -> Result<Option<std::ops::Range<usize>>, 
 /// lock (`WouldBlock`, `LOCK_NB`) is the fast `workspace_busy` refusal
 /// (transient — retry); any other lock-file I/O failure maps to
 /// `io_error{cause}`.
-fn acquire_write_lock(root: &fs::WorkspaceRoot) -> Result<fs::WriteLock, Box<ErrorBody>> {
+pub(crate) fn acquire_write_lock(
+    root: &fs::WorkspaceRoot,
+) -> Result<fs::WriteLock, Box<ErrorBody>> {
     fs::WriteLock::acquire(root).map_err(|e| {
         if e.kind() == ErrorKind::WouldBlock {
             let mut w = ErrorBody::new(ErrorCode::WorkspaceBusy);
@@ -4107,7 +4111,7 @@ fn acquire_write_lock(root: &fs::WorkspaceRoot) -> Result<fs::WriteLock, Box<Err
 /// WHICH tree a path is joined onto: a `root:`-bearing spelling at a write door
 /// is an address, never a corpus path, and is refused rather than creating a
 /// document no address can name (§4.2, D11).
-fn path_confined(root: &fs::WorkspaceRoot, path: &Path) -> Result<(), Box<ErrorBody>> {
+pub(crate) fn path_confined(root: &fs::WorkspaceRoot, path: &Path) -> Result<(), Box<ErrorBody>> {
     if !addr::confined(&path.0) {
         let mut e = ErrorBody::new(ErrorCode::BadPath);
         e.path = Some(path.clone());
@@ -4914,7 +4918,7 @@ fn conformance_to_wire(refusal: &policy::defs::BodyError, path: &Path) -> Box<Er
 
 /// Map an `fs` I/O error onto its wire envelope: `NotFound` ⇒ `file_not_found`
 /// (env), otherwise `io_error{cause}`.
-fn io_to_wire(e: &std::io::Error) -> Box<ErrorBody> {
+pub(crate) fn io_to_wire(e: &std::io::Error) -> Box<ErrorBody> {
     if e.kind() == ErrorKind::NotFound {
         return Box::new(ErrorBody::new(ErrorCode::FileNotFound));
     }
@@ -5619,7 +5623,7 @@ fn stored_form_guard(
 /// can carry a cross-root position at all, so an ordinary single-root write
 /// never pays for one. `tests/u12_door_enumeration.rs` counts the doors by this
 /// one name.
-fn stored_form_guard_lazy(
+pub(crate) fn stored_form_guard_lazy(
     before: Option<&model::Document>,
     candidate: &model::CandidateDocument,
     path: &Path,
