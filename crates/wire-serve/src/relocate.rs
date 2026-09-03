@@ -133,6 +133,7 @@ pub fn relocate(
     };
 
     let (index, docs, _unserved) = fs::build_corpus(referential_files(root)?);
+    let canvases = canvas_carriers(root)?;
     let spec = MoveSpec {
         old: old.clone(),
         new: new.clone(),
@@ -144,7 +145,7 @@ pub fn relocate(
             .collect(),
         root_names: args.root_names.clone(),
     };
-    let plan = planner::plan(&index, &docs, &spec);
+    let plan = planner::plan(&index, &docs, &canvases, &spec);
     let on_disk = if is_dir {
         count_files(&old_abs).map_err(|e| io_to_wire(&e))?
     } else {
@@ -179,8 +180,26 @@ pub fn relocate(
         stored_form_guard_lazy(Some(doc), &candidate, &Path(file.path.clone()))?;
         staged.push((file.path.clone(), candidate));
     }
+    // A canvas carries no document to seal: its bytes are composed against the
+    // same pre-image the plan's spans index, and land raw (`move.md` §4 class 5).
+    let mut staged_canvases = Vec::with_capacity(plan.canvases.len());
+    for file in &plan.canvases {
+        let raw = canvases
+            .get(&file.path)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .ok_or_else(|| {
+                io_refusal(format!(
+                    "{} stopped reading as a canvas while the plan was being composed",
+                    file.path
+                ))
+            })?;
+        staged_canvases.push((file.path.clone(), file.apply(raw)));
+    }
     for (path, candidate) in &staged {
         fs::replace_file(root, FsPath::new(path), candidate).map_err(|e| io_to_wire(&e))?;
+    }
+    for (path, bytes) in &staged_canvases {
+        fs::replace_bytes(root, FsPath::new(path), bytes.as_bytes()).map_err(|e| io_to_wire(&e))?;
     }
 
     // The rename is the last act (`move.md` §9).
@@ -194,7 +213,8 @@ pub fn relocate(
 
     // The receipt's `after` is read back from disk, never copied from the plan.
     let (index_after, docs_after, _) = fs::build_corpus(referential_files(root)?);
-    let read_back = planner::link_census(&index_after, &docs_after);
+    let canvases_after = canvas_carriers(root)?;
+    let read_back = planner::link_census(&index_after, &docs_after, &canvases_after);
     drop(flock);
 
     Ok(RelocateOutcome {
@@ -234,6 +254,16 @@ pub fn ambiguity_refusal(plan: &MovePlan) -> Box<ErrorBody> {
         pairs.join("; ")
     ));
     Box::new(e)
+}
+
+/// The workspace's `.canvas` carriers (`move.md` §4 class 5), keyed by path.
+/// A carrier the walk found but could not read fails the whole move: the door
+/// is about to rewrite references, and it promises nothing it did not read.
+fn canvas_carriers(root: &fs::WorkspaceRoot) -> Result<planner::Canvases, Box<ErrorBody>> {
+    Ok(fs::canvas::canvas_files(root)
+        .map_err(|e| io_refusal(e.to_string()))?
+        .into_iter()
+        .collect())
 }
 
 fn bad_path(path: &str, message: String) -> Box<ErrorBody> {

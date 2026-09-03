@@ -226,12 +226,15 @@ fn frame_of(outcome: &RelocateOutcome, root: Option<&str>) -> Value {
         "new": spell(root, &outcome.new),
         "kind": if outcome.is_dir { "directory" } else { "file" },
         "renames": plan.renames.iter().map(|(from, to)| json!({"from": from, "to": to})).collect::<Vec<_>>(),
-        "rewrites": plan.rewrites.iter().map(|f| json!({
+        // One list of files the door rewrites — pages and canvas carriers
+        // alike; the class counts say which is which.
+        "rewrites": plan.rewrites.iter().chain(&plan.canvases).map(|f| json!({
             "path": f.path,
             "wikilinks": f.count(query::relocate::RefKind::Wikilink),
             "embeds": f.count(query::relocate::RefKind::Embed),
             "frontmatter": f.count(query::relocate::RefKind::Frontmatter),
             "rooted": f.count(query::relocate::RefKind::Rooted),
+            "canvas": f.count(query::relocate::RefKind::Canvas),
             "lock_rows": f.lock_rows(),
         })).collect::<Vec<_>>(),
         "immutable": plan.immutable.iter().map(|s| json!({
@@ -241,10 +244,12 @@ fn frame_of(outcome: &RelocateOutcome, root: Option<&str>) -> Value {
             "source": a.source, "linkpath": a.linkpath, "candidates": a.candidates,
         })).collect::<Vec<_>>(),
         "lock_unreadable": plan.lock_unreadable,
+        "canvas_unreadable": plan.canvas_unreadable,
         "counts": {
-            "files_rewritten": plan.rewrites.len(),
+            "files_rewritten": plan.rewrites.len() + plan.canvases.len(),
             "links_rewritten": plan.links_rewritten(),
             "lock_rows_rewritten": plan.lock_rows_rewritten(),
+            "canvas_nodes_rewritten": plan.canvas_nodes_rewritten(),
             "immutable_skips": plan.immutable.len(),
             "moved_outside_domain": outcome.moved_outside_domain,
         },
@@ -272,18 +277,20 @@ fn print_human(outcome: &RelocateOutcome, root: Option<&str>) {
         outcome.moved_outside_domain
     );
     println!(
-        "  rewrites: {} file(s) · {} link(s) · {} lock row(s)",
-        plan.rewrites.len(),
+        "  rewrites: {} file(s) · {} link(s) · {} lock row(s) · {} canvas node(s)",
+        plan.rewrites.len() + plan.canvases.len(),
         plan.links_rewritten(),
-        plan.lock_rows_rewritten()
+        plan.lock_rows_rewritten(),
+        plan.canvas_nodes_rewritten()
     );
-    for file in &plan.rewrites {
+    for file in plan.rewrites.iter().chain(&plan.canvases) {
         let mut parts = Vec::new();
         for kind in [
             query::relocate::RefKind::Wikilink,
             query::relocate::RefKind::Embed,
             query::relocate::RefKind::Frontmatter,
             query::relocate::RefKind::Rooted,
+            query::relocate::RefKind::Canvas,
         ] {
             let n = file.count(kind);
             if n > 0 {
@@ -312,6 +319,12 @@ fn print_human(outcome: &RelocateOutcome, root: Option<&str>) {
         println!(
             "  lock blocks not read (corrupt): {}",
             plan.lock_unreadable.join(", ")
+        );
+    }
+    if !plan.canvas_unreadable.is_empty() {
+        println!(
+            "  canvases not read (not JSON, or no nodes array): {}",
+            plan.canvas_unreadable.join(", ")
         );
     }
     if !plan.ambiguous.is_empty() {

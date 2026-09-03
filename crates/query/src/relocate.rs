@@ -12,9 +12,16 @@
 //! an immutable prefix is reported instead of rewritten — its `meridian-lock`
 //! rows excepted, which the prefix does not reach (`move.md` §6).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use model::{ByteSpan, CorpusIndex, Docs, Document, Node, NodeKind};
+
+use crate::canvas;
+
+/// The `.canvas` carriers of a workspace: workspace-relative path → raw bytes
+/// (`move.md` §4 class 5). Never corpus members — the plan reads them as
+/// reference carriers and rewrites their node slots in place.
+pub type Canvases = BTreeMap<String, Vec<u8>>;
 
 /// What the caller asks to move — the door has already resolved the into-form
 /// and refused the path-level cases (`move.md` §2).
@@ -46,6 +53,10 @@ pub enum RefKind {
     Frontmatter,
     /// A plain `root:path` string inside the frontmatter block naming this root.
     Rooted,
+    /// A `.canvas` node slot — a `file` node's path, or a wikilink inside a
+    /// text node. The carrier is what the word names: the canvas, not the
+    /// shape of the reference inside it.
+    Canvas,
 }
 
 impl RefKind {
@@ -57,12 +68,15 @@ impl RefKind {
             RefKind::Embed => "embed",
             RefKind::Frontmatter => "frontmatter",
             RefKind::Rooted => "rooted",
+            RefKind::Canvas => "canvas",
         }
     }
 }
 
-/// One byte-span replacement against a page's pre-image: the target slot's
-/// bytes (never the fragment or alias around them) and what replaces them.
+/// One byte-span replacement against a file's pre-image: the target slot's
+/// bytes (never the fragment or alias around them) and what replaces them. In
+/// a canvas, `text` is `new` as a JSON string literal's content — the same
+/// spelling, escaped for the carrier it lands in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rewrite {
     pub span: ByteSpan,
@@ -177,11 +191,19 @@ pub struct MovePlan {
     /// Every corpus member that moves, `(from, to)`.
     pub renames: Vec<(String, String)>,
     pub rewrites: Vec<FileRewrite>,
+    /// The `.canvas` carriers rewritten (§4 class 5), kept apart from
+    /// `rewrites` because they are not corpus members: there is no document to
+    /// seal and no stored-form guard to run, so the door lands their raw bytes
+    /// through a different write. Their edits have the same shape.
+    pub canvases: Vec<FileRewrite>,
     pub immutable: Vec<Skip>,
     pub ambiguous: Vec<Ambiguity>,
     /// Pages whose `meridian-lock` block does not parse: their rows could not
     /// be read, so none were repointed.
     pub lock_unreadable: Vec<String>,
+    /// Canvases the plan could not read — not UTF-8, not JSON, or holding no
+    /// `nodes` array. Nothing in them was rewritten and nothing counted.
+    pub canvas_unreadable: Vec<String>,
     pub before: LinkCensus,
     /// The census the plan predicts, simulated over the post-move index.
     pub after: LinkCensus,
@@ -199,6 +221,12 @@ impl MovePlan {
     pub fn lock_rows_rewritten(&self) -> usize {
         self.rewrites.iter().map(FileRewrite::lock_rows).sum()
     }
+
+    /// Canvas node slots rewritten across every carrier.
+    #[must_use]
+    pub fn canvas_nodes_rewritten(&self) -> usize {
+        self.canvases.iter().map(|f| f.links.len()).sum()
+    }
 }
 
 /// Is `path` under `prefix` — equal to it, or inside it as a directory?
@@ -211,12 +239,13 @@ pub fn under_prefix(prefix: &str, path: &str) -> bool {
 /// Plan the move: nothing is applied.
 #[must_use]
 #[allow(clippy::too_many_lines)]
-pub fn plan(index: &CorpusIndex, docs: &Docs, spec: &MoveSpec) -> MovePlan {
+pub fn plan(index: &CorpusIndex, docs: &Docs, canvases: &Canvases, spec: &MoveSpec) -> MovePlan {
     let mapping = mapping_of(docs, spec);
     let mut after = CorpusIndex::new();
     for (path, doc) in docs {
         after.insert(&mapped(&mapping, path), doc);
     }
+    let after_keys: BTreeSet<String> = docs.keys().map(|p| mapped(&mapping, p)).collect();
     let ctx = Ctx {
         index,
         after: &after,
@@ -231,9 +260,11 @@ pub fn plan(index: &CorpusIndex, docs: &Docs, spec: &MoveSpec) -> MovePlan {
             .map(|(a, b)| (a.clone(), b.clone()))
             .collect(),
         rewrites: Vec::new(),
+        canvases: Vec::new(),
         immutable: Vec::new(),
         ambiguous: Vec::new(),
         lock_unreadable: Vec::new(),
+        canvas_unreadable: Vec::new(),
         before: LinkCensus::default(),
         after: LinkCensus::default(),
     };
@@ -253,7 +284,7 @@ pub fn plan(index: &CorpusIndex, docs: &Docs, spec: &MoveSpec) -> MovePlan {
                 plan.before
                     .tally(index.resolve_linkpath(&occ.target, path).is_some());
             }
-            let spelled_after = match ctx.decide(path, &occ.target) {
+            let spelled_after = match ctx.decide(path, &src_after, &occ.target) {
                 Decision::Keep => occ.target.clone(),
                 Decision::Rewrite(new) => {
                     if frozen {
@@ -359,13 +390,140 @@ pub fn plan(index: &CorpusIndex, docs: &Docs, spec: &MoveSpec) -> MovePlan {
             plan.rewrites.push(file);
         }
     }
+
+    // Class 5 — `.canvas` carriers (`move.md` §4). A canvas is not a corpus
+    // member, so nothing above has seen it: its `file` nodes are paths mapped
+    // across the move whether or not they name a page, and its text nodes'
+    // wikilinks take class 1's rules with the canvas as their source.
+    for (path, bytes) in canvases {
+        let frozen = spec.immutable.iter().any(|p| under_prefix(p, path));
+        // A canvas is not in the mapping — that is corpus members only — so
+        // where THIS file lands is the move applied to its own path. A canvas
+        // inside a moved directory travels with it, and its bare links must be
+        // judged from the directory it will sit in.
+        let src_after = map_string_path(spec, path).unwrap_or_else(|| path.clone());
+        let Ok(raw) = std::str::from_utf8(bytes) else {
+            plan.canvas_unreadable.push(path.clone());
+            continue;
+        };
+        let Some(slots) = canvas::slots(raw) else {
+            plan.canvas_unreadable.push(path.clone());
+            continue;
+        };
+        let mut file = FileRewrite {
+            path: path.clone(),
+            links: Vec::new(),
+            lock: None,
+        };
+
+        for slot in &slots.files {
+            // A `file` node naming a non-markdown file is rewritten and not
+            // counted: the census is the md-only link projection (`wire
+            // §12.1`), where `![[diagram.png]]` already stands outside.
+            let counted = split_md(&slot.value).1;
+            if counted {
+                plan.before.tally(docs.contains_key(&slot.value));
+            }
+            let spelled_after = match map_string_path(spec, &slot.value) {
+                None => slot.value.clone(),
+                Some(new) if frozen => {
+                    plan.immutable.push(Skip {
+                        path: path.clone(),
+                        line: line_of(raw, slot.raw.start),
+                        kind: RefKind::Canvas,
+                        old: slot.value.clone(),
+                        new,
+                    });
+                    slot.value.clone()
+                }
+                Some(new) => {
+                    file.links.push(Rewrite {
+                        span: slot.raw.clone(),
+                        text: canvas::escape(&new),
+                        kind: RefKind::Canvas,
+                        old: slot.value.clone(),
+                        new: new.clone(),
+                    });
+                    new
+                }
+            };
+            if counted {
+                plan.after.tally(after_keys.contains(&spelled_after));
+            }
+        }
+
+        for slot in &slots.texts {
+            for link in scan_wikilinks(&slot.value) {
+                let span = slot.raw_span(link.range.start, link.range.end);
+                let ambient = !addr::head_carries_root_separator(&link.target);
+                if ambient {
+                    plan.before
+                        .tally(index.resolve_linkpath(&link.target, path).is_some());
+                }
+                let spelled_after = match ctx.decide(path, &src_after, &link.target) {
+                    Decision::Keep => link.target.clone(),
+                    Decision::Rewrite(new) => {
+                        if frozen {
+                            plan.immutable.push(Skip {
+                                path: path.clone(),
+                                line: line_of(raw, span.start),
+                                kind: RefKind::Canvas,
+                                old: link.target.clone(),
+                                new,
+                            });
+                            link.target.clone()
+                        } else {
+                            file.links.push(Rewrite {
+                                span,
+                                text: canvas::escape(&new),
+                                kind: RefKind::Canvas,
+                                old: link.target.clone(),
+                                new: new.clone(),
+                            });
+                            new
+                        }
+                    }
+                    Decision::Ambiguous(candidates) => {
+                        if frozen {
+                            plan.immutable.push(Skip {
+                                path: path.clone(),
+                                line: line_of(raw, span.start),
+                                kind: RefKind::Canvas,
+                                old: link.target.clone(),
+                                new: ctx.full_form(path, &link.target),
+                            });
+                        } else {
+                            plan.ambiguous.push(Ambiguity {
+                                source: path.clone(),
+                                linkpath: link.target.clone(),
+                                candidates,
+                            });
+                        }
+                        link.target.clone()
+                    }
+                };
+                if ambient {
+                    plan.after
+                        .tally(after.resolve_linkpath(&spelled_after, &src_after).is_some());
+                }
+            }
+        }
+
+        if !file.links.is_empty() {
+            plan.canvases.push(file);
+        }
+    }
     plan
 }
 
 /// The census over a corpus as it stands: every ambient body and frontmatter
-/// link, resolved or dangling. The read-back half of a receipt.
+/// link of a page, plus every canvas node reference — a text node's wikilinks
+/// and a `file` node naming a markdown path. The read-back half of a receipt,
+/// and the reason a canvas left stale reads as a loss instead of as no change.
+///
+/// A canvas the scan cannot read contributes nothing, on both sides of a move.
 #[must_use]
-pub fn link_census(index: &CorpusIndex, docs: &Docs) -> LinkCensus {
+pub fn link_census(index: &CorpusIndex, docs: &Docs, canvases: &Canvases) -> LinkCensus {
     let mut census = LinkCensus::default();
     for (path, doc) in docs {
         for occ in occurrences(doc) {
@@ -373,6 +531,24 @@ pub fn link_census(index: &CorpusIndex, docs: &Docs) -> LinkCensus {
                 continue;
             }
             census.tally(index.resolve_linkpath(&occ.target, path).is_some());
+        }
+    }
+    for (path, bytes) in canvases {
+        let Some(slots) = std::str::from_utf8(bytes).ok().and_then(canvas::slots) else {
+            continue;
+        };
+        for slot in &slots.files {
+            if split_md(&slot.value).1 {
+                census.tally(docs.contains_key(&slot.value));
+            }
+        }
+        for slot in &slots.texts {
+            for link in scan_wikilinks(&slot.value) {
+                if addr::head_carries_root_separator(&link.target) {
+                    continue;
+                }
+                census.tally(index.resolve_linkpath(&link.target, path).is_some());
+            }
         }
     }
     census
@@ -414,7 +590,12 @@ impl Ctx<'_> {
         self.index.resolve_linkpath(spelling, from)
     }
 
-    fn decide(&self, src: &str, target: &str) -> Decision {
+    /// `src_after` is where the REFERRING file lands, which the caller owns:
+    /// a corpus member's is read off the mapping, and a `.canvas` carrier's is
+    /// the move applied to its path — a canvas is not in the mapping, so a
+    /// moving canvas asked from its old path would have its bare links judged
+    /// by the wrong directory.
+    fn decide(&self, src: &str, src_after: &str, target: &str) -> Decision {
         if addr::head_carries_root_separator(target) {
             return self.decide_rooted(src, target);
         }
@@ -422,12 +603,11 @@ impl Ctx<'_> {
             return Decision::Keep;
         };
         let expected = mapped(self.mapping, &pre);
-        let src_after = mapped(self.mapping, src);
         let (key, has_md) = split_md(target);
         let expected_key = strip_md(&expected);
 
         if key.contains('/') {
-            if self.after.resolve_linkpath(target, &src_after).as_deref() == Some(expected.as_str())
+            if self.after.resolve_linkpath(target, src_after).as_deref() == Some(expected.as_str())
             {
                 return Decision::Keep;
             }
@@ -459,7 +639,7 @@ impl Ctx<'_> {
             }
             return Decision::Ambiguous(candidates);
         }
-        if self.after.resolve_linkpath(target, &src_after).as_deref() == Some(expected.as_str()) {
+        if self.after.resolve_linkpath(target, src_after).as_deref() == Some(expected.as_str()) {
             return Decision::Keep;
         }
         Decision::Ambiguous(self.after.linkpath_candidates(target))
@@ -673,13 +853,22 @@ fn frontmatter_span(doc: &Document) -> Option<ByteSpan> {
         .map(|n| n.span.clone())
 }
 
-/// The wikilink grammar scanned over the frontmatter bytes: `[[target#frag|alias]]`,
-/// no newline inside. The body parse keeps frontmatter link-free by law, so
-/// this scan is the one owner of frontmatter link positions.
-fn frontmatter_links(raw: &str, fm: ByteSpan, out: &mut Vec<Occ>) {
-    let Some(text) = raw.get(fm.clone()) else {
-        return;
-    };
+/// One `[[target#frag|alias]]` a grammar scan found in plain text: the target
+/// slot's range WITHIN that text, and the target itself.
+struct ScannedLink {
+    range: std::ops::Range<usize>,
+    target: String,
+}
+
+/// The wikilink grammar scanned over text no parse owns: `[[target#frag|alias]]`,
+/// no newline inside, the slot ending at the fragment or the alias.
+///
+/// Two callers, for the same reason — the text they read yields no link node.
+/// The frontmatter block is link-free by the ground-truth law, and a canvas
+/// text node is a fragment of markdown inside a JSON string, not a page. An
+/// embed's `!` sits outside the `[[`, so it is found here as its target alone.
+fn scan_wikilinks(text: &str) -> Vec<ScannedLink> {
+    let mut out = Vec::new();
     let mut at = 0;
     while let Some(open) = text[at..].find("[[") {
         let start = at + open + 2;
@@ -689,16 +878,29 @@ fn frontmatter_links(raw: &str, fm: ByteSpan, out: &mut Vec<Occ>) {
         let inner = &text[start..start + close];
         if !inner.contains('\n') && !inner.starts_with('[') {
             let len = inner.find(['#', '|']).unwrap_or(inner.len());
-            let target = &inner[..len];
-            if !target.is_empty() {
-                out.push(Occ {
-                    slot: fm.start + start..fm.start + start + len,
-                    target: target.to_owned(),
-                    kind: RefKind::Frontmatter,
+            if len > 0 {
+                out.push(ScannedLink {
+                    range: start..start + len,
+                    target: inner[..len].to_owned(),
                 });
             }
         }
         at = start + close + 2;
+    }
+    out
+}
+
+/// The frontmatter block's wikilinks, at their positions in the whole page.
+fn frontmatter_links(raw: &str, fm: ByteSpan, out: &mut Vec<Occ>) {
+    let Some(text) = raw.get(fm.clone()) else {
+        return;
+    };
+    for link in scan_wikilinks(text) {
+        out.push(Occ {
+            slot: fm.start + link.range.start..fm.start + link.range.end,
+            target: link.target,
+            kind: RefKind::Frontmatter,
+        });
     }
 }
 
@@ -790,6 +992,41 @@ mod tests {
         }
     }
 
+    /// A plan over a corpus with no canvas carrier — every gate about the four
+    /// markdown classes.
+    fn plan_md(index: &CorpusIndex, docs: &Docs, spec: &MoveSpec) -> MovePlan {
+        plan(index, docs, &Canvases::new(), spec)
+    }
+
+    fn canvases(files: &[(&str, &str)]) -> Canvases {
+        files
+            .iter()
+            .map(|(path, raw)| ((*path).to_owned(), raw.as_bytes().to_vec()))
+            .collect()
+    }
+
+    /// A canvas travels with the directory it sits in, so its bare links are
+    /// judged from the directory it will sit in — not the one it left. Here
+    /// `[[x]]` keeps naming the twin in its own folder across the move; asked
+    /// from the canvas's OLD path the resolver's tie-break would fall to the
+    /// shorter `x.md` at the root and the whole move would refuse as ambiguous.
+    #[test]
+    fn a_moving_canvas_is_asked_from_the_directory_it_lands_in() {
+        let (index, docs) = corpus(&[("a/x.md", "# X\n"), ("x.md", "# Root X\n")]);
+        let carriers = canvases(&[(
+            "a/atlas.canvas",
+            "{\"nodes\":[{\"type\":\"text\",\"text\":\"see [[x]]\"}]}",
+        )]);
+        let plan = plan(&index, &docs, &carriers, &spec("a", "b", true));
+        assert!(
+            plan.ambiguous.is_empty(),
+            "the link still names the twin beside it: {plan:#?}"
+        );
+        assert!(plan.canvases.is_empty(), "nothing to rewrite: {plan:#?}");
+        assert_eq!(plan.before, plan.after);
+        assert_eq!(plan.after.dangling, 0);
+    }
+
     fn rewrites_of<'a>(plan: &'a MovePlan, path: &str) -> &'a FileRewrite {
         plan.rewrites
             .iter()
@@ -805,7 +1042,7 @@ mod tests {
             ("a/x.md", "# X\n"),
             ("notes/fan.md", "see [[x]] and [[x#Top|alias]]\n"),
         ]);
-        let plan = plan(&index, &docs, &spec("a/x.md", "b/x.md", false));
+        let plan = plan_md(&index, &docs, &spec("a/x.md", "b/x.md", false));
         assert!(plan.rewrites.is_empty(), "{plan:#?}");
         assert_eq!(
             plan.renames,
@@ -826,7 +1063,7 @@ mod tests {
                 "see [[x]] and ![[x#Top|alias]] and [[X.md]]\n",
             ),
         ]);
-        let plan = plan(&index, &docs, &spec("a/x.md", "a/y.md", false));
+        let plan = plan_md(&index, &docs, &spec("a/x.md", "a/y.md", false));
         let file = rewrites_of(&plan, "notes/fan.md");
         let raw = &docs["notes/fan.md"].raw;
         assert_eq!(
@@ -851,7 +1088,7 @@ mod tests {
                 "| tool | note |\n|---|---|\n| [[browsers/parsez/PARSEZ\\|parsez]] | cell |\n",
             ),
         ]);
-        let plan = plan(
+        let plan = plan_md(
             &index,
             &docs,
             &spec("browsers/parsez", "tools/parsez", true),
@@ -894,7 +1131,7 @@ mod tests {
                 "[[duckdb/tips]] · [[knowledge/duckdb/DUCKDB]] · [[domains/knowledge/duckdb/tips]] · [[tips]]\n",
             ),
         ]);
-        let plan = plan(
+        let plan = plan_md(
             &index,
             &docs,
             &spec("domains/knowledge/duckdb", "domains/data/duckdb", true),
@@ -923,7 +1160,7 @@ mod tests {
             ("domains/legacy/duckdb/tips.md", "# Old tips\n"),
             ("synthesis/db.md", "[[knowledge/duckdb/tips]]\n"),
         ]);
-        let plan = plan(
+        let plan = plan_md(
             &index,
             &docs,
             &spec("domains/knowledge/duckdb", "domains/data/duckdb", true),
@@ -945,7 +1182,7 @@ mod tests {
             ("b/y.md", "# Y\n"),
             ("notes/fan.md", "see [[x]]\n"),
         ]);
-        let plan = plan(&index, &docs, &spec("a/x.md", "a/y.md", false));
+        let plan = plan_md(&index, &docs, &spec("a/x.md", "a/y.md", false));
         assert_eq!(plan.ambiguous.len(), 1, "{plan:#?}");
         let amb = &plan.ambiguous[0];
         assert_eq!(amb.source, "notes/fan.md");
@@ -966,7 +1203,7 @@ mod tests {
             ("far/x.md", "# Other X\n"),
             ("far/fan.md", "see [[x]]\n"),
         ]);
-        let plan = plan(&index, &docs, &spec("far/x.md", "zz/x.md", false));
+        let plan = plan_md(&index, &docs, &spec("far/x.md", "zz/x.md", false));
         assert_eq!(plan.ambiguous.len(), 1, "{plan:#?}");
         assert_eq!(plan.ambiguous[0].source, "far/fan.md");
         assert_eq!(
@@ -984,7 +1221,7 @@ mod tests {
             ("far/x.md", "# Other X\n"),
             ("a/fan.md", "see [[x]]\n"),
         ]);
-        let plan = plan(&index, &docs, &spec("a/x.md", "b/x.md", false));
+        let plan = plan_md(&index, &docs, &spec("a/x.md", "b/x.md", false));
         assert!(plan.ambiguous.is_empty(), "{plan:#?}");
         assert!(plan.rewrites.is_empty(), "{plan:#?}");
     }
@@ -999,7 +1236,7 @@ mod tests {
             ("u/readme.md", "# R\n"),
             ("t/fan.md", "see [[readme]] and [[x]]\n"),
         ]);
-        let plan = plan(&index, &docs, &spec("a/x.md", "b/x.md", false));
+        let plan = plan_md(&index, &docs, &spec("a/x.md", "b/x.md", false));
         assert!(plan.ambiguous.is_empty(), "{plan:#?}");
         assert!(plan.rewrites.is_empty(), "{plan:#?}");
     }
@@ -1015,7 +1252,7 @@ mod tests {
                 "---\nowner: \"[[zt]]\"\nseat: [[people/zt|ZT]]\nlist:\n  - \"[[zt#Bio]]\"\nsource: \"wiki:people/zt.md#Bio\"\nother: \"elsewhere:people/zt.md\"\n---\n# Card\n",
             ),
         ]);
-        let plan = plan(
+        let plan = plan_md(
             &index,
             &docs,
             &spec("people/zt.md", "domains/people/zt-user.md", false),
@@ -1052,7 +1289,7 @@ mod tests {
             ("other.md", "# Other\n"),
             ("notes/pinner.md", pinner.as_str()),
         ]);
-        let plan = plan(&index, &docs, &spec("a/x.md", "b/z.md", false));
+        let plan = plan_md(&index, &docs, &spec("a/x.md", "b/z.md", false));
         let file = rewrites_of(&plan, "notes/pinner.md");
         let lock_edit = file.lock.as_ref().expect("the lock is re-rendered");
         assert_eq!(lock_edit.rows, vec![("a/x".to_owned(), "b/z".to_owned())]);
@@ -1074,7 +1311,7 @@ mod tests {
         ]);
         let mut s = spec("a/x.md", "a/y.md", false);
         s.immutable = vec!["sources".to_owned()];
-        let plan = plan(&index, &docs, &s);
+        let plan = plan_md(&index, &docs, &s);
         assert_eq!(plan.immutable.len(), 1, "{plan:#?}");
         let skip = &plan.immutable[0];
         assert_eq!(skip.path, "sources/git/rec.md");
@@ -1107,7 +1344,7 @@ mod tests {
         ]);
         let mut s = spec("a/x.md", "a/y.md", false);
         s.immutable = vec!["sources".to_owned()];
-        let plan = plan(&index, &docs, &s);
+        let plan = plan_md(&index, &docs, &s);
 
         assert_eq!(plan.immutable.len(), 1, "{plan:#?}");
         let skip = &plan.immutable[0];
@@ -1133,7 +1370,7 @@ mod tests {
     #[test]
     fn a_dangling_link_is_left_alone() {
         let (index, docs) = corpus(&[("a/x.md", "# X\n"), ("notes/fan.md", "see [[ghost]]\n")]);
-        let plan = plan(&index, &docs, &spec("a/x.md", "b/x.md", false));
+        let plan = plan_md(&index, &docs, &spec("a/x.md", "b/x.md", false));
         assert!(plan.rewrites.is_empty());
         assert_eq!(plan.before.dangling, 1);
         assert_eq!(plan.after.dangling, 1);

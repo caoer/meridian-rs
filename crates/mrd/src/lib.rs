@@ -369,7 +369,9 @@ usage:
                            and embeds (the target slot only; fragment and
                            alias kept), frontmatter wikilinks and rooted
                            strings naming this root, meridian-lock object:
-                           rows. A reference that still resolves is
+                           rows, and .canvas node slots (a file node's path
+                           and a text node's wikilinks; every other byte of
+                           the JSON kept). A reference that still resolves is
                            byte-untouched; a rewrite keeps the class the
                            author wrote (full path / shortest unique suffix /
                            bare name). NEW ending in `/` or naming an existing
@@ -640,11 +642,11 @@ options:
   --env KEY=VALUE          (run) supply one declared env entry (repeatable).
   --immutable PREFIX       (move) a file under PREFIX keeps every word its
                            author wrote; each breaking wikilink, embed,
-                           frontmatter link or rooted string is reported with
-                           its line, old and new spelling (repeatable). Its
-                           meridian-lock object: rows are repointed there as
-                           anywhere else — the path only, never a re-pin. OLD
-                           or NEW under PREFIX refuses.
+                           frontmatter link, rooted string or canvas node slot
+                           is reported with its line, old and new spelling
+                           (repeatable). Its meridian-lock object: rows are
+                           repointed there as anywhere else — the path only,
+                           never a re-pin. OLD or NEW under PREFIX refuses.
   --dry                    (run) starlark: evaluate hermetically, print full
                            effect set, apply nothing; bash: show block + caps,
                            refuse to exec.
