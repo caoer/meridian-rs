@@ -1707,6 +1707,22 @@ on every other caller of those functions (`run-plane.md` § Timing phases — re
  before and after (declared at `wire-contract.md`
  §18 row 12). A consumer polling `changes_seq` as a change monotone misses
  every CLI-lane write — diff by fingerprint (§4.7) instead.
+- **A lock row has no retire verb.** `mrd pin` mints a row; `mrd rm` removes
+ a page; nothing removes ONE row from a page's meridian-lock. A row the engine
+ cannot read, or one that attests nothing — a `^anchor` minted under a heading
+ serves the heading line alone (3–9 words; measured on home-wiki at
+ `ff883de40`: six such rows on five pages, fingerprints equal to the heading
+ spans) — can only leave by hand. home-wiki retired its six under a ruling
+ with a script (`decisions/2026-09-03-retire-vacuous-and-unreadable-lock-rows.md`
+ in that wiki; the script prints `mrd check --json` before and after). The
+ ask, with that receipt shape: `mrd unpin <PAGE> <TARGET>#<SELECTOR>` (or
+ `mrd pin --retire`) — remove exactly one row, matched on object + path +
+ fingerprint, refuse when absent or ambiguous (exit 1, nothing written),
+ leave the target's anchor in place (another row may address it), print the
+ removed row plus the page's pin counts before and after in `pin`'s receipt
+ shape (`--json` too), and let the `## Inputs` twin line be the caller's —
+ a twin drop is prose, not lock bytes. A `--dry` that shows the row is the
+ read half.
 
 Accepted residuals (attestation surfaces) — documented, not prevented. Full statements in
 `wire-contract.md` § Named residuals.
