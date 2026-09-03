@@ -608,8 +608,10 @@ event source is ENGINE-SIDE:
   budget. An idle-reaped engine keeps its watcher; events accumulate into a
   dirty set held by the registry; the next warm applies the dirty set —
   O(dirty), never O(corpus). The registry holds one parsed corpus per warm
-  workspace, so the warm set carries a resident-document budget
-  (`MRD_MAX_RESIDENT_DOCS`): a workspace LRU-evicted under budget pressure
+  workspace, so the warm set carries a resident budget
+  (`MRD_MAX_RESIDENT_BYTES`, estimated resident bytes — a fixed multiplier
+  over the warm set's raw markdown bytes): a workspace LRU-evicted under
+  budget pressure
   drops its WHOLE warm state, watcher included, and its next warm is a full
   walk, not O(dirty). The trade is deliberate — bounded residency outranks
   gap coverage for the least-recently-used workspace. Only a live

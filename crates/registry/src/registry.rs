@@ -3378,9 +3378,15 @@ mod engine_tests {
         );
     }
 
-    /// A workspace `home/<name>` seeded with two documents, registered and
-    /// warmed, every resident plane populated, and its LRU clock set to
-    /// `stamp` — the whole-second `register` stamp cannot order same-second
+    /// One workspace's estimated resident bytes as [`warm_ws_stamped`]
+    /// builds it: 8 raw markdown bytes ("# A\n" + "# B\n") at the 6x
+    /// parse blow-up multiplier.
+    const WS_ESTIMATE: u64 = 6 * 8;
+
+    /// A workspace `home/<name>` seeded with two documents (8 raw markdown
+    /// bytes — [`WS_ESTIMATE`] once warm), registered and warmed, every
+    /// resident plane populated, and its LRU clock set to `stamp` — the
+    /// whole-second `register` stamp cannot order same-second
     /// registrations, so the budget tests set the clock directly.
     fn warm_ws_stamped(reg: &Registry, home: &Path, name: &str, stamp: u64) -> PathBuf {
         let ws = home.join(name);
@@ -3412,12 +3418,12 @@ mod engine_tests {
         canonical
     }
 
-    /// The resident-document budget: serving more resident docs than
-    /// `MRD_MAX_RESIDENT_DOCS` admits sheds warm workspaces LRU-first —
-    /// oldest `last_use` first — until the warm set fits. An eviction is
-    /// TOTAL for its workspace: engine, memo, ring, sql handle, module
-    /// cache, pre-warm signature, and the §6.4 feed all drop; only the
-    /// registration survives, so the next `hello` rebuilds from disk.
+    /// The resident budget: a warm set whose estimated resident bytes (6x
+    /// raw markdown bytes) exceed `MRD_MAX_RESIDENT_BYTES` sheds warm
+    /// workspaces LRU-first — oldest `last_use` first — until it fits. An
+    /// eviction is TOTAL for its workspace: engine, memo, ring, sql handle,
+    /// module cache, pre-warm signature, and the §6.4 feed all drop; only
+    /// the registration survives, so the next `hello` rebuilds from disk.
     #[test]
     fn budget_sweep_evicts_lru_first_until_the_warm_set_fits() {
         let home = tempfile::tempdir().unwrap();
@@ -3426,8 +3432,9 @@ mod engine_tests {
         let w2 = warm_ws_stamped(&reg, home.path(), "w2", 200);
         let w3 = warm_ws_stamped(&reg, home.path(), "w3", 300);
 
-        // 6 resident docs against a budget of 4: exactly the oldest goes.
-        let evicted = reg.reap_to_budget(4);
+        // Three workspaces of estimated 48 bytes each against a budget that
+        // admits exactly two: the oldest goes.
+        let evicted = reg.reap_to_budget(2 * WS_ESTIMATE);
         assert_eq!(
             evicted,
             vec![w1.clone()],
@@ -3466,14 +3473,17 @@ mod engine_tests {
             "the registration survives — a later hello rebuilds the state"
         );
 
-        let resident: usize = reg
+        let estimated: u64 = reg
             .engines
             .read()
             .unwrap()
             .values()
-            .map(|e| e.docs.len())
+            .map(|e| e.docs.values().map(|d| d.raw.len() as u64).sum::<u64>() * 6)
             .sum();
-        assert!(resident <= 4, "warm set within budget: {resident} docs");
+        assert!(
+            estimated <= 2 * WS_ESTIMATE,
+            "warm set within budget: {estimated} estimated bytes"
+        );
         for survivor in [&w2, &w3] {
             assert!(
                 reg.engines.read().unwrap().contains_key(*survivor),
@@ -3482,7 +3492,7 @@ mod engine_tests {
         }
 
         // Within budget: nothing to do. Zero: unbounded, never evicts.
-        assert!(reg.reap_to_budget(4).is_empty());
+        assert!(reg.reap_to_budget(2 * WS_ESTIMATE).is_empty());
         assert!(reg.reap_to_budget(0).is_empty());
     }
 
@@ -3500,9 +3510,9 @@ mod engine_tests {
 
         let guard = reg.subscribe(&w1);
 
-        // 4 resident docs against a budget of 2: the LRU is subscribed, so
-        // the next-oldest goes instead.
-        let evicted = reg.reap_to_budget(2);
+        // Two workspaces against a budget that admits one: the LRU is
+        // subscribed, so the next-oldest goes instead.
+        let evicted = reg.reap_to_budget(WS_ESTIMATE);
         assert_eq!(
             evicted,
             vec![w2.clone()],
@@ -3515,7 +3525,7 @@ mod engine_tests {
 
         // Only the subscribed workspace remains, still over budget: the
         // budget cannot be met — shed nothing, carry on.
-        let evicted = reg.reap_to_budget(1);
+        let evicted = reg.reap_to_budget(WS_ESTIMATE / 2);
         assert!(
             evicted.is_empty(),
             "an all-subscribed warm set cannot be forced under budget: {evicted:?}"
@@ -3524,7 +3534,7 @@ mod engine_tests {
 
         // Dropping the cursor restores mortality.
         drop(guard);
-        assert_eq!(reg.reap_to_budget(1), vec![w1.clone()]);
+        assert_eq!(reg.reap_to_budget(WS_ESTIMATE / 2), vec![w1.clone()]);
     }
 
     /// THE card receipt (quality gate 1): after an engine reap, members
