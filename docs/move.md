@@ -100,8 +100,11 @@ corpus member:
      corpus member, so a file node pointing at an image inside a moved
      directory follows it too. It is never re-minted to a shorter spelling: a
      canvas carries the full path Obsidian writes there.
-   - **`text` wikilinks take class 1's rules exactly**, resolved with the
-     canvas's own path as the source page, including the §5 ambiguity refusal.
+   - **`text` wikilinks take class 1's rules exactly**, with the canvas as
+     their source page — at its own path before the move and at its post-move
+     path after, since a canvas inside a moved directory travels with it and
+     `pick_source_relative` (§5) answers by folder. The §5 ambiguity refusal
+     reaches them like any other bare link.
      They are found by the wikilink grammar scanned over the node's text — the
      scan class 2 runs inside frontmatter — because a text node is a fragment
      of markdown, not a page the corpus parse owns. A `[[…]]` inside a fence
@@ -165,11 +168,12 @@ wikilink or embed, no frontmatter wikilink, no rooted string, no `.canvas` node
 slot in it is rewritten; each one that would break is reported instead — path,
 line, kind, the spelling as written, the spelling the door would have minted —
 and left as written, so the operator can file it where their own law keeps such
-things. A canvas node is authored content, drawn by hand in Obsidian, so the
-prefix freezes it as it freezes prose — the lock row of §4 class 4 is the one
-exception, and it is engine bookkeeping, not authorship.
-OLD or NEW under an immutable prefix refuses: a move into, out of, or across a
-frozen tree is a write to it.
+things. OLD or NEW under an immutable prefix refuses: a move into, out of, or
+across a frozen tree is a write to it.
+
+A canvas node is authored content — drawn by hand in Obsidian — so the prefix
+freezes it as it freezes prose; the lock row below is the one exception, and it
+is engine bookkeeping, not authorship.
 
 **A `meridian-lock` row's `object:` is the one thing the prefix does not
 freeze.** A lock row is engine bookkeeping, not authored content: the claim it
@@ -258,12 +262,15 @@ would have left the origin gone with no command that converges.
   link projection is md-only (`wire §12.1`).
 - **Markdown-link URLs** (`[t](root:path)`, `addr §9` position 2) and prose
   mentions of a path are not addresses this door reads.
-- **`.base` files are not parsed.** An Obsidian Base is a YAML view whose
-  filters select notes by folder path, so a moved directory leaves its views
-  selecting nothing — and, unlike a canvas, silently: a Base that matches no
-  note renders as an empty table, not as a broken link. There is no address in
-  it this door owns, and inventing one would mean interpreting a query
-  language. Sweep them by hand after a move:
+- **`.base` files are not this door's.** The engine reads them — `view` parses
+  a Base into the `base` relations (`base-projection.md`) — but the move door
+  rewrites nothing in one. An Obsidian Base is a YAML view whose filters select
+  notes by folder path, so a moved directory leaves its views selecting
+  nothing, and, unlike a canvas, silently: a Base that matches no note renders
+  as an empty table, not as a broken link. The path inside a filter expression
+  is an argument to a query language, not an address this door owns, and
+  rewriting it would mean interpreting that language. Sweep them by hand after
+  a move:
 
   ```text
   grep -rln 'domains/knowledge/meridian' --include='*.base' .
