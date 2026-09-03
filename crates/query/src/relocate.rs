@@ -838,6 +838,46 @@ mod tests {
         assert_eq!(plan.after.dangling, 0);
     }
 
+    /// A link inside a markdown table cell escapes its alias pipe (`\|`, the
+    /// form Obsidian mints there). It is one link like any other: the census
+    /// counts it resolved on both sides, and the rewrite lands on the path
+    /// slot alone — the escape byte and the alias are untouched.
+    #[test]
+    fn a_table_cell_link_is_rewritten_before_its_escaped_pipe() {
+        let (index, docs) = corpus(&[
+            ("browsers/parsez/PARSEZ.md", "# PARSEZ\n"),
+            (
+                "tools/index.md",
+                "| tool | note |\n|---|---|\n| [[browsers/parsez/PARSEZ\\|parsez]] | cell |\n",
+            ),
+        ]);
+        let plan = plan(
+            &index,
+            &docs,
+            &spec("browsers/parsez", "tools/parsez", true),
+        );
+        let file = rewrites_of(&plan, "tools/index.md");
+        assert_eq!(
+            file.apply(&docs["tools/index.md"].raw),
+            "| tool | note |\n|---|---|\n| [[tools/parsez/PARSEZ\\|parsez]] | cell |\n"
+        );
+        assert_eq!(file.count(RefKind::Wikilink), 1);
+        assert_eq!(
+            (plan.before, plan.after),
+            (
+                LinkCensus {
+                    resolved: 1,
+                    dangling: 0
+                },
+                LinkCensus {
+                    resolved: 1,
+                    dangling: 0
+                }
+            ),
+            "the escaped form is a link the census counts, never a dangler"
+        );
+    }
+
     /// A partial path becomes the shortest unique suffix; a full path stays
     /// full; a bare link stays bare; a partial path that still resolves is
     /// untouched.
