@@ -176,12 +176,12 @@ pub struct Config {
     /// three client budgets that cap it. Fixtures raise this so a `TempDir`
     /// outlives a parked builder.
     pub drain_cold_builds: Duration,
-    /// Ceiling on resident parsed documents summed across warm workspace
-    /// engines — the [`Registry::reap_to_budget`] sweep's budget. `0`
-    /// disables the budget (unbounded warm set). See
-    /// [`crate::DEFAULT_MAX_RESIDENT_DOCS`] for the unit, the calibration,
-    /// and the proxy's limit.
-    pub max_resident_docs: u64,
+    /// Ceiling on ESTIMATED resident bytes summed across warm workspace
+    /// engines ([`crate::RESIDENT_BYTES_PER_RAW_BYTE`] times their raw
+    /// markdown bytes) — the [`Registry::reap_to_budget`] sweep's budget.
+    /// `0` disables the budget (unbounded warm set). See
+    /// [`crate::DEFAULT_MAX_RESIDENT_BYTES`] for the calibration.
+    pub max_resident_bytes: u64,
 }
 
 impl Config {
@@ -209,7 +209,7 @@ impl Config {
             // Production never parks: an unset floor is 0.
             activity_park: None,
             drain_cold_builds: crate::DEFAULT_DRAIN_COLD_BUILDS,
-            max_resident_docs: crate::DEFAULT_MAX_RESIDENT_DOCS,
+            max_resident_bytes: crate::DEFAULT_MAX_RESIDENT_BYTES,
         }
     }
 
@@ -241,8 +241,8 @@ impl Config {
         if let Some(raw) = std::env::var_os(IDLE_EXIT_ENV) {
             config.idle_exit = parse_idle_exit(&raw)?;
         }
-        if let Some(raw) = std::env::var_os(MAX_RESIDENT_DOCS_ENV) {
-            config.max_resident_docs = parse_max_resident_docs(&raw)?;
+        if let Some(raw) = std::env::var_os(MAX_RESIDENT_BYTES_ENV) {
+            config.max_resident_bytes = parse_max_resident_bytes(&raw)?;
         }
         Ok(config)
     }
@@ -381,15 +381,16 @@ fn parse_idle_exit(raw: &std::ffi::OsStr) -> io::Result<Option<Duration>> {
         })
 }
 
-/// The environment variable that overrides [`Config::max_resident_docs`], in
-/// whole DOCUMENTS — the unit the budget is defined in
-/// ([`crate::DEFAULT_MAX_RESIDENT_DOCS`], which carries the calibration).
-/// `0` disables the budget (unbounded warm set).
+/// The environment variable that overrides [`Config::max_resident_bytes`],
+/// in whole ESTIMATED RESIDENT BYTES — the unit the budget is defined in
+/// ([`crate::DEFAULT_MAX_RESIDENT_BYTES`], which carries the calibration;
+/// the estimate is [`crate::RESIDENT_BYTES_PER_RAW_BYTE`] times raw markdown
+/// bytes). `0` disables the budget (unbounded warm set).
 ///
 /// Read at exactly one site, [`Config::resolve`].
-pub const MAX_RESIDENT_DOCS_ENV: &str = "MRD_MAX_RESIDENT_DOCS";
+pub const MAX_RESIDENT_BYTES_ENV: &str = "MRD_MAX_RESIDENT_BYTES";
 
-/// Parse [`MAX_RESIDENT_DOCS_ENV`]'s value as a whole document count; `0` is
+/// Parse [`MAX_RESIDENT_BYTES_ENV`]'s value as a whole byte count; `0` is
 /// the documented unbounded spelling, not a failure.
 ///
 /// Refuses loudly on anything else, naming the variable and echoing the bytes
@@ -398,17 +399,17 @@ pub const MAX_RESIDENT_DOCS_ENV: &str = "MRD_MAX_RESIDENT_DOCS";
 // `{:?}` on the `OsStr` for the same reason as `parse_drain_cold_builds`:
 // the message exists to SHOW a value the parser could not read.
 #[allow(clippy::unnecessary_debug_formatting)]
-fn parse_max_resident_docs(raw: &std::ffi::OsStr) -> io::Result<u64> {
+fn parse_max_resident_bytes(raw: &std::ffi::OsStr) -> io::Result<u64> {
     raw.to_str()
         .and_then(|s| s.trim().parse::<u64>().ok())
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "{MAX_RESIDENT_DOCS_ENV} must be a whole number of documents (0 disables \
-                     the budget), got {:?} — unset it for the {} default",
+                    "{MAX_RESIDENT_BYTES_ENV} must be a whole number of estimated resident \
+                     bytes (0 disables the budget), got {:?} — unset it for the {} default",
                     raw,
-                    crate::DEFAULT_MAX_RESIDENT_DOCS
+                    crate::DEFAULT_MAX_RESIDENT_BYTES
                 ),
             )
         })
@@ -664,7 +665,7 @@ impl RunningServer {
             config.idle_threshold,
             config.reap_interval,
             config.idle_exit,
-            config.max_resident_docs,
+            config.max_resident_bytes,
             exit_requested.clone(),
         );
         let prewarm = spawn_prewarm(
@@ -890,7 +891,7 @@ fn accept_loop(
 }
 
 /// Spawn the reaper: wake every [`REAP_TICK`], and once `reap_interval` has
-/// elapsed drop idle entries, then evict over the resident-document budget
+/// elapsed drop idle entries, then evict over the resident budget
 /// ([`Registry::reap_to_budget`] — the idle pass first, so the budget sweep
 /// only pays for what idleness alone could not shed). Exits promptly on the
 /// shutdown flag.
@@ -900,7 +901,7 @@ fn spawn_reaper(
     idle_threshold: Duration,
     reap_interval: Duration,
     idle_exit: Option<Duration>,
-    max_resident_docs: u64,
+    max_resident_bytes: u64,
     exit_requested: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
@@ -917,11 +918,11 @@ fn spawn_reaper(
             if !reaped.is_empty() {
                 eprintln!("registry: idle-reaped {} workspace(s)", reaped.len());
             }
-            let evicted = registry.reap_to_budget(max_resident_docs);
+            let evicted = registry.reap_to_budget(max_resident_bytes);
             if !evicted.is_empty() {
                 eprintln!(
-                    "registry: budget-evicted {} workspace(s) — resident documents over \
-                     {max_resident_docs}",
+                    "registry: budget-evicted {} workspace(s) — estimated resident bytes over \
+                     {max_resident_bytes}",
                     evicted.len()
                 );
             }
@@ -3314,31 +3315,31 @@ mod socket_placement_tests {
         }
     }
 
-    /// The resident-doc budget knob: `0` is the documented unbounded
-    /// spelling, a whole number is the budget, and anything else REFUSES —
-    /// never falls back to the default it was set to escape (the
-    /// [`parse_idle_exit`] law).
+    /// The resident-budget knob: `0` is the documented unbounded spelling,
+    /// a whole number of estimated resident bytes is the budget, and
+    /// anything else REFUSES — never falls back to the default it was set
+    /// to escape (the [`parse_idle_exit`] law).
     #[test]
-    fn a_malformed_max_resident_docs_knob_refuses_and_names_what_it_saw() {
-        use super::{MAX_RESIDENT_DOCS_ENV, parse_max_resident_docs};
+    fn a_malformed_max_resident_bytes_knob_refuses_and_names_what_it_saw() {
+        use super::{MAX_RESIDENT_BYTES_ENV, parse_max_resident_bytes};
         use std::ffi::OsStr;
 
         assert_eq!(
-            parse_max_resident_docs(OsStr::new("0")).unwrap(),
+            parse_max_resident_bytes(OsStr::new("0")).unwrap(),
             0,
             "0 is the unbounded spelling"
         );
         assert_eq!(
-            parse_max_resident_docs(OsStr::new("150000")).unwrap(),
-            150_000
+            parse_max_resident_bytes(OsStr::new("5368709120")).unwrap(),
+            5 * 1024 * 1024 * 1024
         );
-        for bad in ["150k", "", "unbounded", "-1", "1.5"] {
-            let err = parse_max_resident_docs(OsStr::new(bad))
-                .expect_err(&format!("{bad:?} is not a whole document count"));
+        for bad in ["5G", "", "unbounded", "-1", "1.5"] {
+            let err = parse_max_resident_bytes(OsStr::new(bad))
+                .expect_err(&format!("{bad:?} is not a whole byte count"));
             assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
             let msg = err.to_string();
             assert!(
-                msg.contains(MAX_RESIDENT_DOCS_ENV),
+                msg.contains(MAX_RESIDENT_BYTES_ENV),
                 "the refusal names the variable: {msg}"
             );
             assert!(

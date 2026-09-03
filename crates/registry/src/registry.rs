@@ -2430,14 +2430,21 @@ impl Registry {
     }
 
     /// Budget sweep: evict whole warm workspaces, LRU by `last_use` oldest
-    /// first, until the SUM of resident parsed documents across warm engines
-    /// is within `max_resident_docs` (`0`: unbounded, never evicts). Runs
-    /// beside the idle reap on the reaper thread — the idle reap demotes
-    /// what nobody uses; this sweep bounds what everybody uses, because a
-    /// fleet-touched workspace never reaches the idle horizon and the warm
-    /// set otherwise grows by one parsed corpus per workspace served.
-    /// Documents are the unit ([`crate::DEFAULT_MAX_RESIDENT_DOCS`] carries
-    /// the calibration and the proxy's limit).
+    /// first, until the warm set's ESTIMATED resident bytes —
+    /// [`crate::RESIDENT_BYTES_PER_RAW_BYTE`] times each engine's raw
+    /// markdown bytes — are within `max_resident_bytes` (`0`: unbounded,
+    /// never evicts). Runs beside the idle reap on the reaper thread — the
+    /// idle reap demotes what nobody uses; this sweep bounds what everybody
+    /// uses, because a fleet-touched workspace never reaches the idle
+    /// horizon and the warm set otherwise grows by one parsed corpus per
+    /// workspace served.
+    ///
+    /// Estimated bytes, not documents: per-document resident cost varies
+    /// 67x with document size, so a document budget is defeated by exactly
+    /// the corpus shapes it must bound; the multiplier is the measured
+    /// worst-case parse blow-up (shapes span 1.54x to 6.01x of raw bytes),
+    /// so the estimate never under-counts
+    /// ([`crate::DEFAULT_MAX_RESIDENT_BYTES`] carries the calibration).
     ///
     /// An eviction is TOTAL where the idle reap DEMOTES: engine, resident
     /// memo, ring, sql handle, module cache, pre-warm signature, and the
@@ -2456,26 +2463,30 @@ impl Registry {
     /// (evicting a subscribed ring would fork the per-workspace seq, §4.7).
     /// When every warm workspace is subscribed the budget cannot be met:
     /// log and carry on, never panic.
-    pub fn reap_to_budget(&self, max_resident_docs: u64) -> Vec<PathBuf> {
-        if max_resident_docs == 0 {
+    pub fn reap_to_budget(&self, max_resident_bytes: u64) -> Vec<PathBuf> {
+        if max_resident_bytes == 0 {
             return Vec::new();
         }
-        // Doc-count snapshot OUTSIDE the map guards: an engine that warms
+        // Estimate snapshot OUTSIDE the map guards: an engine that warms
         // between this read and the decision below is missed by one sweep
         // and caught by the next — cheaper than nesting the engines guard
-        // inside `inner`, which no other path does.
+        // inside `inner`, which no other path does. O(docs) per sweep: the
+        // raw bytes ride each parsed document already in memory.
         let mut resident: Vec<(PathBuf, u64)> = {
             let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
             engines
                 .iter()
-                .map(|(key, engine)| (key.clone(), engine.docs.len() as u64))
+                .map(|(key, engine)| {
+                    let raw: u64 = engine.docs.values().map(|doc| doc.raw.len() as u64).sum();
+                    (key.clone(), raw * crate::RESIDENT_BYTES_PER_RAW_BYTE)
+                })
                 .collect()
         };
-        let total: u64 = resident.iter().map(|(_, docs)| docs).sum();
-        if total <= max_resident_docs {
+        let total: u64 = resident.iter().map(|(_, estimated)| estimated).sum();
+        if total <= max_resident_bytes {
             return Vec::new();
         }
-        let mut over = total - max_resident_docs;
+        let mut over = total - max_resident_bytes;
         // Decide + ring removal in ONE critical section, the reap's own
         // discipline (`inner` EXCLUSIVE, then `rings`): an adopter cannot
         // stamp `last_use` mid-decision, and a sub claim cannot land
@@ -2487,7 +2498,7 @@ impl Registry {
             // and sorts oldest.
             resident.sort_by_key(|(key, _)| map.get(key).map_or(0, Slot::last_use));
             let mut victims = Vec::new();
-            for (key, docs) in resident {
+            for (key, estimated) in resident {
                 if over == 0 {
                     break;
                 }
@@ -2495,14 +2506,14 @@ impl Registry {
                     continue;
                 }
                 rings.remove(&key);
-                over = over.saturating_sub(docs);
+                over = over.saturating_sub(estimated);
                 victims.push(key);
             }
             if over > 0 {
                 eprintln!(
-                    "registry: resident-document budget ({max_resident_docs}) cannot be met — \
-                     every remaining warm workspace holds a live sub cursor ({over} documents \
-                     over)"
+                    "registry: resident budget ({max_resident_bytes} estimated bytes) cannot \
+                     be met — every remaining warm workspace holds a live sub cursor ({over} \
+                     estimated bytes over)"
                 );
             }
             victims
@@ -3486,7 +3497,7 @@ mod engine_tests {
         );
         for survivor in [&w2, &w3] {
             assert!(
-                reg.engines.read().unwrap().contains_key(*survivor),
+                reg.engines.read().unwrap().contains_key(survivor),
                 "younger workspaces stay warm"
             );
         }

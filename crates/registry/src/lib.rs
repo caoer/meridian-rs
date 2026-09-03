@@ -19,8 +19,8 @@
 //! the reap DEMOTES — warm engine, ring, read-mint ledger, and sql handle drop;
 //! the entry, the §6.4 event feed, and the resident memo survive (merkle-spec
 //! §6.4 registration-lifetime law — the feed's dirty set is what makes the next
-//! warm O(dirty)). The resident-document budget
-//! ([`DEFAULT_MAX_RESIDENT_DOCS`], [`Registry::reap_to_budget`]) bounds what
+//! warm O(dirty)). The resident budget
+//! ([`DEFAULT_MAX_RESIDENT_BYTES`], [`Registry::reap_to_budget`]) bounds what
 //! idleness cannot: over budget, the least-recently-used workspaces are
 //! EVICTED whole — feed and memo included, a full-walk re-warm being the
 //! deliberate trade — while the registration still survives. Drawer sentinel
@@ -61,7 +61,7 @@ pub use feed::{FeedStats, RescanCause};
 pub use protocol::{DenyKind, Request, Response, WorkspaceEntry};
 pub use registry::{RegisterOutcome, Registry, ResolveOutcome};
 pub use server::{
-    Config, DRAIN_COLD_BUILDS_ENV, IDLE_EXIT_ENV, MAX_RESIDENT_DOCS_ENV, RunningServer,
+    Config, DRAIN_COLD_BUILDS_ENV, IDLE_EXIT_ENV, MAX_RESIDENT_BYTES_ENV, RunningServer,
     ServeOutcome, default_socket_path, in_process_registry, published_socket_path,
     reachable_socket_path, serve_lines, socket_path_for_cache_root, socket_path_under_home,
     socket_pointer_path,
@@ -81,26 +81,32 @@ pub const DEFAULT_IDLE_REAP: Duration = Duration::from_secs(60 * 60);
 #[allow(clippy::duration_suboptimal_units)]
 pub const DEFAULT_REAP_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Resident-document budget: the ceiling on the SUM of parsed documents
-/// across every warm workspace engine. The budget sweep
-/// ([`Registry::reap_to_budget`]) runs beside the idle reap and evicts whole
-/// workspaces LRU-first until the warm set fits; `0` is unbounded.
+/// Resident-budget multiplier: estimated resident bytes per raw markdown
+/// byte. The parse blow-up measured across corpus shapes spans 1.54x to
+/// 6.01x of raw bytes; 6 is the worst case, so the estimate never
+/// under-counts and the bound holds for every shape.
+pub const RESIDENT_BYTES_PER_RAW_BYTE: u64 = 6;
+
+/// Resident budget: the ceiling on ESTIMATED resident bytes across every
+/// warm workspace engine, where the estimate is
+/// [`RESIDENT_BYTES_PER_RAW_BYTE`] times the warm set's raw markdown bytes.
+/// The budget sweep ([`Registry::reap_to_budget`]) runs beside the idle reap
+/// and evicts whole workspaces LRU-first until the warm set fits; `0` is
+/// unbounded.
 ///
-/// The unit is DOCUMENTS because resident cost tracks document count on real
-/// markdown: ~26 KB per resident document, corroborated on two differently
-/// shaped real corpora. The true driver is NODE count — every node carries
-/// its whole heading-chain hpath plus a rev string — and documents stand in
-/// only because real markdown holds a stable nodes-per-doc distribution. A
-/// corpus of very few, very large documents is the shape that defeats the
-/// proxy: few docs, many nodes, a warm set far heavier than the budget
-/// predicts.
+/// Bytes, not documents: per-document resident cost varies 67x with
+/// document size (a real root of 85 huge documents costs ~628 KB per
+/// document; small synthetic documents ~9 KB), so a document budget is
+/// defeated by exactly the corpus shapes it must bound. Raw bytes scale
+/// with what parsing actually allocates, and the worst-case multiplier
+/// keeps the estimate an upper bound.
 ///
-/// At 150,000 documents the warm set costs ~3.8 GB, which admits the largest
-/// single workspace on the measuring fleet (a sessions root at ~50,000
-/// documents) plus a working set of roughly a dozen worktrees, and holds the
-/// daemon well under the 10 GB line at which an unbounded warm set forces
-/// operator restarts.
-pub const DEFAULT_MAX_RESIDENT_DOCS: u64 = 150_000;
+/// 5 GiB estimated admits the measuring fleet's real working set — a
+/// sessions root at ~304 MB of raw markdown (~1.8 GiB estimated), a main
+/// wiki checkout (~420 MiB estimated), and roughly eight worktrees (~235
+/// MiB estimated each) — with headroom, while holding the daemon far under
+/// the 10 GB line at which an unbounded warm set forces operator restarts.
+pub const DEFAULT_MAX_RESIDENT_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 
 /// Idle-exit horizon (G11): no client request for this long ⇒ shut down.
 /// Detached daemons are reparented to init; without this they are immortal.
