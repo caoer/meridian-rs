@@ -81,7 +81,7 @@ Four reference classes, all inside the caller's root:
    The block is re-rendered by the lock crate's canonical writer, which is
    byte-stable for every engine-written block. Pins made FROM a moved page
    travel with it inside its own bytes; anchors minted IN a moved page are
-   untouched.
+   untouched. This is the one class an immutable prefix does not freeze (§6).
 
 **The would-break law.** A reference is rewritten iff the address owner's
 answer changes: `CorpusIndex::resolve_linkpath` (`wire §4.5` stage 1; the
@@ -123,13 +123,26 @@ the corpus's standing state, not this door's finding.
 
 ## §6 `--immutable PREFIX` (repeatable)
 
-A file under an immutable prefix is never written. Every reference in it that
-would break is reported — path, line, kind, the spelling as written, the
-spelling the door would have minted — and left as written, so the operator can
-file it where their own law keeps such things. A lock row in such a file that
-names a moved page is reported and stays; `mrd check` reads it red
-`file-not-found` afterwards, which is the truth. OLD or NEW under an immutable
-prefix refuses: a move into, out of, or across a frozen tree is a write to it.
+A file under an immutable prefix keeps every word its author wrote. No body
+wikilink or embed, no frontmatter wikilink, no rooted string in it is
+rewritten; each one that would break is reported instead — path, line, kind,
+the spelling as written, the spelling the door would have minted — and left as
+written, so the operator can file it where their own law keeps such things.
+OLD or NEW under an immutable prefix refuses: a move into, out of, or across a
+frozen tree is a write to it.
+
+**A `meridian-lock` row's `object:` is the one thing the prefix does not
+freeze.** A lock row is engine bookkeeping, not authored content: the claim it
+carries is `hash:` + `fingerprint:`, both content facts a move leaves intact by
+construction (§3), and `object:` is a pointer this engine mints and this engine
+owns. So a row naming a moved page is repointed under an immutable prefix
+exactly as anywhere else — the path only; `hash:`, `path:`, `fingerprint:` and
+every extra key stay byte-identical, and nothing is re-pinned. A frozen page
+whose only breakage is a lock row is therefore written, and it is written with
+that one slot changed. The alternative was to leave the operator a red
+`file-not-found` row inside a tree their own law forbids them to repair —
+`mrd check` reading red about a page that moved correctly is not a truth worth
+keeping.
 
 The prefix set is the operator's declaration on each run. The engine reads no
 workspace list of frozen paths — not `meridian/domain.md` (the hash domain is
