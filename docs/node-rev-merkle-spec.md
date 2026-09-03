@@ -604,9 +604,17 @@ event source is ENGINE-SIDE:
   construction. No premise anywhere consults the journal (§4.3.1's
   consistency law).
 - **Watcher lifecycle:** the watcher's lifetime is the
-  workspace REGISTRATION, not engine warmth. An idle-reaped engine keeps its
-  watcher; events accumulate into a dirty set held by the registry; the next
-  warm applies the dirty set — O(dirty), never O(corpus).
+  workspace REGISTRATION, not engine warmth — bounded by the resident
+  budget. An idle-reaped engine keeps its watcher; events accumulate into a
+  dirty set held by the registry; the next warm applies the dirty set —
+  O(dirty), never O(corpus). The registry holds one parsed corpus per warm
+  workspace, so the warm set carries a resident-document budget
+  (`MRD_MAX_RESIDENT_DOCS`): a workspace LRU-evicted under budget pressure
+  drops its WHOLE warm state, watcher included, and its next warm is a full
+  walk, not O(dirty). The trade is deliberate — bounded residency outranks
+  gap coverage for the least-recently-used workspace. Only a live
+  subscription exempts a workspace from the budget sweep; the registration
+  survives either way.
 - **The currency barrier (the cookie).** A guard-grade currency question
   writes a sentinel at `.meridian/cookie` and waits to see it return through
   the ordered event stream — an O(1) proof that everything before it is
