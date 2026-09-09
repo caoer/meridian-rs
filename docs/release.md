@@ -320,22 +320,22 @@ prose claims.
 
 ### §5.4 What the tag publishes
 
-A tag builds the engine for both served platforms and publishes each binary to
+A tag builds the engine for every served platform and publishes each binary to
 Forgejo's **generic package registry**, keyed by the **commit** the tag points
 at (§5.2) — never by the tag name, and there is **no `latest`**.
 
 | Element | Shape |
 |---|---|
 | Base | `https://git.0xdao.app/api/packages/caoer115/generic/mrd/<COMMIT>` |
-| Files | `mrd-linux-amd64`, `mrd-darwin-arm64`, and a `.sha256` beside each |
+| Files | `mrd-linux-amd64`, `mrd-darwin-arm64`, `mrd-linux-arm64`, and a `.sha256` beside each |
 | The pin a consumer records | `(COMMIT, SHA256)` |
 | Re-publish of the same commit | HTTP **409**; the FIRST published bytes stay authoritative |
 | Precondition | the `ci` workflow SUCCEEDED for that tag pipeline — all six verdict lanes |
 
 **A tag cannot publish ahead of its verdict.** `ci.yaml` runs on `refs/tags/v*`
-and both tag workflows declare `depends_on: [ci]`, so Woodpecker will not start
-them until every lane in `ci` has succeeded: a red suite leaves both tag
-workflows **skipped** and `publish` never-run, and the release simply does not
+and every tag workflow declares `depends_on: [ci]`, so Woodpecker will not start
+them until every lane in `ci` has succeeded: a red suite leaves every tag
+workflow **skipped** and `publish` never-run, and the release simply does not
 exist. The dependency is deliberately **not** `optional: true` — optional means
 "enforced only if `ci` is part of the pipeline", which would let a `ci` filtered
 out by its own `when` wave a release through ungated.
@@ -394,10 +394,15 @@ commit main already published is a fast no-op that re-prints the pin.
 |---|---|---|
 | `mrd-linux-amd64` | the Linux runner `tag-linux-amd64.yaml` selects by `labels` | docker, the `Dockerfile.ci` image |
 | `mrd-darwin-arm64` | a `platform: darwin/arm64` agent (`tag-darwin-arm64.yaml` `labels`) | local — steps run on the host, against its own toolchain |
+| `mrd-linux-arm64` | the same Linux runner, `tag-linux-arm64.yaml` | docker, the `Dockerfile.ci` image plus an in-step `g++-aarch64-linux-gnu` cross toolchain and the `aarch64-unknown-linux-gnu` rustup target |
 
 A mac artifact needs a mac: no container on any Linux agent can produce one,
 which is why the darwin lane runs on a workstation agent with the local backend
-and why its `image:` names a **shell**, not an image.
+and why its `image:` names a **shell**, not an image. A linux/arm64 artifact
+needs no arm64 host: the vendored DuckDB builds through the `cc` crate, which
+takes the `CC_aarch64_unknown_linux_gnu` family of variables, so the amd64
+runner cross-compiles it and asks the result its `--version` under
+`qemu-aarch64-static`.
 
 **No Forgejo release object is created, deliberately.** Release attachments are
 mutable and the registry is not; a release page would be a second home for the
