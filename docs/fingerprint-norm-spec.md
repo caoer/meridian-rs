@@ -15,8 +15,7 @@ owns: [the fingerprint CID token, norm-v2]
 > Standing law: `README.md` (process and standing corrections) and `wire-contract.md` (the wire contract).
 
 **Scope note:** hash/fingerprint/norm law, not address grammar; mint-plane hpath
-stays segment form. The golden fixtures and this doc are one artifact; a
-divergence is a defect in whichever moved last.
+stays segment form.
 
 ## 1. The three hash planes
 
@@ -29,8 +28,7 @@ and **job**, never family:
 | workspace merkle (`leaf` → fingerprint) | whole raw file bytes in **hash domain** → tree | **none — raw** | `b3:` + 64 lowercase hex | world cursor (`if_fingerprint`, `fingerprint` op / `diff`) |
 | **fingerprint** (this spec) | node span bytes | **norm-v2 (§4)** | CID-token (§2) | attestation content identity (pins, locks, receipts) |
 
-`node_rev` and the workspace merkle stay as `node-rev-merkle-spec.md` §2–§4
-defines them.
+`node_rev` and the workspace merkle stay as `node-rev-merkle-spec.md` §2–§4.
 
 ## 2. The fingerprint token
 
@@ -56,14 +54,14 @@ fp1.span2.b3.40b167ed9b42a2beadb7c441b214efdc93069ef443a1cc2b5ae2ccda4cf03152
 - All four fields non-empty; `[a-z0-9]` for the first three; lowercase hex
   digest — anything else is **malformed**.
 - The prefix `version.codec.hashfn` fixes interpretation: a hash or
-  normalization migration mints a new prefix, and old tokens stay verifiable
+  normalization migration mints a new prefix; old tokens stay verifiable
   forever.
 - No YAML escaping needed; the lock quotes it anyway (`fingerprint: "<CID>"`,
   `crates/lock` render law).
 - Full-length tokens appear only in lock blocks (`laws.md` lock crate) and
-  receipts (pin-count objects); elsewhere the short form is `@` + digest prefix
-  (`@40b167ed`, 8 hex), non-normative here and owned by the claim-link view
-  plane's `@fp` grammar, always the digest.
+  receipts (pin-count objects); render and wire views abbreviate as `@` + digest
+  prefix (`@40b167ed`, 8 hex), non-normative here and owned by the claim-link
+  view plane's `@fp` grammar, always the digest.
 
 ### 2.2 Codec registry
 
@@ -79,7 +77,7 @@ A codec names domain + normalization version.
 
 `span2`'s "2" is the norm version; norm-v1 is the raw bytes `node_rev` keeps.
 Changing anchor recognition (§4.1) is a codec bump (`span3`), never a silent
-reinterpretation of `span2`.
+reinterpretation.
 
 ### 2.3 Hash-fn registry
 
@@ -101,8 +99,8 @@ reinterpretation of `span2`.
 
 ## 3. What bytes enter the hash — the selector axis
 
-`span2` composes with any selector; selector (which span) and canonicalization
-(how bytes hash) stay separate axes.
+`span2` composes with any selector; the selector and canonicalization axes never
+conflate.
 
 - **fingerprint(node)** = `b3( norm2( raw[span.start..span.end) ) )` on the
   node's contract-§1 span as minted: sections heading- and newline-inclusive,
@@ -116,15 +114,15 @@ reinterpretation of `span2`.
   content. Transitivity is lock-is-content: A's span covers A's `meridian-lock`
   block holding B's fingerprint, so drift propagates at pin-update time, not
   hash time (§6).
-- **No descendant fold.** A section's span holds every descendant's bytes; any
-  descendant edit moves its fingerprint.
+- **No descendant fold.** A section's span holds every descendant's bytes, so any
+  descendant edit moves the section's fingerprint.
 
 ## 4. norm-v2 — the exact rule set
 
 norm-v2 is the identity transform except for **anchor-token removal**: no
 newline canonicalization (CRLF stays CRLF), no whitespace trim, no NFC/NFD, no
 case folding, no BOM handling. Any non-anchor byte difference changes the hash.
-Heading sanitization is addressing (selector derivation), not hashing.
+Heading sanitization is addressing, not hashing.
 
 ### 4.1 What is an anchor token
 
@@ -134,14 +132,12 @@ Normative grammar: the syntax crate's block-anchor lexer (`syntax::parse` →
 - `^` + id, id = 1+ of `[A-Za-z0-9-]` (app-exact: `_` excluded, so `^b_1` is not
   an anchor).
 - Line-tail only: after the id only spaces/tabs and an optional `\r`, then `\n`
-  or EOF; one anchor per line.
+  or EOF; at most one anchor per line.
 - Byte before `^`: space, tab, or line start.
 - Never inside fenced or inline code (mask-exact per the parser).
 - **Marker span** = `^` through id end; separator and trailing whitespace lie
-  outside it. norm-v2 consumes this marker span, not the model's
-  `NodeKind::Anchor` host-line re-span.
-
-Classification runs on the whole-file parse, never a slice re-parse.
+  outside it. norm-v2 consumes it, not the model's `NodeKind::Anchor` host-line
+  re-span.
 
 ### 4.2 Removal rules
 
@@ -153,36 +149,38 @@ previous `\n` (or 0):
   tab; bytes after the id (spaces/tabs, `\r`) untouched. Promotion inserts one
   separator: `text` → `text ^goal` → `text`; hand-written `text ^goal` →
   `text `.
-- **R2 — own-line anchor** (only spaces/tabs, possibly none, before `M.start`):
-  remove the entire line, `[line_start, end_of_terminator)`; the terminator is
-  the line's `\n` with any preceding `\r`.
+- **R2 — own-line anchor** (only spaces/tabs, possibly none, between
+  `line_start` and `M.start`): remove the entire line,
+  `[line_start, end_of_terminator)`; the terminator is the line's `\n` with any
+  preceding `\r`.
 - **R2b — own-line anchor on an unterminated last line** (of file or slice):
   remove `[t, line_end)`, `t` at the `\n` (or `\r\n`) immediately before
-  `line_start`; with no preceding terminator, `[line_start, line_end)`. EOF
-  promotion stays neutral for terminator-exclusive slices: `…|rows|` →
-  `…|rows|\n^tbl` → norm-v2 → `…|rows|`.
+  `line_start`; with no preceding terminator, `[line_start, line_end)`. This
+  keeps EOF promotion neutral for terminator-exclusive slices.
 - Overlapping ranges (hand-made only, e.g. two anchor-only lines at EOF) merge
   by union, deterministically.
 
 ### 4.3 Application to a slice
 
 `norm2(node)` = the span bytes with every removal range **intersected with the
-span** applied; removals are computed once, file-level (§4.1). A range partly
-outside the span removes only the intersection. So a block span excludes a
-following own-line anchor (trivially neutral), while section and document spans
-include it and R2/R2b remove it.
+span** applied; removals are computed once on the whole-file parse, never on a
+slice. A range partly outside the span removes only the intersection — a
+determinism guard the grains pin promotes to (file, section, block) cannot hit:
+marker plus separator sit inside the host block's span, so a block span excludes
+a following own-line anchor (trivially neutral), while the section or document
+span containing that anchor line removes it by R2/R2b.
 
 ### 4.4 Noted edge (parser-governed)
 
 The lexer does not mask frontmatter, so a caret-tail line there
 (`title: x ^fm`) mints an anchor and norm-v2 removes it from the hashed bytes.
-Fixture `frontmatter_caret` pins this parser/app divergence, so a parser fix is
+Fixture `frontmatter_caret` pins the divergence, so a parser fix is
 a visible codec decision (§2.2), not silent drift.
 
 ## 5. Rev-neutrality — the theorem the fixtures pin
 
-For any pin promotion — ` ^id` at a block's line tail, or `^id` own line after
-a block, id in charset:
+For any pin promotion (` ^id` at a block's line tail, or `^id` own line after a
+block, id in charset):
 
 1. `fingerprint(node)` is unchanged at every grain (block, section, document)
    for every node whose span contains the site: no false drift.
@@ -196,15 +194,16 @@ guarantee.
 ## 6. Supersedes — the compose_rev scheme
 
 The content fingerprint `fp1.span2.b3.<64hex>` covers norm-v2 span bytes: no
-hash-of-hex indirection, no hash-time graph walk (the span is always complete:
-no cycles, no dangling composes). `RevClass`: `Content` → fingerprint-token
+hash-of-hex indirection, no hash-time graph walk (the span is always complete,
+so no cycles or dangling composes). `RevClass`: `Content` → fingerprint-token
 verify (parse → codec dispatch → recompute → compare); `Object` → git-oid
 equality (git, the only second family, never computed by the engine).
 
 ## 7. Fixture manifest
 
 `crates/model/tests/norm_v2_fixtures.rs` — spec-verbatim reference
-implementation of §4, the conformance target, plus the golden table.
+implementation of §4, the conformance target, plus the golden table. Fixtures
+and doc are one artifact; a divergence is a defect in whichever moved last.
 
 - Canonical bytes: tail anchor; neutrality pair (§5, both directions); own-line
   anchor (mid-file, EOF terminated, EOF unterminated — R2/R2b); mid-line caret

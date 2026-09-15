@@ -36,9 +36,9 @@ additives `plan_edits`, `pin`, `create`, `hello.identity`, …
 - The daemon answers protocol 1 as `meridian-daemon/1.1.0` (derived:
   `concat!("meridian-daemon/", env!("CARGO_PKG_VERSION"))`); its socket is
   the only host — no stdio sidecar (wire-contract §3.3).
-- Binaries still carry a dual negotiation path and legacy `root`/`if_root`
-  spellings in code and caps tables; standing emission and agent teaching use
-  `fingerprint`/`if_fingerprint`/segments.
+- Binaries still carry a dual negotiation path and some legacy
+  `root`/`if_root` spellings in code and caps tables; standing emission and
+  agent teaching use `fingerprint`/`if_fingerprint`/segments.
 
 Capabilities agents should assume (design):
 
@@ -561,10 +561,10 @@ section returns a map at exit 0.
 
 **`mrd put` / `mrd pin` / `mrd rm` / `mrd retire mark` are wire clients.**
 Authenticated IPC to the daemon: hello + socket-law identity check. There is
-no direct-publication fallback: a down daemon refuses at exit 2 and names the
-recovery (`mrd daemon`; shorten `XDG_CACHE_HOME` when sun_path is the cause),
-never writing locally. Auto-spawn still runs. A guardless put needs § A.1's
-fingerprint-or-force: `--force` or `if_node_rev`. `--dry` is the daemon
+no direct-publication fallback: when the daemon is down the CLI face refuses
+at exit 2 and names the recovery (`mrd daemon`; shorten `XDG_CACHE_HOME` when
+sun_path is the cause), never writing locally. Auto-spawn still runs. A
+guardless put needs § A.1's fingerprint-or-force: `--force` or `if_node_rev`. `--dry` is the daemon
 rehearsal, no in-process candidate diff. A commit rides the daemon epoch, so
 `seq` is the ring's, never `0`.
 
@@ -596,7 +596,8 @@ decoded value and its `prop_rev`.
 `--section SEL` and `mrd pin`'s `#SELECTOR` share one human-string door,
 `wire::ReadSel::parse`. Its heading arm joins on `/`, so **a heading whose raw
 text carries `/` is not addressable by the joined spelling** — it misses rather
-than serving a different section. Widening the coat is C2 (`laws.md` D-1).
+than serving a different section. Widening the coat is a C2 change, reserved
+by ruling (`laws.md` D-1).
 
 - **Per delimiter, per ingress**: `#` is not a delimiter here, so
   `--section 'Top/C#D'` serves, and `PATH#FRAG` splits on the FIRST `#` only —
@@ -604,7 +605,8 @@ than serving a different section. Widening the coat is C2 (`laws.md` D-1).
 - **Two escapes, both published by the toc row the caller already read:** the
   **dewey ordinal** (`--section 1.2`) and the **raw heading segments** as the
   wire's hpath array (`{"hpath":[{"h":"Guide"},{"h":"A/B"}]}`), one entry per
-  heading, no joining.
+  heading, no joining. The machine plane addresses and pins such a heading
+  end-to-end; only the joined coat cannot spell it.
 - A miss **teaches both escapes in the refusal**.
 
 ### Operator SQL face — `mrd sql` (NOT agent core)
@@ -708,7 +710,7 @@ choke-point — one flock, one rename (`wire-contract.md` § A.3) — over IPC, 
   refusal — the engine's verbatim message) / 2 bad invocation (including a down
   daemon).
 
-A wire client's pin through the daemon carries this proof automatically: the
+A wire client's pin through the daemon carries its own proof: the
 `fingerprint` its sections read served for that selector rides the pin
 (wire-contract § A.3). "You cannot attest content that was never in your
 context"; the engine keeps no record of the read.
@@ -749,8 +751,8 @@ teaching.
   resolved `MERIDIAN.md`. No anchor ⇒ an empty user layer that says so, never a
   `$HOME` walk.
 - **The `armed-set` header states what is, never the engine's storage.** An
-  unarmed workspace reads `armed-set none`; a present or corrupt artifact names
-  its path.
+  unarmed workspace reads `armed-set none`, the whole line — it never adds
+  where an armed set would live; a present or corrupt artifact names its path.
 - **`armed=` is a separate column**, read from the attested armed set
   (`meridian/armed-rules.md`), joined on `(id, arm root)` narrowed to PATH —
   never on id alone, never recomputed. `-` registered but unarmed · `<mode>`
@@ -827,8 +829,7 @@ dot-declined pages stay named.
 **The excluded-population voices.** Each human note on stderr uses one
 spelling: full count, `EXCLUDED_SHOWN` sample, remainder clause
 (`capped_sample`), pointer at the complete list on that verb's own `--json`. The
-cap bounds the prose; it never re-scopes what was excluded, and no such voice
-touches an exit code.
+cap bounds the prose; it never re-scopes what was excluded.
 
 | voice | population | complete list |
 |---|---|---|
@@ -872,8 +873,8 @@ to git at lock, and anything between locks is not history, so chain continuity
 and last-receipt-vs-live are **not checked here at all: not grey, NOT
 CHECKED**. Green means the world still matches the
 pins, never how it got there. Every face carries the
-`write_history: not-assessed` disclosure, naming that narrowing and pointing at
-git.
+`write_history: not-assessed` disclosure, naming that narrowing and pointing
+at git. The disclosure states the narrowed claim, never the engine's mechanism.
 
 **The interval this verb spans.** The `worktree` interval — the bytes on disk —
 is always assessed. `--staged` adds the interval a commit records: git commits
@@ -1018,7 +1019,8 @@ Debt never enters the findings verdict and never refuses a write; zero renders
 **This is R12, and it is design, not debt**, asserted by name in
 `crates/mrd/tests/u14_check_pin_plane.rs`,
 `crates/mrd/tests/u13_per_root_anchoring.rs` (five exit-0 arms across four
-`#[test]` fns) and `crates/mrd/tests/status_e2e.rs` (debt is not a finding).
+`#[test]` fns; four of them name `R12`) and `crates/mrd/tests/status_e2e.rs`
+(debt is not a finding).
 
 **So `mrd status || alarm` does NOT fire on attestation drift. The fail-closed
 door is `mrd check`**, whose exit triad answers red-or-grey and whose grey leg
@@ -1243,8 +1245,8 @@ mrd-timing cmd=run who=p41273.t1 phase=snapshot.read us=402118
 
 - `cmd=` — the verb this process was entered with (`mrd run` ⇒ `run`, the
   daemon ⇒ `daemon`); it names the process, never one request. A verb with
-  whitespace or a control character is refused and the label stays `mrd`, as
-  does a diagnostic's text.
+  whitespace or a control character is refused and the label stays `mrd`. A
+  diagnostic's text is sanitised the same way.
 - `who=` — the emitter inside that process: `p<pid>.t<n>`, both halves digits,
   `n` a per-process thread ordinal minted on that thread's first line. **It is
   not a request id** — a reused thread keeps its ordinal — and on the daemon
@@ -1270,8 +1272,9 @@ So `grep '^mrd-timing '` — with the space — is exactly the measurements.
 
 A span abandoned on an error path — the `?` on a missing page, an early refusal
 — reports nothing. `mrd run missing.md` reports `workspace.resolve`, the
-refusal, then `total`, and no `page.load` line. `total` alone reports on a
-refusal: it measures the process.
+refusal, then `total`, and no `page.load` line. `total` is the one phase that
+reports even on a refusal: it measures the process, and the process completed
+either way.
 
 **A failure that is itself worth counting says so in its NAME.**
 Load-sensitive call sites stop the span under a distinct name:
@@ -1291,7 +1294,8 @@ lane, never the PR lane.
 **Two lanes, and only one of them is the caller's.** `mrd run` runs in the
 calling process: its phases land on the caller's sink. `mrd script` and wire clients
 hand the work to the resident daemon, so those land on the daemon's sink, and
-nothing rides back on the wire (Law 2 keeps host-facing types in `wire`). A client sees only the frame's
+nothing rides back on the wire (Law 2 puts host-facing types in `wire` and
+`wire-contract.md`, not in an instrument). A client sees only the frame's
 `meta.duration_us`, the server-side total. So set `MRD_TIMING` **in the
 daemon's environment**: an auto-spawn inherits the client's environment, a
 resident daemon kept its own and emits nothing — restart it, or let the idle

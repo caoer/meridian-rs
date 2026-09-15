@@ -29,14 +29,14 @@ The promise surface is `caps` in the `hello` response (`wire-contract.md` §3.2)
 
 | Cap | Law | A caller may rely on |
 |---|---|---|
-| `toc` | §4.1 | write kit per file: `hpath` + `node_rev` per section, anchors with revs, frontmatter keys, header `fingerprint` |
+| `toc` | §4.1 | the complete write kit per file: `hpath` + `node_rev` per section, anchors with revs, frontmatter keys, header `fingerprint` |
 | `cat` | §4.2 | full-span bytes, heading-inclusive; rev is blake3 of those bytes |
 | `extract` | §4.3 | full node objects, 11-variant kind enum, total node order; unknown `kinds` refuses |
 | `read` | § A.3 | addressing + content + render + `props` + `anchors` + `unresolved`, one engine snapshot |
 | `resolve` | §4.5 | best-effort app-compatible two-stage walk; location facts only |
 | `resolve.content` | §4.5 | those facts plus the fragment bytes; still no rev |
 | `links` | §4.6 | per-edge resolved/unresolved counts, per file or corpus-wide |
-| `links.require_fingerprint` | §10.2 | opt-in `stale_view` refusal instead of an untensed answer |
+| `links.require_fingerprint` | §10.2 | opt-in `stale_view` refusal instead of an answer that does not say which view it came from |
 | `mounts` | § A.5 | live root registry, re-derived per call against `~/MERIDIAN.md`'s hash |
 | `hello.identity` | § A.3 | `{build: sha\|unknown}` — read, never invented |
 
@@ -70,7 +70,7 @@ The promise surface is `caps` in the `hello` response (`wire-contract.md` §3.2)
 | Promise | Law |
 |---|---|
 | One wire door — the daemon's unix socket; NDJSON line dialogue | §3.1, §3.3 |
-| The `id` **echo**: a JSON integer lexeme in `[0, 2^53)` returns unchanged. **A non-conforming lexeme is nulled and the request is still served** — no refusal, no `id_raw`, though §3.1 requires both: law stands, unserved | §3.1; §18 row 9 |
+| The `id` **echo**: a JSON integer lexeme in `[0, 2^53)` returns unchanged. **A non-conforming lexeme is nulled and the request is still served** — no refusal, no `id_raw`, though §3.1 requires both: law stands, unserved | §3.1; `wire-contract.md` §18 row 9 |
 | Strict server / tolerant client; unknown request fields are rejected | §3.2 |
 | `node_rev` is MUST on every `toc`/`cat`/`extract` node while `splice ∈ caps` | §3.2 |
 | Every error carries `code` + `recovery` from the closed six-class enum | §8 |
@@ -113,7 +113,7 @@ A release promises these limits hold and are surfaced, not that they are absent.
 
 | Surface | Standing law | Why it is not promised |
 |---|---|---|
-| **Rule packs** — pack loading, budgets, fixtures-as-load-gate, Starlark predicates | §11.1–§11.4 | no pack loads, so `verdicts` serves `[]`; field and row shape are promised (§2.2), admitting a pack over the wire is not |
+| **Rule packs** — pack loading, budgets, fixtures-as-load-gate, Starlark predicates | §11.1–§11.4 | the daemon loads no pack, so `verdicts` serves `[]`; field and row shape are promised (§2.2), admitting a pack over the wire is not |
 | Any future key-grain Delta (`keys:[…]`) | §7.4 | a future-only additive amendment path; no slot ships |
 
 ### §4.3 Deliberately outside the promise
@@ -128,11 +128,11 @@ A release promises these limits hold and are surfaced, not that they are absent.
 
 ### §4.4 The v2 dialect
 
-The engine negotiates a contract rev per session: `hello.contract:"v3"` selects the standing vocabulary, absent or `"v2"` the frozen v2 dialect (`crates/wire-serve/src/rev.rs`). A release promises v2 stays **byte-identical** — the frozen-caps law the v3 projection preserves — and nothing about how long it is served. **v2 retirement is an open fork** this file does not rule; "served and frozen" promises neither permanence nor removal. `wire-contract.md` § A.4's "one constitution for agents" is a teaching law, not a claim that v2 is unserved.
+The engine negotiates a contract rev per session: `hello.contract:"v3"` selects the standing vocabulary, absent or `"v2"` the frozen v2 dialect (`crates/wire-serve/src/rev.rs`). A release promises v2 stays **byte-identical** — the frozen-caps law the v3 projection is built to preserve — and nothing about how long it is served. **v2 retirement is an open fork** this file does not rule; "served and frozen" promises neither permanence nor removal. `wire-contract.md` § A.4's "one constitution for agents" is a teaching law, not a claim that v2 is unserved.
 
 ### §4.5 Multi-root addressing
 
-`roots` advertises every bound root while `read` serves one — the reserved-prefix face shadows the registered-root lane — and a release does **not** promise cross-root addressing. **The defect is the advertisement, not the refusal**: refusing a root the face never bound is correct, while advertising five bound roots against one served `read` misleads. The taught recovery line is **known-inexecutable** pending multi-root; executable recovery is a **v1.x direction**, not a v1 promise.
+`roots` advertises every bound root — the reserved-prefix face shadows the registered-root lane — and a release does **not** promise cross-root addressing. **The defect is the advertisement, not the refusal**: refusing a root the face never bound is correct, while advertising five bound roots against one served `read` misleads. The recovery line that refusal teaches is **known-inexecutable** pending multi-root: a caller following it cannot succeed today. Executable recovery on this path is a **v1.x direction**, not a v1 promise.
 
 ### §4.6 Refusal codes
 
@@ -140,7 +140,7 @@ The engine negotiates a contract rev per session: `hello.contract:"v3"` selects 
 
 ### §4.7 Recorded at cut time
 
-Found at the v1 cut, recorded not repaired; none narrows a promise row.
+Recorded, not repaired; none narrows a promise row.
 
 | Recorded | What it says |
 |---|---|
@@ -167,7 +167,7 @@ One version at `[workspace.package]` in the root `Cargo.toml`; every crate inher
 
 #### The sha token
 
-`MRD_BUILD_SHA` is a sha with an optional marker: `<sha>` where the worktree matched HEAD, `<sha>-dirty` where tracked content diverged, `unknown` where no identity could be read. The marker rides the sha token (git-describe's convention): no schema change, no third identity field.
+`MRD_BUILD_SHA` is a sha with an optional marker: `<sha>` where the worktree matched HEAD, `<sha>-dirty` where tracked content diverged, `unknown` where no identity could be read. The marker rides the sha token (git-describe's convention), so `hello.identity.build` carries it: no schema change, no third identity field.
 
 | Build state | `--version` says | What tells the reader |
 |---|---|---|
@@ -177,7 +177,7 @@ One version at `[workspace.package]` in the root `Cargo.toml`; every crate inher
 
 **The stamp proves identity; identity plus comparison proves provenance**, so a gate compares the string against a declared sha. A clean build's string is byte-unchanged; only a dirty build's changes.
 
-A sentinel path that never exists makes cargo re-run the build script every build: `git rev-parse HEAD` and `git status --porcelain --untracked-files=no --no-optional-locks`, ~20 ms each per cargo invocation, plus one relink of `mrd` per clean↔dirty transition. `--no-optional-locks` stops the probe writing the index, so it never blocks a concurrent git. Untracked files are excluded: one reaches the compiler only through a tracked `mod` line.
+A sentinel path that never exists makes cargo re-run the build script every build: `git rev-parse HEAD` and `git status --porcelain --untracked-files=no --no-optional-locks`, ~20 ms each per cargo invocation, plus one relink of `mrd` per clean↔dirty transition. `--no-optional-locks` stops the probe writing the index, so it never blocks a concurrent git in the same tree. Untracked files are excluded: an untracked file reaches the compiler only through a tracked `mod` line.
 
 **An unverifiable clean claim is never published**: an unreadable probe publishes `unknown`. `MRD_BUILD_SHA` from the environment rides verbatim, unprobed; the supplier owns the claim.
 
@@ -214,11 +214,11 @@ A tag builds both served platforms and publishes each binary to Forgejo's **gene
 
 - **No publish before the verdict.** `ci.yaml` runs on `refs/tags/v*`; both tag workflows declare `depends_on: [ci]`, never `optional: true`, which would wave through a `ci` its own `when` filtered out. A red suite leaves both **skipped**, `publish` never-run: no release.
 - **Slow by construction.** Tag lanes start ~18 minutes in, so every workflow clones with a non-rotating PAT (`clone:` block, woodpecker secret `forgejo_clone_token`), not the server's parse-time OAuth netrc, which expires and kills a late clone with `exit 128`. A failed clone fails closed: no release.
-- **A lane refuses a tree it cannot attest.** Before any upload it checks the §5.1 stamp against the commit built, with the engine's own dirty probe, flag for flag (`--untracked-files=no`, `--no-optional-locks`; `crates/mrd/build_git.rs`). A failed probe or diverged tracked content exits 1, never `-dirty`. A lane supplying `MRD_BUILD_SHA` owns the claim: a bare `git status --porcelain` counts the lane's scratch directory and stamps `-dirty` on a tree matching HEAD.
-- **The tag names the point; the commit keys the bytes.** A consumer resolves the movable tag ref once (`git rev-list -n 1 <tag>`) and records the pair. On a `tag` event `CI_COMMIT_SHA` is the **annotated tag object**, not the commit, so each lane peels with `git rev-parse <sha>^{commit}` before it keys, stamps or checks — a no-op on a commit sha, so all events agree. Same pin as the main-push publish: a tag adds a platform, not a pin vocabulary.
-- **Append-only is the property, not an accident of the store.** A rebuild of the same commit can differ byte-wise; the 409 keeps that from invalidating a recorded digest. Holding every input (`git archive` of `4640044e0`, same CI image, runner, sccache shard, `MRD_BUILD_SHA`, target-dir **path**), one rebuild reproduced `mrd-linux-amd64` byte for byte (sha256 `0098356f0f9ac63af221128459595138f1600eb7aabf4f15a7e04f4306129ce0`, 54151480 bytes) — one measurement only. No input is pinned: a different target-dir path alone came out 64 bytes smaller (`OUT_DIR` strings reach the binary through build scripts); image tag, toolchain and `RUSTFLAGS` move independently.
+- **A lane refuses a tree it cannot attest.** Before any upload it checks the §5.1 stamp against the commit built, with the engine's own dirty probe, flag for flag (`--untracked-files=no`, `--no-optional-locks`; `crates/mrd/build_git.rs`). A failed probe or diverged tracked content exits 1, never `-dirty`. A looser probe there stamps `-dirty` on a tree matching HEAD: a bare `git status --porcelain` counts the lane's scratch directory.
+- **The tag names the point; the commit keys the bytes.** A consumer resolves the movable tag ref once (`git rev-list -n 1 <tag>`) and records the pair. On a `tag` event `CI_COMMIT_SHA` is the **annotated tag object**, not the commit, so each lane peels with `git rev-parse <sha>^{commit}` before it keys, stamps or checks — a no-op on a commit sha, so push, manual and tag events all agree. Same pin as the main-push publish: a tag adds a platform, not a pin vocabulary.
+- **Append-only is the property, not an accident of the store.** A rebuild of the same commit can differ byte-wise; the 409 keeps a recorded digest valid. Holding every input (`git archive` of `4640044e0`, same CI image, runner, sccache shard, `MRD_BUILD_SHA`, target-dir **path**), one rebuild reproduced `mrd-linux-amd64` byte for byte (sha256 `0098356f0f9ac63af221128459595138f1600eb7aabf4f15a7e04f4306129ce0`, 54151480 bytes) — one measurement only. No input is pinned: a different target-dir path alone came out 64 bytes smaller (`OUT_DIR` strings reach the binary through build scripts); image tag, toolchain and `RUSTFLAGS` move independently.
 - **Each lane asks the registry first** and builds only when this commit's artifact is absent, so a tag on a commit main already published re-prints the pin.
-- **No Forgejo release object is created**, deliberately: attachments are mutable, the registry is not, so a release page would be a second home for the pin. Notes live in the tag message (§5.3); bytes only in the registry.
+- **No Forgejo release object is created**, deliberately: attachments are mutable, the registry is not. Notes live in the tag message (§5.3); bytes only in the registry.
 
 ## §6 How the promise changes after a release
 
@@ -250,9 +250,10 @@ frame.
 Startup and teardown sit outside all three. A host's bound on the `mrd` child
 process is a fourth layer in the host, not ruled here.
 
-It is an **engine** budget, never the operator's process wall: measure by engine ms;
-process wall implies no door headroom either way. A write-bearing run can
-cross 7 s of process wall and still commit correctly.
+It is an **engine** budget, never the operator's process wall: measure by
+engine ms; no door headroom may be inferred from process wall, in either
+direction. A write-bearing run can cross 7 s of process wall and still commit
+correctly.
 
 §4.7 script-wall record: at production corpus scale this wall binds before the
-64-read ceiling, so the operative limit is time, not read count.
+64-read ceiling.

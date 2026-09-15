@@ -23,7 +23,7 @@ A `.base` file is an **Obsidian Bases view definition**: one YAML document of sa
 | `properties` | map `property → display config` | display metadata (`displayName`, …) |
 | `views` | list of view objects (`type`, `name`, own `filters`, `groupBy`, `order`, `sort`, `limit`, `columnSize`, …) | the saved views themselves |
 
-Census: 832 member files on two corpora — 812 in a template-stamped tree (mostly `TASKS.base` / `FLEET.base` / `DECISIONS.base` / `BOARD.base` per directory, about two dozen distinct; the walk-cost number, §9), 20 hand-authored. Key counts over all 1521 `.base` files found (snapshots included): `views` 1509, `filters` 1495, `formulas` 1085, `properties` 491.
+Census: 832 member files on two corpora — 812 in a template-stamped tree (mostly `TASKS.base` / `FLEET.base` / `DECISIONS.base` / `BOARD.base` per directory, about two dozen distinct), 20 hand-authored. The 812 is the walk-cost number (§9) and the embed-join population (§5.1). Key counts over all 1521 `.base` files found (snapshots included): `views` 1509, `filters` 1495, `formulas` 1085, `properties` 491.
 
 **Aliens** exist: `.base` files that are not Bases YAML (a shell script `gpurun.base`, backup markdown `AGENTS.md.base`); §4.4 gives them rows. `abc.BASE` is a link-target typo naming no file; it stays dangling (§3, §5.1).
 
@@ -47,7 +47,7 @@ A file is a member iff:
 
 Paths come from directory enumeration, so they are on-disk spellings. A directory that cannot be enumerated reads as absence; a member whose bytes cannot be read is **not** absence and gets a §4.4 error row. Non-UTF-8 paths cannot match `.base` and are skipped; non-UTF-8 content is §4.4's problem.
 
-The walk lives in `fs` beside `domain_snapshot`, returns raw bytes per member plus the §6.2 fold, and honors custom-ignored directories; the probe's fallback index does not prune them.
+The walk lives in `fs` beside `domain_snapshot`, returns raw bytes per member plus the §6.2 fold, and honors custom-ignored directories. It is a distinct walk from the link-target probe's fallback index (§5.1), which does not prune them.
 
 ## §4 The relations
 
@@ -99,7 +99,7 @@ This rule governs; §1's table only describes. A `filters:` that is one bare exp
 
 ### §4.3 Structure is modeled; expressions are not
 
-The projection models the Bases **format** (the four keys, the view list, the filter tree shape) and serves the Bases **language** (filter and formula expressions, the view `type` vocabulary) as verbatim text, because the language is Obsidian's, unversioned and evolving (the mechanism-vs-flow law). So `type` has no CHECK enum, `config` carries unmodeled view keys as written, and `extra` carries unmodeled top-level keys **subtree intact**; a fifth Obsidian key is carried on day one.
+The projection models the Bases **format** (the four keys, the view list, the filter tree shape) and serves the Bases **language** (filter and formula expressions, the view `type` vocabulary) as verbatim text, because the language is Obsidian's, unversioned and evolving (the mechanism-vs-flow law). So `type` has no CHECK enum, `config` carries unmodeled view keys as written, and `extra` carries unmodeled top-level keys **subtree intact**; a fifth Obsidian key is carried on day one, and a schema amendment is a later choice, not a prerequisite.
 
 ### §4.4 Aliens are rows, not absences
 
@@ -136,9 +136,9 @@ The exclusion rule is unchanged: a wikilink or embed whose target is a real `.ba
 
 `LinkTargetProbe::resolution` returns `(path, reason)`; the projection now keeps the path. `.base` targets join `base.path` **exactly**, with no basename re-derivation in SQL; every other excluded class (`.svg`, `.xlsx`, dot-segment, custom-ignore) gets the same. *Who embeds this base* is a join (§11).
 
-**Mint rule, added by this spec: a stamp carries the on-disk spelling, or it does not stamp.** The fallback arm already holds this. The literal arm today trusts an `is_file` probe, which case-folds on a case-insensitive filesystem: `[[abc.base]]` over on-disk `abc.BASE` would stamp a typo as deliberate with a path `base` does not contain. So the literal arm verifies its final segment against the parent directory's entries case-exactly; a spelling reached only through case-folding stays unstamped and dangling. The probe is the shared mint, so the `exclusion` word sharpens wherever it is served (§10.3, served-content motion).
+**Mint rule, added by this spec: a stamp carries the on-disk spelling, or it does not stamp.** The fallback arm already holds this. The literal arm today returns the caller's spelling after an `is_file` probe, and on a case-insensitive filesystem that probe answers true through case-folding: `[[bases/tasks.base]]` over on-disk `bases/TASKS.base` would stamp a path `base` does not contain, so the join misses, and `[[abc.base]]` over on-disk `abc.BASE` would stamp a typo as deliberate. So the literal arm verifies its final segment against the parent directory's entries case-exactly; a spelling reached only through case-folding stays unstamped and dangling. The probe is the shared mint, so the `exclusion` word sharpens wherever it is served (§10.3, served-content motion).
 
-No new vocabulary word; stamping narrows only where case-folding lied. The wire `links` door (`wire-contract.md` §4.6 `unresolved_reason`) stays **word-only**; widening a wire map is a wire amendment, out of scope (§10.4).
+No new vocabulary word and no change to `dangling`'s definition; stamping narrows only where case-folding lied. The wire `links` door (`wire-contract.md` §4.6 `unresolved_reason`) stays **word-only**; widening a wire map is a wire amendment, out of scope (§10.4).
 
 ### §5.2 `.base` → corpus: no edges
 
@@ -168,7 +168,7 @@ So `.base` content cannot move the dangling census.
 
 `bf:` is **a staleness witness, not an attestation**: compared only against a re-walk of the same workspace in the same face, never across contexts or on the wire; §12.3's domain-version laddering does not apply, and the prefix never advances. A `bf:` value never compares equal to a `b3…:` `fingerprint`.
 
-`base_fold` comes from the same `fs` walk as membership (§3); `view` folds nothing itself, so the `build_memory` rule against locally-computed folds (`crates/view/src/lib.rs`), which guards the fingerprint's fold and `version` prefix from `fs::domain_snapshot`, is untouched.
+`base_fold` comes from the same `fs` walk as membership (§3); `view` folds nothing itself, so the `build_memory` rule against locally-computed folds (`crates/view/src/lib.rs`) is untouched: that rule guards the fingerprint, whose fold must take the domain filter and `version` prefix from `fs::domain_snapshot`.
 
 ### §6.3 The freshness frame names the plane
 
