@@ -8,148 +8,122 @@ owns: [architecture laws, crate charters]
 
 # The three laws
 
-`meridian-rs` is split into crates so that its core invariants are dependency
-edges, not conventions. Each law is enforced by what a crate is allowed to
-depend on — breaking it is a compile error, not a review comment.
+Each core invariant of `meridian-rs` is a crate dependency edge, not a
+convention: breaking a law is a compile error.
 
-> **Standing:** Design law is `wire-contract.md` (one contract). Mint addresses = segments only. Receipts = armed wire facts. DuckDB/`view_path` not agent core. **Doc correct > code correct; docs first.** See `README.md`.
+> Standing law: `README.md` (process and standing corrections) and `wire-contract.md` (the wire contract).
 
 ## Law 1 — the wire cannot leak inward
 
-`model`'s public types carry no `serde` derives. The in-memory world model is
-deliberately non-serializable, so no wire shape can reach into the tree and no
-serialization concern can shape the model's types. Anything that must cross the
-process boundary is converted explicitly at the projection seam (Law 3), never
-by deriving `Serialize` on a model type.
+`model`'s public types carry no `serde` derives, so no wire shape reaches the
+tree. Whatever crosses the process boundary is converted at the projection
+seam (Law 3), never by deriving `Serialize` on a model type.
 
 ## Law 2 — nothing host-facing exists beyond `wire`
 
-`wire` is serde-only and does zero I/O. It is the single crate that defines the
-vocabulary the host sees: paths, spans, node revisions, **fingerprints**
-(workspace content hash), and the op/request/response/error types. If a type is
-not in `wire`, it is not on the wire. The standing contract in
-`wire-contract.md` is this crate's intended surface (code may lag; docs win).
+`wire` is serde-only, does no I/O, and alone defines the host-visible
+vocabulary: paths, spans, node revisions, **fingerprints** (the workspace
+content hash), and the op/request/response/error types. A type not in `wire`
+is not on the wire. `wire-contract.md` is its intended surface; code may lag,
+docs win.
 
 ## Law 3 — the bridge has two named organs; everyone else is a consumer
 
-(Law 3 restated.)
-
 - **`wire-map` is the projection seam.** The model tree flattens into wire
- shapes as a tested library function — projection behavior lives here and
- nowhere else. The host-face read facts (`facts`: dewey ordinals,
- segment `hpath`, word counts) live at this seam. Residual fields that still emit
- **joined / sanitized display strings** are host-facing interop debt being
- killed — **not** mint-plane address law (`wire-contract.md` §2.1: segments
- only ⇒ sanitization never necessary on machine addresses).
-- **`wire-serve` is the serve choke-point.** The strict-decode pass, the read
- arms (incl. the composed `read`), the `splice → commit` write choke-point,
- and the standing vocabulary projection are ONE implementation here. "One
- served implementation, one host": the resident `registry` daemon dispatches
- through these arms. (The host shares the LEAVES, not the dispatch shell;
- the resident `registry` daemon is the one wire door — wire-contract §3.3.)
+  shapes here as a tested library function, nowhere else, with the host-face
+  read facts (`facts`: dewey ordinals, segment `hpath`, word counts). Fields
+  still emitting **joined or sanitized display strings** are interop debt,
+  not address law (`wire-contract.md` §2.1: segments only).
+- **`wire-serve` is the serve choke-point.** Strict decode, the read arms
+  (including the composed `read`), the `splice → commit` write choke-point
+  and the standing vocabulary projection are one implementation, dispatched
+  by the resident `registry` daemon, the one wire door (wire-contract §3.3);
+  the host shares the leaves, not the dispatch shell.
 
-Everything else that names both `wire` and `model` is a host, a client, or a
-test member consuming those two organs — never a second place where bridge
-behavior may live: `registry` (the host, wiring-only),
-`mrd` (a local client), `render` (consumes projection facts to produce the
-text face), `check`/`preset`/`realise` (engine planes over wire vocabulary),
-`testsuite` (observes). Growth pressure inside a host or client is the signal
-a capability is missing from one of the two organs.
-
-A corollary edge: `syntax` is the only crate that touches the pulldown-cmark
-fork, so fork churn is a one-crate event.
+Every other crate naming both `wire` and `model` only consumes them:
+`registry` (host, wiring only), `mrd` (local client), `render` (projection
+facts → text face), `check`/`preset`/`realise` (engine planes over wire
+vocabulary), `testsuite` (observes). Growth there signals a missing organ
+capability.
 
 ## Additivity
 
-New capability arrives as new leaf crates or new match arms, never as a
-reshuffle of what already ships. New ops are new `Op` variants and new dispatch
-arms, discovered by the host through the `hello` handshake's capability list;
-`policy` and `query` are additive consumers of the model's index. Nothing that
-has shipped is ever split.
+New capability arrives as new leaf crates or match arms, never as a reshuffle
+of what ships: new ops are new `Op` variants and dispatch arms, discovered
+through `hello`'s capability list; `policy` and `query` are
+additive consumers of the model's index. Nothing shipped is ever split.
 
 ## Crate charters
 
-Each crate's `lib.rs` states its charter, what it owns, what it never does, and
-which laws it carries. In one line each:
+Each crate's `lib.rs` states its charter: what it owns, never does, and
+which laws it carries.
 
 | Crate | Charter |
 |---|---|
-| `addr` | The agent-plane address: `[root:]path[#selector]` parsed into a fallible type carrying an optional canonical root name, plus the resolution-facing bound-name projection (`MountSet`) every plane resolves through. A `std`-only leaf UPSTREAM of `syntax` — it is where an address becomes a value, so nothing downstream re-splits a string. `Addr::parse` is the sole constructor and the path field carries no root prefix by construction; the colon law is root-wins with **no fallback to the literal reading**, because a fallback turns a typo'd root into a wrong success. Parse is not resolve: whether a named root is BOUND is the resolver's question and its answer is grey, never a parse error |
-| `timing` | The timing instrument: the `MRD_TIMING` switch resolved ONCE per process into a sink, and the phase span that emits one `mrd-timing cmd=… who=… phase=… us=…` line per completed phase (`who=` names the emitting process and thread, which is what makes one sink file demultiplexable). A `std`-only leaf with ZERO dependencies, depended on by `fs`, `run`, `mrd` and `registry` — an instrument may sit under every layer precisely because it knows nothing about any of them. It never touches stdout, never changes an exit code, and reads no clock when the switch is off. Not a log framework and not a tracer: no levels, no spans-in-flight, no subscriber, no second time unit (`us`, the wire's own `meta.duration_us` noun). Surface: `status.md` § The timing mode; the `mrd run` phase list: `run-plane.md` § Timing phases |
+| `addr` | The agent-plane address `[root:]path[#selector]`: a fallible type with an optional canonical root name, plus the bound-name projection (`MountSet`) every plane resolves through. A `std`-only leaf upstream of `syntax`; nothing downstream re-splits a string. `Addr::parse` is the sole constructor; the path field carries no root prefix. Colon law: root wins, **no fallback to the literal reading**. Parse is not resolve: whether a named root is bound is the resolver's grey answer, never a parse error |
+| `timing` | The `MRD_TIMING` switch, resolved once per process into a sink, and the phase span emitting one `mrd-timing cmd=… who=… phase=… us=…` line per completed phase (`who=`: process and thread). A `std`-only leaf with zero dependencies, used by `fs`, `run`, `mrd`, `registry`. Never touches stdout or an exit code; reads no clock when off. Not a log framework or tracer: no levels, spans-in-flight, subscriber, or second time unit (`us`, the wire's `meta.duration_us` noun). Surface: `status.md` § The timing mode; `mrd run` phases: `run-plane.md` § Timing phases |
 | `syntax` | Markdown bytes → dialect node list with byte-exact spans; sole owner of the pulldown-cmark fork |
-| `model` | The governed node tree, resolve, CAS-splice validation, workspace fingerprints — non-serializable by design (Law 1); the frozen heading predicate (`gotext`), the single address law its two dependents share; and the content-identity plane: the `fp1.…` CID-token, `verify_content`'s four-arm verdict (carrying the whole `version.codec.hashfn` triple on `Unverifiable`, so a render names WHICH member is unknown), and the ONE reason-carrying `Color` model every drift surface computes through; and the frontmatter scalar codec (`scalar`) — the single owner of the § A.6 value law, decode for every read seam and the double-quoted encode every value-plane write door emits through |
-| `fs` | Disk read/walk/watch into the model; atomic tmp+fsync+rename splice execution. **And the `.base` membership walk** (`base-projection.md` §3): the hash domain's rules with the floor swapped from `*.md` to `*.base`, returning raw bytes per member plus the §6.2 `bf:` witness. It stays YAML-free — it hands bytes up, and `view` parses them |
-| `wire` | The serde-only wire vocabulary — the whole host-visible surface (Law 2) |
-| `wire-map` | The named model→wire projection seam, tested as a library function (Law 3) |
-| `git` | The git plumbing organ: shell-out content-addressing (blob object ids, the eager `-w` write) and object reachability against a `Repo` handle. git owns content-addressing — this crate asks git and reports what git said, and NEVER computes or guesses an oid. A `std`-only leaf: no production dependency, so `git`-invocation churn is a one-crate event |
-| `receipt` | The receipt family, at two planes: the persisted `^receipt` line renderer committed in the same batch as its edit (the shipped default template — facts normative, template replaceable); and the origin-freshness anchor axis plus the three-state blob classification (`anchored` / `pending-anchor` / `never-anchored`). No read-side state: pin proof rides the request (wire-contract § A.3), and the engine records no reads. Dependencies are `wire` only, by gate — so it CLASSIFIES facts it never gathers (the `git` crate does the I/O) |
+| `model` | The governed node tree, resolve, CAS-splice validation, workspace fingerprints; non-serializable (Law 1). The frozen heading predicate (`gotext`), the one address law its two dependents share. The content-identity plane: the `fp1.…` CID-token; `verify_content`'s four-arm verdict (`Unverifiable` carries the whole `version.codec.hashfn` triple); the one reason-carrying `Color` model every drift surface uses. The frontmatter scalar codec (`scalar`): sole owner of the § A.6 value law; decode for every read seam, double-quoted encode for every value-plane write door |
+| `fs` | Disk read/walk/watch into the model; atomic tmp+fsync+rename splice execution. The `.base` membership walk (`base-projection.md` §3): hash-domain rules with the floor swapped from `*.md` to `*.base`, returning raw bytes per member plus the §6.2 `bf:` witness; YAML-free, `view` parses |
+| `wire` | The serde-only wire vocabulary (Law 2) |
+| `wire-map` | The model→wire projection seam (Law 3) |
+| `git` | Git plumbing: shell-out content-addressing (blob object ids, the eager `-w` write) and object reachability against a `Repo` handle; asks git and reports its answer, never computes or guesses an oid. A `std`-only leaf, no production dependency |
+| `receipt` | Two planes: the persisted `^receipt` line renderer, committed in the same batch as its edit (shipped default template; facts normative, template replaceable); the origin-freshness anchor axis and three-state blob classification (`anchored` / `pending-anchor` / `never-anchored`). No read-side state: pin proof rides the request (wire-contract § A.3); the engine records no reads. Depends on `wire` only, by gate; `git` does the I/O |
 | `transport` | Untyped NDJSON envelope + codec seam; framing without meaning |
-| `policy` | Ruleset compile + assertion evaluation under budgets; edit-time verdicts; the blocking `gate` at the armed change plane (`policy::gate`) — see § Amendment |
+| `policy` | Ruleset compile + assertion evaluation under budgets; edit-time verdicts; the blocking `gate` at the armed change plane (`policy::gate`, § Amendment) |
 | `query` | Corpus reads over the model's borrowed index; applies nothing |
-| `wire-serve` | The shared typed edge (Law 3 choke-point): strict decode, read arms incl. the composed `read`, the `splice → commit` write choke-point, the standing projection — one implementation, one host (wire-contract §3.3). Agent/stored address seam: `put` translates cross-root `root:` into `obsidian://` stored form and `read` translates back, at the candidate document (see `address-grammar.md` §9). Reads `config` for the mount table lazily when a candidate can carry a cross-root position. |
-| `render` | The compiled-in render plane: `Renderer` + node-grain walker producing TOON-compact projection through its own encoder (`render::toon`), with block-elision and claim-link decoration hooks. Decorations arrive as data — no `render → lock → fingerprint` edge. |
-| `lock` | The `meridian-lock` fenced-block format: canonical writer/reader, engine sole-writer; owns the reserved `meridian-*` block-language namespace. Reads the current v2 schema and fails loud on unsupported versions. |
-| `effects` | The effect kernel: pure Starlark evaluation — rules in, effect descriptors out; zero I/O, advisory-only |
-| `run` | The mrd-local run plane: plan/execute under the workspace run lock. Owns `Authority` (capabilities real for starlark, absent for bash). See `run-plane.md`. |
-| `realise` | The realise engine: observe → check → apply per claim, on the run plane |
-| `view` | **Ephemeral projection + lock-aware read face** (`wire-contract.md` §10.3–§10.4; not agent core). Projects the parsed corpus into an in-process `:memory:` DuckDB (`build_memory`, the `mrd sql` operator face) and owns the lock-aware read face for walk/status colour. **Writes nothing to disk** — there is no persistent published file, no `view.duckdb`, and no `view_path` wire op (`wire-contract.md` §10.4). **And the `.base` projection** (`base-projection.md`): the three `base` relations, `link.exclusion_path`, and the `base_fold` second witness. The Bases parse is the leaf module `view::base`, which is why this crate is the third permitted `serde_yaml` taker (§9, enforced by `yaml_confinement`) — the parse lives beside its only consumer. |
-| `check` | The check engine: the pure READ verb of the reconciliation loop |
-| `preset` | Presets + session birth: def-pinned convention floor; `new`/`unfold`/`reconcile` through the guarded create. Design element: `run-plane.md` (preset section). |
-| `config` | The `MERIDIAN.md` plane: the one entry point parsed as CONTENT — the two-rung bootstrap chain (`MERIDIAN_CONFIG`, then `$HOME/MERIDIAN.md`), the four resolution states with absent and zero-mount reaching ONE mount table, the strictest parse in the system (a closed `&'static str` reason set, 1-based FILE lines, a teaching refusal that states nothing loaded), and the config's own rev and fingerprint by the shipped laws — `blake3(bytes)[:16]`, no new rev noun minted. No partial mount table is a property of the TYPE: `Config` has private fields and `parse` is its only constructor. Downstream of `model`. **And the mount table (`mount.rs`), which is where a declared entry BECOMES a bound root:** canonicalize at bind, then the `workspace::deny_reason` ceiling **reused whole and never re-implemented** — so a config cannot bypass the ceiling through a file that is itself ordinary editable content — then the three-way map's uniqueness invariants (name ↔ Obsidian vault name ↔ path, refusing equal-or-nested paths so one tree cannot be bound twice under two names), then each root's own self-declaration: **the root declares, `MERIDIAN.md` binds**, so a declared-vs-bound mismatch fails the whole parse and an absent declaration renders grey. Per-root state is grey-exit-1's closed vocabulary — one `bound`, four `grey(...)`, one `red(...)`, every non-bound state refusing on exit 1 with its own reason word. Mount-as-claim lives here too: a mount may pin the root it declares, verified through `model::fingerprint::verify_content` — no new codec, no new hash law. `MountTable`'s field is private and `bind` is its only constructor, so no partial mount table can exist to be observed. **And the bridge period (`bridge.rs`), which is the "checked against" half of the env-var inversion:** `CCC_LLM_WIKI_PATH` and `CCC_LLM_WIKI_REPOS_ROOT` become mount entries, and until they demote to overrides each is checked against the bound table **through `MountTable::by_path`** — the canonicalize-at-bind law reused whole, never a second comparison — so the symlinked, trailing-slash and real spellings of one tree are one lookup. When they disagree **the FILE WINS** (`Bridged::mount` is `Some` only on agreement, so a diverging variable names no root) and the divergence is **reported once per process, per variable, and never on an exit code** — fail-loud here would brick the CLI on every machine exporting the variable, and a bridge whose mismatch is fatal is not a bridge. An empty table is `unchecked`, not divergent: every unmigrated machine exports both variables, and a check that fires on all of them is deleted before it ever guards anything. **And that projection is here:** `MountTable::projection` yields the `addr::MountSet` the planes that resolve and translate consume — which names this machine BINDS, the **vault name** each bound vault root carries (the stored plane is spelled in vault names), and which declared names are unreachable here WITH the path to check, so a refusal for a declared-but-unreadable root never prescribes a declaration that already exists. It is not `mrd walk`'s projection and the difference is a FACT, not a second spelling: walk also marks a root unreachable when its CORPUS will not build, which only a caller holding corpora can know |
-| `workspace` | Workspace identity: the discovery ladder (named argument → env override → git root → cwd default), canonicalization, the deny ceiling — pure filesystem functions (a leaf, `std` + `cache` only). The ladder answers ONE question — *which root does this path belong to* — and every answer names the rung that answered: `Answer::root` is `None` on the cwd default, so a caller cannot inherit an unanchored cwd silently. The top rung is provenance, not a path: `workspace::Base` says whether the caller NAMED this path on this invocation or it is the ambient cwd, and `MERIDIAN_WORKSPACE` answers only for the ambient case — an explicit operand outranks ambient session state (otherwise `MERIDIAN_WORKSPACE=victim mrd unregister target` would remove VICTIM). It is a type, not a flag, so a new door cannot inherit the old order by omission. The two EXPLICIT planes are deliberately NOT rungs here: the mount table (`config::MountTable`) cannot be one without a dependency cycle, since `config` depends on this crate for the ceiling; and a declared root arrives on the serve path as the hello `workspace` field, pinned exactly by `registry::Registry::pin_declared`, because a daemon has no meaningful cwd to walk. All three planes meet at exactly one point: `deny_reason`, reused whole, never re-implemented |
+| `wire-serve` | The shared typed edge (Law 3 choke-point): one implementation, one host (wire-contract §3.3). Agent/stored address seam: `put` translates cross-root `root:` to the `obsidian://` stored form and `read` back, at the candidate document (`address-grammar.md` §9). Reads `config`'s mount table lazily when a candidate can carry a cross-root position |
+| `render` | The compiled-in render plane: `Renderer` + node-grain walker producing the TOON-compact projection through its own encoder (`render::toon`), with block-elision and claim-link decoration hooks. Decorations arrive as data: no `render → lock → fingerprint` edge |
+| `lock` | The `meridian-lock` fenced-block format: canonical writer/reader, engine sole-writer; owns the reserved `meridian-*` block-language namespace. Reads the current v2 schema; refuses unsupported versions |
+| `effects` | The effect kernel: pure Starlark evaluation, rules in, effect descriptors out; zero I/O, advisory-only |
+| `run` | The mrd-local run plane: plan/execute under the workspace run lock. Owns `Authority` (capabilities real for starlark, absent for bash). See `run-plane.md` |
+| `realise` | Observe → check → apply per claim, on the run plane |
+| `view` | **Ephemeral projection + lock-aware read face** (`wire-contract.md` §10.3–§10.4; not agent core): the parsed corpus in an in-process `:memory:` DuckDB (`build_memory`, the `mrd sql` operator face); walk/status colour reads. **Writes nothing to disk**: no persistent published file, no `view.duckdb`, no `view_path` wire op (`wire-contract.md` §10.4). The `.base` projection (`base-projection.md`): three `base` relations, `link.exclusion_path`, the `base_fold` second witness; its parse is the leaf module `view::base`, hence the third permitted `serde_yaml` taker (§9, enforced by `yaml_confinement`) |
+| `check` | The pure read verb of the reconciliation loop |
+| `preset` | Presets + session birth: def-pinned convention floor; `new`/`unfold`/`reconcile` through the guarded create. See `run-plane.md` (preset section) |
+| `config` | The `MERIDIAN.md` plane, the one entry point, parsed as content. Bootstrap chain: `MERIDIAN_CONFIG`, then `$HOME/MERIDIAN.md`. Four resolution states; absent and zero-mount reach one mount table. The strictest parse in the system: closed `&'static str` reason set, 1-based file lines, a teaching refusal stating nothing loaded. Rev and fingerprint: `blake3(bytes)[:16]`, no new rev noun. `Config` has private fields, `parse` its only constructor: no partial table. Downstream of `model`. **Mount table (`mount.rs`)** binds a declared entry, in order: canonicalize; the `workspace::deny_reason` ceiling, reused whole; three-way uniqueness (name ↔ Obsidian vault name ↔ path), refusing equal-or-nested paths; **the root declares, `MERIDIAN.md` binds**: a mismatch fails the whole parse, an absent declaration renders grey. Per-root state is grey-exit-1's closed vocabulary (one `bound`, four `grey(...)`, one `red(...)`); every non-bound state refuses on exit 1 with its own reason word. Mount-as-claim: a mount may pin its root, verified through `model::fingerprint::verify_content`; no new codec or hash law. `MountTable`'s field is private, `bind` its only constructor. **Bridge period (`bridge.rs`):** `CCC_LLM_WIKI_PATH` and `CCC_LLM_WIKI_REPOS_ROOT` become mount entries; until they demote to overrides, each is checked against the bound table through `MountTable::by_path`. On disagreement **the file wins** (`Bridged::mount` is `Some` only on agreement); the divergence is reported once per process, per variable, never on an exit code. An empty table is `unchecked`, not divergent. **Projection:** `MountTable::projection` yields the `addr::MountSet`: bound names, each bound vault root's **vault name** (the stored-plane spelling), and unreachable declared names with the path to check. Not `mrd walk`'s projection, which also marks a root unreachable when its corpus will not build |
+| `workspace` | Workspace identity: the discovery ladder (named argument → env override → git root → cwd default), canonicalization, the deny ceiling; pure filesystem functions (a leaf, `std` + `cache` only). Every answer names the rung that answered; `Answer::root` is `None` on the cwd default. The top rung is provenance, not a path: `workspace::Base` (a type, not a flag) says whether the caller named the path or it is the ambient cwd; `MERIDIAN_WORKSPACE` answers only for the ambient case, so an explicit operand outranks ambient state. Not rungs: the mount table (`config::MountTable`; `config` depends on this crate) and the declared root, the hello `workspace` field on the serve path, pinned by `registry::Registry::pin_declared`. All three planes meet at `deny_reason`, reused whole, never re-implemented |
 | `cache` | The hashed cache drawer: addressing, atomic sentinel registration, corrupt-is-a-miss probing, last-use GC |
 | `registry` | The daemon-held workspace registry: unix-socket RPC server + client, first-writer-wins, atomic state, idle-reap |
-| `mrd` | The workspace CLI — wires `workspace`/`cache`/`registry` into `init`/`unregister`/`resolve`/`cache`/`daemon`, and mounts the local run plane (`mrd run` via `crates/run`). A local CLIENT of the engine crates, never a resident organ and never on the serve path; its `run`→`model` edge stays a single reviewable dependency. **And the CLI rooted lane (`rooted.rs`)** — the ONE seam every page-taking door resolves `[root:]path` through (address-grammar § 4.6: the door family is predicate-bound; the page's tree governs a rooted op), so two doors cannot hold two opinions of one ref |
+| `mrd` | The workspace CLI: wires `workspace`/`cache`/`registry` into `init`/`unregister`/`resolve`/`cache`/`daemon` and mounts the local run plane (`mrd run` via `crates/run`). A local client, never a resident organ or on the serve path; its `run`→`model` edge stays one reviewable dependency. The CLI rooted lane (`rooted.rs`): the one seam every page-taking door resolves `[root:]path` through (address-grammar § 4.6) |
 | `testsuite` | Integration tests + the frozen ground-truth pack as data |
 | `perfsuite` | Perf harness and claims registry (out of default-members) |
 
-**Bulk lock migration is out-of-product:** any bulk v1→v2 lock rewrite is
+**Bulk lock migration is out-of-product:** a bulk v1→v2 lock rewrite is
 script-class, not a product door.
 
 ## Amendment — the policy gate (armed change plane)
 
 Law: `wire-contract.md` § A.2 (armed plane) and § Refusal taxonomy.
 
-`crates/policy` owns advisory edit-time verdicts — findings the host may act
-on or ignore — and the **blocking gate** at the armed change plane.
-
 - **The seam.** `gate(change, law) → GateOutcome`
- (`Ok(verdicts) | Refusal(violations)`) is `policy::gate`
- (`crates/policy/src/gate.rs:108`), the blocking form of the advisory
- `evaluate_verdicts` seam — evaluated after CAS, before bytes land, in both
- writer paths.
- When a workspace is armed, a block-severity verdict or a door-law violation
- refuses the write; the refusal carries a `{code, recovery}` pair from the
- closed §8 taxonomy (`wire-contract.md` §8 and § A.2).
+  (`Ok(verdicts) | Refusal(violations)`), `policy::gate`
+  (`crates/policy/src/gate.rs:108`), blocks where `evaluate_verdicts`
+  advises: after CAS, before bytes land, in both writer paths. Armed, a block-severity verdict or door-law violation refuses the
+  write with a `{code, recovery}` pair from the closed §8 taxonomy
+  (`wire-contract.md` §8).
 - **Trusted-path armed set.** The armed law is loaded and verified from the
- workspace path inside the trusted write path (`resolve_armed_law`,
- `crates/policy/src/armed_law.rs:257`, fed by the write path's own disk seam);
- no caller-supplied ruleset participates in the gating decision. Absent INDEX on a
- never-armed workspace is a no-op bit-for-bit; a missing INDEX on an
- once-armed workspace fails CLOSED (`convention-fault`).
-- **Additivity holds (Law § Additivity).** `policy` is still an additive
- consumer of the model's index; the gate is a new match arm at the write seam,
- not a reshuffle of what ships. `model`, `wire`, and the projection seam are
- untouched — the engine still never derives `Serialize` on a model type (Law 1),
- and the gate mints wire refusals only through `wire`'s error types (Law 2).
+  workspace path inside the trusted write path (`resolve_armed_law`,
+  `crates/policy/src/armed_law.rs:257`, on its own disk seam); no
+  caller-supplied ruleset takes part. Absent INDEX, never armed: bit-for-bit
+  no-op. Missing INDEX, once armed: fails closed (`convention-fault`).
+- **Additivity holds (Law § Additivity).** The gate is a new match arm at the
+  write seam; `model`, `wire` and the projection seam are untouched (Law 1);
+  refusals mint only through `wire`'s error types (Law 2).
 
-**Scope of the refusal claim.** Refusal makes violations "unrepresentable through an
-armed change plane" — never a stronger claim. The genesis epoch (pre-first-arming
-writes) renders grey, never green. The gate governs only the armed change plane:
-out-of-band mutation (an offline pre-push git rewrite, a root-preserving forged
-journal row) is caught by the git witness plus the receipt-engine-only write
-restriction, or it is a named residual — it is never rendered green by refusal.
+**Scope of the refusal claim.** Refusal makes violations "unrepresentable
+through an armed change plane", nothing stronger. The genesis epoch (pre-first-arming
+writes) renders grey, never green. Out-of-band mutation (an
+offline pre-push git rewrite, a root-preserving forged journal row) is caught
+by the git witness plus the receipt-engine-only write restriction, or is a
+named residual, never rendered green.
 
 ## Named residues and candidate rows
 
-A **named residue** is a construction this engine's own law disapproves, whose
-BEHAVIOUR is correct today, deliberately left in place with its reason recorded.
-A **candidate row** is a change nobody has ordered yet, named so a future docket
-inherits it as a decision rather than rediscovering it as a defect.
-
-Both exist for one reason: an undocumented compromise becomes the architecture
-by forgetting. Neither is a TODO — a row here has been ruled, and the ruling is
-that it waits.
+A **named residue** is a construction the engine's law disapproves, whose
+behaviour is correct today, kept with its reason recorded. A **candidate row**
+is a change nobody has ordered yet, named so a future docket inherits a
+decision, not a defect. Neither is a TODO: each row is ruled to wait.
 
 | # | Row | Kind | Status |
 |---|---|---|---|
@@ -162,71 +136,52 @@ that it waits.
 
 ### S-1 — the stored-plane narrowing refusal, and why it is owed
 
-**This is a tracked obligation, not a hope:** the stored-plane narrowing
-refusal — refuse at the translation door with a named `TranslateError` — is
-owed wherever the wikilink ingress can mint a value the agent-plane grammar
-cannot represent unambiguously. That premise holds for exactly one of the three
-values below; the other two have no value at the seam to refuse.
+The stored-plane narrowing refusal — refuse at the translation door with a
+named `TranslateError` — is owed wherever the wikilink ingress can mint a value
+the agent-plane grammar cannot represent unambiguously:
 
-The three values, each with why it waits:
+- **Multi-segment hpath — law on the mint plane; the joined form is residual
+  debt.** A machine address is segment objects only:
+  `{"hpath":[{"h":"Design"},{"h":"Sub"}]}` (`wire-contract.md` §2.1). S-1
+  tracks the stored/wikilink ingress that can still mint a `/`-bearing opaque
+  string (`[[sessions:notes.md#Design/Sub]]` via
+  `syntax::split_wikilink_target`, round-tripped as one string on both
+  planes). `Design/Sub` is ambiguous — one segment or three — so the refusal
+  acts on that joined residual only, never on segment-form law.
+- **Dewey** — the agent-plane grammar on `main` has no dewey spelling.
+  `[[x.md#1.2]]` is a heading literally named `1.2`, and `heading=1.2` stores
+  it correctly.
+- **Occurrence index** — `Addr` has no spelling for it.
 
-- **Multi-segment hpath — LAW on the mint plane; joined form is residual debt.**
- Machine address is segment objects only:
- `{"hpath":[{"h":"Design"},{"h":"Sub"}]}` (`wire-contract.md` §2.1; multi-segment
- is reachable and normative in segment form). What S-1 still tracks is the
- **stored/wikilink ingress** that can mint a `/`-bearing *opaque string*
- (`[[sessions:notes.md#Design/Sub]]` via `syntax::split_wikilink_target`,
- round-tripped as one string on both planes before full segmented lock
- storage). That joined string is **stored-plane debt being
- killed**, not a second writeable address grammar. The ambiguity
- `Design/Sub` would be ambiguous *against* — one segment or three — is why
- the segmented hpath and the stored-plane narrowing refusal exist; the refusal
- is additive against the joined residual, never against segment-form law.
-- **Dewey** — there is no dewey spelling in the agent-plane address grammar on
- `main`. `[[x.md#1.2]]` is a heading literally named `1.2`, and `heading=1.2`
- stores it correctly.
-- **Occurrence index** — no spelling in `Addr` at all.
-
-**The last two are not merely unreachable, they are UN-IMPLEMENTABLE, and that
-is why no variant was landed for them.** There is no value at the translation
-seam to detect, so the refusal would be a variant with no constructor —
-a claim nothing checks. **Do not land dead variants
-for symmetry, and do not let a later reader land them for tidiness.**
+The last two have no value at the translation seam to detect; a refusal
+would be a variant with no constructor. **Do not land dead variants for
+symmetry.**
 
 ### Q7 — why the **optional view organ**'s cross-root destination is THREE columns, not two
 
-*(View organ / SQL board only — not agent core; `wire-contract.md` §10.3–§10.4. Core path never assumes this schema.)*
+*(View organ / SQL board only — not agent core; `wire-contract.md` §10.3–§10.4.
+The core path never assumes this schema.)*
 
-The first shape considered was a nullable `dest_root` **beside** `dest_path`.
-Implementation measured the fact that shape was drawn without: `link.dest_path` carries an
-**enforced** foreign key into `doc(path)` — the organ's DuckDB schema answers
-*"Violates foreign key constraint because key `path: notes.md` does not exist
-in the referenced table"* — and a cross-root path is not a key in this corpus.
-The literal two-column shape therefore required DROPPING that FK.
+A cross-root link row stores `dest_root` + `dest_root_path` and leaves
+`dest_path` NULL, so `dest_path` always means "a path in this corpus".
+`link.dest_path` carries an enforced foreign key into `doc(path)`; that FK
+makes a link row pointing at a missing document unrepresentable.
 
-The shape, FK preserved: `dest_root` + `dest_root_path`, with `dest_path` left
-NULL for a cross-root edge. The FK is the only thing in the schema that makes *a
-link row pointing at a document that does not exist* unrepresentable, and
-trading it away inside the unit about the link plane answering with the wrong
-document is the wrong direction of travel. It also keeps the column honest at
-its grain: **`dest_path` means "a path in THIS corpus" always, rather than only
-sometimes.**
-
-The third column widens the error space, so the illegal states are closed
-STRUCTURALLY — `CHECK ((dest_root IS NULL) = (dest_root_path IS NULL))` and
-`CHECK (dest_path IS NULL OR dest_root IS NULL)` — rather than by the
-projector's discipline. `dangling`'s two destination clauses (`dest_path IS
-NULL AND dest_root IS NULL`) are what stops a resolved cross-vault link reading
-as broken, pinned by a red test, mutation-proved one-edit, in
-`crates/view/tests/u21_cross_root_link_rows.rs`; the third clause (`AND
-exclusion IS NULL`) is what stops a deliberately-unhashed
-target reading as broken, pinned the same way in
-`crates/view/tests/dangling_exclusion.rs`.
+- *A nullable `dest_root` beside `dest_path`* — rejected: a cross-root path
+  is not a key in this corpus, so that shape required dropping the FK.
+- Illegal states close structurally:
+  `CHECK ((dest_root IS NULL) = (dest_root_path IS NULL))` and
+  `CHECK (dest_path IS NULL OR dest_root IS NULL)`.
+- `dangling` tests `dest_path IS NULL AND dest_root IS NULL` so a resolved
+  cross-vault link is not broken
+  (`crates/view/tests/u21_cross_root_link_rows.rs`), and `AND exclusion IS
+  NULL` so a deliberately unhashed target is not
+  (`crates/view/tests/dangling_exclusion.rs`).
 
 ### R1.6-a — the stored→agent re-join, and why it stays
 
 `stored_occupants` (`crates/wire-serve/src/positions.rs:443`) decodes a stored
-URI into its parts, then **re-joins them into one string and re-parses it**:
+URI into parts, then re-joins and re-parses them:
 
 ```rust
 // crates/wire-serve/src/positions.rs, in stored_occupants
@@ -238,123 +193,92 @@ let occupant = Occupant {
  addr: Addr::parse(&address)…
 ```
 
-The parts were already separated; they are joined only to be split again. That
-is a joined string address on a machine surface, which **the machine-surface
-law disapproves** — *"Arrays for machines, TOON for humans. No string address forms
-in machine surfaces."*
+That is a joined string address on a machine surface, which the machine-surface
+law disapproves — *"Arrays for machines, TOON for humans. No string address
+forms in machine surfaces."*
 
-**It is not producing a wrong answer.** The join and the split agree, and the
-round trip is asserted byte-identically
-(`positions.rs::tests::the_agent_plane_form_round_trips_byte_identically`).
-**Only the CONSTRUCTION is disapproved, not the behaviour** — and that is what
-separates this row from the settled `PinSpec.selector` case, where a refusal
-had been lifted while the capability was still missing: a half-delivered
-capability blocking an ordered proof had to be finished, and this does not.
-
-**Why it waits.** The fix requires `Addr` to gain a parts constructor, and
-`Addr` has **no `from_parts` by deliberate invariant**:
-
-> *"there is no `Addr::from_parts` a caller can use to smuggle an unparsed
-> prefix into the `path` field"* — `address-grammar.md` §2.2
-
-That invariant is what makes every downstream guard checkable. Redesigning it is
-its own considered act with its own gate, not a rider slipped into another
-unit's train. **The successor act is: give `Addr` a fallible parts constructor
-running the same checks `parse` runs, then delete the join.**
+- **The behaviour is correct.** Join and split agree; the round trip is
+  asserted byte-identical
+  (`positions.rs::tests::the_agent_plane_form_round_trips_byte_identically`).
+  Only the construction is disapproved.
+- **Why it waits.** `Addr` has no `from_parts` by deliberate invariant
+  (`address-grammar.md` §2.2: *"there is no `Addr::from_parts` a caller can
+  use to smuggle an unparsed prefix into the `path` field"*); that keeps every
+  downstream guard checkable, so redesigning it is its own act with its own
+  gate.
+- **Successor act:** give `Addr` a fallible parts constructor running the same
+  checks `parse` runs, then delete the join.
 
 ### C-1 — the link plane's in-process degrade, and its NAMED SUCCESSOR
 
-The daemon's warm state is one workspace's corpus, keyed by that workspace's own
-canonical path and invalidated by its own fingerprint
-(`crates/registry/src/registry.rs:317-321`, `warm_or_build`). **It holds no
-mounted-root corpora**, so the link arm serves ambient state only
-(`crates/registry/src/server.rs:1121-1135`, the `Op::Links` arm on the
-daemon's one-workspace warm engine). The link plane therefore resolves a cross-vault
-link by DEGRADING that one op to in-process, where the mounted corpora can be
-loaded the way the walk plane already loads them
-(`crates/mrd/src/walk_cmd.rs:146`).
+The daemon warms one workspace's corpus (keyed by its canonical path,
+invalidated by its fingerprint; `crates/registry/src/registry.rs:317-321`,
+`warm_or_build`) and no mounted-root corpora, so the `Op::Links` arm serves
+ambient state only (`crates/registry/src/server.rs:1121-1135`). The link plane
+resolves a cross-vault link by **degrading that one op to in-process**, loading
+mounted corpora as the walk plane does (`crates/mrd/src/walk_cmd.rs:146`).
 
-**The asymmetry is a documented contract, not a bug awaiting discovery:** for
-this one op the daemon is knowingly less capable than the in-process path, and a
-page carrying a cross-vault link pays a cold corpus build. Stated here rather
-than smoothed, on the same discipline as the exit-code asymmetry in
-`address-grammar.md`.
+- **A documented contract.** For this op the daemon is knowingly less capable
+  than in-process; a page with a cross-vault link pays a cold corpus build
+  (cf. the exit-code asymmetry in `address-grammar.md`).
+- **Narrow.** The degrade fires only when an unresolved head names a root the
+  mount table declares (`addr::head_names_declared_root` — bound or
+  declared-but-unreachable), never on any `:`-bearing head — an external URI
+  parses as a root (`https://…` → head `https`) and must not buy a cold
+  rebuild.
+- **Table-external heads** — external scheme, undeclared root, or a name
+  outside `[a-z0-9-]` — keep the daemon's ambient `unresolved`, verbatim,
+  exit 0; the address plane still refuses those spellings on every door that
+  consults it (`walk`, pins, a named read). A mount table that will not resolve
+  or bind keeps the old posture and degrades.
 
-**The degrade is narrow:** it fires only when
-an unresolved head names a root the mount table DECLARES
-(`addr::head_names_declared_root` — bound or declared-but-unreachable), never
-on any `:`-bearing head. An external URI parses as a root
-(`https://…` → head `https`), so under a wide lexical gate one
-`[[https://…]]` wikilink buys the whole corpus a cold rebuild to say
-"https is not a mounted root" (measured: 137 s on an 11.5k-file vault over 6
-such links).
-A table-external head — external scheme, undeclared root, or a name outside
-the `[a-z0-9-]` charset — keeps the daemon's ambient `unresolved`,
-verbatim, exit 0; the address plane still refuses those spellings on every
-door that consults it (`walk`, pins, a NAMED read). A mount table that will
-not resolve or bind keeps the old posture and degrades.
-
-> **THE NAMED SUCCESSOR — option (A): the daemon holds mounted corpora.** That
-> is the correct end state and it was deferred DELIBERATELY, not overlooked. It
-> needs per-root fingerprint invalidation, residency and reap — a designed
-> subsystem with its own design element and gate, exactly as the push channel
-> has. Building it as an implementation detail of a link-plane fix would port
-> a mechanism where a contract is owed.
-
-**A degrade with a named successor is a decision; a degrade without one becomes
-the architecture by forgetting.** That is why this row exists.
+> **Named successor — option (A): the daemon holds mounted corpora.** Deferred
+> deliberately: it needs per-root fingerprint invalidation, residency and reap
+> — a designed subsystem with its own design element and gate, not a detail of
+> a link-plane fix.
 
 ### H-1 — the `#` refusal, recorded here so it is not lost
 
-The `#` refusal SURVIVES, because `#` is a live delimiter in both wikilink and
-`path#fragment` ingress. Its shipped form is `refuse_unrepresentable_heading`
-(`crates/wire-serve/src/write.rs`).
-
-**This row is a POINTER, not a claim about this tree.** The refusal's shapes
-are asserted where it lives; writing them here would assert a tree this row
-does not own, which is the defect this whole section exists to prevent.
+The `#` refusal survives: `#` is a live delimiter in both the wikilink and
+`path#fragment` ingress. Shipped form: `refuse_unrepresentable_heading`
+(`crates/wire-serve/src/write.rs`). This row is a pointer; the refusal's shapes
+are asserted where it lives.
 
 ### D-1 — the `/`-coat limitation, and why C2 stays reserved
 
-The `/`-heading law has two halves. The machine half: a heading whose raw text carries `/` is representable
-and pinnable as ONE segment of an hpath array (`{"hpath":[{"h":"Guide"},
-{"h":"A/B"}]}`) — gated by
-`crates/wire-serve/tests/s7_pin.rs::a_slash_bearing_heading_pins_end_to_end_and_stores_as_one_array_element`.
-The coat half: `ReadSel::parse` (`crates/wire/src/lib.rs`, the ONE
-human-string ingress door) splits its string on `/`, so the joined spelling
-cannot address that heading — it yields a well-formed address resolving to
-nothing, and the door MISSES rather than silently serving a different section.
-Gated as a characterization test:
-`crates/wire-serve/tests/s7_pin.rs::the_cli_string_coat_still_cannot_address_a_slash_bearing_heading`.
+The `/`-heading law has two halves:
 
-**D-1 and G-1 are two properties of ONE function.** `ReadSel::parse` is
+- **Machine half.** A `/`-bearing heading is representable and pinnable as
+  one hpath array segment (`{"hpath":[{"h":"Guide"},{"h":"A/B"}]}`).
+  Gate:
+  `crates/wire-serve/tests/s7_pin.rs::a_slash_bearing_heading_pins_end_to_end_and_stores_as_one_array_element`.
+- **Coat half.** `ReadSel::parse` (`crates/wire/src/lib.rs`, the one
+  human-string ingress door) splits on `/`, so the joined spelling resolves to
+  nothing: the door **misses** rather than serving a different section.
+  Characterization test:
+  `crates/wire-serve/tests/s7_pin.rs::the_cli_string_coat_still_cannot_address_a_slash_bearing_heading`.
+
+**D-1 and G-1 are two properties of one function.** `ReadSel::parse` is
 infallible by signature (`pub fn parse(s: &str) -> Self`): it splits the
-heading arm on `/` (this row) and takes an `^id` verbatim with no charset test
-(G-1). A ratification that makes that signature fallible moves both rows at
-once, and the D-1 characterization test above is where it shows.
+heading arm on `/` (D-1) and takes `^id` verbatim with no charset test (G-1).
+Making it fallible moves both rows; the D-1 test above shows it.
 
-**The coat is not widened.** Widening it means an escape grammar over a flat
-selector, which is C2, and C2 stays reserved: a string selector is not the
-ideal machine form, the put path is an array with no ambiguity, and sanitization
-is never necessary — so C2 is reached for only if a real need appears. This row
-exists so that reservation lives here rather than being rediscovered by a
-caller as an unknown bug.
+**The coat is not widened.** Widening it is an escape grammar over a flat
+selector — C2 — and C2 stays reserved until a real need appears (a string
+selector is not the ideal machine form, the put path is an unambiguous array,
+sanitization is never necessary).
 
-**A miss, not a refusal — and the line that makes this row and its neighbours
-one law.** Stated once here and cited from the others rather than restated:
+**A miss, not a refusal.** The one law for this row and its neighbours:
 
 > **Refuse what can never exist; miss what exists but this door cannot spell —
 > and the taught recovery must be the one that actually repairs it.**
 
-The test is what a corpus edit could do. An input naming something **no corpus
-could ever carry** is outside the minting grammar, so it REFUSES `bad_request`
-— "look again" is a recovery that loops forever (§2.4's `_`-bearing block ids).
-A `/`-bearing heading is the other case: the corpus carries it, the machine
-plane pins it, and only this ingress cannot spell it — so the door MISSES, and
-the miss owes the caller the spellings that DO reach it.
+Input no corpus could ever carry is outside the minting grammar and
+**refuses** `bad_request` (§2.4's `_`-bearing block ids). A `/`-bearing
+heading exists and the machine plane pins it; only this ingress cannot spell
+it, so the door **misses** and owes the caller the spellings that do reach it.
 
-**The scoping is PER DELIMITER, PER INGRESS.** A blanket "live delimiters of
-the joined spelling" claim would be wrong — each door has its own boundary:
+**Scoping is per delimiter, per ingress:**
 
 | Ingress | `/` | `#` |
 |---|---|---|
@@ -363,38 +287,28 @@ the joined spelling" claim would be wrong — each door has its own boundary:
 | wire / MCP segment arrays (`{"hpath":[…]}`) | heading TEXT | heading TEXT |
 | wikilink / `path#fragment` heading refusal | — | **H-1's column, untouched by this row** |
 
-**The two escapes the face must teach.** A heading the joined coat cannot
-spell is still addressable two ways, and both come off the row the toc already
-published: its **dewey ordinal** (`--section 1.2`) and its **raw heading
-segments** as an hpath array (one entry per heading, no joining). So the
-refusal owes the caller those two forms — pointing back at the toc read alone
-hands back the same un-feedable title and the recovery loops. The one teaching site is
-`wire_serve::section_recovery`; the in-tree precedent it follows is the
-duplicate-heading refusal, which already teaches machine address + dewey.
+**Two escapes the face must teach**, both from the published toc row: the
+**dewey ordinal** (`--section 1.2`) and the **raw heading segments** as an
+hpath array (one entry per heading, no joining); pointing at the toc alone
+loops. Teaching site: `wire_serve::section_recovery` (precedent: the
+duplicate-heading refusal, which teaches machine address + dewey).
 
 > **The script plane executes the teaching it prints.** The commit leg carries
-> the engine's refusal verbatim, so the plane that RECEIVES this teaching must
-> accept both taught forms — a `str`-only `section=` would meet the hpath
-> array with a type error and cost a caller several calls to disbelieve the
-> circle. `section=` on the script `put()` and `read()` builtins takes the
-> §2.1 segment array (run-plane.md § the arming surface), and the script toc
-> face publishes each heading row's raw segments as `hpath`, so the taught
-> recovery is executable on every plane that prints it. The coat itself is
-> untouched — this row and C2's reservation stand.
+> the engine's refusal verbatim, so `section=` on the script `put()` and
+> `read()` builtins takes the §2.1 segment array (run-plane.md § the arming
+> surface; a `str`-only `section=` would meet the hpath array with a type
+> error), and the script toc face publishes each heading row's raw segments as
+> `hpath`. The coat itself is untouched.
 
 ### G-1 — the §2.4 charset is enforced at one ingress of two
 
-**This row is a DIVERGENCE, named as a candidate because the fix is a face
-decision nobody has ratified yet — not because the behaviour is defensible.**
-D-1's neighbour in the table and its opposite in verdict: read the refuse/miss
-line stated at D-1 first, because it is what makes these two rows one law
-instead of two moods.
+A **divergence**, a candidate only because the fix is a face decision nobody
+has ratified. The refuse/miss line at D-1 governs it.
 
-wire-contract §2.4 rules ONE block-id charset, `[A-Za-z0-9-]+`, on BOTH planes,
-and states that a `_`-bearing anchor is outside the strict-plane grammar
-(`bad_request`). §4.5 and GOAL 2 say the same thing twice more for the walk
-plane ("refuses loudly"). Measured, three doors
-answer the one law three ways:
+wire-contract §2.4 rules one block-id charset, `[A-Za-z0-9-]+`, on both
+planes, and a `_`-bearing anchor is outside the strict-plane grammar
+(`bad_request`); §4.5 and GOAL 2 say the same for the walk plane ("refuses
+loudly"). Three doors answer it three ways:
 
 | Door | `_`-bearing id | Recovery taught |
 |---|---|---|
@@ -402,75 +316,59 @@ answer the one law three ways:
 | read (composed / `--section`) | `no_match` + nearest list | re-read |
 | walk (`resolve`) | `ref_not_found{stage:2}` | refresh |
 
-**Why this is a divergence and not a taste.** `no_match` and `ref_not_found`
-both teach *the thing you named is not there right now*. For an id §2.4
-forbids minting anywhere, that sentence is false in a way no future corpus can
-make true, so the taught recovery is a circuit with no exit — an agent that
-typos `_` into an id is told "it dangles" instead of "it can never exist", and
-the unrepresentable/merely-absent distinction is unobservable in any
-transcript. Only `bad_request`/fix terminates.
+**Why a divergence.** `no_match` and `ref_not_found` teach *not there right
+now*, which is false forever for an id §2.4 forbids minting; only
+`bad_request`/fix terminates.
 
-**The doors do not disagree about the law — one ingress carries the
-decode-time charset guard and the other does not.** (Not the *mint-guard*:
-§2.4 assigns that named artifact to a later implementation phase, §13.8, and it
-governs MINTING going forward. What G-1 measures is refusal at decode when
-ADDRESSING an id that already exists out of grammar — which §2.4 rules
-present-tense and defers nowhere.) The structured ingress refuses at decode
-(`wire-serve::decode::decode_anchor`, `wire-serve::read::to_model_ref`). The
-human-string ingress does not: `wire::ReadSel::parse` is infallible by
-signature and takes `^id` verbatim with no charset test, so every door
-inheriting it — CLI `--section`, the `PATH#FRAG` frag door, `mrd pin` — carries
-an out-of-grammar id past decode into resolution, where it can only land as a
-miss. The walk leg is the same omission in its own parser
-(`model::walk::parse_linktext`), whose `Miss{stage,dest}` has no arm that could
-carry a grammar refusal even if it wanted one. **This is the same function D-1
-describes splitting on `/`: the two rows are two properties of one door.**
+**One ingress carries the decode-time charset guard; the other does not.**
+(This is decode-time refusal of an existing out-of-grammar id, which §2.4
+rules present-tense — not the *mint-guard* that §2.4 assigns to §13.8 for
+future minting.)
 
-`wire-contract.md` §18 already leans on the ruled behaviour: it carries no
-walk-plane charset deviation, on the reasoning that a `_`-bearing anchor
-refusing loudly is conforming. That premise is currently unmet in code.
+- Structured ingress: refuses at decode (`wire-serve::decode::decode_anchor`,
+  `wire-serve::read::to_model_ref`).
+- Human-string ingress: `wire::ReadSel::parse` takes `^id` verbatim, so CLI
+  `--section`, the `PATH#FRAG` frag door and `mrd pin` carry the id into
+  resolution, where it can only miss.
+- Walk leg: the same omission in `model::walk::parse_linktext`, whose
+  `Miss{stage,dest}` has no arm for a grammar refusal.
 
-**The proposed face decision, awaiting ratification** (the full argument,
-the measured fragments, and the blast-radius measurement are this row's own
-body above and below): the §2.4 boundary is a DECODE-TIME boundary
-enforced at every ingress before any lookup, so an out-of-grammar id never
-becomes a selector and can never surface as a miss; the other two doors adopt
-the write door's existing refusal string verbatim, so one law gets one
-sentence; the guard sits at the `resolve` op boundary, never inside `walk()`,
-which stays pure best-effort app-parity as §4.5 requires; and the refusal never
-becomes an `unresolved` row, because that vocabulary is a *resolution*
-vocabulary and a grammar arm inside it would re-create the conflation this row
-exists to remove.
+`wire-contract.md` §18 assumes a `_`-bearing anchor refuses loudly and so
+carries no walk-plane charset deviation; code does not yet meet that premise.
 
-**Nothing moves in code under this row.** It is a candidate: the divergence is
-recorded, the fix is proposed, and the ruling is that it waits.
+**Proposed face decision, awaiting ratification:**
+
+- Enforce the §2.4 boundary at decode, at every ingress, before any lookup, so
+  an out-of-grammar id never becomes a selector or a miss.
+- The other two doors adopt the write door's refusal string verbatim.
+- The guard sits at the `resolve` op boundary, never inside `walk()`, which
+  stays pure best-effort app-parity (§4.5).
+- The refusal never becomes an `unresolved` row; that is resolution
+  vocabulary.
+
+**Nothing moves in code under this row.**
 
 ## Amendment — capabilities do not apply to bash
 
-Law: **Gate: `crates/mrd/tests/law_no_caps_on_bash.rs`** — that file is
-what makes this hold, and this section is what it enforces. A reader who
-proposes "just a small cap check on bash" must answer both.
+Law: **Gate: `crates/mrd/tests/law_no_caps_on_bash.rs`** — that file makes
+this hold, and this section is what it enforces.
 
 > **Capabilities do not apply to `bash` tasks. Not now, not later, not in a
 > weaker form.**
 >
 > 1. A bash task carries **no `caps:` line**, no cap resolution, no cap source,
 > and no `deny-default`.
-> 2. The engine **never prints a claim about what a bash task may do** — most of
+> 2. The engine **never prints a claim about what a bash task may do** — above
 > all not `(read-only)`.
-> 3. Bash is **unsandboxed by definition** — and that is exactly why no human
-> surface says the word: with no sandbox in the engine, `unsandboxed` names an
-> alternative that does not exist. The only honest description is the positive
-> fact alone: *undeclared effects*. (The class
-> survives structurally — `GuaranteeClass::Unsandboxed`, the `--json`
-> `guarantee` key — and a guarantee word renders only where it is positive:
-> `hermetic`.)
-> 4. Capabilities remain a real, enforceable contract for **starlark**, and only
-> starlark.
+> 3. Bash is **unsandboxed by definition**, and no human surface says that
+> word (there is no sandbox for it to contrast with); the only honest
+> description is *undeclared effects*. The class survives structurally
+> (`GuaranteeClass::Unsandboxed`, the `--json` `guarantee` key); a guarantee
+> word renders only where positive: `hermetic`.
+> 4. Capabilities remain a real, enforceable contract for **starlark**, and
+> only starlark.
 
-**The guarantee is impossible, not merely difficult.** A capability claim is a
-promise about what a process CANNOT do, and for bash the engine holds no
-mechanism that makes one:
+**The guarantee is impossible.** No layer bounds a bash process:
 
 | layer | what exists | why it does not bound the process |
 |---|---|---|
@@ -478,268 +376,206 @@ mechanism that makes one:
 | after the window | nothing | the detector's own wording is *"during exec window"*; a `nohup`, launchd plist, cron line or daemon writes with no observer |
 | outside the corpus | nothing | env scrubbing does not restrict network, credentials, SSH, or `rm -rf` — none of it is an "effect"; and there is no cwd isolation at all, the step runs where `mrd` runs |
 
-A guard escapable by `nohup` is not a guard, so **no honest value exists for a
-bash `caps:` field — including `none`, including `(read-only)`.** A
-resolution ladder on that path buys complexity with no guarantee behind
-it, plus misleading-by-adjacency: `caps:` is TRUE on the starlark row above and
-importing its enforcement model onto the row below asserts, in the engine's own
-voice, a conclusion the engine cannot support.
+**No honest value exists for a bash `caps:` field — not `none`, not
+`(read-only)`**; a resolution ladder there would only mislead by adjacency to
+the starlark row, where `caps:` is true.
 
 **Structural, not cosmetic.** `run::caps::Authority` has two variants —
-`Capabilities(CapResolution)` and `Unsandboxed` — and it is what the executor's
-choke point validates against. The bash dispatcher holds no capability field at
-all (`dispatch_bash::BASH_AUTHORITY`), so it cannot name, narrow, or
-half-enforce one; `resolve_authority` is the only language-aware entry and does
-not even READ a bash task's `task.<name>.caps` declaration, because validating a
-value that governs nothing teaches that it might. Deleting the printing while
-leaving resolution running underneath fails the gate's second half by
-construction.
+`Capabilities(CapResolution)` and `Unsandboxed` — validated at the executor's
+choke point. The bash dispatcher has no capability field
+(`dispatch_bash::BASH_AUTHORITY`), and `resolve_authority`, the only
+language-aware entry, does not read a bash task's `task.<name>.caps`
+declaration. Deleting the printing while resolution still runs fails the
+gate's second half.
 
-**What this does NOT weaken.** Starlark keeps the whole contract: hermetic
-evaluator, closed builtin surface, no `exec`/`os`/`subprocess`, every effect a
-descriptor the applier gates. Both refusal shapes are asserted in the same gate
-file, so the bash half cannot be bought by weakening the starlark half:
-`md.*` without its cap → `capability denied`, exit 1; `proto.*` without its cap
-→ `state: unexecuted-no-capability`, exit 0. The `check-*` / `verify-*` bash
-fence refusal also survives — that is a NAME law, not a capability.
+**Not weakened.** Starlark keeps the whole contract: hermetic evaluator, closed
+builtin surface, no `exec`/`os`/`subprocess`, every effect a descriptor the
+applier gates. The same gate file asserts both refusal shapes: `md.*` without
+its cap → `capability denied`, exit 1; `proto.*` without its cap →
+`state: unexecuted-no-capability`, exit 0. The `check-*` / `verify-*` bash
+fence refusal also survives, as a name law, not a capability.
 
-**Bash has NO governed-tree effect channel at all** — no effect-shim fd, no
-frame grammar, no descriptor apply. A bash block observes and reports; governed
-writes ride the wire faces (MCP `put`) or a starlark task. A gated effect
-channel for bash would never bound the block anyway: a denied block writes with
-`sed -i` instead, where the bracket at most detects the change and never rolls
-it back — the gate only pushes the write off the attested path. The law above
-stands with nothing left for a bash capability to govern, and the gate file's
-second half asserts the governed page stays byte-identical after any bash run.
+**Bash has no governed-tree effect channel** — no effect-shim fd, no frame
+grammar, no descriptor apply. A bash block observes and reports; governed
+writes ride the wire faces (MCP `put`) or a starlark task. A gated bash channel
+would not bound the block (a denied block writes with `sed -i` instead; the
+bracket detects, never rolls back). The gate's second half asserts the governed
+page stays byte-identical after any bash run.
 
 ## Amendment — the face-honesty law
 
-Law: **Gate: `crates/mrd/tests/law_face_honesty.rs`** — that file is what
-makes this hold, and this section is what it enforces.
+Gate: `crates/mrd/tests/law_face_honesty.rs`.
 
 > **Every face states the bound of its own answer.**
->
-> 1. **A subset answer is MARKED.** A face that filters states the count
-> withheld, the criterion, and the pointer to the full face. Enumeration stays
-> machine-side — flooding the human face is the walk-payload failure from the
-> other direction.
-> 2. **A limit that can refuse is DISCOVERABLE BEFORE IT REFUSES** — stated in
-> the verb's help, never learnable only by tripping it. A raise flag is *not*
-> ruled in: raisability is cost policy, not discoverability.
-> 3. **A refusal carries its RECOVERY** at the human face, as the wire already
-> rules it on frames: point at the verb that answers the question the caller was
-> evidently asking, when one clearly exists — **otherwise say nothing, because a
-> wrong pointer is worse than none.**
-> 4. **Engine-owned files are COUNTED AND LABELED**, never silently either way.
 
-**The defect that produced it, in the measured form.** `mrd links` printed 6
-lines naming 2 files while the corpus held 112, and said nothing about the 110
-it withheld: *a person stops there and concludes the corpus holds 2 files.* The
-information existed and only `--json` revealed it. The shape recurs across
-layers — a passive meter read as measured
-headroom, an uncredentialed 404 read as a dead API — and it is always the
-same: **a face answers a different question than it appears to, and it fails
-toward ABSENCE.** Absence is the dangerous direction because a filtered answer
-and an empty world render identically.
+1. **A subset answer is marked:** the count withheld, the criterion, and a
+   pointer to the full face. Enumeration stays on the machine face: a
+   flooding payload (the walk-payload failure) delivers less truth, and
+   `links --json` already enumerates every file, so marking costs one line.
+2. **A limit that can refuse is discoverable before it refuses,** in the
+   verb's help, never only by tripping it. A raise flag is not ruled in;
+   raisability is cost policy, not discoverability. The machine half (an
+   `ack_bounds` grammar: a core-declared number a client reads) is an owed
+   wire dependency this tree does not carry; only the help half lands here.
+3. **A refusal carries its recovery** at the human face, as the wire rules
+   on frames: name the verb that answers the caller's evident question when
+   one clearly exists; otherwise nothing, because a wrong pointer is worse
+   than none.
+4. **Engine-owned files are counted and labeled**, never silently either way.
+   `mrd init` writes `MERIDIAN.md` (`config::CONFIG_FILENAME`) into the
+   corpus it declares; excluding it is a hidden filter, and counting without
+   a label pollutes the content count. Ruled form: *"4 files: 3 content + 1
+   engine-owned"*.
 
-**Why marking, not enumerating (clause 1).** The opposite failure is already
-named in this repo: a payload that floods the reader carries the same amount of
-truth and less of it arrives. So the human face states the bound and hands over
-a pointer; the machine face carries the rows. `links --json` already enumerated
-every file — clause 1 costs one line, not a new query path.
+Defect: `mrd links` printed 6 lines naming 2 files of 112 and said nothing
+about the 110 withheld; only `--json` showed them. A filtered answer and an
+empty world look identical.
 
-**Why COUNT AND LABEL, never exclude (clause 4).** `mrd init` writes
-`MERIDIAN.md` (`config::CONFIG_FILENAME`) into the corpus it declares, so anyone
-who enumerates a workspace and counts gets the engine in their denominator.
-EXCLUDE was refused because a hidden filter is the exact disease this law
-kills; COUNT-without-label was refused because it lets the engine pollute the
-content count. The ruled form keeps both readings available and neither silent:
-*"4 files: 3 content + 1 engine-owned"*.
-
-**Clause 2 has a machine half this engine cannot yet serve, and that is named,
-not hidden.** "Readable by the machine face" means an `ack_bounds` grammar — a
-core-declared number a client reads — which **this tree does not carry**:
-`ack_bounds`, `protocol.limits`, and `"limits"` return zero hits, with
-`exceeded the read budget` and `walk root not in the corpus` found by the same
-tooling in the same scope as the positive control beside that zero. So the help
-half lands here and **the machine half is an owed wire dependency**,
-recorded so the wire work inherits a pointer rather than a gap.
-
-**What this law does NOT authorize.** It does not authorize raising a budget
-(cost policy, refused), it does not authorize a face inventing a recovery
-pointer it is not sure of (clause 3's second half is as binding as its first),
-and it does not authorize the human face growing an enumeration. **The `script`
-budget refusal is the law's positive example and does not change** — *"exceeded
-the read budget of 64 reads per attempt — refused, never truncated"* names the
-number, names the units, and gives absence exactly one meaning.
+**Not authorized:** raising a budget (cost policy); a recovery pointer a face
+is not sure of; an enumeration on the human face. The `script` budget refusal
+is the positive example and does not change: *"exceeded the read budget of 64
+reads per attempt — refused, never truncated"* names number and units and
+gives absence one meaning.
 
 ## Amendment — no hard-coded flow (mechanism in code, semantics in markdown)
 
-Law: the engine is a tool for anyone, and different users — not all of them
-engineers — hold different notions of what a flow is, what a kanban is, what
-they want from it. Hard-coding any concrete concept wastes the design's
-flexibility; the flexibility lives in the hook features, where anyone can
-describe in a markdown file what they want and what its rules are.
+Users, not all of them engineers, hold different notions of a flow or a
+kanban, so the engine hard-codes none: a user describes what they want and
+its rules in a markdown file (the hook features).
 
-**Mechanism in code, semantics in markdown.** Engine code carries the evaluator;
-the user's markdown carries every concrete flow concept. The law has two halves
-and both bind:
+**Mechanism in code, semantics in markdown.** Engine code carries the
+evaluator; the user's markdown carries every concrete flow concept.
 
-1. **No baked folder names.** No engine path may decide where a user's content
-   lives, and no folder name may act as a validity predicate on user markdown.
-   A directory a user is expected to author into is a value read from their
-   markdown, defaulted in code at most.
-2. **No baked flow vocabulary.** No status word, no state-key name, no card or
-   kanban concept, no role or lane name may appear in an engine decision — not in
-   a comparison, not in a refusal string, and not in bytes the engine writes into
-   the user's tree.
+1. **No baked folder names.** No engine path decides where user content
+   lives; no folder name is a validity predicate on user markdown. A user's
+   authoring directory is read from their markdown, defaulted in code at
+   most.
+2. **No baked flow vocabulary.** No status word, state-key name, card,
+   kanban, role or lane name in an engine decision: not in a comparison, a
+   refusal string, or bytes written into the user's tree.
 
-**The user-markdown home.** Flow semantics live in user-authored pages — rule and
-hook pages on the policy/effects planes, and the frontmatter of the page a verb
-is invoked on. Those pages name the folders, the states, the key that spells
-state, and the prose; the engine reads them as data. This is the same
-replaceability the wire already rules for consumers (`wire-contract.md` §1.1,
-"zero consumer concepts", and §11: *pack data behind a generic manifest; no
-evaluator hard-coded*) — this amendment states it for the whole engine, not for
-one plane.
+Flow semantics live in user pages: rule and hook pages on the policy and
+effects planes, and the frontmatter of the page a verb is invoked on. They
+name the folders, the states, the key that spells state, and the prose; the
+engine reads them as data. This extends `wire-contract.md` §1.1 ("zero
+consumer concepts") and §11 (*pack data behind a generic manifest; no
+evaluator hard-coded*) to the whole engine.
 
-**What "generic evaluation" means.** The engine matches on **structure** —
-a frontmatter key exists, a selector resolves, a pin verifies, a rule fires — and
-never on a flow literal. Concreteness enters only as a value the user supplied
-and the engine echoes back unread. The shipped model is
-`preset::DEFAULT_ROOT_RECORD`: the constant is a fallback, `fm_scalar(&doc,
-"root")` is the answer, and a user who spells their root differently is served.
-Every flow-touching site should read like that one.
+**Generic evaluation.** The engine matches on structure (a frontmatter key
+exists, a selector resolves, a pin verifies, a rule fires), never on a flow
+literal; concreteness is a user value echoed back unread. Model:
+`preset::DEFAULT_ROOT_RECORD` is a fallback, `fm_scalar(&doc, "root")` is
+the answer. Every flow-touching site reads like that.
 
-**The boundary — engine-intrinsic vocabulary is mechanism, and is not covered.**
-The engine's own state and mount convention (`MERIDIAN.md`, `.meridian/`,
-receipt paths, the daemon's socket and state files) and the engine's own verdict
-vocabularies (`realise`'s `converged` / `drifted-fixed` / `non-convergent`,
-the rules registry's `collision`) are the engine speaking about itself, the
-equivalent of `.git`. The test that separates the two: **what the engine writes
-into the user's tree, or reads as the user's law, is semantics; what the engine
-keeps for itself is mechanism.** Tests and fixtures may use concrete flow words
-freely — a fixture is an example, not a decision.
+**Boundary.** The engine's own vocabulary is mechanism, not covered: its
+state and mount convention (`MERIDIAN.md`, `.meridian/`, receipt paths, the
+daemon's socket and state files) and its verdicts (`realise`'s `converged` /
+`drifted-fixed` / `non-convergent`, the rules registry's `collision`). What
+the engine writes into the user's tree or reads as the user's law is
+semantics; what it keeps for itself is mechanism. Tests and fixtures may use
+concrete flow words.
 
-**Three sites where the concreteness lives in the user's markdown**, recorded
-here so they are inherited as decisions rather than re-litigated, each gated by
-its own test.
+**Three sites where the concreteness lives in the user's markdown**, each
+with its own gate:
 
-- **`realise`'s board directory.** Generic in the library
+- **`realise`'s board directory:** generic in the library
   (`RealiseSpec::board_dir`); the CLI seam reads `realise.board_dir` off the
-  realising page and defaults in code only — never a pinned `"board"`. Gated by
+  realising page and defaults in code only, never a pinned `"board"`. Gate:
   `crates/mrd/tests/realise_cli.rs`.
-- **`realise`'s `render_card`.** A card whose type word, state key, state value
-  and prose were all baked would leave a user's own rules unable to match the
-  page the engine minted for them. The claim's `realise.card` template page
-  supplies the card's entire vocabulary through the one template mechanism
-  (`preset::template_of` + `preset::fill_slots`); the engine fills only the
-  slots it owns (`{{selector}}`, `{{rule}}`, `{{detail}}`, `{{now}}`,
-  `{{actor}}`), a declared-but-unresolvable template refuses the mint loud, and
-  the baked body mints only when no template is declared. Gated by the
-  card-template scenarios in `crates/realise/tests/scenarios.rs` — the
-  matchability receipt observes the minted card through the engine's own
-  `FieldEquals` on the user's `status:` spelling.
-- **`preset`'s floor prefix.** A `FLOOR_PREFIX = "conventions/"` would be a
-  folder name acting as a validity predicate on a user's preset. The constant is
+- **`realise`'s `render_card`:** the claim's `realise.card` template page
+  supplies the card's entire vocabulary via the one template mechanism
+  (`preset::template_of` + `preset::fill_slots`); the engine fills only its
+  slots (`{{selector}}`, `{{rule}}`, `{{detail}}`, `{{now}}`, `{{actor}}`).
+  An unresolvable declared template refuses the mint; the baked body mints
+  only with no template declared. Gate: the card-template scenarios in
+  `crates/realise/tests/scenarios.rs` (the matchability receipt uses the
+  engine's own `FieldEquals` on the user's `status:` spelling).
+- **`preset`'s floor prefix:** `FLOOR_PREFIX = "conventions/"` would be a
+  folder name as validity predicate, so the constant is
   `DEFAULT_FLOOR_PREFIX`, the fallback behind the def's own `floor:` key
-  (`run-plane.md` § 6, Law 6.3); `pins_floor` measures the pins against
-  `PresetDef::floor_prefix`, so a def filing its convention suite under
-  `standards/` is as valid as one under `conventions/`. Gated by
-  `crates/preset/tests/gates.rs`.
+  (`run-plane.md` § 6, Law 6.3); `pins_floor` measures pins against
+  `PresetDef::floor_prefix`, so `standards/` is as valid as `conventions/`.
+  Gate: `crates/preset/tests/gates.rs`.
 
 ## Amendment — the one state owner (fingerprint grain)
 
-Law: the unification sentence below. Write authority is daemon-routed, the
-checkpoint's identity tuple binds to this generation name, and the commit shape
-whose linearized step this law names is constructed beneath. The merkle-spec
-half is `node-rev-merkle-spec.md` §6.3.
+The merkle-spec half of this law is `node-rev-merkle-spec.md` §6.3.
 
 > **The workspace naming tree, the parsed world, the journal seq, and every
-> minted generation advance under ONE generation name `(instance, seq)`, in
-> one act, owned by one per-workspace state owner — so tree, parse cache,
-> journal, and tokens can never skew against each other.**
+> minted generation advance under one generation name `(instance, seq)`, in
+> one act, owned by one per-workspace state owner, so tree, parse cache,
+> journal, and tokens never skew.**
 
-- **One act.** A commit's settled delta applies to the resident tree, the
-  parse cache, and the journal in one short state-owner step that assigns the
-  next `(instance, seq)`; roots chain contiguously
-  (`commit[n].root_before == commit[n-1].root_after`). Everything outside
-  that step — staging, validation, durability I/O — runs parallel and
-  unordered (the ruled commit shape: the only linearized work is the µs
-  in-memory advance + journal append, group-committable).
-- **One name.** Every minted generation — a script's pinned entry generation,
-  a node's `last_seq` stamp, a checkpoint binding, a delta frame — carries
-  the same `(instance, seq)` pair. Two artifacts of one generation can never
-  disagree about WHEN.
-- **The audit edge.** Per-node `last_seq` stamps are maintained by the SAME
-  guarded write path that maintains digests, so the hash instrument audits
-  the stamp instrument and the two cannot drift silently
-  (`node-rev-merkle-spec.md` §6.3, the ZFS hole_birth lesson). Stamps are
-  instance-bound; an instance mismatch degrades to the content-fold
-  compare — hash tokens stay epoch-free, cursors do not.
-- **The home is the registry/serve seam**;
-  the LAW binds whichever home: no second place may advance any of the four.
+- **One act.** The state-owner step applies a commit's settled delta to the
+  resident tree, parse cache, and journal and assigns the next
+  `(instance, seq)`; roots chain
+  (`commit[n].root_before == commit[n-1].root_after`). Only that µs
+  in-memory advance plus journal append is linearized (group-committable);
+  staging, validation, and durability I/O run outside it, parallel and
+  unordered across disjoint writers.
+- **One name.** A script's pinned entry generation, a node's `last_seq`
+  stamp, a checkpoint binding, and a delta frame carry the same
+  `(instance, seq)`.
+- **The audit edge.** `last_seq` stamps and digests share one guarded write
+  path, so the hash instrument audits the stamp instrument
+  (`node-rev-merkle-spec.md` §6.3). Stamps are instance-bound: an instance
+  mismatch degrades to the content-fold compare. Hash tokens are epoch-free;
+  cursors are not.
+- **The home is the registry/serve seam;** no second place may advance any
+  of the four.
 
-Construction of the linearized step — the publication half
-(`crates/wire-serve/src/publish.rs`); the lease half is `authority.rs`:
+The linearized step (publication half `crates/wire-serve/src/publish.rs`,
+lease half `authority.rs`):
 
 - **Reservation algebra.** Admission atomically reserves the complete
-  premise/read region set `R` and the complete physical write region set
-  `W`. Compatibility is conventional OCC: `R/R` is compatible; `W/W`,
-  `R/W`, and `W/R` conflict on a spatial intersection. A root read
-  intersects every write; a folder premise intersects writes at or under
-  it; a point-file premise does not block a disjoint folder; an absence
-  premise reserves the exact parent/name edge. Target-only reservation is
-  insufficient when a root, ancestor, absence, enumeration, selector, or
-  sql premise influenced the plan. Overlapping callers wait inside the
-  authority (never `workspace_busy`); disjoint callers never wait.
-  Staging may precede the reservation; the reservation is held from final
-  reverify through visible renames, the state-owner step, and durable
-  finalization.
+  premise/read region set `R` and physical write region set `W`;
+  conventional OCC: `R/R` is compatible, `W/W`, `R/W`, and `W/R` conflict on
+  a spatial intersection. A root read intersects every write; a folder
+  premise intersects writes at or under it; a point-file premise does not
+  block a disjoint folder; an absence premise reserves the exact parent/name
+  edge.
+  Target-only reservation is insufficient when a root, ancestor, absence,
+  enumeration, selector, or sql premise shaped the plan. Overlapping callers
+  wait inside the authority (never `workspace_busy`); disjoint callers never
+  wait. Staging may precede the reservation, which holds from final reverify
+  through visible renames, the state-owner step, and durable finalization.
 - **Durable intent.** Before the first visible rename, each transaction
-  creates one checksummed `O_EXCL` intent (`.meridian/intents/<txn>`,
-  outside the hash domain). After that durable decision no error is a
-  refusal: it is `commit_unknown` until recovery proves complete or
-  restores the complete declared set. A destination matching neither old
-  nor new identity is `recovery_ambiguous` (quarantine, never guess).
-  Group commit may share a durability flush only if per-member decision
-  ordering and failure attribution survive — a member rejected before
-  the group manifest is a clean individual refusal; an indeterminate
-  member is `commit_unknown` under its own id; one member's semantic
-  error never lands on a neighbor.
-- **Pre-image verify is the second-writer refusal.** With writes
-  daemon-routed, the write flock is not on the publish path. The `apply_batch` pre-image compare
-  (content + receipt) is what refuses a second in-process writer inside
-  the one authority, so the two-file pairing cannot become silent loss.
-  Editors, git, and bash remain the stated external-race residual.
-- **The µs step.** The state owner applies each settled path delta to
-  the then-current authenticated tree (never the planning `root_before`)
-  and assigns a contiguous `root`/`seq`/frame. There is no disk sync in
-  that mutex. Staging, validation, and all durability I/O run outside it,
-  in parallel across disjoint writers.
+  creates one checksummed `O_EXCL` intent (`.meridian/intents/<txn>`, outside
+  the hash domain). After it no error is a refusal: the result is
+  `commit_unknown` until recovery proves completion or restores the complete
+  declared set; a destination matching neither old nor new identity is
+  `recovery_ambiguous` (quarantine, never guess). Group commit may share a
+  durability flush only if per-member decision ordering and failure
+  attribution survive: a member rejected before the group manifest is an
+  individual refusal; an indeterminate member is `commit_unknown` under its
+  own id; one member's semantic error never lands on a neighbor.
+- **Pre-image verify is the second-writer refusal.** Writes are
+  daemon-routed, so the write flock is off the publish path; the
+  `apply_batch` pre-image compare (content + receipt) refuses a second
+  in-process writer inside the one authority. Editors, git, and bash remain
+  the external-race residual.
+- **The µs step.** The state owner applies each settled path delta to the
+  then-current authenticated tree (never the planning `root_before`) and
+  assigns a contiguous `root`/`seq`/frame, with no disk sync in that mutex.
 
 ## Amendment — the fsync class (fingerprint grain)
 
-Law: the class below, with no optional background flush.
-
-> **Plain `fsync(2)` is the durability class of every sync site, on every
-> platform. `F_FULLFSYNC` is never issued — not on the ack path, not as a
+> **Plain `fsync(2)` is the durability class of every sync site on every
+> platform. `F_FULLFSYNC` is never issued, neither on the ack path nor as a
 > background flush. Drive cache is accepted: the engine makes no power-loss
 > or platter-safety claim.**
 
-- **macOS pays the class via `libc::fsync`.** Rust std's `sync_all` and
-  `sync_data` both issue `fcntl(F_FULLFSYNC)` on macOS (measured, std 1.97.1,
-  aarch64), so no std call gives the ruled class there. `fs::honest_sync` /
-  `fs::honest_sync_path` are the shared primitive; a sync site routes through
-  them — or calls `libc::fsync` with a checked return where its crate does
-  not depend on `fs` — never `sync_all`/`sync_data`.
-- **Linux already complies and is unchanged.** `sync_all` is `fsync(2)`,
-  `sync_data` is `fdatasync(2)`, zero fcntl (measured).
-- **No `F_BARRIERFSYNC` substitute.** It orders without promising durability
-  and is never a silent stand-in.
-- **Return values are checked.** A failed `fsync` is an `io::Error`, never a
-  dropped rc. Whether a site then propagates or stays best-effort (the
-  dir-sync-after-visible-rename sites, which must never turn a committed
-  write into a reported failure) is that site's stated policy.
-- **Scope: local disk only.** No NAS, no network mounts. The `ENOTSUP`/`ENOTTY`-on-network-mount failure
-  mode is a recorded limit, not a built fallback.
+- **macOS:** std `sync_all` and `sync_data` both issue `fcntl(F_FULLFSYNC)`
+  (std 1.97.1, aarch64). A sync site uses `fs::honest_sync` /
+  `fs::honest_sync_path`, or `libc::fsync` with a checked return where its
+  crate does not depend on `fs`; never `sync_all`/`sync_data`.
+- **Linux:** unchanged; `sync_all` is `fsync(2)`, `sync_data` is
+  `fdatasync(2)`, zero fcntl.
+- **`F_BARRIERFSYNC`** is never a substitute: it orders without promising
+  durability.
+- **Return values are checked:** a failed `fsync` is an `io::Error`, never a
+  dropped rc. Propagate or best-effort is each site's stated policy;
+  dir-sync-after-visible-rename sites never turn a committed write into a
+  reported failure.
+- **Scope: local disk only,** no NAS, no network mounts. `ENOTSUP`/`ENOTTY`
+  on a network mount is a recorded limit, not a built fallback.
