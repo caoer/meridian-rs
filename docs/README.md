@@ -10,51 +10,59 @@ owns: [process, standing corrections, inventory, reading order]
 
 `meridian-rs` is a Rust engine over a Markdown workspace: one directory tree of
 `.md` pages, declared by a `MERIDIAN.md` root file. It ships one binary, `mrd`,
-which reads and writes pages, attests them with pins, and runs the resident
-daemon. The daemon's unix socket is the one wire door (`wire §3.3`); a client
-(an MCP server, an editor plugin, a script) drives that socket and holds no
-Markdown semantics. Reads and writes address sections by structure, never by a
-client byte offset, and every write is guarded by revisions: a stale revision
-is refused, not merged. The files in this directory define the law; code
+which reads and writes pages, records pins over them, arms a workspace, and
+runs the resident daemon. The daemon's unix socket is the one wire door
+(`wire §3.3`); a client (an MCP server, an editor plugin, a script) drives that
+socket and holds no Markdown semantics. Reads and writes address sections by
+structure, never by a client byte offset. A write states the revision it
+expects, and a stale revision is refused, not merged (`wire §5.1`); whether a
+scope requires a guard is host policy (`wire §5.3`), and `force` is a client's
+path past one (`wire § A.1`). The files in this directory define the law; code
 follows them.
 
 ## The model in one page
 
 - **workspace** — one directory tree of Markdown pages, declared by a
-  `MERIDIAN.md` root file.
+  `MERIDIAN.md` root file (`schema`).
 - **page / section** — a page is one `.md` file. A section is a heading and
-  everything under it, up to the next heading of the same or higher level.
-- **address** — where a read or write points. Machine addresses are
-  **segments only**: `hpath` (a list of heading segments `{"h":"Goals"}`, with
-  optional `n` to pick a repeat), `anchor` (a block id), or `fm_key` (a
-  top-level frontmatter key). A joined string like `Goals/Q3` is never a
-  machine address.
-- **span** — a `[start, end)` byte range on the raw file bytes. Clients never
-  send spans.
-- **node_rev** — the 16-hex revision of one node: `blake3(span bytes)[:16]`.
-  It is a CAS token: a write that names a stale `node_rev` is refused.
-  `file_rev` is the same kind of token over a whole file.
+  everything under it, up to the next heading of the same or higher level
+  (`wire §1`).
+- **address** (`wire §2.1`; across roots, `addr`) — where a read or write
+  points. Machine addresses are **segments only**: `hpath` (a list of heading
+  segments `{"h":"Goals"}`, with optional `n` to pick a repeat), `anchor` (a
+  block id), or `fm_key` (a top-level frontmatter key). A joined string like
+  `Goals/Q3` is never a machine address.
+- **span** — a `[start, end)` byte range on the raw file bytes (`wire §1`).
+  Clients never send spans.
+- **node_rev** — the 16-hex revision of one node: `blake3(span bytes)[:16]`
+  (`merkle §2`). It is a CAS token (`wire §5.1`): a write that names a stale
+  `node_rev` is refused. `file_rev` is the same kind of token over a whole
+  file.
 - **fingerprint** — the workspace content hash: `b3:` + 64 hex, never
-  truncated. It is a Merkle root over the hash domain. The wire noun is
-  `fingerprint`.
+  truncated (`fp §2`). It is a Merkle root over the hash domain
+  (`merkle §4`). The wire noun is `fingerprint`.
 - **hash domain** — the set of files the fingerprint covers: Markdown only,
-  minus the ignores declared in `meridian/domain.md`.
+  minus dot-segment paths and the ignores declared in `meridian/domain.md`
+  (`wire §12.1`).
 - **CAS** — compare-and-swap. A write states the revision it expects; a
-  mismatch is refused, never merged.
-- **splice** — the only write op. It replaces a section, block, or frontmatter
-  key at an address, guarded by revs.
-- **receipt** — the recorded fact of what a write did. It is returned on the
-  wire and, when armed, written into the workspace.
-- **armed / gate** — armed is the workspace state in which rules and receipts
-  are enforced. The gate is the seam where a write is checked before it lands.
+  mismatch is refused, never merged (`wire §5.1`).
+- **splice** — the only write op (`wire §4.4`). It replaces a section, block,
+  or frontmatter key at an address, guarded by revs.
+- **receipt** — the recorded fact of what a write did (`wire §6`). It is
+  returned on the wire and, when armed, written into the workspace.
+- **armed / gate** (`armed`) — armed is the workspace state in which rules and
+  receipts are enforced. The gate is the seam where a write is checked before
+  it lands.
 - **daemon / wire** — the daemon is the resident `mrd daemon` process; its
-  unix socket is the one wire door. The wire is the NDJSON protocol on that
-  socket: one JSON request per line in, one response per line out.
-- **run plane** — `mrd run` / `mrd script`: the engine executes a task block
-  from a page and turns what it emits into governed effects.
+  unix socket is the one wire door (`wire §3.3`). The wire is the NDJSON
+  protocol on that socket: one JSON object per line, requests correlated to
+  responses by `id`, plus id-less notification frames for deltas
+  (`wire §3.1`).
+- **run plane** (`run`) — `mrd run` / `mrd script`: the engine executes a task
+  block from a page and turns what it emits into governed effects.
 - **pin** — a recorded claim that page A draws from section B at B's
-  fingerprint. `mrd check` reports whether it still holds; a pin that no
-  longer holds is **drift**.
+  fingerprint (`docsys §6`). `mrd check` reports whether it still holds; a pin
+  that no longer holds is **drift**.
 
 ## Rules of this directory
 
@@ -89,9 +97,10 @@ follows them.
 
 A citation names its document: `<id> §N`, for example `wire §4.4` or
 `merkle §5`. The ids are the `id` column of the table below; the registry is
-`docsys §2`. A bare `§N` reads as `wire §N`; qualify it or leave it, never
-re-point it. Inside one file, a citation to that same file may stay bare. The
-full grammar, anchors, and pins are in `doc-system.md`.
+`docsys §2`. A bare `§N` is deprecated for new writing and reads as
+`wire §N`; qualify it or leave it, never re-point it. Inside one file, a
+citation to that same file may stay bare. The full grammar, anchors, and pins
+are in `doc-system.md`.
 
 ## Files in this directory
 

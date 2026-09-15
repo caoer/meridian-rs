@@ -59,13 +59,13 @@ fp1.span2.b3.40b167ed9b42a2beadb7c441b214efdc93069ef443a1cc2b5ae2ccda4cf03152
 - No YAML escaping needed; the lock quotes it anyway (`fingerprint: "<CID>"`,
   `crates/lock` render law).
 - Full-length tokens appear only in lock blocks (`laws.md` lock crate) and
-  receipts (pin-count objects); render and wire views abbreviate as `@` + digest
-  prefix (`@40b167ed`, 8 hex), non-normative here and owned by the claim-link
-  view plane's `@fp` grammar, always the digest.
+  receipts (pin-count objects). Render and wire views abbreviate the digest as
+  `@` + an 8-hex prefix (`@40b167ed`). The short form is non-normative here,
+  owned by the claim-link view plane's `@fp` grammar.
 
 ### 2.2 Codec registry
 
-A codec names domain + normalization version.
+A codec names a byte domain and normalization version.
 
 | Codec | Status | Domain |
 |---|---|---|
@@ -89,18 +89,18 @@ reinterpretation.
 
 - **Parse**: grammar-only, codec-agnostic. Any valid 4-field token parses into
   `{version, codec, hashfn, digest}`, unknown codecs and hash-fns included;
-  digest length is checked only for a known hashfn.
+  digest length is checked only for known hashfns.
 - **Verify** (recompute + compare) needs an implemented `(version, codec,
   hashfn)` triple. An unknown member — a future `fp2` still parses — is
   **unverifiable**: not malformed, not red, rendered grey (`superseded-algo`
   family), never green.
-- Never tokens: bare 16-hex (`node_rev`); `b3:` + 64hex (workspace-merkle wire
+- Not tokens: bare 16-hex (`node_rev`); `b3:` + 64hex (workspace-merkle wire
   spelling; its move onto `tree1` is a future wire amendment).
 
 ## 3. What bytes enter the hash — the selector axis
 
-`span2` composes with any selector; the selector and canonicalization axes never
-conflate.
+`span2` composes with any selector; span selection and canonicalization stay
+separate axes.
 
 - **fingerprint(node)** = `b3( norm2( raw[span.start..span.end) ) )` on the
   node's contract-§1 span as minted: sections heading- and newline-inclusive,
@@ -163,12 +163,12 @@ previous `\n` (or 0):
 ### 4.3 Application to a slice
 
 `norm2(node)` = the span bytes with every removal range **intersected with the
-span** applied; removals are computed once on the whole-file parse, never on a
+span** applied. Removals are computed once on the whole-file parse, never on a
 slice. A range partly outside the span removes only the intersection — a
-determinism guard the grains pin promotes to (file, section, block) cannot hit:
-marker plus separator sit inside the host block's span, so a block span excludes
-a following own-line anchor (trivially neutral), while the section or document
-span containing that anchor line removes it by R2/R2b.
+determinism guard the grains pin promotes to (file, section, block) cannot
+reach: marker and separator sit inside the host block's span, so a block span
+excludes a following own-line anchor (trivially neutral), while the section or
+document span containing that anchor line removes it by R2/R2b.
 
 ### 4.4 Noted edge (parser-governed)
 
@@ -183,7 +183,7 @@ For any pin promotion (` ^id` at a block's line tail, or `^id` own line after a
 block, id in charset):
 
 1. `fingerprint(node)` is unchanged at every grain (block, section, document)
-   for every node whose span contains the site: no false drift.
+   for every node whose span contains the promotion site: no false drift.
 2. `node_rev(node)` moves for every such node, and the workspace root moves:
    the CAS and guard planes see the real byte change (§1).
 

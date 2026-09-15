@@ -1095,7 +1095,7 @@ The downstream implementation plan is sequenced against this table; this section
 
 *Each claim, plus the § that guarantees it.*
 
-- **Every dialect construct is wire-representable; no lossy projection** — `wire-map` superset-by-embedding, as four wire-observable predicates (§4.1); divergence is a projection compile error, not runtime loss (§14).
+- **Every dialect construct is wire-representable; no lossy projection** — `wire-map` superset-by-embedding, as four wire-observable predicates: every construct is representable (an 11-kind enum, `Comment` and `InlineCode` included); wikilink information is carried whole; an unterminated fence surfaces as `unterminated`; frontmatter key order is preserved in `keys` (§4.1). Divergence is a projection compile error, not runtime loss (§14).
 - **Ids are validated as raw lexemes before typed decode**, full discrimination set worked (§3.1).
 - **Ground truth is regenerated from this contract, not hand-authored** — resolution GT is app-oracle `obsidian-compat@1.12.7` (§14, §13.4).
 - **One rev per node; client spans have no expressible form** (§5.1).

@@ -12,7 +12,7 @@ owns: [what a release promises, stamp and tag mechanics, what a tag publishes]
 
 ## §1 A release is a two-key point
 
-A named point on this repo's history at which every surface in §2 and §3 holds **both** keys:
+A release is a named point on this repo's history at which every surface in §2 and §3 holds **both** keys:
 
 | Key | Held when |
 |---|---|
@@ -70,8 +70,8 @@ The promise surface is `caps` in the `hello` response (`wire-contract.md` §3.2)
 | Promise | Law |
 |---|---|
 | One wire door — the daemon's unix socket; NDJSON line dialogue | §3.1, §3.3 |
-| The `id` **echo**: a JSON integer lexeme in `[0, 2^53)` returns unchanged. **A non-conforming lexeme is nulled and the request is still served** — no refusal, no `id_raw`, though §3.1 requires both: law stands, unserved | §3.1; `wire-contract.md` §18 row 9 |
-| Strict server / tolerant client; unknown request fields are rejected | §3.2 |
+| The `id` **echo**: a JSON integer lexeme in `[0, 2^53)` returns unchanged. **A non-conforming lexeme is nulled and the request is still served** — no refusal, no `id_raw`, though §3.1 requires both: the law stands, not yet served | §3.1; `wire-contract.md` §18 row 9 |
+| Strict server / tolerant client; unknown request fields are refused | §3.2 |
 | `node_rev` is MUST on every `toc`/`cat`/`extract` node while `splice ∈ caps` | §3.2 |
 | Every error carries `code` + `recovery` from the closed six-class enum | §8 |
 | A content-mutating wire write demands fingerprint or `force` (`guard_required`) | § A.1 |
@@ -136,11 +136,11 @@ The engine negotiates a contract rev per session: `hello.contract:"v3"` selects 
 
 ### §4.6 Refusal codes
 
-§2.4 promises the classified refusal, never the sentence that teaches a way out; its absence breaks no promise. At the write door: `crates/wire-serve/src/write.rs` → `bad_request(...)` → `ErrorCode::BadRequest` + `Recovery::Fix` (`crates/wire-serve/src/lib.rs`, test `bad_request_carries_the_fix_class_and_message`), no teaching clause. `replace_section` is the taxonomy's **known unreached path**: classified, never exercised by a landed case; an `append` at the same address and rev landed, so the gap is coverage, not addressing.
+§2.4 promises the classified refusal, never the sentence that teaches a way out; its absence breaks no promise. At the write door, `crates/wire-serve/src/write.rs` refuses through `bad_request(...)`, which sets `ErrorCode::BadRequest` + `Recovery::Fix` (`crates/wire-serve/src/lib.rs`, test `bad_request_carries_the_fix_class_and_message`) and no teaching clause. `replace_section` is the taxonomy's **known unreached path**: classified, never exercised by a landed case; an `append` at the same address and rev landed, so the gap is coverage, not addressing.
 
 ### §4.7 Recorded at cut time
 
-Recorded, not repaired; none narrows a promise row.
+Each row is a limit recorded, not repaired; none narrows a promise row.
 
 | Recorded | What it says |
 |---|---|
@@ -223,11 +223,13 @@ A tag builds both served platforms and publishes each binary to Forgejo's **gene
 ## §6 How the promise changes after a release
 
 - **Additive** — a new cap or response field; old callers ignore it
-  (tolerant-client law, §3.2). No promise breaks; the notes name it.
+  (tolerant-client law, `wire-contract.md` §3.2). No promise breaks; the
+  notes name it.
 - **Amending** — a standing doc section changes before the code (docs-first);
   the shipping release names the section.
 - **Removing** — a cap leaves the set, which breaks callers: a ruling, not a
-  refactor, with its own decision record as §3.3 and §10.4 do.
+  refactor, with its own decision record as `wire-contract.md` §3.3 and
+  §10.4 do.
 
 A surface neither doc nor `caps` names is not a promise; no release note may
 create one.
@@ -237,9 +239,9 @@ create one.
 The script entry's wall-clock budget is **7 s**: `WALL_CLOCK`
 (`crates/mrd/src/script/cmd.rs`) in the CLI, `effects::DEFAULT_WALL_CLOCK` in
 the daemon, two literals kept equal by hand. It binds at three layers inside
-the engine, named in the constants' doc comments and in
-`run-plane.md` § Where the budgets bind. The attempt is one § A.7 `script`
-frame.
+the engine, named in the constants' doc comments and in `run-plane.md`
+§ Where the budgets bind. The attempt is one `wire-contract.md` § A.7
+`script` frame.
 
 - **read** (daemon) — before each program read, against the pinned entry
   world (`registry::script_op`).
@@ -254,6 +256,3 @@ It is an **engine** budget, never the operator's process wall: measure by
 engine ms; no door headroom may be inferred from process wall, in either
 direction. A write-bearing run can cross 7 s of process wall and still commit
 correctly.
-
-§4.7 script-wall record: at production corpus scale this wall binds before the
-64-read ceiling.

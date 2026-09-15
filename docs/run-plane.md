@@ -177,8 +177,8 @@ switches the execution model:
   measured at call time through the § A.7 frame's `token_count_endpoint`;
   the engine never counts tokens. The string is measured verbatim (the tool
   face's `{text}` arm), no ref resolution; compose with `read()` to measure
-  served content. No endpoint faults "unbound"; an endpoint refusal faults
-  the program with its words carried whole; the dial deadline caps at the
+  served content. A lane with no endpoint bound faults "unbound"; an endpoint
+  refusal faults the program with its words carried whole; the dial deadline caps at the
   remaining wall clock. No trace entry; a top-level binding echoes like any
   computed name.
 - **No rollback.** A mid-program fault leaves prior acts landed; the trace
@@ -291,9 +291,9 @@ escape, the one the section-miss refusal already teaches. A heading whose
 raw text carries `/` rides one entry; the occurrence index `n` rides the
 structured form only. The toc face publishes each heading row's raw segments
 as `hpath` beside the joined `section`, so any row feeds back into
-`section=` verbatim. A bare string in the list refuses with the wire's
-single-sourced text (wire-contract §2.1); the type refusal names both
-accepted forms.
+`section=` verbatim. Out-of-grammar members refuse at the boundary: a bare
+string in the list refuses with the wire's single-sourced text (wire-contract
+§2.1), and the type refusal names both accepted forms.
 
 **The statement-position rule — echo and quiet.** Every read is recorded. A
 read **echoes** exactly when its call is the whole right-hand side of a
@@ -1019,8 +1019,8 @@ freeze and fire, because starlark-rust resolves globals at compile time.
 | fire | refuse: `fault.class: declare_at_fire` | act, under the page's `caps:` ceiling |
 
 **A block declares once.** `declarations` on the load row is the uninterpreted
-**dict** `declare()` collected (§ A.8): one dict, or `null`. The fire door
-calls one entry, and the engine interprets no key of a declaration, so a second
+**dict** `declare()` collected (§ A.8): one dict, or `null` when the block
+declares nothing. The fire door calls one entry, and the engine interprets no key of a declaration, so a second
 `declare()` refuses **`fault.class: declared_twice`** at its own line, on that
 block's row alone, siblings untouched. One anchored block per declaration.
 
@@ -1115,6 +1115,9 @@ On a **cold workspace** the answer is per lane:
   `corpus_warming` (retry)**, neither blocking nor bypassing;
 - **CLI / in-process lane** — no background substrate to warm on, so it
   **builds the drawer inline** and the caller waits.
+
+Wire-contract § 3.2's promise is the read door's; a fire is not the read door,
+so its answer is stated here.
 
 `prelude` is one per call, cap `run.mode`, and an invalid one refuses
 `prelude_invalid` (§ The consent gate). Declarations and frozen modules are
@@ -1477,8 +1480,8 @@ page lives: under `run.caps.fix-note: md.edit:**/tasks/*.md`, a `fix-note` task
 on `rules/escalate.md` is denied whatever it declares, the bare verb included;
 renamed under an unscoped `fix-*` entry it applies cleanly.
 
-Bare `md.edit` resolves to `md.edit:tasks/**` with
-`narrowed by ceiling: md.edit`. The builtin `check-*` / `verify-*` ceiling is
+Under that ceiling (`md.edit:tasks/**`), a page declaring bare `md.edit`
+resolves to `md.edit:tasks/**` with `narrowed by ceiling: md.edit`. The builtin `check-*` / `verify-*` ceiling is
 absolute; those names refuse a bash fence loudly at load. Caps bind at the
 executor choke point before any I/O: one violation refuses the whole batch.
 
@@ -1607,8 +1610,10 @@ Executor laws:
  in-process acquires — the birth lane's `create` call, the
  delta-mint bracket — retry a `workspace_busy` refusal every 10 ms until
  `MERIDIAN_BUSY_WAIT_MS`
- (default 10 000) is spent, then surface the same typed refusal. `run.lock` is
- uncontended and gets no wait. Lock order stays `run.lock` → `write.lock`.
+ (default 10 000) is spent, then surface the same typed refusal. The door takes
+ the lock before any byte, so a flock refusal has read nothing and written
+ nothing — the retry is not a second write path. `run.lock` was measured at zero
+ contention, so it gets no wait. Lock order stays `run.lock` → `write.lock`.
 - **No foreign-edit gate.** No replace-class effect is compared against a prior
  receipt's after-rev, and no takeover flag exists — a per-target pin-and-verify
  is an unkeepable premise guard (the no-guard amendment at the top of this
@@ -1690,9 +1695,9 @@ exit 2, never ignored: `--load` with `#^<id>`;
 address; `TASK` / `-- ARGS` / `--env` on a fire, whose one input channel is
 `--input-json`.
 
-No argv JSON. With TASK omitted the one declared task runs; with several, the
-binding named `default` (`task.default`); with none, the CLI prints the list
-and exits 2, never guessing. One owner, `run::address::resolve_task`, so CLI
+No argv JSON. With TASK omitted the one declared task runs; with several
+declared, the binding named `default` (`task.default`) runs; where no `default`
+binding exists, the CLI prints the list and exits 2, never guessing. One owner, `run::address::resolve_task`, so CLI
 live, `--dry` rehearsal and the wire arm answer the same. Contract violations
 exit 2 with the declared contract shown.
 
@@ -1739,7 +1744,7 @@ secret reads are intended: ship the scoped claim, never the unqualified one.
 | Bash enforcement is detection, not prevention | intended scope | an OS sandbox, future work |
 | Out-of-tree writes / secret reads by bash | **honor-system** (accepted) | outside the hash domain; claim scoped |
 | Non-md / `.meridian/` / dot-path writes | **accepted gap, distinct from the honor-system** | outside the snapshot hash domain, silently undetected |
-| Symlink laundering (`ln -s secret notes/x.md`) | refused or named | `O_NOFOLLOW`: symlinked path components are refused in walk + snapshot; where refusal is impossible this is a **distinct named gap**. The walk COMPLETES before refusing, and the refusal is a sorted COUNT plus the first offender — `N symlinked paths refused in exec-window snapshot, first: …` — one link keeping the single-path wording. A symlink AT a domain-ignored path (`meridian/domain.md` frontmatter, e.g. `ignore: ["scratch*/", "bin/"]`) is skipped, not refused, reserved paths excepted. The refusal is DELTA-SCOPED: only a link APPEARING inside the window refuses; one pre-dating the bracket is recorded at open, subtracted at close, outside detection. Links never enter the hash domain, so nothing behind one reaches a hash/attest/receipt surface. The bracket's own instruments stay refusable pre-existing or not: a symlinked domain config, and a symlink at a RESERVED path (armed-rules artifact, attested marker). |
+| Symlink laundering (`ln -s secret notes/x.md`) | refused or named | `O_NOFOLLOW`: symlinked path components are refused in walk + snapshot; where refusal is impossible this is a **distinct named gap** — it defeats in-domain detection, unlike a plain out-of-tree write. The walk COMPLETES before refusing, and the refusal is a sorted COUNT plus the first offender — `N symlinked paths refused in exec-window snapshot, first: …` — one link keeping the single-path wording. A symlink AT a domain-ignored path (`meridian/domain.md` frontmatter, e.g. `ignore: ["scratch*/", "bin/"]`) is skipped, not refused, reserved paths excepted. The refusal is DELTA-SCOPED: only a link APPEARING inside the window refuses; one pre-dating the bracket is recorded at open, subtracted at close, outside detection. Links never enter the hash domain, so nothing behind one reaches a hash/attest/receipt surface. The bracket's own instruments stay refusable pre-existing or not: a symlinked domain config, and a symlink at a RESERVED path (armed-rules artifact, attested marker). |
 | Ungoverned writes are never rolled back | law, not gap | the run exits 1 with the delta named (§7.1) |
 | Multi-file crash window (content committed, receipt lost) | accepted | re-derive; lint finds the missing receipt |
 | Local run beside a resident daemon (§7.1) | accepted | its writes reach the daemon as external change, like any out-of-band edit |
@@ -1768,7 +1773,7 @@ Under `MRD_TIMING` (the switch, sink, line grammar and the two lanes:
 | `page.load` | `total` | `mrd::run_cmd` | the door's `address::load_page` — parse of the addressed page |
 | `conventions.load` | `total` | `mrd::run_cmd` | `caps::load_conventions` — the root's `MERIDIAN.md` |
 | `task.gate` | `total` | `mrd::run_cmd` | the door's pre-check: `resolve_task` + `contract_for` + `validate` + `resolve_authority` |
-| `pre_eval` | `total` | `run::runner::pre_eval` | the plane's own address → contract → caps chain, repeating the door's early-refusal work as its own gate ([`pre_eval`], ONE owner for both tenses); measured on the chain, so `--dry` reports it too |
+| `pre_eval` | `total` | `run::runner::pre_eval` | the plane's own address → contract → caps chain, repeating `page.load` and `conventions.load` as its own gate ([`pre_eval`], ONE owner for both tenses); measured on the chain, so `--dry` reports it too |
 | `dispatch` | `total` | `run::runner` | starlark leg only: `eval` + `snapshot` + `apply` whole, in that ORDER — the fold FOLLOWS the eval that decides if it is needed (§ The run plane). **Bash is not that shape**: no `eval` span, no `snapshot*` line — it observes via phase-free `fs::domain_leaves_memoized` (the phases live in `fs::domain_snapshot_with_leaves` and its fold-only twin `fs::domain_fold`) first, under the flock, before the block. The lazy rule is the starlark leg's |
 | `snapshot` | `dispatch` | `fs::domain_fold` on the run plane; `fs::domain_snapshot_with_leaves` for callers that want the bytes | the three below, whole; absent when this tense's lazy gate did not fire (§ The run plane). Both emit the same four names |
 | `snapshot.walk` | `snapshot` | same | `Domain::load` + `hash_domain` — the hash-domain walk |
@@ -1850,9 +1855,9 @@ grep -o 'phase=currency\.floor\.[a-z_]*' "$L" | sort | uniq -c   # by cause
 
 `snapshot.*` comes from `fs`, not this plane: **every** caller of
 `domain_snapshot*` lights it up, so **a `phase=snapshot` line does not imply a
-run.** Folders reporting it under their own `cmd=`: `mrd sql`, `mrd check`,
-`mrd walk`, `mrd repair`, `mrd retire`, `mrd links`, the daemon's resident
-rebuild, its watch loop. It also repeats per mount corpus (`load_mounts_for` →
+run.** Callers that fold and report it under their own `cmd=`: `mrd sql`,
+`mrd check`, `mrd walk`, `mrd repair`, `mrd retire`, `mrd links`, the daemon's
+resident rebuild, its watch loop. It also repeats per mount corpus (`load_mounts_for` →
 `build_docs_at`, calling `fs::domain_snapshot`): once for the workspace corpus,
 once per mounted root addressed — lock-addressed on
 `walk`/`check`/`status`/`walk_op`, link-addressed on `links`/`sql`/`sql_op`.
@@ -1876,11 +1881,13 @@ under-reports corpus work by more than half (37 800-member root: run-plane
 `snapshot` of the same order is the door's own observation; only an instrumented
 build splits it.
 
-`corpus.build` is the same class, from `fs::build_corpus`: the same callers plus
-the write-door referrer scan (`wire_serve::write::inbound_referrers`), so **a
-`phase=corpus.build` line does not imply a links call** — read `cmd=` first. It
-repeats per mount corpus as `snapshot` does; neither name distinguishes
-workspace from mount, so count the lines.
+`corpus.build` is the same class, from `fs::build_corpus`: its callers are
+`mrd sql`, `mrd check`, `mrd walk`, `mrd repair`, `mrd retire`, `mrd links`,
+the daemon's resident rebuild and the write-door referrer scan
+(`wire_serve::write::inbound_referrers`), so **a `phase=corpus.build` line does
+not imply a links call** — read `cmd=` first. It repeats per mount corpus as
+`snapshot` does; neither name distinguishes workspace from mount, so count the
+lines.
 
 Four fold sites, not all firing on one lane:
 
