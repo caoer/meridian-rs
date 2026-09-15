@@ -9,13 +9,16 @@ draws_from: []
 
 # The doc system
 
-> This file governs the **form** of `docs/`, never its content. Process and
+> This file governs the **form** of `docs/`, never its content. No law about
+> meridian lives here — only the rules for where a law may live, how it is
+> addressed, and how a reader can tell it has not gone stale. Process and
 > inventory: `README.md`. Wire law: `wire-contract.md`.
 
 ## §1 Why form is load-bearing
 
-A law is trustworthy when a reader can find its one home and measure that it
-has not drifted.
+A law is trustworthy when a reader can find its one home and can measure that
+the home has not drifted. Two properties needed for that were lost as this
+corpus grew; the rules below restore them.
 
 **Section numbers are not unique across files.** Verify:
 
@@ -32,8 +35,10 @@ so nothing verifies it and it goes stale unnoticed.
 
 ## §2 Doc-id registry
 
-Every file in this directory declares a short, stable `id` in its
-frontmatter; the table below repeats it. The two must agree.
+Every file in this directory declares a short, stable `id` in its frontmatter
+(the `---` block at the top of the file). An `id` is the name a citation uses
+(§3). The table below repeats every id; each row must match that file's own
+frontmatter.
 
 | id | File | Is the home of |
 |---|---|---|
@@ -57,19 +62,22 @@ citations outlive filenames.
 
 ## §3 Citation grammar
 
-A citation names its document: `<id> §N`, as in `wire §4.4`, `merkle §5`,
-`fp §2.1`.
+A citation names its document: `<id> §N`. `wire §4.4` is the splice law,
+`merkle §5` the span fixture, `fp §2.1` the norm-v2 step.
 
 - **Bare `§N` is deprecated for new writing and reads as `wire §N`.** Never
   re-point an existing one; qualify it to `wire §N` or leave it.
 - **Within one file**, a citation to that same file may stay bare; crossing a
   file boundary needs the id.
 - ⚠️ **A `§` number is not a dewey ordinal.** `mrd read --section` takes
-  dewey ordinals, and the two schemes differ by one level: the `#` title is
-  dewey `1`, so this document's `§2` is `1.2`. Cite `§` in prose; leave dewey
+  dewey ordinals. The two schemes differ by one level: the `#` title is dewey
+  `1`, so this document's `§2` is dewey `1.2`. Cite `§` in prose; leave dewey
   to the tool.
 
 ## §4 One law, one home
+
+These rules say where a law may be written, and what every other mention of it
+may say.
 
 1. A law is **spelled** in exactly one section, its home; that document `owns`
    it in frontmatter.
@@ -83,27 +91,29 @@ A citation names its document: `<id> §N`, as in `wire §4.4`, `merkle §5`,
 
 ## §5 Anchors
 
-A section number is editorial (inserting `§4.4` renumbers all after it); an
-anchor is not.
+An anchor is a `^block-id` slug on a law section, minted by `mrd pin`. A
+section number is editorial: inserting `§4.4` renumbers every section after
+it. An anchor does not move.
 
-- A law section carries a `^block-id` slug, minted by `mrd pin`.
 - Long-lived citations use the anchor, not the number, so renumbering breaks
   nothing; both may appear: `wire §4.4 (^splice-law)`.
-- Minting edits the heading line, inside the section's rev span, so its
-  `node_rev` changes; if external expectations rest on the section, coordinate
-  the mint with whoever owns them, never alone.
+- Minting edits the heading line. That line sits inside the section's rev span
+  (the byte range hashed into its `node_rev`), so the section's `node_rev`
+  changes. If external expectations rest on the section, coordinate the mint
+  with whoever owns them, never alone.
 
 ## §6 Locked
 
-This corpus is a meridian workspace, attested by the tool it describes.
+This corpus is a meridian workspace, attested by the tool it describes. The
+commands below are how a reader measures it.
 
 - `mrd resolve docs` — resolves through the repo-root workspace. `docs/`
   declares **no** nested `MERIDIAN.md` root: that would move resolution for
-  every consumer, and the lock comes from pins.
+  every consumer, and the lock comes from pins (below).
 - `mrd read <file>` — the section map, a `sec_rev` per section, under the
-  read's fingerprint. Survey with this, not `grep`: a fixture inside a
-  code fence looks like a heading to `grep`, and `wire §0.3` prints four such
-  lines.
+  read's fingerprint. Survey the corpus with `mrd read`, not `grep`: a fixture
+  inside a code fence looks like a heading to `grep`, and `wire §0.3` prints
+  four such lines.
 - `mrd pin <page> <target>#<selector>` — records that the page draws from that
   section, at that section's content fingerprint.
 - `mrd check` — every pin's verdict; a law that moved under a drawing page

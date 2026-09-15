@@ -14,31 +14,36 @@ and runs the resident daemon. A client — an MCP server, an editor plugin, a
 script — drives the daemon's socket and holds no Markdown semantics. Reads and
 writes address sections by structure, never by a client byte offset, and a
 write names the revision it expects (`wire §5.1`). Whether a scope requires
-such a guard is host policy (`wire §5.3`), and `force` is a client's path past
-one (`wire § A.1`). The files in this directory define the law; code follows
-them.
+that revision guard is host policy (`wire §5.3`); `force` is a client's path
+past the guard (`wire § A.1`).
+
+The files in this directory define the law; code follows them. This README
+carries the process rules, the standing corrections, the inventory, and the
+reading order; each law itself lives in the file named for it below. A citation
+names one of those files and a section in it: `wire §5.1` is section 5.1 of
+`wire-contract.md`.
 
 ## The model in one page
 
-These are the terms the rest of the corpus uses; each carries the address where
-its law is spelled.
+These are the terms the other files here use, including the ones used above.
+Each entry ends with the document and section that spells its law.
 
 - **workspace** — one directory tree of Markdown pages, declared by a
   `MERIDIAN.md` root file (`schema`).
 - **page / section** — a page is one `.md` file. A section is a heading and
   everything under it, up to the next heading of the same or higher level
   (`wire §1`).
-- **address** (`wire §2.1`; across roots, `addr`) — where a read or write
-  points. Machine addresses are **segments only**: `hpath` (a list of heading
+- **address** — where a read or write points (`wire §2.1`; across roots,
+  `addr`). Machine addresses are **segments only**: `hpath` (a list of heading
   segments `{"h":"Goals"}`, with optional `n` to pick a repeat), `anchor` (a
   block id), or `fm_key` (a top-level frontmatter key). A joined string like
   `Goals/Q3` is never a machine address.
 - **span** — a `[start, end)` byte range on the raw file bytes (`wire §1`).
   Clients never send spans.
 - **node_rev** — the 16-hex revision of one node: `blake3(span bytes)[:16]`
-  (`merkle §2`). It is a CAS token (`wire §5.1`): a write that names a stale
-  `node_rev` is refused. `file_rev` is the same kind of token over a whole
-  file.
+  (`merkle §2`). It is a CAS token (compare-and-swap): a write that names a
+  stale `node_rev` is refused (`wire §5.1`). `file_rev` is the same kind of
+  token over a whole file.
 - **fingerprint** — the workspace content hash: `b3:` + 64 hex, never
   truncated (`fp §2`). It is a Merkle root over the hash domain
   (`merkle §4`). The wire noun is `fingerprint`.
@@ -80,6 +85,9 @@ its law is spelled.
 
 ## Standing corrections (always on)
 
+These corrections are always in force. The first table holds the three lettered
+laws (address, receipts, view organ); the second holds one law per topic.
+
 | | Law |
 |---|---|
 | **A — Address** | A machine address is **segments only**: `{"hpath":[{"h":"Goals"},{"h":"Q3"}]}` (optional `n`, or `anchor` / `fm_key`). A joined `Goals>Q3` / `Goals/Q3` is never a writeable form. |
@@ -97,9 +105,10 @@ its law is spelled.
 ## How to cite
 
 A citation names its document: `<id> §N`, for example `wire §4.4` or
-`merkle §5`. The ids are the `id` column of the table below; the registry is
-`docsys §2`. A bare `§N` is deprecated for new writing and reads as
-`wire §N`; qualify it or leave it, never re-point it. Inside one file, a
+`merkle §5`. The ids are the `id` column of the table below; their registry is
+`docsys §2`. A bare `§N` is deprecated for new writing; it reads as `wire §N`.
+Qualify it or leave it alone, but never change which section it names. Inside
+one file, a
 citation to that same file may stay bare. The full grammar, anchors, and pins
 are in `doc-system.md`.
 
