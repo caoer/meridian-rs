@@ -24,8 +24,8 @@ has not drifted.
 grep -hE '^#{1,6} +(§ ?)?[0-9]+' docs/*.md
 ```
 
-Several files have a `4.4`; more have a `1`. A bare `§4.4` is a convention,
-and a convention cannot be measured.
+Several files have a `4.4`; more have a `1`. So a bare `§4.4` resolves only by
+convention, and a convention cannot be measured.
 
 **A law restated outside its home is invisible.** A paraphrase has no address,
 so nothing verifies it and it goes stale unnoticed.
@@ -33,7 +33,7 @@ so nothing verifies it and it goes stale unnoticed.
 ## §2 Doc-id registry
 
 Every file in this directory declares a short, stable `id` in its
-frontmatter, listed here; the two must agree.
+frontmatter; the table below repeats it. The two must agree.
 
 | id | File | Is the home of |
 |---|---|---|
@@ -91,7 +91,7 @@ anchor is not.
   nothing; both may appear: `wire §4.4 (^splice-law)`.
 - Minting edits the heading line, inside the section's rev span, so its
   `node_rev` changes; if external expectations rest on the section, coordinate
-  the mint with their owner, never alone.
+  the mint with whoever owns them, never alone.
 
 ## §6 Locked
 
@@ -106,13 +106,13 @@ This corpus is a meridian workspace, attested by the tool it describes.
   lines.
 - `mrd pin <page> <target>#<selector>` — records that the page draws from that
   section, at that section's content fingerprint.
-- `mrd check` — every pin's verdict; a law that moved under a drawer turns its
-  pin red.
+- `mrd check` — every pin's verdict; a law that moved under a drawing page
+  turns its pin red.
 - `mrd walk <page> --down` — who draws from this page: the blast radius of a
   law edit, from the pin graph.
 
-A restatement (§4) has nothing to pin, so an unpinned claim about a law
-outside its home is visible; that makes §4 enforceable.
+A restatement (§4) has nothing to pin, so a claim about a law outside its home
+is visibly unpinned; that makes §4 enforceable.
 
 ## §7 Migration status
 

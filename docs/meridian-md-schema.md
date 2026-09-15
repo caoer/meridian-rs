@@ -77,8 +77,8 @@ engine-managed, inside the hash domain, drift-tracked by a pinned rev.
    mount-as-claim in §7.3.
 5. **A reserved-path constant mirrored in two crates gets a cross-crate drift
    test** (`crates/policy/src/armed.rs:26`, `crates/fs/src/domain.rs:50`, test
-   `crates/wire-serve/tests/reserved_paths.rs:10`); §2.4 requires it for the
-   filename and the env var.
+   `crates/wire-serve/tests/reserved_paths.rs:10`); §2.4 requires it for
+   `MERIDIAN.md`'s filename and env var.
 
 ### 1.3 Where this schema differs
 
@@ -185,14 +185,14 @@ string (` ```meridian-mount the wiki `) is tolerated and ignored.
 
 ### 3.2 The consequence of the namespace
 
-Elision is per-language, not per-namespace:
+Elision is per-language, not per-namespace.
 
-1. **The render face elides engine-emitted languages only.**
-   `ToonRenderer::with_meridian_elision` drops the blocks
-   `lock::is_engine_emitted` names (`crates/render/src/lib.rs:194-209`):
-   `meridian-lock` is machine-written and elides, while `meridian-mount` and
-   `meridian-tool` are user-authored and **render**. The raw `cat` face carries
-   everything verbatim. No other reader skips engine blocks.
+**The render face elides engine-emitted languages only.**
+`ToonRenderer::with_meridian_elision` drops the blocks
+`lock::is_engine_emitted` names (`crates/render/src/lib.rs:194-209`):
+`meridian-lock` is machine-written and elides, while `meridian-mount` and
+`meridian-tool` are user-authored and **render**. The raw `cat` face carries
+everything verbatim. No other reader skips engine blocks.
 
 **The verification requirement.** A block's bytes render whether or not the
 parser accepted them, so the rendered face never shows the parse **verdict**.
@@ -262,7 +262,7 @@ the line, trailing whitespace trimmed. An absent required field refuses `missing
 | 1 | `name` | canonical root name (§5.2) | **yes** | bad charset, empty, or leading/trailing `-` → `bad-value`, naming the character and the legal charset |
 | 2 | `path` | non-empty filesystem path | **yes** | empty or whitespace-only → `bad-value` |
 | 3 | `primary` | literal `true` (§5.1a) | no | not `true` → `bad-value`, naming the one legal value |
-| 4 | `vault` | non-empty Obsidian vault name | no | present but empty → `bad-value`. Presence IS vault-ness; no `vault:` means not a vault |
+| 4 | `vault` | non-empty Obsidian vault name | no | present but empty → `bad-value`. Presence is vault-ness; no `vault:` means not a vault |
 | 5 | `pin` | fingerprint CID-token (§5.3) | no | malformed token → `bad-value` |
 | 6 | `alias` | canonical root name (§5.2), second lookup spelling (§5.1b) | no | empty or bad charset → `bad-value`, naming the character; equal to any mount's `name` or another mount's `alias` → `alias-shadows-name`, refusing the whole table |
 
@@ -286,33 +286,33 @@ Structural refusals over the block:
 
 **Blank lines and comment lines are refused** as `malformed-line`.
 
-**`duplicate-mount-name` is in scope and `path` collision is NOT**: same-path is decidable only after
-canonicalization (symlinks, trailing slashes, `..`), and **Implementation owns the mount-path law** —
+**`duplicate-mount-name` is in scope and `path` collision is not**: same-path is decidable only after
+canonicalization (symlinks, trailing slashes, `..`), and **implementation owns the mount-path law** —
 canonicalize at bind, inherit `workspace::deny_reason`, refuse equal-or-nested mounts. The parser
-never compares paths lexically: one owner decides "same path", and that owner is the bind step.
+never compares paths lexically: the bind step is the one owner of "same path".
 
 ### 5.1a `primary:` — the declared-primary designation (v1-additive)
 
 An optional `primary: true` line designates its mount as the **primary root**: the one tree a host's
 single-root consumers anchor on, and where a host daemon writes — it need not be a vault. The role
-binds hosts — change feed, watch loop, journal placement — whose rule set lives with the host. The
-engine parses it, refuses illegal shapes (§5.1), and reports it verbatim on the `mounts` wire row
-(`wire-contract.md` §A.5) and both config faces. **The engine never acts on the designation.**
+binds hosts — change feed, watch loop, journal placement — and their rule set lives with the host.
+The engine parses it, refuses illegal shapes (§5.1), and reports it verbatim on the `mounts` wire
+row (`wire-contract.md` §A.5) and both config faces. **The engine never acts on the designation.**
 
 - The value is the literal `true` and nothing else: absence is the only "not primary" spelling, so
   `primary: false` would mint a second spelling for one fact.
 - Two designations refuse the whole table (`duplicate-primary-designation`, the
-  `duplicate-mount-name` class): the designation is DECLARED, never derived, so the parser never picks
+  `duplicate-mount-name` class): the designation is declared, never derived, so the parser never picks
   between claimants and no consumer may fall back to `mounts[0]`, the only vault, or any other
   derivation.
 
-A v1-additive field of the §12 boundary 2 shape. Mount blocks are closed-schema, so
+`primary:` is a v1-additive field of the §12 boundary 2 shape. Mount blocks are closed-schema, so
 `primry: true` refuses as `unknown-field` at parse, closing §4's silent-typo hazard.
 
 ### 5.1b `alias:` — the second lookup spelling (v1-additive)
 
 An optional `alias:` line gives its mount a **second name callers may spell**: it lets a caller
-hard-code ONE constant — `sessions:` — on a machine that names the tree differently, while the engine
+hard-code one constant — `sessions:` — on a machine that names the tree differently, while the engine
 bakes in no root names (the no-baked-names law, `laws.md`).
 
 ```meridian-mount
@@ -322,10 +322,10 @@ vault: field-notes-sessions
 alias: sessions
 ```
 
-> **The lookup order is `name` first, then `alias`.** A root whose `name` already IS the constant
+> **The lookup order is `name` first, then `alias`.** A root whose `name` already is the constant
 > needs **no alias line**: no default, no fallback, no special case.
 
-**`primary:` is NOT consulted.** With no mount named or aliased `sessions`, lookup falls to the
+**`primary:` is not consulted.** With no mount named or aliased `sessions`, lookup falls to the
 implicit default mount if it binds (§5.1c); unscaffolded, `sessions:` refuses as an unbound root and
 teaches the fix:
 
@@ -333,13 +333,13 @@ teaches the fix:
 declare `alias: sessions` on the mount that holds that tree
 ```
 
-**An alias is a LOOKUP spelling, never a STORED one.** Receipts, pins, `mint {…}` paths, `sub` rows
+**An alias is a lookup spelling, never a stored one.** Receipts, pins, `mint {…}` paths, `sub` rows
 and every canonical `root:path` a door echoes carry the mount's `name`; `mrd resolve sessions:x`
 answers `root: field-notes-sessions (alias sessions)`, `ref: field-notes-sessions:x`. Address law and
 the resolution order live in `address-grammar.md` §4.6a.
 
 **Uniqueness is table-level and refuses the whole file**: an alias equal to any mount's `name` —
-including one declared LATER, and its own mount's — or to another mount's `alias` is
+including one declared later, and its own mount's — or to another mount's `alias` is
 `alias-shadows-name`, which carries §8.3's no-partial-load clause. `alias` is likewise v1-additive
 and closed-schema: `alais: sessions` refuses as `unknown-field`.
 
@@ -361,7 +361,7 @@ shape.
   The INV-2/INV-4 checks run against the bound declared table, with the implicit candidate second.
 - **It appears only when it binds.** Same per-entry checks as a declared block: canonicalize, deny
   ceiling, uniqueness and nesting, the root's own declaration naming `sessions` (§4). Anything short
-  of `bound` suppresses it SILENTLY — no grey row, no refusal, no changed exit code (§2.2 state A).
+  of `bound` suppresses it silently — no grey row, no refusal, no changed exit code (§2.2 state A).
 - **Nothing else is defaulted.** No `primary:` (declared-only, §5.1a), no `vault:`, no `alias:`, no
   `pin:`.
 - **Scaffolding is explicit**; effects live in verbs. The engine creates neither the directory nor its
@@ -390,7 +390,7 @@ excluded, and **no legal name can ever collide with an address operator.** Case 
 URIs and case-insensitive filesystems; `_` is excluded to match the charset guard that refuses
 underscore ids at every mint position (`crates/testsuite/data/charset-guard/discrimination.json`).
 
-**This is a FLOOR for the address grammar, not a ceiling.** `address-grammar.md` may narrow what a
+**This is a floor for the address grammar, not a ceiling.** `address-grammar.md` may narrow what a
 `root:` prefix accepts, never widen it past this charset: a name outside it cannot be *bound*, so it
 could never resolve.
 
@@ -441,7 +441,7 @@ Structural rules are §5.1's, with two additions:
  `malformed-line`. The payload's last line ends the block.
 - Two blocks declaring the same `name` → `duplicate-tool-name`.
 
-### 6.1 The payload is engine-OPAQUE
+### 6.1 The payload is engine-opaque
 
 **The engine validates that the payload is present and indented; it never interprets a byte of it.**
 The payload belongs to the tool the `kind` names.
@@ -454,7 +454,7 @@ and `laws.md` § Additivity.
 **Rejected alternative:** a closed set of tool kinds in v1 — v1 owns zero kinds, so every
 declaration would refuse.
 
-**What is NOT deferred:** `name`, `kind`, uniqueness and the block's structure are parsed strictly; a
+**What is not deferred:** `name`, `kind`, uniqueness and the block's structure are parsed strictly; a
 malformed *declaration* still fails loud. The opacity is of the payload's meaning, never the block's
 shape.
 
@@ -478,17 +478,17 @@ so the example is inert):
     ^config
 
 The `^config` line sits on its own line below the closing fence — the Obsidian own-line form, which
-host widening (`anchor_host_span`) attaches to the fence itself, so the id keys the CODE BLOCK, not
+host widening (`anchor_host_span`) attaches to the fence itself, so the id keys the code block, not
 an empty paragraph.
 
 | Fact | Law |
 |---|---|
 | Address | the block id `^config` — `Ref::anchor("config")`, the mint-plane lookup (`crates/model/src/lib.rs`, `resolve`) |
 | Fence language | `starlark`, classified by `run::fence::classify` — §3.1's first-token rule |
-| Entry | a zero-argument `config()`; its return value IS the config |
+| Entry | a zero-argument `config()`; its return value is the config |
 | Return type | **anything the sandbox can serialize** — mapping, list, string, number, bool, `None`. No schema, no key whitelist, no required key |
 | Reader | `mrd config get [KEY]` — bare prints the whole value, `KEY` a dot-path to one member (§6a.3) |
-| Evaluation | the effect kernel's sealed evaluator, standard globals ONLY — no effect constructors, `load` disabled, `EvalLimits::default()` bounds (`effects::eval_value`). Reaches no file, no network, no process |
+| Evaluation | the effect kernel's sealed evaluator, standard globals only — no effect constructors, `load` disabled, `EvalLimits::default()` bounds (`effects::eval_value`). Reaches no file, no network, no process |
 
 ### 6a.1 Why this does not touch the strict parse
 
@@ -496,14 +496,14 @@ an empty paragraph.
 prose. **A ```` ```starlark ```` block is prose to that scan and stays prose**, so a broken
 `config()` cannot cost this machine its mount table.
 
-**The mount plane is SCANNED, the config block is ADDRESSED**: one verb resolves one block id on
+**The mount plane is scanned, the config block is addressed**: one verb resolves one block id on
 demand, so §3.1's namespace argument does not apply — `^config` is a page address, not a third engine
 block-language, and the anchor grammar (`[A-Za-z0-9-]`, `syntax::is_block_id`) admits it.
 
 ### 6a.2 The refusal ladder
 
-Each rung names what is wrong, where, and the fix; none prints an empty line and exits 0
-(schema §8's posture):
+`mrd config get` either prints a value or refuses. Each rung names what is wrong, where, and
+the fix; none prints an empty line and exits 0 (§8's posture):
 
 | Condition | Refusal |
 |---|---|
@@ -516,7 +516,7 @@ Each rung names what is wrong, where, and the fix; none prints an empty line and
 | no `config()` defined | name the entry the block owes |
 | `config()` returned something unserializable (a function, a lambda) | name it — the config is data |
 | a `KEY` segment asked of a non-mapping | name the type found and where the walk stopped |
-| a `KEY` segment absent | name where it stopped and the keys that ARE there |
+| a `KEY` segment absent | name where it stopped and the keys that are there |
 
 **The mount table's state is not a rung.** `mrd config get` never calls `bind()`, so an unbound or
 missing root refuses `mrd config` (exit 1) and leaves `mrd config get` answering normally.
@@ -526,18 +526,18 @@ missing root refuses `mrd config` (exit 1) and leaves `mrd config get` answering
 A `KEY` addresses a member of the returned value: a dot-path resolved with **exact key first, then
 the dot as a separator**, at every level:
 
-1. Does this mapping have a member named by the WHOLE remaining key? Then that member is the answer.
+1. Does this mapping have a member named by the whole remaining key? Then that member is the answer.
 2. Otherwise split at the first `.`: the head must be a member, descend into it, repeat with the tail.
 
 So no author-written key becomes unaddressable: a member literally named `a.b` stays addressable.
-The first real config keys `repos_root` BY WIKI, because a repos root is a fact about a wiki, not a
+The first real config keys `repos_root` by wiki, because a repos root is a fact about a wiki, not a
 machine:
 
     mrd config get repos_root.work-wiki      -> /path/to/work/repos
     mrd config get repos_root.field-notes      -> /path/to/home/repos
     mrd config get repos_root                -> the mapping, as JSON
 
-### 6a.4 What is deliberately NOT specified
+### 6a.4 What is deliberately not specified
 
 - **No key schema.** A future engine-read key inside `config()`
   reopens §4's misspelled-optional-key hazard and must state how it closes it.
@@ -558,7 +558,7 @@ machine:
 
 > `config_rev` = the document root node's `node_rev` = `blake3(raw file bytes)[:16]`, 16 lowercase hex.
 
-Verified in the tree: the root span is `0..raw.len`, its rev `node_rev(raw.as_bytes, &root_span)`
+The root span is `0..raw.len`, its rev `node_rev(raw.as_bytes, &root_span)`
 (`crates/model/src/lib.rs:204`, `:210`, `:310-311`) — the law the armed artifact's pinned `rev` already
 uses for a rule page (§1.2 rule 3, `crates/policy/src/registration.rs`, `page_rev`).
 
@@ -572,17 +572,18 @@ no workspace, no I/O, no git. So `config_rev` is computable for a file in `$HOME
 path** (`DenyReason::HomeDir`, `crates/workspace/src/lib.rs:305`) that can never be promoted into one.
 The rev exists there; the *attestation plane* does not (§9).
 
-### 7.3 What the rev is FOR
+### 7.3 What the rev is for
 
 The requirement is *"the file itself carries a rev, so editing it out of band renders as ordinary
 drift."* Precisely:
 
 - **Reported.** Every surface publishing the loaded config reports its `config_rev`; an edit changes
   it.
-- **No baseline inside the file.** Such a key is self-referential; none exists, none may be added.
+- **No baseline inside the file.** A key declaring the config's own expected rev would be
+  self-referential; none exists, none may be added.
 - **Not a drift verdict.** No attestation baseline exists for `~/MERIDIAN.md` (§9).
 
-**Drift that IS a verdict is the mount pins' (§5.3), not the config's own rev's.** A mount's `pin` names
+**Drift that is a verdict is the mount pins' (§5.3), not the config's own rev's.** A mount's `pin` names
 a root's entry page inside an attestable root, so `pin` against the live fingerprint is ordinary
 machinery (`verify_rows`, `crates/policy/src/armed.rs`). It is this plane's only checkable drift
 claim.
@@ -602,7 +603,7 @@ Malformed { line: usize, reason: &'static str } // the shape to extend
 
 This schema also requires:
 
-1. **`line` is 1-based in the FILE**, not within the block as `lock::parse` numbers; the block node's
+1. **`line` is 1-based in the file**, not within the block as `lock::parse` numbers; the block node's
    byte span makes that an addition, not a mechanism (`crates/lock/src/lib.rs:527-534`).
 2. **The refusal names the config path**: `MERIDIAN_CONFIG` means the file may be anywhere.
 3. **`reason` stays `&'static str` — a closed set, never free text**, so the reason word is testable
@@ -610,7 +611,7 @@ This schema also requires:
 
 ### 8.1a Which line a refusal points at
 
-Three cases, exhaustive:
+Which line a refusal names depends on the fault. Three cases, exhaustive:
 
 | The fault is about | The line is | Cases |
 |---|---|---|
@@ -676,7 +677,7 @@ Therefore:
 - The config's own rev is a **reported number**, never a verdict, and the mount pins are the mitigation
   (§7.3, §5.3).
 
-**The residual that mitigation does NOT close.** A pin protects the root its mount declares, not the
+**The residual that mitigation does not close.** A pin protects the root its mount declares, not the
 mount table's *membership*: **deleting a mount block deletes its own pin along with it.** Under
 grey-exit-1 an unmounted root renders grey and the fence refuses on exit 1, so dropping a mount turns a
 red into a grey that must be `--force`d past — hence grey to exit 1 rather than 0. Bounded and

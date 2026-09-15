@@ -82,7 +82,7 @@ the wire `run` op (`registry::run_op`) and `realise`.
 
 | tense | folds when | the token's reader |
 |---|---|---|
-| **rehearsal** (`--dry`) | ANY effect was emitted | the `--dry --json` report and the wire rehearse row (whole effects, provenance included) |
+| **rehearsal** (`--dry`) | any effect was emitted | the `--dry --json` report and the wire rehearse row (whole effects, provenance included) |
 | **live** | an **md.\*** effect was emitted | the receipt's `root_pin`, written from `observed_root` |
 
 - **Rehearsal residual.** The human `--dry` (`mrd::run_cmd` `dry_starlark`,
@@ -157,8 +157,8 @@ wire-contract § A.7's effects paragraph (today: `run`, `token_count`). No
 `mutex()` builtin: exclusivity belongs to the coordination layer. The flag
 switches the execution model:
 
-- **Absent → pure script.** Everything above holds: entry world, armed set,
-  set-form law, the touch-set commit premise (below), replay.
+- **Absent → pure script.** The pure model holds whole: entry world, armed
+  set, set-form law, the touch-set commit premise (below), replay.
 - **Present → live program.** `read()` serves the live disk at call time: no
   pin, no overlay. `put()` applies at once through the wire splice door
   (write flock held, structural validation intact, the guard's `force`
@@ -350,7 +350,7 @@ The write verbs (`put`, `pin`, `rm`, `retire`) dial the same `SocketDoor` but
 carry no budget, so a read timeout is **not** their verdict: the door waits
 for the answer (`write_ipc::call` → `SocketDoor::call_until_answered`),
 printing one notice at the first tick. The wall clock still bounds their
-HELLO: a daemon that will not greet is down, and nothing was sent. A
+`hello`: a daemon that will not greet is down, and nothing was sent. A
 transport loss after the frame goes out is an unknown outcome (read before
 any re-send), never a failed write — a timeout there once returned `os error
 35` (the layer-2 `EAGAIN`) at 7 s, exit 1, while the bytes landed seconds
@@ -379,7 +379,8 @@ The selector cap sits above the read ceiling: it bounds enumeration (host
 result size, fan-out width), not I/O. 256 covers board-wide fan-out without
 letting a runaway glob return the corpus.
 
-**What an entry costs.** What a program spends against the table above.
+**What an entry costs.** A caller prices its own ceiling against the budget
+table above instead of discovering it as a refusal.
 
 **The ceiling is a function of round trips, and reads are not trips.** For an
 entry against `C` domain members:
@@ -598,7 +599,7 @@ read-class, `attempts:1`. That is a fast-fail courtesy; the commit re-checks
 the same value as a widening premise (below). Before the compare, the pin
 passes §5.7's grammar wall: a non-grammatical `Root`-family value —
 including the reserved `absent`, §5.6 premise vocabulary (`guards[]`), never
-an entry pin — refuses as a REFUSED trace (recovery `fix`) with the raw bytes
+an entry pin — refuses as a `refused` trace (recovery `fix`) with the raw bytes
 debug-quoted, so one leading space shows as a byte instead of a `conflict`
 whose expected/live pair renders identical and loops a re-read. The CLI
 entry and the wire `script` op refuse identically (wire-contract § A.7).
@@ -687,17 +688,17 @@ trace's `entry_fingerprint`, `expected` the caller's pin as
 the trace alone, so `conflict` + no commit leg + `guard_expected` marks a
 guard refusal, not a commit-time mismatch.
 
-**The execution-model seam: arm, then commit.** The seam table's Authority
-row names this entry's authority as *"the caller's own identity — `actor`
+**The execution-model seam: arm, then commit.** The Authority row of the seam
+table below names this entry's authority as *"the caller's own identity — `actor`
 threaded per §9; **ownership guard + armed law**; no cap grammar."* The
 ownership guard is the host's organ (the engine's splice is caller-agnostic,
 §5.3), but `put(path)` computes its path inside the Starlark source, so the
 write set exists only after evaluation, and one evaluate-and-commit call
 never shows it to the host. Hence:
 
-> **The MCP host runs the entry TWICE per attempt: once as an ARM (`--dry`),
+> **The MCP host runs the entry twice per attempt: once as an arm (`--dry`),
 > then, if and only if its own write-authorization plane admits every armed row,
-> once as a COMMIT carrying `--expect-armed <the arm's armed_digest>`.**
+> once as a commit carrying `--expect-armed <the arm's armed_digest>`.**
 > *(`--expect-armed` proves set identity; the touch-set verify, entry-vs-live,
 > proves set freshness; a host-passed `--if-fingerprint` is widening only.)*
 
@@ -734,8 +735,8 @@ what the commit child armed with what the host gated, so the realpath the
 authorization used and the addressable-vs-hash-domain gap stay unverified.
 This sub-amendment makes that chain irrelevant:
 
-> **The commit child accepts `--expect-armed <digest>` and REFUSES BEFORE THE
-> SPLICE IS ISSUED when its own armed set does not hash to that digest.** The
+> **The commit child accepts `--expect-armed <digest>` and refuses before the
+> splice is issued when its own armed set does not hash to that digest.** The
 > refusal is pre-splice: nothing is sent, nothing lands, no fingerprint advances.
 
 Five things follow, and only these five.
@@ -976,7 +977,7 @@ write path. Only the entry differs.
 | Hermeticity | hermetic by construction: sealed kernel, zero I/O, `RunCtx` inert | recorded-read purity: eval is a pure function of (script, args, files, read-response sequence); the trace records every read; replay against recorded reads is byte-identical |
 | Reads | none — inputs arrive as inert `RunCtx` data | one lane (§ A.7): `read()` serves in-process from the pinned entry world plus the program's own armed overlay; `mrd script` forwards the whole attempt and lowers no read of its own |
 | Enumeration | page names its own targets | none in-kernel: host resolves selector (sorted) or binds caller `files[]` in call order — inert paths only |
-| Commit | one atomic `if_fingerprint`-pinned batch via the local executor | one guarded commit as the caller (`actor`/`now`/`receipt` on the request): the single §4.4 splice for one armed path, the §4.4 SET form for N (§ One COMMIT per attempt) |
+| Commit | one atomic `if_fingerprint`-pinned batch via the local executor | one guarded commit as the caller (`actor`/`now`/`receipt` on the request): the single §4.4 splice for one armed path, the §4.4 set form for N (§ One commit per attempt) |
 | Concurrency | `run.lock` `LOCK_NB`; `write.lock` bounded-wait at the door calls (§ Executor laws) | stand-still optimistic at touch-set grain: entry world pinned for reads (frozen view); commit premise = the engine-computed touch set, verified entry-vs-live — foreign churn outside it never refuses; conflict inside it ⇒ host re-resolves selector and retries (budget 2, `attempts` on the face) |
 | Failure grain | one violation refuses the whole batch; bash phase-1 may stand committed and reported | one violation refuses the whole script; nothing partially lands, so a re-run never double-applies |
 | Output | run record: stdout streamed + content-addressed out-of-tree log; receipt linkage via `ExecRecordSink` | `ScriptTrace` → text face: echo semantics, embedded §4.4 splice response verbatim, telemetry always present |
@@ -1059,9 +1060,8 @@ frontmatter `task.*` discovery; nothing re-implements addressing.
 ### Recording by declaration kind
 
 **A fire row writes no receipt rows, and the fire process takes no task-path
-lock** (the recording law above). Md effects go through the applier, which
-takes the workspace lock unconditionally and can refuse workspace busy — the
-pre-birth stage (A8; `modes.rs` → `executor::apply` acquires `WorkspaceLock`
+lock.** Its md effects go through the applier, which takes the workspace lock
+unconditionally and can refuse workspace busy — the pre-birth stage (A8; `modes.rs` → `executor::apply` acquires `WorkspaceLock`
 first). A task row is unchanged; the engine reads the page, with no caller
 flag. 100 declared-block fires add **zero** rows to `receipts/run.md` (anchors
 `^r-<invocation>`, `^p-<invocation>`).
@@ -1116,8 +1116,8 @@ On a **cold workspace** the answer is per lane:
 - **CLI / in-process lane** — no background substrate to warm on, so it
   **builds the drawer inline** and the caller waits.
 
-Wire-contract § 3.2's promise is the read door's; a fire is not the read door,
-so its answer is stated here.
+Wire-contract § 3.2's promise is the read door's, and a fire is not the read
+door.
 
 `prelude` is one per call, cap `run.mode`, and an invalid one refuses
 `prelude_invalid` (§ The consent gate). Declarations and frozen modules are
@@ -1146,7 +1146,7 @@ resident cache; the CLI hands the page it just loaded, with `cache: None`.
 > **A8's touch set reaches past the engine.** A caller that needs "already
 > there" to be benign keys on **`cas_mismatch`** with
 > `expected` = **`absent_rev`, the `node_rev` of the
-> EMPTY DOCUMENT** (`wire-serve/src/write.rs`: `AlreadyExists` →
+> empty document** (`wire-serve/src/write.rs`: `AlreadyExists` →
 > `cas_mismatch(&absent_rev(), &occupant)`; `absent_rev()` is the root rev of
 > `model::build(String::new(), syntax::parse(""))` — a computed blake3 value,
 > not a nil hash and not an empty string — measured `af1349b9f5f9a1a6`).
@@ -1179,7 +1179,7 @@ daemon checking `result == "ok"` before reading `value` would drop it.
 
 "Refusal" names two situations:
 
-| A door said no → the EFFECT's row, fire row stays `ok` | The engine could not carry the batch → the FIRE row refuses |
+| A door said no → the effect's row, fire row stays `ok` | The engine could not carry the batch → the fire row refuses |
 |---|---|
 | `cap_denied` · a birth the create door refused (occupied path, bad path) · an **armed-middleware veto** · a section that is not there or is there twice · an fp-claim · a verdict refusal | the workspace lock is held · I/O · a page that will not load · a non-md descriptor reaching the executor · a malformed descriptor |
 
@@ -1216,13 +1216,13 @@ The engine's own facts reach an exec'd entry as `MRD_RUN_PAGE`,
 fence `exec(block=)` points at) and `MRD_RUN_INVOCATION`; its working directory
 is `input["cwd"]` when given, else the page's root.
 
-**`exec(block=)` resolves at LOAD**, not at the call: the declaration is the
+**`exec(block=)` resolves at load**, not at the call: the declaration is the
 program. A missing fence faults `no_block`, carrying the anchor's own words; an
 anchor minted twice faults the typed `ambiguous_anchor`. Both are **load-row**
 faults, shown by `--load` before any fire, and both are judged again at the
 fire door.
 
-**An exec'd entry's program is a STAGED FILE.** The bytes are written once per
+**An exec'd entry's program is a staged file.** The bytes are written once per
 block rev under `.meridian/staged/<rev>[.<token>]`, and the process is
 `<interpreter> <staged-file> <args…>`.
 
@@ -1230,7 +1230,7 @@ block rev under `.meridian/staged/<rev>[.<token>]`, and the process is
   *a new language is `argv[0]`, not a concept*: `node -c '<source>'`
   reads `-c` as `--check` (`MODULE_NOT_FOUND`, exit 1), `bun -c` answers `File
   not found`, and `deno`'s `-c` is its config-file flag.
-- The extension is the fence's own info-string FIRST token (the classifier
+- The extension is the fence's own info-string first token (the classifier
   `fence.rs` already has): bun and deno pick a loader from the file name.
 - The staged file is the cache — *staged bytes cached by block rev*: a second
   fire of an unchanged block writes nothing. The cache removes the read and the
@@ -1243,13 +1243,13 @@ block rev under `.meridian/staged/<rev>[.<token>]`, and the process is
 **Recording has a ceiling.** Logs live at
 `.meridian/runs/<page-path>/<invocation>-t<index>.log` for an exec'd entry and
 `…-t<index>-b<n>.log` for the n-th `bash()` call of that target — a directory
-**per page**, retention the last 50 per page. The TASK path's logs stay at the
+**per page**, retention the last 50 per page. The task path's logs stay at the
 top level of `.meridian/runs/`, written by `run::record` and pointed at by a
 run receipt. An `exec[]` row publishes `stdout_sha256` + `bytes` +
 that `log` path, never the stream inline. A `process` object is bounded the
 same way: `stdout_tail`/`stderr_tail` are the **last 4096 bytes** of each
 stream, `stdout_bytes`/`stderr_bytes` the full sizes, and the `log` carries all
-of it. The dict the PROGRAM sees still carries `stdout`/`stderr` inline.
+of it. The dict the program sees still carries `stdout`/`stderr` inline.
 Nothing is staged and nothing is logged under `dry`.
 
 ### Input and answer
@@ -1283,12 +1283,12 @@ task name to a same-file fenced code block; `task.<name>.caps` / `.args` /
   binding, ambiguous anchor, not-a-code-block, unknown fence language,
   cross-file ref.
 
-**A binding fault is scoped to its own row.** A binding VALUE is validated when
+**A binding fault is scoped to its own row.** A binding value is validated when
 its own task is addressed, so `mrd run PAGE TASK` always answers TASK's fault,
 never a sibling's. `--list` renders every declared row and prints a faulty
 row's typed error in place of its language and caps.
 
-The one page-eager guard is the task **NAME** charset (§2.4): a key outside
+The one page-eager guard is the task **name** charset (§2.4): a key outside
 `[A-Za-z0-9-]` refuses the whole page, `--list` included. The reason is forgery:
 a name is stamped verbatim into every run receipt as `task`, and as the actor
 `run:<name>` when the request supplies no actor (§9).
@@ -1381,8 +1381,8 @@ own escaper.
 | `props = {"n": "7"}` | `n: "7"` | `props` is a string plane: anything a YAML parser would read as a number or a bool quotes, at every door (§ A.6.3 — a plain all-digit short id like `19895504` reads as an integer). No integer spelling here; `PropValue::List` is the one typed arm |
 | `props = {"owner": "02146210"}` | `owner: "02146210"` | an all-digit 8-hex short id is a string; plain, PyYAML reads octal 576 648 and the join key is gone |
 | `props = {"x": "[a, b]"}` | `x: "[a, b]"` | this door has a list arm, so a scalar never becomes a collection — **the one asymmetry with the patch face**, where the same string lands plain (`yaml_safe_scalar` vs `yaml_safe_value`, wire-contract § A.6.3) |
-| `props = {"bad": "a\nb"}` | REFUSED, nothing born | a v1 frontmatter value is single-line; refused, never sanitized |
-| `props=` plus a `body` opening `---` | REFUSED, nothing born | two spellings of one block; pass one |
+| `props = {"bad": "a\nb"}` | refused, nothing born | a v1 frontmatter value is single-line; refused, never sanitized |
+| `props=` plus a `body` opening `---` | refused, nothing born | two spellings of one block; pass one |
 
 Keys land sorted: a birth must replay byte for byte. Armed middleware still
 stamps `created`/`session` here from the put frame's `fields`; `props` is
@@ -1480,10 +1480,10 @@ page lives: under `run.caps.fix-note: md.edit:**/tasks/*.md`, a `fix-note` task
 on `rules/escalate.md` is denied whatever it declares, the bare verb included;
 renamed under an unscoped `fix-*` entry it applies cleanly.
 
-Under that ceiling (`md.edit:tasks/**`), a page declaring bare `md.edit`
-resolves to `md.edit:tasks/**` with `narrowed by ceiling: md.edit`. The builtin `check-*` / `verify-*` ceiling is
-absolute; those names refuse a bash fence loudly at load. Caps bind at the
-executor choke point before any I/O: one violation refuses the whole batch.
+The bare-verb row reports as `narrowed by ceiling: md.edit`. The builtin
+`check-*` / `verify-*` ceiling is absolute; those names refuse a bash fence
+loudly at load. Caps bind at the executor choke point before any I/O: one
+violation refuses the whole batch.
 
 **The denial names the ceiling that ate the grant.** `narrowed[]` reports
 narrowing on the listing face; a `capability denied` refusal names the winning
@@ -1548,7 +1548,7 @@ Dispatch is by fence language: `starlark` → hermetic kernel eval; `bash` →
 exec in the **invocation cwd**. The set is closed; there is
 **no `Exec` EffectKind**.
 
-**This whole section is the TASK path**: its two-phase receipts, phase-2
+**This whole section is the task path**: its two-phase receipts, phase-2
 convergence and `OutOfBand` refusal are a `task.<name>` row's, not a fire
 process's, and the lock is the one split. An **exec'd** `declare()` entry shares
 **the same bracket** (`run::exec::exec` over `ExecSpec`), then parts company; an
@@ -1558,7 +1558,7 @@ rows are the exec'd entry's:
 | | task row (`task.<name>`) | fire row (`declare()`) |
 |---|---|---|
 | receipts | phase-1 + phase-2 rows in `receipts/run.md` | **none** — 100 declared-block fires add zero rows |
-| `.meridian/run.lock` | taken | **the fire PROCESS takes no task-path lock**; md effects go through the applier (`executor::apply`), which takes the workspace lock unconditionally and can refuse workspace busy — a `runtime` fault (pre-birth stage, A8) |
+| `.meridian/run.lock` | taken | **the fire process takes no task-path lock**; md effects go through the applier (`executor::apply`), which takes the workspace lock unconditionally and can refuse workspace busy — a `runtime` fault (pre-birth stage, A8) |
 | program | `bash -c <source> mrd-task <args…>`, `$0` = `mrd-task` | `<interpreter> <staged-file> <args…>`, `$0` = the staged path |
 | stdin | `Stdio::null()` | the fire's `input`, compact JSON |
 | exit | collapsed to `state: applied\|partial` | the **raw** code, 1 and 2 distinct |
@@ -1659,10 +1659,10 @@ Record ↔ receipt linkage:
  no-guard amendment above).
 - Receipt `page` fact: the task page's **canonical workspace-relative spelling
  in the workspace that runs it** (wire-contract §2.1), resolved once at the
- admitting door, never argv bytes — one page owns ONE receipt history however
+ admitting door, never argv bytes — one page owns one receipt history however
  spelled. Consumers: receipt address, page addressing; CLI ruleset empty
- (`S1_RULES`). A ROOTED ref (`root:page` — address-grammar § 4.6) runs under
- that root's tree and its receipt lands in that workspace, where the page HAS
+ (`S1_RULES`). A rooted ref (`root:page` — address-grammar § 4.6) runs under
+ that root's tree and its receipt lands in that workspace, where the page has
  the spelling: one-key law unchanged.
 - Exec record: **invocation id + exit code + stdout sha256 + byte size + log
  address**, joined to the receipt through the `ExecRecordSink` seam.
@@ -1689,7 +1689,7 @@ mrd script [--json]                      # source on stdin (heredoc)
 run a task, fire one declared block, read declarations off one or more pages
 (§ The run entry, amended) — plus one further subcommand, `mrd script`: source
 on stdin, serving the script entry above, its human-mode face non-normative
-(§ The script entry). Every meaningless combination refuses BY NAME with
+(§ The script entry). Every meaningless combination refuses by name with
 exit 2, never ignored: `--load` with `#^<id>`;
 `--load` with `TASK` / `-- ARGS` / `--list`; `--input-json` without a block
 address; `TASK` / `-- ARGS` / `--env` on a fire, whose one input channel is
@@ -1713,8 +1713,8 @@ Exit triad: **0** clean · **1** the run plane refused or failed (eval fault,
 cap refusal, workspace busy, timeout, bash nonzero) ·
 **2** the invocation is wrong (usage, addressing, contract).
 
-**A CHURN refusal carries a recovery line.** It blames nothing the caller
-wrote: the ADDRESSED target is a **corpus member that vanished** mid-read
+**A churn refusal carries a recovery line.** It blames nothing the caller
+wrote: the addressed target is a **corpus member that vanished** mid-read
 (`corpus_race`). A vanished unrelated record drops from view and fails no other
 target; a foreign root advance re-derives and proceeds — the plane pins no
 root, so no root-mismatch refusal exists (the no-guard amendment above). The
@@ -1736,19 +1736,19 @@ the shipped plane is detection-only.
 
 ## Accepted gaps (S1) — named, deliberate, scoped
 
-Detection-not-prevention for bash and honor-system for out-of-tree writes and
-secret reads are intended: ship the scoped claim, never the unqualified one.
+Every gap below is intended scope: the plane ships the scoped claim, never the
+unqualified one.
 
 | Gap | Class | Disposition |
 |---|---|---|
 | Bash enforcement is detection, not prevention | intended scope | an OS sandbox, future work |
 | Out-of-tree writes / secret reads by bash | **honor-system** (accepted) | outside the hash domain; claim scoped |
 | Non-md / `.meridian/` / dot-path writes | **accepted gap, distinct from the honor-system** | outside the snapshot hash domain, silently undetected |
-| Symlink laundering (`ln -s secret notes/x.md`) | refused or named | `O_NOFOLLOW`: symlinked path components are refused in walk + snapshot; where refusal is impossible this is a **distinct named gap** — it defeats in-domain detection, unlike a plain out-of-tree write. The walk COMPLETES before refusing, and the refusal is a sorted COUNT plus the first offender — `N symlinked paths refused in exec-window snapshot, first: …` — one link keeping the single-path wording. A symlink AT a domain-ignored path (`meridian/domain.md` frontmatter, e.g. `ignore: ["scratch*/", "bin/"]`) is skipped, not refused, reserved paths excepted. The refusal is DELTA-SCOPED: only a link APPEARING inside the window refuses; one pre-dating the bracket is recorded at open, subtracted at close, outside detection. Links never enter the hash domain, so nothing behind one reaches a hash/attest/receipt surface. The bracket's own instruments stay refusable pre-existing or not: a symlinked domain config, and a symlink at a RESERVED path (armed-rules artifact, attested marker). |
+| Symlink laundering (`ln -s secret notes/x.md`) | refused or named | `O_NOFOLLOW`: symlinked path components are refused in walk + snapshot; where refusal is impossible this is a **distinct named gap** — it defeats in-domain detection, unlike a plain out-of-tree write. The walk completes before refusing, and the refusal is a sorted count plus the first offender — `N symlinked paths refused in exec-window snapshot, first: …` — one link keeping the single-path wording. A symlink at a domain-ignored path (`meridian/domain.md` frontmatter, e.g. `ignore: ["scratch*/", "bin/"]`) is skipped, not refused, reserved paths excepted. The refusal is delta-scoped: only a link appearing inside the window refuses; one pre-dating the bracket is recorded at open, subtracted at close, outside detection. Links never enter the hash domain, so nothing behind one reaches a hash/attest/receipt surface. The bracket's own instruments stay refusable pre-existing or not: a symlinked domain config, and a symlink at a reserved path (armed-rules artifact, attested marker). |
 | Ungoverned writes are never rolled back | law, not gap | the run exits 1 with the delta named (§7.1) |
 | Multi-file crash window (content committed, receipt lost) | accepted | re-derive; lint finds the missing receipt |
 | Local run beside a resident daemon (§7.1) | accepted | its writes reach the daemon as external change, like any out-of-band edit |
-| The script entry runs in **wire-client mode**, not pure-local | law, not gap | a script must execute AS the caller, and the row above disqualifies pure-local: its writes reach a resident daemon actor-absent. Through the daemon they arrive governed, actor-carrying and Delta-minted like any splice; the in-process lane (wire `script`, § A.7) is the shortest such path — eval inside the daemon, whose commit IS the governed write path. |
+| The script entry runs in **wire-client mode**, not pure-local | law, not gap | a script must execute as the caller, and the row above disqualifies pure-local: its writes reach a resident daemon actor-absent. Through the daemon they arrive governed, actor-carrying and Delta-minted like any splice; the in-process lane (wire `script`, § A.7) is the shortest such path — eval inside the daemon, whose commit is the governed write path. |
 
 ## Timing phases
 
@@ -1773,8 +1773,8 @@ Under `MRD_TIMING` (the switch, sink, line grammar and the two lanes:
 | `page.load` | `total` | `mrd::run_cmd` | the door's `address::load_page` — parse of the addressed page |
 | `conventions.load` | `total` | `mrd::run_cmd` | `caps::load_conventions` — the root's `MERIDIAN.md` |
 | `task.gate` | `total` | `mrd::run_cmd` | the door's pre-check: `resolve_task` + `contract_for` + `validate` + `resolve_authority` |
-| `pre_eval` | `total` | `run::runner::pre_eval` | the plane's own address → contract → caps chain, repeating `page.load` and `conventions.load` as its own gate ([`pre_eval`], ONE owner for both tenses); measured on the chain, so `--dry` reports it too |
-| `dispatch` | `total` | `run::runner` | starlark leg only: `eval` + `snapshot` + `apply` whole, in that ORDER — the fold FOLLOWS the eval that decides if it is needed (§ The run plane). **Bash is not that shape**: no `eval` span, no `snapshot*` line — it observes via phase-free `fs::domain_leaves_memoized` (the phases live in `fs::domain_snapshot_with_leaves` and its fold-only twin `fs::domain_fold`) first, under the flock, before the block. The lazy rule is the starlark leg's |
+| `pre_eval` | `total` | `run::runner::pre_eval` | the plane's own address → contract → caps chain, repeating `page.load` and `conventions.load` as its own gate ([`pre_eval`], one owner for both tenses); measured on the chain, so `--dry` reports it too |
+| `dispatch` | `total` | `run::runner` | starlark leg only: `eval` + `snapshot` + `apply` whole, in that order — the fold follows the eval that decides if it is needed (§ The run plane). **Bash is not that shape**: no `eval` span, no `snapshot*` line — it observes via phase-free `fs::domain_leaves_memoized` (the phases live in `fs::domain_snapshot_with_leaves` and its fold-only twin `fs::domain_fold`) first, under the flock, before the block. The lazy rule is the starlark leg's |
 | `snapshot` | `dispatch` | `fs::domain_fold` on the run plane; `fs::domain_snapshot_with_leaves` for callers that want the bytes | the three below, whole; absent when this tense's lazy gate did not fire (§ The run plane). Both emit the same four names |
 | `snapshot.walk` | `snapshot` | same | `Domain::load` + `hash_domain` — the hash-domain walk |
 | `snapshot.read` | `snapshot` | same | `read_and_digest_members`, or `digest_members` on the fold-only path — read + blake3 of every member; the fold-only sweep releases each member's bytes with its digest |
@@ -1783,12 +1783,12 @@ Under `MRD_TIMING` (the switch, sink, line grammar and the two lanes:
 | `apply` | `dispatch` | `run::dispatch_starlark` | the executor's one md.\* batch (absent when the block emitted none) |
 | `cascade` | `total` | `run::runner` | the cascade loop; vacuous under the empty `S1_RULES` ruleset, so near-zero `us` is expected |
 | `report.render` | `total` | `mrd::run_cmd` | the report render |
-| `currency.vouched` | — (`cmd=daemon`) | `registry::Registry::currency_refresh` | a READ-plane §6.7 currency pass on the O(1) cookie fast path: no walk, no stat, no byte read |
-| `currency.floor.<cause>` | — (`cmd=daemon`) | same | a read-plane pass that MISSED the vouch and fell to the §6.2 extent-refresh floor — the full stat sweep. `<cause>` names the term that missed. **A bare `currency.floor` is never emitted**; it is the family prefix |
-| `currency.floor.<cause>.refused` | — (`cmd=daemon`) | same | the same pass, ENTERED then refused by an I/O failure in the sweep |
-| `door.vouched` | — (`cmd=daemon`) | `registry::Registry::door_observation` | a WRITE-door entry observation on that fast path, inside the write flock |
+| `currency.vouched` | — (`cmd=daemon`) | `registry::Registry::currency_refresh` | a read-plane §6.7 currency pass on the O(1) cookie fast path: no walk, no stat, no byte read |
+| `currency.floor.<cause>` | — (`cmd=daemon`) | same | a read-plane pass that missed the vouch and fell to the §6.2 extent-refresh floor — the full stat sweep. `<cause>` names the term that missed. **A bare `currency.floor` is never emitted**; it is the family prefix |
+| `currency.floor.<cause>.refused` | — (`cmd=daemon`) | same | the same pass, entered then refused by an I/O failure in the sweep |
+| `door.vouched` | — (`cmd=daemon`) | `registry::Registry::door_observation` | a write-door entry observation on that fast path, inside the write flock |
 | `door.floor.<cause>` · `door.floor.<cause>.refused` | — (`cmd=daemon`) | same | the write plane's floor: same two shapes, same `<cause>` set |
-| `door.refused.<cause>` | — (`cmd=daemon`) | same | a write-door observation refused BEFORE either arm was chosen. One cause today, `lock_contended`: the memo lock stayed held for its whole budget. **The read plane has no counterpart and that is a fact, not a gap** — the same `fs::lock_within` with a budget of `None` returns `Ok` before the wait loop (`Registry::patched_cache` asserts it) |
+| `door.refused.<cause>` | — (`cmd=daemon`) | same | a write-door observation refused before either arm was chosen. One cause today, `lock_contended`: the memo lock stayed held for its whole budget. **The read plane has no counterpart and that is a fact, not a gap** — the same `fs::lock_within` with a budget of `None` returns `Ok` before the wait loop (`Registry::patched_cache` asserts it) |
 
 **The door's three families partition its population**: `door.vouched` (fast
 path), `door.floor` (floor), `door.refused` (no arm) — every `door.*` name under
@@ -1804,9 +1804,9 @@ exactly one, counted once.
 - `untrusted` — the §6.2 close does not hold the memo trusted.
 - `no_overlay` — the resident overlay folded no root.
 
-**A phase reports only where it COMPLETED.** One that never ran emits no line:
+**A phase reports only where it completed.** One that never ran emits no line:
 nothing from `snapshot` down under `--list`, no `snapshot` for `--dry` on bash.
-A FAILED phase is abandoned on the error path: `mrd run missing.md` prints
+A failed phase is abandoned on the error path: `mrd run missing.md` prints
 `workspace.resolve`, the refusal and `total`, no `page.load`. `total` still
 reports on a refusal. Two exceptions:
 
@@ -1815,9 +1815,9 @@ reports on a refusal. Two exceptions:
   not a daemon answer (`status.md` `daemon.dial` Covers).
 - **The daemon's refusals are counted and named as refusals**:
   `currency.floor.<cause>.refused` and `door.floor.<cause>.refused` (floor pass
-  ENTERED, then an error), `door.refused.<cause>` (no arm reached).
+  entered, then an error), `door.refused.<cause>` (no arm reached).
 
-**And a phase whose GATE did not fire never ran.** Only `snapshot` is gated: the
+**And a phase whose gate did not fire never ran.** Only `snapshot` is gated: the
 lazy fold's trigger differs by tense (§ The run plane) — any effect under
 `--dry`, an md.\* effect live. Effect-free and live `notice`-only runs reach no
 `snapshot`; a `snapshot` line there is the lazy gate broken.
@@ -1826,7 +1826,7 @@ lazy fold's trigger differs by tense (§ The run plane) — any effect under
 
 `currency.*` and `door.*` are **pairs, and the pair is the measurement.** The
 §6.2 extent-refresh floor is a second execution path behind the §6.7 vouched
-one: the honest question is a RATIO, not a count.
+one: the honest question is a ratio, not a count.
 
 ```bash
 MRD_TIMING=/var/log/mrd-timing.log   # on the daemon's environment
@@ -1840,7 +1840,7 @@ grep -o 'phase=currency\.floor\.[a-z_]*' "$L" | sort | uniq -c   # by cause
 - Read `cmd=` first: only the engine emits these lines, always `cmd=daemon`.
 - **Do not add the two pairs together**: one currency pass per read-plane warm
   versus one entry observation per write; unrelated denominators.
-- **The floor prefix counts ENTRIES.** The error path
+- **The floor prefix counts entries.** The error path
   returns under a `.refused` name instead of abandoning its span: prefix counts
   entries, suffix the entries that did not finish, and
   `grep -c 'phase=currency.floor'` answers how often a pass fell to the floor.
@@ -1865,9 +1865,9 @@ once per mounted root addressed — lock-addressed on
 **But do not price a run by that count — some full-corpus folds emit no phase at
 all.** The write doors observe through `fs::DomainCache`
 (`wire_serve::write::observed_root` → `DomainCache::root`): it walks the domain,
-`stat`s every member and reads every mover WITHOUT a `snapshot` span. That cache
+`stat`s every member and reads every mover without a `snapshot` span. That cache
 is the process-global `wire_serve::write::WRITE_CACHES`, keyed by canonicalised
-root — FIRST door call per process cold, later ones in the SAME process warm.
+root — first door call per process cold, later ones in the same process warm.
 The CLI does one birth per process, so always cold there: the process model, not
 `md.create`; batching births into one process pays it once.
 
@@ -1876,7 +1876,7 @@ plane's fold, under one `phase=snapshot` line, so `grep -c phase=snapshot`
 under-reports corpus work by more than half (37 800-member root: run-plane
 `snapshot` 446 ms, door 620 ms inside `apply`; 8 002 members: 27 ms + 58 ms).
 
-**Subtraction will not show it**: `apply` has NO nested phases — nothing under
+**Subtraction will not show it**: `apply` has no nested phases — nothing under
 `crates/run/src/executor.rs` opens a span — so a large `apply` beside a
 `snapshot` of the same order is the door's own observation; only an instrumented
 build splits it.
@@ -1893,12 +1893,12 @@ Four fold sites, not all firing on one lane:
 
 | Fold | Fires when |
 |---|---|
-| `dispatch_starlark.rs` `observe_if_emitted`, live tense (reached from `runner.rs` `dispatch`) | a live run whose block emitted an **md.\*** effect. A live `notice`-only or effect-free run folds NOTHING (§ The run plane) |
-| `dispatch_starlark.rs` `observe_if_emitted`, rehearsal tense (reached from `runner.rs` `rehearse`) | `--dry` instead of the above, not as well, and only when the block emitted SOMETHING — a wider gate than live, for the dry report's provenance |
-| `runner.rs` `cascade` | a generation that applies md.\* — needs a NON-EMPTY ruleset, and both doors hand `S1_RULES` (empty), so today: never |
-| `executor.rs` pre-commit | only with a `DeltaSink` in reach, i.e. the WIRE arm. The CLI passes `delta: None` and returns before the fold |
+| `dispatch_starlark.rs` `observe_if_emitted`, live tense (reached from `runner.rs` `dispatch`) | a live run whose block emitted an **md.\*** effect. A live `notice`-only or effect-free run folds nothing (§ The run plane) |
+| `dispatch_starlark.rs` `observe_if_emitted`, rehearsal tense (reached from `runner.rs` `rehearse`) | `--dry` instead of the above, not as well, and only when the block emitted something — a wider gate than live, for the dry report's provenance |
+| `runner.rs` `cascade` | a generation that applies md.\* — needs a non-empty ruleset, and both doors hand `S1_RULES` (empty), so today: never |
+| `executor.rs` pre-commit | only with a `DeltaSink` in reach, i.e. the wire arm. The CLI passes `delta: None` and returns before the fold |
 
-On the **CLI** an md.\*-committing `mrd run` emits exactly ONE `snapshot` set
+On the **CLI** an md.\*-committing `mrd run` emits exactly one `snapshot` set
 (`grep -c 'phase=snapshot '` = 1); one committing nothing emits **zero** — the
 lazy gate (37 800-member root: 0/20 folded; eager 20/20). On the
 **wire/daemon** arm a committing run folds again inside the executor: identical
@@ -1919,14 +1919,13 @@ names, no discriminator, so count them.
 | in-process script serve (§ A.7) | `crates/registry` (op arm: entry world, host, threading, commit) over `crates/effects` (kernel, trace, digest) |
 | wire run serve (§ A.8) + script effects mode | `crates/registry` (`run_op`: per-target loop, §9 threading; `script_op`: the live host) over `crates/run` (the plane, unchanged) |
 | per-phase timing (`MRD_TIMING`) | `crates/timing` (switch, sink, span); call sites `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`, `fs::domain_fold`, `registry::Registry::currency_refresh`, `registry::Registry::door_observation`; § Timing phases |
-| root-at-eval observation (the lazy fold) | `crates/run::dispatch_starlark::observe_if_emitted` — ONE owner of the per-tense gate; `runner::rehearse` calls it directly, the live leg inside `dispatch_starlark::dispatch`. `evaluate` returns `Unobserved`, so neither skips it; § The run plane (`RunCtx`) |
+| root-at-eval observation (the lazy fold) | `crates/run::dispatch_starlark::observe_if_emitted` — one owner of the per-tense gate; `runner::rehearse` calls it directly, the live leg inside `dispatch_starlark::dispatch`. `evaluate` returns `Unobserved`, so neither skips it; § The run plane (`RunCtx`) |
 
 ---
 
 # Presets and session birth — the design element
 
 > Folded into `run-plane.md` for navigation. Standing corrections: `README.md` / `wire-contract.md`.
-
 
 A **preset** is a def page that declares a shape; **session birth** turns that
 shape into files. The `preset` crate and the `new` / `unfold` / `reconcile`
@@ -1962,9 +1961,9 @@ Its body declares, in named sections:
 - `# Ephemeral` — the **allowlist** of declared-disposable paths, empty by
   construction: a def declaring nothing disposable prunes nothing.
 
-**The parenthetical is a REQUIRED byte of the heading line.** `(^properties)`
-and `(^template)` are block ids standing ON the heading line —
-`# Properties ^properties`. The loader finds them by ANCHOR, never by heading
+**The parenthetical is a required byte of the heading line.** `(^properties)`
+and `(^template)` are block ids standing on the heading line —
+`# Properties ^properties`. The loader finds them by anchor, never by heading
 text: a `# Properties` section with no anchor id declares no `^properties`
 block.
 
@@ -1992,18 +1991,18 @@ rev and no bytes, so raw `rmdir` removes it.
 caller-supplied, stamped exactly as given; absent stays absent.
 
 **Law 3.5 — a born record names the def it was born from.** Root record and
-scaffold stub alike carry `preset:` holding the DEF's page path, never their
+scaffold stub alike carry `preset:` holding the def's page path, never their
 own.
 
 **Law 3.6 — a `^template` placeholder in a frontmatter value position is a
-VALUE-PLANE WRITE.** `{{id}}`, `{{kind}}`, `{{actor}}` and `{{now}}` fill the
-template BODY verbatim; in its frontmatter block the substitution goes through
+value-plane write.** `{{id}}`, `{{kind}}`, `{{actor}}` and `{{now}}` fill the
+template body verbatim; in its frontmatter block the substitution goes through
 the one encoder wire-contract § A.6.3a names, which `set_property` and
 `put{at:"upsert"}` already speak. The value is the plain form when that form
 decodes back to exactly the caller's string, the canonical double-quoted scalar
 otherwise.
 
-A value that cannot be ONE frontmatter line — one carrying `\n` or `\r` —
+A value that cannot be one frontmatter line — one carrying `\n` or `\r` —
 **refuses the birth** (`bad_request` / `fix`), naming the key, the v1
 single-line rule, the body-section escape and the placeholder that carried it.
 Nothing is written (Law 3.4: sanitizing the actor would falsify recorded
@@ -2021,12 +2020,12 @@ door, and a verb growing its own copy is wrong-design.
 
 | Verb | Acts on | Refuses when |
 |---|---|---|
-| `new <kind> <id>` | ONE record, from `^template` | the def is invalid, or the target exists |
-| `unfold <preset>` | EVERY declared scaffold path | any declared path already exists |
-| `reconcile <preset>` | the MISSING declared paths only | — (an occupancy is not a failure here) |
+| `new <kind> <id>` | one record, from `^template` | the def is invalid, or the target exists |
+| `unfold <preset>` | every declared scaffold path | any declared path already exists |
+| `reconcile <preset>` | the missing declared paths only | — (an occupancy is not a failure here) |
 
 **`new` validates before it writes.** The filled template is parsed and checked
-against every `^properties` rule; the FIRST violation refuses `def_invalid`,
+against every `^properties` rule; the first violation refuses `def_invalid`,
 naming the rule verbatim. A def with no `^properties` block, no `^template`, or
 an unparsed rule is itself invalid — the same refusal, stating the anchor rule so
 the author learns which byte is absent.
@@ -2059,19 +2058,19 @@ creates, is not an ancestor of a declared path, holds no finding, and is empty.
 A scaffold of only top-level files creates none, and the workspace root is never
 walked for candidates.
 
-**Teaching row — Law 5.3 OUTRANKS Law 5.1, and the losing entry dies
-silently.** An `# Ephemeral` path outside the scaffold's territory is INERT:
+**Teaching row — Law 5.3 outranks Law 5.1, and the losing entry dies
+silently.** An `# Ephemeral` path outside the scaffold's territory is inert:
 `--prune` walks past it with no prune row, no finding row, no refusal —
 territory decides scan scope before the allowlist. Measured:
 `sessions/tmp-cache.md` (allowlisted, in territory) pruned; `scratch/tmp.md`
 (allowlisted, `scratch/` holding no `# Unfold` path) survived untouched and
 unreported. **What the face does not do is say so.** A dead allowlist entry gets
 zero disclosure at declare time (`mrd new` accepts the def) and zero at prune
-time, and an ephemeral-declared file that IS present renders no row under a
+time, and an ephemeral-declared file that is present renders no row under a
 no-prune reconcile — neither finding nor ephemeral.
 
 ⚠️ Whether the plane owes a declare-time or prune-time disclosure on a
-territory-shadowed allowlist entry is NOT settled by this page.
+territory-shadowed allowlist entry is not settled here.
 
 **Law 5.4 — pruning is opt-in.** Without `--prune`, reconcile materializes and
 reports and removes nothing.

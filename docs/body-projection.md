@@ -8,7 +8,7 @@ owns: [the body relation, the exclusive-chunk law, the body_text content-address
 
 # body projection
 
-> Standing law: `README.md` (process, standing corrections; C: the sql face is not agent core) and `wire-contract.md`.
+> Standing law: `README.md` (process, standing corrections; correction C: the sql face is not agent core) and `wire-contract.md`.
 
 Normative for the `body` relation in both sql lanes (`:memory:` build, `sql.duckdb` cache). Also law: `node-rev-merkle-spec.md` (node_rev, content span), `laws.md` § crate charters, `view::store` module docs (cache protocol).
 
@@ -50,9 +50,9 @@ The cache is append-only (`hist.*` is its only storage): each re-projection appe
 
 - **`hist.body`** — the narrow per-generation row: `(path, gen, seq, section_seq, hpath, span_start, span_end, node_rev, body_key)`.
 - **`hist.body_text (body_key, text)`** — content-addressed text, insert-if-absent (staged anti-join at append; INSERT-only, keeping the never-edit law). `body_key` is the **full 64-hex blake3** of the chunk bytes; `node_rev`'s 16-hex truncation is for per-node CAS racing only (merkle spec).
-- **`main.body`** — the latest generation via `hist.doc_latest` (the standing semi-join), joined to `hist.body_text` on `body_key`, serving exactly §3's columns (`body_key` never appears on the face).
+- **`main.body`** — the latest generation via `hist.doc_latest` (the standing semi-join), joined to `hist.body_text` on `body_key`, serving exactly §3's columns; `body_key` never appears on the face.
 
-Only `hist.body_text` rows dedup, across generations and paths: an edit appends text rows only for chunks new to the file's history. Orphaned `body_text` rows compact only at rebuild-and-swap. The pin protocol is unchanged (one file, one transaction, one fingerprint): `as_of_fingerprint` covers body bytes, so no second witness exists (`base_fold` has one only because `.base` bytes are outside the fingerprint).
+Only `hist.body_text` rows dedup, across generations and paths: an edit appends text rows only for chunks new to the file's history. Orphaned `body_text` rows compact only at rebuild-and-swap. The pin protocol is unchanged: one file, one transaction, one fingerprint. `as_of_fingerprint` covers body bytes, so no second witness exists; `base_fold` has one only because `.base` bytes are outside the fingerprint.
 
 ## §5 Alternatives
 

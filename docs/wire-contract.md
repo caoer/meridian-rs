@@ -21,7 +21,7 @@ Goals are ranked: a lower never overrides a higher; no agent adjudicates rank.
 
 **GOAL 1 — works-for-us (primary):** the ruled grammar (§2.1), the geography law (§5.3), and:
 
-1. Interface: five verbs (`toc`/`cat`/`edit`/`append`/`resolve`); sections-as-files; Edit-exact old/new scoped to a section; **requests never require revs, receipts always return them**; no byte offsets; mandatoriness = host policy ratchet; resolve = walk plane.
+1. Interface: five verbs (`toc`/`cat`/`edit`/`append`/`resolve`); sections-as-files; Edit-exact old/new scoped to a section; **requests never require revs, receipts always return them**; no byte offsets in the interface; mandatoriness = host policy ratchet; resolve = walk plane.
 2. Amendments: the fix-at-freeze list (§18), one block-id charset (§2.4), node-grain deltas (§7.4).
 3. Foundations: Starlark evaluator (§11.4); optional, wire-agnostic view organ (§10.3–§10.4).
 4. Review checklist A1–A14; ratified convergence items: mint partition, 16-hex rev, md-only, two-stage resolve, app-oracle GT.
@@ -426,7 +426,7 @@ Frontmatter-plane write, dry (the `fm_key` node is the full key line: span `[4,1
 - Crash posture, including a failed in-memory restore: §6.5's set paragraph; no journal on any set path.
 - The cap ships by the §3.2 evolution law; v2 and cap-less v3 sessions are byte-identical to today.
 
-**Two ceilings, two audiences.** A limit that can refuse must be discoverable before it refuses (the first real batch was 103 files).
+**Two ceilings, two audiences.** A limit that can refuse must be discoverable before it refuses; reading only the script budget under-builds the wire caller — the first real batch ran 103 files, so 64 would fail on contact at that door.
 
 | ceiling | binds | value |
 |---|---|---|
@@ -623,7 +623,7 @@ The family rides behind the `scoped-guards` cap; every refusal below teaches per
 
 The § A.7 field wall (12 → 14: `guards`, `scope`) is this matrix; no fifteenth field exists. Sugar and list together are legal: the sugar desugars to one more premise. Per premise `{scope?, scope_bytes?, fingerprint}`: exactly one of `scope`/`scope_bytes`, or neither for the root premise; `fingerprint` is required and holds a token or `absent` (§5.6). Pair violations — `scope` or `scope_bytes` without `fingerprint`, both spellings in one premise, sugar `scope` without `if_fingerprint` — refuse `bad_request`, validated atomically at the door so hash and path cannot desync; the mint door's own — both spellings on one `fingerprint` request — refuses `bad_request` at §4.7 with its own text.
 
-**Guard-path freshness.** The engine refreshes the named premise's own extent and pays only that: one file, one folder, or the world.
+**Guard-path freshness.** The engine refreshes the named premise's own extent and pays only that: one file, one folder, or the world. A refusal narrows because the premise narrows, never because the engine checked less hard.
 
 **Negotiation.** The family is advertised as the `scoped-guards` cap (§3.2); a frozen v2 session is never pushed it, and un-negotiated use of any guard-family field refuses `bad_request` at the §3.2 strict wall, never silently.
 
@@ -833,7 +833,7 @@ The six classes ride **error frames**, where the daemon answered. A request whos
 
 Two consequences, both **client law** — the wire cannot rule on frames it never served:
 
-- **The op deadline is a hang detector, never a safety mechanism.** Its value is host-chosen and MAY be op-class-aware (say 10 s for ordinary ops; `hello` is config-grade under §3.2 and never pays a cold whole-corpus build). The cold build never rides inside any op's deadline: a cold workspace's first corpus read starts it in the background, waits at most a short bounded time, then refuses `corpus_warming` (§3.2). Warm-cost classes and load are host knowledge the engine does not publish (orientation is not a wire op, §10.3), and no finite value closes the window: any deadline can expire after the commit landed.
+- **The op deadline is a hang detector, never a safety mechanism.** Its value is host-chosen and MAY be op-class-aware (a host might bound ordinary ops at 10 s; `hello` is config-grade under §3.2 and never pays a cold whole-corpus build). The cold build never rides inside any op's deadline: a cold workspace's first corpus read starts it in the background, waits at most a short bounded time, then refuses `corpus_warming` (§3.2). Warm-cost classes and load are host knowledge the engine does not publish (orientation is not a wire op, §10.3), and no finite value closes the window: any deadline can expire after the commit landed.
 - **Re-read before retry.** After a lost `splice` answer, re-read the target and check whether the write **already landed** — content, not just tokens — before any re-send. The ordinary path (`cas_mismatch` → refresh → re-apply) is WRONG here: it re-applies a write that may already be in the file, and a post-loss `no_match` reads as "provably your typo" (§5.2) when the truth is "your first send landed and consumed the anchor".
 
 A **blind re-send without `force` cannot double-apply**: the wire-origin guard demand (A.1, A.3) refuses every arm — a guarded edit's token re-derived against post-commit bytes (`cas_mismatch`, §5.1), a birth whose subject now exists (`cas_mismatch`, absence guard), an unguarded content edit (`guard_required`). The refusal cannot say whose write landed, hence the read first, but nothing applies twice. **`force` strips the node-grain tokens (A.1) and reopens the double-apply; a post-loss re-send MUST NOT carry `force`.**
@@ -1003,11 +1003,11 @@ Which files' bytes enter the workspace **fingerprint** (the merkle content hash)
 
 **Hash domain ⊂ addressable domain — one answer at every door.** The filter gates HASHING, not load. An out-of-domain path (an ignored `.md`, a dot-segment path) is still served by `toc`/`cat`/`read`/`extract`/`check_write`/`splice`: the read door serves its spans and mints its `file_rev` as for a member, the write door commits, and its bytes do not move the fingerprint (`fingerprint_before == fingerprint_after`). A door that refuses one is a door defect, and its CAS token (`node_rev_before` / `file_rev`) is mintable at the read door like any other. `file_not_found` means one thing at every door — **no such file under the workspace root** — never domain exclusion.
 
-**The family is every door the caller NAMES A PATH AT**: `links <PATH>`, `walk <PAGE>` and `repair <PAGE>` take a caller path as `cat` does. The same predicate bounds the rooted-ref lane: every door the caller names a PAGE at resolves the agent-plane `[root:]path` spelling (§ A.12, `address-grammar.md` § 4.6).
+**The rule above binds a door family: every door the caller NAMES A PATH AT**: `links <PATH>`, `walk <PAGE>` and `repair <PAGE>` take a caller path as `cat` does. The same predicate bounds the rooted-ref lane: every door the caller names a PAGE at resolves the agent-plane `[root:]path` spelling (§ A.12, `address-grammar.md` § 4.6).
 
 **Enumerators are bound to SAY, not to admit.** A whole-corpus enumeration (`retire`'s sweep, the `sql` projection, `check`, bare `links`) MAY exclude what its `as_of` fingerprint cannot cover — **never silently: the exclusion is named in the output, and an enumeration that certifies ABSENCE either refuses or names what it did not see.**
 
-**The VERDICT plane must say what it did not look at.** `walk`, `check` and `status` judge a pin's TARGET — a path the caller never named — over the hash domain, so an out-of-domain target is absent only because **the engine did not look**. Both planes ask existence first, by READING THE NAMED PATH — the domain-independent read every named-path door owes, since existence is a DISK fact and the domain a FINGERPRINT fact.
+**The VERDICT plane must say what it did not look at.** `walk`, `check` and `status` judge a pin's TARGET — a path the caller never named — over the hash domain, so an out-of-domain target is absent only because **the engine did not look**. The door plane and the verdict plane both ask existence first, by READING THE NAMED PATH — the domain-independent read every named-path door owes, since existence is a DISK fact and the domain a FINGERPRINT fact.
 
 | Named target | Verdict |
 |---|---|
@@ -1049,7 +1049,7 @@ Worked at **S0**, writing `meridian/domain.md` in the forms §0.3 prints. `draft
 | v1 — ignore `drafts/**`, `meridian/**` | plan, receipts | `b3a:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9` |
 | v2 — same ignore list | plan, receipts | `b3b:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9` |
 
-**The prefix tracks the domain RULES, never the member set**: row 2 adds a file and stays at `b3:` (`version: 0` with no ignore list changes no rule); rows 3–5 advance because the rules moved. **The same surviving hex never compares equal across prefixes**: rows 1, 4 and 5 carry one 64-hex value under three tokens, so receipts cannot silently match a redefined domain. Computed over the standing `meridian/domain.md`: through the legacy non-md `mdfs_config.yaml`, whose bytes stay out, it would not close (§18 row 11).
+**The prefix tracks the domain RULES, never the member set**: row 2 adds a file and stays at `b3:` (`version: 0` with no ignore list changes no rule); rows 3–5 advance because the rules moved. **The same surviving hex never compares equal across prefixes**: rows 1, 4 and 5 carry one 64-hex value under three tokens, so receipts cannot silently match a redefined domain. The table is computed over the standing `meridian/domain.md`, whose own bytes are in the domain it declares. The same pair computed through the legacy non-md `mdfs_config.yaml`, whose bytes stay out, would not close (§18 row 11).
 
 **Hash-law retirement rides the same ladder.** The one-time interior-encoding cutover (fixed-256 radix child maps — `node-rev-merkle-spec.md`) changes the hash LAW, so the prefix advances and old tokens never compare equal. Three facts stay unflattened (§5.7, §8.2):
 
@@ -1082,7 +1082,7 @@ Sequencing uses the **rung ladder** numbering (dialect → facts/check parity �
 | `crates/wire` | four noun newtypes; standing `Toc`/`Extract`/`Hello`; `Node` + kind ordinal; `ErrorBody` typed extras; strict/tolerant obligations | +`Delta`; +ops `cat`/`links`/`fingerprint`/`diff`/`sub`; `resolve`/`splice` reshaped by rung-freezing amendments; `ErrorCode` grows the §8 splits; no bare `not_found`; no `Guard` op |
 | `crates/transport` | `NdjsonCodec` (implemented, tested), raw-id frame classification seam, null-id serialization test | raw-lexeme validation here, before typed decode; JSON-only — no length prefix, no frame-size bound (§18 row 14) |
 | `crates/model` | `build`, richer NodeKind, no-serde law, **sealed `ValidatedSplice` capability discipline** (an unvalidated write cannot reach disk by construction), `merkle_root` seam | `SpliceRequest{span, if_node_rev, text}` reshaped to match-based (`target + match/put` — §4.4); `resolve` serves the strict plane only; hash algorithm = blake3 (the rung-2 wire amendment the model doc reserved — §1) |
-| `crates/fs` | `load`/`walk`/`apply_splice` seams, tmp+fsync+rename, no-storage law | `apply_splice` takes the batch (content + receipt append, one commit — §6.1); walk gains the §12 filter |
+| `crates/fs` | `load`/`walk`/`apply_splice` seams, tmp+fsync+rename, no-storage law (memory that cannot be thrown away is an architecture violation) | `apply_splice` takes the batch (content + receipt append, one commit — §6.1); walk gains the §12 filter |
 | `crates/wire-map` | `prefix_16b` (implemented, contract examples as tests), the model+wire projection seam | `project` implements the superset-by-embedding predicates (§15) |
 | `crates/policy` | `Violation`/`Severity`/`RulesetPin`/`CompiledRuleset`/`CompileError` — this schema's §11 shapes; `policy::gate` stays deferred off the splice path (actor is a wire input, not an engine gate — §9) | `evaluate` output rides splice responses as `verdicts` |
 | `crates/query` | `backlinks` seam | serves `links` with the §10 triple |
@@ -1403,8 +1403,8 @@ side-effect-free: the composed `read` op has no `actor` field.
 
 - A `sections[]` read carries **two bounds of its own**, both enforced in
   `wire-serve`'s `composed_read` so the wire and CLI doors answer identically:
-  **20 000 words served per call** (`READ_MAX_WORDS`) and **64 distinct
-  selectors per call** (`READ_MAX_SELECTORS`). Over either → `bad_request`,
+  at most **20 000 words served per call** (`READ_MAX_WORDS`) and at most
+  **64 distinct selectors per call** (`READ_MAX_SELECTORS`). Over either → `bad_request`,
   **refused, never truncated**, nothing read and no rev minted, naming the
   measured number, the ceiling and its `→` recovery.
 - **The unit is WORDS, not bytes, and that is the discoverability half of the
@@ -1633,7 +1633,9 @@ guarded put):**
 - **The invariant:** after `replace_section(target)`, every byte outside the
   target's subtree is identical and the subtree is exactly the payload. A
   payload that would restructure the document refuses whole — never demoted,
-  never clamped.
+  never clamped. So a `replace_section` armed fact or receipt line
+  (`wrote §target rev:a→b`) can never describe bytes that landed outside the
+  target's subtree.
 - **The gate:** a payload heading at or above the target's own level refuses
   `bad_request` (fix class) with the `payload_escapes_section` grammar, naming
   the offending body line, the payload heading's level, the target's level and
@@ -2147,10 +2149,12 @@ it to a `put{at:"all"}` span replace (encoding only the fragment would yield
 slots — A.6.3a′ lowers `set_property` through `at:"all"` with an
 already-encoded line — so they stay raw, and the kernel with them. The receipt
 renders the caller's edit (`put:end`, `match`), not the lowering; armed facts
-state true before/after revs regardless. Both doors
-carry the same refusal sentence: the key by name, the v1 single-line rule,
-and the body-section escape (*"frontmatter values are single-line in v1; put
-multi-line content in a body section"*).
+state true before/after revs regardless.
+
+**Uniform means the WORDS too.** Both doors carry the same refusal sentence:
+the key by name, the v1 single-line rule, and the body-section escape
+(*"frontmatter values are single-line in v1; put multi-line content in a body
+section"*).
 
 **A.6.3a′ One armed fact per key — the `set_property` CREATE arm is the upsert
 door.** The plan lowering emits one edit per key, each targeting its own
@@ -2485,8 +2489,10 @@ caps stay byte-identical. The complete v3 push is §3.2's.
 
 **Not the banned snapshot.** The entry world is attempt-scoped: born at entry,
 dropped when the attempt answers, never retained across attempts, never shared
-across connections, no version history, no as-of parameter, no MVCC. The
-commit's touch-set verify is the only write authority.
+across connections, no version history, no as-of parameter, no MVCC. What
+`run-plane.md` bans is daemon-held state ACROSS attempts; this is one attempt
+reading the picture its own entry pass took. The commit's touch-set verify is
+the only write authority.
 
 **Containment (the eval boundary).** The kernel runs in the daemon under the
 entry's own limits — fuel, memory cap, call depth, source bytes, the read and
@@ -2634,7 +2640,9 @@ applies):
   confined DIR path, never a `root:` ref, never absolute. A BARE `md.create`
   path born this run resolves under it. Precedence: descriptor `base` (a
   rooted ref or a confined dir) > frame `ambient` > workspace root; no
-  `ambient` = the bare-door law, workspace-root-relative. The birth lane is
+  `ambient` = the bare-door law, workspace-root-relative. Hosts resolve
+  `ambient` per call from the caller's own identity, never from a
+  page-hardcoded directory. The birth lane is
   the starlark kernel's `create(path=, body=, base=, message=, props=)`; bash
   has no effect channel.
   - **`props=` is the newborn's frontmatter as a DICT — string keys to strings

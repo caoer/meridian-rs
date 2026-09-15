@@ -8,19 +8,20 @@ owns: [process, standing corrections, inventory, reading order]
 
 # meridian-rs `docs/`
 
-`meridian-rs` is a Rust engine over a Markdown workspace: one directory tree of
-`.md` pages, declared by a `MERIDIAN.md` root file. It ships one binary, `mrd`,
-which reads and writes pages, records pins over them, arms a workspace, and
-runs the resident daemon. The daemon's unix socket is the one wire door
-(`wire §3.3`); a client (an MCP server, an editor plugin, a script) drives that
-socket and holds no Markdown semantics. Reads and writes address sections by
-structure, never by a client byte offset. A write states the revision it
-expects, and a stale revision is refused, not merged (`wire §5.1`); whether a
-scope requires a guard is host policy (`wire §5.3`), and `force` is a client's
-path past one (`wire § A.1`). The files in this directory define the law; code
-follows them.
+`meridian-rs` is a Rust engine over a Markdown workspace. It ships one binary,
+`mrd`, which reads and writes pages, records pins over them, arms a workspace,
+and runs the resident daemon. A client — an MCP server, an editor plugin, a
+script — drives the daemon's socket and holds no Markdown semantics. Reads and
+writes address sections by structure, never by a client byte offset, and a
+write names the revision it expects (`wire §5.1`). Whether a scope requires
+such a guard is host policy (`wire §5.3`), and `force` is a client's path past
+one (`wire § A.1`). The files in this directory define the law; code follows
+them.
 
 ## The model in one page
+
+These are the terms the rest of the corpus uses; each carries the address where
+its law is spelled.
 
 - **workspace** — one directory tree of Markdown pages, declared by a
   `MERIDIAN.md` root file (`schema`).

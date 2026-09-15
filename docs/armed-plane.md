@@ -10,15 +10,16 @@ owns: [the arming ladder, the gate() seam]
 
 > Standing law: `README.md` (process and standing corrections) and `wire-contract.md` (the wire contract).
 
-Law: `laws.md` § policy gate; `wire-contract.md` § A.2 and §8 (refusal
-taxonomy, genesis-epoch grey).
+Law: `laws.md` § policy gate; `wire-contract.md` § A.2 (block-is-a-feature,
+genesis-epoch grey) and §8 (refusal taxonomy).
 
 ---
 
 # Part A — Arming from zero
 
 Arming is a reviewer act: `mrd arm <ID> --mode M --rev R [--at DIR]` attests
-the resolved page at the rev the reviewer read. `--rev` is required, with no
+the resolved page at the rev the reviewer read. It is the attest path the
+binding law's refusals name as the legal road. `--rev` is required, with no
 live-rev default.
 
 Floor suite: `reviewer-not-owner`, `claim-cas`, `close-verdict`,
@@ -33,10 +34,12 @@ ever armed. The first attested arm creates it; nothing removes it.
 
 - **never-armed** (no marker): `policy::resolve_armed_law` answers
   `never_armed()`; `gate()` is a no-op; writes land bit-for-bit. The artifact
-  (`meridian/armed-rules.md`, `ARMED_RULES_PATH`) is not read.
+  (`meridian/armed-rules.md`, `ARMED_RULES_PATH`) is not read: a stray
+  artifact cannot arm a never-armed workspace, because only an attested arm
+  sets the marker.
 - **once-armed**: the artifact MUST be present, parseable, and attest at least
-  one row, or the gate fails closed (`convention_fault`). Zero rows is absence
-  of attestation; a rule deliberately not enforced is a row spelled `off`.
+  one row, or the gate fails closed (rung 5). Zero rows is absence of
+  attestation; a rule deliberately not enforced is a row spelled `off`.
 
 ## The ladder (five rungs)
 
@@ -54,20 +57,22 @@ state.
 - The check leg keeps its fixed refusal ceiling; the hook leg emits only its
   declared caps, pinned to `proto.send`. FIX and VIEW remain named deferrals.
 - **The page must sit inside the workspace hash domain** (`wire-contract.md`
-  §12.1). A rules-tagged page on a dot-segment path (`.hidden/rules/x.md`) or
-  under a `meridian/domain.md` ignore rule registers as nothing, never silently
-  (§12.1 enumerator clause): `mrd rules` lists such candidates in one bounded
-  line (full list: `not_offered.workspace_dot` in `--json`, exit-neutral);
-  `mrd arm <ID>` on an id whose only carrier is excluded refuses, naming file
-  and reason. A MERIDIAN.md on a dot path resolves to the enclosing root;
+  §12.1). A rules-tagged page on a dot-segment path (`.hidden/rules/x.md`,
+  anything under a dot directory), or one excluded by a `meridian/domain.md`
+  ignore rule, registers as nothing, never silently (§12.1 enumerator clause):
+  `mrd rules` lists such candidates in one bounded line (full list:
+  `not_offered.workspace_dot` in `--json`, exit-neutral); `mrd arm <ID>` on an
+  id whose only carrier is domain-excluded refuses, naming the file and the
+  exclusion reason. A MERIDIAN.md on a dot path resolves to the enclosing root;
   every page under it is outside that root's domain.
 
 ### 2. Author the floor
 
-A refusal always cites its passing scenario (the legal path). A floor
-convention's refusal names its taxonomy rule (`reviewer_owner`, `claim_cas`,
-`close_verdict`, `decoy_close`, `reviewer_bind`, `arming_precondition`) and,
-where it teaches a winner or bound reviewer, names them.
+Write the predicate so its refusal always cites the passing scenario (the
+legal path). A floor convention's refusal names its taxonomy rule
+(`reviewer_owner`, `claim_cas`, `close_verdict`, `decoy_close`,
+`reviewer_bind`, `arming_precondition`) and, where it teaches a winner or
+bound reviewer, names them.
 
 ### 3. Test the tiers
 
@@ -109,7 +114,7 @@ One tag-indexed artifact per workspace (`meridian/armed-rules.md`,
 | `id` | the page's frontmatter `id:` |
 | `page` | workspace path of the RESOLVED page (override winner) |
 | `rev` | the page rev the row is attested at |
-| `scope` | the ARM ROOT: the workspace-relative DIRECTORY that resolution was narrowed to (`.` = workspace root). `layer:depth` (`workspace:0`) is refused at parse: a head segment with `:` is the address grammar's `root:` qualifier (`address-grammar.md` § 4.1 colon law), never a workspace path. A directory scope is not a page reference; it sits outside the rooted-lane door family (`address-grammar.md` § 4.6). |
+| `scope` | the ARM ROOT: the workspace-relative DIRECTORY that resolution was narrowed to (`.` = workspace root). `layer:depth` (`workspace:0`) is refused at parse: a head segment with `:` is the address grammar's `root:` qualifier (`address-grammar.md` § 4.1 colon law), never a workspace path. A directory scope is not a page reference; it sits outside the rooted-lane door family (`address-grammar.md` § 4.6), so this refusal stands. |
 | `mode` | checks `off\|warn\|block`; hooks `off\|armed` |
 
 The act is indivisible and all-or-nothing (narrow to the arm root's chain,
@@ -117,7 +122,8 @@ resolve through the one resolver, pin the winner's page and rev), so `scope`
 cannot drift from its resolution; every fault is reported at once.
 
 - **Arming freezes resolution.** A page appearing later, even a deeper
-  override candidate, governs nothing until re-arm.
+  override candidate, governs nothing until re-arm. The tag registers, only
+  ARM activates, so no writer can take over an armed id by dropping a file.
 - **An edited pinned page reddens:** its row does not fire on the new bytes.
   A red CHECK row refuses the write; a red HOOK row falls silent (a hook never
   vetoes).
@@ -130,9 +136,10 @@ cannot drift from its resolution; every fault is reported at once.
   (naming the loader's fault) refuses **before anything is written to
   `meridian/armed-rules.md`**. `policy` does no I/O: bytes arrive through the
   injected `PageSource` under the caller's `CheckLimits`. `off` rows are not
-  loaded (an `off` row may attest a page too broken to load); this set is a
-  superset of the fire path's `verdict.firing()`, narrowed to the write's
-  path, reddened rows excluded.
+  loaded (an `off` row may attest a page too broken to load). This set is a
+  superset of the fire path's: `resolve_armed_law` loads `verdict.firing()`,
+  which is further narrowed to the write's own path and excludes reddened
+  rows.
 - **Drift, not a broken declaration:** `mrd arm` indexes before taking the
   write flock, so the drift gate may see a stale rev; the loader's
   `RuleLoadError::RevMismatch` catches the race and is re-labelled
@@ -150,9 +157,11 @@ and marker through one shared reader.
   commit point. Artifact-without-marker reads as never-armed; the identical
   re-arm is a no-op.
 - The edge does not ride the caller door: a direct door write to the artifact
-  is `binding_break` (row 9). The act's own law (`policy::armed::arm`'s
-  faults, the drift check, strict parse of the standing artifact) runs before
-  the session opens; other processes see an external write.
+  is `binding_break` (row 9). On a direct write that refusal fires before any
+  rule evaluation, so row 8 cannot fire there. The act's own law
+  (`policy::armed::arm`'s faults, the drift check, strict parse of the standing
+  artifact) runs before the session opens; other processes see an external
+  write.
 
 Deferred: **`mrd realise --truth` convergence** over the artifact+marker pair
 is a separate design.
@@ -168,8 +177,9 @@ Once armed, the `meta-convention` guards this rung: an arming proposal must
 pin attested evidence (P@R), declare a structural `cites:` join, and be armed
 by a reviewer distinct from the convention's `author`, else
 `arming_precondition` (taxonomy row 8) refuses. It cannot gate its own first
-arming, which is grey. **Row 8 is not yet evaluated on the attest path**; the
-next rung wires the armed `meta-convention` into `mrd arm`'s re-arm leg.
+arming, which is grey. **Row 8 is not yet evaluated on the attest path.** A
+follow-up rung, not yet built, will wire the armed `meta-convention` into
+`mrd arm`'s re-arm leg.
 
 ### 5. Steady state
 
@@ -178,8 +188,7 @@ With the marker and `[x]` rows present, the door enforces:
 - `block` rows refuse a violating write (bytes never land) with a `{code,
   recovery}` pair from the closed §8 taxonomy; `warn` rows render an advisory
   finding and land; `off` rows are ignored.
-- Missing or corrupt artifact: `convention_fault` (fails closed, see the two
-  states).
+- Missing or corrupt artifact: fails closed (`convention_fault`).
 - Page drifted off its pinned `armed-rev`: fails closed (`armed_drift`);
   re-arm at the live rev, or revert the law.
 - `--force` is the only escape: journaled AND rendered.
@@ -255,8 +264,8 @@ injected `ctx`:
 pending after-state and every edit or birth earlier middleware emitted (id
 order); a later writer is invisible. `ctx.sql` uses the host-installed SQL
 backend (`wire_serve::middleware::install_sql_backend`; `mrd` and the daemon
-install a `view::build_memory`-backed one); with no backend the write refuses,
-naming the gap.
+install a `view::build_memory`-backed one); a middleware that calls `ctx.sql`
+on a door with no installed backend refuses the write, naming the gap.
 
 ## Emits, compiled
 
@@ -270,8 +279,8 @@ naming the gap.
   (`cas_mismatch`, expected absent). Birth bodies get the same document-grain
   strip and guards as a `create` op's body.
 - V1: the **create door** admits `refuse`, this-file `set_field`, and `send`;
-  cross-file edits or births from a birth refuse as unsupported. The **set
-  door** (`splice.set`) and **remove door** evaluate no middleware.
+  cross-file edits or births from a birth refuse as unsupported. In V1 the
+  **set door** (`splice.set`) and **remove door** evaluate no middleware.
 - **Delete: not built.** No `remove` emit.
 
 ## Hook scope beside the middleware door
@@ -322,8 +331,8 @@ At `7a22e00a`, **three files**:
 - `crates/run/src/fp.rs`
 - `crates/wire-serve/src/watch.rs`
 
-That is the whole claim: it fails only when a candidate is minted in a file
-off the list.
+**That is the entire source-derived claim: three file names.** It fails when
+a candidate is minted in a file not on that list.
 
 ## What is NOT derived — do not read it as checked
 

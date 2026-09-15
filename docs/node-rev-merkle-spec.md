@@ -27,7 +27,7 @@ An earlier merkle-root prototype was folded in: scheme adopted, blake3-256 for x
 
 ## 1. One hash family: BLAKE3-256
 
-Every hash here — `node_rev`, file leaf, interior, workspace fingerprint — is BLAKE3-256: one primitive, no mixed families, crypto-grade at xxhash-class speed; the 32-byte fingerprint is law 2's cursor.
+Every hash here — `node_rev`, file leaf, interior, workspace fingerprint — is BLAKE3-256: one primitive, one implementation, no mixed families, crypto-grade at xxhash-class speed; the 32-byte fingerprint is law 2's cursor.
 
 - **`fingerprint`** = `"b3:" + 64 lowercase hex chars`, algorithm- and domain-prefixed (`wire-contract.md` §1 / §12). Short `"b3:88d2aa"` forms in old examples are non-normative abbreviations.
 - **`node_rev`** = the first **16 lowercase hex chars** (64 bits) of the node hash, unprefixed: enough to detect races in one node's edit history. The fingerprint is the integrity cursor and keeps full width.
@@ -87,14 +87,14 @@ type_byte: 0x00 = file, 0x01 = dir
 - Children sorted by raw name bytes (§9 for the unicode caveat); symlinks skipped (§9); empty dirs pruned bottom-up (a dir with all children pruned is pruned too); the workspace tree root always exists.
 - **`name_bytes` are the exact on-disk bytes of the child's name** — on Unix, the `OsStr` bytes verbatim (§9). `to_string_lossy` on the hash path is a spec violation: two non-UTF-8 names decoding to one replacement string would collapse to one leaf. A `\` inside a name is a name byte, not a separator.
 - The workspace directory's own name is not hashed (no parent to hold it), so identical content gives an identical root.
-- **`fingerprint` (wire noun)** = the workspace tree's interior hash, `b3:<64hex>`, the prefix advancing with the domain `version` (`wire-contract.md` §12.3). A file-scope leaf hash is that file's leaf, not a second wire "root" op.
+- **`fingerprint` (wire noun)** = the workspace tree's interior hash, `b3:<64hex>`; the prefix may advance with the domain `version` (`wire-contract.md` §12.3). A file-scope leaf hash is that file's leaf, not a second wire "root" op.
 - **Why it retires:** re-folding a directory re-encodes every child, so a flat 100,000-file folder stays O(100,000). Keeping this encoding and sharding later is rejected; the cutover is taken while no scoped tokens exist in the wild.
 
 ### 4.2 Merkle law 2 — the fixed-256 radix child map (the new hash-law version)
 
 Each directory's child list is a canonical radix map, fanout fixed at 256 — one slot ("bucket") per byte value — so one change re-hashes a bounded number of vertices, never every sibling. Canonical: history never affects the result. Updating one entry touches the vertices on its key path (bounded by the name's byte length) plus one directory node per ancestor; sibling count appears nowhere.
 
-**Carried over from law 1 unchanged:** the hash family (§1); the untagged leaf law (§3) — a leaf stays the plain blake3 of the file, checkable with any b3 tool and reusable across the cutover from the `StatKey` memo, while the kind byte beside every hash prevents cross-kind confusion; every §4.1 rule but the interior encoding (§9 for names and normalization); unhashed file modes.
+**Carried over from law 1 unchanged:** the hash family (§1); the untagged leaf law (§3) — a leaf stays the plain blake3 of the file, checkable with any b3 tool and reusable across the cutover from the `StatKey` memo, while the kind byte beside every hash prevents cross-kind confusion; raw name bytes, byte-order sort and zero normalization (§9); symlinks skipped (§9); empty directories pruned bottom-up; the workspace root's own name never hashed; file modes never hashed.
 
 **Definitions.** A child set `C` holds entries `(name, kind, hash)`: `name` = the child's exact on-disk name bytes (§9), `kind` = file or dir, `hash` = its 32-byte value (file → §3 leaf; dir → §4.2.3 value). Names are unique in `C`; one name arriving as **both** kinds is the collision case (§4.4). Every varint is unsigned LEB128 in **minimal-length form**; a non-minimal varint is illegal. Byte comparisons are unsigned.
 
@@ -197,7 +197,7 @@ forest(M) = blake3( "mrk2.fst" ‖ varint(n)
 
 ### 4.4 Name collisions — lint loud, refuse at address time
 
-Law 2 closes the file/dir name collision that law 1 ignored both ways, leaving some path's bytes outside the fold (Bazel unique-segment precedent):
+Law 2 closes the file/dir name collision that law 1 ignored both ways, leaving some path's bytes outside the fold:
 
 - **Both kinds enter the fold.** A name reaching one child map as both file and directory (however composed, e.g. via the write overlay) is one key whose terminal carries both values (`0x02`, §4.2.2); no bytes sit outside the integrity surface.
 - **The build lints the collision loudly** — a named diagnostic on every build, never silence — and serving continues: one odd name must not take a workspace down.
@@ -236,6 +236,9 @@ Node spans (wire law: block spans exclude the final line terminator):
 >  {"kind":"heading","level":1,"hpath":[{"h":"Alpha"}],"span":[21,64],"content_span":[29,64],"node_rev":"3d5903c3604ee3ac","text_prefix_16b":"# Alpha\n\nbody li"},
 >  {"kind":"heading","level":2,"hpath":[{"h":"Alpha"},{"h":"Beta"}],"span":[45,64],"content_span":[53,64],"node_rev":"780d2fb4cf68f60f","text_prefix_16b":"## Beta\n\nbeta bo"}]}}
 > ```
+>
+> Response reflowed for line width only; values verbatim, matching this
+> section's pinned rows and fingerprint.
 
 Leaves (blake3 over the raw file):
 
@@ -292,9 +295,8 @@ dir(tasks/)  = blake3("mrk2.dir" ‖ vhash( "mrk2.vtx" ‖ 04 ‖ 78 2e 6d 64 �
 fingerprint  = blake3("mrk2.dir" ‖ vhash(root))
 ```
 
-Frames per §4.2.2: `ext`, terminal, `children_frame`. At scale, 100,000 names
-sharing `2026-08-1` collapse into one vertex's `ext`; a key path stays a few
-vertices deep.
+At scale, 100,000 names sharing `2026-08-1` collapse into one vertex's `ext`;
+a key path stays a few vertices deep.
 
 Law-2 arm of the same generator; re-derived byte-identically by the engine
 encoder `crates/fs/src/radix.rs`, gate
@@ -322,10 +324,9 @@ vhash(v_n), leaf(notes.md): unchanged
 
 ## 6. The resident tree — memory-held, event-fed, checkpointed
 
-The engine holds the merkle tree in memory, feeds it from a file watcher, and
-may checkpoint it. Derive-on-demand — full sweep and fold per pass, no
-persistence, cold rebuild per start — was rejected: two flock-held full-corpus
-reads per guarded write (~1.5 s) for 32 bytes, and root-grain world guards.
+Derive-on-demand — full sweep and fold per pass, no persistence, cold rebuild
+per start — was rejected: two flock-held full-corpus reads per guarded write
+(~1.5 s) for 32 bytes, and root-grain world guards.
 
 ### 6.1 The resident structure and the own-write overlay
 
@@ -352,7 +353,10 @@ cached 32-byte fold, a dirty bit, a `last_seq` stamp (§6.3).
   process-wide hook), and the registry makes the door-entry observation inside
   the door's flock on that memo: §6.4 cookie barrier, then take-and-apply. The
   overlay serves as `root_before` only on `Seen` + no doubt collapse +
-  `Trusted` — the vouch `currency_refresh` demands; a drained dirty set is no
+  `Trusted` — the vouch `currency_refresh` demands. `Trusted` says the last
+  observation landed whole with no unabsorbed loss, not that the stream
+  delivered everything on disk; without the cookie, a silent-dead watcher or a
+  sticky failed feed looks like a quiet corpus. A drained dirty set is no
   completeness proof, and any named miss degrades to the full observation that
   absorbs the loss (§6.2 row 6). In-process callers with no registry fall back
   to a process-local map, still live-observing every door entry. The watcher
@@ -417,8 +421,9 @@ engine-side.
 - **The engine owns its senses.** One kernel file watcher per workspace
   (FSEvents on macOS, inotify on Linux), owned by the engine process, never a
   client: a dead cross-process feed is indistinguishable from a quiet corpus,
-  and the engine holds workspaces the daemon never tracks (CLI lane, ad-hoc
-  repos, CI fixtures).
+  the engine holds workspaces the daemon never tracks (CLI lane, ad-hoc repos,
+  CI fixtures), and the currency proof must ride the same stream that feeds the
+  tree.
 - **A client daemon's journal is a legal additional feed** where it already
   watches — an opportunistic dirty-path hint, never an instrument a guard or
   currency answer depends on.
@@ -479,16 +484,19 @@ outside the hash domain (git-index class): the checkpoint.
   rescans regardless fails. Then one journaled change = one file read and
   hashed, zero unchanged members statted, no cold rebuild. One instrument
   qualifies today: the live §6.4 watcher across an engine-cold, process-alive
-  gap with no overflow raised. No persisted instrument qualifies.
+  gap with no overflow raised. No persisted instrument known qualifies:
+  FSEvents fails (2) and (4) by Apple's own guide, btrfs/ZFS fail portability
+  and enumeration. An instrument qualifies by meeting these four conditions,
+  never by being called a journal.
 - **Where no qualifying journal covers the gap** (today, every process death) a
-  sound checkpoint restores every row UNTRUSTED: no row serves, and no answer
-  derives from one, until one §6.2-governed pass has covered the full member set
-  — a pre-serve barrier, so lazy, deferred or post-first-serve verification is
-  refused. The pass is one stat per member as the floor (the 160 ms figure at
-  29.7k members measures THIS STAT PASS ALONE) plus
-  the watermark law's re-reads: a row racily clean at save — recorded mtime
+  sound checkpoint restores every row **untrusted**: no row serves, and no
+  answer derives from one, until one §6.2-governed pass has covered the full
+  member set — a pre-serve barrier, so lazy, deferred or post-first-serve
+  verification is refused. The pass is one stat per member as the floor (the
+  160 ms figure at 29.7k members measures this stat pass alone) plus the
+  watermark law's re-reads: a row racily clean at save — recorded mtime
   within one calibrated granularity unit of the checkpoint's saved watermark —
-  is re-read or restored pre-spoiled, NEVER trusted on stat-match, under §6.2's
+  is re-read or restored pre-spoiled, never trusted on stat-match, under §6.2's
   identity-fence and suspect rules; their count is published, and rows outside
   the window cost zero bytes. Counter equation: reads = hashes = movers +
   watermark-window re-reads; stats = member count, once, before first serve.
@@ -509,17 +517,19 @@ outside the hash domain (git-index class): the checkpoint.
   The drawer is outside every hash domain — the §6.4 cookie's floor — so the
   checkpoint cannot move a root or break a held token.
 - **Two questions, two instruments.** *Lawfulness* (may these rows enter as
-  HYPOTHESES?) is decided once at restore by the soundness fields — the
-  identity tuple's, plus the hash law. A mismatch discards the object WHOLE,
-  loudly, labeled per field: the **COLD** re-baseline. *Currency* (may a row
-  SERVE?) the checkpoint never answers, and never wholesale: only the §6.2
-  trust close does, row by row.
-- **The journal pair is neither — it is a CURSOR** (§6.3's landed cursor law),
-  never an identity field. Anchored it buys REPLAY; unanchored it forfeits
-  replay ONLY, object retained, rows still hypotheses — the **WARM**
-  re-baseline, currency from zero TRUST, not zero BYTES. The warm event fires
-  on **every** ordinary process restart, since §7.1 persists no epoch fact; the
-  git-index class discards nothing at a gap, it re-verifies by stat.
+  hypotheses?) is decided once at restore by the soundness fields —
+  `workspace_uuid`, `domain_version`, the hash law, parse-cache generation and
+  the `tree_root` binding, never the journal cursor pair. A mismatch discards
+  the object whole, loudly, labeled per field: the **cold** re-baseline.
+  *Currency* (may a row serve?) the checkpoint never answers, and never
+  wholesale: only the §6.2 trust close does, row by row.
+- **The journal pair is neither — it is a cursor** (§6.3's landed cursor law),
+  never an identity field. A cursor that anchors buys replay; one that cannot
+  anchor forfeits replay only: the object is kept and its rows still enter as
+  hypotheses — the **warm** re-baseline, which rebuilds currency from zero
+  trust, not zero bytes. The warm event fires on **every** ordinary process
+  restart, since §7.1 persists no epoch fact; the git-index class discards
+  nothing at a gap, it re-verifies by stat.
 
 ### 6.6 Fingerprint history ring
 
@@ -535,12 +545,13 @@ epoch boundary, never a silent chain break.
 ### 6.7 The serve-path currency consumers — one instrument, vouch first
 
 **Motive, measured.** Left unnamed, a consumer keeps the §6.2 floor
-unconditionally: ~66–85 CPU-seconds per 60 wall-seconds of domain walk plus one
-`lstat` per member (37.8k-member corpus).
+unconditionally: ~66–85 CPU-seconds per 60 wall-seconds on a 37.8k-member
+corpus, nearly all of it floor passes — the domain walk plus one `lstat` per
+member.
 
 > **The law.** Every standing currency question in the daemon is answered by
-> the workspace's ONE resident memo (§6.1) through the §6.4 vouch, at the grade
-> the question needs. The §6.2 extent-refresh floor answers only a NAMED miss —
+> the workspace's one resident memo (§6.1) through the §6.4 vouch, at the grade
+> the question needs. The §6.2 extent-refresh floor answers only a named miss —
 > no live feed, cookie `Unproven`/`Refused`, a doubt collapse, an untrusted
 > memo, no baseline — and never on a timer against a healthy feed. A stat
 > signature or other evidence-grade instrument may gate pure-latency work (the
@@ -552,11 +563,11 @@ Two grades, bound to their consumers:
 
 | Consumer | Question | Grade | Instrument |
 |---|---|---|---|
-| warm read pass — read family, `sql`, `script` entry (`Registry::warm_or_build`, cheap half) | engine current NOW? | current-as-of-the-question | cookie barrier → take-and-apply → `Trusted` → overlay fold (`Registry::currency_refresh`); floor on a named miss — the barrier is what makes the stamp current for the ambient premise tokens a read mints (§5.4; wire-contract §2 mint law) |
+| warm read pass — read family, `sql`, `script` entry (`Registry::warm_or_build`, cheap half) | engine current now? | current-as-of-the-question | cookie barrier → take-and-apply → `Trusted` → overlay fold (`Registry::currency_refresh`); floor on a named miss — the barrier makes the stamp current for the ambient premise tokens a read mints (§5.4; wire-contract §2 mint law), and costs one sentinel write plus delivery, bounded by the door cookie budget |
 | § A.11 post-result `live` | did the corpus move past the rows? | current-as-of-the-question | same call, same vouch |
 | write door `root_before` | §6.1 door-entry observation | guard | `Registry::door_observation`, unchanged |
-| prewarm quiet check | may this sweep be SKIPPED? | latency-only | O(1), no cookie: nothing pending after take-and-apply, memo `Trusted`, cached served fold == the engine's stamp. `domain_stat_signature` walk survives ONLY with no live feed (`FeedSlot::Failed`), under the quiet backoff |
-| §4.7 detect pre-check (`WorkspaceRing::detect`) | root moved since baseline? | latency-only + fallback clock | the same O(1) quiet check through the SHARED memo; the private fold memo serves `prime` and the miss path only. §6.6's poll survives: even under a quiet vouch the floor pre-check runs once per `DETECT_FLOOR_CADENCE` (30 s) — the push plane's backstop against silent capture loss |
+| prewarm quiet check | may this sweep be skipped? | latency-only | O(1), no cookie: nothing pending after take-and-apply, memo `Trusted`, cached served fold == the engine's stamp. `domain_stat_signature` walk survives only with no live feed (`FeedSlot::Failed`), under the quiet backoff |
+| §4.7 detect pre-check (`WorkspaceRing::detect`) | root moved since baseline? | latency-only + fallback clock | the same O(1) quiet check through the shared memo; the private fold memo serves `prime` and the miss path only. §6.6's poll survives: even under a quiet vouch the floor pre-check runs once per `DETECT_FLOOR_CADENCE` (30 s) — the push plane's backstop against silent capture loss |
 
 **The cookie holdoff (posture, both doors).** A `CookieTimeout` collapse is
 sticky doubt until the next take, which converts it to a full sweep and clears
@@ -573,15 +584,14 @@ the fresh config). The governed write path never pays it: its own-config
 commit imposes `overlay_membership` synchronously (§6.1).
 
 **The watch plane classifies off the resident memo** (the §6.6 direction,
-frame-parity gated; the alternative — a full corpus snapshot of every member's
-BYTES per external batch — measured ~1/s under foreign writes).
+frame-parity gated; the alternative — a full corpus snapshot of every
+member's bytes per external batch — measured ~1/s under foreign writes).
 
 - On a moved root the cycle takes the workspace flock, makes the §6.1
-  door-grade observation through the SHARED memo (cookie barrier →
-  take-and-apply → overlay, floor on a named miss), and hands the classifier
-  that leaf set and root.
+  door-grade observation through the shared memo, and hands the classifier that
+  leaf set and root.
 - The classifier diffs those digests against the watcher's retained baseline
-  (entries now carry a leaf digest beside their bytes), reads bytes ONLY for
+  (entries now carry a leaf digest beside their bytes), reads bytes only for
   movers, and mints the same frames: renames pair by digest (byte-equality's
   proxy), removed and `unattested` rows parse retained baseline bytes, modified
   rows diff retained-old against read-new.
@@ -592,9 +602,9 @@ BYTES per external batch — measured ~1/s under foreign writes).
   push and read planes cannot disagree.
 - Priming (the subscribe-time baseline) keeps its one full snapshot. The ring
   holds no private fold memo, and a plain mutex keeps the single-flight gate.
-- Non-UTF-8-NAMED members stay baseline-invisible as the snapshot kept them
-  (their leaves still fold; a `wire::Path` cannot spell them); §52 covers
-  non-UTF-8 CONTENT, which classifies normally.
+- Non-UTF-8-**named** members stay baseline-invisible as the snapshot kept
+  them (their leaves still fold; a `wire::Path` cannot spell them); §52 covers
+  non-UTF-8 **content**, which classifies normally.
 
 **What does NOT change.** The floor pass — walk semantics, §6.2 trust close,
 refusal shapes — is untouched. `Reused` keeps its zero-parse proof; a rebuild is
@@ -603,11 +613,9 @@ observations (guard grade, locked-window law) keep their live floors.
 
 ### 6.8 The absorb path — deriving the answer at the cost of the change
 
-**Motive, measured.** §6.1's maintenance law and §4.2's cost law also bind
-DERIVING the served answer, not only deciding whether it may serve. Measured
-(37.8k members, 15 s, 2 foreign writes/s): ~0.25 CPU-s per absorbed change,
-~26.6 CPU-s per 60 s — two flat rebuilds (overlay fold, rebuild tail fold) plus
-carried-document clones.
+**Motive, measured.** On 37.8k members over 15 s at 2 foreign writes/s:
+~0.25 CPU-s per absorbed change, ~26.6 CPU-s per 60 s — two flat rebuilds
+(overlay fold, rebuild tail fold) plus carried-document clones.
 
 > **The law.** The resident tree IS the serving instrument. The served workspace
 > root derives from the ONE memo's incrementally maintained fold (§6.1) — never
@@ -620,7 +628,7 @@ carried-document clones.
 > (no resident state yet), the divergence tail of an incremental pass (a mover
 > vanished or changed since the snapshot, so the pass folds what it built),
 > and the equivalence gate's oracle. Run-plane bracket observations stay out of
-> scope, as §6.7 left them.
+> scope (§6.7).
 
 Gates:
 
@@ -728,9 +736,9 @@ required (host policy — `wire-contract.md` §5.3); hosts never compute hashes
   checksummed `O_EXCL` intents, the one state owner's contiguous root chain)
   is `crates/wire-serve/src/publish.rs`, disk primitives
   `crates/fs/src/intent.rs`, lease half `authority.rs`. The live write door
-  keeps its interim flock until the cutover. `apply_batch`'s pre-image verify
-  is the in-process second-writer refusal under daemon routing
-  (`docs/laws.md` Amendment).
+  keeps its interim flock until the cutover flips routing. `apply_batch`'s
+  pre-image verify is the in-process second-writer refusal under daemon
+  routing (`docs/laws.md` Amendment).
 - The effects lane (`run`, script-with-effects) is unguarded by rule
   (`run-plane.md` holds the paragraph), yet every effects write rides the same
   write choke-point and maintains the resident tree (leaf update, chain
@@ -783,7 +791,7 @@ required (host policy — `wire-contract.md` §5.3); hosts never compute hashes
 2. **Ring bound** — **256 roots**, `wire-contract.md` §13; older ranges answer
    `fingerprint_unknown` → full resync, never wrong data.
 3. **Hash domain** — `wire-contract.md` §12 (md-only + `meridian/domain.md`);
-   this spec's leaf rule stays aligned with it.
+   this spec's leaf rule must stay aligned with that domain filter.
 4. **Symlink retarget invisibility** (§9) — accept, or hash the target path as
    a pseudo-leaf?
 5. **Multi-file atomic batch** — limit in `wire-contract.md` §6.5; vocabulary

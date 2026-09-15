@@ -467,8 +467,8 @@ names your own worktree. Anything else is **foreign**.
 
 - A common-dir test alone misses a foreign worktree of the same repository,
   which sits inside your common dir.
-- It is the one check that fires at seed time, before HEAD moves and while
-  the sha still agrees.
+- The `/worktrees/<name>/` clause is the one check that fires at seed time,
+  before HEAD moves and while the sha still agrees.
 - Do not tighten it to "any absolute path": a linked worktree's own refs live
   in the common dir, so absolute paths there are expected. The predicate is *a
   different repository or worktree*.
@@ -564,9 +564,9 @@ Authenticated IPC to the daemon: hello + socket-law identity check. There is
 no direct-publication fallback: when the daemon is down the CLI face refuses
 at exit 2 and names the recovery (`mrd daemon`; shorten `XDG_CACHE_HOME` when
 sun_path is the cause), never writing locally. Auto-spawn still runs. A
-guardless put needs § A.1's fingerprint-or-force: `--force` or `if_node_rev`. `--dry` is the daemon
-rehearsal, no in-process candidate diff. A commit rides the daemon epoch, so
-`seq` is the ring's, never `0`.
+guardless put needs § A.1's fingerprint-or-force: `--force` or `if_node_rev`.
+`--dry` is the daemon rehearsal, no in-process candidate diff. A commit rides
+the daemon epoch, so `seq` is the ring's, never `0`.
 
 **A `--json` face answers `{workspace, error}` on EVERY leg that can refuse.**
 `mrd read --json` answers it on all-fail, ambiguous, duplicate-anchor,
@@ -575,7 +575,7 @@ The envelope carries the §8 error body in the v3 vocabulary — A.3's `reason`
 and `candidates` included — on stdout, beside the unchanged human stderr line
 and exit triad.
 
-**Two legs, not an anecdote:**
+**Two legs where the envelope is owed:**
 
 | # | leg | what an envelope-less `--json` stdout would serve |
 |---|---|---|
@@ -640,8 +640,9 @@ A pin has two independent planes: CLAIM (its `fp1.…` fingerprint,
 verified against the live target) and RETRIEVAL (its `hash`, a git blob sha).
 **A pin is LOST when both are dark**: the target no longer verifies and git no
 longer holds the recorded blob, so nothing answers what the pin covered. A red
-pin whose blob is still held is ordinary drift, untouched here. Only a pin minted at an uncommitted file state can be
-lost (§ `mrd pin`, the recorded-blob bullet).
+pin whose blob is still held is ordinary drift, untouched here. Only a pin
+minted at an uncommitted file state can be lost (§ `mrd pin`, the
+recorded-blob bullet).
 
 - **The walk**: ONE `git log` plus ONE `cat-file --batch` for the whole run,
   never a spawn per pin or commit. Each recorded version of a lost target is
@@ -751,8 +752,9 @@ teaching.
   resolved `MERIDIAN.md`. No anchor ⇒ an empty user layer that says so, never a
   `$HOME` walk.
 - **The `armed-set` header states what is, never the engine's storage.** An
-  unarmed workspace reads `armed-set none`, the whole line — it never adds
-  where an armed set would live; a present or corrupt artifact names its path.
+  unarmed workspace reads `armed-set none`, the whole line — it never adds the
+  path where an armed set would live; a present or corrupt artifact names its
+  path.
 - **`armed=` is a separate column**, read from the attested armed set
   (`meridian/armed-rules.md`), joined on `(id, arm root)` narrowed to PATH —
   never on id alone, never recomputed. `-` registered but unarmed · `<mode>`
@@ -865,16 +867,16 @@ dot-prefixed path segment / a `meridian/domain.md` ignore rule).
 Both layer-0 planes the core reads are memory-free — the claim plane (pinned
 content drift) and the pin plane (pin verdicts and the anchoring state of every
 pinned blob) — and both are observed against the CURRENT tree. `check` answers
-at-rest truth, writing nothing and minting no receipt.
-`status = freshness, check = validity`: this verb answers "what lies?".
+at-rest truth, writing nothing and minting no receipt. `status = freshness,
+check = validity`: this verb answers "what lies?".
 
 **Write history is not assessed: the engine keeps no memory.** History is pinned
 to git at lock, and anything between locks is not history, so chain continuity
 and last-receipt-vs-live are **not checked here at all: not grey, NOT
-CHECKED**. Green means the world still matches the
-pins, never how it got there. Every face carries the
-`write_history: not-assessed` disclosure, naming that narrowing and pointing
-at git. The disclosure states the narrowed claim, never the engine's mechanism.
+CHECKED**. Green means the world still matches the pins, never how it got
+there. Every face carries the `write_history: not-assessed` disclosure, naming
+that narrowing and pointing at git. The disclosure states the narrowed claim,
+never the engine's mechanism.
 
 **The interval this verb spans.** The `worktree` interval — the bytes on disk —
 is always assessed. `--staged` adds the interval a commit records: git commits
@@ -882,9 +884,9 @@ the INDEX, `domain_snapshot` reads the worktree, so when the index carries more,
 the staged bytes are assessed in a second pass. The exit is worst-of across both
 intervals and every refusal names its interval. The interval line states the
 case: `coincides` (the index adds nothing, so the one pass IS a commit's
-interval), `diverges` (N paths differ,
-assessed separately), `no-repository`, or — asked but unreadable —
-`grey(cannot-assess)`, which fails closed on exit 1.
+interval), `diverges` (N paths differ, assessed separately), `no-repository`,
+or — asked but unreadable — `grey(cannot-assess)`, which fails closed on
+exit 1.
 
 **The exit triad stays closed** (0 green / 1 finding / 2 bad invocation): grey
 rides leg 1 — a grey pin or an unaskable object store refuses
@@ -939,7 +941,7 @@ pin.
 ⚠️ **The narrowing is a property of EXCLUSION, not of dot segments** — the
 custom ignore list reproduces it identically.
 
-**What does NOT change is the target's colour.** The hash domain still gates
+**What does NOT change is the target's color.** The hash domain still gates
 HASHING and never addressing: a pin whose TARGET the domain excludes stays
 `grey(outside-hash-domain)`, reported and never gated
 (`wire-contract.md` §12.1, verdict-plane clause). Holder and target are
@@ -1105,7 +1107,7 @@ What the document rules:
   overwrites one file N times.) The `chmod +x` is part of placing it — git
   silently skips a hook it cannot execute.
 - **The body runs `mrd check --commit-gate`** and rejects on its exit, holding
-  **zero markdown semantics**: no selector parsed, no rev read, no colour word
+  **zero markdown semantics**: no selector parsed, no rev read, no color word
   spelled, refusal's legal home engine-side.
   `crates/mrd/tests/skill_hook_emit.rs` asserts that over the emitted bytes.
 - **Three commit-creating paths stay open:** `git cherry-pick`, `git revert` and
@@ -1171,8 +1173,8 @@ merely looked at comes away byte-identical, including the roots that refuse.
 
 `cargo test --workspace` — full suite green; CI gates every merge on it. Export
 `CARGO_PROFILE_TEST_DEBUG=0` first — a full-debug `target/` in this workspace
-costs ~26G and the flag is the repo's own CI lever. The `testsuite` crate carries the
-frozen ground-truth pack (rung-1 parse truth: every node reproduced
+costs ~26G and the flag is the repo's own CI lever. The `testsuite` crate
+carries the frozen ground-truth pack (rung-1 parse truth: every node reproduced
 byte-for-byte) and the read/put parity pack (`data/parity/`, captured from the
 live host face), replayed by `u0_read_parity` (addressing facts),
 `u4a1_render_parity` (rendered text) and `u4a2_composed_read` (the composed op
@@ -1207,11 +1209,11 @@ cargo bench -p perfsuite
 
 ### The timing mode — `MRD_TIMING`
 
-`MRD_TIMING` measures the shipped release binary, where `perfsuite` measures a
-tree you built: a **timing-only** log, one line per completed phase and nothing
-else, with no profiler, no debug build and no rebuild. stdout, `--json` bodies and exit codes
-are byte-identical with it on and off; it writes to stderr or a file, never
-stdout.
+`MRD_TIMING` turns on a **timing-only** log for the shipped release binary —
+one line per completed phase and nothing else, with no profiler, no debug build
+and no rebuild — where `perfsuite` measures a tree you built. stdout, `--json`
+bodies and exit codes are byte-identical with it on and off; it writes to
+stderr or a file, never stdout.
 
 The value names the sink, **trimmed and matched case-insensitively** (`OFF`,
 `" off "`, `off` are one answer):
@@ -1250,8 +1252,7 @@ mrd-timing cmd=run who=p41273.t1 phase=snapshot.read us=402118
 - `who=` — the emitter inside that process: `p<pid>.t<n>`, both halves digits,
   `n` a per-process thread ordinal minted on that thread's first line. **It is
   not a request id** — a reused thread keeps its ordinal — and on the daemon
-  not a connection:
-  § The daemon's own lane is the only place that answers what
+  not a connection. § The daemon's own lane is the only place that answers what
   `t` will actually be on a busy server.
 - `phase=` — a dot marks a part of the phase it prefixes (`snapshot.read`
   inside `snapshot`), but containment is wider: `dispatch` contains `snapshot`,
@@ -1292,20 +1293,16 @@ claim is code shape plus stdout byte-identity in
 lane, never the PR lane.
 
 **Two lanes, and only one of them is the caller's.** `mrd run` runs in the
-calling process: its phases land on the caller's sink. `mrd script` and wire clients
-hand the work to the resident daemon, so those land on the daemon's sink, and
-nothing rides back on the wire (Law 2 puts host-facing types in `wire` and
-`wire-contract.md`, not in an instrument). A client sees only the frame's
-`meta.duration_us`, the server-side total. So set `MRD_TIMING` **in the
-daemon's environment**: an auto-spawn inherits the client's environment, a
+calling process: its phases land on the caller's sink. `mrd script` and wire
+clients hand the work to the resident daemon, so those land on the daemon's
+sink, and nothing rides back on the wire (Law 2 puts host-facing types in
+`wire` and `wire-contract.md`, not in an instrument). A client sees only the
+frame's `meta.duration_us`, the server-side total. So set `MRD_TIMING` **in
+the daemon's environment**: an auto-spawn inherits the client's environment, a
 resident daemon kept its own and emits nothing — restart it, or let the idle
 horizon do it.
 
 #### The daemon's own lane — `<socket-stem>.log`
-
-The lane is not gated on this mode: null stdio would leave a detached daemon
-deaf to the refusals above and to `MRD_TIMING=1`, and mute about everything
-else.
 
 **The auto-spawn gives the daemon a voice**: its stderr is `<socket-stem>.log`,
 opened append beside the socket and pidfile keyed off the same stem —
@@ -1315,10 +1312,12 @@ shutdown lines, any refusal or panic it dies with, the registry's operational
 diagnostics and, while the mode is on, every `mrd-timing:` diagnostic, every
 measurement that degraded to stderr, and the `MRD_TIMING=1` form.
 
-- **The lane is unconditional; the MEASUREMENTS are the gate.** Gated, a daemon
-  that died at startup — panic, unresolvable layout, unbindable socket,
-  poisoned state file — would present only as "5 seconds slower": the client
-  polls 5 s, degrades to the ephemeral engine, never refuses.
+- **The lane is unconditional; the MEASUREMENTS are the gate.** Null stdio
+  would leave a detached daemon deaf to the refusals above and to
+  `MRD_TIMING=1`, and mute about everything else. Gated, a daemon that died at
+  startup — panic, unresolvable layout, unbindable socket, poisoned state file
+  — would present only as "5 seconds slower": the client polls 5 s, degrades to
+  the ephemeral engine, never refuses.
 - **What a run that did not ask for the mode pays**: one file beside the
   socket, a few lines per daemon lifetime, not per operation.
 - **The degrade quotes it.** When a daemon this run spawned never binds, the
@@ -1359,7 +1358,7 @@ and `corpus.build` come from `fs`, so they fire on the ephemeral path **and**
 for every other caller of those functions (`run-plane.md` § Timing phases —
 read `cmd=` first). A warm daemon-served `links` emits neither on the
 **client** sink: that fold happened in the daemon, on its own sink
-(`status.md` § Two lanes). A phase that did not run emits no line.
+(§ Two lanes). A phase that did not run emits no line.
 
 | Phase | Inside | Emitted in | Covers |
 |---|---|---|---|
