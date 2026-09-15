@@ -43,8 +43,8 @@ docs win.
 Every other crate naming both `wire` and `model` only consumes them:
 `registry` (host, wiring only), `mrd` (local client), `render` (projection
 facts → text face), `check`/`preset`/`realise` (engine planes over wire
-vocabulary), `testsuite` (observes). Growth there signals a missing organ
-capability.
+vocabulary), `testsuite` (observes). Growth inside one of these consumers
+means a capability is missing from `wire-map` or `wire-serve`.
 
 ## Additivity
 
@@ -64,7 +64,7 @@ which laws it carries.
 | `timing` | The `MRD_TIMING` switch, resolved once per process into a sink, and the phase span emitting one `mrd-timing cmd=… who=… phase=… us=…` line per completed phase (`who=`: process and thread). A `std`-only leaf with zero dependencies, used by `fs`, `run`, `mrd`, `registry`. Never touches stdout or an exit code; reads no clock when off. Not a log framework or tracer: no levels, spans-in-flight, subscriber, or second time unit (`us`, the wire's `meta.duration_us` noun). Surface: `status.md` § The timing mode; `mrd run` phases: `run-plane.md` § Timing phases |
 | `syntax` | Markdown bytes → dialect node list with byte-exact spans; sole owner of the pulldown-cmark fork |
 | `model` | The governed node tree, resolve, CAS-splice validation, workspace fingerprints; non-serializable (Law 1). The frozen heading predicate (`gotext`), the one address law its two dependents share. The content-identity plane: the `fp1.…` CID-token; `verify_content`'s four-arm verdict (`Unverifiable` carries the whole `version.codec.hashfn` triple); the one reason-carrying `Color` model every drift surface uses. The frontmatter scalar codec (`scalar`): sole owner of the § A.6 value law; decode for every read seam, double-quoted encode for every value-plane write door |
-| `fs` | Disk read/walk/watch into the model; atomic tmp+fsync+rename splice execution. The `.base` membership walk (`base-projection.md` §3): hash-domain rules with the floor swapped from `*.md` to `*.base`, returning raw bytes per member plus the §6.2 `bf:` witness; YAML-free, `view` parses |
+| `fs` | Disk read/walk/watch into the model; atomic tmp+fsync+rename splice execution. The `.base` membership walk (`base-projection.md` §3): hash-domain rules with the floor swapped from `*.md` to `*.base`, returning raw bytes per member plus the §6.2 `bf:` witness; stays YAML-free: it hands the bytes up and `view` parses them |
 | `wire` | The serde-only wire vocabulary (Law 2) |
 | `wire-map` | The model→wire projection seam (Law 3) |
 | `git` | Git plumbing: shell-out content-addressing (blob object ids, the eager `-w` write) and object reachability against a `Repo` handle; asks git and reports its answer, never computes or guesses an oid. A `std`-only leaf, no production dependency |
@@ -81,8 +81,8 @@ which laws it carries.
 | `view` | **Ephemeral projection + lock-aware read face** (`wire-contract.md` §10.3–§10.4; not agent core): the parsed corpus in an in-process `:memory:` DuckDB (`build_memory`, the `mrd sql` operator face); walk/status colour reads. **Writes nothing to disk**: no persistent published file, no `view.duckdb`, no `view_path` wire op (`wire-contract.md` §10.4). The `.base` projection (`base-projection.md`): three `base` relations, `link.exclusion_path`, the `base_fold` second witness; its parse is the leaf module `view::base`, hence the third permitted `serde_yaml` taker (§9, enforced by `yaml_confinement`) |
 | `check` | The pure read verb of the reconciliation loop |
 | `preset` | Presets + session birth: def-pinned convention floor; `new`/`unfold`/`reconcile` through the guarded create. See `run-plane.md` (preset section) |
-| `config` | The `MERIDIAN.md` plane, the one entry point, parsed as content. Bootstrap chain: `MERIDIAN_CONFIG`, then `$HOME/MERIDIAN.md`. Four resolution states; absent and zero-mount reach one mount table. The strictest parse in the system: closed `&'static str` reason set, 1-based file lines, a teaching refusal stating nothing loaded. Rev and fingerprint: `blake3(bytes)[:16]`, no new rev noun. `Config` has private fields, `parse` its only constructor: no partial table. Downstream of `model`. **Mount table (`mount.rs`)** binds a declared entry, in order: canonicalize; the `workspace::deny_reason` ceiling, reused whole; three-way uniqueness (name ↔ Obsidian vault name ↔ path), refusing equal-or-nested paths; **the root declares, `MERIDIAN.md` binds**: a mismatch fails the whole parse, an absent declaration renders grey. Per-root state is grey-exit-1's closed vocabulary (one `bound`, four `grey(...)`, one `red(...)`); every non-bound state refuses on exit 1 with its own reason word. Mount-as-claim: a mount may pin its root, verified through `model::fingerprint::verify_content`; no new codec or hash law. `MountTable`'s field is private, `bind` its only constructor. **Bridge period (`bridge.rs`):** `CCC_LLM_WIKI_PATH` and `CCC_LLM_WIKI_REPOS_ROOT` become mount entries; until they demote to overrides, each is checked against the bound table through `MountTable::by_path`. On disagreement **the file wins** (`Bridged::mount` is `Some` only on agreement); the divergence is reported once per process, per variable, never on an exit code. An empty table is `unchecked`, not divergent. **Projection:** `MountTable::projection` yields the `addr::MountSet`: bound names, each bound vault root's **vault name** (the stored-plane spelling), and unreachable declared names with the path to check. Not `mrd walk`'s projection, which also marks a root unreachable when its corpus will not build |
-| `workspace` | Workspace identity: the discovery ladder (named argument → env override → git root → cwd default), canonicalization, the deny ceiling; pure filesystem functions (a leaf, `std` + `cache` only). Every answer names the rung that answered; `Answer::root` is `None` on the cwd default. The top rung is provenance, not a path: `workspace::Base` (a type, not a flag) says whether the caller named the path or it is the ambient cwd; `MERIDIAN_WORKSPACE` answers only for the ambient case, so an explicit operand outranks ambient state. Not rungs: the mount table (`config::MountTable`; `config` depends on this crate) and the declared root, the hello `workspace` field on the serve path, pinned by `registry::Registry::pin_declared`. All three planes meet at `deny_reason`, reused whole, never re-implemented |
+| `config` | The `MERIDIAN.md` plane, the one entry point, parsed as content. Bootstrap chain: `MERIDIAN_CONFIG`, then `$HOME/MERIDIAN.md`. Four resolution states; absent and zero-mount reach one mount table. The strictest parse in the system: closed `&'static str` reason set, 1-based file lines, a teaching refusal stating nothing loaded. Rev and fingerprint: `blake3(bytes)[:16]`, no new rev noun. `Config` has private fields, `parse` its only constructor: no partial table. Downstream of `model`. **Mount table (`mount.rs`)** binds a declared entry, in order: canonicalize; the `workspace::deny_reason` ceiling, reused whole; three-way uniqueness (name ↔ Obsidian vault name ↔ path), refusing equal-or-nested paths; **the root declares, `MERIDIAN.md` binds**: a mismatch fails the whole parse, an absent declaration renders grey. Per-root state is grey-exit-1's closed vocabulary (one `bound`, four `grey(...)`, one `red(...)`); every non-bound state refuses on exit 1 with its own reason word. Mount-as-claim: a mount may pin its root, verified through `model::fingerprint::verify_content`; no new codec or hash law. `MountTable`'s field is private, `bind` its only constructor. **Bridge period (`bridge.rs`):** `CCC_LLM_WIKI_PATH` and `CCC_LLM_WIKI_REPOS_ROOT` become mount entries; until they demote to overrides, each is checked against the bound table through `MountTable::by_path` — the canonicalize-at-bind comparison reused whole, never a second one, so the symlinked, trailing-slash and real spellings of one tree are one lookup. On disagreement **the file wins** (`Bridged::mount` is `Some` only on agreement); the divergence is reported once per process, per variable, never on an exit code. An empty table is `unchecked`, not divergent. **Projection:** `MountTable::projection` yields the `addr::MountSet`: bound names, each bound vault root's **vault name** (the stored-plane spelling), and unreachable declared names with the path to check. Not `mrd walk`'s projection, which also marks a root unreachable when its corpus will not build |
+| `workspace` | Workspace identity: the discovery ladder (named argument → env override → git root → cwd default), canonicalization, the deny ceiling; pure filesystem functions (a leaf, `std` + `cache` only). Every answer names the rung that answered; `Answer::root` is `None` on the cwd default. The top rung is provenance, not a path: `workspace::Base` (a type, not a flag) says whether the caller named the path or it is the ambient cwd; `MERIDIAN_WORKSPACE` answers only for the ambient case, so an explicit operand outranks ambient state — otherwise `MERIDIAN_WORKSPACE=victim mrd unregister target` would remove victim. Not rungs: the mount table (`config::MountTable`; `config` depends on this crate) and the declared root, the hello `workspace` field on the serve path, pinned by `registry::Registry::pin_declared`. All three planes meet at `deny_reason`, reused whole, never re-implemented |
 | `cache` | The hashed cache drawer: addressing, atomic sentinel registration, corrupt-is-a-miss probing, last-use GC |
 | `registry` | The daemon-held workspace registry: unix-socket RPC server + client, first-writer-wins, atomic state, idle-reap |
 | `mrd` | The workspace CLI: wires `workspace`/`cache`/`registry` into `init`/`unregister`/`resolve`/`cache`/`daemon` and mounts the local run plane (`mrd run` via `crates/run`). A local client, never a resident organ or on the serve path; its `run`→`model` edge stays one reviewable dependency. The CLI rooted lane (`rooted.rs`): the one seam every page-taking door resolves `[root:]path` through (address-grammar § 4.6) |
@@ -95,6 +95,9 @@ script-class, not a product door.
 ## Amendment — the policy gate (armed change plane)
 
 Law: `wire-contract.md` § A.2 (armed plane) and § Refusal taxonomy.
+
+`crates/policy` owns advisory edit-time verdicts — findings the host may act on
+or ignore — and the blocking gate at the armed change plane.
 
 - **The seam.** `gate(change, law) → GateOutcome`
   (`Ok(verdicts) | Refusal(violations)`), `policy::gate`
@@ -138,7 +141,8 @@ decision, not a defect. Neither is a TODO: each row is ruled to wait.
 
 The stored-plane narrowing refusal — refuse at the translation door with a
 named `TranslateError` — is owed wherever the wikilink ingress can mint a value
-the agent-plane grammar cannot represent unambiguously:
+the agent-plane grammar cannot represent unambiguously. That premise holds for
+the first of the three values below only.
 
 - **Multi-segment hpath — law on the mint plane; the joined form is residual
   debt.** A machine address is segment objects only:
@@ -164,8 +168,9 @@ The core path never assumes this schema.)*
 
 A cross-root link row stores `dest_root` + `dest_root_path` and leaves
 `dest_path` NULL, so `dest_path` always means "a path in this corpus".
-`link.dest_path` carries an enforced foreign key into `doc(path)`; that FK
-makes a link row pointing at a missing document unrepresentable.
+`link.dest_path` carries an enforced foreign key into `doc(path)`; that FK is
+the only thing in the schema that makes a link row pointing at a missing
+document unrepresentable.
 
 - *A nullable `dest_root` beside `dest_path`* — rejected: a cross-root path
   is not a key in this corpus, so that shape required dropping the FK.
@@ -173,9 +178,9 @@ makes a link row pointing at a missing document unrepresentable.
   `CHECK ((dest_root IS NULL) = (dest_root_path IS NULL))` and
   `CHECK (dest_path IS NULL OR dest_root IS NULL)`.
 - `dangling` tests `dest_path IS NULL AND dest_root IS NULL` so a resolved
-  cross-vault link is not broken
+  cross-vault link is not reported broken
   (`crates/view/tests/u21_cross_root_link_rows.rs`), and `AND exclusion IS
-  NULL` so a deliberately unhashed target is not
+  NULL` so a deliberately unhashed target is not reported broken
   (`crates/view/tests/dangling_exclusion.rs`).
 
 ### R1.6-a — the stored→agent re-join, and why it stays
@@ -294,11 +299,13 @@ loops. Teaching site: `wire_serve::section_recovery` (precedent: the
 duplicate-heading refusal, which teaches machine address + dewey).
 
 > **The script plane executes the teaching it prints.** The commit leg carries
-> the engine's refusal verbatim, so `section=` on the script `put()` and
-> `read()` builtins takes the §2.1 segment array (run-plane.md § the arming
-> surface; a `str`-only `section=` would meet the hpath array with a type
-> error), and the script toc face publishes each heading row's raw segments as
-> `hpath`. The coat itself is untouched.
+> the engine's refusal verbatim, so the plane that receives this teaching must
+> accept both taught forms: `section=` on the script `put()` and `read()`
+> builtins takes the §2.1 segment array (run-plane.md § the arming surface; a
+> `str`-only `section=` would meet the hpath array with a type error), and the
+> script toc face publishes each heading row's raw segments as `hpath` — so the
+> taught recovery is executable on every plane that prints it. The coat itself
+> is untouched.
 
 ### G-1 — the §2.4 charset is enforced at one ingress of two
 
@@ -360,8 +367,9 @@ this hold, and this section is what it enforces.
 > and no `deny-default`.
 > 2. The engine **never prints a claim about what a bash task may do** — above
 > all not `(read-only)`.
-> 3. Bash is **unsandboxed by definition**, and no human surface says that
-> word (there is no sandbox for it to contrast with); the only honest
+> 3. Bash is **unsandboxed by definition**, and no human surface prints the
+> word `unsandboxed` (the engine has no sandbox for it to contrast with); the
+> only honest
 > description is *undeclared effects*. The class survives structurally
 > (`GuaranteeClass::Unsandboxed`, the `--json` `guarantee` key); a guarantee
 > word renders only where positive: `hermetic`.
@@ -440,8 +448,8 @@ gives absence one meaning.
 ## Amendment — no hard-coded flow (mechanism in code, semantics in markdown)
 
 Users, not all of them engineers, hold different notions of a flow or a
-kanban, so the engine hard-codes none: a user describes what they want and
-its rules in a markdown file (the hook features).
+kanban, so the engine hard-codes none: the flexibility lives in the hook
+features, where a user describes the flow and its rules in a markdown file.
 
 **Mechanism in code, semantics in markdown.** Engine code carries the
 evaluator; the user's markdown carries every concrete flow concept.
@@ -465,7 +473,7 @@ evaluator hard-coded*) to the whole engine.
 exists, a selector resolves, a pin verifies, a rule fires), never on a flow
 literal; concreteness is a user value echoed back unread. Model:
 `preset::DEFAULT_ROOT_RECORD` is a fallback, `fm_scalar(&doc, "root")` is
-the answer. Every flow-touching site reads like that.
+the answer. Every flow-touching site should read like that one.
 
 **Boundary.** The engine's own vocabulary is mechanism, not covered: its
 state and mount convention (`MERIDIAN.md`, `.meridian/`, receipt paths, the
@@ -521,8 +529,8 @@ The merkle-spec half of this law is `node-rev-merkle-spec.md` §6.3.
   (`node-rev-merkle-spec.md` §6.3). Stamps are instance-bound: an instance
   mismatch degrades to the content-fold compare. Hash tokens are epoch-free;
   cursors are not.
-- **The home is the registry/serve seam;** no second place may advance any
-  of the four.
+- **The home is the registry/serve seam;** the law binds whichever home: no
+  second place may advance any of the four.
 
 The linearized step (publication half `crates/wire-serve/src/publish.rs`,
 lease half `authority.rs`):

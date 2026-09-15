@@ -32,8 +32,8 @@ so nothing verifies it and it goes stale unnoticed.
 
 ## §2 Doc-id registry
 
-Every file's frontmatter declares a short, stable `id`, listed here; the two
-must agree.
+Every file in this directory declares a short, stable `id` in its
+frontmatter, listed here; the two must agree.
 
 | id | File | Is the home of |
 |---|---|---|
@@ -65,8 +65,9 @@ A citation names its document: `<id> §N`, as in `wire §4.4`, `merkle §5`,
 - **Within one file**, a citation to that same file may stay bare; crossing a
   file boundary needs the id.
 - ⚠️ **A `§` number is not a dewey ordinal.** `mrd read --section` takes
-  dewey ordinals, where the `#` title is `1` and this document's `§2` is
-  `1.2`. Cite `§` in prose; leave dewey to the tool.
+  dewey ordinals, and the two schemes differ by one level: the `#` title is
+  dewey `1`, so this document's `§2` is `1.2`. Cite `§` in prose; leave dewey
+  to the tool.
 
 ## §4 One law, one home
 
@@ -100,21 +101,22 @@ This corpus is a meridian workspace, attested by the tool it describes.
   declares **no** nested `MERIDIAN.md` root: that would move resolution for
   every consumer, and the lock comes from pins.
 - `mrd read <file>` — the section map, a `sec_rev` per section, under the
-  read's fingerprint. Survey with this, not `grep`, which reads a fenced
-  fixture as a heading (`wire §0.3` prints four).
+  read's fingerprint. Survey with this, not `grep`: a fixture inside a
+  code fence looks like a heading to `grep`, and `wire §0.3` prints four such
+  lines.
 - `mrd pin <page> <target>#<selector>` — records that the page draws from that
-  section at its content fingerprint.
+  section, at that section's content fingerprint.
 - `mrd check` — every pin's verdict; a law that moved under a drawer turns its
   pin red.
 - `mrd walk <page> --down` — who draws from this page: the blast radius of a
   law edit, from the pin graph.
 
-A restatement (§4) has nothing to pin, so an unpinned claim about a law is
-visible; that makes §4 enforceable.
+A restatement (§4) has nothing to pin, so an unpinned claim about a law
+outside its home is visible; that makes §4 enforceable.
 
 ## §7 Migration status
 
 These rules bind new writing now. Existing files convert in dependency order:
 frontmatter, index, qualified citations, anchors, pins, restatement audit.
-Until then, bare citations read per §3 and unaddressed summaries are known
-debt, not licence.
+Until a file is converted, its bare citations read per §3 and its
+unaddressed summaries are known debt, not licence.

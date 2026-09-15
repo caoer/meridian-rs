@@ -20,7 +20,7 @@ owns: [cross-root addressing, mounts, "addr::Addr"]
 
 ## 1. The four senses of "root"
 
-`Root` is already a wire type, so this document's type is `MountName`.
+Four things in this engine are called a root. `Root` is already a wire type, so this document's type is `MountName`.
 
 | Name | What it is | Where it lives | Shape |
 |---|---|---|---|
@@ -37,8 +37,8 @@ owns: [cross-root addressing, mounts, "addr::Addr"]
 
 ### 2.1 Neither D12 story as written
 
-- **Story B (RIDE)** — keep the prefix in the spelling; resolve by `three_rules` (`model/src/lib.rs:1856-1871`: `docs.contains_key(spelling)`, `docs.contains_key(spelling + ".md")`, `resolve_linkpath(...)`). Rejected: all three rules look up one root's `BTreeMap<String, Document>`, whose keys carry no root, so `root:page` renders `red selector-unresolved`. Shipped, they run after the root is peeled (`resolve_ref`, `model/src/lib.rs:1767-1782`).
-- **Story A (PEEL)** — strip the root textually at the lock face and discard it. Rejected: no such splitter exists; a discarded root has nowhere to go. Shipped, the root stays on the spelling until resolution — pinned by test, *"the root stays ON the spelling until the lookup is root-aware"* (`view/src/read_face.rs:840-841`) — and is readable as a value from the parsed address (`declared_addr`, :847), carried in `LockItem.to_root: Option<addr::MountName>` (`view/src/read_face.rs:294-334`, :326, :398-400).
+- **Story B (RIDE)** — keep the prefix in the spelling; resolve by `three_rules` (`model/src/lib.rs:1856-1871`: `docs.contains_key(spelling)`, `docs.contains_key(spelling + ".md")`, `resolve_linkpath(...)`). Rejected: all three rules look up one root's `BTreeMap<String, Document>`, whose keys carry no root, so `root:page` renders `red selector-unresolved`. In the shipped design they run after the root is peeled (`resolve_ref`, `model/src/lib.rs:1767-1782`).
+- **Story A (PEEL)** — strip the root textually at the lock face and discard it. Rejected: no such splitter exists; a discarded root has nowhere to go. In the shipped design the root stays on the spelling until resolution — pinned by test, *"the root stays ON the spelling until the lookup is root-aware"* (`view/src/read_face.rs:840-841`) — and is readable as a value from the parsed address (`declared_addr`, :847), carried in `LockItem.to_root: Option<addr::MountName>` (`view/src/read_face.rs:294-334`, :326, :398-400).
 
 **Ruled: the address is a fallible type carrying an optional root; the resolver takes a root-keyed corpus.** Fallible construction makes the compiler list the doors; a string convention re-parsed at 16 sites is the "boolean helper a caller may ignore" defect.
 
@@ -128,7 +128,7 @@ This rules the literal path only (D10); a `root:` spelling resolves at every pag
 The fragment runs from the first `#` to the end of the spelling; **every byte of it is selector bytes, `@` included**. Fingerprint pinning is its own field on its surface (a lock row's pin, a render-face decoration), never an in-band suffix in the name lane (the packing law: a delimiter drawn from an open charset collides with it).
 
 - **Motive.** 3,815 real headings across two roots contain `@`. An in-band `@` split would make each unaddressable by its own spelling, and for (`Deploy`, `Deploy @ prod`) a trimming resolver would resolve the wrong real section.
-- **Narrows.** A pasted render-face spelling (`page.md#Sec@green.b3…`) keeps its `@green.…` tail, misses byte-exact, and lands in the Law A-3 teaching refusal, which republishes the machine address, and the near candidate where the ranker finds one — one taught round trip, never a silent resolution. No stored surface carries an in-band `@fp`: the engine refuses an fp reaching stored bytes (*"a render-face decoration the engine mints on read, never storable content"*, `crates/wire-serve/src/write.rs`).
+- **Narrows.** A pasted render-face spelling (`page.md#Sec@green.b3…`) keeps its `@green.…` tail, misses byte-exact, and lands in the Law A-3 teaching refusal, which republishes the machine address, plus the near candidate where the ranker finds one — one taught round trip, never a silent resolution. No stored surface carries an in-band `@fp`: the engine refuses a fingerprint reaching stored bytes (*"a render-face decoration the engine mints on read, never storable content"*, `crates/wire-serve/src/write.rs`).
 - **Widens.** `#Deploy @ prod` resolves byte-exact to the heading `Deploy @ prod`; the 3,815 `@`-bearing headings are addressable by their own spelling.
 - **Type.** `addr::Addr` has no `fp` field; `Addr::parse` records the fragment verbatim; `Display` round-trips without an `@` re-join.
 
@@ -140,13 +140,13 @@ The fragment runs from the first `#` to the end of the spelling; **every byte of
 | D2 | `notes.md` | no root, path `notes.md` | parse OK — ambient, unchanged |
 | D3 | `dir/a:b.md` | no root, path `dir/a:b.md` | parse OK — the colon follows the first `/` |
 | D4 | `sessions:24-01/notes.md#Design` | root `sessions`, path `24-01/notes.md`, selector `Design` | parse OK |
-| D5 | `My Notes:draft.md` | **REFUSED** | `AddrError::BadMountName` — *"refused: 'My Notes' is not a canonical root name — root names are `[a-z0-9-]`. Fix: quote the path differently or rename the root; see [[address-grammar]]."* |
-| D6 | `Sessions:notes.md` | **REFUSED** (uppercase, § 4.3) | `AddrError::BadMountName` |
-| D7 | `:notes.md` | **REFUSED** | `AddrError::EmptyMountName` |
-| D8 | `sessions:` | **REFUSED** | `AddrError::EmptyPath` |
-| D9 | `a:b:c.md` | **REFUSED** (two colons in the head) | `AddrError::AmbiguousColon` |
+| D5 | `My Notes:draft.md` | **refused** | `AddrError::BadMountName` — *"refused: 'My Notes' is not a canonical root name — root names are `[a-z0-9-]`. Fix: quote the path differently or rename the root; see [[address-grammar]]."* |
+| D6 | `Sessions:notes.md` | **refused** (uppercase, § 4.3) | `AddrError::BadMountName` |
+| D7 | `:notes.md` | **refused** | `AddrError::EmptyMountName` |
+| D8 | `sessions:` | **refused** | `AddrError::EmptyPath` |
+| D9 | `a:b:c.md` | **refused** (two colons in the head) | `AddrError::AmbiguousColon` |
 | D10 | a corpus file at `sessions:notes.md` on disk | **grey**, unaddressable, named | `grey(unaddressable-path)` |
-| D11 | a `create`/`splice` targeting `sessions:notes.md` | **RESOLVES through the rooted lane (§ 4.6)** — root `sessions`, rel `notes.md`, joined onto that root's bound workspace; the wire sees the rel half only | a raw head-colon `Path` arriving ON THE WIRE refuses `bad_path` |
+| D11 | a `create`/`splice` targeting `sessions:notes.md` | **resolves through the rooted lane (§ 4.6)** — root `sessions`, rel `notes.md`, joined onto that root's bound workspace; the wire sees the rel half only | a raw head-colon `Path` arriving on the wire refuses `bad_path` |
 
 D1–D4 must **parse**; D2 and D3 keep this law from swallowing the ordinary corpus.
 
@@ -155,9 +155,9 @@ D1–D4 must **parse**; D2 and D3 keep this law from swallowing the ordinary cor
 
 ### 4.6 The rooted lane spans every page-taking door (rooted-refs-everywhere)
 
-**Motive.** For a rooted ref the runtime cwd is not a factor in `mrd`'s behaviour.
-
 > **The law.** Every door at which the caller names a page resolves `[root:]path[#selector]` through the one rooted lane (parse → confinement → mount table, § 4.1, no literal fallback). No page-taking door refuses a well-formed rooted ref as such or misreads it as a filename (one exception: the preset lane below). The family is bound by the predicate "names a page", not a list (`wire-contract.md` § 12.1).
+
+**Motive.** For a rooted ref the runtime cwd is not a factor in `mrd`'s behaviour.
 
 Members, a measured snapshot (the predicate is the authority; re-measure at the seam):
 
@@ -169,13 +169,13 @@ Members, a measured snapshot (the predicate is the authority; re-measure at the 
 >
 > The hazard is Starlark-only — **caps do not apply to bash** (`crates/run/src/caps.rs` module doc, citing `laws.md` § Amendment): `resolve_authority` takes the bash branch first, consults only the builtin, non-overridable `READ_ONLY_PATTERNS` (`check-*`/`verify-*`, which refuse a bash fence at load), and resolves every other bash task `Authority::Unsandboxed` without reading the conventions. The bypass this law closes: `resolve_caps` consults the conventions of the declaring root, so without the authority law a read-only `run.caps.*` ceiling over a task's `md.*` writes would be cd-swappable for a looser tree's.
 
-**The mechanism is the workspace jail, and it is law.** One daemon serves many workspaces; `hello` pins the workspace exact-or-refuse, no ancestor walk (`registry.rs` `pin_declared`: *"a declaration never widens to an enclosing registered workspace"*), and the connection stays on it. A rooted door resolves the root, then dials that workspace; the wire carries the rel half only, and the § 1 `Path` law (`wire-contract.md`) keeps its head-colon confinement arm.
+**The mechanism is the workspace jail, and it is law.** One daemon serves many workspaces; `hello` pins the workspace exact-or-refuse, no ancestor walk (`registry.rs` `pin_declared`: *"a declaration never widens to an enclosing registered workspace"*), and the connection stays on it. A rooted door resolves the root, then dials that workspace; the wire carries the rel half only, and `wire-contract.md` § 1's `Path` law keeps its head-colon confinement arm.
 
-> **The one exception: the preset lane is not yet converted.** `unfold`, `reconcile` and `new` name a page (`new`'s def token: *"resolve def (presets/<KIND>.md or page path)"*) but write in-process with no daemon dial, so a rooted op would bypass the target tree's armed gates. A rooted ref there **refuses with a teaching** naming this reason and the remedy (run it from inside the target tree). Until it rides the daemon write path the lane is cwd-determined, not correctly cwd-bound forever.
+> **The one exception: the preset lane is not yet converted.** `unfold`, `reconcile` and `new` name a page (`new`'s def token: *"resolve def (presets/<KIND>.md or page path)"*) but write in-process with no daemon dial, so a rooted op would bypass the target tree's armed gates. A rooted ref there **refuses with a teaching** naming this reason and the remedy (run it from inside the target tree). Until the lane rides the daemon write path it stays cwd-determined — a lane awaiting conversion, not one correctly cwd-bound forever.
 
 **Convergence.** A client's multi-file `script` face states the same rule: *"Every files[] entry resolves through one root; that root is the workspace; in-program paths are relative to it"*. A program binds one declared root, so cross-root reads inside one program do not arise.
 
-**Face grammars differ; do not harmonize.** A client face may admit absolute and client-relative refs beside `root:path`; the `mrd` CLI's § 1 path law still forbids absolute paths and `.`/`..` segments.
+**Face grammars differ; do not harmonize.** A client face may admit absolute and client-relative refs beside `root:path`; the `mrd` CLI's path law (`wire-contract.md` § 1) still forbids absolute paths and `.`/`..` segments.
 
 ### 4.6a The root a spelling names — name first, then alias (root-alias)
 
@@ -183,7 +183,7 @@ Members, a measured snapshot (the predicate is the authority; re-measure at the 
 
 **Motive.** The engine knows no root names (the no-baked-names law, `laws.md`); `alias:` maps one agreed constant, `sessions:`, onto whatever each machine calls that tree, without the engine learning that name. `primary:` is not consulted for `sessions` or anything else.
 
-**Default (schema §5.1c).** Where no mount is named or aliased `sessions`, the bound table gains the implicit default mount `sessions` at `$HOME/.local/share/ucc/sessions`, only when it binds clean — found by `name`, first rung, same seam. A declared name or alias suppresses it ("defaulted in code at most").
+**Default (schema §5.1c).** Where no mount is named or aliased `sessions`, the bound mount table gains the implicit default mount `sessions` at `$HOME/.local/share/ucc/sessions`, only when it binds clean — found by `name`, first rung, same seam. A declared name or alias suppresses it ("defaulted in code at most").
 
 **Name first, never a tie-break.** A root named `sessions` resolves `sessions:` with no alias — a name is its own alias. A table where a name and an alias both answer one spelling does not load (`alias-shadows-name`, whole-table refusal).
 
@@ -264,13 +264,13 @@ Unmounted { root: addr::MountName },
 pub const GREY_UNMOUNTED_REFUSAL_EXEMPLAR: &str = "grey(unmounted): root 'assets' is not mounted — the address 'assets:domains/media/logo.md#Design' names a root this machine does not bind. Not red: nothing drifted, you just cannot see from here. Refs to mounted roots remain served. Fix: declare 'assets' in ~/MERIDIAN.md as a mount entry (name / path); see [[address-grammar]].";
 ```
 
-The pinning test asserts the teaching tail verbatim, as `TEACH_TAIL` does for D1:
+The pinning test asserts the teaching tail verbatim, as `TEACH_TAIL` does for D1.
+The tail names the missing mount, teaches the fix (D8), and carries the grey
+rule's sentence verbatim:
 
 ```
 . Not red: nothing drifted, you just cannot see from here. Refs to mounted roots remain served. Fix: declare '<root>' in ~/MERIDIAN.md as a mount entry (name / path); see [[address-grammar]].
 ```
-
-It names the missing mount and teaches the fix (D8), carrying the grey rule's sentence verbatim.
 
 ### 6.0b One remedy per plane
 
@@ -506,10 +506,10 @@ the daemon's mountgate pin).
 
 ## 11. The measurements
 
-All three pre-date the fix and record the defect, not today's behaviour:
-§ 5.1's peel-and-refuse is now the C-3 guard
+All three measurements below pre-date the fix and record the defect, not
+today's behaviour: § 5.1's peel-and-refuse is now the C-3 guard
 (`crates/model/src/lib.rs:1733-1734`), the mount-aware resolver is
-`resolve_ref` (`crates/model/src/lib.rs:1776`), and § 11.1 re-run now hits
+`resolve_ref` (`crates/model/src/lib.rs:1776`), and re-running § 11.1 now hits
 that refusal (`crates/model/tests/u11_c3_linkpath_peels_and_refuses.rs`
 asserts it on the verbatim input).
 
@@ -553,9 +553,8 @@ $ printf 'x\n' > 'sessions:notes.md' && ls
 sessions:notes.md
 ```
 
-The file is created. `wire::Path`'s own doc says *"this newtype does not
-validate, it names"*, and `path_confined` checks only segments (cited in § 4):
-nothing validates a `:` before a path, so § 4 rules a live ambiguity.
+The file is created. Nothing validates a `:` before a path — § 4 cites both
+`wire::Path` and `path_confined` — so § 4 rules a live ambiguity.
 
 ---
 

@@ -61,7 +61,7 @@ engine-managed, inside the hash domain, drift-tracked by a pinned rev.
 | Pinned rev | `rev` = `page_rev(page bytes)` = `blake3(bytes)[:16]`, 16 lowercase hex — the world model's rev law (contract §1) on the rule page | `crates/policy/src/registration.rs` (`page_rev`) |
 | Drift | at the door, `page_rev(live page) != row.rev` → `ArmedFault::Red(Redness::Drifted)`; the write refuses (check) or the fault is reported (hook) | `crates/policy/src/armed.rs` (`verify_rows`), `crates/policy/src/armed_law.rs` |
 | Malformed posture | `ArtifactCorrupt { detail: String }` → `ArmedFault::Corrupt`, **fail closed**; never reads as "nothing armed" | `crates/policy/src/armed.rs`, `crates/policy/src/armed_law.rs` |
-| Emptied posture | zero rows on a once-armed workspace → `ArmedFault::Disarmed`, not a disarm: an attested absence is a row spelled `off`, zero rows is none | `crates/policy/src/armed_law.rs` |
+| Emptied posture | a well-formed artifact with zero rows on a once-armed workspace → `ArmedFault::Disarmed`, not a disarm: an attested absence is a row spelled `off`; zero rows is the absence of attestation | `crates/policy/src/armed_law.rs` |
 | Absent posture | pivots on a **separate marker** (`meridian/attested`): never-armed → not read; once-armed → a fault | `crates/policy/src/armed_law.rs` (`resolve_armed_law`) |
 | Writer | the **engine** is sole writer; a hand edit is a `BindingBreak` teaching refusal | `crates/policy/src/binding.rs` (`classify_door_law`) |
 
@@ -145,8 +145,8 @@ Implementation places the constants; this spec fixes the spellings.
 - **Machine surface** — the frontmatter block, plus every fenced block whose
   info-string names an engine block-language (§3.1). Parsed strictly.
 - **Prose** — everything else. The engine **never parses it and never refuses
-  because of it**, so a sentence of documentation cannot break the config (the
-  INDEX's law generalized: `crates/policy/src/armed.rs:996`, `parse_artifact`).
+  because of it** (the INDEX's law generalized: `crates/policy/src/armed.rs:996`,
+  `parse_artifact`).
 
 **Corollary:** a fenced block that is *not* an engine block-language (a
 ` ```yaml ` example, a ` ```text ` diagram, an indented snippet) is prose,
@@ -196,6 +196,8 @@ Elision is per-language, not per-namespace:
 
 **The verification requirement.** A block's bytes render whether or not the
 parser accepted them, so the rendered face never shows the parse **verdict**.
+`mrd read ~/MERIDIAN.md` shows the prose and the mount blocks, so "no mount
+blocks visible" never means the parse failed.
 **The user-reachable verb that publishes the parsed mount table must therefore
 not be the rendered read face**; implementation owns which verb it is.
 
@@ -275,7 +277,7 @@ Structural refusals over the block:
 | A key not in the table | `unknown-field`, naming the key and the legal set |
 | A key twice | `duplicate-field`, naming the key and both lines |
 | A key out of canonical order | `field-out-of-order`, naming the canonical order |
-| A body line that is not `key: value` (a bare key with no `: ` included) | `malformed-line` |
+| A body line that is not `key: value` (including a bare key with no `: `) | `malformed-line` |
 | The fence never closes | `unterminated-block` |
 | Empty block body | `missing-required-field` naming `name` |
 | Two blocks with the same `name` | `duplicate-mount-name`, naming both lines |
@@ -286,13 +288,15 @@ Structural refusals over the block:
 
 **`duplicate-mount-name` is in scope and `path` collision is NOT**: same-path is decidable only after
 canonicalization (symlinks, trailing slashes, `..`), and **Implementation owns the mount-path law** —
-canonicalize at bind, inherit `workspace::deny_reason`, refuse equal-or-nested mounts.
+canonicalize at bind, inherit `workspace::deny_reason`, refuse equal-or-nested mounts. The parser
+never compares paths lexically: one owner decides "same path", and that owner is the bind step.
 
 ### 5.1a `primary:` — the declared-primary designation (v1-additive)
 
-An optional `primary: true` line designates its mount as the **primary root**: a binding ROLE hosts
-consume — change feed, watch loop, journal placement — whose rule set lives with the host. The engine
-parses it, refuses illegal shapes (§5.1), and reports it verbatim on the `mounts` wire row
+An optional `primary: true` line designates its mount as the **primary root**: the one tree a host's
+single-root consumers anchor on, and where a host daemon writes — it need not be a vault. The role
+binds hosts — change feed, watch loop, journal placement — whose rule set lives with the host. The
+engine parses it, refuses illegal shapes (§5.1), and reports it verbatim on the `mounts` wire row
 (`wire-contract.md` §A.5) and both config faces. **The engine never acts on the designation.**
 
 - The value is the literal `true` and nothing else: absence is the only "not primary" spelling, so
@@ -392,9 +396,10 @@ could never resolve.
 
 ### 5.3 `pin:` — mount-as-claim
 
-A mount entry may pin the root it declares, e.g. that root's entry-page fingerprint. Under
-canonicalize-at-bind `~/MERIDIAN.md` cannot itself be attested (§9), so a mount's pin is **the sole
-mechanism by which the mount table's own integrity is checkable.**
+A mount entry may pin the root it declares, e.g. that root's entry-page fingerprint.
+Canonicalize-at-bind makes this load-bearing, not a nicety. `~/MERIDIAN.md` cannot itself be
+attested (§9), so a mount's pin is **the sole mechanism by which the mount table's own integrity is
+checkable.**
 
 > `pin:` carries a fingerprint CID-token: four `.`-separated non-empty fields,
 > `version.codec.hashfn.digest`. It is well-formed iff `model::fingerprint::parse_fingerprint`
@@ -534,7 +539,7 @@ machine:
 
 ### 6a.4 What is deliberately NOT specified
 
-- **No key schema.** The config is unlimited by rule. A future engine-read key inside `config()`
+- **No key schema.** A future engine-read key inside `config()`
   reopens §4's misspelled-optional-key hazard and must state how it closes it.
 - **One block, not many.** A second `^config` is ambiguous, not a merge; merging would need a
   precedence rule nobody has ruled on.
@@ -610,7 +615,7 @@ Three cases, exhaustive:
 | The fault is about | The line is | Cases |
 |---|---|---|
 | Something **present** | its own line | `wrong-type-value`, `unsupported-version`, `bad-value`, `unknown-field`, `field-out-of-order`, `malformed-line`, `frontmatter-unparseable` |
-| Something **absent** | the opening line of the construct that should have carried it — the block's opening fence for a block field, **line 1** for a frontmatter key or fence fault | `missing-required-field`, `missing-required-key`, `no-frontmatter`, `unterminated-block` |
+| Something **absent** | the opening line of the construct that should have carried it — the block's opening fence for a block field, **line 1** for a frontmatter key or a frontmatter fence fault | `missing-required-field`, `missing-required-key`, `no-frontmatter`, `unterminated-block` |
 | A **duplicate** | the **second** occurrence, and the message names the first | `duplicate-field`, `duplicate-mount-name`, `duplicate-tool-name`, `duplicate-primary-designation` |
 
 State C and `home-unresolvable` carry the config path and no line.
@@ -651,13 +656,13 @@ spell the field you meant.
 ```
 
 **Three clauses are mandatory:** the line; **"no mount table was loaded"** (the no-partial-load law);
-and a `Fix:` naming the legal form (`crates/policy/src/check_eval.rs:502-513`:
-`refuse(message, passing)` cannot refuse without it).
+and a `Fix:` naming the legal form — `refuse(message, passing)` cannot be called without the
+passing scenario (`crates/policy/src/check_eval.rs:502-513`).
 
 ### 8.4 First refusal wins
 
 A malformed config produces **exactly one** refusal — the first, in file order: the file does not
-half-load, and a cascade would bury the fault to fix. `lock::parse` (`crates/lock/src/lib.rs:543`) and
+half-load. `lock::parse` (`crates/lock/src/lib.rs:543`) and
 `parse_artifact` (`crates/policy/src/armed.rs:996`) return on the first fault too.
 
 ## 9. The stated limit — `~/MERIDIAN.md` cannot be attested
@@ -699,16 +704,16 @@ anti-vacuity discipline.
 
 ## 11. Rejected alternatives
 
-- **Mount table in frontmatter (`mounts:` as a YAML list)** — no prose beside an entry; its error type
-  carries no structured location (§1.3 D-d).
+- **Mount table in frontmatter (`mounts:` as a YAML list)** — no prose beside an entry, and the
+  frontmatter parser's error type carries no structured location (§1.3 D-d).
 - **One `meridian-mount` block for all entries** — no prose beside each mount, a mount's pin (§5.3)
   becomes a row field, and refusals lose the coarse address (*which* block).
 - **INDEX-style middot checklist rows** — §1.3 D-b: engine-generated grammar; a hand-written ` · ` is
-  invisible in an editor and unlearnable from a refusal.
+  invisible in an editor.
 - **A closed set of tool kinds in v1** — §6.1: v1 owns zero kinds, so the grammar would admit nothing.
 - **`MERIDIAN.md` authoritative for canonical root names** — contradicts *"MERIDIAN.md binds, it doesn't
-  baptize"* (`address-grammar.md` § 3, INV-5); `name:` is a **binding**, checked against the root's own
-  declaration.
+  baptize"* (`address-grammar.md` § 3, INV-5); `name:` in a mount block is a **binding**;
+  implementation checks it against the root's own declaration.
 - **A declared `expected_rev:` key** — self-referential and unsatisfiable (§7.3).
 - **Project-local walk-up discovery** — not rejected but **deferred** (§0); not built here.
 
@@ -724,8 +729,7 @@ into `model::CorpusIndex::resolve_ref`). **Not ruled here.**
 **Boundary 2 — the pin's target, shared with implementation.** §5.3 fixes what a well-formed `pin` token
 *is*, not **which file** a mount's pin names (the root's self-declaration entry page — the D7 seeding
 question) nor **what bytes** it covers (whole file for a plain-folder root, a parsed span for a vault
-root). Naming the target with a second field is a v1 schema amendment, not a v2 bump: optional and new,
-so
+root). Naming the target with a second field is a v1 schema amendment, not a v2 bump: optional and new, so
 §4's rule about optional engine-read keys applies.
 
 Neither blocks implementation: §2, §3, §4, §7 and §8 are complete without them.

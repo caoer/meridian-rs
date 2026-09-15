@@ -114,8 +114,8 @@ separate axes.
   content. Transitivity is lock-is-content: A's span covers A's `meridian-lock`
   block holding B's fingerprint, so drift propagates at pin-update time, not
   hash time (§6).
-- **No descendant fold.** A section's span holds every descendant's bytes, so any
-  descendant edit moves the section's fingerprint.
+- **No descendant fold.** A section's span holds every descendant's bytes, so
+  any descendant edit moves the section's fingerprint.
 
 ## 4. norm-v2 — the exact rule set
 
@@ -174,8 +174,8 @@ document span containing that anchor line removes it by R2/R2b.
 
 The lexer does not mask frontmatter, so a caret-tail line there
 (`title: x ^fm`) mints an anchor and norm-v2 removes it from the hashed bytes.
-Fixture `frontmatter_caret` pins the divergence, so a parser fix is
-a visible codec decision (§2.2), not silent drift.
+Fixture `frontmatter_caret` pins the divergence, so a parser fix is a visible
+codec decision (§2.2), not silent drift.
 
 ## 5. Rev-neutrality — the theorem the fixtures pin
 
