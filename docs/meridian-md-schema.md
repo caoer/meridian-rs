@@ -13,6 +13,16 @@ owns: ["MERIDIAN.md config parse"]
 
 Status: normative for the `MERIDIAN.md` parse.
 
+`MERIDIAN.md` is the one file a machine reads to learn which markdown trees it
+can reach. Each **mount** entry in it binds a root name — the name of one
+markdown tree — to a local path, and the mount table is the set of those
+entries. This document rules how the engine parses that file: where it is
+found, which bytes are parsed strictly, which keys and fields are legal, and
+how a broken file is refused. Every key and field below states its type,
+whether it is required, and the refusal on violation. It does not rule what
+the mount table means once bound, nor what a tool declaration does; §0 lists
+those boundaries.
+
 **Standing law (no external decision files):** one entry point
 (`MERIDIAN_CONFIG` → `$HOME/MERIDIAN.md`); markdown over TOML; config is
 content; fail-loud strictest parse; the mount table is a three-way map
@@ -45,7 +55,9 @@ not need. Two boundaries are flagged in §12.
 ## 1. The precedent this extends — `meridian/armed-rules.md`
 
 The attested armed-rules artifact already ships markdown-as-config:
-engine-managed, inside the hash domain, drift-tracked by a pinned rev.
+engine-managed, inside the hash domain, drift-tracked by a pinned rev. The
+self-hosting model therefore already ships once, and this schema extends a
+proven pattern rather than inventing one.
 
 > The artifact is a table keyed by `(rule id, arm root)`, called **the INDEX**
 > here.
@@ -100,10 +112,12 @@ engine-managed, inside the hash domain, drift-tracked by a pinned rev.
 2. **`$HOME/MERIDIAN.md`** — the default.
 
 An **empty or whitespace-only** `MERIDIAN_CONFIG` states no path and counts as
-**unset**: the chain falls to rung 2 (§2.2 state D's nil-vs-empty rule on the
-env axis). `$HOME` unset or empty makes rung 2 unresolvable and **refuses**
-(§8, `home-unresolvable`); that is not the absent case (*the default path
-resolved and nothing there*).
+**unset**, so the chain falls to rung 2. This is the same nil-vs-empty
+distinction §2.2 state D draws for the mount table, applied to the env var.
+
+`$HOME` unset or empty makes rung 2 unresolvable and **refuses** (§8,
+`home-unresolvable`). That is not the absent case: absent means the default
+path resolved and no file is there.
 
 ### 2.2 The four states
 
@@ -121,7 +135,8 @@ not A — an observation, never a branch.
 
 **The green-path control.** `cases.json` carries acceptance cases beside
 refusals: A and D leave behaviour unchanged, and a well-formed multi-mount
-config (`corpus/multi-root.md`) loads every entry it declares.
+config (`corpus/multi-root.md`) loads every entry it declares. A build that
+refused every config would satisfy state B alone.
 
 ### 2.3 What "readable regular file" means
 
@@ -147,6 +162,9 @@ Implementation places the constants; this spec fixes the spellings.
 - **Prose** — everything else. The engine **never parses it and never refuses
   because of it** (the INDEX's law generalized: `crates/policy/src/armed.rs:996`,
   `parse_artifact`).
+
+Without this scoping, adding a sentence of documentation to a config could
+break the machine that reads it.
 
 **Corollary:** a fenced block that is *not* an engine block-language (a
 ` ```yaml ` example, a ` ```text ` diagram, an indented snippet) is prose,
@@ -185,7 +203,9 @@ string (` ```meridian-mount the wiki `) is tolerated and ignored.
 
 ### 3.2 The consequence of the namespace
 
-Elision is per-language, not per-namespace.
+This section governs how a block in the namespace appears when the engine shows
+the file. Elision — dropping a block from the rendered page — is per-language,
+not per-namespace.
 
 **The render face elides engine-emitted languages only.**
 `ToonRenderer::with_meridian_elision` drops the blocks
@@ -196,15 +216,16 @@ everything verbatim. No other reader skips engine blocks.
 
 **The verification requirement.** A block's bytes render whether or not the
 parser accepted them, so the rendered face never shows the parse **verdict**.
-`mrd read ~/MERIDIAN.md` shows the prose and the mount blocks, so "no mount
-blocks visible" never means the parse failed.
+`mrd read ~/MERIDIAN.md` shows the prose and the mount blocks either way, so
+what a reader sees there says nothing about whether the parse succeeded.
 **The user-reachable verb that publishes the parsed mount table must therefore
 not be the rendered read face**; implementation owns which verb it is.
 
 ## 4. Frontmatter keys
 
-The frontmatter is the file's first block: bytes `0..3` are `---\n` (a
-BOM-prefixed `---` is **not** frontmatter), terminated by a closing `---` line
+The frontmatter says what the file is and which schema it speaks (§1.3 D-c).
+It is the file's first block: bytes `0..3` are `---\n` (a BOM-prefixed `---` is
+**not** frontmatter), terminated by a closing `---` line
 (`crates/testsuite/data/gt/ground-truth/README.md:21`).
 
 | Key | Type | Required | Refusal on violation |
@@ -221,10 +242,11 @@ page `meridian/domain.md` (`version` + ignore list) holds the same discipline
 **Unknown frontmatter keys are permitted and ignored**
 (`crates/config/src/lib.rs:672`), so `title:`, `updated:` or Obsidian
 properties may ride along. That is safe only because **v1 defines no optional
-frontmatter key the engine reads**: both keys are required, so a typo of either
-fails loud as `missing-required-key` rather than being silently dropped. **A
-future version that adds an optional engine-read key must state how it closes
-this hazard.**
+frontmatter key the engine reads**. Both keys are required, so a typo of either
+fails loud as `missing-required-key` instead of being silently dropped. The
+hazard of unknown-key tolerance is a misspelled *optional* key that silently
+does nothing, and v1 has none. **A future version that adds an optional
+engine-read key must state how it closes this hazard.**
 
 Malformed frontmatter itself:
 
@@ -235,8 +257,11 @@ Malformed frontmatter itself:
 | The frontmatter block opens and closes but carries no keys | `missing-required-key` naming `type` — see below |
 | The frontmatter is not parseable YAML | `frontmatter-unparseable`, carrying the parser's own message |
 
-**An empty *closed* block is a missing key, not a missing block.** The markdown
-parser mints no frontmatter node for `---\n---`, so `crates/config/src/lib.rs`
+**An empty *closed* block is a missing key, not a missing block.** `---\n---`
+opens with `---\n` and closes its fence, so neither `no-frontmatter` condition
+holds. The markdown parser mints no frontmatter node for it, so a reader that
+trusted the parse tree alone would refuse it as `no-frontmatter` — a false
+statement about bytes the author can see. `crates/config/src/lib.rs`
 (`closed_empty_frontmatter`) recognises the shape before the `no-frontmatter`
 refusal is minted.
 
@@ -254,8 +279,9 @@ pin: fp1.span2.b3.40b167ed9b42a2beadb7c441b214efdc93069ef443a1cc2b5ae2ccda4cf031
 
 ### 5.1 Fields
 
-Canonical order is the table's order. Each line is `key`, `:`, one space, then the value: the rest of
-the line, trailing whitespace trimmed. An absent required field refuses `missing-required-field`.
+Canonical order is the table's order. Each line is `key`, `:`, one space, then the value. The value
+is the rest of the line, with trailing whitespace trimmed. An absent required field refuses
+`missing-required-field`.
 
 | # | Field | Type | Required | Refusal on violation |
 |---|---|---|---|---|
@@ -286,34 +312,38 @@ Structural refusals over the block:
 
 **Blank lines and comment lines are refused** as `malformed-line`.
 
-**`duplicate-mount-name` is in scope and `path` collision is not**: same-path is decidable only after
-canonicalization (symlinks, trailing slashes, `..`), and **implementation owns the mount-path law** —
-canonicalize at bind, inherit `workspace::deny_reason`, refuse equal-or-nested mounts. The parser
-never compares paths lexically: the bind step is the one owner of "same path".
+**`duplicate-mount-name` is in scope and `path` collision is not.** Name uniqueness is decidable
+from the bytes alone. Same-path is decidable only after canonicalization (symlinks, trailing slashes,
+`..`), and **implementation owns the mount-path law**: canonicalize at bind, inherit
+`workspace::deny_reason`, refuse equal-or-nested mounts. The parser never compares paths lexically.
+The bind step — where a declared mount becomes a bound root — is the one owner of "same path".
 
 ### 5.1a `primary:` — the declared-primary designation (v1-additive)
 
 An optional `primary: true` line designates its mount as the **primary root**: the one tree a host's
-single-root consumers anchor on, and where a host daemon writes — it need not be a vault. The role
+single-root consumers anchor on, and where a host daemon writes. It need not be a vault. The role
 binds hosts — change feed, watch loop, journal placement — and their rule set lives with the host.
-The engine parses it, refuses illegal shapes (§5.1), and reports it verbatim on the `mounts` wire
-row (`wire-contract.md` §A.5) and both config faces. **The engine never acts on the designation.**
+The engine parses the designation, refuses its illegal shapes (§5.1), and reports it verbatim on the
+`mounts` wire row (`wire-contract.md` §A.5) and both config faces. **The engine never acts on the
+designation.**
 
 - The value is the literal `true` and nothing else: absence is the only "not primary" spelling, so
   `primary: false` would mint a second spelling for one fact.
 - Two designations refuse the whole table (`duplicate-primary-designation`, the
-  `duplicate-mount-name` class): the designation is declared, never derived, so the parser never picks
-  between claimants and no consumer may fall back to `mounts[0]`, the only vault, or any other
-  derivation.
+  `duplicate-mount-name` class). The designation is declared, never derived: the parser never picks
+  between claimants, and where it is absent no consumer may fall back to `mounts[0]`, to the only
+  vault, or to any other derivation.
 
-`primary:` is a v1-additive field of the §12 boundary 2 shape. Mount blocks are closed-schema, so
-`primry: true` refuses as `unknown-field` at parse, closing §4's silent-typo hazard.
+`primary:` is **v1-additive** — optional and new, so adding it amends v1 rather than bumping the
+version (§12, boundary 2). Mount blocks are closed-schema: only the fields in §5.1's table are legal,
+so `primry: true` refuses as `unknown-field` at parse. That closes §4's silent-typo hazard.
 
 ### 5.1b `alias:` — the second lookup spelling (v1-additive)
 
-An optional `alias:` line gives its mount a **second name callers may spell**: it lets a caller
-hard-code one constant — `sessions:` — on a machine that names the tree differently, while the engine
-bakes in no root names (the no-baked-names law, `laws.md`).
+An optional `alias:` line gives its mount a **second name callers may spell**. A skill, a doc or a
+daemon can then hard-code one constant — `sessions:` — on a machine that names that tree something
+else. The engine itself bakes in no root names (the no-baked-names law, `laws.md`), so the mapping
+lives in one line of the user's own config.
 
 ```meridian-mount
 name: field-notes-sessions
@@ -326,26 +356,29 @@ alias: sessions
 > needs **no alias line**: no default, no fallback, no special case.
 
 **`primary:` is not consulted.** With no mount named or aliased `sessions`, lookup falls to the
-implicit default mount if it binds (§5.1c); unscaffolded, `sessions:` refuses as an unbound root and
-teaches the fix:
+implicit default mount if that binds (§5.1c). If the default is not scaffolded, `sessions:` refuses
+as an unbound root and the refusal teaches the fix:
 
 ```text
 declare `alias: sessions` on the mount that holds that tree
 ```
 
 **An alias is a lookup spelling, never a stored one.** Receipts, pins, `mint {…}` paths, `sub` rows
-and every canonical `root:path` a door echoes carry the mount's `name`; `mrd resolve sessions:x`
-answers `root: field-notes-sessions (alias sessions)`, `ref: field-notes-sessions:x`. Address law and
-the resolution order live in `address-grammar.md` §4.6a.
+and every canonical `root:path` a door echoes carry the mount's `name`. So `mrd resolve sessions:x`
+answers `root: field-notes-sessions (alias sessions)`, `ref: field-notes-sessions:x`: the alias
+appears only where it explains the resolution. Address law and the resolution order live in
+`address-grammar.md` §4.6a.
 
-**Uniqueness is table-level and refuses the whole file**: an alias equal to any mount's `name` —
-including one declared later, and its own mount's — or to another mount's `alias` is
-`alias-shadows-name`, which carries §8.3's no-partial-load clause. `alias` is likewise v1-additive
-and closed-schema: `alais: sessions` refuses as `unknown-field`.
+**Uniqueness is table-level and refuses the whole file.** An alias equal to any mount's `name` is
+`alias-shadows-name` — including a name declared later in the file, and its own mount's name — and so
+is an alias equal to another mount's `alias`. That refusal carries §8.3's no-partial-load clause.
+`alias` is likewise v1-additive and closed-schema: `alais: sessions` refuses as `unknown-field`.
 
 ### 5.1c The implicit default `sessions` mount (v1-additive)
 
-When no mount is **named or aliased `sessions`**, the bound table gains one implicit mount:
+This section answers the machine that has mapped nothing: a fresh host needs a `sessions` tree
+before anyone has authored a config. When no mount is **named or aliased `sessions`**, the bound
+table gains one implicit mount:
 
 ```text
 name: sessions
@@ -375,6 +408,8 @@ shape.
 
 ### 5.2 The canonical root-name charset
 
+This is the charset a mount's `name` and `alias` must use (§5.1).
+
 ```
 name ::= lower ( lower | "-" )* lower | lower
 lower ::= [a-z0-9]
@@ -383,12 +418,13 @@ lower ::= [a-z0-9]
 A name is one or more characters from `[a-z0-9-]`, never starting or ending with `-`, never empty.
 Maximum length 64 bytes.
 
-**The charset is derived, not chosen.** A root name travels inside stored content (addresses
-`[root:]path[#selector]`, lock `ref:`/`objects:` keys, `obsidian://` vault parameters), so it is
-**the complement of the address grammar's operator set**: `:` `#` `@` `/` `.` `%` and whitespace are
-excluded, and **no legal name can ever collide with an address operator.** Case is folded out for
-URIs and case-insensitive filesystems; `_` is excluded to match the charset guard that refuses
-underscore ids at every mint position (`crates/testsuite/data/charset-guard/discrimination.json`).
+**The charset is derived, not chosen.** A root name travels inside stored content: addresses
+`[root:]path[#selector]`, lock `ref:`/`objects:` keys, `obsidian://` vault parameters. So the legal
+charset is **the complement of the address grammar's operator set**: `:` `#` `@` `/` `.` `%` and
+whitespace are excluded, because each already carries meaning in an address. **No legal name can
+ever collide with an address operator.** Case is folded out because names travel through URIs and
+case-insensitive filesystems. `_` is excluded to match the charset guard that refuses underscore ids
+at every mint position (`crates/testsuite/data/charset-guard/discrimination.json`).
 
 **This is a floor for the address grammar, not a ceiling.** `address-grammar.md` may narrow what a
 `root:` prefix accepts, never widen it past this charset: a name outside it cannot be *bound*, so it
@@ -396,10 +432,9 @@ could never resolve.
 
 ### 5.3 `pin:` — mount-as-claim
 
-A mount entry may pin the root it declares, e.g. that root's entry-page fingerprint.
-Canonicalize-at-bind makes this load-bearing, not a nicety. `~/MERIDIAN.md` cannot itself be
-attested (§9), so a mount's pin is **the sole mechanism by which the mount table's own integrity is
-checkable.**
+A mount entry may pin the root it declares, e.g. that root's entry-page fingerprint. `~/MERIDIAN.md`
+cannot itself be attested (§9), so a mount's pin is **the sole mechanism by which the mount table's
+own integrity is checkable.**
 
 > `pin:` carries a fingerprint CID-token: four `.`-separated non-empty fields,
 > `version.codec.hashfn.digest`. It is well-formed iff `model::fingerprint::parse_fingerprint`
@@ -411,8 +446,9 @@ whether this build can verify one is `verify_content`'s question
 codec — a plain-folder root's pin grain is the file, a vault root's a parsed span (§12, boundary 2).
 
 **What the pin's target is, and how the claim is checked, is implementation's** (§12, boundary 2). A
-build that cannot verify a pin must say so, never treat it as verified: *outside sight never renders
-as verified*, and under grey-exit-1 a grey refuses on exit 1 with its own reason word.
+build that cannot verify a pin must say so; it must never treat that pin as verified. *Outside
+sight never renders as verified*, and under grey-exit-1 a grey refuses on exit 1 with its own reason
+word.
 
 ## 6. The `meridian-tool` block grammar
 
@@ -463,8 +499,8 @@ shape.
 **The rule:** `mrd config get` finds the `^config` block in the `MERIDIAN.md` file; the block is a
 starlark block whose `config` function returns the config; and the config can be anything — it is
 not limited. So `MERIDIAN.md` carries, beside the mount table, whatever machine-local values its
-tools need, in **one block addressed by the block id `^config`** (fence lines shown as literal text,
-so the example is inert):
+tools need. The surface is **one block, addressed by the block id `^config`**. The example below
+shows its fence lines as literal text, so it is inert here:
 
     ```starlark
     def config():
@@ -477,9 +513,9 @@ so the example is inert):
     ```
     ^config
 
-The `^config` line sits on its own line below the closing fence — the Obsidian own-line form, which
-host widening (`anchor_host_span`) attaches to the fence itself, so the id keys the code block, not
-an empty paragraph.
+The `^config` line sits on its own line below the closing fence: the Obsidian own-line form. Host
+widening (`anchor_host_span`) attaches that line to the fence itself, so the id keys the code block
+and not an empty paragraph.
 
 | Fact | Law |
 |---|---|
@@ -496,9 +532,10 @@ an empty paragraph.
 prose. **A ```` ```starlark ```` block is prose to that scan and stays prose**, so a broken
 `config()` cannot cost this machine its mount table.
 
-**The mount plane is scanned, the config block is addressed**: one verb resolves one block id on
-demand, so §3.1's namespace argument does not apply — `^config` is a page address, not a third engine
-block-language, and the anchor grammar (`[A-Za-z0-9-]`, `syntax::is_block_id`) admits it.
+**The mount plane is scanned, the config block is addressed.** Nothing hunts for a starlark block;
+one verb resolves one block id on demand. So §3.1's namespace argument does not apply: `^config` is a
+page address, not a third engine block-language, and the anchor grammar (`[A-Za-z0-9-]`,
+`syntax::is_block_id`) admits it.
 
 ### 6a.2 The refusal ladder
 
@@ -603,8 +640,9 @@ Malformed { line: usize, reason: &'static str } // the shape to extend
 
 This schema also requires:
 
-1. **`line` is 1-based in the file**, not within the block as `lock::parse` numbers; the block node's
-   byte span makes that an addition, not a mechanism (`crates/lock/src/lib.rs:527-534`).
+1. **`line` is 1-based in the file**, not within the block as `lock::parse` numbers: a human editing
+   `MERIDIAN.md` is looking at file lines. The block node carries its byte span, so converting costs
+   an addition, not a new mechanism (`crates/lock/src/lib.rs:527-534`).
 2. **The refusal names the config path**: `MERIDIAN_CONFIG` means the file may be anywhere.
 3. **`reason` stays `&'static str` — a closed set, never free text**, so the reason word is testable
    (`D1_TEACHING_REFUSAL_EXEMPLAR`, `crates/model/src/selector.rs:569`).
@@ -679,10 +717,10 @@ Therefore:
 
 **The residual that mitigation does not close.** A pin protects the root its mount declares, not the
 mount table's *membership*: **deleting a mount block deletes its own pin along with it.** Under
-grey-exit-1 an unmounted root renders grey and the fence refuses on exit 1, so dropping a mount turns a
-red into a grey that must be `--force`d past — hence grey to exit 1 rather than 0. Bounded and
-visible, but real: **the fence's only bypass is an edit to exactly this file, which cannot be
-attested.** No v1 mechanism closes it.
+grey-exit-1 an unmounted root renders grey and the fence refuses on exit 1. So dropping a mount turns
+a red into a grey that must be `--force`d past, which is why grey rules to exit 1 rather than 0.
+Bounded and visible, but real: **the fence's only bypass is an edit to exactly this file, which
+cannot be attested.** No v1 mechanism closes it.
 
 ## 10. The fixture corpus
 

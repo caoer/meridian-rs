@@ -17,10 +17,18 @@ owns: [the fingerprint CID token, norm-v2]
 **Scope note:** hash/fingerprint/norm law, not address grammar; mint-plane hpath
 stays segment form.
 
+This is the hash-domain law for the **fingerprint plane** — the hash that says
+what a node's content is, used by pins, locks, and receipts. It binds the
+fingerprint token (§2), the norm-v2 canonicalization rule set (§4), and the
+byte domain each node kind hashes (§3). It changes nothing on the other two
+hash planes (§1).
+
 ## 1. The three hash planes
 
-Every hash is BLAKE3-256 (node-rev-merkle-spec §1); planes differ on **domain**
-and **job**, never family:
+The engine computes three different hashes from the same primitive. Each
+**plane** is one byte domain — which bytes go in — doing one job. Every hash is
+BLAKE3-256 (node-rev-merkle-spec §1); planes differ on **domain** and **job**,
+never family:
 
 | Plane | Byte domain | Normalization | Spelling | Job |
 |---|---|---|---|---|
@@ -29,6 +37,9 @@ and **job**, never family:
 | **fingerprint** (this spec) | node span bytes | **norm-v2 (§4)** | CID-token (§2) | attestation content identity (pins, locks, receipts) |
 
 `node_rev` and the workspace merkle stay as `node-rev-merkle-spec.md` §2–§4.
+One physical edit can put two planes under opposite obligations: inserting an
+anchor moves real bytes on disk, so `node_rev` must move, while the fingerprint
+must not (§5).
 
 ## 2. The fingerprint token
 
@@ -99,14 +110,16 @@ reinterpretation.
 
 ## 3. What bytes enter the hash — the selector axis
 
-`span2` composes with any selector; span selection and canonicalization stay
-separate axes.
+Two axes never mix: the **selector** axis picks which span is hashed, and
+canonicalization decides how those bytes become a hash. `span2` composes with
+any selector.
 
 - **fingerprint(node)** = `b3( norm2( raw[span.start..span.end) ) )` on the
   node's contract-§1 span as minted: sections heading- and newline-inclusive,
   leaf blocks terminator-exclusive, frontmatter fence-to-fence, document =
   whole file.
-- **own-hash(node)** = `b3( norm2( own bytes ) )`, same codec, selector only:
+- **own-hash(node)** = `b3( norm2( own bytes ) )` — same codec `span2`, a
+  different selector:
   section → heading line (heading leaf span, terminator-exclusive); document →
   frontmatter block span, else empty; leaf → own span (**leaf: own-hash =
   fingerprint**).
@@ -120,9 +133,9 @@ separate axes.
 ## 4. norm-v2 — the exact rule set
 
 norm-v2 is the identity transform except for **anchor-token removal**: no
-newline canonicalization (CRLF stays CRLF), no whitespace trim, no NFC/NFD, no
-case folding, no BOM handling. Any non-anchor byte difference changes the hash.
-Heading sanitization is addressing, not hashing.
+newline canonicalization (CRLF stays CRLF), no trailing-whitespace trim, no
+NFC/NFD, no case folding, no BOM handling. Any non-anchor byte difference
+changes the hash. Heading sanitization is addressing, not hashing.
 
 ### 4.1 What is an anchor token
 
@@ -141,14 +154,16 @@ Normative grammar: the syntax crate's block-anchor lexer (`syntax::parse` →
 
 ### 4.2 Removal rules
 
-Per anchor marker `M` (file coordinates); `line_start` = the byte after the
-previous `\n` (or 0):
+Each marker is classified by what lies before it on its line, and the class
+decides what is removed. Per anchor marker `M` (file coordinates); `line_start`
+= the byte after the previous `\n` (or 0):
 
 - **R1 — tail anchor** (non-whitespace between `line_start` and `M.start`):
   remove `[M.start − 1, M.end)` — the marker plus exactly one preceding space or
-  tab; bytes after the id (spaces/tabs, `\r`) untouched. Promotion inserts one
-  separator: `text` → `text ^goal` → `text`; hand-written `text ^goal` →
-  `text `.
+  tab; bytes after the id (spaces/tabs, `\r`) untouched. Exactly one separator
+  goes because promotion — the engine inserting ` ^id` when a block is pinned —
+  inserts exactly one: `text` → `text ^goal` → `text`; hand-written
+  `text ^goal` → `text `.
 - **R2 — own-line anchor** (only spaces/tabs, possibly none, between
   `line_start` and `M.start`): remove the entire line,
   `[line_start, end_of_terminator)`; the terminator is the line's `\n` with any
@@ -164,11 +179,12 @@ previous `\n` (or 0):
 
 `norm2(node)` = the span bytes with every removal range **intersected with the
 span** applied. Removals are computed once on the whole-file parse, never on a
-slice. A range partly outside the span removes only the intersection — a
-determinism guard the grains pin promotes to (file, section, block) cannot
-reach: marker and separator sit inside the host block's span, so a block span
-excludes a following own-line anchor (trivially neutral), while the section or
-document span containing that anchor line removes it by R2/R2b.
+slice. A range partly outside the span removes only the intersection. That is a
+determinism guard the grains a pin promotes to — the node levels file, section,
+and block — cannot reach, because marker and separator always sit inside the
+host block's span. So a block span excludes a following own-line anchor and is
+trivially neutral, while the section or document span containing that anchor
+line removes it by R2/R2b.
 
 ### 4.4 Noted edge (parser-governed)
 
@@ -193,11 +209,12 @@ guarantee.
 
 ## 6. Supersedes — the compose_rev scheme
 
-The content fingerprint `fp1.span2.b3.<64hex>` covers norm-v2 span bytes: no
-hash-of-hex indirection, no hash-time graph walk (the span is always complete,
-so no cycles or dangling composes). `RevClass`: `Content` → fingerprint-token
-verify (parse → codec dispatch → recompute → compare); `Object` → git-oid
-equality (git, the only second family, never computed by the engine).
+The content fingerprint `fp1.span2.b3.<64hex>` covers norm-v2 span bytes
+directly: no hash-of-hex indirection, no hash-time graph walk. A span is always
+complete, so no cycles or dangling composes can exist. `RevClass` names the two rev
+families: `Content` → fingerprint-token verify (parse → codec dispatch →
+recompute → compare); `Object` → git-oid equality (git, the only second family,
+never computed by the engine).
 
 ## 7. Fixture manifest
 

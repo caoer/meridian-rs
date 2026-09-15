@@ -12,10 +12,16 @@ owns: [the run plane, preset and session birth]
 
 The run plane executes an addressed task block and turns what it emits into
 governed effects. It is **consumer-plane, imperative, local**: a client of
-the engine crates. The daemon, the wire and the serve path carry no
-run-plane state across invocations.
+the engine crates, layered above them. The daemon, the wire and the serve
+path carry no run-plane state across invocations.
 
-Two entries cross the wire:
+This document rules that plane — its two entries, their budgets, their
+capabilities and their refusals — plus preset and session birth, folded in
+below for navigation. It does not rule the wire itself: request and response
+shapes are `wire-contract.md`'s.
+
+An **entry** is one way into the plane: what the caller supplies, and which
+door evaluates it. Two entries cross the wire:
 
 | Entry | Door | What the daemon holds |
 |---|---|---|
@@ -29,12 +35,14 @@ invoked it. `mrd run` and `mrd script` are clients of the same plane.
 **No-guard amendment (normative): `run` and script-with-effects are not
 guarded.** No CAS premise, no fingerprint requiredness, no synthesized
 touch-set guard, because mrd cannot bound what execution does. Guards are
-pure-lane law (wire-contract §5.4–§5.7, § A.7) for markdown writes through
-the pure doors. Consequences:
+pure-lane law (wire-contract §5.4–§5.7, § A.7): they bind markdown writes
+through the pure doors, which execute nothing and where the engine can keep
+the promise. Consequences:
 
 - **No world pin**, and no narrower pin in its place: no root-mismatch
   premise refusal, no per-target pin-and-verify before a replace-class
-  effect. No refusal on this door is a premise refusal.
+  effect. No refusal on this door is a premise refusal — a refusal because
+  the world moved under the caller.
 - **Observation honesty only.** A foreign advance re-derives and proceeds:
   reported (the named out-of-band window), never refused. A vanished
   unrelated record drops from view and fails no other target; a vanished
@@ -56,7 +64,8 @@ Deliberate non-guarantees: § Accepted gaps.
 
 ## The kernel entry points
 
-The Starlark kernel has exactly three entry points:
+The Starlark kernel has exactly three entry points — two of them the run
+plane's, one the change plane's:
 
 | Plane | Entry | Trigger |
 |---|---|---|
@@ -64,16 +73,22 @@ The Starlark kernel has exactly three entry points:
 | run | `def run(ctx)` | `mrd run` on a task block; in the `run` op's fire mode, the block's declared entry (§ The run entry, amended) |
 | run | script — module top level | `mrd script` / the wire `script` op (wire-contract § A.7) / MCP `script` carrying caller-supplied inline source |
 
-- `on_change(event)` and `def run(ctx)` are **hermetic by construction**; the
-  script builtins do not join their globals.
+- `on_change(event)` and `def run(ctx)` are **hermetic by construction** —
+  sealed kernel, no I/O of their own; the script builtins do not join their
+  globals.
 - The script entry is **hermetic by recording**: its one effectful builtin is
   `read()`, every read response is recorded into the trace, and eval is a
   pure function of `(script, args, files, read-response sequence)` (§ The
-  script entry).
+  script entry). Replay against that recording is byte-identical.
 
 `RunCtx` is inert data: page, task, args, env, invocation id, root-at-eval.
 Identity and time are **caller-supplied** (§9): the kernel never reads a
 clock and never mints an id.
+
+`root_at_eval` is an emitted effect's record of the world it was produced
+against: the root the engine gets by folding the hash domain (the files the
+fingerprint covers). That fold costs a pass over the whole domain. A **tense**
+is which of the two runs this is: a rehearsal (`--dry`) or a live one.
 
 **The fold behind root-at-eval is lazy on the starlark leg: it is taken only
 when this tense's output will put the token in front of a reader.** This
@@ -87,8 +102,8 @@ the wire `run` op (`registry::run_op`) and `realise`.
 
 - **Rehearsal residual.** The human `--dry` (`mrd::run_cmd` `dry_starlark`,
   `Format::Human`) prints `kind` plus args, no provenance, yet pays the fold
-  when it emitted anything: the gate ignores output format, so `--dry` and
-  `--dry --json` observe the same world.
+  when the block emitted anything: the gate ignores output format, so `--dry`
+  and `--dry --json` observe the same world.
 - **Live gate.** The live report prints only `kind` + `domain`
   (`run::report::EffectLine`), so a live block emitting only
   `proto.*`/`daemon.*` (the hook shape: notice / remind / send, once per
@@ -135,13 +150,13 @@ declared behavior; a script is one caller's inline intent.
 - No cap grammar here: authority is the caller's identity, not a declared
   ceiling; delegation caps are a v2 feature.
 
-**Recorded-read purity.** `read(path)` (the toc face) and
-`read(path, section=…)` (the cat face) are the only effectful builtins;
-`put(...)` and its siblings append to the armed list and do no I/O at call
-time. **Script eval is a pure function of
+**Recorded-read purity.** `read(path)` (the toc face: the file's frontmatter
+and section map) and `read(path, section=…)` (the cat face: one section's
+text) are the only effectful builtins; `put(...)` and its siblings append to
+the armed list and do no I/O at call time. **Script eval is a pure function of
 `(script, args, files, read-response sequence)`**: the trace records every
-read response, so re-evaluation against it is byte-identical. No exec
-surface exists here.
+read response, so re-evaluation against it is byte-identical. No exec surface
+exists here.
 
 **The read budget is 64 `read()` calls per attempt, not 64 files.**
 `max_reads` counts read-builtin calls, no dedup by path, section and
@@ -199,13 +214,14 @@ switches the execution model:
   `<invocation>-r<K>` from the submission's host-minted `invocation` base,
   K the 0-based call ordinal.
 
-**Read alignment — both models.** In-script `read()` mirrors the read tool
-and returns values, not opaque structs: `read(path)` is the wire toc face,
-1:1, a dict `{"fm": {…}, "toc": […], "rev": "…", "words": N}`;
+**Read alignment — both models.** In-script `read()` mirrors the read tool and
+returns values, not opaque structs. `read(path)` is the wire toc face, 1:1, a
+dict `{"fm": {…}, "toc": […], "rev": "…", "words": N}`.
 `read(path, section=…)` is the section text as a plain string
-(`"x" in read(p, section=s)` is legal), its rev still riding the recording
-for the threading law. `section` takes the read tool's selector grammar
-(heading path, dewey ordinal, `^anchor`), every arm served in-script.
+(`"x" in read(p, section=s)` is legal); that section's rev still rides the
+recording, where the threading law reads it. `section` takes the read tool's
+selector grammar (heading path, dewey ordinal, `^anchor`), every arm served
+in-script.
 
 - `fm` values are decoded scalars (wire-contract § A.6, as for the composed
   read's `props[].value`): `owner: "[[x]]"` reaches a script as `[[x]]`; a
@@ -218,9 +234,10 @@ for the threading law. `section` takes the read tool's selector grammar
   `toc` for the rev and section map, `read` for the count. Zero wire delta:
   both ops exist, and a read mints nothing (wire-contract § A.3).
 
-**The snapshot guarantee and its composition rule.** `script` pins one entry
-fingerprint and `commit` guards on it; the single-snapshot guarantee holds up
-to the read budget. Above it the caller composes runs under a checkable
+**The snapshot guarantee and its composition rule.** `script` pins one
+**entry fingerprint** — the workspace content hash as the attempt began
+(§4.7) — and `commit` guards on it; the single-snapshot guarantee holds up to
+the read budget. Above it the caller composes runs under a checkable
 rule: **equal entry fingerprints across runs = one snapshot; unequal = the
 world moved, re-run.** No daemon-held state; an engine-held chunk-spanning
 snapshot is deliberately not ruled in (revisit trigger: compose-retry
@@ -276,8 +293,8 @@ Addresses are segments: `section="Notes/Fresh"` is two segments, never a
 joined string.
 
 **One address grammar, one parser.** `section=` on `put()` is parsed by
-`ReadSel::parse`, the same door as `read(path, section=…)` and the tree's
-one human-string→selector door, so the three spellings mean the same on both
+`ReadSel::parse` — the same door as `read(path, section=…)`, and the tree's
+one human-string→selector door. So the three spellings mean the same on both
 faces: `^id` is a block address, digits-and-dots a dewey ordinal, anything
 else splits on `/` into raw heading segments. An `append` carries an hpath,
 so the two non-heading spellings refuse at arm time, naming what they are: a
@@ -305,12 +322,12 @@ v1: `_ = read(…)` is rejected permanently; `quiet()` waits on elision-count
 evidence.
 
 **The bindings echo.** A successful evaluation's module top-level bindings
-ride the trace as `bindings` (name → Starlark repr, name-ordered). One
-carrier per fact: inert inputs and `def` bindings stay out; a name whose
-last assignment is a top-level `name = read(…)` stays out (that value is the
-read's own `echo` entry), but any later rebinding (reassignment, `+=`, a
-loop target, an assignment inside an `if` or `for` body) returns it. A
-failed or refused evaluation carries no bindings; a run that bound nothing
+ride the trace as `bindings` (name → Starlark repr, name-ordered). One carrier
+per fact: inert inputs and `def` bindings stay out, and so does a name whose
+last assignment is a top-level `name = read(…)` — that value is the read's own
+`echo` entry. Any later rebinding returns the name to the bindings:
+reassignment, `+=`, a loop target, an assignment inside an `if` or `for` body.
+A failed or refused evaluation carries no bindings; a run that bound nothing
 emits no `bindings` member.
 
 **The grammar.** The script entry parses under the rule dialect plus
@@ -382,8 +399,9 @@ letting a runaway glob return the corpus.
 **What an entry costs.** A caller prices its own ceiling against the budget
 table above instead of discovering it as a refusal.
 
-**The ceiling is a function of round trips, and reads are not trips.** For an
-entry against `C` domain members:
+**The ceiling is a function of round trips, and reads are not trips.** A trip
+is one request and its answer on the wire. For an entry against `C` domain
+members:
 
 ```
 ceiling = f(reads, corpus)
@@ -416,8 +434,9 @@ pass(C)  = O(dirty) vouched; floor O(C) in `stat`s,     <- the linear term,
   span}`, `wire::ReadRow` has no anchor field; only the `toc` op's nodes
   publish an anchor row with its own `node_rev`.
 
-**What a pass costs.** Every trip is answered from the warm engine, proved
-current first over the whole hash domain: a read is corpus-scoped, since a
+**What a pass costs.** A pass is one currency check: proof that the warm
+engine still agrees with disk. Every trip is answered from that engine, proved
+current first over the whole hash domain. A read is corpus-scoped, since a
 poison member anywhere refuses a read of a healthy one (Law A-3c); that scope
 is not an optimization target. The pass reuses the listing of any directory
 whose timestamps did not move, `stat`s every member, re-reads only members
@@ -482,9 +501,9 @@ variance, never an unpriced engine cost.
 commit(C)  ≈  4.46 s   process wall, live corpus, 5-trial medians
 ```
 
-Process wall as an operator meets it: the folds are not decomposed (the
-figure includes the rest of the commit path), the daemon round trip is not
-separated from the splice, and corpus size was not varied (no slope). The
+The figure is process wall as an operator meets the commit: the folds are not
+decomposed (it includes the rest of the commit path), the daemon round trip is
+not separated from the splice, and corpus size was not varied (no slope). The
 gap to ~1.8 s is no regression claim: the two were never verified to measure
 the same shape. A decomposition run is not owed for v1 and opens only if v1
 testing hits the term.
@@ -510,9 +529,10 @@ cost does not move with corpus size; the slope still governs the entry and
 commit terms. A stale engine pays `rebuild(C)` at entry instead. No figures
 for this lane are recorded.
 
-**The bash bracket's observations serve from the resident memo.** A bash
-dispatch observes the corpus three times (pre-flock leaves fold, bracket
-open, bracket close) from an injected source (`RunSpec.observations`).
+**The bash bracket's observations serve from the resident memo.** The bracket
+is the detection window around a bash step's exec (below). A bash dispatch
+observes the corpus three times — pre-flock leaves fold, bracket open, bracket
+close — from an injected source (`RunSpec.observations`).
 
 - **CLI lane:** a fresh walk each time — full `read_dir` enumeration, full
   stat sweep, byte reads amortised by the per-workspace drawer memo
@@ -540,7 +560,8 @@ here: the daemon has no MVCC and v1 must not grow one.
 2. **Reads serve the entry world**, plus the program's own arms — the four
    laws below.
 3. **Commit.** One splice batch, its premise the **touch set** the attempt
-   recorded (below), checked first.
+   recorded — the nodes it read or armed, listed in full below — checked
+   first.
 4. **Any interleaved write inside the touch set** ⇒ `fingerprint_mismatch`
    ⇒ nothing commits.
 
@@ -597,12 +618,13 @@ A caller may pin its own `if_fingerprint?` guard, checked against the minted
 entry fingerprint **pre-eval**: a mismatch refuses with zero evaluation,
 read-class, `attempts:1`. That is a fast-fail courtesy; the commit re-checks
 the same value as a widening premise (below). Before the compare, the pin
-passes §5.7's grammar wall: a non-grammatical `Root`-family value —
-including the reserved `absent`, §5.6 premise vocabulary (`guards[]`), never
-an entry pin — refuses as a `refused` trace (recovery `fix`) with the raw bytes
-debug-quoted, so one leading space shows as a byte instead of a `conflict`
-whose expected/live pair renders identical and loops a re-read. The CLI
-entry and the wire `script` op refuse identically (wire-contract § A.7).
+passes §5.7's grammar wall. A non-grammatical `Root`-family value refuses as a
+`refused` trace (recovery `fix`) with the raw bytes debug-quoted, so one
+leading space shows as a byte. Comparing the damaged spelling instead would
+answer `conflict` with an expected/live pair that renders identical and loops
+a re-read. The reserved `absent` is non-grammatical here too: it is §5.6
+premise vocabulary (`guards[]`), never an entry pin. The CLI entry and the
+wire `script` op refuse identically (wire-contract § A.7).
 
 **The commit premise is the touch set; the frozen view is kept.**
 Wire-contract § A.7 carries the full law:
@@ -646,7 +668,7 @@ untouched (write-one was never its law): each live `put()` is one
 single-path splice.
 
 **Wire-client mode.** The script entry does its I/O as a wire client through
-the one door, in one § A.7 `script` frame: the CLI sends the program; the
+the one door, in one § A.7 `script` frame. The CLI sends the program. The
 daemon pins the entry, evaluates in-process against the entry world, and
 issues the one guarded `splice` carrying `actor`/`now`/`receipt` through the
 same write choke-point. §4.4 is untouched — splice stays the only write op;
@@ -689,12 +711,12 @@ the trace alone, so `conflict` + no commit leg + `guard_expected` marks a
 guard refusal, not a commit-time mismatch.
 
 **The execution-model seam: arm, then commit.** The Authority row of the seam
-table below names this entry's authority as *"the caller's own identity — `actor`
-threaded per §9; **ownership guard + armed law**; no cap grammar."* The
-ownership guard is the host's organ (the engine's splice is caller-agnostic,
-§5.3), but `put(path)` computes its path inside the Starlark source, so the
-write set exists only after evaluation, and one evaluate-and-commit call
-never shows it to the host. Hence:
+table below names this entry's authority as *"the caller's own identity —
+`actor` threaded per §9; **ownership guard + armed law**; no cap grammar."*
+The ownership guard is the host's organ; the engine's splice is
+caller-agnostic (§5.3). But `put(path)` computes its path inside the Starlark
+source, so the write set exists only after evaluation, and one
+evaluate-and-commit call never shows that set to the host. Hence:
 
 > **The MCP host runs the entry twice per attempt: once as an arm (`--dry`),
 > then, if and only if its own write-authorization plane admits every armed row,
@@ -995,6 +1017,9 @@ sent it.
 *(Wire face: `docs/wire-contract.md` § A.8. Code: `run::modes`, `effects::kernel`,
 `run::blocks`, `run::caps`, `registry::run_op`, `mrd::run_cmd`.)*
 
+This section governs what the `run` op does beside running a task: read what
+a page declares, or fire one block the page declared.
+
 The `run` op gains **`mode`**; a target without it is the shipped task target,
 unchanged. Two modes join it behind the dotted caps **`run.mode`** and
 **`run.input`**; an un-negotiated client is refused by name —
@@ -1059,6 +1084,9 @@ frontmatter `task.*` discovery; nothing re-implements addressing.
 
 ### Recording by declaration kind
 
+The two declaration kinds — a `task.<name>` binding and a `declare()` block —
+record differently.
+
 **A fire row writes no receipt rows, and the fire process takes no task-path
 lock.** Its md effects go through the applier, which takes the workspace lock
 unconditionally and can refuse workspace busy — the pre-birth stage (A8; `modes.rs` → `executor::apply` acquires `WorkspaceLock`
@@ -1068,13 +1096,14 @@ flag. 100 declared-block fires add **zero** rows to `receipts/run.md` (anchors
 
 ### Caps — the page's own ceiling
 
-Declaring blocks have no task names, so `task.<name>.caps` cannot hold their
-ceiling. `run::caps` reads a **page-level `caps:`** key — new grammar, not a
-task binding — over the three md verbs `md.create` · `md.edit` · `md.delete`,
-judged at the lifted `admit` choke point: a denial is `cap_denied` at the door,
-nothing reaches disk, and a missing cap is never a silent no-op. The declaring
-root's conventions ceiling narrows a page's caps and never widens them, as for
-tasks. An exec'd entry's process is inert to it.
+A **cap** is a permission to touch files, declared in frontmatter; what is not
+granted is denied. Declaring blocks have no task names, so `task.<name>.caps`
+cannot hold their ceiling. `run::caps` reads a **page-level `caps:`** key —
+new grammar, not a task binding — over the three md verbs `md.create` ·
+`md.edit` · `md.delete`, judged at the lifted `admit` choke point: a denial is
+`cap_denied` at the door, nothing reaches disk, and a missing cap is never a
+silent no-op. The declaring root's conventions ceiling narrows a page's caps
+and never widens them, as for tasks. An exec'd entry's process is inert to it.
 
 #### One spelling, both planes
 
@@ -1103,6 +1132,8 @@ reaches the run plane as the empty string — a silent read-only grant.
 `model::fm_tags` holds the same law for `tags:`.
 
 ### The world a mode-bearing row runs against
+
+A mode-bearing row is a `run` target that carries `load` or `fire`.
 
 `load` and `fire` take the **pinned resident snapshot** (an `Arc` clone, the
 one the script op takes) and never run the `domain_snapshot` fold. The world is
@@ -1166,7 +1197,8 @@ resident cache; the CLI hands the page it just loaded, with `cache: None`.
 
 ### A door refusal is that effect's row — never the fire's
 
-**The rule.** A **door** refusing one descriptor is that descriptor's own
+**The rule.** A descriptor is one declared md effect — a create, a field set,
+a section append. A **door** refusing one descriptor is that descriptor's own
 `applied[]` row: `result: "refused"` with the door's class and reason. The
 **fire row keeps `result: "ok"` and keeps its `value`.** The page splice stays
 atomic; sibling rows are positional on the refused descriptor's index, and a
@@ -1295,12 +1327,13 @@ a name is stamped verbatim into every run receipt as `task`, and as the actor
 
 ## Capabilities — deny-by-default
 
-An undeclared block is read-only: it computes, but no effect of its executes.
-Three cap verbs answer *may this block touch files there* — `md.create` /
-`md.edit` / `md.delete` (not the birth-preset *three verbs* of § 4); *how* it
-touches them is the descriptor plane's (executor ops). `Create` needs
-`md.create`; `SetField` and `AppendSection` need `md.edit`. `md.delete` is
-reserved: it parses and resolves, so grants can be written ahead, but no
+An undeclared block is read-only: it computes, but none of its effects
+execute. Three cap verbs answer *may this block touch files there* —
+`md.create` / `md.edit` / `md.delete` (not the birth-preset *three verbs*
+of § 4); *how* it touches them is the descriptor plane's (executor ops).
+`Create` needs `md.create`; `SetField` and `AppendSection` need `md.edit`.
+`md.delete`
+is reserved: it parses and resolves, so grants can be written ahead, but no
 descriptor maps to it until a retire descriptor exists.
 
 ⚠️ **This section governs starlark blocks only.** Caps do not apply to bash
@@ -1494,11 +1527,11 @@ ceiling.
 deny-default, or a grant that never held the cap — names the cause and stops;
 the engine attaches no remedy to an unmeasured cause.
 
-The deny arm teaches one measured remedy, the **partition-grain respell**:
-where a declared globless same-verb scope `T` would have covered the declared
-coordinate as `T/*.md` (the refusal says "landing", meaning that coordinate),
-it names the respell — `md.create:tasks` is a literal glob matching only the
-path `tasks`, so the page is told to spell `md.create:tasks/*.md`. Taught only
+The deny arm teaches one measured remedy, the **partition-grain respell**. It
+fires where a declared globless same-verb scope `T` would have covered the
+declared coordinate as `T/*.md` (the refusal says "landing", meaning that
+coordinate). `md.create:tasks` is a literal glob matching only the path
+`tasks`, so the page is told to spell `md.create:tasks/*.md`. Taught only
 on a measured match. Texts: `ExecError::CapDenied`
 (`crates/run/src/executor.rs`); parse-time refusals (unknown verb, bad glob,
 field-grain target) are `CapsError` in `crates/run/src/caps.rs`.
@@ -1544,9 +1577,9 @@ design tests: `crates/run/tests/caps_home.rs`.
 
 ## Fence dispatch — two languages, one write path
 
-Dispatch is by fence language: `starlark` → hermetic kernel eval; `bash` →
-exec in the **invocation cwd**. The set is closed; there is
-**no `Exec` EffectKind**.
+Dispatch is by the task block's fence language — the word on its opening
+fence: `starlark` → hermetic kernel eval; `bash` → exec in the **invocation
+cwd**. The set is closed; there is **no `Exec` EffectKind**.
 
 **This whole section is the task path**: its two-phase receipts, phase-2
 convergence and `OutOfBand` refusal are a `task.<name>` row's, not a fire
@@ -1687,12 +1720,12 @@ mrd script [--json]                      # source on stdin (heredoc)
 
 **The locked surface is exactly these shapes**: one verb in three shapes —
 run a task, fire one declared block, read declarations off one or more pages
-(§ The run entry, amended) — plus one further subcommand, `mrd script`: source
-on stdin, serving the script entry above, its human-mode face non-normative
-(§ The script entry). Every meaningless combination refuses by name with
-exit 2, never ignored: `--load` with `#^<id>`;
-`--load` with `TASK` / `-- ARGS` / `--list`; `--input-json` without a block
-address; `TASK` / `-- ARGS` / `--env` on a fire, whose one input channel is
+(§ The run entry, amended). Beside it stands one further subcommand,
+`mrd script`: source on stdin, serving the script entry above, its human-mode
+face non-normative (§ The script entry). Every meaningless combination refuses
+by name with exit 2, never ignored: `--load` with `#^<id>`; `--load` with
+`TASK` / `-- ARGS` / `--list`; `--input-json` without a block address;
+`TASK` / `-- ARGS` / `--env` on a fire, whose one input channel is
 `--input-json`.
 
 No argv JSON. With TASK omitted the one declared task runs; with several
@@ -1862,14 +1895,15 @@ resident rebuild, its watch loop. It also repeats per mount corpus (`load_mounts
 once per mounted root addressed — lock-addressed on
 `walk`/`check`/`status`/`walk_op`, link-addressed on `links`/`sql`/`sql_op`.
 
-**But do not price a run by that count — some full-corpus folds emit no phase at
-all.** The write doors observe through `fs::DomainCache`
-(`wire_serve::write::observed_root` → `DomainCache::root`): it walks the domain,
-`stat`s every member and reads every mover without a `snapshot` span. That cache
-is the process-global `wire_serve::write::WRITE_CACHES`, keyed by canonicalised
-root — first door call per process cold, later ones in the same process warm.
-The CLI does one birth per process, so always cold there: the process model, not
-`md.create`; batching births into one process pays it once.
+**But do not price a run by that count — some full-corpus folds emit no phase
+at all.** The write doors observe through `fs::DomainCache`
+(`wire_serve::write::observed_root` → `DomainCache::root`): the cache walks
+the domain, `stat`s every member and reads every mover without a `snapshot`
+span. That cache is the process-global `wire_serve::write::WRITE_CACHES`,
+keyed by canonicalised root — first door call per process cold, later ones in
+the same process warm. The CLI does one birth per process, so always cold
+there: the process model, not `md.create`; batching births into one process
+pays it once.
 
 An `md.create` therefore pays a second full-corpus observation on top of the
 plane's fold, under one `phase=snapshot` line, so `grep -c phase=snapshot`

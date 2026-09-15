@@ -10,12 +10,23 @@ owns: [the base projection relations, the base membership rule, the base_fold wi
 
 > Standing law: `README.md` (process and standing corrections; the sql face is not agent core, correction C) and `wire-contract.md` (the wire contract).
 
+A `.base` file holds saved queries and nothing else: one YAML document, no
+markdown body. This spec rules how those files reach the sql face (the DuckDB
+projection for operators): membership, the three tables, the links that point
+at them, freshness. It touches nothing on the wire and nothing in the hash
+domain (the files the fingerprint covers), and the engine projects Bases
+definitions without ever running them.
+
 Status: normative for the `.base` relations of the sql projection, both lanes
 (the `:memory:` build and the `sql.duckdb` cache). Law also:
 `wire-contract.md` §10.3–§10.4 (view topology), §12 (hash domain);
 `node-rev-merkle-spec.md` §4 (leaf/interior encoding); `laws.md` § crate
-charters. The exclusion rule (bare-name fallback +
-`dangling … AND exclusion IS NULL`) is unchanged (§5.1).
+charters.
+
+The exclusion rule is unchanged (§5.1). A wikilink or embed whose target is a
+real file outside the md corpus is stamped `exclusion`. Stamped rows are
+explained, so `dangling … AND exclusion IS NULL` leaves them out of the
+census. The bare-name fallback is unchanged with it.
 
 ## §1 What a `.base` file is
 
@@ -30,9 +41,10 @@ keys occur, all optional:
 | `properties` | map `property → display config` | display metadata (`displayName`, …) |
 | `views` | list of view objects (`type`, `name`, own `filters`, `groupBy`, `order`, `sort`, `limit`, `columnSize`, …) | the saved views themselves |
 
-Census: 832 member files on two corpora — 812 in a template-stamped tree
-(mostly `TASKS.base` / `FLEET.base` / `DECISIONS.base` / `BOARD.base` per
-directory, about two dozen distinct), 20 hand-authored. The 812 is the
+Census: 832 member files on two corpora — 812 in a template-stamped tree, 20
+hand-authored. A member is a `.base` file the projection covers (§3). The
+template tree is mostly `TASKS.base` / `FLEET.base` / `DECISIONS.base` /
+`BOARD.base` per directory, about two dozen distinct; its 812 is the
 walk-cost number (§9) and the embed-join population (§5.1). Key counts over
 all 1521 `.base` files found (snapshots included): `views` 1509, `filters`
 1495, `formulas` 1085, `properties` 491.
@@ -55,14 +67,15 @@ files are expression text, not wikilinks** —
    attestation change. The projection is a **read-model**, not admission into
    the attested corpus.
 2. **No wire surface** (`wire-contract.md` §10.3–§10.4). The relations appear
-   in the sql face and nowhere else; no wire op, field, or error names them,
-   and the doors (`toc` / `cat` / `read` / `splice` / `links` / …) answer for
-   a `.base` path what they answer today.
+   in the sql face and nowhere else; no wire op, field, or error names them.
+   The doors (`toc` / `cat` / `read` / `splice` / `links` / …) answer for a
+   `.base` path what they answer today.
 
-Because `wire-contract.md` §12.1 forbids rows under an `as_of` fingerprint
-stamp that the fingerprint does not cover, the base relations ride their **own
-witness**, `base_fold`, in the same `_meridian_view` row, and each base row
-carries its own `file_rev` (§6).
+`wire-contract.md` §12.1 forbids rows under an `as_of` fingerprint stamp that
+the fingerprint does not cover. So the base relations ride their **own
+witness**, `base_fold`, in the same `_meridian_view` stamp row, and each base
+row carries its own `file_rev` (§6). A witness is a value the face
+re-computes and compares against the stamp to detect staleness.
 
 ## §3 Membership
 
@@ -71,8 +84,9 @@ A file is a member of the base projection iff:
 1. its final extension is exactly `.base`, **case-exact** against the name
    read from the directory (`abc.BASE` is not a member), because case-folding
    would canonize typos on APFS;
-2. it passes the hash domain's ignore rules: the dot-segment floor and the
-   `meridian/domain.md` custom ignore list.
+2. it passes the hash domain's ignore rules: the dot-segment floor (nothing
+   under a path segment that starts with `.`) and the `meridian/domain.md`
+   custom ignore list.
 
 **The base domain is the hash domain's rules with the floor swapped from
 `*.md` to `*.base`**, so membership moves with `meridian/domain.md` and there
@@ -84,14 +98,15 @@ cannot be read is **not** absence and gets a §4.4 error row. Non-UTF-8 paths
 cannot match `.base` and are skipped; non-UTF-8 content is §4.4's problem.
 
 The walk lives in `fs` beside `domain_snapshot`, returns raw bytes per member
-plus the §6.2 fold, and honors custom-ignored directories. It is a distinct
-walk from the link-target probe's fallback index (§5.1), which does not prune
-them.
+plus the §6.2 fold, and honors custom-ignored directories. The link-target
+probe — the resolver that decides which file a wikilink names (§5.1) — keeps
+a separate fallback index, and that index does not prune custom-ignored
+directories.
 
 ## §4 The relations
 
-Three tables, view-lane only, in both lanes. The DDL is the contract;
-`crates/view/src/schema.rs` mirrors it:
+Three tables, in the sql face only and in both of its lanes. The DDL is the
+contract; `crates/view/src/schema.rs` mirrors it:
 
 ```sql
 -- The base relations ride the base_fold witness (§6.2), NEVER
@@ -150,11 +165,12 @@ expression string projects as a JSON string, not an error. Only `views:` and
 
 ### §4.3 Structure is modeled; expressions are not
 
-The projection models the Bases **format** (the four keys, the view list, the
-filter tree shape) and serves the Bases **language** (filter and formula
-expressions, the view `type` vocabulary) as verbatim text, because the
-language is Obsidian's, unversioned and evolving (the mechanism-vs-flow law).
-So `type` has no CHECK enum, `config` carries unmodeled view keys as written,
+The projection models the Bases **format**: the four keys, the view list, the
+filter tree shape. It serves the Bases **language** — filter and formula
+expressions, the view `type` vocabulary — as verbatim text. That language is
+Obsidian's, unversioned and evolving, and parsing it would freeze a moving
+vocabulary into the engine (the mechanism-vs-flow law). So `type` has no
+CHECK enum, `config` carries unmodeled view keys as written,
 and `extra` carries unmodeled top-level keys **subtree intact**; a fifth
 Obsidian key is carried on day one, and a schema amendment is a later choice,
 not a prerequisite.
@@ -162,7 +178,7 @@ not a prerequisite.
 ### §4.4 Aliens are rows, not absences
 
 A member that cannot be read as a YAML mapping projects as a `base` row with
-`error` carrying the message of whatever refused and every content column
+`error` carrying the message of whatever refused. Every content column is
 NULL. The classes:
 
 - a shell script or markdown wearing `.base`; non-UTF-8 bytes; YAML whose root
@@ -183,8 +199,9 @@ by fixture, not census).
 
 ### §4.5 The lifting law
 
-A column is lifted only when the value has the modeled shape; everything else
-is **carried** as §4.2 JSON in the nearest carrier column:
+Lifting means giving a value its own column. A column is lifted only when the
+value has the modeled shape; everything else is **carried** as §4.2 JSON in
+the nearest carrier column:
 
 - `views:` not a sequence, or `formulas:` not a mapping → the subtree lands
   intact in `extra` and makes no rows; the file is not an alien, and a good
@@ -199,12 +216,17 @@ data it declines to lift.
 
 ## §5 References
 
+Two directions, ruled separately: markdown pointing at a `.base` file (§5.1),
+and `.base` content pointing at the corpus (§5.2).
+
 ### §5.1 md → `.base`: the probe's path
 
 The exclusion rule is unchanged: a wikilink or embed whose target is a real
-`.base` file on disk stamps `exclusion = 'non-md'` (literal arm, or case-exact
-bare-name fallback with the shortest-path-then-lexicographic tie-break), and
-`dangling` excludes explained rows. This spec adds **which** file the probe
+`.base` file on disk stamps `exclusion = 'non-md'`, and `dangling` excludes
+explained rows. The probe resolves a target on one of two arms: the **literal
+arm** takes the target's spelling as a path; the **fallback arm** matches a
+bare name, case-exact, against the files it enumerated from disk, tie-broken
+shortest path then lexicographic. This spec adds **which** file the probe
 resolved:
 
 ```sql
@@ -228,13 +250,14 @@ case-insensitive filesystem that probe answers true through case-folding:
 `abc.BASE` would stamp a typo as deliberate. So the literal arm verifies its
 final segment against the parent directory's entries case-exactly; a spelling
 reached only through case-folding stays unstamped and dangling. The probe is
-the shared mint, so the `exclusion` word sharpens wherever it is served
-(§10.3, served-content motion).
+the single place these stamps are minted, so the `exclusion` word sharpens
+wherever it is served (§10.3, served-content motion).
 
 No new vocabulary word and no change to `dangling`'s definition; stamping
 narrows only where case-folding lied. The wire `links` door
-(`wire-contract.md` §4.6 `unresolved_reason`) stays **word-only**; widening a
-wire map is a wire amendment, out of scope (§10.4).
+(`wire-contract.md` §4.6 `unresolved_reason`) stays **word-only**: it serves
+the reason word, never the resolved path. Widening a wire map is a wire
+amendment, out of scope (§10.4).
 
 ### §5.2 `.base` → corpus: no edges
 
@@ -242,10 +265,10 @@ The projection mints **zero `link` rows from `.base` content**:
 
 1. **A parameterized base names no fixed target** (§1: 367 embed sites, 367
    queries), so an edge from its text would publish a fact the file does not
-   state. The stable file-alone reading (which folders, tags, and properties
-   the expressions mention) is servable by text —
-   `WHERE filters LIKE '%hasTag(%'` or a JSON walk (§4.2) — and the reader,
-   not the engine, interprets a mention.
+   state. What is stable in the file alone is which folders, tags, and
+   properties its expressions mention. That is servable by text:
+   `WHERE filters LIKE '%hasTag(%'`, or a JSON walk (§4.2). The reader, not
+   the engine, interprets a mention.
 2. **Nothing wikilink-shaped exists to resolve** (§1): Bases expressions are
    function calls in Obsidian's language, which §4.3 rules opaque.
 
@@ -253,12 +276,15 @@ So `.base` content cannot move the dangling census.
 
 ## §6 Attestation and freshness
 
+Two witnesses, neither of them an attestation: `file_rev` on each base row,
+and `base_fold` over the whole member list.
+
 ### §6.1 `file_rev`
 
-`base.file_rev` is the `node-rev-merkle-spec.md` §4 leaf truncated to 16 hex,
-the same shape as `doc.file_rev`. It enters **no** merkle interior,
-fingerprint, pin, or receipt: it is a staleness and identity witness for one
-projection row only.
+`base.file_rev` is the `node-rev-merkle-spec.md` §4 leaf — blake3 over the
+whole file — truncated to 16 hex, the same shape as `doc.file_rev`. It enters
+**no** merkle interior, fingerprint, pin, or receipt: it is a staleness and
+identity witness for one projection row only.
 
 ### §6.2 `base_fold`
 
@@ -269,11 +295,11 @@ projection row only.
     base_fold VARCHAR,                 -- 'bf:'+blake3-hex over the member list (below); NULL = the base walk did not run
 ```
 
-`base_fold` = `bf:` + lowercase hex of blake3 over the member sequence:
-members sorted by path byte order, each contributing
-`varint(len(path)) ‖ path ‖ 0x00 ‖ leaf32` (`leaf32` = the full 32-byte leaf
-of `node-rev-merkle-spec.md` §4, that section's interior recipe with the
-workspace-relative path as the name). Zero members fold the empty sequence.
+`base_fold` = `bf:` + lowercase hex of blake3 over the member sequence.
+Members sort by path byte order, each contributing
+`varint(len(path)) ‖ path ‖ 0x00 ‖ leaf32`. `leaf32` is the full 32-byte leaf
+of `node-rev-merkle-spec.md` §4: that section's interior recipe with the
+workspace-relative path as the name. Zero members fold the empty sequence.
 `NULL` means the build was handed no base walk (a docs-only `build_memory`
 caller): "not asked", never "empty".
 
@@ -288,18 +314,19 @@ the wire; `wire-contract.md` §12.3's domain-version laddering does not apply,
 and the prefix never advances. A `bf:` value never compares equal to a `b3…:`
 `fingerprint`.
 
-`base_fold` comes from the same `fs` walk as membership (§3); `view` folds
-nothing itself, so the `build_memory` rule against locally-computed folds
+`base_fold` comes from the same `fs` walk as membership (§3), and `view` folds
+nothing itself. So the `build_memory` rule against locally-computed folds
 (`crates/view/src/lib.rs`) is untouched: that rule guards the fingerprint,
 whose fold must take the domain filter and `version` prefix from
 `fs::domain_snapshot`.
 
 ### §6.3 The freshness frame names the plane
 
-The sql face's honest-tense frame (`crates/mrd/src/sql.rs`: sample live last)
-covers both witnesses: fold the md corpus, re-walk the base members, compare
-each against the stamp. A stale verdict **names the plane that moved**,
-because the remedies differ.
+The sql face's honest-tense frame — how it reports the freshness of an answer
+(`crates/mrd/src/sql.rs`: sample live last) — covers both witnesses: fold the
+md corpus, re-walk the base members, compare each against the stamp. Two
+planes can move, the md corpus and the base members, and a stale verdict
+**names the plane that moved**, because the remedies differ.
 
 State space (md live-fold × base live-walk; "not asked" = the stamp's
 `base_fold` is NULL):
@@ -327,20 +354,21 @@ other projection table:
   is diffed against the live base walk, as `doc(path, file_rev)` is against
   the live parsed corpus: added/changed/removed append rows and tombstones.
   **An append triggers on either delta**, so base motion appends even when the
-  fingerprint did not move; `hist.pin` gains `base_fold` beside the
-  fingerprint, the cache's `_meridian_view` VIEW (over that pin ledger, unlike
-  the `:memory:` singleton table) selects it, and the no-op check reads one
-  row.
-- **The affected-set rule covers all link rows, not only dangling ones.** An
-  appearing member can newly stamp unresolved rows; a removal must un-stamp
-  already-stamped rows (deleting `bases/TAG-FILES.base` un-stamps its 367
-  embed rows); a shorter-or-earlier same-basename member must re-point every
-  stamped bare row whose old winner is not itself in the delta. Predicate: the
-  delta contributes each added/changed/removed member's basename and full
-  path, **case-exact**, and a doc re-projects when any of its link rows
-  matches on the target's own key (bare basename or literal path) or on its
-  `exclusion_path` (full path or basename). These keys stay separate from the
-  deliberately lowercased md affected-set keys (§3 and §5.1 forbid
+  fingerprint did not move. `hist.pin` gains `base_fold` beside the
+  fingerprint. In the cache lane `_meridian_view` is a VIEW over that pin
+  ledger, not the `:memory:` lane's singleton table, and it selects
+  `base_fold`; the no-op check reads one row.
+- **The affected-set rule covers all link rows, not only dangling ones.** The
+  affected set is the docs the cache must re-project after a delta. An
+  appearing member can newly stamp unresolved rows. A removal must un-stamp
+  already-stamped rows: deleting `bases/TAG-FILES.base` un-stamps its 367
+  embed rows. A shorter-or-earlier same-basename member must re-point every
+  stamped bare row whose previous tie-break winner is not itself in the delta.
+  Predicate: the delta contributes each added/changed/removed member's
+  basename and full path, **case-exact**. A doc re-projects when any of its
+  link rows matches on the target's own key (bare basename or literal path) or
+  on its `exclusion_path` (full path or basename). These keys stay separate
+  from the deliberately lowercased md affected-set keys (§3 and §5.1 forbid
   case-folding).
 - **The disclosed approximation narrows.** `.base` motion leaves the store's
   "moves no fingerprint, triggers no append" list; `link.exclusion` /
@@ -352,10 +380,12 @@ other projection table:
 
 ## §8 Alternatives held
 
-- **Frontmatter-table reuse** — rejected: `frontmatter` FKs into `doc` (the
-  `wire-contract.md` §12.1 coverage lie), its flat-scalar values (that
-  spec's § A.6) cannot answer nested `views:` per view, and its CAS tokens
-  (`node_rev`, `prop_rev`) serve an `fm_key` splice door that `.base` lacks.
+- **Frontmatter-table reuse** — rejected on three counts. `frontmatter` FKs
+  into `doc`, so `.base` rows would sit under the fingerprint stamp that does
+  not cover them (the `wire-contract.md` §12.1 coverage lie). Its values are
+  flat scalars (that spec's § A.6) and cannot answer nested `views:` per view.
+  Its CAS tokens (`node_rev`, `prop_rev`) serve an `fm_key` splice door that
+  `.base` lacks.
 - **One `base` table, the document as one JSON column** — rejected: questions
   arrive per view, so `ord`/`name`/`type` earn columns
   (`WHERE type = 'table'`) and the cache keys child rows `(path, gen)`; the
@@ -379,10 +409,10 @@ other projection table:
   Base-only motion costs one append transaction.
 - **Schema:** `SCHEMA_VERSION` 5 → 6 and `CACHE_SCHEMA_VERSION` 5 → 6;
   delete-don't-migrate (a mismatched cache file cold-rebuilds).
-- **Dependency:** the Bases parse needs real YAML (arbitrary nesting);
-  `serde_yaml` enters `view` as a leaf module, `view`'s charter gains it, and
-  the `yaml_confinement` permitted-taker set grows `config, policy` →
-  `config, policy, view`, this bullet being the stated deviation. `model`
+- **Dependency:** the Bases parse needs real YAML (arbitrary nesting).
+  `serde_yaml` enters `view` as a leaf module and `view`'s charter gains it.
+  The `yaml_confinement` permitted-taker set grows `config, policy` →
+  `config, policy, view`, with this bullet as the stated deviation. `model`
   stays serde-free (Law 1); `fs` stays YAML-free by charter and hands raw
   bytes up.
 
@@ -417,8 +447,9 @@ Each test lands with its code, red first.
 
 ### §10.2 Doc deltas
 
-Authorized by this spec (docs-first): `crates/view/src/schema.rs` DDL + both
-version consts; `crates/view/src/store.rs` module doc (hist tables, delta
+These doc changes land with the code, authorized by this spec (docs-first):
+`crates/view/src/schema.rs` DDL + both version consts;
+`crates/view/src/store.rs` module doc (hist tables, delta
 grain, the narrowed approximation paragraph); `laws.md` `view` charter row
 (+ serde_yaml, + base relations) and `fs` row (+ base walk); `status.md`
 § operator SQL face (descriptive, after the binary changes); the sql face's
@@ -447,7 +478,8 @@ table-teaching text (refusal/`SQL:` surface) gains the three relations.
 
 ## §11 The worked gate
 
-Target `bases/TASKS.base` on the measuring corpus:
+One file, the SELECT over it, and the exact rows it must answer — §10.1's
+first test. Target `bases/TASKS.base` on the measuring corpus:
 
 ```yaml
 filters:

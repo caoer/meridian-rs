@@ -35,9 +35,8 @@ so nothing verifies it and it goes stale unnoticed.
 
 ## §2 Doc-id registry
 
-Every file in this directory declares a short, stable `id` in its frontmatter
-(the `---` block at the top of the file). An `id` is the name a citation uses
-(§3). The table below repeats every id; each row must match that file's own
+Every file here declares a short, stable `id` in its frontmatter, and a
+citation names that id (§3). Each row below must match the file's own
 frontmatter.
 
 | id | File | Is the home of |
@@ -49,13 +48,13 @@ frontmatter.
 | `release` | `release.md` | what a release promises; stamp and tag mechanics |
 | `addr` | `address-grammar.md` | cross-root addressing, mounts, `addr::Addr` |
 | `schema` | `meridian-md-schema.md` | `MERIDIAN.md` config parse |
-| `merkle` | `node-rev-merkle-spec.md` | `node_rev` + merkle encoding |
+| `merkle` | `node-rev-merkle-spec.md` | `node_rev` + merkle encoding, the resident tree, the event feed |
 | `fp` | `fingerprint-norm-spec.md` | the fingerprint CID token + norm-v2 |
 | `armed` | `armed-plane.md` | the arming ladder + the `gate()` seam |
 | `run` | `run-plane.md` | the run plane, preset and session birth |
-| `base-projection` | `base-projection.md` | the `.base` projection relations, membership, `base_fold` |
-| `body-projection` | `body-projection.md` | the `body` relation, the chunk law, the `body_text` cache protocol |
-| `status` | `status.md` | what the binary exposes today (descriptive only) |
+| `base-projection` | `base-projection.md` | the `.base` projection relations, membership, `base_fold`, `link.exclusion_path` |
+| `body-projection` | `body-projection.md` | the `body` relation, the exclusive-chunk law, the `body_text` cache protocol |
+| `status` | `status.md` | what the binary exposes today (descriptive only); R12, the armed-plane exit reading |
 
 A new file claims a new id when created; an id is never reused or renamed, so
 citations outlive filenames.

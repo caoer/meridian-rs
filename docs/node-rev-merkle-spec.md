@@ -10,24 +10,34 @@ owns: [node_rev, merkle encoding, resident tree, event feed]
 
 > Standing law: `README.md` (process and standing corrections) and `wire-contract.md` (the wire contract).
 
-**Scope note:** hash law for `node_rev` and the workspace merkle (fingerprint), plus the **resident tree** that serves it (§6). It does not define section address grammar; mint-plane hpath stays segments only. Generator assets: `node-rev-merkle-spec.assets/`.
+**Scope note:** hash law for `node_rev` and the workspace merkle (fingerprint), plus the **resident tree** — the engine-held instrument that serves that law (§6: structure, stable-read protocol, stamps, event feed, checkpoint). It does not define section address grammar; mint-plane hpath stays segments only. Generator assets: `node-rev-merkle-spec.assets/`.
 
-The design noun is **`fingerprint`**, the workspace content hash; the wire spells the field `root` in v2 vocabulary, re-keyed to `fingerprint` under `contract:"v3"` (`wire-contract.md` §1). Wire integrity is `fingerprint` + `if_fingerprint` + `diff`, with no `guard` op (`wire-contract.md` §4.7); the scoped-premise surface (`scope`, `guards[]`, `scope_bytes`, `absent`) is `wire-contract.md` §5.4's to spell, against §7's grain ladder. Three laws: no snapshot files (the §6.5 checkpoint is a disposable index), no second database, Rust memory disposable.
+**Binds:** what bytes are hashed (§2, §3), how file leaves compose into the 32-byte workspace fingerprint (§4), how one `splice` updates that fingerprint incrementally (§5), and the resident tree with its event feed (§6).
+
+The design noun is **`fingerprint`**, the workspace content hash; the wire spells the field `root` in v2 vocabulary, re-keyed to `fingerprint` under `contract:"v3"` (`wire-contract.md` §1). Wire integrity is `fingerprint` + `if_fingerprint` + `diff`, with no `guard` op (`wire-contract.md` §4.7). The scoped-premise surface — `scope`, `guards[]`, `scope_bytes`, `absent` — is `wire-contract.md` §5.4's to spell, against §7's grain ladder. Three laws bound the design: no snapshot files (the §6.5 checkpoint is a disposable index), no second database, Rust memory disposable.
 
 ## 0. Design inheritance — the merkle-root-spike, absorbed
 
 An earlier merkle-root prototype was folded in: scheme adopted, blake3-256 for xxhash64, persistence layer dropped.
 
-**Taken:** the injective interior encoding, whose length prefix and type byte block sibling-boundary reinterpretation; names hashing into the **parent**, so a rename is remove+add there and leaves untouched; the **diff shape** — equal roots ⇒ one comparison (the commit fast path), unequal ⇒ descend only unequal branches, naming every drifted path in one pass, remove+add on species change, whole-subtree enumeration on add/remove; the **pluggable leaf hasher seam** (§3); the **measured envelope** (M4 Max): a 4,141-node tree → root 74ms, a 9.5GB/50,319-node corpus → 2.2s warm / 5.2s cold. §4.1 and §4.2 carry the rest as law: git-style empty-dir pruning, the unhashed root name, unhashed file modes, byte-sorted child names.
+**Taken:**
+
+- the injective **interior encoding** — a directory's hash over its sorted child entries — whose length prefix and type byte block sibling-boundary reinterpretation;
+- names hashing into the **parent**, so a rename is remove+add there and leaves untouched;
+- the **diff shape** — equal roots ⇒ one comparison (the commit fast path), unequal ⇒ descend only unequal branches, naming every drifted path in one pass, remove+add on species change, whole-subtree enumeration on add/remove;
+- the **pluggable leaf hasher seam** (§3);
+- the **measured envelope** (M4 Max): a 4,141-node tree → root 74ms, a 9.5GB/50,319-node corpus → 2.2s warm / 5.2s cold.
+
+§4.1 and §4.2 carry the rest as law: git-style empty-dir pruning, the unhashed root name, unhashed file modes, byte-sorted child names.
 
 **Rejected:**
-- **Snapshot persistence** (a `Save`/`Load` format outside the hashed dir) — violates law 2; the root re-derives on demand (§6–7). The ban covers **trusted** snapshots; §6.5's disposable, checksummed, identity-bound checkpoint is the allowed opposite.
+- **Snapshot persistence** (a `Save`/`Load` format outside the hashed dir) — violates law 2 (Rust memory is disposable; disk stays markdown only); the root re-derives on demand (§6–7). The ban covers **trusted** snapshots; §6.5's disposable, checksummed, identity-bound checkpoint is the allowed opposite.
 - **xxhash64 width** — 64-bit is a race detector, not collision-resistant; §1 rules blake3-256.
-- **mtime+size leaf cache** — its lie window (same mtime+size, different bytes) buys warm-rebuild speed the resident, event-fed tree (§6) does not need; cold start eats the 2–5s. Under §6 the memo is `StatKey`-keyed, and §6.2's watermark closes that window.
+- **mtime+size leaf cache** — its lie window (same mtime+size, different bytes) buys warm-rebuild speed the resident, event-fed tree (§6) does not need; cold start eats the 2–5s. Under §6 the memo — the cache of per-file leaf digests — is keyed by `StatKey` (device, inode, size, mtime, ctime), and §6.2's watermark closes that window.
 
 ## 1. One hash family: BLAKE3-256
 
-Every hash here — `node_rev`, file leaf, interior, workspace fingerprint — is BLAKE3-256: one primitive, one implementation, no mixed families, crypto-grade at xxhash-class speed; the 32-byte fingerprint is law 2's cursor.
+Every hash here — `node_rev`, file leaf, interior, workspace fingerprint — is BLAKE3-256: one primitive, one implementation, no mixed families. It is crypto-grade at xxhash-class speed, and the 32-byte fingerprint is law 2's cursor.
 
 - **`fingerprint`** = `"b3:" + 64 lowercase hex chars`, algorithm- and domain-prefixed (`wire-contract.md` §1 / §12). Short `"b3:88d2aa"` forms in old examples are non-normative abbreviations.
 - **`node_rev`** = the first **16 lowercase hex chars** (64 bits) of the node hash, unprefixed: enough to detect races in one node's edit history. The fingerprint is the integrity cursor and keeps full width.
@@ -44,13 +54,13 @@ Every hash here — `node_rev`, file leaf, interior, workspace fingerprint — i
 
 ### 2.1 `prop_rev` — the per-key frontmatter CAS token
 
-`prop_rev = hex(blake3(fm_key_grain_span_bytes))[:16]` — §2 at a second grain: same family (§1), same 16-hex width, same equality-only opacity.
+`prop_rev = hex(blake3(fm_key_grain_span_bytes))[:16]` — §2 applied at a finer grain, one frontmatter key instead of the whole block: same family (§1), same 16-hex width, same equality-only opacity.
 
 **The grain.** `fm_key_grain_span` = the key line plus every indented continuation line of a block value. The key name is inside the span; the end excludes the last content line's terminator (§1 leaf law). A blank line joins the grain only if a later indented line extends past it; trailing blanks belong to the inter-key gap. The scan stops at the next column-0 non-blank line or the block end.
 
-**Why it exists beside the block-grain `node_rev`.** A frontmatter node's `node_rev` covers the whole block, so every key shares one token (6586/6586 multi-key documents in a 6586-document corpus): guarding one key with it refuses `cas_mismatch` when any other key moves. Block grain says whether the frontmatter moved, never whether a single key moved. Both revs are additive.
+**Why it exists beside the block-grain `node_rev`.** A frontmatter node's `node_rev` covers the whole block, so every key shares one token (6586/6586 multi-key documents in a 6586-document corpus). Guarding one key with that token refuses `cas_mismatch` when any other key moves. Block grain says whether the frontmatter moved, never whether a single key moved. Both revs are additive.
 
-**One owner, three faces.** Only `model::resolve(doc, Ref::FmKey(key))` computes the token, the value the write door compares `if_node_rev` against; every face **serves** it.
+**One owner, three faces.** Only `model::resolve(doc, Ref::FmKey(key))` computes the token, the value the write door (where a write enters the engine) compares `if_node_rev` against; every face **serves** it.
 
 | Face | Spelling |
 |---|---|
@@ -72,7 +82,9 @@ Files that are **not valid UTF-8** still get leaf hashes and enter the root but 
 
 ## 4. Tree composition — leaves to the 32-byte workspace fingerprint
 
-**Merkle law 1** (§4.1, the flat encoding) is the shipped law, retiring at the one-time cutover; **Merkle law 2** (§4.2, the fixed-256 radix child map) is the law of the first scoped-token version. Exactly one law is current per workspace; no dual-hash serving window. The cutover is a priced protocol, paid once, behind the pre-cutover code blockers §4.2.5 names.
+Two interior laws exist — two encodings for folding a directory's children
+into one hash. **Merkle law 1** (§4.1, the flat encoding) is the shipped law,
+retiring at the one-time cutover; **Merkle law 2** (§4.2, the fixed-256 radix child map) is the law of the first scoped-token version. Exactly one law is current per workspace; no dual-hash serving window. The cutover is a priced protocol, paid once, behind the pre-cutover code blockers §4.2.5 names.
 
 ### 4.1 Merkle law 1 — the flat interior encoding (retiring at the cutover)
 
@@ -92,9 +104,17 @@ type_byte: 0x00 = file, 0x01 = dir
 
 ### 4.2 Merkle law 2 — the fixed-256 radix child map (the new hash-law version)
 
-Each directory's child list is a canonical radix map, fanout fixed at 256 — one slot ("bucket") per byte value — so one change re-hashes a bounded number of vertices, never every sibling. Canonical: history never affects the result. Updating one entry touches the vertices on its key path (bounded by the name's byte length) plus one directory node per ancestor; sibling count appears nowhere.
+Each directory's child list is a canonical radix map, fanout fixed at 256 — one slot ("bucket") per byte value — so one change re-hashes a bounded number of vertices (the nodes of that map), never every sibling. Canonical: history never affects the result. Updating one entry touches the vertices on its key path (bounded by the name's byte length) plus one directory node per ancestor; sibling count appears nowhere.
 
-**Carried over from law 1 unchanged:** the hash family (§1); the untagged leaf law (§3) — a leaf stays the plain blake3 of the file, checkable with any b3 tool and reusable across the cutover from the `StatKey` memo, while the kind byte beside every hash prevents cross-kind confusion; raw name bytes, byte-order sort and zero normalization (§9); symlinks skipped (§9); empty directories pruned bottom-up; the workspace root's own name never hashed; file modes never hashed.
+**Carried over from law 1 unchanged:**
+
+- the hash family (§1);
+- the untagged leaf law (§3) — a leaf stays the plain blake3 of the file, checkable with any b3 tool and reusable across the cutover from the `StatKey` memo, while the kind byte beside every hash prevents cross-kind confusion;
+- raw name bytes, byte-order sort and zero normalization (§9);
+- symlinks skipped (§9);
+- empty directories pruned bottom-up;
+- the workspace root's own name never hashed;
+- file modes never hashed.
 
 **Definitions.** A child set `C` holds entries `(name, kind, hash)`: `name` = the child's exact on-disk name bytes (§9), `kind` = file or dir, `hash` = its 32-byte value (file → §3 leaf; dir → §4.2.3 value). Names are unique in `C`; one name arriving as **both** kinds is the collision case (§4.4). Every varint is unsigned LEB128 in **minimal-length form**; a non-minimal varint is illegal. Byte comparisons are unsigned.
 
@@ -119,6 +139,9 @@ child map of C = build(C, 0)        # the root vertex
 Invariants forced (an encoder emitting anything else is out of law): a vertex with no terminal has ≥ 2 children (else `ext` was not longest); a vertex with no children has a terminal; vertex count ≤ 2·|C| − 1; fanout ≤ 256.
 
 #### 4.2.2 Vertex hash — bucket layout and the empty-bucket rules
+
+A vertex hashes its own prefix (`ext`), its terminal entry if it has one, and
+its occupied child slots:
 
 ```
 vhash(v) = blake3( "mrk2.vtx" ‖ varint(len(ext)) ‖ ext
@@ -149,6 +172,8 @@ dir(d) = blake3( "mrk2.dir" ‖ vhash(child map of C) )    # C nonempty
 dir(workspace root with C = ∅) = blake3( "mrk2.dir" )    # the empty tree
 ```
 
+- The `mrk2.dir` wrap gives a directory one value whatever its trie shape, and
+  keeps directory values apart from vertex values (§4.3).
 - Only the workspace root may be empty; non-root empty directories stay pruned.
 - The **workspace fingerprint** = `dir(workspace root)`; a child directory's value is the `hash` in its parent's child map, and a file-scope value is its §3 leaf.
 
@@ -178,7 +203,8 @@ Every interior hash in law 2 starts with an 8-byte ASCII domain tag, and the thr
 | `mrk2.dir` | a directory's child map (§4.2.3) — the scoped directory value |
 | `mrk2.fst` | a forest fold (§4.3.1) — a derived match set, never a directory |
 
-**Vertices are hash-law internals.** A caller premise names **path** nodes only: workspace root, folder, file leaf, or `absent`. Vertices and slots are hashed, never addressable as a `scope`, and no wire surface mints or compares one.
+**Vertices are hash-law internals.** A caller premise (the claim a guard carries, §7) names **path** nodes only:
+workspace root, folder, file leaf, or `absent` — a lawful path with no node. Vertices and slots are hashed, never addressable as a `scope`, and no wire surface mints or compares one.
 
 #### 4.3.1 The forest fold — its own domain tag
 
@@ -295,6 +321,10 @@ dir(tasks/)  = blake3("mrk2.dir" ‖ vhash( "mrk2.vtx" ‖ 04 ‖ 78 2e 6d 64 �
 fingerprint  = blake3("mrk2.dir" ‖ vhash(root))
 ```
 
+Reading the frames back against §4.2.2: `07 ‖ "otes.md"` is the varint-framed
+`ext`, `01 ‖ 00 ‖ hash` a one-terminal frame of kind file, and the trailing `00`
+a `children_frame` with n = 0.
+
 At scale, 100,000 names sharing `2026-08-1` collapse into one vertex's `ext`;
 a key path stays a few vertices deep.
 
@@ -350,14 +380,16 @@ cached 32-byte fold, a dirty bit, a `last_seq` stamp (§6.3).
   the write path. The splice response keeps its `wire-contract.md` §4.4
   transition fields.
 - **Write doors ride the same `DomainCache` the feed patches.** The daemon
-  passes `Registry::domain_cache` into each write door (an argument, not a
-  process-wide hook), and the registry makes the door-entry observation inside
-  the door's flock on that memo: §6.4 cookie barrier, then take-and-apply. The
-  overlay serves as `root_before` only on `Seen` + no doubt collapse +
-  `Trusted` — the vouch `currency_refresh` demands. `Trusted` says the last
-  observation landed whole with no unabsorbed loss, not that the stream
-  delivered everything on disk; without the cookie, a silent-dead watcher or a
-  sticky failed feed looks like a quiet corpus. A drained dirty set is no
+  passes `Registry::domain_cache` into each write door — an argument, not a
+  process-wide hook. The registry makes the door-entry observation inside the
+  door's flock on that memo: §6.4 cookie barrier, then take-and-apply — the
+  pending dirty set taken and applied. The overlay serves as `root_before`
+  only on `Seen` (the cookie came back through the ordered event stream,
+  proving earlier events are folded in) + no doubt collapse + `Trusted` — the
+  vouch `currency_refresh` demands. `Trusted` says the last observation landed
+  whole with no unabsorbed loss, not that the stream delivered everything on
+  disk; without the cookie, a silent-dead watcher or a sticky failed feed
+  looks like a quiet corpus. A drained dirty set is no
   completeness proof, and any named miss degrades to the full observation that
   absorbs the loss (§6.2 row 6). In-process callers with no registry fall back
   to a process-local map, still live-observing every door entry. The watcher
@@ -371,6 +403,7 @@ cached 32-byte fold, a dirty bit, a `last_seq` stamp (§6.3).
 
 ### 6.2 The watermark trust close — the full stable-read protocol
 
+The engine trusts a cached leaf digest only where this protocol says it may.
 `StatKey` alone can miss a same-instant, same-size, in-place write. The close
 is git's racy-clean rule, adopted as law; acceptance: a same-tick same-size
 in-place edit still refuses.
@@ -383,10 +416,10 @@ in-place edit still refuses.
 3. Reads **open without following links**, with an fstat identity check before
    and after the byte read; identity moved mid-read ⇒ discard and re-read. The
    no-follow walk is a directory-fd `openat(O_NOFOLLOW)` per component **from
-   the workspace root down**: every component below the root refuses a symlink,
-   while the root — trust anchor, not member — opens as the caller named it,
-   symlinks in its own prefix followed (production roots are canonical at bind,
-   `workspace::canonicalize`).
+   the workspace root down**: every component below the root refuses a symlink.
+   The root — trust anchor, not member — opens as the caller named it, symlinks
+   in its own prefix followed; production roots are canonical at bind
+   (`workspace::canonicalize`).
 4. An **event-generation fence** brackets the read: a feed event landing during
    the read re-classifies it instead of admitting a torn observation.
 5. A **still-open in-place writer** is suspect until its identity settles.
@@ -394,6 +427,9 @@ in-place edit still refuses.
    state** — never silent trust.
 
 ### 6.3 Stamps — `last_seq`, instance-bound
+
+A stamp answers "did anything under this node change?" without re-folding the
+subtree.
 
 - Each node carries `last_seq` = the highest journal seq beneath it, kept by
   the same guarded write path as the digests: the hash instrument audits the
@@ -421,10 +457,10 @@ engine-side.
 
 - **The engine owns its senses.** One kernel file watcher per workspace
   (FSEvents on macOS, inotify on Linux), owned by the engine process, never a
-  client: a dead cross-process feed is indistinguishable from a quiet corpus,
-  the engine holds workspaces the daemon never tracks (CLI lane, ad-hoc repos,
-  CI fixtures), and the currency proof must ride the same stream that feeds the
-  tree.
+  client. The reasons: a dead cross-process feed is indistinguishable from a
+  quiet corpus; the engine holds workspaces the daemon never tracks (CLI lane,
+  ad-hoc repos, CI fixtures); and the currency proof must ride the same stream
+  that feeds the tree.
 - **A client daemon's journal is a legal additional feed** where it already
   watches — an opportunistic dirty-path hint, never an instrument a guard or
   currency answer depends on.
@@ -468,8 +504,8 @@ engine-side.
 
 ### 6.5 Restart — the disposable checkpoint
 
-Requirement 2 ("the engine knows, it does not re-ask") binds across ordinary
-daemon restarts, so the engine may hold a checksummed, disposable derived index
+Requirement 2 — "the engine knows, it does not re-ask" — binds across ordinary
+daemon restarts. So the engine may hold a checksummed, disposable derived index
 outside the hash domain (git-index class): the checkpoint.
 
 - **Identity tuple:** `(workspace_uuid, domain_version, tree_root,
@@ -495,11 +531,11 @@ outside the hash domain (git-index class): the checkpoint.
   member set — a pre-serve barrier, so lazy, deferred or post-first-serve
   verification is refused. The pass is one stat per member as the floor (the
   160 ms figure at 29.7k members measures this stat pass alone) plus the
-  watermark law's re-reads: a row racily clean at save — recorded mtime
-  within one calibrated granularity unit of the checkpoint's saved watermark —
-  is re-read or restored pre-spoiled, never trusted on stat-match, under §6.2's
-  identity-fence and suspect rules; their count is published, and rows outside
-  the window cost zero bytes. Counter equation: reads = hashes = movers +
+  watermark law's re-reads. A row racily clean at save — recorded mtime within
+  one calibrated granularity unit of the checkpoint's saved watermark — is
+  re-read or restored pre-spoiled, never trusted on stat-match, under §6.2's
+  identity-fence and suspect rules. The re-read count is published; rows
+  outside the window cost zero bytes. Counter equation: reads = hashes = movers +
   watermark-window re-reads; stats = member count, once, before first serve.
 - **Parses are not gated by this law:** the checkpoint carries leaf digests and
   the tree, never parsed documents, so those counters and the 160 ms govern the
@@ -517,7 +553,8 @@ outside the hash domain (git-index class): the checkpoint.
   `sql.duckdb` and the run plane's digest memo), written atomically, read whole.
   The drawer is outside every hash domain — the §6.4 cookie's floor — so the
   checkpoint cannot move a root or break a held token.
-- **Two questions, two instruments.** *Lawfulness* (may these rows enter as
+- **Two questions, two instruments.** A checkpoint records the past, never the
+  present, so its trust splits in two. *Lawfulness* (may these rows enter as
   hypotheses?) is decided once at restore by the soundness fields —
   `workspace_uuid`, `domain_version`, the hash law, parse-cache generation and
   the `tree_root` binding, never the journal cursor pair. A mismatch discards
@@ -563,7 +600,7 @@ Two grades, bound to their consumers:
 
 | Consumer | Question | Grade | Instrument |
 |---|---|---|---|
-| warm read pass — read family, `sql`, `script` entry (`Registry::warm_or_build`, cheap half) | engine current now? | current-as-of-the-question | cookie barrier → take-and-apply → `Trusted` → overlay fold (`Registry::currency_refresh`); floor on a named miss — the barrier makes the stamp current for the ambient premise tokens a read mints (`wire-contract.md` §5.4 and its §2 mint law), and costs one sentinel write plus delivery, bounded by the door cookie budget |
+| warm read pass — read family, `sql`, `script` entry (`Registry::warm_or_build`, cheap half) | engine current now? | current-as-of-the-question | cookie barrier → take-and-apply → `Trusted` → overlay fold (`Registry::currency_refresh`); floor on a named miss. The barrier makes the stamp current for the ambient premise tokens a read mints (`wire-contract.md` §5.4 and its §2 mint law); it costs one sentinel write plus delivery, bounded by the door cookie budget |
 | `wire-contract.md` § A.11 post-result `live` | did the corpus move past the rows? | current-as-of-the-question | same call, same vouch |
 | write door `root_before` | §6.1 door-entry observation | guard | `Registry::door_observation`, unchanged |
 | prewarm quiet check | may this sweep be skipped? | latency-only | O(1), no cookie: nothing pending after take-and-apply, memo `Trusted`, cached served fold == the engine's stamp. `domain_stat_signature` walk survives only with no live feed (`FeedSlot::Failed`), under the quiet backoff |
@@ -592,8 +629,8 @@ member's bytes per external batch — measured ~1/s under foreign writes.
   leaf set and root.
 - The classifier diffs those digests against the watcher's retained baseline
   (entries carry a leaf digest beside their bytes), reads bytes only for
-  movers, and mints the same frames: renames pair by digest (byte-equality's
-  proxy), removed and `unattested` rows parse retained baseline bytes, modified
+  movers, and mints the same frames. Renames pair by digest (byte-equality's
+  proxy); removed and `unattested` rows parse retained baseline bytes; modified
   rows diff retained-old against read-new.
 - A mover whose re-read digest disagrees with the observed leaf is a mid-cycle
   race: the cycle emits nothing and holds its baseline; the racing write's event
@@ -658,20 +695,23 @@ never O(corpus).
 
 ## 7. Integrity surface + CAS — the grain ladder
 
-One instrument serves every grain: the resident tree (§6). Every addressable
-node is a legal premise. Coverage sufficiency, field spellings and guard
-requiredness are wire-side law (`wire-contract.md` §5.3–§5.4).
+One instrument serves every grain: the resident tree (§6). A **premise** is
+what a guard claims — this scope still holds this token — and the engine
+re-checks it before the write lands. Every addressable node is a legal
+premise; each row below is one grain, with the refusal it gives. Coverage
+sufficiency, field spellings and guard requiredness are wire-side law
+(`wire-contract.md` §5.3–§5.4).
 **No separate `guard` op** — integrity = mint + premise + `diff`.
 
-| Premise / op | Grain | Failure |
-|---|---|---|
-| `if_node_rev` (on `splice`) | one node | `cas_mismatch` {expected, actual} — re-read, re-plan |
-| `if_node_rev` on an `fm_key` target (`prop_rev`, §2.1) | one frontmatter key | `cas_mismatch` at key grain |
-| **scoped fingerprint** `{scope, fingerprint}` | any PATH node: root, folder, file leaf, or `absent` | `fingerprint_mismatch` {expected, actual, scope} |
-| **forest fold** (pattern/selector/sql-provenance premise, §4.3.1) | a derived match set | `fingerprint_mismatch` naming the set premise |
-| workspace token (root scope — `if_fingerprint`) | the world | `fingerprint_mismatch` — resync |
-| `fingerprint {scope}` op | any PATH node (root default) | `scope_unresolved` |
-| `diff` | fingerprint range; Delta batches between two cursors | `fingerprint_unknown` outside retained history |
+| Premise / op | Grain | Question | Failure |
+|---|---|---|---|
+| `if_node_rev` (on `splice`) | one node | is this section still what I read? | `cas_mismatch` {expected, actual} — re-read, re-plan |
+| `if_node_rev` on an `fm_key` target (`prop_rev`, §2.1) | one frontmatter key | did this key move? | `cas_mismatch` at key grain |
+| **scoped fingerprint** `{scope, fingerprint}` | any PATH node: root, folder, file leaf, or `absent` | is this subtree still what I planned against? | `fingerprint_mismatch` {expected, actual, scope} |
+| **forest fold** (pattern/selector/sql-provenance premise, §4.3.1) | a derived match set | is the set I derived still exactly this? | `fingerprint_mismatch` naming the set premise |
+| workspace token (root scope — `if_fingerprint`) | the world | is the world still what I planned against? | `fingerprint_mismatch` — resync |
+| `fingerprint {scope}` op | any PATH node | mint the current token at a scope (root default) | `scope_unresolved` |
+| `diff` | range of fingerprints | Delta batches between two cursors | `fingerprint_unknown` outside retained history |
 
 **Scope rows, their law:**
 
@@ -699,8 +739,8 @@ requiredness are wire-side law (`wire-contract.md` §5.3–§5.4).
 ← {"id":8,"ok":true,"body":{"fingerprint":"b3:…","seq":N,"scope":"a/target.md"}}
 ```
 
-A lawful empty path answers `absent` and still echoes the scope pair. `scope`
-with `scope_bytes` refuses `bad_request`.
+A lawful empty path answers `fingerprint: "absent"` and still echoes the scope
+pair. `scope` with `scope_bytes` refuses `bad_request`.
 
 **Three errors, three facts, never flattened:**
 
@@ -716,6 +756,11 @@ per-edit `if_node_rev`; a failing wider premise skips narrower work.
 **What each layer never does:** the engine never decides *when* a guard is
 required (host policy — `wire-contract.md` §5.3); hosts never compute hashes
 (node_rev and fingerprint are opaque equality tokens).
+
+**Consistency with the three laws:** disk stays the only durable truth (memo,
+ring and tree are memory; the checkpoint is disposable, §6.5); recovery is
+re-derive; the engine answers "what changed", policy decides what to do about
+it.
 
 ## 8. Interaction with the write plane
 
@@ -765,8 +810,9 @@ required (host policy — `wire-contract.md` §5.3); hosts never compute hashes
   display form for a name with no UTF-8 spelling is escaped: `\xNN` for
   invalid bytes, `\\` for a literal backslash.
 - **Non-UTF-8 names: hashed truthfully, addressable via `scope_bytes`,
-  unservable on the UTF-8 read faces.** Its leaf enters the root with the
-  exact name bytes; mint and guard take the raw-byte arm (`scope_bytes`, §7).
+  unservable on the UTF-8 read faces.** Such a member's leaf enters the root
+  with the exact name bytes; mint and guard take the raw-byte arm
+  (`scope_bytes`, §7).
   Wire paths are JSON strings: the member serves no spans, the serving
   snapshot (`DomainFiles`) holds only UTF-8-named members, and a watch delta
   cannot name it — frame fingerprints stay truthful and §6/§7 resync covers

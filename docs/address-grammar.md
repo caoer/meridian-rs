@@ -12,9 +12,9 @@ owns: [cross-root addressing, mounts, "addr::Addr"]
 
 **Status: normative spec**; ships no engine code. Where it rules, the implementer has no design decision left. Open points are in § 10, each with an owner surface in this tree.
 
-**Scope.** The cross-root (mount) grammar `[root:]path[#selector]`, the `addr::Addr` type, the mount-table invariants, and the stored-form translation positions. Wire section addressing stays `wire-contract.md` §2.1's: segment objects (`{"hpath":[{"h":"Goals"},{"h":"Q3"}]}`, `{"anchor":"…"}`, `{"fm_key":"…"}`), never a joined path (`Goals>Q3`, `Goals/Q3`, a sanitized slug) as the writeable form. An `Addr`'s `#selector` is an ingress/host-face slot; its machine-canonical resolution is still segment or anchor form.
+**Scope.** A cross-root address names a page and, optionally, which root it lives in: `[root:]path[#selector]`. A root here is a mount-table name that this machine binds to one local directory. This document owns that grammar, the `addr::Addr` type, the mount-table invariants, and the stored-form translation positions — the places where an agent-plane `root:` spelling becomes the `obsidian://` form stored on disk. It does not rule how a section inside a page is addressed. Wire section addressing stays `wire-contract.md` §2.1's: segment objects (`{"hpath":[{"h":"Goals"},{"h":"Q3"}]}`, `{"anchor":"…"}`, `{"fm_key":"…"}`), never a joined path (`Goals>Q3`, `Goals/Q3`, a sanitized slug) as the writeable form. An `Addr`'s `#selector` is an ingress/host-face slot; its machine-canonical resolution is still segment or anchor form.
 
-**Law fixed in this tree** (not reopened by citing out-of-tree files): the agent/stored split (`root:` vs the `obsidian://` stored form); name ownership (the root declares, `MERIDIAN.md` binds — `meridian-md-schema.md`); the grey rule (unmounted ≠ red missing); canonicalize-at-bind; refusal of equal or nested mounts; grey refusals on exit 1 with a distinct reason word.
+**Law fixed in this tree** (not reopened by citing out-of-tree files): the agent/stored split (`root:` vs the `obsidian://` stored form); name ownership (the root declares, `MERIDIAN.md` binds — `meridian-md-schema.md`); the grey rule (an unmounted root renders **grey**, never **red**: the engine cannot see it, and nothing drifted); canonicalize-at-bind; refusal of equal or nested mounts; grey refusals on exit 1 with a distinct reason word.
 
 ---
 
@@ -29,7 +29,7 @@ Four things in this engine are called a root. `Root` is already a wire type, so 
 | **`addr::MountName`** | A canonical root name: the mount-table key a cross-root address carries (`sessions`, `assets`) | `crates/addr` (§ 7) | a lowercase name, never a path or a hash |
 | `root:` the frontmatter key | A preset-def property naming the root record a session preset instantiates | `crates/preset/src/lib.rs:232`; fixtures `crates/preset/tests/gates.rs:15`, `:321`, `:524` | an ordinary YAML scalar (`root: SESSION.md`) |
 
-`run::address::AddressError` (`crates/run/src/address.rs:45`) parses the run plane's same-file block refs `[[#^id]]`, a different grammar and owner; it never meets `addr::AddrError`.
+One adjacent name to keep apart: `run::address::AddressError` (`crates/run/src/address.rs:45`) parses the run plane's same-file block refs `[[#^id]]`, a different grammar and owner; it never meets `addr::AddrError`.
 
 ---
 
@@ -37,10 +37,12 @@ Four things in this engine are called a root. `Root` is already a wire type, so 
 
 ### 2.1 Neither D12 story as written
 
+Two candidate designs for carrying the root were written up. Neither works as written.
+
 - **Story B (RIDE)** — keep the prefix in the spelling; resolve by `three_rules` (`model/src/lib.rs:1856-1871`: `docs.contains_key(spelling)`, `docs.contains_key(spelling + ".md")`, `resolve_linkpath(...)`). Rejected: all three rules look up one root's `BTreeMap<String, Document>`, whose keys carry no root, so `root:page` renders `red selector-unresolved`. In the shipped design they run after the root is peeled (`resolve_ref`, `model/src/lib.rs:1767-1782`).
 - **Story A (PEEL)** — strip the root textually at the lock face and discard it. Rejected: no such splitter exists; a discarded root has nowhere to go. In the shipped design the root stays on the spelling until resolution — pinned by test, *"the root stays ON the spelling until the lookup is root-aware"* (`view/src/read_face.rs:840-841`) — and is readable as a value from the parsed address (`declared_addr`, :847), carried in `LockItem.to_root: Option<addr::MountName>` (`view/src/read_face.rs:294-334`, :326, :398-400).
 
-**Ruled: the address is a fallible type carrying an optional root; the resolver takes a root-keyed corpus.** Fallible construction makes the compiler list the doors; a string convention re-parsed at 16 sites is the "boolean helper a caller may ignore" defect.
+**Ruled: the address is a fallible type carrying an optional root; the resolver takes a root-keyed corpus.** Fallible construction makes the compiler list the doors — every call site where an address enters the engine. A string convention re-parsed at 16 sites is the "boolean helper a caller may ignore" defect.
 
 ### 2.2 The type
 
@@ -72,7 +74,7 @@ pub struct MountSet { /* the bound names */ }
 
 ## 3. The three-way translation invariant
 
-The mount table is the single authority for the map canonical root name ↔ Obsidian vault name ↔ local path:
+The mount table lists the roots this machine binds. Each entry ties one canonical root name to one local directory and, where the entry carries a `vault:` leg, to one Obsidian vault name. The table is the single authority for that map, in all three directions:
 
 > **INV-1 (name is a key).** No two entries share a `MountName`.
 > **INV-2 (path is a key).** No two entries share a canonicalized local path.
@@ -89,13 +91,13 @@ The mount table is the single authority for the map canonical root name ↔ Obsi
 | T5 | root declares `wiki`, table binds it as `field-notes` | **parse fails loud**, naming both spellings | `declared-bound-mismatch` |
 | T6 | root declares no name | **grey for that root**, the missing declaration named | `grey(undeclared)` |
 
-INV-1…INV-3 make the map a bijection; a silent pick would make stored links machine-dependent.
+INV-1…INV-3 make the map a bijection: each name has exactly one path, and each path exactly one name. A silent pick between two candidates would make stored links machine-dependent.
 
 ---
 
 ## 4. The colon law — (d), ruled here
 
-`sessions:notes.md` is a legal filename on this machine today (§ 11.3); `wire::Path` does not validate (*"this newtype does not validate, it names"*, `crates/wire/src/lib.rs:29-31`); `path_confined` (`crates/wire-serve/src/write.rs:1984`) rejects only empty, leading-`/`, `.` and `..` segments. So one string has two readings.
+`sessions:notes.md` is a legal filename on this machine today (§ 11.3); `wire::Path` does not validate (*"this newtype does not validate, it names"*, `crates/wire/src/lib.rs:29-31`); `path_confined` (`crates/wire-serve/src/write.rs:1984`) rejects only empty, leading-`/`, `.` and `..` segments. So one string has two readings: a root name plus a path, or a literal filename.
 
 ### 4.1 The law
 
@@ -103,7 +105,7 @@ The **head** of an address is the text before the first `/` and before the first
 
 > **The root reading wins, unconditionally; there is no fallback to the literal reading.**
 >
-> - **Zero `:` in the head** → no root; resolves in the ambient root.
+> - **Zero `:` in the head** → no root; resolves in the ambient root (the workspace the caller is already in).
 > - **Exactly one `:` in the head** → the root separator. Before it a well-formed `MountName`, after it non-empty text; otherwise **refused**, never reinterpreted as a literal path.
 > - **Two or more `:` in the head** → **refused**.
 >
@@ -117,7 +119,7 @@ A corpus-relative path whose first segment contains `:` cannot be named by any a
 
 > The engine **refuses to create** such a path. An existing one on disk renders **grey**, the reason naming it unaddressable — never silently resolved or skipped.
 
-This rules the literal path only (D10); a `root:` spelling resolves at every page-taking door (§ 4.6, D11), and a raw head-colon `Path` on the wire refuses (`addr::confined`).
+The consequence above rules the literal path only (D10); a `root:` spelling resolves at every page-taking door (§ 4.6, D11), and a raw head-colon `Path` on the wire refuses (`addr::confined`).
 
 ### 4.3 `MountName`'s charset
 
@@ -125,10 +127,10 @@ This rules the literal path only (D10); a `root:` spelling resolves at every pag
 
 ### 4.4 Law A-2 — the fragment is selector bytes to its end; `@fp` is off the name lane
 
-The fragment runs from the first `#` to the end of the spelling; **every byte of it is selector bytes, `@` included**. Fingerprint pinning is its own field on its surface (a lock row's pin, a render-face decoration), never an in-band suffix in the name lane (the packing law: a delimiter drawn from an open charset collides with it).
+The fragment runs from the first `#` to the end of the spelling; **every byte of it is selector bytes, `@` included**. Fingerprint pinning is its own field on its surface (a lock row's pin, a render-face decoration), never an in-band suffix in the name lane — never an `@fp` tail glued to the address text. Heading text is an open charset, so a delimiter taken from that same charset collides with the text it delimits: the packing law.
 
 - **Motive.** 3,815 real headings across two roots contain `@`. An in-band `@` split would make each unaddressable by its own spelling, and for (`Deploy`, `Deploy @ prod`) a trimming resolver would resolve the wrong real section.
-- **Narrows.** A pasted render-face spelling (`page.md#Sec@green.b3…`) keeps its `@green.…` tail, misses byte-exact, and lands in the Law A-3 teaching refusal, which republishes the machine address, plus the near candidate where the ranker finds one — one taught round trip, never a silent resolution. No stored surface carries an in-band `@fp`: the engine refuses a fingerprint reaching stored bytes (*"a render-face decoration the engine mints on read, never storable content"*, `crates/wire-serve/src/write.rs`).
+- **Narrows.** A pasted render-face spelling (`page.md#Sec@green.b3…`) keeps its `@green.…` tail. It misses byte-exact and lands in the Law A-3 teaching refusal — a refusal that names the fix. That refusal republishes the machine address, plus the near candidate where the ranker finds one: one taught round trip, never a silent resolution. No stored surface carries an in-band `@fp`: the engine refuses a fingerprint reaching stored bytes (*"a render-face decoration the engine mints on read, never storable content"*, `crates/wire-serve/src/write.rs`).
 - **Widens.** `#Deploy @ prod` resolves byte-exact to the heading `Deploy @ prod`; the 3,815 `@`-bearing headings are addressable by their own spelling.
 - **Type.** `addr::Addr` has no `fp` field; `Addr::parse` records the fragment verbatim; `Display` round-trips without an `@` re-join.
 
@@ -155,6 +157,8 @@ D1–D4 must **parse**; D2 and D3 keep this law from swallowing the ordinary cor
 
 ### 4.6 The rooted lane spans every page-taking door (rooted-refs-everywhere)
 
+Which arguments may carry a `root:` spelling is this section's question.
+
 > **The law.** Every door at which the caller names a page resolves `[root:]path[#selector]` through the one rooted lane (parse → confinement → mount table, § 4.1, no literal fallback). No page-taking door refuses a well-formed rooted ref as such or misreads it as a filename (one exception: the preset lane below). The family is bound by the predicate "names a page", not a list (`wire-contract.md` § 12.1).
 
 **Motive.** For a rooted ref the runtime cwd is not a factor in `mrd`'s behaviour.
@@ -165,11 +169,13 @@ Members, a measured snapshot (the predicate is the authority; re-measure at the 
 - **Not yet converted:** the preset lane (`unfold`, `reconcile`, `new`).
 - **Outside, no page named:** `arm --at` (a workspace-relative directory, `armed-plane.md`; keeps its head-colon refusal); `test --history`, `status --cwd` (explicit tree arguments); `test --corpus` (its spec is a fixture file read from disk with cwd/absolute semantics, and everything inside the spec resolves relative to the spec's own directory — not a corpus page; rule pages it names are document positions, § 9.1); `check`, `retire`, `skill`; `sql` (`--root` selects a workspace, not a page: CLI surface, not address law).
 
-> **Authority: the page's tree governs.** `root:x` behaves exactly as if the caller had cd'd into that root: conventions and caps load from the page's tree, receipts land in the page's workspace, and the standing workspace contributes nothing to the ceiling. Rejected: the standing tree governs; both trees must permit. Closed hazard: a ceiling loaded from where the caller stands (`workspace::Answer::root`, `None` on a cwd default).
+> **Authority: the page's tree governs.** `root:x` behaves exactly as if the caller had cd'd into that root: conventions and caps load from the page's tree, receipts land in the page's workspace, and the workspace the caller stands in contributes nothing to the permission ceiling. Rejected: the standing tree governs; both trees must permit. This closes one hazard: a door that loads the ceiling from where the caller stands (`workspace::Answer::root` is `None` on a cwd default).
 >
-> The hazard is Starlark-only — **caps do not apply to bash** (`crates/run/src/caps.rs` module doc, citing `laws.md` § Amendment): `resolve_authority` takes the bash branch first, consults only the builtin, non-overridable `READ_ONLY_PATTERNS` (`check-*`/`verify-*`, which refuse a bash fence at load), and resolves every other bash task `Authority::Unsandboxed` without reading the conventions. The bypass this law closes: `resolve_caps` consults the conventions of the declaring root, so without the authority law a read-only `run.caps.*` ceiling over a task's `md.*` writes would be cd-swappable for a looser tree's.
+> The hazard is Starlark-only: **caps do not apply to bash** (`crates/run/src/caps.rs` module doc, citing `laws.md` § Amendment). `resolve_authority` takes the bash branch first and consults only the builtin, non-overridable `READ_ONLY_PATTERNS` (`check-*`/`verify-*`, which refuse a bash fence at load). Every other bash task resolves `Authority::Unsandboxed`, and the conventions are never read on that branch.
+>
+> The bypass this law closes: `resolve_caps` consults the conventions of the declaring root. Without the authority law, a read-only `run.caps.*` ceiling over a task's `md.*` writes would be swappable for a looser tree's by changing directory.
 
-**The mechanism is the workspace jail, and it is law.** One daemon serves many workspaces; `hello` pins the workspace exact-or-refuse, no ancestor walk (`registry.rs` `pin_declared`: *"a declaration never widens to an enclosing registered workspace"*), and the connection stays on it. A rooted door resolves the root, then dials that workspace; the wire carries the rel half only, and `wire-contract.md` § 1's `Path` law keeps its head-colon confinement arm.
+**The mechanism is the workspace jail, and it is law.** One daemon serves many workspaces; `hello` pins the workspace exact-or-refuse, no ancestor walk (`registry.rs` `pin_declared`: *"a declaration never widens to an enclosing registered workspace"*), and the connection stays on it. A rooted door resolves the root, then dials that workspace. The wire carries only the rel half — the path with the root peeled off — and `wire-contract.md` § 1's `Path` law keeps its head-colon confinement arm.
 
 > **The one exception: the preset lane is not yet converted.** `unfold`, `reconcile` and `new` name a page (`new`'s def token: *"resolve def (presets/<KIND>.md or page path)"*) but write in-process with no daemon dial, so a rooted op would bypass the target tree's armed gates. A rooted ref there **refuses with a teaching** naming this reason and the remedy (run it from inside the target tree). Until the lane rides the daemon write path it stays cwd-determined — a lane awaiting conversion, not one correctly cwd-bound forever.
 
@@ -179,11 +185,13 @@ Members, a measured snapshot (the predicate is the authority; re-measure at the 
 
 ### 4.6a The root a spelling names — name first, then alias (root-alias)
 
+§ 4.1 says a head colon names a root. This section says which root.
+
 > **The law.** A `root:` spelling resolves to the mount whose `name` it equals; if none, to the mount whose `alias` it equals (`meridian-md-schema.md` § 5.1b); otherwise it refuses as an unbound root. One order at every § 4.6 door, one seam (`mrd::rooted::resolve_name` at the CLI, `addr::MountSet::canonical` on the link plane).
 
 **Motive.** The engine knows no root names (the no-baked-names law, `laws.md`); `alias:` maps one agreed constant, `sessions:`, onto whatever each machine calls that tree, without the engine learning that name. `primary:` is not consulted for `sessions` or anything else.
 
-**Default (schema §5.1c).** Where no mount is named or aliased `sessions`, the bound mount table gains the implicit default mount `sessions` at `$HOME/.local/share/ucc/sessions`, only when it binds clean — found by `name`, first rung, same seam. A declared name or alias suppresses it ("defaulted in code at most").
+**Default (schema §5.1c).** Where no mount is named or aliased `sessions`, the bound mount table gains the implicit default mount `sessions` at `$HOME/.local/share/ucc/sessions`, only when it binds clean — found by `name` on the first rung of the order above, through the same seam. A declared name or alias suppresses it ("defaulted in code at most").
 
 **Name first, never a tie-break.** A root named `sessions` resolves `sessions:` with no alias — a name is its own alias. A table where a name and an alias both answer one spelling does not load (`alias-shadows-name`, whole-table refusal).
 
@@ -212,7 +220,9 @@ let base = key.rsplit('/').next().unwrap_or(key.as_str()).to_string();
 ```
 
 So `"sessions:24-01-retro/notes.md"` matches the ambient root's `notes.md`; the `sessions:`
-prefix is discarded unread (§ 11.1). The defect is inside the owner, not at a door.
+prefix is discarded unread (§ 11.1). The defect is inside `resolve_linkpath` itself, not at a
+door: a correctly parsed `Addr` still lands on the wrong file until that function peels the root
+and refuses.
 
 ### 5.1 Ruled: peel and refuse
 
@@ -221,8 +231,8 @@ prefix is discarded unread (§ 11.1). The defect is inside the owner, not at a d
 - **C-2.** A rooted address never falls back to the ambient root. Root unmounted: **grey
   `unmounted`** (§ 6). Root mounted, path absent there: **`file_not_found` for that root**.
   Never the ambient root's same-basename file.
-- **C-3.** The body guards itself, because the retype does not reach it: `linkpath` must carry
-  no root separator. On a head `:` (a programming error) `resolve_linkpath` returns `None`; a
+- **C-3.** The body guards itself, because the move to the `Addr` type does not reach it:
+  `linkpath` must carry no root separator. On a head `:` (a programming error) `resolve_linkpath` returns `None`; a
   test asserts it, so a raw `&str` caller cannot revive the defect silently.
 - **C-4.** One address, one answer: the two spellings of § 11.1 must converge, and the test
   asserts the convergence.
@@ -244,10 +254,14 @@ editing the file there. All-grey passes F1, F2 and F4 and ships nothing.
 
 ## 6. The unmounted-root refusal — (f), the verbatim exemplar
 
-The refusal text is a **pinned `const` exemplar asserted verbatim**, like
+This section fixes what the engine says when an address names a root this machine does not bind.
+
+The refusal text is a **pinned `const` exemplar asserted verbatim**: one wording held in code,
+which a test compares the rendered message against. The shipped instance of the pattern is
 `model::selector::D1_TEACHING_REFUSAL_EXEMPLAR` (`crates/model/src/selector.rs:569`; rendered by
 `render_ambiguity`, pinned by `render_ambiguity_carries_d1_teaching_verbatim`,
-`crates/model/src/selector.rs:929-961`). It lives beside `GreyReason`'s members:
+`crates/model/src/selector.rs:929-961`). The unmounted-root exemplar lives beside
+`GreyReason`'s members:
 
 ```rust
 // crates/model/src/selector.rs — beside GreyReason's existing members.
@@ -274,6 +288,7 @@ rule's sentence verbatim:
 
 ### 6.0b One remedy per plane
 
+A refusal teaches a fix, and the `Fix:` must answer the failure it is attached to.
 `docs/meridian-md-schema.md` § 8.3 requires a `Fix:` naming the legal form. Two selector-door
 failures take opposite remedies:
 
@@ -318,11 +333,12 @@ be attested (`meridian-md-schema.md` § 9), could then turn a red into a pass.
 | **`crates/addr`** | `std`-only leaf, zero dependencies, upstream of `syntax` | `Addr`, `MountName`, `MountSet`, `AddrError`; the colon law (§ 4); the parse (where an address becomes a value) |
 | **`crates/config`** | downstream of `model` | the `MERIDIAN.md` parse; the mount table (name ↔ vault name ↔ path); canonicalize-at-bind; deny-ceiling inheritance; the equal-or-nested refusal; the declared-vs-bound check |
 
-Neither is `crates/workspace` (*"a leaf, `std` + `cache` only"*, `laws.md` § Crate charters); it
-is read, not moved: `config` calls `workspace::deny_reason`. `addr` sits upstream of `syntax`
-because `model` depends on `syntax` + `blake3` (`crates/model/Cargo.toml`), so a type downstream
-of `model` cannot reach the wikilink ingress `syntax::split_wikilink_target`
-(`crates/syntax/src/lib.rs:424`).
+Neither is `crates/workspace` (*"a leaf, `std` + `cache` only"*, `laws.md`
+§ Crate charters); `workspace` is read, not moved: `config` calls `workspace::deny_reason`. `addr` sits upstream of
+`syntax` — `syntax` may depend on `addr`, never the reverse — because `model` depends on
+`syntax` + `blake3` (`crates/model/Cargo.toml`). A type downstream of `model` therefore cannot
+reach `syntax::split_wikilink_target` (`crates/syntax/src/lib.rs:424`), the wikilink ingress
+where a cross-root address arrives.
 
 ### 7.2 The tension D4 and D4a create, resolved
 
@@ -371,9 +387,9 @@ carry:
 ### 8.2 The motive: a pin-proof bypass
 
 Measured (§ 11.2): `/path/to/repos/wiki` is a **symlink** to `/path/to/projects/wiki`, and
-`CCC_LLM_WIKI_PATH` carries `/path/to/projects/wiki/` (real path, trailing slash). Mounted
-literally, that is **one tree twice, under two names**: two canonical refs with **identical
-`sec_rev`**, so proof gathered on ref A would gate a pin on ref B. B-1 and B-3 together close
+`CCC_LLM_WIKI_PATH` carries `/path/to/projects/wiki/` (real path, trailing slash). Bound as
+spelled, those two paths are **one tree twice, under two names**. Two canonical refs then name
+one document with **identical `sec_rev`**, so proof gathered on ref A would gate a pin on ref B. B-1 and B-3 together close
 this bypass; B-1 alone is not enough — the trailing slash and the symlink are two ways
 to spell the same tree, and only canonicalization collapses both.
 
@@ -418,11 +434,12 @@ CLI arguments admit a rooted spelling is § 4.6's question.
 ### 9.2 The transform is positional, never a byte transform
 
 **A-1.** The stored-form translation is **positional**: it identifies each address by its
-position in the candidate document and translates those in its owned positions. **A blanket byte
-transform over the token `root:` is forbidden**: `root:` is a live YAML frontmatter key in the
-preset/def grammar (`fm_scalar(&doc, "root")`, `crates/preset/src/lib.rs:232`; fixture
-`root: SESSION.md` at `crates/preset/tests/gates.rs:15`, `:321`, `:524`), so a blanket
-transform would corrupt the def and silently invalidate every pin whose fingerprint covers it.
+position in the candidate document — the bytes a write proposes — and translates those in its
+owned positions. **A blanket byte transform over the token `root:` is forbidden**. `root:` is a
+live YAML frontmatter key in the preset/def grammar (`fm_scalar(&doc, "root")`,
+`crates/preset/src/lib.rs:232`; fixture `root: SESSION.md` at
+`crates/preset/tests/gates.rs:15`, `:321`, `:524`). A blanket transform would rewrite that line,
+corrupt the def page, and silently invalidate every pin whose fingerprint covers it.
 Frontmatter is not an address position (*"frontmatter is not a claim-link position
 (S10/R22)"*, `crates/wire-serve/src/write.rs`).
 
@@ -492,9 +509,9 @@ Every row is answered; rows 10–13 name their real owner.
 
 ### 10.1 No opaque-root refusal
 
-There is no mount `kind` and no refusal of a `#selector` on any mounted root. A rule *a
-plain-folder root has no parse and no sections, so an address into one must not carry a
-`#selector`* (`AddrError::SelectorOnOpaqueRoot` at resolution) is false at the data level:
+There is no mount `kind` and no refusal of a `#selector` on any mounted root. Consider the rule
+*a plain-folder root has no parse and no sections, so an address into one must not carry a
+`#selector`* — an `AddrError::SelectorOnOpaqueRoot` at resolution. It is false at the data level:
 `model::RootedCorpus::with_root` builds one parsed index for every root, never branching on
 kind. `meridian-md-schema.md` §5.1 has no `kind`;
 every mounted root is the same shape to the resolver, selectors resolve on any, and the closed
@@ -506,10 +523,10 @@ the daemon's mountgate pin).
 
 ## 11. The measurements
 
-All three measurements below pre-date the fix and record the defect, not
-today's behaviour: § 5.1's peel-and-refuse is now the C-3 guard
-(`crates/model/src/lib.rs:1733-1734`), the mount-aware resolver is
-`resolve_ref` (`crates/model/src/lib.rs:1776`), and re-running § 11.1 now hits
+All three measurements below pre-date the fix. They record the defect, not
+today's behaviour. § 5.1's peel-and-refuse is now the C-3 guard
+(`crates/model/src/lib.rs:1733-1734`), and the mount-aware resolver is
+`resolve_ref` (`crates/model/src/lib.rs:1776`), so re-running § 11.1 now hits
 that refusal (`crates/model/tests/u11_c3_linkpath_peels_and_refuses.rs`
 asserts it on the verbatim input).
 

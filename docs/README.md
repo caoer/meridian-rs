@@ -45,7 +45,7 @@ Each entry ends with the document and section that spells its law.
   stale `node_rev` is refused (`wire §5.1`). `file_rev` is the same kind of
   token over a whole file.
 - **fingerprint** — the workspace content hash: `b3:` + 64 hex, never
-  truncated (`fp §2`). It is a Merkle root over the hash domain
+  truncated (`fp §2`). It is a merkle root over the hash domain
   (`merkle §4`). The wire noun is `fingerprint`.
 - **hash domain** — the set of files the fingerprint covers: Markdown only,
   minus dot-segment paths and the ignores declared in `meridian/domain.md`
@@ -108,9 +108,8 @@ A citation names its document: `<id> §N`, for example `wire §4.4` or
 `merkle §5`. The ids are the `id` column of the table below; their registry is
 `docsys §2`. A bare `§N` is deprecated for new writing; it reads as `wire §N`.
 Qualify it or leave it alone, but never change which section it names. Inside
-one file, a
-citation to that same file may stay bare. The full grammar, anchors, and pins
-are in `doc-system.md`.
+one file, a citation to that same file may stay bare. The full grammar,
+anchors, and pins are in `doc-system.md`.
 
 ## Files in this directory
 
@@ -123,10 +122,10 @@ are in `doc-system.md`.
 | `release.md` | `release` | What a release promises (the two-key rule), plus stamp and tag mechanics | you cut or consume a release |
 | `address-grammar.md` | `addr` | Cross-root addressing, the mount table, and the `addr::Addr` type | you address across roots or mounts |
 | `meridian-md-schema.md` | `schema` | `MERIDIAN.md` config parse | you write or parse a `MERIDIAN.md` |
-| `node-rev-merkle-spec.md` | `merkle` | Hash law for `node_rev` and the merkle fingerprint, the resident tree, and `.assets/` | you implement or verify revs and fingerprints |
+| `node-rev-merkle-spec.md` | `merkle` | Hash law for `node_rev` and the workspace merkle fingerprint, plus the resident tree and its event feed | you implement or verify revs and fingerprints |
 | `fingerprint-norm-spec.md` | `fp` | The fingerprint CID token and the norm-v2 algorithm | you compute or compare fingerprint tokens |
 | `armed-plane.md` | `armed` | The arming ladder and the `gate()` seam | you arm a workspace or touch the write gate |
-| `base-projection.md` | `base-projection` | `.base` (Obsidian Bases) projection into the sql face: membership, relations, the `base_fold` witness | you work on `.base` files in the sql face |
+| `base-projection.md` | `base-projection` | `.base` (Obsidian Bases) projection into the sql face: membership, relations, the `base_fold` witness, `link.exclusion_path` | you work on `.base` files in the sql face |
 | `body-projection.md` | `body-projection` | Section body text in the sql face: the exclusive-chunk law, the `body` relation, the content-addressed cache protocol | you work on body text in the sql face |
 | `run-plane.md` | `run` | The run plane (`mrd run`) and preset / session birth | you work on `run`, `realise`, or `preset` |
 | `status.md` | `status` | CLI / build snapshot, **descriptive** only; also the home of R12, the armed-plane exit reading | you want "what the binary exposes today" |
@@ -135,6 +134,7 @@ are in `doc-system.md`.
 
 1. This README.
 2. `wire-contract.md`.
-3. `laws.md` if you edit crates.
-4. `status.md` only for "what the binary exposes today".
-5. `release.md` only when cutting or consuming a release.
+3. `doc-system.md` if you write, cite, or pin a doc here.
+4. `laws.md` if you edit crates.
+5. `status.md` only for "what the binary exposes today".
+6. `release.md` only when cutting or consuming a release.

@@ -482,7 +482,7 @@ Values at S2; ids 70/71 show case-insensitivity. `dest` rides every stage-2 outc
 
 ### §4.6 links — the oracle audit
 
-`read`-as-link-oracle, the dominant read pattern of corpus tooling, is a fact op; corpus-wide, it carries the staleness triple (§10):
+`read`-as-link-oracle is the dominant read pattern of corpus tooling, and `links` is the fact op that serves it: corpus-wide, carrying the staleness triple (§10):
 
 ```json
 {"id":80,"op":"links","path":"notes/plan.md"}
@@ -566,7 +566,7 @@ A guard states a fact the caller expects to still hold; the engine re-derives th
 
 `if_node_rev` is compared against `blake3(target's full span bytes)[:16]`, re-derived at execution time from the pre-batch state — the derivation `toc`/`cat` serve as `node_rev`. No second rev derivation exists — no content-span rev (§1), no client span (§4.4) — so hashing the bytes about to be replaced is the only implementation.
 
-Check order: `if_fingerprint` against the live workspace fingerprint first (world-grain; a mismatch fails the whole batch, `fingerprint_mismatch{expected,actual}` → re-plan), then per-edit `if_node_rev` (node-grain, `cas_mismatch{expected,actual}` → refresh). Merkle-spec §7 semantics: Rust computes hashes, hosts compare opaque tokens.
+Check order: `if_fingerprint` against the live workspace fingerprint first — world-grain, so a mismatch fails the whole batch (`fingerprint_mismatch{expected,actual}` → re-plan). Then per-edit `if_node_rev`, node-grain, one node at a time (`cas_mismatch{expected,actual}` → refresh). Merkle-spec §7 semantics: Rust computes hashes, hosts compare opaque tokens.
 
 A **premise** is one expected fingerprint plus the scope it covers. Under the `scoped-guards` cap (§5.4), `if_fingerprint` without `scope` is the root premise, byte-identical to v2 and sugar for `guards:[{scope?, fingerprint}]`. Full order: coverage at admission (§5.5) → every supplied premise (§5.4; a scoped refusal names it, `fingerprint_mismatch{expected,actual,scope}`) → per-edit `if_node_rev`. A premise refusal fails the whole batch before any byte lands.
 
@@ -699,7 +699,7 @@ E4 append via `put{at:"end"}`:
 
 **Do not re-teach** pretty joins (`Goals>Q3`); replaceability (§6.4) permits no second address grammar.
 
-**Byte arithmetic.** The two lines measure **260 B** and **262 B** on the node basis (terminator excluded, per the leaf-block span law §1) — the widths required by the fixture's spans `[26,286]` and `[287,549]` (§4.4, §7.1) and the receipts file's 26 → 287 → 550 B growth (§0.3). R1, R2 and every S1/S2-anchored value are therefore reconstructable from this document (§18 row 10).
+**Byte arithmetic.** The two lines measure **260 B** and **262 B** on the node basis — terminator excluded, per the leaf-block span law (§1). Those are the widths the fixture's spans `[26,286]` and `[287,549]` require (§4.4, §7.1), and the receipts file's 26 → 287 → 550 B growth (§0.3). R1, R2 and every S1/S2-anchored value are therefore reconstructable from this document (§18 row 10).
 
 **The lane width.** Replaying E3 through the CLI lane (`mrd put`) under the same `actor` and `now` writes **254 B node bytes** (**255 B line**, terminator included). Every width compared here is node bytes, terminator excluded (§1); the line figure carries its own label because the two bases differ by exactly the terminator. **The 254 is a lane width, not the template's**: the same shipped template writes 260 B when the request carries an id, gated by `crates/receipt/tests/frozen_receipts.rs :: e3_receipt_line_byte_exact`, which renders `id: Some(42)` and asserts the E3 line above and `line.len() == 286 - 26`. A CLI invocation is no wire request and mints no request id, so under §9's absent-inputs law writing no `id=` token is correct. One gap remains, ruled rather than owed:
 
@@ -936,7 +936,7 @@ bad_request — guard family, effects door:
 
 ## §9 actor and now
 
-Rust never reads a wall clock or env identity. `actor` (opaque string) and `now` (RFC 3339 string, format-validated, never generated) ride the wire as ordinary optional request fields on `splice` — recorded into receipts and Deltas — and as rule-evaluation inputs (§11: temporal predicates read the *given* `now`). Absent inputs produce absent facts (worked: external-change deltas, §7.1). Whether a scope requires them is host policy (§5.3). Hosts may mint `actor` from their own session machinery; the engine never invents one.
+Rust never reads a wall clock or env identity. `actor` (an opaque string) and `now` (an RFC 3339 string, format-validated, never generated) ride the wire as ordinary optional request fields on `splice`. They are recorded into receipts and Deltas, and they are rule-evaluation inputs (§11: temporal predicates read the *given* `now`). Absent inputs produce absent facts (worked: external-change deltas, §7.1). Whether a scope requires them is host policy (§5.3). Hosts may mint `actor` from their own session machinery; the engine never invents one.
 
 ## §10 Staleness posture
 
@@ -981,7 +981,7 @@ Every splice response (dry or real) carries `verdicts:[]` — typed findings fro
              "message":"section has no blurb line"}]
 ```
 
-Severity ∈ {`error`, `warn`, `info`}. On an **armed** workspace, block-severity verdicts and door-law violations **refuse the write in-engine** after CAS (`gate()`; § A. Armed plane); on a never-armed workspace they stay advisory. `budget_exceeded` is a finding here. The shape is `crates/policy`'s `Violation{rule, severity, path, span, node_rev, hpath, message}` verbatim.
+Severity ∈ {`error`, `warn`, `info`}. On an **armed** workspace, block-severity verdicts and door-law violations **refuse the write in-engine** after CAS (`gate()`; see § A. Armed plane); on a never-armed workspace they stay advisory. `budget_exceeded` is a finding here. The shape is `crates/policy`'s `Violation{rule, severity, path, span, node_rev, hpath, message}` verbatim.
 
 ### §11.2 WHEN/HOW partition (validation-enforced)
 
@@ -1015,11 +1015,11 @@ Which files' bytes enter the workspace **fingerprint** (the merkle content hash)
 2. **Default ignore (one rule)** — any path with a **dot-prefixed segment** is ignored (`.github/…`, `.obsidian/…`, `.trash/…`). Custom re-includes cannot lift this floor for non-md paths, nor the dot rule's intent on editor noise.
 3. **Custom ignore** — optional rules on the **standing declaration page** `meridian/domain.md` (frontmatter: `version` + an `ignore` list; the body may explain). Patterns are gitignore-style: block list, last match wins, `!` re-includes. The **trailing-slash law**: a pattern ending in `/` names a directory, so it excludes files beneath a matching directory segment, never a bare file whose basename fits the pattern body. So `scratch*/` excludes `results/scratch-r4/venv.md`, not `tasks/scratch-cleanup.md`; `git check-ignore` rules the same pair.
 
-**Hash domain ⊂ addressable domain — one answer at every door.** The filter gates hashing, not load. An out-of-domain path (an ignored `.md`, a dot-segment path) is still served by `toc`/`cat`/`read`/`extract`/`check_write`/`splice`: the read door serves its spans and mints its `file_rev` as for a member, the write door commits, and its bytes do not move the fingerprint (`fingerprint_before == fingerprint_after`). A door that refuses one is a door defect, and its CAS token (`node_rev_before` / `file_rev`) is mintable at the read door like any other. `file_not_found` means one thing at every door — **no such file under the workspace root** — never domain exclusion.
+**Hash domain ⊂ addressable domain — one answer at every door.** The filter gates hashing, not load. An out-of-domain path — an ignored `.md`, a dot-segment path — is still served by `toc`/`cat`/`read`/`extract`/`check_write`/`splice`. The read door serves its spans and mints its `file_rev` as for a member; the write door commits, and its bytes do not move the fingerprint (`fingerprint_before == fingerprint_after`). A door that refuses one is a door defect, and its CAS token (`node_rev_before` / `file_rev`) is mintable at the read door like any other. `file_not_found` means one thing at every door — **no such file under the workspace root** — never domain exclusion.
 
-**The rule above binds a door family: every door the caller names a path at**: `links <PATH>`, `walk <PAGE>` and `repair <PAGE>` take a caller path as `cat` does. The same predicate bounds the rooted-ref lane: every door the caller names a page at resolves the agent-plane `[root:]path` spelling (§ A.12, `address-grammar.md` § 4.6).
+**The rule above binds a door family — every door the caller names a path at.** `links <PATH>`, `walk <PAGE>` and `repair <PAGE>` take a caller path as `cat` does. The same predicate bounds the rooted-ref lane: every door the caller names a page at resolves the agent-plane `[root:]path` spelling (§ A.12, `address-grammar.md` § 4.6).
 
-**Enumerators are bound to say, not to admit.** A whole-corpus enumeration (`retire`'s sweep, the `sql` projection, `check`, bare `links`) MAY exclude what its `as_of` fingerprint cannot cover — **never silently: the exclusion is named in the output, and an enumeration that certifies absence either refuses or names what it did not see.**
+**Enumerators are bound to say, not to admit.** A whole-corpus enumeration — `retire`'s sweep, the `sql` projection, `check`, bare `links` — MAY exclude what its `as_of` fingerprint cannot cover, **never silently**. **The exclusion is named in the output, and an enumeration that certifies absence either refuses or names what it did not see.**
 
 **The verdict plane must say what it did not look at.** `walk`, `check` and `status` judge a pin's target — a path the caller never named — over the hash domain, so an out-of-domain target is absent only because **the engine did not look**. The door plane and the verdict plane both ask existence first, by reading the named path — the domain-independent read every named-path door owes, since existence is a disk fact and the domain a fingerprint fact.
 
@@ -1226,7 +1226,7 @@ Content-mutating writes on the **wire door** (the daemon socket, the only door, 
 
 The satisfying set is the §5.4 premise vocabulary: any legal tree token, judged by the Coverage Law at admission. `guard_required` means no premise and no `force`; premises that fail coverage refuse `scope_does_not_cover{uncovered}` (§5.5, §8.2). `if_node_rev` covers its own edit; `if_fingerprint` covers everything.
 
-The demand binds every op that lands content by declaring its write set in the request: `splice` in every form with its composed fields (§ A.3/§ A.5), `create`, `remove`. It does not bind the effects lane: `run` (§ A.8) and `script` carrying `effects` (§ A.7) are unguarded by ruling — no CAS premise, no fingerprint requiredness, no synthesized touch-set guard. Execution is what `mrd` cannot bound, so a guard there would promise what it cannot keep. A guard field there refuses `bad_request` at the §3.2 strict wall (inapplicable to the op — § A.8; teaching: §8.2), never `guard_required`, a pure-write-door refusal only. `script` without `effects` satisfies the demand by construction: its commit premise is the engine-computed touch set (§ A.7), caller premises legal as widening. The one-door transport law (§3.3) is untouched — the limit is op scope, not transport scope.
+The demand binds every op that lands content by declaring its write set in the request: `splice` in every form with its composed fields (§ A.3/§ A.5), `create`, `remove`. It does not bind the effects lane: `run` (§ A.8) and `script` carrying `effects` (§ A.7) are unguarded by ruling — no CAS premise, no fingerprint requiredness, no synthesized touch-set guard. Execution is something `mrd` cannot bound, so a guard there would promise what it cannot keep. A guard field there refuses `bad_request` at the §3.2 strict wall (inapplicable to the op — § A.8; teaching: §8.2), never `guard_required`, a pure-write-door refusal only. `script` without `effects` satisfies the demand by construction: its commit premise is the engine-computed touch set (§ A.7), caller premises legal as widening. The one-door transport law (§3.3) is untouched — the limit is op scope, not transport scope.
 
 ### A.2 Armed change plane (block is a feature)
 
@@ -1311,7 +1311,7 @@ the wire shape is ruled here.)*
 | `splice.pin` | Pin rides the write choke-point; selector is segments/anchor. |
 | `pin-cross-root` | `splice.pin.target` admits the ruled `name:rel` rooted spelling (`address-grammar.md`): target loaded, gated, promoted and blob-written in the named mounted root under that root's own `LOCK_NB` write flock; the lock row's `object` = `name:rel` minus `.md`, verbatim; the proof compare (`splice.pin.proof`) runs on the target root's live bytes under that flock. Without the cap a face keeps its own taught refusal, not `pin_target_missing`. |
 | `splice.pin.proof` | Pin proof rides the request — the proof law, below. |
-| `create` | File birth through the guarded door; full body bytes, no `props` field (the starlark birth lane's `props=` dict rides this door, § A.8). `bad_path` on an engine machinery segment in the landing — `.git`, `.meridian`, `meridian`, `receipts` — at any depth, ASCII-case-insensitively, whatever the caps admit; the hash-domain config `meridian/domain.md` is the one carve-out (`run-plane.md` § machinery floor). |
+| `create` | File birth through the guarded door; full body bytes, no `props` field (the starlark birth lane's `props=` dict rides this door, § A.8). `bad_path` on an engine machinery segment in the landing — `.git`, `.meridian`, `meridian`, `receipts` — at any depth, ASCII-case-insensitively, whatever the caps admit; the hash-domain config `meridian/domain.md` is the one carve-out (`run-plane.md` § the machinery floor). |
 | `remove` | File death through the guarded door; `remove_refused` while anything in the corpus references the record (below). |
 | `hello.identity` | Optional `{build: sha \| sha-dirty \| unknown}` for deploy identity. `-dirty` rides the sha token (git-describe): `sha` = a whole commit, `sha-dirty` = a worktree diverging from it, `unknown` = nothing attributable. Match the whole token, never a substring — a decorated sha is a different build and must refuse (`docs/release.md` §5.1). Optional, v3-only |
 
@@ -2531,8 +2531,8 @@ pinned root; the non-script doors' refusal scope is untouched.
 
 **Effects mode.** Two more request fields, so the field wall — the closed set of fields this op accepts (§3.2) — grows 9 → 11:
 `effects:[…]` and `invocation`. Absent `effects` = the pure script above,
-byte-identical. Present = the **live program** model (`run-plane.md` § Effects
-mode is normative):
+byte-identical. Present = the **live program** model (`run-plane.md`
+§ Effects mode is normative):
 
 - `read()` serves the live disk at call time.
 - `put()` applies immediately through the wire splice door — write flock held,
