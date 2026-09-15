@@ -8,500 +8,379 @@ owns: [the run plane, preset and session birth]
 
 # The run plane — `mrd run` (S1)
 
-> **Standing:** Design law is `wire-contract.md` (one contract). Mint addresses = segments only. Receipts = armed wire facts. DuckDB/`view_path` not agent core. **Doc correct > code correct; docs first.** See `README.md`.
+> Standing law: `README.md` (process and standing corrections) and `wire-contract.md` (the wire contract).
 
 The run plane executes an addressed task block and turns what it emits into
 governed effects. It is **consumer-plane, imperative, local**: a client of
-the engine crates, layered entirely above them. The daemon, the wire, and
-the serve path carry no run-plane state ACROSS invocations of any kind.
+the engine crates, layered above them. The daemon, the wire and the serve
+path carry no run-plane state across invocations.
 
-Two entries cross the wire. The SCRIPT entry's executor lives in the engine
-daemon — in-process Starlark evaluation behind the wire `script` op
-(wire-contract § A.7) — so the daemon carries the script entry's evaluator
-and its per-attempt state, for exactly the attempt's duration and no longer.
-The TASK entry is wire-invocable too (wire-contract § A.8): a list of
-targets through the face, and `run()` callable inside the script entry
-(live, under § Effects mode). The daemon carries the § A.8 op arm
-(per-target loop over the unchanged `crates/run` seam, §9 identity
-threading) and the effects-mode live host, still per-invocation and never
-ACROSS invocations. The charter sentence is therefore: **the serve path
-consumes the run plane, it never re-implements it** — one runner, one
-executor, one receipt convention, whichever door invoked it. The CLI entry
-(`mrd run`, `mrd script`) is a client of the same plane.
+This document rules that plane — its two entries, their budgets, their
+capabilities and their refusals — plus preset and session birth, folded in
+below for navigation. It does not rule the wire itself: request and response
+shapes are `wire-contract.md`'s.
 
-**No-guard amendment (NORMATIVE): `run` and script-with-effects are NOT
+An **entry** is one way into the plane: what the caller supplies, and which
+door evaluates it. Two entries cross the wire:
+
+| Entry | Door | What the daemon holds |
+|---|---|---|
+| script | Starlark evaluation in the daemon behind the wire `script` op (wire-contract § A.7) | the evaluator and per-attempt state, for the attempt only |
+| task | wire-contract § A.8: a target list through the face, or `run()` inside the script entry (live, under § Effects mode) | the § A.8 op arm (per-target loop over the unchanged `crates/run` seam, §9 identity threading) and the effects-mode live host, per invocation |
+
+Charter: **the serve path consumes the run plane, it never re-implements
+it** — one runner, one executor, one receipt convention, whichever door
+invoked it. `mrd run` and `mrd script` are clients of the same plane.
+
+**No-guard amendment (normative): `run` and script-with-effects are not
 guarded.** No CAS premise, no fingerprint requiredness, no synthesized
-touch-set guard, on execution whose consequences mrd cannot bound — a bash
-script can install a timer that fires five minutes later, and no check
-evaluated at commit time can prevent that. A guard there PROMISES what it
-cannot keep and buys complexity and slowness for the false promise. Guards
-are pure-lane law: the premise/coverage/token machinery (wire-contract
-§5.4–§5.7, § A.7) applies to markdown writes through the pure doors, where
-the engine CAN keep the promise. Consequences, each stated so no implementer
-picks silently:
+touch-set guard, because mrd cannot bound what execution does. Guards are
+pure-lane law (wire-contract §5.4–§5.7, § A.7): they bind markdown writes
+through the pure doors, which execute nothing and where the engine can keep
+the promise. Consequences:
 
-- **The plane manufactures no world pin of its own, and no narrower pin
-  stands in for one.** There is no root-mismatch premise refusal and no
-  per-target pin-and-verify before a replace-class effect. No refusal on
-  this door is a premise refusal.
-- **What remains is observation honesty.** A foreign advance re-derives and
-  proceeds — reported (the named out-of-band window), never refused. A
-  vanished unrelated record drops from view and never fails another target;
-  a vanished ADDRESSED target stays an invocation-law refusal, which is
-  addressing, not a premise.
-- **A task-selection pin is TARGETING, never CAS.** A pin (`task_rev` on
-  the wire row, or any future selection pin) chooses WHAT to execute; its
-  documentation and its faces must call it targeting. A supplied guard
-  field is rejected as inapplicable, never ceremonially checked
-  (wire-contract § A.8).
-- **Guard-free never means fold-invisible.** Every effects write rides the
-  same write choke-point and maintains the resident tree — an effects write
-  advances the folds other writers' premises compare against. That is tree
-  maintenance, not a guard.
+- **No world pin**, and no narrower pin in its place: no root-mismatch
+  premise refusal, no per-target pin-and-verify before a replace-class
+  effect. No refusal on this door is a premise refusal — a refusal because
+  the world moved under the caller.
+- **Observation honesty only.** A foreign advance re-derives and proceeds:
+  reported (the named out-of-band window), never refused. A vanished
+  unrelated record drops from view and fails no other target; a vanished
+  addressed target is an invocation-law (addressing) refusal.
+- **A task-selection pin is targeting, never CAS.** `task_rev` on the wire
+  row (or any future selection pin) chooses what to execute; docs and faces
+  call it targeting. A supplied guard field is rejected as inapplicable,
+  never checked (wire-contract § A.8).
+- **Guard-free is not fold-invisible.** Every effects write rides the one
+  write choke-point and maintains the resident tree, advancing the folds
+  other writers' premises compare against — tree maintenance, not a guard.
 - **Beside it:** `put_live` is CAS-free by its own law; `effects` and guard
-  fields are mutually exclusive at decode; the step's OWN out-of-band writes
-  refuse phase-2 convergence (the governed-change law — enforcement of the
-  one write path, not a world premise); `run.lock` serialization stands (a
-  lock refusal is not a premise refusal).
+  fields are mutually exclusive at decode; the step's own out-of-band writes
+  refuse phase-2 convergence (the governed-change law: one write path, not a
+  world premise); `run.lock` serialization stands (a lock refusal is not a
+  premise refusal).
 
-This document states the surface **as shipped**, including what it
-deliberately does not guarantee (§ Accepted gaps).
+Deliberate non-guarantees: § Accepted gaps.
 
 ## The kernel entry points
 
-The Starlark kernel has exactly three entry points:
+The Starlark kernel has exactly three entry points — two of them the run
+plane's, one the change plane's:
 
 | Plane | Entry | Trigger |
 |---|---|---|
 | change | `on_change(event)` | a governed change event (the effect kernel) |
-| run | `def run(ctx)` | `mrd run` addressing a task block — or, in the `run` op's fire mode, the block's declared entry (§ The run entry, amended) |
+| run | `def run(ctx)` | `mrd run` on a task block; in the `run` op's fire mode, the block's declared entry (§ The run entry, amended) |
 | run | script — module top level | `mrd script` / the wire `script` op (wire-contract § A.7) / MCP `script` carrying caller-supplied inline source |
 
-The run plane carries **two entries** — one plane, two entries — so the
-count is three. The script entry is **not hermetic by construction; it is
-hermetic by recording.** Its one effectful builtin is `read()`; every read
-response is recorded into the trace, and the law that replaces
-construction-hermeticity is stated in § The script entry: eval is a pure
-function of `(script, args, files, read-response sequence)`. Replayability —
-the property construction-hermeticity buys — is preserved by recording it
-instead. The other two entries, `on_change(event)` and `def run(ctx)`, are
-hermetic by construction, and the script builtins do not join their globals.
+- `on_change(event)` and `def run(ctx)` are **hermetic by construction** —
+  sealed kernel, no I/O of their own; the script builtins do not join their
+  globals.
+- The script entry is **hermetic by recording**: its one effectful builtin is
+  `read()`, every read response is recorded into the trace, and eval is a
+  pure function of `(script, args, files, read-response sequence)` (§ The
+  script entry). Replay against that recording is byte-identical.
 
 `RunCtx` is inert data: page, task, args, env, invocation id, root-at-eval.
-Identity and time are **caller-supplied** (§9) — the kernel never reads a
+Identity and time are **caller-supplied** (§9): the kernel never reads a
 clock and never mints an id.
 
-**The fold behind root-at-eval is LAZY on the starlark leg: it is
-taken when, and only when, THIS TENSE'S OUTPUT will put the token in front of a
-reader.** Eval runs first, against no token; the fold, if it is bought at all,
-happens after it. This binds every caller of `runner::run` / `runner::rehearse`
-— the `mrd run` CLI, the wire `run` op (`registry::run_op`) and `realise` — not
-the CLI alone.
+`root_at_eval` is an emitted effect's record of the world it was produced
+against: the root the engine gets by folding the hash domain (the files the
+fingerprint covers). That fold costs a pass over the whole domain. A **tense**
+is which of the two runs this is: a rehearsal (`--dry`) or a live one.
 
-The two tenses have different readers, so they have different gates, and the
-difference is the point:
+**The fold behind root-at-eval is lazy on the starlark leg: it is taken only
+when this tense's output will put the token in front of a reader.** This
+binds every caller of `runner::run` / `runner::rehearse`: the `mrd run` CLI,
+the wire `run` op (`registry::run_op`) and `realise`.
 
 | tense | folds when | the token's reader |
 |---|---|---|
-| **rehearsal** (`--dry`) | ANY effect was emitted | the `--dry --json` report and the wire rehearse row, which serialize whole effects — provenance included |
+| **rehearsal** (`--dry`) | any effect was emitted | the `--dry --json` report and the wire rehearse row (whole effects, provenance included) |
 | **live** | an **md.\*** effect was emitted | the receipt's `root_pin`, written from `observed_root` |
 
-**Named residual on the rehearsal side:** the HUMAN `--dry` renders `kind` plus
-args and no provenance (`mrd::run_cmd` `dry_starlark`, `Format::Human`), so
-that one format pays the fold for a token it never prints. The gate is not
-conditioned on it, deliberately: output format is the caller's, the run plane
-does not know it, and a plane that folded differently per render format would
-make `--dry` and `--dry --json` two different observations of the world. The
-cost lands only on a human-format dry run that emitted something — never on
-the effect-free case, and never live.
+- **Rehearsal residual.** The human `--dry` (`mrd::run_cmd` `dry_starlark`,
+  `Format::Human`) prints `kind` plus args, no provenance, yet pays the fold
+  when the block emitted anything: the gate ignores output format, so `--dry`
+  and `--dry --json` observe the same world.
+- **Live gate.** The live report prints only `kind` + `domain`
+  (`run::report::EffectLine`), so a live block emitting only
+  `proto.*`/`daemon.*` (the hook shape: notice / remind / send, once per
+  event) has no reader for the token: no batch, no `observed_root`, no
+  receipt. Its `root_at_eval` stays empty in the in-memory effect set. The
+  cascade's per-generation fold has the same gate.
+- **When a gate fires:** one `fs::domain_fold` after the eval, its root
+  stamped onto every emitted effect's `Provenance::Run.root_at_eval` and,
+  live, handed to the apply as `observed_root`. After-eval sees the same
+  domain as before-eval, because this entry cannot write. The token is never
+  compared (the no-guard amendment, above).
 
-The live gate is narrower because the live report renders `kind` + `domain`
-only (`run::report::EffectLine`): a live block that emitted nothing but
-`proto.*`/`daemon.*` has no consumer for the token anywhere — no batch, no
-`observed_root`, no receipt, and a report that never prints provenance. Folding
-for it would spend the whole cost of the run on an observation nobody reads.
-**That is the hook shape** — notice / remind / send, live, once per event — so
-it is the case the gate exists for, not an edge. Such a run leaves
-`root_at_eval` empty in the in-memory effect set: that is what "not observed"
-looks like, and nothing renders it.
-
-When a gate does fire: one `fs::domain_fold` AFTER the eval, its root
-stamped onto every emitted effect's `Provenance::Run.root_at_eval` and, on the
-live leg, handed to the apply as `observed_root`. After-eval observes the same
-domain as before-eval would have: this entry is hermetic by construction, so
-the eval cannot write. Observation honesty is unchanged — the token still names
-the world the effects were produced against, and it is still never compared
-(the no-guard amendment, above).
-
-The live gate is the gate the **cascade** already had (its per-generation fold
-runs only when that generation emitted an md.\* effect); the run leg was the
-odd one out. The rehearsal's gate is deliberately wider — its report shows
-more, so it owes more. The saving is the whole cost: on a 37 800-member root
-the fold was **99.5%** of an effect-free run, ~0.9 s → ~20 ms.
-
-Starlark-invokes-bash is a **permanent no on the pure path** (test-gated):
-the sandbox exposes no `exec` / `subprocess` / `os` name, and eval is a pure
-function of its recorded inputs. The composition layer IS bash. The one
-sanctioned exec surface is the effects path: a submission carrying
+**Starlark never invokes bash on the pure path** (test-gated): the sandbox
+exposes no `exec` / `subprocess` / `os` name. The composition layer is bash.
+The one sanctioned exec surface is the effects path: a submission carrying
 `effects:["run"]` holds a live `run()` that executes the addressed task at
-call time — chosen deliberately over an armed/deferred chimera, because
-effects cannot be refused (they are out-of-world), so the transaction
-promise is unkeepable there — no half-promises. The surface test asserts
-both: pure globals stay `{read, me, put}`; effects globals add exactly the
-admitted list.
+call time (live, not armed/deferred: out-of-world effects cannot be refused).
+The surface test asserts: pure globals stay `{read, me, put}`; effects
+globals add exactly the admitted list.
 
 ## The script entry
 
-The script entry runs **caller-supplied inline source** instead of an
-addressed task block. It is the same plane and the same one write path; only
-the entry differs. A task is a governed page's declared behavior; a script is
-one caller's inline intent.
+The script entry runs caller-supplied inline source instead of an addressed
+task block: same plane, same one write path. A task is a governed page's
+declared behavior; a script is one caller's inline intent.
 
 **Inputs — all caller-supplied, all inert** (the `RunCtx` precedent):
 
 | Input | Meaning |
 |---|---|
-| `script` | the source; the module top level IS the body, no hook lookup |
-| `args` | the caller's arguments as an **inert dict** — string keys, string values |
-| `files[]` | **paths only**, in call order — `files[i]` is the i-th path the caller named; patterns expand in place, and a pattern standing before a literal refuses at entry (`files_member_order`, wire-contract § A.7 literals-first) |
-| `actor` | the caller's own identity, threaded per §9 — the engine mints none |
-| `now` | caller-supplied time — the kernel never reads a clock |
+| `script` | the source; the module top level is the body, no hook lookup |
+| `args` | the caller's arguments as an **inert dict**: string keys, string values |
+| `files[]` | **paths only**, in call order (`files[i]` = the i-th path named); patterns expand in place; a pattern before a literal refuses at entry (`files_member_order`, wire-contract § A.7 literals-first) |
+| `actor` | the caller's own identity, threaded per §9; the engine mints none |
+| `now` | caller-supplied time; the kernel never reads a clock |
 | budget overrides | fuel / mem / call depth / source bytes / wall clock / max reads / max armed edits |
 
-`args` is a **dict, not a list** — callers name their inputs (`args["page"]`),
-they do not count them. It is inert in the `RunCtx.env` sense: string keys,
-string values, no callables and no host reach, so nothing in it can read or
-write. The kernel binds the dict; a host never flattens or reshapes one on the
-way in, which is what keeps a single args grammar in a single place.
+- `args`: a dict, not a list (`args["page"]`); no callables, no host reach.
+  The kernel binds it; a host never flattens or reshapes it.
+- `files[]`: paths, never content; content enters only through recorded
+  `read()`.
+- No `glob()` builtin: enumeration is the host's; the wire serves no
+  corpus-enumeration op.
+- No cap grammar here: authority is the caller's identity, not a declared
+  ceiling; delegation caps are a v2 feature.
 
-`files[]` carries paths and never content: all content enters through
-`read()` and is recorded, and inline content would bypass the recorded-read
-purity law below and break replay. There is no `glob()` builtin — enumeration
-is the host's, and the wire serves no corpus-enumeration op. There is no cap
-grammar at this entry: authority is the caller's identity, not a declared
-ceiling, and the delegation caps grammar is a v2 feature.
+**Recorded-read purity.** `read(path)` (the toc face: the file's frontmatter
+and section map) and `read(path, section=…)` (the cat face: one section's
+text) are the only effectful builtins; `put(...)` and its siblings append to
+the armed list and do no I/O at call time. **Script eval is a pure function of
+`(script, args, files, read-response sequence)`**: the trace records every
+read response, so re-evaluation against it is byte-identical. No exec surface
+exists here.
 
-**Recorded-read purity.** `read(path)` (the toc face) and
-`read(path, section=…)` (the cat face) are the **only** effectful builtins;
-`put(...)` and its siblings are pure — they append to the armed list and
-perform no I/O at call time. The law: **script eval is a pure function of
-`(script, args, files, read-response sequence)`.** The trace records every
-read response, so re-evaluating against the recorded responses is
-deterministic and byte-identical. No exec surface exists on this path.
+**The read budget is 64 `read()` calls per attempt, not 64 files.**
+`max_reads` counts read-builtin calls, no dedup by path, section and
+whole-file reads alike: toc + N sections spends 1+N, so the file domain is
+below 64 once sections are used. Example: 3 `--files` with 30 sections each
+refuse at 70 section reads (`outcome fault`, `reads_used 64`); at 60 they
+return `outcome no_effect`, `reads_used 60`, exit 0. Raising the budget is
+refused: it buys a different wrong number, not a stated domain.
 
-**The read budget states its own domain: 64 `read()` CALLS per attempt, NOT 64
-files.** The unit is the entire statement. `max_reads` counts calls to the read
-builtin — the kernel holds one counter over recorded reads with **no dedup by
-path**, and a section read (`read(p, section=…)`, the cat face) is pushed
-identically to a whole-file read (`read(p)`, the toc face). So a file taken as
-toc + N sections spends **1+N** of the budget, and **the effective FILE domain is
-strictly smaller than 64 the moment sections are used.**
+**Effects mode.** `effects: […]` beside `dry`/`files`/`args` names the
+effect builtins the program may use; the closed set lives only in
+wire-contract § A.7's effects paragraph (today: `run`, `token_count`). No
+`mutex()` builtin: exclusivity belongs to the coordination layer. The flag
+switches the execution model:
 
-Measured, with its positive control beside it: a `--files` list of **3 files** with 30 sections each refuses at 70
-section reads — `outcome fault`, `reads_used 64` — while the identical corpus,
-list, and addressing at 60 section reads returns `outcome no_effect`,
-`reads_used 60`, exit 0. Three files exhausted a budget a reader would have
-called "64 files". The control differs from the test in exactly one variable,
-the call count, so the refusal is the budget and nothing else.
+- **Absent → pure script.** The pure model holds whole: entry world, armed
+  set, set-form law, the touch-set commit premise (below), replay.
+- **Present → live program.** `read()` serves the live disk at call time: no
+  pin, no overlay. `put()` applies at once through the wire splice door
+  (write flock held, structural validation intact, the guard's `force`
+  bypass): no rev, no snapshot, no CAS, no set-form law.
+  `run(page, task=None, args=[], env={}, dry=False)` executes the addressed
+  task at call time through the plane's own seam and returns its § A.8 row
+  (state, exit code, stdout) as a value; refusal rows return as values too;
+  only shape errors (wrong argument types) fault the program.
+- **Principle.** The rev leashes an agent's stale context, not writes; a
+  script's own read is the freshest. Effects cannot be refused
+  (out-of-world), so no transaction promise holds.
+- **Accepted tradeoff, on record.** Two effect-scripts can last-writer-wins
+  each other on one section, like two shell scripts; the engine write flock
+  keeps files structurally intact.
+- **`token_count(text)`** returns the text's real token cost as an int,
+  measured at call time through the § A.7 frame's `token_count_endpoint`;
+  the engine never counts tokens. The string is measured verbatim (the tool
+  face's `{text}` arm), no ref resolution; compose with `read()` to measure
+  served content. A lane with no endpoint bound faults "unbound"; an endpoint
+  refusal faults the program with its words carried whole; the dial deadline caps at the
+  remaining wall clock. No trace entry; a top-level binding echoes like any
+  computed name.
+- **No rollback.** A mid-program fault leaves prior acts landed; the trace
+  records how far the program got. A completed live program's outcome is
+  `effects` (the vocabulary's one addition); `fault` keeps its meaning on
+  both models.
+- **Replay refuses a live program:** `replay_script` refuses an effects-mode
+  context.
+- **Budgets.** Eval limits and the wall clock bind over the program's own
+  acts (reads, puts, compute); the read ceiling counts live reads
+  identically; `put()`/`run()` are not fuel-metered. A live `run()` is
+  admitted under the script clock (the pre-dispatch check); the clock then
+  stops while the run plane executes under its own budget
+  (`run.timeout_secs` on the root's declaration, default 5m), never charged
+  to the script clock. `max_runs` (64/attempt) bounds the count: the 65th
+  run refuses typed, naming the ceiling; executed runs stand.
+- **Identity (§9).** `actor`/`now` thread as everywhere; run identity is
+  `<invocation>-r<K>` from the submission's host-minted `invocation` base,
+  K the 0-based call ordinal.
 
-**Effects mode.** A submission may
-carry `effects: […]` beside `dry`/`files`/`args`: the list declares which
-effect builtins the program may use. The closed set's one home is the wire
-contract's § A.7 effects paragraph (today: `run`, `token_count`); there is
-no `mutex()` builtin — exclusivity belongs to the coordination layer
-(below). **The flag switches the execution model:**
+**Read alignment — both models.** In-script `read()` mirrors the read tool and
+returns values, not opaque structs. `read(path)` is the wire toc face, 1:1, a
+dict `{"fm": {…}, "toc": […], "rev": "…", "words": N}`.
+`read(path, section=…)` is the section text as a plain string
+(`"x" in read(p, section=s)` is legal); that section's rev still rides the
+recording, where the threading law reads it. `section` takes the read tool's
+selector grammar (heading path, dewey ordinal, `^anchor`), every arm served
+in-script.
 
-- **Absent → pure script.** Everything above, word for word: entry world,
-  armed set, set-form law, the touch-set commit premise (below), replay. A
-  script is provably pure by default.
-- **Present → LIVE PROGRAM.** `read()` serves the live disk at call time —
-  no pin, no overlay, its own read is the world. `put()` applies
-  IMMEDIATELY through the wire splice door: write flock held, structural
-  validation intact, the guard's `force` bypass — no rev, no snapshot, no
-  CAS; the set-form law does not apply (it is the pure
-  TRANSACTION's law, and there is no transaction here). `run(page,
-  task=None, args=[], env={}, dry=False)` executes the addressed task at
-  call time through the plane's own seam and RETURNS its § A.8 row as a
-  value — state, exit code, stdout observable in-program; run-then-decide
-  works. Refusal rows return as values too (branchable); only shape errors
-  (wrong argument types) fault the program.
-- **Principle:** the rev is a leash for an agent's stale context, not a
-  property of writes. A script reads at execution time — its own read is
-  the freshest possible; guarding a millisecond gap means nothing. Effects
-  cannot be refused (out-of-world), so the transaction promise is
-  unkeepable there — no half-promises, no chimera.
-- **Accepted tradeoff ON RECORD, not a warning:** two effect-scripts can
-  last-writer-wins each other on one section, same as two shell scripts;
-  the engine write flock keeps files structurally intact; exclusivity
-  belongs to the coordination layer.
-- **`token_count(text)`** answers
-  the text's real token cost as an int, measured at call time through the
-  harness endpoint the § A.7 frame binds (`token_count_endpoint`) — a
-  socket call wearing a function; the engine never counts tokens. ONE
-  measurement law: the string is measured verbatim (the tool face's
-  `{text}` arm) — no ref resolution, so the tool face's stored-vs-served
-  split cannot enter; compose with `read()` to measure served content. A
-  lane with no endpoint faults "unbound"; the endpoint's refusal faults
-  the program with its words carried whole; the dial deadline caps at the
-  remaining wall clock. A measurement, not an act: no trace entry — a
-  top-level binding echoes like any computed name.
-- **No rollback.** A mid-program fault leaves every prior act landed; the
-  trace records how far the program got. The outcome word for a completed
-  live program is `effects` (the vocabulary's one addition); `fault` keeps
-  its meaning on both models.
-- **Replay refuses a live program.** Eval-as-pure-function holds for the
-  pure model only; `replay_script` refuses an effects-mode context rather
-  than forging a world that was live.
-- **Budgets, and where a run's cost is charged:**
-  eval limits and the wall clock bind unchanged over the program's OWN acts;
-  the read ceiling counts live reads identically; `put()`/`run()` are not
-  fuel-metered. A live `run()` is ADMITTED under the script clock (the
-  pre-dispatch check), and then **the clock stops while the run plane
-  executes**: the plane's walks and its child are bounded by the plane's own
-  budget — `run.timeout_secs` on the root's declaration, default 5m — and
-  the run's elapsed is never charged to the caller's script clock. What the
-  script clock prices is the program: its reads, its puts, its compute. The
-  COUNT of runs is bounded by the kernel's run ceiling (`max_runs`,
-  64/attempt): the 65th run refuses typed, naming the ceiling, and the runs
-  already executed stand — a live program has no rollback.
-- **Identity (§9):** `actor`/`now` thread as everywhere; run identity
-  derives from the submission's host-minted `invocation` base
-  (`<invocation>-r<K>`, K the 0-based call ordinal).
+- `fm` values are decoded scalars (wire-contract § A.6, as for the composed
+  read's `props[].value`): `owner: "[[x]]"` reaches a script as `[[x]]`; a
+  comparison against the unquoted form arms.
+- `words` is the wire's `words_total`, a delivered fact the host carries,
+  never a count this plane computes: the whole file (`wc -w` parity), never
+  the sum of section rows (wire-contract § A.3).
+- The composed `read` (§4.1, toc mode) carries `words_total`; the `toc` op's
+  body `{path, file_rev, root, nodes}` does not, so `read(path)` asks both:
+  `toc` for the rev and section map, `read` for the count. Zero wire delta:
+  both ops exist, and a read mints nothing (wire-contract § A.3).
 
-**Read alignment — BOTH models.** In-script
-`read()` mirrors the read TOOL interface, and its results are VALUES, not
-opaque structs (the Mathematica principle: *"read() returns actual VALUES
-the agent computes with"*): `read(path)` answers the toc face as a DICT — `{"fm": {…},
-"toc": […], "rev": "…", "words": N}` — and `read(path, section=…)` answers
-the section TEXT as a plain string (`"x" in read(p, section=s)` is a
-legal program; the section's rev still rides the recording, where the
-threading law reads it). The `section` string speaks the read tool's own
-selector grammar — heading path, dewey ordinal, `^anchor` — and every arm
-is served in-script.
+**The snapshot guarantee and its composition rule.** `script` pins one
+**entry fingerprint** — the workspace content hash as the attempt began
+(§4.7) — and `commit` guards on it; the single-snapshot guarantee holds up to
+the read budget. Above it the caller composes runs under a checkable
+rule: **equal entry fingerprints across runs = one snapshot; unequal = the
+world moved, re-run.** No daemon-held state; an engine-held chunk-spanning
+snapshot is deliberately not ruled in (revisit trigger: compose-retry
+livelock under real churn in the field). `mrd script --help` carries the
+budget, so the guarantee's domain is documented.
 
-This is why **RAISING the budget is refused**: it is cost policy wearing a fix,
-and since sections count, a raise is a treadmill that buys a different wrong
-number rather than a stated domain.
+**The trace is the read-only script's output channel, and it is contract
+material.** There is no `print()`; the builtin surface is closed. A script
+that only reads arms nothing and exits `no_effect`: that reports nothing was
+**armed**, never that nothing happened. Under `--json` its reads come back
+as `trace[]` rows of `{kind, line, path, face}`.
 
-**The snapshot guarantee is stated WITH its composition rule.** `script` pins one
-entry fingerprint and `commit` guards on it, so the single-snapshot guarantee
-holds **up to the budget above**. Above it the caller composes runs under a law
-the caller can CHECK: **equal entry fingerprints across runs = one snapshot;
-unequal = the world moved, re-run.** That converts the limitation into a
-protocol and keeps the guarantee composable **without daemon-held state**. An
-engine-HELD chunk-spanning snapshot is deliberately **not** ruled in — it is
-daemon state across attempts for a need not yet shown in use. Revisit
-trigger, named so it is not a matter of taste: **compose-retry livelock under
-real churn in the field.**
+**Seam, named and not taken here: the guarantee's crossing (face-honesty
+clause 5).** Content crossing the guarantee boundary owes a mark: the
+provenance it was read under, so the caller can re-verify. Separate work: it
+changes what the read face emits beside content and touches the composition
+rule above. Nothing of it is implemented, stubbed, or designed around here.
 
-A guarantee whose domain appears in no help text stops holding SILENTLY above a
-boundary the caller cannot learn exists until crossing it — a contract claim
-with an undocumented domain, not an inconvenient budget. That is why this
-paragraph exists and why `mrd script --help` carries the number. **It was never
-a missing help page; it was a missing sentence on a page that already existed.**
+**A composed read is bracketed by `file_rev`, or it refuses.** A whole-file
+`read(path)` is 2+N live round trips (`toc`, one `cat` per frontmatter key,
+the closing `read`), and the world may move between any two. The opening
+`toc`'s `file_rev` is compared with the closing `read`'s; a difference
+refuses the read, naming both revs. The count op closes the bracket (asked
+anyway: no extra round trip), so every `cat` sits between two agreeing
+observations; the count is asked last, never second. A single
+`read(path, section=…)` is one `cat`: one op, one revision, no bracket.
 
-**The trace IS the read-only script's output channel, and that makes it
-CONTRACT MATERIAL.** There is no `print()` — the builtin surface is closed, so a
-script that only reads arms nothing and exits `no_effect`. **That outcome
-reports that nothing was ARMED, never that nothing HAPPENED**, and the reads are
-returned as `trace[]` rows of `{kind, line, path, face}` under `--json`. The
-face-honesty law reaches this face from the opposite side of `links`: not a
-subset withheld, but **a capability withheld** — the help said `--json` "emits
-the trace" and never that the trace carries what you read, so the only
-documented reading of `script` was that it is write-only. Every measurement
-taken through this face rode this echo; **an echo that load-bearing is contract
-material, not an implementation detail**, which is the argument for documenting
-it rather than a complaint about it.
-
-**Seam, named and NOT taken here: the guarantee's crossing (face-honesty clause
-5).** A face that hands content ACROSS the guarantee boundary owes a mark on the
-crossing — content leaving accompanied by the provenance it was read under, so
-the caller can RE-VERIFY rather than inherit a guarantee that silently
-evaporated. The crossing is legitimate and constant; the silence at handover is
-the defect. It is separate work because it changes what the read face emits
-ALONGSIDE content and interacts with the composition protocol above. Recorded
-here as a seam so the next lane inherits a pointer rather than a gap; no part of
-it is implemented, stubbed, or designed around here.
-
-**`read(path)` IS the wire toc face, 1:1.** The recorded toc face is
-`{rev, fm, toc, words}`. `fm` values are DECODED scalars — the frontmatter
-scalar law (wire-contract § A.6) governs this plane exactly as it governs the
-composed read's `props[].value`, so `owner: "[[x]]"` reaches a script as
-`[[x]]` and a comparison against the unquoted form arms. `words` is the
-wire's own `words_total` — a
-delivered fact the host carries, never a count the consumer plane computes.
-It names the FILE (fields over the whole document, `wc -w` parity), never the
-sum of the section rows (the counting law: wire-contract § A.3). A
-script sees `t.words` for the same reason it sees `t.rev`: the wire answered
-it. **Which op answers it:** the composed `read` (§4.1, toc mode) carries
-`words_total`; the `toc` op's body is `{path, file_rev, root, nodes}` and
-carries none, so a whole-file `read(path)` asks both — `toc` for the rev and
-the section map, `read` for the count. Zero wire delta: both ops are already
-declared, and a read mints nothing (reads are side-effect-free engine-wide
-since pin proof rides the request, wire-contract § A.3), so the second
-ask costs nothing but the call.
-
-**A composed read is BRACKETED by `file_rev`, or it refuses.** A whole-file
-`read(path)` is 2+N round trips — `toc`, one `cat` per frontmatter key, then the
-closing `read` — and reads are LIVE, so the world may move between any two of
-them. Composing one face from two revisions would hand the script a state that
-never existed, and the stand-still guarantee is about exactly that. So the
-`file_rev` the opening `toc` answered is compared against the `file_rev` the
-closing `read` answers, and a difference **refuses the read** naming both revs.
-The closing op is the count op deliberately: it already had to be asked, so the
-bracket costs **no additional round trip**, and every intermediate `cat` sits
-inside two agreeing observations of the same revision. Sequence order is
-therefore load-bearing — the count is asked LAST, never second. A single
-`read(path, section=…)` is one `cat` and needs no bracket: one op is one
-revision by construction.
-
-**What the bracket does NOT catch, stated beside the guarantee it bounds.** A
-`file_rev` is content-derived, so an A→B→A sequence — a write and a
-byte-identical restoration, both landing inside one composed read — closes the
-bracket with two agreeing observations of A while the `cat` values in between
-were taken at B. The face is then internally consistent with A and the values
-came from a state that A also describes byte-for-byte, so nothing false is
-published; what is lost is the ability to SAY that the file did not move. The
-bracket is a revision-identity check, never a mutation counter, and the wire
-offers no mutation counter to check instead. The commit is unaffected either
-way: it carries the entry fingerprint and §5.1 checks it first, so a world that
-moved and came back still refuses there if the fingerprint moved. Naming this
-limit is the point — a guarantee stated without its known limit reads as a
-stronger claim than the mechanism makes.
+**What the bracket does not catch.** `file_rev` is content-derived: an A→B→A
+sequence (a write and a byte-identical restoration inside one composed read)
+closes the bracket on A while the `cat` values were taken at B. Nothing
+false is published (A describes those bytes too), but the face cannot say
+the file did not move: the bracket is a revision-identity check, never a
+mutation counter, and the wire offers none. The commit is unaffected: it
+carries the entry fingerprint and §5.1 checks it first, so a world that
+moved and came back still refuses there if the fingerprint moved.
 
 **The arming surface — `put()` speaks the wire's second edit dialect.**
-`put(path, props={…})` arms one `set_property` plan item per key, keys sorted;
-`put(path, section="…", append="…")` arms one section-addressed `append`. These
-are `splice.plan_edits[]` items (§A.3) carried **verbatim** — the armed list IS
-`plan_edits[]`, lowered by the engine's existing intake
-(`wire-serve::plan::lower`), so no third edit grammar is minted and the wire
-schema is untouched. One `put()` call may arm several items; arm order is
-execution order, and each armed item records its source line and nesting depth.
-Depth is a trace fact only: **an applied effect renders at any depth** — the
-echo/quiet rule governs reads, not arms.
+`put(path, props={…})` arms one `set_property` plan item per key, keys
+sorted; `put(path, section="…", append="…")` arms one section-addressed
+`append`. Both are `splice.plan_edits[]` items (§A.3) carried verbatim and
+lowered by the existing intake (`wire-serve::plan::lower`): no third edit
+grammar, wire schema untouched. One `put()` may arm several items; arm order
+is execution order; each item records its source line and nesting depth.
+Depth is a trace fact only: an applied effect renders at any depth
+(echo/quiet governs reads, not arms).
 
-An `append` **addresses a section**. `PlanEdit::Append` carries an hpath and an
-empty one refuses `NotFound`, so a document-grain append has no wire target; a
-bare `append=` with no `section=` refuses at arm time rather than minting a
-default section, and the MCP `put` face refuses the same shape in the same
-words. A `props=` write needs no section — frontmatter is file-grain.
-Addresses are segments: `section="Notes/Fresh"` is two segments, never a joined
-string.
+An `append` addresses a section: `PlanEdit::Append` carries an hpath, an
+empty one refuses `NotFound`, and a document-grain append has no wire
+target. A bare `append=` with no `section=` refuses at arm time rather than
+minting a default section; the MCP `put` face refuses the same shape in the
+same words. A `props=` write needs no section (frontmatter is file-grain).
+Addresses are segments: `section="Notes/Fresh"` is two segments, never a
+joined string.
 
 **One address grammar, one parser.** `section=` on `put()` is parsed by
-`ReadSel::parse` — the same door `read(path, section=…)` goes through, and the
-one human-string→selector door in the tree. The three spellings it decides are
-therefore the same on both faces: `^id` is a block address, digits-and-dots is a
-dewey ordinal, anything else splits on `/` into raw heading segments. An
-`append` carries an **hpath**, so the two non-heading spellings **refuse at arm
-time** naming what they are — the `^anchor` a toc row publishes is a real
-address on the read face and a real refusal on the write face, never a heading
-silently named `^r-…`. A face that parsed its own addresses would mint a second
-grammar for the one thing both faces call `section=`.
+`ReadSel::parse` — the same door as `read(path, section=…)`, and the tree's
+one human-string→selector door. So the three spellings mean the same on both
+faces: `^id` is a block address, digits-and-dots a dewey ordinal, anything
+else splits on `/` into raw heading segments. An `append` carries an hpath,
+so the two non-heading spellings refuse at arm time, naming what they are: a
+toc row's `^anchor` is a real address on the read face and a real refusal on
+the write face, never a heading silently named `^r-…`.
 
-**`section=` also takes the §2.1 segment array**: a list of `{h, n?}`
-objects, one per heading, raw text taken verbatim — the wire's own machine
-form, on both faces. This is not a widening of the string coat (the coat
-splits on `/`, and no escape is spelled there); it is the escape the engine's
-section-miss refusal already teaches, made real on the plane that prints it.
-A heading whose raw text carries `/` rides one array entry, and the
-occurrence index `n` — which the joined spelling cannot spell — rides the
+**`section=` also takes the §2.1 segment array:** a list of `{h, n?}`
+objects, one per heading, raw text verbatim, the wire's machine form on both
+faces. The string coat still splits on `/` with no escape; the array is that
+escape, the one the section-miss refusal already teaches. A heading whose
+raw text carries `/` rides one entry; the occurrence index `n` rides the
 structured form only. The toc face publishes each heading row's raw segments
-as `hpath` beside the joined `section`, so any row feeds back into `section=`
-verbatim. Out-of-grammar members refuse at the boundary — a bare string in
-the list refuses with the wire's own single-sourced text (wire-contract
+as `hpath` beside the joined `section`, so any row feeds back into
+`section=` verbatim. Out-of-grammar members refuse at the boundary: a bare
+string in the list refuses with the wire's single-sourced text (wire-contract
 §2.1), and the type refusal names both accepted forms.
 
-**The statement-position rule — echo and quiet.** Every read is recorded; the
-face renders only the ones the reader wrote as a decision. A read **echoes**
-exactly when its call is the whole right-hand side of a top-level assignment,
-or a top-level expression statement — `card = read(…)` binds and echoes. Every
-other position is **quiet**: comprehensions, `if` conditions, loop bodies,
-function bodies. The kernel reads the positions off the parsed module, so the
-rule is syntactic and stable, never a call-depth heuristic. Suppression syntax
-does not exist in v1 (`_ = read(…)` is rejected permanently; `quiet()` waits on
-elision-count evidence).
+**The statement-position rule — echo and quiet.** Every read is recorded. A
+read **echoes** exactly when its call is the whole right-hand side of a
+top-level assignment or a top-level expression statement (`card = read(…)`
+binds and echoes); every other position is **quiet**: comprehensions, `if`
+conditions, loop bodies, function bodies. The rule is read off the parsed
+module: syntactic, never a call-depth heuristic. No suppression syntax in
+v1: `_ = read(…)` is rejected permanently; `quiet()` waits on elision-count
+evidence.
 
-**The bindings echo — "bind it to a name to echo it", made true.** A successful evaluation's module top-level
-bindings ride the trace as `bindings` — name → Starlark repr, name-ordered —
-so every value the script computes is observable by binding it, Mathematica
-style, and learning a face's fields costs a `dry` run instead of a committed
-write. The capture law keeps one carrier per fact: the inert inputs stay out
-(inputs are not results), function bindings stay out (a `def` is not a value
-the run computed), and a name whose LAST assignment is a top-level
-`name = read(…)` stays out — that value is the read's own `echo` entry. Any
-later rebinding of such a name — reassignment, `+=`, a loop target, an
-assignment inside an `if` or `for` body — returns it to the bindings, because
-the name no longer holds what the echo carries. A failed or refused
-evaluation carries no bindings: its namespace is not a result. Absence stays
-absence — a run that bound nothing emits no `bindings` member at all.
+**The bindings echo.** A successful evaluation's module top-level bindings
+ride the trace as `bindings` (name → Starlark repr, name-ordered). One carrier
+per fact: inert inputs and `def` bindings stay out, and so does a name whose
+last assignment is a top-level `name = read(…)` — that value is the read's own
+`echo` entry. Any later rebinding returns the name to the bindings:
+reassignment, `+=`, a loop target, an assignment inside an `if` or `for` body.
+A failed or refused evaluation carries no bindings; a run that bound nothing
+emits no `bindings` member.
 
-**The grammar.** The script entry parses under the rule dialect plus top-level
-statements — its module top level IS the program, so `if` and `for` at the top
-level are the ordinary case there. A rule or a task must define a hook, so the
-hooked planes keep the stricter grammar. `load` stays disabled at every entry.
+**The grammar.** The script entry parses under the rule dialect plus
+top-level statements: the module top level is the program, so top-level `if`
+and `for` are ordinary. A rule or task must define a hook, so the hooked
+planes keep the stricter grammar. `load` stays disabled at every entry.
 
-**Where the budgets bind.** Fuel, memory, call depth, and source bytes are
+**Where the budgets bind.** Fuel, memory, call depth and source bytes are
 `EvalLimits`, shared with the other two entries. The read ceiling (64 per
-attempt) is the script plane's own — the I/O-amplification axis the hermetic
-entries do not have — and the kernel enforces it: the read past the ceiling
-refuses typed, naming the ceiling, and the attempt has no result at all. Never
-truncation. The armed-edit ceiling (64 per attempt) is the kernel's too, and it
-binds at **arm time**: `put()` refuses the call that would cross it, typed and
-naming the ceiling, with no host involvement at all. The retry budget binds in
-the host, above the kernel, because the loop is the host's.
+attempt) is the script plane's own, kernel-enforced: the read past it
+refuses typed, naming the ceiling, and the attempt has no result (never
+truncation). The armed-edit ceiling (64 per attempt) binds in the kernel at
+arm time: `put()` refuses the crossing call, typed and naming the ceiling,
+no host involvement. The retry budget binds in the host, above the kernel:
+the loop is the host's.
 
-**The wall clock binds at four layers, and every one of them is load-bearing.**
-The entry does its I/O against a daemon, so time is the one budget evaluation
-cannot bound itself: fuel bounds computation, and a blocked read spends none.
-The whole attempt is one § A.7 `script` frame, so the CLI holds the socket and
-the daemon holds the evaluation.
+**The wall clock binds at four layers.** Fuel bounds computation but not a
+blocked read, so time needs its own budget. The attempt is one § A.7 `script`
+frame: the CLI holds the socket, the daemon the evaluation.
 
-1. **Per read, in the daemon.** The clock is checked before **every** read the
-   program makes, against the pinned entry world. In-process there are no
-   round trips to distinguish, so the per-read check IS the per-call check.
-2. **On the socket itself, in the CLI.** The connection carries read and write
-   timeouts of one wall clock, so a daemon that accepts a frame and never
-   answers fails the round trip instead of parking the process forever. This is
-   the one layer `mrd` holds, and it bounds the single `script` round trip.
-3. **Before the commit, in the daemon.** The commit is checked before it is
-   issued: a run whose clock elapsed during evaluation refuses **pre-commit**,
-   so nothing is issued and nothing lands.
-4. **Above the process, in the MCP host.** The child is spawned under a bound of
-   its own and killed by process group if it passes it. That layer exists for
-   the failures the first three cannot see — a child that never reaches its own
-   clock, or one that ignores it.
+1. **Per read, in the daemon** — before every read, against the pinned entry
+   world.
+2. **On the socket, in the CLI** — read and write timeouts of one wall clock,
+   so an unanswered frame fails the round trip. The only layer `mrd` holds.
+3. **Before the commit, in the daemon** — a clock that elapsed during
+   evaluation refuses **pre-commit**; nothing is issued or lands.
+4. **Above the process, in the MCP host** — the child is killed by process
+   group past its own bound, for a child that never reaches or ignores its
+   clock.
 
-Layers 1–3 refuse in the entry's own vocabulary and answer a trace; layer 4 is
-the backstop and answers a host refusal, never a face. A hung child that reached
-none of them would hang the tool with nothing bounding it. The budget is the
-same 7 s on both sides of the socket: `effects::DEFAULT_WALL_CLOCK` for layers 1
-and 3, `WALL_CLOCK` (`crates/mrd/src/script/cmd.rs`) for layer 2 — two
-independent literals kept equal by hand, not one derived from the other.
+Layers 1–3 refuse in the entry's vocabulary and answer a trace; layer 4
+answers a host refusal, never a face. The budget is 7 s on both sides:
+`effects::DEFAULT_WALL_CLOCK` (layers 1 and 3) and `WALL_CLOCK`
+(`crates/mrd/src/script/cmd.rs`, layer 2), two literals kept equal by hand.
 
-Layer 2 is the SOCKET's, and the write
-verbs (`put`, `pin`, `rm`, `retire`) dial the same `SocketDoor` — but they carry
-no budget, so for them a read timeout is **not** a verdict. Their door waits for
-the daemon's answer (`write_ipc::call` → `SocketDoor::call_until_answered`),
-printing one notice at the first tick and reading on. The wall clock still
-bounds their HELLO: a daemon that will not greet is down, and nothing was sent.
-Measured on a large root: a splice behind a slow armed middleware that was
-cut off by a socket timeout returned `os error 35` (the layer-2 `EAGAIN`) at
-7 s and exited 1 while the bytes landed seconds later — the write door has no
-budget to enforce, so a timeout there could only produce a false negative. A
-transport loss AFTER the frame goes out is reported as an unknown outcome
-(read before any re-send), never as a failed write.
+The write verbs (`put`, `pin`, `rm`, `retire`) dial the same `SocketDoor` but
+carry no budget, so a read timeout is **not** their verdict: the door waits
+for the answer (`write_ipc::call` → `SocketDoor::call_until_answered`),
+printing one notice at the first tick. The wall clock still bounds their
+`hello`: a daemon that will not greet is down, and nothing was sent. A
+transport loss after the frame goes out is an unknown outcome (read before
+any re-send), never a failed write — a timeout there once returned `os error
+35` (the layer-2 `EAGAIN`) at 7 s, exit 1, while the bytes landed seconds
+later.
 
-On the in-process lane itself (wire `script`, wire-contract § A.7, dialled
-without the CLI) there are no round trips and no child, so the wall clock
-binds at three sites, all daemon-enforced: at entry before the pass, at every
-read builtin, and pre-commit. Fuel bounds computation between wall checks;
-`catch_unwind` at the eval boundary bounds everything else — a panic answers
-a `fault` trace and the daemon serves its next frame. The socket timeouts and
-the MCP child bound stay on the lanes that have sockets and children.
+The in-process lane (wire `script`, wire-contract § A.7, no CLI) has no round
+trips and no child; the clock binds at three daemon-enforced sites: entry
+before the pass, every read builtin, pre-commit. Fuel bounds computation
+between checks; `catch_unwind` at the eval boundary bounds the rest: a panic
+answers a `fault` trace and the daemon serves its next frame.
 
-The host-side defaults are **§5.3 host policy** — their existence is contract,
-their values are tunable:
+The host-side defaults are **§5.3 host policy**: their existence is contract,
+their values tunable.
 
 | Budget | Default | Binds | Over it |
 |---|---|---|---|
@@ -513,18 +392,16 @@ their values are tunable:
 | reads / attempt | 64 | kernel | typed refusal, no result |
 | selector width | 256 paths | host | typed refusal, **never truncation** |
 
-The selector cap sits **above** the read ceiling on purpose: it bounds
-ENUMERATION — host result size and fan-out width — while the read ceiling bounds
-actual I/O, and a program is free to read only a few of the paths it was handed.
-256 covers board-wide fan-out over a large board without letting a runaway glob
-return the corpus.
+The selector cap sits above the read ceiling: it bounds enumeration (host
+result size, fan-out width), not I/O. 256 covers board-wide fan-out without
+letting a runaway glob return the corpus.
 
-**What an entry costs.** The table above bounds a program;
-this states what the program spends against it, so a caller can compute its own
-ceiling instead of discovering it as a refusal.
+**What an entry costs.** A caller prices its own ceiling against the budget
+table above instead of discovering it as a refusal.
 
-**The ceiling is a function of round trips, and reads are not trips.** For an
-entry against a corpus of `C` domain members:
+**The ceiling is a function of round trips, and reads are not trips.** A trip
+is one request and its answer on the wire. For an entry against `C` domain
+members:
 
 ```
 ceiling = f(reads, corpus)
@@ -538,121 +415,74 @@ pass(C)  = O(dirty) vouched; floor O(C) in `stat`s,     <- the linear term,
            O(changed) in bytes                             floor only
 ```
 
-**Both arguments matter, and the second one is linear only on the floor.**
-The vouched pass (`node-rev-merkle-spec.md` §6.7: the event feed's cookie
-proof over the resident memo) costs O(dirty) — constant on a quiet corpus,
-whatever `C`. Any named miss — no live feed, an unproven cookie, a doubt
-collapse, an untrusted memo — falls to the extent-refresh floor, which
-`stat`s every domain member and stays linear: measured on this engine,
-doubling the corpus (23,758 → 47,477 members) multiplies the floor pass by
-**1.84×**, and with trips minimised a program's per-read cost converges on
-the pass and moves with it — **1.91×** measured end to end.
+- **`pass(C)` is linear only on the floor.** The vouched pass
+  (`node-rev-merkle-spec.md` §6.7: the event feed's cookie proof over the
+  resident memo) costs O(dirty), constant on a quiet corpus. Any named miss
+  (no live feed, an unproven cookie, a doubt collapse, an untrusted memo)
+  falls to the extent-refresh floor, which `stat`s every domain member:
+  doubling the corpus (23,758 → 47,477 members) multiplied the floor pass by
+  **1.84×** and per-read cost by **1.91×**. Size against the floor. Cost is
+  reads × pass, not reads × frontmatter × corpus. The OS event watcher
+  (§6.4) carries the vouched pass.
+- **`3` is the fixed frame:** `hello`, `fingerprint`, the commit.
+- **A whole-file `read(path)` is two trips:** the `toc` op, and the composed
+  `read` (§4.1, toc mode) that brackets it and carries `words_total` plus the
+  frontmatter. A sectioned read is one (~122 ms against ~235 ms).
+- **Two is the floor.** The composed read carries `file_rev`, heading rows,
+  `words_total`, and `props[]` decoded per § A.6 (no `cat` per frontmatter
+  key), but no rev for `^anchor` rows: `wire::ReadAnchor` is `{anchor,
+  span}`, `wire::ReadRow` has no anchor field; only the `toc` op's nodes
+  publish an anchor row with its own `node_rev`.
 
-So a program that fits today keeps fitting on a corpus twice the size only
-while the feed vouches; sizing against the FLOOR is what stays honest, since
-any named miss re-prices the pass at O(C). What the trip collapse removed is
-the *amplification*: cost does not scale with reads × frontmatter × corpus,
-only with reads × pass. The OS event watcher exists (§6.4) and the vouched
-pass rides it.
+**What a pass costs.** A pass is one currency check: proof that the warm
+engine still agrees with disk. Every trip is answered from that engine, proved
+current first over the whole hash domain. A read is corpus-scoped, since a
+poison member anywhere refuses a read of a healthy one (Law A-3c); that scope
+is not an optimization target. The pass reuses the listing of any directory
+whose timestamps did not move, `stat`s every member, re-reads only members
+whose stat identity moved, and folds the §12.2 tree from per-member digests:
+O(corpus) in `stat`s, O(changed) in bytes. Re-reading every byte per trip
+would cost ~0.9 s on a 24k-file, 150 MB corpus.
 
-`3` is the fixed frame — `hello`, `fingerprint`, and the commit. A whole-file
-`read(path)` is **two** trips: the `toc` op, and the composed `read` (§4.1, toc
-mode) that brackets it and carries `words_total` plus the frontmatter.
+**A stale engine pays a rebuild, and `pass(C)` never prices it.** The formula
+assumes the resident engine agrees with disk; the currency check's other
+branch is a different regime, not `pass(C)` scaled up.
 
-**The whole-file 2 / sectioned 1 split is confirmed by an unasked prediction.**
-The split is not read off the code alone: the model
-predicted a figure nobody requested. A sectioned read was expected to cost about
-one trip where a whole-file read of the same page would cost two — ~122 ms
-against ~235 ms — and the measurement landed on the predicted side. A whole-file
-figure near the sectioned one would have falsified `trips(R)` outright. A
-formula that predicts a number nobody asked it for is the strongest form that
-evidence takes, and it is the reason this line is stated as law rather than as
-an inspection of the dispatch code.
-
-**Two is the floor, not one.** The composed read alone
-almost suffices — it already carries `file_rev`, the heading rows,
-`words_total`, and `props[]` with every value decoded per § A.6, which is why
-the frontmatter costs no `cat` per key on top. What it does
-not carry is a rev for `^anchor` rows: `wire::ReadAnchor` is `{anchor, span}`
-and `wire::ReadRow` has no anchor field, while the `toc` op's nodes publish an
-anchor row with its own `node_rev`. Collapsing to one op would silently drop
-anchor rows from the face a script sees, so the `toc` trip stays.
-
-**What a pass costs.** Every trip is answered from the warm engine, and the
-engine is proved current first over the WHOLE hash domain: a read is
-corpus-scoped, not file-scoped, because a poison member anywhere refuses a read
-of a healthy one (Law A-3c). That scope is unchanged and is not an optimization
-target. What changed is the price. The pass walks the domain reusing the listing
-of any directory whose own timestamps did not move, `stat`s every member,
-re-reads only the members whose stat identity moved, and folds the §12.2 tree
-from per-member digests — O(corpus) in `stat`s, O(changed) in bytes. A pass
-that re-read and re-folded every domain byte on every trip would cost ~0.9 s
-per trip on a 24k-file, 150 MB corpus, so a single script read would spend
-several seconds of the 7 s budget and a two-read program would not fit at all
-— the budget is not the defect there.
-
-**A stale engine pays a rebuild, and `pass(C)` never prices it.** The formula above
-prices the read side on the assumption the resident engine already agrees
-with disk — that agreement is exactly what the currency check tests, and the
-check's other branch is not `pass(C)` scaled up, it is a different regime the
-formula does not name.
-
-**The trigger is any fingerprint move, including one the caller itself just
-made.** A splice commits straight to disk and returns without touching the
-resident engine at all — the engine finds out only on its own next currency
-check, and that check treats a caller's own just-landed commit exactly like
-any stranger's concurrent write. The clean case is a retry: the host's own
-retry loop (budget 2, above) fires precisely because the fingerprint moved,
-so the retried attempt's reads land on a stale engine by construction — a
-write-bearing program's ceiling on its next trip is not bounded by the
-formula above at all.
-
-**What the rebuild costs, and why it does not compose with `pass(C)` by
-scaling.** A currency miss re-reads every domain member unconditionally — the
-leaf memo `pass(C)` consults is bypassed on this path, not merely widened —
-and then re-parses every member to replace the resident index and document
-map wholesale. There is no incremental engine update: one changed byte
-anywhere in the corpus pays the same full re-read and full re-parse as a
-rewritten corpus, because the rebuild does not know which byte moved, only
-that the fingerprint disagrees.
+- **Trigger: any fingerprint move, including the caller's own.** A splice
+  commits to disk without touching the resident engine, so the next currency
+  check treats the caller's own commit like a stranger's write. The host's
+  retry (budget 2) fires exactly because the fingerprint moved, so a retried
+  attempt always reads a stale engine; the formula does not bound a
+  write-bearing program's next trip.
+- **Cost: no incremental path.** A currency miss re-reads every member
+  unconditionally (the leaf memo is bypassed, not widened) and re-parses every
+  member, replacing the resident index and document map wholesale. One changed
+  byte pays the same as a rewritten corpus.
 
 ```
 rebuild(C)  =  O(corpus) in full reads  +  O(corpus) in full reparse,
                paid whole regardless of how much of C actually changed
 ```
 
-A trip landing on a stale engine pays `rebuild(C)` in place of `pass(C)`, not
-in addition to it — the ceiling formula above (`wall clock ≥ trips(R) ×
-pass(C)`) holds only for a trip that lands on an already-current engine; the
-write-bearing `commit(C)` term below composes with either.
+A stale trip pays `rebuild(C)` in place of `pass(C)`, not in addition; the
+ceiling formula holds only on a current engine, and `commit(C)` below
+composes with either.
 
-**What is and is not measured here.** `rebuild(C)`'s re-read half is
-`fs::domain_snapshot`, the unconditional-read arm `crates/fs/examples/domain_cost.rs`
-exists to benchmark directly against a real root — but no run of it is
-recorded in this tree, and its scaling is not assumed to match `pass(C)`'s
-measured slope, which was measured against the leaf-memo path `pass(C)`
-actually ships as. The reparse half (`fs::build_corpus`) carries no dedicated
-benchmark at all. The only order-of-magnitude figure on record for the
-combined read-plus-reparse rebuild is the cold-daemon-start case
-(`node-rev-merkle-spec.md` § 0): 2.2–5.2s on a 50,319-node, 9.5 GB corpus
-(M4 Max) — the same functions, a related path, not a controlled measurement
-of this specific mid-session trigger.
+- **Measured:** nothing controlled. `fs::domain_snapshot` (the re-read half)
+  has a benchmark arm, `crates/fs/examples/domain_cost.rs`, with no recorded
+  run and a slope not assumed to match `pass(C)`'s; `fs::build_corpus` (the
+  reparse half) has none. The only order-of-magnitude figure is the cold
+  daemon start (`node-rev-merkle-spec.md` § 0): 2.2–5.2s on a 50,319-node,
+  9.5 GB corpus (M4 Max), a related path.
+- **Evidence:** `Registry::warm_or_build` (`crates/registry/src/registry.rs`),
+  the sole site — `Reused` on a match, `fs::domain_snapshot` +
+  `fs::build_corpus` (`syntax::parse` + `model::build`) on a mismatch;
+  `Op::Splice` (`crates/registry/src/server.rs`) writes disk and returns.
 
-Evidence: `Registry::warm_or_build` (`crates/registry/src/registry.rs`) is
-the sole site of this branch — a fingerprint match returns `Reused` at
-`pass(C)`'s cost, a mismatch calls `fs::domain_snapshot` (unconditional
-full re-read) and `fs::build_corpus` (`syntax::parse` + `model::build` over
-every member), and no partial-rebuild path exists. `Op::Splice`
-(`crates/registry/src/server.rs`) writes disk and returns without touching
-the resident engine; its own comment states the consequence: the warm engine
-rebuilds on next read, because the fingerprint moved.
-
-**A write-bearing program pays a byte term the pass never does.** The formula
-above prices the read side; taken alone as the computable ceiling it is a
-lower bound, because the commit's §5.1 world guard and the seam roots fold
-**from bytes** under the write flock (`domain_snapshot` — the digest memo
-never supplies them; that is what keeps the commit guard byte-derived).
-Priced:
+**A write-bearing program pays a byte term the pass never does.** The
+read-side formula alone is a lower bound: the commit's §5.1 world guard and
+the seam roots fold **from bytes** under the write flock (`domain_snapshot`;
+the digest memo never supplies them, so the guard stays byte-derived).
 
 ```
 wall clock  ≥  trips(R) × pass(C)  +  commit(C)
@@ -661,360 +491,279 @@ commit(C) = 0 for a read-only program
             two byte-folds, O(C) in BYTES, for a write-bearing one
 ```
 
-The folds are O(corpus **bytes**), not `pass(C)`: **on the 24k-file, 150 MB
-corpus this section prices throughout**, they cost ~1.8 s together — more than
-the whole fixed frame. A read-only program's `commit(C)` is zero and its ceiling
-is the first term alone; a write-bearing program budgets both. With every
-engine-side spend a named term, the `≥` that remains is measurement honesty —
-the OS may always be slower — never an unpriced structural cost.
+The folds are O(corpus **bytes**): ~1.8 s together on the 24k-file, 150 MB
+corpus priced throughout, more than the fixed frame. The remaining `≥` is OS
+variance, never an unpriced engine cost.
 
-**The live-corpus term, measured.** Against a live
-corpus, five trials, medians:
+**The live-corpus term, measured** (five trials, medians):
 
 ```
 commit(C)  ≈  4.46 s   process wall, live corpus, 5-trial medians
 ```
 
-That figure is **process wall as an operator meets it** — it prices the
-commit as an operator meets it, not as the model decomposes it. Read it with
-the fence attached:
+The figure is process wall as an operator meets the commit: the folds are not
+decomposed (it includes the rest of the commit path), the daemon round trip is
+not separated from the splice, and corpus size was not varied (no slope). The
+gap to ~1.8 s is no regression claim: the two were never verified to measure
+the same shape. A decomposition run is not owed for v1 and opens only if v1
+testing hits the term.
 
-- The two byte-folds are **not decomposed** — the number is their sum plus
-  whatever else the commit path spends.
-- The daemon round trip is **not separated** from the splice itself.
-- **Corpus size was not varied**, so this term carries no slope of its own.
+**The linear term has a measured slope.** Per-read cost multiplies by **~2.1×
+per root doubling** (1.84× pass, 1.91× end to end; 2.35× without the leaf
+memo, so the memo buys about one doubling — a constant, not a change of
+shape). A 10-read program at ~3.8 s on a 2× root returns to ~7.8 s at 4×,
+over budget. Capacity planning reads `ceiling = f(reads, corpus)` with that
+slope.
 
-**No regression claim attaches to the gap between ~1.8 s and ~4.46 s.** The two
-figures were never verified to measure the same shape — one is an engine-side
-fold pair on a stated corpus, the other an operator-side process wall on the
-live one — so the difference is not evidence of anything having become slower.
-A decomposition run would settle it. That run is **not owed for v1**; it opens
-only if v1 testing hits the term.
-
-**The linear term has a measured slope, and the slope is the honest headline.**
-Per-read cost multiplies by **~2.1× per root doubling** as independently
-measured (1.84× pass / 1.91× end-to-end above; without the leaf memo the
-engine's slope is 2.35×, so the memo buys about one root doubling — a
-constant, not a change of shape). The consequence
-stated rather than implied: a 10-read program clearing ~3.8 s at a 2× root
-returns to roughly ~7.8 s at 4× on the same slope — over the budget again.
-Capacity planning must read `ceiling = f(reads, corpus)` WITH that slope;
-a flattened impression is exactly what this section exists to prevent.
-
-**The in-process lane's cost shape.** Every formula above prices the wire-client lane, where each trip
-pays `pass(C)`. On the in-process lane (wire `script`, § A.7) the pass runs
-once, at entry, and reads serve from the pinned entry state:
+**The in-process lane's cost shape.** Above, each trip pays `pass(C)`. On the
+in-process lane (wire `script`, § A.7) the pass runs once, at entry, and
+reads serve from the pinned entry state:
 
 ```
 wall clock  ≥  entry_pass(C)  +  Σ reads × O(1)  +  commit(C)
                one pass, at entry   memory-speed     unchanged
 ```
 
-`entry_pass(C)` keeps `pass(C)`'s shape — O(corpus) in `stat`s, O(changed)
-in bytes — and the linear term is paid ONCE per attempt instead of once per
-trip, so a program's per-read cost does not move with corpus size at all.
-The slope above still governs the entry term and the commit term; what the
-lane removes is the multiplication by `trips(R)`. A stale engine still pays
-`rebuild(C)` at entry in place of `entry_pass(C)`, exactly as above.
-This section states the shape; no measured figures for this lane are
-recorded here.
+`entry_pass(C)` keeps `pass(C)`'s shape, paid once per attempt, so per-read
+cost does not move with corpus size; the slope still governs the entry and
+commit terms. A stale engine pays `rebuild(C)` at entry instead. No figures
+for this lane are recorded.
 
-**The bash bracket's observations, unified onto the resident memo.**
-A bash dispatch observes the corpus three times — the pre-flock leaves fold,
-the bracket open, the bracket close — and the observation source is injected
-(`RunSpec.observations`). The CLI lane observes with a fresh walk each time:
-full `read_dir` enumeration, full stat sweep, byte reads amortised by the
-per-workspace drawer memo (`run-digests.v1`) — a separate process has no
-resident memo in reach. When the
-door is the daemon (the § A.8 `run` op and the § A.7 in-script `run()`), the
-observations serve from the registry's resident `fs::DomainCache` — the
-dir-listing memo plus the leaf memo every currency pass and warm rebuild
-already run on — locked per observation, never across the exec window, with
-no drawer I/O at all. The verdicts are lane-independent by gate
-(`crates/fs/tests/cached_observation.rs`: same folds, same residual deltas,
-same symlink refusals — including from remembered listings). What the
-daemon lane does not pay is the enumeration and the drawer serialization; the
-stat sweep stays, deliberately — the walk and the stats are live, that is
-what an observation IS. Measured on a 29.5 k-doc synthetic corpus (hermetic,
-`crates/fs/examples/run_observation_cost.rs`): the three-observation trio
-costs ~288–305 ms median through the drawer and ~245–248 ms resident, with
-enumerations per warm trio at ~888 versus 0 and byte reads identical at
-movers-only; a run also leaves the shared memo warm for the next op's
-currency pass, and vice versa.
+**The bash bracket's observations serve from the resident memo.** The bracket
+is the detection window around a bash step's exec (below). A bash dispatch
+observes the corpus three times — pre-flock leaves fold, bracket open, bracket
+close — from an injected source (`RunSpec.observations`).
 
-**The transaction — stand-still optimistic.** The word **snapshot is
-banned** here: the daemon has no MVCC and v1 must not grow one.
+- **CLI lane:** a fresh walk each time — full `read_dir` enumeration, full
+  stat sweep, byte reads amortised by the per-workspace drawer memo
+  (`run-digests.v1`); a separate process has no resident memo.
+- **Daemon door** (§ A.8 `run` op, § A.7 in-script `run()`): the registry's
+  resident `fs::DomainCache` (dir-listing memo plus leaf memo, shared with
+  every currency pass and warm rebuild), locked per observation, never across
+  the exec window, no drawer I/O.
 
-1. **Entry.** One currency pass pins the **entry fingerprint** (§4.7) and
-   the entry world.
+Verdicts are lane-independent by gate (`crates/fs/tests/cached_observation.rs`:
+same folds, residual deltas and symlink refusals, including from remembered
+listings). The daemon lane skips enumeration and drawer serialization; the
+stat sweep stays, because an observation is a live walk. Measured
+(`crates/fs/examples/run_observation_cost.rs`, hermetic 29.5 k-doc corpus):
+trio ~288–305 ms median through the drawer, ~245–248 ms resident;
+enumerations per warm trio ~888 versus 0; byte reads identical, movers only.
+A run leaves the shared memo warm for the next op's currency pass, and vice
+versa.
+
+**The transaction — stand-still optimistic.** The word **snapshot is banned**
+here: the daemon has no MVCC and v1 must not grow one.
+
+1. **Entry.** One currency pass pins the **entry fingerprint** (§4.7) and the
+   entry world.
 2. **Reads serve the entry world**, plus the program's own arms — the four
    laws below.
-3. **Commit.** ONE splice batch, its premise the **touch set** the attempt
-   recorded (below), checked **first**.
+3. **Commit.** One splice batch, its premise the **touch set** the attempt
+   recorded — the nodes it read or armed, listed in full below — checked
+   first.
 4. **Any interleaved write inside the touch set** ⇒ `fingerprint_mismatch`
    ⇒ nothing commits.
 
-**The currency pass stays corpus-scoped.** The cost model above changes what
-a currency pass COSTS and never what it CHECKS. The pass proves the whole
-hash domain current before the entry is served, so a poison member anywhere
-refuses the entry and names the poison (Law A-3c). Nothing is served out of a
-picture retained across attempts, and no version is retained — the banned
-snapshot stays banned.
-
-The one thing the pass takes on trust is that a file whose
-`(device, inode, size, mtime, ctime)` is unchanged has unchanged bytes, and
-that a directory whose own timestamps are unchanged has the same entries —
-which is what a directory's timestamps mean. `ctime` is what puts the first out
-of reach in practice: the kernel bumps it on every inode change and no API sets
-it, so even a deliberate `utimes` restore is caught. This is the standing
-`fs::domain_stat_signature` posture — evidence, not proof — and it is bounded
-underneath: the commit's §5.1 guard folds **from bytes** under the write flock,
-so a memo that ever disagreed with disk makes the commit refuse
-`fingerprint_mismatch` rather than land. It fails closed, in the vocabulary the
-transaction already speaks.
+**The currency pass stays corpus-scoped.** The cost model changes what the
+pass costs, never what it checks: the whole hash domain proves current before
+the entry is served, and a poison member anywhere refuses the entry naming
+the poison (Law A-3c). The pass trusts one thing: unchanged
+`(device, inode, size, mtime, ctime)` means unchanged bytes, and unchanged
+directory timestamps mean unchanged entries; the kernel bumps `ctime` on
+every inode change and no API sets it, so a `utimes` restore is caught. This
+`fs::domain_stat_signature` posture is evidence, not proof, and fails closed:
+the commit's §5.1 guard folds from bytes under the write flock, so a memo
+that disagrees with disk refuses `fingerprint_mismatch`.
 
 **The entry world (the in-process lane).** On the wire `script` op
-(wire-contract § A.7) the daemon itself evaluates the program, and four laws
-govern what a read sees — these four and only these:
+(wire-contract § A.7) the daemon evaluates the program itself. Four laws, and
+only these, govern what a read sees:
 
-1. **One pass, at entry.** The currency pass keeps its corpus-grain scope —
-   the whole hash domain proves current, and a poison member anywhere
-   refuses the ENTRY naming the poison (Law A-3c). No doc-grain narrowing,
-   no staleness window at entry, and no watcher — the pass is re-derived
-   per attempt, never maintained incrementally.
-2. **Reads serve the entry world, plus your own arms.** A read of a target
-   the program has not armed serves the entry bytes and the entry rev. A
-   read of a target the program ITSELF armed serves the ARMED content — the
-   entry bytes with the program's own armed edits applied, in arm order —
-   and that content's own rev: what you read is exactly what is hashed
-   (wire-contract §4.2), on the overlay too. Foreign mid-program changes
-   are invisible; the reads of one attempt span ONE state by construction.
-   The ONE state is the hash domain's: an out-of-domain path
-   (wire-contract §12.1) stays addressable on this lane too and serves
-   from a live single-file disk load — the stand-still guarantee is the
-   fingerprint's surface and nothing wider, exactly as the entry
-   fingerprint never covered those bytes.
-   Recorded-read purity is unmoved — every read, entry-served or
-   overlay-served, is recorded, and eval stays a pure function of
+1. **One pass, at entry.** Corpus-grain, as above: no doc-grain narrowing,
+   no staleness window, no watcher; re-derived per attempt, never
+   incremental.
+2. **Reads serve the entry world, plus the program's own arms.** An unarmed
+   target serves the entry bytes and rev; an armed target serves the entry
+   bytes plus the program's own edits in arm order, and that content's rev
+   — what you read is what is hashed (wire-contract §4.2), overlay included.
+   Foreign mid-program changes are invisible: one attempt's reads span one
+   state, the hash domain's. An out-of-domain path (wire-contract §12.1)
+   stays addressable, served by a live single-file disk load outside the
+   stand-still guarantee. Every read is recorded; eval is a pure function of
    (script, args, files, read-response sequence).
-3. **Disk changes only at commit, and the commit guards the LIVE world.**
-   ONE splice, its premise the touch set the attempt recorded (below),
-   verified entry-vs-live against the world as it is NOW. Any interleaved
-   foreign write inside the touch set ⇒ `fingerprint_mismatch` ⇒ nothing
-   commits. *A committed script read and wrote exactly one state of
-   everything it touched — and an uncommitted one still read exactly one.*
-4. **This is not the banned snapshot.** The ban above is on daemon-held
-   MVCC — versions retained across attempts. The entry world is
-   attempt-scoped: born at entry, dropped at the answer, never retained,
-   never shared across connections, no as-of parameter. Zero daemon state
-   survives the attempt.
+3. **Disk changes only at commit, and the commit guards the live world.** One
+   splice, its premise the recorded touch set, verified entry-vs-live now
+   (below).
+4. **This is not the banned snapshot.** The ban is on daemon-held MVCC —
+   versions retained across attempts. The entry world is attempt-scoped:
+   born at entry, dropped at the answer, never retained or shared across
+   connections, no as-of parameter. No daemon state survives the attempt.
 
-**Rev threading under the entry world (the entry-rev law).** Every
-rev-less row threads the target's ENTRY rev, unconditionally: the file rev
-for a `props=` row, the section's node rev for an `append`, read off the
-pinned entry state. No recording gates it — the recording is a trace fact
-only. An overlay rev is never a CAS token —
-the pre-batch state the §4.4 guards resolve against is the entry state,
-and threading consults only the entry toc, so a token naming bytes no disk
-ever carried cannot be minted. A target the entry state cannot name (an
-absent section) threads nothing and meets the engine's own target-class
-refusal. For every program — read-then-arm, arm-then-read, and never-read —
-an unmoved world commits, and a moved touch set refuses whole at the
-commit's own guard, which is where consistency enforcement lives.
+**Rev threading under the entry world (the entry-rev law).** Every rev-less
+row threads the target's entry rev unconditionally — file rev for a `props=`
+row, section node rev for an `append` — off the pinned entry state;
+recording does not gate it. An overlay rev is never a CAS token: §4.4 guards
+resolve against the entry state and threading consults only the entry toc. A
+target the entry state cannot name (an absent section) threads nothing and
+meets the engine's target-class refusal. For every program, read-first or
+not, an unmoved world commits and a moved touch set refuses whole at commit.
 
 **The bracket is structurally satisfied on this lane.** A composed read is
-bracketed by `file_rev` because 2+N trips could span states; in-process
-there are no trips and one state, so the bracket's purpose is met by
-construction and the A→B→A limit disappears with the window that created
-it. The bracket law itself is stated above for any lane that has trips.
+bracketed by `file_rev` because 2+N trips could span states; in-process there
+are no trips, so the A→B→A limit disappears. The bracket law
+still binds any lane with trips.
 
-A caller may also pin its own `if_fingerprint?` guard. It is checked against
-the minted entry fingerprint **pre-eval** — mismatch refuses immediately with
-zero evaluation, read-class, and the run is `attempts:1` by construction. That
-pre-eval check is a fast-fail courtesy, **not** the authoritative one: the
-commit still carries it as a widening premise beside the touch set (below),
-which is what catches a world that moves *during* eval. Two checks, one value.
+A caller may pin its own `if_fingerprint?` guard, checked against the minted
+entry fingerprint **pre-eval**: a mismatch refuses with zero evaluation,
+read-class, `attempts:1`. That is a fast-fail courtesy; the commit re-checks
+the same value as a widening premise (below). Before the compare, the pin
+passes §5.7's grammar wall. A non-grammatical `Root`-family value refuses as a
+`refused` trace (recovery `fix`) with the raw bytes debug-quoted, so one
+leading space shows as a byte. Comparing the damaged spelling instead would
+answer `conflict` with an expected/live pair that renders identical and loops
+a re-read. The reserved `absent` is non-grammatical here too: it is §5.6
+premise vocabulary (`guards[]`), never an entry pin. The CLI entry and the
+wire `script` op refuse identically (wire-contract § A.7).
 
-Before the compare, the pin passes §5.7's grammar wall: a value that is not
-a grammatical `Root`-family token — the reserved `absent` included, which is
-§5.6 premise vocabulary (`guards[]`), never an entry pin — refuses as a
-REFUSED trace (recovery `fix`) with the raw bytes debug-quoted, so invisible
-damage (one leading space, the measured case) shows as a byte. Comparing a
-damaged spelling instead would answer `conflict` with an expected/live pair
-that can render character-identical and teach a re-read that loops. Both
-lanes — this CLI entry and the wire `script` op — refuse identically
-(wire-contract § A.7).
+**The commit premise is the touch set; the frozen view is kept.**
+Wire-contract § A.7 carries the full law:
 
-**The commit premise is the TOUCH SET; the frozen view is kept.**
-Wire-contract § A.7 carries the full law. Stated here:
-
-- The commit's authority is not the whole-corpus entry fingerprint — it is
-  the **touch set** the attempt itself recorded (point reads, armed
+- Authority is the **touch set** the attempt recorded (point reads, armed
   targets, pattern/selector expansions as set folds, sql provenance
-  regions), verified entry-vs-live at exactly those nodes, O(touch set). A
-  foreign write OUTSIDE the touch set does not refuse the commit; a foreign
-  write INSIDE it refuses — `fingerprint_mismatch` naming the moved
-  premise's scope (wire-contract §5.7). The law covers ALL script lanes;
-  MCP `script` is the same product.
-- The guarantee, stated exactly, on the premise's own surface:
-  *a committed script is consistent with exactly one state of everything
-  it touched — what it read and what it wrote stood still, or the commit
-  refused.* Frozen-view reads (points 1, 2 and 4 of the entry world) hold
-  — the A.7 read-stability promise holds word for word.
-- The caller's own `if_fingerprint` — pre-eval fast-fail and commit check
-  alike — is legal as a WIDENING premise: strictest wins, never
-  sufficient alone, never able to drop write coverage (the touch-set
-  floor always contains the armed writes). No host policy forces a token
-  copy onto script doors.
-- The single-attempt law and the host retry budget: retries spend only on
-  genuine same-subtree contention, because foreign churn outside the
-  touch set never refuses at all.
+  regions), verified entry-vs-live at exactly those nodes, O(touch set),
+  not the whole-corpus entry fingerprint. A foreign write outside it never
+  refuses; one inside refuses `fingerprint_mismatch` naming the moved
+  premise's scope (wire-contract §5.7), on every script lane, MCP `script`
+  included.
+- Guarantee: *a committed script is consistent with exactly one state of
+  everything it touched — what it read and what it wrote stood still, or the
+  commit refused* (an uncommitted script still read one). Frozen-view reads
+  (entry-world laws 1, 2 and 4) hold; the A.7 read-stability promise holds
+  word for word.
+- The caller's `if_fingerprint` widens only: strictest wins, never
+  sufficient alone, never drops write coverage (the touch-set floor contains
+  the armed writes). No host policy forces a token copy onto script doors.
+- Retries spend only on same-subtree contention; foreign churn outside the
+  touch set never refuses.
 
-The entry itself is **single-attempt**. A conflict at the entry is one
-`fingerprint_mismatch` with recovery `resync`; the retry loop belongs to the
-host (budget 2), which re-resolves a selector per attempt and re-runs pinned
-`files[]` as-pinned. `attempts:N` is therefore a host fact, stamped on the
-composed face, never a field of the entry's own trace.
+The entry is **single-attempt**: a conflict is one `fingerprint_mismatch`
+with recovery `resync`. The host owns the retry loop (budget 2),
+re-resolving a selector per attempt and re-running pinned `files[]` as
+pinned; `attempts:N` is a host fact on the composed face, never a field of
+the entry's trace.
 
-**One COMMIT per attempt (the set-form law).** The armed list may span N
-content paths: an
-effect-less script's entire output is a finite armed list, known in full
-before any I/O, so the commit can validate the WHOLE set against the world
-before the first byte moves. One armed path commits as the single §4.4
-splice; N paths commit as the §4.4 SET form
-(`splice.set`) — per-path plan groups in first-arm order, one sealed
-validate-all-then-apply commit under the entry fingerprint, one receipt
-entry naming every file, one Delta, one fingerprint advance. All-or-nothing
-holds by measurement rather than by fencing: a refusal anywhere in the set
-lands nothing (the §5.2 diagnosis even sharpens inside a set — the world
-guard passed, so a `no_match` on file k is provably the program's own text,
-never a moved world). The receipt companion rides the same sealed set
-(§6.1). There is no arm-time multi-file refusal and no single-path commit
-door; the crash story is §6.5's set paragraph (in-memory rollback, no
-journal, stated windows). Effects mode is untouched: write-one was never
-its law, and each live `put()` is one single-path splice.
+**One commit per attempt (the set-form law).** An effect-less script's output
+is a finite armed list, known before any I/O and validated whole before the
+first byte moves. One armed path commits as the single §4.4 splice; N paths
+as the §4.4 set form (`splice.set`): per-path plan groups in first-arm
+order, one sealed validate-all-then-apply commit under the entry
+fingerprint, one receipt entry naming every file, one Delta, one fingerprint
+advance. A refusal anywhere lands nothing; inside a set a `no_match` on file
+k is provably the program's own text (§5.2), the world guard having passed.
+The receipt companion rides the same sealed set (§6.1). No arm-time
+multi-file refusal, no single-path commit door; crash story: §6.5's set
+paragraph (in-memory rollback, no journal, stated windows). Effects mode is
+untouched (write-one was never its law): each live `put()` is one
+single-path splice.
 
-**Wire-client mode.** The script entry does its I/O **as a wire client
-through the one door**, and that I/O is ONE § A.7 `script` frame: the CLI
-sends the program, and the daemon pins the entry, evaluates the program
-in-process against the entry world, serves every read from that world, and
-issues the ONE guarded `splice` carrying `actor`/`now`/`receipt` through the
-same write choke-point. §4.4 is untouched — splice remains the only write op
-and the script executor is just another client; the `script` op ARMS one
-splice and embeds its response in the trace. One schema delta exists and it
-is the § A.7 op itself, additive. One lane, therefore one commit-premise
-implementation. A daemon-side commit advances the delta ring like any wire
-splice — the CLI lane's missing-delta gap (wire-contract §18 row 12) does
-not extend to this lane.
+**Wire-client mode.** The script entry does its I/O as a wire client through
+the one door, in one § A.7 `script` frame. The CLI sends the program. The
+daemon pins the entry, evaluates in-process against the entry world, and
+issues the one guarded `splice` carrying `actor`/`now`/`receipt` through the
+same write choke-point. §4.4 is untouched — splice stays the only write op;
+the `script` op arms one splice and embeds its response in the trace. The
+only schema delta is the additive § A.7 op; one lane, one commit-premise
+implementation. A daemon-side commit advances the delta ring, so the CLI
+lane's missing-delta gap (wire-contract §18 row 12) does not extend to this
+lane.
 
-**The commit is guarded per row, and the consumer plane supplies the tokens.**
-A wire door demands a fingerprint for every edit that changes existing content,
-or an explicit `force` (`wire-serve::guard`), and the two grains differ: a
-`set_property` row takes the **file** rev, because frontmatter semantics are
-file-scoped, and an `append` row takes the **node** rev of the section it lands
-in. The lane threads each row's token itself off the pinned entry state (the
-entry-rev law above) — the same host autofill the `put` face performs, spoken
-at commit time. A token the entry state cannot mint leaves the row untokened
-and the engine's own guard answers — degrade is loud, never a guessed token.
+**The commit is guarded per row, and the consumer plane supplies the
+tokens.** A wire door demands a fingerprint for every edit of existing
+content, or an explicit `force` (`wire-serve::guard`): a `set_property` row
+takes the **file** rev (frontmatter is file-scoped), an `append` row the
+**node** rev of its section. The lane threads each token off the pinned
+entry state at commit time, as the `put` face autofills. A token the entry
+state cannot mint leaves the row untokened for the engine's own guard: the
+degrade is loud, never a guessed token.
 
-**No read-the-section-first ritual binds the author.** A `put()` row's
-target need not have been READ this attempt: **appends go rev-free for the
-author** (put parity — append cannot clobber), **destructive rows are
-auto-guarded from the entry state the engine already holds**, and
-**consistency enforcement lives at COMMIT** — the world-moved refusal. `force`
-is not a script-plane door, and the wire guard itself is unchanged — one
-token law for every door; the lane satisfies it for the author.
+**No read-the-section-first ritual binds the author.** A `put()` target need
+not have been read this attempt: **appends go rev-free for the author** (put
+parity — append cannot clobber), **destructive rows are auto-guarded from
+the entry state**, and **consistency enforcement lives at commit**. `force`
+is not a script-plane door; one token law binds every door. Evidence:
+`crates/mrd/tests/script_golden_live.rs` (every golden scenario against a
+live daemon: each `plan_edits[]` row on the socket carries a token its own
+reads published; the unread-target scenario pins the rev-free half) and
+`crates/registry/tests/script_op.rs` (props and append with zero reads commit
+on an unmoved world; a foreign edit after entry refuses).
 
-Evidence, and where it is held: `crates/mrd/tests/script_golden_live.rs` runs
-every golden scenario through the real entry against
-a **live daemon** and asserts that every `plan_edits[]` row on the socket carries
-a token its own reads published — the conforming half. The rev-free half is
-pinned by the same suite's unread-target scenario (the lane mints the token, the
-engine accepts the batch) and, engine-side, by `crates/registry/tests/script_op.rs`
-(props and append with zero reads commit on an unmoved world) beside the
-module-grain moved-world pin (a foreign edit after entry refuses the commit).
+**`--dry` is a rehearsal, not a commit.** The splice carries `dry: true`: the
+daemon builds the whole effect set and applies none. The response
+(`dry: true`, `fingerprint_after: null`) rides the trace as the commit leg;
+the outcome is `no_effect` — no receipt, no fingerprint advance, workspace
+unchanged, every armed entry `[not committed]`. A caller-guard refusal is
+`conflict` with **no** commit leg and zero telemetry (no splice was issued,
+so no §5.1 body exists); its extras ride the trace in band — `actual` is the
+trace's `entry_fingerprint`, `expected` the caller's pin as
+`guard_expected`, present on exactly this terminal. The face renders from
+the trace alone, so `conflict` + no commit leg + `guard_expected` marks a
+guard refusal, not a commit-time mismatch.
 
-**`--dry` is a rehearsal, not a commit.** The splice carries `dry: true`, so the
-daemon builds the whole effect set and applies none of it; the response — with
-its own `dry: true` and `fingerprint_after: null` — rides the trace as the commit
-leg, and the outcome is `no_effect`, because nothing landed: no receipt, no
-fingerprint advance, workspace unchanged. Every armed entry stays
-`[not committed]`. A caller-guard refusal is `conflict` with **no** commit leg
-and zero telemetry: no splice was issued, so no §5.1 body exists to embed. Both
-extras tokens still ride the trace in band — `actual` IS the trace's
-`entry_fingerprint`, and `expected` is the caller's pinned value carried as
-`guard_expected`, present on exactly this terminal. The face renders from the
-trace and nothing else, and `conflict` + no commit leg + `guard_expected` is
-what tells a guard refusal apart from a commit-time mismatch.
+**The execution-model seam: arm, then commit.** The Authority row of the seam
+table below names this entry's authority as *"the caller's own identity —
+`actor` threaded per §9; **ownership guard + armed law**; no cap grammar."*
+The ownership guard is the host's organ; the engine's splice is
+caller-agnostic (§5.3). But `put(path)` computes its path inside the Starlark
+source, so the write set exists only after evaluation, and one
+evaluate-and-commit call never shows that set to the host. Hence:
 
-**The execution-model seam: arm, then commit.**
-The seam table's Authority row below names this entry's authority as *"the
-caller's own identity — `actor` threaded per §9; **ownership guard + armed law**;
-no cap grammar."* The ownership guard is the HOST's organ — the engine's splice is
-caller-agnostic by §5.3 and enforces no ownership — and a host cannot gate a write
-set it has not seen. `put(path)` takes an arbitrary path, computed inside the
-Starlark source, so the write set does not exist until evaluation has run. A
-single call that evaluates and commits in one child leaves no point at which
-the host can read the armed set. The execution model that gives it one:
-
-> **The MCP host runs the entry TWICE per attempt: once as an ARM (`--dry`),
+> **The MCP host runs the entry twice per attempt: once as an arm (`--dry`),
 > then, if and only if its own write-authorization plane admits every armed row,
-> once as a COMMIT carrying `--expect-armed <the arm's armed_digest>`.**
-> *(The commit's world premise is the engine-computed touch set, verified
-> entry-vs-live; a host-passed `--if-fingerprint` token is legal as WIDENING
-> only. `--expect-armed` proves set identity; the touch-set verify proves set
-> freshness.)*
+> once as a commit carrying `--expect-armed <the arm's armed_digest>`.**
+> *(`--expect-armed` proves set identity; the touch-set verify, entry-vs-live,
+> proves set freshness; a host-passed `--if-fingerprint` is widening only.)*
 
-Four things follow, and only these four. First, **this is a consumer-plane
-sequencing law, and the wire contract carries zero delta** — the split is two
-ordinary invocations of the entry, and the ops on the socket are the same five.
-The CLI surface gains exactly one flag: the commit child accepts
-`--expect-armed` (the sub-amendment below), which is consumer-plane too and
-changes no request shape. Second, the split
-is **safe by construction, never by being fast**: the commit verifies its
-touch set entry-vs-live, so movement of
-the world INSIDE the touch set between the two legs refuses at §5.1 as an
-ordinary `fingerprint_mismatch` naming the moved premise's scope, which the
-host's retry budget already handles; movement OUTSIDE the touch set never
-refuses at all (foreign churn does not cause retries). Correctness
-never depends on the gap being small. Third,
-**recorded-read purity is what makes the arm's set the commit's set**: eval is a
-pure function of (script, args, files, read-response sequence), and an unmoved
-touch set means an unmoved read-response sequence — every read is itself a
-touch-set member — so the two evaluations arm identically; a between-legs move
-that DOES change what the commit child arms is caught pre-splice by
-`--expect-armed` (sub-amendment below). The arm is therefore OUTPUT, never a
-second decision. Fourth, the
-gate is **parity with `put`, not a second policy grammar** — the same organs
-(`checkPutAuthz`, `checkContentWrite`), the same per-target flock held across the
-commit child, and the same journal pipeline. A script commit that took no flock
-and wrote no audit line was the broadest-reach write face in the host having
-neither. The **birth gate is not among them, and that is measured**: a `put()` to
-a path carrying no file is refused by the engine at ARM time (`file_not_found` on
-the rehearsal splice), so the trace is a terminal before any row is classified and
-no host birth decision exists to make. The day this entry gains a birth door, the
-third organ gets its call site.
+Four things follow, and only these four:
 
-The CLI entry keeps its single-call shape: an operator running `mrd script`
-directly evaluates and commits in one process, because there is no host identity
-plane in that path to gate against. The law binds the MCP `script` tool.
+1. **Consumer-plane sequencing; zero wire delta.** Two ordinary invocations,
+   the same five ops on the socket; the CLI gains exactly one flag,
+   `--expect-armed` on the commit child (sub-amendment below), with no
+   request shape change.
+2. **Safe by construction, never by being fast.** A move inside the touch
+   set between the legs refuses at §5.1 as an ordinary
+   `fingerprint_mismatch` (host retry budget); a move outside never refuses.
+   Correctness never depends on the gap being small.
+3. **Recorded-read purity makes the arm's set the commit's set.** Every read
+   is a touch-set member, so an unmoved touch set means an unmoved
+   read-response sequence and identical arms; a move that does change the
+   commit child's arms is caught pre-splice by `--expect-armed`. The arm is
+   output, never a second decision.
+4. **Parity with `put`, not a second policy grammar.** Same organs
+   (`checkPutAuthz`, `checkContentWrite`), same per-target flock held across
+   the commit child, same journal pipeline. The birth gate is not among
+   them: a `put()` to a path with no file is refused at arm time
+   (`file_not_found` on the rehearsal splice), before any row is classified,
+   so no host birth decision exists; when this entry gains a birth door, the
+   third organ gets its call site.
+
+The CLI entry keeps its single-call shape: `mrd script` evaluates and commits
+in one process, having no host identity plane to gate against. The law binds
+the MCP `script` tool.
 
 **Sub-amendment (the armed-set expectation, `--expect-armed`).** The seam
-above gates the ARM's rows and then runs a SECOND child to commit. It states why
-the two evaluations arm identically — recorded-read purity plus an unmoved
-fingerprint — and then *relies* on that reasoning holding. Reasoning is not
-measurement. Nothing in the sequence above compares what the commit child armed
-against what the host actually gated, so every link in that chain (the realpath
-the authorization was decided on, the addressable-vs-hash-domain gap) is load
-bearing and unverified. This sub-amendment makes the chain not matter:
+relies on reasoning that both evaluations arm identically; nothing compares
+what the commit child armed with what the host gated, so the realpath the
+authorization used and the addressable-vs-hash-domain gap stay unverified.
+This sub-amendment makes that chain irrelevant:
 
-> **The commit child accepts `--expect-armed <digest>` and REFUSES BEFORE THE
-> SPLICE IS ISSUED when its own armed set does not hash to that digest.** The
+> **The commit child accepts `--expect-armed <digest>` and refuses before the
+> splice is issued when its own armed set does not hash to that digest.** The
 > refusal is pre-splice: nothing is sent, nothing lands, no fingerprint advances.
 
 Five things follow, and only these five.
 
-**First — the digest is defined ONCE, engine-side, and this is its whole
+**First — the digest is defined once, engine-side, and this is its whole
 definition.** Let `rows` be the armed set the commit splice would carry: the
 armed rows *after* rev threading, in arm order, each one an object
 
@@ -1022,66 +771,51 @@ armed rows *after* rev threading, in arm order, each one an object
 {"edit": <the plan_edits[] item>, "path": <the file it writes>}
 ```
 
-whose `edit` halves are byte-for-byte the value of the request's `plan_edits`
-field and whose `path` halves are the request's `path`. The digest is
+whose `edit` is byte-for-byte the value of the request's `plan_edits` field
+and whose `path` is the request's `path`. The digest is
 
 > `armed-set-path-edit:` ‖ `sha256:` ‖ lowercase-hex( SHA-256( CANON(`rows`) ) )
 
-where `CANON` is compact JSON with **object keys sorted lexicographically by
-UTF-8 byte order**, no whitespace between tokens, and RFC 8259-minimal string
-escaping — only `"`, `\`, and the control characters below `U+0020` are escaped;
-every other code point is emitted as raw UTF-8. There is no second spelling of
-this anywhere in the tree: `effects::digest::armed_digest` is the only function
-that computes it (one function, three callers), and the arm, the commit, and the § A.7 op all reach it through that one call.
+where `CANON` is compact JSON: **object keys sorted lexicographically by
+UTF-8 byte order**, no whitespace between tokens, RFC 8259-minimal string
+escaping (only `"`, `\`, and control characters below `U+0020` are escaped;
+every other code point is raw UTF-8). `effects::digest::armed_digest` is its
+only implementation, with three callers: the arm, the commit, and the § A.7
+op.
 
-**Why the path is in the domain, and not only the payload.** A `PlanEdit`
-carries no path — the target rides `splice.path` — so a digest over
-`plan_edits[]` alone is a total function of the armed **payloads**, not of the
-armed **set**: two sets writing identical edits to *different files* hash
-identically. That is exactly the dimension the arm/commit gap turns on. A host
-gates the rows of one file; a commit child that resolved somewhere else (a
-symlink re-pointed between the legs, or a pin covering the hash domain while the
-write plane resolves through the larger addressable set) produces a **matching**
-digest and splices into a file nobody authorized. Pairing each row with its
-target closes that dimension by construction rather than by argument.
+**Why the path is in the domain, not only the payload.** A `PlanEdit` carries
+no path (the target rides `splice.path`), so a digest over `plan_edits[]`
+alone hashes payloads, not the set: identical edits to different files hash
+identically. A symlink re-pointed between the legs, or a pin covering the
+hash domain while the write plane resolves through the larger addressable
+set, would then pass and splice into a file nobody authorized. Pairing each
+row with its target closes that by construction.
 
-**The `armed-set-path-edit:` prefix is the digest's DOMAIN TAG, and it is a
-deployment organ.** A host cannot tell a narrow digest from a wide one by looking
-at it — an engine hashing payloads only publishes a perfectly well-formed value,
-both children agree, the guard passes, and the class claim above degrades to one
-that holds only on a pinned tree. Host/engine skew is a measured failure mode,
-not a theoretical one: a resident daemon can run a stale engine for hours. So the
-digest names what it covers, and a host asserts that **literal prefix with a
-string comparison and no parsing whatsoever**, refusing an engine below the
-minimum BY NAME. That is a capability assertion, not a canonicalization — the
-courier property in *Second* survives it intact, because the host still copies
-one opaque string and computes nothing. The tag names the DOMAIN rather than a
-version number, so a refusal can say what is missing; widening the domain again
-means a new tag, and every host still asserting the old one refuses loudly
-instead of gating the wrong thing quietly.
+**The `armed-set-path-edit:` prefix is the digest's domain tag, and it is a
+deployment organ.** A host cannot tell a payload-only digest from a set
+digest by looking, and a resident daemon can run a stale engine for hours.
+So the host asserts the **literal prefix by string comparison, no parsing**,
+refusing an engine below the minimum by name — a capability assertion, not a
+canonicalization: the host still copies one opaque string and computes
+nothing (the courier property in *Second*). The tag names the domain, not a
+version, so a refusal says what is missing; widening the domain means a new
+tag, and hosts asserting the old one refuse loudly.
 
-**Second — the host is a COURIER, not a second implementation.** The arm's trace
-publishes the digest as a top-level `armed_digest` field. The host copies that
-string into the commit child's `--expect-armed` and never canonicalizes anything
-itself. This is the load-bearing property: a host that re-serialized the trace's
-armed rows would be a second canonicalization, and two canonicalizations give
-either a refusal on every call or — far worse — a **vacuous pass**, a comparison
-that agrees because both sides computed something equally wrong. The digest is
-computed twice by the *same Rust function* over the *same type*, once per child.
-A courier cannot invent a disagreement.
+**Second — the host is a courier, not a second implementation.** The arm's
+trace publishes the digest as a top-level `armed_digest` field; the host copies
+that string into the commit child's `--expect-armed` and canonicalizes nothing.
+Both children compute the digest with the same Rust function over the same
+type, so a courier cannot invent a disagreement or pass vacuously.
 
-**Third — the serialization is published anyway**, precisely so that a host which
-someday wants to verify independently lands on the same bytes instead of guessing.
-Three traps are named because each one produces a silent false refusal on ordinary
-markdown rather than on a test fixture: a Go implementation MUST disable
-`SetEscapeHTML` (Go escapes `<`, `>`, `&` by default and the engine does not), MUST
-NOT escape `U+2028`/`U+2029` (Go's marshaller does so unconditionally), and MUST
-decode with `UseNumber` so `HpathSeg.n` never round-trips through a float. `CANON`
-is otherwise exactly RFC 8785 (JCS) over a value whose only number is that `n`.
+**Third — the serialization is published anyway**, so an independent verifier
+lands on the same bytes. `CANON` is exactly RFC 8785 (JCS) over a value whose
+only number is `HpathSeg.n`. Three traps, each a silent false refusal on
+ordinary markdown: a Go implementation MUST disable `SetEscapeHTML` (the engine
+does not escape `<`, `>`, `&`), MUST NOT escape `U+2028`/`U+2029`, and MUST
+decode with `UseNumber` so `HpathSeg.n` never round-trips through a float.
 
-The **test vector** an independent implementation checks itself against, before
-trusting itself, is pinned in `digest.rs::the_published_test_vector_holds` so
-these bytes and this document cannot drift apart. For the two-row armed set
+The **test vector** is pinned in `digest.rs::the_published_test_vector_holds`.
+For the two-row armed set
 
 - `set_property{key:"owner", value:"8ab41c02", rev:"7c40e1a8b2f9d356"}` at
   `cards/one.md`, then
@@ -1097,268 +831,199 @@ these bytes and this document cannot drift apart. For the two-row armed set
 and the digest is
 `armed-set-path-edit:sha256:37c4d09eb84d1e902b887a0b13cc90f67d5888e0bd5ebf9148ac0031ccdcde4a`.
 
-Four things in that line are deliberate. The key order at **both** levels is
-lexicographic, not the declaration order the Rust types use — `edit` before
-`path`, and inside the edit `body` before `hpath` before `rev`. The `<`, `>` and
-`&` ride raw. `HpathSeg.n` is **present**, because it is the one field named as a
-trap above and no earlier vector reached it, so an implementation that dropped or
-floated it passed every published check. And the two rows target **different
-paths**: that is on purpose, because a vector whose rows shared a path would be reproducible by an
-implementation that hashes the target once for the whole set and then diverges on
-something no published bytes could catch. An implementation that reproduces this
-line reproduces every digest; one that does not would have refused real markdown
-while passing an ASCII fixture.
+Deliberate in that line: key order at **both** levels is lexicographic, not
+Rust declaration order (`edit` before `path`; `body` before `hpath` before
+`rev`); `<`, `>` and `&` ride raw; `HpathSeg.n` is **present**; the rows
+target **different paths**. An implementation that drops or floats `n`, or
+hashes the target once per set, fails here; one that reproduces this line
+reproduces every digest.
 
-**Fourth — the receipt is NOT an armed row, so the digest excludes it, and the
-exclusion is structural rather than a rule to remember.** The receipt rides
-`request.receipt`, never `eval.armed`; it is not a member of `plan_edits[]` and so
-it is outside `CANON`'s input by construction. The armed-set comparison therefore
-says nothing about the receipt, and must not be read as covering it — the receipt
-births a file under its own pre-spawn gate (the host's `receiptpolicy` leg), which
-is a different door with a different organ. A reader who assumed `--expect-armed`
-covered the receipt would believe a write was gated that this flag never sees.
+**Fourth — the receipt is not an armed row, so the digest excludes it by
+construction.** The receipt rides `request.receipt`, never `eval.armed`, and is
+not in `plan_edits[]`. `--expect-armed` says nothing about it; its file is born
+under the host's `receiptpolicy` pre-spawn gate.
 
-**Fifth — the flag is optional and the CLI entry is unaffected.** Absent
-`--expect-armed`, the entry behaves exactly as before, so an operator's direct
-`mrd script` is unchanged. Present, it is checked after rev threading and before
-the commit is issued, alongside the wall-clock's own pre-commit refusal — the same
-position, the same "nothing was sent" guarantee. A refusal is `refused` with fault
-class `refused`, not `conflict`: a mismatched armed set is not the world moving.
+**Fifth — the flag is optional; the CLI entry is unaffected.** Without
+`--expect-armed`, `mrd script` behaves as before. With it, the check runs after
+rev threading and before the commit is issued, beside the wall-clock pre-commit
+refusal: nothing was sent. A mismatch is `refused` with fault class `refused`,
+not `conflict`.
 
-Evidence, and where it is held: `crates/mrd/tests/script_expect_armed.rs` drives
-the real entry through a recording door and asserts both directions — a matching
-digest commits, and a planted mismatch produces a socket census containing
-`hello`/`fingerprint`/`toc`/`cat` and **no `splice` frame at all**, which is what
-makes the refusal pre-splice rather than a detection after landing.
-
-The target dimension and the tag are held there too, and each has both arms,
-because a gate proven only to refuse cannot be told apart from one that refuses
-everything:
+**Evidence.** `crates/mrd/tests/script_expect_armed.rs` asserts both directions
+through a recording door: a matching digest commits; a planted mismatch yields
+a socket census of `hello`/`fingerprint`/`toc`/`cat` and **no `splice` frame**,
+so the refusal is pre-splice. The target dimension and the tag each hold both
+arms there:
 
 | Claim | Arm | Test |
 |---|---|---|
 | The digest reads the target | refuse | `identical_edits_to_two_targets_publish_different_digests` |
 | | admit | `the_same_target_publishes_one_digest_across_runs` |
-| The tag does not break the tool | admit | `an_ordinary_commit_still_commits_on_the_tagged_engine` — arm, forward verbatim, commit, and the census asserts the splice WAS issued |
+| The tag does not break the tool | admit | `an_ordinary_commit_still_commits_on_the_tagged_engine` — arm, forward verbatim, commit; the census asserts the splice was issued |
 | The tag is assertable | refuse | `digest.rs::an_untagged_digest_is_distinguishable_from_this_engines` |
 
-The first pair is also the **wire-observable capability probe**: a caller holding
-nothing but the entry and a door establishes that this engine's digest covers the
-target by running the same edits at two paths and comparing the published values.
-The capability is observed, never inferred from a version constant.
+The first pair is also the **wire-observable capability probe**: the same
+edits at two paths publish different digests. The capability is observed, not
+inferred from a version constant.
 
-The tag cannot false-refuse an ordinary commit, and that is structural rather
-than tested-for: it is prepended inside `armed_digest` itself, so the value the
-arm publishes and the value the commit recomputes are the same call over the same
-type. There is no side on which it could be stripped or re-added.
+The tag cannot false-refuse an ordinary commit: it is prepended inside
+`armed_digest` itself, so arm and commit make the same call over the same type.
 
-`cmd.rs`'s own tests pin the rev-threading law the target dimension leans on:
-`guarded()` looks a row's CAS token up **by that row's own `arm.path`**, so a
-child that resolved elsewhere cannot inherit the gated file's rev. That was an
-unstated accident until it was pinned, and an unstated accident either becomes
-law or becomes a regression.
+`cmd.rs`'s tests pin the rev-threading law: `guarded()` looks up a row's CAS
+token **by that row's own `arm.path`**, so a child that resolved elsewhere
+cannot inherit the gated file's rev.
 
 **The trace — one commit-fact shape, and no `attempts`.** The entry returns a
-`ScriptTrace`: the entry fingerprint, the outcome
-(`committed | no_effect | conflict | fault | refused`), the decision trace, an
-optional commit leg, an optional fault, the top-level `bindings`, and
-telemetry. Three laws hold it together:
+`ScriptTrace`: entry fingerprint, outcome
+(`committed | no_effect | conflict | fault | refused`), decision trace,
+optional commit leg, optional fault, top-level `bindings`, and telemetry.
 
-- **The commit leg IS the §4.4 splice response, embedded verbatim** — carried as
-  raw bytes, never re-typed. The rev transitions, the receipt fact,
-  `fingerprint_before/after`, and `verdicts` (rules-as-data) all ride it, so no
-  second commit-fact shape exists and none can drift when §4.4 grows a field. A
-  `fingerprint_mismatch` embeds through the same leg: it is the splice's own
-  response. Absent when no splice was issued — the read-class path.
-- **There is no `attempts` field.** The entry is single-attempt; the retry loop
-  is the host's, so `attempts:N` is a host fact stamped on the composed face.
-- **Telemetry is unconditional** — fuel, memory, reads, wall time, reported on
-  faults and refusals too (the `RuleTelemetry` precedent).
+- **The commit leg is the §4.4 splice response, embedded verbatim** as raw
+  bytes, never re-typed. Rev transitions, the receipt fact,
+  `fingerprint_before/after` and `verdicts` (rules-as-data) ride it, so nothing
+  drifts when §4.4 grows a field. A `fingerprint_mismatch` embeds through the
+  same leg. Absent when no splice was issued (the read-class path).
+- **No `attempts` field.** The entry is single-attempt; the retry loop and
+  `attempts:N` are host facts on the composed face.
+- **Telemetry is unconditional** — fuel, memory, reads, wall time — on faults
+  and refusals too (the `RuleTelemetry` precedent).
 
-The decision trace is one entry per recorded read, in call order, then the armed
-block in arm order. A read's entry kind IS the statement-position rule — `echo`
-for a top-level-statement read, `read` for every quiet position — and each armed
-entry carries the wire plan-edit verbatim plus whether the commit landed it, so
-the face's wrote-lines zip descriptor × result exactly as put faces do today.
-The fault taxonomy is CLOSED at `parse | runtime | budget | refused`: a refusal
-is not a fault, and the two must grep apart.
+The decision trace lists one entry per recorded read, in call order, then the
+armed block in arm order. Entry kind is the statement-position rule: `echo` for
+a top-level-statement read, `read` for every quiet position. Each armed entry
+carries the wire plan-edit verbatim plus whether the commit landed it, so the
+face's wrote-lines zip descriptor × result as put faces do. The fault taxonomy is closed at `parse | runtime | budget | refused`; a refusal is
+not a fault, and the two must grep apart.
 
-**A refusal carries the wire's refusal triple, TYPED.**
-The fault of a `refused` run carries `code`, `recovery` and `reason` — the same
-triple the §8 error frame carries — and `recovery` is `wire::Recovery`, the
-closed six-class enum, taken from the **one** source the wire field's vocabulary
-comes from. Five clauses hold it:
+**A refusal carries the wire's refusal triple, typed.** The fault of a
+`refused` run carries `code`, `recovery` and `reason` — the §8 error frame's
+triple — and `recovery` is `wire::Recovery`, the closed six-class enum.
 
-- **Never a fifth fault class.** Transient-vs-permanent is a PROPERTY of a
-  refusal, not a KIND of fault. A `transient` variant beside
-  `parse | runtime | budget | refused` would conflate two axes and silently
-  break every consumer that matches `refused`.
-- **Prose is a rendering, never the carrier.** `reason` keeps the engine's own
-  wording verbatim and the face keeps rendering it; a consumer that needs the
-  class reads the class. A downstream that pins a refusal's SPELLING is the
-  name-promise gap's manufacture channel, and this shape is what retires it.
-- **One source, with a stated precedence.** The daemon's own `error.recovery`
+- **Never a fifth fault class.** Transient-vs-permanent is a property of a
+  refusal, not a kind of fault; a `transient` variant would break every
+  consumer matching `refused`.
+- **Prose is a rendering, never the carrier.** `reason` keeps the engine's
+  wording verbatim; a consumer reads the class, never the spelling.
+- **One source, with a stated precedence.** The daemon's `error.recovery`
   wins; when a frame carries none, the class is the §8 frozen table's binding
-  for its `code` (`ErrorCode::recovery()`) — the same table, never a second copy
-  of it. A code the engine cannot parse with no `recovery` beside it yields
-  absence, and absence stays absence.
-- **Engine-minted refusals name their class explicitly**, because no frame
-  minted one for them: an `expect_armed_mismatch` is `fix` (the armed set is not
-  the one authorized — re-arming is the caller's act), and an elapsed wall clock
-  before the commit is `retry` (nothing was sent, so the same request may
-  succeed). They carry no `code`: no wire code was minted, and inventing one
-  would put a value on the §8 surface that no daemon can answer with.
-- **The migration is ADDITIVE.** `code` and `recovery` are optional and omitted
-  when absent, so a consumer matching `outcome: refused` plus `fault.reason` is
-  byte-unaffected by a frame that carries neither.
+  for its `code` (`ErrorCode::recovery()`), never a second copy of it. An
+  unparseable code with no `recovery` yields absence.
+- **Engine-minted refusals name their class explicitly**: `expect_armed_mismatch`
+  is `fix` (re-arming is the caller's act); an elapsed wall clock before the
+  commit is `retry` (nothing was sent). They carry no `code`, since no daemon
+  could answer with an invented one.
+- **The migration is additive.** `code` and `recovery` are optional, omitted
+  when absent; a consumer matching `outcome: refused` plus `fault.reason` is
+  byte-unaffected.
 
-Why the class must cross here and not above: the engine KNOWS the refusal is
-transient — the daemon frame carries `recovery` first-class and the put door
-reads it — and a script path that flattened it into `format!("{code}: {message}")`
-would lose it. **No host-side change can recover a class the engine destroyed
-before the boundary**; a face left with prose can only match strings. One engine,
-one refusal vocabulary: a door that reads it and a door that destroys it is the
-asymmetry this rules out.
+The daemon frame carries `recovery` and the put door reads it; a script path
+that flattened the frame into `format!("{code}: {message}")` would destroy the
+class, and **no host-side change can recover it**.
 
-**A controlled failure exit SPEAKS.** The clause above
-gives a refusal that reaches `CommitLeg` a typed class. A run can fail without
-ever reaching one, and an exit that left through `mrd::run`'s `Err(Fail)`
-arm with prose on stderr and **nothing at all on stdout** would be the same
-disease one door over: a consumer sees a nonzero exit and an absent trace, and
-cannot tell a deliberate, fully-understood refusal from a process killed
-mid-write. The two need different remedies — one is the caller's to fix, the
-other must never be resent — so a surface that cannot separate them is not an
-inconvenience, it is a correctness hole at the seam.
+**A controlled failure exit speaks.** A run that fails before reaching
+`CommitLeg` and leaves with prose on stderr and nothing on stdout would make a
+deliberate refusal (the caller fixes it) indistinguishable from a process
+killed mid-write (never resend).
 
-**What is CONTROLLED — the definition, not a list.** A failure exit is
+**What is controlled — the definition, not a list.** A failure exit is
 controlled when the process reaches its own exit door under its own control.
-`mrd` has exactly one such door — `mrd::run`, whose `Err(Fail)` arm prints the
-diagnostic and returns `fail.code`; there is no `std::process::exit` and no
-`abort` anywhere in `crates/`. So inside this engine controllability is not a
-discriminator between paths: **every** failure of `mrd` is controlled, and
-controllability discriminates the engine from whatever killed it. What a
-controlled exit may SAY is then decided by two further questions, both
-answerable at the site by a reader writing a new path:
+`mrd` has exactly one: `mrd::run`, whose `Err(Fail)` arm prints the diagnostic
+and returns `fail.code`; there is no `std::process::exit` and no `abort` in
+`crates/`. So **every** failure of `mrd` is controlled, and controllability
+separates the engine from whatever killed it. What a controlled exit may say
+depends on two questions:
 
-1. **Does it hold the trace's premise?** `ScriptTrace`'s first field is
-   `entry_fingerprint`, the §4.7 value the whole run is consistent with. A path
-   that failed before minting one has no premise, and a synthesized premise would
-   mint a fact — the thing this module's assembler is built never to do. Such a
-   path may not speak a trace, and its silence is contracted below.
-2. **Does it know what the splice did?** A path holding the premise MUST speak,
-   and what it may assert about the workspace is bounded by what it knows: a
-   request that was never sent knows nothing landed; a request sent whose answer
-   never arrived knows nothing either way, and must say so.
+1. **Does it hold the trace's premise?** The premise is `entry_fingerprint`,
+   `ScriptTrace`'s first field (the §4.7 value). A path that failed before
+   minting one may not synthesize one and may not speak a trace; its silence
+   is contracted below.
+2. **Does it know what the splice did?** A path holding the premise MUST speak
+   and may assert only what it knows: never sent means nothing landed; sent
+   with no answer means unknown, and it says so.
 
-**The absence contract — what the survivor may rely on.** The obituary belongs
-to the survivor, so the contract states what absence MEANS rather than leaving a
-consumer to mint a convention:
+**The absence contract — what the survivor may rely on.**
 
-- **Nonzero exit + a trace on stdout** — the engine answered. Every claim in it
-  is the engine's, including `fault.recovery`.
-- **Exit exactly 2 + empty stdout** — a controlled exit taken before the entry
+- **Nonzero exit + a trace on stdout** — the engine answered; every claim in
+  it, including `fault.recovery`, is the engine's.
+- **Exit exactly 2 + empty stdout** — a controlled exit before the entry
   fingerprint existed: a bad invocation, an unreadable script, an unresolvable
-  workspace, or no daemon to answer. **Nothing was armed, no splice was issued,
-  and the workspace is unchanged** — this is a guarantee, not a likelihood. The
-  diagnostic on stderr is a rendering for an operator, and no consumer needs to
-  parse it to act.
+  workspace, or no daemon. **Nothing was armed, no splice was issued, and the
+  workspace is unchanged** — a guarantee, not a likelihood. The stderr
+  diagnostic is for an operator; no consumer parses it.
 - **Any other nonzero exit with an absent trace** — the engine did not choose
-  this exit. It cannot promise its own obituary, so the consumer classifies from
-  the observable pair and the class is `resync`: a splice already on the wire is
-  the daemon's to finish, so re-read, never resend. `--dry` narrows it to
-  `retry`, because a rehearsal writes nothing and could not have committed.
+  this exit. The class is `resync`: a splice already on the wire is the
+  daemon's to finish, so re-read, never resend. `--dry` narrows it to `retry`;
+  a rehearsal writes nothing.
 
-The second bullet is the load-bearing one, and it is worth stating as the
-reason: were the premise-holding doors silent, `exit 2 + empty stdout` would
-span both a provably-nothing-sent refusal and a possibly-landed commit whose
-answer was lost, licensing no conclusion at all. Because they speak, that pair
-means exactly one thing and the guarantee in it is true.
+**A lost commit answer states its indeterminacy; it does not resolve it.** Of
+the premise-holding doors, some sent nothing (`splice` refused with no error
+body) — an ordinary engine-minted refusal, classed as above — and some cannot
+know: `splice` never answered, a frame that would not parse, or an `ok`
+carrying no body. **A reply that violates its own schema certifies nothing,
+including its own `ok` bit**, so the last is unknown, not "landed but
+undescribable". A door that cannot know may not use `no_effect`, `conflict` or
+a bare `refused`: **all three assert that nothing landed**. It carries
+`recovery: resync`, the killed-engine class, and states the indeterminacy in
+band; a consumer reads the class, never the sentence.
 
-**A lost commit answer states its indeterminacy; it does not resolve it.** Of the
-premise-holding doors, some sent nothing (`splice` refused with no error body) and
-some cannot know (`splice` never answered; a frame that would not parse; an `ok`
-carrying no body). The last of those is the one a later reader is most likely to
-"correct": an `ok` bit looks like knowledge. It is not, and the ground is the
-reply itself — **a reply that violates its own schema certifies nothing,
-including its own `ok` bit.** Filing it as "landed but undescribable" would
-over-trust a malformed answer; knowledge at this boundary IS a well-formed
-answer, so this door is genuinely unknown rather than merely unexplained. The
-first kind is an ordinary engine-minted refusal and takes
-its class from the reading above. The second kind may not use `no_effect`,
-`conflict` or a bare `refused`, because **all three assert that nothing landed**,
-and that assertion would be a fabrication aimed at the caller's own file. It
-carries `recovery: resync` — the class the consumer already dispatches on for a
-killed engine — and, because `refused` alone reads as "nothing was applied", the
-trace states the indeterminacy in band rather than in prose. Prose stays a
-rendering here too: a consumer that needs to know whether it may resend reads the
-class, never the sentence. `--dry` is `retry` on the same reading as the killed
-path — a rehearsal that lost its answer provably committed nothing.
+The shape: `outcome: refused`, `fault.class: refused`,
+`fault.recovery: resync` (or `retry` under `--dry`, as on the killed path), no
+`fault.code`, and **`commit_unknown: true`** — present exactly when a splice
+was issued and its outcome is not known. It is a field because an absent
+`commit` already means "no splice was issued"; it is not a sixth outcome word
+or a fifth fault class, because **committed-or-not-known is a property of a
+run, not a kind of outcome**. These doors leave through the findings leg,
+**exit 1** (`conflict`, `fault`, `refused`); exit 2 stays the bad-invocation
+leg, which is what makes the exit-2 guarantee true.
 
-The shape, spelled: `outcome: refused` with `fault.class: refused`,
-`fault.recovery: resync` (or `retry` under `--dry`), no `fault.code` — no frame
-minted one — and **`commit_unknown: true`**, a boolean present exactly when a
-splice was issued and its outcome is not known. The field exists because
-`commit`'s ABSENCE is already spoken for: it means no splice was issued, so a
-lost answer that merely omitted the leg would read as the read-class path. It is
-a field and not a sixth outcome word, and not a fifth fault class, on the
-preceding clause's own reasoning one axis over: **committed-or-not-known is a
-PROPERTY of a run, not a KIND of outcome.** A sixth word would break every
-consumer matching the closed five; a fifth class would break every consumer
-matching `refused`. These doors leave through the findings leg — **exit 1**, with
-`conflict`, `fault` and `refused` — which is also what makes the exit-2 guarantee
-above true, since exit 2 is documented as the bad-invocation leg and a lost
-commit answer is not a bad invocation.
-
-**The shape is ADDITIVE.** A consumer that reads a trace when stdout carries
-one needs nothing more; a consumer that treats `exit 2 + empty stdout` as "the
-engine did not answer" keeps that reading, with a guarantee behind it.
+**The shape is additive.** A consumer that reads the trace, or treats
+`exit 2 + empty stdout` as "the engine did not answer", needs no change.
 
 **The `mrd script` human-mode face is non-normative.** The MCP host owns the
 normative text face, rendered from the trace; `mrd script --json` emitting the
 trace is the contract between them. The CLI's human mode is an operator
-convenience. Two normative renderers in two languages would drift, and only
-the host knows `attempts:N`.
+convenience: two normative renderers would drift, and only the host knows
+`attempts:N`.
 
 ### The two entries of the run plane — seam table
 
 The mechanism is shared — sealed Starlark kernel, `md.*` descriptors, the one
-write path. Everything that differs is at the entry.
+write path. Only the entry differs.
 
 | Axis | Task entry (`mrd run`) | Script entry (`mrd script` / MCP `script`) |
 |---|---|---|
 | Source | addressed fenced block in a governed page (`task.<name>: "[[#^block]]"`) — reviewable, rev-pinned, in the hash domain | inline source, caller-supplied per call; never lands in the tree |
 | Authority | ambient — whoever invokes the page runs its task; caps declared in frontmatter, deny-by-default, root ceiling narrows only | the caller's own identity — `actor` threaded per §9; ownership guard + armed law; no cap grammar (caps = v2 delegation feature) |
-| Entry point | `def run(ctx)` (one entry per plane) | module top level — the script IS the body (kernel entry #3) |
+| Entry point | `def run(ctx)` (one entry per plane) | module top level — the script is the body (kernel entry #3) |
 | Languages | starlark + bash (fence dispatch) | starlark only; no exec, ever |
-| Hermeticity | hermetic by construction: sealed kernel, zero I/O, `RunCtx` inert | recorded-read purity: eval is a pure function of (script, args, files, read-response sequence); trace records every read; replay against recorded reads is byte-identical |
-| Reads | none — inputs arrive as inert `RunCtx` data | ONE lane (§ A.7): `read()` serves in-process from the pinned entry world plus the program's own armed overlay. The `mrd script` verb forwards the whole attempt and lowers no read of its own |
+| Hermeticity | hermetic by construction: sealed kernel, zero I/O, `RunCtx` inert | recorded-read purity: eval is a pure function of (script, args, files, read-response sequence); the trace records every read; replay against recorded reads is byte-identical |
+| Reads | none — inputs arrive as inert `RunCtx` data | one lane (§ A.7): `read()` serves in-process from the pinned entry world plus the program's own armed overlay; `mrd script` forwards the whole attempt and lowers no read of its own |
 | Enumeration | page names its own targets | none in-kernel: host resolves selector (sorted) or binds caller `files[]` in call order — inert paths only |
-| Commit | one atomic `if_fingerprint`-pinned batch via the local executor | ONE guarded commit as the caller (`actor`/`now`/`receipt` on the request): the single §4.4 splice for one armed path, the §4.4 SET form for N (§ One COMMIT per attempt) |
+| Commit | one atomic `if_fingerprint`-pinned batch via the local executor | one guarded commit as the caller (`actor`/`now`/`receipt` on the request): the single §4.4 splice for one armed path, the §4.4 set form for N (§ One commit per attempt) |
 | Concurrency | `run.lock` `LOCK_NB`; `write.lock` bounded-wait at the door calls (§ Executor laws) | stand-still optimistic at touch-set grain: entry world pinned for reads (frozen view); commit premise = the engine-computed touch set, verified entry-vs-live — foreign churn outside it never refuses; conflict inside it ⇒ host re-resolves selector and retries (budget 2, `attempts` on the face) |
-| Failure grain | one violation refuses the whole batch; bash phase-1 may stand committed and reported | one violation refuses the whole script; nothing ever partially lands (the sealed set keeps retry sound: a refusal lands nothing, so a re-run never double-applies) |
+| Failure grain | one violation refuses the whole batch; bash phase-1 may stand committed and reported | one violation refuses the whole script; nothing partially lands, so a re-run never double-applies |
 | Output | run record: stdout streamed + content-addressed out-of-tree log; receipt linkage via `ExecRecordSink` | `ScriptTrace` → text face: echo semantics, embedded §4.4 splice response verbatim, telemetry always present |
 | Guarantee label | per block: `hermetic` (starlark) / `detected` (bash) | recorded-read + stand-still, stated as such; zero-armed outcome is read-class (`Ok(vec![])` precedent) |
 | Daemon relation | local run beside a resident daemon = external change (accepted-gaps row, actor-absent) | wire client — writes arrive as governed change, actor-carrying, Delta-minted like any splice |
 | Typical caller | operator / CI invoking a page's declared task | agent making a plan-shaped call over MCP (≥2 dependent steps with a decision between them) |
-| Promotion | a task is already a convention — page-owned, addressable, armable | a re-sent script is a convention trying to be born: REWRITE as `on_change(event)` (reads dropped, payload-only), then the arming ladder — registration ≠ activation, a reviewer arms |
+| Promotion | a task is already a convention — page-owned, addressable, armable | a re-sent script is a convention trying to be born: rewrite as `on_change(event)` (reads dropped, payload-only), then the arming ladder — registration ≠ activation, a reviewer arms |
 
-The collision is at the entry, not the plane — both entries converge on the
-one write path, and neither may grow a private executor.
-
-A task's authority comes from where it lives; a script's authority comes from
-who sent it. Every row above is that sentence applied to one axis.
+Both entries converge on the one write path; neither may grow a private
+executor. A task's authority comes from where it lives; a script's from who
+sent it.
 
 ## The run entry, amended — load, freeze, fire
 
 *(Wire face: `docs/wire-contract.md` § A.8. Code: `run::modes`, `effects::kernel`,
 `run::blocks`, `run::caps`, `registry::run_op`, `mrd::run_cmd`.)*
 
-The `run` op gains **`mode`**, and nothing existing changes behavior: a target
-with no `mode` is the shipped task target, decoded and answered as before. Two
-modes join it, behind the dotted caps **`run.mode`** and **`run.input`** — a
-client that does not negotiate them gets the closed set's refusal by name
-(`` unknown field `mode` on `targets[0]` of `run` ``), which is the whole
-point of a closed set.
+This section governs what the `run` op does beside running a task: read what
+a page declares, or fire one block the page declared.
+
+The `run` op gains **`mode`**; a target without it is the shipped task target,
+unchanged. Two modes join it behind the dotted caps **`run.mode`** and
+**`run.input`**; an un-negotiated client is refused by name —
+`` unknown field `mode` on `targets[0]` of `run` ``.
 
 | Mode | Question it answers | Row it adds to `body.targets[]` |
 |---|---|---|
@@ -1367,109 +1032,86 @@ point of a closed set.
 
 ### Three phases, one globals set
 
-**load → freeze → fire.** The block's top level is evaluated in the load
-phase; the module is then frozen; a fire calls the frozen entry from a fresh
-evaluator.
+**load → freeze → fire.** Load evaluates the block's top level, the module is
+frozen, and a fire calls the frozen entry from a fresh evaluator.
 
-The load/fire boundary is a **phase gate at the emission accessor**, never a
-difference in which names exist: `effects::kernel::hook_globals()` is ONE
-closed set for compile, freeze and fire. That is forced, not chosen —
-starlark-rust resolves globals at module-compile time, so a load environment
-with `bash` unbound makes a block whose `def run(event)` merely *mentions*
-`bash()` fail to load, and a frozen `def` keeps the globals it compiled
-against (measured).
+The boundary is a **phase gate at the emission accessor**, not a difference in
+bound names: `effects::kernel::hook_globals()` is one closed set for compile,
+freeze and fire, because starlark-rust resolves globals at compile time.
 
 | Phase | `declare()` · `exec()` | `bash()` · the md constructors |
 |---|---|---|
 | load | act — the declaration is the load's whole answer | bound, and **refuse**: `fault.class: effect_at_load`, carrying `fault.line` |
 | fire | refuse: `fault.class: declare_at_fire` | act, under the page's `caps:` ceiling |
 
-**A block declares ONCE.** `declarations` on the load row is the uninterpreted
-**dict** `declare()` collected (§ A.8) — one dict, or `null` when the block
-declares nothing — and the fire door calls ONE entry. A second `declare()` in
-one block therefore has no shape to publish, and the engine, which interprets
-no key of a declaration, has no basis on which to merge two: it refuses
-**`fault.class: declared_twice`** at that call's own line, on that block's row
-alone. Its siblings on the page are unaffected; the remedy is one anchored
-block per declaration.
+**A block declares once.** `declarations` on the load row is the uninterpreted
+**dict** `declare()` collected (§ A.8): one dict, or `null` when the block
+declares nothing. The fire door calls one entry, and the engine interprets no key of a declaration, so a second
+`declare()` refuses **`fault.class: declared_twice`** at its own line, on that
+block's row alone, siblings untouched. One anchored block per declaration.
 
-These refusals are typed faults downcast out of starlark's `ErrorKind::Native`
-(`EffectAtLoad` / `DeclareAtFire` / `DeclaredTwice`), so `name_error` keeps its own meaning —
-an identifier bound nowhere, a typo — and a phase violation is never absorbed
-into it. **Load purity is behavioral here, not structural**, and that is
-stated rather than glossed: nothing effectful *happens* at load, but the
-names are in scope. The structural version costs the freeze and the module
-cache, a price this design does not pay.
+These are typed faults downcast from starlark's `ErrorKind::Native`
+(`EffectAtLoad` / `DeclareAtFire` / `DeclaredTwice`), so a phase violation is
+never absorbed into `name_error`, which keeps its own meaning: an unbound
+identifier. **Load purity is behavioral, not structural**: nothing effectful
+happens at load, but the names are in scope.
 
 ### The consent gate — `run` executes what the page declares
 
 > **`run` executes what the page declares: `task.<name>` in frontmatter or
 > `declare()` in the block, never an undeclared block.**
 
-A fire naming a bare anchored fence refuses `not_declared` at the door
-(`run::modes`), and the refusal names the other addressing when the block is
-task-bound — the two addressings are exclusive, so a `task.<name>` block is
-fired as a task, never as a block. A non-starlark fence addressed directly
-refuses `not_a_module` and is told how it is reached: through the starlark
-block that declares it with `exec(...)`.
+- A fire naming a bare anchored fence refuses `not_declared` at the door
+  (`run::modes`); a task-bound block's refusal names the task addressing
+  instead, since a `task.<name>` block fires only as a task.
+- A non-starlark fence addressed directly refuses `not_a_module`, naming its
+  route: the starlark block that declares it with `exec(...)`.
 
-**A prelude may not carry consent.** The `prelude` is CALLER source and it
-evaluates into the block's own module, in the load phase, before the block's
-top level — and `declare()`/`exec()` are load-phase builtins. A caller
-shipping `declare(impl = exec("bash", cmd = "…"))` as its prelude would
-therefore make every anchored starlark fence on every addressed page a fire
-target running caller-authored bytes, including a fence that declares
-nothing. So a prelude that produces ANY declaration (or an `exec` value)
-refuses **`prelude_invalid`** — the existing class, broadened, no new
-vocabulary — at the mode door (`check_prelude` in `mode_row`, above the
-load/fire dispatch), before any block of the page is loaded, for load and fire
-alike, regardless of what the page itself declares; a prelude declaration
-never reaches the declaration list; `not_declared` stays reachable.
+**A prelude may not carry consent.** The `prelude` is caller source, evaluated
+into the block's module at load, before its top level, where `declare()` and
+`exec()` live. A prelude producing any declaration or `exec` value refuses
+**`prelude_invalid`** at the mode door (`check_prelude` in `mode_row`, above
+the load/fire dispatch) — before any block of the page is loaded, for load and
+fire alike, whatever the page itself declares. A prelude declaration never
+reaches the declaration list; `not_declared` stays reachable.
 
-*Regardless* is load-bearing rather than cautious: a task-bound block has no
-`declare()` of its own, so a guard that fired only when the page declared
-would leave exactly that block hijackable. A prelude carries shared helpers,
-not entries.
-`prelude_invalid` is ONE class, not two: a prelude is invalid when its code
-faults **or when it carries consent material — a declaration or an `exec`
-value — because consent is page-authored**. The caller's remedy is the same
-either way, and the reason string names which invalidity it was.
+`prelude_invalid` is one class: the prelude's code faults, **or it carries
+consent material — a declaration or an `exec` value — because consent is
+page-authored**. The reason string names which.
 
-The consent gate is why a page-wide *block enumerator* exists beside
-frontmatter `task.*` discovery: `run::blocks` walks from the page's live
-anchors to their fences; nothing re-implements addressing.
+The block enumerator `run::blocks` walks live anchors to their fences, beside
+frontmatter `task.*` discovery; nothing re-implements addressing.
 
 ### Recording by declaration kind
 
-**A fire row writes no receipt rows, and the fire PROCESS takes no task-path
-lock** (the recording law above); realizing md effects goes through the
-applier, which takes the workspace lock unconditionally and can refuse
-workspace busy — that is the pre-birth stage (A8; the tree: `modes.rs` →
-`executor::apply`, which acquires `WorkspaceLock` first).
-A task row is unchanged. There is no caller flag for this — the engine reads
-the page. 100 declared-block fires add **zero** rows to `receipts/run.md`
-(the receipt anchors counted are `^r-<invocation>` and `^p-<invocation>`).
+The two declaration kinds — a `task.<name>` binding and a `declare()` block —
+record differently.
+
+**A fire row writes no receipt rows, and the fire process takes no task-path
+lock.** Its md effects go through the applier, which takes the workspace lock
+unconditionally and can refuse workspace busy — the pre-birth stage (A8; `modes.rs` → `executor::apply` acquires `WorkspaceLock`
+first). A task row is unchanged; the engine reads the page, with no caller
+flag. 100 declared-block fires add **zero** rows to `receipts/run.md` (anchors
+`^r-<invocation>`, `^p-<invocation>`).
 
 ### Caps — the page's own ceiling
 
-A declaring page's blocks have no task names, so `task.<name>.caps` cannot
-express their ceiling. `run::caps` reads a **page-level `caps:`** key for
-them — new grammar, deliberately not a task binding — over the three md verbs
-`md.create` · `md.edit` · `md.delete`. It is judged at the lifted `admit`
-choke point, so a denial is `cap_denied` at the door and nothing reaches
-disk; absence of a cap is never a silent no-op. The declaring root's
-conventions ceiling narrows a page's caps and never widens them, exactly as
-for tasks. An exec'd entry's process is inert to it, by law.
+A **cap** is a permission to touch files, declared in frontmatter; what is not
+granted is denied. Declaring blocks have no task names, so `task.<name>.caps`
+cannot hold their ceiling. `run::caps` reads a **page-level `caps:`** key —
+new grammar, not a task binding — over the three md verbs `md.create` ·
+`md.edit` · `md.delete`, judged at the lifted `admit` choke point: a denial is
+`cap_denied` at the door, nothing reaches disk, and a missing cap is never a
+silent no-op. The declaring root's conventions ceiling narrows a page's caps
+and never widens them, as for tasks. An exec'd entry's process is inert to it.
 
 #### One spelling, both planes
 
-`caps:` is read by **two planes with different vocabularies** — the run plane's
-verbs (`md.edit:tasks/*.md`) here, and the policy plane's descriptor kinds
-(`proto.send`) at the HOOK leg (`crates/policy/src/hook.rs`). The vocabularies
-differ on purpose. **The spelling has exactly one owner**,
+Two planes read `caps:` with different vocabularies: the run plane's verbs
+(`md.edit:tasks/*.md`) here, the policy plane's descriptor kinds (`proto.send`)
+at the hook leg (`crates/policy/src/hook.rs`). **The spelling has one owner**,
 `model::parse_caps_list`, read off the frontmatter block by `model::fm_caps` /
-`model::fm_doc_caps`, so these all declare the same two caps on **either**
-plane:
+`model::fm_doc_caps`; these all declare the same two caps on **either** plane:
 
 ```yaml
 caps: md.create, md.edit          # plain scalar, comma- or space-separated
@@ -1479,330 +1121,267 @@ caps:                             # block sequence
   - md.edit
 ```
 
-`caps: []` declares the empty grant; a bare `caps:` declares nothing at all (on
-the policy plane that is a refusal, on the run plane deny-by-default). Gate:
+`caps: []` is the empty grant; a bare `caps:` declares nothing — a refusal on
+the policy plane, deny-by-default on the run plane. Gate:
 `crates/testsuite/tests/caps_one_grammar.rs`.
 
-One key, one reader, or the two drift — and they drift in **opposite**
-directions: with a reader per plane, the run plane faults `invalid capability
-'[md.create'` on the flow sequence, the policy plane refuses `invalid type:
-string` on the plain scalar, and a block sequence reaches the run plane as the
-empty string, silently replacing a page's declared caps with an explicit
-read-only grant. `model::fm_tags` exists under the same law for `tags:`.
+One key, one reader, or the two drift in opposite directions: on the flow
+sequence the run plane faults `invalid capability '[md.create'`, on the plain
+scalar the policy plane refuses `invalid type: string`, and a block sequence
+reaches the run plane as the empty string — a silent read-only grant.
+`model::fm_tags` holds the same law for `tags:`.
 
 ### The world a mode-bearing row runs against
 
+A mode-bearing row is a `run` target that carries `load` or `fire`.
+
 `load` and `fire` take the **pinned resident snapshot** (an `Arc` clone, the
-one the script op takes) and never run the `domain_snapshot` fold. The world
-is a parameter (`run::modes::ModeWorld`), so ONE implementation serves the
-daemon and the CLI, and the two lanes cannot answer differently.
+one the script op takes) and never run the `domain_snapshot` fold. The world is
+a parameter (`run::modes::ModeWorld`): one implementation serves the daemon and
+the CLI, so the two lanes cannot answer differently.
 
-On a **cold workspace** the answer is per LANE, and there are two of them:
+On a **cold workspace** the answer is per lane:
 
-- **the daemon lane** takes the same § 3.2 cold gate the script op takes and
-  **refuses `corpus_warming` (retry)** — it does not block and does not
-  bypass;
-- **the CLI / in-process lane** has no background substrate to warm on, so it
+- **daemon lane** — the same § 3.2 cold gate as the script op: it **refuses
+  `corpus_warming` (retry)**, neither blocking nor bypassing;
+- **CLI / in-process lane** — no background substrate to warm on, so it
   **builds the drawer inline** and the caller waits.
 
-That is not a second implementation (A7): one implementation serves both, and what
-differs is the SUBSTRATE each lane runs on — a daemon has a background
-builder to refuse in favour of, and a one-shot process does not. Wire-contract
-§ 3.2's promise is about the read door; a fire is not the read door, so the
-answer is stated here rather than implied.
+Wire-contract § 3.2's promise is the read door's, and a fire is not the read
+door.
 
-`prelude` (one per call, cap `run.mode`) is evaluated into each block's
-module before its top level; when it is invalid it refuses `prelude_invalid`
-— defined once under § The consent gate above, and broadened there to cover a
-prelude that carries consent material. Declarations and frozen modules are
-cached per block rev, keyed with the prelude's blake3 — an unchanged block is
-served from cache rather than re-evaluated, which is what the fire p95 rests
-on.
+`prelude` is one per call, cap `run.mode`, and an invalid one refuses
+`prelude_invalid` (§ The consent gate). Declarations and frozen modules are
+cached per block rev, keyed with the prelude's blake3, so an unchanged block is
+served from cache — what the fire p95 rests on.
 
 ### Amendments this implementation carries (A7, A8)
 
-Two laws of this implementation, both deliberate, both stated here rather
-than discovered in the diff.
-
-**A7 — the world is a parameter, not a second implementation.** Giving the
-daemon and the CLI their own paths into the run rows would make two
-implementations that can answer differently about the same page. What the
-code does instead: `run::modes::ModeWorld` carries the page, the workspace
-root, the declaring root, the observed corpus root, the caller's `prelude`,
-the door-side facilities and the module cache as **borrows**, and ONE
-implementation of `load_row`/`fire_row` serves both lanes. The daemon hands
-the page out of its pinned resident snapshot (an `Arc` clone — never the
-`domain_snapshot` fold) with a resident cache; the CLI hands the page it just
-loaded, with `cache: None`, because a cache built once per process is a cost
-with no benefit. The laws (pinned world, no fold, one write path) hold, and
-it makes "the two lanes cannot disagree" a property of the type rather than of
-two authors' discipline.
+**A7 — the world is a parameter, not a second implementation.**
+`run::modes::ModeWorld` carries as **borrows** the page, the workspace root,
+the declaring root, the observed corpus root, the caller's `prelude`, the
+door-side facilities and the module cache; one `load_row`/`fire_row` serves
+both lanes. The daemon hands the page out of its pinned snapshot with a
+resident cache; the CLI hands the page it just loaded, with `cache: None`.
 
 **A8 — the `applied[]` row vocabulary.** The wire emits
 `born|edited|refused|not_applied`.
-`edited` exists because a `set_field` is not a birth and calling it `born`
-would be a defect (the same row publishes the page's rev for it, so the word
-and the rev would disagree inside one row). There is no `exists` word because
-this door has no such arm — an occupied path REFUSES at the create door, as
-`cas_mismatch` with `expected` = `absent_rev` (the `node_rev` of the empty
-document — not a nil hash, and not "the empty hash"). `not_applied` exists
-because the PAGE SPLICE is atomic: an edit either committed with the whole
-batch or did not happen, so a sibling edit that read `born` would be claiming
-a record that is not on disk. Births are the positional case above. The
-refusal semantics beside it — a door refusal is the effect's row, the fire row
-keeps `ok` and its `value` — are stated below.
 
-> **A8's touch set reaches past the engine.** A caller whose own idempotency
-> needs "already there" to be benign rather than an error (a born-record
-> check) gets no `exists` word from the engine, so the mapping is the
-> caller's — and the token it keys on, character for character, is
-> **`cas_mismatch`**.
+- `edited` — a `set_field` is not a birth, and the same row's rev would
+  contradict `born`.
+- no `exists` — an occupied path **refuses** at the create door (the note
+  below spells it).
+- `not_applied` — the page splice is atomic, so a sibling edit may not claim
+  `born` for a record not on disk.
+
+> **A8's touch set reaches past the engine.** A caller that needs "already
+> there" to be benign keys on **`cas_mismatch`** with
+> `expected` = **`absent_rev`, the `node_rev` of the
+> empty document** (`wire-serve/src/write.rs`: `AlreadyExists` →
+> `cas_mismatch(&absent_rev(), &occupant)`; `absent_rev()` is the root rev of
+> `model::build(String::new(), syntax::parse(""))` — a computed blake3 value,
+> not a nil hash and not an empty string — measured `af1349b9f5f9a1a6`).
+> `cas_mismatch` also spells the create-CAS, the drift/remove-CAS and the
+> splice verdict, so **only `expected == absent_rev()` discriminates** — the
+> field, never the call site.
 >
-> Stated as it actually is, not as it would be convenient: an occupied path
-> refuses `cas_mismatch` with `expected` = **`absent_rev`, the `node_rev` of
-> the EMPTY DOCUMENT** (`wire-serve/src/write.rs`: `AlreadyExists` →
-> `cas_mismatch(&absent_rev(), &occupant)`; `absent_rev()` is
-> `model::build(String::new(), syntax::parse(""))`'s root rev — a computed
-> blake3 value, not a nil hash and not an empty string — measured
-> `af1349b9f5f9a1a6`). **`cas_mismatch` is not unique to occupancy**: the same
-> code spells the create-CAS, the drift/remove-CAS and the splice verdict, so
-> **only `expected == absent_rev()` discriminates**.
->
-> **That check exists.** The token is published as **`wire::ABSENT_REV`** and
-> the comparison as **`ErrorBody::is_path_occupied()`** — one spelling, three
-> Rust consumers (`preset::birth`, `realise`'s card mint, and the wire-serve
-> gates) plus any wire client that mirrors the constant. The engine still
-> COMPUTES `absent_rev()` from the model and a wire-serve test asserts the two
-> agree, so a domain-rule change that moves the empty document's rev fails the
-> build instead of leaving the constant lying. **The discriminator a caller may
-> rely on is the `expected` field, not the call site** — a future non-create
-> caller of these consumers gets an error, not a silent "it was already
-> there".
->
-> Fail-closed at the edge: the guard plane's `AlreadyBorn` is a benign
-> already-exists too, but it carries no `expected` and is a splice-path refusal
-> the create door never mints, so `is_path_occupied()` reads it false.
+> The token is **`wire::ABSENT_REV`** and the comparison
+> **`ErrorBody::is_path_occupied()`** — one spelling for three Rust consumers
+> (`preset::birth`, `realise`'s card mint, the wire-serve gates) and any wire
+> client mirroring it. A wire-serve test asserts the constant equals the
+> computed `absent_rev()`, so a domain-rule change that moves the empty
+> document's rev fails the build. The guard plane's
+> `AlreadyBorn` is a benign already-exists too, but carries no `expected` and
+> is a splice-path refusal the create door never mints, so
+> `is_path_occupied()` reads it false.
 
 ### A door refusal is that effect's row — never the fire's
 
-**The rule.** A **door** refusing one descriptor is that descriptor's own
+**The rule.** A descriptor is one declared md effect — a create, a field set,
+a section append. A **door** refusing one descriptor is that descriptor's own
 `applied[]` row: `result: "refused"` with the door's class and reason. The
 **fire row keeps `result: "ok"` and keeps its `value`.** The page splice stays
-atomic, and the sibling rows are POSITIONAL on the refusal's own descriptor
-index — the table below states them; a create BEFORE the refused index reads
-`born`, because births realize sequentially ahead of the splice and stay
-(never roll back).
+atomic; sibling rows are positional on the refused descriptor's index, and a
+create before that index reads `born` — births realize sequentially ahead of
+the splice and never roll back.
 
-That is the never-veto law made operational. A `PreToolUse` hook that answers
-`{"deny": "…"}` and also appends to a page the armed plane refuses must still
-deliver its verdict; a daemon that checks `result == "ok"` before reading
-`value` would otherwise discard a deny because an unrelated write was
-refused.
+That is the never-veto law made operational: a `PreToolUse` hook's
+`{"deny": "…"}` still reaches the caller when its own append is refused, and a
+daemon checking `result == "ok"` before reading `value` would drop it.
 
-**Where the line sits**, because "refusal" names two different situations:
+"Refusal" names two situations:
 
-| A door said no → the EFFECT's row, fire row stays `ok` | The engine could not carry the batch → the FIRE row refuses |
+| A door said no → the effect's row, fire row stays `ok` | The engine could not carry the batch → the fire row refuses |
 |---|---|
 | `cap_denied` · a birth the create door refused (occupied path, bad path) · an **armed-middleware veto** · a section that is not there or is there twice · an fp-claim · a verdict refusal | the workspace lock is held · I/O · a page that will not load · a non-md descriptor reaching the executor · a malformed descriptor |
 
-The refusal names WHICH descriptor it is about —
-`ExecError::descriptor_index` — and the rows are positional on it. Matching
-the door's own coordinates against the descriptor list would not do: it
-cannot tell two descriptors sharing a path and a verb apart.
+The refusal names its descriptor by `ExecError::descriptor_index`.
 
-A refusal that names **no** descriptor renders **by stage**, because the
-splice runs after the birth lane and "nothing landed" would be false again:
+A refusal naming **no** descriptor renders **by stage**, because the splice
+runs after the birth lane:
 
 | stage | creates | edits |
 |---|---|---|
 | pre-birth (the workspace lock — taken before anything runs) | `not_applied` | `not_applied` |
 | post-birth, no descriptor named (page load, splice I/O) | `born` — the birth lane completed, or its refusal would carry that birth's index | `not_applied` |
 
-`refused` is **reserved for the descriptor a door judged**. The fire row
-refuses in both of those engine-failure cases; a door refusal keeps it `ok`
-and keeps its `value`.
-
-**Result words** (A8): `born` for a birth,
-`edited` for an edit, `refused` for the descriptor a door judged,
-`not_applied` for its siblings. There is no `exists` word — an occupied path
-REFUSES at the create door — and `edited` exists because the alternative is
-calling an edit a birth.
+`refused` is **reserved for the descriptor a door judged**; in both
+engine-failure stages the fire row refuses.
 
 ### Ceilings, and what a caller can narrow
 
 `timeout_ms` and `budget {steps, mem}` on a mode-bearing target are the
-caller's **ceilings**: **effective = min(declared, ceiling)** in every axis.
-A caller narrows; nothing a caller sends raises the engine's own limit, and an
-absent field leaves the engine ceiling standing. `budget` reaches the
-evaluator as its fuel and memory limits; `timeout_ms` reaches every process
-the fire starts — the exec'd entry and each `bash()` call.
+caller's **ceilings**: **effective = min(declared, ceiling)** in every axis. A
+caller narrows, never raises, and an absent field leaves the engine's ceiling
+standing. `budget` is the evaluator's fuel and memory limit; `timeout_ms`
+reaches every process the fire starts — the exec'd entry and each `bash()`
+call.
 
-`env` on a fire is an **exec'd entry's process overlay**: the target's `env`
-is the base — where a daemon's `CCC_HOOK_*` scalars ride, carried opaque — and
-the declared `exec(env=)` pairs overlay it. On an **evaluated**-entry fire it
-**refuses** (`bad_request`), because no process exists to receive it. That
-refusal is a row, not a wall: whether a block's entry is evaluated or exec'd
-is a fact about the page, which the decode wall does not read.
+`env` on a fire is an **exec'd entry's process overlay**: the target's `env` is
+the base, where a daemon's `CCC_HOOK_*` scalars ride opaque, and the declared
+`exec(env=)` pairs overlay it. On an **evaluated**-entry fire it **refuses**
+`bad_request` (no process to receive it) — a row, not a decode-wall refusal,
+since the entry kind is a page fact.
 
-The engine's own facts reach an exec'd entry as `MRD_RUN_PAGE` (the page),
-`MRD_RUN_BLOCK` (**the declaring block's anchor** — the one the caller
-addressed, not the fence `exec(block=)` points at) and `MRD_RUN_INVOCATION`.
-Its working directory is `input["cwd"]` when the input names one, else the
-page's root.
+The engine's own facts reach an exec'd entry as `MRD_RUN_PAGE`,
+`MRD_RUN_BLOCK` (**the declaring block's anchor** the caller addressed, not the
+fence `exec(block=)` points at) and `MRD_RUN_INVOCATION`; its working directory
+is `input["cwd"]` when given, else the page's root.
 
-**`exec(block=)` resolves at LOAD**, not at the call: the declaration IS the
-program, so a declaration naming a fence that is not there is broken when it
-is read — `no_block`, carrying the anchor's own words; an anchor minted twice
-is the typed `ambiguous_anchor`. Both are faults on the **load row**, so a
-resolver deciding what to arm learns it from `--load` rather than from the
-first fire, and both are judged again at the fire door, because a page can
-change between the two.
+**`exec(block=)` resolves at load**, not at the call: the declaration is the
+program. A missing fence faults `no_block`, carrying the anchor's own words; an
+anchor minted twice faults the typed `ambiguous_anchor`. Both are **load-row**
+faults, shown by `--load` before any fire, and both are judged again at the
+fire door.
 
-**An exec'd entry's program is a STAGED FILE.** The bytes are written once per
-block rev under `.meridian/staged/<rev>[.<token>]` and the process is
-`<interpreter> <staged-file> <args…>`. `-c` is a **shell** convention and
-cannot be the contract for a plane whose law is *a new language is `argv[0]`,
-not a concept*: measured, `node -c '<source>'` reads `-c` as
-`--check` and answers `MODULE_NOT_FOUND` exit 1, `bun -c` answers `File not
-found`, `deno`'s `-c` is its config-file flag — so under `-c` every non-shell
-entry fails while looking like a script that ran and said no. The extension is
-the fence's own info-string token (`fence.rs` is untouched: that is the FIRST
-token, the classifier that already exists) because bun and deno pick a loader
-from the file name. The staged file IS the cache the design names — *staged
-bytes cached by block rev*: a rev names one immutable set of bytes, so a
-second fire of an unchanged block finds it there and writes nothing; the cache
-removes the read and the write, never the spawn. `$0` is therefore the staged
-path, not `mrd-task`; stdin, env, cwd and the exit contract are unchanged, so
-*the script's bytes run unchanged* holds. **The shipped task path keeps `-c`
-and `$0 = mrd-task`, byte for byte** (`run::exec::ExecSpec::task`).
+**An exec'd entry's program is a staged file.** The bytes are written once per
+block rev under `.meridian/staged/<rev>[.<token>]`, and the process is
+`<interpreter> <staged-file> <args…>`.
+
+- `-c` is a **shell** convention, not a contract for a plane whose law is
+  *a new language is `argv[0]`, not a concept*: `node -c '<source>'`
+  reads `-c` as `--check` (`MODULE_NOT_FOUND`, exit 1), `bun -c` answers `File
+  not found`, and `deno`'s `-c` is its config-file flag.
+- The extension is the fence's own info-string first token (the classifier
+  `fence.rs` already has): bun and deno pick a loader from the file name.
+- The staged file is the cache — *staged bytes cached by block rev*: a second
+  fire of an unchanged block writes nothing. The cache removes the read and the
+  write, never the spawn.
+- `$0` is the staged path, not `mrd-task`; stdin, env, cwd and the exit
+  contract are unchanged, so *the script's bytes run unchanged* holds.
+- **The shipped task path keeps `-c` and `$0 = mrd-task`, byte for byte**
+  (`run::exec::ExecSpec::task`).
 
 **Recording has a ceiling.** Logs live at
 `.meridian/runs/<page-path>/<invocation>-t<index>.log` for an exec'd entry and
-at `…-t<index>-b<n>.log` for the n-th `bash()` call of that target — a
-directory **per page**, which is what makes the stated retention (the last 50
-per page) implementable at all, and what keeps the fire path out of
-`.meridian/runs/`'s top level, where `run::record` writes the TASK path's logs
-and a run receipt points at them. An `exec[]` row publishes `stdout_sha256` +
-`bytes` + that `log` path, never the stream inline: a chatty hook would
-otherwise put its whole stdout on the wire, in the daemon's journal and in an
-agent's context on every fire. A `process` object is bounded the same way —
-`stdout_tail`/`stderr_tail` are the **last 4096 bytes** of each stream, with
-`stdout_bytes`/`stderr_bytes` saying how much there was and the `log` carrying
-all of it. The dict the PROGRAM sees still carries `stdout`/`stderr` inline —
-a program branching on its own command's output is why `bash()` returns a
-value at all. Nothing is staged and nothing is logged under `dry`.
+`…-t<index>-b<n>.log` for the n-th `bash()` call of that target — a directory
+**per page**, retention the last 50 per page. The task path's logs stay at the
+top level of `.meridian/runs/`, written by `run::record` and pointed at by a
+run receipt. An `exec[]` row publishes `stdout_sha256` + `bytes` +
+that `log` path, never the stream inline. A `process` object is bounded the
+same way: `stdout_tail`/`stderr_tail` are the **last 4096 bytes** of each
+stream, `stdout_bytes`/`stderr_bytes` the full sizes, and the `log` carries all
+of it. The dict the program sees still carries `stdout`/`stderr` inline.
+Nothing is staged and nothing is logged under `dry`.
 
 ### Input and answer
 
 **Which def a fire calls.** `declare(impl = f)` names it; with no `impl` the
 conventional entry is **`run`** (`effects::kernel::DEFAULT_HOOK_ENTRY`), and
-whether the module defines it is the freeze's business — `missing_entry`,
-loud, at the right layer — because a block may legitimately declare before it
-defines. `impl` is resolved at the `declare()` call while the value is still
-live: a callable is the evaluated entry, an `exec(...)` value is a process
-entry, anything else is the `impl_type` fault.
+whether the module defines it is the freeze's business (`missing_entry`), since
+a block may declare before it defines. `impl` is resolved at the `declare()`
+call while the value is still live: a callable is the evaluated entry, an
+`exec(...)` value a process entry, anything else the `impl_type` fault.
 
-`input` (cap `run.input`) is JSON, converted to starlark at the call;
-the entry's return converts back to JSON as `value`. **`None` is no answer** —
-it collapses to no `value`, never to `"value": null` (*the entry's
-return is the answer*). A birth row's `file_rev` names **the born file's**
-rev, not the page's, and carries the born `path`.
+`input` (cap `run.input`) is JSON, converted to starlark at the call; the
+entry's return converts back to JSON as `value`. **`None` is no answer**: no
+`value`, never `"value": null`. A birth row's `file_rev` names **the born
+file's** rev, not the page's, and carries the born `path`.
 
 ## Addressing (§2.1 grammar, no new syntax)
 
 A page declares tasks in frontmatter: `task.<name>: "[[#^block-id]]"` binds a
 task name to a same-file fenced code block; `task.<name>.caps` / `.args` /
-`.env` carry its capability declaration and input contract. `.args` names
-positional slots in order and the count is exact, with one form for
-variable-length input: the LAST name may carry a `...` tail
-(`task.fmt.args: title, rows...`), which keeps the earlier names as fixed slots
-and takes every remaining arg, zero included. Both dispatchers already consume
-a positional list (bash argv, starlark `ctx.args`), so a tail changes no supply
-surface; `.env` is supplied by name and refuses the suffix. Cross-file refs
-are a **non-goal** and refuse with a typed error. Every
-addressing fault is distinct and pre-eval: no such task, dangling binding,
-ambiguous anchor, not-a-code-block, unknown fence language, cross-file ref.
+`.env` carry its capability declaration and input contract.
 
-**A binding fault is scoped to its own row.** A binding VALUE is validated when
-its own task is addressed, so `mrd run PAGE TASK` always answers TASK's fault —
-a sibling's malformed or cross-file binding never masks it. `--list` renders
-every declared row and prints a faulty row's typed error in place of its
-language and caps, so one broken declaration neither hides the page nor
-vanishes from it.
+- `.args` names positional slots in order and the count is exact. The **last**
+  name may carry a `...` tail (`task.fmt.args: title, rows...`): earlier names
+  stay fixed slots, the tail takes every remaining arg, zero included; both
+  dispatchers already consume a positional list (bash argv, starlark
+  `ctx.args`).
+- `.env` is supplied by name and refuses the suffix.
+- Cross-file refs are a **non-goal** and refuse with a typed error.
+- Every addressing fault is distinct and pre-eval: no such task, dangling
+  binding, ambiguous anchor, not-a-code-block, unknown fence language,
+  cross-file ref.
 
-The one page-eager guard is the task **NAME** charset (§2.4): a key
-outside `[A-Za-z0-9-]` refuses the whole page, including `--list`. Its reason is
-not addressing but forgery — a name is stamped verbatim into every run receipt
-as `task`, and as the actor `run:<name>` whenever the request supplies no actor
-of its own (§9), and listing it would print the forged bytes it exists to keep
-out.
+**A binding fault is scoped to its own row.** A binding value is validated when
+its own task is addressed, so `mrd run PAGE TASK` always answers TASK's fault,
+never a sibling's. `--list` renders every declared row and prints a faulty
+row's typed error in place of its language and caps.
+
+The one page-eager guard is the task **name** charset (§2.4): a key outside
+`[A-Za-z0-9-]` refuses the whole page, `--list` included. The reason is forgery:
+a name is stamped verbatim into every run receipt as `task`, and as the actor
+`run:<name>` when the request supplies no actor (§9).
 
 ## Capabilities — deny-by-default
 
-An undeclared block is read-only: it can compute, but no effect of its
-executes. The cap plane speaks THREE CAP VERBS — `md.create` / `md.edit` /
-`md.delete` — answering one question: may this block touch files there
-(distinct from the birth-preset *three verbs* of § 4). HOW it touches them is the descriptor plane's (executor
-ops), extensible without growing this grammar: `Create` needs `md.create`;
-`SetField` and `AppendSection` need `md.edit`; `md.delete` is reserved — it
-parses and resolves so grants can be written ahead, but no descriptor maps
-to it until a retire descriptor exists.
+An undeclared block is read-only: it computes, but none of its effects
+execute. Three cap verbs answer *may this block touch files there* —
+`md.create` / `md.edit` / `md.delete` (not the birth-preset *three verbs*
+of § 4); *how* it touches them is the descriptor plane's (executor ops).
+`Create` needs `md.create`; `SetField` and `AppendSection` need `md.edit`.
+`md.delete`
+is reserved: it parses and resolves, so grants can be written ahead, but no
+descriptor maps to it until a retire descriptor exists.
 
-⚠️ **Everything in this section is STARLARK's.** Caps do not apply to bash
+⚠️ **This section governs starlark blocks only.** Caps do not apply to bash
 (`laws.md`): a bash task resolves `Authority::Unsandboxed`, its
 `task.<name>.caps` is never read, and a present-but-empty declaration grants
-it nothing — a bash fence rewrites any file it likes and the engine DETECTS
-that in the exec-window bracket rather than denying it. Read every rule below
-as governing starlark blocks.
+nothing. A bash fence may rewrite any file; the engine detects that in the
+exec-window bracket rather than denying it.
 
-**The two live verbs do not have the same reach, and the difference decides
-your glob.** `Create` births a file the block names, so `md.create` is a
-genuine *where may I write* grant. `SetField` and `AppendSection` change the
-DECLARING PAGE and nothing else (`descriptor_surface`,
-`crates/run/src/executor.rs`) — a starlark block has no descriptor that edits
-a second file — so an `md.edit` scope is a SELF-GUARD narrowing the block
-against its own coordinate, never a reach. An `md.edit:agents/*/CARD.md`
-declared on a page that is not an agent card can admit nothing, ever.
+**The two live verbs differ in reach, and that decides your glob.** `Create`
+births a file the block names: a real *where may I write* grant. `SetField` and
+`AppendSection` change only the declaring page (`descriptor_surface`,
+`crates/run/src/executor.rs`), so an `md.edit` scope is a **self-guard** on the
+block's own coordinate: `md.edit:agents/*/CARD.md` admits nothing on a page
+that is not an agent card.
 
-A verb is optionally scoped by a PATH GLOB in the system's one glob grammar
-(`policy::glob_match`, defined in `crates/policy/src/declaration.rs` — caps
-call it, never reimplement it), matched at the choke point against the block's DECLARED
-coordinates. Cap scopes carry one restriction the shared matcher does not:
-every segment must be non-empty, never `.` or `..`, and built from letters,
-digits or `_ - . * =` (`bad_glob`, `crates/run/src/caps.rs`) — a scope
-outside that charset refuses at declare time, even where the same string
-would be a legal glob for a rule or hook.
+A verb may carry a path glob in the one glob grammar (`policy::glob_match`,
+`crates/policy/src/declaration.rs`; caps call it, never reimplement it),
+matched at the choke point against the block's **declared** coordinate. Cap
+scopes add one restriction: every segment non-empty, never `.` or `..`, from
+letters, digits or `_ - . * =` (`bad_glob`, `crates/run/src/caps.rs`); outside
+that charset a scope refuses at declare time, even where a rule or hook would
+accept it.
 
 | Descriptor | Coordinate the glob judges |
 |---|---|
-| `Create` | its `path` argument VERBATIM — the resolution base (descriptor `base` > frame `ambient` > workspace root) is a separate axis, never glued into the matched string |
-| `SetField` · `AppendSection` | the declaring page's path with the frame's `ambient` directory stripped as a LITERAL prefix when the page lies under it; with no `ambient` on the frame — or a page that does not lie under it — the page's full workspace-relative path unchanged |
+| `Create` | its `path` argument verbatim; the resolution base (descriptor `base` > frame `ambient` > workspace root) is a separate axis |
+| `SetField` · `AppendSection` | the declaring page's path, minus the frame's `ambient` as a literal prefix when the page lies under it; otherwise the full workspace-relative path |
 
-⛔ **A create scope constrains the SHAPE of the declared path, not where the
-bytes land.** `base` is an ordinary argument the block chooses, and the choke
-point never reads it, so a block granted exactly `md.create:tasks/*.md` can
-land `tasks/<slug>.md` under ANY confined directory in the workspace.
-Measured, all from that one grant with only the glob judging:
-`conventions/attested/tasks/x.md`,
-`receipts/tasks/x.md`, `meridian/tasks/x.md`, `.meridian/tasks/x.md`, and
-**`.git/tasks/x.md`** — the reach includes the receipt ledger, the attestation
-tree, the engine's own reserved dirs, and the git directory, not just a wrong
-content folder. The last four refuse at the machinery floor below; `..`,
-absolute paths and foreign roots refuse at the path law, and every other
-confined landing is reachable. The tail jail is real (`evil/tasks/x.md`
-and `tasks/sub/x.md` both fail the glob as declared paths); the location is
-jailed at the machinery floor and nowhere else. A root ceiling
-like `run.caps.fix-*: md.create:tasks/*.md` reads as *births are confined to
-boards* and does not mean it. That is boundary-as-data working as
-designed — the engine holds no layout pattern to confine against — so treat
-a create scope as a shape contract, and put content containment, if you need
-it, in the block.
+⛔ **A create scope constrains the shape of the declared path, not where the
+bytes land.** The choke point never reads `base`, so `md.create:tasks/*.md`
+alone lands `tasks/<slug>.md` under any confined directory.
 
-🛡 **The machinery floor.** Four names are engine substrate rather
-than layout, so the CREATE DOOR refuses any birth whose RESOLVED landing
-carries one as a path segment — at any depth, ASCII-case-insensitively,
-whatever the capabilities admit. The refusal is `bad_path`, it names the
-offending segment, and nothing is written.
+- The grant admits every confined landing — measured:
+  `conventions/attested/tasks/x.md`, `receipts/tasks/x.md`,
+  `meridian/tasks/x.md`, `.meridian/tasks/x.md`, `.git/tasks/x.md`.
+- Refused: the last four at the machinery floor below; `..`, absolute paths and
+  foreign roots at the path law.
+- Jailed by the glob: the tail only (`evil/tasks/x.md`, `tasks/sub/x.md` fail
+  it as declared paths).
+
+So `run.caps.fix-*: md.create:tasks/*.md` does not confine births to boards
+(boundary-as-data: the engine holds no layout pattern); put content containment
+in the block.
+
+🛡 **The machinery floor.** Four names are engine substrate, not layout. The
+create door refuses any birth whose **resolved landing** carries one as a path
+segment, at any depth, ASCII-case-insensitively, whatever the caps admit:
+`bad_path`, naming the segment, nothing written.
 
 | Segment | What it is |
 |---|---|
@@ -1811,85 +1390,58 @@ offending segment, and nothing is written.
 | `meridian` | the attestation tree (`meridian/armed-rules.md`, `meridian/attested`) |
 | `receipts` | the receipt ledger (`receipts/run.md`, `receipts/realise.md`) |
 
-**One carve-out: `meridian/domain.md`.** The hash-domain config sits beside the
-attestation artifacts but is not one of them — it is AUTHORED content
-declaring the ignore list, deliberately inside its own hash domain, and the
-resident write path births it through this same door. Exempt at any depth.
-Measured, not reasoned: a floor without the carve-out refuses it and takes
-down three door tests. **Stated limit:** the carve-out is a hole in the floor. A run block
-granted a matching `md.create` scope can reach `meridian/domain.md` through its
-own `base` and reshape which files the workspace attests. The door cannot tell
-that block from a human authoring the same page — `actor` is caller-supplied —
-so closing it needs a policy axis this guard does not have.
+**One carve-out, `meridian/domain.md`**, exempt at any depth: the hash-domain
+config declaring the ignore list is authored content, and the resident write
+path births it through this door. **Stated limit:** a block with a matching
+`md.create` scope can reach it through its own `base` and reshape what the
+workspace attests; `actor` is caller-supplied, so the door cannot tell it from
+a human, and closing the hole needs a policy axis this guard lacks.
 
-**At any depth**, because a nested root's machinery is machinery too:
-`results/ws/.git/x.md` corrupts a repository exactly as `.git/x.md` does.
-Measured over a large live corpus: every non-root occurrence of these four
-names was a nested root's OWN machinery, never content — so the depth rule
-refuses no legitimate birth. Case-insensitively,
-because a case-insensitive filesystem lands `.GIT/x.md` inside `.git/` and a
-guard a spelling defeats is not a guard.
-
-This is a DOOR guard on the LANDING — deliberately the one axis capabilities
-do not judge, so caps still read the DECLARED coordinate alone and the two
-grains stay separate. It is also the one owner: the run-plane lane (starlark
-`create()`) converges on that door, as do the
-wire `create` op, the birth preset and the realise card mint.
+The floor judges the **landing**; caps judge the declared coordinate alone. One
+door owns it: starlark `create()`, the wire `create` op, the birth preset and
+the realise card mint.
 
 **The door also serializes the newborn's frontmatter.**
-`create(path=, body=, props=)` takes `props` as a DICT — string keys to
-strings or lists of strings — and the door composes the block, sharing the
-value-plane encoders every other write door uses (`yaml_safe_key`,
-`yaml_safe_scalar`, `yaml_safe_flow`). The point is what the block does not
-have to do: a program that composes its own frontmatter string must escape
-every value or forge a key with one `:`, and that escaper would be copied into
-every record-birthing block. No block carries one.
+`create(path=, body=, props=)` takes `props` as a dict of string keys to
+strings or lists of strings and composes the block with the shared encoders
+(`yaml_safe_key`, `yaml_safe_scalar`, `yaml_safe_flow`); no block carries its
+own escaper.
 
 | The block writes | Lands | Because |
 |---|---|---|
-| `props = {"status": "owner: [[x]] \" #now"}` | `status: "owner: [[x]] \" #now"` | a value that would read back as a key, a comment or a quoted scalar is quoted |
-| `props = {"tags": ["type/agent"]}` | `tags: [type/agent]` | a list is one line of flow, the spelling the corpus carries; a member carrying `,` or `]` quotes |
-| `props = {"n": "7"}` | `n: "7"` | `props` is a STRING plane: a value a YAML parser reads back as a number or a bool quotes, at every door (§ A.6.3 — a plain all-digit short id such as `19895504` reads back as an integer). The integer 7 has no spelling here: `PropValue::List` is the one typed arm |
-| `props = {"owner": "02146210"}` | `owner: "02146210"` | an all-digit 8-hex short id is a STRING — plain, PyYAML reads it as OCTAL 576 648 and the join key is gone |
-| `props = {"x": "[a, b]"}` | `x: "[a, b]"` | this door HAS a list arm, so a scalar never becomes a collection — **the one asymmetry with the patch face**, where the same string lands plain (`yaml_safe_scalar` here vs `yaml_safe_value` there, wire-contract § A.6.3) |
-| `props = {"bad": "a\nb"}` | REFUSED, nothing born | a v1 frontmatter value is single-line — refused, never sanitized |
-| `props=` plus a `body` opening `---` | REFUSED, nothing born | two spellings of one block; pass one |
+| `props = {"status": "owner: [[x]] \" #now"}` | `status: "owner: [[x]] \" #now"` | it would read back as a key, a comment or a quoted scalar |
+| `props = {"tags": ["type/agent"]}` | `tags: [type/agent]` | a list is one line of flow; a member with `,` or `]` quotes |
+| `props = {"n": "7"}` | `n: "7"` | `props` is a string plane: anything a YAML parser would read as a number or a bool quotes, at every door (§ A.6.3 — a plain all-digit short id like `19895504` reads as an integer). No integer spelling here; `PropValue::List` is the one typed arm |
+| `props = {"owner": "02146210"}` | `owner: "02146210"` | an all-digit 8-hex short id is a string; plain, PyYAML reads octal 576 648 and the join key is gone |
+| `props = {"x": "[a, b]"}` | `x: "[a, b]"` | this door has a list arm, so a scalar never becomes a collection — **the one asymmetry with the patch face**, where the same string lands plain (`yaml_safe_scalar` vs `yaml_safe_value`, wire-contract § A.6.3) |
+| `props = {"bad": "a\nb"}` | refused, nothing born | a v1 frontmatter value is single-line; refused, never sanitized |
+| `props=` plus a `body` opening `---` | refused, nothing born | two spellings of one block; pass one |
 
-Keys land sorted (the map carries no order, and a birth must replay byte for
-byte). Born-identity is unaffected: `created`/`session` are still stamped by
-armed middleware at this door from the put frame's `fields`, and `props` never
-reaches them — it is composed into the body BEFORE the middleware runs, so a
-fill-if-absent rule sees the caller's keys and composes with them. It costs the
-engine nothing — the armed artifact is written by `wire_serve::armed_disk`,
-the receipt rides the batch commit, and run logs use plain I/O; none of them
-passes this door.
+Keys land sorted: a birth must replay byte for byte. Armed middleware still
+stamps `created`/`session` here from the put frame's `fields`; `props` is
+composed into the body first and never reaches them, so a fill-if-absent rule
+sees the caller's keys. The armed artifact (`wire_serve::armed_disk`), the
+receipt (batch commit) and run logs (plain I/O) never pass this door.
 
-The engine holds no layout pattern (boundary-as-data),
-so `md.create:tasks/*.md` covers the ambient board, a based (`--target`)
-board, and the root board alike. **That symmetry does not carry to edits**,
-and the asymmetry is the one that bites: `ambient` is a frame field (cap
-`run.ambient`) the calling host attaches per call, so on any lane whose host
-sends none, an edit is judged by its FULL workspace-relative path — and a
-short `md.edit:tasks/*.md` then denies a card sitting at
-`year=…/<session>/tasks/x.md`. Spell an edit scope to span the depth,
-`md.edit:**/tasks/*.md`, which holds either way: `**` matches zero segments
-as readily as five. **Do not take the spelling the denial suggests** — its
-`Fix:` line is built from the denied page's own path, so it hands you a
-session-pinned scope (`md.edit:year=2026/month=08/<session>/tasks/*.md`) that
-works today and denies every card in the next session. What the line DOES
-guarantee is legality: every cap it prints round-trips through
-`Cap::parse`, so following it cannot produce a second refusal. Where no
-scope can name the coordinate at all — a rooted spelling, a segment outside
-the scope charset — the line says so and offers the unscoped verb instead of a
-spelling that dies at parse. Legal is not the same as durable: the
-session-pinning warning above still stands.
+**Spelling an edit scope.** `md.create:tasks/*.md` covers the ambient board, a
+based (`--target`) board and the root board alike; edits are not symmetric.
+`ambient` is a frame field (cap `run.ambient`) the host attaches per call, so
+where a host sends none an edit is judged by its full workspace-relative path:
+a short `md.edit:tasks/*.md` then denies a card at
+`year=…/<session>/tasks/x.md`. Spell `md.edit:**/tasks/*.md`, which holds
+either way (`**` matches zero segments too). **Do not take the spelling the
+denial suggests**: its `Fix:` line, built from the denied page's own path, is
+session-pinned (`md.edit:year=2026/month=08/<session>/tasks/*.md`) and denies
+every card next session. It guarantees legality only — every cap it prints
+round-trips through `Cap::parse`. Where no scope can name the coordinate (a
+rooted spelling, a segment outside the charset) it says so and offers the
+unscoped verb.
 
-Several scopes = several entries in the existing comma list; no new
-list syntax. A scoped cap is strictly narrower than its bare verb
-(`md.edit:**/tasks/*.md` < `md.edit`). Declared two ways — beside the binding,
-or by name convention. **The two examples below are one working pair: the
-ceiling must carry every verb the page declares** (see the verb-allowlist rule
-under Precedence — a ceiling that omits a verb drops it whole):
+Several scopes are several comma-list entries; no new syntax. A scoped cap is
+strictly narrower than its bare verb (`md.edit:**/tasks/*.md` < `md.edit`).
+Declare beside the binding, or by name convention. **The two examples below are
+one working pair: the ceiling must carry every verb the page declares** (a
+ceiling that omits a verb drops it whole):
 
 ```markdown
 ---
@@ -1912,136 +1464,99 @@ run.timeout_secs: 7
 ---
 ```
 
-⛔ **One bad entry in this table bricks the whole root.** The table is loaded
-before authority resolution, so an unparseable value refuses EVERY run on that
-root — read-only tasks, `check-*` tasks, **bash** tasks (which caps otherwise
-never govern), and even `mrd run <page> --list`, which is pure discovery. All
-three causes are the same hazard:
+⛔ **One bad entry in this table bricks the whole root.** The table loads before
+authority resolution, so one unparseable value refuses every run on that
+root — read-only tasks, `check-*` tasks, bash tasks (otherwise ungoverned by
+caps), even `mrd run <page> --list`. Three causes:
 
-- a trailing comment: the frontmatter scanner takes no YAML crate and strips
-  none, so `md.edit:… # longest pattern wins` parses `#` as a cap; <!-- caps-gate: refuses -->
+- a trailing comment: the frontmatter scanner takes no YAML crate, so
+  `md.edit:… # longest pattern wins` parses `#` as a cap; <!-- caps-gate: refuses -->
 - a bad verb: anything outside the three;
 - a glob outside the cap-scope charset above, e.g. `md.edit:tasks/x!y/*.md`. <!-- caps-gate: refuses -->
 
-**The refusal names the declaration path and the offending key.** A bare
-`invalid capability '#'` with no pointer to `MERIDIAN.md`, while every task on
-the root refuses at once, would leave the operator guessing; so it reads
-`refused: <path>: <key>: <what is wrong>`, states the whole-table blast radius,
-and names the trailing-comment cause, because that is the one an operator hits
-by copy-pasting a documented example.
+The refusal reads `refused: <path>: <key>: <what is wrong>`, states the
+whole-table blast radius, and names the trailing-comment cause. After editing a
+ceiling, run `mrd run <any-page> --list`; it fails loudly on a bricked table.
 
-After editing a ceiling, run `mrd run <any-page> --list` once — it is the
-cheapest possible smoke test, and it fails loudly on a bricked table.
+**Legacy per-op spellings fold or refuse, never silently reinterpret a
+target.** Bare `md.set_field` / `md.append_section` alias-fold into `md.edit`
+at parse; reports and refusals then name the canonical form. Their field-grain
+targeted forms (`md.set_field:status`) refuse: the target named a field or <!-- caps-gate: refuses -->
+section, the target position is a path glob, and dropping it would widen the
+grant. Field-grain guards live inside blocks; partition grain (parent-dir-name
+match) is not a grammar.
 
-**Legacy per-op spellings fold or refuse, never silently REINTERPRET a
-target.** Bare `md.set_field` / `md.append_section` ALIAS-FOLD into `md.edit`
-at parse, and the canonical form is what every report and refusal then names;
-their field-grain targeted forms (`md.set_field:status`) REFUSE with the <!-- caps-gate: refuses -->
-teaching — that target named a field or section, the target position is a
-path glob, and dropping the target would widen the grant. Field-grain guards
-live inside blocks. Partition grain (parent-dir-name match) is not a grammar.
+⚠️ **The fold preserves execution and widens the op axis.** `md.set_field`
+spelled a field-write-only grant; folded to `md.edit` it authorizes every
+page-mutating descriptor, `md.append_section` included. Re-guard inside the
+block; the cap plane has no op grain.
 
-⚠️ **The fold preserves execution and WIDENS the op axis** — say this out
-loud, because a page that keeps running looks like a page that did not
-change. `md.set_field` spelled a field-write-only grant; folded to
-`md.edit` it authorizes every page-mutating descriptor, `md.append_section`
-included (measured: a block declaring only bare `md.set_field`
-applies an `append_section` descriptor). A page that relied on the OP grain
-as a guard has no such guard and must re-guard inside the block; the cap
-plane has no op grain to express it with.
-
-`caps: []` is an EXPLICIT read-only grant, distinct from no declaration — and
-distinct from a bare `caps:` with nothing after it, which is not a declaration
-either (the engine never invents `[]` for a bare key). Precedence for the grant
-is explicit > convention > none;
-conventions **narrow only, never widen**, and every cap that did not survive
-intact is reported in `narrowed[]`. **Scopes meet by GLOB CONTAINMENT**
+`caps: []` is an explicit read-only grant; no declaration and a bare `caps:`
+are neither (the engine never invents `[]`). Precedence: explicit > convention
+> none. Conventions **narrow only, never widen**; every cap not surviving
+intact is reported in `narrowed[]`. **Scopes meet by glob containment**
 (`Cap::meet` → `policy::glob_subsumes`): segment-wise `**`/`*`/literal
-subsumption in the one glob grammar, nesting decided conservatively — a
-containment the checker cannot prove segment-wise reads as incomparable and
-drops, so the meet can only drop, never widen. Under a scoped ceiling a
-page's cap meets it five ways:
+subsumption, conservative — an unprovable containment reads as incomparable and
+drops, so the meet can only drop. Five ways:
 
 | Page declares | Result under ceiling `md.edit:tasks/**` |
 |---|---|
-| a scope inside the ceiling — the identical string, or any nested spelling (`md.edit:tasks/foo.md`, `md.edit:tasks/sub/*.md`) | survives intact |
-| the bare verb, unscoped | REPLACED by the ceiling's scope (`md.edit:tasks/**`), reported in `narrowed[]` — the page does not keep full reach |
-| a scope CONTAINING the ceiling (`md.edit:**`) | tightened to the ceiling's scope, reported in `narrowed[]` |
-| a scope neither inside nor containing it — disjoint (`md.edit:notes/*.md`) or overlapping without nesting (`md.edit:*/foo.md`) | DROPPED — overlap is not nesting; the grant is gone |
-| a verb the ceiling does not name at all | DROPPED WHOLE — a ceiling is an allowlist of VERBS as well as scopes, so `run.caps.fix-*: md.edit` kills every `md.create` on a `fix-*` task, however the page declares it |
+| a scope inside the ceiling — identical or nested (`md.edit:tasks/foo.md`, `md.edit:tasks/sub/*.md`) | survives intact |
+| the bare verb, unscoped | replaced by the ceiling's scope (`md.edit:tasks/**`), in `narrowed[]`; no full reach |
+| a scope containing the ceiling (`md.edit:**`) | tightened to the ceiling's scope, in `narrowed[]` |
+| a scope neither inside nor containing it — disjoint (`md.edit:notes/*.md`) or overlapping without nesting (`md.edit:*/foo.md`) | dropped; overlap is not nesting |
+| a verb the ceiling does not name | dropped whole — a ceiling allowlists verbs too, so `run.caps.fix-*: md.edit` kills every `md.create` on a `fix-*` task |
 
-⛔ **Keep `md.edit` ceilings UNSCOPED; scope `md.create` instead.** Because
-edits are self-guarded to the declaring page, a SCOPED edit ceiling is not a
-narrowing a page can comply with — it is an on/off switch keyed to where the
-page happens to live. Measured: under `run.caps.fix-note: md.edit:**/tasks/*.md`,
-a `fix-note` task on `rules/escalate.md` is denied no matter what it declares,
-including the bare verb, because the ceiling's own glob does not cover that
-page; renaming the task so it falls to an unscoped `fix-*` entry applies
-cleanly. The engine's "aim the effect inside what it leaves" is unfollowable
-there — an edit has no second page to aim at.
+⛔ **Keep `md.edit` ceilings unscoped; scope `md.create` instead.** Edits are
+self-guarded, so a scoped edit ceiling is an on/off switch keyed to where the
+page lives: under `run.caps.fix-note: md.edit:**/tasks/*.md`, a `fix-note` task
+on `rules/escalate.md` is denied whatever it declares, the bare verb included;
+renamed under an unscoped `fix-*` entry it applies cleanly.
 
-A string-equality meet would deny `md.edit:tasks/sub/*.md` under that
-ceiling though it sits plainly inside it. The subsumption meet admits exactly
-that case — a nested spelling survives intact, so byte-for-byte spelling is
-not required; NESTING is (a page declaring bare `md.edit` still resolves to
-`md.edit:tasks/**` with `narrowed by ceiling: md.edit`). The builtin `check-*` / `verify-*` ceiling
-is absolute, and those names refuse a bash fence loudly at load. Caps bind at
-the executor choke point before any I/O: one violation refuses the whole batch.
+The bare-verb row reports as `narrowed by ceiling: md.edit`. The builtin
+`check-*` / `verify-*` ceiling is absolute; those names refuse a bash fence
+loudly at load. Caps bind at the executor choke point before any I/O: one
+violation refuses the whole batch.
 
-**The denial names the ceiling that ate the grant.**
-`narrowed[]` reports the narrowing on the LISTING face; the refusal itself is a
-second face and must stand alone. A block whose own frontmatter declares
-`md.edit` and is nevertheless denied `md.edit` reads, at the denial,
-as an engine ignoring a grant that is plainly on the page — and the remedy the
-caller derives (declare the cap) is already in place. So a `capability denied`
-refusal names **which ceiling removed the cap**: the winning `run.caps.<pattern>`
-convention entry, or the builtin `check-*` / `verify-*` ceiling.
+**The denial names the ceiling that ate the grant.** `narrowed[]` reports
+narrowing on the listing face; a `capability denied` refusal names the winning
+`run.caps.<pattern>` convention entry, or the builtin `check-*` / `verify-*`
+ceiling.
 
-⛔ **Only when the ceiling is measured.** A denial that no ceiling caused —
-deny-default, an explicit grant that never held the cap — names the cause and
-STOPS. The engine never attaches a fixed remedy string to a cause it did not
-measure: a remedy that may misdiagnose is worse than none.
+⛔ **Only when the ceiling is measured.** A denial no ceiling caused —
+deny-default, or a grant that never held the cap — names the cause and stops;
+the engine attaches no remedy to an unmeasured cause.
 
-**The one measured remedy the deny arm does teach is the partition-grain
-respell**: where a declared GLOBLESS same-verb
-scope `T` would have covered the DECLARED COORDINATE as `T/*.md` (the same
-string every cap glob judges — the engine's own refusal text says "landing"
-here, which is the coordinate, not the resolved destination), the denial names that
-exact respell — `md.create:tasks` is a literal glob matching only the
-path `tasks`, and the page that used it under partition grain is told to
-spell it `md.create:tasks/*.md`. It is taught only when the match is
-measured, never guessed. Texts: `ExecError::CapDenied`
-(`crates/run/src/executor.rs`); parse-time refusals — unknown verb, bad
-glob, field-grain target — are `CapsError` in `crates/run/src/caps.rs`.
+The deny arm teaches one measured remedy, the **partition-grain respell**. It
+fires where a declared globless same-verb scope `T` would have covered the
+declared coordinate as `T/*.md` (the refusal says "landing", meaning that
+coordinate). `md.create:tasks` is a literal glob matching only the path
+`tasks`, so the page is told to spell `md.create:tasks/*.md`. Taught only
+on a measured match. Texts: `ExecError::CapDenied`
+(`crates/run/src/executor.rs`); parse-time refusals (unknown verb, bad glob,
+field-grain target) are `CapsError` in `crates/run/src/caps.rs`.
 
 ### Where the convention table lives
 
 **The root declares.** The table is read from the root's own `MERIDIAN.md`
-self-declaration (`type: meridian-root`) — the artifact the config charter's
-*"the root declares, `MERIDIAN.md` binds"* already governs — through
-`crates/config`, which owns what a valid declaration is. No other marker
-file is read and no fallback exists.
+self-declaration (`type: meridian-root`; the config charter's *"the root
+declares, `MERIDIAN.md` binds"*) through `crates/config`, which owns valid
+declarations. No other marker file, no fallback.
 
-**A rooted invocation's declaring root is the PAGE's tree (address-grammar § 4.6).**
-`mrd run root:page` behaves exactly as if the caller had
-cd'd into the named root: the convention table above loads from THAT root's own `MERIDIAN.md`,
-the caps ceiling is that tree's, and the receipt lands in that workspace. The standing
-workspace contributes nothing to the ceiling — the runtime cwd is not a factor in deciding
-behavior. This closes the ceiling-by-cd bypass on
-the plane where a declared ceiling exists — STARLARK: the `run.caps.*` table governing a
-task's `md.*` writes is always the page's own tree's, never a looser table chosen by where
-the caller stood. (Bash holds no cap ladder at all — caps do not apply to bash, `laws.md`;
-its only fence is the builtin name-keyed `check-*`/`verify-*` refusal, which
-travels with the page whatever tree resolves it.)
+**A rooted invocation's declaring root is the page's tree (address-grammar
+§ 4.6).** `mrd run root:page` behaves as if the caller had cd'd into that root:
+the table loads from that root's own `MERIDIAN.md`, the ceiling is that tree's,
+the receipt lands in that workspace. The runtime cwd and the standing workspace
+are not factors, which closes the ceiling-by-cd bypass for starlark. Bash holds
+no cap ladder (caps do not apply to bash, `laws.md`); its only fence is the
+builtin name-keyed `check-*`/`verify-*` refusal, travelling with the page.
 
 The grammar is the page grammar reused: flat dotted frontmatter keys carrying a
-cap list. Flat is the reader's law for the KEY, not a preference — the pattern
-is the `<pattern>` in `run.caps.<pattern>`, and a nested `run:`/` caps:` mapping
-would put it on an indented line where no key exists. The VALUE is the ordinary
-cap list, in
-any of the three spellings § *One spelling, both planes* names. A bare
-`run.caps.<pattern>:` declares the EMPTY ceiling, never an absent entry —
-fail-closed, the same direction a broken declaration refuses.
+cap list. The key must be flat — the pattern is the `<pattern>` in
+`run.caps.<pattern>`, which a nested `run:`/`caps:` mapping could not carry.
+The value is the ordinary cap list, in any of the three spellings § *One
+spelling, both planes* names. A bare `run.caps.<pattern>:` declares the empty
+ceiling, never an absent entry — fail-closed.
 
 Which root answered is never silent (`ConventionSource`):
 
@@ -2053,42 +1568,30 @@ Which root answered is never silent (`ConventionSource`):
 | present, not a valid declaration | **refuses** | an unreadable policy file never becomes *no policy* |
 | no root resolved (`CwdDefault`) | empty | `NoRoot` — **no ceiling in force**, stated |
 
-The refusal arm is load-bearing: silently reading a broken declaration as the
-empty table would delete a declared ceiling on one typo, which is a widening.
-`config::mount` renders the same bad read grey rather than refusing outright —
-that is a **blast-radius** difference, not a strictness one: a mount table holds
-many roots and isolates the bad one, while the run plane holds exactly one and
-has nothing to isolate it from.
+`config::mount` greys the same bad read instead — blast radius, not
+strictness: a mount table isolates one bad root, while
+the run plane holds one.
 
 Resolution law and the declaration parse contract: `crates/run/src/caps.rs`;
 design tests: `crates/run/tests/caps_home.rs`.
 
 ## Fence dispatch — two languages, one write path
 
-The runner dispatches on the fence language: `starlark` →
-hermetic kernel eval; `bash` → exec in the **invocation cwd**. The language set
-is closed. There is **no `Exec` EffectKind** — a replayed exec would re-run
-arbitrary code, so exec never enters the effect surface.
+Dispatch is by the task block's fence language — the word on its opening
+fence: `starlark` → hermetic kernel eval; `bash` → exec in the **invocation
+cwd**. The set is closed; there is **no `Exec` EffectKind**.
 
-**This whole section is the TASK path.** Everything below — the two-phase
-receipts, phase-2 convergence, the `OutOfBand` refusal — is what a
-`task.<name>` row does, and a fire's **process** does none of it. The lock
-is the one split (§ Recording by declaration kind): **the fire PROCESS
-takes no task-path lock**; realizing
-md effects goes through the applier, which takes the workspace lock
-unconditionally and can refuse workspace busy (`runtime` on the row — the
-pre-birth stage, A8); a fire that applies nothing — an exec'd entry, an
-evaluated entry whose program returns no effect — and any `dry` fire take
-none. A `declare()` row whose entry is **exec'd** runs its process through
-**the same bracket** (`run::exec::exec` over `ExecSpec`) and then parts
-company. An **evaluated** entry
-spawns nothing at all unless the program calls `bash()`, so the process rows
-below are the exec'd entry's:
+**This whole section is the task path**: its two-phase receipts, phase-2
+convergence and `OutOfBand` refusal are a `task.<name>` row's, not a fire
+process's, and the lock is the one split. An **exec'd** `declare()` entry shares
+**the same bracket** (`run::exec::exec` over `ExecSpec`), then parts company; an
+**evaluated** entry spawns nothing unless the program calls `bash()`, so these
+rows are the exec'd entry's:
 
 | | task row (`task.<name>`) | fire row (`declare()`) |
 |---|---|---|
 | receipts | phase-1 + phase-2 rows in `receipts/run.md` | **none** — 100 declared-block fires add zero rows |
-| `.meridian/run.lock` | taken | **the fire PROCESS takes no task-path lock**; realizing md effects goes through the applier (`executor::apply`), which takes the workspace lock unconditionally and can refuse workspace busy — a `runtime` fault on the row (the pre-birth stage, A8) |
+| `.meridian/run.lock` | taken | **the fire process takes no task-path lock**; md effects go through the applier (`executor::apply`), which takes the workspace lock unconditionally and can refuse workspace busy — a `runtime` fault (pre-birth stage, A8) |
 | program | `bash -c <source> mrd-task <args…>`, `$0` = `mrd-task` | `<interpreter> <staged-file> <args…>`, `$0` = the staged path |
 | stdin | `Stdio::null()` | the fire's `input`, compact JSON |
 | exit | collapsed to `state: applied\|partial` | the **raw** code, 1 and 2 distinct |
@@ -2096,27 +1599,21 @@ below are the exec'd entry's:
 | record | the receipt + `.meridian/runs/<invocation-id>.log` | `.meridian/runs/<page-path>/<invocation-id>.log`, and the row |
 | language set | closed (`starlark`, `bash`) | `argv[0]` — any interpreter |
 
-**There is no flag for that split, and no caller can ask for it**: the engine
-reads the page, and recording follows the **declaration kind** (§ Recording by
-declaration kind). The one thing a fire's process is not is *unrecorded* — it
-is logged out of tree and answered on the row; what it is not is *receipted*.
-The laws it runs under are § The run entry, amended.
+A fire applying nothing — exec'd, or evaluated with no effect — and any `dry`
+fire take no lock. Recording follows the **declaration kind**
+(§ Recording by declaration kind); no flag and no caller selects it. A fire's
+process is recorded, not receipted; its laws are § The run entry, amended.
 
-A bash step runs where `mrd` runs — the running path is not changed. The
-supervisor does not relocate the process; the
-caller-minted out-of-tree scratch directory stays, as the artifact location
-only. The project root reaches the step as `$MERIDIAN_PROJECT_ROOT`
-(convenience). On the WIRE arm (§ A.8) a daemon has no meaningful cwd, so
-the step's working directory is the bound workspace root — deterministic,
-narrower than the CLI, whose step runs in the caller's cwd.
+A bash step runs where `mrd` runs; the supervisor never relocates it, and the
+caller-minted out-of-tree scratch directory is only the artifact location.
+`$MERIDIAN_PROJECT_ROOT` carries the project root. On the wire arm (§ A.8) the
+step runs in the bound workspace root — a daemon has no meaningful cwd —
+narrower than the CLI's.
 
-Say the consequence plainly: a step CAN write into the tree, and such a write is
-neither tolerated nor merely reported. The exec bracket detects it as
-`OutOfBand` and **phase 2 refuses to converge** — no completion receipt is
-written, and the ungoverned write is never rolled back. Governed
-change never comes from bash at all — bash has no effect channel:
-governed writes ride the wire faces (MCP `put`) or a starlark task.
-Gates: `crates/run/tests/dispatch_bash.rs`
+A step **can** write into the tree: the bracket detects it as `OutOfBand` and
+**phase 2 refuses to converge**, writing no completion receipt. Governed writes
+ride the wire faces (MCP `put`) or a starlark task. Gates:
+`crates/run/tests/dispatch_bash.rs`
 (`an_ungoverned_tree_write_refuses_phase2_with_the_delta_named`,
 `a_project_root_relative_stray_write_refuses_convergence`).
 
@@ -2132,115 +1629,85 @@ md.* descriptors → block-cap validation AT THE CHOKE POINT
 Executor laws:
 
 - One violation refuses the whole batch; a refusal applies **nothing**.
-- **Never roll back**: *"Never
- roll back ungoverned writes (rollback = second write path with invented
- authority). Ungoverned writes persist as actor-absent external change
- (§7.1 class)."*
-- `live_fingerprint` is the **computed** fingerprint after phase 1, threaded by
- the caller, never re-read around a bash step; a missing live fingerprint at a
- bash choke point refuses — enforcement-off is not a pass.
-- Local runs serialize under `.meridian/run.lock`; that leg is
- `LOCK_NB` — a held run lock is a fast typed "workspace busy" refusal, and
- stays so.
-- **The `write.lock` leg waits, bounded.** The ENGINE is unchanged: every
- write door takes `.meridian/write.lock` `LOCK_EX|LOCK_NB` and refuses a
- competing writer in ≤0.1 ms with no queue and no engine retry, because
- "waiting is entirely the caller's policy" (wire-contract § the batch
- bound). The run plane is a CALLER of those doors, and this is its policy:
- its two in-process acquires — the birth lane's `create` call and the
+- **Never roll back**: ungoverned writes persist as actor-absent external
+ change (§7.1 class).
+- `live_fingerprint` is the **computed** post-phase-1 fingerprint, threaded by
+ the caller, never re-read around a bash step; missing at a bash choke point it
+ refuses — enforcement-off is not a pass.
+- Local runs serialize under `.meridian/run.lock`, `LOCK_NB`: a held run lock
+ is a fast typed "workspace busy" refusal.
+- **The `write.lock` leg waits, bounded.** Every write door takes
+ `.meridian/write.lock` `LOCK_EX|LOCK_NB` and refuses a competing writer in
+ ≤0.1 ms, with no queue and no engine retry (wire-contract § the batch bound).
+ The run plane is a caller of those doors, and waiting is its policy: its two
+ in-process acquires — the birth lane's `create` call, the
  delta-mint bracket — retry a `workspace_busy` refusal every 10 ms until
- `MERIDIAN_BUSY_WAIT_MS` (default 10 000) is spent, then surface the same
- typed refusal. A refusal at the flock has read nothing and written nothing
- (the door takes the lock before any byte), so the retry is not a second
- write path. Bounded, so a hung holder still cannot make a caller hang.
- Lock order stays `run.lock` → `write.lock`; no path takes them
- the other way, and the wait is inside that order.
- **Why the wait exists, measured** (37 878-file corpus, resident daemon): the
- daemon's own commits hold `write.lock` in **1.1–1.5 s bursts** — that IS
- the write (`wall = hold`, wire-contract), not an idle hold to shorten. A
- single-shot `mrd run` that overlapped one burst lost its whole run to a
- `workspace_busy` birth refusal; 5 of 7 consecutive probes refused. Without
- the wait every caller would be obliged to write its own retry loop or build
- a hermetic workspace. `run.lock` was measured over the same tree at **zero**
- contention in 40 s, so it needs no wait and does not get one.
-- **No foreign-edit gate.** A replace-class effect is not compared against a
- prior run receipt's after-rev before it applies, and no takeover flag
- exists: that would be a per-target pin-and-verify, a premise guard on a
- door whose promise is unkeepable (the no-guard amendment at the top of
- this document). CAS covers concurrent races at the write door and nothing
- wider.
+ `MERIDIAN_BUSY_WAIT_MS`
+ (default 10 000) is spent, then surface the same typed refusal. The door takes
+ the lock before any byte, so a flock refusal has read nothing and written
+ nothing — the retry is not a second write path. `run.lock` was measured at zero
+ contention, so it gets no wait. Lock order stays `run.lock` → `write.lock`.
+- **No foreign-edit gate.** No replace-class effect is compared against a prior
+ receipt's after-rev, and no takeover flag exists — a per-target pin-and-verify
+ is an unkeepable premise guard (the no-guard amendment at the top of this
+ document). CAS covers races at the write door, nothing wider.
 
 ## Bash: two-phase receipts inside the enforcement bracket
 
-A bash step runs as: pre-exec receipt (phase 1) → exec → completion receipt
-(phase 2), with the detection bracket around it:
+A bash step runs as pre-exec receipt (phase 1) → exec → completion receipt
+(phase 2), inside the detection bracket:
 
 - The child runs in its own process group (`setsid`) under a wall-clock
- timeout; timeout SIGKILLs the group and is a distinct typed state.
- Background children die with the group at step end.
-- Bash has **no governed-tree effect channel** — no descriptor fd, no
- in-band `md.*` records: a bash block observes and reports; governed writes
- ride the wire faces (MCP `put`) or a starlark task. Phase 2 commits the
- completion receipt only, always an empty batch.
-- `domain_snapshot` residual-compare runs around **every** bash step: the
- expected post-step root is the pre-step files plus this step's governed
- edits; any residual delta refuses and is named.
+ timeout. Timeout SIGKILLs the group and is a distinct typed state; background
+ children die with the group at step end.
+- Bash has **no governed-tree effect channel** — no descriptor fd, no in-band
+ `md.*` records. Phase 2 commits the completion receipt only, always an empty
+ batch.
+- `domain_snapshot` residual-compare runs around **every** bash step: expected
+ post-step root = pre-step files plus this step's governed edits; any residual
+ delta refuses and is named.
 - The **domain config** is hashed separately around every bash step
   (`meridian/domain.md`, or a sole legacy `mdfs_config.yaml` when that is the
-  only file present). A mid-run change refuses —
-  the config-widening attack (shrink the hash domain, then write inside the
-  blind spot) is closed. See `wire-contract.md` §12.
+  only file present). A mid-run change refuses, closing the config-widening
+  attack. See `wire-contract.md` §12.
 - An interrupt between the phases is a typed `partial`/`interrupted` state;
- a pre-exec receipt records phase-1's committed root so lint finds orphans.
- On exec failure phase 2 refuses and **phase 1 stands committed and
+ the pre-exec receipt records phase-1's committed root so lint finds orphans.
+ On exec failure phase 2 refuses, **phase 1 standing committed and
  reported**.
 - An out-of-band delta is reported as *"out-of-band change during the exec
- window"* — the window is named, the block is not accused.
+ window"*.
 
 ## The run record — stdout is data, not effects
 
-Bash stdout never becomes a tree write. It is:
-
-- **streamed live** to the caller, and
-- **stored out-of-tree, content-addressed** at
- `.meridian/runs/<invocation-id>.log` — addressed by invocation id, content
- pinned by the full sha256 recorded in the receipt.
-
-Tree output happens **only** via an explicit `md.append_section` descriptor.
-No in-tree run journal exists.
+Bash stdout never becomes a tree write: it is **streamed live** to the caller
+and **stored out-of-tree, content-addressed** at
+`.meridian/runs/<invocation-id>.log`, addressed by invocation id and pinned by
+the full sha256 in the receipt. Tree output happens **only** via an explicit
+`md.append_section` descriptor; no in-tree run journal exists.
 
 Record ↔ receipt linkage:
 
-- The receipt line (in-tree, committed in the same splice batch as its
- edits) carries per-edit rev transitions — **attested history, compared by
- nothing** (the no-guard amendment above; the code states the same at its
- seam).
-- The receipt's `page` fact is the task page's **canonical
- workspace-relative spelling in the workspace that runs it**, resolved once
- at the door that admitted the ref — never the invocation's argv bytes
- (wire-contract §2.1: every ref-carrying surface speaks that grammar and no
- other). One page therefore owns ONE receipt history however a caller
- spelled it. Its consumers are the receipt address and the run
- plane's page addressing; the CLI ruleset is empty (`S1_RULES`). A ROOTED
- ref (`root:page` — address-grammar § 4.6) resolves to the named
- root's workspace, where the page HAS that canonical spelling: the run
- executes under the page's tree and the receipt lands in the page's
- workspace, so the one-key law holds there unchanged.
-- The exec record carries **invocation id + exit code + stdout sha256 +
- byte size + log address**, joining the receipt through the
- `ExecRecordSink` seam.
-- **Ordering is structural:** the stdout facts are minted only by
- sealing the log, and sealing fsyncs the log file and its directory entry
- first. A crash can orphan a log (lint finds it); it can never produce a
- receipt naming a log that is not durable.
-- Records carry env **keys, never values**: the record receives the
- contract-validated **declared** map only, and emits its sorted key list —
- receipts name declared keys, nothing else. The child's real environment
- is larger (`wire-contract.md`
- § A.8): it inherits the daemon environment under the declared overlay,
- plus the plane's own injected variables, and none of those inherited
- keys reach the record. The constructor still discards values, so the
- type cannot carry a secret whatever it is fed.
+- Receipt line: in-tree, in the same splice batch as its edits, carrying
+ per-edit rev transitions — **attested history, compared by nothing** (the
+ no-guard amendment above).
+- Receipt `page` fact: the task page's **canonical workspace-relative spelling
+ in the workspace that runs it** (wire-contract §2.1), resolved once at the
+ admitting door, never argv bytes — one page owns one receipt history however
+ spelled. Consumers: receipt address, page addressing; CLI ruleset empty
+ (`S1_RULES`). A rooted ref (`root:page` — address-grammar § 4.6) runs under
+ that root's tree and its receipt lands in that workspace, where the page has
+ the spelling: one-key law unchanged.
+- Exec record: **invocation id + exit code + stdout sha256 + byte size + log
+ address**, joined to the receipt through the `ExecRecordSink` seam.
+- **Ordering is structural:** stdout facts are minted only by sealing the log,
+ which fsyncs it and its directory entry first. A crash can orphan a log (lint
+ finds it), never produce a receipt naming a non-durable log.
+- Env **keys, never values**: the record takes the contract-validated
+ **declared** map only and emits its sorted key list. The child's real
+ environment is larger (`wire-contract.md` § A.8) — daemon environment under
+ the declared overlay, plus the plane's injected variables — and no inherited
+ key reaches the record; the constructor discards values, so no secret can
+ enter the type.
 
 ## The CLI surface (locked)
 
@@ -2251,55 +1718,42 @@ mrd run --load <PAGE>... [--json]                             # what the pages d
 mrd script [--json]                      # source on stdin (heredoc)
 ```
 
-**The locked surface is exactly these shapes.** One verb, three shapes —
-`mrd run <PAGE> [TASK]` runs a task, `mrd run <PAGE>#^<id>` fires one
-declared block and `mrd run --load` reads declarations off one or more pages
-(§ The run entry, amended). Every meaningless combination refuses BY NAME
-with exit 2 rather than being ignored: `--load` with `#^<id>`, `--load` with
-`TASK` / `-- ARGS` / `--list`, `--input-json` without a block address, and
-`TASK` / `-- ARGS` / `--env` on a fire (a fire's one input channel is
-`--input-json`). Beside `mrd run` the surface carries exactly one further
-subcommand, `mrd script`, which takes the script source on stdin and serves
-the script entry above. It is named here rather than slipped into the
-synopsis, because "locked" means a new verb is a stated change, not an
-addition nobody has to notice. `mrd script`'s own human-mode face is
-non-normative (§ The script entry).
+**The locked surface is exactly these shapes**: one verb in three shapes —
+run a task, fire one declared block, read declarations off one or more pages
+(§ The run entry, amended). Beside it stands one further subcommand,
+`mrd script`: source on stdin, serving the script entry above, its human-mode
+face non-normative (§ The script entry). Every meaningless combination refuses
+by name with exit 2, never ignored: `--load` with `#^<id>`; `--load` with
+`TASK` / `-- ARGS` / `--list`; `--input-json` without a block address;
+`TASK` / `-- ARGS` / `--env` on a fire, whose one input channel is
+`--input-json`.
 
-No argv JSON. TASK omitted: one declared task runs; with several declared, a
-binding named `default` (`task.default`) runs — not a guess, the page's
-author elected it by name — and where no `default` binding exists the CLI
-prints the list and exits 2; it never guesses. One owner:
-`run::address::resolve_task`, so every door — CLI live, `--dry` rehearsal,
-the wire arm — answers the same. Contract violations exit 2 with the
-declared contract shown. `--dry` on starlark evaluates hermetically and
-prints the **full** effect set, applying nothing; `--dry` on bash shows the
-block and its resolved caps and **refuses to exec** — running it is the only
-way its effects exist, and inventing descriptors would be fiction. The
-`--dry` caps display is byte-identical to the choke-point caps. `--dry`
-rehearses every pre-apply gate the real run enforces —
-address → contract → caps, then the choke-point admission over the evaluated
-md.* set (`runner::rehearse`) — and refuses exactly as the real run would,
-same words, same exit leg (a rehearsal that passes what live refuses
-predicts nothing).
+No argv JSON. With TASK omitted the one declared task runs; with several
+declared, the binding named `default` (`task.default`) runs; where no `default`
+binding exists, the CLI prints the list and exits 2, never guessing. One owner, `run::address::resolve_task`, so CLI
+live, `--dry` rehearsal and the wire arm answer the same. Contract violations
+exit 2 with the declared contract shown.
+
+`--dry` on starlark evaluates hermetically and prints the **full** effect set,
+applying nothing; on bash it shows the block and its resolved caps and
+**refuses to exec**, the caps display byte-identical to the choke-point caps.
+It rehearses every pre-apply gate the real run enforces —
+address → contract → caps, then choke-point admission over the evaluated md.*
+set (`runner::rehearse`) — refusing as the real run would: same words, same
+exit leg.
 
 Exit triad: **0** clean · **1** the run plane refused or failed (eval fault,
 cap refusal, workspace busy, timeout, bash nonzero) ·
 **2** the invocation is wrong (usage, addressing, contract).
 
-**A CHURN refusal carries a recovery line.** One refusal here blames nothing
-the caller wrote — the corpus moved under an unrelated writer while the call
-was in flight: a **corpus member that vanished** mid-read, where that member
-is the ADDRESSED target (`corpus_race`). A vanished unrelated record drops
-from view and never fails another target, and a foreign root advance
-re-derives and proceeds — the no-guard amendment above; the plane pins no
-root for itself, so there is no root-mismatch refusal. The refusal ends with
-one fitted line — reason first, then `→ <the move> (recovery: <class>)` —
-because a caller who reads only the reason has no way to know the call was
-never wrong. The class is §8's, verbatim: `retry` (the next snapshot serves
-the corpus as it now is). A face that carries `recovery` **structurally** —
-the wire error frame — states the reason alone; the line is for the text
-faces, which have nowhere else to put the class. Re-deriving instead of
-refusing is the churn-grain design, not this wording.
+**A churn refusal carries a recovery line.** It blames nothing the caller
+wrote: the addressed target is a **corpus member that vanished** mid-read
+(`corpus_race`). A vanished unrelated record drops from view and fails no other
+target; a foreign root advance re-derives and proceeds — the plane pins no
+root, so no root-mismatch refusal exists (the no-guard amendment above). The
+line is fitted, reason first, then `→ <the move> (recovery: <class>)`, the class
+being §8's verbatim `retry`. The wire error frame carries `recovery`
+**structurally** and states the reason alone; the line is for the text faces.
 
 ## Guarantee classes — labeled per block
 
@@ -2308,118 +1762,104 @@ refusing is the churn-grain design, not this wording.
 | `hermetic` | starlark | proof by construction: sealed kernel, zero I/O, metered |
 | `detected` | bash | root-snapshot **detection, not prevention** — ungoverned writes are detected and named, not blocked |
 
-The label is per block, and the claim ships **scoped, never unqualified**.
-The guarantee labeler **refuses to emit `detected` unless the detection path
-is landed** — a block is never labeled detected with
-zero detection behind the label. OS-sandbox **prevention** (Landlock /
-sandbox-exec) is future work; the shipped plane is detection-only.
+The label is per block and the claim ships **scoped, never unqualified**. The
+guarantee labeler **refuses to emit `detected` unless the detection path is
+landed**. OS-sandbox **prevention** (Landlock / sandbox-exec) is future work;
+the shipped plane is detection-only.
 
 ## Accepted gaps (S1) — named, deliberate, scoped
 
-The posture: detection-not-prevention for bash and honor-system for
-out-of-tree writes / secret reads is INTENDED — ship the scoped claim, never
-the unqualified one.
+Every gap below is intended scope: the plane ships the scoped claim, never the
+unqualified one.
 
 | Gap | Class | Disposition |
 |---|---|---|
-| Bash enforcement is detection, not prevention | intended scope | upgrade path is an OS sandbox, future work |
-| Out-of-tree writes / secret reads by bash | **honor-system** (accepted) | outside the hash domain by definition; the claim is scoped |
-| Non-md / `.meridian/` / dot-path writes | **accepted gap, distinct from the honor-system** | outside the snapshot hash domain — silently undetected, named here rather than hidden |
-| Symlink laundering (`ln -s secret notes/x.md`) | refused or named | `O_NOFOLLOW` / refuse symlinked path components in walk + snapshot; where not refusable it is a **distinct named gap** (it defeats in-domain detection, unlike plain out-of-tree). The walk COMPLETES before refusing and the refusal is a COUNT plus the first offender, sorted — `N symlinked paths refused in exec-window snapshot, first: …`; one link keeps the single-path wording. A symlink AT a path the domain's own ignore rules exclude — a stranger's venv `bin` dir, a `scratch*` entry — is outside detection like the ignored directories are: skipped, not refused, reserved paths excepted. A root declares the exclusion in `meridian/domain.md` frontmatter, e.g. `ignore: ["scratch*/", "bin/"]` — scratch is ungoverned by definition. The refusal is DELTA-SCOPED to the window: a link that pre-dates the bracket is the world's shape — recorded at open, subtracted at close, outside detection exactly as the plain walk holds it (links never enter the hash domain, so nothing behind one reaches a hash/attest/receipt surface); one stranger's link does not close the run door for every unrelated run — the no-guard posture extended from content to shape. Only a link APPEARING inside the window refuses. The bracket's own instruments stay refusable pre-existing or not: a symlinked domain config, and a symlink at a RESERVED path — the armed-rules artifact, the attested marker. |
-| Ungoverned writes are never rolled back | law, not gap | they persist as actor-absent external change (§7.1) and the run exits 1 with the delta named |
-| Multi-file crash window (content committed, receipt lost) | accepted | recovery is re-derive; lint finds the missing receipt |
-| Local run beside a resident daemon (§7.1) | accepted | a local run's writes reach the daemon as external change — the same class as any out-of-band edit |
-| The script entry runs in **wire-client mode**, not pure-local | law, not gap | a script must execute AS the caller, and the row above disqualifies the pure-local leg by this plane's own table: its writes reach a resident daemon actor-absent. Through the daemon, a script's writes arrive as governed, actor-carrying change, Delta-minted like any splice. The in-process lane — wire `script`, § A.7 — satisfies this row's reason by the shortest path: eval runs inside the daemon and its commit IS the governed write path, actor-carrying and Delta-minted. |
+| Bash enforcement is detection, not prevention | intended scope | an OS sandbox, future work |
+| Out-of-tree writes / secret reads by bash | **honor-system** (accepted) | outside the hash domain; claim scoped |
+| Non-md / `.meridian/` / dot-path writes | **accepted gap, distinct from the honor-system** | outside the snapshot hash domain, silently undetected |
+| Symlink laundering (`ln -s secret notes/x.md`) | refused or named | `O_NOFOLLOW`: symlinked path components are refused in walk + snapshot; where refusal is impossible this is a **distinct named gap** — it defeats in-domain detection, unlike a plain out-of-tree write. The walk completes before refusing, and the refusal is a sorted count plus the first offender — `N symlinked paths refused in exec-window snapshot, first: …` — one link keeping the single-path wording. A symlink at a domain-ignored path (`meridian/domain.md` frontmatter, e.g. `ignore: ["scratch*/", "bin/"]`) is skipped, not refused, reserved paths excepted. The refusal is delta-scoped: only a link appearing inside the window refuses; one pre-dating the bracket is recorded at open, subtracted at close, outside detection. Links never enter the hash domain, so nothing behind one reaches a hash/attest/receipt surface. The bracket's own instruments stay refusable pre-existing or not: a symlinked domain config, and a symlink at a reserved path (armed-rules artifact, attested marker). |
+| Ungoverned writes are never rolled back | law, not gap | the run exits 1 with the delta named (§7.1) |
+| Multi-file crash window (content committed, receipt lost) | accepted | re-derive; lint finds the missing receipt |
+| Local run beside a resident daemon (§7.1) | accepted | its writes reach the daemon as external change, like any out-of-band edit |
+| The script entry runs in **wire-client mode**, not pure-local | law, not gap | a script must execute as the caller, and the row above disqualifies pure-local: its writes reach a resident daemon actor-absent. Through the daemon they arrive governed, actor-carrying and Delta-minted like any splice; the in-process lane (wire `script`, § A.7) is the shortest such path — eval inside the daemon, whose commit is the governed write path. |
 
 ## Timing phases
 
 Under `MRD_TIMING` (the switch, sink, line grammar and the two lanes:
-`status.md` § The timing mode) a run answers where its wall clock went. The
-phases, at the grain a reader can act on:
+`status.md` § The timing mode) a run reports where its wall clock went; the
+"inside" column is the live shape.
 
-**Containment is this table, not the dot.** A dotted name marks a part of the
-phase it prefixes, but `dispatch` contains three undotted phases and `total`
-contains everything — so the `us` column does not sum. Read the "inside" column
-before adding anything up.
-
-**One family of dots means the other thing, and it is the only one: the floor
-names.** `currency.floor.*` and `door.floor.*` do not NEST inside a
-`currency.floor` — no such line is emitted. They PARTITION one population by
-which cause sent the pass there and whether it completed, so their counts DO
-sum and a prefix counts every pass beneath it. Containment is `snapshot.walk`;
-partition is `currency.floor.no_feed`.
-
-The "inside" column is the LIVE run's shape. **`--dry` has no `dispatch` span at
-all** — [`rehearse`] composes the chain itself instead of calling `dispatch` —
-so on a rehearsal `snapshot` and `eval` sit directly inside `total`, and
-`dispatch`, `apply`, `cascade` and `report.render` do not appear.
+- **Containment is this table, not the dot.** `dispatch` holds three undotted
+  phases, `total` holds everything; the `us` column does not sum. Containment is
+  `snapshot.walk`.
+- **The floor names partition instead of nesting.** `currency.floor.*` and
+  `door.floor.*` split one population by cause and by completion: counts sum, a
+  prefix counts every pass beneath it. Partition is `currency.floor.no_feed`.
+- **`--dry` has no `dispatch` span at all** ([`rehearse`] composes the chain
+  itself): `snapshot` and `eval` sit directly inside `total`; `dispatch`,
+  `apply`, `cascade` and `report.render` are absent.
 
 | Phase | Inside | Emitted in | Covers |
 |---|---|---|---|
-| `total` | — | `mrd::run` | the whole process — every verb has it, not just `run` |
+| `total` | — | `mrd::run` | the whole process; every verb has it |
 | `workspace.resolve` | `total` | `mrd::run_cmd` | `workspace::resolve` — the discovery ladder |
-| `page.load` | `total` | `mrd::run_cmd` | the door's `address::load_page` (parse of the addressed page) |
+| `page.load` | `total` | `mrd::run_cmd` | the door's `address::load_page` — parse of the addressed page |
 | `conventions.load` | `total` | `mrd::run_cmd` | `caps::load_conventions` — the root's `MERIDIAN.md` |
 | `task.gate` | `total` | `mrd::run_cmd` | the door's pre-check: `resolve_task` + `contract_for` + `validate` + `resolve_authority` |
-| `pre_eval` | `total` | `run::runner::pre_eval` | the plane's OWN address → contract → caps chain, which repeats the door's work. Measured on the chain, so `--dry` reports it too |
-| `dispatch` | `total` | `run::runner` | On the STARLARK leg: `eval` + `snapshot` + `apply`, whole — in that ORDER, the fold FOLLOWING the eval that decides whether it is needed (§ The run plane). **Bash is not that shape**: it opens no `eval` span, emits no `snapshot*` line at all (it observes through `fs::domain_leaves_memoized`, which carries no phase — the phases live in `fs::domain_snapshot_with_leaves` and its fold-only twin `fs::domain_fold`), and takes its observation FIRST, under the flock, before the block runs. The lazy rule is the starlark leg's |
-| `snapshot` | `dispatch` | `fs::domain_fold` on the run plane; `fs::domain_snapshot_with_leaves` for callers that want the bytes | the three below, whole — absent whenever this tense's lazy gate did not fire (§ The run plane). Both emit the same four names: the run plane takes the fold-only twin because it drops the `DomainFiles`, and a reader must be able to compare the two without the phase names moving |
+| `pre_eval` | `total` | `run::runner::pre_eval` | the plane's own address → contract → caps chain, repeating `page.load` and `conventions.load` as its own gate ([`pre_eval`], one owner for both tenses); measured on the chain, so `--dry` reports it too |
+| `dispatch` | `total` | `run::runner` | starlark leg only: `eval` + `snapshot` + `apply` whole, in that order — the fold follows the eval that decides if it is needed (§ The run plane). **Bash is not that shape**: no `eval` span, no `snapshot*` line — it observes via phase-free `fs::domain_leaves_memoized` (the phases live in `fs::domain_snapshot_with_leaves` and its fold-only twin `fs::domain_fold`) first, under the flock, before the block. The lazy rule is the starlark leg's |
+| `snapshot` | `dispatch` | `fs::domain_fold` on the run plane; `fs::domain_snapshot_with_leaves` for callers that want the bytes | the three below, whole; absent when this tense's lazy gate did not fire (§ The run plane). Both emit the same four names |
 | `snapshot.walk` | `snapshot` | same | `Domain::load` + `hash_domain` — the hash-domain walk |
-| `snapshot.read` | `snapshot` | same | `read_and_digest_members`, or `digest_members` on the fold-only path — read + blake3 of every member. The fold-only sweep releases each member's bytes with its digest, so this phase is where dropping them shows up |
+| `snapshot.read` | `snapshot` | same | `read_and_digest_members`, or `digest_members` on the fold-only path — read + blake3 of every member; the fold-only sweep releases each member's bytes with its digest |
 | `snapshot.fold` | `snapshot` | same | leaf assembly + `served_root` |
 | `eval` | `dispatch` | `run::dispatch_starlark` | hermetic evaluation of the block |
 | `apply` | `dispatch` | `run::dispatch_starlark` | the executor's one md.\* batch (absent when the block emitted none) |
-| `cascade` | `total` | `run::runner` | the cascade loop — vacuous under the empty `S1_RULES` ruleset, so a near-zero `us` here is the expected reading, not a missing measurement |
+| `cascade` | `total` | `run::runner` | the cascade loop; vacuous under the empty `S1_RULES` ruleset, so near-zero `us` is expected |
 | `report.render` | `total` | `mrd::run_cmd` | the report render |
-| `currency.vouched` | — (`cmd=daemon`) | `registry::Registry::currency_refresh` | a READ-plane §6.7 currency pass that took the O(1) cookie fast path: no walk, no stat, no byte read |
-| `currency.floor.<cause>` | — (`cmd=daemon`) | same | a read-plane currency pass that MISSED the vouch and fell to the §6.2 extent-refresh floor — the full stat sweep. `<cause>` NAMES the term that missed (below). **A bare `currency.floor` is never emitted**; it is the family prefix |
-| `currency.floor.<cause>.refused` | — (`cmd=daemon`) | same | the same pass, ENTERED and then refused by an I/O failure in the sweep. Counted, so the prefix stays honest under load (below) |
-| `door.vouched` | — (`cmd=daemon`) | `registry::Registry::door_observation` | a WRITE-door entry observation that took the same fast path, inside the write flock |
-| `door.floor.<cause>` · `door.floor.<cause>.refused` | — (`cmd=daemon`) | same | the write plane's floor, same two shapes and the same `<cause>` set |
-| `door.refused.<cause>` | — (`cmd=daemon`) | same | a write-door observation refused BEFORE either arm was chosen. One cause today, `lock_contended`: the memo lock stayed held for its whole budget. **The read plane has no counterpart and that is a fact, not a gap** — it reaches the same `fs::lock_within` with a budget of `None`, which returns `Ok` before the wait loop, so the error is unreachable there (`Registry::patched_cache` asserts it) |
+| `currency.vouched` | — (`cmd=daemon`) | `registry::Registry::currency_refresh` | a read-plane §6.7 currency pass on the O(1) cookie fast path: no walk, no stat, no byte read |
+| `currency.floor.<cause>` | — (`cmd=daemon`) | same | a read-plane pass that missed the vouch and fell to the §6.2 extent-refresh floor — the full stat sweep. `<cause>` names the term that missed. **A bare `currency.floor` is never emitted**; it is the family prefix |
+| `currency.floor.<cause>.refused` | — (`cmd=daemon`) | same | the same pass, entered then refused by an I/O failure in the sweep |
+| `door.vouched` | — (`cmd=daemon`) | `registry::Registry::door_observation` | a write-door entry observation on that fast path, inside the write flock |
+| `door.floor.<cause>` · `door.floor.<cause>.refused` | — (`cmd=daemon`) | same | the write plane's floor: same two shapes, same `<cause>` set |
+| `door.refused.<cause>` | — (`cmd=daemon`) | same | a write-door observation refused before either arm was chosen. One cause today, `lock_contended`: the memo lock stayed held for its whole budget. **The read plane has no counterpart and that is a fact, not a gap** — the same `fs::lock_within` with a budget of `None` returns `Ok` before the wait loop (`Registry::patched_cache` asserts it) |
 
-**The door's three families partition its population**: `door.vouched` took the fast path, `door.floor` fell to the floor, `door.refused` never reached an arm. Every emitted `door.*` name sits under exactly one, so the three prefixes add up to every observation the write door makes and none is counted twice.
+**The door's three families partition its population**: `door.vouched` (fast
+path), `door.floor` (floor), `door.refused` (no arm) — every `door.*` name under
+exactly one, counted once.
 
-**`<cause>` is one of six**, and it is the term that failed, not a guess: `no_feed` (no live feed — a COLD START, where vouching is impossible by construction) · `cookie_unproven` (the §6.4 barrier timed out or hit I/O — **the only time-bounded cause, so the only one that rises with load**) · `cookie_refused` (the cookie would enter the hash domain) · `collapse` (the applied set collapsed doubt) · `untrusted` (the §6.2 close does not hold the memo trusted) · `no_overlay` (the resident overlay folded no root). Cold start and load are opposite facts about a daemon; a single `currency.floor` name could not tell them apart, so a quiet box could not falsify "the floor is only a cold-start path" (`registry::FloorTrigger`).
+**`<cause>` is one of six** (`registry::FloorTrigger`):
 
-**A phase reports only where it COMPLETED.** A phase that never ran emits no
-line — `--dry` never reaches `apply` or `cascade`, `--list` reaches neither
-`snapshot` nor anything below it, `--dry` on bash reaches no `snapshot` at all.
-Neither does a phase that FAILED: the span is abandoned on the error path, so
-`mrd run missing.md` prints `workspace.resolve`, the refusal, and `total` — and
-no `page.load`, because there was no page load. `total` reports on a refusal
-because the process is what it measures. One completed-degrade exception:
-`daemon.dial` `stop()`s on the degrade path (`mrd::engine::answer_links`) — the
-dial finished with a verdict (no usable daemon answer), which is not a failed
-phase. The line means the decision completed, not that a daemon answered
-(`status.md` `daemon.dial` Covers).
+- `no_feed` — no live feed: cold start, vouching impossible.
+- `cookie_unproven` — the §6.4 barrier timed out or hit I/O; the only
+  time-bounded cause, the only one rising with load.
+- `cookie_refused` — the cookie would enter the hash domain.
+- `collapse` — the applied set collapsed doubt.
+- `untrusted` — the §6.2 close does not hold the memo trusted.
+- `no_overlay` — the resident overlay folded no root.
 
-**The daemon's refusals are the second exception, and they are named as
-refusals.** `currency.floor.<cause>.refused` and `door.floor.<cause>.refused`
-report a floor pass that was ENTERED and then returned on an error;
-`door.refused.<cause>` reports an observation that never reached an arm at all.
-They are counted rather than abandoned because those error paths are
-LOAD-SENSITIVE: the sweep's I/O failure and the memo lock's exhausted budget
-both arrive under pressure, so dropping them would make the count fall exactly
-when the thing being counted is happening most. The suffix is what keeps the
-two floor readings separate — the prefix counts entries, the suffix counts the
-entries that did not finish.
+**A phase reports only where it completed.** One that never ran emits no line:
+nothing from `snapshot` down under `--list`, no `snapshot` for `--dry` on bash.
+A failed phase is abandoned on the error path: `mrd run missing.md` prints
+`workspace.resolve`, the refusal and `total`, no `page.load`. `total` still
+reports on a refusal. Two exceptions:
 
-**And a phase whose GATE did not fire never ran.** The `snapshot` set is the
-one with a gate: the fold is lazy, and its trigger differs by tense (§ The run
-plane) — any effect under `--dry`, an md.\* effect live. So an effect-free run
-reaches no `snapshot` in either tense, and a live `notice`-only run reaches none
-either. That absence is the reading: a `snapshot` line on a live `notice`-only
-run is the lazy gate broken.
+- `daemon.dial` `stop()`s on the degrade path (`mrd::engine::answer_links`): the
+  dial completed with a verdict (no usable daemon answer) — decision completed,
+  not a daemon answer (`status.md` `daemon.dial` Covers).
+- **The daemon's refusals are counted and named as refusals**:
+  `currency.floor.<cause>.refused` and `door.floor.<cause>.refused` (floor pass
+  entered, then an error), `door.refused.<cause>` (no arm reached).
+
+**And a phase whose gate did not fire never ran.** Only `snapshot` is gated: the
+lazy fold's trigger differs by tense (§ The run plane) — any effect under
+`--dry`, an md.\* effect live. Effect-free and live `notice`-only runs reach no
+`snapshot`; a `snapshot` line there is the lazy gate broken.
 
 #### The currency pair answers "how often does the floor run"
 
 `currency.*` and `door.*` are **pairs, and the pair is the measurement.** The
 §6.2 extent-refresh floor is a second execution path behind the §6.7 vouched
-one, and a second path is a claim that the first fails silently — so the only
-honest question about it is a RATIO, not a count. A floor count alone is a
-numerator with no denominator: it cannot tell a daemon that vouched a million
-times and floored twice from one that floored twice out of three.
+one: the honest question is a ratio, not a count.
 
 ```bash
 MRD_TIMING=/var/log/mrd-timing.log   # on the daemon's environment
@@ -2430,104 +1870,73 @@ grep -cE 'phase=currency[.]floor[.][a-z_]+[.]refused( |$)' "$L"   # of those, th
 grep -o 'phase=currency\.floor\.[a-z_]*' "$L" | sort | uniq -c   # by cause
 ```
 
-Read `cmd=` first — these are emitted only by the engine process, so they
-always carry `cmd=daemon`. **Do not add the two pairs together.** They count
-different populations: one currency pass per read-plane warm, versus one entry
-observation per write. Their denominators are unrelated.
-
-**The floor prefix counts ENTRIES, and that is deliberate.** The floor's error
-path returns under a `.refused` name instead of abandoning its span, so
-`grep -c 'phase=currency.floor'` answers "how often did a pass fall to the
-floor" — the question the ratio is for. Counting only completions would answer
-a narrower question while looking like the same number, and it would answer it
-WRONG in one specific direction: the sweep's I/O failure arrives under I/O
-pressure, so the abandoned arm is the one that grows under load. A
-completions-only numerator therefore FALLS as the floor is hit harder, and the
-instrument reads healthiest exactly when the fallback is worst.
-
-**Which is why the fallback test needs this number and not the older one.** A
-second execution path is a claim that the first fails silently, and the test
-that resolves it — zero in steady state means delete it, above zero means it is
-not a fallback — runs on the measured run-count. A numerator biased downward by
-load is the one bias that keeps that escalation from ever firing.
-
-**A `.refused` line still means the span reached its stop.** Nothing is
-inferred from silence: a pass that crashes or is killed reports neither name,
-and `door.refused.lock_contended` covers the write plane's one pre-arm refusal
-(the memo lock budget) so an observation lost to contention does not quietly
-leave the denominator.
+- Read `cmd=` first: only the engine emits these lines, always `cmd=daemon`.
+- **Do not add the two pairs together**: one currency pass per read-plane warm
+  versus one entry observation per write; unrelated denominators.
+- **The floor prefix counts entries.** The error path
+  returns under a `.refused` name instead of abandoning its span: prefix counts
+  entries, suffix the entries that did not finish, and
+  `grep -c 'phase=currency.floor'` answers how often a pass fell to the floor.
+  The fallback test reads that count — zero in steady state means delete the
+  path, above zero means it is not a fallback.
+- **A `.refused` line still means the span reached its stop.** A pass that
+  crashes or is killed reports neither name; `door.refused.lock_contended`
+  covers the write plane's one pre-arm refusal (memo lock budget), so a
+  contended observation stays in the denominator.
 
 #### The `snapshot` set can repeat, and which lane you are on decides
 
-`snapshot.*` is emitted by `fs`, not by this plane: **every** caller of
-`domain_snapshot*` lights it up. The corpus fold is the cost that does not care
-which door asked for it — which also means **a `phase=snapshot` line does not
-imply a run.** `mrd sql`, `mrd check`, `mrd walk`, `mrd repair`, `mrd retire`,
-`mrd links`, the daemon's resident rebuild and its watch loop all fold and all
-report it, under their own `cmd=`. Read `cmd=` before attributing a fold. The
-snapshot set also repeats wherever a verb loads mount corpora (`load_mounts_for`
-→ `build_docs_at`): once for the workspace corpus and once per mounted root
-the verb addresses — lock-addressed on `walk`/`check`/`status`/`walk_op`,
-link-addressed on `links`/`sql`/`sql_op` (`build_docs_at` calls
-`fs::domain_snapshot`). Count the `phase=snapshot` lines the same way as
-`corpus.build`.
+`snapshot.*` comes from `fs`, not this plane: **every** caller of
+`domain_snapshot*` lights it up, so **a `phase=snapshot` line does not imply a
+run.** Callers that fold and report it under their own `cmd=`: `mrd sql`,
+`mrd check`, `mrd walk`, `mrd repair`, `mrd retire`, `mrd links`, the daemon's
+resident rebuild, its watch loop. It also repeats per mount corpus (`load_mounts_for` →
+`build_docs_at`, calling `fs::domain_snapshot`): once for the workspace corpus,
+once per mounted root addressed — lock-addressed on
+`walk`/`check`/`status`/`walk_op`, link-addressed on `links`/`sql`/`sql_op`.
 
 **But do not price a run by that count — some full-corpus folds emit no phase
 at all.** The write doors observe through `fs::DomainCache`
-(`wire_serve::write::observed_root` → `DomainCache::root`), which walks the
-domain, `stat`s every member and reads every mover WITHOUT opening a `snapshot`
-span. That cache is the process-global `wire_serve::write::WRITE_CACHES`, keyed
-by canonicalised root: the FIRST door call in a process observes cold and later
-ones in the SAME process are warm. The CLI does one birth per process, so on the
-CLI it is always the cold one — a property of the process model, not of
-`md.create`; a caller that batches births into one process pays it once.
+(`wire_serve::write::observed_root` → `DomainCache::root`): the cache walks
+the domain, `stat`s every member and reads every mover without a `snapshot`
+span. That cache is the process-global `wire_serve::write::WRITE_CACHES`,
+keyed by canonicalised root — first door call per process cold, later ones in
+the same process warm. The CLI does one birth per process, so always cold
+there: the process model, not `md.create`; batching births into one process
+pays it once.
 
-An `md.create` therefore pays a second full-corpus observation on top of the run
-plane's own fold — measured on a 37 800-member root: run-plane
-`snapshot` 446 ms, the door 620 ms inside `apply`, one `phase=snapshot` line for
-the pair. A `grep -c phase=snapshot` of that run answers 1 and under-reports the
-corpus work by more than half; the same run at 8 002 members answers 1 for
-27 ms + 58 ms.
+An `md.create` therefore pays a second full-corpus observation on top of the
+plane's fold, under one `phase=snapshot` line, so `grep -c phase=snapshot`
+under-reports corpus work by more than half (37 800-member root: run-plane
+`snapshot` 446 ms, door 620 ms inside `apply`; 8 002 members: 27 ms + 58 ms).
 
-**How to see it, since subtraction will not:** `apply` has NO nested phases —
-nothing under `crates/run/src/executor.rs` opens a span — so its whole span is
-un-itemised and there is no remainder to compute. Read the magnitude instead: on
-an effectful run a large `apply` beside a `snapshot` of the same order is the
-door's own corpus observation, and only an instrumented build splits it further.
+**Subtraction will not show it**: `apply` has no nested phases — nothing under
+`crates/run/src/executor.rs` opens a span — so a large `apply` beside a
+`snapshot` of the same order is the door's own observation; only an instrumented
+build splits it.
 
-`corpus.build` is the same class: it is emitted by `fs::build_corpus`, and the
-callers that light it up include `mrd sql`, `mrd check`, `mrd walk`,
-`mrd repair`, `mrd retire`, `mrd links`, the daemon's resident rebuild, and the
-write-door referrer scan (`wire_serve::write::inbound_referrers`). **A
-`phase=corpus.build` line does not imply a links call.** Read `cmd=` first. It
-also repeats wherever a verb loads mount corpora (`load_mounts_for` →
-`build_docs_at`): once for the workspace corpus and once per mounted root the
-verb addresses — lock-addressed on `walk`/`check`/`status`/`walk_op`,
-link-addressed on `links`/`sql`/`sql_op`. Count the lines; the name does not
-distinguish workspace from mount.
+`corpus.build` is the same class, from `fs::build_corpus`: its callers are
+`mrd sql`, `mrd check`, `mrd walk`, `mrd repair`, `mrd retire`, `mrd links`,
+the daemon's resident rebuild and the write-door referrer scan
+(`wire_serve::write::inbound_referrers`), so **a `phase=corpus.build` line does
+not imply a links call** — read `cmd=` first. It repeats per mount corpus as
+`snapshot` does; neither name distinguishes workspace from mount, so count the
+lines.
 
-Within the run plane there are FOUR fold sites, and they do not all fire on one
-lane:
+Four fold sites, not all firing on one lane:
 
 | Fold | Fires when |
 |---|---|
-| `dispatch_starlark.rs` `observe_if_emitted`, live tense (reached from `runner.rs` `dispatch`) | a live run whose block emitted an **md.\*** effect. A live `notice`-only or effect-free run folds NOTHING (§ The run plane) — so this is not "the one every lane pays" |
-| `dispatch_starlark.rs` `observe_if_emitted`, rehearsal tense (reached from `runner.rs` `rehearse`) | `--dry` instead of the above, not as well — and only when the block emitted SOMETHING; a wider gate than live, because the dry report shows provenance |
-| `runner.rs` `cascade` | a generation that applies md.\* — needs a NON-EMPTY ruleset, and both doors hand `S1_RULES` (empty), so today: never |
-| `executor.rs` pre-commit | only when a `DeltaSink` is in reach, i.e. the WIRE arm. The CLI passes `delta: None` and returns before the fold |
+| `dispatch_starlark.rs` `observe_if_emitted`, live tense (reached from `runner.rs` `dispatch`) | a live run whose block emitted an **md.\*** effect. A live `notice`-only or effect-free run folds nothing (§ The run plane) |
+| `dispatch_starlark.rs` `observe_if_emitted`, rehearsal tense (reached from `runner.rs` `rehearse`) | `--dry` instead of the above, not as well, and only when the block emitted something — a wider gate than live, for the dry report's provenance |
+| `runner.rs` `cascade` | a generation that applies md.\* — needs a non-empty ruleset, and both doors hand `S1_RULES` (empty), so today: never |
+| `executor.rs` pre-commit | only with a `DeltaSink` in reach, i.e. the wire arm. The CLI passes `delta: None` and returns before the fold |
 
-So on the **CLI** an md.\*-committing `mrd run` emits exactly ONE `snapshot` set
-(measured on the release binary: `grep -c 'phase=snapshot '` = 1),
-and a run that commits nothing emits **zero** — the lazy gate, measured on a
-37 800-member root: 0/20 samples folded (an eager fold folds 20/20).
-On the **wire/daemon** arm a run that commits folds a second time inside the
-executor, and the two sets are identical in name with no discriminator — count
-them, do not assume the first is the only one.
-
-`pre_eval` repeating `page.load` and `conventions.load` is likewise a fact of
-the shape, not an artifact of the instrument: the door resolves to refuse early,
-then the plane resolves again as its own gate ([`pre_eval`], ONE owner for both
-tenses).
+On the **CLI** an md.\*-committing `mrd run` emits exactly one `snapshot` set
+(`grep -c 'phase=snapshot '` = 1); one committing nothing emits **zero** — the
+lazy gate (37 800-member root: 0/20 folded; eager 20/20). On the
+**wire/daemon** arm a committing run folds again inside the executor: identical
+names, no discriminator, so count them.
 
 ## Seam map (for reviewers)
 
@@ -2539,12 +1948,12 @@ tenses).
 | detection bracket | `fs::guard` (+ `crates/run` snapshot integration) |
 | the one write path | `crates/run::executor` → `model::validate_batch` → `fs::apply_batch` |
 | stdout record | `crates/run::record` |
-| CLI mount | `crates/mrd::run_cmd` — a client; the charter edge is `laws.md` §crates (`mrd` row) |
-| CLI mount — script entry | `crates/mrd::script::cmd` — the same client edge; its human-mode face is non-normative |
-| in-process script serve (§ A.7) | `crates/registry` (the op arm: entry world, host, threading, commit) over `crates/effects` (kernel, trace, digest) |
+| CLI mount | `crates/mrd::run_cmd` — a client; charter edge `laws.md` §crates (`mrd`) |
+| CLI mount — script entry | `crates/mrd::script::cmd` — same client edge; its human-mode face is non-normative |
+| in-process script serve (§ A.7) | `crates/registry` (op arm: entry world, host, threading, commit) over `crates/effects` (kernel, trace, digest) |
 | wire run serve (§ A.8) + script effects mode | `crates/registry` (`run_op`: per-target loop, §9 threading; `script_op`: the live host) over `crates/run` (the plane, unchanged) |
-| per-phase timing (`MRD_TIMING`) | `crates/timing` (the switch, the sink, the span) — the phase call sites are `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`, `fs::domain_fold`, `registry::Registry::currency_refresh`, `registry::Registry::door_observation`; § Timing phases |
-| root-at-eval observation (the lazy fold) | `crates/run::dispatch_starlark::observe_if_emitted` — ONE owner of the per-tense gate; `runner::rehearse` calls it directly, the live leg calls it inside `dispatch_starlark::dispatch`. `evaluate` returns `Unobserved`, so neither can skip it and still compile; § The run plane (`RunCtx`) |
+| per-phase timing (`MRD_TIMING`) | `crates/timing` (switch, sink, span); call sites `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`, `fs::domain_fold`, `registry::Registry::currency_refresh`, `registry::Registry::door_observation`; § Timing phases |
+| root-at-eval observation (the lazy fold) | `crates/run::dispatch_starlark::observe_if_emitted` — one owner of the per-tense gate; `runner::rehearse` calls it directly, the live leg inside `dispatch_starlark::dispatch`. `evaluate` returns `Unobserved`, so neither skips it; § The run plane (`RunCtx`) |
 
 ---
 
@@ -2552,28 +1961,16 @@ tenses).
 
 > Folded into `run-plane.md` for navigation. Standing corrections: `README.md` / `wire-contract.md`.
 
-
-A **preset** is a def page that declares a shape. **Session birth** is the act
-of turning that declared shape into files. This document is the design element
-the `preset` crate and the `new` / `unfold` / `reconcile` verbs are audited
-against: it states what the plane is FOR, the laws it may not break, and the
-boundaries it may not cross.
-
-It is not a description of the current code. Where the code and this element
-disagree, the element wins and the code is rebuilt.
+A **preset** is a def page that declares a shape; **session birth** turns that
+shape into files. The `preset` crate and the `new` / `unfold` / `reconcile`
+verbs are audited against this element; where code and element disagree, the
+element wins.
 
 ## 1. The premise — a shape is declared once, in a page
 
-The alternative this plane exists to replace is a scaffolding script: a
-generator that knows the shape in code, births files nobody can re-derive, and
-drifts from the shape the day someone edits the tree by hand.
-
-The premise here is the opposite. **The shape lives in a page**, in the same
-markdown the engine already governs, and a born tree **pins the def it came
-from at the def's rev** — so the shape that produced any file is recoverable
-forever, from the file, without the tool that wrote it.
-
-Everything below follows from that premise.
+**The shape lives in a page**, in the markdown the engine already governs, and a
+born tree **pins the def it came from at the def's rev** — the shape behind any
+file is recoverable from the file forever, without the tool that wrote it.
 
 ## 2. The def grammar
 
@@ -2590,108 +1987,90 @@ A preset def is a page carrying `type: def`. Its frontmatter declares:
 
 Its body declares, in named sections:
 
-- `# Properties` (`^properties`) — the rules a born record must satisfy. One
-  `- key` or `- key = value` list item per rule.
+- `# Properties` (`^properties`) — the rules a born record must satisfy: one
+  `- key` or `- key = value` item each.
 - `# Template` (`^template`) — the fenced body one record is born from.
-- `# Unfold` — the declared scaffold: the file paths a whole birth materializes,
-  in declared order.
-- `# Ephemeral` — the **allowlist** of declared-disposable paths. Empty by
-  construction, so a def that declares nothing disposable can prune nothing.
+- `# Unfold` — the declared scaffold: the paths a whole birth materializes, in
+  declared order.
+- `# Ephemeral` — the **allowlist** of declared-disposable paths, empty by
+  construction: a def declaring nothing disposable prunes nothing.
 
-**The parenthetical is a REQUIRED byte of the heading line.** `(^properties)` and `(^template)` are block ids that must stand ON
-the heading line — `# Properties ^properties`. The loader finds these blocks by
-ANCHOR, never by heading text, so a def carrying a visually complete
-`# Properties` section with no anchor id declares no `^properties` block at all.
-The two spellings are indistinguishable to a reader and total opposites to the
-loader, so both the element above and the `def_invalid` refusal below state the
-anchor rule outright.
+**The parenthetical is a required byte of the heading line.** `(^properties)`
+and `(^template)` are block ids standing on the heading line —
+`# Properties ^properties`. The loader finds them by anchor, never by heading
+text: a `# Properties` section with no anchor id declares no `^properties`
+block.
 
-**Law 2.1 — `inputs` is read and written whole.** It is a multi-line block
-sequence, read through the whole-value frontmatter grain and written as whole
-birth bytes. A line-oriented scan that stops at the key line, or a single-line
-properties upsert, corrupts it. The read half and the render half are one round
-trip and are audited as a pair.
+**Law 2.1 — `inputs` is read and written whole.** A multi-line block sequence:
+read through the whole-value frontmatter grain, written as whole birth bytes. A
+line-oriented scan stopping at the key line, or a single-line properties upsert,
+corrupts it. Read and render halves are one round trip, audited as a pair.
 
 ## 3. The birth law — one door
 
 **Law 3.1 — every byte a preset lands rides the guarded create.** No
-`fs::write`, no second write path, no exception for a stub, a dry run, or a
-scaffold file the author thinks is uninteresting. The guarded create carries
-three things a raw write cannot: the `if_absent` CAS, the journaled birth
-receipt, and the gate seam.
+`fs::write`, no second write path, no exception for a stub, a dry run or a
+scaffold file: it carries the `if_absent` CAS, the journaled birth receipt and
+the gate seam.
 
-**Law 3.2 — a birth never clobbers.** An occupied target is the CAS's answer,
-not the plane's decision. It surfaces as a `cas_mismatch` finding and the file
-on disk is left byte-untouched. This holds on a dry run too: a rehearsal that
-would have clobbered still refuses.
+**Law 3.2 — a birth never clobbers.** An occupied target is the CAS's answer: a
+`cas_mismatch` finding, the file left byte-untouched; a rehearsal that would have
+clobbered refuses too.
 
 **Law 3.3 — every removal rides the guarded remove**, read-then-delete under
-the live rev. The one exception is an empty directory, which carries no
-governed rev and no bytes to protect; it is removed with a raw `rmdir` and that
-exception is stated here so it cannot be widened silently.
+the live rev. One exception, never widened: an empty directory has no governed
+rev and no bytes, so raw `rmdir` removes it.
 
 **Law 3.4 — the plane mints no identity and no clock.** `actor` and `now` are
-caller-supplied and stamped exactly as given. Absent stays absent. A crate that
-reads the wall clock cannot be tested against a fixture and cannot be replayed.
+caller-supplied, stamped exactly as given; absent stays absent.
 
-**Law 3.5 — a born record names the def it was born from.** Every born record —
-the root record and each scaffold stub alike — carries `preset:` holding the
-DEF's page path. A root record that names itself there makes its own provenance
-line false and gives one key two meanings inside a single birth.
+**Law 3.5 — a born record names the def it was born from.** Root record and
+scaffold stub alike carry `preset:` holding the def's page path, never their
+own.
 
 **Law 3.6 — a `^template` placeholder in a frontmatter value position is a
-VALUE-PLANE WRITE.** `{{id}}`, `{{kind}}`, `{{actor}}` and `{{now}}` fill the
-template BODY verbatim; inside the template's frontmatter block the same
-substitution goes through the one encoder wire-contract § A.6.3a names, the
-encoder `set_property` and `put{at:"upsert"}` already speak. The emitted value
-is the plain form when the plain form decodes back to exactly the caller's
-string, and the canonical double-quoted scalar otherwise.
+value-plane write.** `{{id}}`, `{{kind}}`, `{{actor}}` and `{{now}}` fill the
+template body verbatim; in its frontmatter block the substitution goes through
+the one encoder wire-contract § A.6.3a names, which `set_property` and
+`put{at:"upsert"}` already speak. The value is the plain form when that form
+decodes back to exactly the caller's string, the canonical double-quoted scalar
+otherwise.
 
-A value that cannot be ONE frontmatter line — one carrying `\n` or `\r` —
+A value that cannot be one frontmatter line — one carrying `\n` or `\r` —
 **refuses the birth** (`bad_request` / `fix`), naming the key, the v1
-single-line rule, the body-section escape, and the placeholder that carried it.
-Nothing is written. This is Law 3.4 holding, not bending: sanitizing the
-caller's actor would falsify the provenance the birth records, and an
-escaped-scalar workaround leaks, so the door refuses instead of rewriting.
+single-line rule, the body-section escape and the placeholder that carried it.
+Nothing is written (Law 3.4: sanitizing the actor would falsify recorded
+provenance).
 
-Measured: a door that interpolates source bytes instead, given
-`--actor $'bob\nstatus: closed'` born against `owner: {{actor}}`,
-mints a record carrying `status:` twice — disk `closed`, every read door
-`open`, and no governed edit able to reach the shadow line. The law holds at
-this door as it does at the other two value-plane doors.
+Measured: `--actor $'bob\nstatus: closed'` against `owner: {{actor}}`, through a
+door interpolating source bytes, mints `status:` twice — disk `closed`, every
+read door `open`, no governed edit reaching it.
 
 ## 4. The three verbs
 
-The plane offers exactly three births, and they differ only in **what set of
-paths they act on**. They share one def loader, one renderer pair, and one
-guarded door — a verb that grows its own copy of any of those is wrong-design.
+The plane offers exactly three births, differing only in **what set of paths
+they act on**; they share one def loader, one renderer pair and one guarded
+door, and a verb growing its own copy is wrong-design.
 
 | Verb | Acts on | Refuses when |
 |---|---|---|
-| `new <kind> <id>` | ONE record, from `^template` | the def is invalid, or the target exists |
-| `unfold <preset>` | EVERY declared scaffold path | any declared path already exists |
-| `reconcile <preset>` | the MISSING declared paths only | — (an occupancy is not a failure here) |
+| `new <kind> <id>` | one record, from `^template` | the def is invalid, or the target exists |
+| `unfold <preset>` | every declared scaffold path | any declared path already exists |
+| `reconcile <preset>` | the missing declared paths only | — (an occupancy is not a failure here) |
 
 **`new` validates before it writes.** The filled template is parsed and checked
-against every `^properties` rule; the FIRST violation refuses `def_invalid`
+against every `^properties` rule; the first violation refuses `def_invalid`,
 naming the rule verbatim. A def with no `^properties` block, no `^template`, or
-a rule that did not parse is itself invalid — the same refusal, because a def
-that cannot state its own contract cannot birth a record that satisfies it. The
-missing-block refusal states the anchor rule (Law 2.1's neighbour above): the
-block is found by its `^` id on the heading line, so an author staring at a
-visible `# Properties` heading is told which byte is absent, not merely that the
-block "does not exist".
+an unparsed rule is itself invalid — the same refusal, stating the anchor rule so
+the author learns which byte is absent.
 
-**`unfold` is the first birth; `reconcile` is every birth after it.** That is
-the whole difference: unfold treats an occupied path as a finding because it
-expected to create the world, and reconcile treats it as convergence because it
-expected the world to be partly there.
+**`unfold` is the first birth; `reconcile` is every birth after it.** Unfold
+treats an occupied path as a finding; reconcile treats it as convergence.
 
 ## 5. The reconcile asymmetry
 
 **Law 5.1 — reconcile is additive by set-difference, subtractive by
-allowlist.** These are not two spellings of one operation and must never be
-refactored into one:
+allowlist.** These are two operations, never to be refactored into one:
 
 - **Materialize** every declared path missing from the tree. Set-difference.
 - **Prune** only paths matching the `# Ephemeral` allowlist, plus empty
@@ -2699,137 +2078,110 @@ refactored into one:
 - **Everything else** — undeclared content — renders as a **finding**. Never a
   prune action, never under any flag.
 
-**Law 5.2 — "undeclared" is not "unwanted".** The tempting symmetry (delete
-whatever the def does not declare) is the one thing this design forbids. A user's
-file that the def has never heard of is a report to the user, not garbage. The
-asymmetry is the safety property; a change that makes the two halves symmetric
-has deleted the design, whatever the tests say.
+**Law 5.2 — "undeclared" is not "unwanted".** A user's file the def has never
+heard of is a report, not garbage. The asymmetry is the safety property; making
+the halves symmetric deletes the design.
 
 **Law 5.3 — reconcile stays inside the shape's territory.** The scan scope is
-the set of directories the declared scaffold occupies. Reconcile never reads,
-reports on, or prunes a path outside it. Engine and system files (dotfiles, the
-reserved journal) are never "undeclared content".
+the directories the declared scaffold occupies; reconcile never reads, reports
+on, or prunes a path outside it. Engine and system files (dotfiles, the reserved
+journal) are never "undeclared content".
 
-A prunable **directory** is one that lives strictly beneath a directory the
-scaffold itself creates, is not an ancestor of a declared path, holds no
-finding, and is empty. A scaffold declaring only top-level files creates no
-directory and therefore prunes none: the workspace root is never walked for
-directory candidates, because every empty directory in a user's workspace is not
-this shape's territory.
+A prunable **directory** lives strictly beneath a directory the scaffold itself
+creates, is not an ancestor of a declared path, holds no finding, and is empty.
+A scaffold of only top-level files creates none, and the workspace root is never
+walked for candidates.
 
-**Teaching row — Law 5.3 OUTRANKS Law 5.1, and the losing entry dies
-silently.** An `# Ephemeral` path that lies outside the scaffold's territory is
-INERT: `--prune` walks past it with no prune row, no finding row and no
-refusal, because territory decides scan scope before the allowlist is ever
-consulted. Measured: `sessions/tmp-cache.md` (allowlisted,
-in territory) pruned, while `scratch/tmp.md` (allowlisted, `scratch/` holding
-no `# Unfold` path) survived untouched and unreported. The precedence is
-correct — it is Law 5.2's safety property, which must not weaken because a def
-ASKED for a deletion outside the shape. **What the face does not do is say
-so.** A def author gets a dead allowlist entry with zero disclosure at declare
-time (`mrd new` accepts the def) and zero at prune time, so the only way to
-learn the entry is dead is to notice the file that should be gone is still
-there. An ephemeral-declared file that IS present renders no row under a
-no-prune reconcile either — neither finding nor ephemeral.
+**Teaching row — Law 5.3 outranks Law 5.1, and the losing entry dies
+silently.** An `# Ephemeral` path outside the scaffold's territory is inert:
+`--prune` walks past it with no prune row, no finding row, no refusal —
+territory decides scan scope before the allowlist. Measured:
+`sessions/tmp-cache.md` (allowlisted, in territory) pruned; `scratch/tmp.md`
+(allowlisted, `scratch/` holding no `# Unfold` path) survived untouched and
+unreported. **What the face does not do is say so.** A dead allowlist entry gets
+zero disclosure at declare time (`mrd new` accepts the def) and zero at prune
+time, and an ephemeral-declared file that is present renders no row under a
+no-prune reconcile — neither finding nor ephemeral.
 
-⚠️ Recorded here as the scoping fact it is. Whether the plane owes a
-declare-time or prune-time disclosure on a territory-shadowed allowlist entry
-is NOT settled by this page.
+⚠️ Whether the plane owes a declare-time or prune-time disclosure on a
+territory-shadowed allowlist entry is not settled here.
 
 **Law 5.4 — pruning is opt-in.** Without `--prune`, reconcile materializes and
 reports and removes nothing.
 
 ## 6. The convention floor
 
-A session preset's `inputs` pin the convention floor — the rule pages the born
-session lives under — at a path and a rev. The root record is born carrying that
-pin, so the law a session was born under is readable from the session itself
-long after the def has moved on.
+A session preset's `inputs` pin the **convention floor** — the rule pages the
+born session lives under — at a path and a rev.
 
-**Law 6.1 — a floor pin is a pin, not a copy.** The preset records `path@rev`;
-it never inlines the floor's content into the born tree.
+**Law 6.1 — a floor pin is a pin, not a copy.** It records `path@rev` and never
+inlines floor content into the born tree.
 
 **Law 6.2 — the born root record carries the floor pins itself.** Its `inputs`
-is one block sequence holding the def pin first, then every floor pin the def
-declared, in declared order. A root record carrying the def pin alone leaves the
-floor readable only transitively — def@rev, then the def's content — which is
-one indirection weaker than "readable from the session itself" and survives only
-while the def blob does.
+is one block sequence: the def pin first, then every declared floor pin, in
+declared order. A def pin alone leaves the floor readable only through the def
+blob.
 
 **Law 6.3 — the floor prefix is a default the def overrides, never a validity
-predicate the engine owns** (`docs/laws.md`: no hard-coded flow).
-`conventions/` is where a convention-floor suite lives by convention, so it is the
-fallback; a def spelling `floor: standards/` pins its floor there and is exactly
-as valid. The engine reads the def's own key and only falls back to the
-constant — the shape `root` / `DEFAULT_ROOT_RECORD` already had. A user who
-files their convention suite elsewhere is served, not refused.
+predicate the engine owns** (`docs/laws.md`: no hard-coded flow). `conventions/`
+is the fallback, by convention; `floor: standards/` in a def is exactly as
+valid. The engine reads the def's own key and only falls back to the constant —
+the shape `root` / `DEFAULT_ROOT_RECORD` already had.
 
 ## 7. Refusals and exit codes
 
-The plane distinguishes two failure kinds and never conflates them:
+Two failure kinds, never conflated:
 
 | Kind | Exit | Examples |
 |---|---|---|
 | **Finding** — the plane ran and reported | 1 | `def_invalid{rule}`, `cas_mismatch`, an undeclared-content finding |
-| **Tool failure** — the plane could not run | 2 | the def is unreadable, the page is not a def, a write faulted for a reason other than the CAS |
+| **Tool failure** — the plane could not run | 2 | def unreadable, page is not a def, a write faulted for a non-CAS reason |
 
 **Law 7.1 — a refusal names the rule it enforced.** `def_invalid` carries the
-source text of the violated `^properties` rule. A refusal that says only "the
-def is invalid" makes the author guess, and this plane's whole value is that the
-shape is stated in a page they can read.
+source text of the violated `^properties` rule.
 
 ## 8. Boundaries — what this plane never does
 
-- It holds **no session policy and no liveness**. Whether a session is active,
-  expired, or archived belongs to the customer that dials this plane.
-- It owns **no CLI**. `mrd new` / `unfold` / `reconcile` are thin clients:
-  argument parsing, workspace resolution, output shape. Every decision this
-  document states lives in the crate, so a second host reaches the same
-  behaviour without re-deriving it.
-- It invents **no write path, no hash law, no rev noun**. It composes the
-  shipped ones.
+- **No session policy, no liveness.** Whether a session is active, expired or
+  archived belongs to the customer that dials this plane.
+- **No CLI.** `mrd new` / `unfold` / `reconcile` are thin clients: argument
+  parsing, workspace resolution, output shape. Every decision here lives in the
+  crate.
+- **No write path, no hash law, no rev noun.** It composes the shipped ones.
 
 ## 9. The user-facing surface carries no internal tags
 
 **Law 9.1 — a verb's help text is written for the person typing the verb.**
-Internal planning identifiers — unit numbers, block numbers, plan-section
-references, the tags a docket uses to track its own work — are project
-bookkeeping. They are legitimate in source comments, crate metadata, and test
-names, where the reader is a contributor holding the plan. They must not appear
-in `mrd help` output, where the reader is a user who has never seen the docket
-and for whom `(U5.3)` is noise that reads as a version, a flag, or an error
-code.
-
-This is gated by a test over the real help output, not by review discipline.
+Internal planning tags — unit and block numbers, plan-section references,
+docket tags — belong in source comments, crate metadata and test names, never
+in `mrd help` output. A test over real help output gates it.
 
 ---
 
 ## Appendix — the conformance audit
 
-The audit of the `preset` crate and the `new` / `unfold` / `reconcile`
-verbs against this element. Every law is listed, including the ones the code
-satisfies trivially — an audit that reports only its findings cannot be checked
-by the next reader, who has no way to tell an unexamined law from a passing one.
+Every law audited against the `preset` crate and the `new` / `unfold` /
+`reconcile` verbs, including trivially satisfied ones.
 
 | Law | Verdict | Evidence |
 |---|---|---|
-| 2.1 whole-value `inputs` | **conformant** | `read_inputs_grain` resolves `FmKey("inputs")` and spans the whole block; `render_block_sequence` is its writing half. The round trip is gated by an existing test. |
-| 3.1 one write door | **conformant** | Every landing byte in the crate goes through `birth` → `wire_serve::write::create`. No `fs::write` exists in the crate. |
-| 3.2 never clobber | **conformant** | `if_absent` CAS; `BirthResult::Occupied` is a finding, never a fallback write. `opts.dry` is passed to the door, so a dry run refuses too. |
-| 3.3 guarded remove | **conformant** | `prune_file` reads the live rev and removes under it. The `rmdir` exception is the empty-directory case, stated in the element. |
-| 3.4 no minted identity or clock | **conformant** | `actor` / `now` are `Option<String>` on `BirthOptions` and are never defaulted from a clock; `fill_vars` renders an absent one as empty. |
-| 3.6 template fill is a value-plane write | **conformant** | `fill_template` routes a frontmatter value position through `policy::defs::yaml_safe_value` — the encoder the other two § A.6.3a doors use — and refuses a multi-line value in their uniform words, so a caller value carrying `\n` or `: ` cannot mint a second key line. Gated by `crates/preset/tests/birth_value_plane.rs`, six tests including the plain-value control and the body-verbatim control. |
-| 4 three verbs, one door | **conformant** | All three call `load_def` and `birth`; none carries a private write path or a second renderer. |
-| 4 `new` validates before writing | **conformant** | Structural def checks, then `first_violated_rule`, then birth. A def that cannot satisfy its own `^properties` refuses before any byte moves. |
-| 5.1 additive by diff, subtractive by allowlist | **conformant** | `reconcile_plan` is a pure fold and keeps the two halves as separate fields. |
-| 5.2 undeclared is not unwanted | **conformant** | `findings` is never read by the prune path. |
-| 5.3 territory — file half | **conformant** | `scan_scope` walks only the directories directly holding a declared path; dotfiles and the reserved journal are skipped. |
-| 5.3 territory — directory half | **conformant** | `prune_empty_dirs` walks the live tree beneath the scaffold's own directories, bounded so a top-level-only scaffold never reaches the workspace root. (Drawing candidates and the skip set from the same `declared` expression would make every candidate match the skip set and leave `pruned_dirs` dead.) Gated by three tests, one of which is the bound. |
+| 2.1 whole-value `inputs` | **conformant** | `read_inputs_grain` spans the whole `FmKey("inputs")` block; `render_block_sequence` writes it back; round trip tested. |
+| 3.1 one write door | **conformant** | All landing bytes: `birth` → `wire_serve::write::create`; no `fs::write` in the crate. |
+| 3.2 never clobber | **conformant** | `if_absent` CAS; `BirthResult::Occupied` is a finding, not a fallback write; `opts.dry` refuses at the door. |
+| 3.3 guarded remove | **conformant** | `prune_file` removes under the live rev; `rmdir` only for empty directories. |
+| 3.4 no minted identity/clock | **conformant** | `actor` / `now`: `Option<String>` on `BirthOptions`, never clock-defaulted; `fill_vars` renders absent as empty. |
+| 3.6 template fill is value-plane | **conformant** | `fill_template` encodes frontmatter values with `policy::defs::yaml_safe_value`, the other two § A.6.3a doors' encoder, refusing multi-line values in their uniform words: `\n` or `: ` cannot mint a second key line. Six tests, `crates/preset/tests/birth_value_plane.rs`, incl. plain-value and body-verbatim controls. |
+| 4 three verbs, one door | **conformant** | All three call `load_def` and `birth`; no private write path, no second renderer. |
+| 4 `new` validates first | **conformant** | Structural checks, `first_violated_rule`, birth; a def failing its `^properties` refuses before any byte moves. |
+| 5.1 additive diff, subtractive allowlist | **conformant** | `reconcile_plan` is a pure fold; halves stay separate fields. |
+| 5.2 undeclared is not unwanted | **conformant** | The prune path never reads `findings`. |
+| 5.3 territory, files | **conformant** | `scan_scope` walks only directories holding a declared path; dotfiles and the reserved journal skipped. |
+| 5.3 territory, directories | **conformant** | `prune_empty_dirs` walks beneath the scaffold's own directories, bounded so a top-level-only scaffold never reaches the workspace root; candidates and skip set from different expressions, else `pruned_dirs` dies. Three tests, one the bound. |
 | 5.4 prune is opt-in | **conformant** | Gated by an existing test. |
-| 6 floor pin is a pin | **conformant** | `render_root_record` writes `path@rev`; the floor's content is never inlined. |
-| 7 finding vs tool failure | **conformant** | `RefusalReason` (exit 1) and `PresetError` (exit 2) are separate types; only a non-CAS write fault crosses into the latter. |
-| 7.1 a refusal names its rule | **conformant** | `def_invalid` carries `PropRule::raw`, the source text verbatim. |
-| 8 no session policy, no CLI ownership | **conformant** | The crate holds no liveness state; the three `mrd` modules parse arguments and shape output only. |
-| 9.1 no internal tags in help | **conformant** | No help description carries a planning tag. A derived test scans every page the CLI can print. Source comments and crate metadata keep their tags, which §9.1 permits. |
+| 6 floor pin | **conformant** | `render_root_record` writes `path@rev`; content never inlined. |
+| 7 finding vs failure | **conformant** | `RefusalReason` (exit 1) and `PresetError` (exit 2) are separate types; only a non-CAS write fault crosses over. |
+| 7.1 refusal names its rule | **conformant** | `def_invalid` carries `PropRule::raw` verbatim. |
+| 8 no session policy, no CLI | **conformant** | No liveness state; the three `mrd` modules parse arguments and shape output only. |
+| 9.1 no tags in help | **conformant** | No help description carries a planning tag; a derived test scans every printable page; comments and crate metadata keep theirs, which §9.1 permits. |
 
 **No part of this plane warrants removal.**
