@@ -50,8 +50,8 @@ means a capability is missing from `wire-map` or `wire-serve`.
 
 New capability arrives as new leaf crates or match arms, never as a reshuffle
 of what ships: new ops are new `Op` variants and dispatch arms, discovered
-through `hello`'s capability list; `policy` and `query` are
-additive consumers of the model's index. Nothing shipped is ever split.
+through `hello`'s capability list; `policy` and `query` are additive consumers
+of the model's index. Nothing shipped is ever split.
 
 ## Crate charters
 
@@ -63,14 +63,14 @@ which laws it carries.
 | `addr` | The agent-plane address `[root:]path[#selector]`: a fallible type with an optional canonical root name, plus the bound-name projection (`MountSet`) every plane resolves through. A `std`-only leaf upstream of `syntax`; nothing downstream re-splits a string. `Addr::parse` is the sole constructor; the path field carries no root prefix. Colon law: root wins, **no fallback to the literal reading**. Parse is not resolve: whether a named root is bound is the resolver's grey answer, never a parse error |
 | `timing` | The `MRD_TIMING` switch, resolved once per process into a sink, and the phase span emitting one `mrd-timing cmd=… who=… phase=… us=…` line per completed phase (`who=`: process and thread). A `std`-only leaf with zero dependencies, used by `fs`, `run`, `mrd`, `registry`. Never touches stdout or an exit code; reads no clock when off. Not a log framework or tracer: no levels, spans-in-flight, subscriber, or second time unit (`us`, the wire's `meta.duration_us` noun). Surface: `status.md` § The timing mode; `mrd run` phases: `run-plane.md` § Timing phases |
 | `syntax` | Markdown bytes → dialect node list with byte-exact spans; sole owner of the pulldown-cmark fork |
-| `model` | The governed node tree, resolve, CAS-splice validation, workspace fingerprints; non-serializable (Law 1). The frozen heading predicate (`gotext`), the one address law its two dependents share. The content-identity plane: the `fp1.…` CID-token; `verify_content`'s four-arm verdict (`Unverifiable` carries the whole `version.codec.hashfn` triple); the one reason-carrying `Color` model every drift surface uses. The frontmatter scalar codec (`scalar`): sole owner of the § A.6 value law; decode for every read seam, double-quoted encode for every value-plane write door |
-| `fs` | Disk read/walk/watch into the model; atomic tmp+fsync+rename splice execution. The `.base` membership walk (`base-projection.md` §3): hash-domain rules with the floor swapped from `*.md` to `*.base`, returning raw bytes per member plus the §6.2 `bf:` witness; stays YAML-free: it hands the bytes up and `view` parses them |
+| `model` | The governed node tree, resolve, CAS-splice validation, workspace fingerprints; non-serializable (Law 1). The frozen heading predicate (`gotext`), the one address law its two dependents share. The content-identity plane: the `fp1.…` CID-token; `verify_content`'s four-arm verdict (`Unverifiable` carries the whole `version.codec.hashfn` triple); the one reason-carrying `Color` model every drift surface uses. The frontmatter scalar codec (`scalar`): sole owner of the `wire-contract.md` § A.6 value law; decode for every read seam, double-quoted encode for every value-plane write door |
+| `fs` | Disk read/walk/watch into the model; atomic tmp+fsync+rename splice execution. The `.base` membership walk (`base-projection.md` §3): hash-domain rules with the floor swapped from `*.md` to `*.base`, returning raw bytes per member plus the `bf:` witness (`base-projection.md` §6.2); stays YAML-free: it hands the bytes up and `view` parses them |
 | `wire` | The serde-only wire vocabulary (Law 2) |
 | `wire-map` | The model→wire projection seam (Law 3) |
 | `git` | Git plumbing: shell-out content-addressing (blob object ids, the eager `-w` write) and object reachability against a `Repo` handle; asks git and reports its answer, never computes or guesses an oid. A `std`-only leaf, no production dependency |
 | `receipt` | Two planes: the persisted `^receipt` line renderer, committed in the same batch as its edit (shipped default template; facts normative, template replaceable); the origin-freshness anchor axis and three-state blob classification (`anchored` / `pending-anchor` / `never-anchored`). No read-side state: pin proof rides the request (wire-contract § A.3); the engine records no reads. Depends on `wire` only, by gate; `git` does the I/O |
 | `transport` | Untyped NDJSON envelope + codec seam; framing without meaning |
-| `policy` | Ruleset compile + assertion evaluation under budgets; edit-time verdicts; the blocking `gate` at the armed change plane (`policy::gate`, § Amendment) |
+| `policy` | Ruleset compile + assertion evaluation under budgets; edit-time verdicts; the blocking `gate` at the armed change plane (`policy::gate`; § Amendment — the policy gate) |
 | `query` | Corpus reads over the model's borrowed index; applies nothing |
 | `wire-serve` | The shared typed edge (Law 3 choke-point): one implementation, one host (wire-contract §3.3). Agent/stored address seam: `put` translates cross-root `root:` to the `obsidian://` stored form and `read` back, at the candidate document (`address-grammar.md` §9). Reads `config`'s mount table lazily when a candidate can carry a cross-root position |
 | `render` | The compiled-in render plane: `Renderer` + node-grain walker producing the TOON-compact projection through its own encoder (`render::toon`), with block-elision and claim-link decoration hooks. Decorations arrive as data: no `render → lock → fingerprint` edge |
@@ -78,7 +78,7 @@ which laws it carries.
 | `effects` | The effect kernel: pure Starlark evaluation, rules in, effect descriptors out; zero I/O, advisory-only |
 | `run` | The mrd-local run plane: plan/execute under the workspace run lock. Owns `Authority` (capabilities real for starlark, absent for bash). See `run-plane.md` |
 | `realise` | Observe → check → apply per claim, on the run plane |
-| `view` | **Ephemeral projection + lock-aware read face** (`wire-contract.md` §10.3–§10.4; not agent core): the parsed corpus in an in-process `:memory:` DuckDB (`build_memory`, the `mrd sql` operator face); walk/status colour reads. **Writes nothing to disk**: no persistent published file, no `view.duckdb`, no `view_path` wire op (`wire-contract.md` §10.4). The `.base` projection (`base-projection.md`): three `base` relations, `link.exclusion_path`, the `base_fold` second witness; its parse is the leaf module `view::base`, hence the third permitted `serde_yaml` taker (§9, enforced by `yaml_confinement`) |
+| `view` | **Ephemeral projection + lock-aware read face** (`wire-contract.md` §10.3–§10.4; not agent core): the parsed corpus in an in-process `:memory:` DuckDB (`build_memory`, the `mrd sql` operator face); walk/status colour reads. **Writes nothing to disk**: no persistent published file, no `view.duckdb`, no `view_path` wire op (`wire-contract.md` §10.4). The `.base` projection (`base-projection.md`): three `base` relations, `link.exclusion_path`, the `base_fold` second witness; its parse is the leaf module `view::base`, hence the third permitted `serde_yaml` taker (`base-projection.md` §9, enforced by `yaml_confinement`) |
 | `check` | The pure read verb of the reconciliation loop |
 | `preset` | Presets + session birth: def-pinned convention floor; `new`/`unfold`/`reconcile` through the guarded create. See `run-plane.md` (preset section) |
 | `config` | The `MERIDIAN.md` plane, the one entry point, parsed as content. Bootstrap chain: `MERIDIAN_CONFIG`, then `$HOME/MERIDIAN.md`. Four resolution states; absent and zero-mount reach one mount table. The strictest parse in the system: closed `&'static str` reason set, 1-based file lines, a teaching refusal stating nothing loaded. Rev and fingerprint: `blake3(bytes)[:16]`, no new rev noun. `Config` has private fields, `parse` its only constructor: no partial table. Downstream of `model`. **Mount table (`mount.rs`)** binds a declared entry, in order: canonicalize; the `workspace::deny_reason` ceiling, reused whole; three-way uniqueness (name ↔ Obsidian vault name ↔ path), refusing equal-or-nested paths; **the root declares, `MERIDIAN.md` binds**: a mismatch fails the whole parse, an absent declaration renders grey. Per-root state is grey-exit-1's closed vocabulary (one `bound`, four `grey(...)`, one `red(...)`); every non-bound state refuses on exit 1 with its own reason word. Mount-as-claim: a mount may pin its root, verified through `model::fingerprint::verify_content`; no new codec or hash law. `MountTable`'s field is private, `bind` its only constructor. **Bridge period (`bridge.rs`):** `CCC_LLM_WIKI_PATH` and `CCC_LLM_WIKI_REPOS_ROOT` become mount entries; until they demote to overrides, each is checked against the bound table through `MountTable::by_path` — the canonicalize-at-bind comparison reused whole, never a second one, so the symlinked, trailing-slash and real spellings of one tree are one lookup. On disagreement **the file wins** (`Bridged::mount` is `Some` only on agreement); the divergence is reported once per process, per variable, never on an exit code. An empty table is `unchecked`, not divergent. **Projection:** `MountTable::projection` yields the `addr::MountSet`: bound names, each bound vault root's **vault name** (the stored-plane spelling), and unreachable declared names with the path to check. Not `mrd walk`'s projection, which also marks a root unreachable when its corpus will not build |
@@ -102,22 +102,23 @@ or ignore — and the blocking gate at the armed change plane.
 - **The seam.** `gate(change, law) → GateOutcome`
   (`Ok(verdicts) | Refusal(violations)`), `policy::gate`
   (`crates/policy/src/gate.rs:108`), blocks where `evaluate_verdicts`
-  advises: after CAS, before bytes land, in both writer paths. Armed, a block-severity verdict or door-law violation refuses the
-  write with a `{code, recovery}` pair from the closed §8 taxonomy
+  advises: after CAS, before bytes land, in both writer paths. In an armed
+  workspace, a block-severity verdict or a door-law violation refuses the
+  write with a `{code, recovery}` pair from the closed taxonomy
   (`wire-contract.md` §8).
 - **Trusted-path armed set.** The armed law is loaded and verified from the
   workspace path inside the trusted write path (`resolve_armed_law`,
   `crates/policy/src/armed_law.rs:257`, on its own disk seam); no
   caller-supplied ruleset takes part. Absent INDEX, never armed: bit-for-bit
   no-op. Missing INDEX, once armed: fails closed (`convention-fault`).
-- **Additivity holds (Law § Additivity).** The gate is a new match arm at the
+- **Additivity holds (§ Additivity).** The gate is a new match arm at the
   write seam; `model`, `wire` and the projection seam are untouched (Law 1);
   refusals mint only through `wire`'s error types (Law 2).
 
 **Scope of the refusal claim.** Refusal makes violations "unrepresentable
-through an armed change plane", nothing stronger. The genesis epoch (pre-first-arming
-writes) renders grey, never green. Out-of-band mutation (an
-offline pre-push git rewrite, a root-preserving forged journal row) is caught
+through an armed change plane", nothing stronger. The genesis epoch
+(pre-first-arming writes) renders grey, never green. Out-of-band mutation — an
+offline pre-push git rewrite, a root-preserving forged journal row — is caught
 by the git witness plus the receipt-engine-only write restriction, or is a
 named residual, never rendered green.
 
@@ -131,11 +132,11 @@ decision, not a defect. Neither is a TODO: each row is ruled to wait.
 | # | Row | Kind | Status |
 |---|---|---|---|
 | R1.6-a | The stored→agent re-join/re-parse in `wire-serve::positions` | residue | deferred — see below |
-| C-1 | The link plane resolves cross-vault refs IN-PROCESS, not in the daemon | residue | a degrade — **successor named below** |
+| C-1 | The link plane resolves cross-vault refs in-process, not in the daemon | residue | a degrade — **successor named below** |
 | H-1 | The `#` refusal on a heading whose raw text carries `#` | candidate | **a pointer** — see below |
 | S-1 | The stored-plane narrowing refusal | candidate | **owed** — see below |
 | D-1 | The joined `--section` coat splits on `/`, so a heading whose raw text carries `/` is not addressable by that one spelling | residue | **widening the coat is C2, and C2 stays reserved** — see below |
-| G-1 | The §2.4 block-id charset is enforced at the structured ingress only, so an unmintable `^id` MISSES at the read and walk doors instead of refusing | candidate | **face decision proposed, unratified** — see below |
+| G-1 | The wire-contract §2.4 block-id charset is enforced at the structured ingress only, so an unmintable `^id` misses at the read and walk doors instead of refusing | candidate | **face decision proposed, unratified** — see below |
 
 ### S-1 — the stored-plane narrowing refusal, and why it is owed
 
@@ -161,7 +162,7 @@ The last two have no value at the translation seam to detect; a refusal
 would be a variant with no constructor. **Do not land dead variants for
 symmetry.**
 
-### Q7 — why the **optional view organ**'s cross-root destination is THREE columns, not two
+### Q7 — why the **optional view organ**'s cross-root destination is three columns, not two
 
 *(View organ / SQL board only — not agent core; `wire-contract.md` §10.3–§10.4.
 The core path never assumes this schema.)*
@@ -214,18 +215,19 @@ forms in machine surfaces."*
 - **Successor act:** give `Addr` a fallible parts constructor running the same
   checks `parse` runs, then delete the join.
 
-### C-1 — the link plane's in-process degrade, and its NAMED SUCCESSOR
+### C-1 — the link plane's in-process degrade, and its named successor
 
-The daemon warms one workspace's corpus (keyed by its canonical path,
-invalidated by its fingerprint; `crates/registry/src/registry.rs:317-321`,
-`warm_or_build`) and no mounted-root corpora, so the `Op::Links` arm serves
-ambient state only (`crates/registry/src/server.rs:1121-1135`). The link plane
-resolves a cross-vault link by **degrading that one op to in-process**, loading
-mounted corpora as the walk plane does (`crates/mrd/src/walk_cmd.rs:146`).
+The daemon warms one workspace's corpus — keyed by its canonical path,
+invalidated by its fingerprint (`crates/registry/src/registry.rs:317-321`,
+`warm_or_build`) — and holds no mounted-root corpora, so the `Op::Links` arm
+serves ambient state only (`crates/registry/src/server.rs:1121-1135`). The
+link plane resolves a cross-vault link by **degrading that one op to
+in-process**, loading mounted corpora as the walk plane does
+(`crates/mrd/src/walk_cmd.rs:146`).
 
 - **A documented contract.** For this op the daemon is knowingly less capable
-  than in-process; a page with a cross-vault link pays a cold corpus build
-  (cf. the exit-code asymmetry in `address-grammar.md`).
+  than in-process; a page with a cross-vault link pays a cold corpus build,
+  as with the exit-code asymmetry in `address-grammar.md`.
 - **Narrow.** The degrade fires only when an unresolved head names a root the
   mount table declares (`addr::head_names_declared_root` — bound or
   declared-but-unreachable), never on any `:`-bearing head — an external URI
@@ -242,7 +244,7 @@ mounted corpora as the walk plane does (`crates/mrd/src/walk_cmd.rs:146`).
 > — a designed subsystem with its own design element and gate, not a detail of
 > a link-plane fix.
 
-### H-1 — the `#` refusal, recorded here so it is not lost
+### H-1 — the `#` refusal
 
 The `#` refusal survives: `#` is a live delimiter in both the wikilink and
 `path#fragment` ingress. Shipped form: `refuse_unrepresentable_heading`
@@ -279,17 +281,18 @@ sanitization is never necessary).
 > and the taught recovery must be the one that actually repairs it.**
 
 Input no corpus could ever carry is outside the minting grammar and
-**refuses** `bad_request` (§2.4's `_`-bearing block ids). A `/`-bearing
-heading exists and the machine plane pins it; only this ingress cannot spell
-it, so the door **misses** and owes the caller the spellings that do reach it.
+**refuses** `bad_request` (wire-contract §2.4's `_`-bearing block ids). A
+`/`-bearing heading exists and the machine plane pins it; only this ingress
+cannot spell it, so the door **misses** and owes the caller the spellings that
+do reach it.
 
 **Scoping is per delimiter, per ingress:**
 
 | Ingress | `/` | `#` |
 |---|---|---|
-| CLI joined `--section SEL`, `mrd pin`'s selector (`ReadSel::parse`) | **delimiter** — splits; a `/`-bearing heading is unreachable by this spelling | **heading TEXT** — `--section 'Top/C#D'` serves |
-| CLI `PATH#FRAG` (the frag door) | inherited from `ReadSel::parse` — same split | splits on the FIRST `#` only; the tail is selector bytes, so `notes.md#Top/C#D` serves |
-| wire / MCP segment arrays (`{"hpath":[…]}`) | heading TEXT | heading TEXT |
+| CLI joined `--section SEL`, `mrd pin`'s selector (`ReadSel::parse`) | **delimiter** — splits; a `/`-bearing heading is unreachable by this spelling | **heading text** — `--section 'Top/C#D'` serves |
+| CLI `PATH#FRAG` (the frag door) | inherited from `ReadSel::parse` — same split | splits on the first `#` only; the tail is selector bytes, so `notes.md#Top/C#D` serves |
+| wire / MCP segment arrays (`{"hpath":[…]}`) | heading text | heading text |
 | wikilink / `path#fragment` heading refusal | — | **H-1's column, untouched by this row** |
 
 **Two escapes the face must teach**, both from the published toc row: the
@@ -301,16 +304,17 @@ duplicate-heading refusal, which teaches machine address + dewey).
 > **The script plane executes the teaching it prints.** The commit leg carries
 > the engine's refusal verbatim, so the plane that receives this teaching must
 > accept both taught forms: `section=` on the script `put()` and `read()`
-> builtins takes the §2.1 segment array (run-plane.md § the arming surface; a
-> `str`-only `section=` would meet the hpath array with a type error), and the
-> script toc face publishes each heading row's raw segments as `hpath` — so the
-> taught recovery is executable on every plane that prints it. The coat itself
-> is untouched.
+> builtins takes the wire-contract §2.1 segment array (run-plane.md § the
+> arming surface; a `str`-only `section=` would meet the hpath array with a
+> type error), and the script toc face publishes each heading row's raw
+> segments as `hpath` — so the taught recovery is executable on every plane
+> that prints it. The coat itself is untouched.
 
 ### G-1 — the §2.4 charset is enforced at one ingress of two
 
-A **divergence**, a candidate only because the fix is a face decision nobody
-has ratified. The refuse/miss line at D-1 governs it.
+This row records a **divergence** in where the block-id charset is enforced.
+It is a candidate only because the fix is a face decision nobody has ratified;
+D-1's refuse/miss line governs it.
 
 wire-contract §2.4 rules one block-id charset, `[A-Za-z0-9-]+`, on both
 planes, and a `_`-bearing anchor is outside the strict-plane grammar
@@ -327,10 +331,10 @@ loudly"). Three doors answer it three ways:
 now*, which is false forever for an id §2.4 forbids minting; only
 `bad_request`/fix terminates.
 
-**One ingress carries the decode-time charset guard; the other does not.**
-(This is decode-time refusal of an existing out-of-grammar id, which §2.4
-rules present-tense — not the *mint-guard* that §2.4 assigns to §13.8 for
-future minting.)
+**One ingress carries the decode-time charset guard; the other does not.** The
+guard refuses at decode an id that already exists out of grammar, which §2.4
+rules present-tense; it is not the *mint-guard* §2.4 assigns to §13.8 for
+future minting.
 
 - Structured ingress: refuses at decode (`wire-serve::decode::decode_anchor`,
   `wire-serve::read::to_model_ref`).
@@ -357,8 +361,7 @@ carries no walk-plane charset deviation; code does not yet meet that premise.
 
 ## Amendment — capabilities do not apply to bash
 
-Law: **Gate: `crates/mrd/tests/law_no_caps_on_bash.rs`** — that file makes
-this hold, and this section is what it enforces.
+Gate: `crates/mrd/tests/law_no_caps_on_bash.rs`.
 
 > **Capabilities do not apply to `bash` tasks. Not now, not later, not in a
 > weaker form.**
@@ -368,11 +371,10 @@ this hold, and this section is what it enforces.
 > 2. The engine **never prints a claim about what a bash task may do** — above
 > all not `(read-only)`.
 > 3. Bash is **unsandboxed by definition**, and no human surface prints the
-> word `unsandboxed` (the engine has no sandbox for it to contrast with); the
-> only honest
-> description is *undeclared effects*. The class survives structurally
-> (`GuaranteeClass::Unsandboxed`, the `--json` `guarantee` key); a guarantee
-> word renders only where positive: `hermetic`.
+> word `unsandboxed`: the engine has no sandbox for it to contrast with, so the
+> only honest description is *undeclared effects*. The class survives
+> structurally (`GuaranteeClass::Unsandboxed`, the `--json` `guarantee` key);
+> a guarantee word renders only where positive: `hermetic`.
 > 4. Capabilities remain a real, enforceable contract for **starlark**, and
 > only starlark.
 
@@ -406,9 +408,9 @@ fence refusal also survives, as a name law, not a capability.
 **Bash has no governed-tree effect channel** — no effect-shim fd, no frame
 grammar, no descriptor apply. A bash block observes and reports; governed
 writes ride the wire faces (MCP `put`) or a starlark task. A gated bash channel
-would not bound the block (a denied block writes with `sed -i` instead; the
-bracket detects, never rolls back). The gate's second half asserts the governed
-page stays byte-identical after any bash run.
+would not bound the block: a denied block writes with `sed -i` instead, where
+the detector sees the change and never rolls it back. The gate file's second
+half asserts the governed page stays byte-identical after any bash run.
 
 ## Amendment — the face-honesty law
 
@@ -447,9 +449,9 @@ gives absence one meaning.
 
 ## Amendment — no hard-coded flow (mechanism in code, semantics in markdown)
 
-Users, not all of them engineers, hold different notions of a flow or a
-kanban, so the engine hard-codes none: the flexibility lives in the hook
-features, where a user describes the flow and its rules in a markdown file.
+The engine hard-codes no flow concept. Users, not all of them engineers, hold
+different notions of a flow or a kanban, so the flexibility lives in the hook
+features: a user describes the flow and its rules in a markdown file.
 
 **Mechanism in code, semantics in markdown.** Engine code carries the
 evaluator; the user's markdown carries every concrete flow concept.
@@ -507,7 +509,8 @@ with its own gate:
 
 ## Amendment — the one state owner (fingerprint grain)
 
-The merkle-spec half of this law is `node-rev-merkle-spec.md` §6.3.
+Law: the sentence below; its merkle-spec half is
+`node-rev-merkle-spec.md` §6.3.
 
 > **The workspace naming tree, the parsed world, the journal seq, and every
 > minted generation advance under one generation name `(instance, seq)`, in
@@ -541,8 +544,7 @@ lease half `authority.rs`):
   a spatial intersection. A root read intersects every write; a folder
   premise intersects writes at or under it; a point-file premise does not
   block a disjoint folder; an absence premise reserves the exact parent/name
-  edge.
-  Target-only reservation is insufficient when a root, ancestor, absence,
+  edge. Target-only reservation is insufficient when a root, ancestor, absence,
   enumeration, selector, or sql premise shaped the plan. Overlapping callers
   wait inside the authority (never `workspace_busy`); disjoint callers never
   wait. Staging may precede the reservation, which holds from final reverify
@@ -568,6 +570,8 @@ lease half `authority.rs`):
 
 ## Amendment — the fsync class (fingerprint grain)
 
+Law: the class below.
+
 > **Plain `fsync(2)` is the durability class of every sync site on every
 > platform. `F_FULLFSYNC` is never issued, neither on the ack path nor as a
 > background flush. Drive cache is accepted: the engine makes no power-loss
@@ -577,7 +581,7 @@ lease half `authority.rs`):
   (std 1.97.1, aarch64). A sync site uses `fs::honest_sync` /
   `fs::honest_sync_path`, or `libc::fsync` with a checked return where its
   crate does not depend on `fs`; never `sync_all`/`sync_data`.
-- **Linux:** unchanged; `sync_all` is `fsync(2)`, `sync_data` is
+- **Linux:** already complies — `sync_all` is `fsync(2)`, `sync_data` is
   `fdatasync(2)`, zero fcntl.
 - **`F_BARRIERFSYNC`** is never a substitute: it orders without promising
   durability.

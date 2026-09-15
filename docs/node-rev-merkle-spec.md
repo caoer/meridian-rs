@@ -12,7 +12,7 @@ owns: [node_rev, merkle encoding, resident tree, event feed]
 
 **Scope note:** hash law for `node_rev` and the workspace merkle (fingerprint), plus the **resident tree** that serves it (§6). It does not define section address grammar; mint-plane hpath stays segments only. Generator assets: `node-rev-merkle-spec.assets/`.
 
-The design noun is **`fingerprint`**, the workspace content hash; the wire spells the field `root` in v2 vocabulary, re-keyed to `fingerprint` under `contract:"v3"` (`wire-contract.md` §1). Wire integrity is `fingerprint` + `if_fingerprint` + `diff`, with no `guard` op (`wire-contract.md` §4.7); the scoped-premise surface (`scope`, `guards[]`, `scope_bytes`, `absent`) is `wire-contract.md` §5.4's, against §7's grain ladder. Three laws: no snapshot files (the §6.5 checkpoint is a disposable index), no second database, Rust memory disposable.
+The design noun is **`fingerprint`**, the workspace content hash; the wire spells the field `root` in v2 vocabulary, re-keyed to `fingerprint` under `contract:"v3"` (`wire-contract.md` §1). Wire integrity is `fingerprint` + `if_fingerprint` + `diff`, with no `guard` op (`wire-contract.md` §4.7); the scoped-premise surface (`scope`, `guards[]`, `scope_bytes`, `absent`) is `wire-contract.md` §5.4's to spell, against §7's grain ladder. Three laws: no snapshot files (the §6.5 checkpoint is a disposable index), no second database, Rust memory disposable.
 
 ## 0. Design inheritance — the merkle-root-spike, absorbed
 
@@ -48,7 +48,7 @@ Every hash here — `node_rev`, file leaf, interior, workspace fingerprint — i
 
 **The grain.** `fm_key_grain_span` = the key line plus every indented continuation line of a block value. The key name is inside the span; the end excludes the last content line's terminator (§1 leaf law). A blank line joins the grain only if a later indented line extends past it; trailing blanks belong to the inter-key gap. The scan stops at the next column-0 non-blank line or the block end.
 
-**Why it exists beside the block-grain `node_rev`.** A frontmatter node's `node_rev` covers the whole block, so every key shares one token (6586/6586 multi-key documents in a 6586-document corpus): guarding one key with it refuses `cas_mismatch` when any other key moves. Block grain says whether the frontmatter moved, never whether THIS key moved. Both revs are additive.
+**Why it exists beside the block-grain `node_rev`.** A frontmatter node's `node_rev` covers the whole block, so every key shares one token (6586/6586 multi-key documents in a 6586-document corpus): guarding one key with it refuses `cas_mismatch` when any other key moves. Block grain says whether the frontmatter moved, never whether a single key moved. Both revs are additive.
 
 **One owner, three faces.** Only `model::resolve(doc, Ref::FmKey(key))` computes the token, the value the write door compares `if_node_rev` against; every face **serves** it.
 
@@ -60,7 +60,7 @@ Every hash here — `node_rev`, file leaf, interior, workspace fingerprint — i
 
 The projection's `frontmatter.node_rev` column keeps block-grain meaning.
 
-**Stored form, never decoded.** `prop_rev` hashes source bytes (`wire-contract.md` § A.6.2): a guard token must distinguish `owner: ""` from `owner:`, which the value-plane decode (§ A.6.1) collapses into one state.
+**Stored form, never decoded.** `prop_rev` hashes source bytes (`wire-contract.md` § A.6.2): a guard token must distinguish `owner: ""` from `owner:`, which the value-plane decode (`wire-contract.md` § A.6.1) collapses into one state.
 
 ## 3. File leaf hash — and why there is no per-file sub-merkle
 
@@ -164,7 +164,7 @@ The flat-100k acceptance gate publishes operation counts: per-commit unrelated-m
 - At the cutover every **token** value changes; leaf values survive but re-spell under the new version prefix.
 - Three errors, three facts, never flattened (§7): an old-law token refuses **`fingerprint_version_retired`** with re-mint teaching, never `fingerprint_mismatch`; an unknown **future** family refuses a distinct unsupported-version error; only a current-family unequal digest is the scoped mismatch.
 - **No dual-hash serving window** — keeping two trees for old tokens is waste (requirement 6). The cutover is paid once per workspace, never on every read; `sub` re-baselines at a labeled epoch boundary, never a silent chain break.
-- **The cutover walk** runs behind three pre-cutover code blockers (cursor identity, this section's second version dimension, durable cutover authority state): `OLD_SERVING → DRAINING → no-return boundary → NEW_BUILDING → NEW_COMMITTED → reopen`. One durable act crosses the no-return boundary: making the cutover record's `NEW_BUILDING` state durable. Before it the old law answers guards; after it, old-family tokens refuse `fingerprint_version_retired`.
+- **The cutover walk** runs behind three pre-cutover code blockers (cursor identity, the hash-law version dimension, durable cutover authority state): `OLD_SERVING → DRAINING → no-return boundary → NEW_BUILDING → NEW_COMMITTED → reopen`. One durable act crosses the no-return boundary: making the cutover record's `NEW_BUILDING` state durable. Before it the old law answers guards; after it, old-family tokens refuse `fingerprint_version_retired`.
 - **The downgrade fence never activates.** `crates/fs/src/fence.rs` is dormant (`activate` has no production caller) and the threat model is empty, so it is no cutover blocker. This law's axis is old-**token** refusal, not old-**binary** fencing.
 - **The shadow build is not built.** The one-time per-workspace pause is accepted; no second tree beside the serving one, even as preparation. Acceptance records the real pause and does not gate on a budget.
 
@@ -174,7 +174,7 @@ Every interior hash in law 2 starts with an 8-byte ASCII domain tag, and the thr
 
 | tag (8 ASCII bytes) | over |
 |---|---|
-| `mrk2.vtx` | a radix-map vertex (§4.2.2) — hash-law INTERNAL, see below |
+| `mrk2.vtx` | a radix-map vertex (§4.2.2) — hash-law internal, see below |
 | `mrk2.dir` | a directory's child map (§4.2.3) — the scoped directory value |
 | `mrk2.fst` | a forest fold (§4.3.1) — a derived match set, never a directory |
 
@@ -197,7 +197,7 @@ forest(M) = blake3( "mrk2.fst" ‖ varint(n)
 
 ### 4.4 Name collisions — lint loud, refuse at address time
 
-Law 2 closes the file/dir name collision that law 1 ignored both ways, leaving some path's bytes outside the fold:
+Law 1 ignored file/dir name collisions both ways, which left some path's bytes outside the fold. Law 2 closes both halves:
 
 - **Both kinds enter the fold.** A name reaching one child map as both file and directory (however composed, e.g. via the write overlay) is one key whose terminal carries both values (`0x02`, §4.2.2); no bytes sit outside the integrity surface.
 - **The build lints the collision loudly** — a named diagnostic on every build, never silence — and serving continues: one odd name must not take a workspace down.
@@ -237,8 +237,8 @@ Node spans (wire law: block spans exclude the final line terminator):
 >  {"kind":"heading","level":2,"hpath":[{"h":"Alpha"},{"h":"Beta"}],"span":[45,64],"content_span":[53,64],"node_rev":"780d2fb4cf68f60f","text_prefix_16b":"## Beta\n\nbeta bo"}]}}
 > ```
 >
-> Response reflowed for line width only; values verbatim, matching this
-> section's pinned rows and fingerprint.
+> Response reflowed for line width only; values verbatim, matching the rows
+> and fingerprint pinned above.
 
 Leaves (blake3 over the raw file):
 
@@ -311,9 +311,9 @@ vhash(root)            = de4f14de1fe5206850e917db2e5ea95306b6b7cfc5935da496a4c92
 fingerprint (law 2)    = d53c447167825d40f442c65b10f5ae2c6176a49e1e2d8237902d7eaa3008319e
 ```
 
-Bare 64-hex: the law-2 wire spelling rides the §12.3 prefix ladder,
-`wire-contract.md`'s to advance. The §5 splice under law 2 recomputes exactly
-the `x.md` key path:
+Bare 64-hex: the law-2 wire spelling rides the `wire-contract.md` §12.3
+prefix ladder, which that contract advances. The §5 splice under law 2
+recomputes exactly the `x.md` key path:
 
 ```
 leaf(tasks/x.md)    : 1e56…3d7e → b78a…07ef   (law-independent, as §5)
@@ -324,6 +324,7 @@ vhash(v_n), leaf(notes.md): unchanged
 
 ## 6. The resident tree — memory-held, event-fed, checkpointed
 
+The resident tree is the engine-held instrument that serves this hash law.
 Derive-on-demand — full sweep and fold per pass, no persistence, cold rebuild
 per start — was rejected: two flock-held full-corpus reads per guarded write
 (~1.5 s) for 32 bytes, and root-grain world guards.
@@ -371,8 +372,8 @@ cached 32-byte fold, a dirty bit, a `last_seq` stamp (§6.3).
 ### 6.2 The watermark trust close — the full stable-read protocol
 
 `StatKey` alone can miss a same-instant, same-size, in-place write. The close
-is git's racy-clean rule, as law — acceptance: a same-tick same-size in-place
-edit still refuses.
+is git's racy-clean rule, adopted as law; acceptance: a same-tick same-size
+in-place edit still refuses.
 
 1. The leaf memo carries an **observation watermark**; a leaf with mtime at or
    after it is re-read before its digest is trusted, or its memo entry is
@@ -476,7 +477,7 @@ outside the hash domain (git-index class): the checkpoint.
   forces exactly one loud, labeled re-baseline. `domain_version` stops a
   checkpoint outliving a hash-law change (the §4.2 cutover changes the interior
   encoding); the journal cursor pair is the replay point.
-- **Restart replay** needs a journal that qualifies for THIS gap: (1) coverage
+- **Restart replay** needs a journal that qualifies for this gap: (1) coverage
   complete, gap start to end; (2) the instrument carries a loss signal and
   raised none — silence from an instrument without loss signaling qualifies
   nothing; (3) per-file granularity; (4) its own contract treats a clean,
@@ -500,7 +501,7 @@ outside the hash domain (git-index class): the checkpoint.
   identity-fence and suspect rules; their count is published, and rows outside
   the window cost zero bytes. Counter equation: reads = hashes = movers +
   watermark-window re-reads; stats = member count, once, before first serve.
-- **Parses are NOT gated by this law:** the checkpoint carries leaf digests and
+- **Parses are not gated by this law:** the checkpoint carries leaf digests and
   the tree, never parsed documents, so those counters and the 160 ms govern the
   resident-tree restore (the guard/currency plane). The document plane's restart
   cost is an open residue awaiting a parse-cache persistence object, whose slot
@@ -528,8 +529,8 @@ outside the hash domain (git-index class): the checkpoint.
   anchor forfeits replay only: the object is kept and its rows still enter as
   hypotheses — the **warm** re-baseline, which rebuilds currency from zero
   trust, not zero bytes. The warm event fires on **every** ordinary process
-  restart, since §7.1 persists no epoch fact; the git-index class discards
-  nothing at a gap, it re-verifies by stat.
+  restart, since `wire-contract.md` §7.1 persists no epoch fact; the git-index
+  class discards nothing at a gap, it re-verifies by stat.
 
 ### 6.6 Fingerprint history ring
 
@@ -538,16 +539,15 @@ fingerprints; clients hold only the token. The daemon keeps a bounded in-memory
 ring of recent `DeltaFrame`s (`RootRing`, `wire-serve/src/ring.rs`); `diff`
 replays between two roots, and a fingerprint outside the ring answers
 `fingerprint_unknown` → full resync (re-derive, never wrong data). Detection is
-now event-fed, the poll surviving as fallback clock; frames and the ring's
+event-fed, with the poll surviving as fallback clock; frames and the ring's
 bound are unchanged. At the §4.2.5 cutover the ring re-baselines at a labeled
 epoch boundary, never a silent chain break.
 
 ### 6.7 The serve-path currency consumers — one instrument, vouch first
 
-**Motive, measured.** Left unnamed, a consumer keeps the §6.2 floor
-unconditionally: ~66–85 CPU-seconds per 60 wall-seconds on a 37.8k-member
-corpus, nearly all of it floor passes — the domain walk plus one `lstat` per
-member.
+**Motive, measured.** A consumer left on the §6.2 floor unconditionally burns
+~66–85 CPU-seconds per 60 wall-seconds on a 37.8k-member corpus, nearly all of
+it floor passes — the domain walk plus one `lstat` per member.
 
 > **The law.** Every standing currency question in the daemon is answered by
 > the workspace's one resident memo (§6.1) through the §6.4 vouch, at the grade
@@ -563,11 +563,11 @@ Two grades, bound to their consumers:
 
 | Consumer | Question | Grade | Instrument |
 |---|---|---|---|
-| warm read pass — read family, `sql`, `script` entry (`Registry::warm_or_build`, cheap half) | engine current now? | current-as-of-the-question | cookie barrier → take-and-apply → `Trusted` → overlay fold (`Registry::currency_refresh`); floor on a named miss — the barrier makes the stamp current for the ambient premise tokens a read mints (§5.4; wire-contract §2 mint law), and costs one sentinel write plus delivery, bounded by the door cookie budget |
-| § A.11 post-result `live` | did the corpus move past the rows? | current-as-of-the-question | same call, same vouch |
+| warm read pass — read family, `sql`, `script` entry (`Registry::warm_or_build`, cheap half) | engine current now? | current-as-of-the-question | cookie barrier → take-and-apply → `Trusted` → overlay fold (`Registry::currency_refresh`); floor on a named miss — the barrier makes the stamp current for the ambient premise tokens a read mints (`wire-contract.md` §5.4 and its §2 mint law), and costs one sentinel write plus delivery, bounded by the door cookie budget |
+| `wire-contract.md` § A.11 post-result `live` | did the corpus move past the rows? | current-as-of-the-question | same call, same vouch |
 | write door `root_before` | §6.1 door-entry observation | guard | `Registry::door_observation`, unchanged |
 | prewarm quiet check | may this sweep be skipped? | latency-only | O(1), no cookie: nothing pending after take-and-apply, memo `Trusted`, cached served fold == the engine's stamp. `domain_stat_signature` walk survives only with no live feed (`FeedSlot::Failed`), under the quiet backoff |
-| §4.7 detect pre-check (`WorkspaceRing::detect`) | root moved since baseline? | latency-only + fallback clock | the same O(1) quiet check through the shared memo; the private fold memo serves `prime` and the miss path only. §6.6's poll survives: even under a quiet vouch the floor pre-check runs once per `DETECT_FLOOR_CADENCE` (30 s) — the push plane's backstop against silent capture loss |
+| `wire-contract.md` §4.7 detect pre-check (`WorkspaceRing::detect`) | root moved since baseline? | latency-only + fallback clock | the same O(1) quiet check through the shared memo; the private fold memo serves `prime` and the miss path only. §6.6's poll survives: even under a quiet vouch the floor pre-check runs once per `DETECT_FLOOR_CADENCE` (30 s) — the push plane's backstop against silent capture loss |
 
 **The cookie holdoff (posture, both doors).** A `CookieTimeout` collapse is
 sticky doubt until the next take, which converts it to a full sweep and clears
@@ -583,15 +583,15 @@ rung (§6.4 ladder: memo kept, loss noted, next observation the full walk under
 the fresh config). The governed write path never pays it: its own-config
 commit imposes `overlay_membership` synchronously (§6.1).
 
-**The watch plane classifies off the resident memo** (the §6.6 direction,
-frame-parity gated; the alternative — a full corpus snapshot of every
-member's bytes per external batch — measured ~1/s under foreign writes).
+**The watch plane classifies off the resident memo** — the §6.6 direction,
+frame-parity gated. The alternative — one full corpus snapshot of every
+member's bytes per external batch — measured ~1/s under foreign writes.
 
 - On a moved root the cycle takes the workspace flock, makes the §6.1
   door-grade observation through the shared memo, and hands the classifier that
   leaf set and root.
 - The classifier diffs those digests against the watcher's retained baseline
-  (entries now carry a leaf digest beside their bytes), reads bytes only for
+  (entries carry a leaf digest beside their bytes), reads bytes only for
   movers, and mints the same frames: renames pair by digest (byte-equality's
   proxy), removed and `unattested` rows parse retained baseline bytes, modified
   rows diff retained-old against read-new.
@@ -603,10 +603,10 @@ member's bytes per external batch — measured ~1/s under foreign writes).
 - Priming (the subscribe-time baseline) keeps its one full snapshot. The ring
   holds no private fold memo, and a plain mutex keeps the single-flight gate.
 - Non-UTF-8-**named** members stay baseline-invisible as the snapshot kept
-  them (their leaves still fold; a `wire::Path` cannot spell them); §52 covers
-  non-UTF-8 **content**, which classifies normally.
+  them (their leaves still fold; a `wire::Path` cannot spell them); non-UTF-8
+  **content** classifies normally.
 
-**What does NOT change.** The floor pass — walk semantics, §6.2 trust close,
+**What does not change.** The floor pass — walk semantics, §6.2 trust close,
 refusal shapes — is untouched. `Reused` keeps its zero-parse proof; a rebuild is
 still `fs::update_corpus` against the memo's leaf set. Run-plane bracket
 observations (guard grade, locked-window law) keep their live floors.
@@ -617,8 +617,8 @@ observations (guard grade, locked-window law) keep their live floors.
 ~0.25 CPU-s per absorbed change, ~26.6 CPU-s per 60 s — two flat rebuilds
 (overlay fold, rebuild tail fold) plus carried-document clones.
 
-> **The law.** The resident tree IS the serving instrument. The served workspace
-> root derives from the ONE memo's incrementally maintained fold (§6.1) — never
+> **The law.** The resident tree is the serving instrument. The served workspace
+> root derives from the one memo's incrementally maintained fold (§6.1) — never
 > from a second tree rebuilt over the leaf set the memo already carries. An
 > incremental pass carries an unmoved member's parsed document by shared
 > reference, never by copy, and folds nothing when its built leaf set is
@@ -642,10 +642,10 @@ Gates:
   the rebuilt tree against the stored `tree-root` before adopting a row). The
   absorb-path gate asserts served fold == flat oracle per mutation class.
 - **One instrument, one truth.** The floor pass keeps its §6.2 walk, stat and
-  read semantics; its FOLD is the resident fold.
+  read semantics; its fold is the resident fold.
 - **The §6.3 audit edge is untouched.** Stamps stay on the guarded write path;
   only the source of the served value moves.
-- **The stamp law holds** (§6.7): the resident fold IS the fold of the memo's
+- **The stamp law holds** (§6.7): the resident fold is the fold of the memo's
   content digests, and the fold-free rebuild stamp rides input-equality — by
   purity, byte-equal inputs fold to the same value.
 - **Sharing changes ownership, never content.** A parsed document is immutable
@@ -702,13 +702,13 @@ requiredness are wire-side law (`wire-contract.md` §5.3–§5.4).
 A lawful empty path answers `absent` and still echoes the scope pair. `scope`
 with `scope_bytes` refuses `bad_request`.
 
-**Three refusal families, never flattened:**
+**Three errors, three facts, never flattened:**
 
 | refusal family | the fact | the recovery |
 |---|---|---|
-| `fingerprint_mismatch` {expected, actual, scope} | the premise MOVED | re-read that scope, re-plan |
+| `fingerprint_mismatch` {expected, actual, scope} | the premise moved | re-read that scope, re-plan |
 | `scope_unresolved` | the premise cannot be evaluated there | fix the path |
-| cursor family: `fingerprint_unknown`, dead instance, **`fingerprint_version_retired`** | too old: a seq past the ring, a reaped instance, a retired hash law (§4.2.5) | re-derive and resume, with the resident tree a scope-fold compare, never a full relist; on `fingerprint_version_retired` the LAW moved, not the premise: re-mint |
+| cursor family: `fingerprint_unknown`, dead instance, **`fingerprint_version_retired`** | too old: a seq past the ring, a reaped instance, a retired hash law (§4.2.5) | re-derive and resume, with the resident tree a scope-fold compare, never a full relist; on `fingerprint_version_retired` the law moved, not the premise: re-mint |
 
 **Ordering on one write:** widest first — root token, folder scopes, then
 per-edit `if_node_rev`; a failing wider premise skips narrower work.
@@ -747,7 +747,7 @@ required (host policy — `wire-contract.md` §5.3); hosts never compute hashes
   guarded `remove` (`wire-contract.md` § A.3) unlinks the leaf; the next fold
   composes the tree without it under the §4 encoding, and law 2's child map
   re-canonicalizes as if the entry never existed (§4.2.2). The terminal facts
-  are the removed file's LAST rev (`file_rev_before`, confirmed by the
+  are the removed file's last rev (`file_rev_before`, confirmed by the
   remove-what-you-read CAS) and the workspace fingerprint transition, both
   carried by the death Delta (`change:"deleted"`, `wire-contract.md` §7.1).
   No tombstone leaf or on-disk marker: disk stays markdown only, and history
@@ -791,7 +791,7 @@ required (host policy — `wire-contract.md` §5.3); hosts never compute hashes
 2. **Ring bound** — **256 roots**, `wire-contract.md` §13; older ranges answer
    `fingerprint_unknown` → full resync, never wrong data.
 3. **Hash domain** — `wire-contract.md` §12 (md-only + `meridian/domain.md`);
-   this spec's leaf rule must stay aligned with that domain filter.
+   the leaf rule here must stay aligned with that domain filter.
 4. **Symlink retarget invisibility** (§9) — accept, or hash the target path as
    a pseudo-leaf?
 5. **Multi-file atomic batch** — limit in `wire-contract.md` §6.5; vocabulary

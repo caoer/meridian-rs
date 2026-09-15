@@ -11,7 +11,7 @@ owns: [the arming ladder, the gate() seam]
 > Standing law: `README.md` (process and standing corrections) and `wire-contract.md` (the wire contract).
 
 Law: `laws.md` § policy gate; `wire-contract.md` § A.2 (block-is-a-feature,
-genesis-epoch grey) and §8 (refusal taxonomy).
+genesis-epoch grey) and its §8 (refusal taxonomy).
 
 ---
 
@@ -22,9 +22,9 @@ the resolved page at the rev the reviewer read. It is the attest path the
 binding law's refusals name as the legal road. `--rev` is required, with no
 live-rev default.
 
-Floor suite: `reviewer-not-owner`, `claim-cas`, `close-verdict`,
-`decoy-close`, `verdict-reviewer-bind`, `meta-convention` (guards arming
-itself); each is a `rules/check` page (rung 1).
+The floor suite this ladder arms: `reviewer-not-owner`, `claim-cas`,
+`close-verdict`, `decoy-close`, `verdict-reviewer-bind`, `meta-convention`
+(guards arming itself); each is a `rules/check` page (rung 1).
 
 ## The two states the marker separates
 
@@ -48,6 +48,8 @@ state.
 
 ### 1. Fill the slot
 
+Author the rule page.
+
 - Registration: `rules/check` (a law) and/or `rules/hook` (a reaction) in
   `tags:`, plus an `id:` in the rule-id grammar
   (`crates/policy/src/registration.rs`, `RuleId`). One fenced block may carry
@@ -59,12 +61,13 @@ state.
 - **The page must sit inside the workspace hash domain** (`wire-contract.md`
   §12.1). A rules-tagged page on a dot-segment path (`.hidden/rules/x.md`,
   anything under a dot directory), or one excluded by a `meridian/domain.md`
-  ignore rule, registers as nothing, never silently (§12.1 enumerator clause):
-  `mrd rules` lists such candidates in one bounded line (full list:
-  `not_offered.workspace_dot` in `--json`, exit-neutral); `mrd arm <ID>` on an
-  id whose only carrier is domain-excluded refuses, naming the file and the
-  exclusion reason. A MERIDIAN.md on a dot path resolves to the enclosing root;
-  every page under it is outside that root's domain.
+  ignore rule, registers as nothing. The exclusion is never silent
+  (`wire-contract.md` §12.1 enumerator clause): `mrd rules` lists such
+  candidates in one bounded line (full list: `not_offered.workspace_dot` in
+  `--json`, exit-neutral); `mrd arm <ID>` on an id whose only carrier is
+  domain-excluded refuses, naming the file and the exclusion reason. A
+  MERIDIAN.md on a dot path resolves to the enclosing root; every page under it
+  is outside that root's domain.
 
 ### 2. Author the floor
 
@@ -83,7 +86,7 @@ Before arming, pass both `mrd test` tiers:
   (reachable trigger graph plus bounded counterfactual chaining). Only this
   tier admits `md.*` counterfactuals; it does not widen the armed caps. A
   counterfactual descriptor passes the same canonical intent validation as an
-  armed HOOK's and runs through the production intent→executor adapter and
+  armed hook's and runs through the production intent→executor adapter and
   atomic batch executor in a throwaway proof workspace; the governed tree
   stays read-only, the triggering write untouched.
 - **`--history`** (`mrd test --history <ws> --rule <page> [--spec <page>]`):
@@ -92,15 +95,15 @@ Before arming, pass both `mrd test` tiers:
   `--spec` page.
 
 Passing both is **pre-arm qualification** (required for arming review), not
-armability. The `pin` axis of `mrd status`
-(`status.md` § The composed status line) rolls up attested page-rev drift.
+armability. The `pin` axis of `mrd status` rolls up attested page-rev drift
+(`status.md` § The composed status line).
 
 ### 4. First arming write — ungated-but-journaled, permanent, genesis-grey
 
-The act writes the attested row only while the live rev (`report-rev`) equals
+Arming writes the attested row only while the live rev (`report-rev`) equals
 the approved rev (`armed-rev`); drifted law is refused.
 
-**The attested rev is the PAGE rev, uniformly:** `armed-rev = page_rev(page
+**The attested rev is the page rev, uniformly:** `armed-rev = page_rev(page
 bytes) = blake3(bytes)[:16]` (`crates/policy/src/registration.rs`,
 `node-rev-merkle-spec.md`); hook and check pages attest on the same terms.
 
@@ -112,22 +115,22 @@ One tag-indexed artifact per workspace (`meridian/armed-rules.md`,
 | column | content |
 |---|---|
 | `id` | the page's frontmatter `id:` |
-| `page` | workspace path of the RESOLVED page (override winner) |
+| `page` | workspace path of the resolved page (override winner) |
 | `rev` | the page rev the row is attested at |
-| `scope` | the ARM ROOT: the workspace-relative DIRECTORY that resolution was narrowed to (`.` = workspace root). `layer:depth` (`workspace:0`) is refused at parse: a head segment with `:` is the address grammar's `root:` qualifier (`address-grammar.md` § 4.1 colon law), never a workspace path. A directory scope is not a page reference; it sits outside the rooted-lane door family (`address-grammar.md` § 4.6), so this refusal stands. |
+| `scope` | the arm root: the workspace-relative directory that resolution was narrowed to (`.` = workspace root). `layer:depth` (`workspace:0`) is refused at parse: a head segment with `:` is the address grammar's `root:` qualifier (`address-grammar.md` § 4.1 colon law), never a workspace path. A directory scope is not a page reference; it sits outside the rooted-lane door family (`address-grammar.md` § 4.6), so this refusal stands. |
 | `mode` | checks `off\|warn\|block`; hooks `off\|armed` |
 
-The act is indivisible and all-or-nothing (narrow to the arm root's chain,
-resolve through the one resolver, pin the winner's page and rev), so `scope`
-cannot drift from its resolution; every fault is reported at once.
+The act is indivisible and all-or-nothing: it narrows to the arm root's chain,
+resolves through the one resolver, and pins the winner's page and rev, so
+`scope` cannot drift from its resolution. Every fault is reported at once.
 
 - **Arming freezes resolution.** A page appearing later, even a deeper
   override candidate, governs nothing until re-arm. The tag registers, only
-  ARM activates, so no writer can take over an armed id by dropping a file.
+  arming activates, so no writer can take over an armed id by dropping a file.
 - **An edited pinned page reddens:** its row does not fire on the new bytes.
-  A red CHECK row refuses the write; a red HOOK row falls silent (a hook never
+  A red check row refuses the write; a red hook row falls silent (a hook never
   vetoes).
-- **Mode vocabulary splits by kind** (`mode` above): a hook row with
+- **Mode vocabulary splits by kind** (the `mode` column above): a hook row with
   `warn`/`block`, or a check row with `armed`, is refused at the act.
 - **A row that will FIRE must LOAD.** Arming attests registration (tag +
   `id:`) and declaration (`severity:`, `caps:`, `budget:`, entry point): each
@@ -136,10 +139,10 @@ cannot drift from its resolution; every fault is reported at once.
   (naming the loader's fault) refuses **before anything is written to
   `meridian/armed-rules.md`**. `policy` does no I/O: bytes arrive through the
   injected `PageSource` under the caller's `CheckLimits`. `off` rows are not
-  loaded (an `off` row may attest a page too broken to load). This set is a
-  superset of the fire path's: `resolve_armed_law` loads `verdict.firing()`,
-  which is further narrowed to the write's own path and excludes reddened
-  rows.
+  loaded (an `off` row may attest a page too broken to load). The loaded set
+  is a superset of the fire path's: `resolve_armed_law` loads
+  `verdict.firing()`, which is further narrowed to the write's own path and
+  excludes reddened rows.
 - **Drift, not a broken declaration:** `mrd arm` indexes before taking the
   write flock, so the drift gate may see a stale rev; the loader's
   `RuleLoadError::RevMismatch` catches the race and is re-labelled
@@ -157,41 +160,42 @@ and marker through one shared reader.
   commit point. Artifact-without-marker reads as never-armed; the identical
   re-arm is a no-op.
 - The edge does not ride the caller door: a direct door write to the artifact
-  is `binding_break` (row 9). On a direct write that refusal fires before any
-  rule evaluation, so row 8 cannot fire there. The act's own law
-  (`policy::armed::arm`'s faults, the drift check, strict parse of the standing
-  artifact) runs before the session opens; other processes see an external
-  write.
+  is `binding_break` (taxonomy row 9). On a direct write that refusal fires
+  before any rule evaluation, so row 8 cannot fire there. The act's own law
+  (`policy::armed::arm`'s faults, the drift check, strict parse of the
+  standing artifact) runs before the session opens; other processes see an
+  external write.
 
 Deferred: **`mrd realise --truth` convergence** over the artifact+marker pair
 is a separate design.
 
-The **first** arming write is special, permanently. It is **ungated** (no
-marker yet, so `gate()` is a no-op) and **permanent by the pair** (the row
-pins page and rev, the marker the epoch). It is **grey, never green**: a
-never-armed write carries no enforcement verdict (`t.result.verdicts` is
-empty); grey is the absence of a green verdict, not a token (§ What arming
-does NOT claim).
+The **first** arming write is special, permanently. It is **ungated**: no
+marker exists yet, so `gate()` is a no-op. It is **permanent by the pair**:
+the row pins page and rev, the marker pins the epoch. It is **grey, never
+green**: a never-armed write carries no enforcement verdict
+(`t.result.verdicts` is empty), and grey is the absence of a green verdict,
+not a token (§ What arming does NOT claim).
 
 Once armed, the `meta-convention` guards this rung: an arming proposal must
 pin attested evidence (P@R), declare a structural `cites:` join, and be armed
 by a reviewer distinct from the convention's `author`, else
-`arming_precondition` (taxonomy row 8) refuses. It cannot gate its own first
-arming, which is grey. **Row 8 is not yet evaluated on the attest path.** A
-follow-up rung, not yet built, will wire the armed `meta-convention` into
-`mrd arm`'s re-arm leg.
+`arming_precondition` (taxonomy row 8) refuses. The convention cannot gate
+its own first arming, which is grey. **Row 8 is not yet evaluated on the
+attest path.** A follow-up rung, not yet built, will wire the armed
+`meta-convention` into `mrd arm`'s re-arm leg.
 
 ### 5. Steady state
 
-With the marker and `[x]` rows present, the door enforces:
+With the marker present and the artifact carrying `[x]` rows, the door
+enforces:
 
 - `block` rows refuse a violating write (bytes never land) with a `{code,
-  recovery}` pair from the closed §8 taxonomy; `warn` rows render an advisory
-  finding and land; `off` rows are ignored.
+  recovery}` pair from the closed taxonomy of `wire-contract.md` §8; `warn`
+  rows render an advisory finding and land; `off` rows are ignored.
 - Missing or corrupt artifact: fails closed (`convention_fault`).
 - Page drifted off its pinned `armed-rev`: fails closed (`armed_drift`);
   re-arm at the live rev, or revert the law.
-- `--force` is the only escape: journaled AND rendered.
+- `--force` is the only escape: journaled and rendered.
 
 ## What arming does NOT claim
 
@@ -208,16 +212,16 @@ restriction, or is a named residual; refusal never renders it green.
 Normative for the `rules/middleware` plane; wire shape `wire-contract.md`
 § A.2.1.
 
-Beside CHECK (yes/no before the door) and HOOK (after commit, `proto.send`
-only), **middleware is the third kind: check plus transform on the door
-itself.** One Starlark eval per armed in-scope middleware page, after CAS and
-batch validation, before bytes land. Outputs:
+Beside check pages (yes/no before the door) and hook pages (after commit,
+`proto.send` only), **middleware is the third kind: check plus transform on
+the door itself.** One Starlark eval per armed in-scope middleware page, after
+CAS and batch validation, before bytes land. Outputs:
 
 | Output | Lands | Who applies |
 |---|---|---|
 | `refuse(message=, passing=)` | nothing committed | engine |
-| `set_field(path=, key=, value=)` on THIS file | this put's own batch | engine |
-| `set_field` on OTHER files | **same sealed set** as this put | engine |
+| `set_field(path=, key=, value=)` on this file | this put's own batch | engine |
+| `set_field` on other files | **same sealed set** as this put | engine |
 | `create(path=, body=)` | birth in the same sealed set | engine |
 | `send(to=, body=)` | never disk; an **intent** on the response | **host realizes** |
 
@@ -229,7 +233,7 @@ batch validation, before bytes land. Outputs:
   **validate-all-then-apply**: caller write, middleware edits, and births land
   together or not at all.
 - Send cannot ride `write.lock`, so it stays an intent; the engine never marks
-  it delivered (`armed.intents[]`, § A.2.1).
+  it delivered (`armed.intents[]`, `wire-contract.md` § A.2.1).
 
 ## Registration and arming
 
@@ -237,7 +241,7 @@ batch validation, before bytes land. Outputs:
   as in rung 1. Required frontmatter: `paths:` (scope globs). Entry point:
   `def middleware(ctx)` in the fenced ```starlark block.
 - **Mode vocabulary: `off | block`** (no `warn` tier; `armed` stays hook
-  vocabulary). A red, unloadable, or unevaluable row REFUSES the write
+  vocabulary). A red, unloadable, or unevaluable row refuses the write
   (`Mode::Block` enforces), as a check row does.
 - Arming is the same act (`mrd arm <ID> --mode block --rev R`); artifact row,
   binding law over armed pages, and `armed_drift` apply unchanged.
@@ -246,7 +250,7 @@ batch validation, before bytes land. Outputs:
 
 ## The ctx surface
 
-Middleware runs under the CHECK evaluator's limits (`CheckLimits`: fuel, heap,
+Middleware runs under the check evaluator's limits (`CheckLimits`: fuel, heap,
 call-depth, source-size, nesting; no per-page `budget:` in V1) over one
 injected `ctx`:
 
@@ -256,8 +260,8 @@ injected `ctx`:
 | `ctx.before` | this file before the put: `{path, nodes, frontmatter, edges}` (the `@2` doc facts) |
 | `ctx.after` | this file after the pending set so far (caller put + earlier middleware) |
 | `ctx.put` | the caller's edit set `{op, actor, force, edits, fields_changed, sections_changed, targets}`; never rewritten |
-| `ctx.fields` | **opaque passthrough** dict from the put frame's `fields` (§ A.2.1); keys uninterpreted; `actor`/`now` stay §9 wire inputs |
-| `ctx.sql(query)` | ONE read-only SELECT against the overlay world; returns rows (list of dicts); not DuckDB DML |
+| `ctx.fields` | **opaque passthrough** dict from the put frame's `fields` (`wire-contract.md` § A.2.1); keys uninterpreted; `actor`/`now` stay `wire-contract.md` §9 wire inputs |
+| `ctx.sql(query)` | one read-only SELECT against the overlay world; returns rows (list of dicts); not DuckDB DML |
 | `ctx.read(path)` | that path's bytes in the overlay world, or `None` |
 
 **The world** both accessors read: the snapshot at flock time plus this file's
@@ -272,9 +276,9 @@ on a door with no installed backend refuses the write, naming the gap.
 - This-file `set_field` joins the caller's batch as a native frontmatter
   upsert (`SecRef::FmKey`); the augmented batch re-runs the door pipeline
   (`@fp` strip, stored-form translation, lock-artifact guard, I4 conformance,
-  CHECK gate) on the FINAL state.
+  check gate) on the final state.
 - Other-file `set_field` compiles to that file's member batch: same
-  validation, same CHECK gate at its own path.
+  validation, same check gate at its own path.
 - `create` births in the same set; an occupied path refuses the whole set
   (`cas_mismatch`, expected absent). Birth bodies get the same document-grain
   strip and guards as a `create` op's body.
@@ -299,7 +303,7 @@ production workspace is a deployment decision, not this plane's.
 # Part B — Gate byte landing
 
 **Measured at `7a22e00a`.** No census: *lands bytes, gated or exempt* is not
-the predicate the instrument derives.
+what the instrument below derives.
 
 ## The law
 
@@ -323,7 +327,7 @@ reads the tree: it walks every crate's production `src/` except `model`,
 truncates each file at its first `#[cfg(test)]`, skips lines beginning with
 `//`, and looks for `candidate_of_body(` and `candidate_of_batch(`. A file
 with at least one call is recorded **once**; the test asserts this **set of
-FILES** equals its pinned table's set.
+files** equals its pinned table's set.
 
 At `7a22e00a`, **three files**:
 
