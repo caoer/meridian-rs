@@ -1341,6 +1341,36 @@ fn links_nonmember(
     crate::load_doc(root, p).map(Some)
 }
 
+/// The §10.1 counter as a view-shaped door publishes it: the Delta counter in
+/// the tense of the fingerprint the answer was computed at, and the epoch that
+/// number is valid in.
+///
+/// One value because the two halves are one fact. A seq read at one instant
+/// beside an identity read at another is not a cursor, and a seq published
+/// beside a fingerprint it was not the counter for is a number from a tense
+/// the caller never asked about — which is the thing a staleness triple
+/// exists to prevent. The daemon's ring mints it in one lock
+/// (`registry::ring::WorkspaceRing::counter_at`); a lane with no ring uses
+/// [`Counter::unnumbered`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Counter {
+    /// The retained frame that ended at the served fingerprint, `0` when none
+    /// did — never a claim that nothing changed (§10.1).
+    pub changes_seq: u64,
+    /// The epoch the counter is numbered in (B-01), absent where no ring
+    /// numbers anything.
+    pub tree_instance: Option<String>,
+}
+
+impl Counter {
+    /// The answer of a lane that numbers nothing — the daemonless in-process
+    /// build, which has no epoch to name and no ring to count.
+    #[must_use]
+    pub fn unnumbered() -> Self {
+        Counter::default()
+    }
+}
+
 /// wire §4.6 the corpus edge map under the §10.1 staleness triple, served from
 /// `query` over the borrowed corpus. `as_of_root` folds the exact bytes the
 /// answer parses; `live_root` is sampled after the computation — under a
@@ -1361,7 +1391,7 @@ pub fn links(
     unserved: &BTreeMap<String, String>,
     path: Option<&Path>,
     as_of_root: Root,
-    changes_seq: u64,
+    counter: Counter,
     live_root: impl FnOnce() -> Result<Root, Box<ErrorBody>>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let nonmember = links_nonmember(root, docs, unserved, path)?;
@@ -1383,7 +1413,8 @@ pub fn links(
     Ok(ResponseBody::Links {
         as_of_root,
         live_root: live,
-        changes_seq,
+        changes_seq: counter.changes_seq,
+        tree_instance: counter.tree_instance,
         files: map
             .into_iter()
             .map(|(p, e)| (p, into_wire_with_reasons(&probe, e)))
@@ -1442,7 +1473,7 @@ pub fn links_rooted(
     mounts: &addr::MountSet,
     path: Option<&Path>,
     as_of_root: Root,
-    changes_seq: u64,
+    counter: Counter,
     live_root: impl FnOnce() -> Result<Root, Box<ErrorBody>>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let nonmember = links_nonmember(root, docs, unserved, path)?;
@@ -1459,7 +1490,8 @@ pub fn links_rooted(
     Ok(ResponseBody::Links {
         as_of_root,
         live_root: live,
-        changes_seq,
+        changes_seq: counter.changes_seq,
+        tree_instance: counter.tree_instance,
         files: map
             .into_iter()
             .map(|(p, e)| (p, into_wire_with_reasons(&probe, e)))

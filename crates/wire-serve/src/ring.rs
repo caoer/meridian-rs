@@ -49,8 +49,13 @@ pub enum Anchor {
     /// The cursor's tree instance is not the serving instance — its
     /// numbering died (restart, reap). Sequence was never consulted.
     DeadInstance,
-    /// Same instance, but the position is outside the retained window
-    /// (evicted or ahead of the tip).
+    /// Same instance, but the ring cannot replay contiguously from the
+    /// position: it is outside the retained window (evicted or ahead of the
+    /// tip), or the window from it has a HOLE — two retained frames that do
+    /// not chain, because a change went unnumbered while nobody watched and
+    /// nobody read (§7.1 detection clause). Both degrade the same way, and
+    /// for the same reason: what the ring cannot prove contiguous it refuses
+    /// rather than replays.
     OutsideHistory,
 }
 
@@ -180,6 +185,27 @@ impl RootRing {
         self.entries.back().map(|f| &f.delta.root_after)
     }
 
+    /// The §10.1 counter IN `root`'s tense: the seq of the retained frame
+    /// that ended at that root, or `None` when none did.
+    ///
+    /// This is the only honest number to publish beside a served fingerprint.
+    /// The tip seq is the counter in the TIP's tense; published beside an
+    /// answer computed at some other fingerprint it is a number from a tense
+    /// the caller never asked about — which is what a staleness triple exists
+    /// to prevent.
+    ///
+    /// Searched newest-first: a corpus that returns to an earlier root has
+    /// two frames ending at it, and the counter's value there is the later
+    /// one.
+    #[must_use]
+    pub fn seq_at(&self, root: &Root) -> Option<u64> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|f| f.delta.root_after == *root)
+            .map(|f| f.delta.seq)
+    }
+
     /// Frames with `delta.seq > after`, emission order — the push path's
     /// read (§7.3: the same stored objects `diff` replays; no second
     /// serialization site).
@@ -216,16 +242,47 @@ impl RootRing {
         // `oldest - 1` is the seq a client holds when it has consumed nothing
         // from the retained window. Saturating: a ring whose oldest frame is
         // seq 0 has no earlier position to name (frames number from 1).
-        if cursor.seq == current
-            || (cursor.seq < current
-                && self
-                    .oldest_seq()
-                    .is_some_and(|oldest| cursor.seq >= oldest.saturating_sub(1)))
-        {
+        if cursor.seq == current {
+            // The live tip: nothing is replayed, so there is no chain to prove.
+            return Anchor::Anchored;
+        }
+        let in_window = cursor.seq < current
+            && self
+                .oldest_seq()
+                .is_some_and(|oldest| cursor.seq >= oldest.saturating_sub(1));
+        if in_window && self.chain_intact_from(cursor.seq) {
             Anchor::Anchored
         } else {
             Anchor::OutsideHistory
         }
+    }
+
+    /// Do the frames this cursor would replay chain, each one's `root_before`
+    /// against the last one's `root_after`?
+    ///
+    /// A hole is not hypothetical: detection numbers an out-of-band change
+    /// only where someone is looking (§7.1), so a change that landed while
+    /// nobody watched and nobody read this workspace leaves two retained
+    /// frames that do not meet. Replaying across one serves a stream that
+    /// silently omits that change — wrong data, which this ring answers with
+    /// `root_unknown` → resync instead.
+    ///
+    /// The frame numbered `seq` is included when it is still retained, so the
+    /// join between the cursor's own position and the first replayed frame is
+    /// proved too. When it is not (a cursor at `oldest - 1`, having consumed
+    /// nothing), the ring holds no root for that position and the check
+    /// starts at the first frame it can see.
+    fn chain_intact_from(&self, seq: u64) -> bool {
+        let mut previous: Option<&Root> = None;
+        for frame in self.entries.iter().filter(|f| f.delta.seq >= seq) {
+            if let Some(after) = previous
+                && frame.delta.root_before != *after
+            {
+                return false;
+            }
+            previous = Some(&frame.delta.root_after);
+        }
+        true
     }
 
     /// Record one emitted batch. Contiguity is the caller's:
@@ -573,6 +630,115 @@ mod tests {
         assert_eq!(at(2), Anchor::Anchored, "inside the retained window");
         assert_eq!(at(0), Anchor::Anchored, "nothing consumed, window intact");
         assert_eq!(at(9), Anchor::OutsideHistory, "ahead of the tip");
+    }
+
+    /// §10.1: the counter a view door publishes is the frame that ENDED at
+    /// the served fingerprint — not the tip read beside it. A fingerprint no
+    /// frame ended at has no number, which the door publishes as `0`.
+    ///
+    /// *Mutation:* answer `seq()` instead of `seq_at(root)` and the two
+    /// mid-history assertions read 4, the tip's tense, for answers computed
+    /// two and three batches ago.
+    #[test]
+    fn the_counter_is_read_in_the_served_fingerprints_tense() {
+        let mut ring = RootRing::new();
+        for n in 1..=4 {
+            ring.advance(frame(n));
+        }
+        assert_eq!(ring.seq_at(&root(4)), Some(4), "the tip's own tense");
+        assert_eq!(ring.seq_at(&root(2)), Some(2), "an answer two batches ago");
+        assert_eq!(ring.seq_at(&root(1)), Some(1));
+        assert_eq!(
+            ring.seq_at(&root(0)),
+            None,
+            "the baseline the epoch opened at ended no frame"
+        );
+        assert_eq!(
+            ring.seq_at(&root(9)),
+            None,
+            "a fingerprint this epoch never numbered"
+        );
+        assert_eq!(
+            RootRing::new().seq_at(&root(0)),
+            None,
+            "a fresh epoch numbers nothing"
+        );
+    }
+
+    /// A corpus that returns to an earlier fingerprint has two frames ending
+    /// there; the counter in that tense is the LATER one — the number a
+    /// cursor must carry to be at the world's current position.
+    #[test]
+    fn a_fingerprint_reached_twice_reads_the_later_counter() {
+        let mut ring = RootRing::new();
+        ring.advance(frame(1));
+        ring.advance(frame(2));
+        // The edit is undone: 2 → 1, numbered 3.
+        ring.advance(DeltaFrame {
+            delta: wire::Delta {
+                seq: 3,
+                root_before: root(2),
+                root_after: root(1),
+                actor: None,
+                now: None,
+                files: vec![],
+            },
+            effects: vec![],
+            rescope: None,
+            overflow: None,
+        });
+        assert_eq!(ring.seq_at(&root(1)), Some(3));
+    }
+
+    /// §7.1 detection clause: a change nobody watched and nobody read is
+    /// never numbered, so two retained frames do not meet. A cursor whose
+    /// replay would cross that hole refuses — replaying across it serves a
+    /// stream that silently omits the change, which is the wrong-data case
+    /// this ring exists to refuse.
+    ///
+    /// *Mutation:* drop the `chain_intact_from` term from `can_anchor` and
+    /// the cursor at seq 1 anchors, replaying frame 5 alone as if the world
+    /// had gone 1 → 4 → 5.
+    #[test]
+    fn a_cursor_across_an_unnumbered_change_refuses() {
+        let mut ring = RootRing::new();
+        ring.advance(frame(1));
+        // The hole: the world moved 1 → 4 with nobody looking, so no frame
+        // describes it; the next write is numbered from where it found disk.
+        ring.advance(DeltaFrame {
+            delta: wire::Delta {
+                seq: 2,
+                root_before: root(4),
+                root_after: root(5),
+                actor: Some("agent:a".to_owned()),
+                now: None,
+                files: vec![],
+            },
+            effects: vec![],
+            rescope: None,
+            overflow: None,
+        });
+        let at = |seq| {
+            ring.can_anchor(&Cursor {
+                tree_instance: ring.instance().to_string(),
+                seq,
+            })
+        };
+        assert_eq!(
+            at(1),
+            Anchor::OutsideHistory,
+            "the replay from here would cross the hole"
+        );
+        assert_eq!(
+            at(0),
+            Anchor::OutsideHistory,
+            "so would a client that consumed nothing"
+        );
+        assert_eq!(
+            at(2),
+            Anchor::Anchored,
+            "the live tip replays nothing, so it crosses nothing"
+        );
     }
 
     /// Every ring births its own instance — reap-and-rebirth inside one
