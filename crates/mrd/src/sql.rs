@@ -30,8 +30,10 @@
 //! 1. fold `F0` + bring the projection to `F0` (cache append, or `:memory:`
 //!    build);
 //! 2. execute the query to completion, materialise all rows;
-//! 3. sample `live` = a full-corpus disk fold ([`fs::domain_snapshot`]) last,
-//!    so it post-dates the result;
+//! 3. sample `live` last, so it post-dates the result — through the drawer's
+//!    digest memo ([`fs::domain_fingerprint_memoized`], `run::drawer`): one
+//!    `stat` per member, bytes read only for members that moved since the
+//!    memo last saw them, the root folded from content digests;
 //! 4. `FRESH_AT_SAMPLE` iff `as_of == live`, else `STALE` (or `RACED` under a
 //!    bounded `--fresh` that could not converge).
 //!
@@ -886,7 +888,12 @@ fn test_fold_race_hook() {
     }
 }
 
-/// Sample `live` = a full-corpus disk fold (§Q3 step 5, `fs::domain_snapshot`).
+/// Sample `live` (§Q3 step 5): the workspace root through the drawer's
+/// digest memo (`node-rev-merkle-spec.md` §6.7, "fingerprint-only doors
+/// outside the daemon") — the same value `fs::domain_snapshot` folds, with
+/// bytes read only for members whose identity moved. The memo is loaded at
+/// entry and saved at exit so the NEXT process — `mrd sql` again, or a run —
+/// serves from it; a lane with no drawer loads cold and saves nothing.
 fn fold_live(workspace: &Path) -> Result<String, Fail> {
     let canonical = workspace::canonicalize(workspace).map_err(|e| {
         Fail::tool(format!(
@@ -895,8 +902,10 @@ fn fold_live(workspace: &Path) -> Result<String, Fail> {
         ))
     })?;
     let root = fs::WorkspaceRoot(canonical);
-    let (_files, fingerprint) = fs::domain_snapshot(&root)
+    let mut memo = run::drawer::load_memo(&root);
+    let fingerprint = fs::domain_fingerprint_memoized(&root, &mut memo)
         .map_err(|e| Fail::tool(format!("cannot fold the corpus for live: {e}")))?;
+    run::drawer::save_memo(&root, &memo);
     Ok(fingerprint.0)
 }
 

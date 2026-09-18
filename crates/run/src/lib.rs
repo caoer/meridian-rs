@@ -51,6 +51,7 @@ pub mod caps;
 pub mod contracts;
 pub mod dispatch_bash;
 pub mod dispatch_starlark;
+pub mod drawer;
 pub mod exec;
 pub mod executor;
 pub mod fence;

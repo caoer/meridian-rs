@@ -1181,9 +1181,11 @@ fn apply_generation(
         CapSet::parse("md.edit")
             .map_err(|error| ProofFault::Workspace(format!("proof corpus caps: {error}")))?,
     );
-    let live: MerkleRoot = fs::domain_snapshot(&root)
-        .map_err(|error| ProofFault::Workspace(format!("proof workspace fold: {error}")))?
-        .1;
+    // The proof corpus is a throwaway tmpdir holding one page: no drawer, no
+    // memo, nothing to amortise — the fold-only instrument, which keeps no
+    // member's bytes past its digest (`node-rev-merkle-spec.md` §6.7).
+    let live: MerkleRoot = fs::domain_fold(&root)
+        .map_err(|error| ProofFault::Workspace(format!("proof workspace fold: {error}")))?;
     let invocation = format!("corpus-proof-{}", pending.chain.join("-"));
     let request = adapted.request(&ApplyRequest {
         page: &pending.path,

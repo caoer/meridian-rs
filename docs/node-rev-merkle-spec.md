@@ -542,6 +542,19 @@ outside the hash domain (git-index class): the checkpoint.
   resident-tree restore (the guard/currency plane). The document plane's restart
   cost is an open residue awaiting a parse-cache persistence object, whose slot
   the tuple reserves.
+- **The cold build seeds the memo under the same posture.** A daemon with no
+  checkpoint to restore (or one it discarded) builds its engine from ONE
+  observation (`fs::DomainCache::cold_snapshot`): the domain walk, one `stat`
+  per member, a parallel plain read of every member's bytes. The bytes go to
+  the parse; the digests enter the resident memo keyed by the pre-read
+  `StatKey`, recorded under a watermark captured before the first byte was
+  read, as rows of exactly a restored checkpoint's standing — untrusted until
+  one §6.2-governed pass has covered the member set. The engine's stamp is
+  that observation's own fold. So a cold start reads the corpus once, and the
+  first currency question after it is the stat floor (reads = movers +
+  watermark-window re-reads), never a second byte read of everything. The
+  cold path used to pay two: a floor pass (serial, guard-grade reads) to
+  answer currency, then a plain snapshot for the bytes.
 - Residual: requirement 1 is only partially satisfied at restart, never on the
   warm path.
 - **Markdown stays the sole truth, always.** The §0 ban on trusted snapshots
@@ -600,11 +613,29 @@ Two grades, bound to their consumers:
 
 | Consumer | Question | Grade | Instrument |
 |---|---|---|---|
-| warm read pass — read family, `sql`, `script` entry (`Registry::warm_or_build`, cheap half) | engine current now? | current-as-of-the-question | cookie barrier → take-and-apply → `Trusted` → overlay fold (`Registry::currency_refresh`); floor on a named miss. The barrier makes the stamp current for the ambient premise tokens a read mints (`wire-contract.md` §5.4 and its §2 mint law); it costs one sentinel write plus delivery, bounded by the door cookie budget |
+| warm read pass — read family, `sql`, `script` entry (`Registry::warm_or_build`, cheap half) | engine current now? | current-as-of-the-question | cookie barrier → take-and-apply → `Trusted` → overlay fold (`Registry::currency_refresh`); floor on a named miss. The barrier makes the stamp current for the ambient premise tokens a read mints (`wire-contract.md` §5.4 and its §2 mint law); it costs one sentinel write plus delivery, bounded by the door cookie budget. With no resident engine and no memo baseline, the cold build's one observation seeds the memo (§6.5) and answers the pass — `currency.cold` on the timing lane, one read |
 | `wire-contract.md` § A.11 post-result `live` | did the corpus move past the rows? | current-as-of-the-question | same call, same vouch |
 | write door `root_before` | §6.1 door-entry observation | guard | `Registry::door_observation`, unchanged |
 | prewarm quiet check | may this sweep be skipped? | latency-only | O(1), no cookie: nothing pending after take-and-apply, memo `Trusted`, cached served fold == the engine's stamp. `domain_stat_signature` walk survives only with no live feed (`FeedSlot::Failed`), under the quiet backoff |
 | `wire-contract.md` §4.7 detect pre-check (`WorkspaceRing::detect`) | root moved since baseline? | latency-only + fallback clock | the same O(1) quiet check through the shared memo; the private fold memo serves `prime` and the miss path only. §6.6's poll survives: even under a quiet vouch the floor pre-check runs once per `DETECT_FLOOR_CADENCE` (30 s) — the push plane's backstop against silent capture loss |
+
+**Fingerprint-only doors outside the daemon — the drawer memo.** A door that
+needs the root and not the bytes, in a process with no resident memo, answers
+through the workspace's drawer digest memo (§6.5's storage site, the run
+plane's F8 instrument): `fs::domain_fingerprint_memoized` — the domain walk,
+one `stat` per member, bytes read only for members whose `StatKey` moved, the
+root folded from content digests (memo-served or freshly read). Same evidence
+grade as a warm hit (the memo's standing, §6.1); same value as the flat build
+over the same tree (§4.2.1 purity, gated). `mrd sql`'s post-result `live`
+sample rides it on the direct-file lane (the daemon lane answers through the
+resident memo, above). The run plane's delta frame — `root_before` under the
+flock before the commit, `root_after` after it — is the SINK's to observe
+(`DeltaSink::root_before`), and the daemon's sink observes both through the
+resident memo at the write door's grade (`Registry::door_observation`, the
+`root_before` row above): cookie barrier, vouched overlay fold, the §6.2 floor
+on a named miss — bytes for movers only, never a byte read of the whole
+corpus. A door with no drawer and no memo (the corpus proof's isolated tmpdir)
+folds from bytes and keeps no rows (`fs::domain_fold`).
 
 **The cookie holdoff (posture, both doors).** A `CookieTimeout` collapse is
 sticky doubt until the next take, which converts it to a full sweep and clears
@@ -661,11 +692,12 @@ observations (guard grade, locked-window law) keep their live floors.
 > reference, never by copy, and folds nothing when its built leaf set is
 > byte-equal to its snapshot's — its stamp is then the snapshot's own root,
 > taken with the snapshot under one lock. On the serve path the flat build
-> over a leaf set survives in exactly three roles: the cold observation
-> (no resident state yet), the divergence tail of an incremental pass (a mover
-> vanished or changed since the snapshot, so the pass folds what it built),
-> and the equivalence gate's oracle. Run-plane bracket observations stay out of
-> scope (§6.7).
+> over a leaf set survives in exactly three roles: the from-scratch build
+> behind a reaped or restored engine (the cold observation proper — no
+> resident state at all — seeds the tree and serves the resident fold, §6.5),
+> the divergence tail of an incremental pass (a mover vanished or changed
+> since the snapshot, so the pass folds what it built), and the equivalence
+> gate's oracle. Run-plane bracket observations stay out of scope (§6.7).
 
 Gates:
 
