@@ -804,12 +804,32 @@ fn a_resident_lane_dispatch_leaves_the_shared_cache_warm() {
         "the first pass re-reads at most the phase-2 movers, got {}",
         memo.leaves_read() - reads
     );
+    // The steady state begins one calibrated granule after the last write.
+    // §6.2's trust close makes a record minted inside its own stamp quantum
+    // racy — a same-quantum in-place edit is invisible to the key compare —
+    // so such a record is legitimately re-enumerated, and asserting the
+    // stat-only state without settling first only passes on a machine slow
+    // enough relative to the backend's granule. `crates/fs`'s own gate on
+    // this property settles the same way
+    // (`a_warm_cache_observes_an_unchanged_settled_tree_without_listing_or_reading`).
+    let fs::stable::Calibration::Measured { granule_ns } = memo
+        .calibration()
+        .expect("probed on the first observation")
+        .clone()
+    else {
+        panic!("a writable tempdir calibrates");
+    };
+    std::thread::sleep(Duration::from_nanos(granule_ns * 2 + 2_000_000));
+    // One pass to re-record the racy leftovers under a watermark that clears
+    // them; the pass after it is the one under test.
+    assert_eq!(memo.root(&root).unwrap(), after_run);
+
     let warm = (memo.listings(), memo.leaves_read());
     let again = memo.root(&root).unwrap();
     assert_eq!(
         (memo.listings(), memo.leaves_read()),
         warm,
-        "the second pass over the unchanged tree must be stat-only"
+        "the second pass over the unchanged settled tree must be stat-only"
     );
     assert_eq!(after_run, again);
     assert_eq!(
