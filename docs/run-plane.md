@@ -1712,7 +1712,7 @@ Record ↔ receipt linkage:
 ## The CLI surface (locked)
 
 ```
-mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json
+mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json --exit-passthrough
 mrd run <PAGE>#^<id> [--input-json FILE|-] [--dry] [--json]   # fire one declared block
 mrd run --load <PAGE>... [--json]                             # what the pages declare
 mrd script [--json]                      # source on stdin (heredoc)
@@ -1726,7 +1726,8 @@ face non-normative (§ The script entry). Every meaningless combination refuses
 by name with exit 2, never ignored: `--load` with `#^<id>`; `--load` with
 `TASK` / `-- ARGS` / `--list`; `--input-json` without a block address;
 `TASK` / `-- ARGS` / `--env` on a fire, whose one input channel is
-`--input-json`.
+`--input-json`; `--exit-passthrough` beside `--list` / `--dry` / `--load` or a
+`#^<id>` fire, none of which execs a task step.
 
 No argv JSON. With TASK omitted the one declared task runs; with several
 declared, the binding named `default` (`task.default`) runs; where no `default`
@@ -1745,6 +1746,50 @@ exit leg.
 Exit triad: **0** clean · **1** the run plane refused or failed (eval fault,
 cap refusal, workspace busy, timeout, bash nonzero) ·
 **2** the invocation is wrong (usage, addressing, contract).
+
+**A step's own exit code is a fact, and the triad is not its channel.** A bash
+step exiting 2 to mean "I could not run, do not trust my output" and one
+exiting 1 to mean "I ran and found something" both leave through the triad's
+findings leg, because 2 is reserved: the absence contract above states
+`exit 2 + empty stdout` as a **guarantee** that nothing was armed and the
+workspace is unchanged, and a step's code taking that value over would retract
+the guarantee from every caller already reading it. So the code reaches the
+caller by two surfaces, and the default one is not the rc.
+
+- **Always, on the report.** The rendered report carries the sealed code —
+  `exec: exited N` in text, `exec.exit_code` under `--json` — read off the same
+  `RunReport` the completion receipt's `exec.exit_code` is written from. A
+  caller reads it there; parsing `receipts/run.md` is never the contract. The
+  report is the **last line** of stdout, not the whole stream: a bash step's
+  own stdout streams live ahead of it (§ The run record — stdout is data, not
+  effects), so `--json` piped straight into a JSON reader carries the step's
+  output first.
+- **Under `--exit-passthrough`, on the rc.** The flag hands the findings leg to
+  the step: a step that reached its own exit door with a nonzero code makes
+  `mrd run` exit that code, verbatim.
+
+**Law — passthrough moves one leg and reserves the rest.** The flag governs
+exactly the leg where a clean detection window met a nonzero exit (the
+completion receipt is written, no effect is applied). Every other leg keeps its
+code, flag or no flag: a signaled step stays `128 + signal`, a timeout stays 1,
+and an out-of-band delta or an ungoverned tree write stays 1 with the delta
+named — **the plane's own finding outranks the step's code**, because a detected
+write is mrd's claim and not the task's. Usage, addressing and contract faults
+stay 2, refused before the plane is entered. **Passthrough never yields 0**: a
+code the rc cannot carry leaves as 1, so no caller reads a failure as clean.
+
+**What passthrough costs, stated.** Under the flag a step exiting 2 and a bad
+invocation carry the same rc. They stay distinguishable on stdout: a step that
+ran printed its report there, and a bad invocation printed nothing there. The
+flag is opt-in for exactly that reason — the triad's reading is unchanged for
+every caller who does not pass it.
+
+**Where nothing execs, the flag refuses; on starlark it stands idle.**
+`--list`, `--dry`, `--load` and a `#^<id>` fire run no step, so the flag beside
+any of them refuses by name (§ The CLI surface, above). A starlark task is the
+one place it parses and does nothing: the fence a task declares is the page's
+fact, not argv's, so argv cannot refuse it there — and a hermetic evaluation
+has no exit code to pass.
 
 **A churn refusal carries a recovery line.** It blames nothing the caller
 wrote: the addressed target is a **corpus member that vanished** mid-read
