@@ -368,7 +368,7 @@ fn collect_sections(node: &model::Node, out: &mut BTreeMap<Vec<String>, String>)
     if let NodeKind::Section { .. } = &node.kind
         && let Some(hpath) = &node.hpath
     {
-        out.insert(hpath.clone(), node.node_rev.0.clone());
+        out.insert(hpath.to_strings(), node.node_rev.0.clone());
     }
     for child in &node.children {
         collect_sections(child, out);

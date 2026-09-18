@@ -382,7 +382,7 @@ fn child_segs(node: &Node) -> Vec<Option<AddrSeg>> {
             *occ += 1;
             let ambiguous = totals.get(heading_text.as_str()).is_some_and(|&t| t > 1);
             Some(AddrSeg {
-                h: heading_text.clone(),
+                h: heading_text.to_string(),
                 n: ambiguous.then_some(*occ),
             })
         })

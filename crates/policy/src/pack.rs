@@ -5,7 +5,7 @@
 
 use std::cell::RefCell;
 
-use model::{Document, Node, NodeKind, NodeRev};
+use model::{Document, HeadingChain, Node, NodeKind, NodeRev};
 use starlark::environment::{Globals, GlobalsBuilder, Module};
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
@@ -276,7 +276,11 @@ fn fact_node(raw: &str, node: &Node) -> FactNode {
         text,
         span: (node.span.start, node.span.end),
         node_rev: node.node_rev.0.clone(),
-        hpath: node.hpath.clone().unwrap_or_default(),
+        hpath: node
+            .hpath
+            .as_ref()
+            .map(HeadingChain::to_strings)
+            .unwrap_or_default(),
     }
 }
 
@@ -291,7 +295,7 @@ fn classify_fact(raw: &str, node: &Node) -> (&'static str, u32, String) {
         K::Section {
             heading_text,
             level,
-        } => ("heading", u32::from(*level), heading_text.clone()),
+        } => ("heading", u32::from(*level), heading_text.to_string()),
         K::Heading { text, level } => ("heading", u32::from(*level), text.clone()),
         K::Paragraph => ("paragraph", 0, span_text(raw, node)),
         K::List => ("list", 0, String::new()),

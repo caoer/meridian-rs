@@ -14,8 +14,11 @@
 //! **No serde on any public type** — model facts reach the wire only via
 //! the serving host's projection seam (law 3).
 
+use std::borrow::Borrow;
 use std::collections::{BTreeMap, btree_map};
-use std::ops::Range;
+use std::fmt;
+use std::ops::{Deref, Range};
+use std::sync::Arc;
 
 use addr::{Addr, AddrError, MountName, MountSet};
 
@@ -69,6 +72,139 @@ impl YamlMap {
     }
 }
 
+/// One heading's text, held once per heading: the `Section` node that owns it
+/// and every [`HeadingChain`] it appears in share this allocation, so a
+/// corpus pays for a heading's bytes once, not once per governed node.
+/// Compares and derefs as `str`; `==` against `&str`/`String` reads as before.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct HeadingText(Arc<str>);
+
+impl HeadingText {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Deref for HeadingText {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for HeadingText {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Borrow<str> for HeadingText {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for HeadingText {
+    fn from(text: String) -> Self {
+        Self(Arc::from(text))
+    }
+}
+
+impl From<&str> for HeadingText {
+    fn from(text: &str) -> Self {
+        Self(Arc::from(text))
+    }
+}
+
+impl PartialEq<str> for HeadingText {
+    fn eq(&self, other: &str) -> bool {
+        &*self.0 == other
+    }
+}
+
+impl PartialEq<&str> for HeadingText {
+    fn eq(&self, other: &&str) -> bool {
+        &*self.0 == *other
+    }
+}
+
+impl PartialEq<String> for HeadingText {
+    fn eq(&self, other: &String) -> bool {
+        &*self.0 == other.as_str()
+    }
+}
+
+impl fmt::Debug for HeadingText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&*self.0, f)
+    }
+}
+
+impl fmt::Display for HeadingText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&*self.0, f)
+    }
+}
+
+/// A node's heading chain: heading texts root → governing heading, in
+/// delimiter-free array form (a literal `/` in a heading needs no escaping).
+///
+/// Shared, never copied: every node one section governs holds the same
+/// allocation (a clone is a pointer bump), and each segment is the owning
+/// `Section` node's own [`HeadingText`]. A corpus therefore pays for a chain
+/// once per section and for a heading's bytes once, where a per-node copy
+/// paid for both once per node — the resident-memory claim
+/// `resident.heap.bytes_per_mb.vault_2026` in `perfsuite` measures it.
+/// Derefs to the segment slice; [`HeadingChain::to_strings`] is the owned
+/// form for a face that needs `Vec<String>`.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct HeadingChain(Arc<[HeadingText]>);
+
+impl HeadingChain {
+    /// The chain of a top-level section: one segment.
+    fn root(heading: HeadingText) -> Self {
+        Self(Arc::from([heading]))
+    }
+
+    /// The chain of a section nested under this one: one segment longer,
+    /// the prefix segments shared with `self` (pointer copies, not text).
+    fn child(&self, heading: HeadingText) -> Self {
+        Self(
+            self.0
+                .iter()
+                .cloned()
+                .chain(std::iter::once(heading))
+                .collect(),
+        )
+    }
+
+    /// The segments, root → governing heading.
+    #[must_use]
+    pub fn segments(&self) -> &[HeadingText] {
+        &self.0
+    }
+
+    /// The chain as owned strings, for a face that carries `Vec<String>`.
+    #[must_use]
+    pub fn to_strings(&self) -> Vec<String> {
+        self.0.iter().map(ToString::to_string).collect()
+    }
+}
+
+impl Deref for HeadingChain {
+    type Target = [HeadingText];
+    fn deref(&self) -> &[HeadingText] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for HeadingChain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.0.iter()).finish()
+    }
+}
+
 /// The governed tree node. Every node carries kind + span + `node_rev` + hpath
 /// (`None` for document/frontmatter), per policy-schema §2's guaranteed surface.
 #[derive(Debug, Clone, PartialEq)]
@@ -77,8 +213,9 @@ pub struct Node {
     pub span: ByteSpan,
     pub node_rev: NodeRev,
     /// Chain of heading texts root → governing heading; delimiter-free array
-    /// form (a literal `/` in a heading needs no escaping).
-    pub hpath: Option<Vec<String>>,
+    /// form (a literal `/` in a heading needs no escaping). Shared with every
+    /// node the same section governs ([`HeadingChain`]).
+    pub hpath: Option<HeadingChain>,
     pub children: Vec<Node>,
 }
 
@@ -95,7 +232,8 @@ pub enum NodeKind {
         map: YamlMap,
     },
     Section {
-        heading_text: String,
+        /// The heading's text — the one copy its chains share.
+        heading_text: HeadingText,
         level: u8,
     },
     Heading {
@@ -159,7 +297,7 @@ pub struct Document {
 /// the corpus carries them by shared reference — an incremental rebuild
 /// clones pointers for unmoved members, never document bodies
 /// (node-rev-merkle-spec §6.8: sharing changes ownership, never content).
-pub type Docs = BTreeMap<String, std::sync::Arc<Document>>;
+pub type Docs = BTreeMap<String, Arc<Document>>;
 
 /// Build the governed tree from `syntax`'s dialect stream — the syntax→model
 /// seam.
@@ -190,7 +328,7 @@ pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
         .find_map(|n| matches!(n.kind, D::Frontmatter { .. }).then(|| n.span.clone()));
 
     let mut frontmatter: Option<Node> = None;
-    let mut headings: Vec<(usize, u8, String)> = Vec::new();
+    let mut headings: Vec<(usize, u8, HeadingText)> = Vec::new();
     let mut leaves: Vec<Node> = Vec::new();
 
     for node in nodes {
@@ -205,7 +343,9 @@ pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
                 let map = parse_frontmatter(&raw, &span);
                 frontmatter = Some(leaf_node(&raw, NodeKind::Frontmatter { map }, span));
             }
-            D::Heading { level, text } => headings.push((span.start, level, text)),
+            D::Heading { level, text } => {
+                headings.push((span.start, level, HeadingText::from(text)));
+            }
             other => {
                 if let Some(kind) = leaf_kind(other) {
                     // An anchor's model node carries its host block-leaf span,
@@ -239,7 +379,7 @@ pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
         children: nest_by_containment(items),
     };
     sort_tree(&mut root);
-    fill_hpath(&mut root, &mut Vec::new());
+    fill_hpath(&mut root, None);
 
     Document { raw, root }
 }
@@ -503,7 +643,7 @@ fn leaf_node(raw: &str, kind: NodeKind, span: ByteSpan) -> Node {
 /// Section nodes from the heading list: a section runs from its heading start to
 /// the next heading of level ≤ its own, else EOF — newline-inclusive,
 /// heading-inclusive (contract §1 span sub-laws / compute.py `sections`).
-fn section_nodes(raw: &str, headings: &[(usize, u8, String)]) -> Vec<Node> {
+fn section_nodes(raw: &str, headings: &[(usize, u8, HeadingText)]) -> Vec<Node> {
     let len = raw.len();
     headings
         .iter()
@@ -681,8 +821,14 @@ fn leaf_kind(dk: syntax::DialectKind) -> Option<NodeKind> {
 }
 
 /// Deterministic child order (the §1 total order), applied recursively.
+///
+/// Also the build's last pass over every `children` vector, so it releases
+/// the doubling slack push-growth left behind: a resident tree holds exactly
+/// its nodes, and the daemon keeps trees resident for as long as a workspace
+/// stays warm (`resident.heap.bytes_per_mb.vault_2026` in `perfsuite`).
 fn sort_tree(node: &mut Node) {
     node.children.sort_by(span_order);
+    node.children.shrink_to_fit();
     for c in &mut node.children {
         sort_tree(c);
     }
@@ -691,25 +837,23 @@ fn sort_tree(node: &mut Node) {
 /// Assign `hpath` — the chain of governing heading texts. Sections carry their
 /// own heading; descendants inherit the governing chain; document/frontmatter and
 /// pre-heading nodes have none.
-fn fill_hpath(node: &mut Node, chain: &mut Vec<String>) {
-    let pushed = if let NodeKind::Section { heading_text, .. } = &node.kind {
-        chain.push(heading_text.clone());
-        true
-    } else {
-        false
-    };
-    node.hpath = match &node.kind {
+///
+/// One chain allocation per section, shared: a section extends the chain it
+/// is governed by (prefix segments are pointer copies, its own segment is its
+/// `heading_text`), and every descendant takes a pointer to that same chain.
+fn fill_hpath(node: &mut Node, governing: Option<&HeadingChain>) {
+    let own = match &node.kind {
         NodeKind::Document { .. } | NodeKind::Frontmatter { .. } => None,
-        NodeKind::Section { .. } => Some(chain.clone()),
-        _ if chain.is_empty() => None,
-        _ => Some(chain.clone()),
+        NodeKind::Section { heading_text, .. } => Some(governing.map_or_else(
+            || HeadingChain::root(heading_text.clone()),
+            |chain| chain.child(heading_text.clone()),
+        )),
+        _ => governing.cloned(),
     };
     for c in &mut node.children {
-        fill_hpath(c, chain);
+        fill_hpath(c, own.as_ref());
     }
-    if pushed {
-        chain.pop();
-    }
+    node.hpath = own;
 }
 
 /// Kind ordinal for the total-order tiebreak (declaration order).
@@ -1980,7 +2124,7 @@ fn collect_lost(
             let segs: Vec<HpathSeg> = hpath
                 .iter()
                 .map(|h| HpathSeg {
-                    h: h.clone(),
+                    h: h.to_string(),
                     n: None,
                 })
                 .collect();
@@ -2000,7 +2144,7 @@ fn collect_lost(
                 } else {
                     CorruptCause::HeadingDestroyed
                 };
-                lost.push((hpath.clone(), cause));
+                lost.push((hpath.to_strings(), cause));
             }
         }
     }
@@ -2731,7 +2875,7 @@ pub struct RootedCorpus<'a> {
 /// domain, so a target absent from it is *outside sight* rather than *missing*
 /// whenever the domain excludes it, and only the domain can tell the two apart
 /// (`wire-contract.md` §12.1, verdict-plane clause).
-pub trait HashDomain: std::fmt::Debug {
+pub trait HashDomain: fmt::Debug {
     /// Do this root-relative path's bytes enter the merkle root?
     ///
     /// `false` means "not hashed", never "not addressable": the excluded file
@@ -2751,7 +2895,7 @@ pub trait HashDomain: std::fmt::Debug {
 /// missing from it for the same reason — and only a disk read separates them. A
 /// grey "not in the hash domain" over a file that is not there is a false
 /// sentence, and it fails in the certifying direction.
-pub trait AmbientDisk: std::fmt::Debug {
+pub trait AmbientDisk: fmt::Debug {
     /// Does a file exist at this ambient-root-relative path?
     ///
     /// The path is resolved against the ambient root the corpus was built from,
@@ -3975,8 +4119,8 @@ mod tests {
         assert_eq!(goals.span, 20..136, "L1 section runs to EOF (Q3/Q4 deeper)");
         assert_eq!(goals.node_rev.0, "a6665baff294bd04");
         assert_eq!(
-            goals.hpath.as_deref(),
-            Some(["Goals".to_string()].as_slice())
+            goals.hpath.as_ref().map(HeadingChain::to_strings),
+            Some(vec!["Goals".to_string()])
         );
         // Q3 and Q4 are children of Goals (level nesting), not siblings.
         let q3 = goals
@@ -3987,9 +4131,68 @@ mod tests {
         assert_eq!(q3.span, 49..72);
         assert_eq!(q3.node_rev.0, "33d5b0e1b27cb48b");
         assert_eq!(
-            q3.hpath.as_deref(),
-            Some(["Goals".to_string(), "Q3".to_string()].as_slice())
+            q3.hpath.as_ref().map(HeadingChain::to_strings),
+            Some(vec!["Goals".to_string(), "Q3".to_string()])
         );
+    }
+
+    /// The chain is shared, never copied: every node one section governs
+    /// holds the section's own chain allocation, that chain's last segment is
+    /// the section's own heading text, and a nested chain's prefix segments
+    /// are its parent's. A build that re-copied any of these would still pass
+    /// every equality test; only the pointers say it is one allocation (the
+    /// `resident.heap.bytes_per_mb.vault_2026` claim in `perfsuite` rides it).
+    #[test]
+    fn hpath_chains_are_shared_not_copied() {
+        let doc = build_plan();
+        let section = |name: &str| {
+            find(&doc.root, &|n| {
+                matches!(&n.kind, NodeKind::Section { heading_text, .. } if heading_text == name)
+            })
+            .unwrap_or_else(|| panic!("{name} section"))
+        };
+        let goals = section("Goals");
+        let q4 = section("Q4");
+        let goals_chain = goals.hpath.as_ref().expect("Goals has a chain");
+        let q4_chain = q4.hpath.as_ref().expect("Q4 has a chain");
+        let NodeKind::Section { heading_text, .. } = &q4.kind else {
+            unreachable!("Q4 is a section");
+        };
+
+        // The section's own segment IS its heading text.
+        assert!(
+            Arc::ptr_eq(&q4_chain.last().expect("one segment").0, &heading_text.0),
+            "the chain's last segment must be the Section node's heading text, not a copy"
+        );
+        // A nested chain's prefix segment is the parent's own segment.
+        assert!(
+            Arc::ptr_eq(&q4_chain[0].0, &goals_chain[0].0),
+            "the Q4 chain's `Goals` segment must be the Goals section's own text"
+        );
+        // Every node the section governs holds the section's chain allocation.
+        let governed: Vec<&Node> = q4
+            .children
+            .iter()
+            .filter(|c| matches!(c.kind, NodeKind::Wikilink { .. }))
+            .collect();
+        assert_eq!(governed.len(), 2, "Q4 governs two wikilinks");
+        for leaf in governed {
+            let chain = leaf.hpath.as_ref().expect("a governed leaf has a chain");
+            assert!(
+                Arc::ptr_eq(&chain.0, &q4_chain.0),
+                "a governed leaf must hold the section's chain, not a copy"
+            );
+        }
+        // And a finished tree carries no push-growth slack.
+        fn no_slack(node: &Node) {
+            assert_eq!(
+                node.children.capacity(),
+                node.children.len(),
+                "children vectors are shrunk at build"
+            );
+            node.children.iter().for_each(no_slack);
+        }
+        no_slack(&doc.root);
     }
 
     #[test]
