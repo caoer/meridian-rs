@@ -804,6 +804,21 @@ fn a_resident_lane_dispatch_leaves_the_shared_cache_warm() {
         "the first pass re-reads at most the phase-2 movers, got {}",
         memo.leaves_read() - reads
     );
+    // Settled matters since the §6.2 trust close: the phase-2 movers were
+    // committed inside the stamp quantum the first pass recorded them under,
+    // so their rows (and their directories' listings) are racy — legitimately
+    // re-read — until one calibrated granule has passed since the commit and
+    // one pass has re-recorded them under a watermark that clears them. Only
+    // then is the memo in its stat-only steady state, which is what the next
+    // currency pass is asserted against (the `cached_observation` gate's
+    // discipline, sized from the memo's own measured calibration).
+    let fs::stable::Calibration::Measured { granule_ns } =
+        memo.calibration().expect("probed on first observe").clone()
+    else {
+        panic!("a writable target tmpdir calibrates");
+    };
+    std::thread::sleep(Duration::from_nanos(granule_ns * 2 + 2_000_000));
+    memo.root(&root).unwrap();
     let warm = (memo.listings(), memo.leaves_read());
     let again = memo.root(&root).unwrap();
     assert_eq!(
