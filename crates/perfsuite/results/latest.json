@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
-  "created_utc": "2026-07-29 16:19 UTC",
-  "git_sha": "df446396",
-  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "created_utc": "2026-09-18 08:36 UTC",
+  "git_sha": "f8c92f1",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
   "machine": {
-    "hostname": "zmax",
-    "os": "macos",
-    "arch": "aarch64",
-    "cpu": "Apple M4 Max",
-    "cores": 16
+    "hostname": "vm",
+    "os": "linux",
+    "arch": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cores": 4
   },
   "verdicts": [
     {
@@ -33,7 +33,7 @@
     },
     {
       "claim_id": "assemble.p99.file",
-      "measured": 46.591,
+      "measured": 42.751,
       "verdict": "MEASURED"
     },
     {
@@ -48,17 +48,17 @@
     },
     {
       "claim_id": "transport.codec.ndjson_roundtrip_p99",
-      "measured": 20.591,
+      "measured": 60.703,
       "verdict": "MEASURED"
     },
     {
       "claim_id": "ingest.cold.vault_1gb",
-      "measured": 26015.135667,
+      "measured": 3309.381616,
       "verdict": "PASS"
     },
     {
       "claim_id": "ingest.codec.ndjson.vault_1gb",
-      "measured": 1768.830959,
+      "measured": 2213.5814800000003,
       "verdict": "PASS"
     },
     {
@@ -73,12 +73,12 @@
     },
     {
       "claim_id": "policy.evaluate.p99.vault_1gb",
-      "measured": 31.375,
+      "measured": 94.783,
       "verdict": "MEASURED"
     },
     {
       "claim_id": "policy.evaluate.p99.fence_bomb",
-      "measured": 42.239,
+      "measured": 108.735,
       "verdict": "MEASURED"
     },
     {
@@ -93,7 +93,7 @@
     },
     {
       "claim_id": "policy.splice.match_scan.p99",
-      "measured": 104.191,
+      "measured": 155.903,
       "verdict": "MEASURED"
     },
     {
@@ -122,6 +122,11 @@
       "verdict": "UNTESTED"
     },
     {
+      "claim_id": "resident.heap.bytes_per_mb.vault_2026",
+      "measured": 1665512.2169604218,
+      "verdict": "PASS"
+    },
+    {
       "claim_id": "check.worktree.p99",
       "measured": null,
       "verdict": "UNTESTED"
@@ -130,28 +135,28 @@
   "measurements": [
     {
       "id": "assemble.p99.file",
-      "value": 46.591,
+      "value": 42.751,
       "unit": "us",
       "samples": 8000,
       "dist": {
-        "mean_us": 14.518852874999991,
-        "p50_us": 12.959,
-        "p90_us": 22.879,
-        "p99_us": 46.591,
-        "p999_us": 96.063,
-        "max_us": 639.999
+        "mean_us": 15.961485374999992,
+        "p50_us": 15.015,
+        "p90_us": 24.447,
+        "p99_us": 42.751,
+        "p999_us": 71.935,
+        "max_us": 140.031
       }
     },
     {
       "id": "ingest.codec.ndjson.vault_1gb",
-      "value": 1768.830959,
+      "value": 2213.5814800000003,
       "unit": "ms",
       "samples": 1,
       "dist": null
     },
     {
       "id": "ingest.cold.vault_1gb",
-      "value": 26015.135667,
+      "value": 3309.381616,
       "unit": "ms",
       "samples": 1,
       "dist": null
@@ -172,86 +177,93 @@
     },
     {
       "id": "policy.evaluate.p99.fence_bomb",
-      "value": 42.239,
+      "value": 108.735,
       "unit": "us",
       "samples": 8000,
       "dist": {
-        "mean_us": 31.31722199999998,
-        "p50_us": 30.847,
-        "p90_us": 34.303,
-        "p99_us": 42.239,
-        "p999_us": 108.671,
-        "max_us": 181.247
+        "mean_us": 64.46766400000001,
+        "p50_us": 60.511,
+        "p90_us": 82.559,
+        "p99_us": 108.735,
+        "p999_us": 134.015,
+        "max_us": 177.919
       }
     },
     {
       "id": "policy.evaluate.p99.vault_1gb",
-      "value": 31.375,
+      "value": 94.783,
       "unit": "us",
       "samples": 8000,
       "dist": {
-        "mean_us": 22.992468000000024,
-        "p50_us": 22.591,
-        "p90_us": 26.223,
-        "p99_us": 31.375,
-        "p999_us": 91.711,
-        "max_us": 178.303
+        "mean_us": 52.37767699999997,
+        "p50_us": 48.223,
+        "p90_us": 71.999,
+        "p99_us": 94.783,
+        "p999_us": 119.103,
+        "max_us": 142.207
       }
     },
     {
       "id": "policy.splice.match_scan.p99",
-      "value": 104.191,
+      "value": 155.903,
       "unit": "us",
       "samples": 8000,
       "dist": {
-        "mean_us": 85.43627599999996,
-        "p50_us": 83.839,
-        "p90_us": 90.431,
-        "p99_us": 104.191,
-        "p999_us": 175.999,
-        "max_us": 228.479
+        "mean_us": 132.605056,
+        "p50_us": 130.815,
+        "p90_us": 145.279,
+        "p99_us": 155.903,
+        "p999_us": 181.887,
+        "max_us": 408.575
       }
     },
     {
+      "id": "resident.heap.bytes_per_mb.vault_2026",
+      "value": 1665512.2169604218,
+      "unit": "bytes/MB",
+      "samples": 1,
+      "dist": null
+    },
+    {
       "id": "transport.codec.ndjson_roundtrip_p99",
-      "value": 20.591,
+      "value": 60.703,
       "unit": "us",
       "samples": 20000,
       "dist": {
-        "mean_us": 8.696309500000003,
-        "p50_us": 14.255,
-        "p90_us": 16.719,
-        "p99_us": 20.591,
-        "p999_us": 27.887,
-        "max_us": 64.671
+        "mean_us": 20.65106615000001,
+        "p50_us": 31.487,
+        "p90_us": 40.927,
+        "p99_us": 60.703,
+        "p999_us": 76.799,
+        "max_us": 339.199
       }
     }
   ],
   "criterion": [
     {
       "id": "assemble_build_vault2026",
-      "mean_ns": 14716.228666747917,
-      "median_ns": 14671.14393939394
+      "mean_ns": 16573.478632199614,
+      "median_ns": 15862.68146374829
     },
     {
       "id": "parse/placeholder_corpus_traversal",
-      "mean_ns": 61.79666001526959,
-      "median_ns": 62.19093399193689
+      "mean_ns": 64.47732119045949,
+      "median_ns": 64.75508773439549
     },
     {
       "id": "policy_evaluate_vault1gb_batch",
-      "mean_ns": 4515041.041666665,
-      "median_ns": 4491946.166666667
+      "mean_ns": 10613178.670000002,
+      "median_ns": 10852205.0
     },
     {
       "id": "roundtrip/ndjson_decode_1000",
-      "mean_ns": 7178099.935714286,
-      "median_ns": 7161166.571428571
+      "mean_ns": 15166525.6875,
+      "median_ns": 15051638.375
     },
     {
       "id": "roundtrip/ndjson_encode_1000",
-      "mean_ns": 1388626.1616318766,
-      "median_ns": 1387443.595345345
+      "mean_ns": 3247076.308,
+      "median_ns": 3259132.8
     }
   ]
 }
