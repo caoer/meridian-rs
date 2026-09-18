@@ -4184,15 +4184,17 @@ mod tests {
             );
         }
         // And a finished tree carries no push-growth slack.
-        fn no_slack(node: &Node) {
-            assert_eq!(
-                node.children.capacity(),
-                node.children.len(),
-                "children vectors are shrunk at build"
-            );
-            node.children.iter().for_each(no_slack);
-        }
-        no_slack(&doc.root);
+        assert_no_slack(&doc.root);
+    }
+
+    /// Every `children` vector in a finished tree is shrunk to its length.
+    fn assert_no_slack(node: &Node) {
+        assert_eq!(
+            node.children.capacity(),
+            node.children.len(),
+            "children vectors are shrunk at build"
+        );
+        node.children.iter().for_each(assert_no_slack);
     }
 
     #[test]
