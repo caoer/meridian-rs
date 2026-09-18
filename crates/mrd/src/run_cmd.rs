@@ -34,7 +34,8 @@
 //! timeout and a detected out-of-band delta stay 1 (the plane's own finding outranks the
 //! step's code), usage / addressing / contract stay 2 — and it never yields 0
 //! ([`passthrough_leg`]). It refuses beside `--list` / `--dry` / `--load` / a fire, none of
-//! which execs a step ([`exclusions`]).
+//! which execs a task step — a fired exec entry's raw exit rides its row, never the rc
+//! ([`exclusions`]).
 //!
 //! # The three legs
 //! `--list` surfaces every declared task with its contract, and its caps where capabilities
@@ -397,8 +398,9 @@ fn exclusions(shape: &Shape<'_>) -> Result<(), Fail> {
     // the step's. Named, never ignored.
     if shape.exit_passthrough && (shape.list || shape.dry || shape.load || shape.block.is_some()) {
         return Err(Fail::tool(
-            "--exit-passthrough returns an executed step's own exit code: `--list`, `--dry`, \
-             `--load` and a `#^<id>` fire exec no step. Drop one"
+            "--exit-passthrough returns an executed task step's own exit code: `--list`, \
+             `--dry`, `--load` and a `#^<id>` fire exec no task step (a fire's process exit \
+             rides its row). Drop one"
                 .to_owned(),
         ));
     }

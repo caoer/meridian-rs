@@ -1760,10 +1760,12 @@ caller by two surfaces, and the default one is not the rc.
   `exec: exited N` in text, `exec.exit_code` under `--json` — read off the same
   `RunReport` the completion receipt's `exec.exit_code` is written from. A
   caller reads it there; parsing `receipts/run.md` is never the contract. The
-  report is the **last line** of stdout, not the whole stream: a bash step's
-  own stdout streams live ahead of it (§ The run record — stdout is data, not
-  effects), so `--json` piped straight into a JSON reader carries the step's
-  output first.
+  report comes **last** on stdout, not alone on it: a bash step's own stdout
+  streams live ahead of it, byte for byte (§ The run record — stdout is data,
+  not effects), so `--json` piped straight into a JSON reader carries the
+  step's output first. Under `--json` the report is one line, and it is the
+  **last line** of stdout whenever the step's output ends in a newline; a step
+  that leaves its last line open shares that line with the report.
 - **Under `--exit-passthrough`, on the rc.** The flag hands the findings leg to
   the step: a step that reached its own exit door with a nonzero code makes
   `mrd run` exit that code, verbatim.
@@ -1779,17 +1781,20 @@ stay 2, refused before the plane is entered. **Passthrough never yields 0**: a
 code the rc cannot carry leaves as 1, so no caller reads a failure as clean.
 
 **What passthrough costs, stated.** Under the flag a step exiting 2 and a bad
-invocation carry the same rc. They stay distinguishable on stdout: a step that
-ran printed its report there, and a bad invocation printed nothing there. The
-flag is opt-in for exactly that reason — the triad's reading is unchanged for
-every caller who does not pass it.
+invocation carry the same rc. They stay distinguishable by the report: a step
+that ran printed its report on stdout, and a bad invocation printed none. It is
+the report that tells them apart and not stdout being empty — `TASK` omitted
+among several tasks with no `default` prints the task list there and exits 2
+(§ The CLI surface, above). The flag is opt-in for exactly that reason — the
+triad's reading is unchanged for every caller who does not pass it.
 
-**Where nothing execs, the flag refuses; on starlark it stands idle.**
-`--list`, `--dry`, `--load` and a `#^<id>` fire run no step, so the flag beside
-any of them refuses by name (§ The CLI surface, above). A starlark task is the
-one place it parses and does nothing: the fence a task declares is the page's
-fact, not argv's, so argv cannot refuse it there — and a hermetic evaluation
-has no exit code to pass.
+**Where no task step execs, the flag refuses; on starlark it stands idle.**
+`--list`, `--dry`, `--load` and a `#^<id>` fire run no task step — a fired
+exec entry does run a process, and its raw exit rides the row (`process.exit`),
+never the rc — so the flag beside any of them refuses by name (§ The CLI
+surface, above). A starlark task is the one place it parses and does nothing:
+the fence a task declares is the page's fact, not argv's, so argv cannot refuse
+it there — and a hermetic evaluation has no exit code to pass.
 
 **A churn refusal carries a recovery line.** It blames nothing the caller
 wrote: the addressed target is a **corpus member that vanished** mid-read

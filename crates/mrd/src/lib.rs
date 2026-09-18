@@ -631,7 +631,7 @@ options:
                            invocation stays 2 — which a passed-through 2 now
                            shares, told apart by the report on stdout. Refuses
                            beside --list / --dry / --load / a fire: none execs
-                           a step.
+                           a task step.
   --files PATH             (script) one host-enumerated path, bound inert as
                            files (repeatable). Paths only — content enters
                            through read() alone. A member containing * is a
