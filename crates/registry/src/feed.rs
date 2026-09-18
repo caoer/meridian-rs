@@ -77,6 +77,8 @@ use std::time::{Duration, Instant};
 use notify::event::{AccessKind, AccessMode, CreateKind};
 use notify::{EventKind, RecursiveMode, Watcher as _};
 
+use crate::wake::ChangeWakers;
+
 /// The dirty set's size floor for the all-dirty collapse. Sized well above
 /// any plausible cold-gap edit burst (the delta plane bounds one frame at
 /// 128 rows) and well below corpus scale, so a runaway producer degrades to
@@ -324,9 +326,26 @@ impl WorkspaceFeed {
     /// The kernel watch could not be created or attached. The caller records
     /// the failure loudly; the workspace then keeps the pre-feed semantics
     /// (its resident memo drops on every reap).
+    #[cfg(test)]
     pub(crate) fn start(
         workspace: &Path,
         feed: fs::stable::FeedGen,
+    ) -> notify::Result<WorkspaceFeed> {
+        Self::start_with_wakers(workspace, feed, Arc::default())
+    }
+
+    /// [`Self::start`] on the workspace's shared wake set: every accepted
+    /// event and every doubt collapse wakes the subscribers parked on it
+    /// (`server::push_loop`), which is what lets a subscriber park until the
+    /// kernel says something moved instead of asking on a tick. A cookie
+    /// sighting is the daemon's own barrier write and wakes nobody.
+    ///
+    /// # Errors
+    /// As [`Self::start`].
+    pub(crate) fn start_with_wakers(
+        workspace: &Path,
+        feed: fs::stable::FeedGen,
+        wakers: Arc<ChangeWakers>,
     ) -> notify::Result<WorkspaceFeed> {
         let sync = Arc::new(FeedSync {
             state: Mutex::new(FeedState {
@@ -341,41 +360,49 @@ impl WorkspaceFeed {
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let mut s = sink.state.lock().unwrap_or_else(PoisonError::into_inner);
+                // Whether this delivery changed what a subscriber would see:
+                // dirt admitted or doubt raised. Decided under the lock,
+                // rung after it.
+                let mut moved = false;
                 if let Ok(event) = event {
                     if event.need_rescan() {
                         s.collapse(RescanCause::Overflow);
                         sink.cookie.notify_all();
-                        return;
-                    }
-                    if !relevant(event.kind) {
-                        return;
-                    }
-                    for path in &event.paths {
-                        let Ok(rel) = path.strip_prefix(&root) else {
-                            continue;
-                        };
-                        // §6.4 cookie sighting — UPSTREAM of the member
-                        // filter: the sentinel is the ordered stream's
-                        // proof-of-delivery, never dirt. A torn or
-                        // vanished read proves nothing and skips (the
-                        // close event re-delivers; at worst a barrier
-                        // times out to its floor — never a false Seen).
-                        if rel == Path::new(COOKIE_REL) {
-                            if let Some(serial) = read_serial(path) {
-                                s.cookie_seen = s.cookie_seen.max(serial);
-                                sink.cookie.notify_all();
+                        moved = true;
+                    } else if relevant(event.kind) {
+                        for path in &event.paths {
+                            let Ok(rel) = path.strip_prefix(&root) else {
+                                continue;
+                            };
+                            // §6.4 cookie sighting — UPSTREAM of the member
+                            // filter: the sentinel is the ordered stream's
+                            // proof-of-delivery, never dirt. A torn or
+                            // vanished read proves nothing and skips (the
+                            // close event re-delivers; at worst a barrier
+                            // times out to its floor — never a false Seen).
+                            if rel == Path::new(COOKIE_REL) {
+                                if let Some(serial) = read_serial(path) {
+                                    s.cookie_seen = s.cookie_seen.max(serial);
+                                    sink.cookie.notify_all();
+                                }
+                                continue;
                             }
-                            continue;
+                            s.admit(rel, path, event.kind);
+                            moved = true;
                         }
-                        s.admit(rel, path, event.kind);
-                    }
-                    if s.doubt.is_some() {
-                        sink.cookie.notify_all();
+                        if s.doubt.is_some() {
+                            sink.cookie.notify_all();
+                        }
                     }
                 } else {
                     // A watcher error is event loss until proven otherwise.
                     s.collapse(RescanCause::MissedEvent);
                     sink.cookie.notify_all();
+                    moved = true;
+                }
+                drop(s);
+                if moved {
+                    wakers.wake_all();
                 }
             })?;
         // The sentinel's directory must exist BEFORE the recursive watch is

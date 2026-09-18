@@ -100,6 +100,12 @@ view = { workspace = true }
 # keeping it watcher-free makes "guard correctness consults neither journal
 # nor watcher" structural.
 notify = { workspace = true }
+# The daemon's parking primitive (`wake`): `poll(2)` has no std wrapper, and
+# it is what lets every resident thread sleep in the kernel on the descriptors
+# it serves — the listener, a subscriber's socket, the shutdown bell — instead
+# of ticking to notice them. Already in the graph via `cache` and `mrd`; no
+# new external crate enters and `cargo deny` is unchanged.
+libc = "0.2"
 # The §6.7 currency split's production instrument (`docs/run-plane.md` §
 # Timing phases): `currency_refresh` and `door_observation` each choose between
 # the O(1) vouched path and the §6.2 extent-refresh floor, and until this edge

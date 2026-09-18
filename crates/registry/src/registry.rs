@@ -164,6 +164,12 @@ pub struct Registry {
     /// gap. A slot that failed to start is sticky-Failed, loud once; that
     /// workspace keeps the pre-feed semantics (memo drops on reap).
     feeds: Mutex<HashMap<PathBuf, FeedSlot>>,
+    /// The wake set per workspace: every subscriber parked on its ring
+    /// (`server::push_loop`). One instance serves the workspace's feed (a
+    /// kernel event rings it) and every ring epoch (a recorded frame rings
+    /// it), so it lives as long as the feed does — registration-lifetime,
+    /// created with the first of either, dropped at `unregister`.
+    wakers: Mutex<HashMap<PathBuf, Arc<crate::wake::ChangeWakers>>>,
     /// § A.11 resident sql caches: the open `sql.duckdb` handle per
     /// workspace, this daemon being each file's single owner. The CONNECTION
     /// dies on idle-reap with the engine; the FILE deliberately survives —
@@ -294,9 +300,14 @@ enum FeedSlot {
 }
 
 impl FeedSlot {
-    /// Start the workspace's kernel watcher; loud on failure, once.
-    fn start(workspace: &Path, feed: fs::stable::FeedGen) -> FeedSlot {
-        match feed::WorkspaceFeed::start(workspace, feed) {
+    /// Start the workspace's kernel watcher on the workspace's wake set;
+    /// loud on failure, once.
+    fn start(
+        workspace: &Path,
+        feed: fs::stable::FeedGen,
+        wakers: Arc<crate::wake::ChangeWakers>,
+    ) -> FeedSlot {
+        match feed::WorkspaceFeed::start_with_wakers(workspace, feed, wakers) {
             Ok(feed) => FeedSlot::Live(Arc::new(feed)),
             Err(e) => {
                 eprintln!(
@@ -902,6 +913,8 @@ impl Registry {
             domain_caches: Mutex::new(HashMap::new()),
             // Cold: feeds start with the first resident state per workspace.
             feeds: Mutex::new(HashMap::new()),
+            // Cold: nobody is parked; the first feed or ring mints the set.
+            wakers: Mutex::new(HashMap::new()),
             // Cold: no open sql handles; first `sql` op opens (or cold-builds)
             // each workspace's file.
             sql_stores: Mutex::new(HashMap::new()),
@@ -1613,11 +1626,12 @@ impl Registry {
         // The feed reports into the memo's generation cell so the §6.2 fence
         // and the rescan-loss ledger are one instrument.
         let feed_cell = fs::lock_within(&cache, left())?.feed_gen();
+        let wakers = self.change_wakers(workspace);
         let feed = {
             let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
             match feeds
                 .entry(workspace.to_path_buf())
-                .or_insert_with(|| FeedSlot::start(workspace, feed_cell))
+                .or_insert_with(|| FeedSlot::start(workspace, feed_cell, wakers))
             {
                 FeedSlot::Live(feed) => Some(Arc::clone(feed)),
                 FeedSlot::Failed => None,
@@ -2067,12 +2081,28 @@ impl Registry {
     }
 
     pub fn ring(&self, workspace: &Path) -> Arc<crate::ring::WorkspaceRing> {
+        let wakers = self.change_wakers(workspace);
         let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
         Arc::clone(rings.entry(workspace.to_path_buf()).or_insert_with(|| {
-            Arc::new(crate::ring::WorkspaceRing::new(&fs::WorkspaceRoot(
-                workspace.to_path_buf(),
-            )))
+            Arc::new(crate::ring::WorkspaceRing::with_wakers(
+                &fs::WorkspaceRoot(workspace.to_path_buf()),
+                wakers,
+            ))
         }))
+    }
+
+    /// The workspace's wake set — the one instance its feed and every ring
+    /// epoch ring, minted on first ask (see the field).
+    pub(crate) fn change_wakers(&self, workspace: &Path) -> Arc<crate::wake::ChangeWakers> {
+        let mut wakers = self.wakers.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(wakers.entry(workspace.to_path_buf()).or_default())
+    }
+
+    /// Is the workspace's §6.4 feed live? A subscriber with a live feed parks
+    /// until the feed wakes it; one without keeps the detect poll.
+    pub(crate) fn feed_is_live(&self, workspace: &Path) -> bool {
+        let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+        matches!(feeds.get(workspace), Some(FeedSlot::Live(_)))
     }
 
     /// Take a live subscription claim on `workspace`'s ring (created on first
@@ -2090,11 +2120,13 @@ impl Registry {
     /// why the dispatch claims here and not there.
     #[must_use]
     pub fn subscribe(&self, workspace: &Path) -> crate::ring::SubGuard {
+        let wakers = self.change_wakers(workspace);
         let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
         let ring = rings.entry(workspace.to_path_buf()).or_insert_with(|| {
-            Arc::new(crate::ring::WorkspaceRing::new(&fs::WorkspaceRoot(
-                workspace.to_path_buf(),
-            )))
+            Arc::new(crate::ring::WorkspaceRing::with_wakers(
+                &fs::WorkspaceRoot(workspace.to_path_buf()),
+                wakers,
+            ))
         });
         ring.subscribe()
     }
@@ -2263,6 +2295,12 @@ impl Registry {
             let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
             feeds.remove(&key)
         };
+        // The wake set is the feed's lifetime too; a subscriber still parked
+        // on it keeps its own handle and simply hears nothing further.
+        self.wakers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
         let cache = {
             let mut caches = self
                 .domain_caches

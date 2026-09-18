@@ -26,6 +26,8 @@ use wire::{DeltaFrame, ErrorBody, ErrorCode, Root};
 use wire_serve::ring::RootRing;
 use wire_serve::watch::WatchState;
 
+use crate::wake::ChangeWakers;
+
 /// How often a subscribed workspace looks for external change.
 ///
 /// Sets the push-latency floor for an edit made outside the engine. Checks
@@ -59,6 +61,37 @@ pub struct WorkspaceRing {
     cycle_gate: Mutex<()>,
     /// Live subscriptions — drives detection and reaper exemption.
     subscribers: AtomicUsize,
+    /// The workspace's wake set: every parked subscriber. Rung by a frame
+    /// recorded here ([`Self::advance`], a detect cycle that emitted) and by
+    /// the workspace's §6.4 feed on a kernel event — the registry hands one
+    /// instance to both, registration-lifetime, so the ring epoch may turn
+    /// over under a live feed without re-wiring anyone.
+    wakers: Arc<ChangeWakers>,
+}
+
+/// What one [`WorkspaceRing::detect_outcome`] call did — what the push loop
+/// reads to choose how long it may park before asking again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Detect {
+    /// A cycle completed within [`DETECT_CADENCE`] of this call; it did
+    /// nothing, and owes nothing until the window closes.
+    Coalesced,
+    /// The workspace's live feed vouched quiet through the shared memo: no
+    /// walk, no stat, no fold. Nothing moves until the feed says so, or the
+    /// [`DETECT_FLOOR_CADENCE`] backstop falls due.
+    Quiet,
+    /// A cycle is in flight on another subscriber's thread; the frames it
+    /// emits land on the shared ring and wake every waiter.
+    InFlight,
+    /// A cycle ran (or stood down at the write flock); `emitted` says whether
+    /// it recorded a frame.
+    Cycled {
+        /// Whether the cycle recorded a frame.
+        emitted: bool,
+    },
+    /// The cycle failed (snapshot or classification); the caller logged it
+    /// and retries on the next cadence.
+    Failed,
 }
 
 #[derive(Debug)]
@@ -100,9 +133,17 @@ impl Drop for SubGuard {
 }
 
 impl WorkspaceRing {
-    /// Fresh epoch for `root`: empty ring, unprimed watcher, no subscribers.
+    /// Fresh epoch for `root`: empty ring, unprimed watcher, no subscribers,
+    /// a wake set of its own (a fixture's; the daemon shares the workspace's
+    /// through [`Self::with_wakers`]).
     #[must_use]
     pub fn new(root: &fs::WorkspaceRoot) -> Self {
+        Self::with_wakers(root, Arc::default())
+    }
+
+    /// [`Self::new`] on the workspace's shared wake set.
+    #[must_use]
+    pub fn with_wakers(root: &fs::WorkspaceRoot, wakers: Arc<ChangeWakers>) -> Self {
         WorkspaceRing {
             state: Mutex::new(RingState {
                 ring: RootRing::new(),
@@ -112,6 +153,38 @@ impl WorkspaceRing {
             }),
             cycle_gate: Mutex::new(()),
             subscribers: AtomicUsize::new(0),
+            wakers,
+        }
+    }
+
+    /// The wake set a push loop registers with.
+    #[must_use]
+    pub fn wakers(&self) -> &Arc<ChangeWakers> {
+        &self.wakers
+    }
+
+    /// How long a subscriber may park before it owes the next
+    /// [`Self::detect_outcome`], given what the last one answered and whether
+    /// the workspace's feed is live. A wake ends the park early; this is only
+    /// the clock. While the feed vouches, only the §6.6 backstop is on a
+    /// clock; with no live feed the [`DETECT_CADENCE`] poll stands.
+    #[must_use]
+    pub fn next_detect_in(&self, last: Detect, feed_live: bool) -> Duration {
+        let state = self.state();
+        let cadence_left = state.last_detect.map_or(Duration::ZERO, |at| {
+            DETECT_CADENCE.saturating_sub(at.elapsed())
+        });
+        match last {
+            Detect::Coalesced => cadence_left,
+            Detect::Quiet | Detect::Cycled { .. } if feed_live => state
+                .last_floor
+                .map_or(cadence_left, |at| {
+                    DETECT_FLOOR_CADENCE.saturating_sub(at.elapsed())
+                })
+                .max(cadence_left),
+            Detect::Quiet | Detect::Cycled { .. } | Detect::InFlight | Detect::Failed => {
+                DETECT_CADENCE
+            }
         }
     }
 
@@ -170,6 +243,21 @@ impl WorkspaceRing {
     /// allocation and this call: its number stays burned, never re-issued.
     pub fn advance(&self, frame: DeltaFrame) {
         self.state().ring.advance(frame);
+        self.wakers.wake_all();
+    }
+
+    /// [`Self::detect_outcome`] as the one bit the gates report: did a cycle
+    /// run here and record a frame?
+    ///
+    /// # Errors
+    /// As [`Self::detect_outcome`].
+    pub fn detect(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        registry: &crate::Registry,
+    ) -> Result<bool, Box<ErrorBody>> {
+        self.detect_outcome(ws_root, registry)
+            .map(|outcome| outcome == Detect::Cycled { emitted: true })
     }
 
     /// One detection cycle unless another subscriber ran within [`DETECT_CADENCE`].
@@ -190,11 +278,11 @@ impl WorkspaceRing {
     ///
     /// # Errors
     /// Snapshot or classification failure. Callers log and continue.
-    pub fn detect(
+    pub fn detect_outcome(
         &self,
         ws_root: &fs::WorkspaceRoot,
         registry: &crate::Registry,
-    ) -> Result<bool, Box<ErrorBody>> {
+    ) -> Result<Detect, Box<ErrorBody>> {
         // §6.7 pre-check inputs, read and RELEASED before any registry
         // borrow: no path may hold this state lock while acquiring a memo
         // (the sanctioned order is memo → ring state, never the reverse).
@@ -204,7 +292,7 @@ impl WorkspaceRing {
                 .last_detect
                 .is_some_and(|at| at.elapsed() < DETECT_CADENCE)
             {
-                return Ok(false);
+                return Ok(Detect::Coalesced);
             }
             let due = state
                 .last_floor
@@ -227,14 +315,16 @@ impl WorkspaceRing {
             && registry.vouched_quiet(&ws_root.0, &model::MerkleRoot(baseline.0))
         {
             self.state().last_detect = Some(Instant::now());
-            return Ok(false);
+            return Ok(Detect::Quiet);
         }
         // Gate 2: the winner's cycle IS this cadence's detection; frames it
-        // emits land on the shared ring, which every push loop drains.
+        // emits land on the shared ring, which every push loop drains — and
+        // the emission wakes them.
         let Ok(_flight) = self.cycle_gate.try_lock() else {
-            return Ok(false);
+            return Ok(Detect::InFlight);
         };
         self.cycle(ws_root, registry, floor_due)
+            .map(|emitted| Detect::Cycled { emitted })
     }
 
     /// Establish baseline and return the settled `(root, tip seq)` — at
@@ -338,16 +428,24 @@ impl WorkspaceRing {
                 .filter_map(|(rel, digest)| rel.to_str().map(|s| (s.to_owned(), digest)))
                 .collect()
         };
-        let mut state = self.state();
-        let RingState { ring, watch, .. } = &mut *state;
-        let emitted =
-            wire_serve::watch::reconcile_delta(ws_root, ring, watch, &leaves, &disk_root)?
-                .is_some();
-        state.last_detect = Some(Instant::now());
-        if was_unprimed {
-            // The priming snapshot re-read everything — strictly stronger
-            // than the stat floor; anchor the clock here too.
-            state.last_floor = Some(Instant::now());
+        let emitted = {
+            let mut state = self.state();
+            let RingState { ring, watch, .. } = &mut *state;
+            let emitted =
+                wire_serve::watch::reconcile_delta(ws_root, ring, watch, &leaves, &disk_root)?
+                    .is_some();
+            state.last_detect = Some(Instant::now());
+            if was_unprimed {
+                // The priming snapshot re-read everything — strictly stronger
+                // than the stat floor; anchor the clock here too.
+                state.last_floor = Some(Instant::now());
+            }
+            emitted
+        };
+        if emitted {
+            // Every other subscriber parked on this workspace has a frame to
+            // deliver now; the one that ran this cycle drains it on its way.
+            self.wakers.wake_all();
         }
         Ok(emitted)
     }
