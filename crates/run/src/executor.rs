@@ -28,8 +28,8 @@ use std::time::{Duration, Instant};
 
 use effects::{ArgValue, ChangeEvent, Domain, Effect, EffectKind, EventFacts, Provenance};
 use model::{
-    Document, Edit, EditKind, HpathSeg, MerkleRoot, NodeKind, NodeRev, PutAt, ReceiptAppend, Ref,
-    SpliceRequest, SpliceVerdict, delta,
+    Document, Edit, EditKind, HeadingChain, HpathSeg, MerkleRoot, NodeKind, NodeRev, PutAt,
+    ReceiptAppend, Ref, SpliceRequest, SpliceVerdict, delta,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1958,8 +1958,8 @@ fn find_section(
         [only] => {
             let segs = only
                 .hpath
-                .clone()
-                .unwrap_or_else(|| vec![heading.to_owned()]);
+                .as_ref()
+                .map_or_else(|| vec![heading.to_owned()], HeadingChain::to_strings);
             let last_byte = doc
                 .raw
                 .as_bytes()

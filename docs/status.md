@@ -1230,9 +1230,14 @@ Do not claim “proven end-to-end” without that caveat.
 
 `perfsuite` carries a claims registry (`crates/perfsuite/claims.toml`) whose
 verdicts are computed, not asserted, and written to
-`crates/perfsuite/results/` (`latest.json`, `RESULTS.md`). Tally over 23
-claims: **2 PASS, 7 MEASURED, 14 UNTESTED** — PASS covers cold ingest and codec
-bulk cost, the untested are perf rungs awaiting their first baseline. Refresh:
+`crates/perfsuite/results/` (`latest.json`, `RESULTS.md`). The tally over the
+24 registered claims is the report's own last line — PASS covers cold ingest,
+codec bulk cost and the resident-memory claim, the untested are perf rungs
+awaiting their first baseline. One claim is memory, not time:
+`resident.heap.bytes_per_mb.vault_2026` is the heap the warm engine keeps per
+MB of corpus (raw bytes plus governed trees, measured by a counting allocator,
+so it is exact and the same on every host), the number a workspace costs the
+daemon for as long as it stays warm. Refresh:
 
 ```sh
 cargo bench -p perfsuite

@@ -589,7 +589,9 @@ fn innermost_section(node: &model::Node, range: &model::ByteSpan) -> Option<Vec<
         }
     }
     match (&node.kind, &node.hpath) {
-        (model::NodeKind::Section { .. }, Some(hpath)) if !hpath.is_empty() => Some(hpath.clone()),
+        (model::NodeKind::Section { .. }, Some(hpath)) if !hpath.is_empty() => {
+            Some(hpath.to_strings())
+        }
         _ => None,
     }
 }
