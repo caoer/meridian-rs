@@ -412,7 +412,9 @@ mrd test --history <WS> --rule <PAGE> [--spec <PAGE>]
  declares the exceptions (its `rule:` must name <PAGE>)
 mrd run <PAGE> [TASK] [-- ARGS]
  run a task block declared in the page's frontmatter
- (`--env K=V`, `--dry`, `--list`, `--json`)
+ (`--env K=V`, `--dry`, `--list`, `--json`,
+ `--exit-passthrough` — the step's own nonzero exit code
+ becomes the rc; see `run-plane.md` § The CLI surface)
 mrd script [--json] [--expect-armed DIGEST]
  the script entry of the run plane: caller-supplied
  inline source on stdin, run as the caller through the

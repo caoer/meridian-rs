@@ -1,7 +1,7 @@
 //! `mrd run` — the local run plane mounted on the CLI. The argv surface is locked:
 //!
 //! ```text
-//! mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json
+//! mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json --exit-passthrough
 //! ```
 //!
 //! No argv JSON: positional args ride verbatim after `--`, env rides as repeated
@@ -19,6 +19,23 @@
 //! - **2** — the invocation is wrong (usage, addressing, contract violation) or the tool failed
 //!   pre-run. TASK omitted with several declared tasks lists them and exits 2 — unless one is
 //!   named `default`, which runs (the 2026-08-19 default-task amendment, `docs/run-plane.md`).
+//!
+//! # `--exit-passthrough` — the step's own code on the rc
+//! The triad is **not** the step's exit-code channel: 2 is the bad-invocation leg, and the
+//! absence contract (`docs/run-plane.md` § A controlled failure exit speaks) states
+//! `exit 2 + empty stdout` as a guarantee that nothing was armed, so a step's own 2 may not
+//! take that value over. The sealed code is therefore always on the **report** — `exec: exited
+//! N` in text, `exec.exit_code` under `--json`, off the same [`runner::RunReport`] the
+//! completion receipt is written from — and never only in `receipts/run.md`.
+//!
+//! `--exit-passthrough` additionally hands the **findings leg** to the step: a step that
+//! reached its own exit door with a nonzero code makes `mrd run` exit that code, verbatim. It
+//! moves that one leg and reserves every other — a signaled step stays `128 + signal`, a
+//! timeout and a detected out-of-band delta stay 1 (the plane's own finding outranks the
+//! step's code), usage / addressing / contract stay 2 — and it never yields 0
+//! ([`passthrough_leg`]). It refuses beside `--list` / `--dry` / `--load` / a fire, none of
+//! which execs a task step — a fired exec entry's raw exit rides its row, never the rc
+//! ([`exclusions`]).
 //!
 //! # The three legs
 //! `--list` surfaces every declared task with its contract, and its caps where capabilities
@@ -162,8 +179,9 @@ fn fail_runner(e: &RunnerError) -> Fail {
 }
 
 /// The parsed `mrd run` invocation.
-// Three independent argv switches ARE the surface: --json composes with the
-// other legs, so an enum would invent coupling the CLI does not have.
+// The independent argv switches ARE the surface: --json and --exit-passthrough
+// each compose with the other legs, so an enum would invent coupling the CLI
+// does not have.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 struct RunArgs {
@@ -176,6 +194,10 @@ struct RunArgs {
     dry: bool,
     list: bool,
     json: bool,
+    /// `--exit-passthrough`: the step's own nonzero exit code becomes this
+    /// process's rc (see the module docs). Off by default — the triad's
+    /// reading is unchanged for every caller who does not pass it.
+    exit_passthrough: bool,
     /// `--load`: the load mode (hook-support design § 2.2). Every positional
     /// is a PAGE, and each becomes its own target in one call.
     load: bool,
@@ -200,6 +222,7 @@ impl RunArgs {
         let mut dry = false;
         let mut list = false;
         let mut json = false;
+        let mut exit_passthrough = false;
         let mut load = false;
         let mut input_json: Option<String> = None;
         let mut pages: Vec<String> = Vec::new();
@@ -213,6 +236,7 @@ impl RunArgs {
                 "--dry" => dry = true,
                 "--list" => list = true,
                 "--json" => json = true,
+                "--exit-passthrough" => exit_passthrough = true,
                 "--load" => load = true,
                 "--input-json" => {
                     i += 1;
@@ -255,7 +279,8 @@ impl RunArgs {
         }
         let Some(page) = page else {
             return Err(Fail::tool(
-                "usage: mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json\n   \
+                "usage: mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json \
+                 --exit-passthrough\n   \
                  or: mrd run <PAGE>#^<id> [--input-json FILE|-] [--dry] [--json]\n   \
                  or: mrd run --load <PAGE>... [--json]"
                     .to_owned(),
@@ -275,6 +300,7 @@ impl RunArgs {
             dry,
             list,
             load,
+            exit_passthrough,
             block: block.as_deref(),
             input_json: input_json.as_deref(),
         })?;
@@ -287,6 +313,7 @@ impl RunArgs {
             dry,
             list,
             json,
+            exit_passthrough,
             load,
             block,
             input,
@@ -309,6 +336,9 @@ impl RunArgs {
 }
 
 /// The argv shape one invocation presented, for the exclusion pass.
+// Mirrors argv switch for switch: [`exclusions`] reads the COMBINATIONS, so
+// folding them into an enum would hide the very thing that pass checks.
+#[allow(clippy::struct_excessive_bools)]
 struct Shape<'a> {
     task: Option<&'a str>,
     args: &'a [String],
@@ -316,6 +346,7 @@ struct Shape<'a> {
     dry: bool,
     list: bool,
     load: bool,
+    exit_passthrough: bool,
     block: Option<&'a str>,
     input_json: Option<&'a str>,
 }
@@ -359,6 +390,17 @@ fn exclusions(shape: &Shape<'_>) -> Result<(), Fail> {
         return Err(Fail::tool(
             "a fire's one input channel is `--input-json`: `TASK`, `-- ARGS` and \
              `--env K=V` are the task contract's"
+                .to_owned(),
+        ));
+    }
+    // A passthrough with no step to pass through is the guard-you-believe-is-
+    // armed trap: a caller branching on `$?` would read the plane's own leg as
+    // the step's. Named, never ignored.
+    if shape.exit_passthrough && (shape.list || shape.dry || shape.load || shape.block.is_some()) {
+        return Err(Fail::tool(
+            "--exit-passthrough returns an executed task step's own exit code: `--list`, \
+             `--dry`, `--load` and a `#^<id>` fire exec no task step (a fire's process exit \
+             rides its row). Drop one"
                 .to_owned(),
         ));
     }
@@ -720,13 +762,18 @@ fn execute(
         ),
         Format::Human => print!("{}", rendered.to_text()),
     }
-    exit_leg(&report)
+    exit_leg(&report, parsed.exit_passthrough)
 }
 
 /// The exit leg for a run the runner carried to a report: a bash phase-2 refusal is a run-plane
 /// failure even though the report rendered — exit 1, except a signaled step, which exits
-/// 128+signal.
-fn exit_leg(report: &runner::RunReport) -> Result<(), Fail> {
+/// 128+signal, and a nonzero step under `--exit-passthrough`, which exits the step's own code.
+///
+/// `passthrough` governs **one** arm, the nonzero-exit one. Every other refusal here is the
+/// plane's own finding, not the step's, and keeps its code whatever the flag says: a detected
+/// out-of-band delta is mrd's claim about a write the step made, and reporting it as the step's
+/// exit would retract the claim.
+fn exit_leg(report: &runner::RunReport, passthrough: bool) -> Result<(), Fail> {
     let TaskOutcome::Bash(outcome) = &report.outcome else {
         return Ok(());
     };
@@ -734,9 +781,15 @@ fn exit_leg(report: &runner::RunReport) -> Result<(), Fail> {
         Phase2::Applied { .. } => return Ok(()),
         // The effects refused, the run was recorded — both halves are said, in that order.
         Phase2::RefusedExecFailed { .. } => match &outcome.status {
-            ExecStatus::Exited { code } => format!(
-                "bash exited {code} — no effect applied; the run is recorded with its exit code"
-            ),
+            ExecStatus::Exited { code } => {
+                let said = format!(
+                    "bash exited {code} — no effect applied; the run is recorded with its exit code"
+                );
+                if passthrough {
+                    return Err(Fail::with_code(passthrough_leg(*code), said));
+                }
+                said
+            }
             // Unreachable: this variant is built only under `Exited`.
             other => format!("bash ended {other:?} — no effect applied"),
         },
@@ -760,6 +813,20 @@ fn exit_leg(report: &runner::RunReport) -> Result<(), Fail> {
         Phase2::RefusedExec { error, .. } => return Err(fail_exec(error)),
     };
     Err(fail_run(cause))
+}
+
+/// The rc `--exit-passthrough` hands a step that exited nonzero: the step's own code, verbatim.
+///
+/// A zero, and a code the rc cannot carry, both fall back to [`EXIT_RUN`] — **passthrough may
+/// never spell a failed run clean**, and 1 is the leg the flag was handed. Neither arm is
+/// reachable from a unix wait status ([`Phase2::RefusedExecFailed`] is built only under a
+/// nonzero `Exited`, and those codes are `0..=255`); the floor stands so no future status
+/// source can launder a failure into exit 0.
+fn passthrough_leg(code: i32) -> u8 {
+    match u8::try_from(code) {
+        Ok(0) | Err(_) => EXIT_RUN,
+        Ok(leg) => leg,
+    }
 }
 
 /// Mint the run identity: a unique, path-safe invocation id and a unix-seconds time fact.
@@ -1093,6 +1160,52 @@ mod tests {
     #[test]
     fn cli_hands_the_runner_an_empty_ruleset() {
         assert!(S1_RULES.is_empty(), "S1 must not evaluate cascade rules");
+    }
+
+    /// The flag parses on the task shape and stays off unless passed — the
+    /// triad's reading is the default for every caller who does not ask.
+    #[test]
+    fn exit_passthrough_parses_and_defaults_off() {
+        let bare = RunArgs::parse(&strings(&["notes.md", "census"])).expect("parse");
+        assert!(!bare.exit_passthrough);
+        let asked =
+            RunArgs::parse(&strings(&["notes.md", "census", "--exit-passthrough"])).expect("parse");
+        assert!(asked.exit_passthrough);
+    }
+
+    /// Every argv shape that execs no step refuses BY NAME rather than
+    /// ignoring the flag — an ignored passthrough would hand the caller the
+    /// plane's own leg while they read it as the step's.
+    #[test]
+    fn exit_passthrough_refuses_where_nothing_execs() {
+        for tail in [
+            strings(&["p.md", "--list", "--exit-passthrough"]),
+            strings(&["p.md", "t", "--dry", "--exit-passthrough"]),
+            strings(&["--load", "p.md", "--exit-passthrough"]),
+            strings(&["p.md#^b", "--exit-passthrough"]),
+        ] {
+            let fail = RunArgs::parse(&tail).expect_err("must refuse");
+            assert_eq!(fail.code, 2, "{tail:?} → {}", fail.message);
+            assert!(
+                fail.message.contains("--exit-passthrough"),
+                "{tail:?} → {}",
+                fail.message
+            );
+        }
+    }
+
+    /// The floor: passthrough hands over the step's code and never a clean
+    /// exit. A zero and an rc-uncarryable code both land on the findings leg,
+    /// which is the leg the flag was handed in the first place.
+    #[test]
+    fn passthrough_never_spells_a_failure_clean() {
+        assert_eq!(passthrough_leg(1), 1);
+        assert_eq!(passthrough_leg(2), 2);
+        assert_eq!(passthrough_leg(42), 42);
+        assert_eq!(passthrough_leg(255), 255);
+        assert_eq!(passthrough_leg(0), EXIT_RUN);
+        assert_eq!(passthrough_leg(256), EXIT_RUN);
+        assert_eq!(passthrough_leg(-1), EXIT_RUN);
     }
 
     #[test]
