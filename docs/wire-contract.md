@@ -1349,6 +1349,42 @@ Injective per cache root; the short base keeps the path inside `sun_path`.
   tokens compare equal and assert nothing; the sha stamp (`build.rs`) keeps
   that rare.
 
+**The published socket path: the lock holder is always reachable.** The socket's
+base is env-derived; the singleton lock is not. The flock lives in
+`<cache-root>/registry/`, keyed on the cache root alone, while the base turns on
+whether `XDG_RUNTIME_DIR` was set in the environment that spawned the daemon —
+so two environments over one cache root derive two socket paths and share one
+lock, and the lock holder is unreachable for whichever half does not derive its
+base. Measured: a client without `XDG_RUNTIME_DIR` spawned the daemon under
+`$HOME/.cache/mrd-run/`, every client with it dialled an absent
+`$XDG_RUNTIME_DIR/mrd/<12hex>.sock`, auto-spawned a successor, and got "another
+meridian registry daemon is already running" from a child nobody could hear.
+
+So the daemon PUBLISHES the socket it bound — the absolute path, at
+`<cache-root>/registry/daemon.sock-path`, the lock's own directory, so the file
+is keyed exactly as the lock is. Written after the bind and the pidfile, before
+the accept loop serves, so no pong can precede it; atomically (same-directory
+temp + rename), claiming a crashed predecessor's; removed on a clean shutdown
+after the socket it names. Advisory like the pidfile: a daemon that cannot
+publish still serves. A publication is a claim, never a proof — a `SIGKILL`ed
+daemon removes nothing — so a reader that acts on it still has to dial.
+
+- **A client dials the derived path first.** Only when that path is ABSENT does
+  it read the publication, and only a different socket that EXISTS moves it.
+  The warm path pays one `stat` and no extra dial, so the one-dial discipline
+  is unchanged.
+- **The auto-spawn ladder pings the published socket BEFORE spawning**, so a
+  spawn the lock holder would only refuse is never made.
+- **After a spawn the poll watches BOTH paths.** The derived path is where the
+  child it launched binds, inheriting this environment. The publication is
+  where the winner of a concurrent cold start binds — two clients on different
+  bases can each find no socket and no publication and both spawn, and the
+  loser's child dies on the flock. Polling the derived path alone would spend
+  the whole spawn timeout reaching a degrade while the lock holder is live and
+  published, which is the original defect in a narrower window.
+- **A published socket that was tried and did not answer is NAMED** in the
+  degrade, beside the teaching that already names the derived path.
+
 **Pin proof rides the request.** In `put` the pin supplies `node_rev` or
 fingerprint from the agent's own read. No server-side record of who read what
 exists — no read-receipt ledger, no journal — and a read is identity-free and
