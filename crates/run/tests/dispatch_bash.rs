@@ -804,32 +804,36 @@ fn a_resident_lane_dispatch_leaves_the_shared_cache_warm() {
         "the first pass re-reads at most the phase-2 movers, got {}",
         memo.leaves_read() - reads
     );
-    // The steady state begins one calibrated granule after the last write.
-    // §6.2's trust close makes a record minted inside its own stamp quantum
-    // racy — a same-quantum in-place edit is invisible to the key compare —
-    // so such a record is legitimately re-enumerated, and asserting the
-    // stat-only state without settling first only passes on a machine slow
-    // enough relative to the backend's granule. `crates/fs`'s own gate on
-    // this property settles the same way
-    // (`a_warm_cache_observes_an_unchanged_settled_tree_without_listing_or_reading`).
-    let fs::stable::Calibration::Measured { granule_ns } = memo
-        .calibration()
-        .expect("probed on the first observation")
-        .clone()
+    // Settled matters since the §6.2 trust close: the phase-2 movers were
+    // committed inside the stamp quantum the first pass recorded them under,
+    // so their rows (and their directories' listings) are racy — legitimately
+    // re-read — until a pass re-records them under a watermark that clears
+    // their stamps by one calibrated granule. When that is depends on the
+    // backend's stamp clock (a coarse clock can lag the wall clock by a
+    // tick), so the memo is settled by observation, not by a fixed wait:
+    // passes two granules of its own measured calibration apart, until one
+    // enumerates and reads nothing. From that pass on reuse is deterministic
+    // — the same stamps against the same record watermarks — which is the
+    // stat-only steady state the next currency pass is asserted against.
+    let fs::stable::Calibration::Measured { granule_ns } =
+        memo.calibration().expect("probed on first observe").clone()
     else {
-        panic!("a writable tempdir calibrates");
+        panic!("a writable target tmpdir calibrates");
     };
-    std::thread::sleep(Duration::from_nanos(granule_ns * 2 + 2_000_000));
-    // One pass to re-record the racy leftovers under a watermark that clears
-    // them; the pass after it is the one under test.
-    assert_eq!(memo.root(&root).unwrap(), after_run);
-
+    let pause = Duration::from_nanos(granule_ns * 2 + 2_000_000);
+    let settled = (0..64).any(|_| {
+        std::thread::sleep(pause);
+        let before = (memo.listings(), memo.leaves_read());
+        memo.root(&root).unwrap();
+        (memo.listings(), memo.leaves_read()) == before
+    });
+    assert!(settled, "the memo settles within the retry budget");
     let warm = (memo.listings(), memo.leaves_read());
     let again = memo.root(&root).unwrap();
     assert_eq!(
         (memo.listings(), memo.leaves_read()),
         warm,
-        "the second pass over the unchanged settled tree must be stat-only"
+        "the second pass over the unchanged tree must be stat-only"
     );
     assert_eq!(after_run, again);
     assert_eq!(
