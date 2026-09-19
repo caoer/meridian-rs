@@ -315,6 +315,35 @@ mrd rm <PAGE> --rev <FILE_REV> [--if-fingerprint FP] [--dry] [--actor A]
  {workspace, rm}; an engine refusal {workspace, error}.
  Exit triad: 0 removed|dry / 1 refused / 2 bad
  invocation
+mrd move <OLD> <NEW> [--dry] [--immutable PREFIX]... [--json]
+ the move door (`move.md`): rename or move a page or a
+ directory inside ONE root and rewrite every reference
+ the resolver says would break — body wikilinks and
+ embeds (the target slot only; fragment and alias kept),
+ frontmatter wikilinks, frontmatter rooted strings
+ naming this root, meridian-lock `object:` rows, and
+ `.canvas` node slots (a file node's path and a text
+ node's wikilinks; every other byte of the JSON kept) —
+ in-process, never a wire op. A reference that still
+ resolves is byte-untouched; a rewrite keeps the class
+ the author wrote (full path / shortest unique suffix /
+ bare name). NEW ending in `/` or naming an existing
+ directory lands OLD under it. `--immutable PREFIX`
+ (repeatable): a file under it keeps every word its
+ author wrote — a breaking wikilink, embed, frontmatter
+ link, rooted string or canvas node slot is reported
+ with path, line, old and new spelling and left as
+ written. Its meridian-lock `object:` rows are
+ repointed there as anywhere else — the path only,
+ engine bookkeeping, never a re-pin.
+ `--dry` prints the whole plan and
+ writes nothing; the real run prints the same plan as
+ its receipt plus the link census read back from disk.
+ Refuses NEW occupied, a cross-root pair, OLD or NEW
+ under an immutable prefix, and a bare link the move
+ would leave ambiguous — every pair named, nothing
+ written. Exit triad: 0 moved|dry / 1 refused / 2 bad
+ invocation
 mrd pin <PAGE> <TARGET>#<SELECTOR> [--fingerprint TOKEN] [--vibe] [--dry] [--json]
  mint a meridian-lock pin: PAGE records the claim,
  TARGET#SELECTOR is the content being attested
@@ -1420,6 +1449,22 @@ read `cmd=` first). A warm daemon-served `links` emits neither on the
  no Delta, so `changes_seq` is unchanged (`wire-contract.md` §18 row 12).
  Polling it as a change monotone misses every CLI-lane write — diff by
  fingerprint (§4.7).
+- **A lock row has no retire verb.** `mrd pin` mints a row; `mrd rm` removes
+ a page; nothing removes ONE row from a page's meridian-lock. A row the engine
+ cannot read, or one that attests nothing — a `^anchor` minted under a heading
+ serves the heading line alone (3–9 words; measured on home-wiki at
+ `ff883de40`: six such rows on five pages, fingerprints equal to the heading
+ spans) — can only leave by hand. home-wiki retired its six under a ruling
+ with a script (`decisions/2026-09-03-retire-vacuous-and-unreadable-lock-rows.md`
+ in that wiki; the script prints `mrd check --json` before and after). The
+ ask, with that receipt shape: `mrd unpin <PAGE> <TARGET>#<SELECTOR>` (or
+ `mrd pin --retire`) — remove exactly one row, matched on object + path +
+ fingerprint, refuse when absent or ambiguous (exit 1, nothing written),
+ leave the target's anchor in place (another row may address it), print the
+ removed row plus the page's pin counts before and after in `pin`'s receipt
+ shape (`--json` too), and let the `## Inputs` twin line be the caller's —
+ a twin drop is prose, not lock bytes. A `--dry` that shows the row is the
+ read half.
 
 Accepted residuals (attestation surfaces) — documented, not prevented. Full statements in
 `wire-contract.md` § Named residuals.

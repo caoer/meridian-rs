@@ -144,6 +144,7 @@ fn an_absolute_path_refuses_at_every_door_in_the_family_voice() {
         ("repair", vec!["repair", abs, "--dry"]),
         ("realise", vec!["realise", abs, "--dry"]),
         ("run", vec!["run", abs, "hello"]),
+        ("move", vec!["move", abs, "elsewhere.md", "--dry"]),
     ];
     for (door, args) in doors {
         let out = sb.run(&cwd, args);

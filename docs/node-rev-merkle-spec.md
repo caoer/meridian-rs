@@ -470,9 +470,17 @@ engine-side.
   seq reset on restart — cannot touch it. No premise consults the journal
   (§4.3.1's consistency law).
 - **Watcher lifecycle:** the watcher lives with the workspace registration, not
-  the engine's warmth. An idle-reaped engine keeps it; events accumulate in a
-  registry-held dirty set that the next warm applies — O(dirty), never
-  O(corpus).
+  the engine's warmth — bounded by the resident budget. An idle-reaped engine
+  keeps it; events accumulate in a registry-held dirty set that the next warm
+  applies — O(dirty), never O(corpus). The registry holds one parsed corpus per
+  warm workspace, so the warm set carries a resident budget
+  (`MRD_MAX_RESIDENT_BYTES`, estimated resident bytes — a fixed multiplier over
+  the warm set's raw markdown bytes): a workspace LRU-evicted under budget
+  pressure drops its whole warm state, watcher included, and its next warm is a
+  full walk, not O(dirty). The trade is deliberate — bounded residency outranks
+  gap coverage for the least-recently-used workspace. Only a live subscription
+  exempts a workspace from the budget sweep; the registration survives either
+  way.
 - **The currency barrier (the cookie).** A guard-grade currency question writes
   a sentinel at `.meridian/cookie` and waits for it to return through the
   ordered event stream. `Seen` — ordered delivery of all the kernel captured,
