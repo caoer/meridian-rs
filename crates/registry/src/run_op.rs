@@ -27,6 +27,7 @@
 //!   `ok:false` frames answer only what never reached the plane.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
 use effects::EvalLimits;
@@ -168,13 +169,14 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
     let root = fs::WorkspaceRoot(ws.to_path_buf());
     // Delta honesty (§ A.8): every committed batch of every target mints its
     // frame on the bound workspace's ring, inside the executor's flock.
-    let sink = crate::delta_sink::RingSink::new(registry.ring(ws));
     // A second ring handle: the create door's SeqSink for run-plane births.
     let birth_ring = registry.ring(ws);
     // Observation unification (engine-warm-cost design § 5): the daemon door
-    // serves the bash bracket's observations from the workspace's resident
-    // domain memo — the same instrument every currency pass runs on.
+    // serves the bash bracket's observations — and the sink's two frame
+    // roots — from the workspace's resident domain memo, the same instrument
+    // every currency pass runs on.
     let cache = registry.domain_cache(ws);
+    let sink = crate::delta_sink::RingSink::new(registry, ws, Arc::clone(&cache));
     let host = RunHost {
         sink: &sink,
         birth_seq: &*birth_ring,
@@ -296,7 +298,7 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
 /// the § A.8 op arm and the § A.7 in-script `run()` — hold one per
 /// submission, so the two instruments cannot drift apart between doors.
 pub(crate) struct RunHost<'a> {
-    pub(crate) sink: &'a crate::delta_sink::RingSink,
+    pub(crate) sink: &'a crate::delta_sink::RingSink<'a>,
     /// The workspace ring as the create door's `SeqSink` — run-plane births
     /// (`md.create`) mint numbered frames like any door write.
     pub(crate) birth_seq: &'a dyn wire_serve::seq::SeqSink,

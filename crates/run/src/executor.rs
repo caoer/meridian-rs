@@ -151,6 +151,24 @@ impl ApplyRequest<'_> {
 /// the plane stays free of the wire graph; the one production implementor is
 /// the registry's ring sink.
 pub trait DeltaSink: std::fmt::Debug {
+    /// The frame's before tense: the workspace root the batch advances from,
+    /// observed with the caller's workspace flock held, immediately before
+    /// the commit ([`CommitFacts::root_before`]). The observation is the
+    /// SINK's because the root is the sink's fact — the executor stamps
+    /// nothing with it — so the host answers through its own instrument: the
+    /// daemon's resident memo at the door grade (`node-rev-merkle-spec.md`
+    /// §6.7, one `stat` per member, bytes for movers only), never a byte read
+    /// of the whole corpus. The executor used to fold `domain_snapshot` here
+    /// and hand the token over; on a 1 GB corpus that was the whole read,
+    /// paid once per committed batch, for 32 bytes.
+    ///
+    /// # Errors
+    /// The observation failed — the executor refuses the apply before any
+    /// byte lands ([`ExecError::Io`]; a memo lock that stayed held for its
+    /// budget refuses [`ExecError::WorkspaceBusy`], the same word a contended
+    /// flock answers).
+    fn root_before(&self, root: &fs::WorkspaceRoot) -> io::Result<MerkleRoot>;
+
     /// One committed batch's facts. Called after `fs::apply_batch` returned,
     /// with the caller's workspace flock still held. Infallible by contract:
     /// a mint failure is the host's to degrade (its detector will still
@@ -1427,23 +1445,29 @@ fn acquire_write_flock(root: &fs::WorkspaceRoot) -> Result<fs::WriteLock, ExecEr
 
 /// The frame mint's pre-commit facts (step 7b): the receipt file's before
 /// tense and the workspace root the batch advances from, both under the
-/// flock. `None` when no sink is armed — the CLI pays no fold.
+/// flock. `None` when no sink is armed — the CLI pays no observation. The
+/// root is the sink's own observation ([`DeltaSink::root_before`]): the
+/// host's instrument answers, and no corpus byte is read here for it.
 fn delta_pre_facts(
     root: &fs::WorkspaceRoot,
     req: &ApplyRequest<'_>,
 ) -> Result<Option<(Option<Document>, MerkleRoot)>, ExecError> {
-    if req.delta.is_none() {
+    let Some(sink) = req.delta else {
         return Ok(None);
-    }
+    };
     let receipt_before = match &req.receipt {
         Some(addr) => load_receipt_before(root, &addr.path)?,
         None => None,
     };
-    let root_before = fs::domain_snapshot(root)
-        .map(|(_, r)| r)
-        .map_err(|e| ExecError::Io {
-            reason: format!("pre-commit root fold: {e}"),
-        })?;
+    let root_before = sink.root_before(root).map_err(|e| {
+        if e.kind() == io::ErrorKind::WouldBlock {
+            ExecError::WorkspaceBusy
+        } else {
+            ExecError::Io {
+                reason: format!("pre-commit root observation: {e}"),
+            }
+        }
+    })?;
     Ok(Some((receipt_before, root_before)))
 }
 

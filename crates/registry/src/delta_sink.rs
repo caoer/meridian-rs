@@ -14,38 +14,76 @@
 //! next cycle reconciles the change as external (actor-absent), degraded but
 //! never wrong — matching the push loop's own log-and-retry posture.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use run::executor::{CommitFacts, DeltaSink};
 use wire::Root;
 use wire_serve::seq::SeqSink as _;
 
+use crate::registry::{DOOR_COOKIE_TIMEOUT, Registry};
 use crate::ring::WorkspaceRing;
 
 /// The registry's sink: one per served run/script call, bound to the bound
 /// workspace's ring. Frames from a multi-commit run chain in commit order
 /// because each commit advances the ring before the next can begin.
+///
+/// Both frame roots are the sink's observations, made through the
+/// workspace's resident domain memo at the door grade
+/// ([`Registry::door_observation`]: §6.4 cookie barrier, take-and-apply, the
+/// vouched overlay fold, the §6.2 stat floor on a named miss —
+/// `node-rev-merkle-spec.md` §6.7). `root_before` is asked with the
+/// executor's flock held, before the commit; `root_after` after it, on the
+/// same handle. Neither reads a byte of the corpus that did not move: the
+/// two used to be `domain_snapshot` folds — every member read and hashed,
+/// twice per committed batch.
 #[derive(Debug)]
-pub(crate) struct RingSink {
+pub(crate) struct RingSink<'r> {
     ring: Arc<WorkspaceRing>,
+    registry: &'r Registry,
+    ws: PathBuf,
+    /// The door's own memo handle, taken once per served call: both
+    /// observations land in the same tree, so `root_before` and `root_after`
+    /// cannot fold from two different generations.
+    cache: Arc<Mutex<fs::DomainCache>>,
 }
 
-impl RingSink {
-    pub(crate) fn new(ring: Arc<WorkspaceRing>) -> Self {
-        RingSink { ring }
+impl<'r> RingSink<'r> {
+    pub(crate) fn new(
+        registry: &'r Registry,
+        ws: &Path,
+        cache: Arc<Mutex<fs::DomainCache>>,
+    ) -> Self {
+        RingSink {
+            ring: registry.ring(ws),
+            registry,
+            ws: ws.to_path_buf(),
+            cache,
+        }
+    }
+
+    /// The door-grade observation on this sink's memo handle.
+    fn observe(&self) -> io::Result<model::MerkleRoot> {
+        self.registry
+            .door_observation(&self.ws, &self.cache, DOOR_COOKIE_TIMEOUT)
     }
 }
 
-impl DeltaSink for RingSink {
+impl DeltaSink for RingSink<'_> {
+    fn root_before(&self, _root: &fs::WorkspaceRoot) -> io::Result<model::MerkleRoot> {
+        self.observe()
+    }
+
     fn committed(&self, root: &fs::WorkspaceRoot, facts: &CommitFacts<'_>) {
-        // The after tenses: the workspace root folded post-commit (the flock
-        // is still the executor's, so disk is settled), and the receipt file
-        // as committed.
-        let root_after = match wire_serve::ambient_root(root) {
-            Ok(r) => r,
+        // The after tenses: the workspace root observed post-commit (the
+        // flock is still the executor's, so disk is settled; the cookie
+        // barrier proves this commit's own events are folded in), and the
+        // receipt file as committed.
+        let root_after = match self.observe() {
+            Ok(r) => Root(r.0),
             Err(e) => {
-                eprintln!("registry: run delta mint (post-commit fold): {e:?}");
+                eprintln!("registry: run delta mint (post-commit observation): {e}");
                 return;
             }
         };
