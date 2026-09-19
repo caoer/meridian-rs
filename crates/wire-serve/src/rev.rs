@@ -596,6 +596,8 @@ pub enum Position {
     ErrorPayload,
     /// Inside a splice response's `body.armed` fact.
     ResponseArmed,
+    /// Inside a `links` response body (§4.6's frozen key set).
+    ResponseLinks,
 }
 
 /// One field that postdates frozen v2 and must never reach a v2 session.
@@ -688,6 +690,12 @@ pub const V2_RESERVED_FIELDS: &[ReservedField] = &[
               scope_does_not_cover; postdates frozen v2 — the register-law \
               message names the same set for demoted sessions",
     },
+    ReservedField {
+        key: "tree_instance",
+        position: Position::ResponseLinks,
+        author: "§10.1 counter identity",
+        why: "the epoch `changes_seq` is numbered in, published so a view               answer can be aligned to the delta stream; frozen v2's §4.6 key               set is {as_of_root, live_root, changes_seq, files} and carries               no ring identity (`skip_serializing_if` skips on None, never on               a v2 SESSION)",
+    },
     // The ladder's four post-v2 slots; `message`/`path` are deliberately absent.
     ReservedField {
         key: "rung",
@@ -727,6 +735,16 @@ pub fn is_reserved(key: &str, position: Position) -> bool {
 /// or `None` when it carries none. Typed, like every other strip here — a
 /// `Value` pass would alphabetize the key set (`preserve_order` is off).
 fn demote_body_v2(body: &wire::ResponseBody) -> Option<wire::ResponseBody> {
+    if let wire::ResponseBody::Links { tree_instance, .. } = body {
+        if tree_instance.is_none() || !is_reserved("tree_instance", Position::ResponseLinks) {
+            return None;
+        }
+        let mut demoted = body.clone();
+        if let wire::ResponseBody::Links { tree_instance, .. } = &mut demoted {
+            *tree_instance = None;
+        }
+        return Some(demoted);
+    }
     let wire::ResponseBody::Splice { armed, .. } = body else {
         return None;
     };

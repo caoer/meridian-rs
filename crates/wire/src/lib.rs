@@ -2001,11 +2001,14 @@ pub enum ResponseBody {
     },
     /// v2 §4.7: the current root at world grain + `seq`, the monotone
     /// per-workspace batch counter (per-daemon-epoch — a restart resets it;
-    /// cross-epoch catchup is diff-by-root, §7.1 laws). `tree_instance`
-    /// rides the `sub` ack only (B-01, §4.7): the identity the acked `seq`
-    /// is numbered under, minted fresh per ring epoch. The `root` op serves
-    /// it absent — that op does not read the ring, so it cannot honestly
-    /// name a ring surface.
+    /// cross-epoch catchup is diff-by-root, §7.1 laws), in the tense of the
+    /// token beside it: the retained frame that ended at this fingerprint,
+    /// `0` when none did (§10.1). `tree_instance` is the identity that `seq`
+    /// is numbered under, minted fresh per ring epoch (B-01, §4.7): the
+    /// `sub` ack carries it, and so does a v3 world mint, which reads the
+    /// same ring. A frozen v2 mint and a scoped mint carry it absent — the
+    /// first was never promised it, the second names a node, and the counter
+    /// is workspace-grain.
     Root {
         root: Root,
         seq: u64,
@@ -2028,13 +2031,21 @@ pub enum ResponseBody {
     /// v2 §4.6: the outgoing edge map under the §10.1 staleness triple —
     /// `as_of_root` (the root the answer was computed at), `live_root` (the
     /// root now), `changes_seq` (the Delta counter at `as_of_root`, §7.1
-    /// per-daemon-epoch semantics). No lag bounds are promised (§10.1
+    /// per-daemon-epoch semantics; `0` when no retained frame ended there,
+    /// which is never a claim that nothing changed). No lag bounds are promised (§10.1
     /// honest-tense law): `as_of_root ≠ live_root` is a legal frame, never an
     /// error. `files` keys are corpus paths; see [`FileLinks`].
     Links {
         as_of_root: Root,
         live_root: Root,
         changes_seq: u64,
+        /// The epoch `changes_seq` is numbered in (§10.1, B-01) — the same
+        /// identity a `sub` cursor echoes, so a view answer can be aligned to
+        /// the delta stream without subscribing first. v3-additive: a row in
+        /// `wire_serve::rev::V2_RESERVED_FIELDS` keeps it off a frozen v2
+        /// session's `links` body, whose key set predates it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tree_instance: Option<String>,
         files: BTreeMap<String, FileLinks>,
         /// §4.6 / §12.1: the markdown under the root the hash domain does NOT
         /// hold, so an enumeration names what it left out instead of publishing

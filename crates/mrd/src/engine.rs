@@ -1149,7 +1149,10 @@ fn in_process_links(
         mounts.set(),
         wpath.as_ref(),
         as_of,
-        0,
+        // The daemonless lane numbers nothing: no daemon, no ring, no epoch
+        // to name (§10.1 — `0` says the answer aligns to no frame, never
+        // that the corpus is quiet).
+        wire_serve::read::Counter::unnumbered(),
         || Ok(live),
     )
     .map_err(|mut e| {

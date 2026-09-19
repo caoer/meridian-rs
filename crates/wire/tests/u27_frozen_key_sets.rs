@@ -446,6 +446,7 @@ fn links_body_and_file_key_sets_are_frozen() {
         as_of_root: root(),
         live_root: root(),
         changes_seq: 2,
+        tree_instance: None,
         files: files.clone(),
         excluded: Vec::new(),
     };
@@ -462,7 +463,8 @@ fn links_body_and_file_key_sets_are_frozen() {
         as_of_root: root(),
         live_root: root(),
         changes_seq: 2,
-        files,
+        tree_instance: None,
+        files: files.clone(),
         excluded: vec![".github/README.md".to_string()],
     };
     pin_keys(
@@ -480,6 +482,28 @@ fn links_body_and_file_key_sets_are_frozen() {
         &FileLinks::default(),
         &["resolved", "unresolved"],
         "FileLinks",
+    );
+    // §10.1's counter identity is v3-additive: present the moment the door
+    // publishes it, and kept off a frozen v2 session by its
+    // `rev::V2_RESERVED_FIELDS` row — not by this shape.
+    let numbered = ResponseBody::Links {
+        as_of_root: root(),
+        live_root: root(),
+        changes_seq: 2,
+        tree_instance: Some("1f0.2a.0".into()),
+        files,
+        excluded: Vec::new(),
+    };
+    pin_keys(
+        &numbered,
+        &[
+            "as_of_root",
+            "changes_seq",
+            "files",
+            "live_root",
+            "tree_instance",
+        ],
+        "Links body carrying the §10.1 counter identity",
     );
 }
 
