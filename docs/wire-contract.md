@@ -1349,6 +1349,29 @@ Injective per cache root; the short base keeps the path inside `sun_path`.
   tokens compare equal and assert nothing; the sha stamp (`build.rs`) keeps
   that rare.
 
+**The published socket path: the lock holder is always reachable.** The socket
+base is env-derived (`XDG_RUNTIME_DIR` set or not) while the singleton flock in
+`<cache-root>/registry/` is keyed on the cache root alone, so two environments
+over one cache root derive two socket paths and share one lock. Measured: a
+client without `XDG_RUNTIME_DIR` spawned the daemon under
+`$HOME/.cache/mrd-run/`; every client with it dialled the absent
+`$XDG_RUNTIME_DIR/mrd/<12hex>.sock`, auto-spawned a successor, and was refused
+"another meridian registry daemon is already running" by a child nobody could
+reach. So the daemon PUBLISHES the socket it bound: after the bind and the
+pidfile, before the accept loop serves, it writes the socket's absolute path to
+`<cache-root>/registry/daemon.sock-path` — the lock's own directory, keyed as
+the lock is — atomically (same-directory temp + rename), overwriting a
+predecessor's; a clean shutdown removes it after the socket. Advisory like the
+pidfile: a daemon that cannot publish still serves. A client dials the derived
+path first; when that path is absent it reads the publication and, when it
+names a different socket that exists, dials that instead. The auto-spawn
+ladder pings the published socket BEFORE spawning, so it never launches a
+daemon the lock holder would refuse, and after a spawn polls the derived path,
+where the child it launched (inheriting its environment) binds. When the
+published socket was tried and did not answer, the degrade names it beside the
+existing teaching.
+
+
 **Pin proof rides the request.** In `put` the pin supplies `node_rev` or
 fingerprint from the agent's own read. No server-side record of who read what
 exists — no read-receipt ledger, no journal — and a read is identity-free and

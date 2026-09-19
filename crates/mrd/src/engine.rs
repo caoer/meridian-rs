@@ -641,10 +641,10 @@ fn declared_mount_set() -> Option<addr::MountSet> {
 /// melt into the degrade: build skew (0025 socket law) — a stale resident answering in
 /// silence is the defect, and degrading past it would hide the stale daemon forever.
 fn try_daemon_links(workspace: &Path, path: Option<&str>) -> Result<Option<Value>, Fail> {
-    let Ok(client) = Client::from_default() else {
+    let Ok(mut client) = Client::from_default() else {
         return Ok(None);
     };
-    if ensure_daemon(&client).is_err() {
+    if ensure_daemon(&mut client).is_err() {
         return Ok(None);
     }
     match dial_links(client.socket_path(), workspace, path) {
@@ -680,14 +680,36 @@ enum DialedLinks {
     Skew(String),
 }
 
-/// Ensure a daemon answers on `client`'s socket: return early if one already pings, else
-/// auto-spawn it detached and poll until it binds or the timeout elapses. Errors The daemon
-/// could not be spawned (spawn-impossible), or it was spawned but never became ready within
-/// [`SPAWN_READY_TIMEOUT`].
-pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
+/// Ensure a daemon answers on `client`'s socket: return early if one already pings; else, when
+/// the registry PUBLISHED a different socket and that one answers, retarget `client` there; else
+/// auto-spawn a daemon detached and poll the DERIVED path — where the child, inheriting this
+/// environment, binds — until it answers or the timeout elapses, retargeting `client` on
+/// success. Errors The daemon could not be spawned (spawn-impossible), or it was spawned but
+/// never became ready within [`SPAWN_READY_TIMEOUT`].
+pub(crate) fn ensure_daemon(client: &mut Client) -> io::Result<()> {
     if client.ping().unwrap_or(false) {
         return Ok(());
     }
+    // BEFORE the spawn: the singleton lock is keyed on the cache root while the socket's base
+    // is env-derived, so the lock holder may be bound at a path this environment does not
+    // derive (`registry::server` § The published socket path). A spawn under it is refused
+    // "already running" by a child nobody hears, then the 5 s wait, then the degrade — the
+    // measured 2026-09-02 incident. So the published socket is dialled first.
+    // `Client::from_default` already redirected an ABSENT derived path there; this is the case
+    // where the derived socket EXISTS and does not answer (a SIGKILLed predecessor's file).
+    let published = registry::default_published_socket_path();
+    if let Some(path) = &published
+        && path != client.socket_path()
+    {
+        let holder = Client::new(path.clone());
+        if holder.ping().unwrap_or(false) {
+            *client = holder;
+            return Ok(());
+        }
+    }
+    // From here on a published socket, when there is one, was tried and did not answer —
+    // by the first ping (the client was already redirected to it) or by the one above.
+    let tried = published_tried(published.as_deref());
     // The drain-budget hazard, checked HERE because this is where it is LOUD.
     // The child's identical `debug_assert` (inside `RunningServer::start`) now
     // lands on a lane that is read back — `spawn_detached` gives it a file for
@@ -732,13 +754,18 @@ pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
     if let Err(error) = daemon::spawn_detached() {
         record_spawn_failure(format!(
             "The daemon could not be launched at all ({error}) — nothing was started, so nothing \
-             can answer until it is (check MERIDIAN_DAEMON_BIN if it is set)."
+             can answer until it is (check MERIDIAN_DAEMON_BIN if it is set).{tried}"
         ));
         return Err(error);
     }
+    // The child inherits this environment, so it binds the DERIVED path — whatever this client
+    // dialled so far (a published socket that died between the two pings, say). Poll where the
+    // child binds, and hand the caller that path once it answers.
+    let derived = registry::default_socket_path().map_or_else(|_| client.clone(), Client::new);
     let deadline = Instant::now() + SPAWN_READY_TIMEOUT;
     while Instant::now() < deadline {
-        if client.ping().unwrap_or(false) {
+        if derived.ping().unwrap_or(false) {
+            *client = derived;
             return Ok(());
         }
         std::thread::sleep(PING_POLL);
@@ -746,11 +773,26 @@ pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
     // The whole point of the lane: the caller degrades (or refuses) in a moment,
     // and now it can say WHY rather than presenting every startup failure alike
     // as "5 seconds slower" (card `auto-spawned-daemon-dies-silently`).
-    record_spawn_failure(never_bound(mark));
+    record_spawn_failure(format!("{}{tried}", never_bound(mark)));
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
         "auto-spawned daemon did not become ready",
     ))
+}
+
+/// One sentence for the degrade when the registry published a socket path this run tried
+/// before spawning and got no answer from: the operator's pointer to the daemon that holds the
+/// lock — or held it, since a `SIGKILL`ed daemon removes nothing — beside the teaching that
+/// already names the derived path. Empty when nothing was published, so the existing voice is
+/// unchanged byte for byte on every run that never met one.
+fn published_tried(published: Option<&Path>) -> String {
+    published.map_or_else(String::new, |path| {
+        format!(
+            " The socket the registry published ({}) was tried before the spawn and did not \
+             answer.",
+            path.display()
+        )
+    })
 }
 
 /// Dial one connection: `hello` binds and warms `workspace` (one round trip), then `links`
