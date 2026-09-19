@@ -453,6 +453,106 @@ fn a_slow_read_does_not_block_a_siblings_append_on_the_same_workspace() {
     );
 }
 
+/// **The concurrent-registration gate.** Two workspaces bound at the same
+/// instant, each queried on its own connection: an answer is that
+/// connection's OWN corpus, or a refusal. What it forbids is the third
+/// outcome — a well-formed table about a corpus the caller never named,
+/// which reads exactly like a complete answer and carries no marker that
+/// separates it from one.
+///
+/// The two corpora are deliberately DISTINGUISHABLE, disjoint path sets by
+/// construction. Two identical clones — the obvious way to write this test —
+/// would hide the defect completely: every misrouted answer would be
+/// row-for-row correct.
+///
+/// Rounds, not a single shot. The window is a registration race, so one
+/// aligned pair says nothing about the pair that loses it; each round binds a
+/// fresh workspace pair on the one daemon, which is the state a second
+/// registration actually lands in.
+///
+/// The answered tally is the instrument, asserted before the verdict: a run in
+/// which every round refused would satisfy the row assertions vacuously and
+/// look identical to a fix.
+#[test]
+fn concurrent_registration_never_answers_from_the_other_workspace() {
+    use std::sync::{Arc, Barrier};
+
+    const ROUNDS: usize = 8;
+
+    let tmp = TempDir::new().unwrap();
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let socket = server.socket_path().to_path_buf();
+
+    let mut answered = 0_usize;
+    let mut refused = 0_usize;
+
+    for round in 0..ROUNDS {
+        let alpha = tmp.path().join(format!("alpha-{round}"));
+        write(&alpha, "domains/one.md", "# One\n\nsee [[two]]\n");
+        write(&alpha, "domains/two.md", "# Two\n");
+        let beta = tmp.path().join(format!("beta-{round}"));
+        write(&beta, "notes/only.md", "# Only\n");
+
+        // Both connections open BEFORE the barrier, so the aligned event is
+        // the hello that binds — the registration — and not a connect.
+        let gate = Arc::new(Barrier::new(2));
+        let handles: Vec<_> = [alpha.clone(), beta.clone()]
+            .into_iter()
+            .map(|ws| {
+                let (socket, gate) = (socket.clone(), Arc::clone(&gate));
+                std::thread::spawn(move || {
+                    let mut conn = Conn::open(&socket);
+                    gate.wait();
+                    let hi = conn.hello_v3(&ws);
+                    let answer = conn.sql(1, "SELECT path FROM doc ORDER BY path");
+                    (ws, hi, answer)
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            let (ws, hi, answer) = handle.join().unwrap();
+            let who = ws.display().to_string();
+            assert_eq!(hi["ok"], true, "hello bound {who}: {hi}");
+            // Canonicalized: on macOS the temp root resolves through /private.
+            let bound = fs::canonicalize(&ws).unwrap();
+            assert_eq!(
+                hi["body"]["workspace"].as_str(),
+                bound.to_str(),
+                "hello named a workspace this caller did not: {hi}"
+            );
+
+            // A refusal is an acceptable answer — a caller told the corpus is
+            // warming can wait. Only a SERVED table is held to the corpus.
+            if answer["ok"] != true || !answer["body"]["error"].is_null() {
+                refused += 1;
+                continue;
+            }
+            answered += 1;
+            let expected = if ws == alpha {
+                json!([["domains/one.md"], ["domains/two.md"]])
+            } else {
+                json!([["notes/only.md"]])
+            };
+            assert_eq!(
+                answer["body"]["rows"], expected,
+                "round {round}: the answer served to {who} is not its own \
+                 corpus — a well-formed table about another workspace is the \
+                 defect this gate exists for: {answer}"
+            );
+        }
+    }
+
+    eprintln!("concurrent-registration gate: {answered} answered, {refused} refused");
+    assert!(
+        answered > 0,
+        "every one of the {ROUNDS} rounds refused on both sides, so no row \
+         assertion above ever ran — this gate cannot currently discriminate a \
+         misrouted answer from a correct one. Fix the instrument; do not relax \
+         the assertions."
+    );
+}
+
 /// The strict field wall: a `sql` frame carrying any field beyond `query`
 /// refuses `bad_request` — cwd and row bounds are host concerns.
 #[test]

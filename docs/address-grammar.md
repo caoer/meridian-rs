@@ -165,7 +165,7 @@ Which arguments may carry a `root:` spelling is this section's question.
 
 Members, a measured snapshot (the predicate is the authority; re-measure at the seam):
 
-- **Rooted:** `read`, `fingerprint`, `resolve`, `put --scope`; `run`, `walk`, `repair`, `realise`, `links`, `rules` (read side); `put` (write target), `rm`, `pin` (page position; the target is cross-root too); `script --files` (each entry `root:path`-capable).
+- **Rooted:** `read`, `fingerprint`, `resolve`, `put --scope`; `run`, `walk`, `repair`, `realise`, `links`, `rules` (read side); `put` (write target), `rm`, `pin` (page position; the target is cross-root too), `move` (both operands, which must name one root — a second root refuses `cross_root`, `move.md` §1); `script --files` (each entry `root:path`-capable).
 - **Not yet converted:** the preset lane (`unfold`, `reconcile`, `new`).
 - **Outside, no page named:** `arm --at` (a workspace-relative directory, `armed-plane.md`; keeps its head-colon refusal); `test --history`, `status --cwd` (explicit tree arguments); `test --corpus` (its spec is a fixture file read from disk with cwd/absolute semantics, and everything inside the spec resolves relative to the spec's own directory — not a corpus page; rule pages it names are document positions, § 9.1); `check`, `retire`, `skill`; `sql` (`--root` selects a workspace, not a page: CLI surface, not address law).
 
@@ -178,6 +178,8 @@ Members, a measured snapshot (the predicate is the authority; re-measure at the 
 **The mechanism is the workspace jail, and it is law.** One daemon serves many workspaces; `hello` pins the workspace exact-or-refuse, no ancestor walk (`registry.rs` `pin_declared`: *"a declaration never widens to an enclosing registered workspace"*), and the connection stays on it. A rooted door resolves the root, then dials that workspace. The wire carries only the rel half — the path with the root peeled off — and `wire-contract.md` § 1's `Path` law keeps its head-colon confinement arm.
 
 > **The one exception: the preset lane is not yet converted.** `unfold`, `reconcile` and `new` name a page (`new`'s def token: *"resolve def (presets/<KIND>.md or page path)"*) but write in-process with no daemon dial, so a rooted op would bypass the target tree's armed gates. A rooted ref there **refuses with a teaching** naming this reason and the remedy (run it from inside the target tree). Until the lane rides the daemon write path it stays cwd-determined — a lane awaiting conversion, not one correctly cwd-bound forever.
+>
+> `move` is in-process too and is not this exception: it has no daemon route to await (`wire-contract.md` §16 rules it above-wire), the armed plane fires on neither of its spellings, so the rooted spelling adds no bypass the ambient one lacks — it selects the workspace exactly as a `cd` would (`move.md` §8).
 
 **Convergence.** A client's multi-file `script` face states the same rule: *"Every files[] entry resolves through one root; that root is the workspace; in-program paths are relative to it"*. A program binds one declared root, so cross-root reads inside one program do not arise.
 

@@ -109,6 +109,10 @@ registry = { workspace = true }
 fs = { workspace = true }
 wire = { workspace = true }
 wire-serve = { workspace = true }
+# `mrd move` renders the plan types `wire_serve::relocate` returns
+# (`query::relocate` — docs/move.md §7); `query` is already in the graph via
+# `wire-serve`, so no new external crate enters and `cargo deny` is unchanged.
+query = { workspace = true }
 # The `mrd test --history` tier (U1.6): reconstruct historical changes off GIT,
 # which is where history lives by law (ZT 2026-08-03 — the engine keeps no
 # memory). `git::Repo::path_history` enumerates one row per (commit, path) and

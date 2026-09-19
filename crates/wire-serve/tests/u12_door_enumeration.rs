@@ -213,6 +213,19 @@ const DOORS: &[DoorPin] = &[
         label: "the attest path (ArmSession::commit, the arm act's disk edge)",
         class: Door::OutsideThisUnit,
     },
+    // The in-process move door (`docs/move.md` §8–§9): one candidate per
+    // referring page, composed from spellings the corpus already holds and
+    // passed through `stored_form_guard_lazy` in the same body before any
+    // byte lands. Outside this unit's files, so the enumeration records the
+    // door and leaves the discharge to `move.md`'s own gates (`move_cli`).
+    DoorPin {
+        file: "crates/wire-serve/src/relocate.rs",
+        door_fn: "relocate",
+        mint_fn: "relocate",
+        guard_fn: None,
+        label: "the move door (wire_serve::relocate::relocate, the rename plus reference rewrite)",
+        class: Door::OutsideThisUnit,
+    },
     // ---- wire-serve/watch.rs — the reaction feeder, a mint that is NOT a
     // door. `external_effects` needs each externally-changed document to carry
     // its own path (a HOOK matches `paths:` against it); the candidate is read
@@ -588,11 +601,14 @@ fn the_arithmetic_closes_and_no_class_is_empty() {
          parse (P4); with it gone `lock_write` is again the only lock door",
     );
     assert_eq!(
-        outside, 2,
-        "the run plane's candidate, and the attest path's disk edge \
+        outside, 3,
+        "the run plane's candidate, the attest path's disk edge \
          (ArmSession::commit — `mrd arm`'s byte-lander, joined 2026-08-15: the \
          arm act's own faults are its law, discharged before the session \
-         opens) — stated, not absorbed. WAS 1 before the attest path; WAS 3 \
+         opens), and the move door (`wire_serve::relocate::relocate`, `move.md` \
+         §8: one candidate per referring page, its own guard discharge measured \
+         by `move_cli`) — stated, not absorbed. WAS 2 before the move door; WAS \
+         1 before the attest path; WAS 3 \
          further back: G2's two genesis mints left this count with the verb \
          and the ledger it reset (journal retirement, U6), the same way the \
          two `realise --truth` doors left it with the flag itself \

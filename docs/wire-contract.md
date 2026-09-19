@@ -1141,7 +1141,7 @@ The downstream implementation plan is sequenced against this table, which is its
 | `fix` | Above-wire mutation policy over `dry:true` + per-file batches (§4.4) |
 | `debug` | Above-wire: rule dev tooling over §11 verdicts |
 | `attest` | Above-wire effects layer; dry seam + fm_key handles (§4.4) |
-| `mv` | Loudly alternativized: a composed consumer op — `links` (§4.6) + `fileToLinktext` emission algebra (the app's) + per-file splices; multi-file atomicity absent (§6.5) |
+| `mv` | Above-wire, shipped as `mrd move` (`move.md`): corpus move+link-rewrite is a composed consumer door — `links` (§4.6) decides what would break, the emission rule is the door's own (`move §4`), one whole-file replace per referring page; never a wire op, multi-file atomicity honestly absent (§6.5, `move §9`) |
 | `status` | Dead as op; liveness is the daemon's; the change feed is `sub` (§4.7) |
 | `watch` | Dead as CLI; Delta + `sub` + recovery law serve it (§7) |
 | `resolve` CLI | Matched: `resolve` op (§4.5) |
