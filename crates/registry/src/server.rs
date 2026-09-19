@@ -25,11 +25,11 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -44,16 +44,20 @@ use crate::protocol::{Request, Response};
 use crate::registry::{
     ColdGate, DOOR_COOKIE_TIMEOUT, PinOutcome, RegisterOutcome, Registry, ResolveOutcome,
 };
-use crate::ring::SubGuard;
+use crate::ring::{Detect, SubGuard};
 use crate::state::StateStore;
+use crate::wake::{self, Doorbell};
 use crate::{
     DEFAULT_IDLE_EXIT, DEFAULT_IDLE_REAP, DEFAULT_PREWARM_INTERVAL, DEFAULT_PREWARM_QUIET_MAX,
     DEFAULT_PUSH_WRITE_TIMEOUT, DEFAULT_REAP_INTERVAL, DEFAULT_SUB_IDLE_WRITE_TIMEOUT, now_secs,
 };
 
-/// How long the accept loop parks between non-blocking `accept` polls. Short
-/// enough that shutdown is prompt, long enough not to spin a core.
-const ACCEPT_POLL: Duration = Duration::from_millis(20);
+/// How long the accept loop backs off after `accept` itself fails (descriptor
+/// exhaustion, a listener error): the wait that precedes it keeps reporting
+/// the listener readable until the condition clears, so without this the
+/// loop would spin. An idle loop never sleeps here — it parks in the kernel
+/// ([`accept_loop`]).
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(20);
 
 /// An op slower than this is named on the daemon log with its `duration_us`.
 ///
@@ -78,14 +82,6 @@ const ACCEPT_POLL: Duration = Duration::from_millis(20);
 /// over a 47k-file corpus is 0.4 s, so this names the tail and stays quiet
 /// through ordinary work.
 pub(crate) const SLOW_OP_LOG: Duration = Duration::from_secs(5);
-
-/// The reaper's wake granularity: it sleeps in these steps so shutdown is
-/// prompt even when the reap interval is an hour.
-const REAP_TICK: Duration = Duration::from_millis(200);
-
-/// The pre-warm thread's wake granularity: it sleeps in these steps so shutdown
-/// stays prompt even when the pre-warm interval is configured long.
-const PREWARM_TICK: Duration = Duration::from_millis(100);
 
 /// The fixed subdirectory under the cache root that holds the state file and
 /// singleton lock (and, on the no-HOME fallback lane only, the socket).
@@ -413,10 +409,14 @@ pub fn default_socket_path() -> io::Result<PathBuf> {
 /// and the singleton lock. Drop or [`RunningServer::shutdown`] to stop it.
 #[derive(Debug)]
 pub struct RunningServer {
-    shutdown: Arc<AtomicBool>,
-    /// G11: raised by the reaper when the idle-exit horizon passes. A request,
-    /// not the act — see [`RunningServer::idle_exit_requested`].
-    exit_requested: Arc<AtomicBool>,
+    /// Rung once by [`RunningServer::stop`]. Every resident thread parks on
+    /// it beside the descriptors it serves, so a stop wakes them all at once
+    /// however long their intervals.
+    shutdown: Arc<Doorbell>,
+    /// G11: rung by the reaper when the idle-exit horizon passes. A request,
+    /// not the act — see [`RunningServer::idle_exit_requested`]; the host
+    /// process parks on it ([`RunningServer::idle_exit_fd`]).
+    exit_requested: Arc<Doorbell>,
     accept: Option<JoinHandle<()>>,
     reaper: Option<JoinHandle<()>>,
     prewarm: Option<JoinHandle<()>>,
@@ -514,8 +514,8 @@ impl RunningServer {
             );
         }
 
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let exit_requested = Arc::new(AtomicBool::new(false));
+        let shutdown = Arc::new(Doorbell::new()?);
+        let exit_requested = Arc::new(Doorbell::new()?);
         let accept = spawn_accept(
             listener,
             registry.clone(),
@@ -568,7 +568,16 @@ impl RunningServer {
     /// never acted on, by the thread that observes it.
     #[must_use]
     pub fn idle_exit_requested(&self) -> bool {
-        self.exit_requested.load(Ordering::SeqCst)
+        self.exit_requested.is_rung()
+    }
+
+    /// The descriptor that becomes readable once idle exit is requested — what
+    /// a host process parks on ([`wake::wait_readable`], beside its own signal
+    /// descriptor) instead of polling
+    /// [`idle_exit_requested`](Self::idle_exit_requested) on a tick.
+    #[must_use]
+    pub fn idle_exit_fd(&self) -> BorrowedFd<'_> {
+        self.exit_requested.fd()
     }
 
     /// The shared registry, for in-process inspection and driving the reaper
@@ -585,7 +594,7 @@ impl RunningServer {
     }
 
     fn stop(&mut self) {
-        if self.shutdown.swap(true, Ordering::SeqCst) {
+        if self.shutdown.ring() {
             return; // already stopped
         }
         if let Some(handle) = self.accept.take() {
@@ -666,12 +675,12 @@ struct PushDeadlines {
     idle_write: Duration,
 }
 
-/// Spawn the accept loop: non-blocking `accept`, one detached thread per
-/// connection, polling the shutdown flag between idle polls.
+/// Spawn the accept loop: one detached thread per connection, parked on the
+/// listener and the shutdown bell in between.
 fn spawn_accept(
     listener: UnixListener,
     registry: Arc<Registry>,
-    shutdown: Arc<AtomicBool>,
+    shutdown: Arc<Doorbell>,
     deadlines: PushDeadlines,
     build_sha: Option<Arc<str>>,
 ) -> JoinHandle<()> {
@@ -701,6 +710,13 @@ fn spawn_accept(
 /// The accept loop proper, generic over how an accepted connection is
 /// dispatched.
 ///
+/// **At rest it makes no system call.** Between connections the thread parks
+/// in `poll(2)` on the listener and the shutdown bell; a pending connection
+/// or the ring is what wakes it, never a tick. The listener stays
+/// non-blocking so a wake the bell caused falls through `accept`'s
+/// `WouldBlock` instead of parking inside `accept` where the bell cannot
+/// reach it.
+///
 /// **Fault containment (R2/S2):** a dispatch failure (thread exhaustion) drops
 /// that one connection and keeps accepting. `thread::spawn` panics on a failed
 /// spawn, and that panic would unwind this loop while the daemon still holds
@@ -708,10 +724,20 @@ fn spawn_accept(
 /// (`thread::Builder`) and its error is a `continue`.
 fn accept_loop(
     listener: &UnixListener,
-    shutdown: &AtomicBool,
+    shutdown: &Doorbell,
     dispatch: impl Fn(UnixStream) -> io::Result<()>,
 ) {
-    loop {
+    while !shutdown.is_rung() {
+        match wake::wait_readable(&[listener.as_fd(), shutdown.fd()], None) {
+            Ok(ready) if ready[0] => {}
+            // The bell, or nothing pending after all: the loop head decides.
+            Ok(_) => continue,
+            Err(e) => {
+                eprintln!("registry: accept wait failed ({e})");
+                thread::sleep(ACCEPT_ERROR_BACKOFF);
+                continue;
+            }
+        }
         match listener.accept() {
             Ok((stream, _)) => {
                 // The accepted stream inherits the listener's non-blocking
@@ -727,43 +753,36 @@ fn accept_loop(
                     );
                 }
             }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                if shutdown.load(Ordering::SeqCst) {
-                    return;
-                }
-                thread::sleep(ACCEPT_POLL);
-            }
+            // Readiness without a connection behind it: park again.
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
             Err(e) => {
-                if shutdown.load(Ordering::SeqCst) {
+                if shutdown.is_rung() {
                     return;
                 }
                 eprintln!("registry: accept error ({e})");
-                thread::sleep(ACCEPT_POLL);
+                thread::sleep(ACCEPT_ERROR_BACKOFF);
             }
         }
     }
 }
 
-/// Spawn the reaper: wake every [`REAP_TICK`], and once `reap_interval` has
-/// elapsed drop idle entries. Exits promptly on the shutdown flag.
+/// Spawn the reaper: park for `reap_interval`, then drop idle entries. The
+/// shutdown bell ends the park at once, however long the interval, so the
+/// thread never ticks to stay responsive.
 fn spawn_reaper(
     registry: Arc<Registry>,
-    shutdown: Arc<AtomicBool>,
+    shutdown: Arc<Doorbell>,
     idle_threshold: Duration,
     reap_interval: Duration,
     idle_exit: Option<Duration>,
-    exit_requested: Arc<AtomicBool>,
+    exit_requested: Arc<Doorbell>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let threshold_secs = idle_threshold.as_secs();
-        let mut elapsed = Duration::ZERO;
-        while !shutdown.load(Ordering::SeqCst) {
-            thread::sleep(REAP_TICK);
-            elapsed += REAP_TICK;
-            if elapsed < reap_interval {
-                continue;
+        loop {
+            if shutdown.wait(reap_interval) {
+                return;
             }
-            elapsed = Duration::ZERO;
             let reaped = registry.reap(now_secs(), threshold_secs);
             if !reaped.is_empty() {
                 eprintln!("registry: idle-reaped {} workspace(s)", reaped.len());
@@ -786,7 +805,7 @@ fn spawn_reaper(
                     eprintln!(
                         "registry: no client request in {quiet_for}s — shutting down (a client that needs the daemon auto-spawns one)"
                     );
-                    exit_requested.store(true, Ordering::SeqCst);
+                    exit_requested.ring();
                     return;
                 }
             }
@@ -796,24 +815,20 @@ fn spawn_reaper(
 
 /// Pre-warm thread (P2): every `interval`, sweep warm workspaces so file
 /// changes parse off the query path. Latency only; correctness is fingerprint.
-/// Wakes every [`PREWARM_TICK`] for prompt shutdown.
+/// Parks for the whole delay; the shutdown bell ends the park at once.
 fn spawn_prewarm(
     registry: Arc<Registry>,
-    shutdown: Arc<AtomicBool>,
+    shutdown: Arc<Doorbell>,
     interval: Duration,
     quiet_max: Duration,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        let mut elapsed = Duration::ZERO;
         let mut delay = interval;
         let mut seen_requests = registry.request_count();
-        while !shutdown.load(Ordering::SeqCst) {
-            thread::sleep(PREWARM_TICK);
-            elapsed += PREWARM_TICK;
-            if elapsed < delay {
-                continue;
+        loop {
+            if shutdown.wait(delay) {
+                return;
             }
-            elapsed = Duration::ZERO;
             let rebuilt = registry.prewarm();
             if !rebuilt.is_empty() {
                 eprintln!(
@@ -850,7 +865,7 @@ fn next_prewarm_delay(
 fn serve_conn(
     stream: &UnixStream,
     registry: &Registry,
-    shutdown: &AtomicBool,
+    shutdown: &Doorbell,
     deadlines: PushDeadlines,
     build_sha: Option<&str>,
 ) -> io::Result<()> {
@@ -989,14 +1004,24 @@ pub fn in_process_registry(config: &Config) -> io::Result<Registry> {
     Ok(Registry::new(store, config.cache_root.clone(), entries))
 }
 
-/// How often a subscriber checks for undelivered frames.
-///
-/// Shorter than [`crate::ring::DETECT_CADENCE`]: noticing a frame (mutex + seq
-/// compare) is cheaper than finding one (corpus fold), so N subscribers share
-/// folds yet each delivers promptly.
-const PUSH_TICK: Duration = Duration::from_millis(50);
+/// The floor under the push plane's peer probe. The probe reads the socket
+/// only after the wait reported it readable, so the read answers at once (EOF
+/// or bytes) and this timeout is never spent; it guards a spurious readiness
+/// report from parking the subscriber's thread, nothing more.
+const PROBE_READ_TIMEOUT: Duration = Duration::from_millis(50);
 
-/// Push channel: detect, deliver undelivered frames, repeat.
+/// Push channel: detect, deliver undelivered frames, park, repeat.
+///
+/// **The park has no tick.** Between rounds the thread waits in `poll(2)` on
+/// three descriptors and one clock: the peer's socket (its EOF), the shutdown
+/// bell, the subscriber's [`wake::Waker`] (a frame recorded on the ring, a
+/// kernel event on the workspace, a sibling's detect that emitted), and the
+/// next detect the ring's cadence owes ([`crate::ring::WorkspaceRing::next_detect_in`]
+/// — the coalescing window while the feed vouches nothing, the
+/// [`crate::ring::DETECT_FLOOR_CADENCE`] backstop while it vouches quiet, the
+/// [`crate::ring::DETECT_CADENCE`] poll only on a workspace with no live
+/// feed). A quiet subscribed workspace therefore wakes its subscriber once
+/// per floor pass, not twenty times a second.
 ///
 /// Ends on client disconnect (broken pipe is normal), daemon shutdown, or drop.
 /// The [`SubGuard`](crate::ring::SubGuard) arrives with the accepted `sub`
@@ -1006,8 +1031,9 @@ const PUSH_TICK: Duration = Duration::from_millis(50);
 ///
 /// An armed sub holds the idle-exit clock open (R2/S3) and parks an OS thread,
 /// so three signals keep it mortal:
-/// - **peer closed** — the probe read ([`peer_closed`]) sees EOF within one
-///   [`PUSH_TICK`], the only death signal a quiet workspace ever produces;
+/// - **peer closed** — the wait reports the peer's descriptor readable the
+///   instant the kernel closes it, and the probe read ([`peer_closed`]) then
+///   sees EOF, the only death signal a quiet workspace ever produces;
 /// - **peer wedged** — `deadlines.write` bounds a blocked write once the
 ///   socket buffers fill, so a subscriber that stopped draining is dropped;
 /// - **peer wedged on a quiet workspace** (R2b) — neither of the above can fire
@@ -1028,7 +1054,7 @@ fn push_loop(
     rev: Rev,
     from_seq: u64,
     guard: SubGuard,
-    shutdown: &AtomicBool,
+    shutdown: &Doorbell,
     deadlines: PushDeadlines,
 ) -> io::Result<()> {
     // The guard's ring is the epoch the `sub` was acked on — and the claim has
@@ -1040,50 +1066,69 @@ fn push_loop(
     // redials, and resyncs by root (§7.1).
     writer.set_write_timeout(Some(deadlines.write))?;
     let mut probe = writer.try_clone()?;
-    // The probe read parks for the tick, so it replaces the sleep.
-    probe.set_read_timeout(Some(PUSH_TICK))?;
+    probe.set_read_timeout(Some(PROBE_READ_TIMEOUT))?;
+    // This subscriber's wake: registered before the first look, so no frame
+    // or event can land in a gap between looking and parking.
+    let waker = ring.wakers().register()?;
     let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
     let mut delivered = from_seq;
     // R2b: zero frames written for this long ⇒ drop. Any frame resets it.
     let mut last_write = Instant::now();
-    while !shutdown.load(Ordering::SeqCst) {
+    while !shutdown.is_rung() {
+        // Drain BEFORE looking, so a wake that lands during the look is kept
+        // for the next round instead of lost.
+        waker.drain();
         // Detection failure never ends the sub; log and retry next cycle.
-        if let Err(e) = ring.detect(&ws_root, registry) {
-            eprintln!("registry: watch reconcile ({}): {e:?}", ws.display());
-        }
+        let detected = match ring.detect_outcome(&ws_root, registry) {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                eprintln!("registry: watch reconcile ({}): {e:?}", ws.display());
+                Detect::Failed
+            }
+        };
         for frame in ring.frames_after(delivered) {
             wire_serve::ring::write_frame(writer, &frame, rev == Rev::V3)?;
             delivered = frame.delta.seq;
             last_write = Instant::now();
         }
         writer.flush()?;
-        if peer_closed(&mut probe) {
-            return Ok(());
-        }
         // Drops between frames: nothing was written, so a live client redials
         // with its cursor and catches up from an empty ring.
-        if last_write.elapsed() >= deadlines.idle_write {
+        let Some(idle_left) = deadlines.idle_write.checked_sub(last_write.elapsed()) else {
+            return Ok(());
+        };
+        let timeout = ring
+            .next_detect_in(detected, registry.feed_is_live(ws))
+            .min(idle_left);
+        let ready =
+            match wake::wait_readable(&[probe.as_fd(), shutdown.fd(), waker.fd()], Some(timeout)) {
+                Ok(ready) => ready,
+                Err(e) => {
+                    eprintln!("registry: push wait ({}): {e}", ws.display());
+                    thread::sleep(timeout.min(PROBE_READ_TIMEOUT));
+                    continue;
+                }
+            };
+        if ready[0] && peer_closed(&mut probe) {
             return Ok(());
         }
     }
     Ok(())
 }
 
-/// Has the push peer gone away? Parks up to the socket's read timeout, so this
-/// is also the loop's tick.
+/// Has the push peer gone away? Called only once the wait reported the probe
+/// readable, so the read answers at once.
 ///
 /// The push plane is one-way by construction (`serve_conn` never returns to the
 /// request loop), so a readable zero is EOF, not data — the only death signal a
 /// quiet workspace produces. Bytes are a client speaking on a channel it does
-/// not own: not a death signal, so the sub survives.
+/// not own: not a death signal, so the sub survives; they are consumed so the
+/// descriptor reads quiet again and the next park holds.
 fn peer_closed(probe: &mut UnixStream) -> bool {
-    let mut byte = [0u8; 1];
-    match probe.read(&mut byte) {
+    let mut sink = [0u8; 64];
+    match probe.read(&mut sink) {
         Ok(0) => true,
-        Ok(_) => {
-            thread::sleep(PUSH_TICK);
-            false
-        }
+        Ok(_) => false,
         Err(e) => !matches!(
             e.kind(),
             io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
@@ -2185,11 +2230,11 @@ fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
 /// down with it.
 #[cfg(test)]
 mod accept_containment_tests {
-    use super::accept_loop;
+    use super::{Doorbell, accept_loop};
     use std::io;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -2203,7 +2248,7 @@ mod accept_containment_tests {
         let listener = UnixListener::bind(&socket).unwrap();
         listener.set_nonblocking(true).unwrap();
 
-        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown = Arc::new(Doorbell::new().unwrap());
         let seen = Arc::new(AtomicUsize::new(0));
         let loop_shutdown = shutdown.clone();
         let loop_seen = seen.clone();
@@ -2230,7 +2275,7 @@ mod accept_containment_tests {
             );
         }
 
-        shutdown.store(true, Ordering::SeqCst);
+        shutdown.ring();
         accept
             .join()
             .expect("the accept loop survived every dispatch failure");
