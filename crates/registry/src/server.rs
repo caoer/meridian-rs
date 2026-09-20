@@ -93,6 +93,27 @@ const ACCEPT_POLL: Duration = Duration::from_millis(20);
 /// through ordinary work.
 pub(crate) const SLOW_OP_LOG: Duration = Duration::from_secs(5);
 
+/// The engine's own trail for a slow op. The frame carrying the measured
+/// number reaches a client that may already have given up, so the log is what
+/// survives an incident. `elapsed` is total time in dispatch: a long holder
+/// and a waiter refused behind it are both slow ops and both print here, so
+/// the line reports the duration it measured and leaves attribution to the
+/// reader. ONE printer for every serve path — the generic dispatch and the
+/// § A.7 `script` / § A.8 `run` lines routed around it at `handle_line` — so
+/// no op class is invisible to the trail (a `run` fire held 10 s by a
+/// contended memo left no engine-side line until it printed here too).
+pub(crate) fn log_slow_op(op: &str, elapsed: Duration, attached: Option<&Path>) {
+    if elapsed < SLOW_OP_LOG {
+        return;
+    }
+    let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+    eprintln!(
+        "registry: slow op {op} duration_us={duration_us} on {} — total time in \
+         dispatch, any wait for a contended resource included",
+        attached.map_or_else(|| "<unattached>".to_string(), |p| p.display().to_string()),
+    );
+}
+
 /// The reaper's wake granularity: it sleeps in these steps so shutdown is
 /// prompt even when the reap interval is an hour.
 const REAP_TICK: Duration = Duration::from_millis(200);
@@ -1596,21 +1617,11 @@ fn serve_wire(
             let body = dispatch_read(registry, attached, armed, id, op, rev == Rev::V3);
             let elapsed = started.elapsed();
             let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-            // The engine's own trail for a slow op. The frame carrying this
-            // number reaches a client that may already have given up, so the
-            // log is what survives an incident. `duration_us` is total time in
-            // dispatch: a long holder and a waiter refused behind it are both
-            // slow ops and both print here, so the line reports the duration
-            // it measured and leaves attribution to the reader.
-            if elapsed >= SLOW_OP_LOG {
-                eprintln!(
-                    "registry: slow op {} duration_us={duration_us} on {} — total time in \
-                     dispatch, any wait for a contended resource included",
-                    obj.get("op").and_then(Value::as_str).unwrap_or("?"),
-                    attached
-                        .map_or_else(|| "<unattached>".to_string(), |p| p.display().to_string()),
-                );
-            }
+            log_slow_op(
+                obj.get("op").and_then(Value::as_str).unwrap_or("?"),
+                elapsed,
+                attached,
+            );
             (body, Some(duration_us))
         }
         Err(error) => (Err(error), None),
