@@ -40,10 +40,16 @@ fn header(workspace: &Path, fingerprint: &str) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn checksum(tag: u8, digest: &[u8; 32], bytes: &[u8]) -> [u8; 32] {
+fn record_hasher(tag: u8, digest: &[u8; 32]) -> blake3::Hasher {
     let mut hash = blake3::Hasher::new();
+    hash.update(crate::GENERATION.as_bytes());
     hash.update(&[tag]);
     hash.update(digest);
+    hash
+}
+
+fn checksum(tag: u8, digest: &[u8; 32], bytes: &[u8]) -> [u8; 32] {
+    let mut hash = record_hasher(tag, digest);
     hash.update(bytes);
     *hash.finalize().as_bytes()
 }
@@ -57,9 +63,7 @@ fn read_payload(
     digest: &[u8; 32],
     retain: bool,
 ) -> io::Result<(Vec<u8>, [u8; 32])> {
-    let mut hash = blake3::Hasher::new();
-    hash.update(&[tag]);
-    hash.update(digest);
+    let mut hash = record_hasher(tag, digest);
     let mut bytes = Vec::new();
     let mut buffer = [0; 16 * 1024];
     let mut remaining = len;

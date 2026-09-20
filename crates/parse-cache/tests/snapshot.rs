@@ -3,6 +3,34 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[test]
+fn an_unbound_record_is_rejected_even_under_a_current_generation_header() {
+    let (mut bytes, fresh) = encoded();
+    let wanted = model::leaf_digest(b"# Unique A\n");
+    let mut at = b"mrd-parsed-v1\n".len() + 64 + 32 + 8 + "b3c:test".len() + 32;
+    while bytes[at] != 255 {
+        let len = usize::try_from(u64::from_le_bytes(
+            bytes[at + 33..at + 41].try_into().unwrap(),
+        ))
+        .unwrap();
+        if bytes[at + 1..at + 33] == wanted {
+            // The earlier unbound checksum cannot establish which parser
+            // produced this representation, even when its raw digest matches.
+            let mut old = blake3::Hasher::new();
+            old.update(&bytes[at..at + 33]);
+            old.update(&bytes[at + 73..at + 73 + len]);
+            bytes[at + 41..at + 73].copy_from_slice(old.finalize().as_bytes());
+            break;
+        }
+        at += 73 + len;
+    }
+    let restored =
+        parse_cache::snapshot::read(bytes.as_slice(), Path::new("/workspace"), &fresh).unwrap();
+    assert!(!restored.complete);
+    assert!(!restored.docs.contains_key("a.md"));
+    assert!(restored.docs.contains_key("b.md"));
+}
+
+#[test]
 fn a_maximum_unwanted_record_is_streamed_in_small_reads() {
     use std::io::{self, Read};
     struct SmallReads<R>(R);

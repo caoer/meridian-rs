@@ -960,7 +960,9 @@ that boundary; already verified records remain usable. Bound all allocations
 by the available record bytes and a cache-entry size ceiling. Large documents
 that cannot be cached still parse and serve normally.
 
-The generation and checksum bind the derived representation produced by this
+Each record's checksum includes the semantic generation, type, content digest,
+and payload, so a verified prefix cannot adopt an old-generation record under
+a different header. The generation and checksum bind the derived representation produced by this
 engine; the cache is private local derived data, not an authenticated remote
 input. Restoring does not re-run the parser to prove every semantic field.
 
