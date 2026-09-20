@@ -2384,6 +2384,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "parse-cache"
+version = "1.2.0"
+dependencies = [
+ "blake3",
+ "model",
+ "syntax",
+ "toml",
+]
+
+[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2879,6 +2889,7 @@ dependencies = [
  "lock",
  "model",
  "notify",
+ "parse-cache",
  "policy",
  "query",
  "receipt",

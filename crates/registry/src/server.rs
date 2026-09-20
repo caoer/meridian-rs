@@ -542,6 +542,7 @@ pub struct RunningServer {
     accept: Option<JoinHandle<()>>,
     reaper: Option<JoinHandle<()>>,
     prewarm: Option<JoinHandle<()>>,
+    saver: Option<JoinHandle<()>>,
     registry: Arc<Registry>,
     socket_path: PathBuf,
     /// The published socket pointer this daemon wrote (module header § Socket
@@ -695,6 +696,7 @@ impl RunningServer {
             config.prewarm_interval,
             config.prewarm_quiet_max,
         );
+        let saver = spawn_saver(registry.clone(), shutdown.clone());
 
         Ok(RunningServer {
             shutdown,
@@ -702,6 +704,7 @@ impl RunningServer {
             accept: Some(accept),
             reaper: Some(reaper),
             prewarm: Some(prewarm),
+            saver: Some(saver),
             registry,
             socket_path: config.socket_path,
             socket_pointer,
@@ -751,6 +754,9 @@ impl RunningServer {
             let _ = handle.join();
         }
         if let Some(handle) = self.prewarm.take() {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.saver.take() {
             let _ = handle.join();
         }
         // Drawer-rebuild threads are fire-and-forget (`cold_gate` spawns them
@@ -1006,6 +1012,25 @@ fn spawn_prewarm(
             let quiet = rebuilt.is_empty() && requests == seen_requests;
             delay = next_prewarm_delay(delay, interval, quiet_max, quiet);
             seen_requests = requests;
+        }
+    })
+}
+
+/// One bounded saver: queued work is a workspace identity, never an engine
+/// pin. Polling is short for shutdown; the small checkpoint cadence is 60s.
+fn spawn_saver(registry: Arc<Registry>, shutdown: Arc<AtomicBool>) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let mut checkpoint_at = Instant::now();
+        while !shutdown.load(Ordering::SeqCst) {
+            thread::sleep(PREWARM_TICK);
+            if shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+            registry.save_pending_parsed();
+            if checkpoint_at.elapsed() >= Duration::from_mins(1) {
+                registry.save_observation_checkpoints();
+                checkpoint_at = Instant::now();
+            }
         }
     })
 }

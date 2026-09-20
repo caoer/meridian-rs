@@ -28,6 +28,10 @@ use crate::now_secs;
 use crate::protocol::{DenyKind, WorkspaceEntry};
 use crate::state::StateStore;
 
+#[cfg(test)]
+#[path = "durable_cache_tests.rs"]
+mod durable_cache_tests;
+
 /// The outcome of a [`Registry::register`] call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegisterOutcome {
@@ -192,6 +196,13 @@ pub struct Registry {
     /// anchored, the labeled re-baseline if it did not). The card's published
     /// counters; empty for a workspace that started genuinely cold.
     checkpoints: Mutex<HashMap<PathBuf, crate::checkpoint::CheckpointReceipt>>,
+    /// A single saver bounds retained engine pins to one. This gate is never
+    /// held by a read, hook fire, or currency observation.
+    persistence_gate: Mutex<()>,
+    saved_parse: Mutex<HashMap<PathBuf, String>>,
+    saved_observation: Mutex<HashMap<PathBuf, [u8; 32]>>,
+    /// Queue identities only, never strong references to evictable engines.
+    pending_parse: Mutex<std::collections::BTreeMap<PathBuf, Instant>>,
     /// § A.5 mount-table cache. Machine-scoped (not per-workspace): the
     /// binding file lives outside every workspace's hash domain, so no
     /// engine or ring can carry it.
@@ -912,6 +923,10 @@ impl Registry {
             // Cold: no restore has run; each workspace's first resident memo
             // records its own receipt.
             checkpoints: Mutex::new(HashMap::new()),
+            persistence_gate: Mutex::new(()),
+            saved_parse: Mutex::new(HashMap::new()),
+            saved_observation: Mutex::new(HashMap::new()),
+            pending_parse: Mutex::new(std::collections::BTreeMap::new()),
             requests: AtomicU64::new(0),
             // Clock starts at birth so idle-exit can age an unused daemon.
             last_request: AtomicU64::new(now_secs()),
@@ -1226,6 +1241,32 @@ impl Registry {
         !timed.timed_out()
     }
 
+    fn restore_parsed_prior(
+        &self,
+        workspace: &Path,
+        cache: &Mutex<fs::DomainCache>,
+    ) -> Option<parse_cache::snapshot::Restored> {
+        let fresh = cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .leaf_digests();
+        let prior = crate::parsed_cache::restore(&self.cache_root, workspace, &fresh);
+        let mut saved = self
+            .saved_parse
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(prior) = &prior
+            && prior.complete
+        {
+            saved.insert(workspace.to_path_buf(), prior.fingerprint.clone());
+        } else {
+            // A corrupt/deleted snapshot must be healed even if its old
+            // fingerprint was recorded by an earlier save in this process.
+            saved.remove(workspace);
+        }
+        prior
+    }
+
     /// Warm the resident engine for `workspace`; rebuild only when the corpus
     /// content hash changed (U1). Reuse key is the content hash (R5), not
     /// workspace-identity Merkle. `Reused` ⇒ zero parses. Fingerprint read
@@ -1331,7 +1372,17 @@ impl Registry {
             // (movers only — see the stamp law above); cold → the one
             // whole-corpus parse site. Leaf-set clones happen on this rebuild
             // path only, never per currency pass.
-            let engine = if let Some(prior) = prior {
+            let cold = prior.is_none();
+            let restored = if cold {
+                self.restore_parsed_prior(&canonical, &cache)
+            } else {
+                None
+            };
+            let previous = prior
+                .as_ref()
+                .map(|p| (&p.docs, &p.unserved, &p.leaves))
+                .or_else(|| restored.as_ref().map(|p| (&p.docs, &p.unserved, &p.leaves)));
+            let engine = if let Some((docs, unserved, leaves)) = previous {
                 // Snapshot the leaf set AND the root minted for exactly that
                 // set under ONE lock hold (merkle-spec §6.8): when the
                 // incremental pass builds the very set, its stamp is this
@@ -1341,14 +1392,8 @@ impl Registry {
                     let minted = memo.overlay_root().ok();
                     (memo.leaf_digests(), minted)
                 };
-                let update = fs::update_corpus(
-                    &root,
-                    &prior.docs,
-                    &prior.unserved,
-                    &prior.leaves,
-                    &fresh,
-                    fresh_root.as_ref(),
-                )?;
+                let update =
+                    fs::update_corpus(&root, docs, unserved, leaves, &fresh, fresh_root.as_ref())?;
                 parsed = Some(update.parsed);
                 WorkspaceEngine {
                     index: update.index,
@@ -1369,6 +1414,8 @@ impl Registry {
                     leaves,
                 }
             };
+            drop(prior);
+            drop(restored);
             let docs_parsed = parsed.unwrap_or(0);
 
             // Test-only: park here when the gate is armed (see the field docs).
@@ -1395,6 +1442,13 @@ impl Registry {
                 }
                 if resident == witness {
                     engines.insert(canonical.clone(), Arc::new(engine));
+                    drop(engines);
+                    if cold {
+                        self.pending_parse
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .insert(canonical.clone(), Instant::now());
+                    }
                     return Ok(WarmOutcome::Built { docs: docs_parsed });
                 }
             }
@@ -1977,29 +2031,169 @@ impl Registry {
     /// only re-replays (the overlay is idempotent), over-claiming would skip a
     /// change.
     pub(crate) fn save_checkpoints(&self) {
-        let caches: Vec<(PathBuf, Arc<Mutex<fs::DomainCache>>)> = {
-            let caches = self
-                .domain_caches
+        self.save_resident(true);
+    }
+
+    fn save_resident(&self, parsed: bool) {
+        let workspaces: Vec<_> = self
+            .domain_caches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect();
+        for workspace in workspaces {
+            self.persist_workspace(&workspace, parsed);
+        }
+    }
+
+    /// One saver, no request locks over I/O, and no queued engine references.
+    /// A busy memo or failed write costs future recovery work, never service.
+    fn persist_workspace(&self, workspace: &Path, parsed: bool) -> bool {
+        let Ok(_save) = self.persistence_gate.try_lock() else {
+            return false;
+        };
+        if !self
+            .inner
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(workspace)
+        {
+            return true; // unregister won; never recreate its payload
+        }
+        let mut saved = true;
+        let cache = self
+            .domain_caches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(workspace)
+            .cloned();
+        if let Some(cache) = cache {
+            let (instance, seq) = self
+                .rings
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(workspace)
+                .map_or_else(|| (String::new(), 0), |ring| (ring.instance(), ring.seq()));
+            let snapshot = if let Ok(mut memo) = cache.try_lock() {
+                fs::checkpoint::prepare(
+                    &mut memo,
+                    &fs::checkpoint::SaveIdentity {
+                        workspace: workspace.to_path_buf(),
+                        parse_cache: cache::SCHEMA_SALT.to_owned(),
+                        journal_instance: instance,
+                        journal_seq: seq,
+                    },
+                )
+            } else {
+                saved = false;
+                None
+            };
+            // Encoding and writing happen after the memo guard has dropped.
+            if let Some(snapshot) = snapshot {
+                let bytes = snapshot.encode();
+                let digest = *blake3::hash(&bytes).as_bytes();
+                let unchanged = self
+                    .saved_observation
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(workspace)
+                    == Some(&digest);
+                if !unchanged || !crate::checkpoint::path(&self.cache_root, workspace).is_file() {
+                    if crate::checkpoint::commit(&self.cache_root, workspace, &bytes) {
+                        self.saved_observation
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .insert(workspace.to_path_buf(), digest);
+                    } else {
+                        eprintln!(
+                            "checkpoint: save incomplete for {}; recovery may need source reads",
+                            workspace.display()
+                        );
+                        saved = false;
+                    }
+                }
+            }
+        }
+        if parsed && let Some(engine) = self.engine_snapshot(workspace) {
+            let unchanged = self
+                .saved_parse
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(workspace)
+                == Some(&engine.at_fingerprint.0);
+            if !unchanged || !crate::parsed_cache::path(&self.cache_root, workspace).is_file() {
+                match crate::parsed_cache::save(&self.cache_root, workspace, &engine) {
+                    Ok(count) => {
+                        self.saved_parse
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .insert(workspace.to_path_buf(), engine.at_fingerprint.0.clone());
+                        eprintln!(
+                            "parse-cache: saved {count} document(s) for {}",
+                            workspace.display()
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "parse-cache: save incomplete for {} ({e}); recovery may need source parsing",
+                            workspace.display()
+                        );
+                        saved = false;
+                    }
+                }
+            }
+        }
+        saved
+    }
+
+    /// Called by the single background saver. Failed opportunities retry after
+    /// a minute; identities only are retained, so eviction still releases RAM.
+    pub(crate) fn save_pending_parsed(&self) {
+        let now = Instant::now();
+        let due: Vec<_> = {
+            let mut queue = self
+                .pending_parse
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            caches
+            let due: Vec<_> = queue
                 .iter()
-                .map(|(key, cache)| (key.clone(), Arc::clone(cache)))
-                .collect()
+                .filter(|(_, at)| **at <= now)
+                .take(1)
+                .map(|(ws, _)| ws.clone())
+                .collect();
+            for ws in &due {
+                queue.remove(ws);
+            }
+            due
         };
-        for (workspace, cache) in caches {
-            let journal = {
-                let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
-                rings
-                    .get(&workspace)
-                    .map(|ring| (ring.instance(), ring.seq()))
-            };
-            // No ring is no journal: the cursor is recorded as unanchorable
-            // rather than invented, so a later restore takes the evidence arm
-            // instead of replaying against a numbering that never existed.
-            let (instance, seq) = journal.unwrap_or_else(|| (String::new(), 0));
-            let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
-            crate::checkpoint::save(&self.cache_root, &workspace, &mut memo, instance, seq);
+        for workspace in due {
+            if !self.persist_workspace(&workspace, true) {
+                self.pending_parse
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .entry(workspace)
+                    .or_insert(now + Duration::from_mins(1));
+            }
+        }
+    }
+
+    /// The small observation checkpoint is eligible for periodic coalescing.
+    /// Parsed corpora are NOT rewritten by this timer.
+    pub(crate) fn save_observation_checkpoints(&self) {
+        self.save_resident(false);
+        let workspaces: Vec<_> = self
+            .engines
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect();
+        for workspace in workspaces {
+            let dir = cache::parsed_drawer_dir(&self.cache_root, &workspace);
+            if matches!(cache::probe(&dir), cache::Probe::Hit(_)) {
+                let _ = cache::stamp_last_use(&dir);
+            }
         }
     }
 
@@ -2253,6 +2447,12 @@ impl Registry {
     /// on the path as given — so a vanished workspace can still be unregistered
     /// by the canonical path a `list` reported.
     pub fn unregister(&self, path: &Path) -> bool {
+        // Serialize removal with the saver so no late rename can recreate an
+        // unregistered workspace's payload. No registry map lock is held here.
+        let _save = self
+            .persistence_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let key = workspace::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let removed = {
             let mut map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
@@ -2282,6 +2482,19 @@ impl Registry {
         // here too, or a re-register would adopt an index nothing has covered
         // the gap for.
         crate::checkpoint::discard(&self.cache_root, &key);
+        crate::parsed_cache::discard(&self.cache_root, &key);
+        self.pending_parse
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
+        self.saved_parse
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
+        self.saved_observation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
         // Kernel-stream release (the feed's Drop) runs outside every map lock.
         drop(feed);
         drop(cache);
@@ -2429,6 +2642,39 @@ impl Registry {
         demoted.into_iter().collect()
     }
 
+    fn save_eviction_candidates(&self, resident: &[(PathBuf, u64)], over: u64) {
+        // Save likely victims BEFORE the decide-and-remove critical section.
+        // Re-evaluate LRU/subscription state below after I/O, so a subscriber
+        // arriving during a slow save retains the existing exemption.
+        let opportunities = {
+            let map = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+            let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut preview = resident.to_vec();
+            preview.sort_by_key(|(key, _)| map.get(key).map_or(0, Slot::last_use));
+            let mut left = over;
+            let mut selected = Vec::new();
+            for (key, estimated) in preview {
+                if left == 0 {
+                    break;
+                }
+                if rings.get(&key).is_some_and(|ring| ring.has_subscribers()) {
+                    continue;
+                }
+                left = left.saturating_sub(estimated);
+                selected.push(key);
+            }
+            selected
+        };
+        for workspace in opportunities {
+            if !self.persist_workspace(&workspace, true) {
+                eprintln!(
+                    "checkpoint: pre-eviction save incomplete for {}; eviction proceeds under the resident budget",
+                    workspace.display()
+                );
+            }
+        }
+    }
+
     /// Budget sweep: evict whole warm workspaces, LRU by `last_use` oldest
     /// first, until the warm set's ESTIMATED resident bytes —
     /// [`crate::RESIDENT_BYTES_PER_RAW_BYTE`] times each engine's raw
@@ -2487,6 +2733,7 @@ impl Registry {
             return Vec::new();
         }
         let mut over = total - max_resident_bytes;
+        self.save_eviction_candidates(&resident, over);
         // Decide + ring removal in ONE critical section, the reap's own
         // discipline (`inner` EXCLUSIVE, then `rings`): an adopter cannot
         // stamp `last_use` mid-decision, and a sub claim cannot land

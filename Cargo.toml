@@ -57,6 +57,7 @@ timing = { path = "crates/timing", version = "1.1.0" }
 addr = { path = "crates/addr", version = "1.1.0" }
 syntax = { path = "crates/syntax", version = "1.1.0" }
 model = { path = "crates/model", version = "1.1.0" }
+parse-cache = { path = "crates/parse-cache", version = "1.1.0" }
 fs = { path = "crates/fs", version = "1.1.0" }
 wire = { path = "crates/wire", version = "1.1.0" }
 wire-map = { path = "crates/wire-map", version = "1.1.0" }

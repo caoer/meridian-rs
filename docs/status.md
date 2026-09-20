@@ -75,7 +75,9 @@ mrd init [PATH] [--name NAME]
  declare the root (PATH's own MERIDIAN.md,
  `type: meridian-root`), register its drawer, reconcile
  shadowed descendant drawers
-mrd unregister [PATH] drop the daemon entry (if a daemon answers) + the drawer.
+mrd unregister [PATH] drop the daemon entry (if a daemon answers) + its drawers.
+ This includes the current projection drawer and the
+ version-independent parsed-document drawer.
  A PATH whose directory is already gone is matched as
  given — `Registry::unregister`'s own fallback key, and
  the stale-entry class a sweep leaves behind. A vanished
@@ -453,7 +455,9 @@ mrd reconcile <PRESET> reconcile the tree toward a preset's declared scaffold
 mrd realise <PAGE> [--dry] [--json]
  the reconciliation loop: observe -> check -> apply
  (only on drift, once) -> re-check
-mrd cache ls list the on-disk cache drawers
+mrd cache ls list the on-disk cache drawers; `parsed-v1` is
+ the document snapshot, whose compatibility follows
+ parser semantics rather than package/SQL versions
 mrd cache clean [--all] reap stale / orphaned / retired drawers. "Orphaned"
  means the workspace was OBSERVED gone: a workspace path
  that could not be examined keeps its drawer and is

@@ -27,6 +27,7 @@
 //! (`cache` `registered.json`) drives 30-day last-use GC. Only `unregister`
 //! ends a registration.
 
+mod cache_io;
 mod checkpoint;
 mod client;
 mod delta_sink;
@@ -34,6 +35,7 @@ mod engine;
 mod feed;
 mod mounts;
 pub mod mw_sql;
+mod parsed_cache;
 mod protocol;
 mod registry;
 pub mod ring;

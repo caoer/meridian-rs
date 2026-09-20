@@ -697,9 +697,8 @@ class): the checkpoint.
   all before first serve. **Parses are NOT gated by this law:** the
   checkpoint carries leaf digests and the tree, never parsed documents, so
   these counters and the 160 ms govern the RESIDENT-TREE restore — the
-  guard/currency plane. The document plane's restart cost is a named open
-  residue awaiting a parse-cache persistence object, whose identity slot
-  this tuple's parse-cache generation field already reserves.
+  guard/currency plane. The separate disposable document cache (§6.9)
+  removes unchanged-document parsing; it does not remove this barrier.
 - A soundness mismatch = one loud labeled cold re-baseline; a cursor that
   cannot anchor = one labeled warm re-baseline — replay forfeited, object
   retained. The residual stat term stands UNFIXED: requirement 1 is
@@ -928,6 +927,77 @@ The memo's fold counter keeps its semantics — zero on a quiet vouched
 pass, one per advance — counting served-fold recomputes; the instrument
 behind the count is now O(dirty vertices), never O(corpus).
 
+### 6.9 Durable document reuse
+
+A process restart or resident-budget eviction loses ownership of parsed
+documents, not their content identity. The engine may persist a disposable,
+per-workspace document cache outside the hash domain. Markdown remains the
+sole authority. Cache absence, contention, incompatibility, corruption, or a
+failed save changes cost only; none can make a workspace fail or serve stale
+bytes.
+
+**Three independent objects.** The §6.5 observation checkpoint establishes
+file identities and leaf digests under the normal pre-serve barrier. The
+document cache maps a content digest to the immutable document derived from
+those bytes (or its invalid-UTF-8 condition). The SQL projection is a separate
+consumer. None is reconstructed from another plane's lossy projection.
+
+**Compatibility.** The document format and semantic parser generation are
+independent of the daemon build SHA, package release number, and SQL schema
+salt. The semantic generation is derived at build time from the parser,
+governed-model, address, and codec sources and their locked dependency set.
+A changed input conservatively invalidates parse reuse; an unrelated daemon
+implementation change does not. The cache uses a separate `parsed-v1`
+drawer under the existing workspace bucket, with the same registration,
+locking, last-use, clean, and GC rules as other drawers.
+
+**Restore.** First establish current membership and digests through the
+existing currency instrument. Then decode only cache entries whose digest
+is wanted by that current leaf set. Check the format/generation, record
+checksum, raw-content digest, UTF-8/span bounds, tree depth, and node revs.
+Malformed records are misses. A broken framing boundary ends adoption at
+that boundary; already verified records remain usable. Bound all allocations
+by the available record bytes and a cache-entry size ceiling. Large documents
+that cannot be cached still parse and serve normally.
+
+The generation and checksum bind the derived representation produced by this
+engine; the cache is private local derived data, not an authenticated remote
+input. Restoring does not re-run the parser to prove every semantic field.
+
+Map verified objects onto current paths, including renamed or duplicate
+content, and pass this transient prior corpus to the SAME `fs::update_corpus`
+used by resident rebuilds. Only misses and movers read/parse source. Rebuild
+the corpus name index from the final documents; never deserialize an index,
+persist an epoch cursor as authority, or retain a second decoded corpus.
+The existing witness check controls publication, so an older concurrent
+build cannot replace a newer engine. `WarmOutcome::Built.docs` continues to
+count actual parses, including zero when a cold engine restores completely.
+
+**Storage and saving.** A streaming, checksummed snapshot keeps restore to
+one sequential file instead of one file per document. Entries are keyed by
+content digest and deduplicated within the workspace. Temporary writes are
+atomically replaced; a torn temporary file is never a restore candidate.
+Encode one document at a time so the snapshot size is not also a transient
+RAM allocation. A first completed cold build, eviction, and graceful shutdown
+are save opportunities. Skip a snapshot already saved at the same engine
+fingerprint. Do not periodically rewrite the whole parsed corpus for routine
+edits. An older snapshot is useful: the verified leaf set selects its unchanged
+members and ordinary incremental reconciliation absorbs later edits.
+
+The smaller observation checkpoint may be coalesced in the background, only
+when dirty. Capture its journal cursor before its consistent memo snapshot;
+encode and write after releasing the memo and registry map locks. Background
+saves skip contended state. All cache writes are best effort and observable;
+a failed save never prevents eviction or publication. Persistence I/O must
+not run under a lock that a hook fire or corpus lookup needs.
+
+Acceptance covers unchanged restart (zero parses), one mover, add/remove/
+rename, duplicate content, invalid UTF-8, incompatible generations, corrupt
+records, truncated saves, unavailable storage, concurrent publication, eviction,
+and cache GC. A representative corpus measurement must publish encoded size,
+encode/decode cost, and save memory behavior before relying on this format
+for a large workspace.
+
 ## 7. Integrity surface + CAS — the grain ladder
 
 The premise grains, one instrument: the resident tree (§6) serves every row.
@@ -1033,4 +1103,3 @@ it.
 4. **Symlink retarget invisibility** (§9) — acceptable for now, or hash the target path as a pseudo-leaf?
 5. **Multi-file atomic batch** — limit stated in `wire-contract.md` §6.5; vocabulary is `if_fingerprint` + batch `splice`.
 6. **`diff` payload cap** — a wildly stale fingerprint can name thousands of paths; cap + `truncated:true`, or force `fingerprint_unknown` past a threshold? (The mismatch `changed` field was struck — `wire-contract.md` §18 row 2 — leaving only the `diff` half open.)
-

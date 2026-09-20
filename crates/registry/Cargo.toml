@@ -37,6 +37,7 @@ cache = { workspace = true }
 # `model` carries the resident types (CorpusIndex, Document, MerkleRoot fingerprint).
 fs = { workspace = true }
 model = { workspace = true }
+parse-cache = { workspace = true }
 # § A.7 in-process script serve (2026-08-12): the daemon evaluates the script
 # entry against the entry world — the kernel, the trace shape, and the armed
 # digest all live in `effects` so this crate and the CLI lane reach ONE
