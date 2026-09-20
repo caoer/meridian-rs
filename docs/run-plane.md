@@ -1497,6 +1497,26 @@ one the script op takes) and never run the `domain_snapshot` fold. The world
 is a parameter (`run::modes::ModeWorld`), so ONE implementation serves the
 daemon and the CLI, and the two lanes cannot answer differently.
 
+**What the entry pays first is per MODE — a fire drives no currency pass.**
+`load` is the resolver's question — *what does this page declare NOW?* — so
+its entry freshens the resident engine (`Registry::warm_or_build`: the §6.7
+currency pass, and the incremental fold when the fingerprint moved). A door
+write leaves the resident engine untouched (§ What an entry costs), so without
+that freshen a resolver re-loading on the write's own delta frame would read
+the pre-write page. `fire` is the event's question — *run the block the
+resolver already resolved* — and its entry takes the resident snapshot AS IT
+IS: no currency pass, no fold, and no borrow of the resident domain memo (that
+memo is the bash bracket's observation instrument, borrowed for a live task
+target alone). The row's `rev` names the bytes that ran; the prewarm sweep and
+every read on the workspace keep the resident current. Why: the currency pass
+holds the memo across the extent-refresh floor — O(domain) in `stat`s — so a
+fire that borrowed the memo or drove the pass either ran that floor itself or
+parked, unbounded, behind whichever seat was running it, past the host's
+per-op deadline (measured on a 59k-member sessions root: a 70 ms fire at
+rest; 10 s host timeouts under a concurrent sweep, the memo the one shared
+resource). A fire is one function call on one page and must never pay a
+corpus-wide pass to answer.
+
 On a **cold workspace** the answer is per LANE, and there are two of them:
 
 - **the daemon lane** takes the same § 3.2 cold gate the script op takes and

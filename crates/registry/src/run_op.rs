@@ -571,3 +571,193 @@ fn refusal_row(
     }
     row
 }
+
+#[cfg(test)]
+mod tests {
+    //! The entry's price per mode (run-plane § The world a mode-bearing row
+    //! runs against): a fire borrows no memo and drives no currency pass; a
+    //! load freshens the resident engine.
+
+    use super::*;
+    use crate::registry::Registry;
+    use crate::state::StateStore;
+    use std::fs::{create_dir_all, write};
+    use std::path::PathBuf;
+    use std::sync::{Arc, PoisonError};
+    use std::time::Duration;
+
+    const HOOKS: &str = "\
+# Hooks
+
+```starlark
+def run(event):
+    return {\"deny\": \"no stash\", \"saw\": event[\"name\"]}
+
+declare(on = \"PreToolUse\", match = \"Bash\")
+```
+^no-stash
+";
+
+    /// The same block, edited — a different length, so the member's stat
+    /// key moves with its bytes.
+    const HOOKS_EDITED: &str = "\
+# Hooks
+
+```starlark
+def run(event):
+    return {\"deny\": \"no stash, no push\", \"saw\": event[\"name\"]}
+
+declare(on = \"PreToolUse\", match = \"Bash\")
+```
+^no-stash
+";
+
+    fn registry_in(home: &Path) -> Registry {
+        let cache_root = home.join("cache");
+        create_dir_all(&cache_root).unwrap();
+        Registry::new(
+            StateStore::new(home.join("state.json")),
+            cache_root,
+            Vec::new(),
+        )
+    }
+
+    fn write_ws(home: &Path, files: &[(&str, &str)]) -> PathBuf {
+        let ws = home.join("ws");
+        create_dir_all(&ws).unwrap();
+        for (rel, content) in files {
+            let path = ws.join(rel);
+            if let Some(parent) = path.parent() {
+                create_dir_all(parent).unwrap();
+            }
+            write(path, content).unwrap();
+        }
+        ws
+    }
+
+    /// One v3 run frame, renamed exactly as `handle_line` renames it before
+    /// routing here.
+    fn frame(id: u64, targets: Value) -> Map<String, Value> {
+        let mut obj = json!({
+            "id": id, "op": "run", "invocation": format!("t.{id}"), "targets": targets,
+        })
+        .as_object()
+        .cloned()
+        .expect("a frame is an object");
+        wire_serve::rev::rename_request(&mut obj);
+        obj
+    }
+
+    fn fire_frame(id: u64) -> Map<String, Value> {
+        frame(
+            id,
+            json!([{
+                "page": "HOOKS.md", "block": "no-stash", "mode": "fire",
+                "input": {"name": "PreToolUse", "id": "s:PreToolUse:t0"},
+            }]),
+        )
+    }
+
+    fn load_frame(id: u64) -> Map<String, Value> {
+        frame(id, json!([{"page": "HOOKS.md", "mode": "load"}]))
+    }
+
+    fn rows(line: String) -> Vec<Value> {
+        let resp: Value = serde_json::from_str(line.trim()).expect("one JSON line");
+        assert_eq!(resp["ok"], json!(true), "the run op answers rows: {resp}");
+        resp["body"]["targets"].as_array().cloned().unwrap()
+    }
+
+    /// A fire-only submission answers while another seat holds the resident
+    /// domain memo — the state every currency pass on the workspace leaves
+    /// the memo in across the extent-refresh floor. Before this law the entry
+    /// borrowed the memo for a bracket no mode row ever opens and drove the
+    /// pass itself, and this call parked past the host's 10 s deadline.
+    #[test]
+    fn a_fire_answers_while_the_memo_is_held() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = Arc::new(registry_in(home.path()));
+        let ws = write_ws(home.path(), &[("HOOKS.md", HOOKS)]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        reg.warm_or_build(&canonical)
+            .expect("the entry pass warms the drawer");
+
+        // Another seat mid-pass: the memo stays held for the whole call.
+        let memo = reg.domain_cache(&canonical);
+        let _held = memo.lock().unwrap_or_else(PoisonError::into_inner);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let fire = {
+            let reg = Arc::clone(&reg);
+            let canonical = canonical.clone();
+            std::thread::spawn(move || {
+                let line = serve_line(&reg, Some(&canonical), &fire_frame(1), Rev::V3);
+                let _ = tx.send(line);
+            })
+        };
+        let line = rx.recv_timeout(Duration::from_secs(5)).expect(
+            "a fire-only submission must answer while the memo is held: it borrows \
+             no memo and drives no currency pass",
+        );
+        fire.join().expect("the fire thread panicked");
+        let rows = rows(line);
+        assert_eq!(rows[0]["result"], "ok", "{rows:?}");
+        assert_eq!(
+            rows[0]["value"],
+            json!({"deny": "no stash", "saw": "PreToolUse"}),
+            "the block ran and answered: {rows:?}"
+        );
+    }
+
+    /// The two halves of the law on one workspace: a fire runs the resident
+    /// corpus AS IT IS and names the rev that ran; a load freshens the
+    /// resident engine, and the fire after it runs the edited block.
+    #[test]
+    fn a_fire_runs_the_resident_corpus_and_a_load_freshens_it() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("HOOKS.md", HOOKS)]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        reg.warm_or_build(&canonical)
+            .expect("the entry pass warms the drawer");
+
+        let first = rows(serve_line(&reg, Some(&canonical), &fire_frame(1), Rev::V3));
+        assert_eq!(first[0]["value"]["deny"], "no stash", "{first:?}");
+        let rev_before = first[0]["rev"]["block"]
+            .as_str()
+            .expect("a fire row names the block rev that ran")
+            .to_owned();
+
+        // A foreign edit lands. Nothing folds it: this fixture runs no
+        // prewarm sweep, and no read has been served since.
+        write(ws.join("HOOKS.md"), HOOKS_EDITED).unwrap();
+
+        let stale = rows(serve_line(&reg, Some(&canonical), &fire_frame(2), Rev::V3));
+        assert_eq!(
+            stale[0]["value"]["deny"], "no stash",
+            "a fire drives no currency pass: the resident corpus answers: {stale:?}"
+        );
+        assert_eq!(
+            stale[0]["rev"]["block"], rev_before,
+            "and the row names the bytes that ran"
+        );
+
+        // A load is the resolver's question and freshens the resident engine.
+        let loaded = rows(serve_line(&reg, Some(&canonical), &load_frame(3), Rev::V3));
+        assert!(
+            loaded[0]["loaded"]
+                .as_array()
+                .is_some_and(|l| !l.is_empty()),
+            "the load answered the page's declarations: {loaded:?}"
+        );
+
+        let fresh = rows(serve_line(&reg, Some(&canonical), &fire_frame(4), Rev::V3));
+        assert_eq!(
+            fresh[0]["value"]["deny"], "no stash, no push",
+            "the fire after a load runs the edited block: {fresh:?}"
+        );
+        assert_ne!(fresh[0]["rev"]["block"], rev_before);
+    }
+}
