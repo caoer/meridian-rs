@@ -1288,6 +1288,10 @@ The workflow discovers every `perf-walltime` test target from the manifests,
 compiles them first, then executes each target separately. Existing budgets
 remain unchanged. Woodpecker compiles these targets but does not execute their
 timing budgets; its shared build host is the correctness lane.
+Performance fixtures use the same temporary-cache drain setting as the CLI
+correctness fixtures. Ephemeral SQL is measured inside a declared workspace
+with daemon startup and cache roots disabled; a bare, undeclared directory
+is a refusal case, not a performance fixture.
 An isolated local diagnostic can be run with
 `tools/test.sh --locked -p mrd --features perf-walltime --test rules_drift_cpu -- --nocapture`;
 it is not a CI performance baseline.

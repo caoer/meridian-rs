@@ -2,28 +2,40 @@
 //! name. The view projects ambient docs only; mounted pages exist so
 //! `resolve_ref` can land a rooted spelling.
 //!
-//! Tier-4 bare is the residual: a bare (unregistered) cwd always takes
-//! `:memory:` and always hits `build_and_run_ephemeral` → `load_mounts_for`.
+//! A git-anchored workspace with no cache root takes the `:memory:` lane.
+//! Its explicit mount configuration stays populated while `HOME` and
+//! `XDG_CACHE_HOME` are empty, so no persistent drawer can answer the query.
 //!
 //! Negative control: restore an eager `load_mounts()` in
-//! `build_and_run_ephemeral` and this target reddens.
+//! `load_corpus` and this target reddens.
 
+use std::path::Path;
+use std::process::Output;
 use std::time::{Duration, Instant};
 
+mod common;
 mod multiroot_fixture;
 use multiroot_fixture as fixture;
 
 const CPU_BUDGET: Duration = Duration::from_millis(600);
+
+fn run_ephemeral(sb: &fixture::Sandbox, ws: &Path) -> Output {
+    fixture::command(sb, ws, &["sql", "SELECT count(*) FROM doc", "--json"])
+        .env("HOME", "")
+        .env("XDG_CACHE_HOME", "")
+        .output()
+        .expect("spawn ephemeral sql")
+}
 
 #[test]
 fn sql_ephemeral_cpu_under_budget_with_a_populated_mount_table() {
     let sb = fixture::sandbox();
 
     let names = fixture::plant_declared_roots(&sb);
-    // Bare workspace — tier-4, always ephemeral `:memory:`. Still needs a cwd the
-    // anti-blindness assert can run from; config is process-global via MERIDIAN_CONFIG.
+    // Resolution requires a declared workspace. The .git anchor admits it;
+    // run_ephemeral removes cache roots while preserving MERIDIAN_CONFIG.
     let bare = sb.tmp.path().join("bare");
-    std::fs::create_dir_all(&bare).expect("bare");
+    std::fs::create_dir_all(bare.join(".git")).expect("workspace anchor");
     std::fs::write(
         bare.join("local.md"),
         "# Local\n\n## Body\n\nthe page the claim draws from.\n",
@@ -35,13 +47,13 @@ fn sql_ephemeral_cpu_under_budget_with_a_populated_mount_table() {
     )
     .expect("claim page");
 
-    // Anti-blindness needs a workspace `mrd` accepts as cwd; bare is fine for config.
+    // Prove the mounted roots remain declared and bound before measuring.
     fixture::assert_table_is_populated(&sb, &bare, &names);
 
-    let _ = fixture::run(&sb, &bare, &["sql", "SELECT count(*) FROM doc", "--json"]);
+    let _ = run_ephemeral(&sb, &bare);
     let cpu_before = fixture::children_cpu();
     let wall_start = Instant::now();
-    let out = fixture::run(&sb, &bare, &["sql", "SELECT count(*) FROM doc", "--json"]);
+    let out = run_ephemeral(&sb, &bare);
     let wall = wall_start.elapsed();
     let cpu = fixture::children_cpu()
         .checked_sub(cpu_before)
@@ -54,9 +66,15 @@ fn sql_ephemeral_cpu_under_budget_with_a_populated_mount_table() {
         code == 0,
         "sql ran (exit {code}): stdout={stdout} stderr={stderr}"
     );
-    assert!(
-        stdout.contains("\"row_count\": 1") || stdout.contains("\"row_count\":1"),
-        "sql must return the count row; got:\n{stdout}\n{stderr}"
+    let body: serde_json::Value = serde_json::from_str(&stdout).expect("SQL JSON frame");
+    assert_eq!(
+        body["row_count"], 1,
+        "SQL must return the count row: {body}"
+    );
+    assert_eq!(
+        body["rows"],
+        serde_json::json!([[2]]),
+        "the query must see both ambient pages and no mounted pages: {body}"
     );
 
     eprintln!(

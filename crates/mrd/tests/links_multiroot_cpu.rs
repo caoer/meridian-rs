@@ -18,6 +18,7 @@
 
 use std::time::{Duration, Instant};
 
+mod common;
 mod multiroot_fixture;
 use multiroot_fixture as fixture;
 
