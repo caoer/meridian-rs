@@ -72,6 +72,7 @@ jobs:
           baseline_dir="$RUNNER_TEMP/meridian-perf-baseline"
           git worktree add --detach "$baseline_dir" "$base"
           printf 'PERF_BASELINE_DIR=%s\n' "$baseline_dir" >> "$GITHUB_ENV"
+          printf 'PERF_BASELINE_TARGET=%s/meridian-perf-baseline-target\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'CARGO_TARGET_DIR=%s/target\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
           # Only generated measurement data is reset, not the build cache.
           rm -rf target/criterion target/bench-claims
@@ -90,14 +91,15 @@ jobs:
         run: cargo install critcmp --version 0.1.8 --locked
       # Select the actual benchmark targets; the default also runs lib/bin
       # libtest harnesses, which do not understand Criterion's --save-baseline.
+      # Separate target directories are required: Cargo can reuse a baseline
+      # executable in another worktree when the candidate's files are older.
       - name: compile baseline benchmarks
-        run: cargo bench --manifest-path "$PERF_BASELINE_DIR/Cargo.toml" --locked -p perfsuite --bench '*' --no-run
+        run: CARGO_TARGET_DIR="$PERF_BASELINE_TARGET" cargo bench --manifest-path "$PERF_BASELINE_DIR/Cargo.toml" --locked -p perfsuite --bench '*' --no-run
       - name: measure baseline
         run: |
-          taskset -c "$PERF_CPUS" cargo bench --manifest-path "$PERF_BASELINE_DIR/Cargo.toml" --locked -p perfsuite --bench '*' -- --save-baseline base 2>&1 | tee target/perf-results/baseline.log
-          critcmp --export base > target/perf-results/baseline.json
-          cp -R target/bench-claims target/perf-results/baseline-claims
-          rm -rf target/bench-claims
+          CARGO_TARGET_DIR="$PERF_BASELINE_TARGET" taskset -c "$PERF_CPUS" cargo bench --manifest-path "$PERF_BASELINE_DIR/Cargo.toml" --locked -p perfsuite --bench '*' -- --save-baseline base 2>&1 | tee target/perf-results/baseline.log
+          critcmp --target-dir "$PERF_BASELINE_TARGET" --export base > target/perf-results/baseline.json
+          cp -R "$PERF_BASELINE_TARGET/bench-claims" target/perf-results/baseline-claims
       - name: compile candidate benchmarks
         run: cargo bench --locked -p perfsuite --bench '*' --no-run
       - name: measure candidate on the same VM
@@ -106,7 +108,7 @@ jobs:
           critcmp --export candidate > target/perf-results/candidate.json
       - name: compare and render claim verdicts
         run: |
-          critcmp base candidate | tee target/perf-results/comparison.txt
+          critcmp target/perf-results/baseline.json target/perf-results/candidate.json | tee target/perf-results/comparison.txt
           taskset -c "$PERF_CPUS" cargo run --locked --release -p perfsuite --bin bench-report -- --results target/perf-results/claims | tee target/perf-results/claim-verdicts.md
       - name: compile every performance gate before measuring
         run: tools/perf-tests.sh --no-run

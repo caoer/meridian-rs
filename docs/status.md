@@ -1282,6 +1282,9 @@ budgets serially after compilation. The runner class supplies 4 vCPUs and
 GitHub does not promise identical physical hardware or an immutable OS image
 between jobs. Criterion baseline and candidate revisions are therefore
 measured on the same VM, with the same toolchain, affinity and corpus recipes.
+Each revision has its own Cargo target directory, and the comparison consumes
+exported measurements. Sharing compiled output between worktrees can reuse
+the baseline executable for a candidate whose source timestamps are older.
 Cross-run absolute timings are observations, not a claim of identical hardware.
 
 The workflow discovers every `perf-walltime` test target from the manifests,
