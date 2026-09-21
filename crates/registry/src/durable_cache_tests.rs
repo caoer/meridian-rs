@@ -293,6 +293,102 @@ fn periodic_observation_saves_do_not_rewrite_the_parsed_snapshot() {
     assert_ne!(disk::read(&file).unwrap(), before);
 }
 
+#[test]
+fn restore_skips_last_use_stamp_while_the_drawer_is_busy() {
+    let home = tempfile::tempdir().unwrap();
+    let (reg, ws) = fixture(home.path());
+    reg.save_pending_parsed();
+    drop(reg);
+
+    let restarted = Arc::new(registry(home.path()));
+    restarted.register(&ws);
+    let dir = cache::parsed_drawer_dir(&restarted.cache_root, &ws);
+    let _held = cache::DrawerLock::acquire(&dir).unwrap();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = Arc::clone(&restarted);
+    let worker_ws = ws.clone();
+    std::thread::spawn(move || {
+        let result = worker.warm_or_build(&worker_ws);
+        done_tx.send(result).unwrap();
+    });
+    let outcome = done_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("restore must not wait for the optional last-use stamp")
+        .unwrap();
+    assert_eq!(outcome, WarmOutcome::Built { docs: 0 });
+}
+
+#[test]
+fn running_server_shutdown_completes_with_a_busy_parsed_drawer() {
+    let config = |base: &Path| {
+        let mut config = crate::Config::for_cache_root(base.join("cache"));
+        config.socket_path = base.join("server.sock");
+        config.drain_cold_builds = Duration::from_secs(30);
+        config
+    };
+    let fixture = crate::test_support::TestServer::start(config).unwrap();
+    let ws = fixture.path().join("ws");
+    disk::create_dir_all(&ws).unwrap();
+    disk::write(ws.join("a.md"), "# A\n").unwrap();
+    let ws = workspace::canonicalize(&ws).unwrap();
+    fixture.with(|server| {
+        server.registry().register(&ws);
+        server.registry().warm_or_build(&ws).unwrap();
+        server.registry().save_pending_parsed();
+        let old_fingerprint = server
+            .registry()
+            .engine_snapshot(&ws)
+            .unwrap()
+            .at_fingerprint
+            .clone();
+        disk::write(ws.join("a.md"), "# Changed before shutdown\n").unwrap();
+        assert_eq!(
+            server.registry().warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 1 }
+        );
+        assert_ne!(
+            server
+                .registry()
+                .engine_snapshot(&ws)
+                .unwrap()
+                .at_fingerprint,
+            old_fingerprint,
+            "shutdown must have a dirty parsed snapshot to save"
+        );
+    });
+    let dir = cache::parsed_drawer_dir(&fixture.path().join("cache"), &ws);
+    let held = cache::DrawerLock::acquire(&dir).unwrap();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let shutdown = std::thread::spawn(move || {
+        fixture.shutdown();
+        done_tx.send(()).unwrap();
+    });
+    let completion = done_rx.recv_timeout(Duration::from_secs(5));
+    drop(held);
+    shutdown.join().unwrap();
+    completion.expect("server shutdown must not wait for the optional parsed-cache save");
+}
+
+#[test]
+fn observation_checkpoint_stamping_skips_a_busy_parsed_drawer() {
+    let home = tempfile::tempdir().unwrap();
+    let (reg, ws) = fixture(home.path());
+    reg.save_pending_parsed();
+    let reg = Arc::new(reg);
+    let dir = cache::parsed_drawer_dir(&reg.cache_root, &ws);
+    let held = cache::DrawerLock::acquire(&dir).unwrap();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = Arc::clone(&reg);
+    let observation = std::thread::spawn(move || {
+        worker.save_observation_checkpoints();
+        done_tx.send(()).unwrap();
+    });
+    let completion = done_rx.recv_timeout(Duration::from_secs(5));
+    drop(held);
+    observation.join().unwrap();
+    completion.expect("observation stamping must not wait for the optional cache lock");
+}
+
 /// Run only on an explicitly copied corpus; the marker is a custody receipt.
 /// The normal test suite stays small. The caller controls OS cache conditions.
 #[test]

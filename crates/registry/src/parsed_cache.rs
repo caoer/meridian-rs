@@ -38,7 +38,7 @@ pub(crate) fn restore(
     };
     match parse_cache::snapshot::read(BufReader::new(file), workspace, fresh) {
         Ok(prior) => {
-            let _ = cache::stamp_last_use(&dir);
+            let _ = cache::try_stamp_last_use(&dir);
             eprintln!(
                 "parse-cache: {} — {} document(s) reusable, complete={}",
                 workspace.display(),
@@ -63,9 +63,11 @@ pub(crate) fn save(
     cache_root: &Path,
     workspace: &Path,
     engine: &WorkspaceEngine,
-) -> io::Result<usize> {
+) -> io::Result<Option<usize>> {
     let dir = cache::parsed_drawer_dir(cache_root, workspace);
-    cache::register(&dir, workspace)?;
+    let Some(_) = cache::try_register(&dir, workspace)? else {
+        return Ok(None);
+    };
     let cache::Probe::Hit(sentinel) = cache::probe(&dir) else {
         return Err(io::Error::other(
             "parsed drawer has no compatible registration",
@@ -85,9 +87,9 @@ pub(crate) fn save(
         )
     });
     if result.is_ok() {
-        cache::stamp_last_use(&dir)?;
+        cache::try_stamp_last_use(&dir)?;
     }
-    result
+    result.map(Some)
 }
 
 pub(crate) fn discard(cache_root: &Path, workspace: &Path) {

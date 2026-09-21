@@ -2124,7 +2124,7 @@ impl Registry {
                 == Some(&engine.at_fingerprint.0);
             if !unchanged || !crate::parsed_cache::path(&self.cache_root, workspace).is_file() {
                 match crate::parsed_cache::save(&self.cache_root, workspace, &engine) {
-                    Ok(count) => {
+                    Ok(Some(count)) => {
                         self.saved_parse
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
@@ -2134,6 +2134,7 @@ impl Registry {
                             workspace.display()
                         );
                     }
+                    Ok(None) => saved = false,
                     Err(e) => {
                         eprintln!(
                             "parse-cache: save incomplete for {} ({e}); recovery may need source parsing",
@@ -2192,7 +2193,7 @@ impl Registry {
         for workspace in workspaces {
             let dir = cache::parsed_drawer_dir(&self.cache_root, &workspace);
             if matches!(cache::probe(&dir), cache::Probe::Hit(_)) {
-                let _ = cache::stamp_last_use(&dir);
+                let _ = cache::try_stamp_last_use(&dir);
             }
         }
     }

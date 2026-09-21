@@ -946,7 +946,9 @@ consumer. None is reconstructed from another plane's lossy projection.
 independent of the daemon build SHA, package release number, and SQL schema
 salt. The semantic generation is derived at build time from the parser,
 governed-model, address, and codec sources and their locked dependency set.
-A changed input conservatively invalidates parse reuse; an unrelated daemon
+A changed input conservatively invalidates parse reuse; the covered crates'
+full Rust sources and manifests are hashed, so even a comment or other
+metadata-only edit in those inputs may invalidate reuse. An unrelated daemon
 implementation change does not. The cache uses a separate `parsed-v1`
 drawer under the existing workspace bucket, with the same registration,
 locking, last-use, clean, and GC rules as other drawers.

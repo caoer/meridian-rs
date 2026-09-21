@@ -40,7 +40,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub use layout::{cache_root, drawer_dir, drawer_key, parsed_drawer_dir, sock_key};
 pub use locking::DrawerLock;
-pub use sentinel::{Probe, Sentinel, probe, register, stamp_last_use, supersede};
+pub use sentinel::{
+    Probe, Sentinel, probe, register, stamp_last_use, supersede, try_register, try_stamp_last_use,
+};
 pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 
 /// Schema salt — the discriminator bumped whenever the on-disk *payload*

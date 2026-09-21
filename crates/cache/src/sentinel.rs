@@ -148,6 +148,28 @@ pub fn register(drawer_dir: &Path, workspace: &Path) -> io::Result<Sentinel> {
     let _ = fs::set_permissions(drawer_dir, fs::Permissions::from_mode(0o700));
 
     let _lock = DrawerLock::acquire(drawer_dir)?;
+    register_locked(drawer_dir, workspace)
+}
+
+/// Try to register a drawer without waiting for another drawer user.
+///
+/// `Ok(None)` means the drawer is currently busy and the optional cache
+/// opportunity should be retried later. Filesystem failures remain errors.
+///
+/// # Errors
+///
+/// Returns an I/O error when the drawer cannot be created, opened, or written.
+pub fn try_register(drawer_dir: &Path, workspace: &Path) -> io::Result<Option<Sentinel>> {
+    fs::create_dir_all(drawer_dir)?;
+    let _ = fs::set_permissions(drawer_dir, fs::Permissions::from_mode(0o700));
+
+    let Some(_lock) = DrawerLock::try_acquire(drawer_dir)? else {
+        return Ok(None);
+    };
+    register_locked(drawer_dir, workspace).map(Some)
+}
+
+fn register_locked(drawer_dir: &Path, workspace: &Path) -> io::Result<Sentinel> {
     let sentinel_path = drawer_dir.join(SENTINEL);
 
     // Fast path: a valid sentinel already exists (we won a prior race or a
@@ -209,16 +231,38 @@ pub fn stamp_last_use(drawer_dir: &Path) -> io::Result<()> {
         return Ok(());
     }
     let _lock = DrawerLock::acquire(drawer_dir)?;
+    stamp_last_use_locked(drawer_dir).map(|_| ())
+}
+
+/// Try to stamp a drawer's last-use without waiting for another drawer user.
+///
+/// Returns `false` when the drawer is currently busy or has no valid sentinel.
+///
+/// # Errors
+///
+/// Returns an I/O error when the drawer cannot be opened or the sentinel cannot
+/// be rewritten.
+pub fn try_stamp_last_use(drawer_dir: &Path) -> io::Result<bool> {
+    if !drawer_dir.exists() {
+        return Ok(false);
+    }
+    let Some(_lock) = DrawerLock::try_acquire(drawer_dir)? else {
+        return Ok(false);
+    };
+    stamp_last_use_locked(drawer_dir)
+}
+
+fn stamp_last_use_locked(drawer_dir: &Path) -> io::Result<bool> {
     let sentinel_path = drawer_dir.join(SENTINEL);
     let SentinelState::Valid(mut sentinel) = classify(&sentinel_path) else {
-        return Ok(());
+        return Ok(false);
     };
     sentinel.last_use = now_secs();
     let bytes = to_bytes(&sentinel)?;
     let tmp = write_tmp(drawer_dir, &bytes)?;
     fs::rename(&tmp, &sentinel_path)?;
     fsync_dir(drawer_dir);
-    Ok(())
+    Ok(true)
 }
 
 /// Stamp a drawer's `superseded_by` under the per-drawer lock (amendment M2):
@@ -375,5 +419,14 @@ mod tests {
     fn supersede_missing_drawer_is_a_noop() {
         let dir = tempfile::tempdir().unwrap();
         assert!(!supersede(&dir.path().join("absent"), "/ws/x").unwrap());
+    }
+
+    #[test]
+    fn try_stamp_skips_a_busy_drawer_without_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        register(dir.path(), Path::new("/ws/leaf")).unwrap();
+        let _held = DrawerLock::acquire(dir.path()).unwrap();
+
+        assert!(!try_stamp_last_use(dir.path()).unwrap());
     }
 }
