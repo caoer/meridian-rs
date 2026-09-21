@@ -55,6 +55,8 @@ jobs:
             critcmp.txt
             claim-verdicts.md
             crates/perfsuite/results/
+      - name: rules drift CPU gate (1500 ms, isolated test process)
+        run: tools/test.sh --locked -p mrd --features perf-walltime --test rules_drift_cpu -- --nocapture
       # The `mrd status` <1s wall-time budget (1000 ms). It lived in the
       # correctness suite until an A/B interleave proved it was measuring machine
       # contention there — shipped main blew it 3/3 under load — so it moved to the

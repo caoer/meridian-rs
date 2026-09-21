@@ -32,7 +32,7 @@ several minutes and a few GB under `target/`.
 
 ```sh
 cargo build --locked                 # default members (perfsuite excluded)
-cargo test --workspace --locked      # the full suite
+tools/test.sh --workspace --locked   # correctness suite, isolated binary selectors
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all --check
 cargo deny check                     # licenses, sources, the one-copy fork law (deny.toml)

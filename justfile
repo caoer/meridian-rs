@@ -25,7 +25,7 @@ check:
 
 # Run tests
 test:
-    cargo test --workspace
+    tools/test.sh --workspace --locked
 
 # Clean build artifacts
 clean:

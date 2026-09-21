@@ -1236,7 +1236,11 @@ merely looked at comes away byte-identical, including the roots that refuse.
 
 ## Tests
 
-`cargo test --workspace` — full suite green; CI gates every merge on it.
+`just test` runs `tools/test.sh --workspace --locked`; CI uses the same wrapper.
+The wrapper clears `CCC_MRD_BIN`, `MERIDIAN_MRD_BIN`, `MERIDIAN_DAEMON_BIN`
+and `MRD_BIN` in the test subprocess and reports which names were present.
+The calling shell is unchanged. Identity assertions inside the tests remain
+active; a direct Cargo invocation with an inherited override still refuses.
 Export `CARGO_PROFILE_TEST_DEBUG=0` first — a full-debug `target/` in this
 workspace costs ~26G and the flag is the repo's own CI lever. The `testsuite`
 crate carries two frozen packs: the ground-truth pack (rung-1 parse truth:
@@ -1262,6 +1266,19 @@ Green tests on **tiny synthetic workspaces** do not prove every surface on a
 Do not claim “proven end-to-end” without that caveat.
 
 ## Performance
+
+Timing budgets run separately from correctness tests, behind `perf-walltime`.
+The `rules_drift_cpu` integration target contains one test, so its cumulative
+child-CPU counter cannot include children from neighbouring test cases. It
+keeps the 1,500 ms budget and records wall time without gating it. The normal
+suite retains `policy::armed::tests::drift_reads_each_distinct_pinned_page_once`,
+which checks the read count deterministically.
+
+Performance results require a controlled runner with a fixed toolchain and
+resource allocation. Compiling these targets in the correctness lane does
+not execute their budgets. An isolated local diagnostic can be run with
+`tools/test.sh --locked -p mrd --features perf-walltime --test rules_drift_cpu -- --nocapture`;
+it is not a CI performance baseline.
 
 `perfsuite` carries a claims registry (`crates/perfsuite/claims.toml`) whose
 verdicts are computed, not asserted, and written to
