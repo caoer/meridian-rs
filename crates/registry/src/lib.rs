@@ -51,6 +51,7 @@ mod state;
 // the `tempfile` edge.
 #[cfg(feature = "test-support")]
 pub mod test_support;
+pub mod wake;
 mod walk_op;
 pub mod wedge;
 

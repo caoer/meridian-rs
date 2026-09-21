@@ -6,11 +6,13 @@
 
 use std::fs::OpenOptions;
 use std::io::{self, Read as _, Seek as _};
+use std::os::fd::{AsFd, IntoRawFd};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -18,8 +20,18 @@ use registry::{Config, RunningServer};
 
 use crate::Fail;
 
-/// Set by the signal handler; polled by the foreground loop.
+/// Set by the signal handler; read by the foreground loop once woken.
 static SIGNALLED: AtomicBool = AtomicBool::new(false);
+
+/// The write half of the signal self-pipe, or `-1` before
+/// [`install_signal_handlers`] ran. The handler writes one byte here so the
+/// foreground loop, parked in `poll(2)`, wakes without ticking; `write(2)` is
+/// async-signal-safe, a condvar is not.
+static SIGNAL_PIPE_W: AtomicI32 = AtomicI32::new(-1);
+
+/// How long the foreground loop sleeps when its wait itself fails — never
+/// observed; guards a broken `poll` from becoming a spin.
+const WAIT_FAILURE_BACKOFF: Duration = Duration::from_millis(200);
 
 /// Environment override for the binary [`spawn_detached`] launches as the daemon (default: the
 /// running executable). A packager points it at a dedicated daemon binary; a test points it at
@@ -43,18 +55,36 @@ const VOICE_QUOTE_CHARS: usize = 600;
 
 extern "C" fn on_signal(_sig: libc::c_int) {
     SIGNALLED.store(true, Ordering::SeqCst);
+    let fd = SIGNAL_PIPE_W.load(Ordering::SeqCst);
+    if fd >= 0 {
+        // SAFETY: `write(2)` is async-signal-safe; the descriptor is the
+        // process-lifetime, non-blocking write half installed below, and a
+        // full buffer (a burst of signals) fails harmlessly — one byte is
+        // already waiting.
+        unsafe {
+            let _ = libc::write(fd, [1u8].as_ptr().cast(), 1);
+        }
+    }
 }
 
-/// Install the SIGINT/SIGTERM handler that flips [`SIGNALLED`] so the foreground
-/// loop tears the daemon down cleanly.
-fn install_signal_handlers() {
-    // SAFETY: `on_signal` only stores to a static AtomicBool — an
-    // async-signal-safe operation (no allocation, no lock, no reentrancy).
+/// Install the SIGINT/SIGTERM handler that flips [`SIGNALLED`] and rings the
+/// signal self-pipe, and return the pipe's read half — what the foreground
+/// loop parks on so the daemon tears down promptly without ticking.
+fn install_signal_handlers() -> io::Result<UnixStream> {
+    let (tx, rx) = UnixStream::pair()?;
+    tx.set_nonblocking(true)?;
+    // The write half lives as long as the process: the handler may fire at
+    // any instant, so it is never closed.
+    SIGNAL_PIPE_W.store(tx.into_raw_fd(), Ordering::SeqCst);
+    // SAFETY: `on_signal` stores to a static AtomicBool and issues one
+    // `write(2)` — both async-signal-safe (no allocation, no lock, no
+    // reentrancy).
     let handler = on_signal as *const () as libc::sighandler_t;
     unsafe {
         let _ = libc::signal(libc::SIGINT, handler);
         let _ = libc::signal(libc::SIGTERM, handler);
     }
+    Ok(rx)
 }
 
 /// Run `mrd daemon`: start the server (socket bound, pidfile written before
@@ -68,7 +98,8 @@ pub(crate) fn run() -> Result<(), Fail> {
     // fallback rides through verbatim: publishing an identity, even an unnamed one,
     // is distinguishable from publishing none (`docs/wire-contract.md`).
     config.build_sha = Some(env!("MRD_BUILD_SHA").to_owned());
-    install_signal_handlers();
+    let signals = install_signal_handlers()
+        .map_err(|e| Fail::tool(format!("cannot install the daemon's signal handlers: {e}")))?;
     let server = RunningServer::start(config)
         .map_err(|e| Fail::tool(format!("cannot start the registry daemon: {e}")))?;
     eprintln!(
@@ -79,8 +110,12 @@ pub(crate) fn run() -> Result<(), Fail> {
 
     // Two ways out — a signal, or the idle-exit horizon the reaper watches. A detached daemon is
     // reparented to init, so without the second condition every isolated run leaks one forever.
+    // Both arrive on a descriptor, so the loop parks in the kernel until one does: an idle daemon's
+    // host thread makes no system call (`docs/status.md` § The daemon at rest).
     while !SIGNALLED.load(Ordering::SeqCst) && !server.idle_exit_requested() {
-        thread::sleep(Duration::from_millis(200));
+        if registry::wake::wait_readable(&[signals.as_fd(), server.idle_exit_fd()], None).is_err() {
+            thread::sleep(WAIT_FAILURE_BACKOFF);
+        }
     }
     eprintln!("shutting down");
     server.shutdown();

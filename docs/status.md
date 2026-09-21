@@ -1273,6 +1273,37 @@ bulk cost, the untested are perf rungs awaiting their first baseline. Refresh:
 cargo bench -p perfsuite
 ```
 
+### The daemon at rest
+
+**A resident daemon nobody is talking to makes no system call.** Every thread
+the daemon runs parks in the kernel (`poll(2)`, `crates/registry/src/wake.rs`)
+on the descriptors it serves and a clock only where a sweep is owed, so each
+wake has a named cause and none is a tick:
+
+| Thread | Wakes for |
+|---|---|
+| accept loop | a pending connection; shutdown |
+| reaper | its interval (a minute); shutdown |
+| pre-warm sweep | its interval — one second, doubling toward a minute while quiet; shutdown |
+| saver | a parse save queued by a cold build (the registry rings its waker), a deferred retry's deadline, the observation-checkpoint cadence (a minute); shutdown |
+| an armed `sub` | a kernel event on its workspace (the feed rings the workspace's wake set), a frame recorded on its ring, the `DETECT_FLOOR_CADENCE` backstop (30 s), its peer closing, its idle-write horizon, shutdown. Only a workspace with no live feed keeps the `DETECT_CADENCE` poll (250 ms) |
+| `mrd daemon` host | a signal (a self-pipe rung from the handler); the idle-exit request |
+
+The gate is `crates/registry/tests/daemon_at_rest.rs`: the kernel's own count
+of voluntary context switches, summed over the process, over two seconds at
+rest. Reproduce on a live resident on Linux, ten seconds apart:
+
+```
+for t in /proc/$(cat "$XDG_RUNTIME_DIR/mrd/"*.pid)/task/*; do grep voluntary_ctxt_switches "$t/status"; done
+```
+
+Measured by that gate on the same box: the registry at rest switched 130
+times in two seconds before this posture (accept every 20 ms, pre-warm every
+100 ms, reaper every 200 ms — 65 a second, plus the `mrd daemon` host loop's
+5 a second outside the gate's process) and 2 times after. An armed `sub`
+ticked every 50 ms on top of that — 20 a second per subscriber — and now
+parks.
+
 ### The timing mode — `MRD_TIMING`
 
 `perfsuite` measures a tree you built; `MRD_TIMING` measures the binary you
