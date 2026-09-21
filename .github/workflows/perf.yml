@@ -107,7 +107,7 @@ jobs:
       - name: compare and render claim verdicts
         run: |
           critcmp base candidate | tee target/perf-results/comparison.txt
-          cargo run --locked --release -p perfsuite --bin bench-report -- --results target/perf-results/claims | tee target/perf-results/claim-verdicts.md
+          taskset -c "$PERF_CPUS" cargo run --locked --release -p perfsuite --bin bench-report -- --results target/perf-results/claims | tee target/perf-results/claim-verdicts.md
       - name: compile every performance gate before measuring
         run: tools/perf-tests.sh --no-run
       - name: run performance gates serially on the fixed CPU set
