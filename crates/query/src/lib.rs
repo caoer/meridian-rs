@@ -27,8 +27,8 @@ use std::collections::BTreeMap;
 
 use addr::MountSet;
 use model::{
-    ByteSpan, CorpusIndex, Document, Edit, EditKind, HpathSeg, Node, NodeKind, Ref, RefResolution,
-    RootedCorpus, SpliceRequest,
+    ByteSpan, CorpusIndex, Document, Edit, EditKind, HeadingChain, HeadingText, HpathSeg, Node,
+    NodeKind, Ref, RefResolution, RootedCorpus, SpliceRequest,
 };
 
 /// One inbound reference: which file, where, linking how.
@@ -428,7 +428,7 @@ pub fn plan_rename(
     else {
         return RenamePlan { edits };
     };
-    let old_text = heading_text.clone();
+    let old_text = heading_text.as_str();
     if to == old_text {
         return RenamePlan { edits };
     }
@@ -438,13 +438,13 @@ pub fn plan_rename(
     // fragment is the renamed heading and resolves to `from_path`.
     for (src_path, src_doc) in docs {
         collect_backlink_edits(
-            index, src_path, src_doc, from_path, &old_text, to, &mut edits,
+            index, src_path, src_doc, from_path, old_text, to, &mut edits,
         );
     }
 
     // Heading rename last: a `match` over the heading line (marker + text) so the
     // section body and any trailing `^id` on the line survive byte-for-byte.
-    if let Some(edit) = heading_match_edit(doc, section, &old_text, to, section_ref) {
+    if let Some(edit) = heading_match_edit(doc, section, old_text, to, section_ref) {
         edits.push((from_path.to_string(), single(edit)));
     }
     RenamePlan { edits }
@@ -518,7 +518,7 @@ fn collect_backlink_edits(
 ) {
     fn walk(
         node: &Node,
-        section_hpath: Option<&Vec<String>>,
+        section_hpath: Option<&HeadingChain>,
         ctx: &BacklinkCtx<'_>,
         out: &mut Vec<(String, SpliceRequest)>,
     ) {
@@ -600,12 +600,12 @@ fn single(edit: Edit) -> SpliceRequest {
 }
 
 /// A heading-path (`/`-joined text chain) as a mint-plane `hpath` ref.
-fn hpath_ref(hpath: &[String]) -> Ref {
+fn hpath_ref(hpath: &[HeadingText]) -> Ref {
     Ref::Hpath(
         hpath
             .iter()
             .map(|h| HpathSeg {
-                h: h.clone(),
+                h: h.to_string(),
                 n: None,
             })
             .collect(),
@@ -718,7 +718,7 @@ mod tests {
             &index,
             &docs,
             "page.md",
-            &hpath_ref(&["Foo".to_string()]),
+            &hpath_ref(&[HeadingText::from("Foo")]),
             "Bar",
         );
 

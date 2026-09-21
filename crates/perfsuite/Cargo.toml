@@ -62,3 +62,11 @@ harness = false
 name = "cold-ingest"
 path = "benches/cold_ingest.rs"
 harness = false
+
+# Not criterion: hand-written single-pass main with a counting global
+# allocator (see the file header). Smoke lane (`-- --test`) downshifts to 200
+# files and stages nothing.
+[[bench]]
+name = "resident"
+path = "benches/resident.rs"
+harness = false

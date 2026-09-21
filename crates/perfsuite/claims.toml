@@ -245,6 +245,26 @@ harness = "benches/view.rs"
 recipe = "vault-2026 seed=1 files=2000"
 note = "OD8: the number an agent feels for `mrd sql` — open the RO view, read the _meridian_view stamp as authoritative as_of, run the query client-side, fold live AFTER the result. Baseline TBD on the first fleet run. UNTESTED in V1 (registers the gate)."
 
+# --- resident lane (2026-09-18): the warm engine's memory. Every row above asks
+# how fast; none asked how much a warm workspace costs to KEEP, and the daemon
+# holds every parsed corpus (`model::Docs`) resident until idle-reap. The
+# measurement is a counting global allocator, not RSS: the exact bytes the
+# engine asked to keep, deterministic for a given corpus and tree on every
+# host, so the gate can sit close to the baseline (headroom is for the corpus
+# generator's cross-platform last-ulp drift, not for timing noise).
+
+[[claim]]
+id = "resident.heap.bytes_per_mb.vault_2026"
+title = "Warm engine resident heap per MB of corpus (model::Docs: raw bytes + governed trees)"
+metric = "bytes/MB"
+direction = "lower"
+baseline = 1665512.0
+threshold = 2000000.0 # 1.2x baseline; the pre-sharing tree (2,049,831) sits above it
+baseline_provenance = "first run, 2026-09-18, x86_64 Linux: 11.82 MB / 2000 files resident at 19.69 MB (1.67x the corpus; trees 7.87 MB over 29,957 nodes, 263 B/node). Before the shared heading chain and the children shrink: 24.24 MB (2.05x; 2,049,831 bytes/MB, 414 B/node)"
+harness = "benches/resident.rs"
+recipe = "vault-2026 seed=1 files=2000"
+note = "Heap bytes model::Docs keeps resident per MB of markdown: the raw bytes (1.0x, moved not copied), the governed trees, the path map. What the daemon pays per warm workspace, per MB. Counting allocator (Layout sizes), so allocator overhead and fragmentation are excluded: a floor on RSS, and exactly the number a tree-shape change moves. Of the 7.87 MB tree share at baseline, Node structs are 5.51 MB (184 B each, in children vectors, slack released at build); the next sinks are node_rev's 16-byte heap string per node and NodeKind's 104-byte width set by the four-string link variants"
+
 # --- check lane (card G4, 2026-07-28): the two verbs an operator runs most had
 # NO written budget anywhere — docs/status.md, laws.md and this file were all
 # searched and none existed. That absence was part of the defect: a verb with no

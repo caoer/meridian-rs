@@ -3610,7 +3610,7 @@ fn plan_promotion(
 /// per node in delimiter-free array form, so nothing here re-derives an address.
 fn section_hpath_at(node: &model::Node, start: usize) -> Option<Vec<String>> {
     if matches!(node.kind, model::NodeKind::Section { .. }) && node.span.start == start {
-        return node.hpath.clone();
+        return node.hpath.as_ref().map(model::HeadingChain::to_strings);
     }
     node.children
         .iter()
