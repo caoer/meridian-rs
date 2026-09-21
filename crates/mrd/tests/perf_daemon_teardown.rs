@@ -33,11 +33,9 @@ fn mrd_bin() -> &'static str {
 }
 
 fn run(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
-    Command::new(mrd_bin())
+    common::mrd_command(&sb.home, &sb.cache_home)
         .args(args)
         .current_dir(cwd)
-        .env("XDG_CACHE_HOME", &sb.cache_home)
-        .env("HOME", &sb.home)
         .env_remove("MERIDIAN_WORKSPACE")
         .output()
         .expect("spawn mrd")
@@ -120,7 +118,11 @@ fn one_cycle(label: &str) -> i32 {
 
     // Reap BEFORE any further assert that might panic and skip the control.
     let Some(pid) = pid else {
-        panic!("{label}: auto-spawn wrote a pidfile");
+        panic!(
+            "{label}: auto-spawn wrote no pidfile (exit {:?}): {}",
+            warm.status.code(),
+            String::from_utf8_lossy(&warm.stderr)
+        );
     };
     assert!(
         pid_alive(pid),
@@ -132,11 +134,9 @@ fn one_cycle(label: &str) -> i32 {
     // (a) the pid is dead (already asserted inside teardown_asserted)
     // (b) a forced-degrade links answers ephemeral, proving no resident remains
     //     for this sandbox to dial.
-    let cold = Command::new(mrd_bin())
+    let cold = common::mrd_command(&sb.home, &sb.cache_home)
         .args(["links", "--json"])
         .current_dir(&ws)
-        .env("XDG_CACHE_HOME", &sb.cache_home)
-        .env("HOME", &sb.home)
         .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
         .env_remove("MERIDIAN_WORKSPACE")
         .output()

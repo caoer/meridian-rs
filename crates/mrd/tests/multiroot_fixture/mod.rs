@@ -48,20 +48,22 @@ pub fn sandbox() -> Sandbox {
     }
 }
 
-pub fn run(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
-    Command::new(mrd_bin())
+pub fn command(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Command {
+    let mut command = crate::common::mrd_command(&sb.home, &sb.cache_home);
+    command
         .args(args)
         .current_dir(cwd)
-        .env("HOME", &sb.home)
-        .env("XDG_CACHE_HOME", &sb.cache_home)
         .env("MERIDIAN_CONFIG", &sb.config)
         // Force the daemonless path: `mrd links` and `mrd sql` otherwise take the warm
         // engine and never exercise `load_mounts_for` — which is exactly the residual
         // these multi-root CPU gates measure. Status/walk/check are pure-local already.
         .env("MERIDIAN_DAEMON_BIN", "/nonexistent")
-        .env_remove("MERIDIAN_WORKSPACE")
-        .output()
-        .expect("spawn mrd")
+        .env_remove("MERIDIAN_WORKSPACE");
+    command
+}
+
+pub fn run(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
+    command(sb, cwd, args).output().expect("spawn mrd")
 }
 
 /// One declared root: its canonical-name declaration (INV-5 — without it the bind renders

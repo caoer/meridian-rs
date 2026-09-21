@@ -202,7 +202,7 @@ steps:
       # verdicts and nothing else. On green this fold is near-empty; on a
       # compile error the diagnostics still print here, and the suite fold
       # below is then obviously absent rather than buried.
-      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci cargo test --workspace --locked --no-run -q
+      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci tools/test.sh --workspace --locked --no-run -q
       # --no-fail-fast: one failing test binary must not trade away the other
       # binaries' verdicts (one red binary once cost ~80% of the suite's
       # evidence). Inner bash for pipefail — tee must not mask cargo's exit
@@ -227,7 +227,7 @@ steps:
       # counts, not the name of every passing test.
       - |
         set +e
-        setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci bash -o pipefail -c 'cargo test --workspace --locked --no-fail-fast -q 2>&1 | tee target-ci/suite.log'
+        setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci bash -o pipefail -c 'tools/test.sh --workspace --locked --no-fail-fast -q 2>&1 | tee target-ci/suite.log'
         rc=$?
         set -e
         lines=$(grep -c '^test result' target-ci/suite.log || true)
