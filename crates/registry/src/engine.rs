@@ -4,8 +4,8 @@
 //! built at. [`Registry::warm_or_build`](crate::Registry::warm_or_build)
 //! rebuilds only when the hash changes; else reuses and parses nothing.
 //!
-//! Disposable projection of disk — no persistence. Eviction is idle-reap
-//! ([`Registry::reap`](crate::Registry::reap)), not a separate policy (R4).
+//! Disposable projection of disk. The name index stays RAM-only; immutable
+//! documents may restore through the validated §6.9 cache after a cold gap.
 //! Reuse key is the corpus CONTENT hash (R5), not workspace-identity Merkle.
 
 use std::collections::BTreeMap;
@@ -15,7 +15,8 @@ use std::path::PathBuf;
 /// (U2), plus the corpus content hash it was built at (the reuse key).
 ///
 /// Model state — derived, disposable (decision 0002; `model` law 2). Never
-/// persisted: a restart rebuilds it from disk on the first `warm_or_build`.
+/// persisted as a live world: a restart verifies disk truth and reconciles
+/// any reusable document objects through `fs::update_corpus`.
 #[derive(Debug)]
 pub struct WorkspaceEngine {
     /// The vault name/alias index the `query` read ops borrow (U2).

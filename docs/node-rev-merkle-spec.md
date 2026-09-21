@@ -469,10 +469,17 @@ engine-side.
   journal's vacuous windows — unjournaled external edits, idle-reaped rings, a
   seq reset on restart — cannot touch it. No premise consults the journal
   (§4.3.1's consistency law).
-- **Watcher lifecycle:** the watcher lives with the workspace registration, not
-  the engine's warmth. An idle-reaped engine keeps it; events accumulate in a
-  registry-held dirty set that the next warm applies — O(dirty), never
-  O(corpus).
+- **Watcher lifecycle:** the watcher lives with the workspace registration,
+  bounded by the resident budget. An idle-reaped engine keeps it; events
+  accumulate in a registry-held dirty set that the next warm applies —
+  O(dirty), never O(corpus). The registry holds one parsed corpus per warm
+  workspace, with a resident budget (`MRD_MAX_RESIDENT_BYTES`, estimated
+  resident bytes — a fixed multiplier over the warm set's raw markdown
+  bytes). LRU eviction under budget pressure drops the whole warm state,
+  watcher included; the next warm is a full walk, not O(dirty). Bounded
+  residency takes priority over gap coverage for the least-recently-used
+  workspace. Only a live subscription exempts a workspace from the budget
+  sweep; the registration survives either way.
 - **The currency barrier (the cookie).** A guard-grade currency question writes
   a sentinel at `.meridian/cookie` and waits for it to return through the
   ordered event stream. `Seen` — ordered delivery of all the kernel captured,
@@ -539,11 +546,13 @@ outside the hash domain (git-index class): the checkpoint.
   watermark-window re-reads; stats = member count, once, before first serve.
 - **Parses are not gated by this law:** the checkpoint carries leaf digests and
   the tree, never parsed documents, so those counters and the 160 ms govern the
-  resident-tree restore (the guard/currency plane). The document plane's restart
-  cost is an open residue awaiting a parse-cache persistence object, whose slot
-  the tuple reserves.
-- Residual: requirement 1 is only partially satisfied at restart, never on the
-  warm path.
+  resident-tree restore (the guard/currency plane). The separate disposable
+  document cache (§6.9) removes unchanged-document parsing; it does not remove
+  this barrier.
+- A soundness mismatch forces one loud, labeled cold re-baseline. A cursor that
+  cannot anchor forces one labeled warm re-baseline: replay is forfeited, the
+  object retained. The residual stat term remains: requirement 1 is only
+  partially satisfied at restart, never on the warm path.
 - **Markdown stays the sole truth, always.** The §0 ban on trusted snapshots
   stands: this object is allowed only while loud-discard and identity-binding
   hold.
@@ -692,6 +701,81 @@ Gates:
 The fold counter keeps its semantics — zero on a quiet vouched pass, one per
 advance, counting served-fold recomputes — and now runs O(dirty vertices),
 never O(corpus).
+
+### 6.9 Durable document reuse
+
+A process restart or resident-budget eviction loses ownership of parsed
+documents, not their content identity. The engine may persist a disposable,
+per-workspace document cache outside the hash domain. Markdown remains the
+sole authority. Cache absence, contention, incompatibility, corruption, or a
+failed save changes cost only; none can make a workspace fail or serve stale
+bytes.
+
+**Three independent objects.** The §6.5 observation checkpoint establishes
+file identities and leaf digests under the normal pre-serve barrier. The
+document cache maps a content digest to the immutable document derived from
+those bytes (or its invalid-UTF-8 condition). The SQL projection is a separate
+consumer. None is reconstructed from another plane's lossy projection.
+
+**Compatibility.** The document format and semantic parser generation are
+independent of the daemon build SHA, package release number, and SQL schema
+salt. The semantic generation is derived at build time from the parser,
+governed-model, address, and codec sources and their locked dependency set.
+A changed input conservatively invalidates parse reuse; the covered crates'
+full Rust sources and manifests are hashed, so even a comment or other
+metadata-only edit in those inputs may invalidate reuse. An unrelated daemon
+implementation change does not. The cache uses a separate `parsed-v1`
+drawer under the existing workspace bucket, with the same registration,
+locking, last-use, clean, and GC rules as other drawers.
+
+**Restore.** First establish current membership and digests through the
+existing currency instrument. Then decode only cache entries whose digest
+is wanted by that current leaf set. Check the format/generation, record
+checksum, raw-content digest, UTF-8/span bounds, tree depth, and node revs.
+Malformed records are misses. A broken framing boundary ends adoption at
+that boundary; already verified records remain usable. Bound all allocations
+by the available record bytes and a cache-entry size ceiling. Large documents
+that cannot be cached still parse and serve normally.
+
+Each record's checksum includes the semantic generation, type, content digest,
+and payload, so a verified prefix cannot adopt an old-generation record under
+a different header. The generation and checksum bind the derived representation produced by this
+engine; the cache is private local derived data, not an authenticated remote
+input. Restoring does not re-run the parser to prove every semantic field.
+
+Map verified objects onto current paths, including renamed or duplicate
+content, and pass this transient prior corpus to the SAME `fs::update_corpus`
+used by resident rebuilds. Only misses and movers read/parse source. Rebuild
+the corpus name index from the final documents; never deserialize an index,
+persist an epoch cursor as authority, or retain a second decoded corpus.
+The existing witness check controls publication, so an older concurrent
+build cannot replace a newer engine. `WarmOutcome::Built.docs` continues to
+count actual parses, including zero when a cold engine restores completely.
+
+**Storage and saving.** A streaming, checksummed snapshot keeps restore to
+one sequential file instead of one file per document. Entries are keyed by
+content digest and deduplicated within the workspace. Temporary writes are
+atomically replaced; a torn temporary file is never a restore candidate.
+Encode one document at a time so the snapshot size is not also a transient
+RAM allocation. A first completed cold build, eviction, and graceful shutdown
+are save opportunities. Skip a snapshot already saved at the same engine
+fingerprint. Do not periodically rewrite the whole parsed corpus for routine
+edits. An older snapshot is useful: the verified leaf set selects its unchanged
+members and ordinary incremental reconciliation absorbs later edits.
+
+The smaller observation checkpoint may be coalesced in the background, only
+when dirty. Capture its journal cursor before its consistent memo snapshot;
+encode and write after releasing the memo and registry map locks. Background
+saves skip contended state. All cache writes are best effort and observable;
+a failed save never prevents eviction or publication. Persistence I/O must
+not run under a lock that a hook fire or corpus lookup needs.
+
+Acceptance covers unchanged restart (zero parses), one mover, add/remove/
+rename, duplicate content, invalid UTF-8, incompatible generations, corrupt
+records, truncated saves, unavailable storage, concurrent publication, eviction,
+and cache GC. A representative corpus measurement must publish encoded size,
+encode/decode cost, and save memory behavior before relying on this format
+for a large workspace.
 
 ## 7. Integrity surface + CAS — the grain ladder
 

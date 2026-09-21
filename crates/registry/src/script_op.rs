@@ -120,11 +120,14 @@ pub(crate) fn serve_line(
         scope,
         guards,
     };
-    match serve(registry, ws, &request) {
+    let result = serve(registry, ws, &request);
+    let elapsed = started.elapsed();
+    crate::server::log_slow_op("script", elapsed, Some(ws));
+    match result {
         Ok(trace) => {
             let body = serde_json::to_value(&trace).expect("a ScriptTrace serializes");
             let mut frame = json!({"id": id, "ok": true, "body": body});
-            let duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
             wire_serve::rev::attach_meta(&mut frame, duration_us);
             let mut line = serde_json::to_string(&frame).expect("a script frame serializes");
             line.push('\n');
@@ -654,7 +657,7 @@ impl ScriptHost for LiveHost<'_> {
             // birth an in-script run() commits resolves bare-door until the
             // script frame grows its own member.
             ambient: None,
-            cache: &cache,
+            cache: Some(&cache),
         };
         // The clock stops while the run plane executes: admission was checked
         // above; the dispatch below — its walks, its child — is bounded by the

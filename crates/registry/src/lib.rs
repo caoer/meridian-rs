@@ -19,9 +19,15 @@
 //! the reap DEMOTES — warm engine, ring, read-mint ledger, and sql handle drop;
 //! the entry, the §6.4 event feed, and the resident memo survive (merkle-spec
 //! §6.4 registration-lifetime law — the feed's dirty set is what makes the next
-//! warm O(dirty)). Drawer sentinel (`cache` `registered.json`) drives 30-day
-//! last-use GC. Only `unregister` ends a registration — and the feed with it.
+//! warm O(dirty)). The resident budget
+//! ([`DEFAULT_MAX_RESIDENT_BYTES`], [`Registry::reap_to_budget`]) bounds what
+//! idleness cannot: over budget, the least-recently-used workspaces are
+//! EVICTED whole — feed and memo included, a full-walk re-warm being the
+//! deliberate trade — while the registration still survives. Drawer sentinel
+//! (`cache` `registered.json`) drives 30-day last-use GC. Only `unregister`
+//! ends a registration.
 
+mod cache_io;
 mod checkpoint;
 mod client;
 mod delta_sink;
@@ -29,6 +35,7 @@ mod engine;
 mod feed;
 mod mounts;
 pub mod mw_sql;
+mod parsed_cache;
 mod protocol;
 mod registry;
 pub mod ring;
@@ -56,8 +63,10 @@ pub use feed::{FeedStats, RescanCause};
 pub use protocol::{DenyKind, Request, Response, WorkspaceEntry};
 pub use registry::{RegisterOutcome, Registry, ResolveOutcome};
 pub use server::{
-    Config, DRAIN_COLD_BUILDS_ENV, IDLE_EXIT_ENV, RunningServer, ServeOutcome, default_socket_path,
-    in_process_registry, serve_lines, socket_path_for_cache_root, socket_path_under_home,
+    Config, DRAIN_COLD_BUILDS_ENV, IDLE_EXIT_ENV, MAX_RESIDENT_BYTES_ENV, RunningServer,
+    ServeOutcome, default_socket_path, in_process_registry, published_socket_path,
+    reachable_socket_path, serve_lines, socket_path_for_cache_root, socket_path_under_home,
+    socket_pointer_path,
 };
 #[cfg(feature = "test-support")]
 pub use test_support::TestServer;
@@ -73,6 +82,33 @@ pub const DEFAULT_IDLE_REAP: Duration = Duration::from_secs(60 * 60);
 /// Reaper scan cadence. Must be well under [`DEFAULT_IDLE_EXIT`].
 #[allow(clippy::duration_suboptimal_units)]
 pub const DEFAULT_REAP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Resident-budget multiplier: estimated resident bytes per raw markdown
+/// byte. The parse blow-up measured across corpus shapes spans 1.54x to
+/// 6.01x of raw bytes; 6 is the worst case, so the estimate never
+/// under-counts and the bound holds for every shape.
+pub const RESIDENT_BYTES_PER_RAW_BYTE: u64 = 6;
+
+/// Resident budget: the ceiling on ESTIMATED resident bytes across every
+/// warm workspace engine, where the estimate is
+/// [`RESIDENT_BYTES_PER_RAW_BYTE`] times the warm set's raw markdown bytes.
+/// The budget sweep ([`Registry::reap_to_budget`]) runs beside the idle reap
+/// and evicts whole workspaces LRU-first until the warm set fits; `0` is
+/// unbounded.
+///
+/// Bytes, not documents: per-document resident cost varies 67x with
+/// document size (a real root of 85 huge documents costs ~628 KB per
+/// document; small synthetic documents ~9 KB), so a document budget is
+/// defeated by exactly the corpus shapes it must bound. Raw bytes scale
+/// with what parsing actually allocates, and the worst-case multiplier
+/// keeps the estimate an upper bound.
+///
+/// 5 GiB estimated admits the measuring fleet's real working set — a
+/// sessions root at ~304 MB of raw markdown (~1.8 GiB estimated), a main
+/// wiki checkout (~420 MiB estimated), and roughly eight worktrees (~235
+/// MiB estimated each) — with headroom, while holding the daemon far under
+/// the 10 GB line at which an unbounded warm set forces operator restarts.
+pub const DEFAULT_MAX_RESIDENT_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 
 /// Idle-exit horizon (G11): no client request for this long ⇒ shut down.
 /// Detached daemons are reparented to init; without this they are immortal.

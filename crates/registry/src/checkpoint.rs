@@ -41,6 +41,7 @@
 //! unchanged member's byte read and re-hash; what it still pays is the §6.2
 //! metadata sweep, one `stat` per member and zero bytes (~160 ms, lane B).
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::feed;
@@ -96,14 +97,14 @@ pub(crate) fn path(cache_root: &Path, workspace: &Path) -> PathBuf {
     cache::drawer_dir(cache_root, workspace).join(CHECKPOINT_FILENAME)
 }
 
-/// Serialize `cache` and write it atomically into the drawer. Best-effort and
-/// silent on failure: a checkpoint that fails to save costs the next start a
-/// cold rebuild, never correctness, and must not fail a shutdown.
+/// Test helper for the two-stage production save. Production prepares under
+/// the memo lock, then commits owned bytes after releasing it.
 ///
 /// The journal cursor is captured by the CALLER before the memo snapshot —
 /// under-claiming only re-replays (the overlay is idempotent), over-claiming
 /// would skip a change.
-pub(crate) fn save(
+#[cfg(test)]
+fn save(
     cache_root: &Path,
     workspace: &Path,
     cache: &mut fs::DomainCache,
@@ -119,20 +120,13 @@ pub(crate) fn save(
     let Some(bytes) = fs::checkpoint::serialize(cache, &identity) else {
         return false; // no observation baseline yet, or an unencodable path
     };
+    commit(cache_root, workspace, &bytes)
+}
+
+/// Atomically commit already-encoded bytes. No live memo is borrowed here.
+pub(crate) fn commit(cache_root: &Path, workspace: &Path, bytes: &[u8]) -> bool {
     let dir = cache::drawer_dir(cache_root, workspace);
-    if std::fs::create_dir_all(&dir).is_err() {
-        return false;
-    }
-    let tmp = dir.join(format!("{CHECKPOINT_FILENAME}.tmp.{}", std::process::id()));
-    if std::fs::write(&tmp, &bytes).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        return false;
-    }
-    if std::fs::rename(&tmp, dir.join(CHECKPOINT_FILENAME)).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        return false;
-    }
-    true
+    crate::cache_io::write(&dir, CHECKPOINT_FILENAME, |file| file.write_all(bytes)).is_ok()
 }
 
 /// Read, verify, and replay a workspace's checkpoint. `None` when there is no
@@ -702,6 +696,8 @@ mod tests {
             cache_root.clone(),
             Vec::new(),
         );
+        // Production registers the workspace before warming its memo.
+        reg.register(&ws);
         // Warm it: the memo observes, then the shutdown hook persists it.
         reg.domain_cache(&ws)
             .lock()
@@ -717,6 +713,7 @@ mod tests {
             cache_root.clone(),
             Vec::new(),
         );
+        restarted.register(&ws);
         assert!(
             restarted.checkpoint_receipt(&ws).is_none(),
             "no receipt before the first borrow"

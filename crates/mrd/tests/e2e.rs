@@ -108,10 +108,18 @@ fn e2e_init_ls_unregister_lifecycle() {
     assert_eq!(rows.len(), 1, "one drawer listed");
     assert_eq!(rows[0]["workspace"], canonical.to_string_lossy().as_ref());
 
-    // `unregister` retires (removes) the drawer.
+    // A version-independent parsed cache belongs to the same workspace.
+    let parsed = cache::parsed_drawer_dir(&sb.cache_root, &canonical);
+    cache::register(&parsed, &canonical).unwrap();
+    std::fs::write(parsed.join("corpus.v1"), b"derived payload").unwrap();
+    // `unregister` retires both payload families.
     let out = sb.run(&ws, &["unregister"]);
     assert!(out.status.success(), "unregister: {}", stderr(&out));
     assert!(!drawer.exists(), "unregister removes the drawer directory");
+    assert!(
+        !parsed.exists(),
+        "unregister also removes the stable parsed drawer"
+    );
 }
 
 // ---------------------------------------------------------------------------
