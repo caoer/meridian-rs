@@ -107,6 +107,14 @@ pub fn drawer_dir(cache_root: &Path, workspace: &Path) -> PathBuf {
         .join(version_segment())
 }
 
+/// Stable document-cache drawer. The payload's own format and semantic
+/// generation govern compatibility, independently of package/SQL versions.
+/// It carries a normal registration sentinel, so listing, clean and GC see it.
+#[must_use]
+pub fn parsed_drawer_dir(cache_root: &Path, workspace: &Path) -> PathBuf {
+    cache_root.join(drawer_key(workspace)).join("parsed-v1")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

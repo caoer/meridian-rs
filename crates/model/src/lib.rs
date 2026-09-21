@@ -559,6 +559,14 @@ fn node_rev(bytes: &[u8], span: &ByteSpan) -> NodeRev {
     NodeRev(blake3::hash(&bytes[span.clone()]).to_hex().as_str()[..16].to_string())
 }
 
+/// Whether a claimed node revision matches a valid UTF-8 span of these bytes.
+/// Invalid spans answer false; the hash algorithm remains owned by this crate.
+#[must_use]
+pub fn node_rev_matches(raw: &str, span: &ByteSpan, claimed: &NodeRev) -> bool {
+    raw.get(span.clone())
+        .is_some_and(|bytes| node_rev(bytes.as_bytes(), &(0..bytes.len())) == *claimed)
+}
+
 /// The §1 total order: span.start asc, span.end desc (container before contained),
 /// then kind ordinal.
 fn span_order(a: &Node, b: &Node) -> std::cmp::Ordering {

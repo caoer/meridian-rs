@@ -101,17 +101,26 @@ pub(crate) fn run(target_arg: Option<&str>, format: Format) -> Result<(), Fail> 
     let drawer = match cache::cache_root() {
         Err(e) => Drawer::Unexamined(format!("the cache root could not be resolved ({e})")),
         Ok(cache_root) => {
-            let drawer_dir = cache::drawer_dir(&cache_root, &workspace);
-            match drawer_dir.try_exists() {
+            let drawers = [
+                cache::drawer_dir(&cache_root, &workspace),
+                cache::parsed_drawer_dir(&cache_root, &workspace),
+            ];
+            let examined: std::io::Result<Vec<_>> = drawers
+                .iter()
+                .map(|dir| dir.try_exists().map(|present| (dir, present)))
+                .collect();
+            match examined {
                 Err(e) => Drawer::Unexamined(format!("the drawer could not be examined ({e})")),
-                Ok(false) => Drawer::Absent,
-                Ok(true) => {
-                    cache::remove_drawer(&drawer_dir).map_err(|e| {
-                        Fail::tool(format!(
-                            "cannot remove drawer {}: {e}",
-                            drawer_dir.display()
-                        ))
-                    })?;
+                Ok(found) if found.iter().all(|(_, present)| !present) => Drawer::Absent,
+                Ok(found) => {
+                    for (drawer_dir, _) in found.into_iter().filter(|(_, present)| *present) {
+                        cache::remove_drawer(drawer_dir).map_err(|e| {
+                            Fail::tool(format!(
+                                "cannot remove drawer {}: {e}",
+                                drawer_dir.display()
+                            ))
+                        })?;
+                    }
                     gc::maybe_auto_gc(&cache_root);
                     Drawer::Removed
                 }
