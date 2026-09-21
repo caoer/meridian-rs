@@ -1143,6 +1143,26 @@ one the script op takes) and never run the `domain_snapshot` fold. The world is
 a parameter (`run::modes::ModeWorld`): one implementation serves the daemon and
 the CLI, so the two lanes cannot answer differently.
 
+**What the entry pays first is per MODE — a fire drives no currency pass.**
+`load` is the resolver's question — *what does this page declare NOW?* — so
+its entry freshens the resident engine (`Registry::warm_or_build`: the §6.7
+currency pass, and the incremental fold when the fingerprint moved). A door
+write leaves the resident engine untouched (§ What an entry costs), so without
+that freshen a resolver re-loading on the write's own delta frame would read
+the pre-write page. `fire` is the event's question — *run the block the
+resolver already resolved* — and its entry takes the resident snapshot AS IT
+IS: no currency pass, no fold, and no borrow of the resident domain memo (that
+memo is the bash bracket's observation instrument, borrowed for a live task
+target alone). The row's `rev` names the bytes that ran; the prewarm sweep and
+every read on the workspace keep the resident current. Why: the currency pass
+holds the memo across the extent-refresh floor — O(domain) in `stat`s — so a
+fire that borrowed the memo or drove the pass either ran that floor itself or
+parked, unbounded, behind whichever seat was running it, past the host's
+per-op deadline (measured on a 59k-member sessions root: a 70 ms fire at
+rest; 10 s host timeouts under a concurrent sweep, the memo the one shared
+resource). A fire is one function call on one page and must never pay a
+corpus-wide pass to answer.
+
 On a **cold workspace** the answer is per lane:
 
 - **daemon lane** — the same § 3.2 cold gate as the script op: it **refuses
@@ -1715,7 +1735,7 @@ Record ↔ receipt linkage:
 ## The CLI surface (locked)
 
 ```
-mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json
+mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json --exit-passthrough
 mrd run <PAGE>#^<id> [--input-json FILE|-] [--dry] [--json]   # fire one declared block
 mrd run --load <PAGE>... [--json]                             # what the pages declare
 mrd script [--json]                      # source on stdin (heredoc)
@@ -1729,7 +1749,8 @@ face non-normative (§ The script entry). Every meaningless combination refuses
 by name with exit 2, never ignored: `--load` with `#^<id>`; `--load` with
 `TASK` / `-- ARGS` / `--list`; `--input-json` without a block address;
 `TASK` / `-- ARGS` / `--env` on a fire, whose one input channel is
-`--input-json`.
+`--input-json`; `--exit-passthrough` beside `--list` / `--dry` / `--load` or a
+`#^<id>` fire, none of which execs a task step.
 
 No argv JSON. With TASK omitted the one declared task runs; with several
 declared, the binding named `default` (`task.default`) runs; where no `default`
@@ -1748,6 +1769,55 @@ exit leg.
 Exit triad: **0** clean · **1** the run plane refused or failed (eval fault,
 cap refusal, workspace busy, timeout, bash nonzero) ·
 **2** the invocation is wrong (usage, addressing, contract).
+
+**A step's own exit code is a fact, and the triad is not its channel.** A bash
+step exiting 2 to mean "I could not run, do not trust my output" and one
+exiting 1 to mean "I ran and found something" both leave through the triad's
+findings leg, because 2 is reserved: the absence contract above states
+`exit 2 + empty stdout` as a **guarantee** that nothing was armed and the
+workspace is unchanged, and a step's code taking that value over would retract
+the guarantee from every caller already reading it. So the code reaches the
+caller by two surfaces, and the default one is not the rc.
+
+- **Always, on the report.** The rendered report carries the sealed code —
+  `exec: exited N` in text, `exec.exit_code` under `--json` — read off the same
+  `RunReport` the completion receipt's `exec.exit_code` is written from. A
+  caller reads it there; parsing `receipts/run.md` is never the contract. The
+  report comes **last** on stdout, not alone on it: a bash step's own stdout
+  streams live ahead of it, byte for byte (§ The run record — stdout is data,
+  not effects), so `--json` piped straight into a JSON reader carries the
+  step's output first. Under `--json` the report is one line, and it is the
+  **last line** of stdout whenever the step's output ends in a newline; a step
+  that leaves its last line open shares that line with the report.
+- **Under `--exit-passthrough`, on the rc.** The flag hands the findings leg to
+  the step: a step that reached its own exit door with a nonzero code makes
+  `mrd run` exit that code, verbatim.
+
+**Law — passthrough moves one leg and reserves the rest.** The flag governs
+exactly the leg where a clean detection window met a nonzero exit (the
+completion receipt is written, no effect is applied). Every other leg keeps its
+code, flag or no flag: a signaled step stays `128 + signal`, a timeout stays 1,
+and an out-of-band delta or an ungoverned tree write stays 1 with the delta
+named — **the plane's own finding outranks the step's code**, because a detected
+write is mrd's claim and not the task's. Usage, addressing and contract faults
+stay 2, refused before the plane is entered. **Passthrough never yields 0**: a
+code the rc cannot carry leaves as 1, so no caller reads a failure as clean.
+
+**What passthrough costs, stated.** Under the flag a step exiting 2 and a bad
+invocation carry the same rc. They stay distinguishable by the report: a step
+that ran printed its report on stdout, and a bad invocation printed none. It is
+the report that tells them apart and not stdout being empty — `TASK` omitted
+among several tasks with no `default` prints the task list there and exits 2
+(§ The CLI surface, above). The flag is opt-in for exactly that reason — the
+triad's reading is unchanged for every caller who does not pass it.
+
+**Where no task step execs, the flag refuses; on starlark it stands idle.**
+`--list`, `--dry`, `--load` and a `#^<id>` fire run no task step — a fired
+exec entry does run a process, and its raw exit rides the row (`process.exit`),
+never the rc — so the flag beside any of them refuses by name (§ The CLI
+surface, above). A starlark task is the one place it parses and does nothing:
+the fence a task declares is the page's fact, not argv's, so argv cannot refuse
+it there — and a hermetic evaluation has no exit code to pass.
 
 **A churn refusal carries a recovery line.** It blames nothing the caller
 wrote: the addressed target is a **corpus member that vanished** mid-read
@@ -1940,7 +2010,7 @@ Four fold sites, not all firing on one lane:
 | `dispatch_starlark.rs` `observe_if_emitted`, live tense (reached from `runner.rs` `dispatch`) | a live run whose block emitted an **md.\*** effect. A live `notice`-only or effect-free run folds nothing (§ The run plane) |
 | `dispatch_starlark.rs` `observe_if_emitted`, rehearsal tense (reached from `runner.rs` `rehearse`) | `--dry` instead of the above, not as well, and only when the block emitted something — a wider gate than live, for the dry report's provenance |
 | `runner.rs` `cascade` | a generation that applies md.\* — needs a non-empty ruleset, and both doors hand `S1_RULES` (empty), so today: never |
-| `executor.rs` pre-commit (`DeltaSink::root_before`) | only with a `DeltaSink` in reach, i.e. the wire arm — and then it is the sink's OBSERVATION, not a fold: the daemon's sink answers `root_before` (and, after the commit, `root_after`) from the resident memo at the stat floor, bytes for movers only, phase-free — no `snapshot` set. The CLI passes `delta: None` and returns before the observation |
+| `executor.rs` pre-commit (`DeltaSink::root_before`) | only with a `DeltaSink` in reach, i.e. the wire arm — and then it is the sink's OBSERVATION, not a fold: on a submission that borrowed the resident memo (one carrying a live task target, § The world a mode-bearing row runs against) the daemon's sink answers `root_before` (and, after the commit, `root_after`) from that memo at the stat floor, bytes for movers only, phase-free — no `snapshot` set. A mode-only submission borrows no memo (a fire never drives a currency pass), so the sink of a committing fire folds both roots from bytes (`snapshot` set, one per tense). The CLI passes `delta: None` and returns before the observation |
 
 On the **CLI** an md.\*-committing `mrd run` emits exactly one `snapshot` set
 (`grep -c 'phase=snapshot '` = 1); one committing nothing emits **zero** — the
@@ -1948,7 +2018,9 @@ lazy gate (37 800-member root: 0/20 folded; eager 20/20). On the
 **wire/daemon** arm a committing run emits the same one set: the executor's
 pre-commit observation and the sink's post-commit one ride the resident memo,
 phase-free (as the bash bracket's do), so `grep -c 'phase=snapshot '` counts
-eval folds on either arm.
+eval folds on either arm. A committing fire on a mode-only submission is the
+one daemon-side case that still folds from bytes at the sink (two `snapshot`
+sets, before and after): that submission borrowed no memo by the fire law.
 
 ## Seam map (for reviewers)
 

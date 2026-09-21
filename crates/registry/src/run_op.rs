@@ -27,7 +27,6 @@
 //!   `ok:false` frames answer only what never reached the plane.
 
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Instant;
 
 use effects::EvalLimits;
@@ -119,8 +118,10 @@ pub(crate) fn serve_line(
         return error_line(id, *error, rev);
     }
     let rows = serve(registry, ws, &request);
+    let elapsed = started.elapsed();
+    crate::server::log_slow_op("run", elapsed, Some(ws));
     let mut frame = json!({"id": id, "ok": true, "body": {"targets": rows}});
-    let duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
     wire_serve::rev::attach_meta(&mut frame, duration_us);
     let mut line = serde_json::to_string(&frame).expect("a run frame serializes");
     line.push('\n');
@@ -171,35 +172,27 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
     // frame on the bound workspace's ring, inside the executor's flock.
     // A second ring handle: the create door's SeqSink for run-plane births.
     let birth_ring = registry.ring(ws);
-    // Observation unification (engine-warm-cost design § 5): the daemon door
-    // serves the bash bracket's observations — and the sink's two frame
-    // roots — from the workspace's resident domain memo, the same instrument
-    // every currency pass runs on.
-    let cache = registry.domain_cache(ws);
-    let sink = crate::delta_sink::RingSink::new(registry, ws, Arc::clone(&cache));
+    // Observation unification (engine-warm-cost design § 5): a LIVE task
+    // target's bash bracket — and the sink's two frame roots — observe
+    // through the workspace's resident domain memo, the same instrument
+    // every currency pass runs on. Borrowed for that target class alone
+    // (`RunHost::cache`): a mode row never observes through it, and the
+    // borrow parks unbounded behind any currency pass.
+    let live_task = request
+        .targets
+        .iter()
+        .any(|t| !modes::is_mode_target(t) && !t.dry.unwrap_or(false));
+    let cache = live_task.then(|| registry.domain_cache(ws));
+    let sink = crate::delta_sink::RingSink::new(registry, ws, cache.clone());
     let host = RunHost {
         sink: &sink,
         birth_seq: &*birth_ring,
         fields: &request.fields,
         ambient: request.ambient.as_deref(),
-        cache: &cache,
+        cache: cache.as_deref(),
     };
-    // The mode-bearing rows pin the RESIDENT snapshot — an `Arc` clone, the
-    // script op's entry (`script_op.rs`) — and never run the
-    // `domain_snapshot` fold the task path takes. Pinned once per submission,
-    // so every row of one call reads one corpus.
+    let pinned = pinned_world(registry, ws, request);
     let any_mode = request.targets.iter().any(modes::is_mode_target);
-    let pinned = any_mode
-        .then(|| {
-            // Deliberately discarded: `cold_gate_wire` above has already
-            // refused the cold case with `corpus_warming`, so reaching here
-            // means a warm (or warming) workspace and this call is the nudge,
-            // not the gate. A bare `.ok()` otherwise reads as a swallowed
-            // failure. (PR 195 review, e9f1ae35, N1.)
-            registry.warm_or_build(ws).ok();
-            registry.engine_snapshot(ws)
-        })
-        .flatten();
     // The § 2.2 module cache, resident per workspace: a block is evaluated
     // once per rev, so a warm fire is one function call. The CLI has no
     // equivalent and passes `None` — a fresh process per invocation has
@@ -292,6 +285,48 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
     rows
 }
 
+/// The world a mode-bearing submission runs against: the RESIDENT snapshot —
+/// an `Arc` clone, the script op's entry (`script_op.rs`) — never the
+/// `domain_snapshot` fold the task path takes. Pinned once per submission, so
+/// every row of one call reads one corpus; `None` when no target bears a
+/// mode, or the reaper won the warm→pin race (the row names that).
+///
+/// What the entry pays FIRST is per mode (run-plane § The world a mode-bearing
+/// row runs against). A `load` is the resolver's question — what does this
+/// page declare NOW — so it freshens the resident engine: the currency pass,
+/// and the incremental fold when the fingerprint moved (a door write leaves
+/// the resident engine untouched, so a resolver re-loading on the write's own
+/// delta frame would otherwise read the pre-write page). A `fire` runs the
+/// block the resolver already resolved against the resident corpus AS IT IS —
+/// no currency pass — and its row's `rev` names the bytes that ran; the
+/// prewarm sweep and every read keep the resident current. The pass holds the
+/// memo across the extent-refresh floor, O(domain) in stats, so a fire that
+/// drove it either ran that floor itself or parked unbounded behind the seat
+/// that was, past the host's per-op deadline: a 70 ms fire at rest, 10 s host
+/// timeouts under a concurrent sweep on a 59k-member root.
+fn pinned_world(
+    registry: &Registry,
+    ws: &Path,
+    request: &RunArgs,
+) -> Option<std::sync::Arc<crate::engine::WorkspaceEngine>> {
+    if !request.targets.iter().any(modes::is_mode_target) {
+        return None;
+    }
+    if request
+        .targets
+        .iter()
+        .any(|t| matches!(t.mode, Some(wire::RunMode::Load)))
+    {
+        // Deliberately discarded: `cold_gate_wire` has already refused the
+        // cold case with `corpus_warming`, so reaching here means a warm (or
+        // warming) workspace and this call is the freshen, not the gate. A
+        // bare `.ok()` otherwise reads as a swallowed failure. (PR 195
+        // review, e9f1ae35, N1.)
+        registry.warm_or_build(ws).ok();
+    }
+    registry.engine_snapshot(ws)
+}
+
 /// The daemon-side facilities one submission's targets ride: the workspace
 /// ring's frame mint (§ A.8 Delta honesty) and the resident domain memo (the
 /// observation instrument, card run-observation-unification). Both doors —
@@ -309,7 +344,14 @@ pub(crate) struct RunHost<'a> {
     /// directory every bare birth target this request commits resolves
     /// under. `None` when the host attached none.
     pub(crate) ambient: Option<&'a str>,
-    pub(crate) cache: &'a std::sync::Mutex<fs::DomainCache>,
+    /// The resident domain memo — the bash bracket's observation instrument,
+    /// borrowed for a LIVE task target alone. `None` on a submission with no
+    /// such target (mode-only, or dry-only): borrowing it applies the feed's
+    /// pending set under the memo lock and parks, unbounded, behind any
+    /// currency pass holding it across the extent-refresh floor — a wait a
+    /// row that never observes through it must not pay (run-plane § The
+    /// world a mode-bearing row runs against).
+    pub(crate) cache: Option<&'a std::sync::Mutex<fs::DomainCache>>,
 }
 
 /// One target → one row, whichever door invoked it — the § A.8 op arm's loop
@@ -364,6 +406,19 @@ fn execute_row(
         Ok(t) => t,
         Err(e) => return refusal_row(target, invocation, "invocation", &e.to_string(), None),
     };
+    // Unreachable by construction — `serve` borrows the memo whenever a live
+    // task target is present — answered on the row rather than misdispatched,
+    // like every other routing defect on this op.
+    let Some(cache) = host.cache else {
+        return refusal_row(
+            target,
+            invocation,
+            "run",
+            "no observation memo was borrowed for this submission — a live task target \
+             observes through the resident domain memo",
+            None,
+        );
+    };
     let scratch = root.0.join(".meridian/scratch").join(invocation);
     if let Err(e) = std::fs::create_dir_all(&scratch) {
         return refusal_row(
@@ -404,7 +459,7 @@ fn execute_row(
         // The daemon lane (card run-observation-unification): bracket
         // observations from the resident domain memo; the drawer memo stays
         // the CLI's instrument.
-        observations: run::dispatch_bash::ObservationSource::Resident(host.cache),
+        observations: run::dispatch_bash::ObservationSource::Resident(cache),
     };
     // No live stream on the wire: the report's own sealed stdout record is
     // the exec-facts surface (§ A.8 — "this op streams nothing").
@@ -572,4 +627,194 @@ fn refusal_row(
         row["task"] = json!(task);
     }
     row
+}
+
+#[cfg(test)]
+mod tests {
+    //! The entry's price per mode (run-plane § The world a mode-bearing row
+    //! runs against): a fire borrows no memo and drives no currency pass; a
+    //! load freshens the resident engine.
+
+    use super::*;
+    use crate::registry::Registry;
+    use crate::state::StateStore;
+    use std::fs::{create_dir_all, write};
+    use std::path::PathBuf;
+    use std::sync::{Arc, PoisonError};
+    use std::time::Duration;
+
+    const HOOKS: &str = "\
+# Hooks
+
+```starlark
+def run(event):
+    return {\"deny\": \"no stash\", \"saw\": event[\"name\"]}
+
+declare(on = \"PreToolUse\", match = \"Bash\")
+```
+^no-stash
+";
+
+    /// The same block, edited — a different length, so the member's stat
+    /// key moves with its bytes.
+    const HOOKS_EDITED: &str = "\
+# Hooks
+
+```starlark
+def run(event):
+    return {\"deny\": \"no stash, no push\", \"saw\": event[\"name\"]}
+
+declare(on = \"PreToolUse\", match = \"Bash\")
+```
+^no-stash
+";
+
+    fn registry_in(home: &Path) -> Registry {
+        let cache_root = home.join("cache");
+        create_dir_all(&cache_root).unwrap();
+        Registry::new(
+            StateStore::new(home.join("state.json")),
+            cache_root,
+            Vec::new(),
+        )
+    }
+
+    fn write_ws(home: &Path, files: &[(&str, &str)]) -> PathBuf {
+        let ws = home.join("ws");
+        create_dir_all(&ws).unwrap();
+        for (rel, content) in files {
+            let path = ws.join(rel);
+            if let Some(parent) = path.parent() {
+                create_dir_all(parent).unwrap();
+            }
+            write(path, content).unwrap();
+        }
+        ws
+    }
+
+    /// One v3 run frame, renamed exactly as `handle_line` renames it before
+    /// routing here.
+    fn frame(id: u64, targets: &Value) -> Map<String, Value> {
+        let mut obj = json!({
+            "id": id, "op": "run", "invocation": format!("t.{id}"), "targets": targets,
+        })
+        .as_object()
+        .cloned()
+        .expect("a frame is an object");
+        wire_serve::rev::rename_request(&mut obj);
+        obj
+    }
+
+    fn fire_frame(id: u64) -> Map<String, Value> {
+        frame(
+            id,
+            &json!([{
+                "page": "HOOKS.md", "block": "no-stash", "mode": "fire",
+                "input": {"name": "PreToolUse", "id": "s:PreToolUse:t0"},
+            }]),
+        )
+    }
+
+    fn load_frame(id: u64) -> Map<String, Value> {
+        frame(id, &json!([{"page": "HOOKS.md", "mode": "load"}]))
+    }
+
+    fn rows(line: &str) -> Vec<Value> {
+        let resp: Value = serde_json::from_str(line.trim()).expect("one JSON line");
+        assert_eq!(resp["ok"], json!(true), "the run op answers rows: {resp}");
+        resp["body"]["targets"].as_array().cloned().unwrap()
+    }
+
+    /// A fire-only submission answers while another seat holds the resident
+    /// domain memo — the state every currency pass on the workspace leaves
+    /// the memo in across the extent-refresh floor. Before this law the entry
+    /// borrowed the memo for a bracket no mode row ever opens and drove the
+    /// pass itself, and this call parked past the host's 10 s deadline.
+    #[test]
+    fn a_fire_answers_while_the_memo_is_held() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = Arc::new(registry_in(home.path()));
+        let ws = write_ws(home.path(), &[("HOOKS.md", HOOKS)]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        reg.warm_or_build(&canonical)
+            .expect("the entry pass warms the drawer");
+
+        // Another seat mid-pass: the memo stays held for the whole call.
+        let memo = reg.domain_cache(&canonical);
+        let _held = memo.lock().unwrap_or_else(PoisonError::into_inner);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let fire = {
+            let reg = Arc::clone(&reg);
+            let canonical = canonical.clone();
+            std::thread::spawn(move || {
+                let line = serve_line(&reg, Some(&canonical), &fire_frame(1), Rev::V3);
+                let _ = tx.send(line);
+            })
+        };
+        let line = rx.recv_timeout(Duration::from_secs(5)).expect(
+            "a fire-only submission must answer while the memo is held: it borrows \
+             no memo and drives no currency pass",
+        );
+        fire.join().expect("the fire thread panicked");
+        let rows = rows(&line);
+        assert_eq!(rows[0]["result"], "ok", "{rows:?}");
+        assert_eq!(
+            rows[0]["value"],
+            json!({"deny": "no stash", "saw": "PreToolUse"}),
+            "the block ran and answered: {rows:?}"
+        );
+    }
+
+    /// The two halves of the law on one workspace: a fire runs the resident
+    /// corpus AS IT IS and names the rev that ran; a load freshens the
+    /// resident engine, and the fire after it runs the edited block.
+    #[test]
+    fn a_fire_runs_the_resident_corpus_and_a_load_freshens_it() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("HOOKS.md", HOOKS)]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        reg.warm_or_build(&canonical)
+            .expect("the entry pass warms the drawer");
+
+        let first = rows(&serve_line(&reg, Some(&canonical), &fire_frame(1), Rev::V3));
+        assert_eq!(first[0]["value"]["deny"], "no stash", "{first:?}");
+        let rev_before = first[0]["rev"]["block"]
+            .as_str()
+            .expect("a fire row names the block rev that ran")
+            .to_owned();
+
+        // A foreign edit lands. Nothing folds it: this fixture runs no
+        // prewarm sweep, and no read has been served since.
+        write(ws.join("HOOKS.md"), HOOKS_EDITED).unwrap();
+
+        let stale = rows(&serve_line(&reg, Some(&canonical), &fire_frame(2), Rev::V3));
+        assert_eq!(
+            stale[0]["value"]["deny"], "no stash",
+            "a fire drives no currency pass: the resident corpus answers: {stale:?}"
+        );
+        assert_eq!(
+            stale[0]["rev"]["block"], rev_before,
+            "and the row names the bytes that ran"
+        );
+
+        // A load is the resolver's question and freshens the resident engine.
+        let loaded = rows(&serve_line(&reg, Some(&canonical), &load_frame(3), Rev::V3));
+        assert!(
+            loaded[0]["loaded"]
+                .as_array()
+                .is_some_and(|l| !l.is_empty()),
+            "the load answered the page's declarations: {loaded:?}"
+        );
+
+        let fresh = rows(&serve_line(&reg, Some(&canonical), &fire_frame(4), Rev::V3));
+        assert_eq!(
+            fresh[0]["value"]["deny"], "no stash, no push",
+            "the fire after a load runs the edited block: {fresh:?}"
+        );
+        assert_ne!(fresh[0]["rev"]["block"], rev_before);
+    }
 }

@@ -249,14 +249,14 @@ The **annotated tag message** carries the release notes. `docs/` grows no per-re
 
 ### §5.4 What the tag publishes
 
-A tag builds the engine for both served platforms and publishes each binary to
+A tag builds the engine for every served platform and publishes each binary to
 Forgejo's **generic package registry**. Each binary is keyed by the **commit**
 the tag points at (§5.2), never by the tag name, and there is **no `latest`**.
 
 | Element | Shape |
 |---|---|
 | Base | `https://git.0xdao.app/api/packages/caoer115/generic/mrd/<COMMIT>` |
-| Files | `mrd-linux-amd64`, `mrd-darwin-arm64`, and a `.sha256` beside each |
+| Files | `mrd-linux-amd64`, `mrd-darwin-arm64`, `mrd-linux-arm64`, and a `.sha256` beside each |
 | The pin a consumer records | `(COMMIT, SHA256)` |
 | Re-publish of the same commit | HTTP **409**; first published bytes stay authoritative |
 | Precondition | `ci` succeeded for that tag pipeline — all six verdict lanes |
@@ -265,13 +265,19 @@ the tag points at (§5.2), never by the tag name, and there is **no `latest`**.
 |---|---|---|
 | `mrd-linux-amd64` | Linux runner, `tag-linux-amd64.yaml` selects by `labels` | docker, the `Dockerfile.ci` image |
 | `mrd-darwin-arm64` | `platform: darwin/arm64` agent (`tag-darwin-arm64.yaml` `labels`) — a mac artifact needs a mac | local: steps run on the host's own toolchain, `image:` names a **shell** |
+| `mrd-linux-arm64` | the same Linux runner, `tag-linux-arm64.yaml` | docker, the `Dockerfile.ci` image plus an in-step `g++-aarch64-linux-gnu` cross toolchain and the `aarch64-unknown-linux-gnu` rustup target |
 
-- **No publish before the verdict.** `ci.yaml` runs on `refs/tags/v*`, and both
-  tag workflows declare `depends_on: [ci]`, so neither starts until every `ci`
+A linux/arm64 artifact needs no arm64 host: the vendored DuckDB builds through
+the `cc` crate, which takes the `CC_aarch64_unknown_linux_gnu` family of
+variables, so the amd64 runner cross-compiles it and asks the result its
+`--version` under `qemu-aarch64-static`.
+
+- **No publish before the verdict.** `ci.yaml` runs on `refs/tags/v*`, and every
+  tag workflow declares `depends_on: [ci]`, so none starts until every `ci`
   lane has succeeded. The dependency is never `optional: true`: optional means
   "enforced only if `ci` is part of the pipeline", which would let a `ci` that
   its own `when` filtered out wave a release through ungated. A red suite
-  leaves both workflows **skipped** and `publish` never-run: no release.
+  leaves every tag workflow **skipped** and `publish` never-run: no release.
 - **Slow by construction.** Tag lanes start after the whole suite, ~18 minutes
   in. Every workflow therefore clones with a non-rotating PAT (the `clone:`
   block, woodpecker secret `forgejo_clone_token`), not the server's parse-time

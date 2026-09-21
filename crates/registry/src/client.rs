@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::protocol::{Request, Response, WorkspaceEntry};
-use crate::server::default_socket_path;
+use crate::server::reachable_socket_path;
 use crate::wedge;
 
 /// A handle to a daemon at a known socket path. Cheap to clone; holds no open
@@ -39,15 +39,19 @@ impl Client {
         Client { socket_path }
     }
 
-    /// A client for the default per-user socket — the short hash-keyed path
+    /// A client for the default per-user socket: the short hash-keyed path
     /// derived from the env-resolved cache root
-    /// ([`crate::socket_path_for_cache_root`]).
+    /// ([`crate::socket_path_for_cache_root`]) — or, when the resident daemon
+    /// published a different path and answers there, that one
+    /// ([`crate::reachable_socket_path`]). A spawn this client then makes
+    /// still derives (`Config::resolve`), so a spawned daemon binds the
+    /// derived path and republishes it.
     ///
     /// # Errors
     ///
     /// Returns [`io::ErrorKind::NotFound`] when no cache root resolves.
     pub fn from_default() -> io::Result<Self> {
-        Ok(Client::new(default_socket_path()?))
+        Ok(Client::new(reachable_socket_path(&cache::cache_root()?)))
     }
 
     /// The socket path this client dials.

@@ -184,6 +184,23 @@ impl fmt::Display for Discard {
 /// binding, so the whole save abstains).
 #[must_use]
 pub fn serialize(cache: &mut DomainCache, identity: &SaveIdentity) -> Option<Vec<u8>> {
+    Some(prepare(cache, identity)?.encode())
+}
+
+/// An owned observation snapshot. No mutex or live journal is retained;
+/// encoding and persistence may run after the caller releases its memo lock.
+#[derive(Debug)]
+pub struct Snapshot {
+    identity: SaveIdentity,
+    domain_version: u32,
+    tree_root: [u8; 32],
+    leaves: std::collections::BTreeMap<PathBuf, LeafSeen>,
+}
+
+/// Capture a consistent checkpoint, applying the watermark smudge at capture.
+/// The caller captures its journal cursor BEFORE entering this function.
+#[must_use]
+pub fn prepare(cache: &mut DomainCache, identity: &SaveIdentity) -> Option<Snapshot> {
     let domain_version = cache.domain_seen.as_ref()?.version();
     // The §6.2 smudge (a format consequence of the stat floor). `StatKey`
     // alone can miss a same-instant, same-size, in-place write, so a row that
@@ -205,57 +222,82 @@ pub fn serialize(cache: &mut DomainCache, identity: &SaveIdentity) -> Option<Vec
         _ => None,
     };
     let tree_root = cache.law2_fingerprint();
-    let mut payload: Vec<u8> = Vec::with_capacity(256 + cache.leaves.len() * 128);
-    payload.extend_from_slice(b"workspace ");
-    payload.extend_from_slice(identity.workspace.as_os_str().as_bytes());
-    payload.push(b'\n');
-    payload.extend_from_slice(
-        format!("version {domain_version} {}\n", model::HASH_LAW_RADIX).as_bytes(),
-    );
-    payload.extend_from_slice(format!("parse-cache {}\n", identity.parse_cache).as_bytes());
-    payload.extend_from_slice(
-        format!(
-            "journal {} {}\n",
-            identity.journal_seq, identity.journal_instance
-        )
-        .as_bytes(),
-    );
-    payload.extend_from_slice(format!("tree-root {}\n", hex(&tree_root)).as_bytes());
-    payload.extend_from_slice(format!("leaves {}\n", cache.leaves.len()).as_bytes());
-    for (rel, entry) in &cache.leaves {
-        let bytes = rel.as_os_str().as_bytes();
-        if bytes.contains(&b'\n') {
+    let mut leaves = cache.leaves.clone();
+    for (rel, entry) in &mut leaves {
+        if rel.as_os_str().as_bytes().contains(&b'\n') {
             return None;
         }
-        let (dev, ino, size, mtime, ctime) = entry.key.raw_parts();
-        // Spoil on save when the row is racily clean, or when nothing
-        // calibrated says otherwise (see the smudge note above).
-        let seen = match entry.seen {
-            Some(stamp) if granule.is_some_and(|g| !stable::racy(&entry.key, stamp, g)) => {
-                format!("{}.{}", stamp.0, stamp.1)
-            }
-            _ => "-".to_owned(),
-        };
+        if entry
+            .seen
+            .is_none_or(|stamp| granule.is_none_or(|g| stable::racy(&entry.key, stamp, g)))
+        {
+            entry.seen = None;
+        }
+    }
+    Some(Snapshot {
+        identity: identity.clone(),
+        domain_version,
+        tree_root,
+        leaves,
+    })
+}
+
+impl Snapshot {
+    /// Encode captured state without holding or consulting any live memo.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let identity = &self.identity;
+        let domain_version = self.domain_version;
+        let tree_root = self.tree_root;
+        let mut payload: Vec<u8> = Vec::with_capacity(256 + self.leaves.len() * 128);
+        payload.extend_from_slice(b"workspace ");
+        payload.extend_from_slice(identity.workspace.as_os_str().as_bytes());
+        payload.push(b'\n');
+        payload.extend_from_slice(
+            format!("version {domain_version} {}\n", model::HASH_LAW_RADIX).as_bytes(),
+        );
+        payload.extend_from_slice(format!("parse-cache {}\n", identity.parse_cache).as_bytes());
         payload.extend_from_slice(
             format!(
-                "{dev} {ino} {size} {}.{} {}.{} {seen} {} ",
-                mtime.0,
-                mtime.1,
-                ctime.0,
-                ctime.1,
-                hex(&entry.digest)
+                "journal {} {}\n",
+                identity.journal_seq, identity.journal_instance
             )
             .as_bytes(),
         );
-        payload.extend_from_slice(bytes);
-        payload.push(b'\n');
+        payload.extend_from_slice(format!("tree-root {}\n", hex(&tree_root)).as_bytes());
+        payload.extend_from_slice(format!("leaves {}\n", self.leaves.len()).as_bytes());
+        for (rel, entry) in &self.leaves {
+            let bytes = rel.as_os_str().as_bytes();
+            let (dev, ino, size, mtime, ctime) = entry.key.raw_parts();
+            // Spoil on save when the row is racily clean, or when nothing
+            // calibrated says otherwise (see the smudge note above).
+            let seen = match entry.seen {
+                Some(stamp) => {
+                    format!("{}.{}", stamp.0, stamp.1)
+                }
+                _ => "-".to_owned(),
+            };
+            payload.extend_from_slice(
+                format!(
+                    "{dev} {ino} {size} {}.{} {}.{} {seen} {} ",
+                    mtime.0,
+                    mtime.1,
+                    ctime.0,
+                    ctime.1,
+                    hex(&entry.digest)
+                )
+                .as_bytes(),
+            );
+            payload.extend_from_slice(bytes);
+            payload.push(b'\n');
+        }
+        let mut out = Vec::with_capacity(payload.len() + 80);
+        out.extend_from_slice(VERSION_LINE);
+        out.push(b'\n');
+        out.extend_from_slice(format!("sum {}\n", blake3::hash(&payload).to_hex()).as_bytes());
+        out.extend_from_slice(&payload);
+        out
     }
-    let mut out = Vec::with_capacity(payload.len() + 80);
-    out.extend_from_slice(VERSION_LINE);
-    out.push(b'\n');
-    out.extend_from_slice(format!("sum {}\n", blake3::hash(&payload).to_hex()).as_bytes());
-    out.extend_from_slice(&payload);
-    Some(out)
 }
 
 /// Restore a serialized checkpoint against the CURRENT soundness identity:

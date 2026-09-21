@@ -348,6 +348,51 @@ fn idle_reap_demotes_stale_entries_and_keeps_registrations() {
     server.shutdown();
 }
 
+/// Boot does not reload a registration whose directory is gone: the entry is
+/// skipped at load and falls out of the state file at the next persist. A
+/// temporarily-unmounted volume therefore loses its registration and gets it
+/// back on the next `hello` — acceptable and intended.
+#[test]
+fn boot_does_not_reload_a_registration_whose_directory_is_gone() {
+    let tmp = TempDir::new().unwrap();
+    let kept = tmp.path().join("kept");
+    let vanished = tmp.path().join("vanished");
+    mkdirs(&kept);
+    mkdirs(&vanished);
+    let config = test_config(&tmp);
+
+    let server = RunningServer::start(config.clone()).unwrap();
+    let client = Client::new(server.socket_path().to_path_buf());
+    client.register(&kept).unwrap();
+    client.register(&vanished).unwrap();
+    assert_eq!(client.list().unwrap().len(), 2);
+    server.shutdown();
+
+    fs::remove_dir_all(&vanished).unwrap();
+
+    let server = RunningServer::start(config.clone()).unwrap();
+    let client = Client::new(server.socket_path().to_path_buf());
+    let listed = client.list().unwrap();
+    assert_eq!(
+        listed.len(),
+        1,
+        "a registration whose directory is gone is not reloaded: {listed:?}"
+    );
+    assert_eq!(listed[0].workspace, canonical(&kept));
+
+    // The next persist writes the filtered set: the entry is out of the
+    // state FILE, not merely out of memory.
+    let third = tmp.path().join("third");
+    mkdirs(&third);
+    client.register(&third).unwrap();
+    let state = fs::read_to_string(&config.state_path).unwrap();
+    assert!(
+        !state.contains("vanished"),
+        "the next persist drops the gone entry: {state}"
+    );
+    server.shutdown();
+}
+
 /// A second daemon on the same registry directory refuses to start (singleton).
 #[test]
 fn second_daemon_refuses_to_start() {

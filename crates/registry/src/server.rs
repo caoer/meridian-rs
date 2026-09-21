@@ -17,6 +17,20 @@
 //! mode 0700; a **world-writable** one is refused (a hostile peer must not be
 //! able to swap the socket or state file).
 //!
+//! The derivation is the LAW; the daemon also publishes the FACT. Client and
+//! daemon derive through one function, but each derives from ITS OWN
+//! environment, and one cache root is reachable from environments that
+//! disagree: on workstation-nyc-2 a systemd-started process carried
+//! `XDG_RUNTIME_DIR=/run/user/1000` while a non-interactive ssh shell had it
+//! unset (the directory existed either way), so the two derived different
+//! sockets for one cache root — the shell's spawn lost the flock and exited,
+//! and the holder was unreachable from that shell. So the bound path is also
+//! PUBLISHED at `<cache-root>/registry/socket` ([`socket_pointer_path`]) —
+//! keyed by the cache root alone, written under the flock in the pidfile's
+//! order, removed at shutdown — and a client whose own derivation is not what
+//! was published dials the published path when a daemon answers there
+//! ([`reachable_socket_path`]).
+//!
 //! # Singleton
 //! The daemon takes an exclusive `flock` on the registry directory (reusing
 //! `cache::DrawerLock`) for its whole lifetime. A second daemon fails to
@@ -79,6 +93,27 @@ const ACCEPT_POLL: Duration = Duration::from_millis(20);
 /// through ordinary work.
 pub(crate) const SLOW_OP_LOG: Duration = Duration::from_secs(5);
 
+/// The engine's own trail for a slow op. The frame carrying the measured
+/// number reaches a client that may already have given up, so the log is what
+/// survives an incident. `elapsed` is total time in dispatch: a long holder
+/// and a waiter refused behind it are both slow ops and both print here, so
+/// the line reports the duration it measured and leaves attribution to the
+/// reader. ONE printer for every serve path — the generic dispatch and the
+/// § A.7 `script` / § A.8 `run` lines routed around it at `handle_line` — so
+/// no op class is invisible to the trail (a `run` fire held 10 s by a
+/// contended memo left no engine-side line until it printed here too).
+pub(crate) fn log_slow_op(op: &str, elapsed: Duration, attached: Option<&Path>) {
+    if elapsed < SLOW_OP_LOG {
+        return;
+    }
+    let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+    eprintln!(
+        "registry: slow op {op} duration_us={duration_us} on {} — total time in \
+         dispatch, any wait for a contended resource included",
+        attached.map_or_else(|| "<unattached>".to_string(), |p| p.display().to_string()),
+    );
+}
+
 /// The reaper's wake granularity: it sleeps in these steps so shutdown is
 /// prompt even when the reap interval is an hour.
 const REAP_TICK: Duration = Duration::from_millis(200);
@@ -95,6 +130,9 @@ const REGISTRY_DIR: &str = "registry";
 const SOCKET_NAME: &str = "daemon.sock";
 /// The state file name.
 const STATE_NAME: &str = "state.json";
+/// The published socket pointer's name, inside the registry directory (module
+/// header § Socket placement).
+const SOCKET_POINTER_NAME: &str = "socket";
 
 /// Where and how a daemon runs. Construct with [`Config::resolve`] for the
 /// production layout, or build the fields directly to place everything under a
@@ -159,6 +197,12 @@ pub struct Config {
     /// three client budgets that cap it. Fixtures raise this so a `TempDir`
     /// outlives a parked builder.
     pub drain_cold_builds: Duration,
+    /// Ceiling on ESTIMATED resident bytes summed across warm workspace
+    /// engines ([`crate::RESIDENT_BYTES_PER_RAW_BYTE`] times their raw
+    /// markdown bytes) — the [`Registry::reap_to_budget`] sweep's budget.
+    /// `0` disables the budget (unbounded warm set). See
+    /// [`crate::DEFAULT_MAX_RESIDENT_BYTES`] for the calibration.
+    pub max_resident_bytes: u64,
 }
 
 impl Config {
@@ -186,6 +230,7 @@ impl Config {
             // Production never parks: an unset floor is 0.
             activity_park: None,
             drain_cold_builds: crate::DEFAULT_DRAIN_COLD_BUILDS,
+            max_resident_bytes: crate::DEFAULT_MAX_RESIDENT_BYTES,
         }
     }
 
@@ -216,6 +261,9 @@ impl Config {
         }
         if let Some(raw) = std::env::var_os(IDLE_EXIT_ENV) {
             config.idle_exit = parse_idle_exit(&raw)?;
+        }
+        if let Some(raw) = std::env::var_os(MAX_RESIDENT_BYTES_ENV) {
+            config.max_resident_bytes = parse_max_resident_bytes(&raw)?;
         }
         Ok(config)
     }
@@ -354,6 +402,40 @@ fn parse_idle_exit(raw: &std::ffi::OsStr) -> io::Result<Option<Duration>> {
         })
 }
 
+/// The environment variable that overrides [`Config::max_resident_bytes`],
+/// in whole ESTIMATED RESIDENT BYTES — the unit the budget is defined in
+/// ([`crate::DEFAULT_MAX_RESIDENT_BYTES`], which carries the calibration;
+/// the estimate is [`crate::RESIDENT_BYTES_PER_RAW_BYTE`] times raw markdown
+/// bytes). `0` disables the budget (unbounded warm set).
+///
+/// Read at exactly one site, [`Config::resolve`].
+pub const MAX_RESIDENT_BYTES_ENV: &str = "MRD_MAX_RESIDENT_BYTES";
+
+/// Parse [`MAX_RESIDENT_BYTES_ENV`]'s value as a whole byte count; `0` is
+/// the documented unbounded spelling, not a failure.
+///
+/// Refuses loudly on anything else, naming the variable and echoing the bytes
+/// it saw — the [`parse_drain_cold_builds`] posture: a malformed knob must
+/// never silently fall back to the very default it was set to escape.
+// `{:?}` on the `OsStr` for the same reason as `parse_drain_cold_builds`:
+// the message exists to SHOW a value the parser could not read.
+#[allow(clippy::unnecessary_debug_formatting)]
+fn parse_max_resident_bytes(raw: &std::ffi::OsStr) -> io::Result<u64> {
+    raw.to_str()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{MAX_RESIDENT_BYTES_ENV} must be a whole number of estimated resident \
+                     bytes (0 disables the budget), got {:?} — unset it for the {} default",
+                    raw,
+                    crate::DEFAULT_MAX_RESIDENT_BYTES
+                ),
+            )
+        })
+}
+
 /// The socket path for `cache_root` (short-sock law, 2026-08-20):
 /// `$XDG_RUNTIME_DIR/mrd/<12hex>.sock` on Linux when `XDG_RUNTIME_DIR` is set,
 /// else `$HOME/.cache/mrd-run/<12hex>.sock`, where `<12hex>` is
@@ -398,6 +480,46 @@ fn non_empty_env(key: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// Where the daemon for `cache_root` publishes the socket it bound:
+/// `<cache-root>/registry/socket`, beside the state file and the singleton
+/// flock — keyed by the cache root alone, so a reader finds it whatever its
+/// own environment would derive (module header § Socket placement). Assumes
+/// the production layout ([`Config::for_cache_root`]), as
+/// [`default_socket_path`] does.
+#[must_use]
+pub fn socket_pointer_path(cache_root: &Path) -> PathBuf {
+    cache_root.join(REGISTRY_DIR).join(SOCKET_POINTER_NAME)
+}
+
+/// The socket path the daemon for `cache_root` published, or `None` when no
+/// pointer is present (no daemon has bound there, or the last one shut down
+/// cleanly), or it is empty or unreadable. Presence is not liveness: a
+/// `SIGKILL`ed daemon removes nothing, so a reader that means to dial asks
+/// [`reachable_socket_path`], which does.
+#[must_use]
+pub fn published_socket_path(cache_root: &Path) -> Option<PathBuf> {
+    let raw = std::fs::read_to_string(socket_pointer_path(cache_root)).ok()?;
+    let line = raw.lines().next()?.trim();
+    (!line.is_empty()).then(|| PathBuf::from(line))
+}
+
+/// The socket a client dials for `cache_root`: the path this environment
+/// derives ([`socket_path_for_cache_root`]), unless the daemon published a
+/// DIFFERENT one and a listener answers there — then the published path,
+/// because that is where the flock holder is. A stale pointer (no listener)
+/// falls back to the derivation, so the client's spawn takes the flock and
+/// republishes. When published and derived agree nothing is dialed here.
+#[must_use]
+pub fn reachable_socket_path(cache_root: &Path) -> PathBuf {
+    let derived = socket_path_for_cache_root(cache_root);
+    match published_socket_path(cache_root) {
+        Some(published) if published != derived && UnixStream::connect(&published).is_ok() => {
+            published
+        }
+        _ => derived,
+    }
+}
+
 /// The default per-user RPC socket path, for a client that has no [`Config`]:
 /// [`socket_path_for_cache_root`] of the env-resolved cache root — the same
 /// mapping the daemon binds.
@@ -420,8 +542,12 @@ pub struct RunningServer {
     accept: Option<JoinHandle<()>>,
     reaper: Option<JoinHandle<()>>,
     prewarm: Option<JoinHandle<()>>,
+    saver: Option<JoinHandle<()>>,
     registry: Arc<Registry>,
     socket_path: PathBuf,
+    /// The published socket pointer this daemon wrote (module header § Socket
+    /// placement); removed at shutdown.
+    socket_pointer: PathBuf,
     drain_cold_builds: Duration,
     // The singleton flock, held for the daemon's whole lifetime; dropping it
     // releases the guard so a successor can start.
@@ -473,7 +599,25 @@ impl RunningServer {
         };
 
         let store = StateStore::new(config.state_path.clone());
-        let entries = store.load();
+        // A registration whose directory is gone is not reloaded — HYGIENE,
+        // not memory: a registration is ~150 bytes and warms nothing by
+        // itself, but the set only ever grows, `list` reports workspaces
+        // that cannot exist, and every sweep iterates candidates that can
+        // never warm. A gone directory cannot be adopted (resolve
+        // canonicalizes through it), so the entry is dropped here and falls
+        // out of the state file at the next persist. A temporarily-unmounted
+        // volume therefore loses its registration and gets it back on the
+        // next `hello` — acceptable and intended.
+        let (entries, gone): (Vec<_>, Vec<_>) = store
+            .load()
+            .into_iter()
+            .partition(|entry| entry.workspace.is_dir());
+        if !gone.is_empty() {
+            eprintln!(
+                "registry: not reloading {} registration(s) whose directory is gone",
+                gone.len()
+            );
+        }
         // Born parked when the fixture asked for it: the floor goes up inside
         // the constructor, so no wall time exists between the activity clock
         // starting and the park — the reaper spawned below cannot observe an
@@ -513,6 +657,17 @@ impl RunningServer {
                 pid_file.display()
             );
         }
+        // The published FACT beside the law (module header § Socket
+        // placement): the bound path, in the registry directory, under the
+        // pidfile's order — after the flock, before the accept loop — and
+        // advisory the same way.
+        let socket_pointer = dir.join(SOCKET_POINTER_NAME);
+        if let Err(e) = write_socket_pointer(&socket_pointer, &config.socket_path) {
+            eprintln!(
+                "registry: cannot publish the socket path at {} ({e})",
+                socket_pointer.display()
+            );
+        }
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let exit_requested = Arc::new(AtomicBool::new(false));
@@ -532,6 +687,7 @@ impl RunningServer {
             config.idle_threshold,
             config.reap_interval,
             config.idle_exit,
+            config.max_resident_bytes,
             exit_requested.clone(),
         );
         let prewarm = spawn_prewarm(
@@ -540,6 +696,7 @@ impl RunningServer {
             config.prewarm_interval,
             config.prewarm_quiet_max,
         );
+        let saver = spawn_saver(registry.clone(), shutdown.clone());
 
         Ok(RunningServer {
             shutdown,
@@ -547,8 +704,10 @@ impl RunningServer {
             accept: Some(accept),
             reaper: Some(reaper),
             prewarm: Some(prewarm),
+            saver: Some(saver),
             registry,
             socket_path: config.socket_path,
+            socket_pointer,
             drain_cold_builds: config.drain_cold_builds,
             _singleton: singleton,
         })
@@ -597,6 +756,9 @@ impl RunningServer {
         if let Some(handle) = self.prewarm.take() {
             let _ = handle.join();
         }
+        if let Some(handle) = self.saver.take() {
+            let _ = handle.join();
+        }
         // Drawer-rebuild threads are fire-and-forget (`cold_gate` spawns them
         // and never joins). They hold `Arc<Registry>` and the workspace path.
         // Drain them before the caller drops a TempDir out from under the
@@ -619,6 +781,9 @@ impl RunningServer {
         // finds the file already gone.
         let _ = std::fs::remove_file(&self.socket_path);
         let _ = std::fs::remove_file(self.socket_path.with_extension("pid"));
+        // The pointer last: it names a socket that is now gone, and a reader
+        // that dials it finds no listener and falls back to the law.
+        let _ = std::fs::remove_file(&self.socket_pointer);
     }
 }
 
@@ -655,6 +820,14 @@ fn write_pidfile(path: &Path) -> io::Result<()> {
     let tmp = path.with_extension("pid.tmp");
     std::fs::write(&tmp, format!("{}\n", std::process::id()))?;
     std::fs::rename(&tmp, path)
+}
+
+/// Publish the bound `socket` at `pointer` atomically — the pidfile's
+/// temp + rename discipline, for the same reader-side reason.
+fn write_socket_pointer(pointer: &Path, socket: &Path) -> io::Result<()> {
+    let tmp = pointer.with_extension("tmp");
+    std::fs::write(&tmp, format!("{}\n", socket.display()))?;
+    std::fs::rename(&tmp, pointer)
 }
 
 /// The deadlines that keep a push subscription mortal — see [`push_loop`].
@@ -745,13 +918,17 @@ fn accept_loop(
 }
 
 /// Spawn the reaper: wake every [`REAP_TICK`], and once `reap_interval` has
-/// elapsed drop idle entries. Exits promptly on the shutdown flag.
+/// elapsed drop idle entries, then evict over the resident budget
+/// ([`Registry::reap_to_budget`] — the idle pass first, so the budget sweep
+/// only pays for what idleness alone could not shed). Exits promptly on the
+/// shutdown flag.
 fn spawn_reaper(
     registry: Arc<Registry>,
     shutdown: Arc<AtomicBool>,
     idle_threshold: Duration,
     reap_interval: Duration,
     idle_exit: Option<Duration>,
+    max_resident_bytes: u64,
     exit_requested: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
@@ -767,6 +944,14 @@ fn spawn_reaper(
             let reaped = registry.reap(now_secs(), threshold_secs);
             if !reaped.is_empty() {
                 eprintln!("registry: idle-reaped {} workspace(s)", reaped.len());
+            }
+            let evicted = registry.reap_to_budget(max_resident_bytes);
+            if !evicted.is_empty() {
+                eprintln!(
+                    "registry: budget-evicted {} workspace(s) — estimated resident bytes over \
+                     {max_resident_bytes}",
+                    evicted.len()
+                );
             }
             // G11 idle exit. The reaper raises the flag only; the process's own
             // loop owns the teardown, because shutting the threads down from
@@ -827,6 +1012,25 @@ fn spawn_prewarm(
             let quiet = rebuilt.is_empty() && requests == seen_requests;
             delay = next_prewarm_delay(delay, interval, quiet_max, quiet);
             seen_requests = requests;
+        }
+    })
+}
+
+/// One bounded saver: queued work is a workspace identity, never an engine
+/// pin. Polling is short for shutdown; the small checkpoint cadence is 60s.
+fn spawn_saver(registry: Arc<Registry>, shutdown: Arc<AtomicBool>) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let mut checkpoint_at = Instant::now();
+        while !shutdown.load(Ordering::SeqCst) {
+            thread::sleep(PREWARM_TICK);
+            if shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+            registry.save_pending_parsed();
+            if checkpoint_at.elapsed() >= Duration::from_mins(1) {
+                registry.save_observation_checkpoints();
+                checkpoint_at = Instant::now();
+            }
         }
     })
 }
@@ -1438,21 +1642,11 @@ fn serve_wire(
             let body = dispatch_read(registry, attached, armed, id, op, rev == Rev::V3);
             let elapsed = started.elapsed();
             let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-            // The engine's own trail for a slow op. The frame carrying this
-            // number reaches a client that may already have given up, so the
-            // log is what survives an incident. `duration_us` is total time in
-            // dispatch: a long holder and a waiter refused behind it are both
-            // slow ops and both print here, so the line reports the duration
-            // it measured and leaves attribution to the reader.
-            if elapsed >= SLOW_OP_LOG {
-                eprintln!(
-                    "registry: slow op {} duration_us={duration_us} on {} — total time in \
-                     dispatch, any wait for a contended resource included",
-                    obj.get("op").and_then(Value::as_str).unwrap_or("?"),
-                    attached
-                        .map_or_else(|| "<unattached>".to_string(), |p| p.display().to_string()),
-                );
-            }
+            log_slow_op(
+                obj.get("op").and_then(Value::as_str).unwrap_or("?"),
+                elapsed,
+                attached,
+            );
             (body, Some(duration_us))
         }
         Err(error) => (Err(error), None),
@@ -3148,6 +3342,40 @@ mod socket_placement_tests {
             let msg = err.to_string();
             assert!(
                 msg.contains(IDLE_EXIT_ENV),
+                "the refusal names the variable: {msg}"
+            );
+            assert!(
+                msg.contains(&format!("{bad:?}")),
+                "the refusal echoes the bytes it saw: {msg}"
+            );
+        }
+    }
+
+    /// The resident-budget knob: `0` is the documented unbounded spelling,
+    /// a whole number of estimated resident bytes is the budget, and
+    /// anything else REFUSES — never falls back to the default it was set
+    /// to escape (the [`parse_idle_exit`] law).
+    #[test]
+    fn a_malformed_max_resident_bytes_knob_refuses_and_names_what_it_saw() {
+        use super::{MAX_RESIDENT_BYTES_ENV, parse_max_resident_bytes};
+        use std::ffi::OsStr;
+
+        assert_eq!(
+            parse_max_resident_bytes(OsStr::new("0")).unwrap(),
+            0,
+            "0 is the unbounded spelling"
+        );
+        assert_eq!(
+            parse_max_resident_bytes(OsStr::new("5368709120")).unwrap(),
+            5 * 1024 * 1024 * 1024
+        );
+        for bad in ["5G", "", "unbounded", "-1", "1.5"] {
+            let err = parse_max_resident_bytes(OsStr::new(bad))
+                .expect_err(&format!("{bad:?} is not a whole byte count"));
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+            let msg = err.to_string();
+            assert!(
+                msg.contains(MAX_RESIDENT_BYTES_ENV),
                 "the refusal names the variable: {msg}"
             );
             assert!(

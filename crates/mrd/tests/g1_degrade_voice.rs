@@ -253,12 +253,15 @@ fn g1_deep_cache_root_still_binds_and_serves_warm() {
     );
 }
 
-/// A stale socket at the OLD in-root placement is dead to the client: even a
-/// LIVE daemon bound there is never dialled — the client derives only the
-/// short hash-keyed path. If the client still dialled the old path, the
-/// answer would come back warm and this gate would catch the regression.
+/// A daemon at the OLD in-root placement is reached only through the socket
+/// it PUBLISHED (`<cache-root>/registry/socket`): the client derives the short
+/// hash-keyed path and never the legacy one, so once the pointer is gone — a
+/// pre-pointer build that never wrote it — a live daemon bound there is
+/// invisible and the read degrades to the ephemeral engine. With the pointer
+/// the same daemon serves warm: the flock holder is reachable whatever path
+/// it bound.
 #[test]
-fn g1_stale_daemon_at_the_old_path_is_not_dialled() {
+fn g1_daemon_at_the_old_path_is_reached_only_through_its_pointer() {
     let sb = sandbox();
     let ws = sb.workspace();
     let old_socket = sb.cache_root.join("registry").join("daemon.sock");
@@ -276,14 +279,33 @@ fn g1_stale_daemon_at_the_old_path_is_not_dialled() {
     config.drain_cold_builds = Duration::from_secs(30);
     let server = registry::RunningServer::start(config).expect("old-path daemon binds");
 
-    let out = sb.run_degraded(&ws, &["read", "doc.md", "--json"]);
+    let published = sb.run_degraded(&ws, &["read", "doc.md", "--json"]);
+    std::fs::remove_file(registry::socket_pointer_path(&sb.cache_root))
+        .expect("the daemon published its socket");
+    let unpublished = sb.run_degraded(&ws, &["read", "doc.md", "--json"]);
     server.shutdown();
 
-    assert_eq!(out.status.code(), Some(0), "read exits 0: {}", stderr(&out));
+    assert_eq!(
+        published.status.code(),
+        Some(0),
+        "read exits 0: {}",
+        stderr(&published)
+    );
     assert!(
-        String::from_utf8_lossy(&out.stdout).contains("\"source\": \"ephemeral\""),
-        "the old-path daemon must be invisible — the client dials only the short sock: {}",
-        String::from_utf8_lossy(&out.stdout)
+        String::from_utf8_lossy(&published.stdout).contains("\"source\": \"daemon\""),
+        "the old-path daemon published its socket, so it is the reachable flock holder: {}",
+        String::from_utf8_lossy(&published.stdout)
+    );
+    assert_eq!(
+        unpublished.status.code(),
+        Some(0),
+        "read exits 0: {}",
+        stderr(&unpublished)
+    );
+    assert!(
+        String::from_utf8_lossy(&unpublished.stdout).contains("\"source\": \"ephemeral\""),
+        "with no pointer the client dials only the short sock — the old-path daemon is invisible: {}",
+        String::from_utf8_lossy(&unpublished.stdout)
     );
 }
 

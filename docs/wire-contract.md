@@ -10,7 +10,7 @@ owns: [the wire constitution — nouns, ops, guards, receipts, errors]
 
 The **wire** is the NDJSON request/response protocol the daemon speaks on its unix socket (§3.1). This document is its one constitution: the nouns a frame carries, the ops, the guards that protect a write, the receipts and Deltas a write produces, and the error codes. It does not rule what never reaches the socket: in-process callers are out of wire scope (§3.3), run-plane semantics stay in `run-plane.md`, and anything an orientation dashboard would ask is not a wire op (§10.3).
 
-> **Standing law.** One wire constitution, no v2/v3 stack; **doc correct > code correct** (process: `README.md`; hashes: `node-rev-merkle-spec.md`, `fingerprint-norm-spec.md`).  
+> **Standing law.** One wire constitution, no v2/v3 stack; **doc correct > code correct** (process: `README.md`; hashes: `node-rev-merkle-spec.md`, `fingerprint-norm-spec.md`).\
 > **Always on:** (A) mint address = segments only `{"hpath":[{"h":"Goals"},{"h":"Q3"}]}`; (B) receipt armed facts on the wire are normative, no second path; (C) DuckDB / `view_path` are not agent-core wire.
 
 **Content-hash noun:** `fingerprint` (`b3:…`), not the workspace directory. **Worked values:** hashes, spans and counts in §§0.3–§12 are blake3 over the §0.3 fixture bytes. **Notation:** `[[…]]` in the fixture fence are data bytes for `resolve` / `links`, not doc links.
@@ -1141,7 +1141,7 @@ The downstream implementation plan is sequenced against this table, which is its
 | `fix` | Above-wire mutation policy over `dry:true` + per-file batches (§4.4) |
 | `debug` | Above-wire: rule dev tooling over §11 verdicts |
 | `attest` | Above-wire effects layer; dry seam + fm_key handles (§4.4) |
-| `mv` | Loudly alternativized: a composed consumer op — `links` (§4.6) + `fileToLinktext` emission algebra (the app's) + per-file splices; multi-file atomicity absent (§6.5) |
+| `mv` | Above-wire, shipped as `mrd move` (`move.md`): corpus move+link-rewrite is a composed consumer door — `links` (§4.6) decides what would break, the emission rule is the door's own (`move §4`), one whole-file replace per referring page; never a wire op, multi-file atomicity honestly absent (§6.5, `move §9`) |
 | `status` | Dead as op; liveness is the daemon's; the change feed is `sub` (§4.7) |
 | `watch` | Dead as CLI; Delta + `sub` + recovery law serve it (§7) |
 | `resolve` CLI | Matched: `resolve` op (§4.5) |
@@ -3108,6 +3108,6 @@ structural**:
 
 ## § B. Process
 
-1. Edit this file (or the relevant spec under `docs/`) **before** code.  
+1. Edit this file (or the relevant spec under `docs/`) **before** code.\
 2. Do not reintroduce versioned contract files or amendment piles.  
 3. **UNVERIFIED** when evidence is missing.

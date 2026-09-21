@@ -25,6 +25,7 @@ use std::sync::PoisonError;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod base;
+pub mod canvas;
 pub mod checkpoint;
 pub mod digestmemo;
 pub mod domain;
@@ -525,6 +526,66 @@ fn walk_domain_dir(
         }
     }
     Ok(())
+}
+
+/// The hash domain's walk with the md-only floor swapped for one other
+/// extension: the same directory pruning, the same dot-segment and custom-ignore
+/// rules, membership decided case-exactly on the final extension of the name
+/// READ FROM THE DIRECTORY.
+///
+/// Two carriers take it — `.base` (`base-projection.md` §3) and `.canvas`
+/// (`move.md` §4 class 5) — and they share this one walk so that a custom
+/// ignore which moves markdown membership moves theirs in the same edit. The
+/// case-exactness is the 2026-08-14 ruling: a case-folding match would canonize
+/// a typo on APFS.
+///
+/// A directory that will not enumerate contributes nothing — absence, the
+/// standing posture for an unlistable directory in a non-hashed walk.
+pub(crate) fn walk_extension_dir(
+    abs_dir: &Path,
+    rel_dir: &Path,
+    domain: &domain::Domain,
+    ext: &str,
+    out: &mut Vec<PathBuf>,
+) {
+    let Ok(entries) = fs::read_dir(abs_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let name = entry.file_name();
+        // A non-UTF-8 name matches no extension we serve, and could not be
+        // served as a wire path even if it did.
+        let Some(name) = name.to_str() else { continue };
+        let rel = rel_dir.join(name);
+        if file_type.is_dir() {
+            if domain::dot_segment(name) || domain.prunes_dir(&rel) {
+                continue;
+            }
+            walk_extension_dir(&entry.path(), &rel, domain, ext, out);
+        } else if file_type.is_file()
+            && Path::new(name).extension().is_some_and(|e| e == ext)
+            && in_extension_domain(domain, &rel)
+        {
+            out.push(rel);
+        }
+    }
+}
+
+/// The membership predicate for a FILE whose name already carries the walked
+/// extension: the hash domain's rules with the md-only floor stepped over.
+///
+/// [`domain::Domain::exclusion`] answers `NonMarkdown` first for every such
+/// path, so the floor is skipped here and the other two rules — dot-segment and
+/// custom-ignore — are asked exactly as the hash domain asks them. Asking
+/// through the domain's own `exclusion` keeps ONE rule surface.
+fn in_extension_domain(domain: &domain::Domain, rel: &Path) -> bool {
+    !matches!(
+        domain.exclusion(rel),
+        Some(domain::ExclusionReason::DotSegment | domain::ExclusionReason::CustomIgnore)
+    )
 }
 
 /// A cheap, stat-only fingerprint of the hash domain: the same walk
@@ -2865,6 +2926,69 @@ pub fn build_corpus(
     out
 }
 
+/// Build a corpus from ONE observation's bytes, carrying unchanged documents
+/// from a prior build — the merkle-spec §6.5 cold seed meeting the §6.9
+/// restore. The carry rule is [`update_corpus`]'s: a member whose `leaves`
+/// digest equals `prior_leaves`' AND which the prior parts describe (in
+/// exactly one of `prior_docs` / `prior_unserved`) keeps its prior document
+/// by shared reference; every other member parses the bytes in hand. Nothing
+/// is read a second time — the seed already read every member — so a partial
+/// restore costs parses for the misses, never I/O.
+///
+/// Returns [`build_corpus`]'s parts plus the count of documents THIS pass
+/// parsed (the zero-parse proof: zero when the restore was complete).
+#[must_use]
+pub fn build_corpus_with_prior(
+    files: DomainFiles,
+    leaves: &BTreeMap<PathBuf, [u8; 32]>,
+    prior_docs: &model::Docs,
+    prior_unserved: &BTreeMap<String, String>,
+    prior_leaves: &BTreeMap<PathBuf, [u8; 32]>,
+) -> (
+    model::CorpusIndex,
+    model::Docs,
+    BTreeMap<String, String>,
+    usize,
+) {
+    let building = timing::phase("corpus.build");
+    let mut docs = model::Docs::new();
+    let mut unserved = BTreeMap::new();
+    let mut misses: DomainFiles = Vec::new();
+    for (rel, bytes) in files {
+        let path = Path::new(&rel);
+        let unmoved = match leaves.get(path) {
+            Some(digest) => prior_leaves.get(path) == Some(digest),
+            None => false,
+        };
+        if unmoved {
+            if let Some(doc) = prior_docs.get(&rel) {
+                docs.insert(rel, std::sync::Arc::clone(doc));
+                continue;
+            }
+            if let Some(why) = prior_unserved.get(&rel) {
+                unserved.insert(rel, why.clone());
+                continue;
+            }
+        }
+        misses.push((rel, bytes));
+    }
+    let mut parsed = 0usize;
+    for (rel, result) in parse_members(misses) {
+        match result {
+            Ok(doc) => {
+                docs.insert(rel, std::sync::Arc::new(doc));
+                parsed += 1;
+            }
+            Err(condition) => {
+                unserved.insert(rel, condition);
+            }
+        }
+    }
+    let out = (corpus_index_of(&docs), docs, unserved, parsed);
+    building.stop();
+    out
+}
+
 /// Members below this count parse on the caller's thread — thread spawn only
 /// where the corpus is wide enough to pay for it (the [`PARALLEL_READ_FLOOR`]
 /// posture, same value).
@@ -3365,6 +3489,24 @@ pub fn replace_file(
 ) -> io::Result<()> {
     let dst = root.0.join(rel_path);
     commit_rename(&stage_file(&dst, candidate.raw().as_bytes())?)
+}
+
+/// Overwrite one existing NON-DOCUMENT file's whole bytes, atomically — the
+/// same tmp+fsync+rename discipline [`replace_file`] takes, for a file that has
+/// no document to gate.
+///
+/// The `.canvas` carrier is the one taker (`move.md` §4 class 5): it is not a
+/// corpus member, so there is no [`model::CandidateDocument`] to seal and no
+/// stored-form guard to run — the caller owns what the bytes mean, and this
+/// only lands them. It is deliberately not a general "write any bytes" door: a
+/// markdown page written through here would bypass the guards every markdown
+/// write path exists to run.
+///
+/// # Errors
+/// Any I/O failure at tmp-write, fsync, or rename.
+pub fn replace_bytes(root: &WorkspaceRoot, rel_path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let dst = root.0.join(rel_path);
+    commit_rename(&stage_file(&dst, bytes)?)
 }
 
 /// Append one already-rendered `line` at a page's EOF, atomically (tmp+fsync+

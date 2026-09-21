@@ -168,7 +168,7 @@ impl TestServer {
 
     /// Stop the daemon if one is running. Idempotent: the handle is TAKEN, so a
     /// second call finds an empty slot.
-    fn stop(&self) {
+    pub(crate) fn stop(&self) {
         if let Some(server) = self.lock().take() {
             server.shutdown();
         }

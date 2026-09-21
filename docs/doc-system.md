@@ -52,6 +52,7 @@ frontmatter.
 | `fp` | `fingerprint-norm-spec.md` | the fingerprint CID token + norm-v2 |
 | `armed` | `armed-plane.md` | the arming ladder + the `gate()` seam |
 | `run` | `run-plane.md` | the run plane, preset and session birth |
+| `move` | `move.md` | the move door — rename plus reference rewrite, in-process |
 | `base-projection` | `base-projection.md` | the `.base` projection relations, membership, `base_fold`, `link.exclusion_path` |
 | `body-projection` | `body-projection.md` | the `body` relation, the exclusive-chunk law, the `body_text` cache protocol |
 | `status` | `status.md` | what the binary exposes today (descriptive only); R12, the armed-plane exit reading |

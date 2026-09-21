@@ -84,7 +84,9 @@ mrd init [PATH] [--name NAME]
  declare the root (PATH's own MERIDIAN.md,
  `type: meridian-root`), register its drawer, reconcile
  shadowed descendant drawers
-mrd unregister [PATH] drop the daemon entry (if a daemon answers) + the drawer.
+mrd unregister [PATH] drop the daemon entry (if a daemon answers) + its drawers.
+ This includes the current projection drawer and the
+ version-independent parsed-document drawer.
  A PATH whose directory is already gone is matched as
  given — `Registry::unregister`'s own fallback key, and
  the stale-entry class a sweep leaves behind. A vanished
@@ -315,6 +317,35 @@ mrd rm <PAGE> --rev <FILE_REV> [--if-fingerprint FP] [--dry] [--actor A]
  {workspace, rm}; an engine refusal {workspace, error}.
  Exit triad: 0 removed|dry / 1 refused / 2 bad
  invocation
+mrd move <OLD> <NEW> [--dry] [--immutable PREFIX]... [--json]
+ the move door (`move.md`): rename or move a page or a
+ directory inside ONE root and rewrite every reference
+ the resolver says would break — body wikilinks and
+ embeds (the target slot only; fragment and alias kept),
+ frontmatter wikilinks, frontmatter rooted strings
+ naming this root, meridian-lock `object:` rows, and
+ `.canvas` node slots (a file node's path and a text
+ node's wikilinks; every other byte of the JSON kept) —
+ in-process, never a wire op. A reference that still
+ resolves is byte-untouched; a rewrite keeps the class
+ the author wrote (full path / shortest unique suffix /
+ bare name). NEW ending in `/` or naming an existing
+ directory lands OLD under it. `--immutable PREFIX`
+ (repeatable): a file under it keeps every word its
+ author wrote — a breaking wikilink, embed, frontmatter
+ link, rooted string or canvas node slot is reported
+ with path, line, old and new spelling and left as
+ written. Its meridian-lock `object:` rows are
+ repointed there as anywhere else — the path only,
+ engine bookkeeping, never a re-pin.
+ `--dry` prints the whole plan and
+ writes nothing; the real run prints the same plan as
+ its receipt plus the link census read back from disk.
+ Refuses NEW occupied, a cross-root pair, OLD or NEW
+ under an immutable prefix, and a bare link the move
+ would leave ambiguous — every pair named, nothing
+ written. Exit triad: 0 moved|dry / 1 refused / 2 bad
+ invocation
 mrd pin <PAGE> <TARGET>#<SELECTOR> [--fingerprint TOKEN] [--vibe] [--dry] [--json]
  mint a meridian-lock pin: PAGE records the claim,
  TARGET#SELECTOR is the content being attested
@@ -412,7 +443,9 @@ mrd test --history <WS> --rule <PAGE> [--spec <PAGE>]
  declares the exceptions (its `rule:` must name <PAGE>)
 mrd run <PAGE> [TASK] [-- ARGS]
  run a task block declared in the page's frontmatter
- (`--env K=V`, `--dry`, `--list`, `--json`)
+ (`--env K=V`, `--dry`, `--list`, `--json`,
+ `--exit-passthrough` — the step's own nonzero exit code
+ becomes the rc; see `run-plane.md` § The CLI surface)
 mrd script [--json] [--expect-armed DIGEST]
  the script entry of the run plane: caller-supplied
  inline source on stdin, run as the caller through the
@@ -433,7 +466,9 @@ mrd reconcile <PRESET> reconcile the tree toward a preset's declared scaffold
 mrd realise <PAGE> [--dry] [--json]
  the reconciliation loop: observe -> check -> apply
  (only on drift, once) -> re-check
-mrd cache ls list the on-disk cache drawers
+mrd cache ls list the on-disk cache drawers; `parsed-v1` is
+ the document snapshot, whose compatibility follows
+ parser semantics rather than package/SQL versions
 mrd cache clean [--all] reap stale / orphaned / retired drawers. "Orphaned"
  means the workspace was OBSERVED gone: a workspace path
  that could not be examined keeps its drawer and is
@@ -1421,6 +1456,22 @@ read `cmd=` first). A warm daemon-served `links` emits neither on the
  no Delta, so `changes_seq` is unchanged (`wire-contract.md` §18 row 12).
  Polling it as a change monotone misses every CLI-lane write — diff by
  fingerprint (§4.7).
+- **A lock row has no retire verb.** `mrd pin` mints a row; `mrd rm` removes
+ a page; nothing removes ONE row from a page's meridian-lock. A row the engine
+ cannot read, or one that attests nothing — a `^anchor` minted under a heading
+ serves the heading line alone (3–9 words; measured on home-wiki at
+ `ff883de40`: six such rows on five pages, fingerprints equal to the heading
+ spans) — can only leave by hand. home-wiki retired its six under a ruling
+ with a script (`decisions/2026-09-03-retire-vacuous-and-unreadable-lock-rows.md`
+ in that wiki; the script prints `mrd check --json` before and after). The
+ ask, with that receipt shape: `mrd unpin <PAGE> <TARGET>#<SELECTOR>` (or
+ `mrd pin --retire`) — remove exactly one row, matched on object + path +
+ fingerprint, refuse when absent or ambiguous (exit 1, nothing written),
+ leave the target's anchor in place (another row may address it), print the
+ removed row plus the page's pin counts before and after in `pin`'s receipt
+ shape (`--json` too), and let the `## Inputs` twin line be the caller's —
+ a twin drop is prose, not lock bytes. A `--dry` that shows the row is the
+ read half.
 
 Accepted residuals (attestation surfaces) — documented, not prevented. Full statements in
 `wire-contract.md` § Named residuals.
