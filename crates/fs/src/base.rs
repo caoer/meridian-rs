@@ -14,7 +14,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::WorkspaceRoot;
-use crate::domain::{self, Domain};
+use crate::domain::Domain;
 
 /// One `.base` member as the walk found it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,7 +66,7 @@ pub fn base_snapshot(root: &WorkspaceRoot) -> io::Result<BaseSnapshot> {
 /// As [`base_snapshot`].
 pub fn base_snapshot_under(root: &WorkspaceRoot, domain: &Domain) -> io::Result<BaseSnapshot> {
     let mut rels: Vec<PathBuf> = Vec::new();
-    walk_base_dir(&root.0, Path::new(""), domain, &mut rels);
+    crate::walk_extension_dir(&root.0, Path::new(""), domain, "base", &mut rels);
     rels.sort();
 
     let members: Vec<BaseMember> = rels
@@ -94,53 +94,6 @@ pub fn base_snapshot_under(root: &WorkspaceRoot, domain: &Domain) -> io::Result<
     Ok(BaseSnapshot { members, fold })
 }
 
-/// Is `name` — one path segment as READ FROM THE DIRECTORY — a `.base` member
-/// name? Case-exact: `abc.BASE` is not a member, the case law the 2026-08-14
-/// ruling ratified, applied here for the same reason (a case-folding match
-/// would canonize typos on APFS).
-fn is_base_name(name: &str) -> bool {
-    Path::new(name).extension().is_some_and(|e| e == "base")
-}
-
-/// The membership walk. Dot-segments are skipped without descending (the
-/// structural floor, above custom rules); custom-ignored directories prune the
-/// same way the hash-domain walk prunes them. A directory that will not
-/// enumerate contributes nothing — absence, per §3.
-fn walk_base_dir(abs_dir: &Path, rel_dir: &Path, domain: &Domain, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(abs_dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        let name = entry.file_name();
-        // A non-UTF-8 name can never match `.base` (§3) — and could not be
-        // served as a wire path even if it did.
-        let Some(name) = name.to_str() else { continue };
-        let rel = rel_dir.join(name);
-        if file_type.is_dir() {
-            if domain::dot_segment(name) || domain.prunes_dir(&rel) {
-                continue;
-            }
-            walk_base_dir(&entry.path(), &rel, domain, out);
-        } else if file_type.is_file() && is_base_name(name) && in_base_domain(domain, &rel) {
-            out.push(rel);
-        }
-    }
-}
-
-/// The §3 membership predicate for a FILE whose name already ends `.base`: the
-/// hash domain's rules with the md-only floor swapped out.
-///
-/// [`Domain::exclusion`] answers `NonMarkdown` first for every `.base` path, so
-/// the md floor is stepped over here and the other two rules — dot-segment and
-/// custom-ignore — are asked exactly as the hash domain asks them. Asking
-/// through the domain's own `exclusion` keeps ONE rule surface: a custom
-/// ignore that moves md membership moves base membership in the same edit.
-fn in_base_domain(domain: &Domain, rel: &Path) -> bool {
-    !matches!(
-        domain.exclusion(rel),
-        Some(domain::ExclusionReason::DotSegment | domain::ExclusionReason::CustomIgnore)
-    )
-}
+// Membership itself — the case-exact extension match and the two rules that
+// survive the swapped floor — is [`crate::walk_extension_dir`], shared with the
+// `.canvas` carrier walk so one edit moves both.

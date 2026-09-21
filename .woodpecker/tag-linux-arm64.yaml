@@ -1,0 +1,168 @@
+# TAG lane — linux/arm64, CROSS-COMPILED on the linux/amd64 runner. Ensures the
+# engine binary for the tagged COMMIT exists in the append-only registry, then
+# prints the pin.
+#
+# Law: docs/release.md §5.4 (what the tag publishes) — read it before editing
+# this file. The keying decision (commit, never tag name, never `latest`) and
+# the 409 first-writer property are ruled there, not here.
+#
+# Same shape as `tag-linux-amd64.yaml` — probe the registry, attest the tree,
+# build, ask the binary its name, publish — with three differences, all of them
+# "the target is not the host":
+#   - the toolchain: `g++-aarch64-linux-gnu` from apt plus the
+#     `aarch64-unknown-linux-gnu` rustup target, installed in-step because the
+#     `Dockerfile.ci` image carries neither. The vendored DuckDB (`libduckdb-sys`
+#     `bundled`) builds through the `cc` crate, which honours the
+#     `CC_<target>`/`CXX_<target>`/`AR_<target>` variables below — this is the
+#     same trick ccc-statusd's Go release plays with GOOS/GOARCH, with a C++
+#     cross toolchain doing what Go does for free.
+#   - the artifact path: `target/aarch64-unknown-linux-gnu/release/mrd`.
+#   - the `--version` check runs under `qemu-aarch64-static`: the runner cannot
+#     exec an arm64 ELF natively, and a stamp nobody asked the binary for is a
+#     claim, not a measurement.
+# No sccache and no mold: neither was measured against the cross compiler, and
+# a release lane does not carry an untested accelerator. The cold build is a
+# DuckDB compile, ~15–25 min on this runner.
+when:
+  - event: tag
+    ref: refs/tags/v*
+  - event: manual
+
+depends_on:
+  - ci
+
+labels:
+  hostname: workstation-nyc-2
+
+clone:
+  - name: git
+    image: docker.io/woodpeckerci/plugin-git:2.9.2
+    environment:
+      PLUGIN_DEPTH: "0"
+      PLUGIN_TAGS: "true"
+      CI_NETRC_MACHINE: git.0xdao.app
+      CI_NETRC_USERNAME: caoer115
+      CI_NETRC_PASSWORD:
+        from_secret: forgejo_clone_token
+
+steps:
+  - name: publish mrd (linux-arm64, keyed by commit)
+    image: "meridian-ci:2026-08-10"
+    pull: false
+    environment:
+      CARGO_HOME: /ci-cache/meridian-rs/cargo
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+      CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+      AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
+      CARGO_TERM_COLOR: always
+      FORGEJO_TOKEN:
+        from_secret: forgejo_token
+    commands:
+      # ASK THE REGISTRY FIRST — the .sha256 sidecar answers "published?" and
+      # "which digest?" in one request (tag-linux-amd64.yaml has the reasoning).
+      - |
+        set -eu
+        git config --global --add safe.directory "$${CI_WORKSPACE}"
+        rev="$(git rev-parse "$${CI_COMMIT_SHA}^{commit}")"
+        echo "$${rev}" > /tmp/rev
+        echo "publishing under commit $${rev} (CI sha: $${CI_COMMIT_SHA})"
+        base="https://git.0xdao.app/api/packages/caoer115/generic/mrd/$${rev}"
+        code="$(curl -s -o /tmp/have.sha256 -w '%{http_code}' \
+          -H "Authorization: token $${FORGEJO_TOKEN}" "$${base}/mrd-linux-arm64.sha256")"
+        if [ "$${code}" = "200" ]; then
+          echo "already published for $${rev} — the FIRST bytes stay authoritative (append-only)"
+          echo "SKIP_BUILD=1" > /tmp/lane.env
+        else
+          echo "not published for $${rev} (HTTP $${code}) — building"
+          echo "SKIP_BUILD=0" > /tmp/lane.env
+        fi
+      # The cross toolchain. `libc6-dev-arm64-cross` is what makes the target
+      # libc headers exist; `qemu-user-static` is for the --version step only.
+      - |
+        set -eu
+        . /tmp/lane.env
+        [ "$${SKIP_BUILD}" = "0" ] || exit 0
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get -qq update
+        apt-get -qq install -y --no-install-recommends \
+          g++-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user-static file >/dev/null
+        rustup target add aarch64-unknown-linux-gnu
+      # Attest the tree, tri-state, flag for flag with the engine's own probe
+      # — the amd64 lane's comment block is the law here too.
+      - |
+        set -eu
+        . /tmp/lane.env
+        [ "$${SKIP_BUILD}" = "0" ] || exit 0
+        rev="$(cat /tmp/rev)"
+        if ! porcelain="$(git --no-optional-locks status --porcelain --untracked-files=no)"; then
+          echo "the tree probe FAILED — cannot attest, and 'could not tell' is not 'clean'"
+          exit 1
+        fi
+        if [ -n "$porcelain" ]; then
+          echo "tracked content diverges from $${rev} — refusing to publish a RELEASE no sha can recover"
+          printf '%s\n' "$porcelain"
+          exit 1
+        fi
+        if ! head="$(git rev-parse HEAD)"; then
+          echo "rev-parse FAILED — cannot attest which tree was built"
+          exit 1
+        fi
+        if [ "$head" != "$${rev}" ]; then
+          echo "HEAD is $head, not $${rev} — the probe answered for a tree the stamp does not name; refusing"
+          exit 1
+        fi
+        echo "MRD_BUILD_SHA=$${rev}" > /tmp/stamp.env
+        cat /tmp/stamp.env
+        env $(cat /tmp/stamp.env) cargo build -q --locked --release -p mrd --target aarch64-unknown-linux-gnu
+      # Ask the artifact its name — under emulation, because this runner cannot
+      # exec it. `file` first, so a wrong-arch binary is named as such rather
+      # than as a qemu error.
+      - |
+        set -eu
+        . /tmp/lane.env
+        [ "$${SKIP_BUILD}" = "0" ] || exit 0
+        bin=target/aarch64-unknown-linux-gnu/release/mrd
+        file "$${bin}" | tee /tmp/file.out
+        grep -q "ARM aarch64" /tmp/file.out || { echo "not an aarch64 ELF — refusing to publish it as one"; exit 1; }
+        ver="$(qemu-aarch64-static -L /usr/aarch64-linux-gnu "$${bin}" --version)"
+        echo "$${ver}"
+        case "$${ver}" in
+          *unknown*) echo "this build cannot name the tree it came from — refusing to publish it"; exit 1 ;;
+        esac
+        echo "$${ver}" | grep -q "$(cat /tmp/rev)" || {
+          echo "the stamp does not name $(cat /tmp/rev) — the pin would lie about what it is"; exit 1; }
+      - |
+        set -eu
+        . /tmp/lane.env
+        rev="$(cat /tmp/rev)"
+        base="https://git.0xdao.app/api/packages/caoer115/generic/mrd/$${rev}"
+        if [ "$${SKIP_BUILD}" = "0" ]; then
+          bin=target/aarch64-unknown-linux-gnu/release/mrd
+          sha="$(sha256sum "$${bin}" | cut -d' ' -f1)"
+          echo "$${sha}  mrd-linux-arm64" > /tmp/mrd-linux-arm64.sha256
+          put() {
+            for delay in 0 15 45; do
+              [ "$delay" = 0 ] || sleep "$delay"
+              code="$(curl -s -o /tmp/put.out -w '%{http_code}' -X PUT \
+                -H "Authorization: token $${FORGEJO_TOKEN}" \
+                --upload-file "$$1" "$${base}/$$2")"
+              case "$${code}" in
+                201) echo "published $$2"; return 0 ;;
+                409) echo "$$2 already published for this commit — keeping the FIRST bytes (append-only)"; return 0 ;;
+              esac
+              echo "publish $$2: HTTP $${code} — retrying"
+              cat /tmp/put.out || true
+            done
+            echo "publish $$2 failed after 3 attempts: HTTP $${code}"
+            exit 1
+          }
+          put "$${bin}" mrd-linux-arm64
+          put /tmp/mrd-linux-arm64.sha256 mrd-linux-arm64.sha256
+        fi
+        echo ''
+        echo 'pin for downstream .mrd-pin (linux-arm64):'
+        echo "  MRD_COMMIT=$${rev}"
+        echo "  MRD_SHA256=$$(curl -fsSL -H "Authorization: token $${FORGEJO_TOKEN}" "$${base}/mrd-linux-arm64.sha256" | cut -d' ' -f1)"

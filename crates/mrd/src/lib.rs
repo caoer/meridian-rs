@@ -20,6 +20,7 @@ mod history_cmd;
 mod arm_cmd;
 pub mod hook;
 mod init;
+mod move_cmd;
 mod new_cmd;
 mod path_law;
 mod pin_cmd;
@@ -361,6 +362,29 @@ usage:
                            everything except disk. Routed over IPC like
                            put — no direct-write fallback. Exits: 0
                            removed|dry / 1 refused / 2 bad invocation.
+! mrd move <OLD> <NEW> [--dry] [--immutable PREFIX]... [--json]
+                           the move door (docs/move.md): rename or move a
+                           page or a directory inside ONE root and rewrite
+                           every reference that would break — body wikilinks
+                           and embeds (the target slot only; fragment and
+                           alias kept), frontmatter wikilinks and rooted
+                           strings naming this root, meridian-lock object:
+                           rows, and .canvas node slots (a file node's path
+                           and a text node's wikilinks; every other byte of
+                           the JSON kept). A reference that still resolves is
+                           byte-untouched; a rewrite keeps the class the
+                           author wrote (full path / shortest unique suffix /
+                           bare name). NEW ending in `/` or naming an existing
+                           directory lands OLD under it. Both operands take
+                           [root:]path and must name ONE root. Refuses NEW
+                           occupied, a cross-root pair, OLD or NEW under an
+                           immutable prefix, and a bare link the move would
+                           leave ambiguous — every pair named, nothing
+                           written. --dry prints the whole plan and writes
+                           nothing; the real run prints the plan as its
+                           receipt plus the link census read back from disk.
+                           In-process, never a wire op. Exits: 0 moved|dry / 1
+                           refused / 2 bad invocation.
 ! mrd pin <PAGE> <TARGET>#<SELECTOR> [--fingerprint TOKEN] [--vibe] [--dry]
           [--json]
                            attest: record in PAGE's meridian-lock that it draws
@@ -542,7 +566,9 @@ usage:
                            PAGE workspace-relative). TASK omitted: one declared
                            task runs; several run the one named default, else
                            list and exit 2. Exits: 0 clean / 1 refused|failed /
-                           2 bad invocation.
+                           2 bad invocation. A step's own exit code is always on
+                           the report (exec: exited N; exec.exit_code under
+                           --json); --exit-passthrough puts it on the rc.
 ! mrd script [--files PATH]... [--args JSON] [--dry] [--actor A] [--now T]
           [--if-fingerprint FP] [--expect-armed DIGEST] [--receipt PATH#ANCHOR]
                            evaluate inline Starlark from STDIN as the caller
@@ -616,10 +642,27 @@ usage:
 options:
   --json                   emit JSON instead of a human table.
   --env KEY=VALUE          (run) supply one declared env entry (repeatable).
+  --immutable PREFIX       (move) a file under PREFIX keeps every word its
+                           author wrote; each breaking wikilink, embed,
+                           frontmatter link, rooted string or canvas node slot
+                           is reported with its line, old and new spelling
+                           (repeatable). Its meridian-lock object: rows are
+                           repointed there as anywhere else — the path only,
+                           never a re-pin. OLD or NEW under PREFIX refuses.
   --dry                    (run) starlark: evaluate hermetically, print full
                            effect set, apply nothing; bash: show block + caps,
                            refuse to exec.
   --list                   (run) list the page's tasks with contracts and caps.
+  --exit-passthrough       (run) exit with the executed step's own nonzero exit
+                           code instead of the triad's 1, so a caller can tell
+                           a step's finding from a step that could not run. The
+                           other legs are reserved: signaled stays 128+signal,
+                           a timeout and a detected out-of-band delta stay 1
+                           (the plane's finding, not the step's), and a bad
+                           invocation stays 2 — which a passed-through 2 now
+                           shares, told apart by the report on stdout. Refuses
+                           beside --list / --dry / --load / a fire: none execs
+                           a task step.
   --files PATH             (script) one host-enumerated path, bound inert as
                            files (repeatable). Paths only — content enters
                            through read() alone. A member containing * is a
@@ -839,6 +882,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "fingerprint" => fingerprint_cmd::dispatch(&args[1..]),
         "put" => put_cmd::dispatch(&args[1..]),
         "rm" => rm_cmd::dispatch(&args[1..]),
+        "move" => move_cmd::dispatch(&args[1..]),
         "pin" => pin_cmd::dispatch(&args[1..]),
         "repair" => repair_cmd::dispatch(&args[1..]),
         "walk" => walk_cmd::dispatch(&args[1..]),
@@ -1251,20 +1295,20 @@ mod help {
             assert_eq!(words_of(overflowing), vec!["pin"]);
         }
 
-        /// The write mark is the gutter: 16 verbs write, the rest read.
+        /// The write mark is the gutter: 17 verbs write, the rest read.
         #[test]
-        fn sixteen_verbs_are_marked_as_writers() {
+        fn seventeen_verbs_are_marked_as_writers() {
             let marked: Vec<&str> = LISTING
                 .lines()
                 .filter(|line| line.starts_with("! "))
                 .collect();
             assert_eq!(
                 marked.len(),
-                16,
+                17,
                 "marked as writers:\n{}",
                 marked.join("\n")
             );
-            assert_eq!(blocks().len(), 31, "verb blocks in the listing");
+            assert_eq!(blocks().len(), 32, "verb blocks in the listing");
         }
 
         /// Every option that names an owner names a verb that exists.

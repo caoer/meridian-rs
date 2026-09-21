@@ -2691,7 +2691,9 @@ pub fn remove_with_cache(
 /// The inbound instruments are [`query::backlinks`] and
 /// [`query::lock_pin_referrers`]; this is only their corpus input. A new
 /// reverse-link index is a different card. Not counted by [`fs::fold_count`].
-fn referential_files(root: &fs::WorkspaceRoot) -> Result<fs::DomainFiles, Box<ErrorBody>> {
+pub(crate) fn referential_files(
+    root: &fs::WorkspaceRoot,
+) -> Result<fs::DomainFiles, Box<ErrorBody>> {
     let domain = fs::domain::Domain::load(root).map_err(|e| io_refusal(e.to_string()))?;
     let rels = fs::hash_domain(root, &domain).map_err(|e| io_refusal(e.to_string()))?;
     let mut files = Vec::with_capacity(rels.len());
@@ -3433,7 +3435,7 @@ fn pin_row(
 /// An `io_error` refusal carrying its cause — the shape [`blob_oid`]'s `--vibe`
 /// arm already refuses with, reused so the two git-cannot-answer doors speak
 /// with one voice.
-fn io_refusal(cause: String) -> Box<ErrorBody> {
+pub(crate) fn io_refusal(cause: String) -> Box<ErrorBody> {
     let mut err = ErrorBody::new(ErrorCode::IoError);
     err.cause = Some(cause);
     Box::new(err)
@@ -4079,7 +4081,9 @@ fn locate_lock(doc: &model::Document) -> Result<Option<std::ops::Range<usize>>, 
 /// lock (`WouldBlock`, `LOCK_NB`) is the fast `workspace_busy` refusal
 /// (transient — retry); any other lock-file I/O failure maps to
 /// `io_error{cause}`.
-fn acquire_write_lock(root: &fs::WorkspaceRoot) -> Result<fs::WriteLock, Box<ErrorBody>> {
+pub(crate) fn acquire_write_lock(
+    root: &fs::WorkspaceRoot,
+) -> Result<fs::WriteLock, Box<ErrorBody>> {
     fs::WriteLock::acquire(root).map_err(|e| {
         if e.kind() == ErrorKind::WouldBlock {
             let mut w = ErrorBody::new(ErrorCode::WorkspaceBusy);
@@ -4107,7 +4111,7 @@ fn acquire_write_lock(root: &fs::WorkspaceRoot) -> Result<fs::WriteLock, Box<Err
 /// WHICH tree a path is joined onto: a `root:`-bearing spelling at a write door
 /// is an address, never a corpus path, and is refused rather than creating a
 /// document no address can name (§4.2, D11).
-fn path_confined(root: &fs::WorkspaceRoot, path: &Path) -> Result<(), Box<ErrorBody>> {
+pub(crate) fn path_confined(root: &fs::WorkspaceRoot, path: &Path) -> Result<(), Box<ErrorBody>> {
     if !addr::confined(&path.0) {
         let mut e = ErrorBody::new(ErrorCode::BadPath);
         e.path = Some(path.clone());
@@ -4914,7 +4918,7 @@ fn conformance_to_wire(refusal: &policy::defs::BodyError, path: &Path) -> Box<Er
 
 /// Map an `fs` I/O error onto its wire envelope: `NotFound` ⇒ `file_not_found`
 /// (env), otherwise `io_error{cause}`.
-fn io_to_wire(e: &std::io::Error) -> Box<ErrorBody> {
+pub(crate) fn io_to_wire(e: &std::io::Error) -> Box<ErrorBody> {
     if e.kind() == ErrorKind::NotFound {
         return Box::new(ErrorBody::new(ErrorCode::FileNotFound));
     }
@@ -5619,7 +5623,7 @@ fn stored_form_guard(
 /// can carry a cross-root position at all, so an ordinary single-root write
 /// never pays for one. `tests/u12_door_enumeration.rs` counts the doors by this
 /// one name.
-fn stored_form_guard_lazy(
+pub(crate) fn stored_form_guard_lazy(
     before: Option<&model::Document>,
     candidate: &model::CandidateDocument,
     path: &Path,
@@ -7881,6 +7885,41 @@ mod resident_write_path {
         (dir, root)
     }
 
+    /// Settle the write-plane memo to its stat-only steady state before a
+    /// measured window. A door write spoils the member it wrote, and under
+    /// the §6.2 trust close that row stays racy — legitimately re-read —
+    /// until a pass re-records it under a watermark that clears its stamps
+    /// by one calibrated granule. When that is depends on the backend's
+    /// stamp clock (a coarse clock can lag the wall clock by a tick), so the
+    /// memo is settled by observation, not by a fixed wait: dry passes over
+    /// `path`, each two granules of the memo's own measured calibration
+    /// apart, until one reads nothing. From that pass on reuse is
+    /// deterministic — the same stamps against the same record watermarks —
+    /// which is the steady state a measured window asserts against.
+    fn settle(root: &fs::WorkspaceRoot, cache: &super::WriteCache, path: &str) {
+        let fs::stable::Calibration::Measured { granule_ns } = cache
+            .lock()
+            .unwrap()
+            .calibration()
+            .expect("probed on first observe")
+            .clone()
+        else {
+            panic!("a writable tempdir calibrates");
+        };
+        let pause = std::time::Duration::from_nanos(granule_ns * 2 + 2_000_000);
+        for _ in 0..64 {
+            std::thread::sleep(pause);
+            let before = cache.lock().unwrap().leaves_read();
+            let mut pass = splice_args(path, "w1", "w2");
+            pass.dry = true;
+            splice(root, None, &pass, &[], None).expect("settling dry splice");
+            if cache.lock().unwrap().leaves_read() == before {
+                return;
+            }
+        }
+        panic!("the memo did not settle within the retry budget");
+    }
+
     /// One in-domain page under `Alpha/Beta` whose body a Match edit can move.
     fn page_body(word: &str) -> String {
         format!("# Alpha\n\n## Beta\n\nship by {word}\n")
@@ -8169,11 +8208,8 @@ mod resident_write_path {
         )
         .expect("cold splice observes the corpus");
         // Settle the spoiled member so the measured window is a warm observe.
-        let mut settle = splice_args("notes/plan.md", "w1", "w2");
-        settle.dry = true;
-        splice(&root, None, &settle, &[], None).expect("settling dry splice");
-
         let cache = write_cache(&root);
+        settle(&root, &cache, "notes/plan.md");
         let reads_before = cache.lock().unwrap().leaves_read();
         let rev = live_rev(&root, "notes/victim.md");
         remove(&root, None, &remove_args("notes/victim.md", rev), &[])
@@ -8436,11 +8472,9 @@ mod resident_write_path {
         .expect("seed splice");
 
         let cache = write_cache(&root);
-        // The seed spoiled notes/plan.md; one observation re-reads it and
-        // settles the memo before the measured window.
-        let mut settle = splice_args("notes/plan.md", "w1", "w2");
-        settle.dry = true;
-        splice(&root, None, &settle, &[], None).expect("settling dry splice");
+        // The seed spoiled notes/plan.md; settle the memo before the
+        // measured window.
+        settle(&root, &cache, "notes/plan.md");
         let (reads_before, folds_before) = {
             let c = cache.lock().unwrap();
             (c.leaves_read(), c.served_folds())

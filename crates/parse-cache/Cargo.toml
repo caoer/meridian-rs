@@ -1,0 +1,24 @@
+[package]
+name = "parse-cache"
+description = "Private disposable document codec; no model serialization or filesystem I/O"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+model = { workspace = true }
+blake3 = "1"
+
+[build-dependencies]
+blake3 = "1"
+toml = { workspace = true }
+
+[dev-dependencies]
+syntax = { workspace = true }
+toml = { workspace = true }

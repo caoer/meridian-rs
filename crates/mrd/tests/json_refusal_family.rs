@@ -188,6 +188,25 @@ fn control_put_serves_the_envelope() {
 
 /// `pin` — ALL FOUR refusal legs, not the one that motivated the card. Each was 0 stdout bytes
 /// before the frameless caller at `pin_cmd.rs` was routed through the face's helper.
+/// `move` reaches `wire_serve::relocate` directly — the in-process door — and
+/// routes every engine refusal through the frame: OLD absent is
+/// `file_not_found` at the findings leg.
+#[test]
+fn move_serves_the_envelope_on_its_engine_leg() {
+    let (sb, ws) = sandbox();
+    let out = run(&sb, &ws, &["move", "ghost.md", "elsewhere.md", "--json"]);
+    let frame = assert_envelope("move", &out);
+    assert_eq!(
+        frame["error"]["code"],
+        serde_json::json!("file_not_found"),
+        "the engine's own code rides the frame: {frame}"
+    );
+    assert!(
+        !ws.join("elsewhere.md").exists(),
+        "a refused move lands nothing"
+    );
+}
+
 #[test]
 fn pin_serves_the_envelope_on_every_refusal_leg() {
     let (sb, ws) = sandbox();

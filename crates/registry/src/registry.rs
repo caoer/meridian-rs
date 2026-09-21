@@ -28,6 +28,10 @@ use crate::now_secs;
 use crate::protocol::{DenyKind, WorkspaceEntry};
 use crate::state::StateStore;
 
+#[cfg(test)]
+#[path = "durable_cache_tests.rs"]
+mod durable_cache_tests;
+
 /// The outcome of a [`Registry::register`] call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegisterOutcome {
@@ -151,18 +155,22 @@ pub struct Registry {
     /// whole corpus. Registration-lifetime under a live §6.4 feed: it
     /// survives the idle-reap (the feed's dirty set covers the cold gap, so
     /// the re-warm is O(dirty)); with no live feed it drops on reap as it
-    /// always did. Each entry is its own `Arc<Mutex<…>>` so the run plane
+    /// always did, and the budget sweep ([`Self::reap_to_budget`]) drops it
+    /// with everything else its victims hold. Each entry is its own `Arc<Mutex<…>>` so the run plane
     /// can borrow ONE workspace's memo for its bracket observations (card
     /// run-observation-unification) without holding the map — and so one
     /// workspace's pass never serializes another's.
     domain_caches: Mutex<HashMap<PathBuf, Arc<Mutex<fs::DomainCache>>>>,
     /// The §6.4 event feed per workspace (kernel watcher + registry-held
-    /// dirty set). Registration-lifetime (kimi D1): created with the
-    /// workspace's first resident state, kept across every idle-reap,
-    /// dropped at `unregister` — which is exactly what makes retaining
-    /// [`Self::domain_caches`] across a reap sound: the feed covers the cold
-    /// gap. A slot that failed to start is sticky-Failed, loud once; that
-    /// workspace keeps the pre-feed semantics (memo drops on reap).
+    /// dirty set). Registration-lifetime (kimi D1), bounded by the resident
+    /// budget: created with the workspace's first resident state, kept
+    /// across every idle-reap, dropped at `unregister` and by the budget
+    /// sweep ([`Self::reap_to_budget`], which forfeits gap coverage for its
+    /// victims on purpose). Keeping it across the idle-reap is exactly what
+    /// makes retaining [`Self::domain_caches`] across that reap sound: the
+    /// feed covers the cold gap. A slot that failed to start is
+    /// sticky-Failed, loud once; that workspace keeps the pre-feed
+    /// semantics (memo drops on reap).
     feeds: Mutex<HashMap<PathBuf, FeedSlot>>,
     /// The wake set per workspace: every subscriber parked on its ring
     /// (`server::push_loop`). One instance serves the workspace's feed (a
@@ -194,6 +202,17 @@ pub struct Registry {
     /// anchored, the labeled re-baseline if it did not). The card's published
     /// counters; empty for a workspace that started genuinely cold.
     checkpoints: Mutex<HashMap<PathBuf, crate::checkpoint::CheckpointReceipt>>,
+    /// A single saver bounds retained engine pins to one. This gate is never
+    /// held by a read, hook fire, or currency observation.
+    persistence_gate: Mutex<()>,
+    saved_parse: Mutex<HashMap<PathBuf, String>>,
+    saved_observation: Mutex<HashMap<PathBuf, [u8; 32]>>,
+    /// Queue identities only, never strong references to evictable engines.
+    pending_parse: Mutex<std::collections::BTreeMap<PathBuf, Instant>>,
+    /// The saver's wake set: rung when [`Self::pending_parse`] gains an
+    /// entry, so the saver parks between opportunities instead of ticking
+    /// (see `server::spawn_saver`).
+    saver_wakers: crate::wake::ChangeWakers,
     /// § A.5 mount-table cache. Machine-scoped (not per-workspace): the
     /// binding file lives outside every workspace's hash domain, so no
     /// engine or ring can carry it.
@@ -921,6 +940,11 @@ impl Registry {
             // Cold: no restore has run; each workspace's first resident memo
             // records its own receipt.
             checkpoints: Mutex::new(HashMap::new()),
+            persistence_gate: Mutex::new(()),
+            saved_parse: Mutex::new(HashMap::new()),
+            saved_observation: Mutex::new(HashMap::new()),
+            pending_parse: Mutex::new(std::collections::BTreeMap::new()),
+            saver_wakers: crate::wake::ChangeWakers::default(),
             requests: AtomicU64::new(0),
             // Clock starts at birth so idle-exit can age an unused daemon.
             last_request: AtomicU64::new(now_secs()),
@@ -1235,6 +1259,32 @@ impl Registry {
         !timed.timed_out()
     }
 
+    fn restore_parsed_prior(
+        &self,
+        workspace: &Path,
+        cache: &Mutex<fs::DomainCache>,
+    ) -> Option<parse_cache::snapshot::Restored> {
+        let fresh = cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .leaf_digests();
+        let prior = crate::parsed_cache::restore(&self.cache_root, workspace, &fresh);
+        let mut saved = self
+            .saved_parse
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(prior) = &prior
+            && prior.complete
+        {
+            saved.insert(workspace.to_path_buf(), prior.fingerprint.clone());
+        } else {
+            // A corrupt/deleted snapshot must be healed even if its old
+            // fingerprint was recorded by an earlier save in this process.
+            saved.remove(workspace);
+        }
+        prior
+    }
+
     /// Warm the resident engine for `workspace`; rebuild only when the corpus
     /// content hash changed (U1). Reuse key is the content hash (R5), not
     /// workspace-identity Merkle. `Reused` ⇒ zero parses. Fingerprint read
@@ -1340,7 +1390,17 @@ impl Registry {
             // (movers only — see the stamp law above); cold → the one
             // whole-corpus parse site. Leaf-set clones happen on this rebuild
             // path only, never per currency pass.
-            let engine = if let Some(prior) = prior {
+            let cold = prior.is_none();
+            let restored = if cold {
+                self.restore_parsed_prior(&canonical, &cache)
+            } else {
+                None
+            };
+            let previous = prior
+                .as_ref()
+                .map(|p| (&p.docs, &p.unserved, &p.leaves))
+                .or_else(|| restored.as_ref().map(|p| (&p.docs, &p.unserved, &p.leaves)));
+            let engine = if let Some((docs, unserved, leaves)) = previous {
                 // Snapshot the leaf set AND the root minted for exactly that
                 // set under ONE lock hold (merkle-spec §6.8): when the
                 // incremental pass builds the very set, its stamp is this
@@ -1350,14 +1410,8 @@ impl Registry {
                     let minted = memo.overlay_root().ok();
                     (memo.leaf_digests(), minted)
                 };
-                let update = fs::update_corpus(
-                    &root,
-                    &prior.docs,
-                    &prior.unserved,
-                    &prior.leaves,
-                    &fresh,
-                    fresh_root.as_ref(),
-                )?;
+                let update =
+                    fs::update_corpus(&root, docs, unserved, leaves, &fresh, fresh_root.as_ref())?;
                 parsed = Some(update.parsed);
                 WorkspaceEngine {
                     index: update.index,
@@ -1378,6 +1432,8 @@ impl Registry {
                     leaves,
                 }
             };
+            drop(prior);
+            drop(restored);
             let docs_parsed = parsed.unwrap_or(0);
 
             // Test-only: park here when the gate is armed (see the field docs).
@@ -1404,6 +1460,14 @@ impl Registry {
                 }
                 if resident == witness {
                     engines.insert(canonical.clone(), Arc::new(engine));
+                    drop(engines);
+                    if cold {
+                        self.pending_parse
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .insert(canonical.clone(), Instant::now());
+                        self.saver_wakers.wake_all();
+                    }
                     return Ok(WarmOutcome::Built { docs: docs_parsed });
                 }
             }
@@ -1987,29 +2051,190 @@ impl Registry {
     /// only re-replays (the overlay is idempotent), over-claiming would skip a
     /// change.
     pub(crate) fn save_checkpoints(&self) {
-        let caches: Vec<(PathBuf, Arc<Mutex<fs::DomainCache>>)> = {
-            let caches = self
-                .domain_caches
+        self.save_resident(true);
+    }
+
+    fn save_resident(&self, parsed: bool) {
+        let workspaces: Vec<_> = self
+            .domain_caches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect();
+        for workspace in workspaces {
+            self.persist_workspace(&workspace, parsed);
+        }
+    }
+
+    /// One saver, no request locks over I/O, and no queued engine references.
+    /// A busy memo or failed write costs future recovery work, never service.
+    fn persist_workspace(&self, workspace: &Path, parsed: bool) -> bool {
+        let Ok(_save) = self.persistence_gate.try_lock() else {
+            return false;
+        };
+        if !self
+            .inner
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(workspace)
+        {
+            return true; // unregister won; never recreate its payload
+        }
+        let mut saved = true;
+        let cache = self
+            .domain_caches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(workspace)
+            .cloned();
+        if let Some(cache) = cache {
+            let (instance, seq) = self
+                .rings
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(workspace)
+                .map_or_else(|| (String::new(), 0), |ring| (ring.instance(), ring.seq()));
+            let snapshot = if let Ok(mut memo) = cache.try_lock() {
+                fs::checkpoint::prepare(
+                    &mut memo,
+                    &fs::checkpoint::SaveIdentity {
+                        workspace: workspace.to_path_buf(),
+                        parse_cache: cache::SCHEMA_SALT.to_owned(),
+                        journal_instance: instance,
+                        journal_seq: seq,
+                    },
+                )
+            } else {
+                saved = false;
+                None
+            };
+            // Encoding and writing happen after the memo guard has dropped.
+            if let Some(snapshot) = snapshot {
+                let bytes = snapshot.encode();
+                let digest = *blake3::hash(&bytes).as_bytes();
+                let unchanged = self
+                    .saved_observation
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(workspace)
+                    == Some(&digest);
+                if !unchanged || !crate::checkpoint::path(&self.cache_root, workspace).is_file() {
+                    if crate::checkpoint::commit(&self.cache_root, workspace, &bytes) {
+                        self.saved_observation
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .insert(workspace.to_path_buf(), digest);
+                    } else {
+                        eprintln!(
+                            "checkpoint: save incomplete for {}; recovery may need source reads",
+                            workspace.display()
+                        );
+                        saved = false;
+                    }
+                }
+            }
+        }
+        if parsed && let Some(engine) = self.engine_snapshot(workspace) {
+            let unchanged = self
+                .saved_parse
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(workspace)
+                == Some(&engine.at_fingerprint.0);
+            if !unchanged || !crate::parsed_cache::path(&self.cache_root, workspace).is_file() {
+                match crate::parsed_cache::save(&self.cache_root, workspace, &engine) {
+                    Ok(Some(count)) => {
+                        self.saved_parse
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .insert(workspace.to_path_buf(), engine.at_fingerprint.0.clone());
+                        eprintln!(
+                            "parse-cache: saved {count} document(s) for {}",
+                            workspace.display()
+                        );
+                    }
+                    Ok(None) => saved = false,
+                    Err(e) => {
+                        eprintln!(
+                            "parse-cache: save incomplete for {} ({e}); recovery may need source parsing",
+                            workspace.display()
+                        );
+                        saved = false;
+                    }
+                }
+            }
+        }
+        saved
+    }
+
+    /// The saver's wake set (field doc): the saver registers a waiter here
+    /// and every enqueue rings it.
+    pub(crate) fn saver_wakers(&self) -> &crate::wake::ChangeWakers {
+        &self.saver_wakers
+    }
+
+    /// When the earliest queued parse save is due — `None` when nothing is
+    /// queued. The saver parks until then (or until a wake or shutdown), so a
+    /// retry deferred a minute costs no wakeups in between.
+    pub(crate) fn next_pending_parse_due(&self) -> Option<Instant> {
+        self.pending_parse
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .min()
+            .copied()
+    }
+
+    /// Called by the single background saver. Failed opportunities retry after
+    /// a minute; identities only are retained, so eviction still releases RAM.
+    /// Takes ONE due workspace per call so no request waits behind a long
+    /// save; the saver calls again while any is due.
+    pub(crate) fn save_pending_parsed(&self) {
+        let now = Instant::now();
+        let due: Vec<_> = {
+            let mut queue = self
+                .pending_parse
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            caches
+            let due: Vec<_> = queue
                 .iter()
-                .map(|(key, cache)| (key.clone(), Arc::clone(cache)))
-                .collect()
+                .filter(|(_, at)| **at <= now)
+                .take(1)
+                .map(|(ws, _)| ws.clone())
+                .collect();
+            for ws in &due {
+                queue.remove(ws);
+            }
+            due
         };
-        for (workspace, cache) in caches {
-            let journal = {
-                let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
-                rings
-                    .get(&workspace)
-                    .map(|ring| (ring.instance(), ring.seq()))
-            };
-            // No ring is no journal: the cursor is recorded as unanchorable
-            // rather than invented, so a later restore takes the evidence arm
-            // instead of replaying against a numbering that never existed.
-            let (instance, seq) = journal.unwrap_or_else(|| (String::new(), 0));
-            let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
-            crate::checkpoint::save(&self.cache_root, &workspace, &mut memo, instance, seq);
+        for workspace in due {
+            if !self.persist_workspace(&workspace, true) {
+                self.pending_parse
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .entry(workspace)
+                    .or_insert(now + Duration::from_mins(1));
+            }
+        }
+    }
+
+    /// The small observation checkpoint is eligible for periodic coalescing.
+    /// Parsed corpora are NOT rewritten by this timer.
+    pub(crate) fn save_observation_checkpoints(&self) {
+        self.save_resident(false);
+        let workspaces: Vec<_> = self
+            .engines
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect();
+        for workspace in workspaces {
+            let dir = cache::parsed_drawer_dir(&self.cache_root, &workspace);
+            if matches!(cache::probe(&dir), cache::Probe::Hit(_)) {
+                let _ = cache::try_stamp_last_use(&dir);
+            }
         }
     }
 
@@ -2281,6 +2506,12 @@ impl Registry {
     /// on the path as given — so a vanished workspace can still be unregistered
     /// by the canonical path a `list` reported.
     pub fn unregister(&self, path: &Path) -> bool {
+        // Serialize removal with the saver so no late rename can recreate an
+        // unregistered workspace's payload. No registry map lock is held here.
+        let _save = self
+            .persistence_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let key = workspace::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let removed = {
             let mut map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
@@ -2316,6 +2547,19 @@ impl Registry {
         // here too, or a re-register would adopt an index nothing has covered
         // the gap for.
         crate::checkpoint::discard(&self.cache_root, &key);
+        crate::parsed_cache::discard(&self.cache_root, &key);
+        self.pending_parse
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
+        self.saved_parse
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
+        self.saved_observation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
         // Kernel-stream release (the feed's Drop) runs outside every map lock.
         drop(feed);
         drop(cache);
@@ -2461,6 +2705,191 @@ impl Registry {
             }
         }
         demoted.into_iter().collect()
+    }
+
+    fn save_eviction_candidates(&self, resident: &[(PathBuf, u64)], over: u64) {
+        // Save likely victims BEFORE the decide-and-remove critical section.
+        // Re-evaluate LRU/subscription state below after I/O, so a subscriber
+        // arriving during a slow save retains the existing exemption.
+        let opportunities = {
+            let map = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+            let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut preview = resident.to_vec();
+            preview.sort_by_key(|(key, _)| map.get(key).map_or(0, Slot::last_use));
+            let mut left = over;
+            let mut selected = Vec::new();
+            for (key, estimated) in preview {
+                if left == 0 {
+                    break;
+                }
+                if rings.get(&key).is_some_and(|ring| ring.has_subscribers()) {
+                    continue;
+                }
+                left = left.saturating_sub(estimated);
+                selected.push(key);
+            }
+            selected
+        };
+        for workspace in opportunities {
+            if !self.persist_workspace(&workspace, true) {
+                eprintln!(
+                    "checkpoint: pre-eviction save incomplete for {}; eviction proceeds under the resident budget",
+                    workspace.display()
+                );
+            }
+        }
+    }
+
+    /// Budget sweep: evict whole warm workspaces, LRU by `last_use` oldest
+    /// first, until the warm set's ESTIMATED resident bytes —
+    /// [`crate::RESIDENT_BYTES_PER_RAW_BYTE`] times each engine's raw
+    /// markdown bytes — are within `max_resident_bytes` (`0`: unbounded,
+    /// never evicts). Runs beside the idle reap on the reaper thread — the
+    /// idle reap demotes what nobody uses; this sweep bounds what everybody
+    /// uses, because a fleet-touched workspace never reaches the idle
+    /// horizon and the warm set otherwise grows by one parsed corpus per
+    /// workspace served.
+    ///
+    /// Estimated bytes, not documents: per-document resident cost varies
+    /// 67x with document size, so a document budget is defeated by exactly
+    /// the corpus shapes it must bound; the multiplier is the measured
+    /// worst-case parse blow-up (shapes span 1.54x to 6.01x of raw bytes),
+    /// so the estimate never under-counts
+    /// ([`crate::DEFAULT_MAX_RESIDENT_BYTES`] carries the calibration).
+    ///
+    /// An eviction is TOTAL where the idle reap DEMOTES: engine, resident
+    /// memo, ring, sql handle, module cache, pre-warm signature, and the
+    /// §6.4 feed all drop; only the registration (`inner`) survives, so a
+    /// later `hello` rebuilds the state from disk. Dropping the feed
+    /// forfeits §6.4 gap coverage for that workspace — its next warm is a
+    /// full corpus walk, not O(dirty). That is the deliberate trade under
+    /// budget pressure (merkle-spec §6.4, watcher lifecycle): bounded
+    /// residency outranks gap coverage for the least-recently-used
+    /// workspace. Do not restore a feed or memo exemption here.
+    ///
+    /// The exemption is NARROW: a workspace is exempt only while a live sub
+    /// cursor rides it — the same `has_subscribers` test the idle reap
+    /// uses, decided under the same `inner` → `rings` critical section, so
+    /// a claim landing in the sweep window keeps its workspace and its ring
+    /// (evicting a subscribed ring would fork the per-workspace seq, §4.7).
+    /// When every warm workspace is subscribed the budget cannot be met:
+    /// log and carry on, never panic.
+    pub fn reap_to_budget(&self, max_resident_bytes: u64) -> Vec<PathBuf> {
+        if max_resident_bytes == 0 {
+            return Vec::new();
+        }
+        // Estimate snapshot OUTSIDE the map guards: an engine that warms
+        // between this read and the decision below is missed by one sweep
+        // and caught by the next — cheaper than nesting the engines guard
+        // inside `inner`, which no other path does. O(docs) per sweep: the
+        // raw bytes ride each parsed document already in memory.
+        let mut resident: Vec<(PathBuf, u64)> = {
+            let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
+            engines
+                .iter()
+                .map(|(key, engine)| {
+                    let raw: u64 = engine.docs.values().map(|doc| doc.raw.len() as u64).sum();
+                    (key.clone(), raw * crate::RESIDENT_BYTES_PER_RAW_BYTE)
+                })
+                .collect()
+        };
+        let total: u64 = resident.iter().map(|(_, estimated)| estimated).sum();
+        if total <= max_resident_bytes {
+            return Vec::new();
+        }
+        let mut over = total - max_resident_bytes;
+        self.save_eviction_candidates(&resident, over);
+        // Decide + ring removal in ONE critical section, the reap's own
+        // discipline (`inner` EXCLUSIVE, then `rings`): an adopter cannot
+        // stamp `last_use` mid-decision, and a sub claim cannot land
+        // between the exemption check and the ring's death.
+        let victims: Vec<PathBuf> = {
+            let map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+            let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+            // LRU order. A warm engine with no registration has no clock
+            // and sorts oldest.
+            resident.sort_by_key(|(key, _)| map.get(key).map_or(0, Slot::last_use));
+            let mut victims = Vec::new();
+            for (key, estimated) in resident {
+                if over == 0 {
+                    break;
+                }
+                if rings.get(&key).is_some_and(|ring| ring.has_subscribers()) {
+                    continue;
+                }
+                rings.remove(&key);
+                over = over.saturating_sub(estimated);
+                victims.push(key);
+            }
+            if over > 0 {
+                eprintln!(
+                    "registry: resident budget ({max_resident_bytes} estimated bytes) cannot \
+                     be met — every remaining warm workspace holds a live sub cursor ({over} \
+                     estimated bytes over)"
+                );
+            }
+            victims
+        };
+        if victims.is_empty() {
+            return victims;
+        }
+        {
+            let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
+            for key in &victims {
+                engines.remove(key);
+            }
+        }
+        // Feed and memo leave their maps under the locks and die OUTSIDE
+        // them: the feed's Drop releases a kernel stream, and unbinding a
+        // memo's stamps takes the memo lock — no path takes a memo lock
+        // while holding a map lock (the patched_cache discipline).
+        let feeds: Vec<FeedSlot> = {
+            let mut map = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+            victims.iter().filter_map(|key| map.remove(key)).collect()
+        };
+        let caches: Vec<Arc<Mutex<fs::DomainCache>>> = {
+            let mut map = self
+                .domain_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            victims.iter().filter_map(|key| map.remove(key)).collect()
+        };
+        for cache in &caches {
+            // The stamp plane names the ring this sweep killed, and an
+            // in-flight holder may still borrow the memo privately: no
+            // stamp may answer across the eviction.
+            cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .unbind_stamps();
+        }
+        {
+            let mut stores = self
+                .sql_stores
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            for key in &victims {
+                stores.remove(key);
+            }
+        }
+        {
+            let mut modules = self.modules.lock().unwrap_or_else(PoisonError::into_inner);
+            for key in &victims {
+                modules.remove(key);
+            }
+        }
+        {
+            let mut signatures = self
+                .prewarm_signatures
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            for key in &victims {
+                signatures.remove(key);
+            }
+        }
+        drop(caches);
+        drop(feeds);
+        victims
     }
 
     /// Persist the current map to the state file, logging (never failing) on a
@@ -3270,6 +3699,165 @@ mod engine_tests {
             reg.reap(u64::MAX, 0).is_empty(),
             "an already-cold workspace is not re-demoted every sweep"
         );
+    }
+
+    /// One workspace's estimated resident bytes as [`warm_ws_stamped`]
+    /// builds it: 8 raw markdown bytes ("# A\n" + "# B\n") at the 6x
+    /// parse blow-up multiplier.
+    const WS_ESTIMATE: u64 = 6 * 8;
+
+    /// A workspace `home/<name>` seeded with two documents (8 raw markdown
+    /// bytes — [`WS_ESTIMATE`] once warm), registered and warmed, every
+    /// resident plane populated, and its LRU clock set to `stamp` — the
+    /// whole-second `register` stamp cannot order same-second
+    /// registrations, so the budget tests set the clock directly.
+    fn warm_ws_stamped(reg: &Registry, home: &Path, name: &str, stamp: u64) -> PathBuf {
+        let ws = home.join(name);
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("a.md"), "# A\n").unwrap();
+        fs::write(ws.join("b.md"), "# B\n").unwrap();
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        assert_eq!(
+            reg.warm_or_build(&canonical).unwrap(),
+            WarmOutcome::Built { docs: 2 }
+        );
+        // Seed every resident plane a budget eviction must clear.
+        let _ = reg.domain_cache(&canonical);
+        let _ = reg.ring(&canonical);
+        let _ = reg.modules(&canonical);
+        reg.sql_store(&canonical)
+            .expect("the sql cache opens in the drawer");
+        reg.prewarm_signatures
+            .lock()
+            .unwrap()
+            .insert(canonical.clone(), 7);
+        reg.inner
+            .read()
+            .unwrap()
+            .get(&canonical)
+            .expect("registered")
+            .touch(stamp);
+        canonical
+    }
+
+    /// The resident budget: a warm set whose estimated resident bytes (6x
+    /// raw markdown bytes) exceed `MRD_MAX_RESIDENT_BYTES` sheds warm
+    /// workspaces LRU-first — oldest `last_use` first — until it fits. An
+    /// eviction is TOTAL for its workspace: engine, memo, ring, sql handle,
+    /// module cache, pre-warm signature, and the §6.4 feed all drop; only
+    /// the registration survives, so the next `hello` rebuilds from disk.
+    #[test]
+    fn budget_sweep_evicts_lru_first_until_the_warm_set_fits() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let w1 = warm_ws_stamped(&reg, home.path(), "w1", 100);
+        let w2 = warm_ws_stamped(&reg, home.path(), "w2", 200);
+        let w3 = warm_ws_stamped(&reg, home.path(), "w3", 300);
+
+        // Three workspaces of estimated 48 bytes each against a budget that
+        // admits exactly two: the oldest goes.
+        let evicted = reg.reap_to_budget(2 * WS_ESTIMATE);
+        assert_eq!(
+            evicted,
+            vec![w1.clone()],
+            "LRU first, and only enough to fit"
+        );
+
+        assert!(
+            !reg.engines.read().unwrap().contains_key(&w1),
+            "engine gone"
+        );
+        assert!(
+            !reg.domain_caches.lock().unwrap().contains_key(&w1),
+            "resident memo gone"
+        );
+        assert!(!reg.rings.lock().unwrap().contains_key(&w1), "ring gone");
+        assert!(
+            !reg.sql_stores.lock().unwrap().contains_key(&w1),
+            "sql handle gone"
+        );
+        assert!(
+            !reg.modules.lock().unwrap().contains_key(&w1),
+            "module cache gone"
+        );
+        assert!(
+            !reg.prewarm_signatures.lock().unwrap().contains_key(&w1),
+            "pre-warm signature gone"
+        );
+        assert!(
+            !reg.feeds.lock().unwrap().contains_key(&w1),
+            "the feed drops with the eviction — §6.4 gap coverage is the \
+             deliberate trade under budget pressure, so the next warm is a \
+             full walk"
+        );
+        assert!(
+            matches!(reg.resolve(&w1), ResolveOutcome::Adopted(_)),
+            "the registration survives — a later hello rebuilds the state"
+        );
+
+        let estimated: u64 = reg
+            .engines
+            .read()
+            .unwrap()
+            .values()
+            .map(|e| e.docs.values().map(|d| d.raw.len() as u64).sum::<u64>() * 6)
+            .sum();
+        assert!(
+            estimated <= 2 * WS_ESTIMATE,
+            "warm set within budget: {estimated} estimated bytes"
+        );
+        for survivor in [&w2, &w3] {
+            assert!(
+                reg.engines.read().unwrap().contains_key(survivor),
+                "younger workspaces stay warm"
+            );
+        }
+
+        // Within budget: nothing to do. Zero: unbounded, never evicts.
+        assert!(reg.reap_to_budget(2 * WS_ESTIMATE).is_empty());
+        assert!(reg.reap_to_budget(0).is_empty());
+    }
+
+    /// The exemption is NARROW: only a live sub cursor spares a workspace
+    /// (evicting it would fork the per-workspace seq — §4.7). The subscribed
+    /// LRU survives the sweep, which moves on to the next-oldest; when every
+    /// warm workspace is subscribed the budget cannot be met — the sweep
+    /// sheds nothing and carries on, never panics.
+    #[test]
+    fn a_live_sub_cursor_exempts_the_lru_from_the_budget_sweep() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let w1 = warm_ws_stamped(&reg, home.path(), "w1", 100);
+        let w2 = warm_ws_stamped(&reg, home.path(), "w2", 200);
+
+        let guard = reg.subscribe(&w1);
+
+        // Two workspaces against a budget that admits one: the LRU is
+        // subscribed, so the next-oldest goes instead.
+        let evicted = reg.reap_to_budget(WS_ESTIMATE);
+        assert_eq!(
+            evicted,
+            vec![w2.clone()],
+            "the sub cursor exempts the LRU; the next-oldest goes"
+        );
+        assert!(
+            reg.engines.read().unwrap().contains_key(&w1),
+            "the subscribed workspace keeps its engine"
+        );
+
+        // Only the subscribed workspace remains, still over budget: the
+        // budget cannot be met — shed nothing, carry on.
+        let evicted = reg.reap_to_budget(WS_ESTIMATE / 2);
+        assert!(
+            evicted.is_empty(),
+            "an all-subscribed warm set cannot be forced under budget: {evicted:?}"
+        );
+        assert!(reg.engines.read().unwrap().contains_key(&w1));
+
+        // Dropping the cursor restores mortality.
+        drop(guard);
+        assert_eq!(reg.reap_to_budget(WS_ESTIMATE / 2), vec![w1.clone()]);
     }
 
     /// THE card receipt (quality gate 1): after an engine reap, members

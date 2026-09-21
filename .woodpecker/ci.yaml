@@ -56,8 +56,8 @@
 # what runs, not the answer to "on which events does step X run".
 when:
   - event: [push, pull_request, manual]
-  # `tag` is here so the RELEASE route has a verdict to depend on: both v* tag
-  # lanes (`tag-linux-amd64.yaml`, `tag-darwin-arm64.yaml`) now declare
+  # `tag` is here so the RELEASE route has a verdict to depend on: every v* tag
+  # lane (`tag-linux-amd64.yaml`, `tag-darwin-arm64.yaml`, `tag-linux-arm64.yaml`) declares
   # `depends_on: [ci]`, and a workflow cannot depend on one that never ran.
   # Nothing in THIS file publishes on a tag — `publish mrd` narrows to
   # push/main + manual, and the tag lanes own the release artifacts.
@@ -75,7 +75,7 @@ when:
   # clones with a non-rotating PAT (see the `clone:` block below), which is what
   # makes this gate landable. Landable, not proven safe: a tag-lane clone has
   # run ~20 min after parse and survived, but that was pre-gate; under the gate
-  # a red `ci` leaves both tag workflows skipped, never cloned. The first real
+  # a red `ci` leaves every tag workflow skipped, never cloned. The first real
   # `v*` release is the proof.
   - event: tag
     ref: refs/tags/v*

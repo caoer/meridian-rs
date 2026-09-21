@@ -101,7 +101,7 @@ pub fn wait_readable(fds: &[BorrowedFd<'_>], timeout: Option<Duration>) -> io::R
 /// How long a waiter falls back to sleeping when `poll` itself fails — a
 /// condition no production path has produced, guarded so a broken wait
 /// degrades to a slow tick and never to a spin.
-const WAIT_FAILURE_BACKOFF: Duration = Duration::from_millis(200);
+pub const WAIT_FAILURE_BACKOFF: Duration = Duration::from_millis(200);
 
 /// A one-shot broadcast: rung once, seen by every waiter forever after.
 ///
