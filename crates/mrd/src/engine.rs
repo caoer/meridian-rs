@@ -641,10 +641,10 @@ fn declared_mount_set() -> Option<addr::MountSet> {
 /// melt into the degrade: build skew (0025 socket law) — a stale resident answering in
 /// silence is the defect, and degrading past it would hide the stale daemon forever.
 fn try_daemon_links(workspace: &Path, path: Option<&str>) -> Result<Option<Value>, Fail> {
-    let Ok(client) = Client::from_default() else {
+    let Ok(mut client) = Client::from_default() else {
         return Ok(None);
     };
-    if ensure_daemon(&client).is_err() {
+    if ensure_daemon(&mut client).is_err() {
         return Ok(None);
     }
     match dial_links(client.socket_path(), workspace, path) {
@@ -680,11 +680,13 @@ enum DialedLinks {
     Skew(String),
 }
 
-/// Ensure a daemon answers on `client`'s socket: return early if one already pings, else
-/// auto-spawn it detached and poll until it binds or the timeout elapses. Errors The daemon
+/// Ensure a daemon answers for `client`: return early if one already pings, else auto-spawn it
+/// detached and poll until it binds or the timeout elapses. The poll watches `client`'s own
+/// socket AND the published pointer, which a concurrent cold start's flock winner may write
+/// after this client was built; `client` is retargeted at whichever answers. Errors The daemon
 /// could not be spawned (spawn-impossible), or it was spawned but never became ready within
 /// [`SPAWN_READY_TIMEOUT`].
-pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
+pub(crate) fn ensure_daemon(client: &mut Client) -> io::Result<()> {
     if client.ping().unwrap_or(false) {
         return Ok(());
     }
@@ -740,6 +742,25 @@ pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
     while Instant::now() < deadline {
         if client.ping().unwrap_or(false) {
             return Ok(());
+        }
+        // And the POINTER, every tick. `reachable_socket_path` was read once, when this
+        // client was built (`Client::from_default`), and at a cold start there was nothing
+        // to read: two clients whose environments derive different sockets for one cache
+        // root both find no socket and no pointer, and both spawn. One child takes the
+        // flock, binds its own derived path and publishes it; the other dies on the flock.
+        // Polling only this client's own path then spends the whole deadline degrading with
+        // the holder live, published, and one read away (`registry::server` § Socket
+        // placement). Re-reading costs one small file per tick, on the cold lane alone —
+        // the warm path returned at the first ping above, before any of this.
+        //
+        // `reachable_socket_path` dials before it answers, so a path back from it that is
+        // not the one we are already polling is a listener that ANSWERED: take it.
+        if let Ok(cache_root) = cache::cache_root() {
+            let reachable = registry::reachable_socket_path(&cache_root);
+            if reachable != *client.socket_path() {
+                *client = Client::new(reachable);
+                return Ok(());
+            }
         }
         std::thread::sleep(PING_POLL);
     }
