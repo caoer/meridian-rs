@@ -566,7 +566,9 @@ usage:
                            PAGE workspace-relative). TASK omitted: one declared
                            task runs; several run the one named default, else
                            list and exit 2. Exits: 0 clean / 1 refused|failed /
-                           2 bad invocation.
+                           2 bad invocation. A step's own exit code is always on
+                           the report (exec: exited N; exec.exit_code under
+                           --json); --exit-passthrough puts it on the rc.
 ! mrd script [--files PATH]... [--args JSON] [--dry] [--actor A] [--now T]
           [--if-fingerprint FP] [--expect-armed DIGEST] [--receipt PATH#ANCHOR]
                            evaluate inline Starlark from STDIN as the caller
@@ -651,6 +653,16 @@ options:
                            effect set, apply nothing; bash: show block + caps,
                            refuse to exec.
   --list                   (run) list the page's tasks with contracts and caps.
+  --exit-passthrough       (run) exit with the executed step's own nonzero exit
+                           code instead of the triad's 1, so a caller can tell
+                           a step's finding from a step that could not run. The
+                           other legs are reserved: signaled stays 128+signal,
+                           a timeout and a detected out-of-band delta stay 1
+                           (the plane's finding, not the step's), and a bad
+                           invocation stays 2 — which a passed-through 2 now
+                           shares, told apart by the report on stdout. Refuses
+                           beside --list / --dry / --load / a fire: none execs
+                           a task step.
   --files PATH             (script) one host-enumerated path, bound inert as
                            files (repeatable). Paths only — content enters
                            through read() alone. A member containing * is a

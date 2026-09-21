@@ -9,39 +9,35 @@ draws_from: []
 
 # The doc system
 
-> **This file governs the FORM of `docs/`, never its content.** No law about
-> meridian lives here — only the rules that say where a law may live, how it is
-> addressed, and how a reader knows it has not gone stale.
-> Process and inventory: `README.md`. Wire law: `wire-contract.md`.
+> This file governs the **form** of `docs/`, never its content. No law about
+> meridian lives here — only the rules for where a law may live, how it is
+> addressed, and how a reader can tell it has not gone stale. Process and
+> inventory: `README.md`. Wire law: `wire-contract.md`.
 
 ## §1 Why form is load-bearing
 
-A law is trustworthy when a reader can find its ONE home and MEASURE that the
-home has not drifted. This corpus grew as a history rather than a document, and
-two properties were lost on the way.
+A law is trustworthy when a reader can find its one home and can measure that
+the home has not drifted. Two properties needed for that were lost as this
+corpus grew; the rules below restore them.
 
-**Section numbers are not unique across files.** Derive it:
+**Section numbers are not unique across files.** Verify:
 
 ```sh
 # every numbered heading, by section number, across the corpus
 grep -hE '^#{1,6} +(§ ?)?[0-9]+' docs/*.md
 ```
 
-Several files answer to a heading numbered `4.4`, and more to `1`. So a bare
-`§4.4` names a section only by convention, and a convention cannot be measured.
+Several files have a `4.4`; more have a `1`. So a bare `§4.4` resolves only by
+convention, and a convention cannot be measured.
 
-**A law restated outside its home is invisible.** A citation index finds a law
-where it is SPELLED. A paraphrase carries no address, so nothing points at it,
-nothing verifies it, and it goes stale silently while reading as authoritative.
-The corpus has shipped that failure: a claim was paraphrased into prose outside
-the section that spells the law, and the paraphrase outlived the law.
+**A law restated outside its home is invisible.** A paraphrase has no address,
+so nothing verifies it and it goes stale unnoticed.
 
-The rules below make both conditions structural rather than a matter of care.
+## §2 Doc-id registry
 
-## §2 The doc-id registry
-
-Every file in this directory has a short, stable `id`. The id is declared in the
-file's own frontmatter and listed here; the two must agree.
+Every file here declares a short, stable `id` in its frontmatter, and a
+citation names that id (§3). Each row below must match the file's own
+frontmatter.
 
 | id | File | Is the home of |
 |---|---|---|
@@ -52,100 +48,85 @@ file's own frontmatter and listed here; the two must agree.
 | `release` | `release.md` | what a release promises; stamp and tag mechanics |
 | `addr` | `address-grammar.md` | cross-root addressing, mounts, `addr::Addr` |
 | `schema` | `meridian-md-schema.md` | `MERIDIAN.md` config parse |
-| `merkle` | `node-rev-merkle-spec.md` | `node_rev` + merkle encoding |
+| `merkle` | `node-rev-merkle-spec.md` | `node_rev` + merkle encoding, the resident tree, the event feed |
 | `fp` | `fingerprint-norm-spec.md` | the fingerprint CID token + norm-v2 |
 | `armed` | `armed-plane.md` | the arming ladder + the `gate()` seam |
 | `run` | `run-plane.md` | the run plane, preset and session birth |
 | `move` | `move.md` | the move door — rename plus reference rewrite, in-process |
-| `base-projection` | `base-projection.md` | the `.base` projection relations, membership, `base_fold` |
-| `body-projection` | `body-projection.md` | the `body` relation, the chunk law, the `body_text` cache protocol |
-| `status` | `status.md` | what the binary exposes today (descriptive only) |
+| `base-projection` | `base-projection.md` | the `.base` projection relations, membership, `base_fold`, `link.exclusion_path` |
+| `body-projection` | `body-projection.md` | the `body` relation, the exclusive-chunk law, the `body_text` cache protocol |
+| `status` | `status.md` | what the binary exposes today (descriptive only); R12, the armed-plane exit reading |
 
-A new file claims a new id in the same act that creates it. An id is never
-reused and never renamed — citations outlive filenames.
+A new file claims a new id when created; an id is never reused or renamed, so
+citations outlive filenames.
 
 ## §3 Citation grammar
 
-**A citation names its document.** The form is `<id> §N`:
+A citation names its document: `<id> §N`. `wire §4.4` is the splice law,
+`merkle §5` the span fixture, `fp §2.1` the norm-v2 step.
 
-- `wire §4.4` — the splice law.
-- `merkle §5` — the span fixture.
-- `fp §2.1` — the norm-v2 step.
-
-**Bare `§N` is deprecated for new writing and reads as `wire §N`.** That reading
-is not a preference; it is what every existing bare citation in this repo and in
-downstream clients already means. Declaring it is the compatible move: the tokens
-resting on the wire contract keep resolving, and nothing outside this corpus has
-to change. Never "fix" an existing bare citation by re-pointing it — qualify it
-to `wire §N` or leave it.
-
-**Within one file**, a citation to that same file may stay bare — the document is
-its own default namespace. Crossing a file boundary requires the id.
-
-⚠️ **A `§` number is not a dewey ordinal.** `mrd read --section` accepts a dewey
-ordinal, and the two schemes disagree by one level: this document's `§2` is dewey
-`1.2`, because the `#` title is dewey `1`. So `§2` and `1.2` name the same section
-by two different systems. Cite the `§` form in prose, always; leave dewey ordinals
-to the tool that prints them.
+- **Bare `§N` is deprecated for new writing and reads as `wire §N`.** Never
+  re-point an existing one; qualify it to `wire §N` or leave it.
+- **Within one file**, a citation to that same file may stay bare; crossing a
+  file boundary needs the id.
+- ⚠️ **A `§` number is not a dewey ordinal.** `mrd read --section` takes
+  dewey ordinals. The two schemes differ by one level: the `#` title is dewey
+  `1`, so this document's `§2` is dewey `1.2`. Cite `§` in prose; leave dewey
+  to the tool.
 
 ## §4 One law, one home
 
-1. A law is **SPELLED** in exactly one section. That section is its home, and the
-   home's document `owns` it in frontmatter.
-2. Everywhere else the law is **REFERENCED** by its address (§3) and is not
-   restated. A summary that a reader could act on IS a restatement.
-3. A pointer table, an index row, or a reading-order line may name a law in a few
-   words **only when the same line carries the law's address.** An unaddressed
-   summary is the failure of §1 and is a defect in this corpus.
-4. When two sections both spell a law, that is not a duplicate to tidy — it is a
-   finding. One of them is stale and a reader cannot tell which. Report it; do
-   not pick a winner by reading.
+These rules say where a law may be written, and what every other mention of it
+may say.
 
-## §5 Anchors — the durable form of an address
+1. A law is **spelled** in exactly one section, its home; that document `owns`
+   it in frontmatter.
+2. Elsewhere it is **referenced** by address (§3), never restated; a summary a
+   reader could act on is a restatement.
+3. A pointer table, index row or reading-order line may name a law in a few
+   words **only when the same line carries its address**; an unaddressed
+   summary is a defect (§1).
+4. Two sections spelling one law are a finding, not a duplicate: one is stale
+   and a reader cannot tell which. Report it; pick no winner.
 
-A section number is an editorial artifact: inserting `§4.4` renumbers everything
-after it. An anchor is not.
+## §5 Anchors
 
-- A law section carries a `^block-id` slug, minted by `mrd pin`.
-- The anchor, not the number, is the address a long-lived citation should use.
-- Renumbering therefore stops being a breaking change.
-- A citation may carry both: `wire §4.4 (^splice-law)` reads well and resolves
-  durably.
+An anchor is a `^block-id` slug on a law section, minted by `mrd pin`. A
+section number is editorial: inserting `§4.4` renumbers every section after
+it. An anchor does not move.
 
-Minting an anchor writes to the target's heading line, which is inside that
-section's own rev span — so it changes the section's `node_rev`. On a section
-that external expectations rest on, coordinate the mint with whoever owns those
-expectations, never alone.
+- Long-lived citations use the anchor, not the number, so renumbering breaks
+  nothing; both may appear: `wire §4.4 (^splice-law)`.
+- Minting edits the heading line. That line sits inside the section's rev span
+  (the byte range hashed into its `node_rev`), so the section's `node_rev`
+  changes. If external expectations rest on the section, coordinate the mint
+  with whoever owns them, never alone.
 
-## §6 Locked, not merely written
+## §6 Locked
 
-This corpus is a meridian workspace and is attested by the tool it describes.
-That is the point: trust is a measured property here, not a claim.
+This corpus is a meridian workspace, attested by the tool it describes. The
+commands below are how a reader measures it.
 
-- `mrd resolve docs` — this directory resolves through the repo-root workspace.
-  `docs/` deliberately declares **no** nested `MERIDIAN.md` root: a nested root
-  would move resolution for every consumer of this repo, and the lock comes from
-  pins, not from a root.
-- `mrd read <file>` — the section map with a `sec_rev` per section, under the
-  read's own fingerprint. This, not `grep`, is how the corpus is surveyed: a
-  fixture printed inside a code fence looks exactly like a heading to `grep`, and
-  `wire §0.3` prints four of them.
-- `mrd pin <page> <target>#<selector>` — the drawing page records that it draws
-  from that section AT that section's content fingerprint.
-- `mrd check` — every pin's verdict. A law that moved under a drawer turns that
-  pin red instead of leaving prose quietly wrong.
-- `mrd walk <page> --down` — who draws from this page, and the blast radius. This
-  is the instrument for sizing a law edit: it answers from the pin graph, where a
-  grep over citations answers from a convention.
+- `mrd resolve docs` — resolves through the repo-root workspace. `docs/`
+  declares **no** nested `MERIDIAN.md` root: that would move resolution for
+  every consumer, and the lock comes from pins (below).
+- `mrd read <file>` — the section map, a `sec_rev` per section, under the
+  read's fingerprint. Survey the corpus with `mrd read`, not `grep`: a fixture
+  inside a code fence looks like a heading to `grep`, and `wire §0.3` prints
+  four such lines.
+- `mrd pin <page> <target>#<selector>` — records that the page draws from that
+  section, at that section's content fingerprint.
+- `mrd check` — every pin's verdict; a law that moved under a drawing page
+  turns its pin red.
+- `mrd walk <page> --down` — who draws from this page: the blast radius of a
+  law edit, from the pin graph.
 
-A restatement (§4) cannot be pinned, because there is nothing to draw from. So
-under this system an unpinned claim about a law elsewhere is **structurally
-visible** — which is why §4 is enforceable rather than aspirational.
+A restatement (§4) has nothing to pin, so a claim about a law outside its home
+is visibly unpinned; that makes §4 enforceable.
 
 ## §7 Migration status
 
-The corpus is mid-migration to these rules. The rules bind NEW writing
-immediately; existing files are converted in dependency order — frontmatter, the
-index, qualified citations, anchors, pins, then the restatement audit. Until a
-file is converted, its bare citations read per §3 and its unaddressed summaries
-are known debt, not licence.
+These rules bind new writing now. Existing files convert in dependency order:
+frontmatter, index, qualified citations, anchors, pins, restatement audit.
+Until a file is converted, its bare citations read per §3 and its
+unaddressed summaries are known debt, not licence.

@@ -804,6 +804,30 @@ fn a_resident_lane_dispatch_leaves_the_shared_cache_warm() {
         "the first pass re-reads at most the phase-2 movers, got {}",
         memo.leaves_read() - reads
     );
+    // Settled matters since the §6.2 trust close: the phase-2 movers were
+    // committed inside the stamp quantum the first pass recorded them under,
+    // so their rows (and their directories' listings) are racy — legitimately
+    // re-read — until a pass re-records them under a watermark that clears
+    // their stamps by one calibrated granule. When that is depends on the
+    // backend's stamp clock (a coarse clock can lag the wall clock by a
+    // tick), so the memo is settled by observation, not by a fixed wait:
+    // passes two granules of its own measured calibration apart, until one
+    // enumerates and reads nothing. From that pass on reuse is deterministic
+    // — the same stamps against the same record watermarks — which is the
+    // stat-only steady state the next currency pass is asserted against.
+    let fs::stable::Calibration::Measured { granule_ns } =
+        memo.calibration().expect("probed on first observe").clone()
+    else {
+        panic!("a writable target tmpdir calibrates");
+    };
+    let pause = Duration::from_nanos(granule_ns * 2 + 2_000_000);
+    let settled = (0..64).any(|_| {
+        std::thread::sleep(pause);
+        let before = (memo.listings(), memo.leaves_read());
+        memo.root(&root).unwrap();
+        (memo.listings(), memo.leaves_read()) == before
+    });
+    assert!(settled, "the memo settles within the retry budget");
     let warm = (memo.listings(), memo.leaves_read());
     let again = memo.root(&root).unwrap();
     assert_eq!(
