@@ -319,7 +319,7 @@ fn try_daemon_read(workspace: &Path, r: &Read) -> DaemonRead {
 /// and an unbounded read on a daemon that accepts and never answers parks this
 /// process forever — past every degrade this lane has (card
 /// `registry-client-read-timeout-absent`).
-fn connect_or_spawn(client: &Client) -> std::io::Result<UnixStream> {
+fn connect_or_spawn(client: &mut Client) -> std::io::Result<UnixStream> {
     let bound = |stream: UnixStream| -> std::io::Result<UnixStream> {
         registry::wedge::bind(&stream)?;
         Ok(stream)
@@ -334,12 +334,12 @@ fn connect_or_spawn(client: &Client) -> std::io::Result<UnixStream> {
 /// `None` on any transport or handshake failure — the caller degrades. An op-level `ok:false`
 /// is NOT such a failure: it comes back as [`DaemonRead::Refused`] carrying the engine's frame.
 fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
-    let client = Client::from_default().ok()?;
+    let mut client = Client::from_default().ok()?;
     // `.ok()?` here on purpose: this failure means nothing was reachable and no daemon came
     // up, and `engine::ensure_daemon` has already recorded the richer fact — the child's own
     // dying words. A dial verdict recorded here would overwrite that quote with a connect
     // error, which is the same fact spelled worse.
-    let stream = connect_or_spawn(&client).ok()?;
+    let stream = connect_or_spawn(&mut client).ok()?;
     let mut writer = stream.try_clone().ok()?;
     let mut reader = BufReader::new(stream);
 

@@ -28,12 +28,12 @@ daemon up.";
 /// the same way the read path does, then refuses — never degrades — if it
 /// does not answer.
 pub(crate) fn connect(workspace: &Path) -> Result<SocketDoor, Fail> {
-    let client = Client::from_default().map_err(|e| {
+    let mut client = Client::from_default().map_err(|e| {
         Fail::tool(format!(
             "{DAEMON_DOWN} (cannot resolve the daemon socket: {e})"
         ))
     })?;
-    engine::ensure_daemon(&client).map_err(|e| {
+    engine::ensure_daemon(&mut client).map_err(|e| {
         Fail::tool(format!(
             "{DAEMON_DOWN} ({e}). {}",
             engine::degrade_reason().unwrap_or_else(|| {

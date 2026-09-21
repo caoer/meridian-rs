@@ -202,9 +202,9 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // The script entry has no degrade leg: it must execute AS the caller, and a
     // daemonless in-process write arrives actor-absent (`run-plane.md` § the
     // seam table, "wire-client mode"). No daemon ⇒ refuse, never write anyway.
-    let client = Client::from_default()
+    let mut client = Client::from_default()
         .map_err(|e| Fail::tool(format!("cannot resolve the daemon socket: {e}")))?;
-    engine::ensure_daemon(&client).map_err(|e| {
+    engine::ensure_daemon(&mut client).map_err(|e| {
         // The design sentence is UNCONDITIONAL, and the cause is added to it —
         // never substituted for it. The two answer different questions ("why
         // did this fail" vs "why is there no fallback"), and a door that
