@@ -627,7 +627,9 @@ fn wait_dead(pid: i32, timeout: Duration) -> bool {
 
 // ---------------------------------------------------------------------------
 // Gate: cold client auto-spawns the daemon and answers warm — and the degrade
-// answer is byte-identical (one projection, two state sources, no drift).
+// answer carries the same corpus facts (one projection, two state sources, no
+// drift). The epoch identity is the lane's own, not the corpus's, and is
+// asserted as a difference.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -675,10 +677,38 @@ fn e2e_links_cold_auto_spawns_and_answers_warm() {
         "no daemon → in-process degrade"
     );
 
-    // The whole point: the warm and degrade paths answer the SAME body.
+    // The whole point: the warm and degrade paths answer the SAME corpus facts.
+    // `tree_instance` is the one honest exception and is checked as such below:
+    // it names the epoch a counter was numbered in, and the daemonless lane
+    // builds no epoch (§10.1).
+    let mut warm_links = warm["links"].clone();
+    let epoch = warm_links
+        .as_object_mut()
+        .expect("the links body is an object")
+        .remove("tree_instance");
     assert_eq!(
-        warm["links"], cold["links"],
+        warm_links, cold["links"],
         "warm and degrade answers must not drift"
+    );
+
+    // The lane difference, stated: the daemon names the epoch its counter is
+    // numbered in; the ephemeral build has no ring and so numbers nothing, and
+    // says so by naming no epoch rather than by inventing one (§10.1).
+    assert!(
+        epoch
+            .as_ref()
+            .and_then(|i| i.as_str())
+            .is_some_and(|i| !i.is_empty()),
+        "the daemon answer names its epoch: {warm}"
+    );
+    assert!(
+        cold["links"].get("tree_instance").is_none(),
+        "the ephemeral answer names none: {cold}"
+    );
+    assert_eq!(
+        cold["links"]["changes_seq"],
+        serde_json::json!(0),
+        "and its counter is the unnumbered reading: {cold}"
     );
 
     // And both speak the v3 vocabulary the CLI negotiated (`contract:v3`): the degrade body

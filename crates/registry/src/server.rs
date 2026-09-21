@@ -1727,29 +1727,42 @@ fn dispatch_read(
                 display_path,
             },
         ),
-        Op::Links { path, require_root } => warm_engine_read(registry, ws, |engine| {
-            let as_of = engine_root(engine);
-            wire_serve::read::require_root_check(require_root.as_ref(), &as_of)?;
-            let live = as_of.clone();
-            wire_serve::read::links(
-                &fs::WorkspaceRoot(ws.to_path_buf()),
-                &engine.index,
-                &engine.docs,
-                &engine.unserved,
-                path.as_ref(),
-                as_of,
-                0,
-                || Ok(live),
-            )
-        }),
+        // §4.6 under the §10.1 triple. View-shaped, so it publishes the
+        // counter — which `stamp_counter` writes AFTER the answer, never
+        // before: the read's own corpus pass is what the detection cycle then
+        // rides.
+        Op::Links { path, require_root } => {
+            let mut body = warm_engine_read(registry, ws, |engine| {
+                let as_of = engine_root(engine);
+                wire_serve::read::require_root_check(require_root.as_ref(), &as_of)?;
+                let live = as_of.clone();
+                wire_serve::read::links(
+                    &fs::WorkspaceRoot(ws.to_path_buf()),
+                    &engine.index,
+                    &engine.docs,
+                    &engine.unserved,
+                    path.as_ref(),
+                    as_of,
+                    // Stamped below, in this answer's own tense.
+                    wire_serve::read::Counter::unnumbered(),
+                    || Ok(live),
+                )
+            })?;
+            stamp_counter(registry, ws, &mut body, v3);
+            Ok(body)
+        }
         Op::Root {
             scope,
             scope_bytes,
-        } => mint_fingerprint(registry, ws, scope, scope_bytes),
+        } => mint_fingerprint(registry, ws, scope, scope_bytes, v3),
         Op::Diff { from_root, to_root } => warm_engine_read(registry, ws, |engine| {
-            // `diff` does not read the ring: same-root ⇒ empty; else
-            // `root_unknown` → resync. `root.seq` stays 0 for the same reason —
-            // both surfaces read the ring together or neither does.
+            // `diff` does not read the ring yet: same-root ⇒ empty; else
+            // `root_unknown` → resync. The mint and `links` DO read it now
+            // (§10.1) — a counter, not a replay. Serving batches from the
+            // ring is its own piece of work, and it owes what `can_anchor`
+            // now does for a resumption: prove the retained chain contiguous
+            // before replaying it, since a hole would be served as a stream
+            // that omits a change (§7.1 detection clause, §7.3).
             let current = engine_root(engine);
             if from_root == current && to_root == current {
                 Ok(ResponseBody::Diff {
@@ -2095,21 +2108,33 @@ fn mint_fingerprint(
     ws: &Path,
     scope: Option<wire::Path>,
     scope_bytes: Option<String>,
+    v3: bool,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     match wire_serve::guard::mint_scope_path(scope.as_ref(), scope_bytes.as_deref())? {
-        None => warm_engine_read(registry, ws, |engine| {
-            Ok(ResponseBody::Root {
-                root: engine_root(engine),
-                seq: 0,
-                tree_instance: None,
-                scope: None,
-                scope_bytes: None,
-            })
-        }),
+        None => {
+            // The world mint is view-shaped too: it publishes the counter in
+            // the minted token's own tense (§10.1), stamped after the fold
+            // that produced the token.
+            let mut body = warm_engine_read(registry, ws, |engine| {
+                Ok(ResponseBody::Root {
+                    root: engine_root(engine),
+                    seq: 0,
+                    tree_instance: None,
+                    scope: None,
+                    scope_bytes: None,
+                })
+            })?;
+            stamp_counter(registry, ws, &mut body, v3);
+            Ok(body)
+        }
         Some(path) => {
             let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
             let cache = registry.domain_cache(ws);
             let token = wire_serve::write::scope_token(&ws_root, Some(&cache), Some(&path))?;
+            // A scoped mint names a NODE. No Delta ends at a node token — the
+            // counter is workspace-grain — so this body carries `seq: 0` and
+            // names no epoch, which is §10.1's "aligned to no frame" and not
+            // a claim about the corpus (§4.7 scoped arm).
             Ok(ResponseBody::Root {
                 root: Root(token.unwrap_or_else(|| "absent".to_owned())),
                 seq: 0,
@@ -2118,6 +2143,73 @@ fn mint_fingerprint(
                 scope_bytes,
             })
         }
+    }
+}
+
+/// Write the §10.1 counter onto a view-shaped body, in the tense of the
+/// fingerprint that body was computed at.
+///
+/// **After the answer, never before.** The detection cycle this runs
+/// (`WorkspaceRing::settle`) is what numbers a change nobody watched, so a
+/// reader who never subscribes is served a counter that covers it — but it
+/// observes through the SHARED memo the read has just left current, so
+/// numbering costs no second corpus fold (`timing_daemon_lane`'s one-fold
+/// accounting) and no ring work happens at all on a cold workspace, which is
+/// refused `corpus_warming` before this is reached. Reading the counter after
+/// the fold costs nothing either: `seq_at` is exact in the served
+/// fingerprint's tense whenever it is asked.
+///
+/// A cycle that fails is logged and the answer served regardless: what could
+/// not be numbered costs this answer its cursor, never its facts — the push
+/// loop's own posture on the same call.
+fn stamp_counter(registry: &Registry, ws: &Path, body: &mut ResponseBody, v3: bool) {
+    let ring = registry.ring(ws);
+    if let Err(e) = ring.settle(&fs::WorkspaceRoot(ws.to_path_buf()), registry) {
+        eprintln!("registry: counter cycle ({}): {e:?}", ws.display());
+    }
+    match body {
+        ResponseBody::Links {
+            as_of_root,
+            changes_seq,
+            tree_instance,
+            ..
+        } => {
+            let counter = counter_for(&ring, as_of_root, v3);
+            *changes_seq = counter.changes_seq;
+            *tree_instance = counter.tree_instance;
+        }
+        // The world mint only: a scoped body names a node, and no Delta ends
+        // at a node token (§4.7 scoped arm), so it is never stamped.
+        ResponseBody::Root {
+            root,
+            seq,
+            tree_instance,
+            scope: None,
+            scope_bytes: None,
+        } => {
+            let counter = counter_for(&ring, root, v3);
+            *seq = counter.changes_seq;
+            *tree_instance = counter.tree_instance;
+        }
+        _ => {}
+    }
+}
+
+/// The §10.1 counter for one served fingerprint: the ring's number in THAT
+/// tense, and — for a v3 session — the epoch it is numbered in.
+///
+/// A frozen v2 session is served the bare number: §4.6's key set predates the
+/// identity. The strip is structural as well (`rev::V2_RESERVED_FIELDS`), so
+/// this gate is the first of two, never the only one.
+fn counter_for(
+    ring: &crate::ring::WorkspaceRing,
+    root: &Root,
+    v3: bool,
+) -> wire_serve::read::Counter {
+    let (changes_seq, instance) = ring.counter_at(root);
+    wire_serve::read::Counter {
+        changes_seq,
+        tree_instance: v3.then_some(instance),
     }
 }
 

@@ -457,6 +457,9 @@ fn the_resolve_body_key_sets_are_pinned_both_forms() {
 // ---------------------------------------------------------------------------
 
 /// The staleness triple is re-spelled; the corpus edge map is never re-keyed.
+/// A v3 session also carries `tree_instance`, the epoch `changes_seq` is
+/// numbered in (§10.1) — v3-additive, and kept off a frozen v2 body by its
+/// `rev::V2_RESERVED_FIELDS` row.
 #[test]
 fn the_links_body_and_file_key_sets_are_pinned() {
     let (fx, mut conn) = Fixture::start();
@@ -468,6 +471,7 @@ fn the_links_body_and_file_key_sets_are_pinned() {
             "changes_seq",
             "files",
             "live_fingerprint",
+            "tree_instance",
         ],
         "links body",
     );
@@ -487,6 +491,7 @@ fn the_links_body_and_file_key_sets_are_pinned() {
             "changes_seq",
             "files",
             "live_fingerprint",
+            "tree_instance",
         ],
         "links whole-corpus body",
     );
@@ -605,7 +610,15 @@ fn the_splice_dry_body_key_set_is_pinned() {
 fn the_cursor_sub_ack_and_diff_body_key_sets_are_pinned() {
     let (fx, mut conn) = Fixture::start();
     let cursor = conn.call(&json!({"id": 90, "op": "fingerprint"}));
-    pin_keys(&cursor["body"], &["fingerprint", "seq"], "fingerprint body");
+    // The world mint reads the ring, so it publishes what a cursor needs:
+    // the counter in this token's tense and the epoch numbering it (§4.7,
+    // §10.1). A frozen v2 mint stays `{root, seq}` — pinned in
+    // `changes_seq_published.rs`.
+    pin_keys(
+        &cursor["body"],
+        &["fingerprint", "seq", "tree_instance"],
+        "fingerprint body",
+    );
     let live = cursor["body"]["fingerprint"].as_str().expect("cursor");
 
     let diff = conn.call(&json!({

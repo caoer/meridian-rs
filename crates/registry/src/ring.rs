@@ -44,6 +44,45 @@ pub const DETECT_CADENCE: Duration = Duration::from_millis(250);
 /// backstop — the staleness bound a silent capture loss can put on frames.
 pub const DETECT_FLOOR_CADENCE: Duration = Duration::from_secs(30);
 
+/// Which of a detection cycle's cost gates a caller keeps.
+///
+/// The cycle is the same either way; what differs is whether someone is
+/// waiting on the answer. A subscriber's tick is a poll — it coalesces, and it
+/// owes §6.6's periodic floor pass. A read door has a caller on the line and
+/// is about to publish a counter, so it skips the coalesce, and it leaves the
+/// floor pass to the subscriber: its own corpus pass is the observation the
+/// cycle rides.
+#[derive(Debug, Clone, Copy)]
+struct Gates {
+    /// Skip when another cycle ran within [`DETECT_CADENCE`].
+    coalesce: bool,
+    /// Run §6.6's fallback full pass when [`DETECT_FLOOR_CADENCE`] is due.
+    floor: bool,
+    /// May this caller PRIME an epoch that has no baseline yet?
+    prime: bool,
+}
+
+impl Gates {
+    /// The push loop's: coalesced, the floor clock is its own, and a
+    /// subscription is what establishes an epoch's baseline.
+    const SUBSCRIBER: Gates = Gates {
+        coalesce: true,
+        floor: true,
+        prime: true,
+    };
+    /// A view-shaped read door's: none of the three. It skips no cycle for
+    /// cadence, owes no backstop, and never primes — priming is a full
+    /// corpus read (`watch::reconcile`'s snapshot arm), and an op that
+    /// already folded the corpus once must not fold it twice (the one-fold
+    /// law `mrd`'s `timing_daemon_lane` pins). A read of an unprimed epoch
+    /// numbers nothing and says so as §10.1's `0`.
+    const READ_DOOR: Gates = Gates {
+        coalesce: false,
+        floor: false,
+        prime: false,
+    };
+}
+
 /// One workspace's delta plane: retained ring, watcher baseline, multi-thread bookkeeping.
 #[derive(Debug)]
 pub struct WorkspaceRing {
@@ -134,6 +173,26 @@ impl WorkspaceRing {
         self.state().ring.instance().to_string()
     }
 
+    /// The §10.1 counter in `root`'s tense, and the epoch it is numbered in
+    /// — what a view-shaped door publishes beside the fingerprint it computed
+    /// its answer at.
+    ///
+    /// Both halves come from ONE state lock: a number and the numbering it
+    /// belongs to, read at two instants, is a cursor the client can neither
+    /// verify nor use. `0` is the honest answer for a fingerprint no retained
+    /// frame ended at — a fresh epoch, an evicted window, a scoped token that
+    /// names a node rather than the workspace — and the epoch id is served
+    /// beside it either way, so the reader can tell a counter that reset from
+    /// a corpus that went still.
+    #[must_use]
+    pub fn counter_at(&self, root: &Root) -> (u64, String) {
+        let state = self.state();
+        (
+            state.ring.seq_at(root).unwrap_or(0),
+            state.ring.instance().to_string(),
+        )
+    }
+
     /// §7.1 + B-01 anchor law, delegated to the shared ring: instance before
     /// sequence, both refusals typed.
     #[must_use]
@@ -176,6 +235,7 @@ impl WorkspaceRing {
     ///
     /// Gates in order:
     /// 1. **Coalesce** — recent cycle ⇒ do nothing (N subscribers, one fold).
+    ///    The read door's [`Self::settle`] skips this gate and keeps the rest.
     /// 2. **Single-flight** — a cycle in flight ⇒ do nothing. The cadence
     ///    stamp lands at cycle COMPLETION, so without this gate every
     ///    subscriber thread that ticks while a slow cycle runs starts its own
@@ -195,20 +255,80 @@ impl WorkspaceRing {
         ws_root: &fs::WorkspaceRoot,
         registry: &crate::Registry,
     ) -> Result<bool, Box<ErrorBody>> {
+        self.sweep(ws_root, registry, Gates::SUBSCRIBER)
+    }
+
+    /// One detection cycle for a caller that owes an ANSWER now — the
+    /// view-shaped read doors (§10.1), which publish the counter and so must
+    /// number what they are about to serve.
+    ///
+    /// Same cycle as [`Self::detect`] with two gate differences, both about
+    /// who is waiting:
+    ///
+    /// - **No cadence coalesce.** A reader arriving inside the 250 ms window
+    ///   would otherwise be told a fingerprint the ring has not numbered, and
+    ///   publish the `0` that means *aligned to no frame* for a change already
+    ///   on disk.
+    /// - **No floor pass, and no priming.** §6.6's fallback clock is the
+    ///   subscriber's backstop and its pass is a full re-fold; priming an
+    ///   epoch that has no baseline is a full corpus read
+    ///   (`watch::reconcile`'s snapshot arm). A read door pays neither: it
+    ///   observes through the shared memo its own corpus pass has just left
+    ///   current, so numbering adds no second fold to the op (the one-fold
+    ///   accounting `mrd`'s `timing_daemon_lane` pins). Until a subscription
+    ///   establishes the baseline, a read numbers nothing and publishes
+    ///   §10.1's `0`.
+    ///
+    /// What does not change: the §6.7 quiet pre-check answers O(1) on a
+    /// workspace nothing moved in, and the single-flight token means N
+    /// concurrent readers drive one cycle, not N.
+    ///
+    /// # Errors
+    /// Snapshot or classification failure. Callers log and serve anyway — a
+    /// cycle that could not run costs the answer its counter, never its facts.
+    pub fn settle(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        registry: &crate::Registry,
+    ) -> Result<bool, Box<ErrorBody>> {
+        self.sweep(ws_root, registry, Gates::READ_DOOR)
+    }
+
+    /// The shared body of [`Self::detect`] and [`Self::settle`], under the
+    /// caller's [`Gates`].
+    fn sweep(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        registry: &crate::Registry,
+        gates: Gates,
+    ) -> Result<bool, Box<ErrorBody>> {
+        let Gates {
+            coalesce,
+            floor,
+            prime,
+        } = gates;
         // §6.7 pre-check inputs, read and RELEASED before any registry
         // borrow: no path may hold this state lock while acquiring a memo
         // (the sanctioned order is memo → ring state, never the reverse).
         let (floor_due, baseline) = {
             let state = self.state();
-            if state
-                .last_detect
-                .is_some_and(|at| at.elapsed() < DETECT_CADENCE)
+            if coalesce
+                && state
+                    .last_detect
+                    .is_some_and(|at| at.elapsed() < DETECT_CADENCE)
             {
                 return Ok(false);
             }
-            let due = state
-                .last_floor
-                .is_none_or(|at| at.elapsed() >= DETECT_FLOOR_CADENCE);
+            // An epoch with no baseline has nothing to compare against, and
+            // establishing one costs a full corpus read. Only a caller that
+            // may pay it asks for it.
+            if !prime && state.watch.root().is_none() {
+                return Ok(false);
+            }
+            let due = floor
+                && state
+                    .last_floor
+                    .is_none_or(|at| at.elapsed() >= DETECT_FLOOR_CADENCE);
             // Backstop due (or never primed): the floor cycle answers.
             (
                 due,

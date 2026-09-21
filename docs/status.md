@@ -67,6 +67,19 @@ Also standing:
   (pin-proof token, wire-contract § A.3); reads mint nothing and carry no
   `actor`;
 - pin/error codes: `wire-contract.md` § A.
+- the §10.1 Delta counter where it is read: `links` and the bare §4.7 mint
+  answer the retained counter at the fingerprint they were computed at, with
+  `tree_instance` beside it on a v3 session, and run one detection cycle first
+  — so an out-of-band edit is numbered for a reader who never subscribes, in
+  any epoch a subscription has already given a baseline. A read door never
+  primes one: adopting a baseline is a full corpus observation, and it is a
+  subscriber's cost.
+  `changes_seq: 0` / `seq: 0` means the answer aligns to no retained frame
+  (diff by fingerprint), never that the corpus is quiet. `mrd fingerprint`
+  prints the seq; `mrd links --json` carries `changes_seq`. A scoped mint
+  answers `seq: 0` and names no epoch — its token names a node, and the
+  counter is workspace-grain, and the daemonless `mrd links` lane has no ring
+  at all, so it answers `0` and names no epoch.
 
 Some host fields still emit a **joined display string**. That is leftover debt,
 not address law.
@@ -209,7 +222,10 @@ mrd fingerprint [PATH | --scope-bytes B64] [--json]
  arms ride only when the daemon's hello serves
  `scoped-guards` (taught refusal at exit 2 otherwise,
  nothing sent). The answer is {fingerprint, seq,
- scope|scope_bytes} with the request's spelling echoed
+ scope|scope_bytes} — the world mint adds `tree_instance`,
+ the epoch its `seq` is numbered in (§10.1); a scoped
+ mint carries `seq: 0` and no epoch — with the
+ request's spelling echoed
  beside the token (the §4.7 desync guard); a lawful
  path with no node answers the reserved token `absent`
  (§5.6). `--json` answers {workspace, mint} on the
@@ -1448,11 +1464,6 @@ read `cmd=` first). A warm daemon-served `links` emits neither on the
  `mrd links --require-fingerprint` answers `unknown flag`, exit 2. The §10.2
  posture — refuse with `stale_view`, never answer in an unnamed tense — is
  socket-only.
-- **CLI-committed writes advance the fingerprint, never `changes_seq`.** An
- `mrd put` commit moves the fingerprint the daemon serves immediately and mints
- no Delta, so `changes_seq` is unchanged (`wire-contract.md` §18 row 12).
- Polling it as a change monotone misses every CLI-lane write — diff by
- fingerprint (§4.7).
 - **A lock row has no retire verb.** `mrd pin` mints a row; `mrd rm` removes
  a page; nothing removes ONE row from a page's meridian-lock. A row the engine
  cannot read, or one that attests nothing — a `^anchor` minted under a heading
