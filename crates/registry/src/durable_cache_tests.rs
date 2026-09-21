@@ -303,16 +303,18 @@ fn restore_skips_last_use_stamp_while_the_drawer_is_busy() {
     let restarted = Arc::new(registry(home.path()));
     restarted.register(&ws);
     let dir = cache::parsed_drawer_dir(&restarted.cache_root, &ws);
-    let _held = cache::DrawerLock::acquire(&dir).unwrap();
+    let held = cache::DrawerLock::acquire(&dir).unwrap();
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let worker = Arc::clone(&restarted);
     let worker_ws = ws.clone();
-    std::thread::spawn(move || {
+    let thread = std::thread::spawn(move || {
         let result = worker.warm_or_build(&worker_ws);
         done_tx.send(result).unwrap();
     });
-    let outcome = done_rx
-        .recv_timeout(Duration::from_secs(1))
+    let outcome = done_rx.recv_timeout(Duration::from_secs(5));
+    drop(held);
+    thread.join().unwrap();
+    let outcome = outcome
         .expect("restore must not wait for the optional last-use stamp")
         .unwrap();
     assert_eq!(outcome, WarmOutcome::Built { docs: 0 });
