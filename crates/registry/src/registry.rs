@@ -15,7 +15,7 @@
 //! (`Registry::register` still writes the sentinel BEFORE the insert, so a
 //! sentinel failure leaves no entry — one entry iff one sentinel, unchanged).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -202,7 +202,7 @@ pub struct Registry {
     saved_parse: Mutex<HashMap<PathBuf, String>>,
     saved_observation: Mutex<HashMap<PathBuf, [u8; 32]>>,
     /// Queue identities only, never strong references to evictable engines.
-    pending_parse: Mutex<std::collections::BTreeMap<PathBuf, Instant>>,
+    pending_parse: Mutex<BTreeMap<PathBuf, Instant>>,
     /// § A.5 mount-table cache. Machine-scoped (not per-workspace): the
     /// binding file lives outside every workspace's hash domain, so no
     /// engine or ring can carry it.
@@ -891,6 +891,15 @@ mod floor_grammar {
     }
 }
 
+/// What the cold seed hands the parse: the files, the leaf set the memo now
+/// holds, and the root folded over exactly that set —
+/// [`fs::DomainCache::cold_snapshot`]'s answer.
+type ColdSeed = (
+    fs::DomainFiles,
+    BTreeMap<PathBuf, [u8; 32]>,
+    model::MerkleRoot,
+);
+
 impl Registry {
     /// Build a registry seeded with `entries` (loaded from the state file),
     /// persisting to `state` and writing drawer sentinels under `cache_root`.
@@ -926,7 +935,7 @@ impl Registry {
             persistence_gate: Mutex::new(()),
             saved_parse: Mutex::new(HashMap::new()),
             saved_observation: Mutex::new(HashMap::new()),
-            pending_parse: Mutex::new(std::collections::BTreeMap::new()),
+            pending_parse: Mutex::new(BTreeMap::new()),
             requests: AtomicU64::new(0),
             // Clock starts at birth so idle-exit can age an unused daemon.
             last_request: AtomicU64::new(now_secs()),
@@ -1244,13 +1253,9 @@ impl Registry {
     fn restore_parsed_prior(
         &self,
         workspace: &Path,
-        cache: &Mutex<fs::DomainCache>,
+        fresh: &BTreeMap<PathBuf, [u8; 32]>,
     ) -> Option<parse_cache::snapshot::Restored> {
-        let fresh = cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .leaf_digests();
-        let prior = crate::parsed_cache::restore(&self.cache_root, workspace, &fresh);
+        let prior = crate::parsed_cache::restore(&self.cache_root, workspace, fresh);
         let mut saved = self
             .saved_parse
             .lock()
@@ -1284,9 +1289,24 @@ impl Registry {
     /// A rebuild against a RESIDENT engine is INCREMENTAL
     /// ([`fs::update_corpus`]): it re-reads and re-parses exactly the members
     /// whose §12.2 leaf digest moved against the engine's recorded leaf set —
-    /// O(corpus) in `stat`s, O(delta) in bytes and parses. Cold (no resident
-    /// engine) builds from scratch ([`fs::domain_snapshot_with_leaves`] +
-    /// [`fs::build_corpus`]) — the only whole-corpus parse site.
+    /// O(corpus) in `stat`s, O(delta) in bytes and parses. No resident
+    /// engine builds from scratch — the only whole-corpus parse site — and
+    /// which observation feeds that parse is decided by the memo:
+    ///
+    /// - **Cold, no memo baseline** (no checkpoint, or a discarded one): the
+    ///   build's ONE observation seeds the memo
+    ///   ([`fs::DomainCache::cold_snapshot`], merkle-spec §6.5) and answers
+    ///   the currency pass — `currency.cold` on the timing lane. One read of
+    ///   the corpus; the §6.9 document cache restores against that
+    ///   observation's digests ([`fs::build_corpus_with_prior`]), so a
+    ///   complete snapshot means zero parses and a partial one parses the
+    ///   misses from the bytes in hand. Before this arm the cold path read
+    ///   the corpus twice: the floor pass (serial, guard-grade reads) for
+    ///   currency, then the snapshot for the bytes.
+    /// - **A memo with a baseline** behind a reaped or restored engine: the
+    ///   currency pass is the stat floor (or vouched), and
+    ///   [`fs::domain_snapshot_with_leaves`] + [`fs::build_corpus`] read the
+    ///   bytes once for the parse.
     ///
     /// **Stamp law (amended with the incremental arm).** A built engine's
     /// `at_fingerprint` folds its own leaf set. A mover's leaf derives from
@@ -1326,6 +1346,20 @@ impl Registry {
 
         let cache = self.domain_cache(&canonical);
         loop {
+            // The cold arm (merkle-spec §6.5, the seed): no resident engine
+            // AND a memo with no baseline — one observation feeds both the
+            // memo and the parse, and the currency pass below is not run.
+            if let Some(seed) = self.cold_seed(&canonical, &root, &cache)? {
+                let (engine, count) = self.seed_engine(&canonical, seed);
+                parsed = Some(count);
+                // The insert below is witness-guarded like every other: the
+                // witness is "no engine", which is what this arm observed.
+                if let Some(outcome) = self.install_engine(&canonical, engine, None, parsed, true) {
+                    return Ok(outcome);
+                }
+                continue;
+            }
+
             // Cheap half (no parse, and no re-read of anything that did not
             // move): the workspace's current content hash at the §6.7 vouched
             // grade — cookie proof + take-and-apply + trusted memo serve the
@@ -1374,7 +1408,11 @@ impl Registry {
             // path only, never per currency pass.
             let cold = prior.is_none();
             let restored = if cold {
-                self.restore_parsed_prior(&canonical, &cache)
+                let fresh = cache
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .leaf_digests();
+                self.restore_parsed_prior(&canonical, &fresh)
             } else {
                 None
             };
@@ -1416,46 +1454,141 @@ impl Registry {
             };
             drop(prior);
             drop(restored);
-            let docs_parsed = parsed.unwrap_or(0);
-
-            // Test-only: park here when the gate is armed (see the field docs).
-            #[cfg(test)]
+            if let Some(outcome) =
+                self.install_engine(&canonical, engine, witness.as_ref(), parsed, cold)
             {
-                let gate = self
-                    .pause_before_insert
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .take();
-                if let Some((arrived, release)) = gate {
-                    let _ = arrived.send(());
-                    let _ = release.recv();
-                }
-            }
-
-            {
-                let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
-                let resident = engines.get(&canonical).map(|e| e.at_fingerprint.clone());
-                if resident.as_ref() == Some(&engine.at_fingerprint) {
-                    // A concurrent rebuild already installed this exact corpus
-                    // state — keeping it IS this build, delivered.
-                    return Ok(WarmOutcome::Built { docs: docs_parsed });
-                }
-                if resident == witness {
-                    engines.insert(canonical.clone(), Arc::new(engine));
-                    drop(engines);
-                    if cold {
-                        self.pending_parse
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .insert(canonical.clone(), Instant::now());
-                    }
-                    return Ok(WarmOutcome::Built { docs: docs_parsed });
-                }
+                return Ok(outcome);
             }
             // The resident engine moved while this pass was off the lock: a
             // concurrent rebuild landed, and this build may be the older disk
             // state. Never regress on a guess — go around and re-derive.
         }
+    }
+
+    /// The cold arm's observation, or `None` when this is not a cold start:
+    /// an engine is resident, or the memo already holds a baseline (a
+    /// restored checkpoint, a memo that outlived a reaped engine).
+    ///
+    /// The check and the seed happen under ONE memo hold, so two cold warms
+    /// of one workspace cannot both take this door — the second finds a
+    /// baseline and goes around through the currency pass (its floor is then
+    /// the stat sweep, and the witness guard decides whose engine lands). The
+    /// memo stays held across the read exactly as [`Self::currency_refresh`]
+    /// holds it across the floor pass this replaces.
+    ///
+    /// Emits `currency.cold` (or `currency.cold.refused`) — timed from entry,
+    /// refined at the branch that decides, as the floor names are: a seed
+    /// that refused was entered, and says so under its own name.
+    fn cold_seed(
+        &self,
+        canonical: &Path,
+        root: &fs::WorkspaceRoot,
+        cache: &Mutex<fs::DomainCache>,
+    ) -> io::Result<Option<ColdSeed>> {
+        let no_engine = !self
+            .engines
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(canonical);
+        if !no_engine {
+            return Ok(None);
+        }
+        let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        if memo.has_baseline() {
+            return Ok(None);
+        }
+        let cold_span = timing::phase("currency.cold");
+        match memo.cold_snapshot(root) {
+            Ok(observed) => {
+                cold_span.stop();
+                Ok(Some(observed))
+            }
+            Err(e) => {
+                cold_span.stop_as("currency.cold.refused");
+                Err(e)
+            }
+        }
+    }
+
+    /// The engine a cold seed builds, and how many documents it parsed. The
+    /// §6.9 document cache rides the seed's one observation: the restore
+    /// keys on the digests the seed just derived, a carried member keeps its
+    /// restored document, a miss parses the bytes already in hand
+    /// ([`fs::build_corpus_with_prior`]) — nothing is read twice. No
+    /// snapshot, and every member parses ([`fs::build_corpus`]).
+    fn seed_engine(&self, canonical: &Path, seed: ColdSeed) -> (WorkspaceEngine, usize) {
+        let (files, leaves, fingerprint) = seed;
+        let restored = self.restore_parsed_prior(canonical, &leaves);
+        let (index, docs, unserved, parsed) = if let Some(prior) = &restored {
+            fs::build_corpus_with_prior(files, &leaves, &prior.docs, &prior.unserved, &prior.leaves)
+        } else {
+            let (index, docs, unserved) = fs::build_corpus(files);
+            let parsed = docs.len();
+            (index, docs, unserved, parsed)
+        };
+        drop(restored);
+        let engine = WorkspaceEngine {
+            index,
+            docs,
+            unserved,
+            at_fingerprint: fingerprint,
+            leaves,
+        };
+        (engine, parsed)
+    }
+
+    /// The witness-guarded insert every rebuild arm of
+    /// [`Self::warm_or_build`] lands through: `Some(outcome)` when this
+    /// build is delivered (installed, or found already resident), `None`
+    /// when the resident engine is no longer the `witness` this pass judged
+    /// against and the pass must go around.
+    ///
+    /// `cold` marks a build with no resident prior: its landing is a §6.9
+    /// save opportunity (a first completed cold build), queued for the
+    /// background saver rather than written on the warm path.
+    fn install_engine(
+        &self,
+        canonical: &Path,
+        engine: WorkspaceEngine,
+        witness: Option<&model::MerkleRoot>,
+        parsed: Option<usize>,
+        cold: bool,
+    ) -> Option<WarmOutcome> {
+        let docs_parsed = parsed.unwrap_or(0);
+
+        // Test-only: park here when the gate is armed (see the field docs).
+        #[cfg(test)]
+        {
+            let gate = self
+                .pause_before_insert
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some((arrived, release)) = gate {
+                let _ = arrived.send(());
+                let _ = release.recv();
+            }
+        }
+
+        let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
+        let resident = engines.get(canonical).map(|e| &e.at_fingerprint);
+        if resident == Some(&engine.at_fingerprint) {
+            // A concurrent rebuild already installed this exact corpus
+            // state — keeping it IS this build, delivered.
+            return Some(WarmOutcome::Built { docs: docs_parsed });
+        }
+        if resident == witness {
+            engines.insert(canonical.to_path_buf(), Arc::new(engine));
+            drop(engines);
+            if cold {
+                self.pending_parse
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(canonical.to_path_buf(), Instant::now());
+            }
+            return Some(WarmOutcome::Built { docs: docs_parsed });
+        }
+        None
     }
 
     /// Borrow the warm engine for `canonical` under the read lock. Callers
@@ -3201,6 +3334,100 @@ mod engine_tests {
             reg.warm_or_build(&ws).unwrap(),
             WarmOutcome::Reused,
             "and stays warm — no rebuild storm"
+        );
+    }
+
+    /// The cold arm (merkle-spec §6.5, "the cold build seeds the memo"): a
+    /// warm with no resident engine and no memo baseline reads the corpus
+    /// ONCE — the build's observation seeds the memo and answers the
+    /// currency pass — and the engine it installs is stamped with the flat
+    /// build's root. Every warm after that is the stat floor: `Reused`
+    /// without a member read once the tree has settled.
+    ///
+    /// Before this arm the cold path paid two full reads: the floor pass
+    /// over an empty memo (every member read) to answer currency, then
+    /// `domain_snapshot_with_leaves` for the bytes.
+    #[test]
+    fn a_cold_warm_reads_the_corpus_once_and_seeds_the_memo() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(
+            home.path(),
+            &[
+                ("a.md", "# A\n\nsee [[b]]\n"),
+                ("b.md", "# B\n"),
+                ("notes/c.md", "# C\n"),
+            ],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        let cache = reg.domain_cache(&canonical);
+        assert!(
+            !cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .has_baseline(),
+            "a fresh registry memo is cold"
+        );
+
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 3 },
+            "the cold warm builds the corpus"
+        );
+        {
+            let memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+            assert!(memo.has_baseline(), "the build seeded the memo");
+            assert_eq!(
+                memo.leaves_read(),
+                3,
+                "the corpus was read exactly once — no floor pass before the snapshot"
+            );
+            assert_eq!(memo.sweeps(), 1, "one observation: the seed");
+        }
+        let flat = ::fs::domain_snapshot(&::fs::WorkspaceRoot(canonical.clone()))
+            .unwrap()
+            .1;
+        reg.with_engine(&canonical, |engine| {
+            assert_eq!(
+                engine.expect("installed").at_fingerprint,
+                flat,
+                "the seeded engine is stamped with the flat build's root"
+            );
+        });
+
+        // Let the stamp quantum pass, let one pass re-record the racy
+        // leftovers, then the steady state: stat-only reuse.
+        let granule_ns = {
+            let memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+            match memo.calibration() {
+                Some(::fs::stable::Calibration::Measured { granule_ns }) => *granule_ns,
+                other => panic!("a writable tempdir calibrates: {other:?}"),
+            }
+        };
+        std::thread::sleep(Duration::from_nanos(granule_ns * 2 + 2_000_000));
+        assert_eq!(reg.warm_or_build(&ws).unwrap(), WarmOutcome::Reused);
+        let reads = cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .leaves_read();
+        assert_eq!(reg.warm_or_build(&ws).unwrap(), WarmOutcome::Reused);
+        assert_eq!(
+            cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .leaves_read(),
+            reads,
+            "a warm over a settled, unchanged tree is stat-only"
+        );
+
+        // And a change after the seed is one incremental rebuild, parsing
+        // only the mover — the seeded leaf set is a delta baseline.
+        std::thread::sleep(Duration::from_millis(10));
+        fs::write(ws.join("a.md"), "# A changed\n").unwrap();
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 1 },
+            "a mover after the seed rebuilds incrementally"
         );
     }
 
@@ -5037,7 +5264,7 @@ mod engine_tests {
             edits: vec![match_edit(old, new)],
             plan_edits: Vec::new(),
             pin: None,
-            fields: std::collections::BTreeMap::default(),
+            fields: BTreeMap::default(),
         }
     }
 

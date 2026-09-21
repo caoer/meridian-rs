@@ -56,6 +56,7 @@ use model::MerkleRoot;
 use fs::digestmemo::DigestMemo;
 
 use crate::caps::Authority;
+use crate::drawer::{load_memo, save_memo};
 use crate::exec::{self, ExecSpec, ExecStatus};
 use crate::executor::{self, Applied, ApplyRequest, ExecError, ReceiptAddr, WorkspaceLock};
 use crate::record::{self, RecordError, RunLog, StdoutRecord};
@@ -77,8 +78,8 @@ const BASH_AUTHORITY: Authority = Authority::Unsandboxed;
 #[derive(Debug, Clone, Copy)]
 pub enum ObservationSource<'a> {
     /// The CLI lane: fresh walks per observation, byte reads amortised by the
-    /// workspace drawer memo (`run-digests.v1`, F8) — a separate process has
-    /// no resident memo in reach.
+    /// workspace drawer memo (`run-digests.v1`, F8 — [`crate::drawer`]) — a
+    /// separate process has no resident memo in reach.
     Drawer,
     /// The daemon lane: the host's resident [`fs::DomainCache`] — dir-listing
     /// memo + leaf memo shared with every other op on the workspace. Locked
@@ -520,56 +521,6 @@ impl<'a> Lane<'a> {
         if let Lane::Drawer(memo) = self {
             save_memo(root, memo);
         }
-    }
-}
-
-/// The digest memo's basename inside the per-workspace cache drawer (beside
-/// `sql.duckdb`): run's corpus observations amortise there the same way
-/// sql's projection does (F8). Version rides the name — an older binary
-/// simply reads cold.
-const DIGEST_MEMO_FILENAME: &str = "run-digests.v1";
-
-/// Load the digest memo from the workspace cache drawer. Every failure — no
-/// cache root, no drawer, no file, alien bytes — is a cold memo: the memo is
-/// evidence cache, never authority, and absence only costs reads.
-fn load_memo(root: &fs::WorkspaceRoot) -> DigestMemo {
-    let Ok(canonical) = root.0.canonicalize() else {
-        return DigestMemo::new();
-    };
-    let drawer = cache::CacheDrawer::open(&canonical);
-    let Some(dir) = drawer.dir() else {
-        return DigestMemo::new();
-    };
-    match std::fs::read(dir.join(DIGEST_MEMO_FILENAME)) {
-        Ok(bytes) => DigestMemo::from_bytes(&bytes),
-        Err(_) => DigestMemo::new(),
-    }
-}
-
-/// Persist the memo back to the drawer, atomic (temp + rename) and silent:
-/// concurrent runs last-writer-win over a cache whose worst staleness is an
-/// extra read, and a failed save must never cost a run that already
-/// succeeded.
-fn save_memo(root: &fs::WorkspaceRoot, memo: &DigestMemo) {
-    let Ok(canonical) = root.0.canonicalize() else {
-        return;
-    };
-    let drawer = cache::CacheDrawer::open(&canonical);
-    let Some(dir) = drawer.dir() else {
-        return;
-    };
-    // The sentinel is gc bookkeeping; its failure must not cost the save.
-    let _ = drawer.register();
-    if std::fs::create_dir_all(dir).is_err() {
-        return;
-    }
-    let tmp = dir.join(format!("{DIGEST_MEMO_FILENAME}.tmp.{}", std::process::id()));
-    if std::fs::write(&tmp, memo.to_bytes()).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        return;
-    }
-    if std::fs::rename(&tmp, dir.join(DIGEST_MEMO_FILENAME)).is_err() {
-        let _ = std::fs::remove_file(&tmp);
     }
 }
 

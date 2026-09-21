@@ -680,10 +680,13 @@ Widening the coat is a C2 change, reserved by ruling (`laws.md` D-1).
   line in human mode).
 - `mrd sql` is **operator convenience**: served from the drawer's append-only
   `sql.duckdb` cache when a cache root resolves (`--rebuild` recreates it),
-  else an ephemeral `:memory:` projection of the corpus per query, folding
-  post-result for an honest freshness frame. Not a peer of `mrd read` /
-  `mrd put` / wire `splice`; a cold build is O(corpus) — slow on a large tree,
-  by design.
+  else an ephemeral `:memory:` projection of the corpus per query, sampling
+  `live` post-result for an honest freshness frame. That sample rides the
+  drawer's digest memo (`run-digests.v1`, shared with the run plane —
+  `node-rev-merkle-spec.md` §6.7): one `stat` per member, bytes read only for
+  members that moved since the memo last saw them; a lane with no drawer, or a
+  cold memo, reads every member once. Not a peer of `mrd read` / `mrd put` /
+  wire `splice`; a cold build is O(corpus) — slow on a large tree, by design.
 
 ### `mrd repair` — lost-pin repair
 

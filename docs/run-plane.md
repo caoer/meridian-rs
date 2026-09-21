@@ -536,7 +536,10 @@ close — from an injected source (`RunSpec.observations`).
 
 - **CLI lane:** a fresh walk each time — full `read_dir` enumeration, full
   stat sweep, byte reads amortised by the per-workspace drawer memo
-  (`run-digests.v1`); a separate process has no resident memo.
+  (`run-digests.v1`); a separate process has no resident memo. The same
+  drawer memo answers `mrd sql`'s post-result `live` sample
+  (`fs::domain_fingerprint_memoized`, `node-rev-merkle-spec.md` §6.7): one
+  process's fold warms the next's, whichever verb ran it.
 - **Daemon door** (§ A.8 `run` op, § A.7 in-script `run()`): the registry's
   resident `fs::DomainCache` (dir-listing memo plus leaf memo, shared with
   every currency pass and warm rebuild), locked per observation, never across
@@ -1878,10 +1881,15 @@ Under `MRD_TIMING` (the switch, sink, line grammar and the two lanes:
 | `task.gate` | `total` | `mrd::run_cmd` | the door's pre-check: `resolve_task` + `contract_for` + `validate` + `resolve_authority` |
 | `pre_eval` | `total` | `run::runner::pre_eval` | the plane's own address → contract → caps chain, repeating `page.load` and `conventions.load` as its own gate ([`pre_eval`], one owner for both tenses); measured on the chain, so `--dry` reports it too |
 | `dispatch` | `total` | `run::runner` | starlark leg only: `eval` + `snapshot` + `apply` whole, in that order — the fold follows the eval that decides if it is needed (§ The run plane). **Bash is not that shape**: no `eval` span, no `snapshot*` line — it observes via phase-free `fs::domain_leaves_memoized` (the phases live in `fs::domain_snapshot_with_leaves` and its fold-only twin `fs::domain_fold`) first, under the flock, before the block. The lazy rule is the starlark leg's |
-| `snapshot` | `dispatch` | `fs::domain_fold` on the run plane; `fs::domain_snapshot_with_leaves` for callers that want the bytes | the three below, whole; absent when this tense's lazy gate did not fire (§ The run plane). Both emit the same four names |
-| `snapshot.walk` | `snapshot` | same | `Domain::load` + `hash_domain` — the hash-domain walk |
+| `snapshot` | `dispatch` | `fs::domain_fold` on the run plane; `fs::domain_snapshot_with_leaves` for callers that want the bytes; `fs::DomainCache::cold_snapshot` for the daemon's cold build (inside `currency.cold`) | the three below, whole; absent when this tense's lazy gate did not fire (§ The run plane). All three emit the same four names |
+| `snapshot.walk` | `snapshot` | same | `Domain::load` + `hash_domain` — the hash-domain walk; on the cold build's seed, the memo walk plus its member stat sweep |
 | `snapshot.read` | `snapshot` | same | `read_and_digest_members`, or `digest_members` on the fold-only path — read + blake3 of every member; the fold-only sweep releases each member's bytes with its digest |
-| `snapshot.fold` | `snapshot` | same | leaf assembly + `served_root` |
+| `snapshot.fold` | `snapshot` | same | leaf assembly + `served_root` (the resident fold on the cold build's seed — the same value, §6.8 purity) |
+| `fingerprint` | `total` | `fs::domain_fingerprint_memoized` | the fingerprint-only observation through a drawer digest memo — `mrd sql`'s post-result `live` sample on the direct-file lane: the four below, whole. Never a `snapshot`: a member's bytes are read only when its `StatKey` moved |
+| `fingerprint.walk` | `fingerprint` | same | `Domain::load` + `hash_domain` — the walk `snapshot.walk` covers |
+| `fingerprint.stat` | `fingerprint` | same | `member_identities` — one `stat` per member, parallel above the stat floor |
+| `fingerprint.read` | `fingerprint` | same | read + blake3 of the members the memo could not serve (unknown, or identity moved); zero bytes on a warm memo over a settled tree |
+| `fingerprint.fold` | `fingerprint` | same | leaf assembly + `served_root` |
 | `eval` | `dispatch` | `run::dispatch_starlark` | hermetic evaluation of the block |
 | `apply` | `dispatch` | `run::dispatch_starlark` | the executor's one md.\* batch (absent when the block emitted none) |
 | `cascade` | `total` | `run::runner` | the cascade loop; vacuous under the empty `S1_RULES` ruleset, so near-zero `us` is expected |
@@ -1889,6 +1897,8 @@ Under `MRD_TIMING` (the switch, sink, line grammar and the two lanes:
 | `currency.vouched` | — (`cmd=daemon`) | `registry::Registry::currency_refresh` | a read-plane §6.7 currency pass on the O(1) cookie fast path: no walk, no stat, no byte read |
 | `currency.floor.<cause>` | — (`cmd=daemon`) | same | a read-plane pass that missed the vouch and fell to the §6.2 extent-refresh floor — the full stat sweep. `<cause>` names the term that missed. **A bare `currency.floor` is never emitted**; it is the family prefix |
 | `currency.floor.<cause>.refused` | — (`cmd=daemon`) | same | the same pass, entered then refused by an I/O failure in the sweep |
+| `currency.cold` | — (`cmd=daemon`) | `registry::Registry::warm_or_build` | the cold build's one observation (`fs::DomainCache::cold_snapshot`, `node-rev-merkle-spec.md` §6.5): walk, stat sweep, parallel read of every member — the bytes go to the parse, the digests seed the resident memo. Emitted once per cold build (no resident engine, no memo baseline) in place of the floor pass the cold path used to pay before its snapshot. A `currency.floor` prefix count does not include it: `currency.vouched` + `currency.floor.*` + `currency.cold` partition the read plane's currency answers. Its `snapshot` set is emitted inside it |
+| `currency.cold.refused` | — (`cmd=daemon`) | same | the same observation, entered then refused by an I/O failure |
 | `door.vouched` | — (`cmd=daemon`) | `registry::Registry::door_observation` | a write-door entry observation on that fast path, inside the write flock |
 | `door.floor.<cause>` · `door.floor.<cause>.refused` | — (`cmd=daemon`) | same | the write plane's floor: same two shapes, same `<cause>` set |
 | `door.refused.<cause>` | — (`cmd=daemon`) | same | a write-door observation refused before either arm was chosen. One cause today, `lock_contended`: the memo lock stayed held for its whole budget. **The read plane has no counterpart and that is a fact, not a gap** — the same `fs::lock_within` with a budget of `None` returns `Ok` before the wait loop (`Registry::patched_cache` asserts it) |
@@ -2000,13 +2010,17 @@ Four fold sites, not all firing on one lane:
 | `dispatch_starlark.rs` `observe_if_emitted`, live tense (reached from `runner.rs` `dispatch`) | a live run whose block emitted an **md.\*** effect. A live `notice`-only or effect-free run folds nothing (§ The run plane) |
 | `dispatch_starlark.rs` `observe_if_emitted`, rehearsal tense (reached from `runner.rs` `rehearse`) | `--dry` instead of the above, not as well, and only when the block emitted something — a wider gate than live, for the dry report's provenance |
 | `runner.rs` `cascade` | a generation that applies md.\* — needs a non-empty ruleset, and both doors hand `S1_RULES` (empty), so today: never |
-| `executor.rs` pre-commit | only with a `DeltaSink` in reach, i.e. the wire arm. The CLI passes `delta: None` and returns before the fold |
+| `executor.rs` pre-commit (`DeltaSink::root_before`) | only with a `DeltaSink` in reach, i.e. the wire arm — and then it is the sink's OBSERVATION, not a fold: on a submission that borrowed the resident memo (one carrying a live task target, § The world a mode-bearing row runs against) the daemon's sink answers `root_before` (and, after the commit, `root_after`) from that memo at the stat floor, bytes for movers only, phase-free — no `snapshot` set. A mode-only submission borrows no memo (a fire never drives a currency pass), so the sink of a committing fire folds both roots from bytes (`snapshot` set, one per tense). The CLI passes `delta: None` and returns before the observation |
 
 On the **CLI** an md.\*-committing `mrd run` emits exactly one `snapshot` set
 (`grep -c 'phase=snapshot '` = 1); one committing nothing emits **zero** — the
 lazy gate (37 800-member root: 0/20 folded; eager 20/20). On the
-**wire/daemon** arm a committing run folds again inside the executor: identical
-names, no discriminator, so count them.
+**wire/daemon** arm a committing run emits the same one set: the executor's
+pre-commit observation and the sink's post-commit one ride the resident memo,
+phase-free (as the bash bracket's do), so `grep -c 'phase=snapshot '` counts
+eval folds on either arm. A committing fire on a mode-only submission is the
+one daemon-side case that still folds from bytes at the sink (two `snapshot`
+sets, before and after): that submission borrowed no memo by the fire law.
 
 ## Seam map (for reviewers)
 
@@ -2022,7 +2036,7 @@ names, no discriminator, so count them.
 | CLI mount — script entry | `crates/mrd::script::cmd` — same client edge; its human-mode face is non-normative |
 | in-process script serve (§ A.7) | `crates/registry` (op arm: entry world, host, threading, commit) over `crates/effects` (kernel, trace, digest) |
 | wire run serve (§ A.8) + script effects mode | `crates/registry` (`run_op`: per-target loop, §9 threading; `script_op`: the live host) over `crates/run` (the plane, unchanged) |
-| per-phase timing (`MRD_TIMING`) | `crates/timing` (switch, sink, span); call sites `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`, `fs::domain_fold`, `registry::Registry::currency_refresh`, `registry::Registry::door_observation`; § Timing phases |
+| per-phase timing (`MRD_TIMING`) | `crates/timing` (switch, sink, span); call sites `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`, `fs::domain_fold`, `fs::domain_fingerprint_memoized`, `fs::DomainCache::cold_snapshot`, `registry::Registry::currency_refresh`, `registry::Registry::warm_or_build` (`currency.cold`), `registry::Registry::door_observation`; § Timing phases |
 | root-at-eval observation (the lazy fold) | `crates/run::dispatch_starlark::observe_if_emitted` — one owner of the per-tense gate; `runner::rehearse` calls it directly, the live leg inside `dispatch_starlark::dispatch`. `evaluate` returns `Unobserved`, so neither skips it; § The run plane (`RunCtx`) |
 
 ---

@@ -170,19 +170,20 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
     let root = fs::WorkspaceRoot(ws.to_path_buf());
     // Delta honesty (§ A.8): every committed batch of every target mints its
     // frame on the bound workspace's ring, inside the executor's flock.
-    let sink = crate::delta_sink::RingSink::new(registry.ring(ws));
     // A second ring handle: the create door's SeqSink for run-plane births.
     let birth_ring = registry.ring(ws);
     // Observation unification (engine-warm-cost design § 5): a LIVE task
-    // target's bash bracket observes through the workspace's resident domain
-    // memo — the same instrument every currency pass runs on. Borrowed for
-    // that target class alone (`RunHost::cache`): a mode row never observes
-    // through it, and the borrow parks unbounded behind any currency pass.
+    // target's bash bracket — and the sink's two frame roots — observe
+    // through the workspace's resident domain memo, the same instrument
+    // every currency pass runs on. Borrowed for that target class alone
+    // (`RunHost::cache`): a mode row never observes through it, and the
+    // borrow parks unbounded behind any currency pass.
     let live_task = request
         .targets
         .iter()
         .any(|t| !modes::is_mode_target(t) && !t.dry.unwrap_or(false));
     let cache = live_task.then(|| registry.domain_cache(ws));
+    let sink = crate::delta_sink::RingSink::new(registry, ws, cache.clone());
     let host = RunHost {
         sink: &sink,
         birth_seq: &*birth_ring,
@@ -332,7 +333,7 @@ fn pinned_world(
 /// the § A.8 op arm and the § A.7 in-script `run()` — hold one per
 /// submission, so the two instruments cannot drift apart between doors.
 pub(crate) struct RunHost<'a> {
-    pub(crate) sink: &'a crate::delta_sink::RingSink,
+    pub(crate) sink: &'a crate::delta_sink::RingSink<'a>,
     /// The workspace ring as the create door's `SeqSink` — run-plane births
     /// (`md.create`) mint numbered frames like any door write.
     pub(crate) birth_seq: &'a dyn wire_serve::seq::SeqSink,

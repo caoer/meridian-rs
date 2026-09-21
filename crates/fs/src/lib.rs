@@ -1044,6 +1044,122 @@ impl DomainCache {
         Ok(DomainLeaves { leaves, domain })
     }
 
+    /// Has any observation — or a §6.5 restore — given this memo a leaf set
+    /// to serve from? `false` is the cold memo: every member unknown, the
+    /// resident tree empty. The registry's cold arm asks this to decide
+    /// whether [`Self::cold_snapshot`] is the door.
+    #[must_use]
+    pub fn has_baseline(&self) -> bool {
+        self.domain_seen.is_some()
+    }
+
+    /// The cold build's ONE observation (merkle-spec §6.5, "the cold build
+    /// seeds the memo"): the domain walk, one `stat` per member, a parallel
+    /// plain read of every member's bytes — the bytes handed back for the
+    /// parse, the digests entered into this memo, the resident tree built
+    /// from them, and its served fold returned as the engine's stamp.
+    ///
+    /// Exactly [`domain_snapshot_with_leaves`]'s answer — same walk semantics
+    /// (the plain law), same per-member [`model::leaf_digest`], same files,
+    /// and a root value-identical to its flat build (§4.2.1 purity) — with
+    /// the memo seeded as the side effect, so the currency question that
+    /// follows the build is the stat floor and not a second byte read of the
+    /// whole corpus. Before this door the cold path paid two full reads: the
+    /// floor pass to answer currency, then the snapshot for the bytes.
+    ///
+    /// **The seed's trust posture, precisely.** Each row's key is the
+    /// pre-read path `stat` — not the fd-true identity a §6.2 read records
+    /// — and its watermark is captured BEFORE the first byte is read, so a
+    /// write landing during or after the read is racy against the record
+    /// and re-read by the next pass. On top of that `restored_unobserved`
+    /// is set: guard currency answers UNTRUSTED and the next currency
+    /// question goes to the floor regardless — the same pre-serve barrier
+    /// §6.5 puts before a checkpoint's rows, and only a completed
+    /// [`Self::observe`] clears it. The rows are hypotheses; one stat sweep
+    /// makes them evidence.
+    ///
+    /// Refuses on a memo that already holds a baseline: this is the cold
+    /// door only. A memo with rows — observed, or restored — is served by
+    /// [`Self::root`], which reads only what moved, and a caller wanting
+    /// the bytes beside it takes [`domain_snapshot_with_leaves`].
+    ///
+    /// Counted by [`fold_count`] (it is a full fold) and emits the
+    /// `snapshot{,.walk,.read,.fold}` phase set (it is a snapshot with
+    /// bytes; `run-plane.md` § Timing phases) — `snapshot.walk` covers the
+    /// memo walk AND the member stat sweep here.
+    ///
+    /// # Errors
+    /// I/O failure loading the domain config, traversing the root, `stat`ing
+    /// a member, or reading one; or the memo already holds a baseline.
+    pub fn cold_snapshot(
+        &mut self,
+        root: &WorkspaceRoot,
+    ) -> io::Result<(DomainFiles, BTreeMap<PathBuf, [u8; 32]>, model::MerkleRoot)> {
+        if self.has_baseline() {
+            return Err(io::Error::other(
+                "cold snapshot over a memo that already holds a baseline — observe through \
+                 `root` (it reads only what moved) and take the bytes from `domain_snapshot_with_leaves`",
+            ));
+        }
+        FOLD_COUNT.fetch_add(1, Ordering::Relaxed);
+        let whole = timing::phase("snapshot");
+        let walk = timing::phase("snapshot.walk");
+        let domain = domain::Domain::load(root)?;
+        // Counted at entry, as `observe` counts: an aborted seed still shows
+        // on the §7(d) counter, and losses before the pass are re-derived by
+        // it (a completed seed IS the full sweep the ladder floors at).
+        self.sweeps += 1;
+        let losses_at_start = self.feed.losses();
+        // The trust context FIRST: its watermark must predate every byte
+        // read below, so a write racing the read lands at or after it and
+        // its row is racy — re-read, never trusted on stat-match.
+        let trust = self.trust_context(root);
+        let (mut rels, _offenders, fresh_dirs, listings) =
+            Self::walk_tree(&self.dirs, &root.0, &domain, ObserveLaw::Plain, trust)?;
+        self.dirs = fresh_dirs;
+        self.listings += listings;
+        rels.sort();
+        let identities = member_identities(&root.0, &rels, PARALLEL_STAT_FLOOR)?;
+        self.member_stats += identities.len() as u64;
+        walk.stop();
+        let read = timing::phase("snapshot.read");
+        let members = read_and_digest_members(root, &rels, PARALLEL_READ_FLOOR)?;
+        self.reads += members.len() as u64;
+        read.stop();
+        let fold = timing::phase("snapshot.fold");
+        let seen = trust.record_seen();
+        // Every seeded leaf stamps its chain in the same act (§6.3), one
+        // clock read for the pass — `observe`'s discipline.
+        let stamp_seq = self.stamps.as_ref().map(|s| (s.clock)() + 1);
+        let mut files = Vec::with_capacity(rels.len());
+        let mut leaves: BTreeMap<PathBuf, [u8; 32]> = BTreeMap::new();
+        let mut fresh: BTreeMap<PathBuf, LeafSeen> = BTreeMap::new();
+        // `member_identities` and `read_and_digest_members` both answer in
+        // `rels` order (ordered chunks, merged in spawn order), so the two
+        // zip member-for-member.
+        for ((rel, key), (bytes, digest)) in identities.into_iter().zip(members) {
+            let set = self.tree.set_leaf(&rel, digest);
+            if set && let Some(seq) = stamp_seq {
+                self.tree.stamp_chain(&rel, seq);
+            }
+            leaves.insert(rel.clone(), digest);
+            if let Some(rel_str) = rel.to_str() {
+                files.push((rel_str.to_owned(), bytes));
+            }
+            fresh.insert(rel, LeafSeen { key, digest, seen });
+        }
+        self.served = None;
+        self.leaves = fresh;
+        self.domain_seen = Some(domain.clone());
+        self.acked_losses = losses_at_start;
+        // Hypotheses, not evidence, until one §6.2 pass covers the member set.
+        self.restored_unobserved = true;
+        let folded = self.served_fold(domain.version());
+        fold.stop();
+        whole.stop();
+        Ok((files, leaves, folded))
+    }
+
     /// One observation of the domain through the resident memos — the shared
     /// core of [`root`](Self::root), [`domain_leaves`](Self::domain_leaves),
     /// and the guarded bracket observations ([`guard::StepGuard::open_cached`]
@@ -2284,9 +2400,89 @@ pub fn domain_leaves_memoized(
     root: &WorkspaceRoot,
     memo: &mut digestmemo::DigestMemo,
 ) -> io::Result<DomainLeaves> {
+    memoized_leaves(root, memo, None)
+}
+
+/// The §12 hash-domain FINGERPRINT alone, served through a caller-held
+/// [`digestmemo::DigestMemo`] (merkle-spec §6.7, "fingerprint-only doors
+/// outside the daemon"): the domain walk, one `stat` per member, bytes read
+/// only for members whose [`StatKey`] moved or that the memo has never seen,
+/// and the root folded from content digests — memo-served or freshly read.
+///
+/// **Value identity is the contract.** This is `domain_snapshot(root).1` for
+/// every root — the same walk, the same per-member [`model::leaf_digest`],
+/// the same [`served_root`] fold — gated by
+/// `crates/fs/tests/fingerprint_memo_identity.rs`. Only WHERE an unmoved
+/// member's digest comes from changes. Evidence, not proof: the memo's
+/// standing ([`digestmemo`] module docs) — a same-identity in-place rewrite
+/// is invisible, which is why a committed answer is never stamped from a
+/// memo and this door serves a currency question, never a guard.
+///
+/// **Why it exists.** A CLI door that needs the root and not the bytes —
+/// `mrd sql`'s post-result `live` sample — used to pay [`domain_snapshot`]
+/// for it: every member read and hashed, every member's bytes allocated and
+/// dropped. On a warm memo over a settled tree this reads zero bytes; cold,
+/// it reads each member once and records it for the next process.
+///
+/// Emits its own timing phases — `fingerprint{,.walk,.stat,.read,.fold}`
+/// (`run-plane.md` § Timing phases) — never `snapshot`'s: a reader counting
+/// `snapshot` lines is counting full byte reads, and this is not one.
+///
+/// Not counted by [`fold_count`], which counts FULL folds.
+///
+/// # Errors
+/// I/O failure loading the domain config, traversing the root, `stat`ing a
+/// member, or reading a member the memo could not serve.
+pub fn domain_fingerprint_memoized(
+    root: &WorkspaceRoot,
+    memo: &mut digestmemo::DigestMemo,
+) -> io::Result<model::MerkleRoot> {
+    let whole = timing::phase("fingerprint");
+    let leaves = memoized_leaves(root, memo, Some(FINGERPRINT_PHASES))?;
+    let fold = timing::phase("fingerprint.fold");
+    let folded = leaves.root();
+    fold.stop();
+    whole.stop();
+    Ok(folded)
+}
+
+/// The timing names one memoized observation reports, when it reports any:
+/// [`domain_fingerprint_memoized`] names its own; the run plane's locked
+/// window ([`domain_leaves_memoized`]) is phase-free by doc law
+/// (`run-plane.md` § Timing phases, the `dispatch` row).
+#[derive(Clone, Copy)]
+struct MemoPhases {
+    walk: &'static str,
+    stat: &'static str,
+    read: &'static str,
+}
+
+/// [`domain_fingerprint_memoized`]'s phase set.
+const FINGERPRINT_PHASES: MemoPhases = MemoPhases {
+    walk: "fingerprint.walk",
+    stat: "fingerprint.stat",
+    read: "fingerprint.read",
+};
+
+/// The one memoized observation both entries share: walk, stat sweep, memo
+/// lookups, the miss reads, the records. `phases` names the spans to report,
+/// or reports none.
+fn memoized_leaves(
+    root: &WorkspaceRoot,
+    memo: &mut digestmemo::DigestMemo,
+    phases: Option<MemoPhases>,
+) -> io::Result<DomainLeaves> {
+    let walk = phases.map(|p| timing::phase(p.walk));
     let domain = domain::Domain::load(root)?;
     let rels = hash_domain(root, &domain)?;
+    if let Some(walk) = walk {
+        walk.stop();
+    }
+    let stat = phases.map(|p| timing::phase(p.stat));
     let identities = member_identities(&root.0, &rels, PARALLEL_STAT_FLOOR)?;
+    if let Some(stat) = stat {
+        stat.stop();
+    }
     let mut leaves: BTreeMap<Vec<u8>, [u8; 32]> = BTreeMap::new();
     let mut misses: Vec<(PathBuf, StatKey)> = Vec::new();
     for (rel, key) in identities {
@@ -2296,9 +2492,13 @@ pub fn domain_leaves_memoized(
             misses.push((rel, key));
         }
     }
+    let read = phases.map(|p| timing::phase(p.read));
     let miss_rels: Vec<PathBuf> = misses.iter().map(|(rel, _)| rel.clone()).collect();
-    let read = read_and_digest_members(root, &miss_rels, PARALLEL_READ_FLOOR)?;
-    for ((rel, key), (_, digest)) in misses.into_iter().zip(read) {
+    let rows = read_and_digest_members(root, &miss_rels, PARALLEL_READ_FLOOR)?;
+    if let Some(read) = read {
+        read.stop();
+    }
+    for ((rel, key), (_, digest)) in misses.into_iter().zip(rows) {
         leaves.insert(hash_name(&rel).to_vec(), digest);
         memo.record(rel, key, digest);
     }
@@ -2722,6 +2922,69 @@ pub fn build_corpus(
         }
     }
     let out = (corpus_index_of(&docs), docs, unserved);
+    building.stop();
+    out
+}
+
+/// Build a corpus from ONE observation's bytes, carrying unchanged documents
+/// from a prior build — the merkle-spec §6.5 cold seed meeting the §6.9
+/// restore. The carry rule is [`update_corpus`]'s: a member whose `leaves`
+/// digest equals `prior_leaves`' AND which the prior parts describe (in
+/// exactly one of `prior_docs` / `prior_unserved`) keeps its prior document
+/// by shared reference; every other member parses the bytes in hand. Nothing
+/// is read a second time — the seed already read every member — so a partial
+/// restore costs parses for the misses, never I/O.
+///
+/// Returns [`build_corpus`]'s parts plus the count of documents THIS pass
+/// parsed (the zero-parse proof: zero when the restore was complete).
+#[must_use]
+pub fn build_corpus_with_prior(
+    files: DomainFiles,
+    leaves: &BTreeMap<PathBuf, [u8; 32]>,
+    prior_docs: &model::Docs,
+    prior_unserved: &BTreeMap<String, String>,
+    prior_leaves: &BTreeMap<PathBuf, [u8; 32]>,
+) -> (
+    model::CorpusIndex,
+    model::Docs,
+    BTreeMap<String, String>,
+    usize,
+) {
+    let building = timing::phase("corpus.build");
+    let mut docs = model::Docs::new();
+    let mut unserved = BTreeMap::new();
+    let mut misses: DomainFiles = Vec::new();
+    for (rel, bytes) in files {
+        let path = Path::new(&rel);
+        let unmoved = match leaves.get(path) {
+            Some(digest) => prior_leaves.get(path) == Some(digest),
+            None => false,
+        };
+        if unmoved {
+            if let Some(doc) = prior_docs.get(&rel) {
+                docs.insert(rel, std::sync::Arc::clone(doc));
+                continue;
+            }
+            if let Some(why) = prior_unserved.get(&rel) {
+                unserved.insert(rel, why.clone());
+                continue;
+            }
+        }
+        misses.push((rel, bytes));
+    }
+    let mut parsed = 0usize;
+    for (rel, result) in parse_members(misses) {
+        match result {
+            Ok(doc) => {
+                docs.insert(rel, std::sync::Arc::new(doc));
+                parsed += 1;
+            }
+            Err(condition) => {
+                unserved.insert(rel, condition);
+            }
+        }
+    }
+    let out = (corpus_index_of(&docs), docs, unserved, parsed);
     building.stop();
     out
 }

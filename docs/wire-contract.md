@@ -2863,7 +2863,11 @@ here mint Deltas like every other daemon-side write:
   write flock, held as a bracket around the commit and the mint**
   (`write.lock`, not `run.lock`, which does not exclude the detector).
   Because the detector reconciles under the same flock, no detect cycle sees a
-  half-landed commit or an un-advanced ring.
+  half-landed commit or an un-advanced ring. Both frame roots — `root_before`
+  observed under that flock before the commit, `root_after` after it — come
+  from the workspace's resident memo at the `node-rev-merkle-spec.md` §6.2
+  floor grade (one `stat` per member, bytes read for movers only), never a
+  byte read of the whole corpus.
 - One committed batch = one fingerprint advance = one Delta (§7.1), the content page
   and the receipt file as two entries of one frame's `files`.
 - Identity is §9's: a supplied `actor` threads verbatim; absent, the frame
