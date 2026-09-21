@@ -19,3 +19,6 @@ markdown semantics.
   --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test
   --workspace --locked`, `cargo deny check`, and the perfsuite smoke. Land by
   PR; a red lane blocks the publish step.
+- **Local tests:** use `just test` or `tools/test.sh --workspace --locked`.
+  The wrapper clears inherited engine selectors in the test subprocess;
+  the tests retain their engine-identity assertions.

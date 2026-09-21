@@ -1274,9 +1274,21 @@ keeps the 1,500 ms budget and records wall time without gating it. The normal
 suite retains `policy::armed::tests::drift_reads_each_distinct_pinned_page_once`,
 which checks the read count deterministically.
 
-Performance results require a controlled runner with a fixed toolchain and
-resource allocation. Compiling these targets in the correctness lane does
-not execute their budgets. An isolated local diagnostic can be run with
+`.github/workflows/perf.yml` runs on the standard GitHub-hosted
+`ubuntu-24.04` runner on main pushes, pull requests and manual dispatches.
+It pins Rust 1.97.1, limits measured commands to CPUs 0 and 1, and runs the
+budgets serially after compilation. The runner class supplies 4 vCPUs and
+16 GB RAM; its CPU model and image revision are recorded with every result.
+GitHub does not promise identical physical hardware or an immutable OS image
+between jobs. Criterion baseline and candidate revisions are therefore
+measured on the same VM, with the same toolchain, affinity and corpus recipes.
+Cross-run absolute timings are observations, not a claim of identical hardware.
+
+The workflow discovers every `perf-walltime` test target from the manifests,
+compiles them first, then executes each target separately. Existing budgets
+remain unchanged. Woodpecker compiles these targets but does not execute their
+timing budgets; its shared build host is the correctness lane.
+An isolated local diagnostic can be run with
 `tools/test.sh --locked -p mrd --features perf-walltime --test rules_drift_cpu -- --nocapture`;
 it is not a CI performance baseline.
 

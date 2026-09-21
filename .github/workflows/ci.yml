@@ -1,7 +1,7 @@
 # CI runs on Woodpecker (.woodpecker/ci.yaml); this GitHub Actions lane is manual-only.
 # Correctness + harness bit-rot, timing-insensitive — hosted runners are fine
 # here. Wall-time numbers are NEVER gated in this lane (shared-runner noise);
-# that's perf.yml's job on a pinned runner.
+# that's perf.yml's job in its separate hosted-runner job.
 name: ci
 
 on:
