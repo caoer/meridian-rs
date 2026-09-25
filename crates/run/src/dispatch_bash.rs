@@ -156,7 +156,7 @@ pub struct BashOutcome {
     /// A record failure does not un-run the block — it is carried typed and
     /// the orphan lint finds a receipt whose log is missing.
     pub stdout: Result<StdoutRecord, RecordError>,
-    /// Captured stderr (report diagnostics).
+    /// Captured stderr — the CLI writes it to its own stderr before the report.
     pub stderr: Vec<u8>,
     /// The exec-window detection verdict (U6b) — rendered on EVERY outcome,
     /// orthogonal to how the exec ended (a delta is named even when the step

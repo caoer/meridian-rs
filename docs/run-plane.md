@@ -1615,7 +1615,7 @@ rows are the exec'd entry's:
 | program | `bash -c <source> mrd-task <args…>`, `$0` = `mrd-task` | `<interpreter> <staged-file> <args…>`, `$0` = the staged path |
 | stdin | `Stdio::null()` | the fire's `input`, compact JSON |
 | exit | collapsed to `state: applied\|partial` | the **raw** code, 1 and 2 distinct |
-| stderr | captured, read by nothing | `stderr_tail` on the row |
+| stderr | captured; the CLI writes it to its own stderr before the report (§ The CLI surface) | `stderr_tail` on the row |
 | record | the receipt + `.meridian/runs/<invocation-id>.log` | `.meridian/runs/<page-path>/<invocation-id>.log`, and the row |
 | language set | closed (`starlark`, `bash`) | `argv[0]` — any interpreter |
 
@@ -1789,6 +1789,16 @@ caller by two surfaces, and the default one is not the rc.
 - **Under `--exit-passthrough`, on the rc.** The flag hands the findings leg to
   the step: a step that reached its own exit door with a nonzero code makes
   `mrd run` exit that code, verbatim.
+
+**A bash step's stderr is the caller's stderr.** The bracket captures it (the
+pipe is drained so the child never blocks), and the CLI writes the captured
+bytes, verbatim, to its own stderr once the step has ended and before the
+report is printed — on every exec'd leg, nonzero exit, signal and timeout
+included, `--json` or not. It is diagnostics, never data: it is not in the run
+log, the report or the receipts, and stdout stays the step's output followed by
+the report. A step that reports findings on stderr therefore reports to the
+person or script that ran it, and a caller that wants them separable redirects
+`2>`.
 
 **Law — passthrough moves one leg and reserves the rest.** The flag governs
 exactly the leg where a clean detection window met a nonzero exit (the

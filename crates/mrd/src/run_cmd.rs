@@ -749,6 +749,17 @@ fn execute(
     let _ = std::fs::remove_dir_all(&scratch);
     let report = result.map_err(|e| fail_runner(&e))?;
 
+    // A bash step's stderr is the caller's stderr (run-plane.md § The CLI surface): the bracket
+    // captured it, so it is written here, verbatim, after the step ended and before the report.
+    if let TaskOutcome::Bash(outcome) = &report.outcome
+        && !outcome.stderr.is_empty()
+    {
+        use std::io::Write as _;
+        let mut err = std::io::stderr().lock();
+        let _ = err.write_all(&outcome.stderr);
+        let _ = err.flush();
+    }
+
     // One object, text and json off the same struct, with RunReport-sourced exec facts.
     let rendering = timing::phase("report.render");
     let rendered = run::report::render(&report);
