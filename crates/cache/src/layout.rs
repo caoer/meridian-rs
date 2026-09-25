@@ -81,15 +81,17 @@ fn to_hex(bytes: &[u8]) -> String {
     s
 }
 
-/// The version+salt path segment, `<pkg-version>-<schema-salt>`.
+/// The version+salt path segment, `<pkg-version>-<schema-salt>-r<resolve-rev>`.
 ///
 /// The version and salt ride a path *segment*, never hashed into keys (the Ruff
 /// lesson): a binary upgrade or a payload-schema bump becomes a clean cold start,
-/// an old-schema drawer is never decoded into a new struct.
+/// an old-schema drawer is never decoded into a new struct. `model::RESOLVE_REV`
+/// rides it too: a resolver change moves derived `link` rows at fingerprints
+/// that never advance, and the bump beside the pick rule is the drawer's bump.
 #[must_use]
 pub(crate) fn version_segment() -> String {
     let version = sanitize_segment(env!("CARGO_PKG_VERSION"));
-    format!("{version}-{SCHEMA_SALT}")
+    format!("{version}-{SCHEMA_SALT}-r{}", model::RESOLVE_REV)
 }
 
 /// Keep a string usable as a single path segment: no separators.
@@ -146,11 +148,32 @@ mod tests {
     }
 
     #[test]
-    fn version_segment_carries_salt() {
+    fn version_segment_carries_salt_and_resolve_rev() {
         let seg = version_segment();
-        assert!(seg.ends_with(&format!("-{SCHEMA_SALT}")));
+        assert!(seg.ends_with(&format!("-{SCHEMA_SALT}-r{}", model::RESOLVE_REV)));
         assert!(!seg.contains('/'));
         assert!(!seg.contains(std::path::MAIN_SEPARATOR));
+    }
+
+    /// A drawer registered under the segment the pre-#283 resolver wrote
+    /// (`<ver>-s10`) is invisible to the current engine: the workspace's drawer
+    /// resolves to a fresh directory and probes cold, so a stale
+    /// `link.dest_path` can never be served (card `mrd-sql-cache-key`).
+    #[test]
+    fn a_drawer_under_the_prior_segment_cold_starts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let workspace = Path::new("/home/zt/wiki");
+        let version = sanitize_segment(env!("CARGO_PKG_VERSION"));
+        let prior = root
+            .join(drawer_key(workspace))
+            .join(format!("{version}-s10"));
+        crate::register(&prior, workspace).unwrap();
+        assert!(matches!(crate::probe(&prior), crate::Probe::Hit(_)));
+
+        let current = drawer_dir(root, workspace);
+        assert_ne!(current, prior, "the prior segment must not be reopened");
+        assert_eq!(crate::probe(&current), crate::Probe::Miss);
     }
 
     #[test]

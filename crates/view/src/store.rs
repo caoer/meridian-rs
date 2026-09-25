@@ -159,7 +159,13 @@ use crate::{
 /// for every such row (50 of 50 `agents` rows on the fleet corpus), pinned
 /// to fingerprints that will not move. Same repair-by-rebuild reasoning as
 /// `9` (card `fm-block-list-sql-empty`).
-pub const CACHE_SCHEMA_VERSION: i64 = 10;
+///
+/// `11`: `hist.link.dest_path` under `model::pick_source_relative`'s
+/// exact-directory sibling pick (#283) — a v10 file holds the prior pick for
+/// every unchanged source page, pinned to fingerprints that will not move.
+/// Same repair-by-rebuild reasoning as `9` (card `mrd-sql-cache-key`); later
+/// resolver changes reach the drawer through `model::RESOLVE_REV`.
+pub const CACHE_SCHEMA_VERSION: i64 = 11;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
 pub const SQL_CACHE_FILENAME: &str = "sql.duckdb";

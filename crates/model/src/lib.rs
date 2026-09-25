@@ -3648,6 +3648,18 @@ fn fm_key_line<'a>(lines: &[&'a str], key: &str) -> Option<(usize, &'a str)> {
     })
 }
 
+/// The revision of stage 1's candidate and pick rule ([`pick_source_relative`]).
+/// Bump it with ANY change to which file a link resolves to: the sql drawer
+/// stores `link.dest_path` pinned to the source file's fingerprint, which a
+/// resolver change never moves, so only a fresh drawer serves the new pick.
+/// `cache`'s drawer version segment carries it (`<ver>-<salt>-r<RESOLVE_REV>`),
+/// so the bump alone cold-starts every drawer (`wire-contract.md` §4.5).
+///
+/// `1`: the exact-directory sibling pick (#283) — a candidate merely beneath
+/// the source's directory, or under a directory sharing its prefix bytes, is no
+/// longer a sibling (card `mrd-sql-cache-key`).
+pub const RESOLVE_REV: u32 = 1;
+
 /// Source-relative shortest-unambiguous pick over stage-1 candidates: prefer a
 /// candidate in exactly the source's directory (a sibling — never a candidate
 /// merely beneath that directory, and never one under a directory whose name
