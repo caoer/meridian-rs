@@ -3649,21 +3649,28 @@ fn fm_key_line<'a>(lines: &[&'a str], key: &str) -> Option<(usize, &'a str)> {
 }
 
 /// Source-relative shortest-unambiguous pick over stage-1 candidates: prefer a
-/// match in the source's own directory, then the shortest path, then the
-/// lexicographically first.
+/// candidate in exactly the source's directory (a sibling — never a candidate
+/// merely beneath that directory, and never one under a directory whose name
+/// shares the prefix bytes), then the shortest path, then the lexicographically
+/// first. A root-level source's siblings are the root-level candidates.
 fn pick_source_relative(candidates: &[String], from: &str) -> Option<String> {
-    let from_dir = from.rsplit_once('/').map(|(dir, _)| dir);
+    let from_dir = dir_of(from);
     candidates
         .iter()
         .min_by(|a, b| {
-            let a_same = from_dir.is_some_and(|d| a.starts_with(d));
-            let b_same = from_dir.is_some_and(|d| b.starts_with(d));
+            let a_same = dir_of(a) == from_dir;
+            let b_same = dir_of(b) == from_dir;
             b_same
                 .cmp(&a_same)
                 .then(a.len().cmp(&b.len()))
                 .then(a.cmp(b))
         })
         .cloned()
+}
+
+/// The directory a vault path sits in; `None` at the vault root.
+fn dir_of(path: &str) -> Option<&str> {
+    path.rsplit_once('/').map(|(dir, _)| dir)
 }
 
 #[cfg(test)]
@@ -3757,6 +3764,51 @@ mod tests {
             index.resolve_linkpath("CARD", "agents/ef1dc8e4/NOTE.md"),
             Some("agents/ef1dc8e4/CARD.md".to_string()),
             "a bare basename still resolves source-relative",
+        );
+    }
+
+    /// The pick's first key is "in exactly the source's directory". It was a
+    /// string-prefix test on the source's directory, so from `inbox/INBOX.md`
+    /// (`from_dir = "inbox"`) a twin anywhere beneath `inbox/` beat the
+    /// nine-byte root page: home-wiki 2026-09-25, `[[SCHEMA]]` written in
+    /// `inbox/INBOX.md` resolved to
+    /// `inbox/scraped/claude-api/bundled-2.1.280/shared/evals/report/SCHEMA.md`
+    /// while the same spelling from `inbox/_unstaged/…` and every other folder
+    /// reached `SCHEMA.md`. Ruled 2026-09-25: a bare basename prefers the root
+    /// / shortest path, matching Obsidian; a true sibling still wins.
+    #[test]
+    fn same_directory_means_exactly_the_source_directory_not_a_prefix() {
+        let mut index = CorpusIndex::new();
+        let empty = build(String::new(), syntax::parse(""));
+        for p in [
+            "SCHEMA.md",
+            "inbox/scraped/claude-api/bundled-2.1.280/shared/evals/report/SCHEMA.md",
+            "inbox/y.md",
+            "other/y.md",
+            "inboxes/z.md",
+            "z.md",
+        ] {
+            index.insert(p, &empty);
+        }
+        assert_eq!(
+            index.resolve_linkpath("SCHEMA", "inbox/INBOX.md"),
+            Some("SCHEMA.md".to_string()),
+            "a twin beneath the source's directory is not a sibling; the root wins",
+        );
+        assert_eq!(
+            index.resolve_linkpath("SCHEMA", "inbox/_unstaged/x.md"),
+            Some("SCHEMA.md".to_string()),
+            "the answer no longer depends on which inbox/ folder the source sits in",
+        );
+        assert_eq!(
+            index.resolve_linkpath("y", "inbox/x.md"),
+            Some("inbox/y.md".to_string()),
+            "a sibling in exactly the source's directory beats an equal-length path",
+        );
+        assert_eq!(
+            index.resolve_linkpath("z", "inbox/x.md"),
+            Some("z.md".to_string()),
+            "a directory sharing the prefix bytes (inboxes/) is not the source's",
         );
     }
 
