@@ -1,29 +1,83 @@
 //! The mount-table corpus assembly the pin planes share (walk/check/status
 //! and the § A.10 wire `walk`): one loader binds `MERIDIAN.md`'s table and
-//! builds a corpus per NEEDED root, one assembler produces the
+//! obtains a corpus per NEEDED root, one assembler produces the
 //! [`model::RootedCorpus`] every colour door reads. One owner — the CLI verbs
 //! and the wire serve path must hand the colour computer the same corpus, so
 //! the table bind, the refusal carrying, and the set assembly cannot drift
 //! between hosts (the same one-owner law `Mounts::rooted` was born under).
+//!
+//! WHERE a wanted root's corpus comes from is the caller's ([`CorpusSource`]):
+//! the in-process lanes build it from disk ([`load_mounts_for`]); the daemon
+//! hands in its resident engine for that root ([`load_mounts_for_from`]) —
+//! parsed once, refreshed O(dirty) by the same currency pass every served
+//! workspace gets — so a mounted root is never rebuilt from disk per call. A
+//! per-call disk build inside the daemon costs the whole root's walk, hash
+//! and parse, and overlapping calls each hold a copy (measured on a 61k-file,
+//! 8.9 GB sessions root: two concurrent `sql` calls at 17.8 GB resident).
 //!
 //! Voicing is the CALLER's: this module returns each mounted root's unserved
 //! members instead of printing them — the CLI voices to stderr, the wire host
 //! has no stderr to speak on.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-/// One mounted root's corpus, owned — the backing store the
-/// [`model::RootedCorpus`] borrows — plus the members it could not serve.
+/// A mounted root's served projection, whoever produced it: the documents
+/// the colour computer reads and the hash-domain members that serve no
+/// spans (per-file UTF-8 degradation), path → condition.
+pub trait ServedCorpus: Send + Sync {
+    /// The parsed documents, keyed by root-relative path.
+    fn docs(&self) -> &model::Docs;
+    /// Hash-domain members under this root that serve no spans/nodes.
+    fn unserved(&self) -> &BTreeMap<String, String>;
+}
+
+/// How a wanted root's corpus is obtained, by its canonical bound path. `Err`
+/// is the reason the root cannot be read from here — carried into the mount
+/// set as unreachable, never dropped.
+pub type CorpusSource<'a> = &'a dyn Fn(&Path) -> Result<Arc<dyn ServedCorpus>, String>;
+
+/// The in-process build: snapshot + parse, exactly what the workspace's own
+/// ambient corpus is built through.
+struct BuiltCorpus {
+    docs: model::Docs,
+    unserved: BTreeMap<String, String>,
+}
+
+impl ServedCorpus for BuiltCorpus {
+    fn docs(&self) -> &model::Docs {
+        &self.docs
+    }
+
+    fn unserved(&self) -> &BTreeMap<String, String> {
+        &self.unserved
+    }
+}
+
+/// One mounted root's corpus — the backing store the [`model::RootedCorpus`]
+/// borrows — plus the members it could not serve.
 pub struct MountedCorpus {
     pub name: addr::MountName,
     /// The root's canonical bound path (canonicalize-at-bind) — the handle
     /// the per-root durability read (`check`) opens that root's git through.
-    pub root: std::path::PathBuf,
-    pub docs: model::Docs,
-    /// Hash-domain members under this root that serve no spans/nodes
-    /// (per-file UTF-8 degradation), path → condition. The caller voices.
-    pub unserved: BTreeMap<String, String>,
+    pub root: PathBuf,
+    corpus: Arc<dyn ServedCorpus>,
+}
+
+impl MountedCorpus {
+    /// The root's parsed documents.
+    #[must_use]
+    pub fn docs(&self) -> &model::Docs {
+        self.corpus.docs()
+    }
+
+    /// Hash-domain members under this root that serve no spans/nodes,
+    /// path → condition. The caller voices.
+    #[must_use]
+    pub fn unserved(&self) -> &BTreeMap<String, String> {
+        self.corpus.unserved()
+    }
 }
 
 /// The mount table as the pin planes consume it: the loaded corpora, and the
@@ -56,7 +110,7 @@ impl MountCorpora {
             .with_hash_domain(domain)
             .with_ambient_disk(root);
         for mount in &self.corpora {
-            corpus = corpus.with_root(mount.name.clone(), &mount.docs);
+            corpus = corpus.with_root(mount.name.clone(), mount.docs());
         }
         corpus
     }
@@ -76,7 +130,17 @@ impl MountCorpora {
 /// `needed` narrows the corpora, never the [`addr::MountSet`].
 #[must_use]
 pub fn load_mounts_for(needed: &BTreeSet<addr::MountName>) -> MountCorpora {
-    load_mounts_where(&|name| needed.contains(name))
+    load_mounts_for_from(needed, &build_in_process)
+}
+
+/// [`load_mounts_for`] with the corpora obtained through `source` instead of
+/// built from disk — the daemon's lane, handing in its resident engines.
+#[must_use]
+pub fn load_mounts_for_from(
+    needed: &BTreeSet<addr::MountName>,
+    source: CorpusSource<'_>,
+) -> MountCorpora {
+    load_mounts_where_from(&|name| needed.contains(name), source)
 }
 
 /// Load `MERIDIAN.md`'s mount table into both halves resolution needs: one
@@ -85,6 +149,15 @@ pub fn load_mounts_for(needed: &BTreeSet<addr::MountName>) -> MountCorpora {
 /// never dropped.
 #[must_use]
 pub fn load_mounts_where(wanted: &dyn Fn(&addr::MountName) -> bool) -> MountCorpora {
+    load_mounts_where_from(wanted, &build_in_process)
+}
+
+/// [`load_mounts_where`] with the corpora obtained through `source`.
+#[must_use]
+pub fn load_mounts_where_from(
+    wanted: &dyn Fn(&addr::MountName) -> bool,
+    source: CorpusSource<'_>,
+) -> MountCorpora {
     let env = config::Env::from_process();
     let Ok(resolution) = config::resolve(&env) else {
         return MountCorpora::default();
@@ -127,18 +200,17 @@ pub fn load_mounts_where(wanted: &dyn Fn(&addr::MountName) -> bool) -> MountCorp
             bound.push(name);
             continue;
         }
-        match build_docs_at(path) {
-            Ok((docs, unserved)) => {
+        match source(path) {
+            Ok(corpus) => {
                 bound.push(name.clone());
                 corpora.push(MountedCorpus {
                     name,
                     root: path.to_path_buf(),
-                    docs,
-                    unserved,
+                    corpus,
                 });
             }
-            // Bound per the table, but its corpus will not build — unreadable
-            // from here, and just as much a declared root as any other.
+            // Bound per the table, but its corpus cannot be read from here —
+            // and just as much a declared root as any other.
             Err(e) => unreachable.push((name, path.display().to_string(), e)),
         }
     }
@@ -151,13 +223,11 @@ pub fn load_mounts_where(wanted: &dyn Fn(&addr::MountName) -> bool) -> MountCorp
 }
 
 /// The corpus build at an already-canonical mount path (canonicalize-at-bind),
-/// so re-resolving it would ask a second owner an answered question. Returns
-/// the docs plus the unserved members for the caller to voice.
-#[allow(clippy::type_complexity)] // the two corpus maps, verbatim from fs::build_corpus
-fn build_docs_at(root: &Path) -> Result<(model::Docs, BTreeMap<String, String>), String> {
+/// so re-resolving it would ask a second owner an answered question.
+fn build_in_process(root: &Path) -> Result<Arc<dyn ServedCorpus>, String> {
     let root = fs::WorkspaceRoot(root.to_path_buf());
     let (files, _fingerprint) =
         fs::domain_snapshot(&root).map_err(|e| format!("cannot read the mounted corpus: {e}"))?;
     let (_index, docs, unserved) = fs::build_corpus(files);
-    Ok((docs, unserved))
+    Ok(Arc::new(BuiltCorpus { docs, unserved }))
 }

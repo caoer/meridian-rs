@@ -5,14 +5,10 @@
 //! is the CLI half of the redden.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 use serde_json::Value;
 mod common;
-
-fn mrd_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_mrd")
-}
 
 struct Sandbox {
     /// Load-bearing: the tree dies with this. Read by nothing.
@@ -89,11 +85,9 @@ fn sandbox(create_it: bool) -> Sandbox {
 
 impl Sandbox {
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(mrd_bin())
+        common::mrd_command(&self.home, &self.cache_home)
             .args(args)
             .current_dir(&self.ws)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env("MERIDIAN_CONFIG", &self.config)
             .env_remove("MERIDIAN_WORKSPACE")
             .output()

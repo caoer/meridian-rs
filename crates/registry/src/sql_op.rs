@@ -245,11 +245,15 @@ pub(crate) fn serve(
 
     // The mount table, with a corpus for exactly the roots this corpus's own
     // wikilink/embed targets name — the shared assembly, so this door and the
-    // CLI lane hand the projection the same resolver inputs.
-    let mounts = wire_serve::mount_corpus::load_mounts_for(&view::walk::link_addressed_roots(
-        &engine.docs,
-        None,
-    ));
+    // CLI lane hand the projection the same resolver inputs. Each corpus is
+    // this daemon's resident engine for that root: warmed once, refreshed
+    // O(dirty), never rebuilt from disk per call — a workspace linking into a
+    // 61k-file root would otherwise pay that root's whole walk, hash and parse
+    // here on every statement.
+    let mounts = wire_serve::mount_corpus::load_mounts_for_from(
+        &view::walk::link_addressed_roots(&engine.docs, None),
+        &|root| registry.mounted_corpus(root),
+    );
     let corpus = mounts.rooted(&engine.docs, &domain, &root);
     let probe = fs::domain::LinkTargetProbe::new(&root, &domain);
     let exclusion = |target: &str| {

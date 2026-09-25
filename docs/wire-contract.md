@@ -2974,6 +2974,20 @@ stored, citing the doc revs read (§2.4). Workspace-bound, unlike § A.5
   `walk.<field>`; v2 → `unknown_op`, frozen v2 caps byte-identical.
 - **One computer** (`view::walk::walk_rooted`, shared mount-corpus assembly):
   one spelling of color/reason/detail on the wire and in `mrd walk --json`.
+- **Mounted roots are resident engines.** A cross-root pin colours against
+  the target root's corpus, and the daemon hands the assembly its own warm
+  engine for that root (`Registry::mounted_corpus` — the same
+  `warm_or_build` every served workspace warms through: built once, refreshed
+  O(dirty), under the same residency and reap), never a per-call build from
+  disk. A root cold in this daemon is built inline on the first call that
+  names it. The § A.11 `sql` projection resolves cross-root links through the
+  same engines.
+- **The CLI rides this door.** `mrd walk` dials the resident daemon as
+  `read` and `links` do — auto-spawn, degrade to the in-process build when
+  none answers, the degrade voiced on stderr; an op refusal degrades too, so
+  the in-process diagnostic is the one a caller reads — and renders the wire
+  rows through the same `color_*` projections, so stdout is byte-identical
+  across lanes.
 
 ```json
 {"id":12,"op":"walk","path":"a.md"}
@@ -3016,7 +3030,8 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
   spill-bounded, nothing locked or disabled.
 - **Caps**: workspace-bound; v3-only at dispatch, cap `sql` at op grain; v2 →
   `unknown_op`, frozen caps byte-identical.
-- **Serve shape per call**: warm engine snapshot → pin check + delta append
+- **Serve shape per call**: warm engine snapshot (the mounted roots its
+  wikilinks name: their resident engines, § A.10) → pin check + delta append
   (O(changed files), cache-as-manifest) → always-rollback query
   (`BEGIN → statement → collect → ROLLBACK`) → post-result currency through
   the resident memo at the vouched grade (`node-rev-merkle-spec.md` §6.7; the

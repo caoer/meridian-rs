@@ -242,13 +242,16 @@ forms in machine surfaces."*
 
 ### C-1 — the link plane's in-process degrade, and its named successor
 
-The daemon warms one workspace's corpus, keyed by its canonical path and
-invalidated by its fingerprint (`crates/registry/src/registry.rs:317-321`,
-`warm_or_build`). It holds no mounted-root corpora, so the `Op::Links` arm
-serves ambient state only (`crates/registry/src/server.rs:1121-1135`). The
-link plane resolves a cross-vault link by **degrading that one op to
-in-process**, loading mounted corpora as the walk plane does
-(`crates/mrd/src/walk_cmd.rs:146`).
+The daemon warms one workspace's corpus per canonical path, invalidated by
+its fingerprint (`crates/registry/src/registry.rs`, `warm_or_build`). The pin
+and link planes it serves over the wire — § A.10 `walk`, § A.11 `sql` — take a
+mounted root's corpus from that same map (`Registry::mounted_corpus`: the
+root is warmed as a workspace, once, and refreshed O(dirty)), so mounted-root
+corpora are resident under the same budget and reap as any served workspace.
+The `Op::Links` arm alone serves ambient state only
+(`crates/registry/src/server.rs`), and the link plane resolves a cross-vault
+link by **degrading that one op to in-process**, loading mounted corpora as
+the CLI pin planes do (`crates/mrd/src/walk_cmd.rs`, `load_mounts_for`).
 
 - **A documented contract.** For this op the daemon is knowingly less capable
   than in-process; a page with a cross-vault link pays a cold corpus build,
@@ -266,10 +269,10 @@ in-process**, loading mounted corpora as the walk plane does
   consults it (`walk`, pins, a named read). A mount table that will not resolve
   or bind keeps the old posture and degrades.
 
-> **Named successor — option (A): the daemon holds mounted corpora.** Deferred
-> deliberately: it needs per-root fingerprint invalidation, residency and reap
-> — a designed subsystem with its own design element and gate, not a detail of
-> a link-plane fix.
+> **Named successor:** the `Op::Links` arm takes its mounted corpora through
+> `Registry::mounted_corpus` exactly as `walk` and `sql` do, and this degrade
+> goes. Gate: `crates/registry/tests/walk_mount_reuse.rs` is the shape — a
+> second call over the same mounted root pays no full fold.
 
 ### H-1 — the `#` refusal
 
