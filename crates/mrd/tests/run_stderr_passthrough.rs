@@ -71,7 +71,10 @@ fn a_failing_steps_stderr_reaches_the_caller_before_the_verdict() {
         .find("ERROR: the finding, on stderr")
         .unwrap_or_else(|| panic!("the step's stderr is on mrd's stderr: {err}"));
     let verdict = err.find("mrd: ").expect("mrd's own verdict line");
-    assert!(at < verdict, "the step's lines precede mrd's verdict: {err}");
+    assert!(
+        at < verdict,
+        "the step's lines precede mrd's verdict: {err}"
+    );
     let stdout = text(&out.stdout);
     assert!(stdout.starts_with("on stdout"), "{stdout}");
     assert!(
