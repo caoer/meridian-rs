@@ -319,7 +319,7 @@ fn try_daemon_read(workspace: &Path, r: &Read) -> DaemonRead {
 /// and an unbounded read on a daemon that accepts and never answers parks this
 /// process forever — past every degrade this lane has (card
 /// `registry-client-read-timeout-absent`).
-fn connect_or_spawn(client: &Client) -> std::io::Result<UnixStream> {
+pub(crate) fn connect_or_spawn(client: &Client) -> std::io::Result<UnixStream> {
     let bound = |stream: UnixStream| -> std::io::Result<UnixStream> {
         registry::wedge::bind(&stream)?;
         Ok(stream)

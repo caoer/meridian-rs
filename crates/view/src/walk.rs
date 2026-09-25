@@ -378,8 +378,19 @@ pub use model::selector::{color_detail, color_reason, color_teaching};
 /// Full human color label: tone, reason, optional detail.
 #[must_use]
 pub fn color_label(color: &Color) -> String {
-    let tone = color_tone(color);
-    match (color_reason(color), color_detail(color)) {
+    label_parts(
+        color_tone(color),
+        color_reason(color),
+        color_detail(color).as_deref(),
+    )
+}
+
+/// [`color_label`] from its wire-shaped parts — one spelling whether the
+/// parts came from a [`Color`] in this process or off the § A.10 wire
+/// (`mrd walk` renders the daemon's rows through this).
+#[must_use]
+pub fn label_parts(tone: &str, reason: Option<&str>, detail: Option<&str>) -> String {
+    match (reason, detail) {
         (Some(reason), Some(detail)) => format!("{tone} {reason} ({detail})"),
         (Some(reason), None) => format!("{tone} {reason}"),
         (None, _) => tone.to_string(),

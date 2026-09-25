@@ -1765,10 +1765,14 @@ fn dispatch_read(
             content,
         } => resolve_cold(ws, &from, &r#ref, content.unwrap_or(false)),
         // § A.10 pin-graph context assembly — v3-only, read-only, served from
-        // the warm engine's projection through the shared walk computer.
-        Op::Walk { path, down, depth } if v3 => warm_engine_read(registry, ws, |engine| {
-            crate::walk_op::serve(engine, ws, &path, down.unwrap_or(false), depth)
-        }),
+        // the warm engine's projection through the shared walk computer. The
+        // engine is PINNED (an `Arc` clone), not borrowed under the engines
+        // lock: the walk warms the mounted roots' engines through the same
+        // registry, and a warm may take that lock.
+        Op::Walk { path, down, depth } if v3 => {
+            let engine = warm_engine_pinned(registry, ws)?;
+            crate::walk_op::serve(registry, &engine, ws, &path, down.unwrap_or(false), depth)
+        }
         // Write path: bare meridian-fs commit via shared choke-point.
         // No rule packs (`&[]` ⇒ `verdicts: []`). Writes disk; warm engine
         // rebuilds on next read (fingerprint moved). Numbered on the workspace ring.
@@ -2196,23 +2200,41 @@ fn warm_engine_read<R>(
             let _ = release.recv();
         }
     }
-    registry.with_engine(canonical, |engine| {
-        if let Some(engine) = engine {
-            f(engine)
-        } else {
-            // Idle-reap won the warm→borrow race: the engine this request
-            // just warmed was reclaimed, not broken. `respawn` would teach
-            // the client to tear down a healthy channel; the truthful §8
-            // class is `retry` — the same request re-warms.
-            let mut e = ErrorBody::new(ErrorCode::CorpusRace);
-            e.message = Some(
-                "the idle reaper reclaimed this workspace's warm engine between warm and \
-                 serve — transient; the same request re-warms it"
-                    .to_owned(),
-            );
-            Err(Box::new(e))
-        }
+    registry.with_engine(canonical, |engine| match engine {
+        Some(engine) => f(engine),
+        None => Err(reaped_between_warm_and_serve()),
     })
+}
+
+/// [`warm_engine_read`]'s pinned form: the cold gate, the warm, then the
+/// engine's `Arc` with the engines lock DROPPED — for a door whose serve
+/// re-enters the registry (the walk warms mounted roots through it; a borrow
+/// under the read lock would deadlock on the warm's write).
+fn warm_engine_pinned(
+    registry: &Registry,
+    canonical: &Path,
+) -> Result<Arc<WorkspaceEngine>, Box<ErrorBody>> {
+    cold_gate_wire(registry, canonical)?;
+    registry
+        .warm_or_build(canonical)
+        .map_err(|e| warm_err_to_wire(&e))?;
+    registry
+        .engine_snapshot(canonical)
+        .ok_or_else(reaped_between_warm_and_serve)
+}
+
+/// Idle-reap won the warm→borrow race: the engine this request just warmed
+/// was reclaimed, not broken. `respawn` would teach the client to tear down a
+/// healthy channel; the truthful §8 class is `retry` — the same request
+/// re-warms.
+fn reaped_between_warm_and_serve() -> Box<ErrorBody> {
+    let mut e = ErrorBody::new(ErrorCode::CorpusRace);
+    e.message = Some(
+        "the idle reaper reclaimed this workspace's warm engine between warm and \
+         serve — transient; the same request re-warms it"
+            .to_owned(),
+    );
+    Box::new(e)
 }
 
 /// §4.5 walk plane, served cold from a per-request walk corpus (not the

@@ -268,6 +268,10 @@ pub struct Registry {
 /// (an MCP client's per-request floor is 10 s), well over a small corpus build.
 const COLD_BUILD_WAIT: Duration = Duration::from_secs(2);
 
+/// How many times [`Registry::mounted_corpus`] re-warms a mounted root whose
+/// engine the idle reaper reclaimed between the warm and the pin.
+const MOUNT_WARM_ATTEMPTS: usize = 3;
+
 /// §3.2 cold-read state: which workspaces have a background drawer rebuild
 /// running, and the cause of the last rebuild that failed.
 #[derive(Debug, Default)]
@@ -1501,6 +1505,43 @@ impl Registry {
     pub fn engine_snapshot_nowait(&self, canonical: &Path) -> Option<Arc<WorkspaceEngine>> {
         let engines = self.engines.try_read().ok()?;
         engines.get(canonical).cloned()
+    }
+
+    /// A mounted root's corpus for the pin and link planes (`walk`, `sql`):
+    /// this daemon's resident engine for that root, warmed through the same
+    /// [`warm_or_build`](Self::warm_or_build) every served workspace warms
+    /// through — parsed once, refreshed O(dirty) — never a per-call rebuild
+    /// from disk. A mount's canonical path is a workspace like any other; a
+    /// root cold in this daemon is built inline, once. `Err` is the reason
+    /// the root cannot be read from here, which the loader carries as
+    /// unreachable.
+    ///
+    /// Called with NO registry lock held: the warm may take the engines
+    /// write lock, so a caller inside `with_engine` would deadlock — the
+    /// serving doors pin their ambient engine by [`engine_snapshot`]
+    /// (`Self::engine_snapshot`) first and drop the lock.
+    pub(crate) fn mounted_corpus(
+        &self,
+        root: &Path,
+    ) -> Result<Arc<dyn wire_serve::mount_corpus::ServedCorpus>, String> {
+        let canonical = workspace::canonicalize(root)
+            .map_err(|e| format!("cannot read the mounted corpus: {e}"))?;
+        // The idle reaper can reclaim the engine between the warm and the
+        // pin; the same pass re-warms, bounded so a reaper storm cannot spin
+        // this call forever.
+        for _ in 0..MOUNT_WARM_ATTEMPTS {
+            self.warm_or_build(&canonical)
+                .map_err(|e| format!("cannot read the mounted corpus: {e}"))?;
+            if let Some(engine) = self.engine_snapshot(&canonical) {
+                let served: Arc<dyn wire_serve::mount_corpus::ServedCorpus> = engine;
+                return Ok(served);
+            }
+        }
+        Err(
+            "the idle reaper reclaimed the mounted root's warm engine between warm and read \
+             — transient; the same request re-warms it"
+                .to_owned(),
+        )
     }
 
     /// The workspace's resident sql cache handle (§ A.11), opened in its

@@ -368,7 +368,10 @@ mrd retire <report|mark> [--id ID] [--dry-run] [--expect-root ROOT]
  commit the vault first)
 mrd walk <PAGE> [--down] [--depth N]
  the context-assembly listing over the pin graph;
- every answer cites the revs it read
+ every answer cites the revs it read. Served by the
+ resident daemon (wire-contract § A.10; auto-spawned as
+ for read and links), in-process when none answers —
+ the degrade voiced on stderr, stdout identical
 mrd rules [PATH] [--workspace | --user] [--json]
  the effective-rules print verb: what governs at PATH
  after id-based override resolution — winner first, the
@@ -1470,8 +1473,8 @@ read `cmd=` first). A warm daemon-served `links` emits neither on the
 |---|---|---|---|
 | `total` | — | `mrd::run` | the whole process |
 | `daemon.dial` | `total` | `mrd::engine::answer_links` | hello+links on the resident daemon, or the degrade decision; includes the `ensure_daemon` auto-spawn poll up to `SPAWN_READY_TIMEOUT` (5 s) |
-| `snapshot` / `snapshot.*` | `total` OR `links.read` | `fs::domain_snapshot_with_leaves` | hash-domain walk + digest + fold. Once per mounted root (`build_docs_at`) |
-| `corpus.build` | `total` OR `links.read` | `fs::build_corpus` | UTF-8 + `syntax::parse` of every member. Once per mounted root: the workspace build in `total`, each mount build in `links.read`. Also `sql` / `check` / `walk` / `repair` / `retire` / daemon under their own `cmd=` |
+| `snapshot` / `snapshot.*` | `total` OR `links.read` | `fs::domain_snapshot_with_leaves` | hash-domain walk + digest + fold. Once per mounted root on the in-process lanes (`mount_corpus::build_in_process`); a daemon folds a mounted root once, when its resident engine is first warmed |
+| `corpus.build` | `total` OR `links.read` | `fs::build_corpus` | UTF-8 + `syntax::parse` of every member. Once per mounted root on the in-process lanes: the workspace build in `total`, each mount build in `links.read`. Also `sql` / `check` / `walk` / `repair` / `retire` / daemon under their own `cmd=` — a daemon-served `walk` or `sql` parses a mounted root once, on the engine's cold warm, never per call |
 | `links.read` | `total` | `mrd::engine::in_process_links` | everything from the mount narrow to the v3 re-key |
 | `json.render` | `total` | `mrd::engine::run_command` | `serde_json::to_string_pretty` of the envelope |
 | `json.write` | `total` | same | `println!("{text}")` — stdout is a `LineWriter`, so the trailing newline flushes the envelope inside this span |

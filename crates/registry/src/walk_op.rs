@@ -5,7 +5,9 @@
 //! The walk COMPUTER is the one the CLI verbs color through
 //! ([`view::walk::walk_rooted`]), and the mount-table corpus assembly is the
 //! shared owner ([`wire_serve::mount_corpus`]) — this module only admits the
-//! named page, hands the computer the warm engine's served projection, and
+//! named page, hands the computer the warm engine's served projection with
+//! the mounted roots' resident engines beside it
+//! ([`Registry::mounted_corpus`](crate::Registry::mounted_corpus)), and
 //! projects the report onto the wire shape. Read-only: writes nothing, mints
 //! no receipt; the walk is computed per query, never stored.
 
@@ -15,10 +17,12 @@ use std::path::Path;
 use view::walk::{self, Direction, WalkError};
 use wire::{ErrorBody, ErrorCode, ResponseBody, WalkCite, WalkRow};
 
-use crate::WorkspaceEngine;
 use crate::server::file_not_found;
+use crate::{Registry, WorkspaceEngine};
 
-/// Serve one `walk` call from the warm engine's borrowed state.
+/// Serve one `walk` call from the pinned warm engine `engine` — an
+/// [`engine_snapshot`](Registry::engine_snapshot) clone, no registry lock
+/// held, so the mounted roots can be warmed through `registry` here.
 ///
 /// # Errors
 /// `file_not_found` when the named root has no file; `invalid_utf8` when it
@@ -27,6 +31,7 @@ use crate::server::file_not_found;
 /// the default domain would claim every path is hashed, the false-red
 /// fail-open decision 0034 ruled out.
 pub(crate) fn serve(
+    registry: &Registry,
     engine: &WorkspaceEngine,
     ws: &Path,
     path: &wire::Path,
@@ -68,8 +73,13 @@ pub(crate) fn serve(
 
     // The mount table, with a corpus for exactly the roots this corpus's own
     // lock addresses name — the shared assembly, so this door and the CLI pin
-    // planes hand the colour computer the same corpus.
-    let mounts = wire_serve::mount_corpus::load_mounts_for(&walk::lock_addressed_roots(docs));
+    // planes hand the colour computer the same corpus. Each corpus is this
+    // daemon's resident engine for that root: warmed once, refreshed O(dirty),
+    // never rebuilt from disk per call.
+    let mounts = wire_serve::mount_corpus::load_mounts_for_from(
+        &walk::lock_addressed_roots(docs),
+        &|root| registry.mounted_corpus(root),
+    );
     let corpus = mounts.rooted(docs, &domain, &root);
 
     let direction = if down { Direction::Down } else { Direction::Up };

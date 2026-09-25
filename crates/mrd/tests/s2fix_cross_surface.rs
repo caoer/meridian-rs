@@ -30,13 +30,9 @@ use wire_serve::write::{SpliceArgs, splice};
 mod common;
 
 // ── the engine under test ───────────────────────────────────────────────────
-
-/// The binary every CLI drive goes through; `MRD_BIN` selects the installed
-/// artifact for the fixv evidence run.
-fn mrd_bin() -> PathBuf {
-    std::env::var_os("MRD_BIN")
-        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
-}
+// Every CLI drive goes through `common::mrd_command` (`MRD_BIN` selects the
+// installed artifact for the fixv evidence run; the fixture drain budget rides
+// with it).
 
 /// `daemon` owns the temporary tree AND the resident this sandbox starts into
 /// it, and orders their teardown itself ([`registry::TestServer`]): the stop
@@ -64,11 +60,9 @@ fn sandbox() -> Sandbox {
 
 impl Sandbox {
     fn command(&self, cwd: &Path, args: &[&str]) -> Command {
-        let mut cmd = Command::new(mrd_bin());
+        let mut cmd = common::mrd_command(&self.home, &self.cache_home);
         cmd.args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             // Auto-spawn disabled: only a daemon this sandbox started itself
             // ([`Sandbox::ensure_live`]) may answer these drives.
             .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")

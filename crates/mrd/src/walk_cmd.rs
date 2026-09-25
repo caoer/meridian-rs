@@ -16,22 +16,37 @@
 //!   dependent whose pin no longer resolves).
 //! - **2** — bad invocation, or a structural failure (root absent from the
 //!   corpus, or an in-snapshot cycle).
+//!
+//! # Two lanes, one listing
+//! The answer comes from the resident daemon when one answers (§ A.10 `walk`:
+//! the warm engine's served projection, the mounted roots its resident
+//! engines — one round trip, nothing read in this process), else from the
+//! in-process build, voiced as the degrade on stderr exactly as `read` and
+//! `links` voice theirs. Both lanes land in one [`Listing`] and one renderer,
+//! so stdout is byte-identical across lanes: the wire carries the very
+//! `view::walk::color_*` projections the in-process lane computes. A daemon
+//! op REFUSAL degrades too — the in-process lane's diagnostic for a missing
+//! root or a cycle is the authoritative one, and it is byte-identical to what
+//! the verb said before the daemon lane existed.
 
 use std::collections::BTreeSet;
+use std::io::BufReader;
 use std::path::Path;
 
+use registry::Client;
 use serde_json::{Value, json};
 use view::walk::{self, Direction, WalkError, WalkReport};
 
+use crate::engine::{EngineSource, call, hello_identity_skew, served_or_recorded};
 use crate::{Fail, Format, current_dir};
 
 /// The finding leg of the triad: the invocation was well-formed, the listing carries a red edge.
 const EXIT_FINDING: u8 = 1;
 
-/// Run `mrd walk <PAGE> [--down] [--depth N] [--json]`: resolve the workspace, build the corpus
-/// in-process, walk the pin graph, and print the listing. Errors [`Fail`] exit 2 on a bad
-/// invocation, an unreadable workspace/corpus, a missing root, or an in-snapshot cycle; exit 1
-/// when the listing carries a red edge.
+/// Run `mrd walk <PAGE> [--down] [--depth N] [--json]`: resolve the workspace, answer the
+/// listing from the resident daemon or the in-process build, and print it. Errors [`Fail`]
+/// exit 2 on a bad invocation, an unreadable workspace/corpus, a missing root, or an in-snapshot
+/// cycle; exit 1 when the listing carries a red edge.
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let mut parsed = Walk::parse(args)?;
     let cwd = current_dir()?;
@@ -62,71 +77,42 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             return Err(crate::engine::json_refusal(parsed.format, &ambient, &error));
         }
     };
-    // §1 admission, before any corpus is read: without it `admit_named_page`'s
+    // §1 admission, before any engine contact: without it `admit_named_page`'s
     // `fs::load` resolves an absolute spelling verbatim and this door WALKS a
     // page from outside the root (wire-contract §12.1, the door-family clause).
     // On the rooted lane the rel half is already confined ([`crate::rooted`]),
     // so this admission is a no-op pass there.
     crate::path_law::admit(&workspace, &parsed.page, "walk", "Nothing was walked.")?;
-    let InProcessCorpus { root, mut docs } = build_corpus_in_process(&workspace)?;
-    admit_named_page(&root, &mut docs, &parsed.page);
-    let docs = docs;
 
-    // `--down` answers a POPULATION the caller did not name — the blast radius — so it owes the
-    // enumerator clause: it may exclude what its attestation cannot reach, never SILENTLY
-    // (`crate::voice_excluded`, §12.1). Voiced AFTER `admit_named_page`, or the door's own named
-    // subject reads as an exclusion. `--up` is not gated in: it drops nothing, naming an
-    // excluded ancestor by its correct path at a red edge (measured, `1ee5317a`).
-    if matches!(parsed.direction, Direction::Down) {
-        crate::voice_excluded(&root, &docs);
-    }
-
-    // The mount table, with a corpus for the roots this workspace's own lock addresses name and
-    // no others. `mounts` owns the document maps; `corpus` borrows them — hence two bindings.
-    let mounts = load_mounts_for(&lock_addressed_roots(&docs));
-    let domain = load_domain(&workspace)?;
-    // `root` is the one `build_corpus_in_process` returned above — the root this
-    // corpus was BUILT from, and therefore the root its existence questions are
-    // asked at (0045/0049), never the caller's cwd. Re-deriving it here would be
-    // two answers to one fact inside one function.
-    let corpus = mounts.rooted(&docs, &domain, &root);
-    let mount_set = mounts.set();
-
-    let mut report = walk::walk_rooted(
-        &corpus,
-        mount_set,
-        &parsed.page,
-        parsed.direction,
-        parsed.depth,
-    )
-    .map_err(|e| walk_error(e, &workspace, &cwd, &parsed))?;
+    let mut listing = if let Some(listing) = try_daemon_walk(&workspace, &parsed)? {
+        listing
+    } else {
+        crate::engine::voice_degrade(&EngineSource::Ephemeral);
+        walk_in_process(&workspace, &cwd, &parsed)?
+    };
     // The echo law at the face: the walk root renders rooted where the caller
     // wrote rooted, with the root half CANONICAL (§ 4.6a — an alias is a lookup
     // spelling). Entries are untouched — as-if-cd'd into the named root (see
     // [`Walk`]).
     if let Some(display) = &parsed.display {
-        report.root.clone_from(display);
+        listing.root.clone_from(display);
     }
 
     match parsed.format {
         Format::Json => {
-            let value = to_json(&workspace, &report);
+            let value = to_json(&workspace, &listing);
             println!("{}", serde_json::to_string_pretty(&value).expect("json"));
         }
-        Format::Human => print!("{}", render_human(&report)),
+        Format::Human => print!("{}", render_human(&listing)),
     }
 
-    let reds = report
-        .entries
-        .iter()
-        .filter(|e| walk::color_tone(&e.color) == "red")
-        .count();
+    let reds = listing.entries.iter().filter(|e| e.color == "red").count();
     // Grey refuses on exit 1 with its own reason word; no fourth exit code. Scoped to the two
     // root greys.
-    let root_greys: Vec<&str> = report
+    let root_greys: Vec<&str> = listing
         .entries
         .iter()
-        .filter_map(|e| walk::color_reason(&e.color))
+        .filter_map(|e| e.reason.as_deref())
         .filter(|w| *w == "unmounted" || *w == addr::PATH_UNSEEABLE_REASON_WORD)
         .collect();
     if reds > 0 || !root_greys.is_empty() {
@@ -146,6 +132,131 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         ));
     }
     Ok(())
+}
+
+/// The daemon lane: `hello` binds and warms `workspace`, then one § A.10 `walk`.
+/// `Ok(None)` when no daemon answers, the exchange fails on the wire, or the
+/// daemon refuses the op — the caller degrades, and the in-process lane's own
+/// diagnostic stands. `Err` on ONE case that must not melt into the degrade:
+/// build skew (0025 socket law) — a stale resident answering in silence is the
+/// defect, and degrading past it would hide the stale daemon forever.
+fn try_daemon_walk(workspace: &Path, parsed: &Walk) -> Result<Option<Listing>, Fail> {
+    let dialing = timing::phase("daemon.dial");
+    let Ok(client) = Client::from_default() else {
+        return Ok(None);
+    };
+    // `.ok()` on purpose: this failure means nothing was reachable and no daemon came up,
+    // and `engine::ensure_daemon` has already recorded the richer fact — the child's own
+    // dying words — for `voice_degrade` to state.
+    let Ok(stream) = crate::read_cmd::connect_or_spawn(&client) else {
+        return Ok(None);
+    };
+    let Ok(mut writer) = stream.try_clone() else {
+        return Ok(None);
+    };
+    let mut reader = BufReader::new(stream);
+    let socket = client.socket_path();
+
+    let hello = json!({
+        "op": "hello",
+        "proto": 1,
+        "contract": "v3",
+        "workspace": workspace.to_string_lossy(),
+    });
+    let Some(greeted) = served_or_recorded(call(&mut writer, &mut reader, socket, &hello)) else {
+        return Ok(None);
+    };
+    if greeted.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Ok(None);
+    }
+    // 0025 socket law: identity equality on the hello frame already in hand.
+    if let Err(message) = hello_identity_skew(greeted.get("body"), socket) {
+        return Err(Fail::tool(message));
+    }
+
+    let mut request = json!({ "op": "walk", "path": parsed.page });
+    if matches!(parsed.direction, Direction::Down) {
+        request["down"] = json!(true);
+    }
+    if let Some(depth) = parsed.depth {
+        request["depth"] = json!(depth);
+    }
+    let Some(response) = served_or_recorded(call(&mut writer, &mut reader, socket, &request))
+    else {
+        return Ok(None);
+    };
+    dialing.stop();
+    if response.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Ok(None);
+    }
+    let Some(listing) = response.get("body").and_then(Listing::from_wire) else {
+        return Ok(None);
+    };
+    // `--down` answers a POPULATION the caller did not name — the blast radius — so it owes the
+    // enumerator clause (§12.1): the population rides the wire answer's `excluded`, and this
+    // face voices it exactly as the in-process lane voices its own walk of the declined class.
+    if matches!(parsed.direction, Direction::Down) {
+        voice_excluded_declined(workspace, &listing.excluded);
+    }
+    Ok(Some(listing))
+}
+
+/// The daemon lane's excluded voice. The wire's `excluded` is the COMPLETE
+/// outside-domain census (§ A.10 — the machine channel, dot-prefixed paths
+/// included); this face's note is the declined class only, a dot-prefixed path
+/// never voiced, exactly as [`crate::voice_excluded`] enumerates it in-process
+/// — so the wire list is narrowed by that same walk law before it is spoken.
+fn voice_excluded_declined(workspace: &Path, excluded: &[String]) {
+    let Ok(root) = workspace_root(workspace) else {
+        return;
+    };
+    let Ok(declined) = fs::declined_markdown(&root) else {
+        return;
+    };
+    let excluded: BTreeSet<&str> = excluded.iter().map(String::as_str).collect();
+    let voiced: Vec<String> = declined
+        .into_iter()
+        .filter(|rel| excluded.contains(rel.as_str()))
+        .collect();
+    crate::voice_excluded_note(&voiced);
+}
+
+/// The in-process lane: build the corpus from the workspace on disk, walk the pin graph
+/// through the shared computer, and hand back the listing.
+fn walk_in_process(workspace: &Path, cwd: &Path, parsed: &Walk) -> Result<Listing, Fail> {
+    let InProcessCorpus { root, mut docs } = build_corpus_in_process(workspace)?;
+    admit_named_page(&root, &mut docs, &parsed.page);
+    let docs = docs;
+
+    // `--down` answers a POPULATION the caller did not name — the blast radius — so it owes the
+    // enumerator clause: it may exclude what its attestation cannot reach, never SILENTLY
+    // (`crate::voice_excluded`, §12.1). Voiced AFTER `admit_named_page`, or the door's own named
+    // subject reads as an exclusion. `--up` is not gated in: it drops nothing, naming an
+    // excluded ancestor by its correct path at a red edge (measured, `1ee5317a`).
+    if matches!(parsed.direction, Direction::Down) {
+        crate::voice_excluded(&root, &docs);
+    }
+
+    // The mount table, with a corpus for the roots this workspace's own lock addresses name and
+    // no others. `mounts` owns the document maps; `corpus` borrows them — hence two bindings.
+    let mounts = load_mounts_for(&lock_addressed_roots(&docs));
+    let domain = load_domain(workspace)?;
+    // `root` is the one `build_corpus_in_process` returned above — the root this
+    // corpus was BUILT from, and therefore the root its existence questions are
+    // asked at (0045/0049), never the caller's cwd. Re-deriving it here would be
+    // two answers to one fact inside one function.
+    let corpus = mounts.rooted(&docs, &domain, &root);
+    let mount_set = mounts.set();
+
+    let report = walk::walk_rooted(
+        &corpus,
+        mount_set,
+        &parsed.page,
+        parsed.direction,
+        parsed.depth,
+    )
+    .map_err(|e| walk_error(e, workspace, cwd, parsed))?;
+    Ok(Listing::from_report(&report))
 }
 
 /// The shared mount-table corpus assembly (`wire_serve::mount_corpus` — one
@@ -175,7 +286,7 @@ pub(crate) fn load_mounts_for(needed: &BTreeSet<addr::MountName>) -> Mounts {
 /// speaks them exactly as it always has.
 fn voiced(mounts: Mounts) -> Mounts {
     for corpus in &mounts.corpora {
-        crate::voice_unserved(&corpus.unserved);
+        crate::voice_unserved(corpus.unserved());
     }
     mounts
 }
@@ -197,6 +308,139 @@ pub(crate) fn link_addressed_roots(
     path: Option<&str>,
 ) -> BTreeSet<addr::MountName> {
     walk::link_addressed_roots(docs, path)
+}
+
+/// The listing as both lanes hand it to the faces — the § A.10 wire shape:
+/// one row per reached edge carrying the tone/reason/detail/teaching
+/// projections (`view::walk::color_*`), the rev citations, and the down
+/// walk's excluded population. The in-process lane projects its
+/// [`WalkReport`] through the same functions the daemon projects its own
+/// with, so the two lanes cannot render differently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Listing {
+    /// `up` | `down`.
+    direction: String,
+    /// The walked page — respelled to the rooted display form at the face.
+    root: String,
+    /// The depth bound in effect; `None` = unbounded.
+    depth_bound: Option<u32>,
+    /// BFS order: depth ascending, then discovery.
+    entries: Vec<Row>,
+    /// The doc revs the listing rests on, path order (§2.4).
+    revs_read: Vec<Cite>,
+    /// §12.1 enumerator clause, down walks only: the markdown the hash domain
+    /// left out. Empty on up, and on the in-process lane (which voices its
+    /// own enumeration before the walk).
+    excluded: Vec<String>,
+}
+
+/// One reached edge, wire-shaped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Row {
+    depth: u32,
+    selector: String,
+    rev: Option<String>,
+    /// The tone: `green` | `red` | `grey`.
+    color: String,
+    /// The stable reason word; absent exactly on green.
+    reason: Option<String>,
+    detail: Option<String>,
+    teaching: Option<String>,
+}
+
+/// One rev citation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Cite {
+    path: String,
+    doc_rev: String,
+}
+
+impl Listing {
+    /// The in-process lane's projection — the same `color_*` functions the
+    /// daemon's § A.10 projection applies (`registry::walk_op`).
+    fn from_report(report: &WalkReport) -> Listing {
+        Listing {
+            direction: report.direction.label().to_string(),
+            root: report.root.clone(),
+            depth_bound: report.depth_bound,
+            entries: report
+                .entries
+                .iter()
+                .map(|entry| Row {
+                    depth: entry.depth,
+                    selector: entry.selector.clone(),
+                    rev: entry.rev.clone(),
+                    color: walk::color_tone(&entry.color).to_string(),
+                    reason: walk::color_reason(&entry.color).map(str::to_owned),
+                    detail: walk::color_detail(&entry.color),
+                    teaching: walk::color_teaching(&entry.color, &entry.selector),
+                })
+                .collect(),
+            revs_read: report
+                .revs_read
+                .iter()
+                .map(|cite| Cite {
+                    path: cite.path.clone(),
+                    doc_rev: cite.doc_rev.clone(),
+                })
+                .collect(),
+            excluded: Vec::new(),
+        }
+    }
+
+    /// The daemon lane's projection: the § A.10 success body. `None` on a body
+    /// that is not that shape — the caller degrades rather than render a
+    /// guess.
+    fn from_wire(body: &Value) -> Option<Listing> {
+        let string = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).map(str::to_owned);
+        let entries = body
+            .get("entries")?
+            .as_array()?
+            .iter()
+            .map(|row| {
+                Some(Row {
+                    depth: u32::try_from(row.get("depth")?.as_u64()?).ok()?,
+                    selector: string(row, "selector")?,
+                    rev: string(row, "rev"),
+                    color: string(row, "color")?,
+                    reason: string(row, "reason"),
+                    detail: string(row, "detail"),
+                    teaching: string(row, "teaching"),
+                })
+            })
+            .collect::<Option<Vec<Row>>>()?;
+        let revs_read = body
+            .get("revs_read")?
+            .as_array()?
+            .iter()
+            .map(|cite| {
+                Some(Cite {
+                    path: string(cite, "path")?,
+                    doc_rev: string(cite, "doc_rev")?,
+                })
+            })
+            .collect::<Option<Vec<Cite>>>()?;
+        let excluded = match body.get("excluded") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(list) => list
+                .as_array()?
+                .iter()
+                .map(|v| v.as_str().map(str::to_owned))
+                .collect::<Option<Vec<String>>>()?,
+        };
+        let depth_bound = match body.get("depth_bound") {
+            None | Some(Value::Null) => None,
+            Some(bound) => Some(u32::try_from(bound.as_u64()?).ok()?),
+        };
+        Some(Listing {
+            direction: string(body, "direction")?,
+            root: string(body, "page")?,
+            depth_bound,
+            entries,
+            revs_read,
+            excluded,
+        })
+    }
 }
 
 /// The parsed `walk` invocation: the root page, direction, optional depth bound, output format.
@@ -409,42 +653,45 @@ fn walk_error(error: WalkError, workspace: &Path, cwd: &Path, parsed: &Walk) -> 
 
 /// Render the listing as an indented human block: the header, one line per entry
 /// (`depth N  <color>  <selector>  rev=<rev>`), then the rev citations.
-fn render_human(report: &WalkReport) -> String {
+fn render_human(listing: &Listing) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
-    match report.depth_bound {
+    match listing.depth_bound {
         Some(bound) => {
             let _ = writeln!(
                 out,
                 "walk {} {} (depth <= {bound})",
-                report.direction.label(),
-                report.root
+                listing.direction, listing.root
             );
         }
         None => {
-            let _ = writeln!(out, "walk {} {}", report.direction.label(), report.root);
+            let _ = writeln!(out, "walk {} {}", listing.direction, listing.root);
         }
     }
-    if report.entries.is_empty() {
+    if listing.entries.is_empty() {
         let _ = writeln!(out, "  (nothing)");
     } else {
-        for entry in &report.entries {
+        for entry in &listing.entries {
             let rev = entry.rev.as_deref().unwrap_or("-");
             let _ = writeln!(
                 out,
                 "  depth {}  {}  {}  rev={rev}",
                 entry.depth,
-                walk::color_label(&entry.color),
+                walk::label_parts(
+                    &entry.color,
+                    entry.reason.as_deref(),
+                    entry.detail.as_deref()
+                ),
                 entry.selector,
             );
             // The teaching refusal, indented beneath the row it explains.
-            if let Some(teaching) = walk::color_teaching(&entry.color, &entry.selector) {
+            if let Some(teaching) = &entry.teaching {
                 let _ = writeln!(out, "      {teaching}");
             }
         }
     }
     let _ = writeln!(out, "revs-read:");
-    for cite in &report.revs_read {
+    for cite in &listing.revs_read {
         let _ = writeln!(out, "  {} @ {}", cite.path, cite.doc_rev);
     }
     out
@@ -452,9 +699,9 @@ fn render_human(report: &WalkReport) -> String {
 
 /// The `--json` shape: the workspace plus the walk object (direction, root, depth bound,
 /// entries, rev citations). Colors split into a stable `color`/`reason` pair plus the reason's
-/// `detail`, so a machine reader sees exactly what [`walk::color_label`] renders for a human.
-fn to_json(workspace: &Path, report: &WalkReport) -> Value {
-    let entries: Vec<Value> = report
+/// `detail`, so a machine reader sees exactly what the human render composes.
+fn to_json(workspace: &Path, listing: &Listing) -> Value {
+    let entries: Vec<Value> = listing
         .entries
         .iter()
         .map(|entry| {
@@ -462,15 +709,15 @@ fn to_json(workspace: &Path, report: &WalkReport) -> Value {
                 "depth": entry.depth,
                 "selector": entry.selector,
                 "rev": entry.rev,
-                "color": walk::color_tone(&entry.color),
-                "reason": walk::color_reason(&entry.color),
-                "detail": walk::color_detail(&entry.color),
+                "color": entry.color,
+                "reason": entry.reason,
+                "detail": entry.detail,
                 // `null` for every color that teaches nothing, so the field never invents advice.
-                "teaching": walk::color_teaching(&entry.color, &entry.selector),
+                "teaching": entry.teaching,
             })
         })
         .collect();
-    let revs_read: Vec<Value> = report
+    let revs_read: Vec<Value> = listing
         .revs_read
         .iter()
         .map(|cite| json!({ "path": cite.path, "doc_rev": cite.doc_rev }))
@@ -478,9 +725,9 @@ fn to_json(workspace: &Path, report: &WalkReport) -> Value {
     json!({
         "workspace": workspace.display().to_string(),
         "walk": {
-            "direction": report.direction.label(),
-            "root": report.root,
-            "depth_bound": report.depth_bound,
+            "direction": listing.direction,
+            "root": listing.root,
+            "depth_bound": listing.depth_bound,
             "entries": entries,
             "revs_read": revs_read,
         }
@@ -529,6 +776,88 @@ mod tests {
         }
     }
 
+    /// The § A.10 body the daemon would serve for `report` — projected through
+    /// the same `color_*` functions `registry::walk_op` applies.
+    fn wire_body(report: &WalkReport, excluded: &[&str]) -> Value {
+        let entries: Vec<Value> = report
+            .entries
+            .iter()
+            .map(|entry| {
+                let mut row = json!({
+                    "depth": entry.depth,
+                    "selector": entry.selector,
+                    "color": walk::color_tone(&entry.color),
+                });
+                if let Some(rev) = &entry.rev {
+                    row["rev"] = json!(rev);
+                }
+                if let Some(reason) = walk::color_reason(&entry.color) {
+                    row["reason"] = json!(reason);
+                }
+                if let Some(detail) = walk::color_detail(&entry.color) {
+                    row["detail"] = json!(detail);
+                }
+                if let Some(teaching) = walk::color_teaching(&entry.color, &entry.selector) {
+                    row["teaching"] = json!(teaching);
+                }
+                row
+            })
+            .collect();
+        let mut body = json!({
+            "direction": report.direction.label(),
+            "page": report.root,
+            "entries": entries,
+            "revs_read": report.revs_read.iter().map(|c| json!({"path": c.path, "doc_rev": c.doc_rev})).collect::<Vec<_>>(),
+        });
+        if let Some(bound) = report.depth_bound {
+            body["depth_bound"] = json!(bound);
+        }
+        if !excluded.is_empty() {
+            body["excluded"] = json!(excluded);
+        }
+        body
+    }
+
+    /// The two lanes land in one listing: the wire body projected the way the
+    /// daemon projects it decodes to exactly the in-process projection — rows,
+    /// citations, bound — so the renderers below cannot tell the lanes apart.
+    #[test]
+    fn wire_and_in_process_listings_agree() {
+        let mut r = report();
+        r.direction = Direction::Down;
+        r.depth_bound = Some(1);
+        r.entries[1].color = Color::Red(RedReason::Drifted);
+        r.entries.push(WalkEntry {
+            selector: "ghost:z.md".to_string(),
+            rev: None,
+            color: Color::Grey(GreyReason::Unmounted {
+                root: addr::MountName::parse("ghost").expect("a canonical root name"),
+            }),
+            depth: 1,
+        });
+        let from_report = Listing::from_report(&r);
+        let from_wire = Listing::from_wire(&wire_body(&r, &[])).expect("the wire shape decodes");
+        assert_eq!(from_wire, from_report);
+        assert_eq!(render_human(&from_wire), render_human(&from_report));
+        assert_eq!(
+            to_json(Path::new("/ws"), &from_wire),
+            to_json(Path::new("/ws"), &from_report)
+        );
+        // The down walk's population rides the wire only; the in-process lane
+        // voices its own enumeration and carries none here.
+        let with_excluded =
+            Listing::from_wire(&wire_body(&r, &["bulk/vendored.md"])).expect("decodes");
+        assert_eq!(with_excluded.excluded, vec!["bulk/vendored.md".to_string()]);
+    }
+
+    /// A body that is not the § A.10 shape decodes to nothing — the caller
+    /// degrades rather than render a guess.
+    #[test]
+    fn a_foreign_body_does_not_decode() {
+        assert!(Listing::from_wire(&json!({"files": {}})).is_none());
+        assert!(Listing::from_wire(&json!({"direction": "up", "page": "a.md"})).is_none());
+    }
+
     /// The human render is byte-expected: header, depth-tagged entries with color and rev, then
     /// the rev citations.
     #[test]
@@ -542,7 +871,7 @@ revs-read:
   b.md @ bbbbbbbbbbbbbbbb
   c.md @ cccccccccccccccc
 ";
-        assert_eq!(render_human(&report()), expected);
+        assert_eq!(render_human(&Listing::from_report(&report())), expected);
     }
 
     /// A depth bound renders in the header; a grey entry carrying no rev prints `rev=-` and the
@@ -568,7 +897,7 @@ walk down a.md (depth <= 1)
 revs-read:
   a.md @ aaaaaaaaaaaaaaaa
 ";
-        assert_eq!(render_human(&r), expected);
+        assert_eq!(render_human(&Listing::from_report(&r)), expected);
     }
 
     /// An empty walk renders `(nothing)` and still cites the root rev.
@@ -586,7 +915,7 @@ walk up a.md
 revs-read:
   a.md @ aaaaaaaaaaaaaaaa
 ";
-        assert_eq!(render_human(&r), expected);
+        assert_eq!(render_human(&Listing::from_report(&r)), expected);
     }
 
     /// `--json` carries the split color/reason and the depth-tagged entries.
@@ -594,7 +923,7 @@ revs-read:
     fn json_shape_splits_color_and_reason() {
         let mut r = report();
         r.entries[1].color = Color::Red(RedReason::Drifted);
-        let value = to_json(Path::new("/ws"), &r);
+        let value = to_json(Path::new("/ws"), &Listing::from_report(&r));
         let entries = value["walk"]["entries"].as_array().unwrap();
         assert_eq!(entries[0]["color"], json!("green"));
         assert_eq!(entries[0]["reason"], Value::Null);

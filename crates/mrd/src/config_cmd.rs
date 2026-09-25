@@ -29,7 +29,7 @@
 //! | daemon site | serves |
 //! |---|---|
 //! | `registry/src/mounts.rs::serve` | the `mounts` op |
-//! | `wire-serve/src/mount_corpus.rs::load_mounts_where` | `walk` (`registry/src/walk_op.rs`), `sql` (`registry/src/sql_op.rs`) |
+//! | `wire-serve/src/mount_corpus.rs::load_mounts_where_from` | `walk` (`registry/src/walk_op.rs`), `sql` (`registry/src/sql_op.rs`) |
 //! | `wire-serve/src/positions.rs::machine_mounts` | cross-root link/position translation on the read plane |
 //! | `wire-serve/src/write.rs::machine_mount_table` | the pin door and the write plane |
 //!

@@ -9,7 +9,7 @@
 //! `mrd init` and `mrd unregister` stay legitimate outside all of them.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 use std::time::Instant;
 
 mod common;
@@ -62,11 +62,9 @@ impl Sandbox {
     }
 
     fn run_in(&self, cwd: &Path, args: &[&str]) -> Output {
-        Command::new(mrd_bin())
+        common::mrd_command(&self.home, &self.cache_home)
             .args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .env_remove("MERIDIAN_WORKSPACE")
             .env_remove("MERIDIAN_CONFIG")

@@ -38,6 +38,20 @@ pub struct WorkspaceEngine {
     pub leaves: BTreeMap<PathBuf, [u8; 32]>,
 }
 
+/// The resident engine IS a mounted root's served projection when a pin or
+/// link plane names that root (`wire_serve::mount_corpus`): the daemon hands
+/// its own warm corpus to the colour computer instead of rebuilding the root
+/// from disk per call.
+impl wire_serve::mount_corpus::ServedCorpus for WorkspaceEngine {
+    fn docs(&self) -> &model::Docs {
+        &self.docs
+    }
+
+    fn unserved(&self) -> &BTreeMap<String, String> {
+        &self.unserved
+    }
+}
+
 /// Whether `warm_or_build` reused or rebuilt. `Reused` proves zero parses
 /// (`build_corpus` is rebuild-only). In-process evidence; not on the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
