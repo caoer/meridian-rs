@@ -458,6 +458,8 @@ Frontmatter-plane write, dry (the `fm_key` node is the full key line: span `[4,1
 
 `resolve` is **best-effort app-compatible walking**, two-stage: `parseLinktext` → stage 1 `getFirstLinkpathDest(linkpath, from)` (basename index, frontmatter aliases, case-insensitive, source-relative shortest-unambiguous, unresolved first-class) → stage 2 subpath walk (case-insensitive · first-match-wins on duplicates, silent · strictly-deeper-level · anywhere-after · generation-skipping). These properties are the **behavior spec**, a one-way compatibility floor (everything the engine mints and emits walks in the app), not two-way parity. The ruled grammar wins: an input outside it (a `_`-bearing anchor, §2.4) refuses `bad_request`, conforming, no deviation to ledger. The `obsidian-compat@1.12.7` pack (§13.4) pins the app's walk against version drift beside the six-probe walk law.
 
+**A pick-rule change bumps `model::RESOLVE_REV`.** The sql drawer stores `link.dest_path` per file, pinned to that file's fingerprint, so a change to stage 1's candidate or pick rule (`pick_source_relative`) changes derived rows at fingerprints that never advance. `RESOLVE_REV` sits beside the pick and rides the drawer's version segment (`<ver>-<salt>-r<RESOLVE_REV>`), so bumping it cold-starts every drawer on the next open instead of serving the old pick.
+
 **The response type has no rev field**: the mint partition as a type-level fact.
 
 ```json

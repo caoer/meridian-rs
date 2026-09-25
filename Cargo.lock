@@ -517,6 +517,7 @@ name = "cache"
 version = "1.2.0"
 dependencies = [
  "libc",
+ "model",
  "serde",
  "serde_json",
  "sha2",

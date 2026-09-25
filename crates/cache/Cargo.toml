@@ -18,6 +18,10 @@ serde_json = { workspace = true }
 # internal/cache/location.go). Added to [workspace.dependencies] under the
 # cargo-root-toml mutex.
 sha2 = { workspace = true }
+# `model::RESOLVE_REV` rides the drawer's version segment, so a resolver change
+# cold-starts every drawer by rule (wire-contract §4.5). model depends only on
+# syntax/addr/blake3, never back on this crate.
+model = { workspace = true }
 # Per-drawer advisory flock (m3): flock(2) has no std wrapper. libc is already a
 # graph-wide transitive dep (MIT OR Apache-2.0, passes cargo deny); a direct edge
 # here adds no new crate to the graph. Unix-only crate by design (like the

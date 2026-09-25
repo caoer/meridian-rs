@@ -4,7 +4,7 @@
 //! four concerns and nothing else:
 //!
 //! 1. **Addressing** — [`cache_root`], [`drawer_key`], [`drawer_dir`] map a canonical
-//!    workspace path to `<cache-root>/<sha256(path)[:16]>/<ver>-<salt>/`.
+//!    workspace path to `<cache-root>/<sha256(path)[:16]>/<ver>-<salt>-r<resolve-rev>/`.
 //! 2. **Registration** — [`register`] writes the [`Sentinel`] (`registered.json`) with
 //!    crash-safe atomic + create-exclusive semantics; `mkdir` is not the registration
 //!    signal, the sentinel is (amendment C1).
@@ -100,7 +100,14 @@ pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 /// the append delta cannot repair them and only a fresh drawer can (card
 /// `mrd-frontmatter-block-scalar-decoder-gap`). Same class as `s8`/`s9`: no
 /// column moved, the ROWS were wrong.
-pub const SCHEMA_SALT: &str = "s10";
+///
+/// `s11`: `model::pick_source_relative` picks the exact-directory sibling
+/// (#283) — an s10 drawer holds the old pick in `link.dest_path` for every
+/// unchanged source page (home-wiki `inbox/INBOX.md` → `SCHEMA.md` answered a
+/// deep `…/evals/report/SCHEMA.md`) at fingerprints that will never advance
+/// (card `mrd-sql-cache-key`). Same class as `s8`–`s10`. From here a resolver
+/// change bumps `model::RESOLVE_REV`, which rides the segment beside the salt.
+pub const SCHEMA_SALT: &str = "s11";
 
 /// Default GC threshold: a drawer whose last-use is older than this is reapable.
 /// 30 days, mirroring Cargo's registry auto-GC horizon. A path-keyed drawer store
@@ -129,7 +136,7 @@ pub enum CacheDrawer {
     /// Persistent, addressed at `dir`. `workspace` is the canonical path written
     /// into the sentinel on registration.
     Disk {
-        /// The drawer directory, `<cache-root>/<hash>/<ver>-<salt>/`.
+        /// The drawer directory, `<cache-root>/<hash>/<ver>-<salt>-r<resolve-rev>/`.
         dir: PathBuf,
         /// The canonical workspace path this drawer belongs to.
         workspace: PathBuf,
