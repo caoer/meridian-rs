@@ -283,7 +283,8 @@ impl WorkspaceRing {
     /// and hands the classifier that memo's leaf view and root
     /// (`wire_serve::watch::reconcile_delta` — bytes read for MOVERS only).
     /// `force_floor` is the §6.6 fallback clock: once per
-    /// [`DETECT_FLOOR_CADENCE`] the observation is the true floor pass, so a
+    /// [`DETECT_FLOOR_CADENCE`] the backstop ([`crate::Registry::backstop`])
+    /// compares disk to the memo unlocked and hints what the stream lost, so a
     /// silent capture loss is bounded, not forever.
     fn cycle(
         &self,
@@ -295,18 +296,18 @@ impl WorkspaceRing {
         let cache = registry.domain_cache(&ws_root.0);
         // Unlocked pre-observation — quiet cycles stay OFF the flock so
         // writers are never spuriously `workspace_busy` (the module's
-        // standing law). The floor-forced form IS the §6.6 backstop pass.
-        let pre = if force_floor {
-            cache
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .root(ws_root)
-                .map_err(|e| io_error_body(&e))?
-        } else {
+        // standing law). The floor-forced form runs the §6.6 backstop first:
+        // an unlocked stat pass whose findings reach the memo as dirty hints,
+        // so the observation below folds them — the memo is never held
+        // across the corpus walk (merkle-spec §6.7, detect row).
+        if force_floor {
             registry
-                .door_observation(&ws_root.0, &cache, crate::registry::DOOR_COOKIE_TIMEOUT)
-                .map_err(|e| io_error_body(&e))?
-        };
+                .backstop(&ws_root.0, &cache)
+                .map_err(|e| io_error_body(&e))?;
+        }
+        let pre = registry
+            .door_observation(&ws_root.0, &cache, crate::registry::DOOR_COOKIE_TIMEOUT)
+            .map_err(|e| io_error_body(&e))?;
         {
             let mut state = self.state();
             if force_floor {

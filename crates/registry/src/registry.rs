@@ -1882,6 +1882,59 @@ impl Registry {
         }
     }
 
+    /// The push plane's §6.6 backstop (merkle-spec §6.7, detect row): find
+    /// what the event stream silently lost without holding `cache` across the
+    /// I/O. Snapshot under the lock, compare unlocked
+    /// ([`fs::backstop_movers`]), and hand every disagreement to the live feed
+    /// as a dirty hint. The caller's next vouched observation applies them at
+    /// O(dirty). Returns the hint count.
+    ///
+    /// The domain config is re-read unlocked first. A config the memo has not
+    /// observed (a changed `meridian/domain.md`, a legacy `mdfs_config.yaml`
+    /// that is not a member and raises no member event, a load that now
+    /// refuses) is a failed spot check: the feed marks `vouch-failure` and the
+    /// caller's observation becomes the full sweep under the new config.
+    ///
+    /// With no live feed there is nothing to hint into; the caller's
+    /// observation takes its no-feed floor, as the backstop always did.
+    ///
+    /// # Errors
+    /// I/O failure on the unlocked walk.
+    pub(crate) fn backstop(
+        &self,
+        workspace: &Path,
+        cache: &Arc<Mutex<fs::DomainCache>>,
+    ) -> io::Result<usize> {
+        let root = fs::WorkspaceRoot(workspace.to_path_buf());
+        let feed = {
+            let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+            match feeds.get(workspace) {
+                Some(FeedSlot::Live(feed)) => Some(Arc::clone(feed)),
+                _ => None,
+            }
+        };
+        let Some(feed) = feed else {
+            return Ok(0);
+        };
+        let snapshot = cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .backstop_snapshot(&root);
+        // No baseline yet: the caller's observation is the floor anyway.
+        let Some(snapshot) = snapshot else {
+            return Ok(0);
+        };
+        if !fs::domain::Domain::load(&root).is_ok_and(|d| &d == snapshot.domain()) {
+            feed.rescan(feed::RescanCause::VouchFailure);
+            return Ok(0);
+        }
+        let movers = fs::backstop_movers(&root, &snapshot)?;
+        if !movers.is_empty() {
+            feed.note_dirty(movers.iter().map(PathBuf::as_path));
+        }
+        Ok(movers.len())
+    }
+
     /// The §6.7 LATENCY-ONLY quiet check: `true` iff the workspace's feed is
     /// live and reports nothing pending after take-and-apply, the memo's
     /// guard currency is trusted, and the memo's cached served fold equals
@@ -4796,6 +4849,84 @@ mod engine_tests {
     fn rewrite(ws: &Path, rel: &str, bytes: &str) {
         std::thread::sleep(Duration::from_millis(10));
         fs::write(ws.join(rel), bytes).unwrap();
+    }
+
+    /// merkle-spec §6.7 detect row: the push plane's backstop recovers an edit
+    /// the event stream lost, and it does so without a sweep of the shared
+    /// memo — the finding rides in as a dirty hint and the next vouched
+    /// refresh applies it. Before, the backstop was `DomainCache::root` under
+    /// the memo lock: a full sweep every 30 s that parked every reader.
+    #[test]
+    fn the_backstop_recovers_a_lost_edit_without_sweeping_the_memo() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n"), ("sub/b.md", "# B\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        let (before, _) = reg
+            .currency_refresh(&canonical, Duration::from_secs(10))
+            .unwrap();
+        let feed = match reg.feeds.lock().unwrap().get(&canonical) {
+            Some(FeedSlot::Live(feed)) => Arc::clone(feed),
+            _ => panic!("the first refresh starts the feed"),
+        };
+
+        // Lose one edit: let the stream deliver it, then drop the pending set.
+        rewrite(&canonical, "a.md", "# A, and the stream lost this\n");
+        assert_eq!(
+            feed.cookie_barrier(&canonical, Duration::from_secs(10)),
+            feed::CookieOutcome::Seen
+        );
+        let _lost = feed.take();
+
+        let cache = reg.domain_cache(&canonical);
+        let sweeps = cache.lock().unwrap().sweeps();
+        assert_eq!(reg.backstop(&canonical, &cache).unwrap(), 1, "one mover");
+        assert_eq!(
+            cache.lock().unwrap().sweeps(),
+            sweeps,
+            "the backstop never sweeps the shared memo"
+        );
+
+        let (after, vouched) = reg
+            .currency_refresh(&canonical, Duration::from_secs(10))
+            .unwrap();
+        assert!(vouched, "the hint applies through the vouch, not a floor");
+        assert_ne!(after, before, "the lost edit reached the served root");
+        let mut oracle = ::fs::DomainCache::new();
+        assert_eq!(
+            after,
+            oracle
+                .root(&::fs::WorkspaceRoot(canonical.clone()))
+                .unwrap(),
+            "and the served root is the disk's"
+        );
+
+        // A config change no member event carries (the legacy yaml is not
+        // markdown): the backstop's unlocked reload sees it and the next
+        // refresh re-observes under it, dropping the newly ignored member.
+        fs::write(
+            canonical.join("mdfs_config.yaml"),
+            "ignore:\n  - \"sub/**\"\n",
+        )
+        .unwrap();
+        assert_eq!(reg.backstop(&canonical, &cache).unwrap(), 0);
+        let (reconfigured, vouched) = reg
+            .currency_refresh(&canonical, Duration::from_secs(10))
+            .unwrap();
+        assert!(
+            !vouched,
+            "a config the memo has not observed forces the sweep"
+        );
+        let mut oracle = ::fs::DomainCache::new();
+        assert_eq!(
+            reconfigured,
+            oracle
+                .root(&::fs::WorkspaceRoot(canonical.clone()))
+                .unwrap(),
+            "served under the new config"
+        );
+        assert_ne!(reconfigured, after);
     }
 
     /// The whole-corpus pass stays exact: `warm_or_build` is what `fingerprint`
