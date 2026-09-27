@@ -295,18 +295,18 @@ impl WorkspaceRing {
         let cache = registry.domain_cache(&ws_root.0);
         // Unlocked pre-observation — quiet cycles stay OFF the flock so
         // writers are never spuriously `workspace_busy` (the module's
-        // standing law). The floor-forced form IS the §6.6 backstop pass.
-        let pre = if force_floor {
-            cache
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .root(ws_root)
-                .map_err(|e| io_error_body(&e))?
-        } else {
+        // standing law). The floor-forced form runs the §6.6 backstop first:
+        // an unlocked stat pass whose findings reach the memo as dirty hints,
+        // so the observation below folds them — the memo is never held
+        // across the corpus walk (merkle-spec §6.7, detect row).
+        if force_floor {
             registry
-                .door_observation(&ws_root.0, &cache, crate::registry::DOOR_COOKIE_TIMEOUT)
-                .map_err(|e| io_error_body(&e))?
-        };
+                .backstop(&ws_root.0, &cache)
+                .map_err(|e| io_error_body(&e))?;
+        }
+        let pre = registry
+            .door_observation(&ws_root.0, &cache, crate::registry::DOOR_COOKIE_TIMEOUT)
+            .map_err(|e| io_error_body(&e))?;
         {
             let mut state = self.state();
             if force_floor {

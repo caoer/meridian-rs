@@ -1882,6 +1882,53 @@ impl Registry {
         }
     }
 
+    /// The push plane's §6.6 backstop (merkle-spec §6.7, detect row): find
+    /// what the event stream silently lost without holding `cache` across the
+    /// I/O. Snapshot under the lock, compare unlocked
+    /// ([`fs::backstop_movers`]), and hand every disagreement to the live feed
+    /// as a dirty hint. The caller's next vouched observation applies them at
+    /// O(dirty). Returns the hint count.
+    ///
+    /// With no live feed there is nothing to hint into, so this is the true
+    /// floor pass under the lock, as the backstop always was.
+    ///
+    /// # Errors
+    /// I/O failure on the unlocked walk or on the no-feed floor.
+    pub(crate) fn backstop(
+        &self,
+        workspace: &Path,
+        cache: &Arc<Mutex<fs::DomainCache>>,
+    ) -> io::Result<usize> {
+        let root = fs::WorkspaceRoot(workspace.to_path_buf());
+        let feed = {
+            let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+            match feeds.get(workspace) {
+                Some(FeedSlot::Live(feed)) => Some(Arc::clone(feed)),
+                _ => None,
+            }
+        };
+        let Some(feed) = feed else {
+            cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .root(&root)?;
+            return Ok(0);
+        };
+        let snapshot = cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .backstop_snapshot(&root);
+        // No baseline yet: the caller's observation is the floor anyway.
+        let Some(snapshot) = snapshot else {
+            return Ok(0);
+        };
+        let movers = fs::backstop_movers(&root, &snapshot)?;
+        if !movers.is_empty() {
+            feed.note_dirty(movers.iter().map(PathBuf::as_path));
+        }
+        Ok(movers.len())
+    }
+
     /// The §6.7 LATENCY-ONLY quiet check: `true` iff the workspace's feed is
     /// live and reports nothing pending after take-and-apply, the memo's
     /// guard currency is trusted, and the memo's cached served fold equals
@@ -4796,6 +4843,58 @@ mod engine_tests {
     fn rewrite(ws: &Path, rel: &str, bytes: &str) {
         std::thread::sleep(Duration::from_millis(10));
         fs::write(ws.join(rel), bytes).unwrap();
+    }
+
+    /// merkle-spec §6.7 detect row: the push plane's backstop recovers an edit
+    /// the event stream lost, and it does so without a sweep of the shared
+    /// memo — the finding rides in as a dirty hint and the next vouched
+    /// refresh applies it. Before, the backstop was `DomainCache::root` under
+    /// the memo lock: a full sweep every 30 s that parked every reader.
+    #[test]
+    fn the_backstop_recovers_a_lost_edit_without_sweeping_the_memo() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n"), ("sub/b.md", "# B\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        let (before, _) = reg
+            .currency_refresh(&canonical, Duration::from_secs(10))
+            .unwrap();
+        let feed = match reg.feeds.lock().unwrap().get(&canonical) {
+            Some(FeedSlot::Live(feed)) => Arc::clone(feed),
+            _ => panic!("the first refresh starts the feed"),
+        };
+
+        // Lose one edit: let the stream deliver it, then drop the pending set.
+        rewrite(&canonical, "a.md", "# A, and the stream lost this\n");
+        assert_eq!(
+            feed.cookie_barrier(&canonical, Duration::from_secs(10)),
+            feed::CookieOutcome::Seen
+        );
+        let _lost = feed.take();
+
+        let cache = reg.domain_cache(&canonical);
+        let sweeps = cache.lock().unwrap().sweeps();
+        assert_eq!(reg.backstop(&canonical, &cache).unwrap(), 1, "one mover");
+        assert_eq!(
+            cache.lock().unwrap().sweeps(),
+            sweeps,
+            "the backstop never sweeps the shared memo"
+        );
+
+        let (after, vouched) = reg
+            .currency_refresh(&canonical, Duration::from_secs(10))
+            .unwrap();
+        assert!(vouched, "the hint applies through the vouch, not a floor");
+        assert_ne!(after, before, "the lost edit reached the served root");
+        let mut oracle = ::fs::DomainCache::new();
+        assert_eq!(
+            after,
+            oracle
+                .root(&::fs::WorkspaceRoot(canonical.clone()))
+                .unwrap(),
+            "and the served root is the disk's"
+        );
     }
 
     /// The whole-corpus pass stays exact: `warm_or_build` is what `fingerprint`

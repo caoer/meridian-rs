@@ -499,6 +499,63 @@ pub fn hash_domain(root: &WorkspaceRoot, domain: &domain::Domain) -> io::Result<
     Ok(out)
 }
 
+/// [`DomainCache::backstop_snapshot`]'s answer: the observed domain and, per
+/// member, `(recorded key, recorded digest, reread)` — `reread` is true where
+/// the floor would not trust a key match.
+#[derive(Debug, Clone)]
+pub struct BackstopSnapshot {
+    domain: domain::Domain,
+    rows: BTreeMap<PathBuf, (StatKey, [u8; 32], bool)>,
+}
+
+/// The push plane's backstop pass (merkle-spec §6.7, detect row), run with NO
+/// memo lock: walk the snapshot's domain, stat every member, and name each
+/// member whose disk state disagrees with the snapshot — present but not
+/// recorded, recorded but gone, or a moved key (and every row the floor would
+/// not trust on a key match) whose bytes hash to another digest. A member
+/// that vanishes between walk and stat is named too; the feed apply decides
+/// its fate.
+///
+/// The names are dirty HINTS for the feed's additional-feed door (§6.4): a
+/// name only adds work to the next apply, which re-reads it under the memo
+/// lock. Nothing here decides currency or trust.
+///
+/// # Errors
+/// I/O failure walking the root or statting a member.
+pub fn backstop_movers(
+    root: &WorkspaceRoot,
+    snapshot: &BackstopSnapshot,
+) -> io::Result<Vec<PathBuf>> {
+    let on_disk = hash_domain(root, &snapshot.domain)?;
+    let mut movers = Vec::new();
+    for rel in &on_disk {
+        let Some(key) = StatKey::of_path(&root.0.join(rel))? else {
+            movers.push(rel.clone());
+            continue;
+        };
+        let Some((recorded, digest, reread)) = snapshot.rows.get(rel) else {
+            movers.push(rel.clone());
+            continue;
+        };
+        if *recorded == key && !reread {
+            continue;
+        }
+        match fs::read(root.0.join(rel)) {
+            Ok(bytes) if model::leaf_digest(&bytes) == *digest => {}
+            _ => movers.push(rel.clone()),
+        }
+    }
+    // Both sides are sorted: the members recorded but no longer walked.
+    let mut walked = on_disk.iter().peekable();
+    for rel in snapshot.rows.keys() {
+        while walked.next_if(|w| *w < rel).is_some() {}
+        if walked.peek() != Some(&rel) {
+            movers.push(rel.clone());
+        }
+    }
+    Ok(movers)
+}
+
 fn walk_domain_dir(
     abs_dir: &Path,
     rel_dir: &Path,
@@ -1397,6 +1454,26 @@ impl DomainCache {
             .iter()
             .map(|(rel, entry)| (rel.clone(), entry.digest))
             .collect()
+    }
+
+    /// What the push plane's backstop (merkle-spec §6.7, detect row) compares
+    /// disk against: the domain as last observed plus every member's recorded
+    /// key and digest. Each row also records whether the floor would decline
+    /// its key match ([`stable::TrustCtx::trusts`] — a spoiled overlay key, a
+    /// racy-window record). Taken under the memo lock, O(members) memory and
+    /// one watermark write, no walk. `None` before any observation has landed.
+    pub fn backstop_snapshot(&mut self, root: &WorkspaceRoot) -> Option<BackstopSnapshot> {
+        let domain = self.domain_seen.clone()?;
+        let trust = self.trust_context(root);
+        let rows = self
+            .leaves
+            .iter()
+            .map(|(rel, seen)| {
+                let reread = !trust.trusts(&seen.key, seen.seen);
+                (rel.clone(), (seen.key, seen.digest, reread))
+            })
+            .collect();
+        Some(BackstopSnapshot { domain, rows })
     }
 
     /// Own-write overlay, insert/update half (merkle-spec §6.1): the commit
@@ -5492,6 +5569,46 @@ mod domain_cache_tests {
     fn rewrite(root: &WorkspaceRoot, rel: &str, bytes: &[u8]) {
         std::thread::sleep(std::time::Duration::from_millis(10));
         fs::write(root.0.join(rel), bytes).unwrap();
+    }
+
+    /// merkle-spec §6.7 detect row: the push plane's backstop names exactly
+    /// what moved under the memo without the event stream (a changed member,
+    /// a vanished one, a new one), and nothing the memo already holds. An
+    /// own-write overlay carries a spoiled key, so the backstop re-reads it;
+    /// its bytes match the overlaid digest, so it is not named.
+    #[test]
+    fn the_backstop_names_exactly_what_moved_under_the_memo() {
+        let (_tmp, root) = workspace(&[
+            ("a.md", b"# A\n"),
+            ("b.md", b"# B\n"),
+            ("c.md", b"# C\n"),
+            ("sub/d.md", b"# D\n"),
+        ]);
+        let mut memo = DomainCache::new();
+        memo.root(&root).unwrap();
+        rewrite(&root, "sub/d.md", b"# D overlaid\n");
+        assert!(
+            memo.overlay_leaf(
+                std::path::Path::new("sub/d.md"),
+                model::leaf_digest(b"# D overlaid\n")
+            )
+            .unwrap()
+        );
+
+        let snapshot = memo.backstop_snapshot(&root).expect("a baseline landed");
+        rewrite(&root, "a.md", b"# A silently changed\n");
+        fs::remove_file(root.0.join("b.md")).unwrap();
+        fs::write(root.0.join("sub/e.md"), b"# E\n").unwrap();
+
+        let mut movers = super::backstop_movers(&root, &snapshot).unwrap();
+        movers.sort();
+        assert_eq!(
+            movers,
+            ["a.md", "b.md", "sub/e.md"]
+                .map(std::path::PathBuf::from)
+                .to_vec(),
+            "changed, vanished and new members only; c.md and the overlaid d.md are current"
+        );
     }
 
     /// The whole point: the memo's root IS the byte-derived root, at every

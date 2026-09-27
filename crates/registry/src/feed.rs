@@ -711,7 +711,31 @@ fn hideable_prefix(rel: &Path) -> bool {
 }
 
 fn can_hide_members(rel: &Path, abs: &Path, kind: EventKind) -> bool {
-    hideable_prefix(rel) && (matches!(kind, EventKind::Create(CreateKind::Folder)) || abs.is_dir())
+    hideable_prefix(rel)
+        && !gapless_on_this_backend(kind, abs)
+        && (matches!(kind, EventKind::Create(CreateKind::Folder)) || abs.is_dir())
+}
+
+/// Event kinds that cannot open a capture gap on this platform's watcher
+/// (merkle-spec §6.4 ladder, new-directory row). `FSEvents` watches one
+/// path-prefix stream with no per-directory arm, so a child written into a new
+/// directory arrives as its own event: a directory create hides nothing. A
+/// directory RENAMED in hides its children on every backend (they carry no
+/// events), and a metadata change on a directory can hide or poison them (a
+/// `chmod 000` must still refuse the walk), so every other kind still
+/// collapses — and so does a create the walk could not list (`mkdir -m 000`
+/// raises no metadata event after it). On a busy sessions root, one collapse
+/// per new directory was one full sweep per `mkdir` for every reader.
+#[cfg(target_os = "macos")]
+fn gapless_on_this_backend(kind: EventKind, abs: &Path) -> bool {
+    matches!(kind, EventKind::Create(_)) && (std::fs::read_dir(abs).is_ok() || !abs.exists())
+}
+
+/// inotify arms a new directory only after delivering its create event, so
+/// every hideable kind keeps its collapse.
+#[cfg(not(target_os = "macos"))]
+fn gapless_on_this_backend(_kind: EventKind, _abs: &Path) -> bool {
+    false
 }
 
 /// Parse a sighted cookie's serial. `None` (torn or vanished mid-read) is
@@ -934,21 +958,57 @@ mod tests {
     /// file and a dot-prefixed directory cannot hide members.
     #[test]
     fn a_hideable_directory_collapses_as_missed_event() {
+        use notify::event::{ModifyKind, RenameMode};
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir(root.join("new")).unwrap();
         std::fs::write(root.join("data.json"), "{}\n").unwrap();
         std::fs::create_dir(root.join(".git")).unwrap();
 
+        // A directory renamed in hides its children on every backend.
         let mut s = FeedState::default();
         s.admit(
             Path::new("new"),
             &root.join("new"),
-            EventKind::Create(CreateKind::Folder),
+            EventKind::Modify(ModifyKind::Name(RenameMode::To)),
         );
         assert_eq!(s.doubt, Some(RescanCause::MissedEvent));
         assert_eq!(s.rescans.as_slice(), &[RescanCause::MissedEvent][..]);
         assert!(s.dirty.is_empty());
+
+        // A directory CREATE hides children only where a watch arms per
+        // directory (inotify); FSEvents' prefix stream has no such gap.
+        let mut created = FeedState::default();
+        created.admit(
+            Path::new("new"),
+            &root.join("new"),
+            EventKind::Create(CreateKind::Folder),
+        );
+        if cfg!(target_os = "macos") {
+            assert_eq!(created.doubt, None, "FSEvents: a new directory is no gap");
+        } else {
+            assert_eq!(created.doubt, Some(RescanCause::MissedEvent));
+        }
+
+        // An unlistable new directory poisons the walk: it collapses anywhere.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::create_dir(root.join("shut")).unwrap();
+            std::fs::set_permissions(root.join("shut"), std::fs::Permissions::from_mode(0o000))
+                .unwrap();
+            let listable = std::fs::read_dir(root.join("shut")).is_ok();
+            let mut shut = FeedState::default();
+            shut.admit(
+                Path::new("shut"),
+                &root.join("shut"),
+                EventKind::Create(CreateKind::Folder),
+            );
+            std::fs::set_permissions(root.join("shut"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            if !listable {
+                assert_eq!(shut.doubt, Some(RescanCause::MissedEvent));
+            }
+        }
 
         let mut file = FeedState::default();
         file.admit(
