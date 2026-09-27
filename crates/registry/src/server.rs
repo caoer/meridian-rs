@@ -2110,10 +2110,17 @@ fn mint_fingerprint(
                 scope_bytes: None,
             })
         }),
+        // Scoped: the same §6.4 vouch the read family rides, the scope folded
+        // from the refreshed memo under the same lock (merkle-spec §6.7). An
+        // unvouched live observation here was a full stat sweep per mint,
+        // serialized on the workspace memo — and every agent read mints one.
         Some(path) => {
-            let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
-            let cache = registry.domain_cache(ws);
-            let token = wire_serve::write::scope_token(&ws_root, Some(&cache), Some(&path))?;
+            let (_, _, token) = registry
+                .currency_refresh_with(ws, DOOR_COOKIE_TIMEOUT, |memo| {
+                    wire_serve::write::scope_token_observed(memo, &path)
+                })
+                .map_err(|e| warm_err_to_wire(&e))?;
+            let token = token?;
             Ok(ResponseBody::Root {
                 root: Root(token.unwrap_or_else(|| "absent".to_owned())),
                 seq: 0,
@@ -3455,5 +3462,79 @@ mod socket_placement_tests {
         assert_eq!(stem.len(), 12, "first 12 hex of sha256: {name}");
         assert!(stem.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(name, SOCKET_NAME, "the hash name is never the legacy name");
+    }
+}
+
+/// merkle-spec §6.7, scoped-mint row: `fingerprint {scope}` rides the §6.4
+/// vouch like every other standing currency question. Every agent read and
+/// premise-less put mints one, so a mint that live-observed was a full stat
+/// sweep per call, serialized on the workspace memo — the sessions-root
+/// convoy (63k members, 5–20 s per op under host load).
+#[cfg(test)]
+mod scoped_mint_vouch_tests {
+    use super::mint_fingerprint;
+    use crate::registry::Registry;
+    use crate::state::StateStore;
+    use std::fs::{create_dir_all, write};
+    use std::path::Path;
+    use wire::ResponseBody;
+
+    fn registry_in(home: &Path) -> Registry {
+        let cache_root = home.join("cache");
+        create_dir_all(&cache_root).unwrap();
+        Registry::new(
+            StateStore::new(home.join("state.json")),
+            cache_root,
+            Vec::new(),
+        )
+    }
+
+    fn mint(reg: &Registry, ws: &Path, scope: &str) -> String {
+        match mint_fingerprint(reg, ws, Some(wire::Path(scope.to_owned())), None) {
+            Ok(ResponseBody::Root { root, .. }) => root.0,
+            other => panic!("scoped mint of {scope} answered {other:?}"),
+        }
+    }
+
+    fn sweeps(reg: &Registry, ws: &Path) -> u64 {
+        reg.domain_cache(ws).lock().unwrap().sweeps()
+    }
+
+    #[test]
+    fn a_quiet_scoped_mint_vouches_and_a_foreign_edit_still_moves_it() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = home.path().join("ws");
+        create_dir_all(ws.join("sub")).unwrap();
+        write(ws.join("a.md"), "# A\n").unwrap();
+        write(ws.join("sub/b.md"), "# B\n").unwrap();
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+
+        // Cold: no baseline and no live feed yet — the floor answers once.
+        let cold = mint(&reg, &canonical, "a.md");
+        let after_cold = sweeps(&reg, &canonical);
+        assert_eq!(after_cold, 1, "the cold mint is the one floor pass");
+
+        // Quiet: the feed is live now, so the mints vouch — no sweep. Before
+        // the fix every one of these re-walked the corpus.
+        for _ in 0..5 {
+            assert_eq!(mint(&reg, &canonical, "a.md"), cold);
+        }
+        assert_eq!(
+            sweeps(&reg, &canonical),
+            after_cold,
+            "quiet scoped mints ride the vouch: zero sweeps"
+        );
+
+        // A foreign edit reaches the next mint (through the feed or, on a
+        // named miss, the floor) — currency is kept either way.
+        write(canonical.join("a.md"), "# A moved\n").unwrap();
+        assert_ne!(
+            mint(&reg, &canonical, "a.md"),
+            cold,
+            "the mint is current as of the question"
+        );
+        assert_eq!(mint(&reg, &canonical, "no/such.md"), "absent");
     }
 }

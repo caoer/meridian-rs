@@ -1788,10 +1788,11 @@ impl Registry {
     /// reveal.
     ///
     /// Emitted HERE, at the site that decides, rather than at any one caller:
-    /// this function has three production callers ([`Self::warm_or_build`],
-    /// the prewarm sweep through it, and `sql_op::serve`), and instrumenting
-    /// one of them would undercount by construction. Off, the switch reads no
-    /// clock and this costs nothing.
+    /// this function's production callers ([`Self::warm_or_build`], the
+    /// prewarm sweep through it, `sql_op::serve`, and the scoped mint through
+    /// [`Self::currency_refresh_with`]) all pass through it, and
+    /// instrumenting one of them would undercount by construction. Off, the
+    /// switch reads no clock and this costs nothing.
     ///
     /// # Errors
     /// I/O failure on the floor pass (the vouched path does no I/O).
@@ -1800,6 +1801,23 @@ impl Registry {
         workspace: &Path,
         timeout: Duration,
     ) -> io::Result<(model::MerkleRoot, bool)> {
+        self.currency_refresh_with(workspace, timeout, |_| ())
+            .map(|(root, vouched, ())| (root, vouched))
+    }
+
+    /// [`Self::currency_refresh`], then `then` on the refreshed memo under the
+    /// SAME lock — one memo state answers both, so a scope folded by `then`
+    /// belongs to the returned root (merkle-spec §6.7: the scoped mint). The
+    /// scope fold rides the vouch; it never pays a sweep of its own.
+    ///
+    /// # Errors
+    /// I/O failure on the floor pass (the vouched path does no I/O).
+    pub fn currency_refresh_with<R>(
+        &self,
+        workspace: &Path,
+        timeout: Duration,
+        then: impl FnOnce(&mut fs::DomainCache) -> R,
+    ) -> io::Result<(model::MerkleRoot, bool, R)> {
         // Both arms are timed FROM ENTRY, because the floor's cost includes
         // everything the vouched path also pays (barrier, take-and-apply,
         // memo borrow) plus the sweep — two spans that started anywhere else
@@ -1839,7 +1857,8 @@ impl Registry {
         let trigger = match vouch(cookie, collapse, &mut memo) {
             Ok(root) => {
                 vouched_span.stop();
-                return Ok((root, true));
+                let answer = then(&mut memo);
+                return Ok((root, true, answer));
             }
             Err(trigger) => trigger,
         };
@@ -1853,7 +1872,8 @@ impl Registry {
         match memo.root(&fs::WorkspaceRoot(workspace.to_path_buf())) {
             Ok(root) => {
                 floor_span.stop_as(completed);
-                Ok((root, false))
+                let answer = then(&mut memo);
+                Ok((root, false, answer))
             }
             Err(e) => {
                 floor_span.stop_as(refused);

@@ -4792,23 +4792,37 @@ pub fn scope_token(
     let world = cache.root(root).map_err(|e| io_refusal(e.to_string()))?;
     match scope {
         None => Ok(Some(world.0)),
-        Some(s) => {
-            let scope_str = s.to_string_lossy().into_owned();
-            if s.is_absolute()
-                || s.components()
-                    .any(|c| matches!(c, std::path::Component::ParentDir))
-            {
-                return Err(scope_unresolved(&scope_str));
-            }
-            match cache.scope_token(s) {
-                Ok(fs::ScopeToken::Token(t)) => Ok(Some(t.0)),
-                Ok(fs::ScopeToken::Absent) => Ok(None),
-                Err(fs::ScopeTokenError::Unresolved(r)) => Err(scope_unresolved(&r.path)),
-                Err(fs::ScopeTokenError::NoBaseline) => Err(io_refusal(
-                    "scope mint before any observation — caller-order defect".to_owned(),
-                )),
-            }
-        }
+        Some(s) => scope_token_observed(&mut cache, s),
+    }
+}
+
+/// The §4.7 scoped mint over a memo the caller has ALREADY made current —
+/// the daemon's vouched refresh (`Registry::currency_refresh_with`, which
+/// hands this the memo under the lock it refreshed) or [`scope_token`]'s own
+/// live observation. `None` is lawful absence (§5.6).
+///
+/// # Errors
+/// `scope_unresolved` on an absolute, `..`-bearing or colliding scope;
+/// `io_error` when no observation has landed (a caller-order defect).
+pub fn scope_token_observed(
+    cache: &mut fs::DomainCache,
+    scope: &std::path::Path,
+) -> Result<Option<String>, Box<ErrorBody>> {
+    let scope_str = scope.to_string_lossy().into_owned();
+    if scope.is_absolute()
+        || scope
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(scope_unresolved(&scope_str));
+    }
+    match cache.scope_token(scope) {
+        Ok(fs::ScopeToken::Token(t)) => Ok(Some(t.0)),
+        Ok(fs::ScopeToken::Absent) => Ok(None),
+        Err(fs::ScopeTokenError::Unresolved(r)) => Err(scope_unresolved(&r.path)),
+        Err(fs::ScopeTokenError::NoBaseline) => Err(io_refusal(
+            "scope mint before any observation — caller-order defect".to_owned(),
+        )),
     }
 }
 
