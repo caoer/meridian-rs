@@ -744,11 +744,7 @@ const NEW_DIR_ENUM_CAP: usize = 1024;
 fn new_directory_members(rel: &Path, abs: &Path, kind: EventKind) -> Option<Vec<PathBuf>> {
     use notify::event::ModifyKind;
     if matches!(kind, EventKind::Modify(ModifyKind::Metadata(_))) {
-        return match std::fs::read_dir(abs) {
-            Ok(_) => Some(Vec::new()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Vec::new()),
-            Err(_) => None,
-        };
+        return walkable(abs).then(Vec::new);
     }
     if !matches!(kind, EventKind::Create(CreateKind::Folder)) {
         return None;
@@ -783,6 +779,23 @@ fn new_directory_members(rel: &Path, abs: &Path, kind: EventKind) -> Option<Vec<
         }
     }
     Some(members)
+}
+
+/// Can the domain walk pass through `abs` right now? Listing needs the read
+/// bit and statting a child needs the search bit, so both are probed: a
+/// directory left readable but not searchable (`r--`, or an ACL denying search)
+/// poisons the walk just as `chmod 000` does. A directory already gone hides
+/// nothing; an empty one has no child to stat and poisons nothing.
+#[cfg(target_os = "macos")]
+fn walkable(abs: &Path) -> bool {
+    match std::fs::read_dir(abs) {
+        Ok(mut listing) => match listing.next() {
+            Some(Ok(entry)) => std::fs::symlink_metadata(entry.path()).is_ok(),
+            Some(Err(_)) => false,
+            None => true,
+        },
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    }
 }
 
 /// inotify arms a new directory only after delivering its create event, so a
@@ -1089,6 +1102,33 @@ mod tests {
             assert_eq!(cloned.doubt, Some(RescanCause::MissedEvent));
         }
 
+        let mut file = FeedState::default();
+        file.admit(
+            Path::new("data.json"),
+            &root.join("data.json"),
+            EventKind::Create(CreateKind::File),
+        );
+        assert_eq!(file.doubt, None);
+        assert!(file.dirty.is_empty());
+
+        let mut dot = FeedState::default();
+        dot.admit(
+            Path::new(".git"),
+            &root.join(".git"),
+            EventKind::Create(CreateKind::Folder),
+        );
+        assert_eq!(dot.doubt, None, "dot-prefixed trees cannot hide members");
+    }
+
+    /// A directory the walk cannot pass through poisons it (Law A-3c): a new
+    /// one that cannot be listed, or a metadata change leaving one readable
+    /// but not searchable, collapses on every backend.
+    #[test]
+    fn an_unwalkable_directory_collapses_on_every_backend() {
+        use notify::event::ModifyKind;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
         // An unlistable new directory poisons the walk: it collapses anywhere.
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -1109,22 +1149,35 @@ mod tests {
             }
         }
 
-        let mut file = FeedState::default();
-        file.admit(
-            Path::new("data.json"),
-            &root.join("data.json"),
-            EventKind::Create(CreateKind::File),
-        );
-        assert_eq!(file.doubt, None);
-        assert!(file.dirty.is_empty());
-
-        let mut dot = FeedState::default();
-        dot.admit(
-            Path::new(".git"),
-            &root.join(".git"),
-            EventKind::Create(CreateKind::Folder),
-        );
-        assert_eq!(dot.doubt, None, "dot-prefixed trees cannot hide members");
+        // Readable but not searchable (r--) poisons the walk: it collapses
+        // everywhere, exactly as chmod 000 does.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::create_dir(root.join("listonly")).unwrap();
+            std::fs::write(root.join("listonly/a.md"), "# A\n").unwrap();
+            std::fs::set_permissions(
+                root.join("listonly"),
+                std::fs::Permissions::from_mode(0o444),
+            )
+            .unwrap();
+            let searchable = std::fs::symlink_metadata(root.join("listonly/a.md")).is_ok();
+            let mut listonly = FeedState::default();
+            listonly.admit(
+                Path::new("listonly"),
+                &root.join("listonly"),
+                EventKind::Modify(ModifyKind::Metadata(
+                    notify::event::MetadataKind::Permissions,
+                )),
+            );
+            std::fs::set_permissions(
+                root.join("listonly"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            if !searchable {
+                assert_eq!(listonly.doubt, Some(RescanCause::MissedEvent));
+            }
+        }
     }
 
     /// `Seen` is illegal while a capture-gap doubt is open: the barrier
