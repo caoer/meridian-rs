@@ -4772,9 +4772,10 @@ fn scope_unresolved(scope: &str) -> Box<ErrorBody> {
 }
 
 /// Mint the current §5.4 premise token at `scope` through the write plane's
-/// own cache — the one mint home every premise family accepts (§4.7's scoped
-/// arm serves through this). Observes the domain first (the same currency the
-/// door's own entry pays), then folds the scope. `None` scope mints the root.
+/// own cache, with a live observation of its own — the in-process lane, which
+/// has no feed to vouch with. The daemon's §4.7 scoped arm vouches instead and
+/// folds through [`scope_token_observed`] (merkle-spec §6.7). Observes the
+/// domain first, then folds the scope. `None` scope mints the root.
 ///
 /// # Errors
 /// Wire `io_error` on observation failure; `scope_unresolved` per §5.6.
