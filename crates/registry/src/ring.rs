@@ -283,7 +283,8 @@ impl WorkspaceRing {
     /// and hands the classifier that memo's leaf view and root
     /// (`wire_serve::watch::reconcile_delta` — bytes read for MOVERS only).
     /// `force_floor` is the §6.6 fallback clock: once per
-    /// [`DETECT_FLOOR_CADENCE`] the observation is the true floor pass, so a
+    /// [`DETECT_FLOOR_CADENCE`] the backstop ([`crate::Registry::backstop`])
+    /// compares disk to the memo unlocked and hints what the stream lost, so a
     /// silent capture loss is bounded, not forever.
     fn cycle(
         &self,

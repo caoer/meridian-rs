@@ -1889,11 +1889,17 @@ impl Registry {
     /// as a dirty hint. The caller's next vouched observation applies them at
     /// O(dirty). Returns the hint count.
     ///
-    /// With no live feed there is nothing to hint into, so this is the true
-    /// floor pass under the lock, as the backstop always was.
+    /// The domain config is re-read unlocked first. A config the memo has not
+    /// observed (a changed `meridian/domain.md`, a legacy `mdfs_config.yaml`
+    /// that is not a member and raises no member event, a load that now
+    /// refuses) is a failed spot check: the feed marks `vouch-failure` and the
+    /// caller's observation becomes the full sweep under the new config.
+    ///
+    /// With no live feed there is nothing to hint into; the caller's
+    /// observation takes its no-feed floor, as the backstop always did.
     ///
     /// # Errors
-    /// I/O failure on the unlocked walk or on the no-feed floor.
+    /// I/O failure on the unlocked walk.
     pub(crate) fn backstop(
         &self,
         workspace: &Path,
@@ -1908,10 +1914,6 @@ impl Registry {
             }
         };
         let Some(feed) = feed else {
-            cache
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .root(&root)?;
             return Ok(0);
         };
         let snapshot = cache
@@ -1922,6 +1924,10 @@ impl Registry {
         let Some(snapshot) = snapshot else {
             return Ok(0);
         };
+        if !fs::domain::Domain::load(&root).is_ok_and(|d| &d == snapshot.domain()) {
+            feed.rescan(feed::RescanCause::VouchFailure);
+            return Ok(0);
+        }
         let movers = fs::backstop_movers(&root, &snapshot)?;
         if !movers.is_empty() {
             feed.note_dirty(movers.iter().map(PathBuf::as_path));
@@ -4895,6 +4901,32 @@ mod engine_tests {
                 .unwrap(),
             "and the served root is the disk's"
         );
+
+        // A config change no member event carries (the legacy yaml is not
+        // markdown): the backstop's unlocked reload sees it and the next
+        // refresh re-observes under it, dropping the newly ignored member.
+        fs::write(
+            canonical.join("mdfs_config.yaml"),
+            "ignore:\n  - \"sub/**\"\n",
+        )
+        .unwrap();
+        assert_eq!(reg.backstop(&canonical, &cache).unwrap(), 0);
+        let (reconfigured, vouched) = reg
+            .currency_refresh(&canonical, Duration::from_secs(10))
+            .unwrap();
+        assert!(
+            !vouched,
+            "a config the memo has not observed forces the sweep"
+        );
+        let mut oracle = ::fs::DomainCache::new();
+        assert_eq!(
+            reconfigured,
+            oracle
+                .root(&::fs::WorkspaceRoot(canonical.clone()))
+                .unwrap(),
+            "served under the new config"
+        );
+        assert_ne!(reconfigured, after);
     }
 
     /// The whole-corpus pass stays exact: `warm_or_build` is what `fingerprint`

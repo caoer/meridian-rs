@@ -621,6 +621,12 @@ impl FeedState {
             return;
         }
         if can_hide_members(rel, abs, kind) {
+            if let Some(children) = new_directory_members(rel, abs, kind) {
+                for child in &children {
+                    self.insert(child);
+                }
+                return;
+            }
             self.collapse(RescanCause::MissedEvent);
         }
     }
@@ -711,31 +717,68 @@ fn hideable_prefix(rel: &Path) -> bool {
 }
 
 fn can_hide_members(rel: &Path, abs: &Path, kind: EventKind) -> bool {
-    hideable_prefix(rel)
-        && !gapless_on_this_backend(kind, abs)
-        && (matches!(kind, EventKind::Create(CreateKind::Folder)) || abs.is_dir())
+    hideable_prefix(rel) && (matches!(kind, EventKind::Create(CreateKind::Folder)) || abs.is_dir())
 }
 
-/// Event kinds that cannot open a capture gap on this platform's watcher
-/// (merkle-spec §6.4 ladder, new-directory row). `FSEvents` watches one
-/// path-prefix stream with no per-directory arm, so a child written into a new
-/// directory arrives as its own event: a directory create hides nothing. A
-/// directory RENAMED in hides its children on every backend (they carry no
-/// events), and a metadata change on a directory can hide or poison them (a
-/// `chmod 000` must still refuse the walk), so every other kind still
-/// collapses — and so does a create the walk could not list (`mkdir -m 000`
-/// raises no metadata event after it). On a busy sessions root, one collapse
-/// per new directory was one full sweep per `mkdir` for every reader.
+/// How many entries a new directory may hold for [`new_directory_members`] to
+/// enumerate it rather than collapse. A fresh `mkdir` holds a handful; a
+/// cloned tree past this is cheaper to sweep than to walk in the watcher.
 #[cfg(target_os = "macos")]
-fn gapless_on_this_backend(kind: EventKind, abs: &Path) -> bool {
-    matches!(kind, EventKind::Create(_)) && (std::fs::read_dir(abs).is_ok() || !abs.exists())
+const NEW_DIR_ENUM_CAP: usize = 1024;
+
+/// A new directory's member candidates, named NOW so its create need not
+/// collapse (merkle-spec §6.4 ladder, new-directory row). `FSEvents` watches
+/// one path-prefix stream with no per-directory arm, so a child written after
+/// this enumeration arrives as its own event; the enumeration covers children
+/// that arrived with no event of their own (a cloned tree, `cp -c`). Each is a
+/// hint the apply re-reads. `None` collapses: a kind other than a folder
+/// create (a rename lands a tree whose children raise nothing; a mount), an
+/// unlistable directory (a `chmod 000` or `mkdir -m 000` must still refuse the
+/// walk), or one past [`NEW_DIR_ENUM_CAP`]. On a busy sessions root, one
+/// collapse per `mkdir` was one full sweep for every reader.
+#[cfg(target_os = "macos")]
+fn new_directory_members(rel: &Path, abs: &Path, kind: EventKind) -> Option<Vec<PathBuf>> {
+    if !matches!(kind, EventKind::Create(CreateKind::Folder)) {
+        return None;
+    }
+    let mut members = Vec::new();
+    let mut entries_seen = 0usize;
+    let mut stack = vec![(abs.to_path_buf(), rel.to_path_buf())];
+    while let Some((dir, rel_dir)) = stack.pop() {
+        let listing = match std::fs::read_dir(&dir) {
+            Ok(listing) => listing,
+            // Gone before we looked: it hid nothing.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && dir == abs => {
+                return Some(members);
+            }
+            Err(_) => return None,
+        };
+        for entry in listing {
+            let entry = entry.ok()?;
+            entries_seen += 1;
+            if entries_seen > NEW_DIR_ENUM_CAP {
+                return None;
+            }
+            let child = rel_dir.join(entry.file_name());
+            let file_type = entry.file_type().ok()?;
+            if file_type.is_dir() {
+                if hideable_prefix(&child) {
+                    stack.push((entry.path(), child));
+                }
+            } else if file_type.is_file() && member_candidate(&child) {
+                members.push(child);
+            }
+        }
+    }
+    Some(members)
 }
 
-/// inotify arms a new directory only after delivering its create event, so
-/// every hideable kind keeps its collapse.
+/// inotify arms a new directory only after delivering its create event, so a
+/// child can land before the arm and an enumeration here would race it: every
+/// hideable path collapses.
 #[cfg(not(target_os = "macos"))]
-fn gapless_on_this_backend(_kind: EventKind, _abs: &Path) -> bool {
-    false
+fn new_directory_members(_rel: &Path, _abs: &Path, _kind: EventKind) -> Option<Vec<PathBuf>> {
+    None
 }
 
 /// Parse a sighted cookie's serial. `None` (torn or vanished mid-read) is
@@ -988,6 +1031,32 @@ mod tests {
             assert_eq!(created.doubt, None, "FSEvents: a new directory is no gap");
         } else {
             assert_eq!(created.doubt, Some(RescanCause::MissedEvent));
+        }
+
+        // A tree that arrived whole (a clone) hints its members instead.
+        std::fs::create_dir_all(root.join("cloned/sub/.hidden")).unwrap();
+        std::fs::write(root.join("cloned/a.md"), "# A\n").unwrap();
+        std::fs::write(root.join("cloned/sub/b.md"), "# B\n").unwrap();
+        std::fs::write(root.join("cloned/sub/x.json"), "{}\n").unwrap();
+        std::fs::write(root.join("cloned/sub/.hidden/c.md"), "# C\n").unwrap();
+        let mut cloned = FeedState::default();
+        cloned.admit(
+            Path::new("cloned"),
+            &root.join("cloned"),
+            EventKind::Create(CreateKind::Folder),
+        );
+        if cfg!(target_os = "macos") {
+            assert_eq!(cloned.doubt, None);
+            assert_eq!(
+                cloned.dirty.iter().cloned().collect::<Vec<_>>(),
+                vec![
+                    PathBuf::from("cloned/a.md"),
+                    PathBuf::from("cloned/sub/b.md")
+                ],
+                "member candidates only: no json, nothing under a dot directory"
+            );
+        } else {
+            assert_eq!(cloned.doubt, Some(RescanCause::MissedEvent));
         }
 
         // An unlistable new directory poisons the walk: it collapses anywhere.

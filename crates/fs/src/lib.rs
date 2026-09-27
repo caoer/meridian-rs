@@ -508,6 +508,15 @@ pub struct BackstopSnapshot {
     rows: BTreeMap<PathBuf, (StatKey, [u8; 32], bool)>,
 }
 
+impl BackstopSnapshot {
+    /// The domain the memo last observed under — what the backstop walks, and
+    /// what a fresh config load must equal for the walk to mean anything.
+    #[must_use]
+    pub fn domain(&self) -> &domain::Domain {
+        &self.domain
+    }
+}
+
 /// The push plane's backstop pass (merkle-spec §6.7, detect row), run with NO
 /// memo lock: walk the snapshot's domain, stat every member, and name each
 /// member whose disk state disagrees with the snapshot — present but not
