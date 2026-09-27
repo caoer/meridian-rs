@@ -731,13 +731,21 @@ const NEW_DIR_ENUM_CAP: usize = 1024;
 /// one path-prefix stream with no per-directory arm, so a child written after
 /// this enumeration arrives as its own event; the enumeration covers children
 /// that arrived with no event of their own (a cloned tree, `cp -c`). Each is a
-/// hint the apply re-reads. `None` collapses: a kind other than a folder
-/// create (a rename lands a tree whose children raise nothing; a mount), an
-/// unlistable directory (a `chmod 000` or `mkdir -m 000` must still refuse the
-/// walk), or one past [`NEW_DIR_ENUM_CAP`]. On a busy sessions root, one
-/// collapse per `mkdir` was one full sweep for every reader.
+/// hint the apply re-reads. A metadata change on a directory (mode, owner,
+/// xattr — `FSEvents` coalesces them onto nearly every new directory here)
+/// hides nothing while the directory stays listable: the stream reports its
+/// children whatever the mode, so it names no members. `None` collapses: a
+/// kind other than these (a rename lands a tree whose children raise nothing;
+/// a mount), an unlistable directory (a `chmod 000` or `mkdir -m 000` must
+/// still refuse the walk), or one past [`NEW_DIR_ENUM_CAP`]. On a busy
+/// sessions root, one collapse per `mkdir` was one full sweep for every
+/// reader.
 #[cfg(target_os = "macos")]
 fn new_directory_members(rel: &Path, abs: &Path, kind: EventKind) -> Option<Vec<PathBuf>> {
+    use notify::event::ModifyKind;
+    if matches!(kind, EventKind::Modify(ModifyKind::Metadata(_))) {
+        return walkable(abs).then(Vec::new);
+    }
     if !matches!(kind, EventKind::Create(CreateKind::Folder)) {
         return None;
     }
@@ -773,9 +781,27 @@ fn new_directory_members(rel: &Path, abs: &Path, kind: EventKind) -> Option<Vec<
     Some(members)
 }
 
+/// Can the domain walk pass through `abs` right now? Listing needs the read
+/// bit and statting a child needs the search bit, so both are probed: a
+/// directory left readable but not searchable (`r--`, or an ACL denying search)
+/// poisons the walk just as `chmod 000` does. A directory already gone hides
+/// nothing; an empty one has no child to stat and poisons nothing.
+#[cfg(target_os = "macos")]
+fn walkable(abs: &Path) -> bool {
+    match std::fs::read_dir(abs) {
+        Ok(mut listing) => match listing.next() {
+            Some(Ok(entry)) => std::fs::symlink_metadata(entry.path()).is_ok(),
+            Some(Err(_)) => false,
+            None => true,
+        },
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
 /// inotify arms a new directory only after delivering its create event, so a
-/// child can land before the arm and an enumeration here would race it: every
-/// hideable path collapses.
+/// child can land before the arm and an enumeration here would race it; and it
+/// cannot arm a directory it cannot read, so a mode change can reveal children
+/// that raised nothing. Every hideable path collapses.
 #[cfg(not(target_os = "macos"))]
 fn new_directory_members(_rel: &Path, _abs: &Path, _kind: EventKind) -> Option<Vec<PathBuf>> {
     None
@@ -1045,6 +1071,23 @@ mod tests {
             &root.join("cloned"),
             EventKind::Create(CreateKind::Folder),
         );
+        // A metadata change on a listable directory (FSEvents coalesces mode
+        // and xattr flags onto new directories) hides nothing there.
+        let mut meta = FeedState::default();
+        meta.admit(
+            Path::new("new"),
+            &root.join("new"),
+            EventKind::Modify(ModifyKind::Metadata(notify::event::MetadataKind::Any)),
+        );
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                meta.doubt, None,
+                "FSEvents: a listable directory's metadata is no gap"
+            );
+        } else {
+            assert_eq!(meta.doubt, Some(RescanCause::MissedEvent));
+        }
+
         if cfg!(target_os = "macos") {
             assert_eq!(cloned.doubt, None);
             assert_eq!(
@@ -1058,6 +1101,33 @@ mod tests {
         } else {
             assert_eq!(cloned.doubt, Some(RescanCause::MissedEvent));
         }
+
+        let mut file = FeedState::default();
+        file.admit(
+            Path::new("data.json"),
+            &root.join("data.json"),
+            EventKind::Create(CreateKind::File),
+        );
+        assert_eq!(file.doubt, None);
+        assert!(file.dirty.is_empty());
+
+        let mut dot = FeedState::default();
+        dot.admit(
+            Path::new(".git"),
+            &root.join(".git"),
+            EventKind::Create(CreateKind::Folder),
+        );
+        assert_eq!(dot.doubt, None, "dot-prefixed trees cannot hide members");
+    }
+
+    /// A directory the walk cannot pass through poisons it (Law A-3c): a new
+    /// one that cannot be listed, or a metadata change leaving one readable
+    /// but not searchable, collapses on every backend.
+    #[test]
+    fn an_unwalkable_directory_collapses_on_every_backend() {
+        use notify::event::ModifyKind;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
 
         // An unlistable new directory poisons the walk: it collapses anywhere.
         {
@@ -1079,22 +1149,35 @@ mod tests {
             }
         }
 
-        let mut file = FeedState::default();
-        file.admit(
-            Path::new("data.json"),
-            &root.join("data.json"),
-            EventKind::Create(CreateKind::File),
-        );
-        assert_eq!(file.doubt, None);
-        assert!(file.dirty.is_empty());
-
-        let mut dot = FeedState::default();
-        dot.admit(
-            Path::new(".git"),
-            &root.join(".git"),
-            EventKind::Create(CreateKind::Folder),
-        );
-        assert_eq!(dot.doubt, None, "dot-prefixed trees cannot hide members");
+        // Readable but not searchable (r--) poisons the walk: it collapses
+        // everywhere, exactly as chmod 000 does.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::create_dir(root.join("listonly")).unwrap();
+            std::fs::write(root.join("listonly/a.md"), "# A\n").unwrap();
+            std::fs::set_permissions(
+                root.join("listonly"),
+                std::fs::Permissions::from_mode(0o444),
+            )
+            .unwrap();
+            let searchable = std::fs::symlink_metadata(root.join("listonly/a.md")).is_ok();
+            let mut listonly = FeedState::default();
+            listonly.admit(
+                Path::new("listonly"),
+                &root.join("listonly"),
+                EventKind::Modify(ModifyKind::Metadata(
+                    notify::event::MetadataKind::Permissions,
+                )),
+            );
+            std::fs::set_permissions(
+                root.join("listonly"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            if !searchable {
+                assert_eq!(listonly.doubt, Some(RescanCause::MissedEvent));
+            }
+        }
     }
 
     /// `Seen` is illegal while a capture-gap doubt is open: the barrier
