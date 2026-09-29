@@ -2017,8 +2017,10 @@ fn script_token_count_api(builder: &mut GlobalsBuilder) {
 }
 
 /// Allocate a JSON value as its natural Starlark value — dicts, lists,
-/// strings, ints, bools, None. Numbers outside `i64` fall back to their
-/// string form rather than inventing a float the row never carried.
+/// strings, ints, floats, bools, None: the inverse of [`json_of_value`]. A
+/// JSON float is a Starlark float, whole ones (`12.0`) included; an integer
+/// beyond `i64` keeps its string form rather than being rounded into a float
+/// it never was.
 fn alloc_json<'v>(heap: Heap<'v>, value: &serde_json::Value) -> Value<'v> {
     match value {
         serde_json::Value::Null => Value::new_none(),
@@ -2026,6 +2028,8 @@ fn alloc_json<'v>(heap: Heap<'v>, value: &serde_json::Value) -> Value<'v> {
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 heap.alloc(i)
+            } else if let (true, Some(f)) = (n.is_f64(), n.as_f64()) {
+                heap.alloc(f)
             } else {
                 heap.alloc(n.to_string())
             }
@@ -4060,6 +4064,41 @@ declare(on = \"PreToolUse\")
                 fault.reason
             );
         }
+    }
+
+    /// A fire's input binds as real starlark values (wire contract § `input`):
+    /// a JSON float is a starlark float at every value, whole ones included,
+    /// an int stays an int, and only an integer beyond `i64` keeps its string
+    /// form. A float that arrived as a string made `12.3 + 1` a type fault and
+    /// `"%.2f" % cost` a format fault on the hook plane.
+    #[test]
+    fn a_fire_input_float_binds_as_a_starlark_float() {
+        let source = "def run(event):\n    \
+                      return [type(event[\"f\"]), event[\"f\"] + 1, type(event[\"w\"]), \
+                      type(event[\"i\"]), type(event[\"big\"])]\n";
+        let loaded = load_block(source, None, &probe_ctx(), EvalLimits::default());
+        assert!(loaded.fault.is_none(), "{:?}", loaded.fault);
+        let module = loaded.module.expect("a clean load freezes");
+        let host = ProbeHost {
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+        let input: serde_json::Value =
+            serde_json::from_str(r#"{"f": 12.5, "w": 12.0, "i": 12, "big": 18446744073709551615}"#)
+                .expect("valid JSON");
+        let fired = fire_entry(
+            &module,
+            "run",
+            &input,
+            &probe_ctx(),
+            &host,
+            EvalLimits::default(),
+        )
+        .expect("`run` exists");
+        assert!(fired.fault.is_none(), "{:?}", fired.fault);
+        assert_eq!(
+            fired.value,
+            Some(serde_json::json!(["float", 13.5, "float", "int", "string"]))
+        );
     }
 
     /// `declare()` and `exec()` are the LOAD phase's — A1's mirror gate.
