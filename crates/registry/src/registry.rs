@@ -2593,6 +2593,14 @@ impl Registry {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&key);
+        // The sql handle leaves too: `mrd unregister` removes the drawer, and a
+        // handle kept here would serve the removed file's rows to every later
+        // `sql` call instead of the cold build the removal asked for.
+        let sql_store = self
+            .sql_stores
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
         // The §6.5 checkpoint is derived state OF the registration: it ends
         // here too, or a re-register would adopt an index nothing has covered
         // the gap for.
@@ -2613,6 +2621,7 @@ impl Registry {
         // Kernel-stream release (the feed's Drop) runs outside every map lock.
         drop(feed);
         drop(cache);
+        drop(sql_store);
         removed
     }
 
@@ -4382,6 +4391,38 @@ mod engine_tests {
         assert!(
             !reg.note_dirty(&canonical, &[PathBuf::from("a.md")]),
             "a hint for an unregistered workspace is refused"
+        );
+    }
+
+    /// `mrd unregister` removes the drawer, so the daemon's resident sql
+    /// handle must leave with the entry: a re-registered workspace opens a
+    /// fresh `sql.duckdb`, never the removed file's handle and its rows.
+    #[test]
+    fn unregister_drops_the_resident_sql_handle() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        let before = reg.sql_store(&canonical).expect("the sql cache opens");
+
+        assert!(reg.unregister(&canonical));
+        assert!(
+            !reg.sql_stores.lock().unwrap().contains_key(&canonical),
+            "the sql handle leaves with the registration"
+        );
+
+        let drawer = cache::drawer_dir(&reg.cache_root, &canonical);
+        fs::remove_dir_all(&drawer).unwrap();
+        reg.register(&canonical);
+        let after = reg.sql_store(&canonical).expect("a fresh sql cache opens");
+        assert!(
+            !Arc::ptr_eq(&before, &after),
+            "re-registration opens a new handle, not the removed file's"
+        );
+        assert!(
+            drawer.join(view::store::SQL_CACHE_FILENAME).exists(),
+            "the fresh handle's file is back in the drawer"
         );
     }
 

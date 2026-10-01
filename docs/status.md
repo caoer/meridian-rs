@@ -86,7 +86,11 @@ mrd init [PATH] [--name NAME]
  shadowed descendant drawers
 mrd unregister [PATH] drop the daemon entry (if a daemon answers) + its drawers.
  This includes the current projection drawer and the
- version-independent parsed-document drawer.
+ version-independent parsed-document drawer. The daemon
+ drops its resident `sql.duckdb` handle with the entry,
+ so the next `mrd sql` cold-builds a fresh file instead
+ of serving the removed one (the repair route the held
+ `--rebuild` refusal names).
  A PATH whose directory is already gone is matched as
  given — `Registry::unregister`'s own fallback key, and
  the stale-entry class a sweep leaves behind. A vanished
