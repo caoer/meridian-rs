@@ -18,6 +18,7 @@
 //! `results/sql-duckdb-append-cache-design.md` § Ruling interaction).
 
 mod base;
+mod fm_strict;
 /// The pinned `DuckDB`, re-exported so a consumer converting result cells
 /// (registry `mw_sql`) speaks THIS crate's engine version, never a second pin.
 pub use duckdb;
@@ -341,6 +342,7 @@ pub(crate) struct Rows {
     pub(crate) link: Vec<Vec<Value>>,
     pub(crate) tag: Vec<Vec<Value>>,
     pub(crate) frontmatter_tag: Vec<Vec<Value>>,
+    pub(crate) frontmatter_fault: Vec<Vec<Value>>,
     pub(crate) task: Vec<Vec<Value>>,
     pub(crate) base: Vec<Vec<Value>>,
     pub(crate) base_view: Vec<Vec<Value>>,
@@ -685,6 +687,19 @@ fn emit_frontmatter(
     // the flat parse keeps only each key line's remainder and a block
     // sequence puts every item on the lines after it.
     let block = doc.raw.get(node.span.clone()).unwrap_or_default();
+    // The strict-YAML verdict on the same block: the one fact the lenient
+    // scanner's values cannot carry (`fm_strict`).
+    let open_line = doc
+        .raw
+        .get(..node.span.start)
+        .map_or(0, |head| head.matches('\n').count());
+    if let Some(fault) = fm_strict::judge(block, u64c(open_line) + 1) {
+        rows.frontmatter_fault.push(vec![
+            Value::Text(path.to_string()),
+            Value::UBigInt(fault.line),
+            Value::Text(fault.error),
+        ]);
+    }
     for (ord, (key, _)) in map.0.iter().enumerate() {
         // A map key resolves by construction — `model::parse_frontmatter` and
         // the `fm_key` resolver scan the same block with the same column-0,
@@ -987,6 +1002,7 @@ impl Rows {
         append_rows(conn, "link", &self.link)?;
         append_rows(conn, "tag", &self.tag)?;
         append_rows(conn, "frontmatter_tag", &self.frontmatter_tag)?;
+        append_rows(conn, "frontmatter_fault", &self.frontmatter_fault)?;
         append_rows(conn, "task", &self.task)?;
         // The base relations, parents before children (the FK order every
         // other table already loads in).
@@ -1303,6 +1319,11 @@ mod tests {
         )?;
         insert_rows(
             conn,
+            "INSERT INTO frontmatter_fault (path, line, error) VALUES (?, ?, ?)",
+            &rows.frontmatter_fault,
+        )?;
+        insert_rows(
+            conn,
             "INSERT INTO task (path, seq, checked, depth, section_seq, hpath, text, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             &rows.task,
         )?;
@@ -1332,7 +1353,7 @@ mod tests {
     /// generated, never stored, so it is derived equal by construction). The
     /// hpath columns are TEXT (the JSON machine address — injective and
     /// self-delimiting), so they digest verbatim.
-    const LANE_DIGESTS: [(&str, &str); 11] = [
+    const LANE_DIGESTS: [(&str, &str); 12] = [
         (
             "doc",
             "SELECT coalesce(md5(string_agg(path || '|' || file_rev || '|' || line_count::VARCHAR || '|' || bytes::VARCHAR, chr(10) ORDER BY path)), 'EMPTY') FROM doc",
@@ -1356,6 +1377,10 @@ mod tests {
         (
             "frontmatter_tag",
             "SELECT coalesce(md5(string_agg(path || '|' || seq::VARCHAR || '|' || tag || '|' || key || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY path, key, seq)), 'EMPTY') FROM frontmatter_tag",
+        ),
+        (
+            "frontmatter_fault",
+            "SELECT coalesce(md5(string_agg(path || '|' || line::VARCHAR || '|' || error, chr(10) ORDER BY path)), 'EMPTY') FROM frontmatter_fault",
         ),
         (
             "task",
@@ -1436,6 +1461,11 @@ mod tests {
             Value::UBigInt(0),
             Value::UBigInt(1),
             Value::Text("rev".to_string()),
+        ]);
+        rows.frontmatter_fault.push(vec![
+            Value::Text("d.md".to_string()),
+            Value::UBigInt(2),
+            Value::Text("mapping values are not allowed in this context".to_string()),
         ]);
         rows.tag.push(vec![
             Value::Text("d.md".to_string()),

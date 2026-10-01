@@ -19,7 +19,10 @@ use std::collections::BTreeSet;
 /// it. `view` is the second stated deviation, on the same ground: a `.base`
 /// file is one YAML document whose values nest arbitrarily, and §4.4 requires
 /// the parser's own refusal message (`docs/base-projection.md` §9). The parse
-/// is a leaf module beside its only consumer.
+/// is a leaf module beside its only consumer. The same crate's `fm_strict`
+/// judges each page's frontmatter block on the same ground: the
+/// `frontmatter_fault` relation serves the strict parser's own refusal, the one
+/// fact `model`'s serde-free scanner cannot give.
 const PERMITTED: [&str; 3] = ["config", "policy", "view"];
 
 /// Workspace metadata, read live. Fails loud if cargo cannot be run: an

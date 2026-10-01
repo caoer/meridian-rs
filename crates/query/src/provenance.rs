@@ -20,7 +20,7 @@
 //!
 //! ROW-BOUND — every row (and every row's absence) is a fact of its own
 //! file, named by the relation's `path` column: `doc`, `frontmatter`,
-//! `section`, `tag`, `frontmatter_tag`, `task`, `body`, `record` (a per-file
+//! `section`, `tag`, `frontmatter_tag`, `frontmatter_fault`, `task`, `body`, `record` (a per-file
 //! pivot: each row folds only its own file's frontmatter), `tag_all` (a
 //! union of two row-bound relations sharing the `path` spelling).
 //!
@@ -97,12 +97,13 @@ pub fn classify(sql: &str) -> SqlProvenance {
 
 /// Relations whose rows are facts of their own file, all spelling their own
 /// path column `path` (catalog rationale: module docs).
-const ROW_BOUND: [&str; 9] = [
+const ROW_BOUND: [&str; 10] = [
     "doc",
     "frontmatter",
     "section",
     "tag",
     "frontmatter_tag",
+    "frontmatter_fault",
     "task",
     "body",
     "record",

@@ -692,6 +692,13 @@ Widening the coat is a C2 change, reserved by ruling (`laws.md` D-1).
   fingerprint: they ride their own `base_fold` witness, reported by the
   freshness frame as a SECOND plane (`base_plane` in `--json`, its own banner
   line in human mode).
+- **`frontmatter_fault(path, line, error)`** — one row per page whose
+  frontmatter block strict YAML refuses (the pinned `serde_yaml`, the `.base`
+  parser), or whose root is not a mapping: the 1-based file line the parser
+  points at and its own message. The engine's own frontmatter scanner is
+  lenient — `description: a: b` and `description: "a: b"` both project `a: b`
+  in `frontmatter.value` — so this relation is the only face that tells a page
+  a strict reader (Obsidian) drops from one it reads. No row = it parses.
 - `mrd sql` is **operator convenience**: served from the drawer's append-only
   `sql.duckdb` cache when a cache root resolves (`--rebuild` recreates it),
   else an ephemeral `:memory:` projection of the corpus per query, folding
