@@ -785,7 +785,7 @@ def middleware(ctx):
 "#;
 
 /// A def whose births land in the rule's scope.
-const NOTE_DEF: &str = r#"---
+const NOTE_DEF: &str = r"---
 type: def
 defines: note
 births: notes/{{id}}.md
@@ -802,7 +802,7 @@ type: note
 
 # {{id}}
 ```
-"#;
+";
 
 /// An armed rule refusing `mrd new` is the engine refusing the caller's birth: exit 1, the
 /// rule's teaching line first on stderr (never a Rust `Debug` dump of the error body), the
