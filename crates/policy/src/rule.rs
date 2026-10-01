@@ -20,8 +20,32 @@ pub struct Rule {
     scope: Vec<String>,
     check_source: Option<String>,
     middleware_source: Option<String>,
+    query: Option<QueryLeg>,
     hook: Option<Hook>,
     limits: CheckLimits,
+}
+
+/// The query leg of a `rules/query` page (armed-plane Part A3): its one SQL
+/// statement and the control path it is expected to report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryLeg {
+    sql: String,
+    control: Option<String>,
+}
+
+impl QueryLeg {
+    /// The SQL, as fenced on the page.
+    #[must_use]
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+
+    /// The planted page the query must report (`control:`), when declared. Its
+    /// row is never a finding; its absence is one.
+    #[must_use]
+    pub fn control(&self) -> Option<&str> {
+        self.control.as_deref()
+    }
 }
 
 impl Rule {
@@ -77,6 +101,14 @@ impl Rule {
     #[must_use]
     pub fn middleware_source(&self) -> Option<&str> {
         self.middleware_source.as_deref()
+    }
+
+    /// The corpus leg, when the page carries `rules/query`. Run by `mrd check`
+    /// over the corpus projection — never at the write door, which runs only
+    /// the check, middleware and hook legs.
+    #[must_use]
+    pub fn query(&self) -> Option<&QueryLeg> {
+        self.query.as_ref()
     }
 
     /// The limits every leg of this rule evaluates under.
@@ -281,14 +313,16 @@ fn declared_kind(bytes: &str) -> Option<String> {
     Some(value.as_str().unwrap_or_default().to_string())
 }
 
-/// The entry point a leg is evaluated through — `rulepack-api@2`'s
+/// The entry point a Starlark leg is evaluated through — `rulepack-api@2`'s
 /// `check_change(change)` for the law, the effect kernel's `on_change(event)` for
-/// the reaction.
-fn entry_point(kind: RuleKind) -> &'static str {
+/// the reaction, `middleware(ctx)` for the door. The query leg is SQL and has
+/// none.
+fn entry_point(kind: RuleKind) -> Option<&'static str> {
     match kind {
-        RuleKind::Check => "check_change",
-        RuleKind::Hook => "on_change",
-        RuleKind::Middleware => "middleware",
+        RuleKind::Check => Some("check_change"),
+        RuleKind::Hook => Some("on_change"),
+        RuleKind::Middleware => Some("middleware"),
+        RuleKind::Query => None,
     }
 }
 
@@ -396,6 +430,12 @@ fn load_rule_with_hook_loader(
         .contains(&RuleKind::Hook)
         .then(|| hook_loader(bytes, limits).map_err(leg(RuleKind::Hook)))
         .transpose()?;
+    let query = registration
+        .kinds()
+        .contains(&RuleKind::Query)
+        .then(|| crate::declaration::parse_query(bytes).map_err(leg(RuleKind::Query)))
+        .transpose()?
+        .map(|(sql, control)| QueryLeg { sql, control });
 
     // Each declared leg must define its own entry point. One page, one fenced block,
     // two possible legs — so the tag alone no longer says which code is the law and
@@ -408,7 +448,9 @@ fn load_rule_with_hook_loader(
         ),
         (RuleKind::Hook, hook.as_ref().map(Hook::source)),
     ] {
-        let entry = entry_point(kind);
+        let Some(entry) = entry_point(kind) else {
+            continue;
+        };
         if source.is_some_and(|source| !declares_def(source, entry)) {
             return Err(RuleLoadError::EntryMissing {
                 page: registration.page().to_string(),
@@ -435,6 +477,7 @@ fn load_rule_with_hook_loader(
         scope,
         check_source: check.map(|(_, source)| source),
         middleware_source: middleware.map(|(_, source)| source),
+        query,
         hook,
         limits,
     })

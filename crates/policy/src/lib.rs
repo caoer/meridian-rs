@@ -122,7 +122,9 @@ pub use registration::{
 /// declare through the same parsers the convention folder loader uses. It takes
 /// the [`Registration`] rather than re-deriving one, and verifies the supplied
 /// bytes against the registered rev.
-pub use rule::{CounterfactualRule, Rule, RuleLoadError, load_rule, load_rule_for_corpus};
+pub use rule::{
+    CounterfactualRule, QueryLeg, Rule, RuleLoadError, load_rule, load_rule_for_corpus,
+};
 
 /// The blocking gate at the armed change plane (U4.2): the pure decision
 /// ([`gate`]), whose input is the [`ArmedLaw`] that [`resolve_armed_law`]

@@ -382,7 +382,13 @@ mrd arm <ID> --mode <off|warn|block|armed> --rev <16HEX> [--at DIR] [--json]
  workspace-relative directory, default `.`), admit the
  attestation only if the live page rev equals --rev,
  and pin the winner into meridian/armed-rules.md. A
- check arms off|warn|block, a hook off|armed
+ check or query arms off|warn|block, middleware (alone
+ or with a query) off|block, a hook off|armed
+mrd arm <ID> --remove [--at DIR] [--json]
+ delete the (ID, arm root) row when its mode is off;
+ refuses an armed row, an absent row, and the last row
+ (armed-plane.md § Part A3 is the law; exit 0 removed /
+ 1 refused / 2 bad invocation)
 mrd config the MERIDIAN.md config plane: resolve the bootstrap
  (MERIDIAN_CONFIG, then $HOME/MERIDIAN.md) and print path,
  state, origin, rev/fingerprint, the BOUND mount table, and
@@ -420,10 +426,13 @@ mrd config get [KEY] [--json]
  config` and leaves this one answering. Exits: 0 value
  printed / 1 the chain, the block, the eval, or the key
  refused / 2 bad invocation
-mrd check [--core] [--staged] [--commit-gate [--require-pins]] [--json]
+mrd check [--core] [--staged] [--commit-gate [--require-pins]] [--json] [-- PATH…]
  the pure READ validity verb: claim drift + the pin
- plane (pin verdicts + blob anchoring); writes nothing,
- mints no receipt. WRITE HISTORY is NOT assessed (NOT
+ plane (pin verdicts + blob anchoring) + the armed
+ plane (red armed rows, and every armed `rules/query`
+ run over the snapshot — armed-plane.md § Part A3;
+ `-- PATH…` limits query rows and pins to those
+ paths); writes nothing, mints no receipt. WRITE HISTORY is NOT assessed (NOT
  CHECKED, never grey) — the engine keeps no memory;
  green means the world still matches the pins, not how
  it got there

@@ -1,12 +1,15 @@
 //! `mrd check` — the pure read validity verb.
 //!
 //! ```text
-//! mrd check [--core] [--staged] [--commit-gate] [--json]
+//! mrd check [--core] [--staged] [--commit-gate] [--json] [-- PATH…]
 //! ```
 //!
 //! Runs the convention-free core (layer 0) over the resolved workspace: observe
 //! every claim against the current tree, then read the pin plane — the pin verdicts
-//! and the anchoring state of every pinned blob. `status = freshness, check =
+//! and the anchoring state of every pinned blob — then the armed plane: the armed
+//! rows, and every armed `rules/query` run over the snapshot ([`crate::check_armed`],
+//! `docs/armed-plane.md` § Part A3). `-- PATH…` limits query rows and pins to those
+//! paths; a rule-level finding counts whatever the paths. `status = freshness, check =
 //! validity` — this answers "what lies?", writing nothing and minting no receipt.
 //!
 //! Write history is not assessed: the engine keeps no memory. `check` answers
@@ -98,7 +101,8 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // would let the two planes describe two different worktrees.
     let domain = fs::domain::Domain::load(&root)
         .map_err(|e| Fail::tool(format!("cannot read the hash domain: {e}")))?;
-    let (worktree_files, _worktree_fold) = fs::domain_snapshot(&root)
+    let paths = workspace_paths(&canonical, &cwd, &parsed.paths)?;
+    let (worktree_files, worktree_fold) = fs::domain_snapshot(&root)
         .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
 
     // The second interval, only when asked for: absent divergence the two intervals
@@ -142,12 +146,12 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // the row does not exist at either interval; named rather than assumed.
     let excluded = excluded_holders(&root, &domain);
 
-    let worktree = assess(&root, &mounts, &worktree_docs, &domain, &excluded);
+    let worktree = assess(&root, &mounts, &worktree_docs, &domain, &excluded, &paths);
 
     let staged = match (&interval, &staged_docs) {
         (Interval::Diverges(bytes), Some(docs)) => Some(Assessed {
             paths: bytes.paths.clone(),
-            report: assess(&root, &mounts, docs, &domain, &excluded).report,
+            report: assess(&root, &mounts, docs, &domain, &excluded, &paths).report,
         }),
         _ => None,
     };
@@ -155,6 +159,15 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let gate = parsed
         .commit_gate
         .then(|| build_gate(&interval, &worktree, staged.as_ref(), parsed.require_pins));
+
+    // The armed plane — red rows and armed queries — over the worktree snapshot.
+    // The commit gate stays the pin plane alone, so it runs no query.
+    let armed = (!parsed.commit_gate)
+        .then(|| crate::check_armed::assess(&root, &worktree_docs, &domain, &worktree_fold.0));
+    let armed_findings = armed
+        .as_ref()
+        .map(|plane| plane.findings(&paths))
+        .unwrap_or_default();
 
     // The checkout's fence coverage — read here, reported below, reachable from no
     // exit path. Taken on every invocation, gated and ungated alike.
@@ -168,6 +181,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         staged.as_ref(),
         gate.as_ref(),
         &fence,
+        armed.as_ref().map(|plane| (plane, paths.as_slice())),
     );
 
     // Fail closed on an interval that was asked for and could not be read: degrading
@@ -189,7 +203,39 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         return gate.exit();
     }
 
-    worst_of_exit(&worktree.report, staged.as_ref())
+    worst_of_exit(&worktree.report, staged.as_ref(), &armed_findings)
+}
+
+/// The `-- PATH…` operands as workspace-relative paths. Absolute or relative to
+/// the cwd; a path that no longer exists (a deleted file in a push) is resolved
+/// through its parent, so it still names where it was.
+///
+/// # Errors
+/// [`Fail`] exit 2 for a path outside the workspace or with no UTF-8 spelling.
+fn workspace_paths(workspace: &Path, cwd: &Path, raw: &[String]) -> Result<Vec<String>, Fail> {
+    raw.iter()
+        .map(|given| {
+            let joined = cwd.join(given);
+            let resolved = std::fs::canonicalize(&joined)
+                .or_else(|_| {
+                    let name = joined
+                        .file_name()
+                        .ok_or_else(|| std::io::Error::other("no file name"))?;
+                    let parent = joined.parent().unwrap_or(Path::new("/"));
+                    std::fs::canonicalize(parent).map(|p| p.join(name))
+                })
+                .unwrap_or(joined);
+            let rel = resolved.strip_prefix(workspace).map_err(|_| {
+                Fail::tool(format!(
+                    "`{given}` is outside the workspace {} — check reads one workspace",
+                    workspace.display()
+                ))
+            })?;
+            rel.to_str()
+                .map(|s| s.trim_end_matches('/').to_owned())
+                .ok_or_else(|| Fail::tool(format!("`{given}` has no UTF-8 spelling")))
+        })
+        .collect()
 }
 
 /// The corpus-wide question's exit: worst-of across intervals — the interval
@@ -205,24 +251,38 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 ///
 /// # Errors
 /// [`Fail`] exit 1 on the worst finding across the assessed intervals.
-fn worst_of_exit(worktree: &CoreReport, staged: Option<&Assessed>) -> Result<(), Fail> {
+fn worst_of_exit(
+    worktree: &CoreReport,
+    staged: Option<&Assessed>,
+    armed: &[String],
+) -> Result<(), Fail> {
     let mut intervals: Vec<(&str, &CoreReport)> = vec![(WORKTREE, worktree)];
     if let Some(staged) = staged {
         intervals.push((STAGED, &staged.report));
     }
+    let mut refusals = Vec::new();
     for worst in [CoreReport::is_red, CoreReport::cannot_assess] {
         if let Some((label, report)) = intervals
             .iter()
             .find_map(|(label, report)| worst(report).then_some((*label, *report)))
         {
-            return Err(Fail::with_code(
-                EXIT_FINDING,
-                refusal_list(label, &all_findings(report)),
-            ));
+            refusals.push(refusal_list(label, &all_findings(report)));
+            break;
         }
     }
-    Ok(())
+    // The armed plane's findings ride beside the core's, never instead of them.
+    if !armed.is_empty() {
+        refusals.push(refusal_list(ARMED, &armed.join("\n")));
+    }
+    if refusals.is_empty() {
+        Ok(())
+    } else {
+        Err(Fail::with_code(EXIT_FINDING, refusals.join("\n")))
+    }
 }
+
+/// The armed plane's label in a refusal.
+const ARMED: &str = "armed";
 
 /// Every finding one interval holds, worst-of ORDERED and never worst-of
 /// SELECTED: the red lines first, then the grey ones, each keeping the reason
@@ -273,6 +333,7 @@ fn build_gate<'a>(
 
 /// Print the verdict on the caller's chosen face. One writer for both, so a face
 /// can never be given a reading the other was not.
+#[allow(clippy::too_many_arguments)] // one writer for both faces, fed every reading
 fn emit(
     format: Format,
     workspace: &Path,
@@ -281,16 +342,47 @@ fn emit(
     staged: Option<&Assessed>,
     gate: Option<&Gate<'_>>,
     fence: &Fence,
+    armed: Option<(&crate::check_armed::ArmedPlane, &[String])>,
 ) {
     match format {
         Format::Json => {
-            let value = to_json(workspace, worktree, interval, staged, gate, fence);
+            let mut value = to_json(workspace, worktree, interval, staged, gate, fence);
+            if let Some((plane, paths)) = armed {
+                let (rules, rows) = plane.json(paths);
+                value["red"] = Value::Bool(
+                    value["red"].as_bool().unwrap_or(false) || !plane.findings(paths).is_empty(),
+                );
+                value["rules"] = rules;
+                value["armed_rows"] = rows;
+                value["paths"] = json!(paths);
+            }
             println!("{}", serde_json::to_string_pretty(&value).expect("json"));
         }
-        Format::Human => print!(
-            "{}",
-            render_human(workspace, worktree, interval, staged, gate, fence)
-        ),
+        Format::Human => {
+            let mut armed_lines = String::new();
+            if let Some((plane, paths)) = armed {
+                if !paths.is_empty() {
+                    let _ = writeln!(
+                        armed_lines,
+                        "  paths: {} — query rows and pins count under these paths only",
+                        crate::capped_sample(paths)
+                    );
+                }
+                armed_lines.push_str(&plane.render(paths));
+            }
+            print!(
+                "{}",
+                render_human(
+                    workspace,
+                    worktree,
+                    interval,
+                    staged,
+                    gate,
+                    fence,
+                    &armed_lines
+                )
+            );
+        }
     }
 }
 
@@ -620,11 +712,14 @@ fn assess(
     docs: &model::Docs,
     domain: &fs::domain::Domain,
     excluded_holders: &model::Docs,
+    paths: &[String],
 ) -> Assessed {
     // The same domain the snapshot was taken under — the colour plane must be
     // filtered by the filter that built its corpus, never by a second reading.
     let corpus = mounts.rooted(docs, domain, root);
-    let pins = pin_rows(&corpus, mounts.set(), excluded_holders);
+    let mut pins = pin_rows(&corpus, mounts.set(), excluded_holders);
+    // `-- PATH…`: a pin counts where its holding page lies under the paths.
+    pins.retain(|pin| crate::check_armed::under(paths, &pin.src_path));
     // D-F: each MOUNTED root's store answers durability for the form-3 rows
     // that name it — the map is the loaded corpora's own (name, bound path)
     // pairs, so the store asked is the tree the row was coloured against.
@@ -769,6 +864,9 @@ struct Check {
     /// meaningful beside [`Check::commit_gate`] — passing it alone is refused as a
     /// bad invocation rather than silently ignored.
     require_pins: bool,
+    /// The `-- PATH…` operands, as given: query rows and pins count under them
+    /// only. Empty means the whole workspace.
+    paths: Vec<String>,
 }
 
 impl Check {
@@ -777,8 +875,15 @@ impl Check {
         let mut staged = false;
         let mut commit_gate = false;
         let mut require_pins = false;
+        let mut paths = Vec::new();
+        let mut operands = false;
         for arg in args {
+            if operands {
+                paths.push(arg.clone());
+                continue;
+            }
             match arg.as_str() {
+                "--" => operands = true,
                 "--json" => json = true,
                 // `--core` names layer 0 explicitly; it is the default today, so it
                 // is accepted and needs no separate branch.
@@ -817,6 +922,7 @@ impl Check {
             staged,
             commit_gate,
             require_pins,
+            paths,
         })
     }
 }
@@ -831,6 +937,7 @@ fn render_human(
     staged: Option<&Assessed>,
     gate: Option<&Gate<'_>>,
     fence: &Fence,
+    armed: &str,
 ) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -853,6 +960,8 @@ fn render_human(
             gate.label
         );
     }
+    // The armed plane: red rows and armed queries (`crate::check_armed`).
+    out.push_str(armed);
     // The fence line comes last, after every reading that could have decided the
     // exit, because it is the one reading that could not have.
     out.push_str(&fence_lines(fence));
@@ -1439,7 +1548,7 @@ mod tests {
     #[test]
     fn the_findings_list_keeps_the_grey_beside_the_reds() {
         let report = red_beside_grey();
-        let refusal = worst_of_exit(&report, None).expect_err("reds refuse");
+        let refusal = worst_of_exit(&report, None, &[]).expect_err("reds refuse");
         let text = format!("{refusal:?}");
         assert!(
             text.contains("3 findings"),
@@ -1478,7 +1587,7 @@ mod tests {
             },
             orphans: Vec::new(),
         };
-        let refusal = worst_of_exit(&report, None).expect_err("grey fails closed");
+        let refusal = worst_of_exit(&report, None, &[]).expect_err("grey fails closed");
         let text = format!("{refusal:?}");
         assert!(text.contains("1 finding"), "{text}");
         assert!(text.contains("grey unverifiable-fingerprint"), "{text}");
@@ -1492,7 +1601,7 @@ mod tests {
             pins: holding_pins(),
             orphans: Vec::new(),
         };
-        assert!(worst_of_exit(&report, None).is_ok());
+        assert!(worst_of_exit(&report, None, &[]).is_ok());
     }
 
     #[test]

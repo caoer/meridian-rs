@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 mod cache_cmd;
+mod check_armed;
 mod check_cmd;
 mod config_cmd;
 mod corpus_tier;
@@ -471,13 +472,21 @@ usage:
                            marker on the first arm. --rev is the attestation:
                            the rev the reviewer READ (`mrd rules` winner rev=;
                            `mrd read` serves the page); no live-rev default. A
-                           check arms off|warn|block, a hook off|armed. Re-arm
+                           check or query arms off|warn|block, middleware
+                           (alone or with a query) off|block, a hook
+                           off|armed. Re-arm
                            on the same (id, arm root): identical row = no-op
                            \"unchanged\"; differing row REPLACED (the re-arm
                            every drift refusal commands). Corrupt existing
                            artifact refuses, byte-untouched. Exits: 0 armed |
                            unchanged / 1 refused (arm fault | drift | corrupt
                            artifact | busy lock) / 2 bad invocation.
+                           `mrd arm <ID> --remove [--at DIR]` (no --mode/--rev)
+                           deletes the (ID, arm root) row when its mode is off:
+                           a rule retires as arm off, remove the row, delete
+                           the page. Reads no page. Refuses an armed row, an
+                           absent row and the last row (zero rows on an armed
+                           workspace refuses every write) with exit 1.
   mrd config               MERIDIAN.md config plane: resolve bootstrap
                            (MERIDIAN_CONFIG, then $HOME/MERIDIAN.md) and print
                            path, state, origin, rev/fingerprint, BOUND mount
@@ -502,11 +511,16 @@ usage:
                            unbound root refuses mrd config and leaves this one
                            answering. Exits: 0 value printed / 1 chain, block,
                            eval or key refused / 2 bad invocation.
-  mrd check [--core] [--staged] [--commit-gate [--require-pins]] [--json]
+  mrd check [--core] [--staged] [--commit-gate [--require-pins]] [--json] [-- PATH…]
                            pure READ validity (what lies?). Layer-0 core: claim
                            plane (pinned content drift) + retrieval plane
                            (pinned blob
-                           durably anchored). WRITE HISTORY is NOT assessed
+                           durably anchored). Armed plane: a red armed row, and
+                           every armed rules/query run over the snapshot — a
+                           block query's row, a missing control: or a query
+                           that cannot run is a finding; warn rows print.
+                           -- PATH… counts query rows and pins under those
+                           paths only. --commit-gate runs no query. WRITE HISTORY is NOT assessed
                            (NOT CHECKED, never grey) — engine keeps no memory;
                            history is git at lock. Green means the world still
                            matches the pins, not how it got there.

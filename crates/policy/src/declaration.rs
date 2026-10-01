@@ -27,6 +27,9 @@ pub enum LoadError {
     /// The HOOK predicate reaches for a constructor its declared `caps:` do not
     /// grant — refused at LOAD, before any change reaches it.
     HookCeiling { reason: String },
+    /// The query declaration is malformed: not exactly one fenced `sql` block,
+    /// an empty one, or a `control:` that is not one workspace path.
+    QueryMalformed { reason: String },
 }
 
 impl std::fmt::Display for LoadError {
@@ -34,6 +37,9 @@ impl std::fmt::Display for LoadError {
         match self {
             LoadError::Malformed { reason } => {
                 write!(f, "the check declaration is malformed: {reason}")
+            }
+            LoadError::QueryMalformed { reason } => {
+                write!(f, "the query declaration is malformed: {reason}")
             }
             LoadError::CheckInvalid { source } => {
                 write!(f, "the check predicate failed the load gate: {source}")
@@ -108,6 +114,105 @@ pub(crate) fn parse_check(
     check_eval::validate_check_source(&source, limits)
         .map_err(|source| LoadError::CheckInvalid { source })?;
     Ok((scope, source))
+}
+
+/// Parse the QUERY leg from a rule page's bytes: its one fenced `sql` block and
+/// its optional `control:` path (armed-plane Part A3). The SQL is not run
+/// here — `policy` does no I/O; `mrd check` runs it over the projection.
+///
+/// # Errors
+/// [`LoadError::QueryMalformed`] — no `sql` block, more than one, an empty one,
+/// or a `control:` that is not one workspace-relative path.
+pub(crate) fn parse_query(page: &str) -> Result<(String, Option<String>), LoadError> {
+    #[derive(serde::Deserialize, Default)]
+    struct ControlFrontmatter {
+        control: Option<serde_yaml::Value>,
+    }
+
+    let malformed = |reason: String| LoadError::QueryMalformed { reason };
+    let blocks = fenced_blocks(page, "sql");
+    let source = match blocks.as_slice() {
+        [one] => one.clone(),
+        [] => return Err(malformed("no fenced ```sql block".to_owned())),
+        many => {
+            return Err(malformed(format!(
+                "{} fenced ```sql blocks — a query page carries exactly one, so which rows \
+                 are the rule's is never a guess",
+                many.len()
+            )));
+        }
+    };
+    if source.trim().is_empty() {
+        return Err(malformed("the fenced ```sql block is empty".to_owned()));
+    }
+
+    let control = match crate::pack::split_frontmatter(page) {
+        None => None,
+        Some((frontmatter, _)) => serde_yaml::from_str::<ControlFrontmatter>(frontmatter)
+            .map_err(|e| malformed(format!("frontmatter parse: {e}")))?
+            .control
+            .filter(|value| !value.is_null()),
+    };
+    let control = match control {
+        None => None,
+        Some(value) => {
+            let path = value
+                .as_str()
+                .ok_or_else(|| malformed("`control:` is not a string".to_owned()))?;
+            if path.is_empty()
+                || path.starts_with('/')
+                || path
+                    .split('/')
+                    .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+            {
+                return Err(malformed(format!(
+                    "`control: {path}` is not one workspace-relative path"
+                )));
+            }
+            Some(path.to_owned())
+        }
+    };
+    Ok((source, control))
+}
+
+/// The inner source of every fenced block whose info string's first token is
+/// `lang`, in page order. A fence closes on a run of at least as many of the
+/// same fence character, so a block nested in a longer fence stays inside it.
+fn fenced_blocks(page: &str, lang: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    // (fence char, fence length, collecting this block's lines?, buffer)
+    let mut open: Option<(char, usize, bool, String)> = None;
+    for line in page.lines() {
+        let trimmed = line.trim_start();
+        let fence = trimmed
+            .chars()
+            .next()
+            .filter(|c| *c == '`' || *c == '~')
+            .map(|c| (c, trimmed.chars().take_while(|x| *x == c).count()))
+            .filter(|(_, n)| *n >= 3);
+        match (&mut open, fence) {
+            (Some((c, n, keep, buf)), Some((fc, fnum)))
+                if fc == *c && fnum >= *n && trimmed[fnum..].trim().is_empty() =>
+            {
+                if *keep {
+                    blocks.push(std::mem::take(buf));
+                }
+                open = None;
+            }
+            (Some((_, _, keep, buf)), _) => {
+                if *keep {
+                    buf.push_str(line);
+                    buf.push('\n');
+                }
+            }
+            (None, Some((fc, fnum))) => {
+                let info = trimmed[fnum..].split_whitespace().next();
+                open = Some((fc, fnum, info == Some(lang), String::new()));
+            }
+            (None, None) => {}
+        }
+    }
+    blocks
 }
 
 #[derive(serde::Deserialize)]
