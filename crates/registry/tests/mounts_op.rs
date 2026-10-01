@@ -131,6 +131,10 @@ fn mounts_lifecycle_freshness_and_changed_invalid_refusal() {
     write_config(&config_path, &base);
     // One env-dependent test fn by design (see module docs).
     unsafe { std::env::set_var("MERIDIAN_CONFIG", &config_path) };
+    // `HOME` pinned to a tree with no `.local/share/ucc/sessions`: on a host
+    // that has one, the implicit `sessions` mount would join every table this
+    // test counts.
+    unsafe { std::env::set_var("HOME", tmp.path()) };
 
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
