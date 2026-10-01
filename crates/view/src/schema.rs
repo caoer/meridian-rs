@@ -184,6 +184,11 @@ CREATE TABLE frontmatter_tag (                    -- B2: keys 'tag'/'tags', scal
     PRIMARY KEY (path, key, seq),                 -- key in the PK: simultaneous 'tag' and 'tags' seq=0 rows never collide
     CHECK (key IN ('tag','tags'))
 );
+CREATE TABLE frontmatter_fault (                  -- one row per page whose frontmatter strict YAML refuses; absent = it parses
+    path       TEXT     PRIMARY KEY REFERENCES doc(path),
+    line       UBIGINT  NOT NULL,                 -- 1-based FILE line the parser points at, clamped into the block
+    error      TEXT     NOT NULL                  -- the pinned serde_yaml's own message
+);
 CREATE TABLE task (
     path        TEXT     NOT NULL REFERENCES doc(path),
     seq         UBIGINT  NOT NULL,
@@ -298,7 +303,12 @@ CREATE VIEW tag_all AS                             -- B2: the union — inline +
 /// renders as its flow-style text instead of `''` — 50 of 50 `agents` rows on
 /// the fleet corpus. Same obligation as `9`: no DDL moved, ROW CONTENT did for
 /// identical corpora at identical fingerprints (card `fm-block-list-sql-empty`).
-pub const SCHEMA_VERSION: i32 = 10;
+///
+/// `11`: the `frontmatter_fault` relation — the strict-YAML verdict on each
+/// page's frontmatter block, which the lenient scanner's projected values
+/// cannot carry (`description: a: b` and `description: "a: b"` both project
+/// `a: b`). A v10 projection has no fault rows to serve.
+pub const SCHEMA_VERSION: i32 = 11;
 
 /// Run the full round-1 DDL against `conn` (8 tables + 4 views).
 ///

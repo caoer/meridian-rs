@@ -58,7 +58,9 @@ serde_json = { workspace = true }
 # into `config` for arbitrary user frontmatter applies verbatim
 # (`docs/base-projection.md` §9). It lives beside its only consumer as the leaf
 # module `view::base`; `model` stays serde-free (Law 1) and `fs` stays
-# YAML-free (its charter) — it hands raw bytes up.
+# YAML-free (its charter) — it hands raw bytes up. The leaf module
+# `view::fm_strict` takes it on the same ground: the `frontmatter_fault`
+# relation is the strict parser's own verdict on each frontmatter block.
 serde_yaml = "0.9"
 
 [dev-dependencies]

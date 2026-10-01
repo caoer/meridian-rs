@@ -18,7 +18,7 @@
 //! - **`main.*`** — the caller-facing latest views, keeping the ephemeral
 //!   projection's exact names and column shapes (`doc`, `section`, `link`,
 //!   `backlink`, `dangling`, `record`, `tag_all`, `task`, `frontmatter`,
-//!   `frontmatter_tag`, `tag`) — plus `_meridian_view`, the ONE relation whose
+//!   `frontmatter_tag`, `frontmatter_fault`, `tag`) — plus `_meridian_view`, the ONE relation whose
 //!   shape deliberately differs (there a singleton table, here a view over the
 //!   pin ledger). One `QUALIFY` window over `hist.doc` picks each path's newest
 //!   version and drops tombstones; child views follow by `(path, gen)` semi
@@ -165,7 +165,11 @@ use crate::{
 /// every unchanged source page, pinned to fingerprints that will not move.
 /// Same repair-by-rebuild reasoning as `9` (card `mrd-sql-cache-key`); later
 /// resolver changes reach the drawer through `model::RESOLVE_REV`.
-pub const CACHE_SCHEMA_VERSION: i64 = 11;
+///
+/// `12`: `hist.frontmatter_fault` + `main.frontmatter_fault` — the strict-YAML
+/// verdict per page (`fm_strict`); a v11 file holds no fault rows for pages
+/// whose fingerprints will not move. Same repair-by-rebuild reasoning as `9`.
+pub const CACHE_SCHEMA_VERSION: i64 = 12;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
 pub const SQL_CACHE_FILENAME: &str = "sql.duckdb";
@@ -208,6 +212,9 @@ CREATE TABLE hist.tag (
 CREATE TABLE hist.frontmatter_tag (
     path TEXT, gen BIGINT, seq UBIGINT, tag TEXT, key TEXT,
     span_start UBIGINT, span_end UBIGINT, node_rev TEXT
+);
+CREATE TABLE hist.frontmatter_fault (
+    path TEXT, gen BIGINT, line UBIGINT, error TEXT
 );
 CREATE TABLE hist.task (
     path TEXT, gen BIGINT, seq UBIGINT, checked BOOLEAN, depth UINTEGER,
@@ -282,6 +289,10 @@ CREATE VIEW main.tag AS
 CREATE VIEW main.frontmatter_tag AS
     SELECT f.path, f.seq, f.tag, f.key, f.span_start, f.span_end, f.node_rev
     FROM hist.frontmatter_tag f
+    SEMI JOIN hist.doc_latest d ON f.path = d.path AND f.gen = d.gen;
+CREATE VIEW main.frontmatter_fault AS
+    SELECT f.path, f.line, f.error
+    FROM hist.frontmatter_fault f
     SEMI JOIN hist.doc_latest d ON f.path = d.path AND f.gen = d.gen;
 CREATE VIEW main.task AS
     SELECT t.path, t.seq, t.checked, t.depth, t.section_seq, t.hpath, t.text,
@@ -1256,6 +1267,7 @@ impl SqlStore {
         self.append_scalar(&rows.link, "link", &generation)?;
         self.append_scalar(&rows.tag, "tag", &generation)?;
         self.append_scalar(&rows.frontmatter_tag, "frontmatter_tag", &generation)?;
+        self.append_scalar(&rows.frontmatter_fault, "frontmatter_fault", &generation)?;
         self.append_scalar(&rows.section, "section", &generation)?;
         self.append_scalar(&rows.task, "task", &generation)?;
         self.append_body_chunks(&rows.body, &generation)?;
@@ -1769,7 +1781,7 @@ pub(crate) mod tests {
     /// Per-surface digest over every column of every row — the 8 base tables
     /// plus the 4 convenience views, so the acceptance is the whole caller
     /// surface, not just storage.
-    const SURFACE_DIGESTS: [(&str, &str); 12] = [
+    const SURFACE_DIGESTS: [(&str, &str); 13] = [
         (
             "doc",
             "SELECT coalesce(md5(string_agg(path || '|' || file_rev || '|' || line_count::VARCHAR || '|' || bytes::VARCHAR, chr(10) ORDER BY path)), 'EMPTY') FROM doc",
@@ -1793,6 +1805,10 @@ pub(crate) mod tests {
         (
             "frontmatter_tag",
             "SELECT coalesce(md5(string_agg(path || '|' || seq::VARCHAR || '|' || tag || '|' || key || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY path, key, seq)), 'EMPTY') FROM frontmatter_tag",
+        ),
+        (
+            "frontmatter_fault",
+            "SELECT coalesce(md5(string_agg(path || '|' || line::VARCHAR || '|' || error, chr(10) ORDER BY path)), 'EMPTY') FROM frontmatter_fault",
         ),
         (
             "task",
@@ -2169,6 +2185,43 @@ pub(crate) mod tests {
             })
             .expect("rev");
         assert_ne!(rev_v1, rev_v2, "the CAS token moved with the heading");
+        assert_surface_matches_fresh(&store, &v2);
+    }
+
+    /// The strict-YAML verdict rides the append like every per-page relation:
+    /// a fault appears with its page, clears when the page is fixed, and the
+    /// latest view equals a fresh build at each step.
+    #[test]
+    fn a_frontmatter_fault_appears_and_clears_with_its_page() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let faults = |store: &SqlStore| -> Vec<(String, u64)> {
+            let mut stmt = store
+                .connection()
+                .prepare("SELECT path, line FROM frontmatter_fault ORDER BY path")
+                .expect("prepare");
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .expect("query")
+                .map(|r| r.expect("row"))
+                .collect()
+        };
+        let v1 = corpus(&[
+            ("bad.md", "---\ntype: note\ndescription: a: b\n---\n# Bad\n"),
+            ("good.md", "---\ndescription: \"a: b\"\n---\n# Good\n"),
+        ]);
+        sync_ambient(&mut store, &v1, "b3b:v1").expect("cold");
+        assert_eq!(faults(&store), vec![("bad.md".to_owned(), 3)]);
+        assert_surface_matches_fresh(&store, &v1);
+
+        let v2 = corpus(&[
+            (
+                "bad.md",
+                "---\ntype: note\ndescription: \"a: b\"\n---\n# Bad\n",
+            ),
+            ("good.md", "---\ndescription: \"a: b\"\n---\n# Good\n"),
+        ]);
+        sync_ambient(&mut store, &v2, "b3b:v2").expect("append");
+        assert!(faults(&store).is_empty(), "the fixed page clears its fault");
         assert_surface_matches_fresh(&store, &v2);
     }
 
