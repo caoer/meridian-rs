@@ -1519,6 +1519,32 @@ read `cmd=` first). A warm daemon-served `links` emits neither on the
  shape (`--json` too), and let the `## Inputs` twin line be the caller's —
  a twin drop is prose, not lock bytes. A `--dry` that shows the row is the
  read half.
+- **The human sections read serves no pin proof.** `mrd read PAGE --section
+ SEL` prints `fp:` (the file's `b3a:` token) and the section `rev`; neither is
+ the `fp1.` fingerprint `mrd pin --fingerprint` checks, and only `--json`
+ serves that (`.read.sections[0].fingerprint`). The `pin_proof_required`
+ refusal says to pin again "with the `fingerprint` that read serves" and never
+ names `--json`, so a caller who copies a token from the human face is refused
+ with no way to the right one. The fix is either half: print the `fp1.` token
+ beside the section `rev` on the human face, or have the refusal name `--json`
+ and the field.
+- **Full-corpus passes still hold the memo lock.** The cookie-timeout,
+ rename-in and overflow floors sweep the corpus under the workspace's memo
+ lock, and `fs::update_corpus` runs once per waiting reader with no
+ single-flight (487 of 2,158 profile samples on one read thread, on a
+ 63k-document sessions root under ~60 agents). Done when no full-corpus pass
+ holds the lock that readers wait on.
+- **An abandoned request keeps costing work.** A caller that disconnects or
+ passes its deadline does not cancel the op: the same load logged 489
+ broken-pipe replies, with reads finishing 100–1,392 s after a 10 s caller had
+ left. `sql_op`'s `lock_timeout` bounds only the wait, never the holder's
+ query. Done when a disconnect or an expired deadline cancels the op.
+- **A spawn burst's first prompts are slow.** Steady-state prompts on that root
+ run at p50 0.07 s, but each first prompt of a 10-seat spawn burst took
+ 11–27 s, with a 49 s `run` seen after a budget eviction; card birth can take
+ 25 s, leaving the hook pass about 32 s against the harness's 30 s cap. Done
+ when a new seat's first prompt stays under 2 s, measured under a burst of 10
+ or more seats, with no broken pipe on card birth.
 
 Accepted residuals (attestation surfaces) — documented, not prevented. Full statements in
 `wire-contract.md` § Named residuals.
