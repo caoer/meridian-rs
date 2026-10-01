@@ -950,7 +950,7 @@ fn emit_task(
 ///
 /// Split mirrors the link plane (`addr::head_carries_root_separator`). No mount
 /// authority ⇒ rooted spelling stays dangling (not having looked ≠ finding).
-fn resolve_dest(
+pub(crate) fn resolve_dest(
     index: &CorpusIndex,
     target: &str,
     heading: Option<&str>,
@@ -977,7 +977,7 @@ fn resolve_dest(
 }
 
 /// Link destination — two facts when cross-root, never a joined `root:path` (U21 Q5).
-enum Dest {
+pub(crate) enum Dest {
     Ambient(String),
     Rooted { root: String, path: String },
 }

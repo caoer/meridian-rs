@@ -63,13 +63,26 @@
 //! keys above, because folding them together would reintroduce the
 //! case-folding the base floor and the §5.1 mint rule forbid.
 //!
+//! # Rooted rows
+//!
+//! A cross-root link's answer lives in ANOTHER root's contents, which no
+//! ambient fingerprint covers: a page that links `b:x.md` before root `b`
+//! holds it projects unresolved, and `x.md` appearing in `b` moves nothing
+//! here. So every sync — before the no-op check — re-runs the projector's own
+//! resolver over the latest rooted rows (`kind` wikilink/embed, a
+//! root-separator head) against the corpora it was handed, and a source doc
+//! whose answer moved joins the affected set. Such a doc appends at an
+//! unchanged fingerprint, as base motion does; a drawer that went stale
+//! before this rule heals on its first sync. Re-resolving rows is
+//! milliseconds; only the docs whose answer moved re-project.
+//!
 //! Disclosed approximations (repair = the rebuild verb): motion OUTSIDE the
-//! pinned corpus — mount-table edits, other roots' contents (cross-root
-//! `dest_root_path`), and non-md files entering/leaving the `exclusion`
-//! domain — moves no fingerprint and therefore triggers no append. **`.base`
-//! motion has LEFT that list** (§7); every other non-md class (`.svg`,
-//! `.xlsx`, …) remains approximated, since no snapshot of those exists to
-//! diff, and rebuild remains the repair. The `:memory:` lane has no
+//! pinned corpus — mount-table edits under non-rooted rows, and non-md files
+//! entering/leaving the `exclusion` domain — moves no fingerprint and
+//! therefore triggers no append. **`.base` motion has LEFT that list** (§7),
+//! and so have other roots' contents (§ Rooted rows); every other non-md class
+//! (`.svg`, `.xlsx`, …) remains approximated, since no snapshot of those
+//! exists to diff, and rebuild remains the repair. The `:memory:` lane has no
 //! approximation: it re-walks everything per query.
 //!
 //! # Query lane
@@ -926,11 +939,24 @@ impl SqlStore {
     ) -> Result<Option<AppendCounts>, ViewError> {
         let base_fold = base.map(|b| b.fold);
         let mut pin = self.pin()?;
+        // Built at most once per sync, and only when something needs it.
+        let mut index: Option<model::CorpusIndex> = None;
+        // Other roots' contents move no ambient fingerprint (§ Rooted rows),
+        // so this runs BEFORE the no-op check, not inside the append.
+        let rooted = if pin.is_some() {
+            self.rooted_affected(docs, &mut index, corpus, mounts)?
+        } else {
+            BTreeSet::new()
+        };
         if let Some(p) = &pin {
-            // TWO witnesses, one no-op check (`base-projection.md` §7): base
-            // motion appends even when the fingerprint did not move, so a
-            // pinned fingerprint alone no longer proves the file is current.
-            if p.fingerprint == fingerprint && p.base_fold.as_deref() == base_fold {
+            // THREE witnesses, one no-op check: base motion (`base-projection.md`
+            // §7) and rooted-row motion append even when the fingerprint did
+            // not move, so a pinned fingerprint alone does not prove the file
+            // is current.
+            if p.fingerprint == fingerprint
+                && p.base_fold.as_deref() == base_fold
+                && rooted.is_empty()
+            {
                 return Ok(None);
             }
             if fingerprint_version(&p.fingerprint) != fingerprint_version(fingerprint) {
@@ -981,6 +1007,7 @@ impl SqlStore {
         } else {
             let mut affected = self.resolution_affected(docs, &added, &changed, &removed)?;
             affected.extend(self.base_affected(docs, &base_delta)?);
+            affected.extend(rooted);
             affected.retain(|p| !added.contains(p.as_str()) && !changed.contains(p.as_str()));
             affected
         };
@@ -997,7 +1024,7 @@ impl SqlStore {
         let mut reproject: BTreeSet<String> = added.iter().map(|p| (*p).to_owned()).collect();
         reproject.extend(changed.iter().map(|p| (*p).to_owned()));
         reproject.extend(affected.iter().cloned());
-        let index = corpus_index(docs);
+        let index = index.unwrap_or_else(|| corpus_index(docs));
         let mut rows = Rows::default();
         for path in &reproject {
             if let Some(doc) = docs.get(path) {
@@ -1128,6 +1155,67 @@ impl SqlStore {
                         || p.rsplit('/').next().is_some_and(|b| keys.contains(b))
                 });
             if hit {
+                affected.insert(src);
+            }
+        }
+        Ok(affected)
+    }
+
+    /// Docs whose rooted link rows the resolver now answers differently
+    /// (module docs § Rooted rows): every latest wikilink/embed row with a
+    /// root-separator head is re-resolved by the projector's own
+    /// [`crate::resolve_dest`] against `corpus`/`mounts`, and its source doc
+    /// is returned when the answer differs from the stored
+    /// `dest_path`/`dest_root`/`dest_root_path`. Comparing the projector's
+    /// answer, never a re-implementation of it, keeps a marked doc's
+    /// re-projection equal to a fresh build and an unmarked doc's rows equal
+    /// to what a fresh build would write.
+    ///
+    /// `index` is the ambient corpus index, built here on the first rooted
+    /// row and handed back for the append to reuse.
+    fn rooted_affected(
+        &self,
+        docs: &model::Docs,
+        index: &mut Option<model::CorpusIndex>,
+        corpus: &model::RootedCorpus<'_>,
+        mounts: Option<&addr::MountSet>,
+    ) -> Result<BTreeSet<String>, ViewError> {
+        let mut affected = BTreeSet::new();
+        // `:` in the target is the cheap superset; the exact head test is
+        // `addr::head_carries_root_separator`, applied per row below.
+        let mut stmt = self.conn.prepare(
+            "SELECT src_path, target_raw, heading, block, dest_path, dest_root, dest_root_path \
+             FROM link WHERE kind IN ('wikilink','embed') AND contains(target_raw, ':')",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let src: String = row.get(0)?;
+            if affected.contains(&src) || !docs.contains_key(&src) {
+                continue;
+            }
+            let target: String = row.get(1)?;
+            if !addr::head_carries_root_separator(&target) {
+                continue;
+            }
+            let heading: Option<String> = row.get(2)?;
+            let block: Option<String> = row.get(3)?;
+            let stored: (Option<String>, Option<String>, Option<String>) =
+                (row.get(4)?, row.get(5)?, row.get(6)?);
+            let index = index.get_or_insert_with(|| corpus_index(docs));
+            let live = match crate::resolve_dest(
+                index,
+                &target,
+                heading.as_deref(),
+                block.as_deref(),
+                &src,
+                corpus,
+                mounts,
+            ) {
+                Some(crate::Dest::Ambient(path)) => (Some(path), None, None),
+                Some(crate::Dest::Rooted { root, path }) => (None, Some(root), Some(path)),
+                None => (None, None, None),
+            };
+            if live != stored {
                 affected.insert(src);
             }
         }
