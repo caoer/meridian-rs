@@ -684,46 +684,16 @@ fn attempt(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Attempt, 
             })
         }
         Lane::Memory => {
-            let corpus = loaded
-                .mounts
-                .rooted(&loaded.docs, &loaded.domain, &loaded.root);
-            let probe = fs::domain::LinkTargetProbe::new(&loaded.root, &loaded.domain);
-            let exclusion = |target: &str| {
-                probe
-                    .resolution(target)
-                    .map(|(p, why)| (p, why.word().to_owned()))
-            };
-            let walk = base_walk(loaded);
-            let base = walk
-                .as_ref()
-                .map(|(members, fold)| view::BaseWalk { members, fold });
-            let conn = view::build_memory_rooted(
+            let conn = memory_projection(
+                &loaded.root,
                 &loaded.docs,
-                &corpus,
-                loaded.mounts.set(),
+                &loaded.domain,
+                &loaded.mounts,
                 &loaded.f0,
-                Some(&exclusion),
-                base.as_ref(),
+                loaded.base.as_ref().ok(),
             )
-            .map_err(|e| Fail::tool(format!("cannot build the view: {e}")))?;
+            .map_err(Fail::tool)?;
             let as_of = read_as_of(&conn)?;
-            // No drawer on this lane: the env temp root is the absolute
-            // spill home (card sql-spill-config-lockout — the default was
-            // `.tmp` RELATIVE to the shell cwd).
-            view::store::apply_spill_containment(
-                &conn,
-                &std::env::temp_dir().join("mrd-sql-spill"),
-            )
-            .map_err(|e| Fail::tool(format!("cannot apply the spill containment: {e}")))?;
-            // Same door as the drawer lane (card
-            // sql-extension-ddl-escapes-rollback-lane): this build has no file
-            // to leak into, but the contract a caller reads is ONE contract —
-            // an extension that loads here and refuses there would make the
-            // lane, not the statement, decide what "ephemeral" means. All
-            // THREE caller-SQL doors take it: here, `SqlStore::open`/`recreate`,
-            // and `registry::mw_sql`'s middleware projection. No exemptions.
-            view::store::apply_extension_gate(&conn)
-                .map_err(|e| Fail::tool(format!("cannot apply the extension gate: {e}")))?;
             let (columns, rows, error) = match view::store::run_query(&conn, query) {
                 Ok((c, r)) => (c, r, None),
                 Err(msg) => (Vec::new(), Vec::new(), Some(msg)),
@@ -736,6 +706,71 @@ fn attempt(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Attempt, 
             })
         }
     }
+}
+
+/// The `:memory:` projection of one corpus — the memory lane's build, and the
+/// one `mrd check` runs its armed queries against (armed-plane Part A3), so a
+/// query answers the same rows on both verbs. Mount authority, the link-target
+/// exclusion probe and the base plane all ride in, exactly as on this lane.
+///
+/// # Errors
+/// The build, the spill containment or the extension gate failed — the
+/// message names which.
+pub(crate) fn memory_projection(
+    root: &fs::WorkspaceRoot,
+    docs: &model::Docs,
+    domain: &fs::domain::Domain,
+    mounts: &crate::walk_cmd::Mounts,
+    f0: &str,
+    base: Option<&fs::base::BaseSnapshot>,
+) -> Result<duckdb::Connection, String> {
+    let corpus = mounts.rooted(docs, domain, root);
+    let probe = fs::domain::LinkTargetProbe::new(root, domain);
+    let exclusion = |target: &str| {
+        probe
+            .resolution(target)
+            .map(|(p, why)| (p, why.word().to_owned()))
+    };
+    let members: Option<Vec<view::BaseMember>> = base.map(|snapshot| {
+        snapshot
+            .members
+            .iter()
+            .map(|m| view::BaseMember {
+                path: m.path.clone(),
+                bytes: m.bytes.clone(),
+            })
+            .collect()
+    });
+    let walk = members
+        .as_ref()
+        .zip(base)
+        .map(|(members, snapshot)| view::BaseWalk {
+            members,
+            fold: &snapshot.fold,
+        });
+    let conn = view::build_memory_rooted(
+        docs,
+        &corpus,
+        mounts.set(),
+        f0,
+        Some(&exclusion),
+        walk.as_ref(),
+    )
+    .map_err(|e| format!("cannot build the view: {e}"))?;
+    // No drawer on this lane: the env temp root is the absolute spill home
+    // (card sql-spill-config-lockout — the default was `.tmp` RELATIVE to the
+    // shell cwd).
+    view::store::apply_spill_containment(&conn, &std::env::temp_dir().join("mrd-sql-spill"))
+        .map_err(|e| format!("cannot apply the spill containment: {e}"))?;
+    // Same door as the drawer lane (card sql-extension-ddl-escapes-rollback-lane):
+    // this build has no file to leak into, but the contract a caller reads is ONE
+    // contract — an extension that loads here and refuses there would make the
+    // lane, not the statement, decide what "ephemeral" means. All THREE
+    // caller-SQL doors take it: here, `SqlStore::open`/`recreate`, and
+    // `registry::mw_sql`'s middleware projection. No exemptions.
+    view::store::apply_extension_gate(&conn)
+        .map_err(|e| format!("cannot apply the extension gate: {e}"))?;
+    Ok(conn)
 }
 
 /// The §Q3 order-of-operations over the chosen lane, with the `--fresh`

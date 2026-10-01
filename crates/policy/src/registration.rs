@@ -1,7 +1,7 @@
 //! Tag-indexed rule registration — discovery, id grammar, override resolution.
 //!
-//! A page registers by carrying `rules/hook` / `rules/check` in frontmatter
-//! `tags:` ([`RuleKind`]), is identified by frontmatter `id:` ([`RuleId`],
+//! A page registers by carrying `rules/check` / `rules/hook` /
+//! `rules/middleware` / `rules/query` in frontmatter `tags:` ([`RuleKind`]), is identified by frontmatter `id:` ([`RuleId`],
 //! § 2 grammar), and resolves against same-id pages by mount depth along the
 //! three-rung scope ladder ([`ScopeLayer`] → [`Scope`]).
 //!
@@ -46,6 +46,10 @@ pub enum RuleKind {
     /// the write door and may refuse, transform this file, transform other
     /// files, birth files, and emit `send` intents.
     Middleware,
+    /// `rules/query` — the corpus leg (armed-plane Part A3). One fenced `sql`
+    /// block whose rows are the pages breaking the rule now, run by `mrd
+    /// check` over the corpus projection. Never evaluated at the write door.
+    Query,
 }
 
 impl RuleKind {
@@ -56,6 +60,7 @@ impl RuleKind {
             RuleKind::Check => "check",
             RuleKind::Hook => "hook",
             RuleKind::Middleware => "middleware",
+            RuleKind::Query => "query",
         }
     }
 
@@ -71,6 +76,7 @@ impl RuleKind {
             "check" => Some(RuleKind::Check),
             "hook" => Some(RuleKind::Hook),
             "middleware" => Some(RuleKind::Middleware),
+            "query" => Some(RuleKind::Query),
             _ => None,
         }
     }
@@ -498,9 +504,12 @@ impl std::fmt::Display for RegisterError {
             RegisterFault::KindDeferred { tag } => write!(
                 f,
                 "`{page}` carries `{tag}`, but `{REGISTRATION_NAMESPACE}` carries \
-                 `{check}` and `{hook}` only — the tag is reserved, not ignored",
+                 `{check}`, `{hook}`, `{middleware}` and `{query}` only — the tag is reserved, \
+                 not ignored",
                 check = RuleKind::Check.tag(),
                 hook = RuleKind::Hook.tag(),
+                middleware = RuleKind::Middleware.tag(),
+                query = RuleKind::Query.tag(),
             ),
             RegisterFault::IdAbsent => write!(
                 f,

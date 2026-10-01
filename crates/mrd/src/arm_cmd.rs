@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! mrd arm <ID> --mode <off|warn|block|armed> --rev <16HEX> [--at DIR] [--json]
+//! mrd arm <ID> --remove [--at DIR] [--json]
 //! ```
 //!
 //! Arming attests a rule: a reviewer approves the resolved page AT the rev they
@@ -33,9 +34,18 @@
 //! overwriting an unreadable artifact would silently disarm rows nobody can
 //! read. Fail closed, teach the fault.
 //!
-//! Exit triad: **0** armed (or already-armed, unchanged) · **1** refused (an
-//! arm fault, drift, a corrupt artifact, a busy write lock) · **2** bad
-//! invocation.
+//! `--remove` deletes the (id, arm root) row when its mode is `off` — the
+//! middle step of retiring a rule: arm it `off`, remove the row, delete the
+//! page (`docs/armed-plane.md` § What the ARM act attests). It reads no page,
+//! because the page may already be gone. It refuses an armed row (a rule is
+//! retired `off` first, so the removal never silently disarms law), an absent
+//! row, the last row (zero rows on a once-armed workspace is the `Disarmed`
+//! fault, which refuses every write), and a never-armed workspace (landing the
+//! artifact there would create the once-armed marker).
+//!
+//! Exit triad: **0** armed (or already-armed, unchanged), or removed · **1**
+//! refused (an arm fault, drift, a corrupt artifact, a busy write lock, a row
+//! `--remove` may not delete) · **2** bad invocation.
 
 use serde_json::json;
 
@@ -69,6 +79,11 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         ))
     })?;
 
+    let (mode, rev) = match &parsed.act {
+        Act::Remove => return remove(&parsed, &canonical),
+        Act::Arm { mode, rev } => (*mode, rev.clone()),
+    };
+
     // Discovery through the one shared feed (`rules_walk`), so the act arms
     // exactly what `mrd rules` shows — never a second enumeration.
     let anchor = crate::rules_walk::user_anchor(&config::Env::from_process());
@@ -79,16 +94,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // The disk session: flock now, so the artifact read, the compose, and the
     // commit see one world.
     let root = fs::WorkspaceRoot(canonical.clone());
-    let session = ArmSession::open(&root).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::WouldBlock {
-            Fail::with_code(
-                EXIT_REFUSED,
-                "another meridian writer holds .meridian/write.lock — transient; retry".to_owned(),
-            )
-        } else {
-            Fail::tool(format!("cannot take the write lock: {e}"))
-        }
-    })?;
+    let session = open_session(&root)?;
 
     // The standing artifact, strictly parsed. Corrupt refuses the act and the
     // page stays byte-untouched — a clobber would silently disarm unknown rows.
@@ -115,8 +121,8 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         &parsed.root,
         [ArmRequest {
             id: parsed.id.clone(),
-            mode: parsed.mode,
-            attested_rev: parsed.rev.clone(),
+            mode,
+            attested_rev: rev,
         }],
         &pages,
         policy::CheckLimits::default(),
@@ -175,6 +181,103 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         landing.first_arm,
         false,
     );
+    Ok(())
+}
+
+/// Take the write flock both acts run under. Busy is a refusal (exit 1,
+/// transient), any other failure an unreadable workspace (exit 2).
+fn open_session(root: &fs::WorkspaceRoot) -> Result<ArmSession, Fail> {
+    ArmSession::open(root).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::WouldBlock {
+            Fail::with_code(
+                EXIT_REFUSED,
+                "another meridian writer holds .meridian/write.lock — transient; retry".to_owned(),
+            )
+        } else {
+            Fail::tool(format!("cannot take the write lock: {e}"))
+        }
+    })
+}
+
+/// `mrd arm <ID> --remove`: delete an `off` row under the write flock.
+///
+/// # Errors
+/// [`Fail`] exit 1 on every refusal — busy lock, never armed, no or corrupt
+/// artifact, no such row, a row that is not `off`, the last row.
+fn remove(parsed: &Arm, workspace: &std::path::Path) -> Result<(), Fail> {
+    let refuse = |message: String| Fail::with_code(EXIT_REFUSED, message);
+    let root = fs::WorkspaceRoot(workspace.to_path_buf());
+    let session = open_session(&root)?;
+    if !wire_serve::armed_disk::once_armed(&root) {
+        return Err(refuse(
+            "this workspace has never been armed, so its rows govern nothing — removing one \
+             through the arm act would create the once-armed marker and arm the workspace"
+                .to_owned(),
+        ));
+    }
+    let Some(page) = session.artifact() else {
+        return Err(refuse(format!(
+            "no armed-set artifact at {} — there is no row to remove",
+            policy::armed::ARMED_RULES_PATH
+        )));
+    };
+    let mut artifact = parse_artifact(&page).map_err(|corrupt| {
+        refuse(format!(
+            "{corrupt} — the remove act refuses to rewrite an artifact it cannot read"
+        ))
+    })?;
+    let Some(row) = artifact.remove(&parsed.id, &parsed.root) else {
+        return Err(refuse(format!(
+            "no row for `{id}` at arm root `{root}` — `mrd rules --workspace` lists the rows",
+            id = parsed.id,
+            root = parsed.root,
+        )));
+    };
+    if row.mode() != Mode::Off {
+        return Err(refuse(format!(
+            "`{id}` is armed `{mode}` at `{root}` — only an `off` row is removed, so removal \
+             never silently disarms law. Arm it off first: mrd arm {id} --mode off --rev {rev}",
+            id = row.id(),
+            mode = row.mode(),
+            root = row.scope(),
+            rev = row.rev(),
+        )));
+    }
+    if artifact.rows().is_empty() {
+        return Err(refuse(format!(
+            "`{id}` is the artifact's last row — zero rows on an armed workspace attests nothing \
+             and refuses every write (the Disarmed fault). Keep the `off` row",
+            id = row.id(),
+        )));
+    }
+    session
+        .commit(&artifact.render())
+        .map_err(|e| Fail::tool(format!("the remove write failed: {e}")))?;
+
+    match parsed.format {
+        Format::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "workspace": workspace.display().to_string(),
+                "remove": {
+                    "id": row.id().as_str(),
+                    "scope": row.scope().to_string(),
+                    "page": row.page(),
+                    "rev": row.rev(),
+                    "rows_left": artifact.rows().len(),
+                }
+            }))
+            .expect("json"),
+        ),
+        Format::Human => println!(
+            "removed {id} (off) at {scope} — {page} @ {rev}; {left} row(s) left",
+            id = row.id(),
+            scope = row.scope(),
+            page = row.page(),
+            rev = row.rev(),
+            left = artifact.rows().len(),
+        ),
+    }
     Ok(())
 }
 
@@ -300,10 +403,18 @@ fn report(
 #[derive(Debug)]
 struct Arm {
     id: policy::RuleId,
-    mode: Mode,
-    rev: String,
+    act: Act,
     root: ArmRoot,
     format: Format,
+}
+
+/// Which act the invocation asks for.
+#[derive(Debug, PartialEq, Eq)]
+enum Act {
+    /// Attest the resolved page at `rev` in `mode`.
+    Arm { mode: Mode, rev: String },
+    /// Delete the `off` row (`--remove`).
+    Remove,
 }
 
 impl Arm {
@@ -313,11 +424,13 @@ impl Arm {
         let mut rev: Option<String> = None;
         let mut at: Option<String> = None;
         let mut json = false;
+        let mut remove = false;
 
         let mut walk = args.iter();
         while let Some(arg) = walk.next() {
             match arg.as_str() {
                 "--json" => json = true,
+                "--remove" => remove = true,
                 "--mode" | "--rev" | "--at" => {
                     let value = walk
                         .next()
@@ -346,6 +459,24 @@ impl Arm {
         })?;
         let id = policy::RuleId::parse(&id)
             .map_err(|fault| Fail::tool(format!("not a legal rule id: {fault}")))?;
+        let root = Self::root(at.as_deref())?;
+        let format = if json { Format::Json } else { Format::Human };
+
+        if remove {
+            if mode.is_some() || rev.is_some() {
+                return Err(Fail::tool(
+                    "--remove takes no --mode or --rev: it deletes the row as it stands, and only \
+                     an `off` row"
+                        .to_owned(),
+                ));
+            }
+            return Ok(Arm {
+                id,
+                act: Act::Remove,
+                root,
+                format,
+            });
+        }
 
         let mode_word = mode.ok_or_else(|| {
             Fail::tool(format!(
@@ -383,23 +514,25 @@ impl Arm {
             )));
         }
 
-        // The refusal names what was passed and teaches the flag's own law —
-        // the sealed `ArmRoot::parse` fault speaks in artifact terms, so the
-        // wrapper owes the caller the CLI-face constraint and the default.
-        let at_given = at.as_deref().unwrap_or(".");
-        let root = ArmRoot::parse(at_given).map_err(|fault| {
+        Ok(Arm {
+            id,
+            act: Act::Arm { mode, rev },
+            root,
+            format,
+        })
+    }
+
+    /// The `--at` arm root. The refusal names what was passed and teaches the
+    /// flag's own law — the sealed `ArmRoot::parse` fault speaks in artifact
+    /// terms, so the wrapper owes the caller the CLI-face constraint and the
+    /// default.
+    fn root(at: Option<&str>) -> Result<ArmRoot, Fail> {
+        let at_given = at.unwrap_or(".");
+        ArmRoot::parse(at_given).map_err(|fault| {
             Fail::tool(format!(
                 "--at `{at_given}` is not a legal arm root ({fault}) — --at takes a \
                  workspace-relative directory, default `.` (the workspace root)"
             ))
-        })?;
-
-        Ok(Arm {
-            id,
-            mode,
-            rev,
-            root,
-            format: if json { Format::Json } else { Format::Human },
         })
     }
 }
@@ -426,8 +559,13 @@ mod tests {
         ])
         .expect("parses");
         assert_eq!(arm.id.as_str(), "close-verdict");
-        assert_eq!(arm.mode, Mode::Block);
-        assert_eq!(arm.rev, "0123456789abcdef");
+        assert_eq!(
+            arm.act,
+            Act::Arm {
+                mode: Mode::Block,
+                rev: "0123456789abcdef".to_owned()
+            }
+        );
         assert_eq!(arm.root.as_str(), "sessions/s1");
     }
 

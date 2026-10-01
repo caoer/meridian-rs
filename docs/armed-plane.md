@@ -62,7 +62,8 @@ state.
 Author the rule page.
 
 - Registration: `rules/check` (a law) and/or `rules/hook` (a reaction) in
-  `tags:`, plus an `id:` in the rule-id grammar
+  `tags:` — or `rules/middleware` (Part A2) or `rules/query` (Part A3) —
+  plus an `id:` in the rule-id grammar
   (`crates/policy/src/registration.rs`, `RuleId`). One fenced block may carry
   both legs; entry points `check_change` / `on_change`. No folder or filename
   is load-bearing.
@@ -135,7 +136,7 @@ One tag-indexed artifact per workspace (`meridian/armed-rules.md`,
 | `page` | workspace path of the resolved page (override winner) |
 | `rev` | the page rev the row is attested at |
 | `scope` | the arm root: the workspace-relative directory that resolution was narrowed to (`.` = workspace root). `layer:depth` (`workspace:0`) is refused at parse: a head segment with `:` is the address grammar's `root:` qualifier (`address-grammar.md` § 4.1 colon law), never a workspace path. A directory scope is not a page reference; it sits outside the rooted-lane door family (`address-grammar.md` § 4.6), so this refusal stands. |
-| `mode` | checks `off\|warn\|block`; hooks `off\|armed` |
+| `mode` | checks and queries `off\|warn\|block`; middleware, and a middleware + query page, `off\|block`; hooks `off\|armed` |
 
 The act is indivisible and all-or-nothing. It narrows to the arm root's
 chain, resolves through the one resolver, and pins the winner's page and rev,
@@ -148,7 +149,16 @@ so `scope` cannot drift from its resolution. Every fault is reported at once.
   A red check row refuses the write; a red hook row falls silent (a hook never
   vetoes).
 - **Mode vocabulary splits by kind** (the `mode` column above): a hook row with
-  `warn`/`block`, or a check row with `armed`, is refused at the act.
+  `warn`/`block`, or a check row with `armed`, is refused at the act. A page
+  carrying two kinds refuses `ArmFault::DualKind`, with one exception:
+  `rules/middleware` + `rules/query` is one id and one row, and its mode must
+  be one both kinds admit (`off` or `block`).
+- **Removing a row** is `mrd arm <ID> --remove [--at DIR]`, under the same
+  flock. It deletes the (id, arm root) row only when its mode is `off`, reads
+  no page (the page may already be deleted), and refuses an armed row, an
+  absent row, and the artifact's last row: zero rows on a once-armed
+  workspace is the `Disarmed` fault, which refuses every write. Retiring a
+  rule is three steps: arm it `off`, remove the row, delete the page.
 - **A row that will FIRE must LOAD.** Arming attests two layers:
   registration (tag + `id:`) and declaration (`severity:`, `caps:`,
   `budget:`, entry point). Each non-`off` winner is loaded through
@@ -323,6 +333,63 @@ path. `rules/hook` fires on the external-change detector (`watch`).
 
 First-arm `meridian/attested` is a plane-wide permanent flip; arming a
 production workspace is a deployment decision, not this plane's.
+
+---
+
+# Part A3 — Query rules in `mrd check`
+
+A query rule states a rule as SQL over the corpus projection and is judged by
+`mrd check`, never at the write door. It covers what the single-page door
+misses: a multi-file script, a move, a file a tool writes to disk.
+
+## Registration and arming
+
+- Registration: `rules/query` in `tags:` plus an `id:`. The page carries
+  exactly one fenced ```sql block; none, or two, is a load fault, so arming
+  refuses it (`ArmFault::Unloadable`). Optional `control:` names one
+  workspace path.
+- The same page may also carry `rules/middleware`: one id, one armed row,
+  mode `off | block`. The middleware leg reads the ```starlark block, the
+  query leg the ```sql block.
+- **Mode vocabulary: `off | warn | block`.** `warn` is for a page without a
+  write rule.
+- A query leg has no door entry point. The write door, the check gate and the
+  hook feeder each run only the legs a page declares, so a query-only row is
+  inert on every write; a middleware + query row runs its middleware there.
+
+## What `mrd check` runs
+
+`mrd check [--json] [-- PATH…]` adds the armed plane to its verdict:
+
+- **The armed rows.** On a once-armed workspace the artifact must be present,
+  parse, and carry a row (else the `Missing`, `Corrupt`, `Disarmed` faults).
+  Every firing row is verified with the door's own law (`verify_rows`): a
+  drifted page, a missing page, or a mode outside the page's kind is a
+  finding. `off` rows are inert here as at the door.
+- **The queries.** Each firing row whose page is a query runs its SQL against
+  one `:memory:` projection built from the check's own snapshot, the same
+  build as `mrd sql`'s memory lane (mounts, link-target exclusion, base
+  plane). The result must carry a column named `path`; `detail` is optional.
+  A result row is the rule's finding only where that row's arm root governs
+  its path (`ArmedArtifact::select_at`).
+- **The control.** The path `control:` names is expected among the rows: it
+  is never a finding, and its absence is one.
+
+A finding, exit 1: a row of a `block` query; a missing control; a query that
+errors, returns no `path` column, or returns a null `path`; a red armed row;
+an unreadable artifact. `warn` rows print and leave the exit alone.
+
+**Paths.** With `-- PATH…` (workspace-relative or absolute; a directory
+covers what is under it), only path-bearing findings under the paths count:
+query rows and pins. Rule-level findings — a query error, a missing control,
+a red row, an unreadable artifact — count whatever the paths, because a rule
+that cannot run has no answer for any path.
+
+`--commit-gate` gates on the pin plane alone and runs no query.
+
+`--json` carries `rules: [{id, page, mode, rows: [{path, detail}], control,
+error}]`, where `control` is `{path, fired}` or null, and `armed_rows` (the
+artifact state and its red rows).
 
 ---
 

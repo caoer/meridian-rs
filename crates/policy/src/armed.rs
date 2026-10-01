@@ -56,18 +56,21 @@ this set until a re-arm, and nothing arms by tag alone.";
 
 /// How an armed row acts, in the vocabulary its kind admits (§ 4).
 ///
-/// `warn`/`block` is check-enforcement vocabulary; a hook can never veto or
-/// mutate, so hook activation is binary ([`ArmFault::ModeKind`]). A row's kind
-/// is recoverable from its mode (`warn`/`block` ⇒ check, `armed` ⇒ hook), so
-/// the artifact needs no sixth column; `off` alone is shared and never fires.
+/// `warn`/`block` is enforcement vocabulary (check, query; middleware arms
+/// `block` alone); a hook can never veto or mutate, so hook activation is
+/// binary ([`ArmFault::ModeKind`]). The artifact carries no kind column: a
+/// row's kind is re-derived from its pinned page ([`mode_outside_its_kind`]);
+/// `off` alone is shared and never fires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Mode {
     /// Attested-off: the reviewer read the page at this rev and chose not to
     /// activate it. Legal for both kinds; never fires.
     Off,
-    /// Check-only — the door annotates the write but lands it.
+    /// Check or query — the door annotates the write but lands it; `mrd
+    /// check` prints a query's rows and leaves its exit alone.
     Warn,
-    /// Check-only — the door refuses the write.
+    /// Check, middleware or query — the door refuses the write; `mrd check`
+    /// fails on any row of a query.
     Block,
     /// Hook-only — the reaction fires. Binary by law: a hook has no severity axis.
     Armed,
@@ -105,11 +108,14 @@ impl Mode {
     pub fn admits(self, kind: RuleKind) -> bool {
         match self {
             Mode::Off => true,
-            Mode::Warn => kind == RuleKind::Check,
+            Mode::Warn => matches!(kind, RuleKind::Check | RuleKind::Query),
             // Middleware is door law (armed-plane Part A2): its activation word
             // is `block`, which buys the fail-closed red-row semantics a
             // transformer on the door must have.
-            Mode::Block => kind == RuleKind::Check || kind == RuleKind::Middleware,
+            Mode::Block => matches!(
+                kind,
+                RuleKind::Check | RuleKind::Middleware | RuleKind::Query
+            ),
             Mode::Armed => kind == RuleKind::Hook,
         }
     }
@@ -131,11 +137,29 @@ impl Mode {
     #[must_use]
     pub fn vocabulary(kind: RuleKind) -> &'static str {
         match kind {
-            RuleKind::Check => "off|warn|block",
+            RuleKind::Check | RuleKind::Query => "off|warn|block",
             RuleKind::Hook => "off|armed",
             RuleKind::Middleware => "off|block",
         }
     }
+
+    /// Whether a page registering `kinds` may arm in this mode: the kinds form
+    /// one armable set ([`armable_kinds`]) and EVERY kind admits the mode. One
+    /// answer for the act and for re-verification, so a hand-edited row cannot
+    /// reach for a power one of its page's legs does not have.
+    #[must_use]
+    pub fn admitted_by(self, kinds: &[RuleKind]) -> bool {
+        armable_kinds(kinds) && kinds.iter().all(|kind| self.admits(*kind))
+    }
+}
+
+/// Whether one armed row can carry a page registering `kinds`. One kind
+/// always; two kinds only as `rules/middleware` + `rules/query` (armed-plane
+/// Part A3): the write rule and the query that states the same law, one id and
+/// one row. Every other pair has no single mode vocabulary.
+#[must_use]
+pub fn armable_kinds(kinds: &[RuleKind]) -> bool {
+    matches!(kinds, [_] | [RuleKind::Middleware, RuleKind::Query])
 }
 
 impl std::fmt::Display for Mode {
@@ -453,8 +477,9 @@ pub enum ArmFault {
         /// The root the resolution was narrowed to.
         root: ArmRoot,
     },
-    /// The resolved page carries BOTH registration tags, so its row's `mode` column
-    /// has no single vocabulary. Discovery admits such a page deliberately; arming
+    /// The resolved page carries two registration kinds that are not the one
+    /// armable pair ([`armable_kinds`]), so its row's `mode` column has no single
+    /// vocabulary. Discovery admits such a page deliberately; arming
     /// is where the ambiguity has to be answered, and it is answered fail-closed.
     DualKind {
         /// The id that was asked for.
@@ -607,13 +632,12 @@ impl std::fmt::Display for ArmFault {
             ),
             ArmFault::DualKind { id, page } => write!(
                 f,
-                "id `{id}` resolves to `{page}`, which carries BOTH `{check}` and `{hook}` — its \
-                 row's mode has no single vocabulary ({check_vocab} for a check, {hook_vocab} for \
-                 a hook). Split it into two pages with distinct ids, one per plane",
-                check = RuleKind::Check.tag(),
-                hook = RuleKind::Hook.tag(),
-                check_vocab = Mode::vocabulary(RuleKind::Check),
-                hook_vocab = Mode::vocabulary(RuleKind::Hook),
+                "id `{id}` resolves to `{page}`, which carries more than one registration kind — \
+                 its row's mode has no single vocabulary. The one pair that arms as one row is \
+                 `{middleware}` + `{query}`; split any other page into two pages with distinct \
+                 ids, one per plane",
+                middleware = RuleKind::Middleware.tag(),
+                query = RuleKind::Query.tag(),
             ),
             ArmFault::ModeKind {
                 id,
@@ -635,6 +659,8 @@ impl std::fmt::Display for ArmFault {
                     RuleKind::Middleware =>
                         "middleware is door law with no warn tier: it is off, or it acts with \
                          the power to refuse (`block`)",
+                    RuleKind::Query =>
+                        "`armed` is hook vocabulary; a query declares how hard its rows count",
                 },
             ),
             ArmFault::Drift {
@@ -747,14 +773,14 @@ pub fn arm(
             continue;
         }
 
-        let [kind] = winner.kinds() else {
+        if !armable_kinds(winner.kinds()) {
             faults.push(ArmFault::DualKind {
                 id,
                 page: winner.page().to_string(),
             });
             continue;
-        };
-        if !mode.admits(*kind) {
+        }
+        if let Some(kind) = winner.kinds().iter().find(|kind| !mode.admits(**kind)) {
             faults.push(ArmFault::ModeKind {
                 id,
                 page: winner.page().to_string(),
@@ -1150,7 +1176,7 @@ fn mode_outside_its_kind(row: &ArmedRow, bytes: &str) -> Option<Redness> {
         // vocabulary its mode belongs to.
         _ => Vec::new(),
     };
-    if kinds.iter().any(|kind| row.mode.admits(*kind)) {
+    if row.mode.admitted_by(&kinds) {
         return None;
     }
     Some(Redness::mode_outside_kind(kinds))
@@ -2661,7 +2687,8 @@ mod tests {
             assert!(matches!(faults[0], ArmFault::DualKind { .. }), "{faults:?}");
             let rendered = faults[0].to_string();
             assert!(
-                rendered.contains("dual.md") && rendered.contains("Split it into two pages"),
+                rendered.contains("dual.md")
+                    && rendered.contains("split any other page into two pages"),
                 "the refusal names the page and the remedy: {rendered}"
             );
         }
@@ -3281,5 +3308,136 @@ mod tests {
         let page = artifact.render();
         assert_eq!(parse_artifact(&page).expect("parses"), artifact);
         assert!(artifact.select_at("anything.md").is_empty());
+    }
+
+    // ── the query kind (armed-plane Part A3) ──────────────────────────────────
+
+    /// A `rules/query` page: one fenced `sql` block, optionally a `control:`.
+    fn query_page(id: &str, extra_tags: &str, body: &str) -> String {
+        format!(
+            "---\ntags: [type/rule, rules/query{extra_tags}]\nid: {id}\n\
+             paths: [\"**\"]\ncontrol: fixtures/broken.md\n---\n\n# {id}\n\n{body}"
+        )
+    }
+
+    const SQL: &str = "```sql\nSELECT path, 'x' AS detail FROM doc\n```\n";
+    const MIDDLEWARE: &str = "```starlark\ndef middleware(ctx):\n    pass\n```\n";
+
+    fn query_ws(path: &str, page: &str) -> Workspace {
+        Workspace::default().page(ScopeLayer::Workspace, path, page)
+    }
+
+    /// A query arms `warn` and `block`, loads its one SQL statement and its
+    /// control, and declares no door leg — so the write door has nothing of
+    /// it to run.
+    #[test]
+    fn a_query_page_arms_warn_or_block_and_carries_no_door_leg() {
+        let ws = query_ws("rules/q.md", &query_page("q", "", SQL));
+        for mode in [Mode::Warn, Mode::Block, Mode::Off] {
+            arm_one(&ws, "q", mode).unwrap_or_else(|f| panic!("{mode} arms: {f:?}"));
+        }
+        assert_eq!(
+            arm_one(&ws, "q", Mode::Armed).unwrap_err(),
+            vec![ArmFault::ModeKind {
+                id: id("q"),
+                page: "rules/q.md".into(),
+                kind: RuleKind::Query,
+                mode: Mode::Armed,
+            }]
+        );
+
+        let registration = crate::registration::register_page(PageRef {
+            layer: ScopeLayer::Workspace,
+            page: "rules/q.md",
+            bytes: ws.bytes("rules/q.md"),
+        })
+        .unwrap()
+        .unwrap();
+        let rule = load_rule(
+            &registration,
+            ws.bytes("rules/q.md"),
+            CheckLimits::default(),
+        )
+        .expect("loads");
+        let leg = rule.query().expect("the query leg");
+        assert_eq!(leg.sql(), "SELECT path, 'x' AS detail FROM doc\n");
+        assert_eq!(leg.control(), Some("fixtures/broken.md"));
+        assert!(
+            rule.check_source().is_none()
+                && rule.middleware_source().is_none()
+                && rule.hook().is_none(),
+            "a query declares no leg the door runs"
+        );
+    }
+
+    /// Middleware + query is the one pair that arms as one row, and only in a
+    /// mode both admit; any other pair stays `DualKind`.
+    #[test]
+    fn middleware_and_query_share_one_row_in_block_only() {
+        let both = query_ws(
+            "rules/mq.md",
+            &query_page("mq", ", rules/middleware", &format!("{MIDDLEWARE}\n{SQL}")),
+        );
+        let row = arm_one(&both, "mq", Mode::Block).expect("middleware + query arms block");
+        assert_eq!(row.rows()[0].mode(), Mode::Block);
+        assert_eq!(
+            both.index().registered()[0].kinds(),
+            [RuleKind::Middleware, RuleKind::Query]
+        );
+        assert!(matches!(
+            arm_one(&both, "mq", Mode::Warn).unwrap_err()[0],
+            ArmFault::ModeKind {
+                kind: RuleKind::Middleware,
+                mode: Mode::Warn,
+                ..
+            }
+        ));
+
+        let check_query = query_ws(
+            "rules/cq.md",
+            &query_page(
+                "cq",
+                ", rules/check",
+                &format!("```starlark\ndef check_change(change):\n    pass\n```\n\n{SQL}"),
+            ),
+        );
+        assert!(matches!(
+            arm_one(&check_query, "cq", Mode::Block).unwrap_err()[0],
+            ArmFault::DualKind { .. }
+        ));
+    }
+
+    /// Not exactly one `sql` block does not load, so it cannot arm.
+    #[test]
+    fn a_query_page_without_exactly_one_sql_block_does_not_arm() {
+        for (body, says) in [
+            ("no block here\n", "no fenced ```sql block"),
+            (&*format!("{SQL}\n{SQL}"), "2 fenced ```sql blocks"),
+            ("```sql\n\n```\n", "empty"),
+        ] {
+            let ws = query_ws("rules/q.md", &query_page("q", "", body));
+            let faults = arm_one(&ws, "q", Mode::Block).expect_err("does not load");
+            let text = faults[0].to_string();
+            assert!(
+                matches!(faults[0], ArmFault::Unloadable { .. }) && text.contains(says),
+                "{text}"
+            );
+        }
+    }
+
+    /// A row armed against a query page, read by an engine that verifies the
+    /// page's kinds, stays standing; the same row hand-edited to `armed`
+    /// reddens.
+    #[test]
+    fn a_query_row_verifies_and_a_hook_mode_on_it_reddens() {
+        let ws = query_ws("rules/q.md", &query_page("q", "", SQL));
+        let artifact = arm_one(&ws, "q", Mode::Block).expect("arms");
+        assert_eq!(artifact.verify(&ws).firing().len(), 1);
+        let tampered = parse_artifact(&artifact.render().replace("| `block` |", "| `armed` |"))
+            .expect("parses");
+        assert!(matches!(
+            tampered.verify(&ws).red()[0].why(),
+            Redness::ModeOutsideKind { .. }
+        ));
     }
 }
