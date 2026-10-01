@@ -2013,9 +2013,9 @@ pub(crate) mod tests {
             assert_eq!(cols, ref_cols, "main.{name} columns drifted from the build");
         }
         // 12 md relations + the three `.base` relations (`base-projection.md`
-        // §4) + `body` (`body-projection.md`), all under the same
-        // latest-view protocol.
-        assert_eq!(cached.len(), 16, "16 caller-facing relations");
+        // §4) + `body` (`body-projection.md`) + `frontmatter_fault`, all
+        // under the same latest-view protocol.
+        assert_eq!(cached.len(), 17, "17 caller-facing relations");
 
         // Each column once, per relation — the literal card assertion.
         for (name, columns) in &cached {
