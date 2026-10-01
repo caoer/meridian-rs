@@ -766,3 +766,75 @@ fn the_caps_empty_hook_shape_arms_clean() {
         "the once-armed marker landed"
     );
 }
+
+/// A middleware that refuses every birth under `notes/`.
+const NO_NOTES: &str = r#"---
+tags: [type/rule, rules/middleware]
+id: 000-no-notes
+paths:
+  - notes/**
+---
+
+# 000-no-notes
+
+```starlark
+def middleware(ctx):
+    if ctx.op == "create":
+        refuse(message = "no_notes: notes are born by the ingest lane", passing = "rules/no-notes.md#legal")
+```
+"#;
+
+/// A def whose births land in the rule's scope.
+const NOTE_DEF: &str = r#"---
+type: def
+defines: note
+births: notes/{{id}}.md
+---
+
+# Properties ^properties
+
+# Template ^template
+
+```record
+---
+type: note
+---
+
+# {{id}}
+```
+"#;
+
+/// An armed rule refusing `mrd new` is the engine refusing the caller's birth: exit 1, the
+/// rule's teaching line first on stderr (never a Rust `Debug` dump of the error body), the
+/// `{workspace, error}` frame under `--json`, and nothing born — the same answer `put` gives.
+#[test]
+fn a_rule_refusing_mrd_new_answers_as_every_write_door_does() {
+    let s = sandbox();
+    s.write("rules/no-notes.md", NO_NOTES);
+    s.write("presets/note.md", NOTE_DEF);
+    let rev = s.reviewed_rev("000-no-notes");
+    s.stdout(&["arm", "000-no-notes", "--mode", "block", "--rev", &rev]);
+
+    let human = s.run(&["new", "note", "n1"]);
+    let err = String::from_utf8_lossy(&human.stderr);
+    assert_eq!(human.status.code(), Some(1), "a rule refusal is a finding: {err}");
+    let first = err.lines().next().unwrap_or_default();
+    assert!(
+        first.contains("no_notes: notes are born by the ingest lane"),
+        "the first stderr line is the refusal: {err}"
+    );
+    assert!(!err.contains("ErrorBody"), "no Debug dump: {err}");
+
+    let json = s.run(&["new", "note", "n1", "--json"]);
+    assert_eq!(json.status.code(), Some(1));
+    let frame: serde_json::Value =
+        serde_json::from_slice(&json.stdout).expect("the --json frame parses");
+    assert!(
+        frame["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("no_notes")),
+        "the frame carries the refusal: {frame}"
+    );
+    assert!(frame["workspace"].is_string(), "{frame}");
+    assert!(!s.ws.join("notes/n1.md").exists(), "a refusal births nothing");
+}

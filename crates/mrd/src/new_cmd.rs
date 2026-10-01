@@ -17,8 +17,9 @@ fn refused(message: String) -> Fail {
 /// Run `mrd new <kind> <id> [--dry] [--actor A] [--now T] [--json]`.
 ///
 /// # Errors
-/// A tool failure (exit 2) — bad usage, an unreadable workspace, a def that is not a def, or a
-/// faulting write — or a birth refusal (exit 1) rendered from the closed-taxonomy reason.
+/// A tool failure (exit 2) — bad usage, an unreadable workspace, a def that is not a def — or a
+/// birth refusal (exit 1): the closed-taxonomy reason, or the write door's own refusal (an armed
+/// rule) rendered as every write door renders it.
 pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
     let parsed = Parsed::parse(args)?;
     // Not yet converted to the rooted lane — see [`crate::preset_cmd::refuse_rooted`].
@@ -32,7 +33,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
         dry: parsed.dry,
     };
     let outcome = preset::new_record(&root, &def_path, &parsed.id, &opts)
-        .map_err(|e| Fail::tool(e.to_string()))?;
+        .map_err(|e| crate::preset_cmd::preset_fail(parsed.format, &root, e))?;
 
     match parsed.format {
         Format::Json => println!(

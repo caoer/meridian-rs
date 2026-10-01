@@ -30,8 +30,8 @@ pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
         now: parsed.now,
         dry: parsed.dry,
     };
-    let report =
-        preset::unfold(&root, &preset_path, &opts).map_err(|e| Fail::tool(e.to_string()))?;
+    let report = preset::unfold(&root, &preset_path, &opts)
+        .map_err(|e| crate::preset_cmd::preset_fail(parsed.format, &root, e))?;
 
     match parsed.format {
         Format::Json => println!(
