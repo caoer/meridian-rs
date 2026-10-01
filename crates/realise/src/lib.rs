@@ -619,7 +619,10 @@ fn mint_board_card(
         // body's Debug dump; a message-less body names its code.
         Err(e) => Err(RealiseError::CardMint {
             selector: selector.to_owned(),
-            reason: e.message.unwrap_or_else(|| format!("{:?}", e.code)),
+            reason: match &e.message {
+                Some(message) => message.clone(),
+                None => format!("{:?}", e.code),
+            },
         }),
     }
 }

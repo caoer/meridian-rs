@@ -1405,7 +1405,7 @@ fn birth(
         Err(e) if e.is_path_occupied() => {
             Ok(BirthResult::Occupied(RefusalReason::cas_mismatch(path)))
         }
-        Err(e) => Err(PresetError::Write(Box::new(e))),
+        Err(e) => Err(PresetError::Write(e)),
     }
 }
 
