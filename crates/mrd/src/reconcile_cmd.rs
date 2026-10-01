@@ -32,7 +32,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
         dry: parsed.dry,
     };
     let report = preset::reconcile(&root, &preset_path, parsed.prune, &opts)
-        .map_err(|e| Fail::tool(e.to_string()))?;
+        .map_err(|e| crate::preset_cmd::preset_fail(parsed.format, &root, e))?;
 
     match parsed.format {
         Format::Json => println!(

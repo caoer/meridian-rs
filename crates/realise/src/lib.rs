@@ -615,9 +615,14 @@ fn mint_board_card(
         // verdict, and swallowing one of THOSE would report a card that was
         // never minted.
         Err(e) if e.is_path_occupied() => Ok(None),
+        // The refusal's own sentence (an armed rule's teaching line), never the
+        // body's Debug dump; a message-less body names its code.
         Err(e) => Err(RealiseError::CardMint {
             selector: selector.to_owned(),
-            reason: format!("{e:?}"),
+            reason: match &e.message {
+                Some(message) => message.clone(),
+                None => format!("{:?}", e.code),
+            },
         }),
     }
 }

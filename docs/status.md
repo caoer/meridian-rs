@@ -474,7 +474,11 @@ mrd script [--json] [--expect-armed DIGEST]
  own automatic touch-set premises; wire callers
  may still send `guards[]` on the `script` op (§5.4)
 mrd new <KIND> <ID> file birth: fill the def's template, validate, birth
- the first rev through the guarded create
+ the first rev through the guarded create. A write
+ door refusal (an armed rule) is the put door's
+ refusal family on new, unfold and reconcile alike:
+ exit 1, the refusal's line on stderr,
+ {workspace,error} under --json
 mrd unfold <PRESET> materialize a preset's declared scaffold
 mrd reconcile <PRESET> reconcile the tree toward a preset's declared scaffold
 mrd realise <PAGE> [--dry] [--json]

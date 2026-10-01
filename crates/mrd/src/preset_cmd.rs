@@ -65,3 +65,19 @@ pub(crate) fn def_path(token: &str) -> String {
         format!("presets/{token}.md")
     }
 }
+
+/// A preset verb's failure, on the triad every write door uses: the write door's refusal (an
+/// armed rule, a bad scaffold path, an I/O fault at the door) is the engine refusing the caller's
+/// birth, so it renders through [`crate::engine::json_refusal`] — exit 1, the refusal's own
+/// teaching line on stderr, the `{workspace, error}` frame under `--json`. A def that cannot be
+/// loaded is a tool failure (exit 2).
+pub(crate) fn preset_fail(
+    format: crate::Format,
+    root: &fs::WorkspaceRoot,
+    error: preset::PresetError,
+) -> Fail {
+    match error {
+        preset::PresetError::Write(body) => crate::engine::json_refusal(format, &root.0, &body),
+        other => Fail::tool(other.to_string()),
+    }
+}

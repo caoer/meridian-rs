@@ -110,7 +110,7 @@ pub struct PresetDef {
 /// A tool-level failure (mrd exit 2): the def could not be loaded or a birth
 /// faulted for a reason other than the guarded `if_absent` CAS. Distinct from a
 /// [`RefusalReason`] finding (exit 1).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PresetError {
     /// The def page could not be read (missing, unreadable).
     Io(String),
@@ -121,9 +121,11 @@ pub enum PresetError {
         /// The `type:` value found (or `"(absent)"`).
         found: String,
     },
-    /// A birth faulted at the write door for a reason other than the CAS (a bad
-    /// path in the scaffold, an I/O failure) — the wire error, surfaced.
-    Write(String),
+    /// The write door refused a birth for a reason other than the CAS (an
+    /// armed rule, a bad path in the scaffold, an I/O failure) — the wire's
+    /// error body, kept whole so a client renders it as every other write
+    /// door's refusal.
+    Write(Box<wire::ErrorBody>),
 }
 
 impl std::fmt::Display for PresetError {
@@ -136,7 +138,10 @@ impl std::fmt::Display for PresetError {
                     "{path} is not a preset def (type: {found}, expected def)"
                 )
             }
-            PresetError::Write(e) => write!(f, "birth faulted at the write door: {e}"),
+            PresetError::Write(e) => match &e.message {
+                Some(message) => write!(f, "the write door refused the birth: {message}"),
+                None => write!(f, "the write door refused the birth: {:?}", e.code),
+            },
         }
     }
 }
@@ -1400,7 +1405,7 @@ fn birth(
         Err(e) if e.is_path_occupied() => {
             Ok(BirthResult::Occupied(RefusalReason::cas_mismatch(path)))
         }
-        Err(e) => Err(PresetError::Write(format!("{e:?}"))),
+        Err(e) => Err(PresetError::Write(e)),
     }
 }
 
