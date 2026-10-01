@@ -442,12 +442,13 @@ mrd skill hook emit the commit-fence contract to stdout: the markdown
 mrd status [--cwd PATH] [--json]
  the bare drift + freshness summary (pure-local,
  O(armed), fetch-less)
-mrd sql <QUERY> [--fresh] [--rebuild] [--cwd PATH | --root NAME] [--json]
+mrd sql [--fresh] [--rebuild] [--cwd PATH | --root NAME] [--json] [--] <QUERY>
  **operator face** — SQL over an in-process projection
  of the corpus, served from the drawer's `sql.duckdb`
  cache when a cache root resolves, else an ephemeral
  `:memory:` build (NOT agent core; see § Operator SQL
- face below)
+ face below). `--` ends the flags: the next argument is
+ the query even when it opens with a `--` SQL comment
 mrd test --corpus <SPEC> the pre-arming corpus runner over synthetic changes
 mrd test --history <WS> --rule <PAGE> [--spec <PAGE>]
  the same law replayed against the workspace's own past;

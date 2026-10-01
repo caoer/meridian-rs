@@ -85,6 +85,19 @@ impl SqlArgs {
         let mut i = 0;
         while i < tail.len() {
             let arg = tail[i].as_str();
+            // `--` ends the flags: every later argument is positional, so a
+            // query opening with a `--` SQL comment reaches the query slot.
+            if arg == "--" {
+                for rest in &tail[i + 1..] {
+                    if query.is_some() {
+                        return Err(Fail::tool(format!(
+                            "unexpected argument: {rest} (the query is a single argument — quote it)"
+                        )));
+                    }
+                    query = Some(rest.clone());
+                }
+                break;
+            }
             // `--flag=value` split.
             let (flag, inline) = match arg.split_once('=') {
                 Some((f, v)) => (f, Some(v.to_owned())),
@@ -108,7 +121,9 @@ impl SqlArgs {
                     root = Some(v);
                 }
                 other if other.starts_with('-') => {
-                    return Err(Fail::tool(format!("unknown flag: {other}")));
+                    return Err(Fail::tool(format!(
+                        "unknown flag: {other} (a query that starts with `-` goes after `--`)"
+                    )));
                 }
                 _ if query.is_none() => query = Some(arg.to_owned()),
                 _ => {
@@ -1066,6 +1081,17 @@ mod tests {
         let args = SqlArgs::parse(&["SELECT 1".to_owned()]).expect("parse");
         assert!(!args.fresh && !args.json && !args.rebuild);
         assert_eq!(args.query.as_deref(), Some("SELECT 1"));
+    }
+
+    #[test]
+    fn parse_separator_admits_a_query_opening_with_a_comment() {
+        let q = "-- c\nSELECT 1";
+        let args = SqlArgs::parse(&["--json".to_owned(), "--".to_owned(), q.to_owned()])
+            .expect("parse after --");
+        assert!(args.json);
+        assert_eq!(args.query.as_deref(), Some(q));
+        assert!(SqlArgs::parse(&[q.to_owned()]).is_err());
+        assert!(SqlArgs::parse(&["--".to_owned(), q.to_owned(), "x".to_owned()]).is_err());
     }
 
     #[test]

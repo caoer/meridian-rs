@@ -543,7 +543,9 @@ usage:
   mrd cache ls             list registered drawers.
 ! mrd cache clean [--all]  reap stale / orphaned / retired drawers (--all:
                            every drawer).
-  mrd sql <query> [--fresh] [--json] [--rebuild] [--cwd PATH | --root NAME]
+  mrd sql [--fresh] [--json] [--rebuild] [--cwd PATH | --root NAME] [--] <query>
+                           -- ends the flags: the next argument is the
+                           query even when it opens with a -- comment.
                            SQL over the corpus projection (honest-tense
                            freshness frame), served from the drawer's
                            append-only sql.duckdb cache when a cache root
