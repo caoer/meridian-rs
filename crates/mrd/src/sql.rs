@@ -955,22 +955,26 @@ fn fold_live(workspace: &Path) -> Result<String, Fail> {
 // ---------------------------------------------------------------------------
 
 /// Emit the frame: one buffered JSON document under `--json` (OD9), else a human
-/// table with the freshness banner. In human mode a SQL error is a loud tool
-/// failure (exit 2); under `--json` it rides the buffered document (the parent
-/// reads `error`).
+/// table with the freshness banner. A SQL error is a tool failure (exit 2) in
+/// both modes: under `--json` the document carrying it in `error` is printed
+/// first, so a caller reading the body and a caller reading the exit code see
+/// the same failure.
 fn emit(args: &SqlArgs, frame: &Frame) -> Result<(), Fail> {
     if args.json {
         println!("{}", frame_json(frame));
-        return Ok(());
     }
     if let Some(error) = &frame.error {
         if frame.state == QueryState::NoView {
-            eprintln!("mrd sql: {error}");
+            if !args.json {
+                eprintln!("mrd sql: {error}");
+            }
             return Err(Fail::tool(format!("NO_VIEW: {error}")));
         }
         return Err(Fail::tool(format!("query failed: {error}")));
     }
-    print_human(frame);
+    if !args.json {
+        print_human(frame);
+    }
     Ok(())
 }
 

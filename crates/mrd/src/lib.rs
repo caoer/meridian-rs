@@ -555,7 +555,10 @@ usage:
                            canonical root name from the machine mount table
                            (§4.6 addendum — the cwd plays no part); an unbound
                            name refuses naming the bound roots. One of
-                           --root/--cwd.
+                           --root/--cwd. Exits: 0 answered / 2 query failed
+                           (parser, binder, refused DML, NO_VIEW) or bad
+                           invocation — --json too, after printing its
+                           UNVERIFIED document with the error.
   mrd status [--cwd PATH]  pure-local drift + freshness: rules line (N
                            armed · M drifted · forced-since-realise:
                            not-tracked — the engine keeps no memory), then the

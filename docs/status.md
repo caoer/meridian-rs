@@ -448,7 +448,12 @@ mrd sql [--fresh] [--rebuild] [--cwd PATH | --root NAME] [--json] [--] <QUERY>
  cache when a cache root resolves, else an ephemeral
  `:memory:` build (NOT agent core; see § Operator SQL
  face below). `--` ends the flags: the next argument is
- the query even when it opens with a `--` SQL comment
+ the query even when it opens with a `--` SQL comment.
+ Exits 0 answered (any freshness state) / 2 the query
+ failed (parser, binder, refused DML, `NO_VIEW`) or bad
+ invocation — the same with and without `--json`;
+ under `--json` a failed query still prints its
+ `UNVERIFIED` document, the engine's words in `error`
 mrd test --corpus <SPEC> the pre-arming corpus runner over synthetic changes
 mrd test --history <WS> --rule <PAGE> [--spec <PAGE>]
  the same law replayed against the workspace's own past;
