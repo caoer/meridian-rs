@@ -428,7 +428,7 @@ fn the_write_classification_is_seventeen_of_thirty_two() {
 #[test]
 fn the_tempdir_and_read_only_verbs_are_not_marked() {
     let listing = listing();
-    for unmarked in ["  mrd test --corpus", "  mrd sql <query>", "  mrd check"] {
+    for unmarked in ["  mrd test --corpus", "  mrd sql [--fresh]", "  mrd check"] {
         assert!(
             listing.contains(unmarked),
             "{unmarked} must stand unmarked:\n{listing}"
