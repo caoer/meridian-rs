@@ -817,7 +817,11 @@ fn a_rule_refusing_mrd_new_answers_as_every_write_door_does() {
 
     let human = s.run(&["new", "note", "n1"]);
     let err = String::from_utf8_lossy(&human.stderr);
-    assert_eq!(human.status.code(), Some(1), "a rule refusal is a finding: {err}");
+    assert_eq!(
+        human.status.code(),
+        Some(1),
+        "a rule refusal is a finding: {err}"
+    );
     let first = err.lines().next().unwrap_or_default();
     assert!(
         first.contains("no_notes: notes are born by the ingest lane"),
@@ -836,5 +840,8 @@ fn a_rule_refusing_mrd_new_answers_as_every_write_door_does() {
         "the frame carries the refusal: {frame}"
     );
     assert!(frame["workspace"].is_string(), "{frame}");
-    assert!(!s.ws.join("notes/n1.md").exists(), "a refusal births nothing");
+    assert!(
+        !s.ws.join("notes/n1.md").exists(),
+        "a refusal births nothing"
+    );
 }
