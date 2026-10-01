@@ -2113,6 +2113,63 @@ pub(crate) mod tests {
         assert_eq!(resolved, 1);
     }
 
+    /// A rooted link written before its target exists resolves once the
+    /// target is born in the OTHER root, with no ambient motion and no
+    /// rebuild (module docs § Rooted rows). The ambient fingerprint never
+    /// moves here, so only the rooted re-resolution can catch it.
+    #[test]
+    fn a_rooted_target_born_later_resolves_at_an_unchanged_fingerprint() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let ambient = corpus(&[
+            ("page.md", "# Page\n\nsee [[b:x.md]] and [[local]]\n"),
+            ("local.md", "# Local\n"),
+        ]);
+        let root = addr::MountName::parse("b").expect("a name");
+        let mounts = addr::MountSet::new([root.clone()]);
+        let dest = |store: &SqlStore| -> Option<String> {
+            store
+                .connection()
+                .query_row(
+                    "SELECT dest_root FROM link WHERE target_raw = 'b:x.md'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("the rooted row")
+        };
+
+        let before = corpus(&[("other.md", "# Other\n")]);
+        let rooted = RootedCorpus::ambient(&ambient).with_root(root.clone(), &before);
+        store
+            .sync(&ambient, &rooted, Some(&mounts), None, "b3b:v1", None)
+            .expect("cold");
+        assert_eq!(dest(&store), None, "x.md is not in b yet: unresolved");
+
+        let after = corpus(&[("other.md", "# Other\n"), ("x.md", "# X\n")]);
+        let rooted = RootedCorpus::ambient(&ambient).with_root(root, &after);
+        let counts = store
+            .sync(&ambient, &rooted, Some(&mounts), None, "b3b:v1", None)
+            .expect("sync");
+        assert_eq!(
+            dest(&store).as_deref(),
+            Some("b"),
+            "x.md born in b: resolved"
+        );
+        assert_eq!(
+            counts.map(|c| c.changed),
+            Some(1),
+            "rooted motion appends at an unchanged fingerprint; page.md alone re-projects"
+        );
+
+        // Settled: the next sync at the same state is a no-op again.
+        assert!(
+            store
+                .sync(&ambient, &rooted, Some(&mounts), None, "b3b:v1", None)
+                .expect("sync")
+                .is_none()
+        );
+    }
+
     /// Spec §7.1 test 3: an identical chunk in two docs stores ONE
     /// `hist.body_text` row, and an edit that leaves a chunk's bytes unchanged
     /// appends no new text row for it — the content-address dedup that keeps
