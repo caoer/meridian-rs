@@ -1545,6 +1545,12 @@ read `cmd=` first). A warm daemon-served `links` emits neither on the
  25 s, leaving the hook pass about 32 s against the harness's 30 s cap. Done
  when a new seat's first prompt stays under 2 s, measured under a burst of 10
  or more seats, with no broken pipe on card birth.
+- **A per-run checkout pays a cold projection every run.** A batch caller that
+ adds a fresh detached git worktree of the wiki for each run and runs `mrd
+ check` inside it (meeting-ingest's gate pass does) opens a new workspace each
+ time, so every run builds the corpus projection from nothing and none of it is
+ reused by the next. Done when a run reuses one workspace, or reads the main
+ root.
 
 Accepted residuals (attestation surfaces) — documented, not prevented. Full statements in
 `wire-contract.md` § Named residuals.
