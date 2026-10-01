@@ -454,9 +454,10 @@ fn dml_against_a_latest_view_refuses_with_the_teaching() {
             "INSERT INTO doc VALUES ('ghost.md', '0000000000000000', 1, 1)",
         ],
     );
-    assert!(
-        out.status.success(),
-        "--json buffers the refusal: {}",
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a refused query exits 2 under --json too: {}",
         stderr(&out)
     );
     let doc = json(&out);
@@ -557,18 +558,41 @@ fn verify_flag_is_refused_at_the_process_boundary() {
 }
 
 // ---------------------------------------------------------------------------
-// a SQL error is a buffered UNVERIFIED frame under --json, loud in human mode
+// a SQL error exits 2 in both modes; under --json it also rides an UNVERIFIED
+// document on stdout
 // ---------------------------------------------------------------------------
 
 #[test]
-fn sql_error_is_buffered_unverified_under_json() {
+fn sql_error_exits_2_with_an_unverified_document_under_json() {
     let sb = sandbox();
     let ws = write_bare_ws(&sb, "err", &[("a.md", "# A\n")]);
 
+    for query in ["SELEC 1", "SELECT nope FROM missing"] {
+        let plain = sb.run(&ws, &["sql", query]);
+        assert_eq!(
+            plain.status.code(),
+            Some(2),
+            "{query}: a failed query exits 2: {}",
+            stderr(&plain)
+        );
+    }
+
+    let parser = sb.run(&ws, &["sql", "--json", "SELEC 1"]);
+    assert_eq!(
+        parser.status.code(),
+        Some(2),
+        "a parser error exits 2 under --json: {}",
+        stderr(&parser)
+    );
+    let doc = json(&parser);
+    assert_eq!(doc["state"], "UNVERIFIED", "no rows to certify: {doc}");
+    assert!(doc["error"].is_string(), "the error rides the doc: {doc}");
+
     let out = sb.run(&ws, &["sql", "--json", "SELECT nope FROM missing"]);
-    assert!(
-        out.status.success(),
-        "--json buffers the SQL error: {}",
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a binder error exits 2 under --json: {}",
         stderr(&out)
     );
     let doc = json(&out);
