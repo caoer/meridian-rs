@@ -2309,6 +2309,15 @@ impl Registry {
             if matches!(cache::probe(&dir), cache::Probe::Hit(_)) {
                 let _ = cache::try_stamp_last_use(&dir);
             }
+            // The storage drawer (sql cache, checkpoint) is stamped here too: nothing else
+            // refreshes its last use, so the age sweep would reap it 30 days after its
+            // birth while in use. Registering first heals a segment that has no sentinel —
+            // a workspace adopted from the state file after a version bump never wrote one,
+            // and a drawer without a sentinel is invisible to every sweep.
+            let dir = cache::drawer_dir(&self.cache_root, &workspace);
+            if let Ok(Some(_)) = cache::try_register(&dir, &workspace) {
+                let _ = cache::try_stamp_last_use(&dir);
+            }
         }
     }
 

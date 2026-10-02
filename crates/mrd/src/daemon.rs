@@ -11,6 +11,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -69,6 +70,7 @@ pub(crate) fn run() -> Result<(), Fail> {
     // is distinguishable from publishing none (`docs/wire-contract.md`).
     config.build_sha = Some(env!("MRD_BUILD_SHA").to_owned());
     install_signal_handlers();
+    let cache_root = config.cache_root.clone();
     let server = RunningServer::start(config)
         .map_err(|e| Fail::tool(format!("cannot start the registry daemon: {e}")))?;
     eprintln!(
@@ -76,6 +78,8 @@ pub(crate) fn run() -> Result<(), Fail> {
         server.socket_path().display()
     );
     eprintln!("press Ctrl-C to stop");
+    // Started only once the singleton is held, so a losing second daemon never sweeps.
+    let sweeper = spawn_sweeper(cache_root);
 
     // Two ways out — a signal, or the idle-exit horizon the reaper watches. A detached daemon is
     // reparented to init, so without the second condition every isolated run leaks one forever.
@@ -84,7 +88,45 @@ pub(crate) fn run() -> Result<(), Fail> {
     }
     eprintln!("shutting down");
     server.shutdown();
+    sweeper.stop();
     Ok(())
+}
+
+/// How often the sweeper asks whether a sweep is due. The sweep itself runs at most once a
+/// day ([`gc::maybe_auto_gc`] keeps that stamp); this only bounds how late a due sweep starts.
+// `Duration::from_hours` is not const-stable at MSRV 1.96; the seconds form is
+// the workspace precedent.
+#[allow(clippy::duration_suboptimal_units)]
+const SWEEP_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// The daemon's cache sweeper: the automatic sweep at start, then whenever it is due.
+/// Without it a host whose agents never run `mrd init` never sweeps.
+struct Sweeper {
+    stop: mpsc::Sender<()>,
+    thread: thread::JoinHandle<()>,
+}
+
+fn spawn_sweeper(cache_root: PathBuf) -> Sweeper {
+    let (stop, stopped) = mpsc::channel::<()>();
+    let thread = thread::spawn(move || {
+        loop {
+            crate::gc::maybe_auto_gc(&cache_root);
+            match stopped.recv_timeout(SWEEP_CHECK_INTERVAL) {
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    });
+    Sweeper { stop, thread }
+}
+
+impl Sweeper {
+    /// Stop the sweeper, waiting out a sweep in progress: a drawer half-removed by an exiting
+    /// process can lose its sentinel first and then no sweep ever sees it again.
+    fn stop(self) {
+        let _ = self.stop.send(());
+        let _ = self.thread.join();
+    }
 }
 
 /// Auto-spawn the resident daemon DETACHED (decision 0002 §3): launch `mrd daemon` in a new

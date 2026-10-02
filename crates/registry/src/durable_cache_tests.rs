@@ -294,6 +294,34 @@ fn periodic_observation_saves_do_not_rewrite_the_parsed_snapshot() {
 }
 
 #[test]
+fn periodic_observation_saves_stamp_and_heal_the_storage_drawer() {
+    let home = tempfile::tempdir().unwrap();
+    let (reg, ws) = fixture(home.path());
+    let dir = cache::drawer_dir(&reg.cache_root, &ws);
+    let sentinel = dir.join("registered.json");
+    let probe_last_use = || match cache::probe(&dir) {
+        cache::Probe::Hit(s) => Some(s.last_use),
+        cache::Probe::Miss => None,
+    };
+
+    // A last use from long ago is refreshed: the storage drawer of a resident
+    // workspace must never age out.
+    let cache::Probe::Hit(mut old) = cache::probe(&dir) else {
+        panic!("registration wrote the storage drawer's sentinel");
+    };
+    old.last_use = 1;
+    disk::write(&sentinel, serde_json::to_vec(&old).unwrap()).unwrap();
+    reg.save_observation_checkpoints();
+    assert!(probe_last_use().unwrap() > 1, "last use refreshed");
+
+    // A segment with no sentinel (adopted from the state file after a version
+    // bump) gets one, so the sweeps can see it.
+    disk::remove_file(&sentinel).unwrap();
+    reg.save_observation_checkpoints();
+    assert!(probe_last_use().is_some(), "sentinel healed");
+}
+
+#[test]
 fn restore_skips_last_use_stamp_while_the_drawer_is_busy() {
     let home = tempfile::tempdir().unwrap();
     let (reg, ws) = fixture(home.path());
