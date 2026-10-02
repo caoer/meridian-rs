@@ -3,8 +3,9 @@
 Pure Starlark evaluation: **rules in, effect descriptors out. Zero I/O, zero
 integration. Advisory-only.** The engine's organ for the `on_change` hook, in
 its own crate. Runs parallel to the resident-daemon spine and touches nothing
-it owns — no splice choke point, no wire I/O, no daemon — and never will. It
-names `wire::PlanEdit` shapes only, which are serde types with zero I/O.
+it owns — no splice choke point, no wire I/O, no daemon — and never will. The
+`wire` types it names (`PlanEdit`, `ReadSel`, `HpathSeg`, `Recovery`) are serde
+shapes with zero I/O.
 
 ```rust
 use effects::{eval, ChangeEvent, Rule};

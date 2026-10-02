@@ -1,6 +1,6 @@
 [package]
 name = "check"
-description = "The check engine (U2.10): the pure READ verb over the run plane — what lies? Layer 0 is rule-free (chain integrity by full recompute of the receipt journal, claims realised by observe-then-compare, and the mechanical journal TRACE that catches a foreign_edit by last-receipt-vs-live). Layer 1 runs the workspace's ARMED RULES read-only over the law policy::resolve_armed_law resolved at the write's own path — the SAME check_change surface the door mounts (U4.2), byte-for-byte. Writes nothing, mints no receipt, needs no cap."
+description = "The check engine (U2.10): the pure READ verb over the run plane — what lies? Layer 0 is rule-free: claims realised by observe-then-compare, and the pin plane (did the pinned content drift, is the pinned blob anchored). Layer 1 runs the workspace's ARMED RULES read-only over the law policy::resolve_armed_law resolved at the write's own path — the SAME check_change surface the door mounts (U4.2), byte-for-byte. Writes nothing, mints no receipt, needs no cap."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,8 +16,7 @@ workspace = true
 # blob (anchored / pending-anchor / never-anchored) from the
 # `ObjectAnchorFacts` the `git` crate gathers.
 receipt = { workspace = true }
-# The workspace root handle + the live §12 tree merkle (`domain_snapshot`) the
-# foreign_edit trace compares against the last receipt's recorded root_after.
+# The workspace root handle (`WorkspaceRoot`) every read takes.
 fs = { workspace = true }
 # The layer-0 claims-realised read reuses the realise engine's pure-detection
 # surface (observe → CheckOutcome) rather than forking it — the SAME check the
@@ -55,10 +54,8 @@ model = { workspace = true }
 addr = { workspace = true }
 
 [dev-dependencies]
-# The end-to-end fixtures mount a REAL tmpdir workspace and seed its journal
-# through the PRODUCTION write path (no in-memory double): a guarded `create`
-# mints real journal rows with real tree roots, then the fixtures splice a forged
-# row (chain) or edit a page out-of-band (foreign_edit).
+# The end-to-end fixtures mount a real tmpdir workspace and write through the
+# production write path (a guarded `create` / `splice`, no in-memory double).
 tempfile = "3"
 wire-serve = { workspace = true }
 wire = { workspace = true }

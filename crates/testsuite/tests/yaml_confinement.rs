@@ -89,7 +89,7 @@ fn declared_kinds(meta: &Value, pkg: &str, dep: &str) -> Vec<String> {
 }
 
 /// The assertion: exactly `{config, policy, view}` take `serde_yaml` as a direct
-/// production dependency. Equality, not containment — a third crate taking it
+/// production dependency. Equality, not containment — any other crate taking it
 /// reddens and is named, and a permitted crate dropping it reddens too.
 #[test]
 fn serde_yaml_direct_production_takers_are_exactly_the_permitted_crates() {
