@@ -12,9 +12,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-# Layer 0 chain recompute: the U2.1 journal primitives — parse the reserved
-# journal page into rows and recompute chain continuity (`check_chain`), catching
-# a spliced/forged row with a row cite.
+# Layer 0 pin anchoring: `receipt::anchor::ObjectAnchor` classifies each pinned
+# blob (anchored / pending-anchor / never-anchored) from the
+# `ObjectAnchorFacts` the `git` crate gathers.
 receipt = { workspace = true }
 # The workspace root handle + the live §12 tree merkle (`domain_snapshot`) the
 # foreign_edit trace compares against the last receipt's recorded root_after.
