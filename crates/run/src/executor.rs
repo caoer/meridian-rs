@@ -1430,7 +1430,7 @@ fn acquire_write_flock(root: &fs::WorkspaceRoot) -> Result<fs::WriteLock, ExecEr
     let deadline = Instant::now() + busy_wait_budget();
     loop {
         match fs::WriteLock::acquire(root) {
-            Ok(lock) => return Ok(lock),
+            Ok(lock) => return Ok(lock.timed("flock.hold.run")),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 if Instant::now() >= deadline {
                     return Err(ExecError::WorkspaceBusy);
