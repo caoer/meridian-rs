@@ -182,7 +182,10 @@ use crate::{
 /// `12`: `hist.frontmatter_fault` + `main.frontmatter_fault` — the strict-YAML
 /// verdict per page (`fm_strict`); a v11 file holds no fault rows for pages
 /// whose fingerprints will not move. Same repair-by-rebuild reasoning as `9`.
-pub const CACHE_SCHEMA_VERSION: i64 = 12;
+///
+/// `13`: `hist.link.candidates` — a v12 file has no such column, so the
+/// link load's INSERT names a column the file lacks.
+pub const CACHE_SCHEMA_VERSION: i64 = 13;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
 pub const SQL_CACHE_FILENAME: &str = "sql.duckdb";
@@ -216,7 +219,7 @@ CREATE TABLE hist.link (
     heading TEXT, block TEXT, alias TEXT,
     dest_path TEXT, dest_root TEXT, dest_root_path TEXT, exclusion TEXT,
     exclusion_path TEXT,
-    span_start UBIGINT, span_end UBIGINT, node_rev TEXT
+    span_start UBIGINT, span_end UBIGINT, node_rev TEXT, candidates TEXT[]
 );
 CREATE TABLE hist.tag (
     path TEXT, gen BIGINT, seq UBIGINT, tag TEXT,
@@ -292,7 +295,7 @@ CREATE VIEW main.link AS
            l.alias, l.dest_path, l.dest_root, l.dest_root_path, l.exclusion,
            l.exclusion_path,
            (l.dest_path IS NOT NULL OR l.dest_root IS NOT NULL) AS resolved,
-           l.span_start, l.span_end, l.node_rev
+           l.span_start, l.span_end, l.node_rev, l.candidates
     FROM hist.link l
     SEMI JOIN hist.doc_latest d ON l.src_path = d.path AND l.gen = d.gen;
 CREATE VIEW main.tag AS
@@ -1210,7 +1213,9 @@ impl SqlStore {
                 &src,
                 corpus,
                 mounts,
-            ) {
+            )
+            .0
+            {
                 Some(crate::Dest::Ambient(path)) => (Some(path), None, None),
                 Some(crate::Dest::Rooted { root, path }) => (None, Some(root), Some(path)),
                 None => (None, None, None),
@@ -1352,7 +1357,7 @@ impl SqlStore {
         }
 
         self.append_scalar(&rows.frontmatter, "frontmatter", &generation)?;
-        self.append_scalar(&rows.link, "link", &generation)?;
+        crate::append_links(&self.conn, "hist", Some(&generation), &rows.link)?;
         self.append_scalar(&rows.tag, "tag", &generation)?;
         self.append_scalar(&rows.frontmatter_tag, "frontmatter_tag", &generation)?;
         self.append_scalar(&rows.frontmatter_fault, "frontmatter_fault", &generation)?;
@@ -1884,7 +1889,7 @@ pub(crate) mod tests {
         ),
         (
             "link",
-            "SELECT coalesce(md5(string_agg(src_path || '|' || seq::VARCHAR || '|' || kind || '|' || target_raw || '|' || coalesce(heading,'~N~') || '|' || coalesce(block,'~N~') || '|' || coalesce(alias,'~N~') || '|' || coalesce(dest_path,'~N~') || '|' || coalesce(dest_root,'~N~') || '|' || coalesce(dest_root_path,'~N~') || '|' || coalesce(exclusion,'~N~') || '|' || coalesce(exclusion_path,'~N~') || '|' || resolved::VARCHAR || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY src_path, seq)), 'EMPTY') FROM link",
+            "SELECT coalesce(md5(string_agg(src_path || '|' || seq::VARCHAR || '|' || kind || '|' || target_raw || '|' || coalesce(heading,'~N~') || '|' || coalesce(block,'~N~') || '|' || coalesce(alias,'~N~') || '|' || coalesce(dest_path,'~N~') || '|' || coalesce(dest_root,'~N~') || '|' || coalesce(dest_root_path,'~N~') || '|' || coalesce(exclusion,'~N~') || '|' || coalesce(exclusion_path,'~N~') || '|' || resolved::VARCHAR || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev || '|' || coalesce(candidates::VARCHAR,'~N~'), chr(10) ORDER BY src_path, seq)), 'EMPTY') FROM link",
         ),
         (
             "tag",

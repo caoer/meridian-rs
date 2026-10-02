@@ -3099,6 +3099,15 @@ that guards fine; a class with no refusal.
 ⚠️ **`n` addresses a section inside one file, never which entry of a `files[]`
 request a row belongs to** — see `files[i]`, §A.7 and the §4.4 set form.
 
+**A link's choice is SERVED as a column, never re-derived.** The `link`
+relation publishes `candidates`: every page the written target matches under
+stage 1's candidate rule (§4.5, aliases included), sorted by path, **NULL
+when it matches at most one page** — so a dangling target and a rooted target
+are NULL, `candidates IS NOT NULL` is the choice predicate, and
+`unnest(candidates)` names the pages. `dest_path` is the pick among them; the
+projector takes the set and the pick from one call to the candidate rule, so a
+query never rebuilds the matching in SQL.
+
 **The CLI ladder.** `mrd sql` asks the resident daemon first (this op), then
 the drawer file when unheld, then `:memory:`. One ladder, no profile
 distinction; only `--rebuild` goes direct.

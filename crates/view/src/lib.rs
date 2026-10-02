@@ -543,36 +543,19 @@ fn walk(
             heading,
             block,
             alias,
-        } => {
-            let dest = resolve_dest(
-                index,
-                target,
-                heading.as_deref(),
-                block.as_deref(),
-                path,
-                corpus,
-                mounts,
-            );
-            emit_link(
-                node,
-                path,
-                "wikilink",
-                target,
-                heading.as_deref(),
-                block.as_deref(),
-                alias.as_deref(),
-                dest.as_ref(),
-                counters,
-                rows,
-            );
         }
-        NodeKind::Embed {
+        | NodeKind::Embed {
             target,
             heading,
             block,
             alias,
         } => {
-            let dest = resolve_dest(
+            let kind = if matches!(node.kind, NodeKind::Embed { .. }) {
+                "embed"
+            } else {
+                "wikilink"
+            };
+            let (dest, candidates) = resolve_dest(
                 index,
                 target,
                 heading.as_deref(),
@@ -584,19 +567,30 @@ fn walk(
             emit_link(
                 node,
                 path,
-                "embed",
+                kind,
                 target,
                 heading.as_deref(),
                 block.as_deref(),
                 alias.as_deref(),
                 dest.as_ref(),
+                &candidates,
                 counters,
                 rows,
             );
         }
         NodeKind::Link { target } => {
             emit_link(
-                node, path, "link", target, None, None, None, None, counters, rows,
+                node,
+                path,
+                "link",
+                target,
+                None,
+                None,
+                None,
+                None,
+                &[],
+                counters,
+                rows,
             );
         }
         NodeKind::Tag { name } => emit_tag(node, path, name, counters, rows),
@@ -824,6 +818,7 @@ fn emit_link(
     block: Option<&str>,
     alias: Option<&str>,
     dest: Option<&Dest>,
+    candidates: &[String],
     counters: &mut Counters,
     rows: &mut Rows,
 ) {
@@ -858,7 +853,79 @@ fn emit_link(
         Value::UBigInt(u64c(node.span.start)),
         Value::UBigInt(u64c(node.span.end)),
         Value::Text(node.node_rev.0.clone()),
+        // `candidates` — the set the pick in `dest` came from, kept only when
+        // there was a choice. Always the LAST cell: [`append_links`] splits it off.
+        if candidates.len() > 1 {
+            Value::List(candidates.iter().cloned().map(Value::Text).collect())
+        } else {
+            Value::Null
+        },
     ]);
+}
+
+/// The scalar `link` columns in DDL order — every column but the generated
+/// `resolved` and the trailing `candidates` list.
+const LINK_SCALAR_COLS: &str = "src_path, seq, kind, target_raw, heading, block, alias, \
+     dest_path, dest_root, dest_root_path, exclusion, exclusion_path, span_start, span_end, node_rev";
+
+/// Load staged `link` rows into `{schema}.link`, `candidates` included.
+///
+/// duckdb-rs's appender and parameter binder both refuse LIST values, so the
+/// lists ride a stage: the scalar cells append into one temp table, each
+/// candidate appends as its own `(src_path, seq, path)` row into a second, and
+/// one INSERT … SELECT folds them back with `list(path ORDER BY path)`. The
+/// target sees only that INSERT — the cache's append-only law holds.
+///
+/// `generation` is the cache's `gen` cell, placed second as `hist.link` orders
+/// it; `None` loads the ephemeral `link` table.
+pub(crate) fn append_links(
+    conn: &Connection,
+    schema: &str,
+    generation: Option<&Value>,
+    rows: &[Vec<Value>],
+) -> duckdb::Result<()> {
+    let cols = match generation {
+        Some(_) => LINK_SCALAR_COLS.replacen("src_path, ", "src_path, gen, ", 1),
+        None => LINK_SCALAR_COLS.to_owned(),
+    };
+    conn.execute_batch(&format!(
+        "CREATE OR REPLACE TEMP TABLE link_stage AS SELECT {cols} FROM {schema}.link LIMIT 0;
+         CREATE OR REPLACE TEMP TABLE link_candidate_stage (src_path TEXT, seq UBIGINT, path TEXT);"
+    ))?;
+    {
+        let mut stage = conn.appender_to_catalog_and_db("link_stage", "temp", "main")?;
+        let mut cands = conn.appender_to_catalog_and_db("link_candidate_stage", "temp", "main")?;
+        for row in rows {
+            let Some((list, scalars)) = row.split_last() else {
+                continue;
+            };
+            let mut r: Vec<&Value> = Vec::with_capacity(row.len());
+            r.push(&scalars[0]);
+            r.extend(generation);
+            r.extend(&scalars[1..]);
+            stage.append_row(duckdb::appender_params_from_iter(r))?;
+            if let Value::List(items) = list {
+                for item in items {
+                    cands.append_row(duckdb::appender_params_from_iter([
+                        &scalars[0],
+                        &scalars[1],
+                        item,
+                    ]))?;
+                }
+            }
+        }
+        stage.flush()?;
+        cands.flush()?;
+    }
+    conn.execute_batch(&format!(
+        "INSERT INTO {schema}.link ({cols}, candidates)
+             SELECT s.*, c.candidates FROM temp.main.link_stage s
+             LEFT JOIN (SELECT src_path, seq, list(path ORDER BY path) AS candidates
+                        FROM temp.main.link_candidate_stage GROUP BY src_path, seq) c
+             ON s.src_path = c.src_path AND s.seq = c.seq;
+         DROP TABLE temp.main.link_stage;
+         DROP TABLE temp.main.link_candidate_stage;"
+    ))
 }
 
 /// Column index of `exclusion` in a `link` row, and of the two destination
@@ -946,7 +1013,9 @@ fn emit_task(
 }
 
 /// Resolve wikilink/embed to structural dest: `Ambient` / `Rooted` / `None`
-/// (dangling). Self-ref `[[#H]]` / `[[#^blk]]` → source doc.
+/// (dangling), beside the candidate set an ambient pick was made from (sorted;
+/// empty for a self-ref and for a rooted spelling). Self-ref `[[#H]]` /
+/// `[[#^blk]]` → source doc.
 ///
 /// Split mirrors the link plane (`addr::head_carries_root_separator`). No mount
 /// authority ⇒ rooted spelling stays dangling (not having looked ≠ finding).
@@ -958,14 +1027,17 @@ pub(crate) fn resolve_dest(
     src_path: &str,
     corpus: &model::RootedCorpus<'_>,
     mounts: Option<&addr::MountSet>,
-) -> Option<Dest> {
+) -> (Option<Dest>, Vec<String>) {
     if target.trim().is_empty() {
-        return (heading.is_some() || block.is_some()).then(|| Dest::Ambient(src_path.to_string()));
+        let dest =
+            (heading.is_some() || block.is_some()).then(|| Dest::Ambient(src_path.to_string()));
+        return (dest, Vec::new());
     }
     let Some(mounts) = mounts.filter(|_| addr::head_carries_root_separator(target)) else {
-        return index.resolve_linkpath(target, src_path).map(Dest::Ambient);
+        let (pick, candidates) = index.resolve_linkpath_with_candidates(target, src_path);
+        return (pick.map(Dest::Ambient), candidates);
     };
-    match index.resolve_ref(target, src_path, corpus, mounts) {
+    let dest = match index.resolve_ref(target, src_path, corpus, mounts) {
         model::RefResolution::Ambient(path) => Some(Dest::Ambient(path)),
         model::RefResolution::Rooted { root, path } => Some(Dest::Rooted {
             root: root.to_string(),
@@ -973,7 +1045,8 @@ pub(crate) fn resolve_dest(
         }),
         // Refusals project as dangling: this is a fact table, not a refusal surface.
         _ => None,
-    }
+    };
+    (dest, Vec::new())
 }
 
 /// Link destination — two facts when cross-root, never a joined `root:path` (U21 Q5).
@@ -999,7 +1072,7 @@ impl Rows {
         append_rows(conn, "doc", &self.doc)?;
         append_rows(conn, "frontmatter", &self.frontmatter)?;
         append_rows(conn, "section", &self.section)?;
-        append_rows(conn, "link", &self.link)?;
+        append_links(conn, "main", None, &self.link)?;
         append_rows(conn, "tag", &self.tag)?;
         append_rows(conn, "frontmatter_tag", &self.frontmatter_tag)?;
         append_rows(conn, "frontmatter_fault", &self.frontmatter_fault)?;
@@ -1302,11 +1375,22 @@ mod tests {
             "INSERT INTO section (path, node_seq, hpath, n, heading, level, node_rev, span_start, span_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             &rows.section,
         )?;
-        insert_rows(
-            conn,
-            "INSERT INTO link (src_path, seq, kind, target_raw, heading, block, alias, dest_path, dest_root, dest_root_path, exclusion, exclusion_path, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            &rows.link,
-        )?;
+        // The binder refuses a LIST value, so the reference lane spells the
+        // trailing `candidates` cell as `list_value(?, …)` over its items.
+        for row in &rows.link {
+            let (list, scalars) = row.split_last().expect("link row");
+            let (cell, items): (String, &[Value]) = match list {
+                Value::List(items) => (
+                    format!("list_value({})", vec!["?"; items.len()].join(", ")),
+                    items,
+                ),
+                _ => ("NULL".to_owned(), &[]),
+            };
+            conn.execute(
+                &format!("INSERT INTO link (src_path, seq, kind, target_raw, heading, block, alias, dest_path, dest_root, dest_root_path, exclusion, exclusion_path, span_start, span_end, node_rev, candidates) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {cell})"),
+                duckdb::params_from_iter(scalars.iter().chain(items)),
+            )?;
+        }
         insert_rows(
             conn,
             "INSERT INTO tag (path, seq, tag, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?)",
@@ -1368,7 +1452,7 @@ mod tests {
         ),
         (
             "link",
-            "SELECT coalesce(md5(string_agg(src_path || '|' || seq::VARCHAR || '|' || kind || '|' || target_raw || '|' || coalesce(heading,'~N~') || '|' || coalesce(block,'~N~') || '|' || coalesce(alias,'~N~') || '|' || coalesce(dest_path,'~N~') || '|' || coalesce(dest_root,'~N~') || '|' || coalesce(dest_root_path,'~N~') || '|' || coalesce(exclusion,'~N~') || '|' || coalesce(exclusion_path,'~N~') || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY src_path, seq)), 'EMPTY') FROM link",
+            "SELECT coalesce(md5(string_agg(src_path || '|' || seq::VARCHAR || '|' || kind || '|' || target_raw || '|' || coalesce(heading,'~N~') || '|' || coalesce(block,'~N~') || '|' || coalesce(alias,'~N~') || '|' || coalesce(dest_path,'~N~') || '|' || coalesce(dest_root,'~N~') || '|' || coalesce(dest_root_path,'~N~') || '|' || coalesce(exclusion,'~N~') || '|' || coalesce(exclusion_path,'~N~') || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev || '|' || coalesce(candidates::VARCHAR,'~N~'), chr(10) ORDER BY src_path, seq)), 'EMPTY') FROM link",
         ),
         (
             "tag",
@@ -1491,6 +1575,29 @@ mod tests {
             Value::UBigInt(0),
             Value::UBigInt(1),
             Value::Text("rev".to_string()),
+            Value::Null,
+        ]);
+        // A row with a choice, its candidate paths carrying list-hostile bytes.
+        rows.link.push(vec![
+            Value::Text("d.md".to_string()),
+            Value::UBigInt(1),
+            Value::Text("wikilink".to_string()),
+            Value::Text("d".to_string()),
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Text("d.md".to_string()),
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::UBigInt(2),
+            Value::UBigInt(3),
+            Value::Text("rev".to_string()),
+            Value::List(vec![
+                Value::Text("d.md".to_string()),
+                Value::Text("x/d, 'q' [1].md".to_string()),
+            ]),
         ]);
     }
 

@@ -122,6 +122,10 @@ CREATE TABLE link (
     span_start UBIGINT  NOT NULL,                 -- C1: Wikilink/Link/Embed node span
     span_end   UBIGINT  NOT NULL,
     node_rev   TEXT     NOT NULL,
+    -- Every page the written target matches (the resolver's candidate set,
+    -- sorted by path) when it matches more than one; NULL otherwise, dangling
+    -- and rooted targets included. `dest_path` is the pick among them.
+    candidates TEXT[],
     PRIMARY KEY (src_path, seq),
     CHECK (kind IN ('wikilink','embed','link')),
     CHECK (kind <> 'link' OR dest_path IS NULL),  -- external links never carry a vault dest
@@ -308,7 +312,10 @@ CREATE VIEW tag_all AS                             -- B2: the union — inline +
 /// page's frontmatter block, which the lenient scanner's projected values
 /// cannot carry (`description: a: b` and `description: "a: b"` both project
 /// `a: b`). A v10 projection has no fault rows to serve.
-pub const SCHEMA_VERSION: i32 = 11;
+///
+/// `12`: `link.candidates` — the resolver's candidate set for a written target
+/// that matches more than one page. A v11 projection has no such column.
+pub const SCHEMA_VERSION: i32 = 12;
 
 /// Run the full round-1 DDL against `conn` (8 tables + 4 views).
 ///

@@ -2554,6 +2554,21 @@ impl CorpusIndex {
         pick_source_relative(&self.linkpath_candidates(linkpath), from)
     }
 
+    /// [`CorpusIndex::resolve_linkpath`] together with the set it picked from,
+    /// from ONE evaluation of the candidate rule: `(pick, candidates)`, the
+    /// candidates sorted by path. The sql projection stores both — `dest_path`
+    /// and `link.candidates` — so the two can never disagree.
+    #[must_use]
+    pub fn resolve_linkpath_with_candidates(
+        &self,
+        linkpath: &str,
+        from: &str,
+    ) -> (Option<String>, Vec<String>) {
+        let mut candidates = self.linkpath_candidates(linkpath);
+        candidates.sort();
+        (pick_source_relative(&candidates, from), candidates)
+    }
+
     /// The stage-1 candidate set behind [`CorpusIndex::resolve_linkpath`],
     /// BEFORE the source-relative pick: every vault path the linkpath names
     /// under the same rules (case-insensitive, `.md` optional, a subdir
