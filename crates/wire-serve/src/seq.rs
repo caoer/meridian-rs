@@ -27,9 +27,10 @@ pub trait SeqSink: std::fmt::Debug {
     /// write path answers this frame to its caller.
     ///
     /// An implementor that holds a ring advances it HERE, not after the
-    /// choke-point returns: by the time a detect cycle can take the flock the
-    /// tip already carries the moved root, and reconcile syncs silently (the
-    /// internal-commit arm — the `delta_sink` pattern). Recording after the
+    /// choke-point returns; one that also holds the watcher baseline moves it
+    /// onto the frame's `root_after` in the same act, so a detect cycle
+    /// taking the flock next finds disk equal to the baseline and classifies
+    /// a later external edit against the committed world. Recording after the
     /// flock drops re-opens the detector double-emission window: a cycle in
     /// the gap re-tells the same change as an actor-absent external frame.
     fn committed(&self, frame: &DeltaFrame);

@@ -5,13 +5,19 @@
 //! shared-state wrapping (N connection threads) and a detector — a subscriber
 //! sends no lines, so nothing else would drive reconcile on its behalf.
 //!
-//! # Two producers, one critical section
+//! # Two producers, one critical section, one baseline
 //! The write choke-point allocates its `seq` AND records its frame under the
 //! workspace write flock (`SeqSink::committed`); the detector allocates and
-//! records under the same flock. So a detect cycle taking the flock after a
-//! write finds the tip already at the moved root and syncs silently — the
-//! just-committed change is never re-told as an actor-absent external frame
-//! (the seq:655 double-emission window, closed).
+//! records under the same flock. The law both keep: when a commit releases
+//! the flock, the watcher baseline equals the ring tip. A write door holds it
+//! at two points under its flock ([`DoorPlane`]): before bytes land, a
+//! baseline behind the door's observation tells the pending external change
+//! in its own actor-absent frame, numbered before the commit's; when the
+//! frame is recorded, a baseline at its `root_before` moves onto its
+//! `root_after`. So a just-committed change is never re-told as external
+//! (the seq:655 double-emission window stays closed), an external edit beside
+//! it is never swallowed by it, and a resumed cursor replays one chain — with
+//! or without a subscriber.
 //!
 //! # Flock is the serialization point
 //! Detect reconcile holds the workspace write flock so it never classifies a
@@ -328,7 +334,30 @@ impl WorkspaceRing {
         let observed = registry
             .door_observation(&ws_root.0, &cache, crate::registry::DOOR_COOKIE_TIMEOUT)
             .map_err(|e| io_error_body(&e))?;
-        let disk_root = Root(observed.0);
+        let emitted = self.reconcile_observed(ws_root, &cache, &Root(observed.0))?;
+        let mut state = self.state();
+        state.last_detect = Some(Instant::now());
+        if was_unprimed {
+            // The priming snapshot re-read everything — strictly stronger
+            // than the stat floor; anchor the clock here too.
+            state.last_floor = Some(Instant::now());
+        }
+        Ok(emitted)
+    }
+
+    /// The flock-held step, on an observation the caller just made through
+    /// `cache`: classify the memo's leaf view against the baseline, then
+    /// tell the change or sync silently (`wire_serve::watch::reconcile_delta`
+    /// — bytes read for MOVERS only, each verified against its observed
+    /// leaf). The detector and both write-door points run this one step; the
+    /// caller holds the workspace write flock, so no batch is observed
+    /// mid-landing.
+    fn reconcile_observed(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        cache: &Arc<Mutex<fs::DomainCache>>,
+        disk_root: &Root,
+    ) -> Result<bool, Box<ErrorBody>> {
         // The memo's leaf view, String-spelled: non-UTF-8 NAMES stay
         // baseline-invisible exactly as the snapshot kept them (their leaves
         // still fold into the root; a `wire::Path` cannot spell them).
@@ -341,16 +370,160 @@ impl WorkspaceRing {
         };
         let mut state = self.state();
         let RingState { ring, watch, .. } = &mut *state;
-        let emitted =
-            wire_serve::watch::reconcile_delta(ws_root, ring, watch, &leaves, &disk_root)?
-                .is_some();
-        state.last_detect = Some(Instant::now());
-        if was_unprimed {
-            // The priming snapshot re-read everything — strictly stronger
-            // than the stat floor; anchor the clock here too.
-            state.last_floor = Some(Instant::now());
+        Ok(wire_serve::watch::reconcile_delta(ws_root, ring, watch, &leaves, disk_root)?.is_some())
+    }
+
+    /// Baseline law, before bytes land: a write door holding the flock has
+    /// just observed `observed` through `cache`. A primed baseline behind it
+    /// is an external change no frame has told — told now, in its own
+    /// actor-absent frame, so the commit's frame chains onto it. An unprimed
+    /// watcher is left alone: priming is a full snapshot, a subscriber's
+    /// cost, never a writer's.
+    ///
+    /// Never fails the write. A refused reconcile is logged, and a writer
+    /// still mid-write holds the baseline (the race arm); either way
+    /// [`Self::follow`] then leaves the baseline too, and the detector tells
+    /// the change as external.
+    fn settle(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        cache: &Arc<Mutex<fs::DomainCache>>,
+        observed: &Root,
+    ) {
+        let behind = self
+            .state()
+            .watch
+            .root()
+            .is_some_and(|baseline| baseline != observed);
+        if behind && let Err(e) = self.reconcile_observed(ws_root, cache, observed) {
+            eprintln!("registry: write-door reconcile: {e:?}");
         }
-        Ok(emitted)
+    }
+
+    /// Baseline law, at `committed`: `frame` is recorded and `cache` now
+    /// folds to `observed`. A baseline at the frame's `root_before`, with the
+    /// memo at its `root_after`, follows the commit: the movers are the
+    /// commit's own files, re-read and verified against the memo's leaves,
+    /// and the internal-commit arm syncs silently. Any other state stays for
+    /// the detector — a baseline the door could not settle, a disk already
+    /// past the commit, or a commit's file rewritten before the re-read.
+    fn follow(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        cache: &Arc<Mutex<fs::DomainCache>>,
+        frame: &DeltaFrame,
+        observed: &Root,
+    ) {
+        let at_before = self.state().watch.root() == Some(&frame.delta.root_before);
+        if at_before
+            && *observed == frame.delta.root_after
+            && let Err(e) = self.reconcile_observed(ws_root, cache, observed)
+        {
+            eprintln!("registry: commit baseline follow: {e:?}");
+        }
+    }
+
+    /// The run plane's door point ([`Self::settle`]): its executor folds
+    /// `root_before` itself, so the memo is observed only when a primed
+    /// baseline is behind that root — a run on a workspace nobody watches
+    /// pays nothing.
+    pub(crate) fn settle_run(
+        &self,
+        registry: &crate::Registry,
+        ws_root: &fs::WorkspaceRoot,
+        root_before: &Root,
+    ) {
+        let behind = self
+            .state()
+            .watch
+            .root()
+            .is_some_and(|baseline| baseline != root_before);
+        if behind {
+            let cache = registry.domain_cache(&ws_root.0);
+            if let Err(e) = DoorPlane::new(registry, ws_root, self, &cache).observe() {
+                eprintln!("registry: run door observation: {e}");
+            }
+        }
+    }
+
+    /// The run plane's commit point ([`Self::follow`]): the executor commits
+    /// through its own seam, not the memo's overlay, so the memo is observed
+    /// after the commit — only when the baseline sits at the frame's
+    /// `root_before`.
+    pub(crate) fn follow_run(
+        &self,
+        registry: &crate::Registry,
+        ws_root: &fs::WorkspaceRoot,
+        frame: &DeltaFrame,
+    ) {
+        if self.state().watch.root() != Some(&frame.delta.root_before) {
+            return;
+        }
+        let cache = registry.domain_cache(&ws_root.0);
+        match registry.door_observation(&ws_root.0, &cache, crate::registry::DOOR_COOKIE_TIMEOUT) {
+            Ok(observed) => self.follow(ws_root, &cache, frame, &Root(observed.0)),
+            Err(e) => eprintln!("registry: run commit observation: {e}"),
+        }
+    }
+}
+
+/// One write door's hold on its workspace's delta plane: the ring it
+/// numbers on and the memo it observes through, both used under the door's
+/// flock. It is the door's [`SeqSink`](wire_serve::seq::SeqSink) and the
+/// body of its observation closure, so the baseline law holds at the door's
+/// two points ([`WorkspaceRing::settle`], [`WorkspaceRing::follow`]).
+#[derive(Debug)]
+pub(crate) struct DoorPlane<'a> {
+    registry: &'a crate::Registry,
+    ws_root: &'a fs::WorkspaceRoot,
+    ring: &'a WorkspaceRing,
+    cache: &'a Arc<Mutex<fs::DomainCache>>,
+}
+
+impl<'a> DoorPlane<'a> {
+    pub(crate) fn new(
+        registry: &'a crate::Registry,
+        ws_root: &'a fs::WorkspaceRoot,
+        ring: &'a WorkspaceRing,
+        cache: &'a Arc<Mutex<fs::DomainCache>>,
+    ) -> Self {
+        DoorPlane {
+            registry,
+            ws_root,
+            ring,
+            cache,
+        }
+    }
+
+    /// The door-entry observation (`Registry::door_observation`), with the
+    /// baseline settled onto it before any byte lands.
+    ///
+    /// # Errors
+    /// The observation's own refusal; settling never adds one.
+    pub(crate) fn observe(&self) -> std::io::Result<model::MerkleRoot> {
+        let observed = self.registry.door_observation(
+            &self.ws_root.0,
+            self.cache,
+            crate::registry::DOOR_COOKIE_TIMEOUT,
+        )?;
+        self.ring
+            .settle(self.ws_root, self.cache, &Root(observed.0.clone()));
+        Ok(observed)
+    }
+}
+
+impl wire_serve::seq::SeqSink for DoorPlane<'_> {
+    fn allocate(&self, before: &Root, after: &Root, files: &[wire::DeltaFile]) -> u64 {
+        wire_serve::seq::SeqSink::allocate(self.ring, before, after, files)
+    }
+
+    /// Recorded, then followed. The door's own-write overlay landed in this
+    /// memo, so it already folds to the frame's `root_after` — no second
+    /// observation.
+    fn committed(&self, frame: &DeltaFrame) {
+        self.ring.advance(frame.clone());
+        self.ring
+            .follow(self.ws_root, self.cache, frame, &frame.delta.root_after);
     }
 }
 
@@ -374,9 +547,11 @@ impl wire_serve::seq::SeqSink for WorkspaceRing {
     }
 
     /// The write path's frame, recorded while the choke-point still holds the
-    /// workspace flock — the `delta_sink` pattern, closing the detector
-    /// window on the write paths: a detect cycle taking the flock next finds
-    /// the tip already at the moved root and syncs silently.
+    /// workspace flock. Records only: the ring holds no memo to verify a
+    /// baseline move against, so a door handed this sink directly (the run
+    /// plane's births) leaves the baseline to the detector, which syncs
+    /// silently once the frames chain from it. A door with the workspace memo
+    /// takes a [`DoorPlane`].
     fn committed(&self, frame: &DeltaFrame) {
         self.advance(frame.clone());
     }

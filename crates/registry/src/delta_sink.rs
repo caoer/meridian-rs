@@ -7,7 +7,9 @@
 //! constructor and advances the workspace ring — all inside the executor's
 //! write flock, which is what closes the detector window: by the time a
 //! detect cycle can take the flock, the ring tip already carries the moved
-//! root and `reconcile` syncs silently (the internal-commit arm).
+//! root. It keeps the watcher baseline at the ring tip at the batch's two
+//! points, exactly as a wire door does (`ring::WorkspaceRing::settle_run`,
+//! `follow_run`).
 //!
 //! Degradation posture: the mint never fails a landed commit. A post-commit
 //! fold or receipt read failure logs and skips the frame — the detector's
@@ -21,23 +23,33 @@ use run::executor::{CommitFacts, DeltaSink};
 use wire::Root;
 use wire_serve::seq::SeqSink as _;
 
+use crate::Registry;
 use crate::ring::WorkspaceRing;
 
 /// The registry's sink: one per served run/script call, bound to the bound
 /// workspace's ring. Frames from a multi-commit run chain in commit order
 /// because each commit advances the ring before the next can begin.
 #[derive(Debug)]
-pub(crate) struct RingSink {
+pub(crate) struct RingSink<'a> {
+    registry: &'a Registry,
     ring: Arc<WorkspaceRing>,
 }
 
-impl RingSink {
-    pub(crate) fn new(ring: Arc<WorkspaceRing>) -> Self {
-        RingSink { ring }
+impl<'a> RingSink<'a> {
+    pub(crate) fn new(registry: &'a Registry, ws: &Path) -> Self {
+        RingSink {
+            registry,
+            ring: registry.ring(ws),
+        }
     }
 }
 
-impl DeltaSink for RingSink {
+impl DeltaSink for RingSink<'_> {
+    fn opening(&self, root: &fs::WorkspaceRoot, root_before: &model::MerkleRoot) {
+        self.ring
+            .settle_run(self.registry, root, &Root(root_before.0.clone()));
+    }
+
     fn committed(&self, root: &fs::WorkspaceRoot, facts: &CommitFacts<'_>) {
         // The after tenses: the workspace root folded post-commit (the flock
         // is still the executor's, so disk is settled), and the receipt file
@@ -75,13 +87,15 @@ impl DeltaSink for RingSink {
         // Allocate under the executor's flock and advance in the same act —
         // no allocation gap exists on this producer.
         let seq = self.ring.allocate(&root_before, &root_after, &files);
-        self.ring.advance(wire_serve::write::assemble_delta(
+        let frame = wire_serve::write::assemble_delta(
             seq,
             root_before,
             root_after,
             Some(facts.actor.to_owned()),
             facts.now.map(str::to_owned),
             files,
-        ));
+        );
+        self.ring.advance(frame.clone());
+        self.ring.follow_run(self.registry, root, &frame);
     }
 }

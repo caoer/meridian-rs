@@ -1226,7 +1226,11 @@ fn baseline_an_external_edit_after_a_wire_commit_names_only_its_own_file() {
         let commit = sub.next_frame().expect("the commit's frame arrives");
         external_edit(&ws, "other.md", &format!("# Other\n\nexternal {round}\n"));
         let external = sub.next_frame().expect("the external edit is pushed");
-        assert_eq!(paths_of(&external), ["other.md"], "round {round}: {external}");
+        assert_eq!(
+            paths_of(&external),
+            ["other.md"],
+            "round {round}: {external}"
+        );
         assert_eq!(
             external["delta"]["root_before"], commit["delta"]["root_after"],
             "round {round}: {external}"

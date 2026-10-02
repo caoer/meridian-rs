@@ -580,16 +580,11 @@ impl ScriptHost for LiveHost<'_> {
         };
         let ring = self.registry.ring(&self.ws_path);
         let cache = self.registry.domain_cache(&self.ws_path);
-        let observe = || {
-            self.registry.door_observation(
-                &self.ws_path,
-                &cache,
-                crate::registry::DOOR_COOKIE_TIMEOUT,
-            )
-        };
+        let plane = crate::ring::DoorPlane::new(self.registry, &self.ws, &ring, &cache);
+        let observe = || plane.observe();
         let outcome = wire_serve::write::splice(
             &self.ws,
-            Some(&*ring),
+            Some(&plane),
             &args,
             &[],
             Some(wire_serve::write::ResidentDoor {
@@ -642,7 +637,7 @@ impl ScriptHost for LiveHost<'_> {
         );
         // Delta honesty (§ A.7 effects paragraph): a live run() mints per
         // committed batch through the same sink seam as the § A.8 op arm.
-        let sink = crate::delta_sink::RingSink::new(self.registry.ring(&self.ws_path));
+        let sink = crate::delta_sink::RingSink::new(self.registry, &self.ws_path);
         // The create door's SeqSink for any `md.create` birth this run()
         // commits — numbered frames, same as the § A.8 arm.
         let birth_ring = self.registry.ring(&self.ws_path);
@@ -945,7 +940,8 @@ fn commit(
              retry: re-run the entry",
         ));
     };
-    let observe = || registry.door_observation(ws, &cache, crate::registry::DOOR_COOKIE_TIMEOUT);
+    let plane = crate::ring::DoorPlane::new(registry, &ws_root, &ring, &cache);
+    let observe = || plane.observe();
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if let [path] = paths.as_slice() {
             let args = wire_serve::write::SpliceArgs {
@@ -969,7 +965,7 @@ fn commit(
             };
             wire_serve::write::splice(
                 &ws_root,
-                Some(&*ring),
+                Some(&plane),
                 &args,
                 &[],
                 Some(wire_serve::write::ResidentDoor {
@@ -993,7 +989,7 @@ fn commit(
             };
             wire_serve::write::splice_set_with_cache(
                 &ws_root,
-                Some(&*ring),
+                Some(&plane),
                 &args,
                 &[],
                 Some(wire_serve::write::ResidentDoor {
