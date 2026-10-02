@@ -216,6 +216,22 @@ fn the_agent_plane_form_round_trips_through_the_stored_form() {
             "the rendered face must read back {agent} byte-identically:\n{}",
             stdout(&read),
         );
+        // The head's `bytes` is the length of the body served — read back,
+        // not as stored. One section: its body is everything after its marker.
+        let face = stdout(&read);
+        let declared: usize = face
+            .lines()
+            .skip_while(|l| !l.starts_with("sections["))
+            .nth(1)
+            .and_then(|row| row.rsplit(',').next())
+            .and_then(|cell| cell.parse().ok())
+            .expect("the head declares the body's bytes");
+        let served = face
+            .split_once("\n\n")
+            .and_then(|(_, rest)| rest.split_once('\n'))
+            .map(|(_, body)| body.len())
+            .expect("one body after its marker");
+        assert_eq!(declared, served, "{agent}: declared vs served:\n{face}");
     }
 }
 

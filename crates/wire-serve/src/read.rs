@@ -289,7 +289,7 @@ pub fn composed_read(
 
     if has_sections {
         let sels: Vec<wire::ReadSel> = params.sections.clone().unwrap_or_default();
-        let (body, rendered_sections) = composed_sections(doc, &facts, &sels, header)?;
+        let (body, rendered_sections) = composed_sections(doc, &facts, &sels, &header)?;
         return Ok(ResponseBody::Read {
             path: path.clone(),
             file_rev: NodeRev(file_rev),
@@ -1134,7 +1134,7 @@ fn composed_sections(
     doc: &model::Document,
     facts: &[wire_map::facts::ReadFact],
     sels: &[wire::ReadSel],
-    header: render::Header<'_>,
+    header: &render::Header<'_>,
 ) -> Result<(SectionsRender, Vec<wire::ReadSectionOut>), Box<ErrorBody>> {
     let display = header.display_path;
     if sels.is_empty() {
@@ -1282,19 +1282,27 @@ fn composed_sections(
     };
     let unresolved: Vec<wire::ReadUnresolved> = failures.iter().map(SelFail::row).collect();
     let job = render::RenderJob::Sections {
-        header,
+        header: header.clone(),
         rows: &rows,
         notice: notice.as_deref(),
     };
     // The render face's production configuration — engine (`meridian-*`)
     // blocks are elided from rendered output (`rendered_text`) only.
-    let rendered =
+    let mut rendered =
         render::Renderer::render(&render::ToonRenderer::with_meridian_elision(), doc, &job)
             .map_err(|e| {
                 let mut err = ErrorBody::new(ErrorCode::Internal);
                 err.message = Some(e.to_string());
                 Box::new(err)
             })?;
+    // Each body is read back into the agent plane BEFORE the head takes its
+    // length, so a row's `bytes` is the length of the body this face serves
+    // (wire-contract § A.3 counting law: `bytes` alone declares the served
+    // length). The caller's whole-face pass then has only the head left to read back.
+    for s in &mut rendered.sections {
+        s.content = agent_plane_face(std::mem::take(&mut s.content));
+    }
+    let text = render::sections_toon(header, &rendered.sections, notice.as_deref());
     // `sections[].content` is the raw face — the verbatim bytes `sec_rev` was
     // minted over — so a put built from its content round-trips without
     // silently dropping an elided block. Elision lives in `rendered_text`
@@ -1326,7 +1334,7 @@ fn composed_sections(
         .collect();
     Ok((
         SectionsRender {
-            text: rendered.text,
+            text,
             notice,
             unresolved,
         },
