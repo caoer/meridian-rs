@@ -128,6 +128,22 @@ fn latch() -> ReportLatch {
     ReportLatch::new()
 }
 
+/// No `repos_root` declared — the decl a wiki-path gate passes when the repos
+/// root is not what it measures.
+fn undeclared() -> ReposRootDecl {
+    ReposRootDecl::Undeclared("no ^config block".to_string())
+}
+
+/// `repos_root` keyed by wiki, the shape the first real config has.
+fn by_wiki(pairs: &[(&str, &Path)]) -> ReposRootDecl {
+    ReposRootDecl::ByWiki(
+        pairs
+            .iter()
+            .map(|(wiki, path)| ((*wiki).to_string(), path.display().to_string()))
+            .collect(),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Gate 1 — the measured case binds ONE tree once, through both spellings
 // ---------------------------------------------------------------------------
@@ -169,7 +185,7 @@ fn the_measured_case_yields_one_canonical_mount_not_two() {
             wiki_path: Some(spelling.clone()),
             repos_root: Some(t.repos_root.display().to_string()),
         };
-        let checked = check_in(&env, &table, &latch());
+        let checked = check_in(&env, &table, &undeclared(), &latch());
         assert_eq!(
             checked[0].mount(),
             Some("field-notes"),
@@ -248,20 +264,19 @@ fn canonicalization_dissolves_the_apparent_nesting_of_the_repos_root() {
 // ---------------------------------------------------------------------------
 
 /// The acceptance half: agreement binds silently — no report, on either
-/// variable, through every measured spelling.
+/// variable, through every measured spelling. The repos root agrees with
+/// `repos_root.<wiki>` and is bound by no mount.
 #[test]
 fn agreement_binds_silently_and_names_where_it_resolved_from() {
     let t = the_measured_topology();
-    let table = table_of(&config_of(&[
-        vault_block("field-notes", &t.linked_wiki),
-        folder_block("repos", &t.repos_root),
-    ]));
+    let table = table_of(&config_of(&[vault_block("field-notes", &t.linked_wiki)]));
     let env = BridgeEnv {
         wiki_path: Some(t.slashed_wiki.clone()),
-        repos_root: Some(t.repos_root.display().to_string()),
+        repos_root: Some(format!("{}/", t.repos_root.display())),
     };
+    let repos = by_wiki(&[("field-notes", &t.repos_root)]);
 
-    let checked = check_in(&env, &table, &latch());
+    let checked = check_in(&env, &table, &repos, &latch());
     assert_eq!(checked.len(), 2);
 
     for b in &checked {
@@ -273,7 +288,7 @@ fn agreement_binds_silently_and_names_where_it_resolved_from() {
         );
     }
 
-    // The state change, named: which mount now exists for each variable, and
+    // The state change, named: which mount now exists for the wiki path, and
     // the canonical path it resolved from.
     assert_eq!(checked[0].var(), BridgeVar::WikiPath);
     assert_eq!(checked[0].mount(), Some("field-notes"));
@@ -287,14 +302,20 @@ fn agreement_binds_silently_and_names_where_it_resolved_from() {
         "the wiki resolved from the REAL path, not the symlink spelling the file declares"
     );
     assert_eq!(checked[1].var(), BridgeVar::ReposRoot);
-    assert_eq!(checked[1].mount(), Some("repos"));
+    assert_eq!(
+        checked[1].mount(),
+        None,
+        "the repos root is never a root, so it names no mount even when it agrees"
+    );
+    assert_eq!(checked[1].against(), Some("repos_root.field-notes"));
     assert_eq!(
         checked[1].canonical(),
         Some(
             std::fs::canonicalize(&t.repos_root)
                 .expect("canonicalize")
                 .as_path()
-        )
+        ),
+        "the trailing-slash spelling and the declared one are one tree"
     );
 
     // And the roots really are bound, not merely present.
@@ -320,7 +341,7 @@ fn divergence_reports_once_per_process_and_the_file_wins() {
     };
     let latch = latch();
 
-    let first = check_in(&env, &table, &latch);
+    let first = check_in(&env, &table, &undeclared(), &latch);
     assert_eq!(first[0].state().word(), "diverges");
     assert_eq!(
         first[0].mount(),
@@ -340,7 +361,7 @@ fn divergence_reports_once_per_process_and_the_file_wins() {
     // A per-call warning is a different behaviour — the one that gets the
     // variable unset.
     for call in 2..=5 {
-        let again = check_in(&env, &table, &latch);
+        let again = check_in(&env, &table, &undeclared(), &latch);
         assert_eq!(again[0].state().word(), "diverges", "call {call}");
         assert_eq!(
             again[0].report(),
@@ -360,9 +381,10 @@ fn each_variable_carries_its_own_once() {
         wiki_path: Some(t.dir.path().join("nowhere-a").display().to_string()),
         repos_root: Some(t.dir.path().join("nowhere-b").display().to_string()),
     };
+    let repos = ReposRootDecl::Machine(t.repos_root.display().to_string());
     let latch = latch();
 
-    let first = check_in(&env, &table, &latch);
+    let first = check_in(&env, &table, &repos, &latch);
     assert!(
         first[0].report().is_some() && first[1].report().is_some(),
         "both variables report their own first divergence"
@@ -373,7 +395,7 @@ fn each_variable_carries_its_own_once() {
         "the two reports are different facts"
     );
 
-    let second = check_in(&env, &table, &latch);
+    let second = check_in(&env, &table, &repos, &latch);
     assert!(
         second[0].report().is_none() && second[1].report().is_none(),
         "and neither reports twice"
@@ -392,9 +414,9 @@ fn the_public_entry_point_latches_process_wide() {
         repos_root: None,
     };
 
-    let first = check(&env, &table);
+    let first = check(&env, &table, &undeclared());
     assert_eq!(first[0].state().word(), "diverges");
-    let second = check(&env, &table);
+    let second = check(&env, &table, &undeclared());
     assert_eq!(
         second[0].report(),
         None,
@@ -427,7 +449,7 @@ fn an_empty_table_is_unchecked_in_both_of_its_shapes() {
     let empty = table_of(&config_of(&[]));
 
     for (shape, table) in [("state A", &absent), ("state D", &empty)] {
-        let checked = check_in(&env, table, &latch());
+        let checked = check_in(&env, table, &undeclared(), &latch());
         for b in &checked {
             assert_eq!(
                 b.state().word(),
@@ -453,7 +475,7 @@ fn unset_empty_and_whitespace_state_no_path() {
             wiki_path: stated.clone(),
             repos_root: None,
         };
-        let checked = check_in(&env, &table, &latch());
+        let checked = check_in(&env, &table, &undeclared(), &latch());
         assert_eq!(
             checked[0].state().word(),
             "unset",
@@ -474,7 +496,7 @@ fn an_unresolvable_path_diverges_with_its_own_detail() {
         repos_root: None,
     };
 
-    let checked = check_in(&env, &table, &latch());
+    let checked = check_in(&env, &table, &undeclared(), &latch());
     let BridgeState::Diverges { detail, .. } = checked[0].state() else {
         panic!("an unresolvable path diverges: {:?}", checked[0].state());
     };
@@ -490,7 +512,7 @@ fn an_unresolvable_path_diverges_with_its_own_detail() {
         wiki_path: Some(resolvable.display().to_string()),
         repos_root: None,
     };
-    let checked = check_in(&env, &table, &latch());
+    let checked = check_in(&env, &table, &undeclared(), &latch());
     let BridgeState::Diverges { detail, .. } = checked[0].state() else {
         panic!("an unbound path diverges");
     };
@@ -506,9 +528,12 @@ fn an_unresolvable_path_diverges_with_its_own_detail() {
 fn the_state_words_are_distinct() {
     let words = [
         BridgeState::Unset.word(),
-        BridgeState::Unchecked.word(),
+        BridgeState::Unchecked {
+            detail: String::new(),
+        }
+        .word(),
         BridgeState::Agrees {
-            mount: String::new(),
+            against: String::new(),
             canonical: PathBuf::new(),
         }
         .word(),
@@ -526,4 +551,102 @@ fn the_state_words_are_distinct() {
         BridgeVar::ALL.map(BridgeVar::name),
         [WIKI_PATH_ENV_VAR, REPOS_ROOT_ENV_VAR]
     );
+}
+
+// ---------------------------------------------------------------------------
+// Gate 4 — the repos root's authority is `repos_root.<wiki>`, never a mount
+// ---------------------------------------------------------------------------
+
+/// The repos root is checked against the `repos_root` of the wiki the wiki path
+/// names. A path the table does not mount agrees when the config declares it;
+/// another wiki's repos root diverges, and the note names both values and the
+/// two places to correct — never a mount to add, never a variable to unset.
+#[test]
+fn the_repos_root_is_checked_against_repos_root_of_the_wiki_never_the_mount_table() {
+    let t = the_measured_topology();
+    let other = t.dir.path().join("other-repos");
+    std::fs::create_dir_all(&other).expect("create the other wiki's repos root");
+    let table = table_of(&config_of(&[vault_block("field-notes", &t.linked_wiki)]));
+    assert!(
+        table.by_path(&t.repos_root).is_none(),
+        "precondition: no mount binds the repos root"
+    );
+    let repos = by_wiki(&[("field-notes", &t.repos_root), ("work-wiki", &other)]);
+
+    let agreeing = BridgeEnv {
+        wiki_path: Some(t.slashed_wiki.clone()),
+        repos_root: Some(t.repos_root.display().to_string()),
+    };
+    let checked = check_in(&agreeing, &table, &repos, &latch());
+    assert_eq!(checked[1].state().word(), "agrees", "{:?}", checked[1]);
+    assert_eq!(checked[1].report(), None);
+
+    // Another wiki's repos root is a real divergence for this wiki.
+    let diverging = BridgeEnv {
+        wiki_path: Some(t.slashed_wiki.clone()),
+        repos_root: Some(other.display().to_string()),
+    };
+    let checked = check_in(&diverging, &table, &repos, &latch());
+    assert_eq!(checked[1].state().word(), "diverges");
+    assert_eq!(checked[1].against(), None);
+    let report = checked[1].report().expect("the first divergence reports");
+    for needle in [
+        REPOS_ROOT_ENV_VAR,
+        "repos_root.field-notes",
+        &other.display().to_string(),
+        &t.repos_root.display().to_string(),
+        "mrd config get repos_root.field-notes",
+    ] {
+        assert!(report.contains(needle), "the note names {needle}: {report}");
+    }
+    assert!(
+        !report.contains("meridian-mount") && !report.contains("unset"),
+        "mounting the repos root widens every serving face and unsetting it breaks its \
+         readers — the fix names neither: {report}"
+    );
+
+    // A machine-wide string needs no wiki.
+    let machine = ReposRootDecl::Machine(format!("{}/", t.repos_root.display()));
+    let checked = check_in(&agreeing, &table, &machine, &latch());
+    assert_eq!(checked[1].state().word(), "agrees");
+    assert_eq!(checked[1].against(), Some("repos_root"));
+}
+
+/// With nothing to check against, the repos root is `unchecked` and says what
+/// is missing — a misspelled key reads as missing, never as agreement, and
+/// never as a divergence note.
+#[test]
+fn a_repos_root_with_nothing_to_check_against_is_unchecked_and_says_why() {
+    let t = the_measured_topology();
+    let table = table_of(&config_of(&[vault_block("field-notes", &t.linked_wiki)]));
+    let stated = Some(t.repos_root.display().to_string());
+    let wiki_bound = BridgeEnv {
+        wiki_path: Some(t.slashed_wiki.clone()),
+        repos_root: stated.clone(),
+    };
+    let wiki_unset = BridgeEnv {
+        wiki_path: None,
+        repos_root: stated,
+    };
+    let declared = by_wiki(&[("work-wiki", &t.repos_root)]);
+
+    for (env, repos, why) in [
+        (
+            &wiki_bound,
+            ReposRootDecl::Undeclared("the config declares no `repos_root`".to_string()),
+            "declares no `repos_root`",
+        ),
+        (&wiki_bound, declared.clone(), "no repos_root.field-notes"),
+        (&wiki_unset, declared, WIKI_PATH_ENV_VAR),
+    ] {
+        let checked = check_in(env, &table, &repos, &latch());
+        assert_eq!(checked[1].state().word(), "unchecked", "{repos:?}");
+        let detail = checked[1].state().detail().expect("unchecked says why");
+        assert!(detail.contains(why), "{why}: {detail}");
+        assert_eq!(
+            checked[1].report(),
+            None,
+            "nothing to check is not a divergence"
+        );
+    }
 }

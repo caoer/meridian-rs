@@ -446,7 +446,7 @@ impl MountTable {
     /// symlinked or trailing-slash spelling finds the mount it names.
     #[must_use]
     pub fn by_path(&self, path: &Path) -> Option<&Mount> {
-        let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let target = canonical_or_literal(path);
         self.mounts
             .iter()
             .find(|m| m.canonical.as_deref() == Some(target.as_path()))
@@ -967,6 +967,15 @@ pub fn read_declaration(path: &Path) -> Result<Declaration, DeclarationFault> {
         name: name.to_string(),
         document,
     })
+}
+
+/// The lookup canonicalization: the real path when `path` resolves, the
+/// spelling itself when it does not. [`MountTable::by_path`] and the bridge's
+/// repos-root check both compare through it, so one rule decides when two
+/// spellings name one tree.
+#[must_use]
+pub fn canonical_or_literal(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 #[cfg(test)]
