@@ -1741,7 +1741,8 @@ pub enum ResponseBody {
     /// addressing table (`toc`, mode toc) or the selected sections
     /// (`sections`, mode sections; `truncated`+`notice` = the partial-read
     /// rule), the `anchors` plane, the `props` frontmatter plane, and
-    /// `rendered_text`.
+    /// `rendered_text`. `notice` also carries, on both modes, one entry per
+    /// stored cross-root link served as written because it does not decode.
     Read {
         path: Path,
         file_rev: NodeRev,
@@ -1773,10 +1774,16 @@ pub enum ResponseBody {
         sections: Option<Vec<ReadSectionOut>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         truncated: Option<bool>,
+        /// Entries joined with `; `: the partial-read rule's (unresolved
+        /// selectors, collapsed repeats) and one per stored cross-root link
+        /// served as written, `line <n>: … left as written — <cause> — …`,
+        /// on the toc face too (wire-contract, the composed-read
+        /// `unresolved` plane). `None` = nothing to report.
         #[serde(skip_serializing_if = "Option::is_none")]
         notice: Option<String>,
         /// The unresolved plane (wire-contract § A.3): one row per failed
-        /// section selector, request order — the machine tense of `notice`.
+        /// section selector, request order — the machine tense of `notice`'s
+        /// partial-read entries. A link entry has no row: it is served.
         /// Always emitted — empty means "every selector resolved" (a toc
         /// read trivially so); `serde(default)` keeps decoding tolerant of
         /// older recorded frames.

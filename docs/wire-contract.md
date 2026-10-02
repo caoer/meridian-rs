@@ -1746,6 +1746,16 @@ containment law):**
   tense of the partial-read `notice` and the all-fail refusal (the A.3 symmetry
   law: three tenses of one fact set). `notice` and `truncated` stay unchanged
   beside it, from the same resolution pass, so they cannot disagree.
+- `notice` also carries one entry per governed stored cross-root link the read
+  serves as written because it does not decode (`address-grammar.md` §9.4 P9),
+  on both faces: the sections face reports links inside the served sections,
+  the toc face links inside the served heading lines. Each entry is
+  `line <n>: a stored cross-root link is left as written — <cause> — mrd put
+  re-mints it as a wikilink`, where `<n>` is the link's line in the file and
+  `<cause>` names the decode failure (for a literal `=` in a path, "the `file`
+  parameter is not canon-encoded"). Entries are joined with `; ` and an entry
+  holds no `;`. These entries have no `unresolved` row: the link is served,
+  not a failed selector.
 - Row shape `{sel, reason, candidates, count?, host?, nearest}`:
   - `sel` — the failed selector echoed in its own request grammar
     (`{"hpath":…}` / `{"n":…}` / `{"anchor":…}`): correlate by shape or

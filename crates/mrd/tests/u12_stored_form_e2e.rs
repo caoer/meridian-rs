@@ -411,8 +411,15 @@ fn a_hand_edited_stored_uri_is_served_as_written_and_flagged_on_read_back() {
         "one notice in the header, naming the link:\n{text}",
     );
     assert!(
-        text.contains("line 5: a stored cross-root link is left as written"),
-        "the notice names the link's line in the file:\n{text}",
+        text.contains(
+            "line 5: a stored cross-root link is left as written — its action is not `open` or \
+             `advanced-uri`"
+        ),
+        "the notice names the link's line in the file and the cause:\n{text}",
+    );
+    assert!(
+        !text.contains("refused") && text.matches("re-mints").count() == 1,
+        "a served link's notice is no refusal, and gives the re-mint advice once:\n{text}",
     );
 
     // ACCEPTANCE: the canonical spelling reads back, in the same fixture.
@@ -477,10 +484,15 @@ fn a_non_canonical_file_parameter_reads_at_rc_0_on_both_faces() {
         "the rendered face leaves it as written:\n{rendered}"
     );
     let notice = read["notice"].as_str().expect("a notice");
+    assert_eq!(
+        notice,
+        "line 5: a stored cross-root link is left as written — the `file` parameter is not \
+         canon-encoded — mrd put re-mints it as a wikilink",
+        "the notice names the line and the decode's cause",
+    );
     assert!(
-        notice.starts_with("line 5: a stored cross-root link is left as written")
-            && notice.contains("`file` parameter is not canon-encoded"),
-        "the notice names the line and the decode's words: {notice}",
+        !notice.contains("refused") && !notice.contains(';'),
+        "a served link's entry is no refusal and holds no entry separator: {notice}",
     );
     assert!(
         rendered.contains("notice: "),
@@ -508,6 +520,22 @@ fn a_non_canonical_file_parameter_reads_at_rc_0_on_both_faces() {
     assert_eq!(
         body_rev, read["sections"][0]["sec_rev"],
         "the toc read and the section read agree on the section",
+    );
+    assert!(
+        toc["read"]["notice"].is_null(),
+        "the toc face serves heading text alone, so a link in a body is not its to report: {toc}",
+    );
+
+    // The toc face reports a link inside a served heading line.
+    sb.seed("page.md", &format!("# Page\n\n## Body {link}\n\nplain\n"));
+    let toc = sb.run(&["read", "page.md", "--json"]);
+    assert_eq!(code(&toc), 0, "the toc read serves: {}", stderr(&toc));
+    let toc: serde_json::Value = serde_json::from_str(&stdout(&toc)).expect("json");
+    let notice = toc["read"]["notice"].as_str().expect("a toc-face notice");
+    assert!(
+        notice.starts_with("line 3: a stored cross-root link is left as written — the `file`")
+            && !notice.contains("refused"),
+        "the toc face names the heading's line and the cause: {notice}",
     );
 }
 

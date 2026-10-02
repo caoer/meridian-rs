@@ -211,7 +211,7 @@ document unrepresentable.
 
 ### R1.6-a — the stored→agent re-join, and why it stays
 
-`stored_occupants` (`crates/wire-serve/src/positions.rs:443`) decodes a stored
+`stored_occupants` (`crates/wire-serve/src/positions.rs`) decodes a stored
 URI into parts, then re-joins and re-parses them:
 
 ```rust
@@ -220,8 +220,10 @@ let address = match &parsed.selector {
  Some(sel) => format!("{name}:{}#{sel}", parsed.path),
  None => format!("{name}:{}", parsed.path),
 };
-let occupant = Occupant {
- addr: Addr::parse(&address)…
+let Ok(addr) = Addr::parse(&address) else {
+ untranslated.push(Untranslated { span, error: stored::StoredError::BadPath { … } });
+ continue;
+};
 ```
 
 That is a joined string address on a machine surface, which the machine-surface

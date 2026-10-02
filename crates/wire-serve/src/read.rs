@@ -29,7 +29,7 @@ fn agent_plane_face(rendered: String) -> String {
 
 /// One notice entry per governed stored link inside `served` (byte ranges of
 /// `raw`, the page as stored) that does not decode, so the face leaves it as
-/// written: its line in the file and the decode's own words.
+/// written: its line in the file and the decode's cause ([`link_cause`]).
 fn link_notices(raw: &str, served: &[Span]) -> Vec<String> {
     if !crate::positions::may_carry_stored(raw) {
         return Vec::new();
@@ -47,12 +47,36 @@ fn link_notices(raw: &str, served: &[Span]) -> Vec<String> {
         .map(|u| {
             let line = raw[..u.span.start].matches('\n').count() + 1;
             format!(
-                "line {line}: a stored cross-root link is left as written — {}; re-mint it \
-                 with mrd put to make it a wikilink",
-                u.error
+                "line {line}: a stored cross-root link is left as written — {} — mrd put \
+                 re-mints it as a wikilink",
+                link_cause(&u.error)
             )
         })
         .collect()
+}
+
+/// Why a stored link does not decode, in a notice entry's words.
+///
+/// Built from the variant, not from [`addr::stored::StoredError`]'s `Display`:
+/// that text is a write door's refusal ("refused", "Fix:", the pin sentence),
+/// while a read serves the link. No URI text rides along, so an entry never
+/// holds `;`, the separator between notice entries.
+fn link_cause(error: &addr::stored::StoredError) -> String {
+    use addr::stored::StoredError as E;
+    match error {
+        E::NotStoredForm => "it is not an `obsidian://` stored form".to_string(),
+        E::UnknownAction { .. } => {
+            "its action is not `open` or `advanced-uri`, the canon's two".to_string()
+        }
+        E::BadParams { .. } => {
+            "its parameters are not the canonical sequence for its action".to_string()
+        }
+        E::NonCanonicalEncoding { param, .. } => {
+            format!("the `{param}` parameter is not canon-encoded")
+        }
+        E::EmptyValue { param } => format!("its `{param}` is empty"),
+        E::BadPath { .. } => "its path is not a confined corpus path".to_string(),
+    }
 }
 
 /// The claim-link decoration input, re-exported at the read seam so a host
