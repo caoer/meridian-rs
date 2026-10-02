@@ -2912,27 +2912,34 @@ pub fn sub_dead_instance_teaching(held: &str, live: &str) -> String {
 
 /// One inbound reference blocking a `remove` (§ A.3 remove door): the
 /// referring file, its edge kind, and how many edges it holds. Rows are
-/// path-lex sorted, then kind — a deterministic unlink worklist.
+/// path-lex sorted, then kind, then key — a deterministic unlink worklist.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Referrer {
     /// The referring file's corpus path.
     pub path: String,
     pub kind: ReferrerKind,
+    /// The top-level frontmatter key whose value holds the links — present on
+    /// a [`ReferrerKind::Frontmatter`] row alone, absent from the JSON
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
     /// How many edges of this kind the file holds toward the record.
     pub count: u64,
 }
 
 /// The closed edge-kind vocabulary of the remove door's referential guard:
-/// the corpus link plane's two kinds plus the ambient `meridian-lock` pin
-/// plane (the walk plane's Down direction). Cross-root inbound pins are a
-/// stated limit of the guard (§ A.3), not a fourth kind. `Ord` follows
-/// declaration order and is the refusal's within-file sort.
+/// the corpus link plane's two kinds, the ambient `meridian-lock` pin plane
+/// (the walk plane's Down direction), and wikilinks inside frontmatter
+/// values. Cross-root inbound pins are a stated limit of the guard (§ A.3),
+/// not a kind. `Ord` follows declaration order and is the refusal's
+/// within-file sort.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReferrerKind {
     Wikilink,
     Embed,
     Pin,
+    Frontmatter,
 }
 
 /// The two §4.4 `would_corrupt` families — which identity does not survive the

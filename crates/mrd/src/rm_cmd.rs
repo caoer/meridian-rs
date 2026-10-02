@@ -9,8 +9,9 @@
 //! whole-file rev from a prior read, required at parse — the engine demands it
 //! from every origin, deletion being the one write with no recovery. The
 //! referential check runs inside the engine's write flock: any inbound
-//! wikilink, embed, or ambient `meridian-lock` pin refuses `remove_refused`
-//! naming every referring file, its edge kind, and its edge count. There is
+//! wikilink, embed, ambient `meridian-lock` pin, or wikilink inside a
+//! frontmatter value refuses `remove_refused` naming every referring file, its
+//! edge kind (with the key, for a frontmatter one), and its edge count. There is
 //! no `--force` — the door has none.
 //!
 //! Routes as a wire `remove` to the running daemon ([`crate::write_ipc`]). There

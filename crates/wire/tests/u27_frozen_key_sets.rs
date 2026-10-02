@@ -693,6 +693,7 @@ fn error_body_key_set_is_frozen_plus_the_v3_ladder_extras() {
         referrers: Some(vec![wire::Referrer {
             path: "notes/fan.md".into(),
             kind: wire::ReferrerKind::Wikilink,
+            key: None,
             count: 1,
         }]),
         scope: Some("notes".into()),
@@ -736,6 +737,38 @@ fn error_body_key_set_is_frozen_plus_the_v3_ladder_extras() {
         &ErrorBody::new(ErrorCode::UnknownOp),
         &["code", "recovery"],
         "ErrorBody (bare)",
+    );
+}
+
+/// A `remove_refused` referrer row: the three link-plane and pin kinds keep
+/// their `{path, kind, count}` shape byte for byte — `key` is never serialized
+/// on them — and a `frontmatter` row adds `key` (§ A.3).
+#[test]
+fn referrer_key_sets_are_frozen() {
+    pin_keys(
+        &wire::Referrer {
+            path: "notes/fan.md".into(),
+            kind: wire::ReferrerKind::Wikilink,
+            key: None,
+            count: 1,
+        },
+        &["count", "kind", "path"],
+        "Referrer (wikilink)",
+    );
+    let fm = wire::Referrer {
+        path: "notes/fan.md".into(),
+        kind: wire::ReferrerKind::Frontmatter,
+        key: Some("source".into()),
+        count: 1,
+    };
+    pin_keys(
+        &fm,
+        &["count", "key", "kind", "path"],
+        "Referrer (frontmatter)",
+    );
+    assert_eq!(
+        serde_json::to_value(&fm).expect("serializes")["kind"],
+        "frontmatter"
     );
 }
 

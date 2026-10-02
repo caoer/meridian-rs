@@ -1595,16 +1595,23 @@ guarded put):**
   guard): wikilinks and embeds through `query::backlinks` (link-plane
   resolution, walk stage 1), ambient `meridian-lock` pins through
   `query::lock_pin_referrers` (the walk plane's Down predicate at corpus
-  grain) — never a new index, never a merkle fold. The door lists the hash
+  grain), and wikilinks inside frontmatter values through
+  `query::frontmatter_referrers` — the links `model::frontmatter_wikilinks`
+  finds under a top-level key, the ones the move door rewrites and
+  `frontmatter_link` lists (§ A.11), resolved by the same call with the
+  writing page as the source; a `root:` head and a same-page anchor are not
+  referrers — never a new index, never a merkle fold. The door lists the hash
   domain (`fs::hash_domain`) and reads member bytes for `fs::build_corpus`
   only, never `domain_snapshot`: fingerprint and referential parse are
   different reads. Any inbound edge → `remove_refused` (fix), unlink never
   runs. Self-edges are excluded; a dangling inbound spelling does not block.
-- **The refusal names the referrers:** `referrers:[{path, kind, count}]` — each
-  referring file, its edge kind (`wikilink` / `embed` / `pin`), its edge count,
-  path-lex sorted — then the teaching register: these records still reference
-  this one and removing it would strand them dangling, so unlink or retarget
-  each named edge, then resend.
+- **The refusal names the referrers:** `referrers:[{path, kind, key?, count}]`
+  — each referring file, its edge kind (`wikilink` / `embed` / `pin` /
+  `frontmatter`), its edge count, path-lex sorted then kind then key. `key` is
+  present on a `frontmatter` row alone: the top-level key whose value holds
+  the links, one row per key. Then the teaching register: these records still
+  reference this one and removing it would strand them dangling, so unlink or
+  retarget each named edge, then resend.
 - **Check and unlink are one critical section:** check, `if_file_rev` CAS and
   unlink all run under the workspace write flock, so no cooperating writer
   lands a link in a TOCTOU window. Editors that never take the flock (a
@@ -3121,10 +3128,12 @@ same-page anchor (`[[#^x]]`) has no target and is not a row. `dest_path` and
 the source: `candidates` is NULL unless more than one page matches, as on
 `link`. A `root:` head consults no mount and a non-markdown target matches no
 page, so both are rows with `dest_path` and `candidates` NULL. The links are
-the ones the move door rewrites in frontmatter (one scanner); `backlink`,
-`dangling`, `mrd links` and the remove door's referrers stay body-only. A
-query that wants both kinds of edge reads `link` and `frontmatter_link`
-together.
+the ones the move door rewrites in frontmatter and the remove door counts as
+`frontmatter` referrers (one scanner). `backlink(path, src_path, kind, alias,
+key)` carries both kinds of inbound edge: the resolved body rows of `link`
+with `key` NULL, and the resolved rows of `frontmatter_link` with `kind =
+'frontmatter'`, `alias` NULL and the row's `key`. `dangling` and `mrd links`
+stay body-only.
 
 **The CLI ladder.** `mrd sql` asks the resident daemon first (this op), then
 the drawer file when unheld, then `:memory:`. One ladder, no profile

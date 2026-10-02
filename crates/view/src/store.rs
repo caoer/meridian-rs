@@ -189,7 +189,10 @@ use crate::{
 /// `14`: `hist.frontmatter_link` + `main.frontmatter_link` — a v13 file holds
 /// no frontmatter link rows for pages whose fingerprints will not move. Same
 /// repair-by-rebuild reasoning as `9`.
-pub const CACHE_SCHEMA_VERSION: i64 = 14;
+///
+/// `15`: `main.backlink` gained `key` and the frontmatter rows — a v14 file
+/// carries the body-only view, and views are made with the file.
+pub const CACHE_SCHEMA_VERSION: i64 = 15;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
 pub const SQL_CACHE_FILENAME: &str = "sql.duckdb";
@@ -354,8 +357,11 @@ CREATE VIEW main.base_formula AS
 
 -- Convenience views: today's definitions verbatim, now over the latest views.
 CREATE VIEW main.backlink AS
-    SELECT dest_path AS path, src_path, kind, alias FROM main.link
-    WHERE dest_path IS NOT NULL;
+    SELECT dest_path AS path, src_path, kind, alias, NULL::TEXT AS key FROM main.link
+    WHERE dest_path IS NOT NULL
+    UNION ALL
+    SELECT dest_path AS path, src_path, 'frontmatter' AS kind, NULL::TEXT AS alias, key
+    FROM main.frontmatter_link WHERE dest_path IS NOT NULL;
 CREATE VIEW main.dangling AS
     SELECT src_path, target_raw FROM main.link
     WHERE kind IN ('wikilink','embed') AND dest_path IS NULL AND dest_root IS NULL
@@ -1953,7 +1959,7 @@ pub(crate) mod tests {
         ),
         (
             "backlink",
-            "SELECT coalesce(md5(string_agg(path || '|' || src_path || '|' || kind || '|' || coalesce(alias,'~N~'), chr(10) ORDER BY path, src_path, kind)), 'EMPTY') FROM backlink",
+            "SELECT coalesce(md5(string_agg(path || '|' || src_path || '|' || kind || '|' || coalesce(alias,'~N~') || '|' || coalesce(key,'~N~'), chr(10) ORDER BY path, src_path, kind, alias, key)), 'EMPTY') FROM backlink",
         ),
         (
             "dangling",

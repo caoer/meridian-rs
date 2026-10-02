@@ -229,6 +229,33 @@ pub fn lock_pin_referrers(index: &CorpusIndex, docs: &model::Docs, target: &str)
     out
 }
 
+/// Every wikilink inside a frontmatter value that resolves to `target`, as
+/// `(source path, key)` in corpus then byte order: the links
+/// `model::frontmatter_wikilinks` finds under a top-level key — the ones the
+/// move door rewrites and `frontmatter_link` lists — resolved by the body
+/// link's call with the writing page as the source. A `root:` head consults no
+/// mount and a same-page anchor has no target, so neither is a referrer.
+#[must_use]
+pub fn frontmatter_referrers(
+    index: &CorpusIndex,
+    docs: &model::Docs,
+    target: &str,
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (src, doc) in docs {
+        for link in model::frontmatter_wikilinks(doc) {
+            let Some(key) = link.key else { continue };
+            if addr::head_carries_root_separator(&link.target) {
+                continue;
+            }
+            if index.resolve_linkpath(&link.target, src).as_deref() == Some(target) {
+                out.push((src.clone(), key));
+            }
+        }
+    }
+    out
+}
+
 /// Find-references: every wikilink/embed in the corpus resolving to `target`
 /// (a corpus path), in deterministic order — path-lexicographic, then span
 /// order within a file.
