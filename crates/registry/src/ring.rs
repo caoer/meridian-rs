@@ -549,8 +549,10 @@ impl wire_serve::seq::SeqSink for WorkspaceRing {
     /// The write path's frame, recorded while the choke-point still holds the
     /// workspace flock. Records only: the ring holds no memo to verify a
     /// baseline move against, so a door handed this sink directly (the run
-    /// plane's births) leaves the baseline to the detector, which syncs
-    /// silently once the frames chain from it. A door with the workspace memo
+    /// plane's births) leaves the baseline one frame behind the tip until the
+    /// next detect cycle. That cycle syncs silently when the frames chain
+    /// from the baseline; an external edit inside it is told from the stale
+    /// baseline, with the born file re-named. A door with the workspace memo
     /// takes a [`DoorPlane`].
     fn committed(&self, frame: &DeltaFrame) {
         self.advance(frame.clone());
