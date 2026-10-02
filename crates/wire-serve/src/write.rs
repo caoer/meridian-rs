@@ -2825,7 +2825,7 @@ fn remove_refused(path: &Path, referrers: Vec<Referrer>) -> Box<ErrorBody> {
     let files = referrers
         .iter()
         .map(|r| r.path.as_str())
-        .collect::<std::collections::BTreeSet<_>>()
+        .collect::<BTreeSet<_>>()
         .len();
     let mut e = ErrorBody::new(ErrorCode::RemoveRefused);
     e.path = Some(path.clone());
