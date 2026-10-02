@@ -3075,7 +3075,7 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
 | `error` | a caller's failing SQL is a success body with the engine's words verbatim plus the arms below. Never a wire error: `ok:false` frames are door faults (`io_error`, `bad_request`, `unknown_op`) |
 
 **Teaching arms on a refusal (reason first, then a suggestion that fits).**
-Three arms extend or trim the engine's words:
+Four arms extend or trim the engine's words:
 
 1. **View-DML**: the remedy names the `hist.*` lane.
 2. **A retired face name** names its replacement (`card` → `record`); with no
@@ -3085,6 +3085,16 @@ Three arms extend or trim the engine's words:
    `board_drift` → `duckdb_constraints`): a `pg_`/`duckdb_`/`sqlite_` fit never
    answers a face question. Near-miss face fits (`records` → `record`) are
    untouched.
+4. **A column miss lists the columns.** On `Referenced column "x" not found`
+   or `Table "r"` / `Values list "r"` `does not have a column named "x"`, one
+   `<relation> columns: a, b, c` line per face relation involved follows the
+   engine's words: the relation a qualified miss names first, then every face
+   relation (`main`, `hist`) whose name appears in the statement as a whole
+   word, in statement order, each once; a `hist` relation is labelled
+   `hist.<name>`. The lists are read from the live catalog at the moment of the
+   error. A relation outside the face (a CTE, a table function, a temp table)
+   adds nothing; a face name used as a column or inside a literal costs one
+   extra line.
 
 **DML law (ruled).** Latest-layer names (`doc`, `section`, …) are views over
 append-only history; DML against them refuses with `DuckDB`'s own error plus
