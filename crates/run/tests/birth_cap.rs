@@ -561,7 +561,11 @@ fn a_nested_machinery_dir_refuses_at_any_depth() {
 /// inside `.git/`, so a guard a spelling defeats is not a guard.
 #[test]
 fn a_case_variant_machinery_dir_still_refuses() {
-    for path in [".GIT/tasks/card.md", "Receipts/run.md", "MERIDIAN/x.md"] {
+    for path in [
+        ".GIT/tasks/card.md",
+        ".Meridian/receipts/run.md",
+        "MERIDIAN/x.md",
+    ] {
         let (tmp, root) = workspace();
         let effects = [create_effect(path, "# Case\n", 0)];
         let authority = granted("md.create");

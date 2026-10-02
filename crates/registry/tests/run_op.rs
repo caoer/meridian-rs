@@ -608,11 +608,13 @@ fn a_run_apply_without_actor_carries_the_planes_self_label() {
 }
 
 /// The bash path commits twice — the phase-1 pre-exec receipt and the phase-2
-/// completion — and each committed batch mints its own contiguous frame
-/// (§7.1: one batch, one root advance, one Delta). `echo nope` emits no
-/// descriptor, so both frames name only the receipt file.
+/// completion — and `echo nope` emits no descriptor, so both batches write only
+/// the run ledger. The ledger lies outside the hash domain (wire-contract
+/// §6.1), so neither batch advances the root and neither mints a frame (§7.1:
+/// no root advance, no Delta): the first frame the subscriber sees is the next
+/// run's, which edits a page.
 #[test]
-fn a_bash_run_mints_one_frame_per_committed_batch() {
+fn a_bash_run_commits_its_receipts_and_mints_no_frame() {
     let tmp = TempDir::new().unwrap();
     let ws = seeded(&tmp);
     let server = RunningServer::start(test_config(&tmp)).unwrap();
@@ -627,37 +629,42 @@ fn a_bash_run_mints_one_frame_per_committed_batch() {
         "id": 33, "op": "run", "invocation": "run-d3", "actor": "seat-78",
         "targets": [{"page": "tasks.md", "task": "sh-note"}],
     }));
-    let rows = rows_of(&resp);
     assert!(
-        rows[0].get("refusal").is_none(),
+        rows_of(&resp)[0].get("refusal").is_none(),
         "the bash run landed: {resp}"
     );
+    let ledger = fs::read_to_string(ws.join(".meridian/receipts/run.md")).unwrap();
+    assert!(
+        ledger.contains("^p-run-d3") && ledger.contains("^r-run-d3"),
+        "both batches committed their receipts: {ledger}"
+    );
 
-    let first = sub.next_frame().expect("phase 1 mints a frame");
-    let second = sub.next_frame().expect("phase 2 mints a frame");
-    for (name, frame) in [("phase 1", &first), ("phase 2", &second)] {
-        assert_eq!(
-            frame["delta"]["actor"],
-            json!("seat-78"),
-            "{name} frame is attributed: {frame}"
-        );
-        let paths: Vec<&str> = frame["delta"]["files"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|f| f["path"].as_str().unwrap())
-            .collect();
-        assert_eq!(
-            paths,
-            vec![".meridian/receipts/run.md"],
-            "{name}: a receipt-only batch names the receipt file: {frame}"
-        );
-    }
-    assert_eq!(first["delta"]["seq"], json!(1));
-    assert_eq!(second["delta"]["seq"], json!(2));
+    let resp = conn.call(&json!({
+        "id": 34, "op": "run", "invocation": "run-d4", "actor": "seat-78",
+        "targets": [{"page": "tasks.md", "task": "fix-note", "args": ["done"]}],
+    }));
+    assert!(
+        rows_of(&resp)[0].get("refusal").is_none(),
+        "the page-editing run landed: {resp}"
+    );
+    let frame = sub
+        .next_frame()
+        .expect("the page-editing run mints a frame");
     assert_eq!(
-        second["delta"]["root_before"], first["delta"]["root_after"],
-        "the two commits chain: {second}"
+        frame["delta"]["seq"],
+        json!(1),
+        "the bash run minted no frame before this one: {frame}"
+    );
+    assert_eq!(frame["delta"]["actor"], json!("seat-78"), "{frame}");
+    let paths: Vec<&str> = frame["delta"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert!(
+        paths.contains(&"tasks.md"),
+        "the frame names the edited page: {frame}"
     );
     server.shutdown();
 }
