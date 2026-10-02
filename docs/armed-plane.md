@@ -387,9 +387,17 @@ that cannot run has no answer for any path.
 
 `--commit-gate` gates on the pin plane alone and runs no query.
 
+**Interval.** The armed plane reads the worktree: the artifact, the rule
+pages and the projection the queries run against all come from disk.
+`--staged` assesses pins over the index and leaves the armed plane where it
+is, so a breach that exists only in the index returns no row. When the run
+prints a staged interval, the `armed:` line says so: `armed: N row(s) in
+meridian/armed-rules.md — queries read the worktree, not the staged bytes`.
+
 `--json` carries `rules: [{id, page, mode, rows: [{path, detail}], control,
 error}]`, where `control` is `{path, fired}` or null, and `armed_rows` (the
-artifact state and its red rows).
+artifact state, its red rows, and `interval: "worktree"`, the bytes the plane
+read).
 
 ---
 

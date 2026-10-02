@@ -368,7 +368,7 @@ fn emit(
                         crate::capped_sample(paths)
                     );
                 }
-                armed_lines.push_str(&plane.render(paths));
+                armed_lines.push_str(&plane.render(paths, staged.is_some()));
             }
             print!(
                 "{}",
@@ -974,7 +974,7 @@ fn interval_line(interval: &Interval) -> String {
     match interval {
         Interval::NotAsked => format!(
             "{WORKTREE} — the bytes on disk. The git INDEX was not read, so this says nothing \
-             about what a commit would record: `mrd check --staged` asks that question"
+             about what a commit would record: `mrd check --staged` asks that question for pins"
         ),
         Interval::NoRepository => format!(
             "{WORKTREE} — this workspace is not a git repository, so there is no index and \
