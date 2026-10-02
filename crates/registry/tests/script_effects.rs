@@ -153,7 +153,10 @@ fn a_pure_submission_has_no_run_builtin() {
         trace["fault"]["reason"].as_str().unwrap().contains("run"),
         "the fault names the unbound name: {trace}"
     );
-    assert!(!ws.join("receipts/run.md").exists(), "nothing executed");
+    assert!(
+        !ws.join(".meridian/receipts/run.md").exists(),
+        "nothing executed"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -177,7 +180,10 @@ fn run_executes_at_call_time_and_its_row_is_a_value() {
     let trace = trace_of(&resp);
     assert_eq!(trace["outcome"], json!("effects"), "{trace}");
     // The run plane's receipt exists on disk — it executed, at call time.
-    assert!(ws.join("receipts/run.md").exists(), "the run landed");
+    assert!(
+        ws.join(".meridian/receipts/run.md").exists(),
+        "the run landed"
+    );
     let ran: Vec<&Value> = trace["trace"]
         .as_array()
         .unwrap()
@@ -392,7 +398,10 @@ fn the_combination_walls_refuse_before_anything_runs() {
             "{name}: {resp}"
         );
     }
-    assert!(!ws.join("receipts/run.md").exists(), "nothing ran");
+    assert!(
+        !ws.join(".meridian/receipts/run.md").exists(),
+        "nothing ran"
+    );
 }
 
 // ---------------------------------------------------------------------------

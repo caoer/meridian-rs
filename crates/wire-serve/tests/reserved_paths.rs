@@ -49,14 +49,14 @@ fn the_machinery_floor_covers_every_reserved_path() {
     }
 }
 
-/// The floor's members are the four the contract names, and nothing has been
+/// The floor's members are the three the contract names, and nothing has been
 /// quietly added: each entry widens what every birth lane refuses, so growth
 /// belongs in `docs/run-plane.md` § the machinery floor first.
 #[test]
 fn the_machinery_floor_has_exactly_the_contracted_members() {
     assert_eq!(
         wire_serve::write::MACHINERY_DIRS,
-        [".git", ".meridian", "meridian", "receipts"].as_slice(),
+        [".git", ".meridian", "meridian"].as_slice(),
         "the create door's deny list drifted from `docs/run-plane.md` § the machinery \
          floor and `docs/wire-contract.md` § A.3"
     );

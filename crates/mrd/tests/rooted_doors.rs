@@ -305,11 +305,11 @@ fn run_receipt_lands_in_the_page_tree_never_the_standing_one() {
     let out = sb.run_degraded(&sb.ws, &["run", "sessions:job.md", "say"]);
     assert_eq!(code(&out), 0, "the rooted run executes: {}", stderr(&out));
     assert!(
-        sb.sessions.join("receipts/run.md").is_file(),
+        sb.sessions.join(".meridian/receipts/run.md").is_file(),
         "the receipt lands in the page's workspace (authority: the page tree governs)"
     );
     assert!(
-        !sb.ws.join("receipts").exists(),
+        !sb.ws.join(".meridian/receipts").exists(),
         "the standing workspace gains no receipt"
     );
 }
@@ -323,7 +323,7 @@ fn run_unbound_root_refuses_and_executes_nothing() {
     assert_eq!(code(&out), 1, "an unbound root is an address refusal");
     assert_unbound_refusal(&out, "run");
     assert!(
-        !sb.ws.join("receipts").exists(),
+        !sb.ws.join(".meridian/receipts").exists(),
         "nothing was executed and no receipt was written"
     );
 }

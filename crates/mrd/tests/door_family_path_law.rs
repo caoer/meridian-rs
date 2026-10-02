@@ -100,7 +100,7 @@ fn code(out: &Output) -> i32 {
 }
 
 /// No run receipt anywhere under the workspace — the outside-page defect wrote
-/// one into `receipts/run.md`, so its absence is asserted over the whole tree.
+/// one into the workspace's own run ledger, so its absence is asserted over the whole tree.
 fn assert_no_receipt(ws: &Path) {
     let mut stack = vec![ws.to_path_buf()];
     while let Some(dir) = stack.pop() {

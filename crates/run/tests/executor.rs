@@ -563,7 +563,7 @@ fn receipt_stamps_the_procedure_hash_and_adopts_the_exec_seam() {
 
     // The U8 S10 seam binds on the REAL receipt type: a bash owner adopts a
     // sealed record through `fill_exec`, and it serializes back into the line.
-    let stdout = RunLog::create(&root.0, "inv-seam")
+    let stdout = RunLog::create(&root.0, "page.md", "inv-seam")
         .expect("create")
         .seal()
         .expect("seal");
@@ -587,7 +587,7 @@ fn receipt_commits_the_threaded_exec_facts() {
 
     let (_tmp, root) = workspace();
     let now = current_root(&root);
-    let stdout = RunLog::create(&root.0, "inv-exec")
+    let stdout = RunLog::create(&root.0, "page.md", "inv-exec")
         .expect("create")
         .seal()
         .expect("seal");

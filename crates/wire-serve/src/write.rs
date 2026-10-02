@@ -2378,8 +2378,8 @@ pub fn create_with_cache(
     let fs_path = FsPath::new(&args.path.0);
     path_confined(root, &args.path)?;
     // The machinery floor: the landing may be confined and still be substrate
-    // (`.git/`, `.meridian/`, `meridian/`, `receipts/`). Caps judge the
-    // DECLARED coordinate, so this is the only place the landing is judged.
+    // (`.git/`, `.meridian/`, `meridian/`). Caps judge the DECLARED coordinate,
+    // so this is the only place the landing is judged.
     machinery_contained(&args.path)?;
 
     // D9: births serialize on the same write flock as every meridian writer —
@@ -4152,13 +4152,12 @@ pub(crate) fn path_confined(root: &fs::WorkspaceRoot, path: &Path) -> Result<(),
 /// The engine machinery directories a birth may never land under — engine
 /// substrate rather than markdown-record homes (`docs/run-plane.md` § the
 /// machinery floor, 2026-08-20): `.git` is the git directory, `.meridian` the
-/// engine's stable state and run logs, `meridian` the attestation tree
-/// (`meridian/armed-rules.md`, `meridian/attested`), and `receipts` the
-/// receipt ledger.
+/// engine's stable state, run logs and receipts, and `meridian` the
+/// attestation tree (`meridian/armed-rules.md`, `meridian/attested`).
 ///
 /// Public so a cross-crate test can assert the family's membership, not just
 /// each member's spelling — the [`fs::domain::RESERVED_PATHS`] precedent.
-pub const MACHINERY_DIRS: &[&str] = &[".git", ".meridian", "meridian", "receipts"];
+pub const MACHINERY_DIRS: &[&str] = &[".git", ".meridian", "meridian"];
 
 /// The machinery floor at the create door: refuse a birth whose landing
 /// carries a [`MACHINERY_DIRS`] name as a path segment.
@@ -4174,7 +4173,7 @@ pub const MACHINERY_DIRS: &[&str] = &[".git", ".meridian", "meridian", "receipts
 /// **At any depth**, not just the head segment: a nested root's machinery is
 /// machinery too, and `results/ws/.git/x.md` corrupts a repository exactly as
 /// `.git/x.md` does. Measured over the live sessions corpus before this
-/// landed — every non-root occurrence of these four names was a nested root's
+/// landed — every non-root occurrence of these names was a nested root's
 /// OWN machinery, never content — so the depth rule refuses no legitimate
 /// birth.
 ///
@@ -4203,8 +4202,8 @@ fn machinery_contained(path: &Path) -> Result<(), Box<ErrorBody>> {
     e.message = Some(format!(
         "the birth landing {} carries `{segment}` as a path segment — an engine machinery \
          directory the create door never births into, whatever the capabilities admit: \
-         `.git` is the git directory, `.meridian` the engine's stable state, `meridian` the \
-         attestation tree and `receipts` the receipt ledger, and none of them is a \
+         `.git` is the git directory, `.meridian` the engine's stable state, run logs and \
+         receipts, and `meridian` the attestation tree, and none of them is a \
          markdown-record home. A capability scope judges the DECLARED path's shape; this \
          door judges the RESOLVED landing — re-aim the birth's `base` (or the caller's \
          ambient directory) at a content directory. Nothing was written.",

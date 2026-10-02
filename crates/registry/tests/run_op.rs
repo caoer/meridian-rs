@@ -9,7 +9,7 @@
 //!   refused target halts nothing after it — no aggregate boolean anywhere;
 //! - the §9 identity law: per-target invocation ids derive from the host
 //!   base, and a supplied `actor` threads into the receipt's actor fact;
-//! - the plane's own receipts land at `receipts/run.md` under `r-<id>`;
+//! - the plane's own receipts land at `.meridian/receipts/run.md` under `r-<id>`;
 //! - the several-tasks listing rides a `class:"invocation"` refusal row;
 //! - `dry` rows rehearse without disk effect (starlark effects listed, bash
 //!   shown-not-executed);
@@ -247,12 +247,12 @@ fn a_threaded_actor_lands_in_the_plane_receipt_under_the_derived_anchor() {
     assert_eq!(rows[0]["state"], json!("applied"));
     assert_eq!(
         rows[0]["receipt"],
-        json!("receipts/run.md §^r-run-778-1-t0"),
+        json!(".meridian/receipts/run.md §^r-run-778-1-t0"),
         "the § A.8 receipt address, live grammar (2026-08-14 ruling): \
          `path §^anchor`, never the retired `#` join"
     );
 
-    let receipts = fs::read_to_string(ws.join("receipts/run.md")).unwrap();
+    let receipts = fs::read_to_string(ws.join(".meridian/receipts/run.md")).unwrap();
     assert!(
         receipts.contains("^r-run-778-1-t0"),
         "the derived anchor is on the line: {receipts}"
@@ -295,7 +295,7 @@ fn receipt_and_row_page_echo_the_resolved_workspace_relative_spelling() {
     );
     assert_eq!(rows[1]["state"], json!("applied"), "row 1: {resp}");
 
-    let receipts = fs::read_to_string(ws.join("receipts/run.md")).unwrap();
+    let receipts = fs::read_to_string(ws.join(".meridian/receipts/run.md")).unwrap();
     let pages: std::collections::BTreeSet<String> = receipts
         .lines()
         .filter_map(|l| l.strip_prefix("- run "))
@@ -445,7 +445,7 @@ fn frame_faults_answer_section_8_frames_and_nothing_reaches_the_plane() {
 
     // The workspace never moved: no run receipt exists.
     assert!(
-        !ws.join("receipts/run.md").exists(),
+        !ws.join(".meridian/receipts/run.md").exists(),
         "nothing reached the plane"
     );
 }
@@ -538,7 +538,7 @@ fn a_run_apply_pushes_one_attributed_delta_frame() {
         .collect();
     assert_eq!(
         paths,
-        vec!["tasks.md", "receipts/run.md"],
+        vec!["tasks.md", ".meridian/receipts/run.md"],
         "one committed batch = one frame; content first, then receipt: {frame}"
     );
 
@@ -649,7 +649,7 @@ fn a_bash_run_mints_one_frame_per_committed_batch() {
             .collect();
         assert_eq!(
             paths,
-            vec!["receipts/run.md"],
+            vec![".meridian/receipts/run.md"],
             "{name}: a receipt-only batch names the receipt file: {frame}"
         );
     }
@@ -696,7 +696,7 @@ fn under_a_live_subscriber_every_run_frame_stays_attributed() {
     while let Some(frame) = sub.next_frame() {
         let names_run_files = frame["delta"]["files"].as_array().unwrap().iter().any(|f| {
             let p = f["path"].as_str().unwrap();
-            p == "tasks.md" || p == "receipts/run.md"
+            p == "tasks.md" || p == ".meridian/receipts/run.md"
         });
         if names_run_files {
             assert_eq!(
@@ -769,7 +769,7 @@ fn a_supplied_guard_field_on_run_is_rejected_as_inapplicable() {
 
     // Nothing reached the plane: no run receipt exists.
     assert!(
-        !ws.join("receipts/run.md").exists(),
+        !ws.join(".meridian/receipts/run.md").exists(),
         "a guard-field refusal must commit nothing"
     );
     server.shutdown();
@@ -792,7 +792,7 @@ fn an_effects_write_advances_the_folds_other_writers_premises_compare_against() 
     // The other writer's premise, minted BEFORE the effects write.
     let pre_run = conn.fingerprint();
 
-    // The effects write: a governed run apply (tasks.md + receipts/run.md).
+    // The effects write: a governed run apply (tasks.md + .meridian/receipts/run.md).
     let resp = conn.call(&json!({
         "id": 50, "op": "run", "invocation": "run-f1",
         "targets": [{"page": "tasks.md", "task": "fix-note", "args": ["done"]}],

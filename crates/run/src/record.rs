@@ -15,6 +15,16 @@ use sha2::{Digest, Sha256};
 /// construction (`.meridian/` is outside the md domain).
 const RUNS_DIR: &str = ".meridian/runs";
 
+/// A task's logs sit in this subdirectory of its page's leaf
+/// (`.meridian/runs/<page>/tasks/`), apart from the fire logs in the leaf
+/// itself, so each lane keeps its own ceiling.
+const TASK_LOGS_DIR: &str = "tasks";
+
+/// How many task logs a page keeps: the fire path's ceiling, counted on its
+/// own so a page that fires often never evicts the logs its run receipts
+/// point at (`docs/run-plane.md` § The run record).
+const TASK_LOG_RETENTION: usize = 50;
+
 /// Tee read size. Chunks are written through unbuffered so the log is
 /// live-tailable and the live sink sees bytes as the child emits them.
 const CHUNK: usize = 8192;
@@ -29,6 +39,13 @@ pub enum RecordError {
     BadInvocationId {
         /// The refused id.
         id: String,
+    },
+    /// The caller-supplied page is not a workspace-relative path (empty,
+    /// absolute, or carrying an empty, `.` or `..` segment), so it cannot
+    /// name the page's log directory.
+    BadPage {
+        /// The refused page.
+        page: String,
     },
     /// A log for this invocation id already exists — a reused id would
     /// silently interleave two runs' stdout, so creation refuses loudly.
@@ -74,6 +91,9 @@ impl std::fmt::Display for RecordError {
             RecordError::BadInvocationId { id } => {
                 write!(f, "invocation id '{id}' is not a safe path component")
             }
+            RecordError::BadPage { page } => {
+                write!(f, "page '{page}' is not a workspace-relative path")
+            }
             RecordError::Collision { path } => {
                 write!(f, "run log {path} already exists (reused invocation id)")
             }
@@ -94,10 +114,10 @@ impl std::error::Error for RecordError {}
 #[derive(Debug)]
 pub struct RunLog {
     file: File,
-    /// Absolute `.meridian/runs` dir — fsynced at seal so the log's
-    /// directory entry is durable, not just its bytes.
+    /// Absolute `.meridian/runs/<page>/tasks` dir — fsynced at seal so the
+    /// log's directory entry is durable, not just its bytes, then pruned.
     dir: PathBuf,
-    /// Workspace-relative log path (`.meridian/runs/<id>.log`).
+    /// Workspace-relative log path (`.meridian/runs/<page>/tasks/<id>.log`).
     rel_path: String,
     invocation: String,
     hasher: Sha256,
@@ -105,25 +125,36 @@ pub struct RunLog {
 }
 
 impl RunLog {
-    /// Open the log for `invocation_id` at `.meridian/runs/<id>.log` under
-    /// `workspace_root`, creating the directory on first use. Refuses a
-    /// pre-existing log (id reuse) and any id that is not a safe single
-    /// path component (§9: the id is caller-supplied, so it is validated
-    /// before it names a file).
+    /// Open the log for `invocation_id` of a task on `page` at
+    /// `.meridian/runs/<page>/tasks/<id>.log` under `workspace_root`, creating
+    /// the directory on first use. Refuses a pre-existing log (id reuse), any
+    /// id that is not a safe single path component, and a page that is not
+    /// workspace-relative (§9: both are caller-supplied, so they are validated
+    /// before they name a file).
     ///
     /// # Errors
-    /// [`RecordError::BadInvocationId`], [`RecordError::Collision`], or
-    /// [`RecordError::Create`] on I/O failure.
-    pub fn create(workspace_root: &Path, invocation_id: &str) -> Result<Self, RecordError> {
+    /// [`RecordError::BadInvocationId`], [`RecordError::BadPage`],
+    /// [`RecordError::Collision`], or [`RecordError::Create`] on I/O failure.
+    pub fn create(
+        workspace_root: &Path,
+        page: &str,
+        invocation_id: &str,
+    ) -> Result<Self, RecordError> {
         if !is_safe_invocation_id(invocation_id) {
             return Err(RecordError::BadInvocationId {
                 id: invocation_id.to_owned(),
             });
         }
-        let rel_path = format!("{RUNS_DIR}/{invocation_id}.log");
-        let dir = workspace_root.join(RUNS_DIR);
+        if !is_workspace_relative(page) {
+            return Err(RecordError::BadPage {
+                page: page.to_owned(),
+            });
+        }
+        let rel_dir = format!("{RUNS_DIR}/{page}/{TASK_LOGS_DIR}");
+        let rel_path = format!("{rel_dir}/{invocation_id}.log");
+        let dir = workspace_root.join(&rel_dir);
         std::fs::create_dir_all(&dir).map_err(|e| RecordError::Create {
-            path: RUNS_DIR.to_owned(),
+            path: rel_dir,
             reason: e.to_string(),
         })?;
         let file = match OpenOptions::new()
@@ -172,6 +203,10 @@ impl RunLog {
     /// only source of the stdout hash/size/address — receipt filling cannot
     /// precede this call.
     ///
+    /// Sealing then prunes the page's task logs to the newest
+    /// [`TASK_LOG_RETENTION`]; this log is the newest, so it stays. An older
+    /// receipt keeps its stdout sha256 and size after its log is pruned.
+    ///
     /// # Errors
     /// [`RecordError::Seal`] — the log is not durable; no facts are minted
     /// and the run must not receipt.
@@ -181,6 +216,7 @@ impl RunLog {
         };
         fs::honest_sync(&self.file).map_err(seal_err)?;
         fs::honest_sync_path(&self.dir).map_err(seal_err)?;
+        crate::modes::prune(&self.dir, Some("log"), TASK_LOG_RETENTION);
         Ok(StdoutRecord {
             invocation: self.invocation,
             log: self.rel_path,
@@ -189,7 +225,7 @@ impl RunLog {
         })
     }
 
-    /// The workspace-relative log path (`.meridian/runs/<id>.log`).
+    /// The workspace-relative log path (`.meridian/runs/<page>/tasks/<id>.log`).
     #[must_use]
     pub fn rel_path(&self) -> &str {
         &self.rel_path
@@ -239,7 +275,7 @@ where
 pub struct StdoutRecord {
     /// The caller-supplied invocation id (§9).
     pub invocation: String,
-    /// Workspace-relative log address (`.meridian/runs/<id>.log`).
+    /// Workspace-relative log address (`.meridian/runs/<page>/tasks/<id>.log`).
     pub log: String,
     /// Full lowercase-hex sha256 of the streamed stdout bytes.
     pub sha256: String,
@@ -297,6 +333,17 @@ impl ExecRecord {
 pub trait ExecRecordSink {
     /// Adopt one exec record into the receipt-side facts.
     fn fill_exec(&mut self, exec: ExecRecord);
+}
+
+/// A caller-supplied page names a directory under `.meridian/runs/`; admit
+/// only a workspace-relative path — non-empty, not absolute, and no empty,
+/// `.` or `..` segment — so it can never climb out of its leaf.
+fn is_workspace_relative(page: &str) -> bool {
+    !page.is_empty()
+        && !page.starts_with('/')
+        && page
+            .split('/')
+            .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
 }
 
 /// A caller-supplied invocation id is used as a file name; admit only a

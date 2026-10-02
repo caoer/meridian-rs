@@ -26,7 +26,7 @@
 //! `exit 2 + empty stdout` as a guarantee that nothing was armed, so a step's own 2 may not
 //! take that value over. The sealed code is therefore always on the **report** — `exec: exited
 //! N` in text, `exec.exit_code` under `--json`, off the same [`runner::RunReport`] the
-//! completion receipt is written from — and never only in `receipts/run.md`.
+//! completion receipt is written from — and never only in `.meridian/receipts/run.md`.
 //!
 //! `--exit-passthrough` additionally hands the **findings leg** to the step: a step that
 //! reached its own exit door with a nonzero code makes `mrd run` exit that code, verbatim. It
@@ -483,7 +483,7 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
     // §1 admission, before the page is read: without it `load_page` resolves an
     // absolute spelling verbatim and this door EXECUTED a page from outside the
     // workspace — writing the receipt into the workspace's own
-    // `receipts/run.md` (wire-contract §12.1, the door-family clause; § A.8:
+    // `.meridian/receipts/run.md` (wire-contract §12.1, the door-family clause; § A.8:
     // `page` is workspace-relative). Ordered ABOVE the echo-law rebind: the
     // family refuses the absolute spelling with its fitted respell, so the
     // rebind below no-ops for every admitted argv (the same string back) and

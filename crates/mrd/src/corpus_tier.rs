@@ -838,7 +838,7 @@ const QUIESCENCE_FUEL: usize = 256;
 
 /// Where the isolated proof corpus lands its executor receipts: never the live tree, and never
 /// the triggering write's own page.
-const PROOF_RECEIPT_PATH: &str = "receipts/corpus-proof.md";
+const PROOF_RECEIPT_PATH: &str = ".meridian/receipts/corpus-proof.md";
 
 /// The task name the proof's receipts are actored by (`run:<task>`).
 const PROOF_TASK: &str = "corpus-proof";

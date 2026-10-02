@@ -38,8 +38,10 @@ use crate::record::{ExecRecord, ExecRecordSink};
 
 /// The run plane's receipt file — ONE convention, whichever door invoked the
 /// plane (the CLI entry and the § A.8 wire arm both append here). Promoted
-/// from the CLI (§ A.8) so the convention has one home.
-pub const RECEIPT_FILE: &str = "receipts/run.md";
+/// from the CLI (§ A.8) so the convention has one home. It lives under
+/// `.meridian/`, outside the hash domain (wire-contract §6.1): the ledger is
+/// engine state, never the checkout's content.
+pub const RECEIPT_FILE: &str = ".meridian/receipts/run.md";
 
 /// Where the run receipt lands: a workspace-relative file (appended) and the
 /// pre-minted block anchor for the line. Address policy is the CALLER's (U5

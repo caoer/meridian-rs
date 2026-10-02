@@ -115,7 +115,7 @@ fn without_the_flag_a_finding_and_a_fault_share_one_code() {
 }
 
 /// The code is on the report whether or not the flag is passed — the surface
-/// a caller reads instead of parsing `receipts/run.md`.
+/// a caller reads instead of parsing `.meridian/receipts/run.md`.
 ///
 /// Where on stdout is part of the claim: a bash step's own stdout streams
 /// live, so the report is the LAST line of the stream and never the whole of
