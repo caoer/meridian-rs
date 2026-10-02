@@ -1909,6 +1909,9 @@ Under `MRD_TIMING` (the switch, sink, line grammar and the two lanes:
 | `door.refused.<cause>` | — (`cmd=daemon`) | same | a write-door observation refused before either arm was chosen. One cause today, `lock_contended`: the memo lock stayed held for its whole budget. **The read plane has no counterpart and that is a fact, not a gap** — the same `fs::lock_within` with a budget of `None` returns `Ok` before the wait loop (`Registry::patched_cache` asserts it) |
 | `flock.hold.run` | — (`cmd=daemon`) | `fs::WriteLock` (timed by `run::executor`) | how long the run plane's delta-mint bracket held `.meridian/write.lock`: from the acquire that won to the release. The wait before the acquire is not in it |
 | `flock.hold.door` | — (`cmd=daemon`, or the CLI's `cmd=` for a CLI-lane door) | `fs::WriteLock` (timed by `wire_serve::write`) | the same hold for a wire write door's critical section, run-plane births included |
+| `flock.hold.detect` | — (`cmd=daemon`) | `fs::WriteLock` (timed by `registry::ring`) | the same hold for an ordinary detect cycle of a subscribed workspace: one taken because the root moved past the watcher's baseline |
+| `flock.hold.backstop` | — (`cmd=daemon`) | same | the same hold for the detect cycle that runs once per `DETECT_FLOOR_CADENCE` (30 s), the push plane's backstop |
+| `flock.hold.prime` | — (`cmd=daemon`) | same | the same hold for the priming cycle, which sets a new subscription's baseline |
 
 **The door's three families partition its population**: `door.vouched` (fast
 path), `door.floor` (floor), `door.refused` (no arm) — every `door.*` name under
@@ -1917,8 +1920,9 @@ exactly one, counted once.
 **`flock.hold.<holder>` is the one hold measurement.** `slow op` lines and the
 `total` of an op include every wait for a contended resource; this family
 counts only the time a holder kept every other writer out. A bare `flock.hold`
-is never emitted; it is the family prefix. Holders not named above (the detect
-cycle, `ArmSession`, the downgrade fence, takeover) are not timed.
+is never emitted; it is the family prefix, and no holder's name is a prefix of
+another's. Holders not named above (`ArmSession`, the downgrade fence,
+takeover) are not timed.
 
 **`<cause>` is one of six** (`registry::FloorTrigger`):
 

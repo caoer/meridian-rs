@@ -329,7 +329,14 @@ impl WorkspaceRing {
         // Root moved (or priming) — take the write flock so reconcile cannot
         // observe mid-batch, and RE-observe under it: the flock-held
         // observation is the one the frame folds.
-        let Ok(_write_lock) = fs::WriteLock::acquire(ws_root) else {
+        let holder = if was_unprimed {
+            "flock.hold.prime"
+        } else if force_floor {
+            "flock.hold.backstop"
+        } else {
+            "flock.hold.detect"
+        };
+        let Ok(_write_lock) = fs::WriteLock::acquire(ws_root).map(|lock| lock.timed(holder)) else {
             return Ok(false); // a write is in flight; its change keeps
         };
         let observed = registry
