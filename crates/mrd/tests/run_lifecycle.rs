@@ -89,7 +89,7 @@ fn code(out: &Output) -> i32 {
 
 /// The newest receipt file's text, if any receipt landed.
 fn receipts_text(ws: &Ws) -> String {
-    let Ok(entries) = std::fs::read_dir(ws.file("receipts")) else {
+    let Ok(entries) = std::fs::read_dir(ws.file(".meridian/receipts")) else {
         return String::new();
     };
     let mut files: Vec<PathBuf> = entries.filter_map(Result::ok).map(|e| e.path()).collect();

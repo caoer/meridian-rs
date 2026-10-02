@@ -351,7 +351,7 @@ fn refused_rehearsals_move_nothing() {
     }
     assert_eq!(conn.fingerprint(), before, "nothing landed");
     assert!(
-        !ws.join("receipts/run.md").exists(),
+        !ws.join(".meridian/receipts/run.md").exists(),
         "no receipt on any rehearsal"
     );
 }

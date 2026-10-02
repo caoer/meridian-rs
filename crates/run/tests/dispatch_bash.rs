@@ -115,7 +115,7 @@ fn a_preflight_refusal_is_findable_in_the_run_log() {
 
     let _ = dispatch_bash::run(&root, &dispatch_of("echo hi\n", &scratch), &mut Vec::new());
 
-    let runs = root.0.join(".meridian/runs");
+    let runs = root.0.join(".meridian/runs/page.md/tasks");
     let logged: String = std::fs::read_dir(&runs)
         .expect("the run log directory exists")
         .filter_map(|e| std::fs::read_to_string(e.unwrap().path()).ok())
@@ -186,7 +186,7 @@ fn a_clean_run_commits_the_completion_receipt_two_phase() {
     assert_eq!(live, b"running\n");
     let record = out.stdout.expect("stdout record sealed");
     assert_eq!(record.bytes, 8);
-    let log = std::fs::read(root.0.join(".meridian/runs/inv-1.log")).unwrap();
+    let log = std::fs::read(root.0.join(".meridian/runs/page.md/tasks/inv-1.log")).unwrap();
     assert_eq!(log, b"running\n");
 }
 

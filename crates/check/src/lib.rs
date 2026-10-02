@@ -52,7 +52,10 @@ pub struct CoreReport {
     pub drifted_claims: Vec<ClaimFinding>,
     /// The pin plane: red/grey pins, and the pinned blobs no ref reaches.
     pub pins: PinPlane,
-    /// The run plane: pre-exec receipts with no completion (G3).
+    /// The run plane: pre-exec receipts with no completion (G3), read from the
+    /// worktree's run ledger ([`orphan::orphaned_runs`]). The ledger is engine
+    /// state outside every interval, so [`core_of`] leaves this empty and a
+    /// caller assessing the worktree fills it.
     ///
     /// REPORTED, never gated on — it does not move [`is_red`](Self::is_red) or
     /// the exit code: such receipts are unauditable by construction and can
@@ -165,7 +168,7 @@ pub fn core(
     Ok(CoreReport {
         drifted_claims,
         pins: pin_plane(root, docs, pins, mounted),
-        orphans: orphan::orphaned_runs(docs),
+        orphans: orphan::orphaned_runs(root).map_err(CoreError::RunLedger)?,
     })
 }
 
@@ -183,7 +186,8 @@ pub fn core(
 ///
 /// Claims are not evaluated over a foreign interval: a claim's observation is a
 /// live read against the tree, so that plane is reported empty rather than
-/// pretending to have asked.
+/// pretending to have asked. The run ledger is no interval's bytes either, so
+/// `orphans` is empty here too.
 #[must_use]
 pub fn core_of(
     root: &WorkspaceRoot,
@@ -194,7 +198,7 @@ pub fn core_of(
     CoreReport {
         drifted_claims: Vec::new(),
         pins: pin_plane(root, docs, pins, mounted),
-        orphans: orphan::orphaned_runs(docs),
+        orphans: Vec::new(),
     }
 }
 
@@ -204,12 +208,19 @@ pub fn core_of(
 pub enum CoreError {
     /// A claim's observation faulted (page load / I/O) — not a clean drift.
     Claim(realise::CheckError),
+    /// The run ledger exists and could not be read — not an absence of orphans.
+    RunLedger(std::io::Error),
 }
 
 impl std::fmt::Display for CoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CoreError::Claim(e) => write!(f, "check core claim observation failed: {e}"),
+            CoreError::RunLedger(e) => write!(
+                f,
+                "check core could not read the run ledger {}: {e}",
+                run::executor::RECEIPT_FILE
+            ),
         }
     }
 }

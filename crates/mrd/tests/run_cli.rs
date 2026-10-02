@@ -543,7 +543,8 @@ fn receipt_page_key_is_canonical_across_argv_spellings() {
         let out = ws.run(&["canon.md", "mark", "--", value]);
         assert_eq!(code(&out), 0, "canon.md: {}", stderr(&out));
     }
-    let receipts = std::fs::read_to_string(ws.file("receipts/run.md")).expect("receipt file");
+    let receipts =
+        std::fs::read_to_string(ws.file(".meridian/receipts/run.md")).expect("receipt file");
     let count_after_admitted = receipts.lines().filter(|l| l.starts_with("- run ")).count();
     assert!(
         count_after_admitted >= 2,
@@ -561,7 +562,8 @@ fn receipt_page_key_is_canonical_across_argv_spellings() {
             stderr(&out)
         );
     }
-    let receipts = std::fs::read_to_string(ws.file("receipts/run.md")).expect("receipt file");
+    let receipts =
+        std::fs::read_to_string(ws.file(".meridian/receipts/run.md")).expect("receipt file");
     let bodies: Vec<&str> = receipts
         .lines()
         .filter_map(|l| l.strip_prefix("- run "))

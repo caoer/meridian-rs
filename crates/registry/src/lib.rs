@@ -16,7 +16,7 @@
 //!
 //! # Two lifecycles, one workspace
 //! Registry entry ([`WorkspaceEntry`]) drives idle-reap ([`DEFAULT_IDLE_REAP`]):
-//! the reap DEMOTES — warm engine, ring, read-mint ledger, and sql handle drop;
+//! the reap DEMOTES — warm engine, ring, and sql handle drop;
 //! the entry, the §6.4 event feed, and the resident memo survive (merkle-spec
 //! §6.4 registration-lifetime law — the feed's dirty set is what makes the next
 //! warm O(dirty)). The resident budget
@@ -72,7 +72,7 @@ pub use server::{
 pub use test_support::TestServer;
 
 /// Idle-reap horizon: an unused workspace's warm serving state (engine, ring,
-/// read-mint ledger, sql handle) drops from memory. The registration, its
+/// sql handle) drops from memory. The registration, its
 /// §6.4 event feed, and the resident memo survive the horizon (merkle-spec
 /// §6.4). Reaper never touches the drawer (`cache::gc` 30-day horizon).
 // `Duration::from_hours`/`from_days` not const-stable at MSRV 1.96.

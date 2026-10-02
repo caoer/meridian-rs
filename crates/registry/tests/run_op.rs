@@ -9,7 +9,7 @@
 //!   refused target halts nothing after it — no aggregate boolean anywhere;
 //! - the §9 identity law: per-target invocation ids derive from the host
 //!   base, and a supplied `actor` threads into the receipt's actor fact;
-//! - the plane's own receipts land at `receipts/run.md` under `r-<id>`;
+//! - the plane's own receipts land at `.meridian/receipts/run.md` under `r-<id>`;
 //! - the several-tasks listing rides a `class:"invocation"` refusal row;
 //! - `dry` rows rehearse without disk effect (starlark effects listed, bash
 //!   shown-not-executed);
@@ -247,12 +247,12 @@ fn a_threaded_actor_lands_in_the_plane_receipt_under_the_derived_anchor() {
     assert_eq!(rows[0]["state"], json!("applied"));
     assert_eq!(
         rows[0]["receipt"],
-        json!("receipts/run.md §^r-run-778-1-t0"),
+        json!(".meridian/receipts/run.md §^r-run-778-1-t0"),
         "the § A.8 receipt address, live grammar (2026-08-14 ruling): \
          `path §^anchor`, never the retired `#` join"
     );
 
-    let receipts = fs::read_to_string(ws.join("receipts/run.md")).unwrap();
+    let receipts = fs::read_to_string(ws.join(".meridian/receipts/run.md")).unwrap();
     assert!(
         receipts.contains("^r-run-778-1-t0"),
         "the derived anchor is on the line: {receipts}"
@@ -295,7 +295,7 @@ fn receipt_and_row_page_echo_the_resolved_workspace_relative_spelling() {
     );
     assert_eq!(rows[1]["state"], json!("applied"), "row 1: {resp}");
 
-    let receipts = fs::read_to_string(ws.join("receipts/run.md")).unwrap();
+    let receipts = fs::read_to_string(ws.join(".meridian/receipts/run.md")).unwrap();
     let pages: std::collections::BTreeSet<String> = receipts
         .lines()
         .filter_map(|l| l.strip_prefix("- run "))
@@ -445,7 +445,7 @@ fn frame_faults_answer_section_8_frames_and_nothing_reaches_the_plane() {
 
     // The workspace never moved: no run receipt exists.
     assert!(
-        !ws.join("receipts/run.md").exists(),
+        !ws.join(".meridian/receipts/run.md").exists(),
         "nothing reached the plane"
     );
 }
@@ -538,7 +538,7 @@ fn a_run_apply_pushes_one_attributed_delta_frame() {
         .collect();
     assert_eq!(
         paths,
-        vec!["tasks.md", "receipts/run.md"],
+        vec!["tasks.md", ".meridian/receipts/run.md"],
         "one committed batch = one frame; content first, then receipt: {frame}"
     );
 
@@ -608,11 +608,13 @@ fn a_run_apply_without_actor_carries_the_planes_self_label() {
 }
 
 /// The bash path commits twice — the phase-1 pre-exec receipt and the phase-2
-/// completion — and each committed batch mints its own contiguous frame
-/// (§7.1: one batch, one root advance, one Delta). `echo nope` emits no
-/// descriptor, so both frames name only the receipt file.
+/// completion — and `echo nope` emits no descriptor, so both batches write only
+/// the run ledger. The ledger lies outside the hash domain (wire-contract
+/// §6.1), so neither batch advances the root and neither mints a frame (§7.1:
+/// no root advance, no Delta): the first frame the subscriber sees is the next
+/// run's, which edits a page.
 #[test]
-fn a_bash_run_mints_one_frame_per_committed_batch() {
+fn a_bash_run_commits_its_receipts_and_mints_no_frame() {
     let tmp = TempDir::new().unwrap();
     let ws = seeded(&tmp);
     let server = RunningServer::start(test_config(&tmp)).unwrap();
@@ -627,37 +629,42 @@ fn a_bash_run_mints_one_frame_per_committed_batch() {
         "id": 33, "op": "run", "invocation": "run-d3", "actor": "seat-78",
         "targets": [{"page": "tasks.md", "task": "sh-note"}],
     }));
-    let rows = rows_of(&resp);
     assert!(
-        rows[0].get("refusal").is_none(),
+        rows_of(&resp)[0].get("refusal").is_none(),
         "the bash run landed: {resp}"
     );
+    let ledger = fs::read_to_string(ws.join(".meridian/receipts/run.md")).unwrap();
+    assert!(
+        ledger.contains("^p-run-d3") && ledger.contains("^r-run-d3"),
+        "both batches committed their receipts: {ledger}"
+    );
 
-    let first = sub.next_frame().expect("phase 1 mints a frame");
-    let second = sub.next_frame().expect("phase 2 mints a frame");
-    for (name, frame) in [("phase 1", &first), ("phase 2", &second)] {
-        assert_eq!(
-            frame["delta"]["actor"],
-            json!("seat-78"),
-            "{name} frame is attributed: {frame}"
-        );
-        let paths: Vec<&str> = frame["delta"]["files"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|f| f["path"].as_str().unwrap())
-            .collect();
-        assert_eq!(
-            paths,
-            vec!["receipts/run.md"],
-            "{name}: a receipt-only batch names the receipt file: {frame}"
-        );
-    }
-    assert_eq!(first["delta"]["seq"], json!(1));
-    assert_eq!(second["delta"]["seq"], json!(2));
+    let resp = conn.call(&json!({
+        "id": 34, "op": "run", "invocation": "run-d4", "actor": "seat-78",
+        "targets": [{"page": "tasks.md", "task": "fix-note", "args": ["done"]}],
+    }));
+    assert!(
+        rows_of(&resp)[0].get("refusal").is_none(),
+        "the page-editing run landed: {resp}"
+    );
+    let frame = sub
+        .next_frame()
+        .expect("the page-editing run mints a frame");
     assert_eq!(
-        second["delta"]["root_before"], first["delta"]["root_after"],
-        "the two commits chain: {second}"
+        frame["delta"]["seq"],
+        json!(1),
+        "the bash run minted no frame before this one: {frame}"
+    );
+    assert_eq!(frame["delta"]["actor"], json!("seat-78"), "{frame}");
+    let paths: Vec<&str> = frame["delta"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert!(
+        paths.contains(&"tasks.md"),
+        "the frame names the edited page: {frame}"
     );
     server.shutdown();
 }
@@ -696,7 +703,7 @@ fn under_a_live_subscriber_every_run_frame_stays_attributed() {
     while let Some(frame) = sub.next_frame() {
         let names_run_files = frame["delta"]["files"].as_array().unwrap().iter().any(|f| {
             let p = f["path"].as_str().unwrap();
-            p == "tasks.md" || p == "receipts/run.md"
+            p == "tasks.md" || p == ".meridian/receipts/run.md"
         });
         if names_run_files {
             assert_eq!(
@@ -769,7 +776,7 @@ fn a_supplied_guard_field_on_run_is_rejected_as_inapplicable() {
 
     // Nothing reached the plane: no run receipt exists.
     assert!(
-        !ws.join("receipts/run.md").exists(),
+        !ws.join(".meridian/receipts/run.md").exists(),
         "a guard-field refusal must commit nothing"
     );
     server.shutdown();
@@ -792,7 +799,7 @@ fn an_effects_write_advances_the_folds_other_writers_premises_compare_against() 
     // The other writer's premise, minted BEFORE the effects write.
     let pre_run = conn.fingerprint();
 
-    // The effects write: a governed run apply (tasks.md + receipts/run.md).
+    // The effects write: a governed run apply (tasks.md + .meridian/receipts/run.md).
     let resp = conn.call(&json!({
         "id": 50, "op": "run", "invocation": "run-f1",
         "targets": [{"page": "tasks.md", "task": "fix-note", "args": ["done"]}],

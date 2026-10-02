@@ -273,7 +273,7 @@ pub fn run(
 ) -> Result<BashOutcome, BashError> {
     // 0. The stdout log — created first, so an unwritable log refuses the
     // run before anything commits.
-    let log = RunLog::create(&root.0, d.invocation_id).map_err(BashError::Record)?;
+    let log = RunLog::create(&root.0, d.page, d.invocation_id).map_err(BashError::Record)?;
 
     // 0b. PRE-FLIGHT (G3): ask the guard whether it would refuse BEFORE
     // anything commits — see `preflight` for why the probe runs first and

@@ -227,7 +227,8 @@ fn the_dry_token_is_the_root_pin_the_live_run_attests() {
 
     // Matched as the FIELD: the row is compact JSON, and a bare
     // `contains(token)` would also pass on a token that landed elsewhere.
-    let receipt = std::fs::read_to_string(ws.file("receipts/run.md")).expect("receipt written");
+    let receipt =
+        std::fs::read_to_string(ws.file(".meridian/receipts/run.md")).expect("receipt written");
     assert!(
         receipt.contains(&format!("\"root_pin\":\"{}\"", dry[0])),
         "the receipt attests a root the dry run never showed\ndry: {}\n{receipt}",

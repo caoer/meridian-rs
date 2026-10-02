@@ -84,8 +84,8 @@ const LOG_RETENTION: usize = 50;
 
 /// Where a fire's logs live, out of tree. One directory per page below it
 /// (`<RUNS_DIR>/<page-path>/`), which is what makes the ceiling above *per
-/// page* and keeps the fire path out of the top level, where the task path's
-/// receipted logs are.
+/// page*. The task path's receipted logs sit one level further down, in that
+/// leaf's `tasks/` subdirectory ([`crate::record`]), under their own ceiling.
 const RUNS_DIR: &str = ".meridian/runs";
 
 /// Where an exec'd entry's bytes are staged, keyed by the block's rev — the
@@ -105,6 +105,54 @@ static STAGE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::n
 /// prune runs at the START of a staging call, so at rest the directory holds
 /// at most one file over this — the one the last call staged and returned.
 const STAGED_RETENTION: usize = 50;
+
+/// Keep the newest `keep` files with this extension in `dir` and drop the
+/// rest — the ceiling § 2.2 names for logs (*"retention is the last 50 per
+/// page, none under `dry`, named so that tool-call cadence has a
+/// ceiling"*), the same one this implementation puts on staged bytes,
+/// because a cache keyed by an ever-growing set of revs is the same
+/// unbounded cost with a longer fuse, and the one the task path puts on its
+/// own logs ([`crate::record`]).
+///
+/// `dir` is always ONE leaf: a page's fire-log directory, that page's
+/// `tasks/` subdirectory of task logs, or the staged-bytes directory. Only
+/// files directly in `dir` are members, so a page's fire prune never reaches
+/// its `tasks/` subdirectory: each lane keeps its own ceiling, and a page
+/// that fires often never evicts the logs its run receipts point at.
+///
+/// Best-effort by construction: a file that cannot be removed is not a
+/// reason to fail a run or a fire that already ran.
+pub(crate) fn prune(dir: &Path, ext: Option<&str>, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        // `None` counts every file in the leaf — the staged directory's
+        // members carry the fence's own extension, so filtering on one
+        // would leave every other language unbounded. A `.tmp` is never a
+        // member either way: it is another fire's in-flight staging write,
+        // and deleting it would take the bytes that fire is about to run.
+        .filter(|e| {
+            let path = e.path();
+            let found = path.extension();
+            !found.is_some_and(|found| found.eq_ignore_ascii_case(STAGED_TMP_EXT))
+                && ext.is_none_or(|ext| found.is_some_and(|found| found.eq_ignore_ascii_case(ext)))
+        })
+        .filter_map(|e| {
+            let modified = e.metadata().ok()?.modified().ok()?;
+            Some((modified, e.path()))
+        })
+        .collect();
+    if files.len() <= keep {
+        return;
+    }
+    files.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+    for (_, path) in files.drain(keep..) {
+        let _ = std::fs::remove_file(path);
+    }
+}
 
 /// How many bytes of each stream the `process` object publishes.
 ///
@@ -1199,59 +1247,11 @@ impl ProcessSeam<'_> {
         self.calls.lock().map(|c| c.clone()).unwrap_or_default()
     }
 
-    /// Keep the newest `keep` files with this extension in `dir` and drop the
-    /// rest — the ceiling § 2.2 names for logs (*"retention is the last 50 per
-    /// page, none under `dry`, named so that tool-call cadence has a
-    /// ceiling"*), and the same one this implementation puts on staged bytes,
-    /// because a cache keyed by an ever-growing set of revs is the same
-    /// unbounded cost with a longer fuse.
-    ///
-    /// `dir` is always a leaf the FIRE path owns — one page's log directory,
-    /// or the staged-bytes directory — never `.meridian/runs/` itself: the
-    /// task path's own logs live at that top level and a run receipt POINTS
-    /// AT them, so a prune that could reach them would delete the evidence a
-    /// receipt promises.
-    ///
-    /// Best-effort by construction: a file that cannot be removed is not a
-    /// reason to fail a fire that already ran.
-    fn prune(dir: &Path, ext: Option<&str>, keep: usize) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
-            .filter_map(Result::ok)
-            // `None` counts every file in the leaf — the staged directory's
-            // members carry the fence's own extension, so filtering on one
-            // would leave every other language unbounded. A `.tmp` is never a
-            // member either way: it is another fire's in-flight staging write,
-            // and deleting it would take the bytes that fire is about to run.
-            .filter(|e| {
-                let path = e.path();
-                let found = path.extension();
-                !found.is_some_and(|found| found.eq_ignore_ascii_case(STAGED_TMP_EXT))
-                    && ext.is_none_or(|ext| {
-                        found.is_some_and(|found| found.eq_ignore_ascii_case(ext))
-                    })
-            })
-            .filter_map(|e| {
-                let modified = e.metadata().ok()?.modified().ok()?;
-                Some((modified, e.path()))
-            })
-            .collect();
-        if files.len() <= keep {
-            return;
-        }
-        files.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
-        for (_, path) in files.drain(keep..) {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-
     /// This page's log directory — `.meridian/runs/<page-path>/`.
     ///
     /// The page is a DIRECTORY, not a fragment of a file name, which is what
     /// makes *"the last 50 per page"* implementable at all: retention is
-    /// [`Self::prune`] over this one leaf.
+    /// [`prune`] over this one leaf.
     fn log_dir(&self) -> std::path::PathBuf {
         self.root.join(RUNS_DIR).join(self.page)
     }
@@ -1321,7 +1321,7 @@ impl ProcessSeam<'_> {
             format!("{stdout}\n--- stderr ---\n{stderr}")
         };
         std::fs::write(dir.join(&name), body).ok()?;
-        Self::prune(&dir, Some("log"), LOG_RETENTION);
+        prune(&dir, Some("log"), LOG_RETENTION);
         Some(format!("{RUNS_DIR}/{}/{name}", self.page))
     }
 
@@ -1357,7 +1357,7 @@ impl ProcessSeam<'_> {
         // (PR 205 review, N1). `.tmp` files are excluded from the count on
         // purpose: a racer's in-flight write is not a cache member, and
         // pruning one would delete the bytes a live fire is about to run.
-        Self::prune(&dir, None, STAGED_RETENTION);
+        prune(&dir, None, STAGED_RETENTION);
         // Write only when it is not already there: the key is the content's
         // own identity, so an existing file has the bytes we were about to
         // write. This is the cache — it removes the write, and (with the
@@ -2208,18 +2208,20 @@ printf '%s|%s' \"$BASE\" \"$OVER\"
 
     /// Retention is **per page**, and it can never reach the TASK path's logs.
     ///
-    /// `.meridian/runs/` top level is where `run::record` writes a task's log
-    /// and a run receipt POINTS AT it. The fire path writes one directory
-    /// below, and the prune runs on that leaf only — so a busy page cannot
+    /// `run::record` writes a task's log into the page leaf's `tasks/`
+    /// subdirectory and a run receipt POINTS AT it. The fire prune counts
+    /// only the files directly in the leaf — so a page that fires often cannot
     /// delete the evidence another lane's receipt promises.
     #[test]
     fn retention_keeps_the_last_fifty_of_one_page_and_never_a_task_log() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let runs = tmp.path().join(RUNS_DIR);
         let page_dir = runs.join("HOOKS.md");
-        std::fs::create_dir_all(&page_dir).expect("page dir");
-        // A task log at the top level, receipted by construction.
-        std::fs::write(runs.join("inv-task-t0.log"), "task").expect("task log");
+        let task_dir = page_dir.join("tasks");
+        std::fs::create_dir_all(&task_dir).expect("page dir");
+        // The page's task log, written first so it is the oldest file under
+        // the leaf, receipted by construction.
+        std::fs::write(task_dir.join("inv-task-t0.log"), "task").expect("task log");
         for i in 0..60 {
             std::fs::write(page_dir.join(format!("inv-{i}-t0.log")), "fire").expect("fire log");
             // Distinct mtimes: the prune keeps the NEWEST, and a filesystem
@@ -2227,13 +2229,17 @@ printf '%s|%s' \"$BASE\" \"$OVER\"
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
 
-        ProcessSeam::prune(&page_dir, Some("log"), LOG_RETENTION);
+        prune(&page_dir, Some("log"), LOG_RETENTION);
 
-        let left = std::fs::read_dir(&page_dir).expect("read back").count();
+        let left = std::fs::read_dir(&page_dir)
+            .expect("read back")
+            .filter_map(Result::ok)
+            .filter(|e| e.path().is_file())
+            .count();
         assert_eq!(left, LOG_RETENTION, "the ceiling is per page");
         assert!(
-            runs.join("inv-task-t0.log").exists(),
-            "a per-page prune reached the task path's own log"
+            task_dir.join("inv-task-t0.log").exists(),
+            "a page's fire prune reached the task path's own log"
         );
         assert!(
             page_dir.join("inv-59-t0.log").exists(),
@@ -2262,7 +2268,7 @@ printf '%s|%s' \"$BASE\" \"$OVER\"
         let inflight = dir.join(format!("rev-0.bash.4242.{STAGED_TMP_EXT}"));
         std::fs::write(&inflight, "echo half").expect("in-flight write");
 
-        ProcessSeam::prune(&dir, None, STAGED_RETENTION);
+        prune(&dir, None, STAGED_RETENTION);
 
         let members = std::fs::read_dir(&dir)
             .expect("read back")

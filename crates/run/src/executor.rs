@@ -36,10 +36,25 @@ use serde::{Deserialize, Serialize};
 use crate::caps::{self, Authority, Cap};
 use crate::record::{ExecRecord, ExecRecordSink};
 
+/// The engine's receipt home, `.meridian/receipts`, as a literal: outside the
+/// hash domain (wire-contract §6.1), so a receipt is engine state, never the
+/// checkout's content. A macro because `concat!` composes literals only, and
+/// every engine receipt path is composed from this one spelling —
+/// [`RECEIPT_FILE`], realise's and the corpus proof's.
+#[macro_export]
+macro_rules! receipts_dir {
+    () => {
+        ".meridian/receipts"
+    };
+}
+
+/// The engine's receipt home, workspace-relative ([`receipts_dir!`]).
+pub const RECEIPTS_DIR: &str = crate::receipts_dir!();
+
 /// The run plane's receipt file — ONE convention, whichever door invoked the
 /// plane (the CLI entry and the § A.8 wire arm both append here). Promoted
 /// from the CLI (§ A.8) so the convention has one home.
-pub const RECEIPT_FILE: &str = "receipts/run.md";
+pub const RECEIPT_FILE: &str = concat!(crate::receipts_dir!(), "/run.md");
 
 /// Where the run receipt lands: a workspace-relative file (appended) and the
 /// pre-minted block anchor for the line. Address policy is the CALLER's (U5

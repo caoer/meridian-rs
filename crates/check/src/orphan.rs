@@ -33,19 +33,25 @@ const PRE_EXEC: &str = "^p-run-";
 /// The completion anchor prefix (`^r-run-<invocation>`).
 const COMPLETION: &str = "^r-run-";
 
-/// Every orphaned run receipt in the corpus, in page then document order.
+/// Every orphaned run receipt in the run plane's ledger
+/// ([`run::executor::RECEIPT_FILE`]), in document order.
 ///
-/// Reads the parsed corpus rather than the disk: receipt pages are ordinary
-/// markdown in the hash domain, so they are already here, and a detector that
-/// re-read them could disagree with the bytes every other plane was computed
-/// from.
-#[must_use]
-pub fn orphaned_runs(docs: &model::Docs) -> Vec<OrphanedRun> {
-    let mut out = Vec::new();
-    for (page, doc) in docs {
-        out.extend(orphans_on_page(page, &doc.raw));
-    }
-    out
+/// Reads the ledger from disk: it lives under `.meridian/`, outside the hash
+/// domain (wire-contract §6.1), so no corpus — worktree or index — carries it.
+/// An absent ledger is no orphans: a workspace that never ran a task has none.
+/// Bytes that are not UTF-8 are read lossily, since the lint joins on ASCII
+/// anchors and a stray byte elsewhere on a line cannot hide one.
+///
+/// # Errors
+/// The ledger exists and could not be read.
+pub fn orphaned_runs(root: &fs::WorkspaceRoot) -> std::io::Result<Vec<OrphanedRun>> {
+    let page = run::executor::RECEIPT_FILE;
+    let bytes = match std::fs::read(root.0.join(page)) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    Ok(orphans_on_page(page, &String::from_utf8_lossy(&bytes)))
 }
 
 fn orphans_on_page(page: &str, raw: &str) -> Vec<OrphanedRun> {

@@ -13,8 +13,7 @@
 //! The anchors are copied verbatim; the JSON bodies are elided to the fields that matter,
 //! because the lint joins on the anchor and must not depend on payload shape.
 
-use check::orphan::{orphaned_runs, render};
-use std::collections::BTreeMap;
+use check::orphan::{OrphanedRun, orphaned_runs, render};
 
 /// The real sequence, in page order, from field-notes 2026-07-28.
 const PRODUCTION_RECEIPTS: &str = "\
@@ -27,17 +26,33 @@ const PRODUCTION_RECEIPTS: &str = "\
 - run {\"page\":\"LLM_WIKI.md\",\"task\":\"load-skill\"} ^r-run-1785273287426-33159
 ";
 
-fn corpus() -> model::Docs {
-    let raw = PRODUCTION_RECEIPTS.to_owned();
-    let doc = model::build(raw.clone(), syntax::parse(&raw));
-    BTreeMap::from([("receipts/run.md".to_owned(), std::sync::Arc::new(doc))])
+/// The lint over a workspace whose run ledger holds `ledger`, written where the
+/// run plane writes it — the lint reads the disk, never a corpus.
+fn lint(ledger: &str) -> Vec<OrphanedRun> {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join(run::executor::RECEIPT_FILE);
+    std::fs::create_dir_all(path.parent().expect("the ledger has a parent")).expect("mkdir");
+    std::fs::write(&path, ledger).expect("write the ledger");
+    orphaned_runs(&fs::WorkspaceRoot(tmp.path().to_path_buf())).expect("ledger read")
+}
+
+fn production() -> Vec<OrphanedRun> {
+    lint(PRODUCTION_RECEIPTS)
+}
+
+/// A workspace that never ran a task has no ledger, and no ledger is no orphans.
+#[test]
+fn an_absent_ledger_is_no_orphans() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let found = orphaned_runs(&fs::WorkspaceRoot(tmp.path().to_path_buf())).expect("absent reads");
+    assert!(found.is_empty(), "{found:?}");
 }
 
 /// The gate: every pre-marker invocation is flagged, the post-marker one is
 /// spared. Not "flag one and spare one" — the whole era, by the dated boundary.
 #[test]
 fn the_lint_flags_the_five_known_orphans_and_spares_the_completed_run() {
-    let found = orphaned_runs(&corpus());
+    let found = production();
     let ids: Vec<&str> = found.iter().map(|o| o.invocation.as_str()).collect();
 
     assert_eq!(
@@ -64,7 +79,7 @@ fn the_lint_flags_the_five_known_orphans_and_spares_the_completed_run() {
 /// support.
 #[test]
 fn a_run_that_succeeded_without_recording_it_is_still_an_orphan() {
-    let found = orphaned_runs(&corpus());
+    let found = production();
     let succeeded = found
         .iter()
         .find(|o| o.invocation == "1785268805357-94789")
@@ -80,7 +95,7 @@ fn a_run_that_succeeded_without_recording_it_is_still_an_orphan() {
 /// nothing on this page went missing after the writer could record it.
 #[test]
 fn the_whole_defect_era_renders_as_unauditable_not_as_live_incidents() {
-    let found = orphaned_runs(&corpus());
+    let found = production();
     assert!(
         found.iter().all(|o| o.before_completions_existed),
         "every orphan here predates the first completion receipt"
@@ -108,11 +123,9 @@ fn the_whole_defect_era_renders_as_unauditable_not_as_live_incidents() {
 /// orphan, after completions exist, reads as a LIVE incident on the same page.
 #[test]
 fn an_orphan_after_the_boundary_is_a_live_incident() {
-    let raw = format!("{PRODUCTION_RECEIPTS}- run {{}} ^p-run-1785299999999-00001\n");
-    let doc = model::build(raw.clone(), syntax::parse(&raw));
-    let docs = BTreeMap::from([("receipts/run.md".to_owned(), std::sync::Arc::new(doc))]);
-
-    let found = orphaned_runs(&docs);
+    let found = lint(&format!(
+        "{PRODUCTION_RECEIPTS}- run {{}} ^p-run-1785299999999-00001\n"
+    ));
     let live: Vec<&str> = found
         .iter()
         .filter(|o| !o.before_completions_existed)
