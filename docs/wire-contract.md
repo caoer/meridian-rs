@@ -23,7 +23,7 @@ Goals are ranked: a lower never overrides a higher; no agent adjudicates rank.
 
 **GOAL 1 — works-for-us (primary):** the ruled grammar (§2.1), the geography law (§5.3), and the rulings enumerated below, each naming the section that carries it:
 
-1. Interface: five verbs (`toc`/`cat`/`edit`/`append`/`resolve`); sections-as-files; Edit-exact old/new scoped to a section; **requests never require revs, receipts always return them**; no byte offsets in the interface; mandatoriness = host policy ratchet; resolve = walk plane.
+1. Interface: five verbs (`toc`/`cat`/`edit`/`append`/`resolve`); sections-as-files; Edit-exact old/new scoped to a section; **requests never require revs, receipts always return them**; no byte offsets in the interface; mandatoriness = host policy ratchet; resolve = walk plane (the wire op; the `mrd resolve` CLI verb answers where a path lands and does not send it, §4.8).
 2. Amendments: the fix-at-freeze list (§18), one block-id charset (§2.4), node-grain deltas (§7.4).
 3. Foundations: Starlark evaluator (§11.4); optional, wire-agnostic view organ (§10.3–§10.4).
 4. Review checklist A1–A14; ratified convergence items: mint partition, 16-hex rev, md-only, two-stage resolve, app-oracle GT (ground truth).
@@ -556,7 +556,7 @@ A refused `sub` leaves an ordinary request channel. The delta stream is not acto
 | cat (CLI: `mrd read` / section) | `cat` | `--sec` segments → hpath array verbatim |
 | edit (CLI: `mrd put` + match) | `splice` with one `match` edit | `--if 9d3e…` → `if_node_rev`; receipt address defaulted by the client library, overridable |
 | append (CLI: `mrd put` + put at end) | `splice` with one `put{at:"end"}` edit | |
-| resolve (interop; interface strips `[[…]]`) | `resolve` | interface strips `[[…|alias]]`; wire takes raw linktext — one grammar |
+| resolve (interop; interface strips `[[…]]`) | `resolve` | interface strips `[[…|alias]]`; wire takes raw linktext — one grammar. No CLI verb sends this op: `mrd resolve` answers where a path or `root:path` ref lands, with no wire call |
 
 Requests never require revs; receipts always return them, so the current rev is ambient after any read or write and `--if` costs ~10 tokens, zero extra calls. No byte offsets exist in the interface surface or in wire *requests* (§4.4).
 
@@ -1146,7 +1146,7 @@ The downstream implementation plan is sequenced against this table, which is its
 | `mv` | Above-wire, shipped as `mrd move` (`move.md`): corpus move+link-rewrite is a composed consumer door — `links` (§4.6) decides what would break, the emission rule is the door's own (`move §4`), one whole-file replace per referring page; never a wire op, multi-file atomicity honestly absent (§6.5, `move §9`) |
 | `status` | Dead as op; liveness is the daemon's; the change feed is `sub` (§4.7) |
 | `watch` | Dead as CLI; Delta + `sub` + recovery law serve it (§7) |
-| `resolve` CLI | Matched: `resolve` op (§4.5) |
+| `resolve` CLI | Not an op client: `mrd resolve` answers where a path or `root:path` ref lands (workspace tier, or the bound root, physical path and file presence); the `resolve` op (§4.5) has no CLI caller |
 | `append` | Matched: `put{at:"end"}` with full receipts, worked (§4.4) |
 | `toc` | Matched: `toc` with rev/write-kit per node (§4.1) |
 | `pipe` | Dead; staged commit re-expressed as `dry` + atomic batch + `if_fingerprint` (§4.4, §5.1) |
