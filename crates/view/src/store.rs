@@ -653,10 +653,16 @@ pub struct ColMeta {
 /// # Errors
 /// The error is the `DuckDB` message, extended with the OQ1 teaching when the
 /// statement was DML against a latest view (`Binder Error: Can only update
-/// base table` — the remedy names the hist lane).
+/// base table` — the remedy names the hist lane), and with the column lists
+/// of the face relations involved when it names a column that does not exist
+/// ([`column_lists`]).
 pub fn run_query(conn: &Connection, query: &str) -> Result<(Vec<ColMeta>, Vec<Vec<Json>>), String> {
-    let mut stmt = conn.prepare(query).map_err(|e| teach(&e.to_string()))?;
-    let mut rows = stmt.query([]).map_err(|e| teach(&e.to_string()))?;
+    let refuse = |e: duckdb::Error| {
+        let error = e.to_string();
+        format!("{}{}", teach(&error), column_lists(conn, query, &error))
+    };
+    let mut stmt = conn.prepare(query).map_err(refuse)?;
+    let mut rows = stmt.query([]).map_err(refuse)?;
 
     // Column metadata is available once the query has executed (`query` binds +
     // executes); collect owned copies before stepping the rows. The tz flags
@@ -789,6 +795,256 @@ fn teach(error: &str) -> String {
         && let Some((_, new)) = RETIRED_NAMES.iter().find(|(old, _)| *old == name)
     {
         return format!("{out}\n`{name}` was renamed to `{new}` — query `{new}` instead.");
+    }
+    out
+}
+
+/// The schemas that make up the face: the latest layer and its history.
+const FACE_SCHEMAS: &[&str] = &["main", "hist"];
+
+/// The lines a column miss adds after `DuckDB`'s own words: one
+/// `<relation> columns: a, b, c` per face relation the error names or the
+/// statement reads from, in that order, each listed once. `DuckDB`'s
+/// Did-you-mean offers one or two near names (`about` on `record` offers only
+/// `status`), so a caller who guessed a column had no way to learn the real
+/// ones short of a schema probe.
+///
+/// The lists come from the live catalog of `conn` at the moment of the error,
+/// never from a constant, so a schema change cannot leave them stale. A
+/// relation outside the face (a CTE, a table function, a caller's temp table)
+/// adds nothing; any other error, or a catalog read that fails, adds nothing.
+fn column_lists(conn: &Connection, query: &str, error: &str) -> String {
+    use std::fmt::Write as _;
+
+    if !is_column_miss(error) {
+        return String::new();
+    }
+    let Ok(face) = face_columns(conn) else {
+        return String::new();
+    };
+    let read = statement_relations(query);
+    let mut wanted: Vec<(String, String)> = Vec::new();
+    if let Some(name) = error_relation(error) {
+        // The error spells the relation as the statement bound it: an alias
+        // names nothing here, and a bare name read from `hist` is that one.
+        let name = name.to_lowercase();
+        let schema = read
+            .iter()
+            .find(|(_, n)| *n == name)
+            .map_or_else(|| "main".to_owned(), |(s, _)| s.clone());
+        wanted.push((schema, name));
+    }
+    wanted.extend(read);
+
+    let mut seen = BTreeSet::new();
+    let mut out = String::new();
+    for key in wanted {
+        let Some(columns) = face.get(&key) else {
+            continue;
+        };
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let (schema, name) = &key;
+        let label = if schema == "main" {
+            name.clone()
+        } else {
+            format!("{schema}.{name}")
+        };
+        let _ = write!(out, "\n{label} columns: {}", columns.join(", "));
+    }
+    out
+}
+
+/// Whether `DuckDB` refused a column that does not exist. Its two spellings:
+/// an unqualified reference (`Referenced column "about" not found in FROM
+/// clause!`) and a qualified one (`Table "record" does not have a column
+/// named "about"`, `Values list "r" …` through an alias, `… with name …` for
+/// an INSERT column list).
+fn is_column_miss(error: &str) -> bool {
+    error.contains("Binder Error")
+        && ((error.contains("Referenced column \"") && error.contains("\" not found"))
+            || error.contains("does not have a column"))
+}
+
+/// The relation a qualified column miss names: `Table "x"` or `Values
+/// list "x"` before `does not have a column`.
+fn error_relation(error: &str) -> Option<&str> {
+    let head = error.split_once(" does not have a column")?.0;
+    let rest = ["Table \"", "Values list \""]
+        .iter()
+        .find_map(|p| head.rsplit_once(p).map(|(_, r)| r))?;
+    rest.strip_suffix('"')
+}
+
+/// Every face relation's columns in catalog order, keyed by
+/// `(schema, relation)`, read from `conn` now.
+fn face_columns(conn: &Connection) -> duckdb::Result<BTreeMap<(String, String), Vec<String>>> {
+    let schemas = FACE_SCHEMAS
+        .iter()
+        .map(|s| format!("'{s}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT schema_name, table_name, column_name FROM duckdb_columns() \
+         WHERE database_name = current_database() AND NOT internal \
+         AND schema_name IN ({schemas}) \
+         ORDER BY schema_name, table_name, column_index"
+    ))?;
+    let mut rows = stmt.query([])?;
+    let mut face: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    while let Some(row) = rows.next()? {
+        let schema: String = row.get(0)?;
+        let table: String = row.get(1)?;
+        let column: String = row.get(2)?;
+        face.entry((schema, table.to_lowercase()))
+            .or_default()
+            .push(column);
+    }
+    Ok(face)
+}
+
+/// One lexical token of a statement, as far as relation references need.
+#[derive(Debug, PartialEq)]
+enum Tok {
+    /// An identifier or keyword; `true` when it was double-quoted.
+    Word(String, bool),
+    Dot,
+    Comma,
+    Open,
+    Close,
+    Other,
+}
+
+/// Split a statement into [`Tok`]s, skipping comments, string literals and
+/// whitespace. Not a SQL parser: it only has to find the names that follow
+/// FROM, JOIN, INTO and UPDATE, and the commas of a FROM list.
+fn tokens(query: &str) -> Vec<Tok> {
+    let chars: Vec<char> = query.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        if c.is_whitespace() {
+            i += 1;
+        } else if c == '-' && next == Some('-') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+        } else if c == '/' && next == Some('*') {
+            i += 2;
+            while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                i += 1;
+            }
+            i += 2;
+        } else if c == '\'' || c == '"' {
+            // `''` / `""` inside the quotes is the escaped quote itself.
+            let mut text = String::new();
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == c {
+                    if chars.get(i + 1) == Some(&c) {
+                        text.push(c);
+                        i += 2;
+                        continue;
+                    }
+                    break;
+                }
+                text.push(chars[i]);
+                i += 1;
+            }
+            i += 1;
+            out.push(if c == '"' {
+                Tok::Word(text, true)
+            } else {
+                Tok::Other
+            });
+        } else if c.is_alphabetic() || c == '_' {
+            let start = i;
+            while i < chars.len()
+                && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '$')
+            {
+                i += 1;
+            }
+            out.push(Tok::Word(chars[start..i].iter().collect(), false));
+        } else {
+            out.push(match c {
+                '.' => Tok::Dot,
+                ',' => Tok::Comma,
+                '(' => Tok::Open,
+                ')' => Tok::Close,
+                _ => Tok::Other,
+            });
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The relations a statement names where a relation goes — after FROM, JOIN,
+/// INTO, UPDATE, or a comma of a FROM list — as lowercase `(schema, name)`.
+/// A bare name is `main`'s; `x.y` and `db.x.y` carry their own schema.
+/// Whether the name exists is the catalog's question, not this one's.
+fn statement_relations(query: &str) -> Vec<(String, String)> {
+    let toks = tokens(query);
+    let mut out = Vec::new();
+    // One flag per parenthesis depth: is a comma here a FROM-list comma?
+    let mut in_from = vec![false];
+    let mut expect = false;
+    let mut i = 0;
+    while i < toks.len() {
+        match &toks[i] {
+            Tok::Word(first, quoted) => {
+                let mut chain = vec![first.to_lowercase()];
+                while let (Some(Tok::Dot), Some(Tok::Word(w, _))) =
+                    (toks.get(i + 1), toks.get(i + 2))
+                {
+                    chain.push(w.to_lowercase());
+                    i += 2;
+                }
+                if expect {
+                    expect = false;
+                    let n = chain.len();
+                    let schema = if n >= 2 {
+                        chain[n - 2].clone()
+                    } else {
+                        "main".to_owned()
+                    };
+                    out.push((schema, chain[n - 1].clone()));
+                } else if !quoted && chain.len() == 1 {
+                    let top = in_from.last_mut().expect("depth 0 is never popped");
+                    match chain[0].as_str() {
+                        "from" => {
+                            expect = true;
+                            *top = true;
+                        }
+                        "join" | "into" | "update" => expect = true,
+                        "where" | "group" | "having" | "order" | "limit" | "offset" | "qualify"
+                        | "window" | "union" | "except" | "intersect" | "on" | "using"
+                        | "select" | "set" | "values" | "returning" => *top = false,
+                        _ => {}
+                    }
+                }
+            }
+            Tok::Comma => {
+                if *in_from.last().expect("depth 0 is never popped") {
+                    expect = true;
+                }
+            }
+            Tok::Open => {
+                expect = false;
+                in_from.push(false);
+            }
+            Tok::Close => {
+                expect = false;
+                if in_from.len() > 1 {
+                    in_from.pop();
+                }
+            }
+            Tok::Dot | Tok::Other => expect = false,
+        }
+        i += 1;
     }
     out
 }
@@ -3572,5 +3828,104 @@ mod config_scope_tests {
             restore_global_config(&conn, &clean).is_empty(),
             "an undisturbed instance restores clean"
         );
+    }
+}
+
+#[cfg(test)]
+mod column_miss_tests {
+    use super::tests::{fixture_v1, sync_ambient, tmp_store};
+    use super::*;
+
+    fn store() -> (tempfile::TempDir, SqlStore) {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        (dir, store)
+    }
+
+    /// The refusal as it was before the column arm: `DuckDB`'s words through
+    /// [`teach`] alone.
+    fn taught_alone(store: &SqlStore, query: &str) -> String {
+        let conn = store.connection();
+        let error = match conn.prepare(query) {
+            Err(e) => e,
+            Ok(mut stmt) => stmt.query([]).map(|_| ()).expect_err("the probe refuses"),
+        };
+        teach(&error.to_string())
+    }
+
+    /// A relation's columns through `information_schema` — a catalog route
+    /// independent of the one the refusal reads.
+    fn listed(store: &SqlStore, schema: &str, relation: &str) -> String {
+        store
+            .connection()
+            .query_row(
+                "SELECT string_agg(column_name, ', ' ORDER BY ordinal_position) \
+                 FROM information_schema.columns \
+                 WHERE table_catalog = current_database() \
+                   AND table_schema = ? AND table_name = ?",
+                [schema, relation],
+                |r| r.get::<_, String>(0),
+            )
+            .expect("the relation is in the catalog")
+    }
+
+    /// The most-guessed miss: `about` on `record`, where `DuckDB` offers only
+    /// `status`. Its words stay first and whole; the real columns follow.
+    #[test]
+    fn a_column_miss_on_record_lists_its_columns() {
+        let (_dir, store) = store();
+        let query = "SELECT about FROM record";
+        let got = store
+            .query(query)
+            .expect("lane")
+            .expect_err("about is no column");
+        let columns = listed(&store, "main", "record");
+        assert!(
+            columns.contains("path"),
+            "the catalog route works: {columns}"
+        );
+        assert_eq!(
+            got,
+            format!("{}\nrecord columns: {columns}", taught_alone(&store, query))
+        );
+    }
+
+    /// `body` guessed as a column of `main.body` (it is `text`).
+    #[test]
+    fn a_column_miss_on_main_body_lists_its_columns() {
+        let (_dir, store) = store();
+        let query = "SELECT body FROM main.body";
+        let got = store
+            .query(query)
+            .expect("lane")
+            .expect_err("body is no column");
+        let columns = listed(&store, "main", "body");
+        assert!(
+            columns.contains("text"),
+            "the catalog route works: {columns}"
+        );
+        assert_eq!(
+            got,
+            format!("{}\nbody columns: {columns}", taught_alone(&store, query))
+        );
+    }
+
+    /// Every other refusal is untouched, byte for byte: a syntax error, a
+    /// view-DML refusal, and a column miss on a relation outside the face.
+    #[test]
+    fn other_refusals_are_unchanged() {
+        let (_dir, store) = store();
+        for query in [
+            "SELEC about FROM record",
+            "DELETE FROM record",
+            "WITH t AS (SELECT 1 AS a) SELECT b FROM t",
+        ] {
+            let got = store
+                .query(query)
+                .expect("lane")
+                .expect_err("the probe refuses");
+            assert_eq!(got, taught_alone(&store, query), "{query}");
+        }
     }
 }
