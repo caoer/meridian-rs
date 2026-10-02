@@ -205,6 +205,32 @@ fn file_not_found_on_the_load_plane_names_the_miss_and_a_fix() {
     assert!(m.contains("birth"), "points writes at the birth door: {m}");
 }
 
+/// A read of a folder keeps `io_error`/`env` and its cause names the folder
+/// and how its records are listed, instead of the bare errno
+/// `Is a directory (os error 21)`.
+#[test]
+fn a_folder_on_the_load_plane_names_the_path_and_the_listing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("domains/net")).expect("fixture");
+    std::fs::write(dir.path().join("domains/net/dns.md"), "# DNS\n").expect("fixture");
+    let root = fs::WorkspaceRoot(dir.path().canonicalize().expect("canonicalize"));
+
+    let err =
+        wire_serve::load_doc(&root, &WPath("domains/net".into())).expect_err("a folder refuses");
+
+    assert_eq!(err.code, ErrorCode::IoError);
+    assert_eq!(err.recovery, ErrorCode::IoError.recovery());
+    let cause = err
+        .cause
+        .as_deref()
+        .expect("the io refusal carries its cause");
+    assert!(cause.contains("domains/net"), "names the folder: {cause}");
+    assert!(
+        cause.contains("SELECT path FROM doc WHERE path LIKE 'domains/net/%'"),
+        "teaches the listing: {cause}"
+    );
+}
+
 /// One law, one sentence, at BOTH value-plane write doors (wire-contract
 /// § A.6.3a, dogfood s7). The upsert door used to say only that the value must
 /// be single-line — no key, no remedy — so recovery quality was a function of
