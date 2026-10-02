@@ -226,7 +226,9 @@ usage:
                            leaves behind. Keyed by nothing, it refuses (exit 2)
                            instead of reporting a removal that did not happen.
   mrd resolve [PATH]       how PATH resolves: the tier that answered and the
-                           root it named.
+                           root it named. A `root:path` answers where the ref
+                           lands and whether a file is there now (`file:
+                           present | absent | directory`); exit 0 either way.
   mrd links [PATH]         corpus edge map (whole corpus, or one file). Daemon
                            (auto-spawned) or in-process.
   mrd read <PATH>[#FRAG] [--section SEL]

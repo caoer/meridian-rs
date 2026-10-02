@@ -16,9 +16,9 @@
 //!   colon-bearing string;
 //! - the answer is the MCP resolve face's, shape-for-shape: physical path,
 //!   rooted lane, root row (state + workspace), canonical `root:path`;
-//! - no existence check: a missing rel inside a BOUND root still names its
-//!   landing (absence is the engine's question, §5.6, never the address
-//!   plane's);
+//! - absence never refuses: a missing rel inside a BOUND root still names
+//!   its landing, exit 0, and the answer's `file:` line says what sits
+//!   there now (present, absent, directory);
 //! - path grain: a `#` fragment refuses with its own teaching;
 //! - D3: a colon after the first `/` stays an ordinary path byte — the
 //!   ambient ladder report survives beside the lane.
@@ -173,15 +173,13 @@ fn a_bound_rooted_ref_names_where_it_lands() {
     );
 }
 
-/// No existence check: a missing rel inside a BOUND root still names its
-/// landing — absence is the engine's question (§5.6), never the address
-/// plane's. (Semantics probed live on the MCP face 2026-08-16: a missing
-/// file resolves identically to a present one.)
+/// Absence never refuses: a missing rel inside a BOUND root still names its
+/// landing — a birth resolves its path before the record exists.
 #[test]
 fn a_missing_rel_inside_a_bound_root_still_names_its_landing() {
     let sb = sandbox();
     let out = sb.run(&["resolve", "sessions:nope.md"]);
-    assert_eq!(code(&out), 0, "no existence check: {}", stderr(&out));
+    assert_eq!(code(&out), 0, "absence never refuses: {}", stderr(&out));
     let text = stdout(&out);
     assert_eq!(
         text.lines().next().unwrap_or_default(),
@@ -195,6 +193,34 @@ fn a_missing_rel_inside_a_bound_root_still_names_its_landing() {
         text.contains("ref: sessions:nope.md"),
         "the canonical spelling still closes the answer: {text:?}"
     );
+}
+
+/// The answer says what sits at the landing now — a present file, an absent
+/// one, a directory — on both faces, and absence never moves the exit code.
+#[test]
+fn the_answer_says_whether_a_file_is_at_the_landing() {
+    let sb = sandbox();
+    std::fs::create_dir_all(sb.sessions.join("sub")).expect("mkdir sub");
+    for (spelling, word) in [
+        ("sessions:notes.md", "present"),
+        ("sessions:nope.md", "absent"),
+        ("sessions:notes.md/below.md", "absent"),
+        ("sessions:sub", "directory"),
+    ] {
+        let human = sb.run(&["resolve", spelling]);
+        assert_eq!(code(&human), 0, "{spelling}: {}", stderr(&human));
+        let text = stdout(&human);
+        assert_eq!(
+            text.lines().last().unwrap_or_default(),
+            format!("  file: {word}"),
+            "{spelling}: the file line closes the answer: {text:?}"
+        );
+        let json = sb.run(&["resolve", spelling, "--json"]);
+        assert_eq!(code(&json), 0, "{spelling}: {}", stderr(&json));
+        let v: serde_json::Value = serde_json::from_slice(&json.stdout)
+            .unwrap_or_else(|e| panic!("json parses ({e}): {}", stdout(&json)));
+        assert_eq!(v["file"], word, "{spelling}: {v}");
+    }
 }
 
 /// The `--json` face carries the same facts in the door's house keys, and the

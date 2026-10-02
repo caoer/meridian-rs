@@ -280,12 +280,15 @@ const RESOLVE_CONSEQUENCE: &str = "Nothing was resolved.";
 /// resolution is the read door's seam ([`crate::rooted`]), so two doors
 /// cannot hold two opinions of one ref.
 ///
-/// No existence check and no daemon contact: the mount table is the whole
-/// authority, and the answer names where the ref lands whether or not a file
-/// sits there today — absence is the engine's question (§5.6), never the
-/// address plane's. A resolution refusal is the address answer (exit 1,
-/// framed with the workspace the caller stands in), never a canonicalize of
-/// the literal colon-bearing string.
+/// No daemon contact: the mount table is the whole authority, and the answer
+/// names where the ref lands whether or not a file sits there today — a
+/// birth resolves its path before the record exists. The answer also
+/// reports what sits at that path now (`file: present | absent |
+/// directory`, one stat — [`FileAt`]), so "it resolved" never reads as "it
+/// exists". Absence is never a refusal: the exit code is 0 either way. A
+/// resolution refusal is the address answer (exit 1, framed with the
+/// workspace the caller stands in), never a canonicalize of the literal
+/// colon-bearing string.
 fn run_rooted(spelling: &str, cwd: &Path, format: Format) -> Result<(), Fail> {
     use wire::{ErrorBody, ErrorCode};
 
@@ -321,6 +324,7 @@ fn run_rooted(spelling: &str, cwd: &Path, format: Format) -> Result<(), Fail> {
     match crate::rooted::resolve(spelling, "resolve", RESOLVE_CONSEQUENCE) {
         Ok((rel, rooted)) => {
             let landed = rooted.workspace.join(&rel);
+            let file = FileAt::stat(&landed);
             match format {
                 // `root` and `ref` carry the MOUNT's name whichever spelling the
                 // caller used — the canonical-spelling law (§ 4.6a). `alias` is
@@ -336,6 +340,7 @@ fn run_rooted(spelling: &str, cwd: &Path, format: Format) -> Result<(), Fail> {
                         "primary": rooted.primary,
                         "path": landed.display().to_string(),
                         "ref": rooted.canonical_ref(&rel),
+                        "file": file.word(),
                     });
                     println!("{}", serde_json::to_string_pretty(&value).expect("json"));
                 }
@@ -353,10 +358,49 @@ fn run_rooted(spelling: &str, cwd: &Path, format: Format) -> Result<(), Fail> {
                         if rooted.primary { "  ← primary" } else { "" }
                     );
                     println!("  ref: {}", rooted.canonical_ref(&rel));
+                    println!("  file: {}", file.word());
                 }
             }
             Ok(())
         }
         Err(error) => refusal(error, format),
+    }
+}
+
+/// What sits at a resolved path now — one stat, following symlinks.
+enum FileAt {
+    Present,
+    Absent,
+    Directory,
+    /// The stat failed for a reason other than absence (a permission wall):
+    /// neither present nor absent can be claimed.
+    Unknown,
+}
+
+impl FileAt {
+    fn stat(path: &Path) -> Self {
+        match std::fs::metadata(path) {
+            Ok(meta) if meta.is_dir() => Self::Directory,
+            Ok(_) => Self::Present,
+            // A prefix that is a file (ENOTDIR) holds nothing under it either.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Self::Absent
+            }
+            Err(_) => Self::Unknown,
+        }
+    }
+
+    fn word(&self) -> &'static str {
+        match self {
+            Self::Present => "present",
+            Self::Absent => "absent",
+            Self::Directory => "directory",
+            Self::Unknown => "unknown",
+        }
     }
 }
