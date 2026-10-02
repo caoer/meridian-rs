@@ -3889,7 +3889,8 @@ mod column_miss_tests {
     #[test]
     fn a_column_miss_on_main_body_lists_its_columns() {
         let (_dir, store) = store();
-        let query = "SELECT body FROM main.body";
+        // Through an alias: a bare `body` binds the whole row of `body`.
+        let query = "SELECT b.body FROM main.body b";
         let got = store
             .query(query)
             .expect("lane")
