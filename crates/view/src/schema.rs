@@ -1,10 +1,10 @@
-//! Round-1 view schema — 9 physical tables + 4 SQL views (binding design §Q1;
+//! Round-1 view schema — 14 physical tables + 4 SQL views (binding design §Q1;
 //! `body` added by docs/body-projection.md). Disposable projections of the
 //! parsed corpus, rebuilt on fingerprint change (view-never-store). DDL is the
 //! contract: singleton `_meridian_view`, task→section identity FK, derived
 //! `resolved`, C1 locator triple on every fact row.
 
-/// Full round-1 DDL: singleton stamp + 8 fact tables + 4 views. Binding design —
+/// Full round-1 DDL: singleton stamp + 13 fact tables + 4 views. Binding design —
 /// do not edit without leader approval.
 pub const SCHEMA_SQL: &str = r#"
 -- View-never-store: every table is a disposable projection of the resident engine's parsed corpus,
@@ -344,7 +344,7 @@ CREATE VIEW tag_all AS                             -- B2: the union — inline +
 /// body-only view at the same fingerprint.
 pub const SCHEMA_VERSION: i32 = 14;
 
-/// Run the full round-1 DDL against `conn` (8 tables + 4 views).
+/// Run the full round-1 DDL against `conn` (14 tables + 4 views).
 ///
 /// # Errors
 /// Propagates any `DuckDB` error from the DDL batch.

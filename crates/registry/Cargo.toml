@@ -71,13 +71,6 @@ wire-serve = { workspace = true }
 # `id_raw`, never served, never reclassified as a notification). Leaf crate, no
 # external edges; the daemon is the first serving host.
 transport = { workspace = true }
-# Stage-2 S6: the read-is-the-mint ledger type (`receipt::read_mint`). The daemon
-# HOLDS one per workspace — the in-memory session layer a composed read mints
-# into — deliberately outside the warm engine, whose rebuild would otherwise
-# evaporate the receipt a pin's own write depends on. A path crate already in the
-# graph via `wire-serve`, so no new external crate enters and `cargo deny` is
-# unchanged.
-receipt = { workspace = true }
 # The `mounts` op (wire-contract § A.5): the daemon serves the machine's
 # mount table — `config` owns resolve/parse/bind and every refusal word; the
 # daemon only projects. `blake3` mints the § A.5 freshness token

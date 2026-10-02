@@ -2646,7 +2646,7 @@ impl Registry {
     }
 
     /// Idle-reap: DEMOTE workspaces with `last_use <= now - threshold_secs`
-    /// — drop the warm engine, read-mint ledger, ring, and sql handle. The
+    /// — drop the warm engine, ring, and sql handle. The
     /// REGISTRATION survives, and with it the §6.4 feed and the resident
     /// memo ([`Self::domain_caches`]): the feed's dirty set covers the cold
     /// gap, which is what makes the next warm O(dirty) instead of a full
