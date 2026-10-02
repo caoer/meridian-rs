@@ -19,6 +19,13 @@ workspace = true
 name = "main"
 path = "tests/main.rs"
 
+# The one exception: G12 over a stored cross-root link needs a bound mount
+# table, which only the process-global `MERIDIAN_CONFIG` supplies — so it runs
+# alone in its own process (module docs of `tests/g12_stored_link.rs`).
+[[test]]
+name = "g12_stored_link"
+path = "tests/g12_stored_link.rs"
+
 [dependencies]
 syntax = { workspace = true }
 model = { workspace = true }
