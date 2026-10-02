@@ -75,6 +75,9 @@ fn a_body_holding_a_stored_link_declares_the_length_it_serves() {
             "[{case}] the first body serves the link as {served}: {:?}",
             bodies[0]
         );
-        assert_eq!(bodies[1], "\nafter body\n", "[{case}] the second body, whole");
+        assert_eq!(
+            bodies[1], "\nafter body\n",
+            "[{case}] the second body, whole"
+        );
     }
 }
