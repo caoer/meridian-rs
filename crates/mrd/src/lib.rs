@@ -357,9 +357,11 @@ usage:
                            prior read (remove-what-you-read; REQUIRED — the
                            engine demands it from every origin). Refuses while
                            anything still references the page: inbound
-                           wikilinks, embeds, and ambient meridian-lock pins,
-                           checked by the daemon; the refusal names
-                           every referring file, edge kind, and count. NO
+                           wikilinks, embeds, ambient meridian-lock pins,
+                           and wikilinks in frontmatter values, checked by
+                           the daemon; the refusal names every referring
+                           file, edge kind (with the key, for a frontmatter
+                           one), and count. NO
                            --force exists on this door. --if-fingerprint =
                            optional world-grain guard. --dry rehearses
                            everything except disk. Routed over IPC like

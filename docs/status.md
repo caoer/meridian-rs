@@ -319,9 +319,11 @@ mrd rm <PAGE> --rev <FILE_REV> [--if-fingerprint FP] [--dry] [--actor A]
  is the page's whole-file rev from a prior read,
  REQUIRED — the engine demands it from every origin and
  there is no `--force` on this door. A page with inbound
- wikilinks, embeds, or ambient meridian-lock pins
- refuses `remove_refused` naming every referring file,
- its edge kind, and its count — unlink those edges,
+ wikilinks, embeds, ambient meridian-lock pins, or
+ wikilinks in frontmatter values refuses
+ `remove_refused` naming every referring file, its
+ edge kind (with the key, for a frontmatter one), and
+ its count — unlink those edges,
  then rerun. `--json` answers both legs: a removal
  {workspace, rm}; an engine refusal {workspace, error}.
  Exit triad: 0 removed|dry / 1 refused / 2 bad
