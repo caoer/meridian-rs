@@ -14,6 +14,10 @@ use policy::armed::{ArmedArtifact, ArmedRow, Mode, PageSource, parse_artifact};
 use policy::{ArmedFault, PageRef, ScopeLayer};
 use serde_json::{Value, json};
 
+/// The interval the armed plane reads: the artifact, the rule pages and the
+/// query projection all come from disk, under `--staged` too.
+const INTERVAL: &str = "worktree";
+
 /// What the armed plane found, before any path narrowing.
 pub(crate) struct ArmedPlane {
     /// Never armed: no marker, so nothing here is law.
@@ -263,17 +267,25 @@ impl ArmedPlane {
     }
 
     /// The human lines: the artifact state, its faults, then each query and
-    /// the rows under `paths`.
-    pub(crate) fn render(&self, paths: &[String]) -> String {
+    /// the rows under `paths`. `beside_staged` is whether the run printed a
+    /// staged interval above these lines: the plane reads the worktree, and
+    /// beside a staged block the `armed:` line says so, because a reader takes
+    /// a `0 row(s)` printed under that block as a statement about the commit.
+    pub(crate) fn render(&self, paths: &[String], beside_staged: bool) -> String {
         use std::fmt::Write as _;
         let mut out = String::new();
         if self.never_armed {
             let _ = writeln!(out, "  armed: never armed — no rule is law here");
             return out;
         }
+        let interval = if beside_staged {
+            " — queries read the worktree, not the staged bytes"
+        } else {
+            ""
+        };
         let _ = writeln!(
             out,
-            "  armed: {} row(s) in {}",
+            "  armed: {} row(s) in {}{interval}",
             self.rows,
             policy::armed::ARMED_RULES_PATH
         );
@@ -346,6 +358,9 @@ impl ArmedPlane {
             "state": if self.never_armed { "never-armed" } else { "armed" },
             "rows": self.rows,
             "red": self.faults,
+            // The bytes the plane read — the worktree, whatever interval the
+            // pin plane was asked about.
+            "interval": INTERVAL,
         });
         (Value::Array(rules), armed)
     }

@@ -248,6 +248,61 @@ fn check_json_carries_each_rule_and_the_armed_rows() {
     assert_eq!(json["armed_rows"]["red"], serde_json::json!([]));
 }
 
+/// `--staged` assesses pins over the index; the queries still read the
+/// worktree. A breach only the index carries returns no row, so beside a
+/// staged interval the armed line and the JSON name the bytes that were read.
+#[test]
+fn beside_a_staged_interval_the_armed_plane_names_the_worktree() {
+    const ARMED_LINE: &str = "  armed: 1 row(s) in meridian/armed-rules.md";
+    let s = Sandbox::new();
+    std::fs::remove_file(s.ws.join("notes/a.md")).expect("rm");
+    s.query("no-notes", NOTES, "block");
+
+    // The breach is staged and then taken off disk: the index alone has it.
+    git(&s.ws, &["init", "-q"]);
+    s.write("notes/staged.md", "# staged\n");
+    git(&s.ws, &["add", "notes/staged.md"]);
+    std::fs::remove_file(s.ws.join("notes/staged.md")).expect("rm");
+
+    let out = s.run(&["check", "--staged"]);
+    let said = text(&out);
+    assert_eq!(out.status.code(), Some(0), "{said}");
+    assert!(
+        said.contains("  interval: staged — the bytes a commit would record for notes/staged.md\n"),
+        "the staged interval did not print, so this test would pass vacuously: {said}"
+    );
+    assert!(
+        said.contains(&format!(
+            "{ARMED_LINE} — queries read the worktree, not the staged bytes\n"
+        )),
+        "{said}"
+    );
+    assert!(said.contains("query no-notes (block): 0 row(s)"), "{said}");
+
+    let plain = text(&s.run(&["check"]));
+    assert!(
+        plain.contains(&format!("{ARMED_LINE}\n")),
+        "with no staged interval the armed line carries no interval: {plain}"
+    );
+
+    let out = s.run(&["check", "--staged", "--json"]);
+    let json: Value = serde_json::from_slice(&out.stdout).expect("check --json");
+    assert_eq!(json["interval"]["state"], "diverges", "{json}");
+    assert_eq!(json["armed_rows"]["interval"], "worktree", "{json}");
+}
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("git runs in the test environment");
+    assert!(status.success(), "git {args:?}");
+}
+
 #[test]
 fn a_drifted_armed_row_is_a_check_finding() {
     let s = Sandbox::new();

@@ -1005,7 +1005,9 @@ reds are fixed, while the same grey alone WOULD be the one-finding list.
 
 **`--staged` picks the interval.** Forge a pinned section, `git add` it, restore
 the governed bytes to the worktree, and an unscoped check answers green over
-bytes no commit would record.
+bytes no commit would record. The interval is the pin plane's: armed queries
+read the worktree under either flag (`armed-plane.md` § Part A3), and the
+`armed:` line says so beside a staged interval.
 
 **`--commit-gate` picks the question, and implies `--staged`.** It narrows the
 exit to ONE interval — the one a commit records — and gates on the pin plane

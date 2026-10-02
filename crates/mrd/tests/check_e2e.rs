@@ -192,7 +192,8 @@ fn check_is_green_on_a_governed_corpus_and_the_render_is_pinned() {
         format!(
             "check core {ws}\n  interval: worktree — the bytes on disk. The git INDEX was not \
              read, so this says nothing about what a commit would record: `mrd check --staged` \
-             asks that question\n{disclosure}  pins: green\n  anchoring: no pinned objects\n  \
+             asks that question for pins\n{disclosure}  pins: green\n  anchoring: no pinned \
+             objects\n  \
              armed: never armed — no rule is law here\n  \
              fence: not-a-git-repo — {ws} is not a git repository, so there is no hook directory \
              to place a fence in. A meridian workspace does not have to be a git repository — \
@@ -259,7 +260,12 @@ fn check_is_green_on_a_governed_corpus_and_the_render_is_pinned() {
             // and reaching no exit.
             "fence": no_repo_fence(&root.0),
             "rules": [],
-            "armed_rows": { "state": "never-armed", "rows": 0, "red": [] },
+            "armed_rows": {
+                "state": "never-armed",
+                "rows": 0,
+                "red": [],
+                "interval": "worktree",
+            },
             "paths": [],
         }),
         "the green json: `write_history` present, `core.chain` / `core.foreign_edit` \
@@ -563,7 +569,12 @@ fn check_json_discloses_write_history_and_carries_no_chain_keys() {
             // The armed plane (armed-plane § Part A3): never armed, so no row
             // and no query — stated, not absent.
             "rules": [],
-            "armed_rows": { "state": "never-armed", "rows": 0, "red": [] },
+            "armed_rows": {
+                "state": "never-armed",
+                "rows": 0,
+                "red": [],
+                "interval": "worktree",
+            },
             "paths": [],
         }),
         "and the whole shape key for key, so a key cannot return unnoticed"
