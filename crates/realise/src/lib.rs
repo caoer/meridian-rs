@@ -46,9 +46,10 @@ static EMPTY_RUN_FIELDS: BTreeMap<String, String> = BTreeMap::new();
 use run::runner::{self, RunSpec, TaskOutcome};
 
 /// The receipt file every realise apply appends to (workspace-relative). One
-/// file per realise plane, mirroring the run plane's `receipts/run.md` (address
-/// policy is the caller's — this is the realise convention).
-const REALISE_RECEIPT_PATH: &str = "receipts/realise.md";
+/// file per realise plane, beside the run plane's [`run::executor::RECEIPT_FILE`]
+/// under `.meridian/receipts/` (address policy is the caller's — this is the
+/// realise convention).
+const REALISE_RECEIPT_PATH: &str = concat!(run::receipts_dir!(), "/realise.md");
 
 /// The verdict of observing and checking one claim against the current tree —
 /// a pure read, no write, no cap (d2 §5.4).
@@ -235,7 +236,7 @@ pub struct ClaimResult {
 pub struct RealiseSpec {
     /// Base invocation id; each apply derives `<invocation_id>~<n>` for the run
     /// plane and `r-<invocation_id>-<n>` for its receipt anchor. The anchor
-    /// carries the base id because `receipts/realise.md` is shared across
+    /// carries the base id because `.meridian/receipts/realise.md` is shared across
     /// invocations (§6.6), so the id must be unique per invocation and inside
     /// the block-id charset (`[A-Za-z0-9-]`, §2.4) — a violation refuses with
     /// [`RealiseError::BadInvocationId`] before any apply runs.
@@ -531,7 +532,7 @@ fn run_apply(
 }
 
 /// Mint one apply receipt's anchor: `r-<invocation-id>-<attempt>`, unique
-/// within the SHARED `receipts/realise.md` across invocations (contract §6.6 —
+/// within the SHARED `.meridian/receipts/realise.md` across invocations (contract §6.6 —
 /// the anchor is the caller's to mint, and a mint that collides publishes a
 /// receipt no strict door can address). A per-invocation counter is unique only
 /// inside its own process, so from invocation 2 on it re-mints invocation 1's

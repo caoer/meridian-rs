@@ -23,6 +23,9 @@ fs = { workspace = true }
 # surface (observe → CheckOutcome) rather than forking it — the SAME check the
 # realise loop would converge, run here read-only (no apply, no cap).
 realise = { workspace = true }
+# The G3 orphan lint reads the run plane's ledger at the one path the run plane
+# owns (`run::executor::RECEIPT_FILE`), so the two can never name different files.
+run = { workspace = true }
 # Layer 1: the rulepack-api@2 `check_change` surface (Change / Rule / Refusal),
 # the resolved armed law it evaluates (ArmedRule — construction sealed to
 # `resolve_armed_law`, so the layer cannot be handed a set the door would not have

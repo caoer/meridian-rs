@@ -7,6 +7,9 @@ use std::io::Cursor;
 use run::record::{self, ExecRecord, ExecRecordSink, RecordError, RunLog, StdoutRecord};
 use sha2::{Digest, Sha256};
 
+/// The page every log here belongs to.
+const PAGE: &str = "tasks.md";
+
 fn ws() -> tempfile::TempDir {
     tempfile::tempdir().expect("tempdir")
 }
@@ -22,13 +25,13 @@ fn hex_sha256(bytes: &[u8]) -> String {
 }
 
 /// Task-card gate: stdout streamed LIVE and stored content-addressed
-/// out-of-tree at `.meridian/runs/<invocation-id>.log`; hash + size are the
+/// out-of-tree at `.meridian/runs/<page>/tasks/<invocation-id>.log`; hash + size are the
 /// real content facts.
 #[test]
 fn tee_streams_live_and_logs_out_of_tree() {
     let ws = ws();
     let payload = b"line one\nline two\nbinary \x00\xff ok\n";
-    let mut log = RunLog::create(ws.path(), "inv-0001").expect("create");
+    let mut log = RunLog::create(ws.path(), PAGE, "inv-0001").expect("create");
     let mut live: Vec<u8> = Vec::new();
     let n = record::stream(&mut Cursor::new(&payload[..]), &mut log, &mut live).expect("stream");
 
@@ -37,7 +40,8 @@ fn tee_streams_live_and_logs_out_of_tree() {
     assert_eq!(n, payload.len() as u64);
 
     // The log landed out-of-tree at the addressed path with identical bytes.
-    let on_disk = std::fs::read(ws.path().join(".meridian/runs/inv-0001.log")).expect("log file");
+    let on_disk = std::fs::read(ws.path().join(".meridian/runs/tasks.md/tasks/inv-0001.log"))
+        .expect("log file");
     assert_eq!(on_disk, payload);
 
     // Sealed facts carry the REAL content hash + size + address.
@@ -46,7 +50,7 @@ fn tee_streams_live_and_logs_out_of_tree() {
         rec,
         StdoutRecord {
             invocation: "inv-0001".to_owned(),
-            log: ".meridian/runs/inv-0001.log".to_owned(),
+            log: ".meridian/runs/tasks.md/tasks/inv-0001.log".to_owned(),
             sha256: hex_sha256(payload),
             bytes: payload.len() as u64,
         }
@@ -59,7 +63,7 @@ fn tee_streams_live_and_logs_out_of_tree() {
 fn tee_survives_chunk_boundaries() {
     let ws = ws();
     let payload: Vec<u8> = (0u32..40_000).flat_map(u32::to_le_bytes).collect();
-    let mut log = RunLog::create(ws.path(), "inv-big").expect("create");
+    let mut log = RunLog::create(ws.path(), PAGE, "inv-big").expect("create");
     let mut live: Vec<u8> = Vec::new();
     let n = record::stream(&mut Cursor::new(&payload[..]), &mut log, &mut live).expect("stream");
     assert_eq!(n, payload.len() as u64);
@@ -67,7 +71,8 @@ fn tee_survives_chunk_boundaries() {
     let rec = log.seal().expect("seal");
     assert_eq!(rec.bytes, payload.len() as u64);
     assert_eq!(rec.sha256, hex_sha256(&payload));
-    let on_disk = std::fs::read(ws.path().join(".meridian/runs/inv-big.log")).expect("log file");
+    let on_disk = std::fs::read(ws.path().join(".meridian/runs/tasks.md/tasks/inv-big.log"))
+        .expect("log file");
     assert_eq!(on_disk, payload);
 }
 
@@ -76,12 +81,16 @@ fn tee_survives_chunk_boundaries() {
 #[test]
 fn empty_stdout_records_cleanly() {
     let ws = ws();
-    let log = RunLog::create(ws.path(), "inv-empty").expect("create");
+    let log = RunLog::create(ws.path(), PAGE, "inv-empty").expect("create");
     let rec = log.seal().expect("seal");
     assert_eq!(rec.bytes, 0);
     assert_eq!(rec.sha256, hex_sha256(b""));
     assert_eq!(
-        std::fs::read(ws.path().join(".meridian/runs/inv-empty.log")).expect("log file"),
+        std::fs::read(
+            ws.path()
+                .join(".meridian/runs/tasks.md/tasks/inv-empty.log")
+        )
+        .expect("log file"),
         Vec::<u8>::new()
     );
 }
@@ -91,12 +100,12 @@ fn empty_stdout_records_cleanly() {
 #[test]
 fn invocation_id_reuse_refuses() {
     let ws = ws();
-    let _first = RunLog::create(ws.path(), "inv-dup").expect("create");
-    let err = RunLog::create(ws.path(), "inv-dup").expect_err("collision");
+    let _first = RunLog::create(ws.path(), PAGE, "inv-dup").expect("create");
+    let err = RunLog::create(ws.path(), PAGE, "inv-dup").expect_err("collision");
     assert_eq!(
         err,
         RecordError::Collision {
-            path: ".meridian/runs/inv-dup.log".to_owned(),
+            path: ".meridian/runs/tasks.md/tasks/inv-dup.log".to_owned(),
         }
     );
 }
@@ -118,7 +127,7 @@ fn hostile_invocation_ids_refuse() {
         "x\0y",
         overlong.as_str(),
     ] {
-        let err = RunLog::create(ws.path(), id).expect_err("hostile id");
+        let err = RunLog::create(ws.path(), PAGE, id).expect_err("hostile id");
         assert_eq!(
             err,
             RecordError::BadInvocationId { id: id.to_owned() },
@@ -131,6 +140,62 @@ fn hostile_invocation_ids_refuse() {
     }
 }
 
+/// The page names the log's directory, so it is validated like the id: a page
+/// that is not workspace-relative refuses before any directory is made.
+#[test]
+fn hostile_pages_refuse() {
+    let ws = ws();
+    for page in [
+        "",
+        "/abs.md",
+        "../evil.md",
+        "a/../../evil.md",
+        "a//b.md",
+        "./a.md",
+    ] {
+        let err = RunLog::create(ws.path(), page, "inv-1").expect_err("hostile page");
+        assert_eq!(
+            err,
+            RecordError::BadPage {
+                page: page.to_owned()
+            },
+            "page {page:?} must refuse"
+        );
+    }
+    assert!(!ws.path().join(".meridian").exists(), "nothing was created");
+}
+
+/// Task logs keep their own ceiling of 50 per page, apart from the fire logs
+/// in the page's leaf: sealing the 60th task log prunes the oldest task logs
+/// and never a fire log, and the log just sealed survives.
+#[test]
+fn sealing_keeps_the_last_fifty_task_logs_of_a_page_and_never_a_fire_log() {
+    let ws = ws();
+    let leaf = ws.path().join(".meridian/runs").join(PAGE);
+    std::fs::create_dir_all(&leaf).expect("page leaf");
+    // A fire log in the leaf, older than every task log.
+    std::fs::write(leaf.join("fire-t0.log"), "fire").expect("fire log");
+    for i in 0..60 {
+        // Distinct mtimes: the prune keeps the NEWEST, and colliding
+        // timestamps would make the assertions vacuous.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        RunLog::create(ws.path(), PAGE, &format!("inv-{i}"))
+            .expect("create")
+            .seal()
+            .expect("seal");
+    }
+
+    let tasks = leaf.join("tasks");
+    let kept = std::fs::read_dir(&tasks).expect("task logs").count();
+    assert_eq!(kept, 50, "a page keeps its last 50 task logs");
+    assert!(tasks.join("inv-59.log").exists(), "the newest log survives");
+    assert!(!tasks.join("inv-0.log").exists(), "the oldest log goes");
+    assert!(
+        leaf.join("fire-t0.log").exists(),
+        "the task prune reached the page's fire log"
+    );
+}
+
 /// S8 ordering is structural: the receipt-side facts type is minted ONLY by
 /// `seal()` — this test pins the seam (constructing `StdoutRecord` by hand
 /// here is possible only because the fields are pub for the receipt's
@@ -140,10 +205,10 @@ fn hostile_invocation_ids_refuse() {
 #[test]
 fn seal_returns_facts_matching_the_durable_log() {
     let ws = ws();
-    let mut log = RunLog::create(ws.path(), "inv-seal").expect("create");
+    let mut log = RunLog::create(ws.path(), PAGE, "inv-seal").expect("create");
     log.append(b"partial ").expect("append");
     log.append(b"then done\n").expect("append");
-    assert_eq!(log.rel_path(), ".meridian/runs/inv-seal.log");
+    assert_eq!(log.rel_path(), ".meridian/runs/tasks.md/tasks/inv-seal.log");
     let rec = log.seal().expect("seal");
     let on_disk = std::fs::read(ws.path().join(&rec.log)).expect("log file");
     assert_eq!(rec.bytes, on_disk.len() as u64);
@@ -164,7 +229,7 @@ fn live_sink_failure_is_typed_distinct() {
         }
     }
     let ws = ws();
-    let mut log = RunLog::create(ws.path(), "inv-pipe").expect("create");
+    let mut log = RunLog::create(ws.path(), PAGE, "inv-pipe").expect("create");
     let err = record::stream(
         &mut Cursor::new(b"data".as_slice()),
         &mut log,
@@ -203,7 +268,7 @@ fn stream_terminates_on_pipe_eof_after_sigkill() {
     let ws_path = ws.path().to_path_buf();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut log = RunLog::create(&ws_path, "inv-kill").expect("create");
+        let mut log = RunLog::create(&ws_path, PAGE, "inv-kill").expect("create");
         let mut live: Vec<u8> = Vec::new();
         let streamed = record::stream(&mut stdout, &mut log, &mut live);
         let sealed = log.seal();
@@ -253,7 +318,7 @@ fn live_sink_death_mid_stream_keeps_the_record() {
     let ws = ws();
     // > one tee chunk (8192), so the sink dies on the SECOND chunk.
     let payload = vec![0xabu8; 20_000];
-    let mut log = RunLog::create(ws.path(), "inv-midpipe").expect("create");
+    let mut log = RunLog::create(ws.path(), PAGE, "inv-midpipe").expect("create");
     let mut sink = DiesAfterFirstWrite { writes: 0 };
     let err = record::stream(&mut Cursor::new(&payload[..]), &mut log, &mut sink)
         .expect_err("sink died mid-stream");
@@ -273,7 +338,7 @@ fn live_sink_death_mid_stream_keeps_the_record() {
 #[test]
 fn env_record_carries_keys_never_values() {
     let ws = ws();
-    let log = RunLog::create(ws.path(), "inv-env").expect("create");
+    let log = RunLog::create(ws.path(), PAGE, "inv-env").expect("create");
     let stdout = log.seal().expect("seal");
     let env = [
         ("HOME_WIKI", "/Users/zt/wiki"),
@@ -300,7 +365,7 @@ fn exec_record_serde_shape() {
         3,
         StdoutRecord {
             invocation: "inv-7".to_owned(),
-            log: ".meridian/runs/inv-7.log".to_owned(),
+            log: ".meridian/runs/tasks.md/tasks/inv-7.log".to_owned(),
             sha256: hex_sha256(b"x"),
             bytes: 1,
         },
@@ -311,7 +376,7 @@ fn exec_record_serde_shape() {
     assert_eq!(back, rec);
     assert_eq!(back.exit_code, 3);
     assert_eq!(back.stdout.invocation, "inv-7");
-    assert_eq!(back.stdout.log, ".meridian/runs/inv-7.log");
+    assert_eq!(back.stdout.log, ".meridian/runs/tasks.md/tasks/inv-7.log");
     assert_eq!(back.stdout.bytes, 1);
 }
 
@@ -329,7 +394,7 @@ fn exec_record_sink_seam_binds() {
         }
     }
     let ws = ws();
-    let stdout = RunLog::create(ws.path(), "inv-sink")
+    let stdout = RunLog::create(ws.path(), PAGE, "inv-sink")
         .expect("create")
         .seal()
         .expect("seal");

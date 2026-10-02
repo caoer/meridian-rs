@@ -113,7 +113,7 @@ fn binding(page: &str, task: &str) -> ApplyBinding {
 }
 
 fn receipt_run_lines(root: &fs::WorkspaceRoot) -> usize {
-    let path = root.0.join("receipts/realise.md");
+    let path = root.0.join(".meridian/receipts/realise.md");
     std::fs::read_to_string(path)
         .unwrap_or_default()
         .lines()
@@ -360,7 +360,7 @@ fn dry_run_uses_zero_caps_projects_blast_radius_and_writes_nothing() {
     // No apply and no receipt touched the tree.
     let after = std::fs::read_to_string(root.0.join("conv.md")).unwrap();
     assert_eq!(before, after, "dry-run wrote nothing");
-    assert!(!root.0.join("receipts/realise.md").exists());
+    assert!(!root.0.join(".meridian/receipts/realise.md").exists());
 }
 
 #[test]
@@ -382,7 +382,7 @@ fn a_converged_claim_runs_no_apply() {
     let report = realise(&root, &[claim], &spec(&scratch)).unwrap();
     assert_eq!(report.claims[0].state, ClaimState::Converged);
     assert_eq!(report.claims[0].applies, 0);
-    assert!(!root.0.join("receipts/realise.md").exists());
+    assert!(!root.0.join(".meridian/receipts/realise.md").exists());
 }
 
 // ---------------------------------------------------------------------------
@@ -481,12 +481,12 @@ fn a_malformed_now_refuses_the_card_mint() {
 
 // ---------------------------------------------------------------------------
 // The receipt address plane: two invocations against the SHARED
-// `receipts/realise.md` must not mint the same anchor (contract §6.6).
+// `.meridian/receipts/realise.md` must not mint the same anchor (contract §6.6).
 // ---------------------------------------------------------------------------
 
 /// Every `^id` published in the receipts file, in order.
 fn receipt_anchors(root: &fs::WorkspaceRoot) -> Vec<String> {
-    std::fs::read_to_string(root.0.join("receipts/realise.md"))
+    std::fs::read_to_string(root.0.join(".meridian/receipts/realise.md"))
         .unwrap_or_default()
         .lines()
         .filter_map(|l| l.rsplit_once(" ^").map(|(_, id)| id.to_owned()))
@@ -511,7 +511,7 @@ fn converge_claim(page: &str) -> Claim {
 /// caller's invocation id, so it is unique across invocations.
 #[test]
 fn two_invocations_publish_distinct_receipt_anchors() {
-    // Two pages, one per invocation — the shared file is `receipts/realise.md`,
+    // Two pages, one per invocation — the shared file is `.meridian/receipts/realise.md`,
     // which is where the collision lived. (Re-drifting ONE page by hand instead
     // would trip the run plane's foreign-edit guard, not this gate.)
     let (_tmp, root, scratch) =
@@ -556,7 +556,7 @@ fn an_invocation_id_outside_the_block_id_charset_refuses_before_applying() {
         "expected the charset refusal, got {err:?}"
     );
     assert!(
-        !root.0.join("receipts/realise.md").exists(),
+        !root.0.join(".meridian/receipts/realise.md").exists(),
         "no receipt is published on a refused mint"
     );
 }

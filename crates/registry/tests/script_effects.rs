@@ -153,7 +153,10 @@ fn a_pure_submission_has_no_run_builtin() {
         trace["fault"]["reason"].as_str().unwrap().contains("run"),
         "the fault names the unbound name: {trace}"
     );
-    assert!(!ws.join("receipts/run.md").exists(), "nothing executed");
+    assert!(
+        !ws.join(".meridian/receipts/run.md").exists(),
+        "nothing executed"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -177,7 +180,10 @@ fn run_executes_at_call_time_and_its_row_is_a_value() {
     let trace = trace_of(&resp);
     assert_eq!(trace["outcome"], json!("effects"), "{trace}");
     // The run plane's receipt exists on disk — it executed, at call time.
-    assert!(ws.join("receipts/run.md").exists(), "the run landed");
+    assert!(
+        ws.join(".meridian/receipts/run.md").exists(),
+        "the run landed"
+    );
     let ran: Vec<&Value> = trace["trace"]
         .as_array()
         .unwrap()
@@ -392,7 +398,10 @@ fn the_combination_walls_refuse_before_anything_runs() {
             "{name}: {resp}"
         );
     }
-    assert!(!ws.join("receipts/run.md").exists(), "nothing ran");
+    assert!(
+        !ws.join(".meridian/receipts/run.md").exists(),
+        "nothing ran"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -634,9 +643,28 @@ fn token_count_endpoint_decode_walls() {
 
 const PUSH_WAIT: Duration = Duration::from_secs(10);
 
-/// A live `run()` inside a script pushes the run plane's attributed frames to a
+/// A page whose one task edits it, so its run advances the root and mints a
+/// frame. A bash task's commits write only the run ledger, outside the hash
+/// domain, and mint none (wire-contract § A.8).
+const NOTE_TASKS: &str = "\
+---
+task.fix-note: \"[[#^note-1]]\"
+task.fix-note.caps: md.edit
+task.fix-note.args: value
+---
+
+# Tasks
+
+```starlark
+def run(ctx):
+    set_field(field = \"status\", value = ctx.args[0])
+```
+^note-1
+";
+
+/// A live `run()` inside a script pushes the run plane's attributed frame to a
 /// subscriber: the script's actor threads through the shared row seam into
-/// the frames the bash task's two commits mint.
+/// the frame the task's commit mints.
 ///
 /// RED before the ruling's code: the run lands, the fingerprint advances, and
 /// the subscriber sees only actorless detector-cadence external change.
@@ -644,6 +672,7 @@ const PUSH_WAIT: Duration = Duration::from_secs(10);
 fn a_live_run_pushes_attributed_frames() {
     let tmp = TempDir::new().unwrap();
     let ws = seeded(&tmp);
+    fs::write(ws.join("note.md"), NOTE_TASKS).unwrap();
     let server = RunningServer::start(test_config(&tmp)).unwrap();
 
     let mut sub = Conn::open(&test_config(&tmp).socket_path);
@@ -662,22 +691,18 @@ fn a_live_run_pushes_attributed_frames() {
     let resp = conn.call(&json!({
         "id": 41, "op": "script", "effects": ["run"], "invocation": "scr-d1",
         "actor": "seat-79",
-        "source": "r = run(\"tasks.md\", task=\"sh-note\")\n",
+        "source": "r = run(\"note.md\", task=\"fix-note\", args=[\"done\"])\n",
     }));
     assert_eq!(trace_of(&resp)["outcome"], json!("effects"), "{resp}");
 
-    // The bash task commits twice (pre-exec receipt, completion receipt);
-    // both frames arrive attributed with the script's actor.
-    for phase in ["phase 1", "phase 2"] {
-        let mut line = String::new();
-        let n = sub.reader.read_line(&mut line).unwrap_or(0);
-        assert!(n > 0, "{phase}: a frame arrives");
-        let frame: Value = serde_json::from_str(&line).expect("notification is JSON");
-        assert_eq!(
-            frame["delta"]["actor"],
-            json!("seat-79"),
-            "{phase}: the script's actor threads into the run frame: {frame}"
-        );
-    }
+    let mut line = String::new();
+    let n = sub.reader.read_line(&mut line).unwrap_or(0);
+    assert!(n > 0, "the run's frame arrives");
+    let frame: Value = serde_json::from_str(&line).expect("notification is JSON");
+    assert_eq!(
+        frame["delta"]["actor"],
+        json!("seat-79"),
+        "the script's actor threads into the run frame: {frame}"
+    );
     server.shutdown();
 }

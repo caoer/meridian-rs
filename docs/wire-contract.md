@@ -675,13 +675,13 @@ A well-formed token premise whose scope holds no live node refuses `scope_does_n
 
 ### §6.1 The law
 
-A write that names a receipt gives its address as `receipt:{path, anchor}` on the splice request. Receipts are per-request, never a wire requirement; whether a scope requires one is host policy (§5.3). When named, the engine appends the entry to that md file **in the same batch commit** as the content edit: one exchange, one reparse, one fingerprint advance covering both files. Receipts are ordinary markdown in the hash domain (§12): addressable, cat-able, resolvable via `#^anchor`, hashed into the fingerprint.
+A write that names a receipt gives its address as `receipt:{path, anchor}` on the splice request. Receipts are per-request, never a wire requirement; whether a scope requires one is host policy (§5.3). When named, the engine appends the entry to that md file **in the same batch commit** as the content edit: one exchange, one reparse, one fingerprint advance. Receipts are ordinary markdown: addressable, cat-able, resolvable via `#^anchor`. Whether a receipt hashes is its address's question (§12.1). A receipt file inside the hash domain is hashed into the fingerprint with the content edit. One outside it is served at every door like any out-of-domain path and never moves the fingerprint — the engine's own receipts are these: `.meridian/receipts/run.md`, `realise.md` and `corpus-proof.md`, kept out of the checkout's content by the dot segment.
 
 The armed response (§4.4) and the receipt entry carry the same facts — op, target identities, rev transitions, `fingerprint_before`, actor, now, request id — stating what was **armed**, never "delivered" or "succeeded downstream"; delivery is the host's business.
 
 ### §6.2 No-self-rooting law
 
-A receipt **cannot contain the root it produces**: `fingerprint_after` covers the receipt file's bytes, so the hash would have to contain itself. Receipts carry `fingerprint_before`; `fingerprint_after` rides the wire response and the Delta — a limit, not worked around.
+A receipt **cannot contain the root it produces**: when its file is in the hash domain, `fingerprint_after` covers the receipt file's bytes, so the hash would have to contain itself. Receipts carry `fingerprint_before`; `fingerprint_after` rides the wire response and the Delta — a limit, not worked around.
 
 ### §6.3 The worked receipt
 
@@ -1313,7 +1313,7 @@ the wire shape is ruled here.)*
 | `splice.pin` | Pin rides the write choke-point; selector is segments/anchor. |
 | `pin-cross-root` | `splice.pin.target` admits the ruled `name:rel` rooted spelling (`address-grammar.md`): target loaded, gated, promoted and blob-written in the named mounted root under that root's own `LOCK_NB` write flock; the lock row's `object` = `name:rel` minus `.md`, verbatim; the proof compare (`splice.pin.proof`) runs on the target root's live bytes under that flock. Without the cap a face keeps its own taught refusal, not `pin_target_missing`. |
 | `splice.pin.proof` | Pin proof rides the request — the proof law, below. |
-| `create` | File birth through the guarded door; full body bytes, no `props` field (the starlark birth lane's `props=` dict rides this door, § A.8). `bad_path` on an engine machinery segment in the landing — `.git`, `.meridian`, `meridian`, `receipts` — at any depth, ASCII-case-insensitively, whatever the caps admit; the hash-domain config `meridian/domain.md` is the one carve-out (`run-plane.md` § the machinery floor). |
+| `create` | File birth through the guarded door; full body bytes, no `props` field (the starlark birth lane's `props=` dict rides this door, § A.8). `bad_path` on an engine machinery segment in the landing — `.git`, `.meridian`, `meridian` — at any depth, ASCII-case-insensitively, whatever the caps admit; the hash-domain config `meridian/domain.md` is the one carve-out (`run-plane.md` § the machinery floor). |
 | `remove` | File death through the guarded door; `remove_refused` while anything in the corpus references the record (below). |
 | `hello.identity` | Optional `{build: sha \| sha-dirty \| unknown}` for deploy identity. `-dirty` rides the sha token (git-describe): `sha` = a whole commit, `sha-dirty` = a worktree diverging from it, `unknown` = nothing attributable. Match the whole token, never a substring — a decorated sha is a different build and must refuse (`docs/release.md` §5.1). Optional, v3-only |
 
@@ -1921,7 +1921,10 @@ is a **well-formed** quoted scalar: `'…'` with interior `'` only as `''`, or
 nothing else; double-quoted resolves `\\ \" \n \t \r` and leaves any other
 escape verbatim. Everything else is served verbatim after the whitespace trim:
 plain scalars, flow collections (`[a, b]`), and malformed quoting, which no
-reader may guess at. A quoted scalar is a string in every schema: the decode is
+reader may guess at. A plain or quoted scalar is read to the end of its key
+line: indented continuation lines are not joined, so a continued scalar serves
+its first line, and a continued quoted scalar serves it with its opening quote.
+A quoted scalar is a string in every schema: the decode is
 the quoting layer only, never type inference.
 
 **A.6.1a Block scalars.** A key line may carry a YAML **block-scalar header**
@@ -2822,7 +2825,7 @@ op reached the plane; no aggregate boolean exists in the body:
 ```json
 {"id":9,"ok":true,"body":{"targets":[
  {"page":"rules/escalate.md","invocation":"run-1755100931421-4417-3-t0",
-  "receipt":"receipts/run.md §^r-run-1755100931421-4417-3-t0",
+  "receipt":".meridian/receipts/run.md §^r-run-1755100931421-4417-3-t0",
   "dry":false, "task":"arm", "task_rev":"…", "guarantee":"hermetic",
   "state":"applied", "applied":[{"kind":"md.set_field","domain":"…"}],
   "unexecuted":[], "caps":{"effective":["md.edit:**/rules/*.md"],
@@ -2883,8 +2886,11 @@ here mint Deltas like every other daemon-side write:
   (`write.lock`, not `run.lock`, which does not exclude the detector).
   Because the detector reconciles under the same flock, no detect cycle sees a
   half-landed commit or an un-advanced ring.
-- One committed batch = one fingerprint advance = one Delta (§7.1), the content page
-  and the receipt file as two entries of one frame's `files`.
+- A committed batch that advances the fingerprint mints one Delta (§7.1), the
+  content page and the receipt file as two entries of one frame's `files`. A
+  batch that commits only its receipt — both of a bash task's batches, and any
+  run that applies no `md.*` effect — writes only the run ledger, which lies
+  outside the hash domain (§6.1): no fingerprint advance, so no Delta.
 - Identity is §9's: a supplied `actor` threads verbatim; absent, the frame
   carries the plane's own `run:<task>` self-label, so `actor`-absent still
   means exactly "edited outside the face". `now` is the caller's or absent,

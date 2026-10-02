@@ -153,7 +153,7 @@ fn evaluate_alone_is_the_dry_seam_full_truth_nothing_applied() {
 /// landing on an axis the caps do not read.
 #[test]
 fn a_starlark_birth_into_a_machinery_dir_refuses() {
-    for dir in [".git", ".meridian", "meridian", "receipts"] {
+    for dir in [".git", ".meridian", "meridian"] {
         let (_tmp, root) = workspace();
         let caps = Authority::granted(CapSet::parse("md.create:tasks/*.md").unwrap());
         let src = format!(

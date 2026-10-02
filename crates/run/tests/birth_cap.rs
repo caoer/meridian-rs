@@ -466,17 +466,17 @@ fn a_malformed_ambient_refuses_the_birth() {
 // A create scope judges the DECLARED path's SHAPE, never the landing, so the
 // grant `md.create:tasks/*.md` reached `.git/tasks/x.md` through the
 // descriptor's own `base` — probed in the round-2 review of caps-redesign-docs.
-// The door now refuses a landing carrying `.git`, `.meridian`, `meridian` or
-// `receipts` as a segment, at any depth, case-insensitively. These tests pin
+// The door now refuses a landing carrying `.git`, `.meridian` or `meridian`
+// as a segment, at any depth, case-insensitively. These tests pin
 // the floor at the shared choke both run-plane lanes converge on; the per-lane
 // end-to-end proofs live in `dispatch_bash.rs` and `dispatch_starlark.rs`.
 
-/// The measured escape, closed: one grant, four machinery landings, reached
+/// The measured escape, closed: one grant, three machinery landings, reached
 /// through the BASE axis the capability never reads. Each refuses and lands
 /// nothing.
 #[test]
 fn a_based_birth_into_each_machinery_dir_refuses() {
-    for dir in [".git", ".meridian", "meridian", "receipts"] {
+    for dir in [".git", ".meridian", "meridian"] {
         let (tmp, root) = workspace();
         let mut based = create_effect("tasks/card.md", "# Escaped\n", 0);
         based
@@ -515,7 +515,7 @@ fn a_declared_machinery_path_refuses_without_any_base() {
         ".git/tasks/card.md",
         ".meridian/runs/card.md",
         "meridian/armed-rules.md",
-        "receipts/run.md",
+        ".meridian/receipts/run.md",
     ] {
         let (tmp, root) = workspace();
         let effects = [create_effect(path, "# Escaped\n", 0)];
@@ -541,7 +541,6 @@ fn a_nested_machinery_dir_refuses_at_any_depth() {
         "results/probe/ws/.git/tasks/card.md",
         "results/probe/ws/.meridian/card.md",
         "results/probe/ws/meridian/armed-rules.md",
-        "results/probe/ws/receipts/2026-08-20.md",
     ] {
         let (tmp, root) = workspace();
         let effects = [create_effect(path, "# Nested\n", 0)];
@@ -562,7 +561,11 @@ fn a_nested_machinery_dir_refuses_at_any_depth() {
 /// inside `.git/`, so a guard a spelling defeats is not a guard.
 #[test]
 fn a_case_variant_machinery_dir_still_refuses() {
-    for path in [".GIT/tasks/card.md", "Receipts/run.md", "MERIDIAN/x.md"] {
+    for path in [
+        ".GIT/tasks/card.md",
+        ".Meridian/receipts/run.md",
+        "MERIDIAN/x.md",
+    ] {
         let (tmp, root) = workspace();
         let effects = [create_effect(path, "# Case\n", 0)];
         let authority = granted("md.create");

@@ -146,7 +146,15 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // the row does not exist at either interval; named rather than assumed.
     let excluded = excluded_holders(&root, &domain);
 
-    let worktree = assess(&root, &mounts, &worktree_docs, &domain, &excluded, &paths);
+    let mut worktree = assess(&root, &mounts, &worktree_docs, &domain, &excluded, &paths);
+    // The run ledger is engine state outside every interval (wire-contract
+    // §6.1), so the G3 orphan lint reads it once, from disk, for the worktree.
+    worktree.report.orphans = check::orphan::orphaned_runs(&root).map_err(|e| {
+        Fail::tool(format!(
+            "cannot read the run ledger {}: {e}",
+            run::executor::RECEIPT_FILE
+        ))
+    })?;
 
     let staged = match (&interval, &staged_docs) {
         (Interval::Diverges(bytes), Some(docs)) => Some(Assessed {
