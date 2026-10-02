@@ -3108,6 +3108,24 @@ are NULL, `candidates IS NOT NULL` is the choice predicate, and
 projector takes the set and the pick from one call to the candidate rule, so a
 query never rebuilds the matching in SQL.
 
+**Frontmatter links are SERVED as their own relation, never extracted in
+SQL.** `link` holds body links only. `frontmatter_link(src_path, seq, key,
+target_raw, dest_path, candidates)` holds one row per `[[…]]` inside the
+value of a top-level frontmatter key, whatever the value's form: a quoted
+scalar, a flow or block list, a comma-joined string, or prose. `key` is that
+key, by the rule the `frontmatter` relation keys by; `seq` is the link's
+order among the page's frontmatter links, and `(src_path, seq)` is the row's
+identity. `target_raw` is the target without its `#fragment` and `|alias`. A
+same-page anchor (`[[#^x]]`) has no target and is not a row. `dest_path` and
+`candidates` come from the call a body link uses, with the writing page as
+the source: `candidates` is NULL unless more than one page matches, as on
+`link`. A `root:` head consults no mount and a non-markdown target matches no
+page, so both are rows with `dest_path` and `candidates` NULL. The links are
+the ones the move door rewrites in frontmatter (one scanner); `backlink`,
+`dangling`, `mrd links` and the remove door's referrers stay body-only. A
+query that wants both kinds of edge reads `link` and `frontmatter_link`
+together.
+
 **The CLI ladder.** `mrd sql` asks the resident daemon first (this op), then
 the drawer file when unheld, then `:memory:`. One ladder, no profile
 distinction; only `--rebuild` goes direct.

@@ -136,6 +136,19 @@ CREATE TABLE link (
     CHECK (kind <> 'link' OR dest_root IS NULL),             -- external links are not cross-root either
     CHECK ((exclusion IS NULL) = (exclusion_path IS NULL))   -- the word and the file it names arrive together
 );
+-- One row per wikilink inside a frontmatter value that names a page
+-- (`wire-contract.md` § A.11) — `link` stays the body's. The links are the ones
+-- the move door rewrites (`model::frontmatter_wikilinks`), resolved by the
+-- body link's call with the writing page as the source.
+CREATE TABLE frontmatter_link (
+    src_path   TEXT    NOT NULL REFERENCES doc(path),
+    seq        UBIGINT NOT NULL,                  -- document order among this page's frontmatter links
+    key        TEXT    NOT NULL,                  -- the top-level key whose value holds the link
+    target_raw TEXT    NOT NULL,                  -- the target as written, without #fragment and |alias
+    dest_path  TEXT    REFERENCES doc(path),      -- the page it resolves to; NULL = no page, a root: head, or a non-markdown target
+    candidates TEXT[],                            -- every page the target matches when more than one, sorted; as on `link`
+    PRIMARY KEY (src_path, seq)
+);
 -- The three `.base` relations (`base-projection.md` §4), view-lane only.
 -- They ride the `base_fold` witness, NEVER `as_of_fingerprint`: their bytes
 -- cannot move the workspace fingerprint (§12.1 md-only floor), so their
@@ -315,7 +328,10 @@ CREATE VIEW tag_all AS                             -- B2: the union — inline +
 ///
 /// `12`: `link.candidates` — the resolver's candidate set for a written target
 /// that matches more than one page. A v11 projection has no such column.
-pub const SCHEMA_VERSION: i32 = 12;
+///
+/// `13`: the `frontmatter_link` relation — the wikilinks in frontmatter
+/// values, resolved. A v12 projection has no such relation.
+pub const SCHEMA_VERSION: i32 = 13;
 
 /// Run the full round-1 DDL against `conn` (8 tables + 4 views).
 ///

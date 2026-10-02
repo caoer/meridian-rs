@@ -304,6 +304,80 @@ fn a_file_move_rewrites_partial_and_full_links_and_frontmatter_links() {
     );
 }
 
+// ── the door and the frontmatter_link relation read the same links ───────────
+
+#[test]
+fn the_frontmatter_links_the_door_rewrites_are_the_relations_rows() {
+    let sb = sandbox();
+    let ws = sb.tmp.path().join("fm");
+    std::fs::create_dir_all(&ws).expect("mkdir");
+    git_init(&ws);
+    let init = sb.run(&ws, &["init"]);
+    assert!(init.status.success(), "init: {}", said(&init));
+    write(&ws, "notes/n.md", "# N\n\n## Top\n");
+    write(&ws, "other.md", "# Other\n");
+    write(
+        &ws,
+        "ref.md",
+        "---\nsource: \"[[notes/n]]\"\nsee: [\"[[notes/n#Top]]\", \"[[other]]\"]\n\
+         related:\n  - \"[[notes/n|N]]\"\nalso: \"[[notes/n]], [[other]]\"\n\
+         description: drawn from [[notes/n]] by hand\n---\n# Ref\n",
+    );
+    commit_all(&ws, "fixture");
+    let rows = |dest: &str| {
+        let query = format!(
+            "SELECT key, target_raw FROM frontmatter_link \
+             WHERE src_path = 'ref.md' AND dest_path = '{dest}' ORDER BY seq"
+        );
+        let out = sb.run(&ws, &["sql", "--json", &query]);
+        assert_eq!(code(&out), 0, "{}", said(&out));
+        frame(&out)["rows"].clone()
+    };
+    let before = rows("notes/n.md");
+    assert_eq!(
+        before,
+        serde_json::json!([
+            ["source", "notes/n"],
+            ["see", "notes/n"],
+            ["related", "notes/n"],
+            ["also", "notes/n"],
+            ["description", "notes/n"]
+        ])
+    );
+
+    let plan = sb.run(
+        &ws,
+        &["move", "notes/n.md", "archive/n.md", "--dry", "--json"],
+    );
+    assert_eq!(code(&plan), 0, "{}", said(&plan));
+    let v = frame(&plan);
+    let rewrite = v["move"]["rewrites"]
+        .as_array()
+        .expect("rewrites")
+        .iter()
+        .find(|r| r["path"] == "ref.md")
+        .unwrap_or_else(|| panic!("ref.md is rewritten: {v}"))
+        .clone();
+    assert_eq!(
+        rewrite["frontmatter"],
+        Value::from(before.as_array().map_or(0, Vec::len)),
+        "the door rewrites exactly the relation's rows that name the page: {v}"
+    );
+
+    let out = sb.run(&ws, &["move", "notes/n.md", "archive/n.md"]);
+    assert_eq!(code(&out), 0, "{}", said(&out));
+    assert_eq!(
+        rows("archive/n.md"),
+        serde_json::json!([
+            ["source", "archive/n"],
+            ["see", "archive/n"],
+            ["related", "archive/n"],
+            ["also", "archive/n"],
+            ["description", "archive/n"]
+        ])
+    );
+}
+
 // ── directory move, into-form ────────────────────────────────────────────────
 
 #[test]

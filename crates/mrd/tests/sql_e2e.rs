@@ -231,6 +231,49 @@ fn link_candidates_list_the_choice_and_follow_a_page_added_later() {
     );
 }
 
+/// `frontmatter_link` through `mrd sql`: a frontmatter wikilink is a row with
+/// its key, resolved the way a body link is, and a page added later reaches
+/// the unchanged linking page on the next append. `link` stays body-only.
+#[test]
+fn frontmatter_links_are_rows_of_their_own_relation() {
+    let sb = sandbox();
+    let ws = write_bare_ws(
+        &sb,
+        "fm-links",
+        &[(
+            "p.md",
+            "---\nsource: \"[[x]]\"\nsee: [\"[[y]]\", \"[[#^here]]\"]\n---\n# P\n\n[[y]]\n",
+        )],
+    );
+    for (rel, content) in [("a/x.md", "# A x\n"), ("y.md", "# Y\n")] {
+        let file = ws.join(rel);
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+        std::fs::write(file, content).expect("write");
+    }
+    let query = "SELECT key, target_raw, dest_path, candidates FROM frontmatter_link ORDER BY seq";
+
+    let out = sb.run(&ws, &["sql", "--json", query]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        json(&out)["rows"],
+        serde_json::json!([["source", "x", "a/x.md", null], ["see", "y", "y.md", null]])
+    );
+    let body = sb.run(&ws, &["sql", "--json", "SELECT target_raw FROM link"]);
+    assert_eq!(json(&body)["rows"], serde_json::json!([["y"]]));
+
+    std::fs::create_dir_all(ws.join("b")).expect("dir");
+    std::fs::write(ws.join("b/x.md"), "# B x\n").expect("write");
+    let out = sb.run(&ws, &["sql", "--json", query]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        json(&out)["rows"],
+        serde_json::json!([
+            ["source", "x", "a/x.md", ["a/x.md", "b/x.md"]],
+            ["see", "y", "y.md", null]
+        ])
+    );
+}
+
 #[test]
 fn rebuild_recreates_the_file_at_gen_one() {
     let sb = sandbox();

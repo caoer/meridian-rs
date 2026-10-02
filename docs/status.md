@@ -727,6 +727,9 @@ Widening the coat is a C2 change, reserved by ruling (`laws.md` D-1).
   lenient — `description: a: b` and `description: "a: b"` both project `a: b`
   in `frontmatter.value` — so this relation is the only face that tells a page
   a strict reader (Obsidian) drops from one it reads. No row = it parses.
+- **`frontmatter_link(src_path, seq, key, target_raw, dest_path, candidates)`**
+  — one row per wikilink in a frontmatter value, resolved the way a body link
+  is (`wire-contract.md` § A.11). `link` stays body-only.
 - `mrd sql` is **operator convenience**: served from the drawer's append-only
   `sql.duckdb` cache when a cache root resolves (`--rebuild` recreates it),
   else an ephemeral `:memory:` projection of the corpus per query, folding

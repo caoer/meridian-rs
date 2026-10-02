@@ -26,7 +26,8 @@
 //!
 //! WORLD — the row is a corpus-computed fact: `link` (its `dest_path` /
 //! `resolved` / `exclusion` columns re-resolve against the member set, so a
-//! row changes when a FOREIGN file is born), `backlink`, `dangling` (a "no
+//! row changes when a FOREIGN file is born), `frontmatter_link` (the same
+//! re-resolution over frontmatter links), `backlink`, `dangling` (a "no
 //! file exists" reading), and the `.base` relations plus `_meridian_view`
 //! (outside the fingerprint domain entirely — `base_fold` witness, §12.1
 //! md-only floor — so no tree premise can bound them; world is the honest
