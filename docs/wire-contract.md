@@ -3128,10 +3128,12 @@ same-page anchor (`[[#^x]]`) has no target and is not a row. `dest_path` and
 the source: `candidates` is NULL unless more than one page matches, as on
 `link`. A `root:` head consults no mount and a non-markdown target matches no
 page, so both are rows with `dest_path` and `candidates` NULL. The links are
-the ones the move door rewrites in frontmatter (one scanner); `backlink`,
-`dangling`, `mrd links` and the remove door's referrers stay body-only. A
-query that wants both kinds of edge reads `link` and `frontmatter_link`
-together.
+the ones the move door rewrites in frontmatter and the remove door counts as
+`frontmatter` referrers (one scanner). `backlink(path, src_path, kind, alias,
+key)` carries both kinds of inbound edge: the resolved body rows of `link`
+with `key` NULL, and the resolved rows of `frontmatter_link` with `kind =
+'frontmatter'`, `alias` NULL and the row's `key`. `dangling` and `mrd links`
+stay body-only.
 
 **The CLI ladder.** `mrd sql` asks the resident daemon first (this op), then
 the drawer file when unheld, then `:memory:`. One ladder, no profile

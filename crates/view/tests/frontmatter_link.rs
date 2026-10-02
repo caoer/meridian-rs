@@ -1,6 +1,7 @@
 //! `frontmatter_link`: one row per wikilink in a frontmatter value that names
 //! a page, whatever the value's form, resolved by the body link's call
-//! (`wire-contract.md` § A.11). `link` stays body-only.
+//! (`wire-contract.md` § A.11). `link` stays body-only; `backlink` carries
+//! both kinds of edge.
 
 use std::collections::BTreeMap;
 
@@ -41,6 +42,12 @@ fn view() -> duckdb::Connection {
         ("c/shapes.md", SHAPES),
         ("c/p.md", "---\nsource: \"[[x]]\"\n---\n# P\n"),
         ("a/q.md", "---\nsource: \"[[x]]\"\n---\n# Q\n"),
+        ("cited.md", "# Cited\n"),
+        ("citer.md", "---\nsource: \"[[cited]]\"\n---\n# Citer\n"),
+        (
+            "c/rooted.md",
+            "---\nremote: \"[[sessions:cited]]\"\nself: \"[[#^a]]\"\n---\n# R\n",
+        ),
     ] {
         ambient.insert(path.to_owned(), doc(raw));
     }
@@ -132,4 +139,55 @@ fn every_key_is_a_key_of_the_frontmatter_relation() {
         )
         .expect("count");
     assert_eq!(orphans, 0);
+}
+
+/// `kind|alias|key` per `backlink` row from `src` to `path`.
+fn backlinks(conn: &duckdb::Connection, path: &str, src: &str) -> Vec<String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT kind || '|' || coalesce(alias, 'NULL') || '|' || coalesce(key, 'NULL') \
+             FROM backlink WHERE path = ? AND src_path = ? ORDER BY kind, key",
+        )
+        .expect("prepare");
+    stmt.query_map([path, src], |r| r.get(0))
+        .expect("query")
+        .map(|r| r.expect("row"))
+        .collect()
+}
+
+#[test]
+fn backlink_lists_a_page_cited_only_in_frontmatter() {
+    let conn = view();
+    assert_eq!(
+        backlinks(&conn, "cited.md", "citer.md"),
+        ["frontmatter|NULL|source"]
+    );
+}
+
+#[test]
+fn backlink_keeps_body_rows_beside_frontmatter_rows() {
+    let conn = view();
+    assert_eq!(
+        backlinks(&conn, "y.md", "c/shapes.md"),
+        [
+            "frontmatter|NULL|also",
+            "frontmatter|NULL|description",
+            "frontmatter|NULL|related",
+            "frontmatter|NULL|see",
+            "wikilink|NULL|NULL",
+        ]
+    );
+}
+
+#[test]
+fn backlink_has_no_row_for_a_rooted_target_or_an_anchor() {
+    let conn = view();
+    let n: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM backlink WHERE src_path = 'c/rooted.md'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count");
+    assert_eq!(n, 0);
 }

@@ -243,7 +243,14 @@ CREATE VIEW backlink AS                           -- inbound vault edges = resol
     -- oversight: this corpus is one vault, so a cross-vault link is visible
     -- from the source side alone. `dest_path IS NOT NULL` already excludes
     -- cross-root rows, since their destination is not a path in this corpus.
-    SELECT dest_path AS path, src_path, kind, alias FROM link WHERE dest_path IS NOT NULL;
+    -- Both kinds of edge (`wire-contract.md` § A.11): body rows keep their
+    -- kind and alias with `key` NULL; a frontmatter link is kind
+    -- 'frontmatter', `alias` NULL, and the key whose value holds it.
+    SELECT dest_path AS path, src_path, kind, alias, NULL::TEXT AS key
+      FROM link WHERE dest_path IS NOT NULL
+    UNION ALL
+    SELECT dest_path AS path, src_path, 'frontmatter' AS kind, NULL::TEXT AS alias, key
+      FROM frontmatter_link WHERE dest_path IS NOT NULL;
 CREATE VIEW dangling AS                            -- broken VAULT refs with NO exclusion explanation
     -- **A RESOLVED CROSS-ROOT EDGE IS NOT DANGLING.** `dest_path` is NULL for
     -- it by construction (its target is not a path in this corpus), so the
@@ -331,7 +338,11 @@ CREATE VIEW tag_all AS                             -- B2: the union — inline +
 ///
 /// `13`: the `frontmatter_link` relation — the wikilinks in frontmatter
 /// values, resolved. A v12 projection has no such relation.
-pub const SCHEMA_VERSION: i32 = 13;
+///
+/// `14`: `backlink` gained the `key` column and the frontmatter rows —
+/// `kind = 'frontmatter'` from `frontmatter_link`. A v13 projection serves the
+/// body-only view at the same fingerprint.
+pub const SCHEMA_VERSION: i32 = 14;
 
 /// Run the full round-1 DDL against `conn` (8 tables + 4 views).
 ///
