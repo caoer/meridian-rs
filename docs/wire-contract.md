@@ -2903,6 +2903,12 @@ here mint Deltas like every other daemon-side write:
   (`write.lock`, not `run.lock`, which does not exclude the detector).
   Because the detector reconciles under the same flock, no detect cycle sees a
   half-landed commit or an un-advanced ring.
+- The frame's roots come from the write doors' two steps, never a corpus
+  read: `root_before` is the §6.1 door-entry observation through the
+  workspace's resident memo, made under that flock before any byte lands (a
+  refused observation refuses the apply with nothing written); `root_after`
+  is the commit's own overlay of the page and receipt bytes onto that memo. A
+  receipt outside the hash domain leaves the overlay unchanged.
 - A committed batch that advances the fingerprint mints one Delta (§7.1), the
   content page and the receipt file as two entries of one frame's `files`. A
   batch that commits only its receipt — both of a bash task's batches, and any

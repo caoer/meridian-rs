@@ -501,6 +501,7 @@ fn a_run_apply_pushes_one_attributed_delta_frame() {
     let ack = sub.sub();
     assert_eq!(ack["ok"], json!(true), "sub is served: {ack}");
     let ack_root = ack["body"]["root"].as_str().unwrap().to_owned();
+    assert_eq!(ack_root, disk_fold(&ws), "the ack root is the disk truth");
 
     let mut conn = Conn::open(server.socket_path());
     conn.hello_v3(&ws);
@@ -529,6 +530,11 @@ fn a_run_apply_pushes_one_attributed_delta_frame() {
         delta["root_before"].as_str().unwrap(),
         ack_root,
         "the frame chains onto the subscriber's ack root: {frame}"
+    );
+    assert_eq!(
+        delta["root_after"].as_str().unwrap(),
+        disk_fold(&ws),
+        "root_after is the disk truth — the commit's overlay, never a stale memo: {frame}"
     );
     let paths: Vec<&str> = delta["files"]
         .as_array()
@@ -570,6 +576,143 @@ fn a_run_apply_pushes_one_attributed_delta_frame() {
 /// An out-of-band note write — the external door, for chain-contiguity gates.
 fn external_edit_note(ws: &Path) {
     fs::write(ws.join("note.md"), "# Note\n\nout of band\n").unwrap();
+}
+
+/// The workspace root folded from disk bytes — the oracle every run frame's
+/// roots must equal. The bracket takes them from the resident memo, so a memo
+/// that missed a change would show here as a different root.
+fn disk_fold(ws: &Path) -> String {
+    ::fs::domain_snapshot(&::fs::WorkspaceRoot(ws.to_path_buf()))
+        .expect("disk fold")
+        .1
+        .0
+}
+
+fn files_of(frame: &Value) -> Vec<String> {
+    frame["delta"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// A bash task that writes a domain file: out-of-band change inside a run.
+/// The plane refuses the step (residual delta) and the bytes stay on disk —
+/// an external edit landing between the run's two commits.
+const EXT: &str = "\
+---
+task.ext-note: \"[[#^ext-1]]\"
+---
+
+# Ext
+
+```bash
+echo out-of-band > note.md
+```
+^ext-1
+";
+
+/// An external edit between two commits of ONE run: the second commit's
+/// opening observes it and tells it in its own actor-absent frame, so the
+/// second run frame does not absorb it, and `root_before == previous
+/// root_after` holds across all three frames.
+#[test]
+fn an_external_edit_between_two_commits_of_one_run_keeps_its_own_frame() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    fs::write(ws.join("ext.md"), EXT).unwrap();
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+    let mut sub = Conn::open(server.socket_path());
+    assert_eq!(sub.hello_v2(&ws)["ok"], json!(true));
+    let ack = sub.sub();
+    assert_eq!(ack["ok"], json!(true), "{ack}");
+
+    let mut conn = Conn::open(server.socket_path());
+    conn.hello_v3(&ws);
+    let resp = conn.call(&json!({
+        "id": 35, "op": "run", "invocation": "run-x1", "actor": "seat-79",
+        "targets": [
+            {"page": "tasks.md", "task": "fix-note", "args": ["first"]},
+            {"page": "ext.md", "task": "ext-note"},
+            {"page": "tasks.md", "task": "fix-note", "args": ["second"]},
+        ],
+    }));
+    let rows = rows_of(&resp);
+    assert_eq!(rows[0]["state"], json!("applied"), "{resp}");
+    assert_eq!(rows[2]["state"], json!("applied"), "{resp}");
+    assert!(ws.join("note.md").exists(), "the bash step wrote the note");
+
+    let first = sub.next_frame().expect("the first commit's frame");
+    let external = sub.next_frame().expect("the external edit's frame");
+    let second = sub.next_frame().expect("the second commit's frame");
+    assert_eq!(first["delta"]["actor"], json!("seat-79"), "{first}");
+    assert_eq!(
+        first["delta"]["root_before"], ack["body"]["root"],
+        "{first}"
+    );
+    assert!(external["delta"].get("actor").is_none(), "{external}");
+    assert_eq!(files_of(&external), ["note.md"], "{external}");
+    assert_eq!(
+        external["delta"]["root_before"], first["delta"]["root_after"],
+        "{external}"
+    );
+    assert_eq!(second["delta"]["actor"], json!("seat-79"), "{second}");
+    assert!(
+        !files_of(&second).contains(&"note.md".to_owned()),
+        "the second run frame does not absorb the external edit: {second}"
+    );
+    assert_eq!(
+        second["delta"]["root_before"], external["delta"]["root_after"],
+        "{second}"
+    );
+    assert_eq!(
+        second["delta"]["root_after"].as_str().unwrap(),
+        disk_fold(&ws),
+        "{second}"
+    );
+    server.shutdown();
+}
+
+/// A run whose observation misses the vouch still mints disk-true roots: the
+/// observation falls to the floor and the commit overlays onto it. A
+/// directory at the §6.4 cookie sentinel's path makes every sentinel write
+/// fail, so every barrier answers `Unproven` (`feed.rs`
+/// `cookie_barrier_at`) — the feed is live, the proof never comes.
+#[test]
+fn a_run_whose_observation_misses_the_vouch_still_mints_disk_true_roots() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    fs::create_dir_all(ws.join(".meridian/cookie")).unwrap();
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+    let mut sub = Conn::open(server.socket_path());
+    assert_eq!(sub.hello_v2(&ws)["ok"], json!(true));
+    let ack = sub.sub();
+    assert_eq!(ack["ok"], json!(true), "{ack}");
+    assert_eq!(ack["body"]["root"].as_str().unwrap(), disk_fold(&ws));
+
+    let mut conn = Conn::open(server.socket_path());
+    conn.hello_v3(&ws);
+    let mut prev = ack["body"]["root"].clone();
+    for (i, value) in ["one", "two"].iter().enumerate() {
+        let resp = conn.call(&json!({
+            "id": 36 + i, "op": "run", "invocation": format!("run-u{i}"), "actor": "seat-80",
+            "targets": [{"page": "tasks.md", "task": "fix-note", "args": [value]}],
+        }));
+        assert_eq!(rows_of(&resp)[0]["state"], json!("applied"), "{resp}");
+        let frame = sub.next_frame().expect("the run frame");
+        assert_eq!(frame["delta"]["actor"], json!("seat-80"), "{frame}");
+        assert_eq!(frame["delta"]["root_before"], prev, "run {i}: {frame}");
+        assert_eq!(
+            frame["delta"]["root_after"].as_str().unwrap(),
+            disk_fold(&ws),
+            "run {i}: root_after is the disk truth on the floor path: {frame}"
+        );
+        prev = frame["delta"]["root_after"].clone();
+    }
+    server.shutdown();
 }
 
 /// §9 on the frame, absent-actor arm: a run without a supplied actor is still

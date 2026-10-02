@@ -3097,6 +3097,8 @@ pub struct WriteLock {
     /// workspace identity from the lock, so a lock and a root cannot be
     /// paired wrongly.
     root: WorkspaceRoot,
+    /// The `flock.hold.<holder>` span ([`Self::timed`]), reported at release.
+    hold: Option<timing::Phase>,
 }
 
 /// Release the lock explicitly, before the fd closes: a `flock` lock belongs to
@@ -3109,6 +3111,9 @@ impl Drop for WriteLock {
     fn drop(&mut self) {
         // SAFETY: flock on a valid open fd we own; the fd outlives the call.
         unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+        if let Some(hold) = self.hold.take() {
+            hold.stop();
+        }
     }
 }
 
@@ -3136,7 +3141,19 @@ impl WriteLock {
         Ok(Self {
             file,
             root: root.clone(),
+            hold: None,
         })
+    }
+
+    /// Time this hold under `name` (a `flock.hold.<holder>` phase,
+    /// `run-plane.md` § Timing phases): one line at release, covering the
+    /// hold from this call — made right after the acquire that won — to the
+    /// unlock. The wait before the acquire is the holder's own and not in it.
+    /// Off under `MRD_TIMING`, this reads no clock.
+    #[must_use]
+    pub fn timed(mut self, name: &'static str) -> Self {
+        self.hold = Some(timing::phase(name));
+        self
     }
 
     /// The workspace this lock is held on. A door that needs both a lock and

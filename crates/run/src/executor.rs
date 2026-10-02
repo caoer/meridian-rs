@@ -166,11 +166,17 @@ impl ApplyRequest<'_> {
 /// the plane stays free of the wire graph; the one production implementor is
 /// the registry's ring sink.
 pub trait DeltaSink: std::fmt::Debug {
-    /// The workspace root a batch is about to advance from, folded under the
-    /// caller's workspace flock before any byte lands — where the host tells
-    /// an external change still pending against its watcher, ahead of the
-    /// batch's own frame. Infallible by contract, as [`Self::committed`].
-    fn opening(&self, root: &fs::WorkspaceRoot, root_before: &MerkleRoot);
+    /// The workspace root a batch is about to advance from, observed under
+    /// the caller's workspace flock before any byte lands — where the host
+    /// also tells an external change still pending against its watcher, ahead
+    /// of the batch's own frame. The host observes through its resident memo,
+    /// so the executor folds no corpus for the bracket.
+    ///
+    /// # Errors
+    /// The observation's refusal — [`io::ErrorKind::WouldBlock`] when the
+    /// host's memo stayed held for its whole budget. Nothing has landed, so
+    /// the executor refuses the apply cleanly.
+    fn opening(&self, root: &fs::WorkspaceRoot) -> io::Result<MerkleRoot>;
 
     /// One committed batch's facts. Called after `fs::apply_batch` returned,
     /// with the caller's workspace flock still held. Infallible by contract:
@@ -182,7 +188,7 @@ pub trait DeltaSink: std::fmt::Debug {
 /// What one committed batch changed — the before tense held in memory by the
 /// executor, the after tense as the exact candidate `fs` landed (D8/U31: the
 /// dry bytes ARE the committed bytes), and the workspace root the batch
-/// advanced from, folded under the flock immediately before the commit.
+/// advanced from, observed under the flock immediately before the commit.
 #[derive(Debug)]
 pub struct CommitFacts<'a> {
     /// The content page the batch spliced (workspace-relative).
@@ -195,7 +201,8 @@ pub struct CommitFacts<'a> {
     pub receipt_path: Option<&'a str>,
     /// The receipt file before the batch (`None`: first append creates it).
     pub receipt_before: Option<&'a Document>,
-    /// The workspace root before the commit, folded under the flock.
+    /// The workspace root before the commit — [`DeltaSink::opening`]'s
+    /// observation, under the flock.
     pub root_before: &'a MerkleRoot,
     /// The frame's identity fact, resolved by the receipt's own law (§9):
     /// the supplied actor verbatim, else the plane's `run:<task>` self-label
@@ -1356,8 +1363,8 @@ pub fn apply_under(
     // (run applies and wire splices do not otherwise serialize), so without
     // this flock a detect cycle can classify the half-landed commit as
     // external, actorless change — the misattribution this ruling exists to
-    // kill. Pre-facts fold under the same flock; nothing has landed yet, so
-    // a failure here refuses cleanly.
+    // kill. The pre-commit facts are taken under the same flock; nothing has
+    // landed yet, so a failure here refuses cleanly.
     let _delta_bracket = match req.delta {
         Some(_) => Some(acquire_write_flock(root)?),
         None => None,
@@ -1430,7 +1437,7 @@ fn acquire_write_flock(root: &fs::WorkspaceRoot) -> Result<fs::WriteLock, ExecEr
     let deadline = Instant::now() + busy_wait_budget();
     loop {
         match fs::WriteLock::acquire(root) {
-            Ok(lock) => return Ok(lock),
+            Ok(lock) => return Ok(lock.timed("flock.hold.run")),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 if Instant::now() >= deadline {
                     return Err(ExecError::WorkspaceBusy);
@@ -1447,9 +1454,9 @@ fn acquire_write_flock(root: &fs::WorkspaceRoot) -> Result<fs::WriteLock, ExecEr
 }
 
 /// The frame mint's pre-commit facts (step 7b): the receipt file's before
-/// tense and the workspace root the batch advances from, both under the
-/// flock, offered to the sink before anything lands. `None` when no sink is
-/// armed — the CLI pays no fold.
+/// tense and the workspace root the batch advances from — the sink's own
+/// observation ([`DeltaSink::opening`]) — both under the flock, before
+/// anything lands. `None` when no sink is armed — the CLI observes nothing.
 fn delta_pre_facts(
     root: &fs::WorkspaceRoot,
     req: &ApplyRequest<'_>,
@@ -1461,12 +1468,15 @@ fn delta_pre_facts(
         Some(addr) => load_receipt_before(root, &addr.path)?,
         None => None,
     };
-    let root_before = fs::domain_snapshot(root)
-        .map(|(_, r)| r)
-        .map_err(|e| ExecError::Io {
-            reason: format!("pre-commit root fold: {e}"),
-        })?;
-    sink.opening(root, &root_before);
+    let root_before = sink.opening(root).map_err(|e| {
+        if e.kind() == io::ErrorKind::WouldBlock {
+            ExecError::WorkspaceBusy
+        } else {
+            ExecError::Io {
+                reason: format!("pre-commit root observation: {e}"),
+            }
+        }
+    })?;
     Ok(Some((receipt_before, root_before)))
 }
 

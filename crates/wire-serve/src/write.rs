@@ -4152,23 +4152,25 @@ fn locate_lock(doc: &model::Document) -> Result<Option<std::ops::Range<usize>>, 
 /// Acquire the workspace write flock (D9) with the typed error split: a held
 /// lock (`WouldBlock`, `LOCK_NB`) is the fast `workspace_busy` refusal
 /// (transient — retry); any other lock-file I/O failure maps to
-/// `io_error{cause}`.
+/// `io_error{cause}`. The hold is timed as `flock.hold.door`.
 pub(crate) fn acquire_write_lock(
     root: &fs::WorkspaceRoot,
 ) -> Result<fs::WriteLock, Box<ErrorBody>> {
-    fs::WriteLock::acquire(root).map_err(|e| {
-        if e.kind() == ErrorKind::WouldBlock {
-            let mut w = ErrorBody::new(ErrorCode::WorkspaceBusy);
-            w.message = Some(
-                "another meridian writer holds .meridian/write.lock — transient; retry".into(),
-            );
-            Box::new(w)
-        } else {
-            let mut w = ErrorBody::new(ErrorCode::IoError);
-            w.cause = Some(format!("write lock: {e}"));
-            Box::new(w)
-        }
-    })
+    fs::WriteLock::acquire(root)
+        .map(|lock| lock.timed("flock.hold.door"))
+        .map_err(|e| {
+            if e.kind() == ErrorKind::WouldBlock {
+                let mut w = ErrorBody::new(ErrorCode::WorkspaceBusy);
+                w.message = Some(
+                    "another meridian writer holds .meridian/write.lock — transient; retry".into(),
+                );
+                Box::new(w)
+            } else {
+                let mut w = ErrorBody::new(ErrorCode::IoError);
+                w.cause = Some(format!("write lock: {e}"));
+                Box::new(w)
+            }
+        })
 }
 
 /// Workspace-root confinement: the same §1 path law the strict decode enforces

@@ -1904,13 +1904,21 @@ Under `MRD_TIMING` (the switch, sink, line grammar and the two lanes:
 | `currency.vouched` | — (`cmd=daemon`) | `registry::Registry::currency_refresh` | a read-plane §6.7 currency pass on the O(1) cookie fast path: no walk, no stat, no byte read |
 | `currency.floor.<cause>` | — (`cmd=daemon`) | same | a read-plane pass that missed the vouch and fell to the §6.2 extent-refresh floor — the full stat sweep. `<cause>` names the term that missed. **A bare `currency.floor` is never emitted**; it is the family prefix |
 | `currency.floor.<cause>.refused` | — (`cmd=daemon`) | same | the same pass, entered then refused by an I/O failure in the sweep |
-| `door.vouched` | — (`cmd=daemon`) | `registry::Registry::door_observation` | a write-door entry observation on that fast path, inside the write flock |
+| `door.vouched` | — (`cmd=daemon`) | `registry::Registry::door_observation` | a write-door entry observation on that fast path, inside the write flock. The run plane's delta-mint bracket makes the same observation, so its commits count here too |
 | `door.floor.<cause>` · `door.floor.<cause>.refused` | — (`cmd=daemon`) | same | the write plane's floor: same two shapes, same `<cause>` set |
 | `door.refused.<cause>` | — (`cmd=daemon`) | same | a write-door observation refused before either arm was chosen. One cause today, `lock_contended`: the memo lock stayed held for its whole budget. **The read plane has no counterpart and that is a fact, not a gap** — the same `fs::lock_within` with a budget of `None` returns `Ok` before the wait loop (`Registry::patched_cache` asserts it) |
+| `flock.hold.run` | — (`cmd=daemon`) | `fs::WriteLock` (timed by `run::executor`) | how long the run plane's delta-mint bracket held `.meridian/write.lock`: from the acquire that won to the release. The wait before the acquire is not in it |
+| `flock.hold.door` | — (`cmd=daemon`, or the CLI's `cmd=` for a CLI-lane door) | `fs::WriteLock` (timed by `wire_serve::write`) | the same hold for a wire write door's critical section, run-plane births included |
 
 **The door's three families partition its population**: `door.vouched` (fast
 path), `door.floor` (floor), `door.refused` (no arm) — every `door.*` name under
 exactly one, counted once.
+
+**`flock.hold.<holder>` is the one hold measurement.** `slow op` lines and the
+`total` of an op include every wait for a contended resource; this family
+counts only the time a holder kept every other writer out. A bare `flock.hold`
+is never emitted; it is the family prefix. Holders not named above (the detect
+cycle, `ArmSession`, the downgrade fence, takeover) are not timed.
 
 **`<cause>` is one of six** (`registry::FloorTrigger`):
 
@@ -2008,20 +2016,21 @@ not imply a links call** — read `cmd=` first. It repeats per mount corpus as
 `snapshot` does; neither name distinguishes workspace from mount, so count the
 lines.
 
-Four fold sites, not all firing on one lane:
+Three fold sites, not all firing on one lane:
 
 | Fold | Fires when |
 |---|---|
 | `dispatch_starlark.rs` `observe_if_emitted`, live tense (reached from `runner.rs` `dispatch`) | a live run whose block emitted an **md.\*** effect. A live `notice`-only or effect-free run folds nothing (§ The run plane) |
 | `dispatch_starlark.rs` `observe_if_emitted`, rehearsal tense (reached from `runner.rs` `rehearse`) | `--dry` instead of the above, not as well, and only when the block emitted something — a wider gate than live, for the dry report's provenance |
 | `runner.rs` `cascade` | a generation that applies md.\* — needs a non-empty ruleset, and both doors hand `S1_RULES` (empty), so today: never |
-| `executor.rs` pre-commit | only with a `DeltaSink` in reach, i.e. the wire arm. The CLI passes `delta: None` and returns before the fold |
 
 On the **CLI** an md.\*-committing `mrd run` emits exactly one `snapshot` set
 (`grep -c 'phase=snapshot '` = 1); one committing nothing emits **zero** — the
-lazy gate (37 800-member root: 0/20 folded; eager 20/20). On the
-**wire/daemon** arm a committing run folds again inside the executor: identical
-names, no discriminator, so count them.
+lazy gate (37 800-member root: 0/20 folded; eager 20/20). The **wire/daemon**
+arm folds nothing more at the commit: the delta-mint bracket observes through
+the resident memo, so a committing run adds one `door.*` line (§ Timing phases)
+and no `snapshot` set. A mode-bearing fire reads the pinned world and reaches
+none of the three sites above.
 
 ## Seam map (for reviewers)
 
@@ -2037,7 +2046,7 @@ names, no discriminator, so count them.
 | CLI mount — script entry | `crates/mrd::script::cmd` — same client edge; its human-mode face is non-normative |
 | in-process script serve (§ A.7) | `crates/registry` (op arm: entry world, host, threading, commit) over `crates/effects` (kernel, trace, digest) |
 | wire run serve (§ A.8) + script effects mode | `crates/registry` (`run_op`: per-target loop, §9 threading; `script_op`: the live host) over `crates/run` (the plane, unchanged) |
-| per-phase timing (`MRD_TIMING`) | `crates/timing` (switch, sink, span); call sites `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`, `fs::domain_fold`, `registry::Registry::currency_refresh`, `registry::Registry::door_observation`; § Timing phases |
+| per-phase timing (`MRD_TIMING`) | `crates/timing` (switch, sink, span); call sites `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`, `fs::domain_fold`, `registry::Registry::currency_refresh`, `registry::Registry::door_observation`, `fs::WriteLock` (holds timed by `run::executor` and `wire_serve::write`); § Timing phases |
 | root-at-eval observation (the lazy fold) | `crates/run::dispatch_starlark::observe_if_emitted` — one owner of the per-tense gate; `runner::rehearse` calls it directly, the live leg inside `dispatch_starlark::dispatch`. `evaluate` returns `Unobserved`, so neither skips it; § The run plane (`RunCtx`) |
 
 ---
