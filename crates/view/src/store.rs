@@ -17,8 +17,8 @@
 //!   that reference it.
 //! - **`main.*`** — the caller-facing latest views, keeping the ephemeral
 //!   projection's exact names and column shapes (`doc`, `section`, `link`,
-//!   `backlink`, `dangling`, `record`, `tag_all`, `task`, `frontmatter`,
-//!   `frontmatter_tag`, `frontmatter_fault`, `tag`) — plus `_meridian_view`, the ONE relation whose
+//!   `frontmatter_link`, `backlink`, `dangling`, `record`, `tag_all`, `task`,
+//!   `frontmatter`, `frontmatter_tag`, `frontmatter_fault`, `tag`) — plus `_meridian_view`, the ONE relation whose
 //!   shape deliberately differs (there a singleton table, here a view over the
 //!   pin ledger). One `QUALIFY` window over `hist.doc` picks each path's newest
 //!   version and drops tombstones; child views follow by `(path, gen)` semi
@@ -185,7 +185,11 @@ use crate::{
 ///
 /// `13`: `hist.link.candidates` — a v12 file has no such column, so the
 /// link load's INSERT names a column the file lacks.
-pub const CACHE_SCHEMA_VERSION: i64 = 13;
+///
+/// `14`: `hist.frontmatter_link` + `main.frontmatter_link` — a v13 file holds
+/// no frontmatter link rows for pages whose fingerprints will not move. Same
+/// repair-by-rebuild reasoning as `9`.
+pub const CACHE_SCHEMA_VERSION: i64 = 14;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
 pub const SQL_CACHE_FILENAME: &str = "sql.duckdb";
@@ -220,6 +224,10 @@ CREATE TABLE hist.link (
     dest_path TEXT, dest_root TEXT, dest_root_path TEXT, exclusion TEXT,
     exclusion_path TEXT,
     span_start UBIGINT, span_end UBIGINT, node_rev TEXT, candidates TEXT[]
+);
+CREATE TABLE hist.frontmatter_link (
+    src_path TEXT, gen BIGINT, seq UBIGINT, key TEXT, target_raw TEXT,
+    dest_path TEXT, candidates TEXT[]
 );
 CREATE TABLE hist.tag (
     path TEXT, gen BIGINT, seq UBIGINT, tag TEXT,
@@ -298,6 +306,10 @@ CREATE VIEW main.link AS
            l.span_start, l.span_end, l.node_rev, l.candidates
     FROM hist.link l
     SEMI JOIN hist.doc_latest d ON l.src_path = d.path AND l.gen = d.gen;
+CREATE VIEW main.frontmatter_link AS
+    SELECT f.src_path, f.seq, f.key, f.target_raw, f.dest_path, f.candidates
+    FROM hist.frontmatter_link f
+    SEMI JOIN hist.doc_latest d ON f.src_path = d.path AND f.gen = d.gen;
 CREATE VIEW main.tag AS
     SELECT t.path, t.seq, t.tag, t.span_start, t.span_end, t.node_rev
     FROM hist.tag t
@@ -1231,7 +1243,15 @@ impl SqlStore {
     /// name keys of added/removed paths (stem + full key) plus the aliases
     /// entering or leaving through added/changed/removed docs, matched
     /// against every latest link row's target keys (module docs § Delta
-    /// grain — a superset of the resolver's keys, never a subset).
+    /// grain — a superset of the resolver's keys, never a subset). Body and
+    /// frontmatter links both: a frontmatter link resolves by the same call,
+    /// so a name appearing elsewhere moves its `dest_path` and `candidates`
+    /// as it moves a body link's.
+    ///
+    /// `base_affected` and `rooted_affected` read `link` alone: they re-decide
+    /// `exclusion` stamps and rooted destinations, and a `frontmatter_link`
+    /// row carries neither — its `.base` and `root:` targets are NULL rows
+    /// that no member or mount can move.
     fn resolution_affected(
         &self,
         docs: &model::Docs,
@@ -1272,9 +1292,10 @@ impl SqlStore {
         }
 
         let mut affected = BTreeSet::new();
-        let mut stmt = self
-            .conn
-            .prepare("SELECT DISTINCT src_path, target_raw FROM link")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT src_path, target_raw FROM link \
+                 UNION SELECT src_path, target_raw FROM frontmatter_link",
+        )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let src: String = row.get(0)?;
@@ -1357,7 +1378,22 @@ impl SqlStore {
         }
 
         self.append_scalar(&rows.frontmatter, "frontmatter", &generation)?;
-        crate::append_links(&self.conn, "hist", Some(&generation), &rows.link)?;
+        crate::append_listed(
+            &self.conn,
+            "hist",
+            "link",
+            crate::LINK_SCALAR_COLS,
+            Some(&generation),
+            &rows.link,
+        )?;
+        crate::append_listed(
+            &self.conn,
+            "hist",
+            "frontmatter_link",
+            crate::FRONTMATTER_LINK_SCALAR_COLS,
+            Some(&generation),
+            &rows.frontmatter_link,
+        )?;
         self.append_scalar(&rows.tag, "tag", &generation)?;
         self.append_scalar(&rows.frontmatter_tag, "frontmatter_tag", &generation)?;
         self.append_scalar(&rows.frontmatter_fault, "frontmatter_fault", &generation)?;
@@ -1874,7 +1910,7 @@ pub(crate) mod tests {
     /// Per-surface digest over every column of every row — the 8 base tables
     /// plus the 4 convenience views, so the acceptance is the whole caller
     /// surface, not just storage.
-    const SURFACE_DIGESTS: [(&str, &str); 13] = [
+    const SURFACE_DIGESTS: [(&str, &str); 14] = [
         (
             "doc",
             "SELECT coalesce(md5(string_agg(path || '|' || file_rev || '|' || line_count::VARCHAR || '|' || bytes::VARCHAR, chr(10) ORDER BY path)), 'EMPTY') FROM doc",
@@ -1890,6 +1926,10 @@ pub(crate) mod tests {
         (
             "link",
             "SELECT coalesce(md5(string_agg(src_path || '|' || seq::VARCHAR || '|' || kind || '|' || target_raw || '|' || coalesce(heading,'~N~') || '|' || coalesce(block,'~N~') || '|' || coalesce(alias,'~N~') || '|' || coalesce(dest_path,'~N~') || '|' || coalesce(dest_root,'~N~') || '|' || coalesce(dest_root_path,'~N~') || '|' || coalesce(exclusion,'~N~') || '|' || coalesce(exclusion_path,'~N~') || '|' || resolved::VARCHAR || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev || '|' || coalesce(candidates::VARCHAR,'~N~'), chr(10) ORDER BY src_path, seq)), 'EMPTY') FROM link",
+        ),
+        (
+            "frontmatter_link",
+            "SELECT coalesce(md5(string_agg(src_path || '|' || seq::VARCHAR || '|' || key || '|' || target_raw || '|' || coalesce(dest_path,'~N~') || '|' || coalesce(candidates::VARCHAR,'~N~'), chr(10) ORDER BY src_path, seq)), 'EMPTY') FROM frontmatter_link",
         ),
         (
             "tag",
@@ -2106,9 +2146,9 @@ pub(crate) mod tests {
             assert_eq!(cols, ref_cols, "main.{name} columns drifted from the build");
         }
         // 12 md relations + the three `.base` relations (`base-projection.md`
-        // §4) + `body` (`body-projection.md`) + `frontmatter_fault`, all
-        // under the same latest-view protocol.
-        assert_eq!(cached.len(), 17, "17 caller-facing relations");
+        // §4) + `body` (`body-projection.md`) + `frontmatter_fault` +
+        // `frontmatter_link`, all under the same latest-view protocol.
+        assert_eq!(cached.len(), 18, "18 caller-facing relations");
 
         // Each column once, per relation — the literal card assertion.
         for (name, columns) in &cached {
@@ -2372,6 +2412,41 @@ pub(crate) mod tests {
         ]);
         sync_ambient(&mut store, &v2, "b3b:v2").expect("append");
         assert!(faults(&store).is_empty(), "the fixed page clears its fault");
+        assert_surface_matches_fresh(&store, &v2);
+    }
+
+    #[test]
+    fn a_page_added_later_re_resolves_an_unchanged_pages_frontmatter_link() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        // c/p.md names x in frontmatter alone — no body link reaches x.
+        let mut files = vec![
+            ("a/x.md", "# A x\n"),
+            ("c/p.md", "---\nsource: \"[[x]]\"\n---\n# P\n"),
+        ];
+        let v1 = corpus(&files);
+        sync_ambient(&mut store, &v1, "b3b:v1").expect("cold");
+        let row = |store: &SqlStore| -> (String, Option<String>) {
+            store
+                .connection()
+                .query_row(
+                    "SELECT dest_path, candidates::VARCHAR FROM frontmatter_link \
+                     WHERE src_path = 'c/p.md'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .expect("one frontmatter link")
+        };
+        assert_eq!(row(&store), ("a/x.md".to_owned(), None));
+
+        // A sibling x appears; c/p.md is unchanged and its link moves to it.
+        files.push(("c/x.md", "# C x\n"));
+        let v2 = corpus(&files);
+        sync_ambient(&mut store, &v2, "b3b:v2").expect("append");
+        assert_eq!(
+            row(&store),
+            ("c/x.md".to_owned(), Some("[a/x.md, c/x.md]".to_owned()))
+        );
         assert_surface_matches_fresh(&store, &v2);
     }
 

@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use model::{ByteSpan, CorpusIndex, Docs, Document, Node, NodeKind};
+use model::{ByteSpan, CorpusIndex, Docs, Document, Node, NodeKind, scan_wikilinks};
 
 use crate::canvas;
 
@@ -804,9 +804,17 @@ struct Occ {
 fn occurrences(doc: &Document) -> Vec<Occ> {
     let mut out = Vec::new();
     body_links(&doc.root, &doc.raw, &mut out);
-    if let Some(fm) = frontmatter_span(doc) {
-        frontmatter_links(&doc.raw, fm, &mut out);
-    }
+    // The one frontmatter scanner (`model::frontmatter_wikilinks`): every link
+    // this door rewrites under a key is a row of the `frontmatter_link` relation.
+    out.extend(
+        model::frontmatter_wikilinks(doc)
+            .into_iter()
+            .map(|link| Occ {
+                slot: link.slot,
+                target: link.target,
+                kind: RefKind::Frontmatter,
+            }),
+    );
     out.sort_by_key(|o| o.slot.start);
     out
 }
@@ -853,57 +861,6 @@ fn frontmatter_span(doc: &Document) -> Option<ByteSpan> {
         .map(|n| n.span.clone())
 }
 
-/// One `[[target#frag|alias]]` a grammar scan found in plain text: the target
-/// slot's range WITHIN that text, and the target itself.
-struct ScannedLink {
-    range: std::ops::Range<usize>,
-    target: String,
-}
-
-/// The wikilink grammar scanned over text no parse owns: `[[target#frag|alias]]`,
-/// no newline inside, the slot ending at the fragment or the alias.
-///
-/// Two callers, for the same reason — the text they read yields no link node.
-/// The frontmatter block is link-free by the ground-truth law, and a canvas
-/// text node is a fragment of markdown inside a JSON string, not a page. An
-/// embed's `!` sits outside the `[[`, so it is found here as its target alone.
-fn scan_wikilinks(text: &str) -> Vec<ScannedLink> {
-    let mut out = Vec::new();
-    let mut at = 0;
-    while let Some(open) = text[at..].find("[[") {
-        let start = at + open + 2;
-        let Some(close) = text[start..].find("]]") else {
-            break;
-        };
-        let inner = &text[start..start + close];
-        if !inner.contains('\n') && !inner.starts_with('[') {
-            let len = inner.find(['#', '|']).unwrap_or(inner.len());
-            if len > 0 {
-                out.push(ScannedLink {
-                    range: start..start + len,
-                    target: inner[..len].to_owned(),
-                });
-            }
-        }
-        at = start + close + 2;
-    }
-    out
-}
-
-/// The frontmatter block's wikilinks, at their positions in the whole page.
-fn frontmatter_links(raw: &str, fm: ByteSpan, out: &mut Vec<Occ>) {
-    let Some(text) = raw.get(fm.clone()) else {
-        return;
-    };
-    for link in scan_wikilinks(text) {
-        out.push(Occ {
-            slot: fm.start + link.range.start..fm.start + link.range.end,
-            target: link.target,
-            kind: RefKind::Frontmatter,
-        });
-    }
-}
-
 struct RootedOcc {
     /// The path half of the token, after the `root:` head and before any `#`.
     slot: ByteSpan,
@@ -919,7 +876,7 @@ fn is_delim(c: char) -> bool {
 /// Plain `root:path` tokens inside the frontmatter block whose root names
 /// this root — a value token bounded by [`is_delim`], parsed through the one
 /// address constructor. A token inside a `[[…]]` is a frontmatter wikilink,
-/// owned by [`frontmatter_links`].
+/// owned by `model::frontmatter_wikilinks`.
 fn frontmatter_rooted(raw: &str, fm: ByteSpan, root_names: &[String]) -> Vec<RootedOcc> {
     let mut out = Vec::new();
     let Some(text) = raw.get(fm.clone()) else {

@@ -327,6 +327,7 @@ pub(crate) fn corpus_index(docs: &model::Docs) -> CorpusIndex {
 struct Counters {
     section: u64,
     link: u64,
+    frontmatter_link: u64,
     tag: u64,
     task: u64,
     body: u64,
@@ -340,6 +341,7 @@ pub(crate) struct Rows {
     pub(crate) frontmatter: Vec<Vec<Value>>,
     pub(crate) section: Vec<Vec<Value>>,
     pub(crate) link: Vec<Vec<Value>>,
+    pub(crate) frontmatter_link: Vec<Vec<Value>>,
     pub(crate) tag: Vec<Vec<Value>>,
     pub(crate) frontmatter_tag: Vec<Vec<Value>>,
     pub(crate) frontmatter_fault: Vec<Vec<Value>>,
@@ -527,7 +529,10 @@ fn walk(
 ) {
     let mut child_gov = gov_section;
     match &node.kind {
-        NodeKind::Frontmatter { map } => emit_frontmatter(node, path, doc, map, rows),
+        NodeKind::Frontmatter { map } => {
+            emit_frontmatter(node, path, doc, map, rows);
+            emit_frontmatter_links(path, doc, index, counters, rows);
+        }
         NodeKind::Section {
             heading_text: _,
             level,
@@ -740,6 +745,54 @@ fn emit_frontmatter(
     }
 }
 
+/// Emit one `frontmatter_link` row per wikilink in a frontmatter value that
+/// names a page (`wire-contract.md` § A.11): the links
+/// `model::frontmatter_wikilinks` finds under a top-level key — the same
+/// links the move door rewrites. A same-page anchor (`[[#^x]]`) has no target
+/// and is not a row.
+///
+/// Resolution is the body link's call, `resolve_linkpath_with_candidates`,
+/// with this page as the source. A `root:` head consults no mount and a
+/// non-markdown target matches no page: both are rows with `dest_path` and
+/// `candidates` NULL.
+fn emit_frontmatter_links(
+    path: &str,
+    doc: &Document,
+    index: &CorpusIndex,
+    counters: &mut Counters,
+    rows: &mut Rows,
+) {
+    for link in model::frontmatter_wikilinks(doc) {
+        let Some(key) = link.key else { continue };
+        let (dest, candidates) = if addr::head_carries_root_separator(&link.target) {
+            (None, Vec::new())
+        } else {
+            index.resolve_linkpath_with_candidates(&link.target, path)
+        };
+        let seq = counters.frontmatter_link;
+        counters.frontmatter_link += 1;
+        rows.frontmatter_link.push(vec![
+            Value::Text(path.to_string()),
+            Value::UBigInt(seq),
+            Value::Text(key),
+            Value::Text(link.target),
+            dest.map_or(Value::Null, Value::Text),
+            // Always the LAST cell: [`append_listed`] splits it off.
+            candidates_cell(&candidates),
+        ]);
+    }
+}
+
+/// The `candidates` cell: the set a pick was made from, kept only when there
+/// was a choice.
+fn candidates_cell(candidates: &[String]) -> Value {
+    if candidates.len() > 1 {
+        Value::List(candidates.iter().cloned().map(Value::Text).collect())
+    } else {
+        Value::Null
+    }
+}
+
 /// Emit one `section` row — identity `(path, node_seq)`; `hpath` advisory,
 /// rendered as the published machine address ([`hpath_json`]). `chain` includes
 /// the section's own segment, so its last element carries the raw heading text.
@@ -853,22 +906,24 @@ fn emit_link(
         Value::UBigInt(u64c(node.span.start)),
         Value::UBigInt(u64c(node.span.end)),
         Value::Text(node.node_rev.0.clone()),
-        // `candidates` — the set the pick in `dest` came from, kept only when
-        // there was a choice. Always the LAST cell: [`append_links`] splits it off.
-        if candidates.len() > 1 {
-            Value::List(candidates.iter().cloned().map(Value::Text).collect())
-        } else {
-            Value::Null
-        },
+        // `candidates` — the set the pick in `dest` came from. Always the
+        // LAST cell: [`append_listed`] splits it off.
+        candidates_cell(candidates),
     ]);
 }
 
 /// The scalar `link` columns in DDL order — every column but the generated
 /// `resolved` and the trailing `candidates` list.
-const LINK_SCALAR_COLS: &str = "src_path, seq, kind, target_raw, heading, block, alias, \
+pub(crate) const LINK_SCALAR_COLS: &str = "src_path, seq, kind, target_raw, heading, block, alias, \
      dest_path, dest_root, dest_root_path, exclusion, exclusion_path, span_start, span_end, node_rev";
 
-/// Load staged `link` rows into `{schema}.link`, `candidates` included.
+/// The scalar `frontmatter_link` columns in DDL order — every column but the
+/// trailing `candidates` list.
+pub(crate) const FRONTMATTER_LINK_SCALAR_COLS: &str = "src_path, seq, key, target_raw, dest_path";
+
+/// Load staged rows of a table keyed `(src_path, seq)` whose last column is
+/// the `candidates` list — `link` and `frontmatter_link` — into
+/// `{schema}.{table}`.
 ///
 /// duckdb-rs's appender and parameter binder both refuse LIST values, so the
 /// lists ride a stage: the scalar cells append into one temp table, each
@@ -876,25 +931,30 @@ const LINK_SCALAR_COLS: &str = "src_path, seq, kind, target_raw, heading, block,
 /// one INSERT … SELECT folds them back with `list(path ORDER BY path)`. The
 /// target sees only that INSERT — the cache's append-only law holds.
 ///
-/// `generation` is the cache's `gen` cell, placed second as `hist.link` orders
-/// it; `None` loads the ephemeral `link` table.
-pub(crate) fn append_links(
+/// `scalar_cols` lists the table's columns but the list, in DDL order,
+/// `src_path, seq` first. `generation` is the cache's `gen` cell, placed
+/// second as the `hist` tables order it; `None` loads the ephemeral table.
+pub(crate) fn append_listed(
     conn: &Connection,
     schema: &str,
+    table: &str,
+    scalar_cols: &str,
     generation: Option<&Value>,
     rows: &[Vec<Value>],
 ) -> duckdb::Result<()> {
     let cols = match generation {
-        Some(_) => LINK_SCALAR_COLS.replacen("src_path, ", "src_path, gen, ", 1),
-        None => LINK_SCALAR_COLS.to_owned(),
+        Some(_) => scalar_cols.replacen("src_path, ", "src_path, gen, ", 1),
+        None => scalar_cols.to_owned(),
     };
+    let stage = format!("{table}_stage");
+    let cand_stage = format!("{table}_candidate_stage");
     conn.execute_batch(&format!(
-        "CREATE OR REPLACE TEMP TABLE link_stage AS SELECT {cols} FROM {schema}.link LIMIT 0;
-         CREATE OR REPLACE TEMP TABLE link_candidate_stage (src_path TEXT, seq UBIGINT, path TEXT);"
+        "CREATE OR REPLACE TEMP TABLE {stage} AS SELECT {cols} FROM {schema}.{table} LIMIT 0;
+         CREATE OR REPLACE TEMP TABLE {cand_stage} (src_path TEXT, seq UBIGINT, path TEXT);"
     ))?;
     {
-        let mut stage = conn.appender_to_catalog_and_db("link_stage", "temp", "main")?;
-        let mut cands = conn.appender_to_catalog_and_db("link_candidate_stage", "temp", "main")?;
+        let mut scalars_app = conn.appender_to_catalog_and_db(&stage, "temp", "main")?;
+        let mut cands = conn.appender_to_catalog_and_db(&cand_stage, "temp", "main")?;
         for row in rows {
             let Some((list, scalars)) = row.split_last() else {
                 continue;
@@ -903,7 +963,7 @@ pub(crate) fn append_links(
             r.push(&scalars[0]);
             r.extend(generation);
             r.extend(&scalars[1..]);
-            stage.append_row(duckdb::appender_params_from_iter(r))?;
+            scalars_app.append_row(duckdb::appender_params_from_iter(r))?;
             if let Value::List(items) = list {
                 for item in items {
                     cands.append_row(duckdb::appender_params_from_iter([
@@ -914,17 +974,17 @@ pub(crate) fn append_links(
                 }
             }
         }
-        stage.flush()?;
+        scalars_app.flush()?;
         cands.flush()?;
     }
     conn.execute_batch(&format!(
-        "INSERT INTO {schema}.link ({cols}, candidates)
-             SELECT s.*, c.candidates FROM temp.main.link_stage s
+        "INSERT INTO {schema}.{table} ({cols}, candidates)
+             SELECT s.*, c.candidates FROM temp.main.{stage} s
              LEFT JOIN (SELECT src_path, seq, list(path ORDER BY path) AS candidates
-                        FROM temp.main.link_candidate_stage GROUP BY src_path, seq) c
+                        FROM temp.main.{cand_stage} GROUP BY src_path, seq) c
              ON s.src_path = c.src_path AND s.seq = c.seq;
-         DROP TABLE temp.main.link_stage;
-         DROP TABLE temp.main.link_candidate_stage;"
+         DROP TABLE temp.main.{stage};
+         DROP TABLE temp.main.{cand_stage};"
     ))
 }
 
@@ -1072,7 +1132,15 @@ impl Rows {
         append_rows(conn, "doc", &self.doc)?;
         append_rows(conn, "frontmatter", &self.frontmatter)?;
         append_rows(conn, "section", &self.section)?;
-        append_links(conn, "main", None, &self.link)?;
+        append_listed(conn, "main", "link", LINK_SCALAR_COLS, None, &self.link)?;
+        append_listed(
+            conn,
+            "main",
+            "frontmatter_link",
+            FRONTMATTER_LINK_SCALAR_COLS,
+            None,
+            &self.frontmatter_link,
+        )?;
         append_rows(conn, "tag", &self.tag)?;
         append_rows(conn, "frontmatter_tag", &self.frontmatter_tag)?;
         append_rows(conn, "frontmatter_fault", &self.frontmatter_fault)?;
@@ -1377,20 +1445,38 @@ mod tests {
         )?;
         // The binder refuses a LIST value, so the reference lane spells the
         // trailing `candidates` cell as `list_value(?, …)` over its items.
-        for row in &rows.link {
-            let (list, scalars) = row.split_last().expect("link row");
-            let (cell, items): (String, &[Value]) = match list {
-                Value::List(items) => (
-                    format!("list_value({})", vec!["?"; items.len()].join(", ")),
-                    items,
-                ),
-                _ => ("NULL".to_owned(), &[]),
-            };
-            conn.execute(
-                &format!("INSERT INTO link (src_path, seq, kind, target_raw, heading, block, alias, dest_path, dest_root, dest_root_path, exclusion, exclusion_path, span_start, span_end, node_rev, candidates) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {cell})"),
-                duckdb::params_from_iter(scalars.iter().chain(items)),
-            )?;
+        fn insert_listed(
+            conn: &Connection,
+            table: &str,
+            scalar_cols: &str,
+            rows: &[Vec<Value>],
+        ) -> duckdb::Result<()> {
+            for row in rows {
+                let (list, scalars) = row.split_last().expect("listed row");
+                let (cell, items): (String, &[Value]) = match list {
+                    Value::List(items) => (
+                        format!("list_value({})", vec!["?"; items.len()].join(", ")),
+                        items,
+                    ),
+                    _ => ("NULL".to_owned(), &[]),
+                };
+                let marks = vec!["?"; scalars.len()].join(", ");
+                conn.execute(
+                    &format!(
+                        "INSERT INTO {table} ({scalar_cols}, candidates) VALUES ({marks}, {cell})"
+                    ),
+                    duckdb::params_from_iter(scalars.iter().chain(items)),
+                )?;
+            }
+            Ok(())
         }
+        insert_listed(conn, "link", LINK_SCALAR_COLS, &rows.link)?;
+        insert_listed(
+            conn,
+            "frontmatter_link",
+            FRONTMATTER_LINK_SCALAR_COLS,
+            &rows.frontmatter_link,
+        )?;
         insert_rows(
             conn,
             "INSERT INTO tag (path, seq, tag, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?)",
@@ -1437,7 +1523,7 @@ mod tests {
     /// generated, never stored, so it is derived equal by construction). The
     /// hpath columns are TEXT (the JSON machine address — injective and
     /// self-delimiting), so they digest verbatim.
-    const LANE_DIGESTS: [(&str, &str); 12] = [
+    const LANE_DIGESTS: [(&str, &str); 13] = [
         (
             "doc",
             "SELECT coalesce(md5(string_agg(path || '|' || file_rev || '|' || line_count::VARCHAR || '|' || bytes::VARCHAR, chr(10) ORDER BY path)), 'EMPTY') FROM doc",
@@ -1453,6 +1539,10 @@ mod tests {
         (
             "link",
             "SELECT coalesce(md5(string_agg(src_path || '|' || seq::VARCHAR || '|' || kind || '|' || target_raw || '|' || coalesce(heading,'~N~') || '|' || coalesce(block,'~N~') || '|' || coalesce(alias,'~N~') || '|' || coalesce(dest_path,'~N~') || '|' || coalesce(dest_root,'~N~') || '|' || coalesce(dest_root_path,'~N~') || '|' || coalesce(exclusion,'~N~') || '|' || coalesce(exclusion_path,'~N~') || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev || '|' || coalesce(candidates::VARCHAR,'~N~'), chr(10) ORDER BY src_path, seq)), 'EMPTY') FROM link",
+        ),
+        (
+            "frontmatter_link",
+            "SELECT coalesce(md5(string_agg(src_path || '|' || seq::VARCHAR || '|' || key || '|' || target_raw || '|' || coalesce(dest_path,'~N~') || '|' || coalesce(candidates::VARCHAR,'~N~'), chr(10) ORDER BY src_path, seq)), 'EMPTY') FROM frontmatter_link",
         ),
         (
             "tag",

@@ -110,7 +110,10 @@ pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 ///
 /// `s12`: `link.candidates` — the resolver's candidate set as a column on both
 /// the ephemeral projection and `hist.link` (`wire-contract.md` § A.11).
-pub const SCHEMA_SALT: &str = "s12";
+///
+/// `s13`: the `frontmatter_link` relation (`wire-contract.md` § A.11) — an s12
+/// drawer holds no rows of it for pages whose fingerprints will not move.
+pub const SCHEMA_SALT: &str = "s13";
 
 /// Default GC threshold: a drawer whose last-use is older than this is reapable.
 /// 30 days, mirroring Cargo's registry auto-GC horizon. A path-keyed drawer store

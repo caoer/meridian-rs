@@ -616,15 +616,8 @@ fn parse_frontmatter(raw: &str, span: &ByteSpan) -> YamlMap {
         if trimmed == "---" || trimmed.is_empty() {
             continue;
         }
-        // top-level keys sit at column 0; indented lines are values/nesting
-        if line.starts_with([' ', '\t']) || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some(colon) = line.find(':') {
-            let key = line[..colon].trim().trim_matches(['"', '\'']).to_string();
-            if key.is_empty() {
-                continue;
-            }
+        if let Some((key, colon)) = fm_top_key(line) {
+            let key = key.to_string();
             if pairs.iter().all(|(k, _)| *k != key) {
                 let remainder = line[colon + 1..].trim();
                 // A block scalar keeps its value on the following lines: read
@@ -641,6 +634,115 @@ fn parse_frontmatter(raw: &str, span: &ByteSpan) -> YamlMap {
         }
     }
     YamlMap(pairs)
+}
+
+/// The top-level key a frontmatter line opens, and the colon's byte offset in
+/// the line: column 0, not a comment, first colon, quotes trimmed, never
+/// empty. The one key rule [`parse_frontmatter`] indexes by and
+/// [`frontmatter_wikilinks`] attributes links by, so a link's `key` is always
+/// a key the `frontmatter` map carries.
+fn fm_top_key(line: &str) -> Option<(&str, usize)> {
+    if line.starts_with([' ', '\t']) || line.trim().starts_with('#') {
+        return None;
+    }
+    let colon = line.find(':')?;
+    let key = line[..colon].trim().trim_matches(['"', '\'']);
+    (!key.is_empty()).then_some((key, colon))
+}
+
+/// One `[[target#frag|alias]]` a grammar scan found in plain text: the target
+/// slot's byte range within that text, and the target itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScannedWikilink {
+    /// The bytes after the opening `[[`, up to the fragment, the alias, or
+    /// the closing `]]`.
+    pub range: ByteSpan,
+    /// The target as written, without its `#fragment` and `|alias`.
+    pub target: String,
+}
+
+/// The wikilink grammar scanned over text no parse owns: `[[target#frag|alias]]`,
+/// no newline inside, the slot ending at the fragment or the alias. An empty
+/// target (a same-page `[[#^x]]`) is not returned.
+///
+/// Its callers read text that yields no link node: the frontmatter block,
+/// link-free by the ground-truth law ([`frontmatter_wikilinks`]), and a canvas
+/// text node, a fragment of markdown inside a JSON string. An embed's `!`
+/// sits outside the `[[`, so it is found here as its target alone.
+#[must_use]
+pub fn scan_wikilinks(text: &str) -> Vec<ScannedWikilink> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(open) = text[at..].find("[[") {
+        let start = at + open + 2;
+        let Some(close) = text[start..].find("]]") else {
+            break;
+        };
+        let inner = &text[start..start + close];
+        if !inner.contains('\n') && !inner.starts_with('[') {
+            let len = inner.find(['#', '|']).unwrap_or(inner.len());
+            if len > 0 {
+                out.push(ScannedWikilink {
+                    range: start..start + len,
+                    target: inner[..len].to_owned(),
+                });
+            }
+        }
+        at = start + close + 2;
+    }
+    out
+}
+
+/// One wikilink inside a document's frontmatter block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FmWikilink {
+    /// The top-level key whose value holds the link — the last key line at or
+    /// before it, by [`fm_top_key`]'s rule. `None` for a link before the
+    /// first key line.
+    pub key: Option<String>,
+    /// The target slot, in whole-document byte offsets.
+    pub slot: ByteSpan,
+    /// The target as written, without its `#fragment` and `|alias`.
+    pub target: String,
+}
+
+/// Every wikilink in the document's frontmatter block, in byte order, each
+/// with the top-level key whose value holds it — whatever the value's form:
+/// a quoted scalar, a flow or block list, a comma-joined string, or prose.
+/// The one frontmatter link scanner: the move door rewrites these slots and
+/// the `frontmatter_link` relation lists these links (`wire-contract.md`
+/// § A.11).
+#[must_use]
+pub fn frontmatter_wikilinks(doc: &Document) -> Vec<FmWikilink> {
+    let Some(fm) = find_frontmatter(&doc.root) else {
+        return Vec::new();
+    };
+    let Some(block) = doc.raw.get(fm.span.clone()) else {
+        return Vec::new();
+    };
+    // Each key line's start offset in the block, in order.
+    let mut keys: Vec<(usize, &str)> = Vec::new();
+    let mut line_start = 0;
+    for line in block.split_inclusive('\n') {
+        let text = line.trim_end_matches(['\n', '\r']);
+        if text.trim() != "---" {
+            if let Some((key, _)) = fm_top_key(text) {
+                keys.push((line_start, key));
+            }
+        }
+        line_start += line.len();
+    }
+    scan_wikilinks(block)
+        .into_iter()
+        .map(|link| {
+            let owner = keys.partition_point(|(start, _)| *start <= link.range.start);
+            FmWikilink {
+                key: owner.checked_sub(1).map(|i| keys[i].1.to_owned()),
+                slot: fm.span.start + link.range.start..fm.span.start + link.range.end,
+                target: link.target,
+            }
+        })
+        .collect()
 }
 
 /// Map a leaf dialect construct to its model node kind. `Heading`/`Frontmatter`
