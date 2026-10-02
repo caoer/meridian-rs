@@ -1882,6 +1882,16 @@ impl Registry {
         }
     }
 
+    /// Test-only: this workspace's feed slot goes sticky `Failed`, as a
+    /// watcher that never started leaves it.
+    #[cfg(test)]
+    pub(crate) fn fail_feed(&self, workspace: &Path) {
+        self.feeds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(workspace.to_path_buf(), FeedSlot::Failed);
+    }
+
     /// The push plane's §6.6 backstop (merkle-spec §6.7, detect row): find
     /// what the event stream silently lost without holding `cache` across the
     /// I/O. Snapshot under the lock, compare unlocked
