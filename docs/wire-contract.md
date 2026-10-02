@@ -2886,8 +2886,11 @@ here mint Deltas like every other daemon-side write:
   (`write.lock`, not `run.lock`, which does not exclude the detector).
   Because the detector reconciles under the same flock, no detect cycle sees a
   half-landed commit or an un-advanced ring.
-- One committed batch = one fingerprint advance = one Delta (§7.1), the content page
-  and the receipt file as two entries of one frame's `files`.
+- A committed batch that advances the fingerprint mints one Delta (§7.1), the
+  content page and the receipt file as two entries of one frame's `files`. A
+  batch that commits only its receipt — both of a bash task's batches, and any
+  run that applies no `md.*` effect — writes only the run ledger, which lies
+  outside the hash domain (§6.1): no fingerprint advance, so no Delta.
 - Identity is §9's: a supplied `actor` threads verbatim; absent, the frame
   carries the plane's own `run:<task>` self-label, so `actor`-absent still
   means exactly "edited outside the face". `now` is the caller's or absent,

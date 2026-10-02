@@ -1683,7 +1683,8 @@ A bash step runs as pre-exec receipt (phase 1) → exec → completion receipt
  children die with the group at step end.
 - Bash has **no governed-tree effect channel** — no descriptor fd, no in-band
  `md.*` records. Phase 2 commits the completion receipt only, always an empty
- batch.
+ batch. Both phases write only the run ledger, outside the hash domain, so a
+ bash step moves no fingerprint and mints no Delta (wire-contract § A.8).
 - `domain_snapshot` residual-compare runs around **every** bash step: expected
  post-step root = pre-step files plus this step's governed edits; any residual
  delta refuses and is named.
