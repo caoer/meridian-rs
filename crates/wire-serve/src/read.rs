@@ -15,23 +15,44 @@ use crate::bad_request;
 /// `sections[].content` and `cat.content` stay raw and untranslated: they are
 /// the verbatim bytes `sec_rev` was minted over, so each row is self-verifying.
 ///
-/// A URI naming a vault this machine does not bind is left verbatim; a URI
-/// naming a bound vault is the engine's, so a hand-edited one fails loudly
-/// rather than resolving to something plausible.
-///
-/// # Errors
-/// `bad_request` naming the URI, the non-canonical part and the canonical
-/// spelling.
-fn agent_plane_face(rendered: String) -> Result<String, Box<ErrorBody>> {
+/// A URI naming a vault this machine does not bind is left verbatim. A URI
+/// naming a bound vault that does not decode is left verbatim too — never
+/// translated, never guessed, never a refusal of the call; [`link_notices`]
+/// says so in the answer header.
+fn agent_plane_face(rendered: String) -> String {
     if !crate::positions::may_carry_stored(&rendered) {
-        return Ok(rendered);
+        return rendered;
     }
     let mounts = crate::positions::machine_mounts();
-    crate::positions::to_agent_plane(&rendered, &mounts).map_err(|e| {
-        bad_request(format!(
-            "read: a stored cross-root link in this page cannot be read back — {e}"
-        ))
-    })
+    crate::positions::to_agent_plane(&rendered, &mounts).0
+}
+
+/// One notice entry per governed stored link inside `served` (byte ranges of
+/// `raw`, the page as stored) that does not decode, so the face leaves it as
+/// written: its line in the file and the decode's own words.
+fn link_notices(raw: &str, served: &[Span]) -> Vec<String> {
+    if !crate::positions::may_carry_stored(raw) {
+        return Vec::new();
+    }
+    let mounts = crate::positions::machine_mounts();
+    let (_, untranslated) = crate::positions::to_agent_plane(raw, &mounts);
+    untranslated
+        .iter()
+        .filter(|u| {
+            served.iter().any(|s| {
+                usize::try_from(s.0).is_ok_and(|a| a <= u.span.start)
+                    && usize::try_from(s.1).is_ok_and(|b| u.span.end <= b)
+            })
+        })
+        .map(|u| {
+            let line = raw[..u.span.start].matches('\n').count() + 1;
+            format!(
+                "line {line}: a stored cross-root link is left as written — {}; re-mint it \
+                 with mrd put to make it a wikilink",
+                u.error
+            )
+        })
+        .collect()
 }
 
 /// The claim-link decoration input, re-exported at the read seam so a host
@@ -261,7 +282,7 @@ pub fn composed_read(
             truncated: (!body.unresolved.is_empty()).then_some(true),
             notice: body.notice,
             unresolved: body.unresolved,
-            rendered_text: agent_plane_face(body.text)?,
+            rendered_text: agent_plane_face(body.text),
         });
     }
     // A resolved scope always yields rows (its own section is a row), so the
@@ -271,7 +292,17 @@ pub fn composed_read(
     // One row set for the heading plane: `rendered_text` renders these rows
     // and `toc` carries these rows, so the structured face never diverges
     // from the rendered one.
-    let rendered_text = agent_plane_face(render::toc_toon(&header, &rows))?;
+    // The toc face serves heading text alone, so only a link inside a served
+    // heading line is this face's to report.
+    let headings: Vec<Span> = rows
+        .iter()
+        .map(|f| Span(f.span.0, f.content_span.map_or(f.span.1, |c| c.0)))
+        .collect();
+    let notice = {
+        let links = link_notices(&doc.raw, &headings);
+        (!links.is_empty()).then(|| links.join("; "))
+    };
+    let rendered_text = agent_plane_face(render::toc_toon(&header, &rows, notice.as_deref()));
     Ok(ResponseBody::Read {
         path: path.clone(),
         file_rev: NodeRev(file_rev),
@@ -282,7 +313,7 @@ pub fn composed_read(
         props,
         sections: None,
         truncated: None,
-        notice: None,
+        notice,
         unresolved: Vec::new(),
         rendered_text,
     })
@@ -1221,6 +1252,8 @@ fn composed_sections(
                  a repeat resolves to the same node, so its bytes and its rev are identical"
             ));
         }
+        let served: Vec<Span> = rows.iter().map(|row| row.fact.span).collect();
+        entries.extend(link_notices(&doc.raw, &served));
         (!entries.is_empty()).then(|| entries.join("; "))
     };
     let unresolved: Vec<wire::ReadUnresolved> = failures.iter().map(SelFail::row).collect();

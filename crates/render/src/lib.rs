@@ -230,7 +230,7 @@ impl Renderer for ToonRenderer {
     fn render(&self, doc: &model::Document, job: &RenderJob<'_>) -> Result<Rendered, RenderFailed> {
         match job {
             RenderJob::Toc { header, rows } => Ok(Rendered {
-                text: toc_toon(header, rows),
+                text: toc_toon(header, rows, None),
                 sections: Vec::new(),
             }),
             RenderJob::Sections {
@@ -286,9 +286,9 @@ fn header_fields(header: &Header<'_>) -> Vec<(String, toon::Value)> {
 /// Raw, not sanitized — `sanitize_heading` is many-to-one, and `mrd put`
 /// takes exactly the raw text this column prints. The structured `toc[]` rows
 /// still carry `hpath` as segments (decision 14: arrays for machines, text
-/// for humans).
+/// for humans). `notice` rides after the map, as it does on the sections face.
 #[must_use]
-pub fn toc_toon(header: &Header<'_>, rows: &[&ReadFact]) -> String {
+pub fn toc_toon(header: &Header<'_>, rows: &[&ReadFact], notice: Option<&str>) -> String {
     let mut fields = header_fields(header);
     let toc: Vec<toon::Value> = rows
         .iter()
@@ -303,6 +303,9 @@ pub fn toc_toon(header: &Header<'_>, rows: &[&ReadFact]) -> String {
         })
         .collect();
     fields.push(("toc".to_string(), toon::Value::Arr(toc)));
+    if let Some(notice) = notice {
+        fields.push(("notice".to_string(), toon::Value::str(notice)));
+    }
     toon::encode(&toon::Value::Obj(fields))
 }
 
@@ -412,7 +415,7 @@ mod tests {
             words_total,
             decorations: &NO_DECORATIONS,
         };
-        let text = toc_toon(&header, &rows);
+        let text = toc_toon(&header, &rows, None);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "path: $S/x.md");
         assert_eq!(lines[1], format!("file_rev: {}", doc.root.node_rev.0));
@@ -448,7 +451,7 @@ mod tests {
             decorations: &NO_DECORATIONS,
         };
         assert!(rows.is_empty(), "the fixture really has no heading rows");
-        assert!(toc_toon(&header, &rows).ends_with("\ntoc: []"));
+        assert!(toc_toon(&header, &rows, None).ends_with("\ntoc: []"));
     }
 
     /// The sections face is a TOON head then verbatim bodies (U15). The head

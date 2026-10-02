@@ -381,26 +381,38 @@ fn an_absent_mount_table_refuses_cross_root_and_leaves_everything_else_alone() {
     );
 }
 
-/// **Criterion 5 — a hand-edited stored URI fails LOUDLY on read-back** rather than resolving
-/// to something plausible. The acceptance half is the canonical URI in the same fixture, which
-/// reads back.
+/// **Criterion 5 — a hand-edited stored URI is served AS WRITTEN on read-back and flagged in the
+/// answer header**, never resolved to something plausible and never a refusal of the call. The
+/// acceptance half is the canonical URI in the same fixture, which reads back.
 #[test]
-fn a_hand_edited_stored_uri_fails_loudly_on_read_back() {
+fn a_hand_edited_stored_uri_is_served_as_written_and_flagged_on_read_back() {
     let sb = sandbox(true);
-    // Hand-written, non-canonical: `adv-uri` is the legacy action spelling and `%2F` is a path
-    // separator the canon writes literally. Both name a vault this machine BINDS, so both are the
-    // engine's to judge.
-    sb.seed(
-        "page.md",
-        "# Page\n\n## Body\n\n\
-         [x](obsidian://adv-uri?vault=field-notes-sessions&filepath=notes.md&heading=Design)\n",
-    );
+    // Hand-written, non-canonical: `adv-uri` is the legacy action spelling. It names a vault this
+    // machine BINDS, so it is the engine's to judge — and the engine does not guess.
+    let hand_edited =
+        "[x](obsidian://adv-uri?vault=field-notes-sessions&filepath=notes.md&heading=Design)";
+    sb.seed("page.md", &format!("# Page\n\n## Body\n\n{hand_edited}\n"));
     let out = sb.run(&["read", "page.md", "--section", "Page/Body"]);
-    assert_ne!(
+    assert_eq!(
         code(&out),
         0,
-        "a governed URI that is not canonical must refuse: {}",
-        stdout(&out),
+        "a governed URI that is not canonical is served, not refused: {}",
+        stderr(&out),
+    );
+    let text = stdout(&out);
+    assert!(
+        text.contains(&format!("\n{hand_edited}\n")),
+        "the link is served byte-identical to disk, untranslated:\n{text}",
+    );
+    assert_eq!(
+        text.matches("a stored cross-root link is left as written")
+            .count(),
+        1,
+        "one notice in the header, naming the link:\n{text}",
+    );
+    assert!(
+        text.contains("line 5: a stored cross-root link is left as written"),
+        "the notice names the link's line in the file:\n{text}",
     );
 
     // ACCEPTANCE: the canonical spelling reads back, in the same fixture.
@@ -429,6 +441,73 @@ fn a_hand_edited_stored_uri_fails_loudly_on_read_back() {
         0,
         "a foreign vault is not ours to refuse: {}",
         stderr(&foreign),
+    );
+}
+
+/// A hand-written `obsidian://open` link whose `file` parameter holds a literal `=` (the
+/// `year=…/month=…` session layout) is not canon-encoded. A section read serves it at rc 0, byte-
+/// identical to disk, with one header notice; the toc read serves too, and the two faces agree on
+/// the section's rev.
+#[test]
+fn a_non_canonical_file_parameter_reads_at_rc_0_on_both_faces() {
+    let sb = sandbox(true);
+    let link = "[x](obsidian://open?vault=field-notes-sessions&file=year=2026/month=10/foo.md)";
+    sb.seed(
+        "page.md",
+        &format!("# Page\n\n## Body\n\nsee {link} here\n\n## Other\n\nplain\n"),
+    );
+
+    let section = sb.run(&["read", "page.md", "--section", "Page/Body", "--json"]);
+    assert_eq!(
+        code(&section),
+        0,
+        "a section holding a non-canonical link is served: {}",
+        stderr(&section),
+    );
+    let section: serde_json::Value = serde_json::from_str(&stdout(&section)).expect("json");
+    let read = &section["read"];
+    assert_eq!(
+        read["sections"][0]["content"].as_str().expect("content"),
+        format!("\nsee {link} here\n\n"),
+        "the raw plane is the bytes on disk (the heading-excluded content span)",
+    );
+    let rendered = read["rendered_text"].as_str().expect("rendered_text");
+    assert!(
+        rendered.contains(link),
+        "the rendered face leaves it as written:\n{rendered}"
+    );
+    let notice = read["notice"].as_str().expect("a notice");
+    assert!(
+        notice.starts_with("line 5: a stored cross-root link is left as written")
+            && notice.contains("`file` parameter is not canon-encoded"),
+        "the notice names the line and the decode's words: {notice}",
+    );
+    assert!(
+        rendered.contains("notice: "),
+        "the human face carries it in the header:\n{rendered}",
+    );
+
+    let other = sb.run(&["read", "page.md", "--section", "Page/Other", "--json"]);
+    assert_eq!(code(&other), 0, "{}", stderr(&other));
+    let other: serde_json::Value = serde_json::from_str(&stdout(&other)).expect("json");
+    assert!(
+        other["read"]["notice"].is_null(),
+        "a section that does not hold the link carries no notice: {other}",
+    );
+
+    let toc = sb.run(&["read", "page.md", "--json"]);
+    assert_eq!(code(&toc), 0, "the toc read serves: {}", stderr(&toc));
+    let toc: serde_json::Value = serde_json::from_str(&stdout(&toc)).expect("json");
+    let body_rev = toc["read"]["toc"]
+        .as_array()
+        .expect("toc rows")
+        .iter()
+        .find(|r| r["title"] == "Body")
+        .map(|r| r["sec_rev"].clone())
+        .expect("a Body row");
+    assert_eq!(
+        body_rev, read["sections"][0]["sec_rev"],
+        "the toc read and the section read agree on the section",
     );
 }
 

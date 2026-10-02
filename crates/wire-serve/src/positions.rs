@@ -430,29 +430,39 @@ pub(crate) fn to_stored(raw: &str, mounts: &MountSet) -> Result<String, Translat
     Ok(out)
 }
 
+/// A governed stored form the strict decode refused: left as written, and
+/// reported so the read can say so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Untranslated {
+    /// The whole `[label](uri)` span in the scanned text.
+    pub span: Range<usize>,
+    /// Why it does not decode — [`stored::decode`]'s own refusal.
+    pub error: stored::StoredError,
+}
+
 /// Every stored cross-root form in `raw` this machine governs, with the
-/// agent-plane text it reads back to — span order.
+/// agent-plane text it reads back to — span order — and every governed form
+/// the strict decode refused.
 ///
 /// A URI naming a vault this machine does not bind is left verbatim — an
 /// ordinary link to a vault meridian does not govern. A URI naming a bound
-/// vault is the engine's, so a hand-edited one refuses loudly here rather than
-/// resolving to something plausible.
-///
-/// # Errors
-/// [`stored::StoredError`] for a governed URI that is not canonical.
+/// vault that does not decode is left verbatim too, and returned as
+/// [`Untranslated`]: the engine never guesses an address from it, and never
+/// refuses to serve the bytes the page holds.
 pub(crate) fn stored_occupants(
     raw: &str,
     mounts: &MountSet,
-) -> Result<Vec<(Range<usize>, String)>, stored::StoredError> {
+) -> (Vec<(Range<usize>, String)>, Vec<Untranslated>) {
     let nodes = syntax::parse(raw);
     let mask = code_mask(&nodes);
     let mut out = Vec::new();
+    let mut untranslated = Vec::new();
     for (span, label, url) in markdown_links(raw, &mask) {
         if !stored::is_stored_uri(&url) {
             continue;
         }
         // Peek at the vault name before judging the URI: a malformed URI to a
-        // vault we do not govern is not ours to refuse.
+        // vault we do not govern is not ours to judge.
         let parsed = stored::decode(&url);
         let vault = match &parsed {
             Ok(r) => r.vault.clone(),
@@ -461,28 +471,36 @@ pub(crate) fn stored_occupants(
                 None => continue,
             },
         };
-        if mounts.name_of_vault(&vault).is_none() {
+        let Some(name) = mounts.name_of_vault(&vault) else {
             continue;
-        }
-        let parsed = parsed?;
-        let name = mounts
-            .name_of_vault(&parsed.vault)
-            .expect("checked bound just above");
+        };
+        let parsed = match parsed {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                untranslated.push(Untranslated { span, error });
+                continue;
+            }
+        };
         let address = match &parsed.selector {
             Some(sel) => format!("{name}:{}#{sel}", parsed.path),
             None => format!("{name}:{}", parsed.path),
         };
+        let Ok(addr) = Addr::parse(&address) else {
+            untranslated.push(Untranslated {
+                span,
+                error: stored::StoredError::BadPath { found: parsed.path },
+            });
+            continue;
+        };
         let occupant = Occupant {
             span: span.clone(),
-            addr: Addr::parse(&address).map_err(|_| stored::StoredError::BadPath {
-                found: parsed.path.clone(),
-            })?,
+            addr,
             display: Some(label),
             form: Form::Markdown,
         };
         out.push((span, occupant.agent_plane_text(&address)));
     }
-    Ok(out)
+    (out, untranslated)
 }
 
 /// Might this text carry a cross-root position at all? The cheap gate that
@@ -570,15 +588,12 @@ fn governed_vault_guess(url: &str) -> Option<String> {
 }
 
 /// `raw` with every governed stored form read back into its agent-plane
-/// spelling.
-///
-/// # Errors
-/// [`stored::StoredError`] — a governed URI that is not canonical fails loudly
-/// rather than resolving to something plausible.
-pub(crate) fn to_agent_plane(raw: &str, mounts: &MountSet) -> Result<String, stored::StoredError> {
-    let occupants = stored_occupants(raw, mounts)?;
+/// spelling, and the governed forms left as written because they do not
+/// decode ([`stored_occupants`]).
+pub(crate) fn to_agent_plane(raw: &str, mounts: &MountSet) -> (String, Vec<Untranslated>) {
+    let (occupants, untranslated) = stored_occupants(raw, mounts);
     if occupants.is_empty() {
-        return Ok(raw.to_string());
+        return (raw.to_string(), untranslated);
     }
     let mut out = String::with_capacity(raw.len());
     let mut cursor = 0usize;
@@ -588,12 +603,22 @@ pub(crate) fn to_agent_plane(raw: &str, mounts: &MountSet) -> Result<String, sto
         cursor = span.end;
     }
     out.push_str(&raw[cursor..]);
-    Ok(out)
+    (out, untranslated)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The read-back of a text whose every governed form decodes.
+    fn reads_back(raw: &str, mounts: &MountSet) -> String {
+        let (text, untranslated) = to_agent_plane(raw, mounts);
+        assert!(
+            untranslated.is_empty(),
+            "every form decodes: {untranslated:?}"
+        );
+        text
+    }
 
     fn mounts() -> MountSet {
         let sessions = addr::MountName::parse("sessions").expect("a name");
@@ -645,7 +670,7 @@ mod tests {
 
         // And it round-trips to a BARE wikilink, not a labelled one: the
         // display equals the address, so the read plane drops it.
-        let back = to_agent_plane(&out, &aliased_mounts()).expect("reads back");
+        let back = reads_back(&out, &aliased_mounts());
         assert_eq!(
             back, "A ref: [[field-notes-sessions:SCHEMA.md#Design]]\n",
             "the round trip converges on the canonical bare spelling",
@@ -720,7 +745,7 @@ mod tests {
             "[[ambient.md]] and [[ambient.md#H|alias]] are untouched\n",
         ] {
             let stored = to_stored(agent, &mounts).expect("translates");
-            let back = to_agent_plane(&stored, &mounts).expect("reads back");
+            let back = reads_back(&stored, &mounts);
             assert_eq!(
                 back, agent,
                 "round trip must be byte-identical via {stored}"
@@ -735,7 +760,7 @@ mod tests {
             "[the retro](obsidian://open?vault=field-notes-sessions&file=notes.md)",
         );
         assert_eq!(
-            to_agent_plane(&stored, &mounts).expect("reads back"),
+            reads_back(&stored, &mounts),
             "[[sessions:notes.md|the retro]]",
         );
     }
@@ -846,7 +871,7 @@ mod tests {
             "the owned position translated: {at_bearing}",
         );
         assert_eq!(
-            to_agent_plane(&at_bearing, &mounts).expect("reads back"),
+            reads_back(&at_bearing, &mounts),
             "[[sessions:a.md#^claim@fp1.span2.b3.beef]]",
             "the whole fragment survives the round trip byte-identically",
         );
@@ -855,7 +880,7 @@ mod tests {
         let heading = to_stored("[[sessions:a.md#Deploy @ prod]]", &mounts)
             .expect("the design pair's heading translates");
         assert_eq!(
-            to_agent_plane(&heading, &mounts).expect("reads back"),
+            reads_back(&heading, &mounts),
             "[[sessions:a.md#Deploy @ prod]]",
         );
         // Acceptance: the ordinary corpus passes through byte-identically.
@@ -877,20 +902,47 @@ mod tests {
         }
     }
 
-    /// A hand-edited stored URI fails loudly on read-back; a URI naming a vault
-    /// this machine does not govern is left verbatim.
+    /// A hand-edited stored URI to a governed vault is served as written and
+    /// reported, never translated into a guessed address; a URI naming a vault
+    /// this machine does not govern is left verbatim and not reported.
     #[test]
-    fn read_back_refuses_a_governed_hand_edit_and_ignores_a_foreign_vault() {
+    fn read_back_serves_a_governed_hand_edit_as_written_and_ignores_a_foreign_vault() {
         let mounts = mounts();
-        let hand_edited =
-            "[x](obsidian://adv-uri?vault=field-notes-sessions&filepath=a.md&block=claim)";
-        assert!(
-            to_agent_plane(hand_edited, &mounts).is_err(),
-            "a governed URI that is not canonical must refuse, never resolve to \
-             something plausible",
-        );
-        let non_canonical = "[x](obsidian://open?vault=field-notes-sessions&file=a%2Fb.md)";
-        assert!(to_agent_plane(non_canonical, &mounts).is_err());
+        let canonical = "[c](obsidian://open?vault=field-notes-sessions&file=ok.md)";
+        for (hand_edited, param) in [
+            (
+                "[x](obsidian://adv-uri?vault=field-notes-sessions&filepath=a.md&block=claim)",
+                None,
+            ),
+            (
+                "[x](obsidian://open?vault=field-notes-sessions&file=a%2Fb.md)",
+                Some("file"),
+            ),
+            (
+                "[x](obsidian://open?vault=field-notes-sessions&file=year=2026/a.md)",
+                Some("file"),
+            ),
+        ] {
+            let page = format!("{hand_edited} and {canonical}\n");
+            let (text, untranslated) = to_agent_plane(&page, &mounts);
+            assert_eq!(
+                text,
+                format!("{hand_edited} and [[sessions:ok.md|c]]\n"),
+                "the hand edit stays byte-identical; its canonical neighbour still translates",
+            );
+            assert_eq!(untranslated.len(), 1, "{untranslated:?}");
+            assert_eq!(&page[untranslated[0].span.clone()], hand_edited);
+            if let Some(param) = param {
+                assert!(
+                    matches!(
+                        &untranslated[0].error,
+                        stored::StoredError::NonCanonicalEncoding { param: p, .. } if p == param
+                    ),
+                    "{:?}",
+                    untranslated[0].error,
+                );
+            }
+        }
 
         for foreign in [
             "[x](obsidian://open?vault=someone-else&file=a.md)",
@@ -898,9 +950,9 @@ mod tests {
             "[x](obsidian://open?vault=&file=)",
         ] {
             assert_eq!(
-                to_agent_plane(foreign, &mounts).expect("a foreign vault is not ours to judge"),
-                foreign,
-                "a link to a vault this machine does not bind is left verbatim",
+                to_agent_plane(foreign, &mounts),
+                (foreign.to_string(), Vec::new()),
+                "a link to a vault this machine does not bind is left verbatim, unreported",
             );
         }
     }

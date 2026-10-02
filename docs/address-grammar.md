@@ -476,7 +476,7 @@ form (agent plane), never the URI"*.
 | P6 | a lock `objects:` key | **no such position** (see below) | — |
 | P7 | an address the transform cannot attribute to one payload | **refused** | `bad_request`, the `strip_fp_candidate` shape |
 | P8 | an `@fp` token reaching a stored URI or a display field | **refused** | criterion-4 machinery, reused at the candidate |
-| P9 | a hand-edited, malformed `obsidian://` URI on read-back | **fails loudly**, never guesses | reverse-translation refusal |
+| P9 | a hand-edited, malformed `obsidian://` URI on read-back | **served as written and flagged in the answer header**; never translated, never guessed | the read's `notice` names the file line and the decode error; the call is not refused |
 
 **Acceptance half:** P3 and P4 must translate, and the agent-plane form must round-trip through
 the stored form byte-identically; since an identity function round-trips perfectly and ships
@@ -503,7 +503,7 @@ Every row is answered; rows 10–13 name their real owner.
 | 6 | one root mounted at two paths | § 3 INV-2, § 8 B-1/B-3, rows T2/M3 | parse fails loud **after canonicalization**; a symlink cannot smuggle it past |
 | 7 | a root without a `vault:` leg (a plain folder) | § 10.1 | **selectors are legal on every mounted root**; no kind taxonomy, no opaque-root refusal |
 | 8 | a cross-root pin whose target root is later unmounted | § 6.2 R-3 | **grey, never red** |
-| 9 | a stored `obsidian://` URI hand-edited by a human | § 9.4 row P9 | read-back **fails loudly**, never guesses |
+| 9 | a stored `obsidian://` URI hand-edited by a human | § 9.4 row P9 | read-back **serves it as written and flags it in the answer header**; never translated, never guessed |
 | 10 | `MERIDIAN.md` pins a root it declares; that root drifts | not this document's | **Implementation owns it** (mount-as-claim, `meridian-md-schema.md` § 5.3; the fence's only bypass is an edit to `~/MERIDIAN.md`) |
 | 11 | hook placed, `mrd` later uninstalled | not this document's | **Implementation owns it**: fail closed with teaching, `--no-verify` named in the message |
 | 12 | two worktrees, one hook dir, different meridian workspaces | not this document's | **Implementation owns it** (D11: placed per git common dir; workspace-root ≠ worktree-top-level is a stated refusal in `mrd skill hook`'s document) |
