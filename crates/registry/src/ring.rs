@@ -169,9 +169,10 @@ impl WorkspaceRing {
 
     /// Record an emitted frame (detector records its own inside reconcile).
     ///
-    /// Both remaining callers hold the workspace flock: the run plane's sink
-    /// (`delta_sink`) under the executor's, and the write choke-point through
-    /// `SeqSink::committed` under its own. [`RootRing::allocate_seq`]'s
+    /// Every caller holds the workspace flock: [`DoorPlane`]'s `committed` —
+    /// a wire door under its own, the run plane's sink (`delta_sink`) under
+    /// the executor's — and this ring's own `SeqSink::committed` (the run
+    /// plane's births, under the create door's). [`RootRing::allocate_seq`]'s
     /// reserve remains the floor for any producer that unwinds between
     /// allocation and this call: its number stays burned, never re-issued.
     pub fn advance(&self, frame: DeltaFrame) {
@@ -422,56 +423,15 @@ impl WorkspaceRing {
             eprintln!("registry: commit baseline follow: {e:?}");
         }
     }
-
-    /// The run plane's door point ([`Self::settle`]): its executor folds
-    /// `root_before` itself, so the memo is observed only when a primed
-    /// baseline is behind that root — a run on a workspace nobody watches
-    /// pays nothing.
-    pub(crate) fn settle_run(
-        &self,
-        registry: &crate::Registry,
-        ws_root: &fs::WorkspaceRoot,
-        root_before: &Root,
-    ) {
-        let behind = self
-            .state()
-            .watch
-            .root()
-            .is_some_and(|baseline| baseline != root_before);
-        if behind {
-            let cache = registry.domain_cache(&ws_root.0);
-            if let Err(e) = DoorPlane::new(registry, ws_root, self, &cache).observe() {
-                eprintln!("registry: run door observation: {e}");
-            }
-        }
-    }
-
-    /// The run plane's commit point ([`Self::follow`]): the executor commits
-    /// through its own seam, not the memo's overlay, so the memo is observed
-    /// after the commit — only when the baseline sits at the frame's
-    /// `root_before`.
-    pub(crate) fn follow_run(
-        &self,
-        registry: &crate::Registry,
-        ws_root: &fs::WorkspaceRoot,
-        frame: &DeltaFrame,
-    ) {
-        if self.state().watch.root() != Some(&frame.delta.root_before) {
-            return;
-        }
-        let cache = registry.domain_cache(&ws_root.0);
-        match registry.door_observation(&ws_root.0, &cache, crate::registry::DOOR_COOKIE_TIMEOUT) {
-            Ok(observed) => self.follow(ws_root, &cache, frame, &Root(observed.0)),
-            Err(e) => eprintln!("registry: run commit observation: {e}"),
-        }
-    }
 }
 
 /// One write door's hold on its workspace's delta plane: the ring it
 /// numbers on and the memo it observes through, both used under the door's
 /// flock. It is the door's [`SeqSink`](wire_serve::seq::SeqSink) and the
 /// body of its observation closure, so the baseline law holds at the door's
-/// two points ([`WorkspaceRing::settle`], [`WorkspaceRing::follow`]).
+/// two points ([`WorkspaceRing::settle`], [`WorkspaceRing::follow`]). The
+/// wire doors and the run plane's delta-mint bracket (`delta_sink`) both
+/// hold one.
 #[derive(Debug)]
 pub(crate) struct DoorPlane<'a> {
     registry: &'a crate::Registry,
