@@ -468,8 +468,8 @@ fn a_non_canonical_file_parameter_reads_at_rc_0_on_both_faces() {
     let read = &section["read"];
     assert_eq!(
         read["sections"][0]["content"].as_str().expect("content"),
-        format!("## Body\n\nsee {link} here\n\n"),
-        "the raw plane is the bytes on disk",
+        format!("\nsee {link} here\n\n"),
+        "the raw plane is the bytes on disk (the heading-excluded content span)",
     );
     let rendered = read["rendered_text"].as_str().expect("rendered_text");
     assert!(
