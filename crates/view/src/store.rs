@@ -653,10 +653,16 @@ pub struct ColMeta {
 /// # Errors
 /// The error is the `DuckDB` message, extended with the OQ1 teaching when the
 /// statement was DML against a latest view (`Binder Error: Can only update
-/// base table` — the remedy names the hist lane).
+/// base table` — the remedy names the hist lane), and with the column lists
+/// of the face relations involved when it names a column that does not exist
+/// ([`column_lists`]).
 pub fn run_query(conn: &Connection, query: &str) -> Result<(Vec<ColMeta>, Vec<Vec<Json>>), String> {
-    let mut stmt = conn.prepare(query).map_err(|e| teach(&e.to_string()))?;
-    let mut rows = stmt.query([]).map_err(|e| teach(&e.to_string()))?;
+    let refuse = |e: duckdb::Error| {
+        let error = e.to_string();
+        format!("{}{}", teach(&error), column_lists(conn, query, &error))
+    };
+    let mut stmt = conn.prepare(query).map_err(refuse)?;
+    let mut rows = stmt.query([]).map_err(refuse)?;
 
     // Column metadata is available once the query has executed (`query` binds +
     // executes); collect owned copies before stepping the rows. The tz flags
@@ -791,6 +797,136 @@ fn teach(error: &str) -> String {
         return format!("{out}\n`{name}` was renamed to `{new}` — query `{new}` instead.");
     }
     out
+}
+
+/// The schemas that make up the face: the latest layer and its history.
+const FACE_SCHEMAS: &[&str] = &["main", "hist"];
+
+/// The lines a column miss adds after `DuckDB`'s own words: one
+/// `<relation> columns: a, b, c` per face relation the error names or the
+/// statement mentions ([`first_mention`]), the named one first and the rest in
+/// statement order, each listed once. `DuckDB`'s
+/// Did-you-mean offers one or two near names (`about` on `record` offers only
+/// `status`), so a caller who guessed a column had no way to learn the real
+/// ones short of a schema probe.
+///
+/// The lists come from the live catalog of `conn` at the moment of the error,
+/// never from a constant, so a schema change cannot leave them stale. A
+/// relation outside the face (a CTE, a table function, a caller's temp table)
+/// adds nothing; any other error, or a catalog read that fails, adds nothing.
+fn column_lists(conn: &Connection, query: &str, error: &str) -> String {
+    use std::fmt::Write as _;
+
+    if !is_column_miss(error) {
+        return String::new();
+    }
+    let Ok(face) = face_columns(conn) else {
+        return String::new();
+    };
+    let text = query.to_ascii_lowercase();
+    let mut read: Vec<(usize, &(String, String))> = face
+        .keys()
+        .filter_map(|key| first_mention(&text, key).map(|at| (at, key)))
+        .collect();
+    read.sort();
+    let mut wanted: Vec<&(String, String)> = Vec::new();
+    if let Some(name) = error_relation(error) {
+        // The error spells the relation as the statement bound it: an alias
+        // names nothing here, and a bare name read from `hist` is that one.
+        let name = name.to_lowercase();
+        let named = read
+            .iter()
+            .map(|(_, key)| *key)
+            .find(|(_, n)| *n == name)
+            .or_else(|| {
+                face.get_key_value(&("main".to_owned(), name))
+                    .map(|(k, _)| k)
+            });
+        wanted.extend(named);
+    }
+    wanted.extend(read.into_iter().map(|(_, key)| key));
+
+    let mut seen = BTreeSet::new();
+    let mut out = String::new();
+    for key in wanted {
+        if !seen.insert(key) {
+            continue;
+        }
+        let (schema, name) = key;
+        let columns = &face[key];
+        let label = if schema == "main" {
+            name.clone()
+        } else {
+            format!("{schema}.{name}")
+        };
+        let _ = write!(out, "\n{label} columns: {}", columns.join(", "));
+    }
+    out
+}
+
+/// Whether `DuckDB` refused a column that does not exist. Its two spellings:
+/// an unqualified reference (`Referenced column "about" not found in FROM
+/// clause!`) and a qualified one (`Table "record" does not have a column
+/// named "about"`, `Values list "r" …` through an alias, `… with name …` for
+/// an INSERT column list).
+fn is_column_miss(error: &str) -> bool {
+    error.contains("Binder Error")
+        && ((error.contains("Referenced column \"") && error.contains("\" not found"))
+            || error.contains("does not have a column"))
+}
+
+/// The relation a qualified column miss names: `Table "x"` or `Values
+/// list "x"` before `does not have a column`.
+fn error_relation(error: &str) -> Option<&str> {
+    let head = error.split_once(" does not have a column")?.0;
+    let rest = ["Table \"", "Values list \""]
+        .iter()
+        .find_map(|p| head.rsplit_once(p).map(|(_, r)| r))?;
+    rest.strip_suffix('"')
+}
+
+/// Every face relation's columns in catalog order, keyed by
+/// `(schema, relation)`, read from `conn` now.
+fn face_columns(conn: &Connection) -> duckdb::Result<BTreeMap<(String, String), Vec<String>>> {
+    let schemas = FACE_SCHEMAS
+        .iter()
+        .map(|s| format!("'{s}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT schema_name, table_name, column_name FROM duckdb_columns() \
+         WHERE database_name = current_database() AND NOT internal \
+         AND schema_name IN ({schemas}) \
+         ORDER BY schema_name, table_name, column_index"
+    ))?;
+    let mut rows = stmt.query([])?;
+    let mut face: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    while let Some(row) = rows.next()? {
+        let schema: String = row.get(0)?;
+        let table: String = row.get(1)?;
+        let column: String = row.get(2)?;
+        face.entry((schema, table.to_lowercase()))
+            .or_default()
+            .push(column);
+    }
+    Ok(face)
+}
+
+/// Where `text` (a statement, ASCII-lowercased) first names the face
+/// relation `key` as a whole word: a `hist` relation spelled `hist.<name>`, a
+/// `main` one by any other spelling. Not a parser — a name that appears as a
+/// column or inside a literal counts too, which costs one extra list line.
+fn first_mention(text: &str, (schema, name): &(String, String)) -> Option<usize> {
+    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    text.match_indices(name.as_str())
+        .map(|(at, _)| at)
+        .find(|&at| {
+            let before = &text[..at];
+            let after = &text[at + name.len()..];
+            !before.chars().next_back().is_some_and(word)
+                && !after.chars().next().is_some_and(word)
+                && before.ends_with("hist.") == (schema == "hist")
+        })
 }
 
 /// The fingerprint-pinned append-only cache file, open read-write.
@@ -3572,5 +3708,131 @@ mod config_scope_tests {
             restore_global_config(&conn, &clean).is_empty(),
             "an undisturbed instance restores clean"
         );
+    }
+}
+
+#[cfg(test)]
+mod column_miss_tests {
+    use super::tests::{fixture_v1, sync_ambient, tmp_store};
+    use super::*;
+
+    fn store() -> (tempfile::TempDir, SqlStore) {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        (dir, store)
+    }
+
+    /// The refusal as it was before the column arm: `DuckDB`'s words through
+    /// [`teach`] alone.
+    fn taught_alone(store: &SqlStore, query: &str) -> String {
+        let conn = store.connection();
+        let error = match conn.prepare(query) {
+            Err(e) => e,
+            Ok(mut stmt) => stmt.query([]).map(|_| ()).expect_err("the probe refuses"),
+        };
+        teach(&error.to_string())
+    }
+
+    /// A relation's columns through `information_schema` — a catalog route
+    /// independent of the one the refusal reads.
+    fn listed(store: &SqlStore, schema: &str, relation: &str) -> String {
+        store
+            .connection()
+            .query_row(
+                "SELECT string_agg(column_name, ', ' ORDER BY ordinal_position) \
+                 FROM information_schema.columns \
+                 WHERE table_catalog = current_database() \
+                   AND table_schema = ? AND table_name = ?",
+                [schema, relation],
+                |r| r.get::<_, String>(0),
+            )
+            .expect("the relation is in the catalog")
+    }
+
+    /// The most-guessed miss: `about` on `record`, where `DuckDB` offers only
+    /// `status`. Its words stay first and whole; the real columns follow.
+    #[test]
+    fn a_column_miss_on_record_lists_its_columns() {
+        let (_dir, store) = store();
+        let query = "SELECT about FROM record";
+        let got = store
+            .query(query)
+            .expect("lane")
+            .expect_err("about is no column");
+        let columns = listed(&store, "main", "record");
+        assert!(
+            columns.contains("path"),
+            "the catalog route works: {columns}"
+        );
+        assert_eq!(
+            got,
+            format!("{}\nrecord columns: {columns}", taught_alone(&store, query))
+        );
+    }
+
+    /// `body` guessed as a column of `main.body` (it is `text`).
+    #[test]
+    fn a_column_miss_on_main_body_lists_its_columns() {
+        let (_dir, store) = store();
+        // Through an alias: a bare `body` binds the whole row of `body`.
+        let query = "SELECT b.body FROM main.body b";
+        let got = store
+            .query(query)
+            .expect("lane")
+            .expect_err("body is no column");
+        let columns = listed(&store, "main", "body");
+        assert!(
+            columns.contains("text"),
+            "the catalog route works: {columns}"
+        );
+        assert_eq!(
+            got,
+            format!("{}\nbody columns: {columns}", taught_alone(&store, query))
+        );
+    }
+
+    /// A miss in a join of two face relations lists both, each once, though
+    /// the statement names each more than once; the relation the error names
+    /// comes first.
+    #[test]
+    fn a_column_miss_in_a_join_lists_both_relations_once() {
+        let (_dir, store) = store();
+        let query = "SELECT doc.bytes, record.about FROM doc JOIN record ON record.path = doc.path";
+        let got = store
+            .query(query)
+            .expect("lane")
+            .expect_err("about is no column");
+        assert!(
+            got.contains("\"record\" does not have a column"),
+            "a qualified miss: {got}"
+        );
+        assert_eq!(
+            got,
+            format!(
+                "{}\nrecord columns: {}\ndoc columns: {}",
+                taught_alone(&store, query),
+                listed(&store, "main", "record"),
+                listed(&store, "main", "doc"),
+            )
+        );
+    }
+
+    /// Every other refusal is untouched, byte for byte: a syntax error, a
+    /// view-DML refusal, and a column miss on a relation outside the face.
+    #[test]
+    fn other_refusals_are_unchanged() {
+        let (_dir, store) = store();
+        for query in [
+            "SELEC about FROM record",
+            "DELETE FROM record",
+            "WITH t AS (SELECT 1 AS a) SELECT b FROM t",
+        ] {
+            let got = store
+                .query(query)
+                .expect("lane")
+                .expect_err("the probe refuses");
+            assert_eq!(got, taught_alone(&store, query), "{query}");
+        }
     }
 }
