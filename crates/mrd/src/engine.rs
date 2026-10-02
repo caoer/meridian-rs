@@ -1013,10 +1013,12 @@ fn extras(error: &ErrorBody) -> String {
                 wire::ReferrerKind::Wikilink => "wikilink",
                 wire::ReferrerKind::Embed => "embed",
                 wire::ReferrerKind::Pin => "pin",
+                wire::ReferrerKind::Frontmatter => "frontmatter",
             };
+            let key = r.key.as_deref().map_or(String::new(), |k| format!(" {k}"));
             let _ = write!(
                 out,
-                "\n    {}  {kind}  {} edge{}",
+                "\n    {}  {kind}{key}  {} edge{}",
                 r.path,
                 r.count,
                 if r.count == 1 { "" } else { "s" }
@@ -1274,16 +1276,25 @@ mod tests {
             Referrer {
                 path: "notes/fan.md".to_owned(),
                 kind: ReferrerKind::Wikilink,
+                key: None,
                 count: 2,
             },
             Referrer {
                 path: "notes/gallery.md".to_owned(),
                 kind: ReferrerKind::Embed,
+                key: None,
                 count: 1,
             },
             Referrer {
                 path: "notes/lock-holder.md".to_owned(),
                 kind: ReferrerKind::Pin,
+                key: None,
+                count: 1,
+            },
+            Referrer {
+                path: "notes/source-holder.md".to_owned(),
+                kind: ReferrerKind::Frontmatter,
+                key: Some("source".to_owned()),
                 count: 1,
             },
         ]);
@@ -1303,6 +1314,10 @@ mod tests {
         assert!(
             text.contains("notes/lock-holder.md  pin  1 edge"),
             "the ambient pin plane renders beside the link kinds:\n{text}"
+        );
+        assert!(
+            text.contains("notes/source-holder.md  frontmatter source  1 edge"),
+            "a frontmatter row names the key beside its kind:\n{text}"
         );
     }
 

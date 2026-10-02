@@ -2715,11 +2715,12 @@ pub(crate) fn referential_files(
 /// embeds via [`query::backlinks`] (link-plane resolution, walk stage 1),
 /// ambient `meridian-lock` pins via [`query::lock_pin_referrers`] (the walk
 /// plane's Down predicate at corpus grain; cross-root inbound is that plane's
-/// stated limit, § A.3). Self-edges are excluded: a record cannot hold itself
-/// alive.
+/// stated limit, § A.3), and wikilinks inside frontmatter values via
+/// [`query::frontmatter_referrers`] (the move door's scanner and call, one row
+/// per key). Self-edges are excluded: a record cannot hold itself alive.
 fn inbound_referrers(target: &str, files: fs::DomainFiles) -> Vec<Referrer> {
     let (index, docs, _unserved) = fs::build_corpus(files);
-    let mut counts: BTreeMap<(String, ReferrerKind), u64> = BTreeMap::new();
+    let mut counts: BTreeMap<(String, ReferrerKind, Option<String>), u64> = BTreeMap::new();
 
     for b in query::backlinks(&index, &docs, target) {
         if b.path == target {
@@ -2729,19 +2730,33 @@ fn inbound_referrers(target: &str, files: fs::DomainFiles) -> Vec<Referrer> {
             query::BacklinkKind::Wikilink => ReferrerKind::Wikilink,
             query::BacklinkKind::Embed => ReferrerKind::Embed,
         };
-        *counts.entry((b.path, kind)).or_insert(0) += 1;
+        *counts.entry((b.path, kind, None)).or_insert(0) += 1;
     }
 
     for src in query::lock_pin_referrers(&index, &docs, target) {
         if src == target {
             continue;
         }
-        *counts.entry((src, ReferrerKind::Pin)).or_insert(0) += 1;
+        *counts.entry((src, ReferrerKind::Pin, None)).or_insert(0) += 1;
+    }
+
+    for (src, key) in query::frontmatter_referrers(&index, &docs, target) {
+        if src == target {
+            continue;
+        }
+        *counts
+            .entry((src, ReferrerKind::Frontmatter, Some(key)))
+            .or_insert(0) += 1;
     }
 
     counts
         .into_iter()
-        .map(|((path, kind), count)| Referrer { path, kind, count })
+        .map(|((path, kind, key), count)| Referrer {
+            path,
+            kind,
+            key,
+            count,
+        })
         .collect()
 }
 
@@ -2761,7 +2776,8 @@ fn remove_refused(path: &Path, referrers: Vec<Referrer>) -> Box<ErrorBody> {
     e.message = Some(format!(
         "refused: {} still has {edges} inbound reference{} from {files} file{} — removing it \
          would strand them dangling. The referrers list names each referring file, its edge \
-         kind (wikilink / embed / pin), and its edge count: unlink or retarget those edges \
+         kind (wikilink / embed / pin / frontmatter, the last with the key whose value holds \
+         the link), and its edge count: unlink or retarget those edges \
          (re-read each referring file first, then edit it through the write door), then resend \
          the remove. There is no force on this door.",
         path.0,
@@ -7234,6 +7250,126 @@ mod guarded_create_remove {
                 referrers[0].count
             ),
             ("notes/pinner.md", ReferrerKind::Pin, 1)
+        );
+    }
+
+    /// § A.3 referential guard, frontmatter arm: a page citing the record only
+    /// in a frontmatter value blocks with kind `frontmatter` and the key — the
+    /// links the move door rewrites are the links that hold a record alive.
+    /// With the citation gone, the same remove lands.
+    #[test]
+    fn remove_refuses_while_a_frontmatter_value_cites_the_record() {
+        let (dir, root) = ws();
+        let born = create(
+            &root,
+            None,
+            &create_args("notes/victim.md", "# Victim\n"),
+            &[],
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("notes/citer.md"),
+            "---\nsource: \"[[victim]]\"\n---\n# Citer\n",
+        )
+        .unwrap();
+
+        let err = remove(
+            &root,
+            None,
+            &remove_args("notes/victim.md", &born.file_rev_after.0),
+            &[],
+        )
+        .expect_err("a record cited in frontmatter must not die");
+        assert_eq!(err.code, ErrorCode::RemoveRefused);
+        let referrers = err.referrers.as_deref().unwrap();
+        assert_eq!(referrers.len(), 1, "one row: {referrers:?}");
+        assert_eq!(
+            (
+                referrers[0].path.as_str(),
+                referrers[0].kind,
+                referrers[0].key.as_deref(),
+                referrers[0].count
+            ),
+            (
+                "notes/citer.md",
+                ReferrerKind::Frontmatter,
+                Some("source"),
+                1
+            )
+        );
+
+        std::fs::write(
+            dir.path().join("notes/citer.md"),
+            "---\nsource: \"plain text\"\n---\n# Citer\n",
+        )
+        .unwrap();
+        remove(
+            &root,
+            None,
+            &remove_args("notes/victim.md", &born.file_rev_after.0),
+            &[],
+        )
+        .expect("with the citation gone the record is free to die");
+        assert!(!dir.path().join("notes/victim.md").exists());
+    }
+
+    /// The frontmatter arm reads every value form the scanner reads — a list
+    /// and a comma-joined string count, one row per key — and only links that
+    /// name a page in this corpus: a same-page anchor and a `root:` target
+    /// are not referrers.
+    #[test]
+    fn remove_counts_frontmatter_lists_and_skips_anchors_and_rooted_targets() {
+        let (dir, root) = ws();
+        let born = create(
+            &root,
+            None,
+            &create_args("notes/victim.md", "# Victim\n"),
+            &[],
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("notes/citer.md"),
+            "---\nrelated: [\"[[victim]]\", \"[[elsewhere]]\"]\n\
+             see-also: \"[[victim]], [[victim|the victim]]\"\n---\n# Citer\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("notes/bystander.md"),
+            "---\nanchor: \"[[#^x]]\"\nremote: \"[[other:notes/victim]]\"\n---\n# Bystander\n",
+        )
+        .unwrap();
+
+        let err = remove(
+            &root,
+            None,
+            &remove_args("notes/victim.md", &born.file_rev_after.0),
+            &[],
+        )
+        .expect_err("a record cited in frontmatter lists must not die");
+        let rows: Vec<_> = err
+            .referrers
+            .as_deref()
+            .unwrap()
+            .iter()
+            .map(|r| (r.path.as_str(), r.kind, r.key.as_deref(), r.count))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "notes/citer.md",
+                    ReferrerKind::Frontmatter,
+                    Some("related"),
+                    1
+                ),
+                (
+                    "notes/citer.md",
+                    ReferrerKind::Frontmatter,
+                    Some("see-also"),
+                    2
+                ),
+            ],
+            "the anchor and the rooted target name no referrer"
         );
     }
 
