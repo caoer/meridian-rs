@@ -576,7 +576,7 @@ pub(crate) fn machine_mounts() -> MountSet {
 ///
 /// Lexical and deliberately forgiving: it answers whose vault this is, not
 /// whether the URI is canonical. The strict [`stored::decode`] answers the
-/// second and is what the caller propagates.
+/// second; [`stored_occupants`] records its refusal as [`Untranslated`].
 fn governed_vault_guess(url: &str) -> Option<String> {
     let rest = url.strip_prefix(stored::OBSIDIAN_SCHEME)?;
     let (_, query) = rest.split_once('?')?;
