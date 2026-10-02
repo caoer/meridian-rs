@@ -173,11 +173,34 @@ impl RootRing {
         self.entries.front().map(|f| f.delta.seq)
     }
 
-    /// The tip's `root_after` (`None`: no batch this epoch) — the watcher's
-    /// internal-commit sync check.
+    /// The tip's `root_after` (`None`: no batch this epoch).
     #[must_use]
     pub fn tip_root(&self) -> Option<&Root> {
         self.entries.back().map(|f| &f.delta.root_after)
+    }
+
+    /// Do the retained frames chain, unbroken, from `from` to a tip at
+    /// `to`? The watcher's internal-commit check: a baseline may move to the
+    /// disk root silently only when frames already told every step between
+    /// them. A tip at `to` reached from anywhere else is not enough — a
+    /// change between the baseline and the first of those frames was never
+    /// told.
+    #[must_use]
+    pub fn chains(&self, from: &Root, to: &Root) -> bool {
+        if self.tip_root() != Some(to) {
+            return false;
+        }
+        let mut at = to;
+        for frame in self.entries.iter().rev() {
+            if frame.delta.root_after != *at {
+                return false;
+            }
+            at = &frame.delta.root_before;
+            if at == from {
+                return true;
+            }
+        }
+        false
     }
 
     /// Frames with `delta.seq > after`, emission order — the push path's

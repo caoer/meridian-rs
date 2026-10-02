@@ -166,6 +166,12 @@ impl ApplyRequest<'_> {
 /// the plane stays free of the wire graph; the one production implementor is
 /// the registry's ring sink.
 pub trait DeltaSink: std::fmt::Debug {
+    /// The workspace root a batch is about to advance from, folded under the
+    /// caller's workspace flock before any byte lands — where the host tells
+    /// an external change still pending against its watcher, ahead of the
+    /// batch's own frame. Infallible by contract, as [`Self::committed`].
+    fn opening(&self, root: &fs::WorkspaceRoot, root_before: &MerkleRoot);
+
     /// One committed batch's facts. Called after `fs::apply_batch` returned,
     /// with the caller's workspace flock still held. Infallible by contract:
     /// a mint failure is the host's to degrade (its detector will still
@@ -1442,14 +1448,15 @@ fn acquire_write_flock(root: &fs::WorkspaceRoot) -> Result<fs::WriteLock, ExecEr
 
 /// The frame mint's pre-commit facts (step 7b): the receipt file's before
 /// tense and the workspace root the batch advances from, both under the
-/// flock. `None` when no sink is armed — the CLI pays no fold.
+/// flock, offered to the sink before anything lands. `None` when no sink is
+/// armed — the CLI pays no fold.
 fn delta_pre_facts(
     root: &fs::WorkspaceRoot,
     req: &ApplyRequest<'_>,
 ) -> Result<Option<(Option<Document>, MerkleRoot)>, ExecError> {
-    if req.delta.is_none() {
+    let Some(sink) = req.delta else {
         return Ok(None);
-    }
+    };
     let receipt_before = match &req.receipt {
         Some(addr) => load_receipt_before(root, &addr.path)?,
         None => None,
@@ -1459,6 +1466,7 @@ fn delta_pre_facts(
         .map_err(|e| ExecError::Io {
             reason: format!("pre-commit root fold: {e}"),
         })?;
+    sink.opening(root, &root_before);
     Ok(Some((receipt_before, root_before)))
 }
 

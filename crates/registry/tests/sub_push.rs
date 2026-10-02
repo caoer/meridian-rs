@@ -1081,3 +1081,160 @@ fn an_unsubscribed_workspace_is_still_reaped() {
     );
     server.shutdown();
 }
+
+// ---------------------------------------------------------------------------
+// The watcher baseline keeps step with the ring across a wire commit.
+//
+// One external edit and one wire commit landing inside one detect cadence, in
+// three orders. Each must leave ONE contiguous chain that tells both changes,
+// each once, each under its own producer. No sleeps: the pair lands inside the
+// cadence by construction.
+// ---------------------------------------------------------------------------
+
+/// A guardless wire commit on `plan.md` (appends under `# Notes`).
+fn splice_notes(ops: &mut Conn, text: &str) -> Value {
+    ops.call(&json!({
+        "id": 7, "op": "splice", "path": "plan.md", "force": true,
+        "actor": "agent:writer", "now": "2026-10-02T12:00:00Z",
+        "edits": [{
+            "target": {"hpath": [{"h": "Notes"}]},
+            "edit": {"put": {"at": "end", "text": text}},
+        }],
+    }))
+}
+
+fn paths_of(frame: &Value) -> Vec<String> {
+    frame["delta"]["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .filter_map(|f| f["path"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// External edit FIRST, wire commit right behind it: the edit keeps its own
+/// actor-absent frame, numbered before the commit's, and the chain joins.
+///
+/// On the base: the detect cycle after the commit finds disk == ring tip and
+/// syncs silently — the external edit is never told and its hooks never fire.
+#[test]
+fn baseline_an_external_edit_then_a_wire_commit_are_both_told_in_one_chain() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(
+        &tmp.path().join("ws"),
+        &[("plan.md", PLAN), ("other.md", "# Other\n\nseed\n")],
+    );
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut ops = Conn::open(server.socket_path());
+    ops.hello(&ws);
+    let mut sub = Conn::open(server.socket_path());
+    sub.hello(&ws);
+    let ack = sub.sub();
+    assert_eq!(ack["ok"], json!(true), "{ack}");
+    let mut prev = ack["body"]["root"].clone();
+
+    for round in 0..5 {
+        external_edit(&ws, "other.md", &format!("# Other\n\nexternal {round}\n"));
+        let put = splice_notes(&mut ops, &format!("wire {round}\n"));
+        assert_eq!(put["ok"], json!(true), "round {round}: {put}");
+        let mut told_other = false;
+        loop {
+            let frame = sub
+                .next_frame()
+                .unwrap_or_else(|| panic!("round {round}: the commit's frame arrives"));
+            assert_eq!(
+                frame["delta"]["root_before"], prev,
+                "round {round}: each frame chains onto the previous one: {frame}"
+            );
+            prev = frame["delta"]["root_after"].clone();
+            if frame["delta"].get("actor").is_none() {
+                assert_eq!(paths_of(&frame), ["other.md"], "round {round}: {frame}");
+                told_other = true;
+            } else {
+                assert_eq!(paths_of(&frame), ["plan.md"], "round {round}: {frame}");
+                break;
+            }
+        }
+        assert!(
+            told_other,
+            "round {round}: the external edit has its own frame before the commit's"
+        );
+    }
+    server.shutdown();
+}
+
+/// Wire commit FIRST, then bytes restored externally to what they were at the
+/// subscribe baseline: a change from the committed world, so it is told.
+///
+/// On the base: disk == the watcher's stale baseline, so nothing is ever told
+/// and the ring tip names a root the disk no longer has.
+#[test]
+fn baseline_bytes_restored_externally_after_a_wire_commit_are_told() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp.path().join("ws"), &[("plan.md", PLAN)]);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut ops = Conn::open(server.socket_path());
+    ops.hello(&ws);
+    let mut sub = Conn::open(server.socket_path());
+    sub.hello(&ws);
+    let ack = sub.sub();
+    assert_eq!(ack["ok"], json!(true), "{ack}");
+
+    let put = splice_notes(&mut ops, "wire\n");
+    assert_eq!(put["ok"], json!(true), "{put}");
+    let commit = sub.next_frame().expect("the commit's frame arrives");
+    assert_eq!(commit["delta"]["root_before"], ack["body"]["root"]);
+
+    external_edit(&ws, "plan.md", PLAN);
+    let restore = sub
+        .next_frame()
+        .expect("restoring the bytes is a change from the committed world");
+    assert!(restore["delta"].get("actor").is_none(), "{restore}");
+    assert_eq!(
+        restore["delta"]["root_before"], commit["delta"]["root_after"],
+        "{restore}"
+    );
+    assert_eq!(
+        restore["delta"]["root_after"], ack["body"]["root"],
+        "{restore}"
+    );
+    server.shutdown();
+}
+
+/// Wire commit FIRST, then an external edit to a different file: the external
+/// frame names its own file only and chains onto the commit's frame.
+///
+/// On the base: the frame is classified against the pre-commit baseline, so it
+/// re-tells the commit's file with no actor and breaks the chain.
+#[test]
+fn baseline_an_external_edit_after_a_wire_commit_names_only_its_own_file() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(
+        &tmp.path().join("ws"),
+        &[("plan.md", PLAN), ("other.md", "# Other\n\nseed\n")],
+    );
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut ops = Conn::open(server.socket_path());
+    ops.hello(&ws);
+    let mut sub = Conn::open(server.socket_path());
+    sub.hello(&ws);
+    assert_eq!(sub.sub()["ok"], json!(true));
+
+    for round in 0..5 {
+        let put = splice_notes(&mut ops, &format!("wire {round}\n"));
+        assert_eq!(put["ok"], json!(true), "round {round}: {put}");
+        let commit = sub.next_frame().expect("the commit's frame arrives");
+        external_edit(&ws, "other.md", &format!("# Other\n\nexternal {round}\n"));
+        let external = sub.next_frame().expect("the external edit is pushed");
+        assert_eq!(
+            paths_of(&external),
+            ["other.md"],
+            "round {round}: {external}"
+        );
+        assert_eq!(
+            external["delta"]["root_before"], commit["delta"]["root_after"],
+            "round {round}: {external}"
+        );
+    }
+    server.shutdown();
+}

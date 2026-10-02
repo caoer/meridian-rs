@@ -2,8 +2,9 @@
 //! `WatchState` tracks the world at ring tip; each reconcile is three-way:
 //!
 //! - snapshot root == watch root → nothing;
-//! - snapshot root == ring tip `root_after` → internal: sync silently
-//!   (`commit_batch` already emitted);
+//! - the ring's frames chain from the watch root to a tip at the snapshot
+//!   root ([`RootRing::chains`]) → internal: sync silently (the commits
+//!   already told every step);
 //! - else → external: one change set = one root advance = one Delta;
 //!   `actor`/`now` absent (§7.1); `seq` at detection; one production constructor.
 //!
@@ -30,11 +31,14 @@
 //! (`fs::build_corpus`'s unserved slot is the corpus twin of the degraded
 //! entry).
 //!
-//! **Stated degrade — line-boundary reconcile only** (the deleted sidecar's
-//! mode; no shipping driver runs it): an external write in the same window as
-//! an internal commit can break ring-chain contiguity → `root_unknown` resync
-//! (§7.3: re-derive, never wrong data). The registry detector snapshots under
-//! the write flock, never mid-landing.
+//! **The baseline follows the ring.** The registry keeps the watch root equal
+//! to the ring tip whenever a commit releases the write flock: a write door
+//! reconciles before its bytes land, so a pending external change is told in
+//! its own frame ahead of the commit's, and the recorded commit moves the
+//! baseline onto its `root_after`. The one degrade is a race with an external
+//! writer still mid-write: the baseline holds, the chain check above refuses
+//! the silent sync, and the change is told as external — a file may be told
+//! twice, never not at all.
 //!
 //! Shared here: the three-way disposition, the rename ruling, the wire
 //! projection. Host driver: the registry, on its subscription detection cycle.
@@ -117,11 +121,11 @@ pub fn reconcile(
             Ok(None)
         }
         Some(r) if *r == disk_root => Ok(None),
-        // An internal commit moved the world — already emitted; sync silent.
-        // The scope refreshes with the baseline: a face write that re-scoped
-        // the domain must not be re-claimed as a cause by the NEXT external
-        // batch.
-        Some(_) if ring.tip_root() == Some(&disk_root) => {
+        // Internal commits moved the world — every step already emitted; sync
+        // silent. The scope refreshes with the baseline: a face write that
+        // re-scoped the domain must not be re-claimed as a cause by the NEXT
+        // external batch.
+        Some(r) if ring.chains(r, &disk_root) => {
             watch.watcher.rebase(&files);
             watch.root = Some(disk_root);
             watch.scope = Some(load_scope(ws_root)?);
@@ -237,9 +241,9 @@ pub fn reconcile_delta(
             .to_vec();
         changes.removed.push((path.clone(), before));
     }
-    // An internal commit moved the world — already emitted; sync silent.
-    // Scope refreshes with the baseline, exactly as the snapshot arm.
-    if ring.tip_root() == Some(disk_root) {
+    // Internal commits moved the world — every step already emitted; sync
+    // silent. Scope refreshes with the baseline, exactly as the snapshot arm.
+    if ring.chains(&watch_root, disk_root) {
         watch.watcher.rebase_entries(&upserts, &diff.removed);
         watch.root = Some(disk_root.clone());
         watch.scope = Some(load_scope(ws_root)?);
@@ -862,5 +866,66 @@ mod tests {
                 .is_none(),
             "the re-scoped world is the new baseline"
         );
+    }
+
+    /// The memo-grain reconcile's inputs for the disk as it stands: the leaf
+    /// view and its fold.
+    fn observe(root: &fs::WorkspaceRoot) -> (std::collections::BTreeMap<String, [u8; 32]>, Root) {
+        let (files, disk_root) = crate::domain_snapshot(root).expect("snapshot");
+        let leaves = files
+            .iter()
+            .map(|(path, bytes)| (path.clone(), model::leaf_digest(bytes)))
+            .collect();
+        (leaves, disk_root)
+    }
+
+    /// The race arm: a tip at the disk root is not enough to sync silently.
+    /// A commit whose door could not settle a pending external edit (its
+    /// writer still mid-write) records a frame that starts past the
+    /// baseline. Nothing told the edit between them, so reconcile tells it.
+    ///
+    /// *Mutation:* sync whenever the tip equals the disk root — the edit to
+    /// `other.md` is never told.
+    #[test]
+    fn a_tip_that_does_not_chain_from_the_baseline_is_told_as_external() {
+        let (_dir, root) = scratch_root();
+        std::fs::write(root.0.join("plan.md"), b"# Plan\n\nseed\n").unwrap();
+        std::fs::write(root.0.join("other.md"), b"# Other\n\nseed\n").unwrap();
+        let mut ring = RootRing::new();
+        let mut watch = WatchState::new(&root);
+        let (leaves, disk_root) = observe(&root);
+        assert!(
+            reconcile_delta(&root, &mut ring, &mut watch, &leaves, &disk_root)
+                .expect("prime")
+                .is_none(),
+            "priming emits nothing"
+        );
+
+        std::fs::write(root.0.join("other.md"), b"# Other\n\nexternal\n").unwrap();
+        let (_, edited) = observe(&root);
+        std::fs::write(root.0.join("plan.md"), b"# Plan\n\ncommitted\n").unwrap();
+        let (leaves, committed) = observe(&root);
+        let seq = ring.allocate_seq();
+        ring.advance(crate::write::assemble_delta(
+            seq,
+            edited,
+            committed.clone(),
+            Some("agent:writer".into()),
+            None,
+            vec![],
+        ));
+
+        let frame = reconcile_delta(&root, &mut ring, &mut watch, &leaves, &committed)
+            .expect("reconcile")
+            .expect("the edit the commit's door missed is told");
+        let paths: Vec<_> = frame
+            .delta
+            .files
+            .iter()
+            .map(|f| f.path.0.as_str())
+            .collect();
+        assert!(paths.contains(&"other.md"), "{paths:?}");
+        assert!(frame.delta.actor.is_none(), "{frame:?}");
+        assert_eq!(frame.delta.root_after, committed);
     }
 }

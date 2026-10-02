@@ -1814,20 +1814,22 @@ fn dispatch_read(
             // A pin's proof rides the request itself (§ A.3 proof law) — no
             // session-side ledger exists to hand the choke-point.
             //
-            // U20b: numbered producer on this workspace's ring. The sink
-            // allocates AND records inside the choke-point's flock
+            // U20b: numbered producer on this workspace's ring. The door's
+            // plane allocates AND records inside the choke-point's flock
             // (`SeqSink::committed`), so no detect cycle can re-tell this
-            // write as external between commit and record.
+            // write as external between commit and record, and it keeps the
+            // watcher baseline at the ring tip (`ring::DoorPlane`).
             let ring = registry.ring(ws);
             // Same memo the feed patches; the door observes it through the
             // §6.4 vouch at entry (`door_observation`) — a drained dirty set
             // alone never authorizes the overlay. Bounded: a write door owes
             // its own verdict before the caller's deadline (`write_door_memo`).
             let cache = write_door_memo(registry, ws)?;
-            let observe = || registry.door_observation(ws, &cache, DOOR_COOKIE_TIMEOUT);
+            let plane = crate::ring::DoorPlane::new(registry, &ws_root, &ring, &cache);
+            let observe = || plane.observe();
             let out = wire_serve::write::splice(
                 &ws_root,
-                Some(&*ring),
+                Some(&plane),
                 &args,
                 &[],
                 Some(wire_serve::write::ResidentDoor {
@@ -1868,10 +1870,11 @@ fn dispatch_read(
             // Sink records inside the flock (`SeqSink::committed`) — see `Op::Splice`.
             let ring = registry.ring(ws);
             let cache = write_door_memo(registry, ws)?;
-            let observe = || registry.door_observation(ws, &cache, DOOR_COOKIE_TIMEOUT);
+            let plane = crate::ring::DoorPlane::new(registry, &ws_root, &ring, &cache);
+            let observe = || plane.observe();
             let out = wire_serve::write::splice_set_with_cache(
                 &ws_root,
-                Some(&*ring),
+                Some(&plane),
                 &args,
                 &[],
                 Some(wire_serve::write::ResidentDoor {
@@ -1910,10 +1913,11 @@ fn dispatch_read(
             // inside the flock (`SeqSink::committed`) — see `Op::Splice`.
             let ring = registry.ring(ws);
             let cache = write_door_memo(registry, ws)?;
-            let observe = || registry.door_observation(ws, &cache, DOOR_COOKIE_TIMEOUT);
+            let plane = crate::ring::DoorPlane::new(registry, &ws_root, &ring, &cache);
+            let observe = || plane.observe();
             let out = wire_serve::write::create_with_cache(
                 &ws_root,
-                Some(&*ring),
+                Some(&plane),
                 &args,
                 &[],
                 Some(wire_serve::write::ResidentDoor {
@@ -1948,10 +1952,11 @@ fn dispatch_read(
             // inside the flock (`SeqSink::committed`) — see `Op::Splice`.
             let ring = registry.ring(ws);
             let cache = write_door_memo(registry, ws)?;
-            let observe = || registry.door_observation(ws, &cache, DOOR_COOKIE_TIMEOUT);
+            let plane = crate::ring::DoorPlane::new(registry, &ws_root, &ring, &cache);
+            let observe = || plane.observe();
             let out = wire_serve::write::remove_with_cache(
                 &ws_root,
-                Some(&*ring),
+                Some(&plane),
                 &args,
                 &[],
                 Some(wire_serve::write::ResidentDoor {
