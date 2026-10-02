@@ -420,6 +420,18 @@ impl WorkspaceFeed {
         self.cookie_barrier_at(workspace, Path::new(COOKIE_REL), timeout)
     }
 
+    /// The detect cycle's barrier under the write flock (merkle-spec §6.7,
+    /// the watch plane): [`Self::cookie_barrier`] whose own timeout is not
+    /// doubt. Its `Unproven` grants nothing — the caller skips — and the
+    /// events it waited for still arrive in the dirty set, so a timed-out
+    /// probe neither collapses the memo nor starts the cookie holdoff. A
+    /// standing doubt or holdoff still answers `Unproven` at once. Collapsing
+    /// here would send every write door to the floor for the holdoff's width
+    /// whenever a probe's short budget lost a race with delivery.
+    pub(crate) fn cookie_probe(&self, workspace: &Path, timeout: Duration) -> CookieOutcome {
+        self.barrier(workspace, Path::new(COOKIE_REL), timeout, false)
+    }
+
     /// The barrier at an explicit rel — the refusal seam. A rel the member
     /// filter would admit is REFUSED by construction (merged plan §7 row):
     /// a cookie inside the hash domain would move the very root it vouches
@@ -430,6 +442,19 @@ impl WorkspaceFeed {
         workspace: &Path,
         rel: &Path,
         timeout: Duration,
+    ) -> CookieOutcome {
+        self.barrier(workspace, rel, timeout, true)
+    }
+
+    /// One barrier; `doubt_on_timeout` decides whether running out of
+    /// `timeout` is the named `CookieTimeout` doubt plus the holdoff
+    /// ([`Self::cookie_barrier_at`]) or only `Unproven` ([`Self::cookie_probe`]).
+    fn barrier(
+        &self,
+        workspace: &Path,
+        rel: &Path,
+        timeout: Duration,
+        doubt_on_timeout: bool,
     ) -> CookieOutcome {
         if member_candidate(rel) {
             return CookieOutcome::Refused;
@@ -477,8 +502,10 @@ impl WorkspaceFeed {
                 return CookieOutcome::Seen;
             }
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
-                s.collapse(RescanCause::CookieTimeout);
-                s.cookie_timeout_at = Some(Instant::now());
+                if doubt_on_timeout {
+                    s.collapse(RescanCause::CookieTimeout);
+                    s.cookie_timeout_at = Some(Instant::now());
+                }
                 return CookieOutcome::Unproven;
             };
             s = self
@@ -1394,6 +1421,38 @@ mod tests {
         let after = cache.root(&root).unwrap();
         let fresh = fs::DomainCache::new().root(&root).unwrap();
         assert_eq!(after, fresh);
+    }
+
+    /// The detect cycle's probe: its timeout is no doubt. A probe that runs
+    /// out of budget answers `Unproven` without minting `CookieTimeout` or
+    /// starting the holdoff, so the next barrier on the live stream still
+    /// earns `Seen` instead of answering `Unproven` for the holdoff's width.
+    ///
+    /// *Mutation:* collapse on the probe's timeout — the record names
+    /// `CookieTimeout` and the next barrier answers `Unproven` at once.
+    #[test]
+    fn a_timed_out_probe_mints_no_doubt_and_no_holdoff() {
+        let watched = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let root = watched.path().canonicalize().unwrap();
+        let feed = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("watcher");
+        assert_eq!(
+            feed.cookie_probe(
+                &elsewhere.path().canonicalize().unwrap(),
+                Duration::from_millis(50)
+            ),
+            CookieOutcome::Unproven,
+            "no sighting by the deadline proves nothing"
+        );
+        assert!(
+            feed.rescan_record().is_empty(),
+            "a probe's timeout is not the CookieTimeout trigger"
+        );
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(10)),
+            CookieOutcome::Seen,
+            "no holdoff: the next barrier re-tests the live stream"
+        );
     }
 
     /// §6.7 holdoff: after a timed-out barrier, further barriers answer

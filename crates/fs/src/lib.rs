@@ -4172,6 +4172,14 @@ impl Watcher {
         );
     }
 
+    /// Adopt a baseline whose entries the caller already verified: each
+    /// digest is its bytes' [`model::leaf_digest`]. Priming off the resident
+    /// memo builds one from the memo's leaves, every member's bytes checked
+    /// against its leaf, so adopting a whole corpus hashes nothing again.
+    pub fn adopt(&mut self, baseline: BTreeMap<String, (Vec<u8>, [u8; 32])>) {
+        self.baseline = Some(baseline);
+    }
+
     /// Advance the baseline by exactly the movers a cycle told: upserts land
     /// with their digest, removals leave. O(changed) — the incremental form
     /// of [`Self::rebase`] for a cycle that never snapshotted. No-op until

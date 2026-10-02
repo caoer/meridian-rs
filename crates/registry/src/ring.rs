@@ -205,6 +205,9 @@ impl WorkspaceRing {
     ///    concurrent splices).
     /// 4. **Reconcile under flock** — only when root moved. `WouldBlock` ⇒ write
     ///    in flight; skip (never block a subscriber thread on an unrelated writer).
+    ///    An ordinary cycle observes vouched-only under the flock and skips on
+    ///    any miss; the [`DETECT_FLOOR_CADENCE`] backstop cycle floors there,
+    ///    so a miss delays a frame by at most that cadence.
     ///
     /// # Errors
     /// Snapshot or classification failure. Callers log and continue.
@@ -294,16 +297,16 @@ impl WorkspaceRing {
 
     /// One detection cycle, cadence ignored. Gates described on [`Self::detect`].
     ///
-    /// The cycle takes the workspace write flock FIRST — reconcile must never
-    /// observe a mid-batch state — then makes the §6.1 door-grade observation
-    /// through the SHARED memo (`Registry::door_observation`: cookie barrier →
-    /// take-and-apply → overlay; the extent-refresh floor on any named miss),
-    /// and hands the classifier that memo's leaf view and root
-    /// (`wire_serve::watch::reconcile_delta` — bytes read for MOVERS only).
-    /// `force_floor` is the §6.6 fallback clock: once per
-    /// [`DETECT_FLOOR_CADENCE`] the backstop ([`crate::Registry::backstop`])
-    /// compares disk to the memo unlocked and hints what the stream lost, so a
-    /// silent capture loss is bounded, not forever.
+    /// Unlocked first: the pre-observation through the SHARED memo
+    /// (`Registry::door_observation`), compared with the baseline, and — when
+    /// priming — the byte snapshot ([`wire_serve::watch::PrimeSnapshot`]).
+    /// Then [`Self::cycle_locked`] under the workspace write flock: reconcile
+    /// must never observe a mid-batch state. `force_floor` is the §6.6
+    /// fallback clock: once per [`DETECT_FLOOR_CADENCE`] the backstop
+    /// ([`crate::Registry::backstop`]) compares disk to the memo unlocked and
+    /// hints what the stream lost, and the flock-held observation may floor,
+    /// so neither a silent capture loss nor a feed that cannot vouch delays a
+    /// frame past that cadence.
     fn cycle(
         &self,
         ws_root: &fs::WorkspaceRoot,
@@ -328,19 +331,57 @@ impl WorkspaceRing {
             .map_err(|e| io_error_body(&e))?;
         {
             let mut state = self.state();
-            if force_floor {
-                // A true floor pass ran — anchor the §6.6 fallback clock.
-                state.last_floor = Some(Instant::now());
-            }
             if !was_unprimed && state.watch.root() == Some(&Root(pre.0.clone())) {
-                state.last_detect = Some(Instant::now());
+                let now = Instant::now();
+                state.last_detect = Some(now);
+                if force_floor {
+                    // A true floor pass found nothing — anchor the §6.6
+                    // fallback clock.
+                    state.last_floor = Some(now);
+                }
                 return Ok(false);
             }
         }
-        // Root moved (or priming) — take the write flock so reconcile cannot
-        // observe mid-batch, and RE-observe under it: the flock-held
-        // observation is the one the frame folds.
-        let holder = if was_unprimed {
+        // Priming reads the corpus HERE, before the flock: its bytes seed the
+        // baseline, and its root is written nowhere (merkle-spec §6.7).
+        let snapshot = if was_unprimed {
+            Some(wire_serve::watch::PrimeSnapshot::take(ws_root)?)
+        } else {
+            None
+        };
+        #[cfg(test)]
+        self.park_after_prime_snapshot(snapshot.is_some());
+        self.cycle_locked(ws_root, registry, &cache, force_floor, snapshot)
+    }
+
+    /// The flock-held half of [`Self::cycle`]: the root moved (or the watch
+    /// is priming), so take the write flock and RE-observe under it — the
+    /// flock-held observation is the one the frame folds.
+    ///
+    /// An ordinary cycle observes vouched-only
+    /// (`Registry::door_observation_vouched`, in one [`DETECT_CADENCE`]): on
+    /// any miss it releases the flock and tells nothing, a skip that costs
+    /// latency only. The backstop and priming cycles make the full §6.1
+    /// door-grade observation, floor included, and anchor the fallback clock
+    /// only once it ran — a backstop that lost the flock to a writer re-runs
+    /// on the next cadence instead of waiting out another
+    /// [`DETECT_FLOOR_CADENCE`].
+    ///
+    /// Priming builds the baseline from the memo's leaf view, reusing each
+    /// `snapshot` member whose digest matches its leaf
+    /// (`wire_serve::watch::prime`); a re-read that races its leaf falls back
+    /// to the full snapshot under the flock (`reconcile`, through
+    /// [`Self::reconcile_observed`] on the unprimed watch).
+    fn cycle_locked(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        registry: &crate::Registry,
+        cache: &Arc<Mutex<fs::DomainCache>>,
+        force_floor: bool,
+        snapshot: Option<wire_serve::watch::PrimeSnapshot>,
+    ) -> Result<bool, Box<ErrorBody>> {
+        let full = force_floor || snapshot.is_some();
+        let holder = if snapshot.is_some() {
             "flock.hold.prime"
         } else if force_floor {
             "flock.hold.backstop"
@@ -348,20 +389,70 @@ impl WorkspaceRing {
             "flock.hold.detect"
         };
         let Ok(_write_lock) = fs::WriteLock::acquire(ws_root).map(|lock| lock.timed(holder)) else {
-            return Ok(false); // a write is in flight; its change keeps
+            // A write is in flight; its change keeps. A full cycle that lost
+            // the flock leaves the fallback clock unanchored and retries one
+            // cadence later, not on every tick: its unlocked passes are the
+            // expensive ones.
+            if full {
+                self.state().last_detect = Some(Instant::now());
+            }
+            return Ok(false);
         };
-        let observed = registry
-            .door_observation(&ws_root.0, &cache, crate::registry::DOOR_COOKIE_TIMEOUT)
-            .map_err(|e| io_error_body(&e))?;
-        let emitted = self.reconcile_observed(ws_root, &cache, &Root(observed.0))?;
+        let observed = if full {
+            registry
+                .door_observation(&ws_root.0, cache, crate::registry::DOOR_COOKIE_TIMEOUT)
+                .map_err(|e| io_error_body(&e))?
+        } else if let Some(root) =
+            registry.door_observation_vouched(&ws_root.0, cache, DETECT_CADENCE)
+        {
+            root
+        } else {
+            self.state().last_detect = Some(Instant::now());
+            return Ok(false);
+        };
+        let observed = Root(observed.0);
+        let emitted = match snapshot {
+            Some(snapshot) => {
+                let leaves = leaf_view(cache);
+                let primed = {
+                    let mut state = self.state();
+                    wire_serve::watch::prime(
+                        ws_root,
+                        &mut state.watch,
+                        snapshot,
+                        &leaves,
+                        &observed,
+                    )?
+                };
+                !primed && self.reconcile_observed(ws_root, cache, &observed)?
+            }
+            None => self.reconcile_observed(ws_root, cache, &observed)?,
+        };
+        let now = Instant::now();
         let mut state = self.state();
-        state.last_detect = Some(Instant::now());
-        if was_unprimed {
-            // The priming snapshot re-read everything — strictly stronger
-            // than the stat floor; anchor the clock here too.
-            state.last_floor = Some(Instant::now());
+        state.last_detect = Some(now);
+        if full {
+            state.last_floor = Some(now);
         }
         Ok(emitted)
+    }
+
+    /// Test seam: park between priming's unlocked snapshot and the flock
+    /// (the `pause_after_prime_snapshot` gate).
+    #[cfg(test)]
+    fn park_after_prime_snapshot(&self, priming: bool) {
+        if !priming {
+            return;
+        }
+        let gate = self
+            .pause_after_prime_snapshot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some((announce, resume)) = gate {
+            let _ = announce.send(());
+            let _ = resume.recv();
+        }
     }
 
     /// The flock-held step, on an observation the caller just made through
@@ -377,16 +468,7 @@ impl WorkspaceRing {
         cache: &Arc<Mutex<fs::DomainCache>>,
         disk_root: &Root,
     ) -> Result<bool, Box<ErrorBody>> {
-        // The memo's leaf view, String-spelled: non-UTF-8 NAMES stay
-        // baseline-invisible exactly as the snapshot kept them (their leaves
-        // still fold into the root; a `wire::Path` cannot spell them).
-        let leaves: std::collections::BTreeMap<String, [u8; 32]> = {
-            let memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
-            memo.leaf_digests()
-                .into_iter()
-                .filter_map(|(rel, digest)| rel.to_str().map(|s| (s.to_owned(), digest)))
-                .collect()
-        };
+        let leaves = leaf_view(cache);
         let mut state = self.state();
         let RingState { ring, watch, .. } = &mut *state;
         Ok(wire_serve::watch::reconcile_delta(ws_root, ring, watch, &leaves, disk_root)?.is_some())
@@ -503,6 +585,17 @@ impl wire_serve::seq::SeqSink for DoorPlane<'_> {
         self.ring
             .follow(self.ws_root, self.cache, frame, &frame.delta.root_after);
     }
+}
+
+/// The memo's leaf view, String-spelled: non-UTF-8 NAMES stay
+/// baseline-invisible exactly as the snapshot kept them (their leaves still
+/// fold into the root; a `wire::Path` cannot spell them).
+fn leaf_view(cache: &Arc<Mutex<fs::DomainCache>>) -> std::collections::BTreeMap<String, [u8; 32]> {
+    let memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    memo.leaf_digests()
+        .into_iter()
+        .filter_map(|(rel, digest)| rel.to_str().map(|s| (s.to_owned(), digest)))
+        .collect()
 }
 
 /// The memo pass's refusal in the envelope [`wire_serve::ambient_root`] always
