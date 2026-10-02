@@ -1091,7 +1091,7 @@ record differently.
 lock.** Its md effects go through the applier, which takes the workspace lock
 unconditionally and can refuse workspace busy — the pre-birth stage (A8; `modes.rs` → `executor::apply` acquires `WorkspaceLock`
 first). A task row is unchanged; the engine reads the page, with no caller
-flag. 100 declared-block fires add **zero** rows to `receipts/run.md` (anchors
+flag. 100 declared-block fires add **zero** rows to `.meridian/receipts/run.md` (anchors
 `^r-<invocation>`, `^p-<invocation>`).
 
 ### Caps — the page's own ceiling
@@ -1295,9 +1295,11 @@ block rev under `.meridian/staged/<rev>[.<token>]`, and the process is
 **Recording has a ceiling.** Logs live at
 `.meridian/runs/<page-path>/<invocation>-t<index>.log` for an exec'd entry and
 `…-t<index>-b<n>.log` for the n-th `bash()` call of that target — a directory
-**per page**, retention the last 50 per page. The task path's logs stay at the
-top level of `.meridian/runs/`, written by `run::record` and pointed at by a
-run receipt. An `exec[]` row publishes `stdout_sha256` + `bytes` +
+**per page**, retention the last 50 per page. The task path's logs live in the
+page's own `tasks/` subdirectory, `.meridian/runs/<page-path>/tasks/<invocation>.log`,
+written by `run::record` and pointed at by a run receipt, under a separate cap
+of the last 50 per page — so a page that fires often never evicts the logs its
+run receipts point at. An `exec[]` row publishes `stdout_sha256` + `bytes` +
 that `log` path, never the stream inline. A `process` object is bounded the
 same way: `stdout_tail`/`stderr_tail` are the **last 4096 bytes** of each
 stream, `stdout_bytes`/`stderr_bytes` the full sizes, and the `log` carries all
@@ -1387,9 +1389,9 @@ bytes land.** The choke point never reads `base`, so `md.create:tasks/*.md`
 alone lands `tasks/<slug>.md` under any confined directory.
 
 - The grant admits every confined landing — measured:
-  `conventions/attested/tasks/x.md`, `receipts/tasks/x.md`,
-  `meridian/tasks/x.md`, `.meridian/tasks/x.md`, `.git/tasks/x.md`.
-- Refused: the last four at the machinery floor below; `..`, absolute paths and
+  `conventions/attested/tasks/x.md`, `meridian/tasks/x.md`,
+  `.meridian/tasks/x.md`, `.git/tasks/x.md`.
+- Refused: the last three at the machinery floor below; `..`, absolute paths and
   foreign roots at the path law.
 - Jailed by the glob: the tail only (`evil/tasks/x.md`, `tasks/sub/x.md` fail
   it as declared paths).
@@ -1398,7 +1400,7 @@ So `run.caps.fix-*: md.create:tasks/*.md` does not confine births to boards
 (boundary-as-data: the engine holds no layout pattern); put content containment
 in the block.
 
-🛡 **The machinery floor.** Four names are engine substrate, not layout. The
+🛡 **The machinery floor.** Three names are engine substrate, not layout. The
 create door refuses any birth whose **resolved landing** carries one as a path
 segment, at any depth, ASCII-case-insensitively, whatever the caps admit:
 `bad_path`, naming the segment, nothing written.
@@ -1406,9 +1408,8 @@ segment, at any depth, ASCII-case-insensitively, whatever the caps admit:
 | Segment | What it is |
 |---|---|
 | `.git` | the git directory — a birth here can corrupt the repository |
-| `.meridian` | engine stable state and run logs (`.meridian/runs/`) |
+| `.meridian` | engine stable state, run logs (`.meridian/runs/`) and the engine's receipts (`.meridian/receipts/run.md`, `realise.md`, `corpus-proof.md`) |
 | `meridian` | the attestation tree (`meridian/armed-rules.md`, `meridian/attested`) |
-| `receipts` | the receipt ledger (`receipts/run.md`, `receipts/realise.md`) |
 
 **One carve-out, `meridian/domain.md`**, exempt at any depth: the hash-domain
 config declaring the ignore list is authored content, and the resident write
@@ -1610,13 +1611,13 @@ rows are the exec'd entry's:
 
 | | task row (`task.<name>`) | fire row (`declare()`) |
 |---|---|---|
-| receipts | phase-1 + phase-2 rows in `receipts/run.md` | **none** — 100 declared-block fires add zero rows |
+| receipts | phase-1 + phase-2 rows in `.meridian/receipts/run.md` | **none** — 100 declared-block fires add zero rows |
 | `.meridian/run.lock` | taken | **the fire process takes no task-path lock**; md effects go through the applier (`executor::apply`), which takes the workspace lock unconditionally and can refuse workspace busy — a `runtime` fault (pre-birth stage, A8) |
 | program | `bash -c <source> mrd-task <args…>`, `$0` = `mrd-task` | `<interpreter> <staged-file> <args…>`, `$0` = the staged path |
 | stdin | `Stdio::null()` | the fire's `input`, compact JSON |
 | exit | collapsed to `state: applied\|partial` | the **raw** code, 1 and 2 distinct |
 | stderr | captured; the CLI writes it to its own stderr before the report (§ The CLI surface) | `stderr_tail` on the row |
-| record | the receipt + `.meridian/runs/<invocation-id>.log` | `.meridian/runs/<page-path>/<invocation-id>.log`, and the row |
+| record | the receipt + `.meridian/runs/<page-path>/tasks/<invocation-id>.log` | `.meridian/runs/<page-path>/<invocation-id>.log`, and the row |
 | language set | closed (`starlark`, `bash`) | `argv[0]` — any interpreter |
 
 A fire applying nothing — exec'd, or evaluated with no effect — and any `dry`
@@ -1701,13 +1702,16 @@ A bash step runs as pre-exec receipt (phase 1) → exec → completion receipt
 
 Bash stdout never becomes a tree write: it is **streamed live** to the caller
 and **stored out-of-tree, content-addressed** at
-`.meridian/runs/<invocation-id>.log`, addressed by invocation id and pinned by
-the full sha256 in the receipt. Tree output happens **only** via an explicit
-`md.append_section` descriptor; no in-tree run journal exists.
+`.meridian/runs/<page-path>/tasks/<invocation-id>.log`, addressed by invocation
+id and pinned by the full sha256 in the receipt. A page keeps its last 50 task
+logs: an older receipt still carries the stdout sha256 and size after its log is
+pruned. Tree output happens **only** via an explicit `md.append_section`
+descriptor; no in-tree run journal exists.
 
 Record ↔ receipt linkage:
 
-- Receipt line: in-tree, in the same splice batch as its edits, carrying
+- Receipt line: in `.meridian/receipts/run.md`, outside the hash domain
+ (wire-contract §6.1), in the same splice batch as its edits, carrying
  per-edit rev transitions — **attested history, compared by nothing** (the
  no-guard amendment above).
 - Receipt `page` fact: the task page's **canonical workspace-relative spelling
@@ -1779,7 +1783,7 @@ caller by two surfaces, and the default one is not the rc.
 - **Always, on the report.** The rendered report carries the sealed code —
   `exec: exited N` in text, `exec.exit_code` under `--json` — read off the same
   `RunReport` the completion receipt's `exec.exit_code` is written from. A
-  caller reads it there; parsing `receipts/run.md` is never the contract. The
+  caller reads it there; parsing `.meridian/receipts/run.md` is never the contract. The
   report comes **last** on stdout, not alone on it: a bash step's own stdout
   streams live ahead of it, byte for byte (§ The run record — stdout is data,
   not effects), so `--json` piped straight into a JSON reader carries the
