@@ -1428,23 +1428,8 @@ mod tests {
             }
             Ok(())
         }
-        insert_rows(
-            conn,
-            "INSERT INTO doc (path, file_rev, line_count, bytes) VALUES (?, ?, ?, ?)",
-            &rows.doc,
-        )?;
-        insert_rows(
-            conn,
-            "INSERT INTO frontmatter (path, ord, key, value, span_start, span_end, node_rev, prop_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            &rows.frontmatter,
-        )?;
-        insert_rows(
-            conn,
-            "INSERT INTO section (path, node_seq, hpath, n, heading, level, node_rev, span_start, span_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            &rows.section,
-        )?;
-        // The binder refuses a LIST value, so the reference lane spells the
-        // trailing `candidates` cell as `list_value(?, …)` over its items.
+        /// The binder refuses a LIST value, so the reference lane spells the
+        /// trailing `candidates` cell as `list_value(?, …)` over its items.
         fn insert_listed(
             conn: &Connection,
             table: &str,
@@ -1470,6 +1455,21 @@ mod tests {
             }
             Ok(())
         }
+        insert_rows(
+            conn,
+            "INSERT INTO doc (path, file_rev, line_count, bytes) VALUES (?, ?, ?, ?)",
+            &rows.doc,
+        )?;
+        insert_rows(
+            conn,
+            "INSERT INTO frontmatter (path, ord, key, value, span_start, span_end, node_rev, prop_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            &rows.frontmatter,
+        )?;
+        insert_rows(
+            conn,
+            "INSERT INTO section (path, node_seq, hpath, n, heading, level, node_rev, span_start, span_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            &rows.section,
+        )?;
         insert_listed(conn, "link", LINK_SCALAR_COLS, &rows.link)?;
         insert_listed(
             conn,
