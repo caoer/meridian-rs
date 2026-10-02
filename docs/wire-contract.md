@@ -1921,7 +1921,10 @@ is a **well-formed** quoted scalar: `'…'` with interior `'` only as `''`, or
 nothing else; double-quoted resolves `\\ \" \n \t \r` and leaves any other
 escape verbatim. Everything else is served verbatim after the whitespace trim:
 plain scalars, flow collections (`[a, b]`), and malformed quoting, which no
-reader may guess at. A quoted scalar is a string in every schema: the decode is
+reader may guess at. A plain or quoted scalar is read to the end of its key
+line: indented continuation lines are not joined, so a continued scalar serves
+its first line, and a continued quoted scalar serves it with its opening quote.
+A quoted scalar is a string in every schema: the decode is
 the quoting layer only, never type inference.
 
 **A.6.1a Block scalars.** A key line may carry a YAML **block-scalar header**
