@@ -111,8 +111,13 @@ mrd resolve [PATH] report how a path resolves — the tier that answered and
  rooted ref answers WHERE THE REF LANDS — the physical path, the
  rooted lane, the bound root and its workspace, and
  the canonical `root:path` spelling — resolved through
- the read door's seam with no existence check and no
- daemon contact. A typo'd or unbound root refuses as a
+ the read door's seam with no daemon contact — and
+ what sits at that path now: `file: present`, `file:
+ absent` or `file: directory` (`--json`: `file`), one
+ stat (`unknown` when the stat itself fails). Absence
+ is never a refusal: a birth resolves its path before
+ the record exists, so the exit is 0 whether or not a
+ file is there. A typo'd or unbound root refuses as a
  root problem (exit 1, the seam's refusal family, the
  bound names enumerated), never a literal-path lookup
  of the colon-bearing string. A `#` fragment refuses:
