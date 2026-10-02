@@ -3,7 +3,7 @@
 //!
 //! # Charter
 //! **Owns:** the `:memory:` SQL projection of the fact corpus — walk
-//! `BTreeMap<path, Document>` into 8 tables + 4 views ([`schema`]) — and the
+//! `BTreeMap<path, Document>` into 14 tables + 4 views ([`schema`]) — and the
 //! lock-aware read face for walk/status colour ([`walk`], [`read_face`]).
 //! The projection is advisory; disk and fingerprints are correctness.
 //!

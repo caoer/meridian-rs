@@ -18,7 +18,7 @@ syntax = { workspace = true }
 # weight and keeps `resolve_ref` able to speak `MountSet` without depending on
 # `config`, which is DOWNSTREAM of `model` (docs/address-grammar.md § 7.2).
 addr = { workspace = true }
-# node_rev / file_rev minting (contract §1: blake3-256, first 16 hex). blake3
-# enters the engine HERE and nowhere else in production (M2-BUILD, the rung-2
-# "algorithm is a wire amendment" decision landed).
+# node_rev / file_rev minting (contract §1: blake3-256, first 16 hex) lives here;
+# the crates that hash for their own tokens (fs, view, policy, run, registry,
+# effects, parse-cache) take blake3 at the same version "1".
 blake3 = "1"

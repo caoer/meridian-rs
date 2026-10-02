@@ -1,6 +1,6 @@
 [package]
 name = "run"
-description = "The mrd-local run plane (S1, U2 slice): task addressing over the §2.1 fm_key→block grammar, fence-language detection (starlark|bash), arg/env contract validation, and deny-by-default capability resolution. Pure pre-eval resolution — no eval, no apply, no I/O beyond page load and the root's own MERIDIAN.md declaration."
+description = "The mrd-local run plane (S1): resolves, dispatches, executes and applies `mrd run` tasks — task addressing over the §2.1 fm_key→block grammar, fence-language detection (starlark|bash), arg/env contract validation, deny-by-default capability resolution, a hermetic starlark kernel whose writes land as one splice batch with its receipt, and bash children under a wall-clock timeout that observe and report."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

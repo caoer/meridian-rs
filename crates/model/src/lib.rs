@@ -746,8 +746,7 @@ pub fn frontmatter_wikilinks(doc: &Document) -> Vec<FmWikilink> {
 }
 
 /// Map a leaf dialect construct to its model node kind. `Heading`/`Frontmatter`
-/// are handled structurally (sections / fm node); `InlineCode`/`Comment` have no
-/// model kind yet and are dropped.
+/// are handled structurally (sections / fm node) and map to no leaf kind.
 fn leaf_kind(dk: syntax::DialectKind) -> Option<NodeKind> {
     use syntax::DialectKind as D;
     Some(match dk {

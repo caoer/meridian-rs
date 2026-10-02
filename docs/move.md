@@ -256,12 +256,16 @@ would have left the origin gone with no command that converges.
   wiki's frontmatter, a cross-root pin — are not enumerated; enumerating them
   costs a corpus parse per bound root. `mrd walk OLD --down` before the move
   lists the pinners across roots; afterwards those roots' own `mrd check`
-  reads their stale rows red.
+  reads their stale rows red. A plain `root:path` held by another root, in
+  frontmatter or backticked in a body, is no `link` row there, so no check in
+  that root reads it stale; a text search of that root for
+  `<this root>:<OLD>` finds it.
 - **Non-markdown targets** (`![[diagram.png]]`) and markdown outside the hash
   domain move with their directory; their references are not computed — the
   link projection is md-only (`wire §12.1`).
-- **Markdown-link URLs** (`[t](root:path)`, `addr §9` position 2) and prose
-  mentions of a path are not addresses this door reads.
+- **Markdown-link URLs** (`[t](root:path)`, `addr §9` position 2), a
+  backticked `root:path` in a body, and prose mentions of a path are not
+  addresses this door reads.
 - **`.base` files are not this door's.** The engine reads them — `view` parses
   a Base into the `base` relations (`base-projection.md`) — but the move door
   rewrites nothing in one. An Obsidian Base is a YAML view whose filters select

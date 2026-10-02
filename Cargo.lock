@@ -2894,7 +2894,6 @@ dependencies = [
  "parse-cache",
  "policy",
  "query",
- "receipt",
  "registry",
  "run",
  "serde",
