@@ -172,6 +172,19 @@ pub fn load_doc(root: &fs::WorkspaceRoot, path: &Path) -> Result<model::Document
                 ));
                 err
             }
+            std::io::ErrorKind::IsADirectory => {
+                // A folder is not a record: the bare errno names neither the
+                // path nor how a folder is listed, so the cause teaches both.
+                // Code and recovery stay `io_error`/`env`.
+                let folder = path.0.trim_end_matches('/');
+                let mut err = ErrorBody::new(ErrorCode::IoError);
+                err.cause = Some(format!(
+                    "{folder} is a folder, not a record — read serves one markdown record, \
+                     and nothing was served. List the records under it with sql on this \
+                     root: SELECT path FROM doc WHERE path LIKE '{folder}/%'"
+                ));
+                err
+            }
             _ => {
                 let mut err = ErrorBody::new(ErrorCode::IoError);
                 err.cause = Some(e.to_string());
