@@ -3803,7 +3803,10 @@ mod column_miss_tests {
             .query(query)
             .expect("lane")
             .expect_err("about is no column");
-        assert!(got.contains("Table \"record\""), "a qualified miss: {got}");
+        assert!(
+            got.contains("\"record\" does not have a column"),
+            "a qualified miss: {got}"
+        );
         assert_eq!(
             got,
             format!(
