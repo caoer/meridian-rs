@@ -1983,6 +1983,11 @@ pub enum ResponseBody {
         /// the splice-side law. The engine never marks one delivered.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         intents: Option<Vec<MwIntent>>,
+        /// § A.2.1 keys middleware set on the born file. Top-level for the
+        /// same reason `intents` is; absent when middleware set nothing, so
+        /// the reply bytes of an unstamped birth stand.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        self_set: Vec<MwSelfSet>,
     },
     /// The death reply (the `remove` op, v3-only): what died — the removed
     /// path, its confirmed whole-file rev, and the root transition. Never a
@@ -2157,6 +2162,11 @@ pub struct Armed {
     /// cross-file effects on its agent-facing receipt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub set: Option<Vec<ArmedSetMember>>,
+    /// § A.2.1 keys middleware set on the caller's own file — the fact
+    /// `set` never carries. Absent when middleware set nothing there, so
+    /// the response bytes of an unstamped write stand.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub self_set: Vec<MwSelfSet>,
 }
 
 /// One § A.2.1 sealed-set member row — a cross-file effect of the caller's
@@ -2171,6 +2181,19 @@ pub struct ArmedSetMember {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_rev_after: Option<NodeRev>,
     pub rules: Vec<String>,
+}
+
+/// One § A.2.1 `self_set` row: a frontmatter key a middleware `set_field`
+/// set on the caller's own file. Rows run in evaluation order, keys sorted
+/// within a rule, one row per rule and key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MwSelfSet {
+    /// The armed middleware id whose `set_field` set the key.
+    pub rule_id: String,
+    pub key: String,
+    /// The key's value in the landed bytes, as the read's props plane
+    /// serves it (§ A.6.1 decoded) — always text, a list included.
+    pub value: String,
 }
 
 /// One § A.2.1 middleware intent — the V1 frozen item shape. Inert data the

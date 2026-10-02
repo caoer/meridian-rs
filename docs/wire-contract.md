@@ -1295,6 +1295,23 @@ the wire shape is ruled here.)*
   (`created`)). `rules` names the middleware id(s) whose emits compiled the
   member, first-touch order. Receipt appends and pin promotions are commit
   machinery, not members, and never appear.
+- **Response field `armed.self_set`** (splice, single form; `self_set`
+  top-level on the birth response): every frontmatter key a middleware
+  `set_field` set on the caller's own file. Absent when middleware set
+  nothing there, so the response bytes are those of a write without it;
+  present on a dry run too, since it describes the bytes the write lands.
+  V1 rows are exactly:
+
+  ```json
+  { "rule_id": "<middleware id>", "key": "<frontmatter key>", "value": "<text>" }
+  ```
+
+  Rows run in evaluation order (`id` ascending), keys sorted within a rule,
+  one row per rule and key. `value` is always a JSON string: the key's value
+  in the landed bytes as the § A.3 read's props plane serves it (a quoted
+  scalar decoded, a flow list as its text, `[type/task]`). When two rules set
+  one key, both rows carry the landed value. A key only the caller's own
+  edits set does not appear.
 - **Write responses carry no reaction envelopes** (`armed.effects` serializes
   empty here); `rules/hook` + `proto.send` ride the external-change detector
   only. A middleware refusal refuses `convention_fault` naming the rule id

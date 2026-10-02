@@ -16,6 +16,7 @@ fn create_body() -> ResponseBody {
         dry: None,
         verdicts: Vec::new(),
         intents: None,
+        self_set: Vec::new(),
     }
 }
 
@@ -48,6 +49,7 @@ fn a_dry_birth_keeps_its_null_root_after() {
         dry: Some(true),
         verdicts: Vec::new(),
         intents: None,
+        self_set: Vec::new(),
     };
     let v = serde_json::to_value(&dry).expect("serializes");
     assert!(

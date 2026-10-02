@@ -40,6 +40,7 @@ fn splice_response(effects: Vec<EffectEnvelope>) -> Response {
                     effects,
                     intents: None,
                     set: None,
+                    self_set: Vec::new(),
                 },
                 receipt: None,
                 root_before: Root("b3:a".into()),

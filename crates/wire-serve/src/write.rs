@@ -24,7 +24,7 @@
 //! and re-tell the just-committed change as external. The returned frame is
 //! data for the caller's response; a ringless in-process caller discards it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::io::ErrorKind;
 use std::path::{Path as FsPath, PathBuf};
@@ -613,6 +613,7 @@ pub fn splice(
     // Ordered before the ladder, the advisory verdicts, and the dry
     // short-circuit, so a rehearsal refuses exactly where the real write does.
     lock_artifact_guard(&doc, after_doc.document(), pin_block.as_deref(), &args.path)?;
+    let self_set = self_set_rows(&mw.self_keys, after_doc.document());
 
     let armed_edits = simulate_armed_edits(
         after_doc.document(),
@@ -724,6 +725,7 @@ pub fn splice(
                     // § A.2.1: intents/set ride non-dry successes only.
                     intents: None,
                     set: None,
+                    self_set,
                 },
                 receipt: None,
                 root_before,
@@ -925,6 +927,7 @@ pub fn splice(
                 effects: Vec::new(),
                 set: Some(armed_set_members(&mw, &frame.delta)),
                 intents: Some(mw.intents),
+                self_set,
             },
             receipt: receipt_fact,
             root_before: frame.delta.root_before.clone(),
@@ -954,6 +957,46 @@ struct MwEmitted {
     /// § A.2.1 `armed.set` attribution: member/birth path → the middleware
     /// id(s) whose emits compiled it, first-touch order, deduped per path.
     rules_by_path: BTreeMap<String, Vec<String>>,
+    /// § A.2.1 `armed.self_set`: the keys each rule set on the caller's own
+    /// file.
+    self_keys: SelfKeys,
+}
+
+/// Rule id → the frontmatter keys its `set_field` emits set on the caller's
+/// own file, in evaluation order. Values are read off the landed bytes at the
+/// end ([`self_set_rows`]), never taken from the emit.
+type SelfKeys = Vec<(String, BTreeSet<String>)>;
+
+fn note_self_key(keys: &mut SelfKeys, rule_id: &str, key: &str) {
+    match keys.last_mut() {
+        Some((id, set)) if id == rule_id => {
+            set.insert(key.to_string());
+        }
+        _ => keys.push((rule_id.to_string(), BTreeSet::from([key.to_string()]))),
+    }
+}
+
+/// § A.2.1 `self_set` rows: each noted key with its value in the LANDED
+/// document, as the read's props plane serves it — so the row says what a
+/// read would, after every rewrite the door ran past middleware.
+fn self_set_rows(keys: &SelfKeys, landed: &model::Document) -> Vec<wire::MwSelfSet> {
+    if keys.is_empty() {
+        return Vec::new();
+    }
+    let props = crate::read::props_of(landed);
+    keys.iter()
+        .flat_map(|(rule_id, set)| {
+            set.iter().map(|key| wire::MwSelfSet {
+                rule_id: rule_id.clone(),
+                key: key.clone(),
+                value: props
+                    .iter()
+                    .find(|p| &p.key == key)
+                    .map(|p| p.value.clone())
+                    .unwrap_or_default(),
+            })
+        })
+        .collect()
 }
 
 impl MwEmitted {
@@ -1199,6 +1242,7 @@ fn run_door_middleware(
                     value,
                 } => {
                     if p == path.0 {
+                        note_self_key(&mut out.self_keys, row.id().as_str(), &key);
                         effective_edits.push(mw_upsert(key, value));
                         born.push(None);
                         self_added = true;
@@ -1356,11 +1400,12 @@ fn run_birth_middleware(
     actor: Option<&str>,
     fields: &BTreeMap<String, String>,
     mut candidate: model::CandidateDocument,
-) -> Result<(model::CandidateDocument, Vec<MwIntent>), Box<ErrorBody>> {
+) -> Result<(model::CandidateDocument, Vec<MwIntent>, SelfKeys), Box<ErrorBody>> {
     let rows = middleware_rows(root, &path.0);
     let mut intents = Vec::new();
+    let mut self_keys = SelfKeys::new();
     if rows.is_empty() {
-        return Ok((candidate, intents));
+        return Ok((candidate, intents, self_keys));
     }
     let absent = crate::gate::absent_doc(path);
     let mut overlay: BTreeMap<String, String> = BTreeMap::new();
@@ -1407,7 +1452,10 @@ fn run_birth_middleware(
                     path: p,
                     key,
                     value,
-                } if p == path.0 => self_edits.push(mw_upsert(key, value)),
+                } if p == path.0 => {
+                    note_self_key(&mut self_keys, row.id().as_str(), &key);
+                    self_edits.push(mw_upsert(key, value));
+                }
                 policy::MwEmit::Send { to, body } => intents.push(MwIntent {
                     kind: "send".to_string(),
                     to,
@@ -1448,7 +1496,7 @@ fn run_birth_middleware(
             overlay.insert(path.0.clone(), candidate.raw().to_string());
         }
     }
-    Ok((candidate, intents))
+    Ok((candidate, intents, self_keys))
 }
 
 // ---------------------------------------------------------------------------
@@ -1597,6 +1645,7 @@ pub fn splice_set_with_cache(
                         effects: Vec::new(),
                         intents: None,
                         set: None,
+                        self_set: Vec::new(),
                     })
                     .collect(),
                 receipt: None,
@@ -1667,6 +1716,7 @@ pub fn splice_set_with_cache(
             effects: Vec::new(),
             intents: None,
             set: None,
+            self_set: Vec::new(),
         });
     }
 
@@ -2268,6 +2318,8 @@ pub struct CreateOutcome {
     /// § A.2.1 middleware intents the birth armed — `Some` (possibly empty)
     /// on every non-dry landed birth, `None` on dry.
     pub intents: Option<Vec<MwIntent>>,
+    /// § A.2.1 keys middleware set on the born file, dry or landed.
+    pub self_set: Vec<wire::MwSelfSet>,
 }
 
 /// Project a landed birth into its wire response body — one implementation both
@@ -2287,6 +2339,7 @@ pub fn create_response(path: Path, out: &CreateOutcome) -> ResponseBody {
         dry: out.dry.then_some(true),
         verdicts: out.verdicts.clone(),
         intents: out.intents.clone(),
+        self_set: out.self_set.clone(),
     }
 }
 
@@ -2414,7 +2467,7 @@ pub fn create_with_cache(
     // transforms land IN the born bytes — one receipt, no unstamped birth —
     // and `send` intents ride the reply. Every guard below judges the FINAL
     // candidate, so a middleware cannot smuggle bytes past them.
-    let (after_doc, mw_intents) = run_birth_middleware(
+    let (after_doc, mw_intents, mw_self_keys) = run_birth_middleware(
         root,
         &args.path,
         args.actor.as_deref(),
@@ -2427,6 +2480,7 @@ pub fn create_with_cache(
     // birth has no pre-image, so `None`.
     stored_form_guard_lazy(None, &after_doc, &args.path)?;
     let file_rev_after = NodeRev(after_doc.document().root.node_rev.0.clone());
+    let self_set = self_set_rows(&mw_self_keys, after_doc.document());
 
     // A token still standing in a claim-link position refuses instead of
     // landing. A birth has no pre-image, so "introduced" and "present" are the
@@ -2484,6 +2538,7 @@ pub fn create_with_cache(
             dry: true,
             // § A.2.1: intents ride non-dry successes only.
             intents: None,
+            self_set,
         });
     }
 
@@ -2525,6 +2580,7 @@ pub fn create_with_cache(
         verdicts,
         dry: false,
         intents: Some(mw_intents),
+        self_set,
     })
 }
 
