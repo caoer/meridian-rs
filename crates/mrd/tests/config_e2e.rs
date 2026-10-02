@@ -43,6 +43,16 @@ path: {}
     )
 }
 
+/// [`single`] plus a `^config` block whose `repos_root` names `repos` for the
+/// `field-notes` wiki — a repos root the file declares and no mount binds.
+fn single_with_repos_root(home: &Path, repos: &Path) -> String {
+    format!(
+        "{}\n```starlark\ndef config():\n    return {{\"repos_root\": {{\"field-notes\": \"{}\"}}}}\n```\n^config\n",
+        single(home),
+        repos.display()
+    )
+}
+
 /// Create a root under the sandbox and write its self-declaration.
 fn declare_root(home: &Path, name: &str) -> std::path::PathBuf {
     let root = home.join("roots").join(name);
@@ -543,7 +553,13 @@ fn the_bridge_agrees_silently_diverges_loudly_and_never_moves_the_exit_code() {
 #[test]
 fn the_json_face_carries_the_bridge_and_nulls_the_mount_on_divergence() {
     let home = tempfile::tempdir().expect("tempdir");
-    std::fs::write(home.path().join("MERIDIAN.md"), single(home.path())).expect("write");
+    let repos = home.path().join("repos");
+    std::fs::create_dir_all(&repos).expect("create");
+    std::fs::write(
+        home.path().join("MERIDIAN.md"),
+        single_with_repos_root(home.path(), &repos),
+    )
+    .expect("write");
     let bound = home.path().join("roots").join("field-notes");
     let elsewhere = home.path().join("elsewhere");
     std::fs::create_dir_all(&elsewhere).expect("create");
@@ -585,6 +601,70 @@ fn the_json_face_carries_the_bridge_and_nulls_the_mount_on_divergence() {
     // state is how a downstream reader and an operator come to disagree.
     let human = run_bridged(home.path(), None, &[], Some(&bound), Some(&elsewhere));
     assert!(stdout(&human).contains("CCC_LLM_WIKI_REPOS_ROOT  diverges"));
+}
+
+/// The repos root's authority is `repos_root.<wiki>` in the `^config` block, not the mount
+/// table: a repos root the config declares and no mount binds agrees in silence; a different
+/// tree diverges with a note that names both values and neither a mount nor an unset; a config
+/// with no `repos_root` leaves it `unchecked` and says so. The exit code never moves.
+#[test]
+fn the_repos_root_is_checked_against_the_config_repos_root_not_the_mount_table() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let repos = home.path().join("repos");
+    std::fs::create_dir_all(&repos).expect("create");
+    let bound = home.path().join("roots").join("field-notes");
+    std::fs::write(
+        home.path().join("MERIDIAN.md"),
+        single_with_repos_root(home.path(), &repos),
+    )
+    .expect("write");
+
+    // Agreement: the declared repos root, spelled with a trailing slash.
+    let slashed = std::path::PathBuf::from(format!("{}/", repos.display()));
+    let out = run_bridged(home.path(), None, &[], Some(&bound), Some(&slashed));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("CCC_LLM_WIKI_REPOS_ROOT  agrees  -> repos_root.field-notes"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("the FILE WINS"),
+        "agreement is silent: {text}"
+    );
+
+    // Divergence: a different tree.
+    let elsewhere = home.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).expect("create");
+    let out = run_bridged(home.path(), None, &[], Some(&bound), Some(&elsewhere));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("CCC_LLM_WIKI_REPOS_ROOT  diverges"), "{text}");
+    assert!(
+        text.contains("repos_root.field-notes")
+            && text.contains(&repos.display().to_string())
+            && text.contains(&elsewhere.display().to_string()),
+        "the note names the key and both values: {text}"
+    );
+    assert!(
+        !text.contains("meridian-mount block for")
+            && !text.contains("or unset CCC_LLM_WIKI_REPOS_ROOT"),
+        "the fix names neither a mount nor an unset: {text}"
+    );
+
+    // No `repos_root` in the config: unchecked, with the reason on the line.
+    std::fs::write(home.path().join("MERIDIAN.md"), single(home.path())).expect("write");
+    let out = run_bridged(home.path(), None, &[], Some(&bound), Some(&repos));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("CCC_LLM_WIKI_REPOS_ROOT  unchecked"),
+        "{text}"
+    );
+    assert!(
+        text.contains("no repos_root to check it against"),
+        "the unchecked line says why: {text}"
+    );
 }
 
 /// The verb names WHICH PROCESS resolved the chain and HOW WIDE the divergence is, and warns

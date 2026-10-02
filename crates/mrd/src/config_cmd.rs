@@ -64,7 +64,12 @@ pub(crate) fn run(format: Format) -> Result<(), Fail> {
 
     // The bridge check never changes the exit code: a divergence between an env var and the file
     // is a note, because failing loud here would brick the CLI on every machine that exports it.
-    let bridged = config::bridge::check(&config::bridge::BridgeEnv::from_process(), &table);
+    // A `^config` block that refuses is a note for the same reason (schema §6a.5).
+    let bridged = config::bridge::check(
+        &config::bridge::BridgeEnv::from_process(),
+        &table,
+        &repos_root_decl(&resolution),
+    );
 
     match format {
         Format::Json => {
@@ -171,25 +176,7 @@ pub(crate) fn run_get(key: Option<&str>, format: Format) -> Result<(), Fail> {
         )));
     }
 
-    // Re-read rather than carry the bytes out of the parse: a `Config` holds the
-    // mount plane's findings, never the page, and this door needs the page.
-    let raw = std::fs::read_to_string(&path).map_err(|e| {
-        Fail::findings(format!(
-            "{}: {e}. Fix: make the file readable, then run this again.",
-            path.display()
-        ))
-    })?;
-    let nodes = syntax::parse(&raw);
-    let doc = model::build(raw, nodes);
-
-    let source = config_block(&doc, &path)?;
-    let block_id = format!("{}#^{CONFIG_ANCHOR}", path.display());
-    let value = effects::eval_value(
-        &effects::Rule::new(block_id, source),
-        CONFIG_ENTRY,
-        effects::EvalLimits::default(),
-    )
-    .map_err(|e| Fail::findings(e.to_string()))?;
+    let value = config_value(&path)?;
 
     let selected = match key {
         None => value,
@@ -206,6 +193,78 @@ pub(crate) fn run_get(key: Option<&str>, format: Format) -> Result<(), Fail> {
         Format::Human => println!("{}", human_value(&selected)),
     }
     Ok(())
+}
+
+/// What the `^config` block in the file at `path` returns, or the refusal that
+/// names why it returns nothing.
+fn config_value(path: &std::path::Path) -> Result<Value, Fail> {
+    // Re-read rather than carry the bytes out of the parse: a `Config` holds the
+    // mount plane's findings, never the page, and this door needs the page.
+    let raw = std::fs::read_to_string(path).map_err(|e| {
+        Fail::findings(format!(
+            "{}: {e}. Fix: make the file readable, then run this again.",
+            path.display()
+        ))
+    })?;
+    let nodes = syntax::parse(&raw);
+    let doc = model::build(raw, nodes);
+
+    let source = config_block(&doc, path)?;
+    let block_id = format!("{}#^{CONFIG_ANCHOR}", path.display());
+    effects::eval_value(
+        &effects::Rule::new(block_id, source),
+        CONFIG_ENTRY,
+        effects::EvalLimits::default(),
+    )
+    .map_err(|e| Fail::findings(e.to_string()))
+}
+
+/// The `repos_root` the `^config` block declares, as the bridge's data — the
+/// one key the engine reads (schema §6a.5). Never a refusal: a missing file, a
+/// refused block or an absent key is [`ReposRootDecl::Undeclared`] with its
+/// reason, and the bridge prints that reason on the `unchecked` line.
+///
+/// [`ReposRootDecl::Undeclared`]: config::bridge::ReposRootDecl::Undeclared
+fn repos_root_decl(resolution: &config::Resolution) -> config::bridge::ReposRootDecl {
+    use config::bridge::ReposRootDecl;
+    const KEY: &str = "repos_root";
+
+    let path = resolution.path();
+    if matches!(resolution, config::Resolution::Absent { .. }) {
+        return ReposRootDecl::Undeclared(format!("no config file at {}", path.display()));
+    }
+    let value = match config_value(path) {
+        Ok(value) => value,
+        // The refusal's first sentence names what is wrong; its Fix belongs to
+        // `mrd config get`, which prints it whole.
+        Err(fail) => {
+            let first = fail.message.lines().next().unwrap_or_default();
+            let what = first
+                .split(" Fix:")
+                .next()
+                .unwrap_or(first)
+                .trim_end_matches('.');
+            return ReposRootDecl::Undeclared(what.to_owned());
+        }
+    };
+    match value.get(KEY) {
+        None => ReposRootDecl::Undeclared(format!(
+            "{}#^{CONFIG_ANCHOR} declares no `{KEY}`",
+            path.display()
+        )),
+        Some(Value::String(machine)) => ReposRootDecl::Machine(machine.clone()),
+        Some(Value::Object(by_wiki)) => ReposRootDecl::ByWiki(
+            by_wiki
+                .iter()
+                .filter_map(|(wiki, path)| Some((wiki.clone(), path.as_str()?.to_owned())))
+                .collect(),
+        ),
+        Some(other) => ReposRootDecl::Undeclared(format!(
+            "{}#^{CONFIG_ANCHOR} declares `{KEY}` as {}, not a path or a mapping of wiki to path",
+            path.display(),
+            type_word(other)
+        )),
+    }
 }
 
 /// The `^config` block's starlark source, or the refusal that names what stands
@@ -404,12 +463,16 @@ fn to_json(
             "kind": t.kind,
             "config": t.config,
         })).collect::<Vec<_>>(),
-        // `mount` is null on anything but agreement — "the file wins" as data, not as prose.
+        // `mount` is null on anything but a wiki-path agreement — "the file wins" as data, not as
+        // prose; the repos root is never a root, so its agreement rides `against` alone.
         "bridge": bridged.iter().map(|b| json!({
             "var": b.var().name(),
             "state": b.state().word(),
             "mount": b.mount(),
+            // The root name or the `repos_root` key the variable agreed with.
+            "against": b.against(),
             "canonical": b.canonical().map(|p| p.display().to_string()),
+            "detail": b.state().detail(),
             "report": b.report(),
         })).collect::<Vec<_>>(),
     })
@@ -559,8 +622,8 @@ fn render_human(
     let _ = writeln!(out, "bridge ({}):", bridged.len());
     for b in bridged {
         let _ = write!(out, "  {}  {}", b.var().name(), b.state().word());
-        if let Some(mount) = b.mount() {
-            let _ = write!(out, "  -> {mount}");
+        if let Some(against) = b.against() {
+            let _ = write!(out, "  -> {against}");
         }
         if let Some(canonical) = b.canonical() {
             let _ = write!(out, "  {}", canonical.display());
@@ -568,6 +631,10 @@ fn render_human(
         out.push('\n');
         if let Some(report) = b.report() {
             let _ = writeln!(out, "      {report}");
+        } else if let config::bridge::BridgeState::Unchecked { detail } = b.state() {
+            // An unchecked variable says what the file lacks — a misspelled
+            // `repos_root` reads as missing here, never as agreement.
+            let _ = writeln!(out, "      {detail}");
         }
     }
 

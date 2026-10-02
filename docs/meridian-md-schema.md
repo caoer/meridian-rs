@@ -576,8 +576,8 @@ machine:
 
 ### 6a.4 What is deliberately not specified
 
-- **No key schema.** A future engine-read key inside `config()`
-  reopens §4's misspelled-optional-key hazard and must state how it closes it.
+- **No key schema.** An engine-read key inside `config()` reopens §4's misspelled-optional-key
+  hazard and must state how it closes it. The one engine-read key is `repos_root` (§6a.5).
 - **One block, not many.** A second `^config` is ambiguous, not a merge; merging would need a
   precedence rule nobody has ruled on.
 - **No list index.** A KEY segment addresses a mapping's member and nothing else; indexing a list
@@ -586,6 +586,21 @@ machine:
 - **No wire op.** The CLI reads the block in the calling process, from the file that process's own
   chain resolves (`mrd config`'s own `answered by: this process`). A daemon serving its own
   `MERIDIAN.md` would answer about a different machine's config.
+
+### 6a.5 `repos_root` — the one key the engine reads
+
+`mrd config` checks `CCC_LLM_WIKI_REPOS_ROOT` against `repos_root.<wiki>`, where `<wiki>` is the
+bound root `CCC_LLM_WIKI_PATH` agrees with; a `repos_root` that is a string is one machine-wide
+value and needs no wiki. The two canonicalize by the mount table's rule; equal is `agrees`,
+different is `diverges` with a note naming both values and the two places to correct. The repos
+root is never a mount: mounting it would put every repository under every serving face.
+
+The misspelled-key hazard closes on the output line. A variable with no value to be checked against
+prints `unchecked` with the reason — no `^config` block, no `repos_root` key, no
+`repos_root.<wiki>` member, or no wiki named — so a misspelled key reads as `unchecked … no
+repos_root`, never as agreement. A `^config` block that refuses (§6a.2) also lands as `unchecked`
+with the refusal's words: the check is a note and never changes `mrd config`'s exit code, so a
+broken config block cannot cost the mount table its verb.
 
 ## 7. The self-hosting rev
 
