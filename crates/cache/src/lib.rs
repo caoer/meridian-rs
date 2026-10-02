@@ -107,7 +107,10 @@ pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 /// deep `…/evals/report/SCHEMA.md`) at fingerprints that will never advance
 /// (card `mrd-sql-cache-key`). Same class as `s8`–`s10`. From here a resolver
 /// change bumps `model::RESOLVE_REV`, which rides the segment beside the salt.
-pub const SCHEMA_SALT: &str = "s11";
+///
+/// `s12`: `link.candidates` — the resolver's candidate set as a column on both
+/// the ephemeral projection and `hist.link` (`wire-contract.md` § A.11).
+pub const SCHEMA_SALT: &str = "s12";
 
 /// Default GC threshold: a drawer whose last-use is older than this is reapable.
 /// 30 days, mirroring Cargo's registry auto-GC horizon. A path-keyed drawer store

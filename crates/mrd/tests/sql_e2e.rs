@@ -192,6 +192,45 @@ fn cache_appends_are_delta_grain_across_invocations() {
     );
 }
 
+/// `link.candidates` through the cache lane: the set a written target matches
+/// when there is a choice, and a later page that joins the set without
+/// moving the pick reaches the unchanged linking page on the next append.
+#[test]
+fn link_candidates_list_the_choice_and_follow_a_page_added_later() {
+    let sb = sandbox();
+    let ws = write_bare_ws(&sb, "candidates", &[("p.md", "# P\n\n[[x]]\n[[y]]\n")]);
+    for (rel, content) in [
+        ("a/x.md", "# A x\n"),
+        ("b/x.md", "# B x\n"),
+        ("y.md", "# Y\n"),
+    ] {
+        let file = ws.join(rel);
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+        std::fs::write(file, content).expect("write");
+    }
+    let query = "SELECT target_raw, dest_path, candidates FROM link ORDER BY target_raw";
+
+    let out = sb.run(&ws, &["sql", "--json", query]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        json(&out)["rows"],
+        serde_json::json!([["x", "a/x.md", ["a/x.md", "b/x.md"]], ["y", "y.md", null]])
+    );
+
+    // A longer path joins the set; the pick stays a/x.md and p.md is unchanged.
+    std::fs::create_dir_all(ws.join("c/deep")).expect("dir");
+    std::fs::write(ws.join("c/deep/x.md"), "# Deep x\n").expect("write");
+    let out = sb.run(&ws, &["sql", "--json", query]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        json(&out)["rows"],
+        serde_json::json!([
+            ["x", "a/x.md", ["a/x.md", "b/x.md", "c/deep/x.md"]],
+            ["y", "y.md", null]
+        ])
+    );
+}
+
 #[test]
 fn rebuild_recreates_the_file_at_gen_one() {
     let sb = sandbox();
