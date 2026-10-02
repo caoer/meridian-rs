@@ -1298,8 +1298,9 @@ the wire shape is ruled here.)*
 - **Response field `armed.self_set`** (splice, single form; `self_set`
   top-level on the birth response): every frontmatter key a middleware
   `set_field` set on the caller's own file. Absent when middleware set
-  nothing there, so the response bytes are those of a write without it;
-  present on a dry run too, since it describes the bytes the write lands.
+  nothing there, on a dry run as on a landed write, so the response bytes
+  are those of a write without it; when middleware set a key, the dry reply
+  carries the rows too, since they describe the bytes the write would land.
   V1 rows are exactly:
 
   ```json
