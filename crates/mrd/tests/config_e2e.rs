@@ -665,6 +665,32 @@ fn the_repos_root_is_checked_against_the_config_repos_root_not_the_mount_table()
         text.contains("no repos_root to check it against"),
         "the unchecked line says why: {text}"
     );
+
+    // A block that faults at evaluation: unchecked, the exit code unmoved, and the line sends the
+    // reader to the verb that prints the traceback.
+    std::fs::write(
+        home.path().join("MERIDIAN.md"),
+        format!(
+            "{}\n```starlark\ndef config():\n    fail(\"boom\")\n```\n^config\n",
+            single(home.path())
+        ),
+    )
+    .expect("write");
+    let out = run_bridged(home.path(), None, &[], Some(&bound), Some(&repos));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("CCC_LLM_WIKI_REPOS_ROOT  unchecked"),
+        "{text}"
+    );
+    assert!(
+        text.contains("refuses to evaluate (`mrd config get` prints why)"),
+        "the line names the verb that prints the cause: {text}"
+    );
+    assert!(
+        !text.contains("Traceback"),
+        "a traceback header is not a reason: {text}"
+    );
 }
 
 /// The verb names WHICH PROCESS resolved the chain and HOW WIDE the divergence is, and warns

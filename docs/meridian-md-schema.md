@@ -598,9 +598,11 @@ root is never a mount: mounting it would put every repository under every servin
 The misspelled-key hazard closes on the output line. A variable with no value to be checked against
 prints `unchecked` with the reason — no `^config` block, no `repos_root` key, no
 `repos_root.<wiki>` member, or no wiki named — so a misspelled key reads as `unchecked … no
-repos_root`, never as agreement. A `^config` block that refuses (§6a.2) also lands as `unchecked`
-with the refusal's words: the check is a note and never changes `mrd config`'s exit code, so a
-broken config block cannot cost the mount table its verb.
+repos_root`, never as agreement. A `^config` block that refuses (§6a.2) also lands as `unchecked`:
+a missing or ambiguous block and a parse error carry the refusal's first sentence, and a block
+that faults at evaluation says it refuses to evaluate and that `mrd config get` prints why. The
+check is a note and never changes `mrd config`'s exit code, so a broken config block cannot cost the
+mount table its verb.
 
 ## 7. The self-hosting rev
 

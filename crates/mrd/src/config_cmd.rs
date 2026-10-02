@@ -176,7 +176,7 @@ pub(crate) fn run_get(key: Option<&str>, format: Format) -> Result<(), Fail> {
         )));
     }
 
-    let value = config_value(&path)?;
+    let value = config_value(&path).map_err(ValueError::into_fail)?;
 
     let selected = match key {
         None => value,
@@ -195,28 +195,46 @@ pub(crate) fn run_get(key: Option<&str>, format: Format) -> Result<(), Fail> {
     Ok(())
 }
 
-/// What the `^config` block in the file at `path` returns, or the refusal that
-/// names why it returns nothing.
-fn config_value(path: &std::path::Path) -> Result<Value, Fail> {
+/// Why the `^config` block returned no value: the file or the block refused, or
+/// the evaluator did.
+enum ValueError {
+    /// The file is unreadable, or no single `starlark` block carries `^config`.
+    Block(Fail),
+    /// The block's source would not parse, faulted, or returned no data.
+    Eval(effects::EvalError),
+}
+
+impl ValueError {
+    fn into_fail(self) -> Fail {
+        match self {
+            ValueError::Block(fail) => fail,
+            ValueError::Eval(e) => Fail::findings(e.to_string()),
+        }
+    }
+}
+
+/// What the `^config` block in the file at `path` returns, or why it returns
+/// nothing.
+fn config_value(path: &std::path::Path) -> Result<Value, ValueError> {
     // Re-read rather than carry the bytes out of the parse: a `Config` holds the
     // mount plane's findings, never the page, and this door needs the page.
     let raw = std::fs::read_to_string(path).map_err(|e| {
-        Fail::findings(format!(
+        ValueError::Block(Fail::findings(format!(
             "{}: {e}. Fix: make the file readable, then run this again.",
             path.display()
-        ))
+        )))
     })?;
     let nodes = syntax::parse(&raw);
     let doc = model::build(raw, nodes);
 
-    let source = config_block(&doc, path)?;
+    let source = config_block(&doc, path).map_err(ValueError::Block)?;
     let block_id = format!("{}#^{CONFIG_ANCHOR}", path.display());
     effects::eval_value(
         &effects::Rule::new(block_id, source),
         CONFIG_ENTRY,
         effects::EvalLimits::default(),
     )
-    .map_err(|e| Fail::findings(e.to_string()))
+    .map_err(ValueError::Eval)
 }
 
 /// The `repos_root` the `^config` block declares, as the bridge's data — the
@@ -235,9 +253,9 @@ fn repos_root_decl(resolution: &config::Resolution) -> config::bridge::ReposRoot
     }
     let value = match config_value(path) {
         Ok(value) => value,
-        // The refusal's first sentence names what is wrong; its Fix belongs to
-        // `mrd config get`, which prints it whole.
-        Err(fail) => {
+        // A block refusal's first sentence names what is wrong; its Fix belongs
+        // to `mrd config get`, which prints it whole.
+        Err(ValueError::Block(fail)) => {
             let first = fail.message.lines().next().unwrap_or_default();
             let what = first
                 .split(" Fix:")
@@ -245,6 +263,18 @@ fn repos_root_decl(resolution: &config::Resolution) -> config::bridge::ReposRoot
                 .unwrap_or(first)
                 .trim_end_matches('.');
             return ReposRootDecl::Undeclared(what.to_owned());
+        }
+        // A parse error is one line that names the fault.
+        Err(ValueError::Eval(e @ effects::EvalError::Parse { .. })) => {
+            return ReposRootDecl::Undeclared(e.to_string());
+        }
+        // An evaluation error is a multi-line traceback whose cause is not on
+        // its first line, so the reader is sent to the verb that prints it.
+        Err(ValueError::Eval(_)) => {
+            return ReposRootDecl::Undeclared(format!(
+                "{}#^{CONFIG_ANCHOR} refuses to evaluate (`mrd config get` prints why)",
+                path.display()
+            ));
         }
     };
     match value.get(KEY) {

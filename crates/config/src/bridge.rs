@@ -16,8 +16,8 @@
 //! against `repos_root.<wiki>` from the `^config` block, `<wiki>` being the root
 //! the wiki path agrees with.
 //!
-//! When the variable and the file disagree, the file wins and the divergence is
-//! reported once per process, never silently. [`check`] has no `Err` variant,
+//! When a variable and the file disagree, the divergence is reported once per
+//! process, never silently; for the wiki path the file wins. [`check`] has no `Err` variant,
 //! and [`Bridged::mount`] is `Some` only on a wiki-path agreement — a variable
 //! stating a tree the table does not bind names no root at all.
 //!
@@ -102,9 +102,8 @@ pub enum BridgeState {
         /// The canonical path both spellings resolve to.
         canonical: PathBuf,
     },
-    /// The variable states a tree the file does not declare. The file wins:
-    /// this variable names no root, and the divergence is reported once per
-    /// process.
+    /// The variable states a tree the file does not declare. The variable
+    /// names no root, and the divergence is reported once per process.
     Diverges {
         /// The path the variable states, verbatim — the spelling an operator
         /// will grep their shell profile for.
@@ -395,7 +394,7 @@ fn check_repos_root(
         ", which does not resolve on this machine"
     };
     let detail = format!(
-        "{name} states {stated}{unresolved}, but the ^config block declares {key} = {declared} — two different trees, and the FILE WINS."
+        "{name} states {stated}{unresolved}, but the ^config block declares {key} = {declared} — two different trees."
     );
     let report = latch.take(var).then(|| {
         format!(
