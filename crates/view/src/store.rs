@@ -804,7 +804,8 @@ const FACE_SCHEMAS: &[&str] = &["main", "hist"];
 
 /// The lines a column miss adds after `DuckDB`'s own words: one
 /// `<relation> columns: a, b, c` per face relation the error names or the
-/// statement reads from, in that order, each listed once. `DuckDB`'s
+/// statement mentions ([`first_mention`]), the named one first and the rest in
+/// statement order, each listed once. `DuckDB`'s
 /// Did-you-mean offers one or two near names (`about` on `record` offers only
 /// `status`), so a caller who guessed a column had no way to learn the real
 /// ones short of a schema probe.
@@ -822,30 +823,37 @@ fn column_lists(conn: &Connection, query: &str, error: &str) -> String {
     let Ok(face) = face_columns(conn) else {
         return String::new();
     };
-    let read = statement_relations(query);
-    let mut wanted: Vec<(String, String)> = Vec::new();
+    let text = query.to_ascii_lowercase();
+    let mut read: Vec<(usize, &(String, String))> = face
+        .keys()
+        .filter_map(|key| first_mention(&text, key).map(|at| (at, key)))
+        .collect();
+    read.sort();
+    let mut wanted: Vec<&(String, String)> = Vec::new();
     if let Some(name) = error_relation(error) {
         // The error spells the relation as the statement bound it: an alias
         // names nothing here, and a bare name read from `hist` is that one.
         let name = name.to_lowercase();
-        let schema = read
+        let named = read
             .iter()
+            .map(|(_, key)| *key)
             .find(|(_, n)| *n == name)
-            .map_or_else(|| "main".to_owned(), |(s, _)| s.clone());
-        wanted.push((schema, name));
+            .or_else(|| {
+                face.get_key_value(&("main".to_owned(), name))
+                    .map(|(k, _)| k)
+            });
+        wanted.extend(named);
     }
-    wanted.extend(read);
+    wanted.extend(read.into_iter().map(|(_, key)| key));
 
     let mut seen = BTreeSet::new();
     let mut out = String::new();
     for key in wanted {
-        let Some(columns) = face.get(&key) else {
-            continue;
-        };
-        if !seen.insert(key.clone()) {
+        if !seen.insert(key) {
             continue;
         }
-        let (schema, name) = &key;
+        let (schema, name) = key;
+        let columns = &face[key];
         let label = if schema == "main" {
             name.clone()
         } else {
@@ -904,149 +912,21 @@ fn face_columns(conn: &Connection) -> duckdb::Result<BTreeMap<(String, String), 
     Ok(face)
 }
 
-/// One lexical token of a statement, as far as relation references need.
-#[derive(Debug, PartialEq)]
-enum Tok {
-    /// An identifier or keyword; `true` when it was double-quoted.
-    Word(String, bool),
-    Dot,
-    Comma,
-    Open,
-    Close,
-    Other,
-}
-
-/// Split a statement into [`Tok`]s, skipping comments, string literals and
-/// whitespace. Not a SQL parser: it only has to find the names that follow
-/// FROM, JOIN, INTO and UPDATE, and the commas of a FROM list.
-fn tokens(query: &str) -> Vec<Tok> {
-    let chars: Vec<char> = query.chars().collect();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        let next = chars.get(i + 1).copied();
-        if c.is_whitespace() {
-            i += 1;
-        } else if c == '-' && next == Some('-') {
-            while i < chars.len() && chars[i] != '\n' {
-                i += 1;
-            }
-        } else if c == '/' && next == Some('*') {
-            i += 2;
-            while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
-                i += 1;
-            }
-            i += 2;
-        } else if c == '\'' || c == '"' {
-            // `''` / `""` inside the quotes is the escaped quote itself.
-            let mut text = String::new();
-            i += 1;
-            while i < chars.len() {
-                if chars[i] == c {
-                    if chars.get(i + 1) == Some(&c) {
-                        text.push(c);
-                        i += 2;
-                        continue;
-                    }
-                    break;
-                }
-                text.push(chars[i]);
-                i += 1;
-            }
-            i += 1;
-            out.push(if c == '"' {
-                Tok::Word(text, true)
-            } else {
-                Tok::Other
-            });
-        } else if c.is_alphabetic() || c == '_' {
-            let start = i;
-            while i < chars.len()
-                && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '$')
-            {
-                i += 1;
-            }
-            out.push(Tok::Word(chars[start..i].iter().collect(), false));
-        } else {
-            out.push(match c {
-                '.' => Tok::Dot,
-                ',' => Tok::Comma,
-                '(' => Tok::Open,
-                ')' => Tok::Close,
-                _ => Tok::Other,
-            });
-            i += 1;
-        }
-    }
-    out
-}
-
-/// The relations a statement names where a relation goes — after FROM, JOIN,
-/// INTO, UPDATE, or a comma of a FROM list — as lowercase `(schema, name)`.
-/// A bare name is `main`'s; `x.y` and `db.x.y` carry their own schema.
-/// Whether the name exists is the catalog's question, not this one's.
-fn statement_relations(query: &str) -> Vec<(String, String)> {
-    let toks = tokens(query);
-    let mut out = Vec::new();
-    // One flag per parenthesis depth: is a comma here a FROM-list comma?
-    let mut in_from = vec![false];
-    let mut expect = false;
-    let mut i = 0;
-    while i < toks.len() {
-        match &toks[i] {
-            Tok::Word(first, quoted) => {
-                let mut chain = vec![first.to_lowercase()];
-                while let (Some(Tok::Dot), Some(Tok::Word(w, _))) =
-                    (toks.get(i + 1), toks.get(i + 2))
-                {
-                    chain.push(w.to_lowercase());
-                    i += 2;
-                }
-                if expect {
-                    expect = false;
-                    let n = chain.len();
-                    let schema = if n >= 2 {
-                        chain[n - 2].clone()
-                    } else {
-                        "main".to_owned()
-                    };
-                    out.push((schema, chain[n - 1].clone()));
-                } else if !quoted && chain.len() == 1 {
-                    let top = in_from.last_mut().expect("depth 0 is never popped");
-                    match chain[0].as_str() {
-                        "from" => {
-                            expect = true;
-                            *top = true;
-                        }
-                        "join" | "into" | "update" => expect = true,
-                        "where" | "group" | "having" | "order" | "limit" | "offset" | "qualify"
-                        | "window" | "union" | "except" | "intersect" | "on" | "using"
-                        | "select" | "set" | "values" | "returning" => *top = false,
-                        _ => {}
-                    }
-                }
-            }
-            Tok::Comma => {
-                if *in_from.last().expect("depth 0 is never popped") {
-                    expect = true;
-                }
-            }
-            Tok::Open => {
-                expect = false;
-                in_from.push(false);
-            }
-            Tok::Close => {
-                expect = false;
-                if in_from.len() > 1 {
-                    in_from.pop();
-                }
-            }
-            Tok::Dot | Tok::Other => expect = false,
-        }
-        i += 1;
-    }
-    out
+/// Where `text` (a statement, ASCII-lowercased) first names the face
+/// relation `key` as a whole word: a `hist` relation spelled `hist.<name>`, a
+/// `main` one by any other spelling. Not a parser — a name that appears as a
+/// column or inside a literal counts too, which costs one extra list line.
+fn first_mention(text: &str, (schema, name): &(String, String)) -> Option<usize> {
+    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    text.match_indices(name.as_str())
+        .map(|(at, _)| at)
+        .find(|&at| {
+            let before = &text[..at];
+            let after = &text[at + name.len()..];
+            !before.chars().next_back().is_some_and(word)
+                && !after.chars().next().is_some_and(word)
+                && before.ends_with("hist.") == (schema == "hist")
+        })
 }
 
 /// The fingerprint-pinned append-only cache file, open read-write.
@@ -3909,6 +3789,29 @@ mod column_miss_tests {
         assert_eq!(
             got,
             format!("{}\nbody columns: {columns}", taught_alone(&store, query))
+        );
+    }
+
+    /// A miss in a join of two face relations lists both, each once, though
+    /// the statement names each more than once; the relation the error names
+    /// comes first.
+    #[test]
+    fn a_column_miss_in_a_join_lists_both_relations_once() {
+        let (_dir, store) = store();
+        let query = "SELECT doc.bytes, record.about FROM doc JOIN record ON record.path = doc.path";
+        let got = store
+            .query(query)
+            .expect("lane")
+            .expect_err("about is no column");
+        assert!(got.contains("Table \"record\""), "a qualified miss: {got}");
+        assert_eq!(
+            got,
+            format!(
+                "{}\nrecord columns: {}\ndoc columns: {}",
+                taught_alone(&store, query),
+                listed(&store, "main", "record"),
+                listed(&store, "main", "doc"),
+            )
         );
     }
 
