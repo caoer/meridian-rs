@@ -742,3 +742,204 @@ fn a_birth_through_props_is_composed_before_middleware_and_still_stamped() {
         "body verbatim: {born}"
     );
 }
+
+// ── `self_set`: what middleware set on the caller's own file ────────────────
+
+/// A `self_set` row as a comparable tuple.
+fn rows(set: &[wire::MwSelfSet]) -> Vec<(&str, &str, &str)> {
+    set.iter()
+        .map(|r| (r.rule_id.as_str(), r.key.as_str(), r.value.as_str()))
+        .collect()
+}
+
+fn plain_birth(path: &str, body: &str) -> CreateArgs {
+    CreateArgs {
+        id: None,
+        path: Path(path.into()),
+        body: body.into(),
+        actor: None,
+        now: None,
+        if_root: None,
+        dry: false,
+        fields: BTreeMap::new(),
+        props: BTreeMap::default(),
+    }
+}
+
+/// The create reply names every key middleware set on the born file: rules in
+/// evaluation order, keys sorted within a rule, each value as the landed bytes
+/// serve it on the props plane (a quoted scalar decoded, a flow list as text).
+#[test]
+fn create_reply_names_each_key_middleware_set_on_the_born_file() {
+    let (_dir, root) = tmp_ws();
+    let identity = mw_page(
+        "000-born-identity",
+        "def middleware(ctx):\n    if ctx.op != \"create\":\n        return\n    set_field(path = ctx.after.path, key = \"spawned-by\", value = \"[[64cb50a1]]\")\n    set_field(path = ctx.after.path, key = \"created\", value = \"2026-10-02T16:29\")\n",
+    );
+    let card = mw_page(
+        "025-task-card",
+        "def middleware(ctx):\n    if ctx.op != \"create\":\n        return\n    set_field(path = ctx.after.path, key = \"type\", value = \"task\")\n    set_field(path = ctx.after.path, key = \"tags\", value = \"[type/task]\")\n    set_field(path = ctx.after.path, key = \"status\", value = \"Todo\")\n",
+    );
+    write_page(&root, "rules/identity.md", &identity);
+    write_page(&root, "rules/card.md", &card);
+    arm(
+        &root,
+        &[
+            (
+                "rules/identity.md",
+                &identity,
+                "000-born-identity",
+                Mode::Block,
+            ),
+            ("rules/card.md", &card, "025-task-card", Mode::Block),
+        ],
+    );
+
+    let out = create(&root, None, &plain_birth("tasks/born.md", "# Born\n"), &[])
+        .expect("the stamped birth lands");
+    assert_eq!(
+        rows(&out.self_set),
+        vec![
+            ("000-born-identity", "created", "2026-10-02T16:29"),
+            ("000-born-identity", "spawned-by", "[[64cb50a1]]"),
+            ("025-task-card", "status", "Todo"),
+            ("025-task-card", "tags", "[type/task]"),
+            ("025-task-card", "type", "task"),
+        ],
+    );
+    let json = serde_json::to_value(wire_serve::write::create_response(
+        Path("tasks/born.md".into()),
+        &out,
+    ))
+    .expect("serializes");
+    assert_eq!(
+        json["self_set"][1],
+        serde_json::json!({"rule_id": "000-born-identity", "key": "spawned-by", "value": "[[64cb50a1]]"}),
+        "the reply carries the rows: {json}"
+    );
+}
+
+/// A birth middleware sets nothing on: the reply bytes are today's — no
+/// `self_set` key, every other key where it was.
+#[test]
+fn create_reply_bytes_stand_when_middleware_sets_nothing() {
+    let (_dir, root) = tmp_ws();
+    let page = mw_page(
+        "000-splice-only",
+        "def middleware(ctx):\n    if ctx.op == \"create\":\n        return\n    set_field(path = ctx.after.path, key = \"touched\", value = \"yes\")\n",
+    );
+    write_page(&root, "rules/splice-only.md", &page);
+    arm(
+        &root,
+        &[(
+            "rules/splice-only.md",
+            &page,
+            "000-splice-only",
+            Mode::Block,
+        )],
+    );
+
+    let out = create(
+        &root,
+        None,
+        &plain_birth("tasks/plain.md", "---\nstatus: open\n---\n# Plain\n"),
+        &[],
+    )
+    .expect("the birth lands");
+    assert!(out.self_set.is_empty());
+    let bytes = serde_json::to_string(&wire_serve::write::create_response(
+        Path("tasks/plain.md".into()),
+        &out,
+    ))
+    .expect("serializes");
+    let seq = out
+        .committed
+        .as_ref()
+        .map(|f| format!(",\"seq\":{}", f.delta.seq))
+        .unwrap_or_default();
+    assert_eq!(
+        bytes,
+        format!(
+            "{{\"path\":\"tasks/plain.md\",\"file_rev_after\":\"{}\",\"root_before\":\"{}\",\
+             \"root_after\":\"{}\"{seq},\"verdicts\":[],\"intents\":[]}}",
+            out.file_rev_after.0,
+            out.root_before.0,
+            out.root_after.as_ref().expect("landed").0,
+        ),
+    );
+}
+
+/// The splice reply's `armed` group names the keys middleware set on the
+/// caller's own file — never the caller's own edits.
+#[test]
+fn splice_armed_names_each_key_middleware_set_on_the_callers_file() {
+    let (_dir, root) = tmp_ws();
+    write_page(&root, "tasks/fix.md", CARD);
+    let page = mw_page(
+        "000-stamp-session",
+        "def middleware(ctx):\n    session = ctx.fields.get(\"session\")\n    if session != None:\n        set_field(path = ctx.after.path, key = \"session\", value = session)\n",
+    );
+    write_page(&root, "rules/stamp.md", &page);
+    arm(
+        &root,
+        &[("rules/stamp.md", &page, "000-stamp-session", Mode::Block)],
+    );
+
+    let out = splice(
+        &root,
+        None,
+        &status_splice("tasks/fix.md", "review", &[("session", "0ecc9d6a")]),
+        &[],
+        None,
+    )
+    .expect("the transformed write lands");
+    let (armed, _) = splice_parts(&out.body);
+    assert_eq!(
+        rows(&armed.self_set),
+        vec![("000-stamp-session", "session", "0ecc9d6a")],
+    );
+}
+
+/// A splice middleware sets nothing on: the `armed` group serializes exactly
+/// today's keys.
+#[test]
+fn splice_armed_bytes_stand_when_middleware_sets_nothing() {
+    let (_dir, root) = tmp_ws();
+    write_page(&root, "tasks/fix.md", CARD);
+    let page = mw_page(
+        "000-create-only",
+        "def middleware(ctx):\n    if ctx.op != \"create\":\n        return\n    set_field(path = ctx.after.path, key = \"touched\", value = \"yes\")\n",
+    );
+    write_page(&root, "rules/create-only.md", &page);
+    arm(
+        &root,
+        &[(
+            "rules/create-only.md",
+            &page,
+            "000-create-only",
+            Mode::Block,
+        )],
+    );
+
+    let out = splice(
+        &root,
+        None,
+        &status_splice("tasks/fix.md", "review", &[]),
+        &[],
+        None,
+    )
+    .expect("the write lands");
+    let json = serde_json::to_value(&out.body).expect("serializes");
+    let mut keys: Vec<&str> = json["armed"]
+        .as_object()
+        .expect("armed is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["edits", "file_rev_after", "intents", "path", "set"],
+        "{json}"
+    );
+}
