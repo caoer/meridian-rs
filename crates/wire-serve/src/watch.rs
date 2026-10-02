@@ -326,9 +326,9 @@ struct Classified {
 }
 
 /// The reaction feeder on the external arm, through the same `wire-serve` leaf
-/// the guarded write uses (`docs/laws.md` Law 3: one implementation, two
-/// hosts). The before/after documents are already in hand, so the feeder reads
-/// nothing back from disk.
+/// the guarded write uses (`docs/laws.md` Law 3: one implementation; the host
+/// shares the leaves, not the dispatch shell). The before/after documents are
+/// already in hand, so the feeder reads nothing back from disk.
 ///
 /// No actor: an edit made behind the engine's back has no acting caller, so
 /// `actor` stays absent rather than invented (§7.1); with no response to carry
