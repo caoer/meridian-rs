@@ -7,7 +7,7 @@
 //! door refuses by §1, `walk` WALKED it, `links` SERVED it, `repair` accepted
 //! it and scanned 0, `realise` OPENED it, and `run` EXECUTED it — including a
 //! page entirely OUTSIDE the workspace, writing the receipt into the
-//! workspace's own `receipts/run.md`. Six doors also spoke six different
+//! workspace's own `.meridian/receipts/run.md`. Six doors also spoke six different
 //! refusals for one bare-name mistake, and `realise` leaked a raw `os error 2`.
 //!
 //! Two family gates:
@@ -183,7 +183,7 @@ fn an_absolute_path_refuses_at_every_door_in_the_family_voice() {
 // ---------------------------------------------------------------------------
 // Gate 2 — the outside-workspace run: refuses, executes nothing, writes no
 // receipt. The measured defect ran the task AND receipted it into the
-// workspace's own `receipts/run.md`.
+// workspace's own `.meridian/receipts/run.md`.
 // ---------------------------------------------------------------------------
 
 #[test]

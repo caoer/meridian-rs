@@ -49,7 +49,7 @@ use run::runner::{self, RunSpec, TaskOutcome};
 /// file per realise plane, beside the run plane's [`run::executor::RECEIPT_FILE`]
 /// under `.meridian/receipts/` (address policy is the caller's — this is the
 /// realise convention).
-const REALISE_RECEIPT_PATH: &str = ".meridian/receipts/realise.md";
+const REALISE_RECEIPT_PATH: &str = concat!(run::receipts_dir!(), "/realise.md");
 
 /// The verdict of observing and checking one claim against the current tree —
 /// a pure read, no write, no cap (d2 §5.4).

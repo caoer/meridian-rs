@@ -8,7 +8,7 @@
 //! module the law was enforced at `read` and nowhere else: handed the same
 //! absolute path, `walk` walked it, `links` served it, `repair` accepted it,
 //! `realise` opened it, and `run` executed it — writing the receipt of a page
-//! OUTSIDE the workspace into the workspace's own `receipts/run.md` (measured
+//! OUTSIDE the workspace into the workspace's own `.meridian/receipts/run.md` (measured
 //! 2026-08-15 at `073d184f1`, re-measured at `cac5bc8b`).
 //!
 //! The respell computation stays ONE implementation for every refusal that
