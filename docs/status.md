@@ -507,7 +507,16 @@ mrd cache clean [--all] reap stale / orphaned / retired drawers. "Orphaned"
  that could not be examined keeps its drawer and is
  listed as kept (`skipped_unexaminable` in `--json`),
  because that lookup authorizes a removal
-mrd daemon run the registry daemon in the foreground
+mrd daemon run the registry daemon in the foreground. At start
+ and then at most once a day (the `.last-gc` stamp,
+ shared with `init` and `unregister`) it runs the
+ automatic sweep: a drawer more than 30 days past its
+ last use, or one whose workspace was OBSERVED gone
+ (the probe `cache clean` uses — an unexaminable path
+ keeps its drawer), is removed unless its lock is held.
+ Each minute it registers and stamps the drawers of
+ its resident workspaces, so a workspace in use never
+ ages out and never holds a drawer without a sentinel
 mrd --version the build identity, one line: package version + the
  tree the build read — a bare commit where that tree
  was clean, `<commit>-dirty` where tracked content

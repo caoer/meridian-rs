@@ -3,8 +3,8 @@
 //!
 //! A path-keyed drawer store without a reaper is the Bazel/VSCode disk-leak class
 //! (decision 0001 round 4). GC reaps only drawers with a **valid current-schema
-//! sentinel** whose last-use is past the threshold and that are **not currently locked**
-//! by a live workspace (amendment m3). Corrupt and future-schema drawers are left for
+//! sentinel** whose last-use is past the threshold or whose workspace is observed gone,
+//! and that are **not currently locked** by a live workspace (amendment m3). Corrupt and future-schema drawers are left for
 //! explicit `clean` — GC never guesses a workspace path any way but the sentinel
 //! (amendment C3).
 
@@ -40,7 +40,7 @@ pub struct DrawerInfo {
 /// What a GC sweep did.
 #[derive(Debug, Default, Clone)]
 pub struct GcReport {
-    /// Drawers removed (past threshold, not locked).
+    /// Drawers removed (past threshold or workspace gone, not locked).
     pub removed: Vec<PathBuf>,
     /// Past-threshold drawers skipped because a live workspace held the lock.
     pub skipped_locked: Vec<PathBuf>,
@@ -98,7 +98,8 @@ pub fn gc(cache_root: &Path, threshold: Duration) -> io::Result<GcReport> {
 
 /// Sweep at an explicit `now` (unix seconds) — the injectable-clock form.
 ///
-/// A drawer is reaped only when `now - last_use > threshold` **and** its
+/// A drawer is reaped when `now - last_use > threshold` **or** its workspace is
+/// observed gone ([`workspace_gone`]), and in either case only while its
 /// per-drawer lock is free. A live workspace holding the lock survives the sweep.
 ///
 /// # Errors
@@ -108,8 +109,8 @@ pub(crate) fn gc_at(cache_root: &Path, threshold: Duration, now: u64) -> io::Res
     let horizon = threshold.as_secs();
     let mut report = GcReport::default();
     for info in list_drawers(cache_root)? {
-        let age = now.saturating_sub(info.last_use);
-        if age <= horizon {
+        let expired = now.saturating_sub(info.last_use) > horizon;
+        if !expired && !workspace_gone(&info.workspace) {
             continue;
         }
         match DrawerLock::try_acquire(&info.drawer_dir)? {
@@ -123,6 +124,14 @@ pub(crate) fn gc_at(cache_root: &Path, threshold: Duration, now: u64) -> io::Res
         }
     }
     Ok(report)
+}
+
+/// Is this workspace OBSERVED gone? Only `Ok(false)` from `try_exists` counts:
+/// a path this process could not examine (EACCES, ELOOP, ESTALE) is an `Err`,
+/// and reading it as gone would delete a live workspace's drawer — the same
+/// probe `mrd cache clean` uses (card `drawer-exists-folds-eacces`).
+fn workspace_gone(workspace: &str) -> bool {
+    matches!(Path::new(workspace).try_exists(), Ok(false))
 }
 
 /// Remove one drawer directory (for `unregister` / `clean`), taking the
@@ -207,11 +216,19 @@ mod tests {
         dir
     }
 
+    // A workspace directory that exists, so only the age rule can reap its drawer.
+    fn live_workspace(parent: &Path, name: &str) -> String {
+        let ws = parent.join(name);
+        fs::create_dir_all(&ws).unwrap();
+        ws.to_str().unwrap().to_owned()
+    }
+
     #[test]
     fn gc_reaps_only_past_threshold() {
         let root = tempfile::tempdir().unwrap();
-        let stale = make_drawer(root.path(), "/ws/stale");
-        let fresh = make_drawer(root.path(), "/ws/fresh");
+        let wss = tempfile::tempdir().unwrap();
+        let stale = make_drawer(root.path(), &live_workspace(wss.path(), "stale"));
+        let fresh = make_drawer(root.path(), &live_workspace(wss.path(), "fresh"));
 
         // last_use == registration time (t0). Freshen one drawer to t0 + 40d, and
         // sweep as if now == t0 + 40d, threshold 30d: only the un-freshened
@@ -250,6 +267,40 @@ mod tests {
         );
         assert!(live.exists(), "flocked live drawer survives GC");
         assert!(!dead.exists());
+    }
+
+    #[test]
+    fn gc_reaps_gone_workspace_within_threshold() {
+        let root = tempfile::tempdir().unwrap();
+        let wss = tempfile::tempdir().unwrap();
+        let live = make_drawer(root.path(), &live_workspace(wss.path(), "live"));
+        let gone_ws = live_workspace(wss.path(), "gone");
+        let gone = make_drawer(root.path(), &gone_ws);
+        fs::remove_dir(&gone_ws).unwrap();
+
+        // Both drawers were used just now; only the absent workspace's goes.
+        let report = gc_at(root.path(), Duration::from_secs(30 * DAY), now_secs()).unwrap();
+
+        assert_eq!(report.removed, vec![gone.clone()]);
+        assert!(!gone.exists(), "gone workspace's drawer reaped");
+        assert!(live.exists(), "live workspace's drawer survives");
+    }
+
+    #[test]
+    fn gc_keeps_drawer_whose_workspace_cannot_be_examined() {
+        let root = tempfile::tempdir().unwrap();
+        let wss = tempfile::tempdir().unwrap();
+        // A self-referencing symlink: the probe fails with ELOOP, even as root,
+        // which is "could not look", never "gone".
+        let looped = wss.path().join("loop");
+        std::os::unix::fs::symlink(&looped, &looped).unwrap();
+        assert!(looped.try_exists().is_err(), "probe must error");
+        let kept = make_drawer(root.path(), looped.to_str().unwrap());
+
+        let report = gc_at(root.path(), Duration::from_secs(30 * DAY), now_secs()).unwrap();
+
+        assert!(report.removed.is_empty(), "{:?}", report.removed);
+        assert!(kept.exists(), "unexaminable workspace keeps its drawer");
     }
 
     #[test]

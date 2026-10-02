@@ -601,7 +601,10 @@ fn open_lane(canonical: &Path, rebuild: bool) -> Result<Lane, Fail> {
         return Ok(Lane::Memory);
     };
     // The sentinel is gc bookkeeping; its failure must not cost the answer.
+    // Registration adopts an existing sentinel without touching its last use,
+    // so the use is stamped here, or the age sweep reaps a drawer in use.
     let _ = drawer.register();
+    let _ = cache::try_stamp_last_use(dir);
     let file = dir.join(view::store::SQL_CACHE_FILENAME);
     let opened = if rebuild {
         SqlStore::rebuild(&file)
