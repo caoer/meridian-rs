@@ -725,10 +725,10 @@ pub fn frontmatter_wikilinks(doc: &Document) -> Vec<FmWikilink> {
     let mut line_start = 0;
     for line in block.split_inclusive('\n') {
         let text = line.trim_end_matches(['\n', '\r']);
-        if text.trim() != "---" {
-            if let Some((key, _)) = fm_top_key(text) {
-                keys.push((line_start, key));
-            }
+        if text.trim() != "---"
+            && let Some((key, _)) = fm_top_key(text)
+        {
+            keys.push((line_start, key));
         }
         line_start += line.len();
     }
