@@ -683,8 +683,9 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         dry: Option<bool>,
         /// The sanctioned bypass (§11.1 pt 3): a `--force` write escapes an
-        /// armed binding-break / block refusal, and the skip is journaled and
-        /// rendered, never silent. Absent/`false` is an ordinary gated write.
+        /// armed binding-break / block refusal, and the skip renders as a
+        /// `forced:` verdict, never silent. Absent/`false` is an ordinary gated
+        /// write.
         #[serde(skip_serializing_if = "Option::is_none")]
         force: Option<bool>,
         edits: Vec<Edit>,

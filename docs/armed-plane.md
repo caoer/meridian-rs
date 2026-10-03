@@ -103,14 +103,14 @@ Before arming, pass both `mrd test` tiers:
   atomic batch executor, in a throwaway proof workspace. The governed tree
   stays read-only, and the triggering write is untouched.
 - **`--history`** (`mrd test --history <ws> --rule <page> [--spec <page>]`):
-  reconstructs the workspace's past, reports the exact journal span examined,
+  reconstructs the workspace's past from git, reports the exact commit span examined,
   and requires zero undeclared refusals against the `golden` fence of the
   `--spec` page.
 
 Passing both is **pre-arm qualification** (required for arming review), not
 armability.
 
-### 4. First arming write — ungated-but-journaled, permanent, genesis-grey
+### 4. First arming write — ungated, permanent, genesis-grey
 
 This rung is the act itself. A reviewer approves the page at the rev they
 read (the `armed-rev`), the act writes the attested row, and the first arm
@@ -224,13 +224,14 @@ enforces:
 - Missing or corrupt artifact: fails closed (`convention_fault`).
 - Page drifted off its pinned `armed-rev`: fails closed (`armed_drift`);
   re-arm at the live rev, or revert the law.
-- `--force` is the only escape: journaled and rendered.
+- `--force` is the only escape, rendered as a `forced:` verdict on the write's
+  response; that verdict is its only record.
 
 ## What arming does NOT claim
 
 Refusal makes violations "unrepresentable through an armed change plane",
 nothing stronger. The genesis epoch renders grey, never green. Out-of-band
-mutation — an offline pre-push git rewrite, a root-preserving forged journal
+mutation — an offline pre-push git rewrite, a root-preserving forged receipt
 row — is caught by the git witness plus the receipt-engine-only write
 restriction, or it is a named residual. Refusal never renders it green.
 
@@ -288,9 +289,9 @@ injected `ctx`:
 | Member | Carries |
 |---|---|
 | `ctx.op` | `"splice"` \| `"create"`, the caller's op |
-| `ctx.before` | this file before the put: `{path, nodes, frontmatter, edges}` (the `@2` doc facts) |
+| `ctx.before` | this file before the put: `{path, nodes, frontmatter, edges}` (the `@2` doc facts). `frontmatter` maps each key to its published value (`wire-contract.md` § A.6.1′): a quoted scalar decoded, a block or multi-line flow sequence rendered `[a, b]`, a block scalar folded — the value `ctx.sql`'s `frontmatter` row carries |
 | `ctx.after` | this file after the pending set so far (caller put + earlier middleware) |
-| `ctx.put` | the caller's edit set `{op, actor, force, edits, fields_changed, sections_changed, targets}`; never rewritten |
+| `ctx.put` | the caller's edit set `{op, actor, force, edits, fields_changed, sections_changed, targets}`; never rewritten. `fields_changed` names each key whose stored bytes differ between `before` and `after`, block-sequence items included |
 | `ctx.fields` | **opaque passthrough** dict from the put frame's `fields` (`wire-contract.md` § A.2.1); keys uninterpreted; `actor`/`now` stay `wire-contract.md` §9 wire inputs |
 | `ctx.sql(query)` | one read-only SELECT against the overlay world; returns rows (list of dicts); not DuckDB DML |
 | `ctx.read(path)` | that path's bytes in the overlay world, or `None` |
