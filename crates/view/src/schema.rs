@@ -1,10 +1,10 @@
-//! Round-1 view schema — 14 physical tables + 4 SQL views (binding design §Q1;
+//! Round-1 view schema — 15 physical tables + 4 SQL views (binding design §Q1;
 //! `body` added by docs/body-projection.md). Disposable projections of the
 //! parsed corpus, rebuilt on fingerprint change (view-never-store). DDL is the
 //! contract: singleton `_meridian_view`, task→section identity FK, derived
 //! `resolved`, C1 locator triple on every fact row.
 
-/// Full round-1 DDL: singleton stamp + 13 fact tables + 4 views. Binding design —
+/// Full round-1 DDL: singleton stamp + 14 fact tables + 4 views. Binding design —
 /// do not edit without leader approval.
 pub const SCHEMA_SQL: &str = r#"
 -- View-never-store: every table is a disposable projection of the resident engine's parsed corpus,
@@ -148,6 +148,24 @@ CREATE TABLE frontmatter_link (
     dest_path  TEXT    REFERENCES doc(path),      -- the page it resolves to; NULL = no page, a root: head, or a non-markdown target
     candidates TEXT[],                            -- every page the target matches when more than one, sorted; as on `link`
     PRIMARY KEY (src_path, seq)
+);
+-- One row per pin in a page's `meridian-lock` block (`wire-contract.md`
+-- § A.11), read by the one lock parser (`lock::find`); a block it refuses
+-- projects no rows. No colour column: colour is a live recompute over the
+-- target's bytes, owned by `mrd walk` / `mrd check`.
+CREATE TABLE lock (
+    src_path    TEXT    NOT NULL REFERENCES doc(path),  -- the pinning page
+    seq         UBIGINT NOT NULL,                  -- the pin's order in its lock block
+    object      TEXT    NOT NULL,                  -- the pin's object verbatim: wikilink inner text without .md, name:rel across roots
+    dest_path   TEXT    REFERENCES doc(path),      -- the walk's resolution of the object; NULL = no page, or another root
+    arm         TEXT    NOT NULL,                  -- 'path' | 'properties'
+    selector    TEXT    NOT NULL,                  -- the arm's array as written, compact JSON ('["Notes","Q3"]')
+    hpath       TEXT,                              -- a heading-path pin's address as section.hpath spells it; NULL otherwise
+    fingerprint TEXT    NOT NULL,                  -- the fp1 token, verbatim
+    hash        TEXT    NOT NULL,                  -- the target's git blob id, verbatim
+    PRIMARY KEY (src_path, seq),
+    CHECK (arm IN ('path','properties')),
+    CHECK (arm = 'path' OR hpath IS NULL)           -- a properties pin names no section
 );
 -- The three `.base` relations (`base-projection.md` §4), view-lane only.
 -- They ride the `base_fold` witness, NEVER `as_of_fingerprint`: their bytes
@@ -342,9 +360,12 @@ CREATE VIEW tag_all AS                             -- B2: the union — inline +
 /// `14`: `backlink` gained the `key` column and the frontmatter rows —
 /// `kind = 'frontmatter'` from `frontmatter_link`. A v13 projection serves the
 /// body-only view at the same fingerprint.
-pub const SCHEMA_VERSION: i32 = 14;
+///
+/// `15`: the `lock` relation — one row per pin in each page's
+/// `meridian-lock` block. A v14 projection has no such relation.
+pub const SCHEMA_VERSION: i32 = 15;
 
-/// Run the full round-1 DDL against `conn` (14 tables + 4 views).
+/// Run the full round-1 DDL against `conn` (15 tables + 4 views).
 ///
 /// # Errors
 /// Propagates any `DuckDB` error from the DDL batch.

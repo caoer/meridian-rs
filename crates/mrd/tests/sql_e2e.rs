@@ -274,6 +274,56 @@ fn frontmatter_links_are_rows_of_their_own_relation() {
     );
 }
 
+/// `lock` through `mrd sql`: one row per pin, its object resolved the way the
+/// walk resolves it and a heading path spelled as `section.hpath`, and a page
+/// added later reaches the unchanged pinning page on the next append.
+#[test]
+fn pins_are_rows_of_the_lock_relation() {
+    let sb = sandbox();
+    let ws = write_bare_ws(&sb, "lock-rows", &[]);
+    let pinning = "# P\n\n```meridian-lock\nversion: 2\npins:\n\
+                   \x20 - object: \"[[x]]\"\n\
+                   \x20   hash: \"h1\"\n\
+                   \x20   path: [\"A x\", \"Q3\"]\n\
+                   \x20   fingerprint: \"fp1.span2.b3.aa\"\n\
+                   \x20 - object: \"[[x]]\"\n\
+                   \x20   hash: \"h1\"\n\
+                   \x20   properties: [\"tags\"]\n\
+                   \x20   fingerprint: \"fp1.props1.b3.bb\"\n\
+                   ```\n";
+    for (rel, content) in [("c/p.md", pinning), ("a/x.md", "# A x\n\n## Q3\n")] {
+        let file = ws.join(rel);
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+        std::fs::write(file, content).expect("write");
+    }
+    let query = "SELECT object, dest_path, arm, selector, hpath FROM lock ORDER BY seq";
+
+    let out = sb.run(&ws, &["sql", "--json", query]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        json(&out)["rows"],
+        serde_json::json!([
+            [
+                "x",
+                "a/x.md",
+                "path",
+                r#"["A x","Q3"]"#,
+                r#"[{"h":"A x"},{"h":"Q3"}]"#
+            ],
+            ["x", "a/x.md", "properties", r#"["tags"]"#, null]
+        ])
+    );
+
+    // A sibling x appears; c/p.md is unchanged and both pins move to it.
+    std::fs::write(ws.join("c/x.md"), "# C x\n").expect("write");
+    let out = sb.run(&ws, &["sql", "--json", "SELECT dest_path FROM lock"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        json(&out)["rows"],
+        serde_json::json!([["c/x.md"], ["c/x.md"]])
+    );
+}
+
 #[test]
 fn rebuild_recreates_the_file_at_gen_one() {
     let sb = sandbox();

@@ -736,6 +736,12 @@ Widening the coat is a C2 change, reserved by ruling (`laws.md` D-1).
 - **`frontmatter_link(src_path, seq, key, target_raw, dest_path, candidates)`**
   — one row per wikilink in a frontmatter value, resolved the way a body link
   is (`wire-contract.md` § A.11). `link` stays body-only.
+- **`lock(src_path, seq, object, dest_path, arm, selector, hpath, fingerprint,
+  hash)`** — one row per pin in a page's `meridian-lock` block, its object
+  resolved the way the walk resolves it and a heading-path selector spelled as
+  `section.hpath` (`wire-contract.md` § A.11). A page whose lock block refuses
+  to parse has no rows (`mrd check` / `mrd walk` report it grey
+  `lock-refused`); colour stays with `mrd walk` / `mrd check`.
 - `mrd sql` is **operator convenience**: served from the drawer's append-only
   `sql.duckdb` cache when a cache root resolves (`--rebuild` recreates it),
   else an ephemeral `:memory:` projection of the corpus per query, folding
