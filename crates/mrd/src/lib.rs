@@ -392,6 +392,7 @@ usage:
                            refused / 2 bad invocation.
 ! mrd pin <PAGE> <TARGET>#<SELECTOR> [--fingerprint TOKEN] [--vibe] [--dry]
           [--json]
+          mrd pin --refresh <PAGE> [--accept] [--dry] [--json]
                            attest: record in PAGE's meridian-lock that it draws
                            from TARGET#SELECTOR at that section's content
                            fingerprint, and mint a stable ^block-id on the
@@ -406,6 +407,20 @@ usage:
                            always verified (trust excuses absence, never a
                            wrong token). Exits: 0 pinned|dry / 1 refused /
                            2 bad invocation.
+                           --refresh re-pins every row of PAGE's lock, in lock
+                           order, and takes no TARGET. A dry pass first
+                           carries each row's recorded fingerprint as its
+                           proof: ok, drifted (the target moved) or refused.
+                           Any refused row, or a drifted one without
+                           --accept, exits 1 with nothing written — read what
+                           changed (mrd walk PAGE), fix the page where a claim
+                           no longer holds, then re-run with --accept, which
+                           pins drifted rows at their live bytes. A row whose
+                           target file took a later row's anchor is pinned
+                           again, so every hash names the file's final blob.
+                           --dry stops after the rehearsal. Exits: 0 every
+                           row pinned|dry clean / 1 refused|drifted / 2 bad
+                           invocation.
 ! mrd repair [PAGE] [--dry] [--json]
                            lost-pin repair via git history. LOST = live target
                            no longer verifies the fingerprint AND git no longer
