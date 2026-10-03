@@ -1,10 +1,12 @@
 //! The §6.5 checkpoint's storage site and replay adjudication — the disk half
 //! of [`fs::checkpoint`] (merkle-spec §6.5).
 //!
-//! One file per workspace in its cache drawer, beside `sql.duckdb` and the run
-//! plane's digest memo — outside every hash domain by construction, so the
-//! object can never move a root or break a held token. Written atomically
-//! (temp + rename), read whole, discarded whole.
+//! One file per workspace in its own stable drawer
+//! ([`cache::checkpoint_drawer_dir`]) — outside every hash domain by
+//! construction, so the object can never move a root or break a held token,
+//! and outside the SQL drawer's version segment, so a package release or a SQL
+//! schema bump never strands it. Written atomically (temp + rename), read
+//! whole, discarded whole.
 //!
 //! # Lifecycle
 //! - **Save** at daemon shutdown, for every workspace holding a resident memo:
@@ -47,10 +49,10 @@ use std::path::{Path, PathBuf};
 use crate::feed;
 use crate::ring::WorkspaceRing;
 
-/// The checkpoint filename inside a workspace's cache drawer. The version
-/// rides the name as well as the payload's own tag: an old binary meeting a
-/// future file never even reads it.
-pub(crate) const CHECKPOINT_FILENAME: &str = "checkpoint.v1";
+/// The checkpoint filename inside its drawer. The version rides the name as
+/// well as the payload's own tag: an old binary meeting a future file never
+/// even reads it.
+pub(crate) const CHECKPOINT_FILENAME: &str = "checkpoint.v2";
 
 /// What a restore did, published for the card's counters and the daemon log.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,9 +94,9 @@ pub struct CheckpointReceipt {
     pub watermark_rereads_before_serve: u64,
 }
 
-/// The checkpoint file for `workspace`'s drawer.
+/// The checkpoint file for `workspace`.
 pub(crate) fn path(cache_root: &Path, workspace: &Path) -> PathBuf {
-    cache::drawer_dir(cache_root, workspace).join(CHECKPOINT_FILENAME)
+    cache::checkpoint_drawer_dir(cache_root, workspace).join(CHECKPOINT_FILENAME)
 }
 
 /// Test helper for the two-stage production save. Production prepares under
@@ -113,7 +115,6 @@ fn save(
 ) -> bool {
     let identity = fs::checkpoint::SaveIdentity {
         workspace: workspace.to_path_buf(),
-        parse_cache: cache::SCHEMA_SALT.to_owned(),
         journal_instance,
         journal_seq,
     };
@@ -124,9 +125,18 @@ fn save(
 }
 
 /// Atomically commit already-encoded bytes. No live memo is borrowed here.
+/// The drawer is registered first, so listing, clean and GC see it; a drawer
+/// another user holds is a skipped save, retried at the next opportunity.
 pub(crate) fn commit(cache_root: &Path, workspace: &Path, bytes: &[u8]) -> bool {
-    let dir = cache::drawer_dir(cache_root, workspace);
-    crate::cache_io::write(&dir, CHECKPOINT_FILENAME, |file| file.write_all(bytes)).is_ok()
+    let dir = cache::checkpoint_drawer_dir(cache_root, workspace);
+    let Ok(Some(_)) = cache::try_register(&dir, workspace) else {
+        return false;
+    };
+    let written = crate::cache_io::write(&dir, CHECKPOINT_FILENAME, |file| file.write_all(bytes));
+    if written.is_ok() {
+        let _ = cache::try_stamp_last_use(&dir);
+    }
+    written.is_ok()
 }
 
 /// Read, verify, and replay a workspace's checkpoint. `None` when there is no
@@ -144,7 +154,25 @@ pub(crate) fn restore(
     ring: Option<&WorkspaceRing>,
 ) -> Option<(fs::DomainCache, CheckpointReceipt)> {
     let file = path(cache_root, workspace);
-    let bytes = std::fs::read(&file).ok()?;
+    let bytes = match std::fs::read(&file) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            // The cold fill's own line: with no checkpoint the first
+            // observation reads and hashes every member under the memo, and
+            // the fleet can only count that event if it is said.
+            let why = if e.kind() == std::io::ErrorKind::NotFound {
+                "none".to_owned()
+            } else {
+                format!("unreadable ({e})")
+            };
+            eprintln!(
+                "checkpoint: {why} for {} under {} — cold fill at the first observation",
+                workspace.display(),
+                file.parent().unwrap_or(&file).display()
+            );
+            return None;
+        }
+    };
     let root = fs::WorkspaceRoot(workspace.to_path_buf());
     let domain = match fs::domain::Domain::load(&root) {
         Ok(domain) => domain,
@@ -156,7 +184,7 @@ pub(crate) fn restore(
             return None;
         }
     };
-    let restored = match fs::checkpoint::restore(&bytes, workspace, cache::SCHEMA_SALT, &domain) {
+    let restored = match fs::checkpoint::restore(&bytes, workspace, &domain) {
         Ok(restored) => restored,
         Err(discard) => {
             // COLD re-baseline: the rows are not lawful statements about this
@@ -728,6 +756,58 @@ mod tests {
         assert!(
             !path(&cache_root, &ws).exists(),
             "the derived index does not outlive its registration"
+        );
+    }
+
+    /// A SQL salt or package bump moves the version segment: the next start
+    /// looks in a fresh SQL drawer and the old one is unreachable. The
+    /// checkpoint lives outside that segment, so the restart is WARM — the
+    /// rows adopted and re-verified by stat — never the cold fill. Removing
+    /// the whole SQL drawer is what a segment move looks like to the new
+    /// binary.
+    #[test]
+    fn a_version_segment_move_restarts_warm() {
+        let home = tempfile::tempdir().unwrap();
+        let (ws, cache_root) = workspace(home.path());
+        let ws = std::fs::canonicalize(&ws).unwrap();
+        let state = || StateStore::new(home.path().join("state.json"));
+
+        let reg = Registry::new(state(), cache_root.clone(), Vec::new());
+        reg.register(&ws);
+        reg.domain_cache(&ws)
+            .lock()
+            .unwrap()
+            .root(&fs::WorkspaceRoot(ws.clone()))
+            .unwrap();
+        reg.save_checkpoints();
+        assert!(path(&cache_root, &ws).exists(), "shutdown persisted it");
+        assert!(
+            matches!(
+                cache::probe(&cache::checkpoint_drawer_dir(&cache_root, &ws)),
+                cache::Probe::Hit(_)
+            ),
+            "the checkpoint drawer is registered, so listing, clean and GC see it"
+        );
+
+        let sql_drawer = cache::drawer_dir(&cache_root, &ws);
+        if sql_drawer.exists() {
+            std::fs::remove_dir_all(&sql_drawer).unwrap();
+        }
+
+        let restarted = Registry::new(state(), cache_root.clone(), Vec::new());
+        restarted.register(&ws);
+        let _ = restarted.domain_cache(&ws);
+        let receipt = restarted
+            .checkpoint_receipt(&ws)
+            .expect("the checkpoint outlives the SQL drawer's segment");
+        assert_eq!(receipt.leaves, 3);
+        assert!(
+            receipt.warm_rebaseline.is_some(),
+            "a restart across the move is the warm re-baseline"
+        );
+        assert_eq!(
+            receipt.reads_before_serve, receipt.watermark_rereads_before_serve,
+            "no member that did not move was read — not the cold fill"
         );
     }
 }

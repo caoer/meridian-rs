@@ -112,13 +112,21 @@ fn e2e_init_ls_unregister_lifecycle() {
     let parsed = cache::parsed_drawer_dir(&sb.cache_root, &canonical);
     cache::register(&parsed, &canonical).unwrap();
     std::fs::write(parsed.join("corpus.v1"), b"derived payload").unwrap();
-    // `unregister` retires both payload families.
+    // So does the version-independent restart checkpoint.
+    let checkpoint = cache::checkpoint_drawer_dir(&sb.cache_root, &canonical);
+    cache::register(&checkpoint, &canonical).unwrap();
+    std::fs::write(checkpoint.join("checkpoint.v2"), b"derived payload").unwrap();
+    // `unregister` retires every payload family.
     let out = sb.run(&ws, &["unregister"]);
     assert!(out.status.success(), "unregister: {}", stderr(&out));
     assert!(!drawer.exists(), "unregister removes the drawer directory");
     assert!(
         !parsed.exists(),
         "unregister also removes the stable parsed drawer"
+    );
+    assert!(
+        !checkpoint.exists(),
+        "unregister also removes the stable checkpoint drawer"
     );
 }
 

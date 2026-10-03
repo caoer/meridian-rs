@@ -38,7 +38,9 @@ mod sweep;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub use layout::{cache_root, drawer_dir, drawer_key, parsed_drawer_dir, sock_key};
+pub use layout::{
+    cache_root, checkpoint_drawer_dir, drawer_dir, drawer_key, parsed_drawer_dir, sock_key,
+};
 pub use locking::DrawerLock;
 pub use sentinel::{
     Probe, Sentinel, probe, register, stamp_last_use, supersede, try_register, try_stamp_last_use,

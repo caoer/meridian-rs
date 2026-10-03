@@ -15,8 +15,10 @@
 //!
 //! - **Lawfulness — may these rows enter the memo as HYPOTHESES?** Decided
 //!   once, here, at restore, by the SOUNDNESS fields: format and checksum,
-//!   `workspace`, `domain_version`, `hash_law`, parse-cache generation, and
-//!   the `tree_root` binding over the restored rows. A mismatch means the rows
+//!   `workspace`, `domain_version`, `hash_law`, and the `tree_root` binding
+//!   over the restored rows. No package, SQL-schema or parse-cache generation
+//!   is among them: none of those changes a leaf digest, a stat key or a
+//!   watermark, so none can make a restored row wrong. A mismatch means the rows
 //!   are not lawful statements about this world under today's law — a hash-law
 //!   change re-spells every interior value, a domain bump re-cuts membership, a
 //!   failed binding is tampering. Any mismatch discards the object WHOLE,
@@ -59,11 +61,10 @@
 //!
 //! # Format (version-tagged lines; paths are raw bytes, `\n`-free)
 //! ```text
-//! mrd-checkpoint v1
+//! mrd-checkpoint v2
 //! sum <blake3 hex of every byte after this line>
 //! workspace <canonical root path bytes>
 //! version <domain_version> <hash_law>
-//! parse-cache <generation>
 //! journal <seq> <instance>
 //! tree-root <hex64 law-2 fingerprint>
 //! leaves <count>
@@ -82,8 +83,9 @@ use crate::stable::{self, FsStamp};
 use crate::{DomainCache, LeafSeen, StatKey};
 
 /// The format tag. Bump on any shape change: an alien tag is a
-/// [`Discard::Format`] — the caller re-baselines, never guesses.
-const VERSION_LINE: &[u8] = b"mrd-checkpoint v1";
+/// [`Discard::Format`] — the caller re-baselines, never guesses. `v2` dropped
+/// v1's `parse-cache` header line.
+const VERSION_LINE: &[u8] = b"mrd-checkpoint v2";
 
 /// The save-side identity the CALLER supplies. The tuple's remaining fields
 /// come from the memo itself: `domain_version` from the observed generation,
@@ -95,10 +97,6 @@ pub struct SaveIdentity {
     /// registry key; no separate uuid exists in this engine). Compared as
     /// raw path bytes.
     pub workspace: PathBuf,
-    /// The parse/derived-cache schema generation this engine persists derived
-    /// state under (`cache::SCHEMA_SALT` at the daemon). A schema bump
-    /// discards the checkpoint with it.
-    pub parse_cache: String,
     /// The journal (delta-ring) instance the cursor was numbered under.
     pub journal_instance: String,
     /// The journal cursor: everything at or before this seq is inside the
@@ -150,8 +148,6 @@ pub enum Discard {
         stored: (u32, u32),
         current: (u32, u32),
     },
-    /// The stored parse/derived-cache generation is not this engine's.
-    ParseCache { stored: String, current: String },
     /// The rebuilt tree's law-2 fingerprint is not the stored `tree_root`.
     TreeRoot,
 }
@@ -168,10 +164,6 @@ impl fmt::Display for Discard {
                 "version identity mismatch (stored domain {} hash-law {}, serving domain {} \
                  hash-law {})",
                 stored.0, stored.1, current.0, current.1
-            ),
-            Discard::ParseCache { stored, current } => write!(
-                f,
-                "parse-cache generation mismatch (stored '{stored}', current '{current}')"
             ),
             Discard::TreeRoot => write!(f, "tree-root binding failed (rebuilt fold differs)"),
         }
@@ -256,7 +248,6 @@ impl Snapshot {
         payload.extend_from_slice(
             format!("version {domain_version} {}\n", model::HASH_LAW_RADIX).as_bytes(),
         );
-        payload.extend_from_slice(format!("parse-cache {}\n", identity.parse_cache).as_bytes());
         payload.extend_from_slice(
             format!(
                 "journal {} {}\n",
@@ -301,7 +292,7 @@ impl Snapshot {
 }
 
 /// Restore a serialized checkpoint against the CURRENT soundness identity:
-/// `workspace` and `parse_cache` as the caller serves them now, `domain`
+/// `workspace` as the caller serves it now, `domain`
 /// freshly loaded (its `version()` is the current domain dimension; the
 /// current hash law is the resident encoding's constant). On success the
 /// rebuilt tree is verified against the stored `tree_root` and `domain` is
@@ -315,12 +306,7 @@ impl Snapshot {
 /// # Errors
 /// [`Discard`] naming the refusing fact. The caller re-baselines loudly,
 /// exactly once — partial adoption does not exist.
-pub fn restore(
-    bytes: &[u8],
-    workspace: &Path,
-    parse_cache: &str,
-    domain: &Domain,
-) -> Result<Restored, Discard> {
+pub fn restore(bytes: &[u8], workspace: &Path, domain: &Domain) -> Result<Restored, Discard> {
     let rest = bytes
         .strip_prefix(VERSION_LINE)
         .and_then(|r| r.strip_prefix(b"\n"))
@@ -336,7 +322,6 @@ pub fn restore(
     let mut lines = payload;
     let stored_ws = header_line(&mut lines, b"workspace ", "bad workspace line")?;
     let version_line = header_line(&mut lines, b"version ", "bad version line")?;
-    let stored_parse = header_line(&mut lines, b"parse-cache ", "bad parse-cache line")?;
     let journal_line = header_line(&mut lines, b"journal ", "bad journal line")?;
     let tree_root_hex = header_line(&mut lines, b"tree-root ", "bad tree-root line")?;
     let count: usize = ascii(header_line(&mut lines, b"leaves ", "bad leaves line")?)
@@ -356,12 +341,6 @@ pub fn restore(
         return Err(Discard::Version {
             stored: (stored_domain, stored_law),
             current,
-        });
-    }
-    if stored_parse != parse_cache.as_bytes() {
-        return Err(Discard::ParseCache {
-            stored: String::from_utf8_lossy(stored_parse).into_owned(),
-            current: parse_cache.to_owned(),
         });
     }
     let (journal_seq, journal_instance) =
@@ -504,7 +483,6 @@ mod tests {
     fn identity(dir: &Path) -> SaveIdentity {
         SaveIdentity {
             workspace: dir.to_path_buf(),
-            parse_cache: "s7".to_owned(),
             journal_instance: "aa.bb.0".to_owned(),
             journal_seq: 41,
         }
@@ -526,9 +504,9 @@ mod tests {
     /// Recompute the `sum` line after a deliberate payload edit, so tamper
     /// tests reach the arm BEHIND the checksum.
     fn resum(bytes: &[u8]) -> Vec<u8> {
-        let rest = bytes.strip_prefix(b"mrd-checkpoint v1\n").unwrap();
+        let rest = bytes.strip_prefix(b"mrd-checkpoint v2\n").unwrap();
         let (_, payload) = split_line(rest).unwrap();
-        let mut out = b"mrd-checkpoint v1\n".to_vec();
+        let mut out = b"mrd-checkpoint v2\n".to_vec();
         out.extend_from_slice(format!("sum {}\n", blake3::hash(payload).to_hex()).as_bytes());
         out.extend_from_slice(payload);
         out
@@ -536,7 +514,7 @@ mod tests {
 
     fn restore_here(bytes: &[u8], dir: &Path) -> Result<Restored, Discard> {
         let domain = Domain::load(&WorkspaceRoot(dir.to_path_buf())).unwrap();
-        restore(bytes, dir, "s7", &domain)
+        restore(bytes, dir, &domain)
     }
 
     /// Round trip: the restored memo carries the same leaves, binds the same
@@ -598,12 +576,8 @@ mod tests {
         let (_, bytes) = observed(tmp.path());
         let domain = Domain::load(&WorkspaceRoot(tmp.path().to_path_buf())).unwrap();
         assert!(matches!(
-            restore(&bytes, Path::new("/else/where"), "s7", &domain),
+            restore(&bytes, Path::new("/else/where"), &domain),
             Err(Discard::Workspace { .. })
-        ));
-        assert!(matches!(
-            restore(&bytes, tmp.path(), "s8", &domain),
-            Err(Discard::ParseCache { .. })
         ));
         // Domain-version bump: the config declares a new version — the
         // checkpoint must not outlive it (§12.1 membership is re-cut).
@@ -616,7 +590,7 @@ mod tests {
         let bumped = Domain::load(&WorkspaceRoot(tmp.path().to_path_buf())).unwrap();
         assert_eq!(bumped.version(), 2);
         assert!(matches!(
-            restore(&bytes, tmp.path(), "s7", &bumped),
+            restore(&bytes, tmp.path(), &bumped),
             Err(Discard::Version {
                 stored: (0, model::HASH_LAW_RADIX),
                 current: (2, model::HASH_LAW_RADIX),
@@ -656,6 +630,13 @@ mod tests {
             let got = restore_here(&mutation, tmp.path());
             assert!(matches!(got, Err(Discard::Format(_))), "{case}");
         }
+        // A v1 file (it carried a `parse-cache` line) is a foreign shape.
+        let mut v1 = b"mrd-checkpoint v1".to_vec();
+        v1.extend_from_slice(&bytes[VERSION_LINE.len()..]);
+        assert_eq!(
+            restore_here(&v1, tmp.path()).unwrap_err(),
+            Discard::Format("unknown version tag")
+        );
         let mut flipped = bytes.clone();
         let last = flipped.len() - 2;
         flipped[last] ^= 0x01;

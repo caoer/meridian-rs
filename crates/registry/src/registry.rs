@@ -2243,7 +2243,6 @@ impl Registry {
                     &mut memo,
                     &fs::checkpoint::SaveIdentity {
                         workspace: workspace.to_path_buf(),
-                        parse_cache: cache::SCHEMA_SALT.to_owned(),
                         journal_instance: instance,
                         journal_seq: seq,
                     },
@@ -2354,9 +2353,13 @@ impl Registry {
             .cloned()
             .collect();
         for workspace in workspaces {
-            let dir = cache::parsed_drawer_dir(&self.cache_root, &workspace);
-            if matches!(cache::probe(&dir), cache::Probe::Hit(_)) {
-                let _ = cache::try_stamp_last_use(&dir);
+            for dir in [
+                cache::parsed_drawer_dir(&self.cache_root, &workspace),
+                cache::checkpoint_drawer_dir(&self.cache_root, &workspace),
+            ] {
+                if matches!(cache::probe(&dir), cache::Probe::Hit(_)) {
+                    let _ = cache::try_stamp_last_use(&dir);
+                }
             }
             // The storage drawer (sql cache, checkpoint) is stamped here too: nothing else
             // refreshes its last use, so the age sweep would reap it 30 days after its

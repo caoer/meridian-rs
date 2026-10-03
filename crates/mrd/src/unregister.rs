@@ -104,6 +104,7 @@ pub(crate) fn run(target_arg: Option<&str>, format: Format) -> Result<(), Fail> 
             let drawers = [
                 cache::drawer_dir(&cache_root, &workspace),
                 cache::parsed_drawer_dir(&cache_root, &workspace),
+                cache::checkpoint_drawer_dir(&cache_root, &workspace),
             ];
             let examined: std::io::Result<Vec<_>> = drawers
                 .iter()

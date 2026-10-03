@@ -117,6 +117,17 @@ pub fn parsed_drawer_dir(cache_root: &Path, workspace: &Path) -> PathBuf {
     cache_root.join(drawer_key(workspace)).join("parsed-v1")
 }
 
+/// Stable restart-checkpoint drawer (merkle-spec §6.5). The checkpoint holds
+/// leaf digests, stat keys, watermarks and a journal cursor — nothing the SQL
+/// projection or the package release derives — so its own format tag and its
+/// soundness fields govern compatibility, never [`drawer_dir`]'s version
+/// segment. It carries a normal registration sentinel, so listing, clean and
+/// GC see it.
+#[must_use]
+pub fn checkpoint_drawer_dir(cache_root: &Path, workspace: &Path) -> PathBuf {
+    cache_root.join(drawer_key(workspace)).join("checkpoint-v2")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,6 +195,18 @@ mod tests {
         assert_eq!(xdg, Path::new("/x/cache/meridian"));
         let home = PathBuf::from("/h").join(".cache").join("meridian");
         assert_eq!(home, Path::new("/h/.cache/meridian"));
+    }
+
+    /// The checkpoint drawer sits in the workspace's bucket but never under
+    /// the version segment: a SQL salt or package bump moves `drawer_dir`
+    /// and leaves the checkpoint where the next start looks.
+    #[test]
+    fn the_checkpoint_drawer_is_independent_of_the_version_segment() {
+        let root = Path::new("/c/meridian");
+        let ws = Path::new("/w");
+        let dir = checkpoint_drawer_dir(root, ws);
+        assert_eq!(dir, root.join(drawer_key(ws)).join("checkpoint-v2"));
+        assert!(!dir.starts_with(drawer_dir(root, ws)));
     }
 
     #[test]
