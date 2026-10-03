@@ -119,7 +119,12 @@ pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 /// `s14`: `backlink` lists frontmatter links beside body links, with a `key`
 /// column (`wire-contract.md` § A.11) — an s13 drawer's file carries the
 /// body-only view.
-pub const SCHEMA_SALT: &str = "s14";
+///
+/// `s15`: `frontmatter.value`, `tag_all` and `prop_rev` read a block sequence
+/// whose items sit at column 0, and a comment after `key:` is no value
+/// (`wire-contract.md` § A.6.1′) — an s14 drawer holds the old rows for pages
+/// whose fingerprints will not move.
+pub const SCHEMA_SALT: &str = "s15";
 
 /// Default GC threshold: a drawer whose last-use is older than this is reapable.
 /// 30 days, mirroring Cargo's registry auto-GC horizon. A path-keyed drawer store

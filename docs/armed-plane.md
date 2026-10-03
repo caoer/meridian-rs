@@ -289,9 +289,9 @@ injected `ctx`:
 | Member | Carries |
 |---|---|
 | `ctx.op` | `"splice"` \| `"create"`, the caller's op |
-| `ctx.before` | this file before the put: `{path, nodes, frontmatter, edges}` (the `@2` doc facts) |
+| `ctx.before` | this file before the put: `{path, nodes, frontmatter, edges}` (the `@2` doc facts). `frontmatter` maps each key to its published value (`wire-contract.md` § A.6.1′): a quoted scalar decoded, a block or multi-line flow sequence rendered `[a, b]`, a block scalar folded — the value `ctx.sql`'s `frontmatter` row carries |
 | `ctx.after` | this file after the pending set so far (caller put + earlier middleware) |
-| `ctx.put` | the caller's edit set `{op, actor, force, edits, fields_changed, sections_changed, targets}`; never rewritten |
+| `ctx.put` | the caller's edit set `{op, actor, force, edits, fields_changed, sections_changed, targets}`; never rewritten. `fields_changed` names each key whose stored bytes differ between `before` and `after`, block-sequence items included |
 | `ctx.fields` | **opaque passthrough** dict from the put frame's `fields` (`wire-contract.md` § A.2.1); keys uninterpreted; `actor`/`now` stay `wire-contract.md` §9 wire inputs |
 | `ctx.sql(query)` | one read-only SELECT against the overlay world; returns rows (list of dicts); not DuckDB DML |
 | `ctx.read(path)` | that path's bytes in the overlay world, or `None` |

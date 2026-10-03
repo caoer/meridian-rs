@@ -292,41 +292,73 @@ fn doc_facts(doc: &Document, edges: Vec<Edge>) -> DocFacts {
     }
 }
 
-/// The document's frontmatter `(key, value)` pairs in document order, or empty
-/// when the document has no frontmatter block.
+/// The document's frontmatter `(key, value)` pairs in document order, each the
+/// key's PUBLISHED value (`wire-contract.md` § A.6.1′, `model::fm_value`): a
+/// quoted scalar decoded, a block or multi-line flow sequence rendered as the
+/// flow text it spells, a block scalar folded — the value the `sql` face's
+/// `frontmatter` row carries for the same key. Empty when the document has no
+/// frontmatter block.
 fn frontmatter_pairs(doc: &Document) -> Vec<(String, String)> {
-    frontmatter_map(doc)
-        .map(|m| m.0.clone())
-        .unwrap_or_default()
+    let Some((block, map)) = frontmatter_block(doc) else {
+        return Vec::new();
+    };
+    map.0
+        .iter()
+        .map(|(key, stored)| {
+            // `fm_value` finds the key line by the rule the map was indexed
+            // under, so a miss cannot happen; the stored remainder is the
+            // honest fallback should the two rules ever part.
+            let value = model::fm_value(block, key).unwrap_or_else(|| stored.clone());
+            (key.clone(), value)
+        })
+        .collect()
 }
 
-/// The frontmatter map of a document, if it carries a frontmatter node.
-fn frontmatter_map(doc: &Document) -> Option<&YamlMap> {
+/// The frontmatter block's bytes and its parsed map, if the document carries a
+/// frontmatter node.
+fn frontmatter_block(doc: &Document) -> Option<(&str, &YamlMap)> {
     doc.root.children.iter().find_map(|c| match &c.kind {
-        NodeKind::Frontmatter { map } => Some(map),
+        NodeKind::Frontmatter { map } => {
+            Some((doc.raw.get(c.span.clone()).unwrap_or_default(), map))
+        }
         _ => None,
     })
 }
 
+/// Each frontmatter key's `prop_rev` — the rev of its whole stored grain, the
+/// key line plus every continuation line (`node-rev-merkle-spec.md` §2.1).
+fn key_grain_revs(doc: &Document) -> BTreeMap<String, String> {
+    frontmatter_block(doc)
+        .map(|(_, map)| {
+            map.0
+                .iter()
+                .map(|(key, stored)| {
+                    let rev = resolve(doc, &Ref::FmKey(key.clone()))
+                        .map_or_else(|_| stored.clone(), |r| r.node_rev.0);
+                    (key.clone(), rev)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Frontmatter keys added, removed, or changed between the two states. Facts from
-/// STATES: a pure diff of the parsed maps, sorted and deduplicated.
+/// STATES, sorted and deduplicated. A key changed when its stored grain changed
+/// (§ A.6 "What stays raw"): the whole grain, so an edit to one item of a block
+/// sequence names its key, and a quoting-only edit is a change.
 fn diff_fields(before: &Document, after: &Document) -> Vec<String> {
-    let b: BTreeMap<&str, &str> = frontmatter_map(before)
-        .map(|m| m.0.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect())
-        .unwrap_or_default();
-    let a: BTreeMap<&str, &str> = frontmatter_map(after)
-        .map(|m| m.0.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect())
-        .unwrap_or_default();
+    let b = key_grain_revs(before);
+    let a = key_grain_revs(after);
 
     let mut changed = BTreeSet::new();
     for (k, av) in &a {
         if b.get(k) != Some(av) {
-            changed.insert((*k).to_owned());
+            changed.insert(k.clone());
         }
     }
     for k in b.keys() {
         if !a.contains_key(k) {
-            changed.insert((*k).to_owned());
+            changed.insert(k.clone());
         }
     }
     changed.into_iter().collect()
@@ -689,6 +721,58 @@ mod tests {
             vec!["add".to_string(), "change".to_string(), "drop".to_string()],
             "added + changed + removed keys, sorted; `keep` excluded"
         );
+    }
+
+    /// The frontmatter dict serves each key's published value (§ A.6.1′): the
+    /// items of a block sequence and of a multi-line flow list, a quoted scalar
+    /// decoded — never the key line's remainder, which is `""`, `[type/a,` and
+    /// `"a: b"` for these three.
+    #[test]
+    fn the_frontmatter_dict_serves_published_values() {
+        let before = doc_of("f.md", "# A\n");
+        let after = doc_of(
+            "f.md",
+            "---\ntags:\n  - type/a\n  - status/bogus\naliases: [x,\n  y]\ntitle: \"a: b\"\n---\n# A\n",
+        );
+        let change = derive(&before, &after, &[], None, false, &[], &no_edges);
+        assert_eq!(
+            change.doc.frontmatter,
+            vec![
+                ("tags".to_string(), "[type/a, status/bogus]".to_string()),
+                ("aliases".to_string(), "[x, y]".to_string()),
+                ("title".to_string(), "a: b".to_string()),
+            ]
+        );
+    }
+
+    /// The dict reads a sequence whose items sit at column 0, and a comment
+    /// after `key:` is not the value.
+    #[test]
+    fn the_frontmatter_dict_reads_column_zero_items_and_skips_a_key_comment() {
+        let before = doc_of("f.md", "# A\n");
+        let after = doc_of(
+            "f.md",
+            "---\ntags: # schema tag first\n- type/a\n- status/bogus\nnote: # none\n---\n# A\n",
+        );
+        let change = derive(&before, &after, &[], None, false, &[], &no_edges);
+        assert_eq!(
+            change.doc.frontmatter,
+            vec![
+                ("tags".to_string(), "[type/a, status/bogus]".to_string()),
+                ("note".to_string(), String::new()),
+            ]
+        );
+    }
+
+    /// An edit to one item of a block sequence changes its key: the diff reads
+    /// each key's whole stored grain, not the key line, which is `tags:` on
+    /// both sides.
+    #[test]
+    fn fields_changed_sees_a_block_sequence_item_edit() {
+        let before = doc_of("f.md", "---\ntags:\n  - a\n  - b\nkeep: 1\n---\n# A\n");
+        let after = doc_of("f.md", "---\ntags:\n  - a\n  - c\nkeep: 1\n---\n# A\n");
+        let change = derive(&before, &after, &[], None, false, &[], &no_edges);
+        assert_eq!(change.fields_changed, vec!["tags".to_string()]);
     }
 
     /// `sections_changed` reports the hpath of a section whose rev moved between
