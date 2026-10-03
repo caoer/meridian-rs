@@ -35,6 +35,10 @@ pub struct BaseSnapshot {
     pub members: Vec<BaseMember>,
     /// `bf:` + hex ([`model::base_fold`]).
     pub fold: String,
+    /// Every directory listed and every member read. A walk that is not
+    /// complete answers its own call and is never kept for a later one
+    /// (`base-projection.md` §7): its gaps may be transient.
+    pub complete: bool,
 }
 
 /// Walk `root` for `.base` members and fold the §6.2 witness over them.
@@ -66,7 +70,7 @@ pub fn base_snapshot(root: &WorkspaceRoot) -> io::Result<BaseSnapshot> {
 /// As [`base_snapshot`].
 pub fn base_snapshot_under(root: &WorkspaceRoot, domain: &Domain) -> io::Result<BaseSnapshot> {
     let mut rels: Vec<PathBuf> = Vec::new();
-    crate::walk_extension_dir(&root.0, Path::new(""), domain, "base", &mut rels);
+    let listed = crate::walk_extension_dir(&root.0, Path::new(""), domain, "base", &mut rels);
     rels.sort();
 
     let members: Vec<BaseMember> = rels
@@ -91,7 +95,12 @@ pub fn base_snapshot_under(root: &WorkspaceRoot, domain: &Domain) -> io::Result<
             .collect();
         model::base_fold(&leaves)
     };
-    Ok(BaseSnapshot { members, fold })
+    let complete = listed && members.iter().all(|m| m.bytes.is_ok());
+    Ok(BaseSnapshot {
+        members,
+        fold,
+        complete,
+    })
 }
 
 // Membership itself — the case-exact extension match and the two rules that

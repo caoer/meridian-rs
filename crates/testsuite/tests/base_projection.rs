@@ -681,3 +681,60 @@ fn a_build_with_no_walk_stamps_the_fold_null() {
         "not asked is NULL; a walk that found nothing would carry a bf: fold instead"
     );
 }
+
+/// `base-projection.md` §7: a walk that could not list a directory or read a
+/// member says so, so the daemon never keeps it for a later call — the gap may
+/// be transient, and no event would ever retire a kept partial walk.
+#[test]
+fn a_walk_past_an_unlistable_directory_or_unreadable_member_is_incomplete() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = WorkspaceRoot(tmp.path().to_path_buf());
+    write(tmp.path(), "bases/x.base", "views: []\n");
+    write(tmp.path(), "locked/y.base", "views: []\n");
+    assert!(walk(&root).complete, "a clean walk is complete");
+
+    let locked = tmp.path().join("locked");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    let listable = std::fs::read_dir(&locked).is_ok();
+    let partial = walk(&root);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    assert!(
+        !listable,
+        "PRECONDITION FAILED: a mode-000 directory still lists — this gate cannot \
+         run as a privileged user, and passing here would test nothing"
+    );
+    assert!(
+        !partial.complete,
+        "an unlistable directory leaves the walk incomplete"
+    );
+    let paths: Vec<&str> = partial.members.iter().map(|m| m.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        ["bases/x.base"],
+        "the unlistable subtree reads as absence"
+    );
+
+    let member = tmp.path().join("bases/x.base");
+    std::fs::set_permissions(&member, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    let readable = std::fs::read(&member).is_ok();
+    let unread = walk(&root);
+    std::fs::set_permissions(&member, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+
+    assert!(
+        !readable,
+        "PRECONDITION FAILED: a mode-000 file still reads"
+    );
+    assert!(
+        !unread.complete,
+        "a member that would not read leaves the walk incomplete"
+    );
+    assert!(
+        unread
+            .members
+            .iter()
+            .any(|m| m.path == "bases/x.base" && m.bytes.is_err()),
+        "the unreadable member is a named row, not an absence (§4.4)"
+    );
+}

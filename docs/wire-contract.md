@@ -3089,7 +3089,9 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
 - **Caps**: workspace-bound; v3-only at dispatch, cap `sql` at op grain; v2 →
   `unknown_op`, frozen caps byte-identical.
 - **Serve shape per call**: warm engine snapshot (the mounted roots its
-  wikilinks name: their resident engines, § A.10) → pin check + delta append
+  wikilinks name: their resident engines, § A.10) → the `.base` walk, reused
+  while the event feed vouches that the base plane did not move
+  (`base-projection.md` §7) → pin check + delta append
   (O(changed files), cache-as-manifest) → always-rollback query
   (`BEGIN → statement → collect → ROLLBACK`) → post-result currency through
   the resident memo at the vouched grade (`node-rev-merkle-spec.md` §6.7; the

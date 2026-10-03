@@ -267,7 +267,9 @@ pub(crate) fn serve(
     // every base row where it is and the stamp says NOT ASKED — an absent walk
     // must never read as an empty one, or the next append would tombstone every
     // member the workspace still has.
-    let walk = fs::base::base_snapshot_under(&root, &domain).ok();
+    let walk = registry
+        .base_walk(ws, &domain, crate::registry::DOOR_COOKIE_TIMEOUT)
+        .ok();
     let members: Vec<view::BaseMember> = walk
         .iter()
         .flat_map(|w| w.members.iter())

@@ -40,6 +40,15 @@
 //! every event before it was delivered, which is what makes the dirty set
 //! complete as of the write.
 //!
+//! # The base-plane count (merkle-spec §6.4)
+//! Beside the set, one counter of the events that can move a `.base` member
+//! (`base-projection.md` §7; [`base_motion`] names the classes), advanced by
+//! every doubt collapse too. It holds no paths and gates no md read. Its one
+//! consumer is the daemon's `.base` walk ([`crate::Registry::base_walk`]),
+//! kept only when it listed and read everything, and reused only under a
+//! `Seen` barrier and an unmoved count — so the count carries exactly the
+//! barrier's guarantee, capture gap included.
+//!
 //! # The rescan ladder — every cause NAMED, throttled (merkle-spec §6.4)
 //! Doubt — a kernel overflow, a watcher error, a new directory (or any
 //! non-member path that can hide members before its watch arms), the set
@@ -74,7 +83,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use notify::event::{AccessKind, AccessMode, CreateKind};
+use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind};
 use notify::{EventKind, RecursiveMode, Watcher as _};
 
 /// The dirty set's size floor for the all-dirty collapse. Sized well above
@@ -225,6 +234,15 @@ struct FeedState {
     rescans_total: u64,
     /// Kernel events accepted into the set (post-filter), over the feed's life.
     events: u64,
+    /// `.base` walks paid for this feed's workspace, over the feed's life —
+    /// each a directory enumeration of the whole root (`base-projection.md`
+    /// §7, §9).
+    base_walks: u64,
+    /// The base-plane count (module doc): events that can move a `.base`
+    /// member, plus every doubt collapse. Only grows.
+    base_epoch: u64,
+    /// The last `.base` walk kept for reuse, with the count it began under.
+    base_kept: Option<KeptBaseWalk>,
     /// Doubt collapses over the feed's life (rescan flags, errors, cap,
     /// explicit triggers). Equal to [`Self::rescans_total`] by construction —
     /// asserted apart in the chaos gate so an anonymous doubt path cannot
@@ -248,6 +266,15 @@ struct FeedState {
     cookie_holdoff: Duration,
 }
 
+/// A kept `.base` walk: reusable while the base-plane count still reads
+/// `epoch` and the caller walks under the same hash domain.
+#[derive(Debug)]
+struct KeptBaseWalk {
+    epoch: u64,
+    domain: fs::domain::Domain,
+    walk: Arc<fs::base::BaseSnapshot>,
+}
+
 /// Published feed counters (the card's "counter published" receipt, probe
 /// surface class): what arrived, what collapsed, what applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,6 +292,9 @@ pub struct FeedStats {
     pub pending: usize,
     /// Whether the pending state is the all-dirty collapse.
     pub all_dirty: bool,
+    /// `.base` walks paid (`base-projection.md` §7): each one a directory
+    /// enumeration of the whole root.
+    pub base_walks: u64,
 }
 
 /// What a take found pending.
@@ -621,11 +651,86 @@ impl WorkspaceFeed {
             applied: s.applied,
             pending: s.dirty.len(),
             all_dirty: s.doubt.is_some(),
+            base_walks: s.base_walks,
         }
+    }
+
+    /// The base-plane count now (module doc).
+    pub(crate) fn base_epoch(&self) -> u64 {
+        let s = self
+            .sync
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        s.base_epoch
+    }
+
+    /// The kept `.base` walk, when the base-plane count has not moved since
+    /// it began and it was walked under `domain`. Sound only after a `Seen`
+    /// barrier taken before this call: the barrier is what makes the count
+    /// complete (`base-projection.md` §7).
+    pub(crate) fn kept_base_walk(
+        &self,
+        domain: &fs::domain::Domain,
+    ) -> Option<Arc<fs::base::BaseSnapshot>> {
+        self.sync
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .kept_base_walk(domain)
+    }
+
+    /// Count one paid `.base` walk, begun at count `epoch` under `domain`,
+    /// and keep it when it is complete ([`FeedState::keep_base_walk`]).
+    pub(crate) fn keep_base_walk(
+        &self,
+        epoch: u64,
+        domain: fs::domain::Domain,
+        walk: Arc<fs::base::BaseSnapshot>,
+    ) {
+        self.sync
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keep_base_walk(epoch, domain, walk);
     }
 }
 
 impl FeedState {
+    /// The kept walk, while the count still reads its epoch and `domain` is
+    /// the one it walked under.
+    fn kept_base_walk(&self, domain: &fs::domain::Domain) -> Option<Arc<fs::base::BaseSnapshot>> {
+        self.base_kept
+            .as_ref()
+            .filter(|kept| kept.epoch == self.base_epoch && kept.domain == *domain)
+            .map(|kept| Arc::clone(&kept.walk))
+    }
+
+    /// Count one paid walk and keep it — unless it is incomplete (a directory
+    /// that would not list or a member that would not read may be transient,
+    /// and no event would ever retire it), or a walk begun at a later count
+    /// is kept already (a concurrent caller's).
+    fn keep_base_walk(
+        &mut self,
+        epoch: u64,
+        domain: fs::domain::Domain,
+        walk: Arc<fs::base::BaseSnapshot>,
+    ) {
+        self.base_walks += 1;
+        if walk.complete
+            && self
+                .base_kept
+                .as_ref()
+                .is_none_or(|kept| kept.epoch <= epoch)
+        {
+            self.base_kept = Some(KeptBaseWalk {
+                epoch,
+                domain,
+                walk,
+            });
+        }
+    }
+
     /// Take whatever is pending, leaving the set clean.
     fn take(&mut self) -> Pending {
         if let Some(cause) = self.doubt.take() {
@@ -643,6 +748,9 @@ impl FeedState {
     /// collapses under [`RescanCause::MissedEvent`] so a later cookie
     /// cannot `Seen` a capture gap.
     fn admit(&mut self, rel: &Path, abs: &Path, kind: EventKind) {
+        if base_motion(rel, abs, kind) {
+            self.base_epoch += 1;
+        }
         if member_candidate(rel) {
             self.insert(rel);
             return;
@@ -687,6 +795,7 @@ impl FeedState {
             _ => cause,
         });
         self.dirty.clear();
+        self.base_epoch += 1;
         self.overflows += 1;
         self.rescans_total += 1;
         if self.rescans.len() == RESCAN_RECORD_CAP {
@@ -721,6 +830,41 @@ fn member_candidate(rel: &Path) -> bool {
         && rel
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+}
+
+/// Can this event move a `.base` member (`base-projection.md` §7)? A
+/// conservative superset — a false yes costs one walk, a false no serves a
+/// stale base plane. Dot-prefixed trees hold no members (the §3 floor). Any
+/// event on a `.base` name (case-folded: the walk is case-exact, so this only
+/// over-counts) moves it. A plain file's create, delete or content write
+/// under any other name does not. A directory created or removed does; so
+/// does every rename except one that lands a markdown file (the name exists
+/// and is not a directory), because a directory renamed in or out carries its
+/// members with no event of their own, and by the time the event arrives a
+/// path renamed away is gone whatever it was — a directory may wear a
+/// markdown name. Any other change counts when the path is a directory now or
+/// exists no longer: a mode change can hide or reveal a directory's members.
+fn base_motion(rel: &Path, abs: &Path, kind: EventKind) -> bool {
+    if !hideable_prefix(rel) {
+        return false;
+    }
+    if rel
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("base"))
+    {
+        return true;
+    }
+    match kind {
+        EventKind::Create(CreateKind::File)
+        | EventKind::Remove(RemoveKind::File)
+        | EventKind::Modify(ModifyKind::Data(_))
+        | EventKind::Access(_) => false,
+        EventKind::Create(CreateKind::Folder) | EventKind::Remove(RemoveKind::Folder) => true,
+        EventKind::Modify(ModifyKind::Name(_)) => {
+            !member_candidate(rel) || abs.is_dir() || !abs.exists()
+        }
+        _ => abs.is_dir() || !abs.exists(),
+    }
 }
 
 /// A non-member path whose children would be member candidates — a new
@@ -1050,6 +1194,117 @@ mod tests {
         assert!(!member_candidate(Path::new("")));
     }
 
+    /// The base-plane count's classes (`base-projection.md` §7): a `.base`
+    /// name, a directory's arrival or departure, a rename of anything but a
+    /// markdown file, and any other change on a directory or a vanished path
+    /// count; plain file traffic under other names and dot-prefixed trees do
+    /// not. Every doubt collapse counts too.
+    #[test]
+    fn the_base_plane_count_follows_what_can_move_a_member() {
+        use notify::event::{DataChange, MetadataKind, RenameMode};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("d")).unwrap();
+        std::fs::write(root.join("f.txt"), "x\n").unwrap();
+        std::fs::write(root.join("a.md"), "# A\n").unwrap();
+        let counts =
+            |rel: &str, kind: EventKind| base_motion(Path::new(rel), &root.join(rel), kind);
+        let data = EventKind::Modify(ModifyKind::Data(DataChange::Content));
+        let meta = EventKind::Modify(ModifyKind::Metadata(MetadataKind::Permissions));
+        let rename = EventKind::Modify(ModifyKind::Name(RenameMode::From));
+
+        assert!(counts("x.base", EventKind::Create(CreateKind::File)));
+        assert!(counts("d/X.BASE", data));
+        assert!(counts("d", EventKind::Create(CreateKind::Folder)));
+        assert!(counts("gone", EventKind::Remove(RemoveKind::Folder)));
+        assert!(counts("d", meta), "a directory's mode can hide its members");
+        assert!(
+            counts("gone", rename),
+            "a directory renamed out carries its members"
+        );
+        assert!(counts("gone.txt", EventKind::Remove(RemoveKind::Any)));
+        assert!(
+            counts("gone.md", rename),
+            "a path renamed away may have been a directory with a markdown name"
+        );
+
+        assert!(!counts(
+            ".hidden/x.base",
+            EventKind::Create(CreateKind::File)
+        ));
+        assert!(!counts("a.md", data));
+        assert!(
+            !counts("a.md", rename),
+            "a markdown rename is the md plane's"
+        );
+        assert!(!counts("f.txt", EventKind::Create(CreateKind::File)));
+        assert!(!counts("f.txt", data));
+        assert!(!counts("f.txt", meta));
+        assert!(!counts(
+            "f.txt",
+            EventKind::Access(AccessKind::Close(AccessMode::Write))
+        ));
+
+        let mut s = FeedState::default();
+        s.admit(Path::new("f.txt"), &root.join("f.txt"), data);
+        s.admit(Path::new("a.md"), &root.join("a.md"), data);
+        assert_eq!(s.base_epoch, 0, "no base-plane motion");
+        s.admit(Path::new("x.base"), &root.join("x.base"), data);
+        assert_eq!(s.base_epoch, 1);
+        s.collapse(RescanCause::Overflow);
+        assert_eq!(s.base_epoch, 2, "a doubt collapse counts");
+    }
+
+    /// The keep rules (`base-projection.md` §7): a complete walk answers while
+    /// the count and the domain hold; an incomplete walk is paid and never
+    /// kept; an older concurrent walk never displaces a newer one.
+    #[test]
+    fn a_kept_base_walk_answers_only_while_its_count_and_domain_hold() {
+        let snapshot = |complete: bool| {
+            Arc::new(fs::base::BaseSnapshot {
+                members: Vec::new(),
+                fold: "bf:0".to_owned(),
+                complete,
+            })
+        };
+        let domain = fs::domain::Domain::default();
+        let mut s = FeedState::default();
+
+        s.keep_base_walk(0, domain.clone(), snapshot(false));
+        assert!(
+            s.kept_base_walk(&domain).is_none(),
+            "an incomplete walk is never kept: its gaps may be transient"
+        );
+
+        let complete = snapshot(true);
+        s.keep_base_walk(0, domain.clone(), Arc::clone(&complete));
+        let kept = s.kept_base_walk(&domain).expect("a complete walk is kept");
+        assert!(Arc::ptr_eq(&kept, &complete));
+        assert_eq!(s.base_walks, 2, "both walks were paid");
+        let ignoring = fs::domain::Domain::from_config("ignore:\n  - \"archive/**\"\n");
+        assert!(
+            s.kept_base_walk(&ignoring).is_none(),
+            "a different domain walks again"
+        );
+
+        s.collapse(RescanCause::Overflow);
+        assert!(
+            s.kept_base_walk(&domain).is_none(),
+            "a moved count retires the kept walk"
+        );
+
+        let newer = snapshot(true);
+        s.keep_base_walk(s.base_epoch, domain.clone(), Arc::clone(&newer));
+        s.keep_base_walk(0, domain.clone(), snapshot(true));
+        let kept = s
+            .kept_base_walk(&domain)
+            .expect("the newer walk stays kept");
+        assert!(
+            Arc::ptr_eq(&kept, &newer),
+            "an older walk never displaces a newer one"
+        );
+    }
+
     /// A hideable directory is named doubt, not a silent drop. A non-md
     /// file and a dot-prefixed directory cannot hide members.
     #[test]
@@ -1248,9 +1503,9 @@ mod tests {
         assert!(relevant(EventKind::Access(AccessKind::Close(
             AccessMode::Write
         ))));
-        assert!(relevant(EventKind::Modify(notify::event::ModifyKind::Any)));
+        assert!(relevant(EventKind::Modify(ModifyKind::Any)));
         assert!(relevant(EventKind::Create(CreateKind::Any)));
-        assert!(relevant(EventKind::Remove(notify::event::RemoveKind::Any)));
+        assert!(relevant(EventKind::Remove(RemoveKind::Any)));
         assert!(relevant(EventKind::Any));
     }
 
