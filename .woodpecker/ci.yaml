@@ -131,8 +131,11 @@ variables:
   # crate, so this also bounds the parallel cc1plus instances compiling the
   # bundled DuckDB amalgamation (~1.5 GB each). Unbounded on the 30-core /
   # 58 GB runner, two lanes building DuckDB concurrently OOM-killed cc1plus
-  # ("error: Killed signal terminated program cc1plus").
-  - &build_jobs "8"
+  # ("error: Killed signal terminated program cc1plus"). Each rustc job also
+  # does its own link, so the cap bounds concurrent rust-lld too: a
+  # `cargo test --workspace` build links every test binary, ~2.4 GB each,
+  # and the runner shares its RAM with long-running non-CI work.
+  - &build_jobs "4"
   # Cap per-lane sccache shard. The bundled-DuckDB objects dominate a warm
   # shard; 30G is ~10x that. If --show-stats shows evictions, raise the test
   # shard first — it holds the most profile variants.

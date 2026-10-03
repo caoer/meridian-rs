@@ -51,7 +51,7 @@ steps:
     pull: false
     environment:
       CARGO_HOME: /ci-cache/meridian-rs/cargo
-      CARGO_BUILD_JOBS: "8"
+      CARGO_BUILD_JOBS: "4"
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
       CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
