@@ -1120,7 +1120,8 @@ impl DomainCache {
     /// dir memo for unmoved directories; digests from the leaf memo for
     /// unmoved members; moved members are re-read under the §6.2 stable-read
     /// law ([`stable::read_settled`]: `O_NOFOLLOW`, fd identity fstatted
-    /// before and after the bytes, feed-generation fence). On success the
+    /// before and after the bytes, feed-generation fence), in parallel across
+    /// members above [`PARALLEL_READ_FLOOR`] movers. On success the
     /// leaf memo holds exactly the observed generation — vanished members
     /// are dropped, so the memo cannot outlive its corpus.
     ///
@@ -1134,6 +1135,19 @@ impl DomainCache {
         root: &WorkspaceRoot,
         domain: &domain::Domain,
         law: ObserveLaw,
+    ) -> Result<ObservedDomain, ObserveRefusal> {
+        self.observe_with(root, domain, law, PARALLEL_READ_FLOOR)
+    }
+
+    /// [`observe`](Self::observe) with the mover-read fan-out floor named:
+    /// below `read_floor` movers the reads run on the caller's thread. The
+    /// equivalence gate drives both sides of the floor through this one body.
+    fn observe_with(
+        &mut self,
+        root: &WorkspaceRoot,
+        domain: &domain::Domain,
+        law: ObserveLaw,
+        read_floor: usize,
     ) -> Result<ObservedDomain, ObserveRefusal> {
         // Losses counted before the pass are re-derived by the pass (a
         // completed observation IS the full sweep the rescan ladder floors
@@ -1161,8 +1175,19 @@ impl DomainCache {
         // consumer folds or compares in, built once here so no observation
         // pays a second per-member map conversion.
         let mut rows: BTreeMap<Vec<u8>, [u8; 32]> = BTreeMap::new();
+        // Trusted rows serve from the memo now; movers are read below, in
+        // parallel across members (on a cold memo every member is one).
+        let mut movers: Vec<Mover> = Vec::new();
         for (rel, key) in identities {
-            let entry = self.observe_member(root, &rel, key, law, trust)?;
+            match self.trusted_leaf(&rel, key, trust) {
+                Ok(entry) => {
+                    rows.insert(hash_name(&rel).to_vec(), entry.digest);
+                    fresh.insert(rel, entry);
+                }
+                Err(key_matched) => movers.push(Mover { rel, key_matched }),
+            }
+        }
+        for (rel, entry) in self.read_moved(root, movers, law, trust, read_floor)? {
             rows.insert(hash_name(&rel).to_vec(), entry.digest);
             fresh.insert(rel, entry);
         }
@@ -1208,61 +1233,79 @@ impl DomainCache {
         Ok((rows, offenders))
     }
 
-    /// One member's leaf under the §6.2 trust decision: a memoized digest
-    /// serves only when the key matches AND the watermark law clears the
-    /// record — a matching key inside the racy window re-reads, because the
-    /// same-quantum in-place write is exactly what the key compare cannot
-    /// see (codex gate 17: `StatKey` equality alone never passes).
-    fn observe_member(
-        &mut self,
-        root: &WorkspaceRoot,
+    /// One member's memoized leaf under the §6.2 trust decision: it serves
+    /// only when the key matches AND the watermark law clears the record — a
+    /// matching key inside the racy window re-reads, because the same-quantum
+    /// in-place write is exactly what the key compare cannot see (codex gate
+    /// 17: `StatKey` equality alone never passes). `Err(key_matched)` names a
+    /// mover, and whether its re-read is the watermark's own.
+    fn trusted_leaf(
+        &self,
         rel: &Path,
         key: StatKey,
+        trust: stable::TrustCtx,
+    ) -> Result<LeafSeen, bool> {
+        match self.leaves.get(rel) {
+            Some(prior) if prior.key == key && trust.trusts(&key, prior.seen) => Ok(LeafSeen {
+                key,
+                digest: prior.digest,
+                seen: prior.seen,
+            }),
+            Some(prior) => Err(prior.key == key),
+            None => Err(false),
+        }
+    }
+
+    /// Read and hash every mover ([`read_movers`]) and keep the pass's
+    /// counters exactly as the serial loop kept them: every mover up to and
+    /// including the first refusal in sorted order counts as attempted.
+    fn read_moved(
+        &mut self,
+        root: &WorkspaceRoot,
+        movers: Vec<Mover>,
         law: ObserveLaw,
         trust: stable::TrustCtx,
-    ) -> Result<LeafSeen, ObserveRefusal> {
-        let key_matched = match self.leaves.get(rel) {
-            Some(prior) if prior.key == key && trust.trusts(&key, prior.seen) => {
-                return Ok(LeafSeen {
-                    key,
-                    digest: prior.digest,
-                    seen: prior.seen,
-                });
+        read_floor: usize,
+    ) -> Result<Vec<(PathBuf, LeafSeen)>, ObserveRefusal> {
+        let (reads, refusal) = read_movers(root, &movers, law, &self.feed, read_floor);
+        let attempted = reads.len() + usize::from(refusal.is_some());
+        for mover in &movers[..attempted] {
+            self.reads += 1;
+            if mover.key_matched {
+                // The watermark's own re-read — the trust close's instrument.
+                self.watermark_rereads += 1;
             }
-            Some(prior) => prior.key == key,
-            None => false,
-        };
-        if key_matched {
-            // The watermark's own re-read — the trust close's instrument.
-            self.watermark_rereads += 1;
         }
-        self.reads += 1;
-        // The event-generation fence brackets the read (§6.2 row 4): a feed
-        // event landing inside re-classifies the record as spoiled, never a
-        // torn observation trusted.
-        let bracket = self.feed.bracket();
-        let read = read_member(root, rel, law)?;
-        let fence_clean = self.feed.clean(bracket);
-        if !read.settled {
-            // A still-open in-place writer (§6.2 row 5): the leaf is
-            // SUSPECT — served this pass, never trusted.
-            self.suspect_reads += 1;
+        let mut moved = Vec::with_capacity(reads.len());
+        for (mover, read) in movers.into_iter().zip(reads) {
+            if !read.settled {
+                // A still-open in-place writer (§6.2 row 5): the leaf is
+                // SUSPECT — served this pass, never trusted.
+                self.suspect_reads += 1;
+            }
+            if !read.fence_clean {
+                self.fenced_reads += 1;
+            }
+            let seen = if read.settled && read.fence_clean {
+                trust.record_seen()
+            } else {
+                None
+            };
+            // The fd-true identity of the bytes actually hashed — never the
+            // walk's path stat, which the minting write can race.
+            moved.push((
+                mover.rel,
+                LeafSeen {
+                    key: read.key,
+                    digest: read.digest,
+                    seen,
+                },
+            ));
         }
-        if !fence_clean {
-            self.fenced_reads += 1;
+        match refusal {
+            Some(refusal) => Err(refusal),
+            None => Ok(moved),
         }
-        let seen = if read.settled && fence_clean {
-            trust.record_seen()
-        } else {
-            None
-        };
-        // The fd-true identity of the bytes actually hashed — never the
-        // walk's path stat, which the minting write can race.
-        Ok(LeafSeen {
-            key: read.key,
-            digest: model::leaf_digest(&read.bytes),
-            seen,
-        })
     }
 
     /// The trust context this pass runs under: calibrate lazily at the first
@@ -2065,6 +2108,102 @@ fn read_member(
             }
         },
     }
+}
+
+/// A member [`DomainCache::observe`] must read: its memo row is absent, moved,
+/// or inside the watermark's racy window.
+struct Mover {
+    rel: PathBuf,
+    /// The key matched a memo row the watermark refused — the re-read is the
+    /// trust close's own (`watermark_rereads`).
+    key_matched: bool,
+}
+
+/// One mover's read, bytes already hashed and dropped.
+struct MoverRead {
+    /// The fd-true identity of the bytes hashed.
+    key: StatKey,
+    digest: [u8; 32],
+    /// No still-open in-place writer was seen (§6.2 row 5).
+    settled: bool,
+    /// No feed event landed inside this read's own fence bracket (§6.2 row 4).
+    fence_clean: bool,
+}
+
+/// One mover under the §6.2 stable-read law, its own fence bracket around
+/// its own bytes. Shared by the serial and parallel arms of [`read_movers`].
+fn read_mover(
+    root: &WorkspaceRoot,
+    rel: &Path,
+    law: ObserveLaw,
+    feed: &stable::FeedGen,
+) -> Result<MoverRead, ObserveRefusal> {
+    // The event-generation fence brackets the read (§6.2 row 4): a feed event
+    // landing inside re-classifies the record as spoiled, never a torn
+    // observation trusted.
+    let bracket = feed.bracket();
+    let read = read_member(root, rel, law)?;
+    let fence_clean = feed.clean(bracket);
+    Ok(MoverRead {
+        key: read.key,
+        digest: model::leaf_digest(&read.bytes),
+        settled: read.settled,
+        fence_clean,
+    })
+}
+
+/// Read and hash every mover — serial below `floor`, else order-preserving
+/// contiguous chunks on 2–4 scoped workers ([`read_and_digest_members`]'s
+/// discipline and clamp: reads contend in the kernel under wider fan-out).
+///
+/// Returns the reads of the longest clean prefix in `movers` order, and the
+/// first refusal in that order: each chunk stops at its own first refusal and
+/// the merge stops at the earliest chunk's, so both match the serial loop
+/// exactly. The stable-read law is per member and unchanged — every worker
+/// brackets each read with the shared feed generation, as the serial loop
+/// did. A worker panic resumes on the caller.
+fn read_movers(
+    root: &WorkspaceRoot,
+    movers: &[Mover],
+    law: ObserveLaw,
+    feed: &stable::FeedGen,
+    floor: usize,
+) -> (Vec<MoverRead>, Option<ObserveRefusal>) {
+    let read_chunk = |chunk: &[Mover]| {
+        let mut reads = Vec::with_capacity(chunk.len());
+        for mover in chunk {
+            match read_mover(root, &mover.rel, law, feed) {
+                Ok(read) => reads.push(read),
+                Err(refusal) => return (reads, Some(refusal)),
+            }
+        }
+        (reads, None)
+    };
+    if movers.is_empty() || movers.len() < floor {
+        return read_chunk(movers);
+    }
+    let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 4));
+    let chunk = movers.len().div_ceil(workers);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = movers
+            .chunks(chunk)
+            .map(|chunk| scope.spawn(move || read_chunk(chunk)))
+            .collect();
+        let mut out = Vec::with_capacity(movers.len());
+        let mut first = None;
+        for handle in handles {
+            match handle.join() {
+                Ok((reads, refusal)) => {
+                    if first.is_none() {
+                        out.extend(reads);
+                        first = refusal;
+                    }
+                }
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+        (out, first)
+    })
 }
 
 /// Open `rel` under `root` without following any symlink component BELOW
@@ -3127,6 +3266,18 @@ impl WriteLock {
     /// other I/O failure creating or locking the lockfile (the caller maps it
     /// to a typed engine error, never unwraps).
     pub fn acquire(root: &WorkspaceRoot) -> io::Result<Self> {
+        Self::acquire_within(root, std::time::Duration::ZERO)
+    }
+
+    /// [`acquire`](Self::acquire), retried every `LOCK_POLL` until `budget`
+    /// has passed — [`lock_within`]'s shape for the flock. For the one caller
+    /// that must observe under the flock rather than skip (a subscribe's
+    /// priming); every other caller keeps the non-blocking try.
+    ///
+    /// # Errors
+    /// [`io::ErrorKind::WouldBlock`] when the lock stayed held for the whole
+    /// `budget`; any other failure [`acquire`](Self::acquire) names, at once.
+    pub fn acquire_within(root: &WorkspaceRoot, budget: std::time::Duration) -> io::Result<Self> {
         let dir = root.0.join(".meridian");
         fs::create_dir_all(&dir)?;
         let file = fs::OpenOptions::new()
@@ -3134,15 +3285,23 @@ impl WriteLock {
             .truncate(false)
             .write(true)
             .open(dir.join("write.lock"))?;
-        // SAFETY: flock on a valid open fd; the fd outlives the call.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(io::Error::last_os_error());
+        let deadline = std::time::Instant::now() + budget;
+        loop {
+            // SAFETY: flock on a valid open fd; the fd outlives the call.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Ok(Self {
+                    file,
+                    root: root.clone(),
+                    hold: None,
+                });
+            }
+            let e = io::Error::last_os_error();
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if e.kind() != io::ErrorKind::WouldBlock || left.is_zero() {
+                return Err(e);
+            }
+            std::thread::sleep(LOCK_POLL.min(left));
         }
-        Ok(Self {
-            file,
-            root: root.clone(),
-            hold: None,
-        })
     }
 
     /// Time this hold under `name` (a `flock.hold.<holder>` phase,
@@ -6081,6 +6240,149 @@ mod domain_cache_parallel_tests {
                 "the later vanished member is never named (floor {floor}): {msg}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod observe_parallel_read_tests {
+    //! The mover reads inside `DomainCache::observe` fan out across members;
+    //! the serial loop below the floor is the oracle. Same leaves, same
+    //! counters, same first refusal — parallelism moves wall time only.
+
+    use super::{
+        DomainCache, Mover, ObserveLaw, ObserveRefusal, PARALLEL_READ_FLOOR, WorkspaceRoot, domain,
+        read_movers, stable,
+    };
+    use std::path::PathBuf;
+
+    const SERIAL: usize = usize::MAX;
+
+    fn write(root: &std::path::Path, rel: &str, contents: &str) {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, contents).unwrap();
+    }
+
+    /// `(key, digest, recorded?)` per member — the watermark VALUE differs
+    /// between two passes by construction, whether one was recorded does not.
+    fn rows(cache: &DomainCache) -> Vec<(PathBuf, super::StatKey, [u8; 32], bool)> {
+        cache
+            .leaves
+            .iter()
+            .map(|(rel, e)| (rel.clone(), e.key, e.digest, e.seen.is_some()))
+            .collect()
+    }
+
+    fn counters(cache: &DomainCache) -> [u64; 5] {
+        [
+            cache.leaves_read(),
+            cache.watermark_rereads(),
+            cache.suspect_reads(),
+            cache.fenced_reads(),
+            cache.member_stats(),
+        ]
+    }
+
+    /// A cold pass (every member a mover) and a pass over a mover set wider
+    /// than the floor: the fan-out yields the serial oracle's rows, leaves
+    /// and counters exactly.
+    #[test]
+    fn parallel_mover_reads_match_the_serial_oracle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let n = 2 * PARALLEL_READ_FLOOR + 3;
+        for i in 0..n {
+            write(
+                tmp.path(),
+                &format!("d{}/m{i:03}.md", i % 5),
+                &format!("# {i}\n"),
+            );
+        }
+        let root = WorkspaceRoot(std::fs::canonicalize(tmp.path()).unwrap());
+        let law = ObserveLaw::Plain;
+        let mut serial = DomainCache::new();
+        let mut fanned = DomainCache::new();
+        // Settle the stamps past a ms-class quantum: no row is racily clean.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+
+        let domain = domain::Domain::load(&root).unwrap();
+        let oracle = serial
+            .observe_with(&root, &domain, law, SERIAL)
+            .ok()
+            .unwrap();
+        let got = fanned
+            .observe_with(&root, &domain, law, PARALLEL_READ_FLOOR)
+            .ok()
+            .unwrap();
+        assert_eq!(got.0, oracle.0, "cold: same rows");
+        assert_eq!(rows(&fanned), rows(&serial), "cold: same leaves");
+        assert_eq!(counters(&fanned), counters(&serial), "cold: same counters");
+        assert_eq!(
+            fanned.leaves_read(),
+            n as u64,
+            "cold: every member read once"
+        );
+
+        // A mover set past the floor on the warm memo.
+        for i in 0..=PARALLEL_READ_FLOOR {
+            write(
+                tmp.path(),
+                &format!("d{}/m{i:03}.md", i % 5),
+                &format!("# {i} moved\n"),
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let oracle = serial
+            .observe_with(&root, &domain, law, SERIAL)
+            .ok()
+            .unwrap();
+        let got = fanned
+            .observe_with(&root, &domain, law, PARALLEL_READ_FLOOR)
+            .ok()
+            .unwrap();
+        assert_eq!(got.0, oracle.0, "warm: same rows");
+        assert_eq!(rows(&fanned), rows(&serial), "warm: same leaves");
+        assert_eq!(counters(&fanned), counters(&serial), "warm: same counters");
+        assert_eq!(
+            fanned.leaves_read(),
+            (n + PARALLEL_READ_FLOOR + 1) as u64,
+            "warm: exactly the movers were read"
+        );
+    }
+
+    /// Two members missing at read time, in different chunks: both arms read
+    /// the same clean prefix and name the same — first, in sorted order —
+    /// member.
+    #[test]
+    fn the_first_refusal_matches_the_serial_loop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let n = 2 * PARALLEL_READ_FLOOR;
+        let mut movers = Vec::new();
+        for i in 0..n {
+            let rel = format!("m{i:03}.md");
+            if i != 10 && i != n - 5 {
+                write(tmp.path(), &rel, "# m\n");
+            }
+            movers.push(Mover {
+                rel: PathBuf::from(rel),
+                key_matched: false,
+            });
+        }
+        let root = WorkspaceRoot(std::fs::canonicalize(tmp.path()).unwrap());
+        let feed = stable::FeedGen::default();
+        let refusal = |floor| {
+            let (reads, refusal) = read_movers(&root, &movers, ObserveLaw::Plain, &feed, floor);
+            let Some(ObserveRefusal::Io(e)) = refusal else {
+                panic!("a missing member refuses");
+            };
+            (reads.len(), e.to_string())
+        };
+        let oracle = refusal(SERIAL);
+        assert_eq!(
+            oracle.0, 10,
+            "the serial loop stops at the first missing member"
+        );
+        assert!(oracle.1.contains("m010.md"), "{}", oracle.1);
+        assert_eq!(refusal(PARALLEL_READ_FLOOR), oracle);
     }
 }
 

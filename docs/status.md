@@ -86,7 +86,8 @@ mrd init [PATH] [--name NAME]
  shadowed descendant drawers
 mrd unregister [PATH] drop the daemon entry (if a daemon answers) + its drawers.
  This includes the current projection drawer and the
- version-independent parsed-document drawer. The daemon
+ version-independent parsed-document and checkpoint
+ drawers. The daemon
  drops its resident `sql.duckdb` handle with the entry,
  so the next `mrd sql` cold-builds a fresh file instead
  of serving the removed one (the repair route the held
@@ -503,7 +504,10 @@ mrd realise <PAGE> [--dry] [--json]
  (only on drift, once) -> re-check
 mrd cache ls list the on-disk cache drawers; `parsed-v1` is
  the document snapshot, whose compatibility follows
- parser semantics rather than package/SQL versions
+ parser semantics rather than package/SQL versions;
+ `checkpoint-v2` is the restart checkpoint, whose
+ compatibility follows its own format and the hash
+ law
 mrd cache clean [--all] reap stale / orphaned / retired drawers. "Orphaned"
  means the workspace was OBSERVED gone: a workspace path
  that could not be examined keeps its drawer and is

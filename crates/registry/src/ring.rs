@@ -50,6 +50,12 @@ pub const DETECT_CADENCE: Duration = Duration::from_millis(250);
 /// backstop — the staleness bound a silent capture loss can put on frames.
 pub const DETECT_FLOOR_CADENCE: Duration = Duration::from_secs(30);
 
+/// How long a subscribe's priming waits for the workspace write flock
+/// (merkle-spec §6.7). With the pre-observation's 2 s door cookie budget it
+/// leaves half of a client's 10 s request deadline for the snapshot and the
+/// flock-held observation. Past it the `sub` refuses `workspace_busy`.
+pub const PRIME_FLOCK_BUDGET: Duration = Duration::from_secs(3);
+
 /// One workspace's delta plane: retained ring, watcher baseline, multi-thread bookkeeping.
 #[derive(Debug)]
 pub struct WorkspaceRing {
@@ -65,6 +71,9 @@ pub struct WorkspaceRing {
     cycle_gate: Mutex<()>,
     /// Live subscriptions — drives detection and reaper exemption.
     subscribers: AtomicUsize,
+    /// How long priming waits for the flock: [`PRIME_FLOCK_BUDGET`]; tests
+    /// shorten it.
+    prime_budget: Duration,
     /// Test-only pause gate for priming's unlocked window: when armed, the
     /// next priming cycle announces itself on the first channel after its
     /// unlocked byte snapshot, then parks on the second — before it takes
@@ -127,6 +136,7 @@ impl WorkspaceRing {
             }),
             cycle_gate: Mutex::new(()),
             subscribers: AtomicUsize::new(0),
+            prime_budget: PRIME_FLOCK_BUDGET,
             #[cfg(test)]
             pause_after_prime_snapshot: Mutex::new(None),
         }
@@ -270,8 +280,17 @@ impl WorkspaceRing {
     /// seq can never skip a frame the acked root does not carry (a frame
     /// landing after this read is > the pair's seq and delivers).
     ///
+    /// The baseline is the flock-held observation, so priming waits up to
+    /// [`PRIME_FLOCK_BUDGET`] for a writer to release the flock. It never
+    /// acks a root it did not observe under the flock: an unlocked fold can
+    /// catch a batch between its renames, a root no door committed, and the
+    /// watch would then prime on a later cycle without telling what changed
+    /// in between.
+    ///
     /// # Errors
-    /// Snapshot or classification failure — refuse rather than ack an unanchorable stream.
+    /// Snapshot or classification failure, or `workspace_busy` when a writer
+    /// holds the flock past the budget — refuse rather than ack an
+    /// unanchorable stream.
     pub fn prime(
         &self,
         ws_root: &fs::WorkspaceRoot,
@@ -287,12 +306,21 @@ impl WorkspaceRing {
         self.cycle(ws_root, registry, false)?;
         let state = self.state();
         let seq = state.ring.seq();
-        match state.watch.root() {
-            Some(root) => Ok((root.clone(), seq)),
-            // Cycle skipped (write held flock). Disk root is still a truthful
-            // anchor; in-flight write's change is detected later.
-            None => Ok((wire_serve::ambient_root(ws_root)?, seq)),
-        }
+        // No root: the priming cycle lost the flock for the whole budget, so
+        // no baseline exists, and none is invented.
+        state
+            .watch
+            .root()
+            .map(|root| (root.clone(), seq))
+            .ok_or_else(|| {
+                let mut busy = ErrorBody::new(ErrorCode::WorkspaceBusy);
+                busy.message = Some(format!(
+                    "a writer held .meridian/write.lock past this subscribe's {:?} priming \
+                 budget — no baseline was observed and nothing was acked; transient, retry",
+                    self.prime_budget
+                ));
+                Box::new(busy)
+            })
     }
 
     /// One detection cycle, cadence ignored. Gates described on [`Self::detect`].
@@ -367,6 +395,11 @@ impl WorkspaceRing {
     /// on the next cadence instead of waiting out another
     /// [`DETECT_FLOOR_CADENCE`].
     ///
+    /// Priming waits for the flock up to `prime_budget` with its snapshot in
+    /// hand, so a win costs no re-read; ordinary and backstop cycles keep the
+    /// non-blocking try — never block a subscriber thread on an unrelated
+    /// writer in steady state.
+    ///
     /// Priming builds the baseline from the memo's leaf view, reusing each
     /// `snapshot` member whose digest matches its leaf
     /// (`wire_serve::watch::prime`); a re-read that races its leaf falls back
@@ -388,7 +421,12 @@ impl WorkspaceRing {
         } else {
             "flock.hold.detect"
         };
-        let Ok(_write_lock) = fs::WriteLock::acquire(ws_root).map(|lock| lock.timed(holder)) else {
+        let acquired = if snapshot.is_some() {
+            fs::WriteLock::acquire_within(ws_root, self.prime_budget)
+        } else {
+            fs::WriteLock::acquire(ws_root)
+        };
+        let Ok(_write_lock) = acquired.map(|lock| lock.timed(holder)) else {
             // A write is in flight; its change keeps. A full cycle that lost
             // the flock leaves the fallback clock unanchored and retries one
             // cadence later, not on every tick: its unlocked passes are the
@@ -677,6 +715,150 @@ mod tests {
             .collect();
         rows.sort_by(|a, b| a.0.cmp(&b.0));
         rows
+    }
+
+    /// A batch's frame, as a write door records it under the flock.
+    fn batch_frame(ring: &WorkspaceRing, before: &Root, after: &Root, rels: &[&str]) -> DeltaFrame {
+        DeltaFrame {
+            delta: wire::Delta {
+                seq: ring.state().ring.allocate_seq(),
+                root_before: before.clone(),
+                root_after: after.clone(),
+                actor: None,
+                now: None,
+                files: rels
+                    .iter()
+                    .map(|rel| wire::DeltaFile {
+                        path: wire::Path((*rel).to_owned()),
+                        change: wire::FileChange::Modified,
+                        from_path: None,
+                        file_rev_before: None,
+                        file_rev_after: None,
+                        nodes: vec![],
+                    })
+                    .collect(),
+            },
+            effects: vec![],
+            rescope: None,
+            overflow: None,
+        }
+    }
+
+    /// Arm the priming pause seam; the returned pair announces the unlocked
+    /// snapshot and resumes priming toward the flock.
+    fn pause_priming(ring: &WorkspaceRing) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (announce, announced) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel();
+        *ring.pause_after_prime_snapshot.lock().unwrap() = Some((announce, resumed));
+        (announced, resume)
+    }
+
+    /// A `sub` arriving while a two-file batch is parked between its renames:
+    /// priming waits for the batch's flock, so the ack root is the batch's
+    /// committed root — the `root_after` of its frame in the ring — and the
+    /// next external edit's frame chains from it. An unlocked ack would carry
+    /// the torn root, and the frame after it a `root_before` no subscriber
+    /// was told.
+    ///
+    /// *Mutation:* take the flock with `acquire` on the priming arm — priming
+    /// loses the try, acks before the batch lands, and is finished while the
+    /// batch still holds the flock.
+    #[test]
+    fn priming_waits_out_a_batch_and_acks_its_committed_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = workspace(
+            tmp.path(),
+            &[("a.md", "# A\n\none\n"), ("b.md", "# B\n\none\n")],
+        );
+        let reg = registry_in(tmp.path());
+        let ring = WorkspaceRing::new(&ws);
+        let before = disk_root(&ws);
+        let batch = fs::WriteLock::acquire(&ws).expect("the batch takes the flock");
+        write(&ws.0, "a.md", "# A\n\ntwo\n");
+        let (announced, resume) = pause_priming(&ring);
+
+        let (root, seq) = std::thread::scope(|scope| {
+            let priming = scope.spawn(|| ring.prime(&ws, &reg));
+            announced
+                .recv_timeout(Duration::from_secs(10))
+                .expect("priming never reached its unlocked snapshot");
+            resume.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(
+                !priming.is_finished(),
+                "priming waits for the batch's flock instead of acking under it"
+            );
+            write(&ws.0, "b.md", "# B\n\ntwo\n");
+            ring.advance(batch_frame(
+                &ring,
+                &before,
+                &disk_root(&ws),
+                &["a.md", "b.md"],
+            ));
+            drop(batch);
+            priming.join().unwrap().expect("prime")
+        });
+
+        let frames = ring.frames_after(0);
+        assert_eq!(frames.len(), 1, "the batch's own frame");
+        assert_eq!(
+            root, frames[0].delta.root_after,
+            "the ack root sits in the chain"
+        );
+        assert_eq!(root, disk_root(&ws), "and is the committed disk");
+        assert_eq!(seq, frames[0].delta.seq, "anchored at the batch's frame");
+
+        write(&ws.0, "a.md", "# A\n\nthree\n");
+        assert!(ring.cycle(&ws, &reg, true).expect("backstop cycle"));
+        let next = ring.frames_after(seq);
+        assert_eq!(next.len(), 1);
+        assert_eq!(
+            next[0].delta.root_before, root,
+            "the next frame chains from the ack"
+        );
+    }
+
+    /// A flock held past the priming budget: the `sub` refuses with the retry
+    /// class and acks nothing, and the ring's state guard stays free during
+    /// the wait — a writer's `advance` lands within one cadence. Once the
+    /// flock is free the retry primes.
+    ///
+    /// *Mutation:* ack `wire_serve::ambient_root` in `prime`'s unprimed arm —
+    /// the lost flock answers `Ok` with a root nobody observed under it.
+    #[test]
+    fn priming_past_the_flock_budget_refuses_busy_and_holds_no_ring_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = workspace(tmp.path(), &[("a.md", "# A\n")]);
+        let reg = registry_in(tmp.path());
+        let mut ring = WorkspaceRing::new(&ws);
+        ring.prime_budget = Duration::from_millis(600);
+        let ring = ring;
+        let held = fs::WriteLock::acquire(&ws).expect("a writer holds the flock");
+        let (announced, resume) = pause_priming(&ring);
+
+        let refused = std::thread::scope(|scope| {
+            let priming = scope.spawn(|| ring.prime(&ws, &reg));
+            announced
+                .recv_timeout(Duration::from_secs(10))
+                .expect("priming never reached its unlocked snapshot");
+            resume.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            let root = disk_root(&ws);
+            let started = Instant::now();
+            ring.advance(batch_frame(&ring, &root, &root, &["a.md"]));
+            assert!(
+                started.elapsed() < DETECT_CADENCE,
+                "a writer's ring advance is never parked behind priming's wait"
+            );
+            priming.join().unwrap()
+        });
+        let err = refused.expect_err("a flock held past the budget refuses");
+        assert_eq!(err.code, ErrorCode::WorkspaceBusy);
+        assert!(ring.state().watch.root().is_none(), "nothing was primed");
+
+        drop(held);
+        let (root, _) = ring.prime(&ws, &reg).expect("the retry primes");
+        assert_eq!(root, disk_root(&ws));
     }
 
     /// P1(b): no ordinary cycle runs the floor under the flock. With the vouch
