@@ -157,7 +157,13 @@ steps:
         fi
         echo "MRD_BUILD_SHA=$${rev}" > "$${CI_WORKSPACE}/.ci/stamp.env"
         cat "$${CI_WORKSPACE}/.ci/stamp.env"
-        env $(cat "$${CI_WORKSPACE}/.ci/stamp.env") cargo build --locked --release -p mrd
+        # LOWEST CPU PRIORITY. The only darwin agent is a person's desk
+        # machine: a release build at normal priority drove it thermal Heavy
+        # even with CARGO_BUILD_JOBS=4, because the job bound caps parallel
+        # rustc processes, not the codegen threads inside each one. Under
+        # nice 19 the build yields to interactive work; codegen threads are
+        # the next lever if that is not enough.
+        env $(cat "$${CI_WORKSPACE}/.ci/stamp.env") nice -n 19 cargo build --locked --release -p mrd
       # ASK THE ARTIFACT what it is. A binary that cannot name its tree, or
       # names a different one, must never reach a pin.
       - |
