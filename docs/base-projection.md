@@ -385,7 +385,13 @@ other projection table:
   own call and is never kept: its gap may be transient, and no event would
   retire it. The reuse inherits the md plane's capture gap and closes it the
   same way: a new directory is a counted event and, on inotify, a doubt
-  collapse. The CLI lane walks on every call.
+  collapse. Classification reads the path as it stands when the feed handles
+  the event, as the md plane's does, so one race stays open: a directory
+  with a markdown name renamed away, with a markdown file created at that
+  name before the feed handles the rename, moves no count. Counting every
+  rename would close it, but FSEvents reports the engine's own atomic writes
+  as renames, so every write would end the reuse. The CLI lane walks on
+  every call.
 - **The disclosed approximation narrows.** `.base` motion leaves the store's
   "moves no fingerprint, triggers no append" list; `link.exclusion` /
   `exclusion_path` are consistent with `base` as of the append's own two

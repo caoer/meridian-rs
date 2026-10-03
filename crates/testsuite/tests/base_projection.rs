@@ -682,11 +682,11 @@ fn a_build_with_no_walk_stamps_the_fold_null() {
     );
 }
 
-/// `base-projection.md` §7: a walk that could not list a directory says so, so
-/// the daemon never keeps it for a later call — the gap may be transient, and
-/// no event would ever retire a kept partial walk.
+/// `base-projection.md` §7: a walk that could not list a directory or read a
+/// member says so, so the daemon never keeps it for a later call — the gap may
+/// be transient, and no event would ever retire a kept partial walk.
 #[test]
-fn a_walk_past_an_unlistable_directory_is_incomplete() {
+fn a_walk_past_an_unlistable_directory_or_unreadable_member_is_incomplete() {
     use std::os::unix::fs::PermissionsExt;
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = WorkspaceRoot(tmp.path().to_path_buf());
@@ -714,5 +714,27 @@ fn a_walk_past_an_unlistable_directory_is_incomplete() {
         paths,
         ["bases/x.base"],
         "the unlistable subtree reads as absence"
+    );
+
+    let member = tmp.path().join("bases/x.base");
+    std::fs::set_permissions(&member, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    let readable = std::fs::read(&member).is_ok();
+    let unread = walk(&root);
+    std::fs::set_permissions(&member, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+
+    assert!(
+        !readable,
+        "PRECONDITION FAILED: a mode-000 file still reads"
+    );
+    assert!(
+        !unread.complete,
+        "a member that would not read leaves the walk incomplete"
+    );
+    assert!(
+        unread
+            .members
+            .iter()
+            .any(|m| m.path == "bases/x.base" && m.bytes.is_err()),
+        "the unreadable member is a named row, not an absence (§4.4)"
     );
 }
