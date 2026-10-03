@@ -1385,21 +1385,9 @@ impl Registry {
                 None
             };
             let previous = prior
-                .as_ref()
-                .map(|p| fs::CorpusPrior {
-                    docs: &p.docs,
-                    unserved: &p.unserved,
-                    leaves: &p.leaves,
-                    index: Some(&p.index),
-                })
-                .or_else(|| {
-                    restored.as_ref().map(|p| fs::CorpusPrior {
-                        docs: &p.docs,
-                        unserved: &p.unserved,
-                        leaves: &p.leaves,
-                        index: None,
-                    })
-                });
+                .as_deref()
+                .map(WorkspaceEngine::as_prior)
+                .or_else(|| restored.as_ref().map(crate::engine::restored_prior));
             let engine = if let Some(previous) = previous {
                 // The movers against the prior's leaf set AND the root
                 // minted for the memo's set under ONE lock hold (merkle-spec

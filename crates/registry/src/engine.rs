@@ -41,6 +41,33 @@ pub struct WorkspaceEngine {
     pub leaves: BTreeMap<PathBuf, [u8; 32]>,
 }
 
+impl WorkspaceEngine {
+    /// This engine as the prior of the next incremental pass
+    /// ([`fs::update_corpus`]) — its name index included, so the pass can
+    /// share it.
+    #[must_use]
+    pub fn as_prior(&self) -> fs::CorpusPrior<'_> {
+        fs::CorpusPrior {
+            docs: &self.docs,
+            unserved: &self.unserved,
+            leaves: &self.leaves,
+            index: Some(&self.index),
+        }
+    }
+}
+
+/// A §6.9 restored snapshot as an incremental pass's prior: no name index,
+/// so the pass builds one over the final docs (merkle-spec §6.9).
+#[must_use]
+pub fn restored_prior(restored: &parse_cache::snapshot::Restored) -> fs::CorpusPrior<'_> {
+    fs::CorpusPrior {
+        docs: &restored.docs,
+        unserved: &restored.unserved,
+        leaves: &restored.leaves,
+        index: None,
+    }
+}
+
 /// The resident engine IS a mounted root's served projection when a pin or
 /// link plane names that root (`wire_serve::mount_corpus`): the daemon hands
 /// its own warm corpus to the colour computer instead of rebuilding the root
