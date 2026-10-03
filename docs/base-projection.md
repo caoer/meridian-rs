@@ -374,13 +374,16 @@ other projection table:
   keeps its last walk and hands it to the next sync while its event feed
   vouches that nothing on the base plane moved. The feed counts every event
   that can move a member — any event on a `.base` name; a directory created
-  or removed; a rename of anything but a markdown file; any other change on
-  a path that is a directory or no longer exists — and every doubt collapse
+  or removed; a rename, unless it lands a markdown file (a markdown name that
+  exists and is not a directory); any other change on a path that is a
+  directory or no longer exists — and every doubt collapse
   (`node-rev-merkle-spec.md` §6.4). A walk is reused only when all three
   hold: the call's own cookie barrier answers `Seen` (every earlier event
   delivered, no capture-gap doubt open), the count has not moved since the
   walk began, and the hash domain is the one it walked under. Any other call
-  walks. The reuse inherits the md plane's capture gap and closes it the
+  walks. A walk that could not list a directory or read a member answers its
+  own call and is never kept: its gap may be transient, and no event would
+  retire it. The reuse inherits the md plane's capture gap and closes it the
   same way: a new directory is a counted event and, on inotify, a doubt
   collapse. The CLI lane walks on every call.
 - **The disclosed approximation narrows.** `.base` motion leaves the store's

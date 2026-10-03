@@ -4990,12 +4990,12 @@ mod engine_tests {
         );
     }
 
-    /// `base-projection.md` §7: two `sql` calls with nothing moved between
-    /// them pay ONE `.base` walk — the walk is a directory enumeration of the
-    /// whole root, the largest per-call term on a sessions root. Live kernel
-    /// stream.
+    /// `base-projection.md` §7: `sql` calls with nothing moved between them
+    /// pay no `.base` walk after the first — the walk is a directory
+    /// enumeration of the whole root, the largest per-call term on a sessions
+    /// root. Live kernel stream.
     #[test]
-    fn two_quiet_sql_calls_walk_the_base_plane_once() {
+    fn quiet_sql_calls_reuse_the_kept_base_walk() {
         let home = tempfile::tempdir().unwrap();
         let reg = registry_in(home.path());
         let ws = write_ws(
@@ -5004,9 +5004,8 @@ mod engine_tests {
         );
         let canonical = workspace::canonicalize(&ws).unwrap();
         reg.warm_or_build(&canonical).unwrap();
-
-        for _ in 0..2 {
-            match crate::sql_op::serve(&reg, &canonical, "SELECT path FROM base ORDER BY path")
+        let serve =
+            || match crate::sql_op::serve(&reg, &canonical, "SELECT path FROM base ORDER BY path")
                 .unwrap()
             {
                 wire::ResponseBody::Sql { rows, error, .. } => {
@@ -5014,13 +5013,20 @@ mod engine_tests {
                     assert_eq!(rows, vec![vec![serde_json::json!("bases/x.base")]]);
                 }
                 other => panic!("not a sql body: {other:?}"),
-            }
-        }
-        assert_eq!(
-            reg.feed_stats(&canonical).expect("live feed").base_walks,
-            1,
-            "the second call reused the first call's walk"
-        );
+            };
+        let walks = || reg.feed_stats(&canonical).expect("live feed").base_walks;
+
+        serve();
+        assert_eq!(walks(), 1, "the first call pays the walk");
+        // Settle: a stream may deliver an event from before it started late
+        // (FSEvents can), which would retire the first walk once.
+        let domain = ::fs::domain::Domain::load(&::fs::WorkspaceRoot(canonical.clone())).unwrap();
+        reg.base_walk(&canonical, &domain, Duration::from_secs(10))
+            .unwrap();
+        let settled = walks();
+        serve();
+        serve();
+        assert_eq!(walks(), settled, "quiet calls reuse the kept walk");
     }
 
     /// `base-projection.md` §7: the kept `.base` walk follows base-plane
@@ -5049,22 +5055,25 @@ mod engine_tests {
 
         let first = walk();
         assert_eq!(paths(&first), ["bases/x.base"]);
-        assert_eq!(walks(), 1);
+        assert!(first.complete);
+        // Settle (see `quiet_sql_calls_reuse_the_kept_base_walk`).
+        let settled = walk();
+        let paid = walks();
 
         // Nothing on the base plane moves.
         rewrite(&canonical, "a.md", "# A moved\n");
         rewrite(&canonical, "notes.txt", "scratch\n");
         let quiet = walk();
         assert!(
-            Arc::ptr_eq(&first, &quiet),
+            Arc::ptr_eq(&settled, &quiet),
             "a markdown edit and a non-member file reuse the kept walk"
         );
-        assert_eq!(walks(), 1);
+        assert_eq!(walks(), paid);
 
         // A member's bytes move.
         rewrite(&canonical, "bases/x.base", "views:\n  - type: table\n");
         let edited = walk();
-        assert!(walks() > 1, "a member edit walks again");
+        assert!(walks() > paid, "a member edit walks again");
         assert_eq!(
             edited.members[0].bytes.as_deref().unwrap(),
             b"views:\n  - type: table\n"

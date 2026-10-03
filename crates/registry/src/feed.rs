@@ -45,8 +45,9 @@
 //! (`base-projection.md` §7; [`base_motion`] names the classes), advanced by
 //! every doubt collapse too. It holds no paths and gates no md read. Its one
 //! consumer is the daemon's `.base` walk ([`crate::Registry::base_walk`]),
-//! reused only under a `Seen` barrier and an unmoved count — so the count
-//! carries exactly the barrier's guarantee, capture gap included.
+//! kept only when it listed and read everything, and reused only under a
+//! `Seen` barrier and an unmoved count — so the count carries exactly the
+//! barrier's guarantee, capture gap included.
 //!
 //! # The rescan ladder — every cause NAMED, throttled (merkle-spec §6.4)
 //! Doubt — a kernel overflow, a watcher error, a new directory (or any
@@ -672,43 +673,64 @@ impl WorkspaceFeed {
         &self,
         domain: &fs::domain::Domain,
     ) -> Option<Arc<fs::base::BaseSnapshot>> {
-        let s = self
-            .sync
+        self.sync
             .state
             .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        s.base_kept
-            .as_ref()
-            .filter(|kept| kept.epoch == s.base_epoch && kept.domain == *domain)
-            .map(|kept| Arc::clone(&kept.walk))
+            .unwrap_or_else(PoisonError::into_inner)
+            .kept_base_walk(domain)
     }
 
     /// Count one paid `.base` walk, begun at count `epoch` under `domain`,
-    /// and keep it — unless a walk begun at a later count is kept already (a
-    /// concurrent caller's).
+    /// and keep it when it is complete ([`FeedState::keep_base_walk`]).
     pub(crate) fn keep_base_walk(
         &self,
         epoch: u64,
         domain: fs::domain::Domain,
         walk: Arc<fs::base::BaseSnapshot>,
     ) {
-        let mut s = self
-            .sync
+        self.sync
             .state
             .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        s.base_walks += 1;
-        if s.base_kept.as_ref().is_none_or(|kept| kept.epoch <= epoch) {
-            s.base_kept = Some(KeptBaseWalk {
+            .unwrap_or_else(PoisonError::into_inner)
+            .keep_base_walk(epoch, domain, walk);
+    }
+}
+
+impl FeedState {
+    /// The kept walk, while the count still reads its epoch and `domain` is
+    /// the one it walked under.
+    fn kept_base_walk(&self, domain: &fs::domain::Domain) -> Option<Arc<fs::base::BaseSnapshot>> {
+        self.base_kept
+            .as_ref()
+            .filter(|kept| kept.epoch == self.base_epoch && kept.domain == *domain)
+            .map(|kept| Arc::clone(&kept.walk))
+    }
+
+    /// Count one paid walk and keep it — unless it is incomplete (a directory
+    /// that would not list or a member that would not read may be transient,
+    /// and no event would ever retire it), or a walk begun at a later count
+    /// is kept already (a concurrent caller's).
+    fn keep_base_walk(
+        &mut self,
+        epoch: u64,
+        domain: fs::domain::Domain,
+        walk: Arc<fs::base::BaseSnapshot>,
+    ) {
+        self.base_walks += 1;
+        if walk.complete
+            && self
+                .base_kept
+                .as_ref()
+                .is_none_or(|kept| kept.epoch <= epoch)
+        {
+            self.base_kept = Some(KeptBaseWalk {
                 epoch,
                 domain,
                 walk,
             });
         }
     }
-}
 
-impl FeedState {
     /// Take whatever is pending, leaving the set clean.
     fn take(&mut self) -> Pending {
         if let Some(cause) = self.doubt.take() {
@@ -816,11 +838,12 @@ fn member_candidate(rel: &Path) -> bool {
 /// event on a `.base` name (case-folded: the walk is case-exact, so this only
 /// over-counts) moves it. A plain file's create, delete or content write
 /// under any other name does not. A directory created or removed does; so
-/// does a rename of anything but a markdown file, because a directory renamed
-/// in or out carries its members with no event of their own and the path is
-/// gone or new by the time the event arrives. Any other change counts when
-/// the path is a directory now or exists no longer: a mode change can hide or
-/// reveal a directory's members.
+/// does every rename except one that lands a markdown file (the name exists
+/// and is not a directory), because a directory renamed in or out carries its
+/// members with no event of their own, and by the time the event arrives a
+/// path renamed away is gone whatever it was — a directory may wear a
+/// markdown name. Any other change counts when the path is a directory now or
+/// exists no longer: a mode change can hide or reveal a directory's members.
 fn base_motion(rel: &Path, abs: &Path, kind: EventKind) -> bool {
     if !hideable_prefix(rel) {
         return false;
@@ -837,7 +860,9 @@ fn base_motion(rel: &Path, abs: &Path, kind: EventKind) -> bool {
         | EventKind::Modify(ModifyKind::Data(_))
         | EventKind::Access(_) => false,
         EventKind::Create(CreateKind::Folder) | EventKind::Remove(RemoveKind::Folder) => true,
-        EventKind::Modify(ModifyKind::Name(_)) => !member_candidate(rel) || abs.is_dir(),
+        EventKind::Modify(ModifyKind::Name(_)) => {
+            !member_candidate(rel) || abs.is_dir() || !abs.exists()
+        }
         _ => abs.is_dir() || !abs.exists(),
     }
 }
@@ -1198,6 +1223,10 @@ mod tests {
             "a directory renamed out carries its members"
         );
         assert!(counts("gone.txt", EventKind::Remove(RemoveKind::Any)));
+        assert!(
+            counts("gone.md", rename),
+            "a path renamed away may have been a directory with a markdown name"
+        );
 
         assert!(!counts(
             ".hidden/x.base",
@@ -1224,6 +1253,56 @@ mod tests {
         assert_eq!(s.base_epoch, 1);
         s.collapse(RescanCause::Overflow);
         assert_eq!(s.base_epoch, 2, "a doubt collapse counts");
+    }
+
+    /// The keep rules (`base-projection.md` §7): a complete walk answers while
+    /// the count and the domain hold; an incomplete walk is paid and never
+    /// kept; an older concurrent walk never displaces a newer one.
+    #[test]
+    fn a_kept_base_walk_answers_only_while_its_count_and_domain_hold() {
+        let snapshot = |complete: bool| {
+            Arc::new(fs::base::BaseSnapshot {
+                members: Vec::new(),
+                fold: "bf:0".to_owned(),
+                complete,
+            })
+        };
+        let domain = fs::domain::Domain::default();
+        let mut s = FeedState::default();
+
+        s.keep_base_walk(0, domain.clone(), snapshot(false));
+        assert!(
+            s.kept_base_walk(&domain).is_none(),
+            "an incomplete walk is never kept: its gaps may be transient"
+        );
+
+        let complete = snapshot(true);
+        s.keep_base_walk(0, domain.clone(), Arc::clone(&complete));
+        let kept = s.kept_base_walk(&domain).expect("a complete walk is kept");
+        assert!(Arc::ptr_eq(&kept, &complete));
+        assert_eq!(s.base_walks, 2, "both walks were paid");
+        let ignoring = fs::domain::Domain::from_config("ignore:\n  - \"archive/**\"\n");
+        assert!(
+            s.kept_base_walk(&ignoring).is_none(),
+            "a different domain walks again"
+        );
+
+        s.collapse(RescanCause::Overflow);
+        assert!(
+            s.kept_base_walk(&domain).is_none(),
+            "a moved count retires the kept walk"
+        );
+
+        let newer = snapshot(true);
+        s.keep_base_walk(s.base_epoch, domain.clone(), Arc::clone(&newer));
+        s.keep_base_walk(0, domain.clone(), snapshot(true));
+        let kept = s
+            .kept_base_walk(&domain)
+            .expect("the newer walk stays kept");
+        assert!(
+            Arc::ptr_eq(&kept, &newer),
+            "an older walk never displaces a newer one"
+        );
     }
 
     /// A hideable directory is named doubt, not a silent drop. A non-md

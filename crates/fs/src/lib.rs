@@ -606,19 +606,24 @@ fn walk_domain_dir(
 /// a typo on APFS.
 ///
 /// A directory that will not enumerate contributes nothing — absence, the
-/// standing posture for an unlistable directory in a non-hashed walk.
+/// standing posture for an unlistable directory in a non-hashed walk. The
+/// return says whether the walk saw everything: `false` when a directory
+/// would not list or an entry could not be identified, so a caller that
+/// keeps a walk can refuse to keep a partial one (`base-projection.md` §7).
 pub(crate) fn walk_extension_dir(
     abs_dir: &Path,
     rel_dir: &Path,
     domain: &domain::Domain,
     ext: &str,
     out: &mut Vec<PathBuf>,
-) {
+) -> bool {
     let Ok(entries) = fs::read_dir(abs_dir) else {
-        return;
+        return false;
     };
-    for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else {
+    let mut complete = true;
+    for entry in entries {
+        let Ok((entry, file_type)) = entry.and_then(|e| e.file_type().map(|t| (e, t))) else {
+            complete = false;
             continue;
         };
         let name = entry.file_name();
@@ -630,7 +635,7 @@ pub(crate) fn walk_extension_dir(
             if domain::dot_segment(name) || domain.prunes_dir(&rel) {
                 continue;
             }
-            walk_extension_dir(&entry.path(), &rel, domain, ext, out);
+            complete &= walk_extension_dir(&entry.path(), &rel, domain, ext, out);
         } else if file_type.is_file()
             && Path::new(name).extension().is_some_and(|e| e == ext)
             && in_extension_domain(domain, &rel)
@@ -638,6 +643,7 @@ pub(crate) fn walk_extension_dir(
             out.push(rel);
         }
     }
+    complete
 }
 
 /// The membership predicate for a FILE whose name already carries the walked
