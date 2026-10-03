@@ -955,7 +955,7 @@ pub enum ScopeTokenError {
 
 /// The journal tip clock a stamp plane mints against: answers the current
 /// journal seq (the workspace ring's tip) at the instant of a tree advance.
-pub type StampClock = std::sync::Arc<dyn Fn() -> u64 + Send + Sync>;
+pub type StampClock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 /// The §6.3 stamp binding: which journal epoch the tree's stamps belong to.
 ///
@@ -2952,7 +2952,7 @@ pub fn build_corpus(
     for (rel, parsed) in parse_members(files) {
         match parsed {
             Ok(doc) => {
-                docs.insert(rel, std::sync::Arc::new(doc));
+                docs.insert(rel, Arc::new(doc));
             }
             Err(condition) => {
                 unserved.insert(rel, condition);
@@ -3195,10 +3195,10 @@ pub fn update_corpus(
     let holes = if prior.docs.len() + prior.unserved.len() == prior.leaves.len() {
         Vec::new()
     } else {
-        let moved: std::collections::BTreeSet<&PathBuf> =
+        let planned: std::collections::BTreeSet<&PathBuf> =
             moves.iter().map(|(rel, _)| rel).collect();
         let mut holes = prior_holes(prior);
-        holes.retain(|(rel, _)| !moved.contains(rel));
+        holes.retain(|(rel, _)| !planned.contains(rel));
         holes
     };
     // Start from the prior's maps: an unmoved member is already in place,
