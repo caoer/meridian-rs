@@ -1623,10 +1623,7 @@ read `cmd=` first). A warm daemon-served `links` emits neither on the
  cannot read, or one that attests nothing — a `^anchor` minted under a heading
  serves the heading line alone (3–9 words; measured on home-wiki at
  `ff883de40`: six such rows on five pages, fingerprints equal to the heading
- spans) — can only leave by hand. home-wiki retired its six under a ruling
- with a script (`decisions/2026-09-03-retire-vacuous-and-unreadable-lock-rows.md`
- in that wiki; the script prints `mrd check --json` before and after). The
- ask, with that receipt shape: `mrd unpin <PAGE> <TARGET>#<SELECTOR>` (or
+ spans) — can only leave by hand. The ask: `mrd unpin <PAGE> <TARGET>#<SELECTOR>` (or
  `mrd pin --retire`) — remove exactly one row, matched on object + path +
  fingerprint, refuse when absent or ambiguous (exit 1, nothing written),
  leave the target's anchor in place (another row may address it), print the

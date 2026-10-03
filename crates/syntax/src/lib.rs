@@ -415,8 +415,13 @@ fn frontmatter_keys(block: &str) -> Vec<String> {
         if line.trim() == "---" || line.trim().is_empty() {
             continue;
         }
-        // top-level keys sit at column 0; indented lines are values/nesting
-        if line.starts_with([' ', '\t']) || line.trim_start().starts_with('#') {
+        // top-level keys sit at column 0; indented lines are values/nesting,
+        // and a column-0 `- ` line is an item of the key above it
+        if line.starts_with([' ', '\t'])
+            || line.trim_start().starts_with('#')
+            || line.starts_with("- ")
+            || line.trim_end() == "-"
+        {
             continue;
         }
         if let Some(colon) = line.find(':') {
