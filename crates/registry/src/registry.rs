@@ -2402,16 +2402,24 @@ impl Registry {
     }
 
     /// The workspace's `.base` walk for one `sql` sync (`base-projection.md`
-    /// §7), under `domain`. Each walk is counted on the live feed's published
-    /// [`feed::FeedStats::base_walks`].
+    /// §7), under `domain`: the feed's kept walk while the feed vouches that
+    /// the base plane did not move, else a fresh walk, kept for the next call
+    /// and counted on [`feed::FeedStats::base_walks`]. No live feed: a fresh
+    /// walk on every call.
+    ///
+    /// The barrier comes FIRST: its `Seen` proves every earlier event is
+    /// already counted, so an unmoved count after it covers the whole span
+    /// since the kept walk began. A fresh walk reads the count BEFORE it
+    /// starts, so an event racing the walk moves the count past it and the
+    /// next call walks again. `timeout` bounds the barrier.
     ///
     /// # Errors
-    /// The walk's own error.
+    /// The fresh walk's own error.
     pub(crate) fn base_walk(
         &self,
         workspace: &Path,
         domain: &fs::domain::Domain,
-        _timeout: Duration,
+        timeout: Duration,
     ) -> io::Result<Arc<fs::base::BaseSnapshot>> {
         let root = fs::WorkspaceRoot(workspace.to_path_buf());
         let feed = {
@@ -2422,10 +2430,17 @@ impl Registry {
                 None
             }
         };
-        let walk = Arc::new(fs::base::base_snapshot_under(&root, domain)?);
-        if let Some(feed) = feed {
-            feed.note_base_walk();
+        let Some(feed) = feed else {
+            return fs::base::base_snapshot_under(&root, domain).map(Arc::new);
+        };
+        if feed.cookie_barrier(workspace, timeout) == feed::CookieOutcome::Seen
+            && let Some(kept) = feed.kept_base_walk(domain)
+        {
+            return Ok(kept);
         }
+        let epoch = feed.base_epoch();
+        let walk = Arc::new(fs::base::base_snapshot_under(&root, domain)?);
+        feed.keep_base_walk(epoch, domain.clone(), Arc::clone(&walk));
         Ok(walk)
     }
 
@@ -5024,8 +5039,7 @@ mod engine_tests {
         );
         let canonical = workspace::canonicalize(&ws).unwrap();
         reg.warm_or_build(&canonical).unwrap();
-        let domain =
-            ::fs::domain::Domain::load(&::fs::WorkspaceRoot(canonical.clone())).unwrap();
+        let domain = ::fs::domain::Domain::load(&::fs::WorkspaceRoot(canonical.clone())).unwrap();
         let timeout = Duration::from_secs(10);
         let walk = || reg.base_walk(&canonical, &domain, timeout).unwrap();
         let walks = || reg.feed_stats(&canonical).expect("live feed").base_walks;
