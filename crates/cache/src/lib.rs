@@ -120,9 +120,14 @@ pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 /// column (`wire-contract.md` § A.11) — an s13 drawer's file carries the
 /// body-only view.
 ///
-/// `s15`: the `lock` relation (`wire-contract.md` § A.11) — an s14 drawer
+/// `s15`: `frontmatter.value`, `tag_all` and `prop_rev` read a block sequence
+/// whose items sit at column 0, and a comment after `key:` is no value
+/// (`wire-contract.md` § A.6.1′) — an s14 drawer holds the old rows for pages
+/// whose fingerprints will not move.
+///
+/// `s16`: the `lock` relation (`wire-contract.md` § A.11) — an s15 drawer
 /// holds no rows of it for pages whose fingerprints will not move.
-pub const SCHEMA_SALT: &str = "s15";
+pub const SCHEMA_SALT: &str = "s16";
 
 /// Default GC threshold: a drawer whose last-use is older than this is reapable.
 /// 30 days, mirroring Cargo's registry auto-GC horizon. A path-keyed drawer store

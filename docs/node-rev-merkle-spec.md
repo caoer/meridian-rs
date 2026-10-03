@@ -744,6 +744,29 @@ The fold counter keeps its semantics — zero on a quiet vouched pass, one per
 advance, counting served-fold recomputes — and now runs O(dirty vertices),
 never O(corpus).
 
+**The incremental pass takes movers, never the leaf set.** Motive, measured:
+on a 72.5k-member sessions root a pass that received the memo's whole leaf
+set searched every member in two maps and rebuilt the leaf map, the docs map
+and the name index for every change, on the 1 s prewarm and again on every
+reader holding a stale stamp — 40–110 % daemon CPU at under one change a
+second.
+
+> **The law.** The movers are ONE ordered merge of the prior build's leaf set
+> against the memo's, taken with the snapshot root under the memo lock: no
+> per-member search and no copy of either set. The pass starts from the prior
+> build's maps and applies the movers alone; reads, parses and name-index
+> work are O(movers). The name index is the prior build's own, shared by
+> reference, until a mover adds, removes or re-aliases a document; then that
+> mover's rows move to the positions a from-scratch build over the final docs
+> map gives them. The one O(corpus) term left is the structural copy of the
+> docs and leaf maps — pointer and key copies, no comparison, no parse. A
+> prior with no index (the §6.9 restore) builds it from the final docs.
+
+The prior must describe every UTF-8-named leaf in exactly one of its docs
+and unserved maps — every builder inserts a member's leaf together with its
+document or condition. A prior whose counts disagree pays one scan for its
+holes and re-reads them as movers, never serves a member it does not hold.
+
 ### 6.9 Durable document reuse
 
 A process restart or resident-budget eviction loses ownership of parsed

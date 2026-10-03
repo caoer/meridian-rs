@@ -76,6 +76,10 @@ plane's, one the change plane's:
 - `on_change(event)` and `def run(ctx)` are **hermetic by construction** —
   sealed kernel, no I/O of their own; the script builtins do not join their
   globals.
+- Neither has a load phase. An md constructor called at a task block's or a
+  rule's module top level runs with the module and records its effect on every
+  run or change event, as if the entry had called it. Only the `run` op's load
+  mode (§ The run entry, amended) refuses an effect at load.
 - The script entry is **hermetic by recording**: its one effectful builtin is
   `read()`, every read response is recorded into the trace, and eval is a
   pure function of `(script, args, files, read-response sequence)` (§ The
