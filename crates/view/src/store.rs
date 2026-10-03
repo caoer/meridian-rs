@@ -17,8 +17,8 @@
 //!   that reference it.
 //! - **`main.*`** — the caller-facing latest views, keeping the ephemeral
 //!   projection's exact names and column shapes (`doc`, `section`, `link`,
-//!   `frontmatter_link`, `backlink`, `dangling`, `record`, `tag_all`, `task`,
-//!   `frontmatter`, `frontmatter_tag`, `frontmatter_fault`, `tag`) — plus `_meridian_view`, the ONE relation whose
+//!   `frontmatter_link`, `lock`, `backlink`, `dangling`, `record`, `tag_all`,
+//!   `task`, `frontmatter`, `frontmatter_tag`, `frontmatter_fault`, `tag`) — plus `_meridian_view`, the ONE relation whose
 //!   shape deliberately differs (there a singleton table, here a view over the
 //!   pin ledger). One `QUALIFY` window over `hist.doc` picks each path's newest
 //!   version and drops tombstones; child views follow by `(path, gen)` semi
@@ -192,7 +192,10 @@ use crate::{
 ///
 /// `15`: `main.backlink` gained `key` and the frontmatter rows — a v14 file
 /// carries the body-only view, and views are made with the file.
-pub const CACHE_SCHEMA_VERSION: i64 = 15;
+///
+/// `16`: `hist.lock` + `main.lock` — a v15 file holds no pin rows for pages
+/// whose fingerprints will not move. Same repair-by-rebuild reasoning as `9`.
+pub const CACHE_SCHEMA_VERSION: i64 = 16;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
 pub const SQL_CACHE_FILENAME: &str = "sql.duckdb";
@@ -231,6 +234,10 @@ CREATE TABLE hist.link (
 CREATE TABLE hist.frontmatter_link (
     src_path TEXT, gen BIGINT, seq UBIGINT, key TEXT, target_raw TEXT,
     dest_path TEXT, candidates TEXT[]
+);
+CREATE TABLE hist.lock (
+    src_path TEXT, gen BIGINT, seq UBIGINT, object TEXT, dest_path TEXT,
+    arm TEXT, selector TEXT, hpath TEXT, fingerprint TEXT, hash TEXT
 );
 CREATE TABLE hist.tag (
     path TEXT, gen BIGINT, seq UBIGINT, tag TEXT,
@@ -313,6 +320,11 @@ CREATE VIEW main.frontmatter_link AS
     SELECT f.src_path, f.seq, f.key, f.target_raw, f.dest_path, f.candidates
     FROM hist.frontmatter_link f
     SEMI JOIN hist.doc_latest d ON f.src_path = d.path AND f.gen = d.gen;
+CREATE VIEW main.lock AS
+    SELECT l.src_path, l.seq, l.object, l.dest_path, l.arm, l.selector, l.hpath,
+           l.fingerprint, l.hash
+    FROM hist.lock l
+    SEMI JOIN hist.doc_latest d ON l.src_path = d.path AND l.gen = d.gen;
 CREATE VIEW main.tag AS
     SELECT t.path, t.seq, t.tag, t.span_start, t.span_end, t.node_rev
     FROM hist.tag t
@@ -1388,12 +1400,15 @@ impl SqlStore {
     /// grain — a superset of the resolver's keys, never a subset). Body and
     /// frontmatter links both: a frontmatter link resolves by the same call,
     /// so a name appearing elsewhere moves its `dest_path` and `candidates`
-    /// as it moves a body link's.
+    /// as it moves a body link's. Pins too: a `lock` row's `object` resolves
+    /// through `resolve_ref`, whose exact-path and name rules both answer to
+    /// the full key or the stem matched here, so a page appearing elsewhere
+    /// moves its `dest_path`.
     ///
     /// `base_affected` and `rooted_affected` read `link` alone: they re-decide
     /// `exclusion` stamps and rooted destinations, and a `frontmatter_link`
-    /// row carries neither — its `.base` and `root:` targets are NULL rows
-    /// that no member or mount can move.
+    /// or `lock` row carries neither — its `.base` and `root:` targets are
+    /// NULL rows that no member or mount can move.
     fn resolution_affected(
         &self,
         docs: &model::Docs,
@@ -1436,7 +1451,8 @@ impl SqlStore {
         let mut affected = BTreeSet::new();
         let mut stmt = self.conn.prepare(
             "SELECT src_path, target_raw FROM link \
-                 UNION SELECT src_path, target_raw FROM frontmatter_link",
+                 UNION SELECT src_path, target_raw FROM frontmatter_link \
+                 UNION SELECT src_path, object FROM lock",
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
@@ -1536,6 +1552,7 @@ impl SqlStore {
             Some(&generation),
             &rows.frontmatter_link,
         )?;
+        self.append_scalar(&rows.lock, "lock", &generation)?;
         self.append_scalar(&rows.tag, "tag", &generation)?;
         self.append_scalar(&rows.frontmatter_tag, "frontmatter_tag", &generation)?;
         self.append_scalar(&rows.frontmatter_fault, "frontmatter_fault", &generation)?;
@@ -2052,7 +2069,7 @@ pub(crate) mod tests {
     /// Per-surface digest over every column of every row — the 8 base tables
     /// plus the 4 convenience views, so the acceptance is the whole caller
     /// surface, not just storage.
-    const SURFACE_DIGESTS: [(&str, &str); 14] = [
+    const SURFACE_DIGESTS: [(&str, &str); 15] = [
         (
             "doc",
             "SELECT coalesce(md5(string_agg(path || '|' || file_rev || '|' || line_count::VARCHAR || '|' || bytes::VARCHAR, chr(10) ORDER BY path)), 'EMPTY') FROM doc",
@@ -2072,6 +2089,10 @@ pub(crate) mod tests {
         (
             "frontmatter_link",
             "SELECT coalesce(md5(string_agg(src_path || '|' || seq::VARCHAR || '|' || key || '|' || target_raw || '|' || coalesce(dest_path,'~N~') || '|' || coalesce(candidates::VARCHAR,'~N~'), chr(10) ORDER BY src_path, seq)), 'EMPTY') FROM frontmatter_link",
+        ),
+        (
+            "lock",
+            "SELECT coalesce(md5(string_agg(src_path || '|' || seq::VARCHAR || '|' || object || '|' || coalesce(dest_path,'~N~') || '|' || arm || '|' || selector || '|' || coalesce(hpath,'~N~') || '|' || fingerprint || '|' || hash, chr(10) ORDER BY src_path, seq)), 'EMPTY') FROM lock",
         ),
         (
             "tag",
@@ -2289,8 +2310,8 @@ pub(crate) mod tests {
         }
         // 12 md relations + the three `.base` relations (`base-projection.md`
         // §4) + `body` (`body-projection.md`) + `frontmatter_fault` +
-        // `frontmatter_link`, all under the same latest-view protocol.
-        assert_eq!(cached.len(), 18, "18 caller-facing relations");
+        // `frontmatter_link` + `lock`, all under the same latest-view protocol.
+        assert_eq!(cached.len(), 19, "19 caller-facing relations");
 
         // Each column once, per relation — the literal card assertion.
         for (name, columns) in &cached {
@@ -2589,6 +2610,36 @@ pub(crate) mod tests {
             row(&store),
             ("c/x.md".to_owned(), Some("[a/x.md, c/x.md]".to_owned()))
         );
+        assert_surface_matches_fresh(&store, &v2);
+    }
+
+    #[test]
+    fn a_page_added_later_re_resolves_an_unchanged_pages_pin() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        // c/p.md names x in its lock block alone — no link reaches x.
+        let pinning = "# P\n\n```meridian-lock\nversion: 2\npins:\n  - object: \"[[x]]\"\n    \
+                       hash: \"h\"\n    path: []\n    fingerprint: \"fp1.span2.b3.aa\"\n```\n";
+        let mut files = vec![("a/x.md", "# A x\n"), ("c/p.md", pinning)];
+        let v1 = corpus(&files);
+        sync_ambient(&mut store, &v1, "b3b:v1").expect("cold");
+        let dest = |store: &SqlStore| -> Option<String> {
+            store
+                .connection()
+                .query_row(
+                    "SELECT dest_path FROM lock WHERE src_path = 'c/p.md'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("one pin")
+        };
+        assert_eq!(dest(&store).as_deref(), Some("a/x.md"));
+
+        // A sibling x appears; c/p.md is unchanged and its pin moves to it.
+        files.push(("c/x.md", "# C x\n"));
+        let v2 = corpus(&files);
+        sync_ambient(&mut store, &v2, "b3b:v2").expect("append");
+        assert_eq!(dest(&store).as_deref(), Some("c/x.md"));
         assert_surface_matches_fresh(&store, &v2);
     }
 

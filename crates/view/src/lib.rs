@@ -3,7 +3,7 @@
 //!
 //! # Charter
 //! **Owns:** the `:memory:` SQL projection of the fact corpus — walk
-//! `BTreeMap<path, Document>` into 14 tables + 4 views ([`schema`]) — and the
+//! `BTreeMap<path, Document>` into 15 tables + 4 views ([`schema`]) — and the
 //! lock-aware read face for walk/status colour ([`walk`], [`read_face`]).
 //! The projection is advisory; disk and fingerprints are correctness.
 //!
@@ -342,6 +342,7 @@ pub(crate) struct Rows {
     pub(crate) section: Vec<Vec<Value>>,
     pub(crate) link: Vec<Vec<Value>>,
     pub(crate) frontmatter_link: Vec<Vec<Value>>,
+    pub(crate) lock: Vec<Vec<Value>>,
     pub(crate) tag: Vec<Vec<Value>>,
     pub(crate) frontmatter_tag: Vec<Vec<Value>>,
     pub(crate) frontmatter_fault: Vec<Vec<Value>>,
@@ -437,6 +438,8 @@ pub(crate) fn collect_doc(
         Value::UInt(line_count),
         Value::UBigInt(u64c(doc.raw.len())),
     ]);
+
+    emit_lock_pins(path, doc, index, corpus, rows);
 
     let mut counters = Counters::default();
     emit_preamble(root, path, doc, &mut counters, rows);
@@ -793,6 +796,60 @@ fn candidates_cell(candidates: &[String]) -> Value {
     }
 }
 
+/// Emit one `lock` row per pin in the page's `meridian-lock` block
+/// (`wire-contract.md` § A.11). [`lock::find`] is the one parser: a block it
+/// refuses projects no rows, and `mrd check` / `mrd walk` report the page
+/// grey `lock-refused`.
+///
+/// `dest_path` is the walk's resolution of the object
+/// ([`read_face::page_lock_items_in_rooted_corpus`]: `resolve_ref` on
+/// `object.md`, this page as the source), ambient only. No mount is
+/// consulted, so a `root:` object is NULL as an unresolved one is. `hpath`
+/// reads the selector the way the walk does ([`walk::model_selector`]): a
+/// heading path renders as `section.hpath` spells it ([`hpath_json`]), and
+/// every other selector is NULL.
+fn emit_lock_pins(
+    path: &str,
+    doc: &Document,
+    index: &CorpusIndex,
+    corpus: &model::RootedCorpus<'_>,
+    rows: &mut Rows,
+) {
+    let Ok(Some(found)) = lock::find(doc) else {
+        return;
+    };
+    let no_mounts = addr::MountSet::default();
+    for (seq, pin) in found.lock.pins.into_iter().enumerate() {
+        let spelling = format!("{}.md", pin.object);
+        let dest = match index.resolve_ref(&spelling, path, corpus, &no_mounts) {
+            model::RefResolution::Ambient(dest) => Value::Text(dest),
+            _ => Value::Null,
+        };
+        let hpath = match walk::model_selector(&pin.object, &pin.selector) {
+            model::selector::Selector::Heading(segs) => {
+                let chain: Vec<AddrSeg> = segs
+                    .into_iter()
+                    .map(|s| AddrSeg { h: s.h, n: s.n })
+                    .collect();
+                Value::Text(hpath_json(&chain))
+            }
+            _ => Value::Null,
+        };
+        let selector = serde_json::Value::from(pin.selector.elements().to_vec()).to_string();
+        rows.lock.push(vec![
+            Value::Text(path.to_string()),
+            Value::UBigInt(u64c(seq)),
+            Value::Text(pin.object),
+            dest,
+            Value::Text(pin.selector.key().to_string()),
+            Value::Text(selector),
+            hpath,
+            Value::Text(pin.fingerprint),
+            Value::Text(pin.hash),
+        ]);
+    }
+}
+
 /// Emit one `section` row — identity `(path, node_seq)`; `hpath` advisory,
 /// rendered as the published machine address ([`hpath_json`]). `chain` includes
 /// the section's own segment, so its last element carries the raw heading text.
@@ -1141,6 +1198,7 @@ impl Rows {
             None,
             &self.frontmatter_link,
         )?;
+        append_rows(conn, "lock", &self.lock)?;
         append_rows(conn, "tag", &self.tag)?;
         append_rows(conn, "frontmatter_tag", &self.frontmatter_tag)?;
         append_rows(conn, "frontmatter_fault", &self.frontmatter_fault)?;
@@ -1479,6 +1537,11 @@ mod tests {
         )?;
         insert_rows(
             conn,
+            "INSERT INTO lock (src_path, seq, object, dest_path, arm, selector, hpath, fingerprint, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            &rows.lock,
+        )?;
+        insert_rows(
+            conn,
             "INSERT INTO tag (path, seq, tag, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?)",
             &rows.tag,
         )?;
@@ -1523,7 +1586,7 @@ mod tests {
     /// generated, never stored, so it is derived equal by construction). The
     /// hpath columns are TEXT (the JSON machine address — injective and
     /// self-delimiting), so they digest verbatim.
-    const LANE_DIGESTS: [(&str, &str); 13] = [
+    const LANE_DIGESTS: [(&str, &str); 14] = [
         (
             "doc",
             "SELECT coalesce(md5(string_agg(path || '|' || file_rev || '|' || line_count::VARCHAR || '|' || bytes::VARCHAR, chr(10) ORDER BY path)), 'EMPTY') FROM doc",
@@ -1543,6 +1606,10 @@ mod tests {
         (
             "frontmatter_link",
             "SELECT coalesce(md5(string_agg(src_path || '|' || seq::VARCHAR || '|' || key || '|' || target_raw || '|' || coalesce(dest_path,'~N~') || '|' || coalesce(candidates::VARCHAR,'~N~'), chr(10) ORDER BY src_path, seq)), 'EMPTY') FROM frontmatter_link",
+        ),
+        (
+            "lock",
+            "SELECT coalesce(md5(string_agg(src_path || '|' || seq::VARCHAR || '|' || object || '|' || coalesce(dest_path,'~N~') || '|' || arm || '|' || selector || '|' || coalesce(hpath,'~N~') || '|' || fingerprint || '|' || hash, chr(10) ORDER BY src_path, seq)), 'EMPTY') FROM lock",
         ),
         (
             "tag",
@@ -1649,6 +1716,7 @@ mod tests {
             Value::UBigInt(1),
             Value::Text("rev".to_string()),
         ]);
+        stage_lock_fillers(rows);
         rows.link.push(vec![
             Value::Text("d.md".to_string()),
             Value::UBigInt(0),
@@ -1689,6 +1757,44 @@ mod tests {
                 Value::Text("x/d, 'q' [1].md".to_string()),
             ]),
         ]);
+    }
+
+    /// The `lock` fillers: a heading pin with an occurrence-addressed hpath
+    /// over JSON-hostile heading bytes, and an anchor pin on an unresolved
+    /// object whose hpath and dest are NULL.
+    fn stage_lock_fillers(rows: &mut Rows) {
+        let dup = hpath_json(&[
+            AddrSeg {
+                h: "a\"b".to_string(),
+                n: None,
+            },
+            AddrSeg {
+                h: "Dup".to_string(),
+                n: Some(2),
+            },
+        ]);
+        for (seq, object, dest, selector, hpath) in [
+            (
+                0,
+                "d",
+                Value::Text("d.md".to_string()),
+                r#"["a\"b","Dup#2"]"#,
+                Value::Text(dup),
+            ),
+            (1, "gone", Value::Null, r#"["^claim"]"#, Value::Null),
+        ] {
+            rows.lock.push(vec![
+                Value::Text("d.md".to_string()),
+                Value::UBigInt(seq),
+                Value::Text(object.to_string()),
+                dest,
+                Value::Text("path".to_string()),
+                Value::Text(selector.to_string()),
+                hpath,
+                Value::Text("fp1.span2.b3.x".to_string()),
+                Value::Text("blob".to_string()),
+            ]);
+        }
     }
 
     /// The encoding edges, hand-staged so the gate cannot silently lose them

@@ -3184,6 +3184,29 @@ with `key` NULL, and the resolved rows of `frontmatter_link` with `kind =
 'frontmatter'`, `alias` NULL and the row's `key`. `dangling` and `mrd links`
 stay body-only.
 
+**Pins are SERVED as their own relation, never parsed in SQL.** `lock(src_path,
+seq, object, dest_path, arm, selector, hpath, fingerprint, hash)` holds one
+row per pin in a page's `meridian-lock` block, read by the one lock parser
+(`lock::find`). `seq` is the pin's order in the block, and `(src_path, seq)`
+is the row's identity. `object` is the pin's object verbatim: the wikilink's
+inner text without `.md`, `name:rel` for a cross-root pin. `dest_path` is the
+page the object resolves to by the call the walk makes (`resolve_ref` on
+`object` + `.md`, with the pinning page as the source), ambient only: NULL when
+it names no page of this corpus or names another root. `arm` is `path` or
+`properties`; `selector` is that arm's array as written, compact JSON
+(`["Notes","Q3"]`, `["^claim"]`, `["tags"]`, `[]`). `hpath` is a heading-path
+pin's address in `section.hpath`'s spelling, read the way the walk reads the
+selector — a segment's `#n` occurrence suffix becomes `"n":n` — so `JOIN
+section s ON s.path = l.dest_path AND s.hpath = l.hpath` finds the pinned
+section whenever the pin's spelling is that section's published address. It
+is NULL for a `properties` pin, for `path: []`, for a sole `^id` anchor and for
+a sole `seq-N` transcript ref. `fingerprint` and `hash` are the pin's tokens
+verbatim. A page whose lock block refuses to parse (malformed, a version this
+engine does not read, more than one block) has no rows; `mrd check` and `mrd
+walk` report it grey `lock-refused`. There is no colour column: a pin's colour
+is a live recompute over the target's bytes, owned by `mrd walk` and `mrd
+check` — one compare, not two.
+
 **The CLI ladder.** `mrd sql` asks the resident daemon first (this op), then
 the drawer file when unheld, then `:memory:`. One ladder, no profile
 distinction; only `--rebuild` goes direct.

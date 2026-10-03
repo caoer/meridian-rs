@@ -124,7 +124,10 @@ pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 /// whose items sit at column 0, and a comment after `key:` is no value
 /// (`wire-contract.md` § A.6.1′) — an s14 drawer holds the old rows for pages
 /// whose fingerprints will not move.
-pub const SCHEMA_SALT: &str = "s15";
+///
+/// `s16`: the `lock` relation (`wire-contract.md` § A.11) — an s15 drawer
+/// holds no rows of it for pages whose fingerprints will not move.
+pub const SCHEMA_SALT: &str = "s16";
 
 /// Default GC threshold: a drawer whose last-use is older than this is reapable.
 /// 30 days, mirroring Cargo's registry auto-GC horizon. A path-keyed drawer store
