@@ -836,8 +836,11 @@ fn under_a_live_subscriber_every_run_frame_stays_attributed() {
     let mut sub = Conn::open(server.socket_path());
     assert_eq!(sub.hello_v2(&ws)["ok"], json!(true));
     assert_eq!(sub.sub()["ok"], json!(true));
-    // Drain off-thread from here on; the channel ends when `next_frame`
-    // answers `None` (PUSH_WAIT with no frame, or EOF).
+    // Drain off-thread from here on. The drained socket carries no read
+    // timeout: under `PUSH_WAIT` a single run slower than 10 s would end the
+    // reader as if the daemon had dropped it. The reader ends on EOF
+    // (`server.shutdown()`); `PUSH_WAIT` bounds the consumer below instead.
+    sub.writer.set_read_timeout(None).unwrap();
     let (frames, received) = mpsc::channel();
     std::thread::spawn(move || {
         while let Some(frame) = sub.next_frame() {
@@ -862,7 +865,7 @@ fn under_a_live_subscriber_every_run_frame_stays_attributed() {
     }
 
     let mut governed = 0;
-    while let Ok(frame) = received.recv() {
+    while let Ok(frame) = received.recv_timeout(PUSH_WAIT) {
         let names_run_files = frame["delta"]["files"].as_array().unwrap().iter().any(|f| {
             let p = f["path"].as_str().unwrap();
             p == "tasks.md" || p == ".meridian/receipts/run.md"
