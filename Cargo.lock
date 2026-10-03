@@ -4533,6 +4533,7 @@ dependencies = [
  "serde_json",
  "syntax",
  "tempfile",
+ "timing",
  "wire",
  "wire-map",
 ]

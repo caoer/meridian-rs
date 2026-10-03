@@ -71,7 +71,10 @@ impl policy::MwWorld for DoorWorld<'_> {
                     .to_string(),
             );
         };
-        backend(&overlay_docs(self.root, self.overlay)?, query)
+        let building = timing::phase("mw.sql.world");
+        let docs = overlay_docs(self.root, self.overlay)?;
+        building.stop();
+        backend(&docs, query)
     }
 }
 

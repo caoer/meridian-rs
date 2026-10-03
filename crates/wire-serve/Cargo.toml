@@ -60,6 +60,10 @@ git = { workspace = true }
 # post-batch doc and projects §11.1 findings to `wire::Verdict`. Zero edges run
 # the OTHER way (policy consumes supplied facts, names no wire/serve type).
 policy = { workspace = true }
+# The `MRD_TIMING` phase span (`docs/run-plane.md` § Timing phases): the
+# middleware door's `ctx.sql` world build reports as `mw.sql.world`. A
+# `std`-only leaf with zero dependencies.
+timing = { workspace = true }
 # Decode-time JSON: the strict-decode pass validates the raw request object by
 # hand (serde's `deny_unknown_fields` does not compose with `flatten`).
 serde_json = { workspace = true }
