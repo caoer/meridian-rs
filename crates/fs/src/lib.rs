@@ -21,8 +21,8 @@ use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::PoisonError;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, PoisonError};
 
 pub mod base;
 pub mod canvas;
@@ -955,7 +955,7 @@ pub enum ScopeTokenError {
 
 /// The journal tip clock a stamp plane mints against: answers the current
 /// journal seq (the workspace ring's tip) at the instant of a tree advance.
-pub type StampClock = std::sync::Arc<dyn Fn() -> u64 + Send + Sync>;
+pub type StampClock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 /// The §6.3 stamp binding: which journal epoch the tree's stamps belong to.
 ///
@@ -1506,6 +1506,19 @@ impl DomainCache {
             .iter()
             .map(|(rel, entry)| (rel.clone(), entry.digest))
             .collect()
+    }
+
+    /// The movers between `prior` — a build's recorded leaf set — and this
+    /// memo's leaf set ([`leaf_delta`]): the incremental pass's input
+    /// (merkle-spec §6.8). One ordered merge, no copy of either set; take it
+    /// with [`Self::overlay_root`] under one lock hold so the movers and the
+    /// minted root describe the same set.
+    #[must_use]
+    pub fn leaf_delta(&self, prior: &BTreeMap<PathBuf, [u8; 32]>) -> Vec<LeafMove> {
+        leaf_delta(
+            prior,
+            self.leaves.iter().map(|(rel, entry)| (rel, entry.digest)),
+        )
     }
 
     /// What the push plane's backstop (merkle-spec §6.7, detect row) compares
@@ -2939,7 +2952,7 @@ pub fn build_corpus(
     for (rel, parsed) in parse_members(files) {
         match parsed {
             Ok(doc) => {
-                docs.insert(rel, std::sync::Arc::new(doc));
+                docs.insert(rel, Arc::new(doc));
             }
             Err(condition) => {
                 unserved.insert(rel, condition);
@@ -3032,12 +3045,12 @@ fn corpus_index_of(docs: &model::Docs) -> model::CorpusIndex {
 
 /// One incremental corpus pass's product ([`update_corpus`]): the same parts a
 /// from-scratch [`build_corpus`] yields, plus the leaf set and fold they were
-/// built at, plus how many documents this pass actually parsed.
+/// built at, plus how many documents this pass actually parsed and indexed.
 #[derive(Debug)]
 pub struct CorpusUpdate {
-    /// The rebuilt name index — constructed over the FINAL docs map, so it
-    /// cannot drift from a from-scratch build over the same tree.
-    pub index: model::CorpusIndex,
+    /// The name index over the FINAL docs map — equal to a from-scratch
+    /// build's. The prior build's own allocation when no mover touched it.
+    pub index: Arc<model::CorpusIndex>,
     /// The updated documents, keyed by workspace-relative path.
     pub docs: model::Docs,
     /// The updated unserved map (non-UTF-8 CONTENT members).
@@ -3049,108 +3062,227 @@ pub struct CorpusUpdate {
     /// Documents parsed by THIS pass (movers only) — the [`build_corpus`]
     /// zero-parse proof, kept per-pass.
     pub parsed: usize,
+    /// Documents THIS pass entered into the name index: the movers that
+    /// added, re-aliased or restored a document against a prior index, or
+    /// every document when the prior carried none.
+    pub indexed: usize,
 }
 
-/// Rebuild a corpus INCREMENTALLY against a prior build. `fresh` is the
-/// current §12.2 leaf set (a [`DomainCache::leaf_digests`] pass); `prior_*`
-/// are the parts and leaf set of the build being updated.
+/// One mover between a prior build's leaf set and the current one
+/// ([`leaf_delta`]): `Some(digest)` — present now, added or changed, with the
+/// digest the current set records; `None` — gone.
+pub type LeafMove = (PathBuf, Option<[u8; 32]>);
+
+/// The movers between `prior` and `fresh`: every member whose digest moved,
+/// that `fresh` added, or that `fresh` lacks — by ONE ordered merge of the
+/// two sets (merkle-spec §6.8). Both sides iterate in `PathBuf` order, so
+/// equal members meet in lockstep: no per-member search, and only movers
+/// allocate. `fresh` must iterate in `PathBuf` order (a `BTreeMap` walk).
+pub fn leaf_delta<'a>(
+    prior: &BTreeMap<PathBuf, [u8; 32]>,
+    fresh: impl IntoIterator<Item = (&'a PathBuf, [u8; 32])>,
+) -> Vec<LeafMove> {
+    let mut moves = Vec::new();
+    let mut old = prior.iter().peekable();
+    for (rel, digest) in fresh {
+        // Equal spellings first — the lockstep case, one memcmp — and the
+        // component order only where the two sides differ.
+        let mut order = std::cmp::Ordering::Less;
+        while let Some((was, prior_digest)) = old.peek() {
+            order = if was.as_os_str() == rel.as_os_str() {
+                std::cmp::Ordering::Equal
+            } else {
+                (*was).cmp(rel)
+            };
+            match order {
+                std::cmp::Ordering::Less => {
+                    moves.push(((*was).clone(), None));
+                    old.next();
+                }
+                std::cmp::Ordering::Equal => {
+                    if **prior_digest != digest {
+                        moves.push((rel.clone(), Some(digest)));
+                    }
+                    old.next();
+                    break;
+                }
+                std::cmp::Ordering::Greater => break,
+            }
+        }
+        if order != std::cmp::Ordering::Equal {
+            moves.push((rel.clone(), Some(digest)));
+        }
+    }
+    moves.extend(old.map(|(was, _)| (was.clone(), None)));
+    moves
+}
+
+/// The build an incremental pass ([`update_corpus`]) updates: its parts, its
+/// recorded leaf set, and its name index when it has one.
 ///
-/// Per member of `fresh`: an unmoved leaf (digest equal to `prior_leaves`)
-/// carries its parsed document by shared reference (merkle-spec §6.8 —
-/// pointer clone, never a document copy) — or its unserved condition —
-/// bytes untouched; a moved, added, or unaccounted-for member is read NOW,
-/// its digest re-derived from the very bytes parsed, so the per-member
-/// stamp==bytes atomicity of [`domain_snapshot`] is preserved for everything
-/// this pass parses. A member absent from `fresh` is vanished and drops. A
-/// mover that vanishes between the leaf pass and the read drops the same way
-/// (the fold describes what was actually built); any other read failure
-/// refuses the pass whole — the Law A-3c posture, unchanged.
+/// The parts must describe every UTF-8-named leaf in exactly one of `docs`
+/// and `unserved` — every builder inserts a member's leaf together with its
+/// document or condition. A prior whose counts disagree pays one scan for
+/// its holes, which the pass re-reads as movers.
+#[derive(Debug, Clone, Copy)]
+pub struct CorpusPrior<'a> {
+    /// The prior documents, keyed by workspace-relative path.
+    pub docs: &'a model::Docs,
+    /// The prior unserved map.
+    pub unserved: &'a BTreeMap<String, String>,
+    /// The leaf set the prior was built at.
+    pub leaves: &'a BTreeMap<PathBuf, [u8; 32]>,
+    /// The prior name index — a resident engine's. `None` (the §6.9 restored
+    /// prior) builds the index from the final docs.
+    pub index: Option<&'a Arc<model::CorpusIndex>>,
+}
+
+/// Members of `prior.leaves` its parts do not describe: a UTF-8-named leaf
+/// with neither a document nor a condition. Reached only when the counts
+/// disagree — non-UTF-8 names, or a prior that broke the builder invariant.
+fn prior_holes(prior: &CorpusPrior<'_>) -> Vec<LeafMove> {
+    prior
+        .leaves
+        .iter()
+        .filter(|(rel, _)| {
+            rel.to_str().is_some_and(|rel| {
+                !prior.docs.contains_key(rel) && !prior.unserved.contains_key(rel)
+            })
+        })
+        .map(|(rel, digest)| (rel.clone(), Some(*digest)))
+        .collect()
+}
+
+/// Rebuild a corpus INCREMENTALLY against a prior build, at the cost of the
+/// change (merkle-spec §6.8). `moves` are the movers between the prior's
+/// leaf set and the current §12.2 one — [`leaf_delta`], or
+/// [`DomainCache::leaf_delta`] — never the whole current set.
+///
+/// The pass starts from the prior's maps, so an unmoved member keeps its
+/// parsed document by shared reference (pointer clone, never a document
+/// copy) — or its unserved condition — bytes untouched, and costs no
+/// search. A mover present now is read NOW, its digest re-derived from the
+/// very bytes parsed, so the per-member stamp==bytes atomicity of
+/// [`domain_snapshot`] is preserved for everything this pass parses. A gone
+/// mover drops. A mover that vanishes between the leaf pass and the read
+/// drops the same way (the fold describes what was actually built); any other
+/// read failure refuses the pass whole — the Law A-3c posture, unchanged.
+///
+/// The name index is the prior's own allocation while no mover changes its
+/// rows; a mover that does is patched to the position a from-scratch build
+/// gives it ([`model::CorpusIndex::insert_ordered`]). A prior with no index
+/// builds one over the final docs.
 ///
 /// The returned root folds the resulting leaf set. `fresh_root` is the
-/// served root the caller's memo minted for exactly `fresh` (taken with it
-/// under one lock): when the built set is byte-equal to `fresh`, the fold
-/// of equal inputs is that same value by §4.2.1 purity and no tree is
-/// rebuilt (§6.8's fold-free rebuild stamp). A divergent set — a mover
-/// vanished or changed between snapshot and read — or `None` folds fresh
-/// through [`served_root`], byte-identical to what [`domain_snapshot`]
-/// folds over the same tree state.
+/// served root the caller's memo minted for exactly the set `moves`
+/// describes (taken with them under one lock): when every mover read the
+/// digest it was planned with, the built set equals that one, the fold of
+/// equal inputs is that same value by §4.2.1 purity, and no tree is rebuilt
+/// (§6.8's fold-free rebuild stamp). A divergent set — a mover vanished or
+/// changed between snapshot and read — or `None` folds fresh through
+/// [`served_root`], byte-identical to what [`domain_snapshot`] folds over
+/// the same tree state.
 ///
 /// # Errors
 /// I/O failure loading the domain config or reading a moved member.
 pub fn update_corpus(
     root: &WorkspaceRoot,
-    prior_docs: &model::Docs,
-    prior_unserved: &BTreeMap<String, String>,
-    prior_leaves: &BTreeMap<PathBuf, [u8; 32]>,
-    fresh: &BTreeMap<PathBuf, [u8; 32]>,
+    prior: &CorpusPrior<'_>,
+    moves: &[LeafMove],
     fresh_root: Option<&model::MerkleRoot>,
 ) -> io::Result<CorpusUpdate> {
     let domain = domain::Domain::load(root)?;
-    let mut docs: model::Docs = BTreeMap::new();
-    let mut unserved: BTreeMap<String, String> = BTreeMap::new();
-    let mut leaves: BTreeMap<PathBuf, [u8; 32]> = BTreeMap::new();
+    let holes = if prior.docs.len() + prior.unserved.len() == prior.leaves.len() {
+        Vec::new()
+    } else {
+        let planned: std::collections::BTreeSet<&PathBuf> =
+            moves.iter().map(|(rel, _)| rel).collect();
+        let mut holes = prior_holes(prior);
+        holes.retain(|(rel, _)| !planned.contains(rel));
+        holes
+    };
+    // Start from the prior's maps: an unmoved member is already in place,
+    // its document by shared reference (merkle-spec §6.8). Only movers are
+    // touched below.
+    let mut docs = prior.docs.clone();
+    let mut unserved = prior.unserved.clone();
+    let mut leaves = prior.leaves.clone();
+    let mut index = prior.index.cloned();
     let mut parsed = 0usize;
-    for (rel, fresh_digest) in fresh {
-        let carried = prior_leaves.get(rel) == Some(fresh_digest)
-            && match rel.to_str() {
-                // A UTF-8-named member of the prior build is in exactly one
-                // of docs/unserved; a hole means the prior parts do not
-                // describe this member — re-read it rather than guess.
-                Some(rel_str) => {
-                    prior_docs.contains_key(rel_str) || prior_unserved.contains_key(rel_str)
-                }
-                // Non-UTF-8 NAME: integrity-covered, never servable — the
-                // leaf alone is the whole carry.
-                None => true,
-            };
-        if carried {
-            leaves.insert(rel.clone(), *fresh_digest);
-            if let Some(rel_str) = rel.to_str() {
-                if let Some(doc) = prior_docs.get(rel_str) {
-                    docs.insert(rel_str.to_owned(), doc.clone());
-                } else if let Some(why) = prior_unserved.get(rel_str) {
-                    unserved.insert(rel_str.to_owned(), why.clone());
-                }
-            }
-            continue;
+    let mut indexed = 0usize;
+    // The built set equals the planned one unless a mover's bytes moved
+    // again (or vanished) between the leaf pass and this read.
+    let mut diverged = false;
+    for (rel, want) in moves.iter().chain(&holes) {
+        let rel_str = rel.to_str();
+        let was = rel_str.and_then(|rel| docs.remove(rel));
+        if let Some(rel) = rel_str {
+            unserved.remove(rel);
         }
-        let bytes = match fs::read(root.0.join(rel)) {
-            Ok(bytes) => bytes,
-            // Vanished since the leaf pass: not part of what this pass
-            // builds, exactly as a fresh walk would report it.
-            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-            Err(e) => {
-                return Err(corpus_member_refusal(
-                    e.kind(),
-                    &display_name(hash_name(rel)),
-                    format!("cannot be read ({e})"),
-                ));
-            }
-        };
-        leaves.insert(rel.clone(), model::leaf_digest(&bytes));
-        if let Some(rel_str) = rel.to_str() {
-            match String::from_utf8(bytes) {
-                Ok(text) => {
-                    let doc = model::build(text.clone(), syntax::parse(&text));
-                    docs.insert(rel_str.to_owned(), std::sync::Arc::new(doc));
-                    parsed += 1;
+        leaves.remove(rel);
+        let now = match want {
+            None => None,
+            Some(want) => match fs::read(root.0.join(rel)) {
+                Ok(bytes) => {
+                    let digest = model::leaf_digest(&bytes);
+                    diverged |= digest != *want;
+                    leaves.insert(rel.clone(), digest);
+                    Some(bytes)
+                }
+                // Vanished since the leaf pass: not part of what this pass
+                // builds, exactly as a fresh walk would report it.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    diverged = true;
+                    None
                 }
                 Err(e) => {
-                    unserved.insert(
-                        rel_str.to_owned(),
-                        format!("is not UTF-8 ({})", e.utf8_error()),
-                    );
+                    return Err(corpus_member_refusal(
+                        e.kind(),
+                        &display_name(hash_name(rel)),
+                        format!("cannot be read ({e})"),
+                    ));
                 }
+            },
+        };
+        // Non-UTF-8 NAME: integrity-covered, never servable — the leaf
+        // alone is the whole member.
+        let Some(rel_str) = rel_str else {
+            continue;
+        };
+        let doc = match now.map(String::from_utf8) {
+            None => None,
+            Some(Ok(text)) => {
+                parsed += 1;
+                // Parse borrowing, then MOVE the text in (`parse_member`).
+                let nodes = syntax::parse(&text);
+                Some(Arc::new(model::build(text, nodes)))
             }
+            Some(Err(e)) => {
+                unserved.insert(
+                    rel_str.to_owned(),
+                    format!("is not UTF-8 ({})", e.utf8_error()),
+                );
+                None
+            }
+        };
+        if let Some(index) = index.as_mut() {
+            indexed += patch_index(index, rel_str, was.as_deref(), doc.as_deref());
+        }
+        if let Some(doc) = doc {
+            docs.insert(rel_str.to_owned(), doc);
         }
     }
+    let index = index.unwrap_or_else(|| {
+        indexed = docs.len();
+        Arc::new(corpus_index_of(&docs))
+    });
     // §6.8 fold-free rebuild stamp: the pass still folds its OWN leaf set —
     // when that set is byte-equal to the snapshot it planned against, the
     // fold of equal inputs IS the snapshot's minted root (§4.2.1 purity),
     // so no tree is rebuilt. Divergence (or no snapshot root) pays the flat
     // build over what was actually built — the honest rare price.
     let folded = match fresh_root {
-        Some(root) if leaves == *fresh => root.clone(),
+        Some(root) if !diverged => root.clone(),
         _ => {
             let leaf_refs: Vec<(&[u8], [u8; 32])> =
                 leaves.iter().map(|(rel, d)| (hash_name(rel), *d)).collect();
@@ -3158,13 +3290,46 @@ pub fn update_corpus(
         }
     };
     Ok(CorpusUpdate {
-        index: corpus_index_of(&docs),
+        index,
         docs,
         unserved,
         leaves,
         root: folded,
         parsed,
+        indexed,
     })
+}
+
+/// Move one member's rows in a prior build's name index from its document
+/// `was` to its document `now` — either may be absent. The index allocation
+/// stays shared when the member's rows do not change (same document set and
+/// same aliases): a content edit costs the index nothing. Returns `1` when
+/// `now` entered the index.
+fn patch_index(
+    index: &mut Arc<model::CorpusIndex>,
+    rel: &str,
+    was: Option<&model::Document>,
+    now: Option<&model::Document>,
+) -> usize {
+    if let (Some(was), Some(now)) = (was, now)
+        && model::doc_aliases(was) == model::doc_aliases(now)
+    {
+        return 0;
+    }
+    if was.is_none() && now.is_none() {
+        return 0;
+    }
+    let index = Arc::make_mut(index);
+    if let Some(was) = was {
+        index.remove(rel, was);
+    }
+    match now {
+        Some(now) => {
+            index.insert_ordered(rel, now);
+            1
+        }
+        None => 0,
+    }
 }
 
 /// A process-unique suffix source for staging paths (combined with the pid and

@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// The warm per-workspace engine state: the parsed corpus that `query` reads
 /// (U2), plus the corpus content hash it was built at (the reuse key).
@@ -19,8 +20,10 @@ use std::path::PathBuf;
 /// any reusable document objects through `fs::update_corpus`.
 #[derive(Debug)]
 pub struct WorkspaceEngine {
-    /// The vault name/alias index the `query` read ops borrow (U2).
-    pub index: model::CorpusIndex,
+    /// The vault name/alias index the `query` read ops borrow (U2). Shared
+    /// with the prior engine while no rebuild mover changed its rows
+    /// (merkle-spec §6.8).
+    pub index: Arc<model::CorpusIndex>,
     /// The parsed documents, keyed by workspace-relative path.
     pub docs: model::Docs,
     /// Members in the hash domain that serve no spans/nodes (per-file UTF-8
@@ -36,6 +39,33 @@ pub struct WorkspaceEngine {
     /// ([`fs::update_corpus`]): the next rebuild re-parses exactly the
     /// members whose leaf moved against this record.
     pub leaves: BTreeMap<PathBuf, [u8; 32]>,
+}
+
+impl WorkspaceEngine {
+    /// This engine as the prior of the next incremental pass
+    /// ([`fs::update_corpus`]) — its name index included, so the pass can
+    /// share it.
+    #[must_use]
+    pub fn as_prior(&self) -> fs::CorpusPrior<'_> {
+        fs::CorpusPrior {
+            docs: &self.docs,
+            unserved: &self.unserved,
+            leaves: &self.leaves,
+            index: Some(&self.index),
+        }
+    }
+}
+
+/// A §6.9 restored snapshot as an incremental pass's prior: no name index,
+/// so the pass builds one over the final docs (merkle-spec §6.9).
+#[must_use]
+pub(crate) fn restored_prior(restored: &parse_cache::snapshot::Restored) -> fs::CorpusPrior<'_> {
+    fs::CorpusPrior {
+        docs: &restored.docs,
+        unserved: &restored.unserved,
+        leaves: &restored.leaves,
+        index: None,
+    }
 }
 
 /// The resident engine IS a mounted root's served projection when a pin or
