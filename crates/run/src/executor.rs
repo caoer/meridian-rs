@@ -1664,10 +1664,13 @@ fn mount_middleware(
     // the receipt attests, what the create door was told, and — since the
     // CHECK leg was brought onto the same law — what a check rule sees.
     let actor = req.actor();
+    // One overlay world for every row: a `ctx.sql` projection is reused until
+    // a row's transform moves the page's pending bytes.
+    let mut world = wire_serve::middleware::DoorWorld::new(root);
     for row in &rows {
         let (batch, _sealed, after_doc) = seal_candidate(req.page, doc, planned)?;
         let emits = crate::gate::middleware_emits(
-            root,
+            &mut world,
             row,
             &crate::gate::PendingSplice {
                 page: req.page,

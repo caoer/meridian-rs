@@ -1162,7 +1162,9 @@ fn mw_upsert(key: String, value: String) -> Edit {
 /// cross-file transforms and births; collect `send` intents.
 ///
 /// The overlay world `ctx.sql` / `ctx.read` query is maintained here: this
-/// file's pending bytes, every member's pending bytes, every birth.
+/// file's pending bytes, every member's pending bytes, every birth. One
+/// [`crate::middleware::DoorWorld`] spans every row, so a `ctx.sql`
+/// projection is reused until an emit moves pending bytes.
 ///
 /// # Errors
 /// A middleware `refuse` (`convention_fault` naming the rule), an evaluation
@@ -1190,9 +1192,9 @@ fn run_door_middleware(
         return Ok(out);
     }
 
-    // The overlay world: pending bytes shadowing disk.
-    let mut overlay: BTreeMap<String, String> = BTreeMap::new();
-    overlay.insert(path.0.clone(), after_doc.raw().to_string());
+    // The overlay world: pending bytes shadowing disk, one world for every row.
+    let mut world = crate::middleware::DoorWorld::new(root);
+    world.stage(&path.0, after_doc.raw());
     // Member accumulation: disk base doc + accumulated edits, first-touch order.
     let mut member_order: Vec<String> = Vec::new();
     let mut member_state: BTreeMap<String, (model::Document, Vec<Edit>)> = BTreeMap::new();
@@ -1214,10 +1216,6 @@ fn run_door_middleware(
             &[],
             &crate::gate::no_edges,
         );
-        let world = crate::middleware::DoorWorld {
-            root,
-            overlay: &overlay,
-        };
         let outcome = policy::run_middleware(
             source,
             &policy::MwCtxInput {
@@ -1312,7 +1310,7 @@ fn run_door_middleware(
                         &birth_path,
                     )
                     .map_err(|e| mw_member_refusal(&birth_path, e))?;
-                    overlay.insert(p.clone(), candidate.raw().to_string());
+                    world.stage(&p, candidate.raw());
                     out.attribute(&p, row.id().as_str());
                     out.births.push((birth_path, candidate));
                 }
@@ -1345,7 +1343,7 @@ fn run_door_middleware(
                 }
             };
             *after_doc = build_after_doc(doc, sealed, path);
-            overlay.insert(path.0.clone(), after_doc.raw().to_string());
+            world.stage(&path.0, after_doc.raw());
         }
 
         // Re-seal each touched member's pending bytes for the overlay.
@@ -1371,7 +1369,7 @@ fn run_door_middleware(
                 }
             };
             let candidate = member_overlay_candidate(&p, &base.raw, &member_sealed);
-            overlay.insert(p.clone(), candidate.raw().to_string());
+            world.stage(&p, candidate.raw());
         }
     }
 
@@ -1408,8 +1406,8 @@ fn run_birth_middleware(
         return Ok((candidate, intents, self_keys));
     }
     let absent = crate::gate::absent_doc(path);
-    let mut overlay: BTreeMap<String, String> = BTreeMap::new();
-    overlay.insert(path.0.clone(), candidate.raw().to_string());
+    let mut world = crate::middleware::DoorWorld::new(root);
+    world.stage(&path.0, candidate.raw());
 
     for row in &rows {
         let source = row
@@ -1428,10 +1426,6 @@ fn run_birth_middleware(
             &[],
             &crate::gate::no_edges,
         );
-        let world = crate::middleware::DoorWorld {
-            root,
-            overlay: &overlay,
-        };
         let outcome = policy::run_middleware(
             source,
             &policy::MwCtxInput {
@@ -1493,7 +1487,7 @@ fn run_birth_middleware(
             // violation into the born bytes between the door's pre-middleware
             // guard and the landing.
             stored_form_guard_lazy(None, &candidate, path)?;
-            overlay.insert(path.0.clone(), candidate.raw().to_string());
+            world.stage(&path.0, candidate.raw());
         }
     }
     Ok((candidate, intents, self_keys))

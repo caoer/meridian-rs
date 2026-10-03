@@ -1912,9 +1912,9 @@ Under `MRD_TIMING` (the switch, sink, line grammar and the two lanes:
 | `flock.hold.detect` | — (`cmd=daemon`) | `fs::WriteLock` (timed by `registry::ring`) | the same hold for an ordinary detect cycle of a subscribed workspace: one taken because the root moved past the watcher's baseline |
 | `flock.hold.backstop` | — (`cmd=daemon`) | same | the same hold for the detect cycle that runs once per `DETECT_FLOOR_CADENCE` (30 s), the push plane's backstop |
 | `flock.hold.prime` | — (`cmd=daemon`) | same | the same hold for the priming cycle, which sets a new subscription's baseline |
-| `mw.sql.world` | — (the write door's process: `cmd=daemon`, or the CLI's `cmd=` for an in-process door) | `wire_serve::middleware` | a middleware `ctx.sql` building its overlay world's documents: the hash-domain walk, then read and parse of every member the overlay does not shadow, then the overlay's own members (`armed-plane.md` § The ctx surface) |
-| `mw.sql.project` | — (same) | `registry::mw_sql` | `view::build_memory` over that world, plus the extension gate |
-| `mw.sql.query` | — (same) | `registry::mw_sql` | the one SELECT: prepare, run, convert the rows |
+| `mw.sql.world` | — (the write door's process: `cmd=daemon`, or the CLI's `cmd=` for an in-process door) | `wire_serve::middleware` | the documents of one `ctx.sql` projection build: the parse of the pending files, and on the door run's first build also the hash-domain walk, read and parse of every disk member (`armed-plane.md` § The ctx surface). One line per build; a call that reuses the projection emits none |
+| `mw.sql.project` | — (same) | `registry::mw_sql` | `view::build_memory` over that world, the extension gate, the spill containment and the settings read the calls are checked against. One line per build |
+| `mw.sql.query` | — (same) | `registry::mw_sql` | one `ctx.sql` call: a fresh connection, `BEGIN`, the statement and its rows, `ROLLBACK`, the settings check. One line per answered call |
 
 **The door's three families partition its population**: `door.vouched` (fast
 path), `door.floor` (floor), `door.refused` (no arm) — every `door.*` name under

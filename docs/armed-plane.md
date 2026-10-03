@@ -299,9 +299,45 @@ injected `ctx`:
 file's pending after-state, plus every edit or birth earlier middleware
 emitted (id order). A later writer is invisible. `ctx.sql` uses the
 host-installed SQL backend (`wire_serve::middleware::install_sql_backend`);
-`mrd` and the daemon install a `view::build_memory`-backed one. A middleware
+`mrd` and the daemon install a `view::build_memory`-backed one, under the
+extension gate and spill budget the other sql lanes apply
+(`view::store::apply_extension_gate`, `apply_spill_containment`). A middleware
 that calls `ctx.sql` on a door with no installed backend refuses the write,
 naming the gap.
+
+**What `ctx.sql` costs, and what it reuses.** One door run (one put, one
+birth, one fire's page splice) holds one world (`wire_serve::middleware::DoorWorld`)
+across all its middleware rows:
+
+- The first `ctx.sql` walks the hash domain and parses every disk member. That
+  parse is kept for the rest of the door run, so the run reads one disk
+  snapshot and later builds re-parse only the pending files.
+- The backend then projects the world into one `:memory:` database. Every
+  later `ctx.sql` that reads the same world, in the same evaluation or in a
+  later row, queries that database and builds nothing.
+- An emit that changes pending bytes drops the projection: a this-file
+  `set_field`, a member edit, a birth. The next `ctx.sql` projects again. An
+  emit that leaves the bytes as they were, and a `send`, keeps it.
+
+So the first call pays O(corpus), and a call on an unchanged world pays its
+query alone. No projection outlives its door run.
+
+**A shared projection does not let one call change another's answer.** Each
+call gets a fresh connection to the projection's database and runs
+`BEGIN → statement → ROLLBACK` there, so its DML, DDL, temp objects and
+session `SET`s end with the call. Some effects survive a rollback. The call
+still answers, but the door drops the projection, and the next call builds a
+fresh one:
+
+- text that ends the call's own transaction. `prepare` runs every statement
+  before the last, so `COMMIT; DELETE …; BEGIN; SELECT 1` commits the
+  `DELETE`. The projection database's transaction id, read before and after
+  the call, shows it.
+- a moved instance setting (`SET GLOBAL …`, an extension's settings). The
+  settings a fresh connection sees differ from the build's.
+
+A call that errors also drops the projection, and the error refuses the write
+as any `ctx.sql` error does. So every call reads exactly the world above.
 
 ## Emits, compiled
 
