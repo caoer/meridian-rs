@@ -515,11 +515,14 @@ Requirement 2 — "the engine knows, it does not re-ask" — binds across ordina
 daemon restarts. So the engine may hold a checksummed, disposable derived index
 outside the hash domain (git-index class): the checkpoint.
 
-- **Identity tuple:** `(workspace_uuid, domain_version, tree_root,
-  journal_instance, journal_seq, parse-cache generation)`. Any field mismatch
-  forces exactly one loud, labeled re-baseline. `domain_version` stops a
-  checkpoint outliving a hash-law change (the §4.2 cutover changes the interior
-  encoding); the journal cursor pair is the replay point.
+- **Identity tuple:** `(workspace_uuid, domain_version, hash law, tree_root,
+  journal_instance, journal_seq)`. Any field mismatch forces exactly one loud,
+  labeled re-baseline. `domain_version` and the hash law stop a checkpoint
+  outliving a hash-law change (the §4.2 cutover changes the interior
+  encoding); the journal cursor pair is the replay point. No package, SQL
+  schema or parse-cache generation is in the tuple: the rows are leaf digests,
+  stat keys, watermarks and a cursor, which none of those generations changes,
+  so a release or a SQL schema bump keeps the checkpoint.
 - **Restart replay** needs a journal that qualifies for this gap: (1) coverage
   complete, gap start to end; (2) the instrument carries a loss signal and
   raised none — silence from an instrument without loss signaling qualifies
@@ -558,15 +561,26 @@ outside the hash domain (git-index class): the checkpoint.
   hold.
 - **Format ordering:** the checkpoint format is downstream of the §4.2
   encoding — never persist what the next step replaces.
-- **Storage site:** one file per workspace in its cache drawer (beside
-  `sql.duckdb` and the run plane's digest memo), written atomically, read whole.
-  The drawer is outside every hash domain — the §6.4 cookie's floor — so the
-  checkpoint cannot move a root or break a held token.
+- **Storage site:** one file per workspace in its own stable drawer,
+  `checkpoint-v2`, under the workspace's drawer bucket beside the SQL drawer
+  and `parsed-v1`, written atomically, read whole. Its compatibility is its
+  own format tag and the soundness fields, never the package or SQL version
+  segment the SQL drawer rides. It carries the normal registration sentinel,
+  so listing, clean, GC and `unregister` see it. The drawer is outside every
+  hash domain — the §6.4 cookie's floor — so the checkpoint cannot move a root
+  or break a held token.
+- **No checkpoint is the cold fill, and it is logged.** A workspace with no
+  file (its first start, a discard, an unclean exit before any save) logs one
+  line naming the workspace and the drawer, and fills at its first
+  observation: every member is read and hashed once, in parallel across
+  members, each under §6.2's per-member stable-read law. That read is the
+  limit: it runs under the workspace memo, so write doors on that root refuse
+  `workspace_busy` and reads wait until it lands.
 - **Two questions, two instruments.** A checkpoint records the past, never the
   present, so its trust splits in two. *Lawfulness* (may these rows enter as
   hypotheses?) is decided once at restore by the soundness fields —
-  `workspace_uuid`, `domain_version`, the hash law, parse-cache generation and
-  the `tree_root` binding, never the journal cursor pair. A mismatch discards
+  `workspace_uuid`, `domain_version`, the hash law and the `tree_root`
+  binding, never the journal cursor pair. A mismatch discards
   the object whole, loudly, labeled per field: the **cold** re-baseline.
   *Currency* (may a row serve?) the checkpoint never answers, and never
   wholesale: only the §6.2 trust close does, row by row.
@@ -661,6 +675,14 @@ member's bytes per external batch — measured ~1/s under foreign writes.
   snapshot digest equals its leaf keeps the snapshot's bytes, any other member
   is re-read and verified against its leaf, and a snapshot member the memo
   lacks is dropped. The baseline root is the observed root.
+- Priming waits for the flock, holding its snapshot, for at most
+  `PRIME_FLOCK_BUDGET` (3 s: with the 2 s door cookie budget it leaves half of
+  a client's 10 s deadline for the snapshot and the observation). Ordinary and
+  backstop cycles keep the non-blocking try: a subscriber thread never blocks
+  on an unrelated writer in steady state. A flock still held at the budget
+  refuses the `sub` `workspace_busy` and leaves the watch unprimed; the
+  engine never acks a root it did not observe under the flock, and folds no
+  corpus under the ring's state lock, which every writer's ring advance takes.
 - The unlocked snapshot's own root is written nowhere — not the baseline, not
   a frame, not the ring. Taken unlocked, it can fold a batch mid-landing, a
   root no door committed; only its bytes are reused, each one verified. A
