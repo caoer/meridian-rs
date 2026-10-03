@@ -745,6 +745,25 @@ mod tests {
         );
     }
 
+    /// The dict reads a sequence whose items sit at column 0, and a comment
+    /// after `key:` is not the value.
+    #[test]
+    fn the_frontmatter_dict_reads_column_zero_items_and_skips_a_key_comment() {
+        let before = doc_of("f.md", "# A\n");
+        let after = doc_of(
+            "f.md",
+            "---\ntags: # schema tag first\n- type/a\n- status/bogus\nnote: # none\n---\n# A\n",
+        );
+        let change = derive(&before, &after, &[], None, false, &[], &no_edges);
+        assert_eq!(
+            change.doc.frontmatter,
+            vec![
+                ("tags".to_string(), "[type/a, status/bogus]".to_string()),
+                ("note".to_string(), String::new()),
+            ]
+        );
+    }
+
     /// An edit to one item of a block sequence changes its key: the diff reads
     /// each key's whole stored grain, not the key line, which is `tags:` on
     /// both sides.

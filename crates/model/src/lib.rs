@@ -642,12 +642,20 @@ fn parse_frontmatter(raw: &str, span: &ByteSpan) -> YamlMap {
 /// [`frontmatter_wikilinks`] attributes links by, so a link's `key` is always
 /// a key the `frontmatter` map carries.
 fn fm_top_key(line: &str) -> Option<(&str, usize)> {
-    if line.starts_with([' ', '\t']) || line.trim().starts_with('#') {
+    if line.starts_with([' ', '\t']) || line.trim().starts_with('#') || fm_is_col0_item(line) {
         return None;
     }
     let colon = line.find(':')?;
     let key = line[..colon].trim().trim_matches(['"', '\'']);
     (!key.is_empty()).then_some((key, colon))
+}
+
+/// A column-0 YAML block-sequence entry — `- item`, or a bare `-`. YAML lets a
+/// sequence sit at its key's own indentation, so such a line is an item of the
+/// key above it and never a key of its own, whatever its text holds after the
+/// marker (`- http://x` carries a colon). The `---` fence is not one.
+fn fm_is_col0_item(line: &str) -> bool {
+    line.starts_with("- ") || line.starts_with("-\t") || line.trim_end() == "-"
 }
 
 /// One `[[target#frag|alias]]` a grammar scan found in plain text: the target
@@ -1114,11 +1122,12 @@ fn fm_line_is_blank(bytes: &[u8], start: usize, end: usize) -> bool {
 }
 
 /// The full grain span of a top-level frontmatter key whose line starts at
-/// `key_line_start`: the key line, extended over every indented continuation
-/// line of a block value. A blank line is carried only when a later indented
-/// line follows — trailing blanks belong to the inter-key gap. The scan stops at
-/// the next column-0 non-blank line or the block end; the returned end excludes
-/// the last content line's terminator (§1 leaf law).
+/// `key_line_start`: the key line, extended over every continuation line of a
+/// block value — an indented line, or a column-0 sequence entry
+/// ([`fm_is_col0_item`]). A blank line is carried only when a later
+/// continuation line follows — trailing blanks belong to the inter-key gap.
+/// The scan stops at any other column-0 non-blank line or the block end; the
+/// returned end excludes the last content line's terminator (§1 leaf law).
 fn fm_key_grain_span(bytes: &[u8], key_line_start: usize, block_end: usize) -> ByteSpan {
     let key_line_end = fm_line_end(bytes, key_line_start, block_end);
     let mut grain_end = trim_terminator(bytes, key_line_start, key_line_end);
@@ -1128,10 +1137,12 @@ fn fm_key_grain_span(bytes: &[u8], key_line_start: usize, block_end: usize) -> B
         if fm_line_is_blank(bytes, cursor, line_end) {
             // tentative — a blank line joins the value only if a later indented
             // line extends the grain past it.
-        } else if matches!(bytes.get(cursor), Some(b' ' | b'\t')) {
+        } else if matches!(bytes.get(cursor), Some(b' ' | b'\t'))
+            || std::str::from_utf8(&bytes[cursor..line_end]).is_ok_and(fm_is_col0_item)
+        {
             grain_end = trim_terminator(bytes, cursor, line_end);
         } else {
-            // column-0 non-blank: the next key or the closing fence.
+            // any other column-0 non-blank line: the next key or the closing fence.
             break;
         }
         cursor = line_end;
@@ -1306,7 +1317,8 @@ fn fm_block_has_key_outside(bytes: &[u8], block: &ByteSpan, removed: &ByteSpan) 
     while line_start < block.end {
         let line_end = fm_line_end(bytes, line_start, block.end);
         let is_key = !matches!(bytes.get(line_start), Some(b' ' | b'\t'))
-            && bytes[line_start..line_end].contains(&b':');
+            && bytes[line_start..line_end].contains(&b':')
+            && !std::str::from_utf8(&bytes[line_start..line_end]).is_ok_and(fm_is_col0_item);
         if is_key && !(removed.start <= line_start && line_start < removed.end) {
             return true;
         }
@@ -3173,6 +3185,7 @@ pub fn fm_tags(block: &str, key: &str) -> Vec<String> {
     let Some((at, remainder)) = fm_key_line(&lines, key) else {
         return Vec::new();
     };
+    let remainder = fm_uncomment(remainder);
 
     // A quoted scalar that is not a flow list is ONE tag, comma or no comma:
     // `tags: "a, b"` is a single YAML string, and splitting it would invent a
@@ -3523,6 +3536,7 @@ pub fn fm_doc_publish(doc: &Document, key: &str) -> Option<String> {
 pub fn fm_value(block: &str, key: &str) -> Option<String> {
     let lines: Vec<&str> = block.lines().collect();
     let (at, remainder) = fm_key_line(&lines, key)?;
+    let remainder = fm_uncomment(remainder);
     // A block scalar's value is on the FOLLOWING lines; the key line carries
     // only its header. Before this arm, `>` was non-empty, so the walk below
     // returned the indicator byte and never looked further (card
@@ -3542,6 +3556,17 @@ pub fn fm_value(block: &str, key: &str) -> Option<String> {
         return Some(String::new());
     }
     Some(format!("[{}]", items.join(", ")))
+}
+
+/// A key line's remainder with a comment-only remainder (`key: # note`) read
+/// as no value: in YAML the comment is not the value, which is the block that
+/// follows, or nothing.
+fn fm_uncomment(remainder: &str) -> &str {
+    if remainder.trim_start().starts_with('#') {
+        ""
+    } else {
+        remainder
+    }
 }
 
 /// Join a flow sequence that spans lines (`key: [a,` / `  b]`): continue
@@ -3567,9 +3592,11 @@ fn fm_flow_join(lines: &[&str], at: usize, mut value: String) -> String {
 
 /// The items of the YAML block sequence that follows the key line at `at`,
 /// each the text after its `-` marker, trimmed, spelling kept (quotes and all
-/// — the item lanes decide what to strip). Blank and comment lines do not end
-/// a sequence; a column-0 line (the next key, or the closing fence) does, and
-/// so does an indented shape that is not an item — stop, never guess.
+/// — the item lanes decide what to strip). Items may be indented or sit at
+/// column 0 ([`fm_is_col0_item`]). Blank and comment lines do not end a
+/// sequence; any other column-0 line (the next key, or the closing fence)
+/// does, and so does an indented shape that is not an item — stop, never
+/// guess.
 fn fm_block_items(lines: &[&str], at: usize) -> Vec<String> {
     let mut items = Vec::new();
     for line in &lines[at + 1..] {
@@ -3577,7 +3604,7 @@ fn fm_block_items(lines: &[&str], at: usize) -> Vec<String> {
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        if !line.starts_with([' ', '\t']) {
+        if !line.starts_with([' ', '\t']) && !fm_is_col0_item(line) {
             break;
         }
         let Some(item) = trimmed.strip_prefix('-') else {
@@ -3752,7 +3779,7 @@ fn fm_key_line<'a>(lines: &[&'a str], key: &str) -> Option<(usize, &'a str)> {
         if is_fm_fence(line) || trimmed.is_empty() || line.starts_with([' ', '\t']) {
             return None;
         }
-        if trimmed.starts_with('#') {
+        if trimmed.starts_with('#') || fm_is_col0_item(line) {
             return None;
         }
         let colon = line.find(':')?;
@@ -4098,6 +4125,43 @@ mod tests {
         let nested = "agents:\n  - a\n  nested:\n    - b\n";
         assert_eq!(fm_value(nested, "agents").as_deref(), Some("[a]"));
         assert_eq!(fm_tags(nested, "agents"), vec!["a"]);
+    }
+
+    /// A block sequence may sit at its key's own column. The value lane, the
+    /// tag lane, the key's grain and the key set all read it that way, and a
+    /// column-0 `- ` line is never a key, whatever follows its marker.
+    #[test]
+    fn a_column_zero_sequence_is_its_keys_value() {
+        let block = "---\ntags:\n- type/a\n- status/bogus\nsource:\n- http://x\nnext: 1\n---";
+        assert_eq!(
+            fm_value(block, "tags").as_deref(),
+            Some("[type/a, status/bogus]")
+        );
+        assert_eq!(fm_tags(block, "tags"), vec!["type/a", "status/bogus"]);
+        assert_eq!(fm_value(block, "source").as_deref(), Some("[http://x]"));
+        assert_eq!(fm_value(block, "next").as_deref(), Some("1"));
+        assert_eq!(fm_value(block, "- http"), None, "an item line is no key");
+
+        let raw = format!("{block}\n# T\n");
+        let doc = build(raw.clone(), syntax::parse(&raw));
+        let NodeKind::Frontmatter { map } = &find_frontmatter(&doc.root).expect("fm").kind else {
+            panic!("frontmatter node");
+        };
+        let keys: Vec<&str> = map.0.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["tags", "source", "next"]);
+        let tags = resolve(&doc, &Ref::FmKey("tags".to_string())).expect("tags");
+        assert_eq!(&raw[tags.span], "tags:\n- type/a\n- status/bogus");
+    }
+
+    /// A comment after `key:` is not the key's value: the value is the block
+    /// below it, or nothing.
+    #[test]
+    fn a_comment_after_the_key_is_not_its_value() {
+        let block = "tags: # schema tag first\n  - a\nnote: # nothing here\nnext: 1\n";
+        assert_eq!(fm_value(block, "tags").as_deref(), Some("[a]"));
+        assert_eq!(fm_tags(block, "tags"), vec!["a"]);
+        assert_eq!(fm_value(block, "note").as_deref(), Some(""));
+        assert!(fm_tags(block, "note").is_empty());
     }
 
     /// Both spellings of the block reach the same answer: `view` holds the

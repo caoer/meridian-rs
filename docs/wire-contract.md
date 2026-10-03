@@ -2008,9 +2008,12 @@ Rule: the view projection's `frontmatter.value` for a key whose line carries
 no scalar and whose block sequence follows is that sequence **rendered as the
 flow-style text it spells** — `[a, b]`, items verbatim, spelling kept
 (`- "[[x]]"` renders `["[[x]]"]`). A multi-line flow sequence (`[a,` / `  b]`) joins the same way.
-Comment and blank lines inside a sequence are skipped; an indented non-item
-ends the walk (fail-closed). A bare key line with nothing below stays `''`;
-the engine never invents `[]`. The rendering is text, never a YAML node; a
+Items may be indented or sit at the key's own column (`tags:` then `- a` at
+column 0); a column-0 `- ` line is an item, never a key. Comment and blank
+lines inside a sequence are skipped; an indented non-item ends the walk
+(fail-closed). A comment after the key (`tags: # note`) is not the value: the
+value is the sequence or scalar block below it, or `''`. A bare key line with
+nothing below stays `''`; the engine never invents `[]`. The rendering is text, never a YAML node; a
 consumer splits it as `parse_alias_list` / `parse_tag_list` split a flow
 list. One reader owns it (`model::fm_value`), and `fm_tags` rides the same
 walk, so the tag lane and the value lane agree on where a sequence ends.
