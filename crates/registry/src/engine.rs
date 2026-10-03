@@ -59,7 +59,7 @@ impl WorkspaceEngine {
 /// A §6.9 restored snapshot as an incremental pass's prior: no name index,
 /// so the pass builds one over the final docs (merkle-spec §6.9).
 #[must_use]
-pub fn restored_prior(restored: &parse_cache::snapshot::Restored) -> fs::CorpusPrior<'_> {
+pub(crate) fn restored_prior(restored: &parse_cache::snapshot::Restored) -> fs::CorpusPrior<'_> {
     fs::CorpusPrior {
         docs: &restored.docs,
         unserved: &restored.unserved,
