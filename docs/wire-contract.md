@@ -1232,7 +1232,7 @@ The demand binds every op that lands content by declaring its write set in the r
 
 ### A.2 Armed change plane (block is a feature)
 
-When a workspace is **armed** (attested index present), after CAS and before bytes land the engine runs `gate()` over its own armed set. Block-severity verdicts and closed door-law violations **refuse the write**. Never-armed workspaces stay advisory. `--force` escapes an armed refusal and is loud (journaled and rendered). Detail and bootstrap ladder: `armed-plane.md`.
+When a workspace is **armed** (attested index present), after CAS and before bytes land the engine runs `gate()` over its own armed set. Block-severity verdicts and closed door-law violations **refuse the write**. Never-armed workspaces stay advisory. `--force` escapes an armed refusal and is loud: the bypass renders as a `forced:` verdict on the response, its only record. Detail and bootstrap ladder: `armed-plane.md`.
 
 **Essential refusal recovery bindings** (subset of the closed §8 taxonomy; the attestation suite runs against these):
 
