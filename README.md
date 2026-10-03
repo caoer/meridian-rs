@@ -88,7 +88,7 @@ contract property, `docs/wire-contract.md` §3.1). A minimal exchange:
 | `check` | The check engine: the pure READ verb of the reconciliation loop |
 | `view` | The DuckDB view organ: a write-only leaf projecting the warm corpus into a disposable, fingerprint-stamped file; also the lock-aware read face that renders each `meridian-lock` pin's drift color |
 | `preset` | Presets + session birth: def-pinned convention floor; `unfold`/`new` materialize through the guarded create |
-| `workspace` | Workspace identity: the discovery ladder (`MERIDIAN_WORKSPACE` → git root → cwd default), canonicalization, and the deny-ceiling predicate — pure filesystem functions, writes nothing |
+| `workspace` | Workspace identity: the discovery ladder (named argument → `MERIDIAN_WORKSPACE` → git root → cwd default), canonicalization, and the deny-ceiling predicate — pure filesystem functions, writes nothing |
 | `cache` | The central hashed cache drawer: addressing, atomic sentinel registration, corrupt-is-a-miss probing, last-use stamping, and the Cargo-grade GC sweep |
 | `parse-cache` | The registry's private document codec: bytes in, bytes out, model conversions with bounded, validated decoding; an unsupported or corrupt entry is a cache miss |
 | `registry` | The daemon-held workspace registry (watchman model): a unix-socket NDJSON RPC server + client, first-writer-wins registration, atomic state file, idle-reap |
