@@ -1983,6 +1983,7 @@ read-half silent false again.
 | `preset`'s `^properties` rule check and its `type`/`defines`/`root`/`births` reads | compared value |
 | `realise`'s `FieldEquals` — both halves: the page's declared `realise.expected` and the observed field | compared value |
 | the view projection's `frontmatter.value` column — and the `record` pivot and B2 tag parse riding it | published value |
+| `policy::change`'s `DocFacts.frontmatter` — a rule's `ctx.before`/`ctx.after.frontmatter` dict and the `on_change` event's `changes` values | published value |
 
 **A.6.1a carve-out: the run plane's binding values.** The binding row stays
 under § A.6.1 (`task.build: "[[#^x]]"` unquotes), but § A.6.1a does not reach
@@ -2013,6 +2014,9 @@ the engine never invents `[]`. The rendering is text, never a YAML node; a
 consumer splits it as `parse_alias_list` / `parse_tag_list` split a flow
 list. One reader owns it (`model::fm_value`), and `fm_tags` rides the same
 walk, so the tag lane and the value lane agree on where a sequence ends.
+`policy::change`'s `DocFacts.frontmatter` reads through the same
+`model::fm_value`, so a rule's `ctx.after.frontmatter["tags"]` and the
+`frontmatter` row `ctx.sql` serves for that key are one value.
 
 Named residual: the other seams in the table (`props[].value`, a script's
 `fm`, `preset`'s `^properties` check, both halves of `realise`'s
@@ -2027,14 +2031,12 @@ name, not a line range). The run plane's bindings read under the `[[#^id]]`
 grammar, so a bare key line with a sequence below refuses on the grammar.
 
 **What stays raw** (§ A.6.2, the stance `cat` takes): `lock` (guard tokens),
-`policy::change`'s `diff_fields`, and the view's locator and rev columns
+`policy::change`'s `fields_changed`, and the view's locator and rev columns
 (`span_start`/`span_end`, `node_rev`, `file_rev`) answer questions about the
 stored bytes, and a quoting-only edit is a change to the stored form.
-
-**Named residual:** `policy::change`'s `DocFacts.frontmatter` — the
-`(key, value)` pairs the effect kernel's `on_change(event)` receives — is a
-published value plane and still serves stored bytes. It lands with the change
-kernel's own contract work.
+`fields_changed` names every key whose `prop_rev` differs between the two
+states, plus every key present on one side only: the key's whole grain, so an
+edit to an item of a block sequence names its key.
 
 **A.6.2 The stored form stays raw where hashing is the point.** `prop_rev`,
 `span`, the props fingerprint (`props1`) and every node rev are computed over
