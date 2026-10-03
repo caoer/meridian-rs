@@ -32,7 +32,7 @@
 
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Output};
 use std::time::{Duration, Instant};
 
 /// The fixture drain budget, in whole seconds — the unit
@@ -81,6 +81,50 @@ pub(crate) fn mrd_command(home: &Path, cache_home: &Path) -> Command {
         .env("XDG_CACHE_HOME", cache_home)
         .env(registry::DRAIN_COLD_BUILDS_ENV, FIXTURE_DRAIN_SECS);
     cmd
+}
+
+/// How long [`retry_while_warming`] keeps re-issuing a command the cold gate
+/// refused — the ceiling the live-door tests use (`a6_read_seam.rs`,
+/// `script_golden_live.rs`).
+pub(crate) const WARMING_BUDGET: Duration = Duration::from_secs(30);
+
+/// Is `out` the §3.2 cold gate's `corpus_warming` refusal? `--json` puts it on
+/// stdout as `error.code`; the human face puts the sentence on stderr.
+pub(crate) fn is_corpus_warming(out: &Output) -> bool {
+    serde_json::from_slice::<serde_json::Value>(&out.stdout)
+        .is_ok_and(|frame| frame["error"]["code"] == "corpus_warming")
+        || String::from_utf8_lossy(&out.stderr).contains("the drawer is still warming")
+}
+
+/// Run `run` and re-issue it while it answers `corpus_warming`, for at most
+/// `budget`; the first other answer is returned as is.
+///
+/// The refusal's recovery class is `retry`, and that is the contract: the
+/// first corpus read on a fresh workspace kicks the drawer rebuild and absorbs
+/// it only for the engine's unpublished bound, so on a loaded host it refuses
+/// and the same request serves once the rebuild lands. A CLI fixture that takes
+/// the first answer turns host load into a red (pipeline 2463,
+/// `prop_rev_column.rs`). Same rule as `crates/registry/tests/common/mod.rs`
+/// `honour_retry`, for the `mrd` subprocess lane.
+///
+/// # Panics
+///
+/// The refusal persists past `budget`; the message carries the last answer.
+pub(crate) fn retry_while_warming(budget: Duration, mut run: impl FnMut() -> Output) -> Output {
+    let started = Instant::now();
+    loop {
+        let out = run();
+        if !is_corpus_warming(&out) {
+            return out;
+        }
+        assert!(
+            started.elapsed() < budget,
+            "corpus_warming persisted past {budget:?}; last answer: stdout {:?} stderr {:?}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// Feed a spawned child's stdin, tolerating a child that has already stopped

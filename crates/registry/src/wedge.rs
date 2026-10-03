@@ -379,7 +379,8 @@ mod tests {
     use std::thread;
 
     use super::{
-        BufReader, Duration, Instant, PROBE_TIMEOUT, TICK, UnixStream, Write, io, read_line,
+        BufRead, BufReader, Duration, Instant, PROBE_TIMEOUT, TICK, UnixStream, Write, io,
+        read_line,
     };
 
     /// How long a test waits before calling a bounded read unbounded.
@@ -447,6 +448,17 @@ mod tests {
                             if held.is_empty() {
                                 held.push(stream);
                             } else {
+                                // Read the ping, then pong — the daemon's
+                                // order. Ponging first and dropping the stream
+                                // races `answers_ping`: preempted between
+                                // `connect` and `write` past an accept poll, it
+                                // writes into a closed peer and takes `EPIPE`.
+                                // Blocking, because the accepted stream
+                                // inherits the listener's non-blocking flag on
+                                // BSD/macOS.
+                                let _ = stream.set_nonblocking(false);
+                                let _ = stream.set_read_timeout(Some(PROBE_TIMEOUT));
+                                let _ = BufReader::new(&stream).read_line(&mut String::new());
                                 let _ = stream.write_all(b"{\"status\":\"pong\"}\n");
                                 let _ = stream.flush();
                             }

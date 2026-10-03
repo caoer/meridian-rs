@@ -22,6 +22,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::time::Duration;
 
 use registry::{Config, RunningServer};
@@ -818,6 +819,14 @@ fn a_bash_run_commits_its_receipts_and_mints_no_frame() {
 /// run commit as external, actorless change (shed twice in one workspace
 /// suite run before the bracket). Twelve governed runs under a live
 /// subscriber — EVERY frame that names the run's files carries the actor.
+///
+/// "Live" means the subscriber READS while the runs land, as every real one
+/// does. A subscriber left undrained until all twelve runs end fills its
+/// socket buffer within a frame or two, and the daemon drops it once a push
+/// write blocks past `push_write_timeout` (R2/S1, `server.rs` `push_loop`) —
+/// the client then reads a truncated line and EOF. On a loaded CI host one
+/// run took 13.2 s and did exactly that (pipeline 2457); the daemon kept its
+/// contract, the test had assumed its loop ends inside the daemon's deadline.
 #[test]
 fn under_a_live_subscriber_every_run_frame_stays_attributed() {
     let tmp = TempDir::new().unwrap();
@@ -827,6 +836,19 @@ fn under_a_live_subscriber_every_run_frame_stays_attributed() {
     let mut sub = Conn::open(server.socket_path());
     assert_eq!(sub.hello_v2(&ws)["ok"], json!(true));
     assert_eq!(sub.sub()["ok"], json!(true));
+    // Drain off-thread from here on. The drained socket carries no read
+    // timeout: under `PUSH_WAIT` a single run slower than 10 s would end the
+    // reader as if the daemon had dropped it. The reader ends on EOF
+    // (`server.shutdown()`); `PUSH_WAIT` bounds the consumer below instead.
+    sub.writer.set_read_timeout(None).unwrap();
+    let (frames, received) = mpsc::channel();
+    std::thread::spawn(move || {
+        while let Some(frame) = sub.next_frame() {
+            if frames.send(frame).is_err() {
+                break;
+            }
+        }
+    });
 
     let mut conn = Conn::open(server.socket_path());
     conn.hello_v3(&ws);
@@ -843,7 +865,7 @@ fn under_a_live_subscriber_every_run_frame_stays_attributed() {
     }
 
     let mut governed = 0;
-    while let Some(frame) = sub.next_frame() {
+    while let Ok(frame) = received.recv_timeout(PUSH_WAIT) {
         let names_run_files = frame["delta"]["files"].as_array().unwrap().iter().any(|f| {
             let p = f["path"].as_str().unwrap();
             p == "tasks.md" || p == ".meridian/receipts/run.md"

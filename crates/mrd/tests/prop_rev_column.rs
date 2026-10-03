@@ -14,6 +14,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -61,8 +62,13 @@ impl Sandbox {
         cmd
     }
 
+    /// Run to an answer other than `corpus_warming`: `read` and `sql` here are
+    /// the workspace's first corpus reads after `init`, which the cold gate
+    /// may refuse with `recovery: retry` on a loaded host.
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
-        self.command(cwd, args).output().expect("spawn mrd")
+        common::retry_while_warming(common::WARMING_BUDGET, || {
+            self.command(cwd, args).output().expect("spawn mrd")
+        })
     }
 
     /// Run with `stdin_bytes` piped — the `put` edits channel.
@@ -260,5 +266,75 @@ fn a_guarded_fm_key_put_commits_on_prop_rev_and_refuses_on_node_rev() {
             .expect("doc")
             .contains("status: done"),
         "the guarded write landed"
+    );
+}
+
+// ── `common::retry_while_warming`, over scripted answers ─────────────────────
+
+fn answer(stdout: &str, stderr: &str) -> Output {
+    use std::os::unix::process::ExitStatusExt as _;
+    let code = i32::from(stdout.contains("\"error\"") || !stderr.is_empty());
+    Output {
+        status: std::process::ExitStatus::from_raw(code << 8),
+        stdout: stdout.as_bytes().to_vec(),
+        stderr: stderr.as_bytes().to_vec(),
+    }
+}
+
+/// Both faces of the refusal are retried; the first other answer is returned.
+#[test]
+fn retry_while_warming_reissues_through_both_faces_then_returns_the_answer() {
+    let mut script = vec![
+        answer(
+            r#"{"workspace":"/w","error":{"code":"corpus_warming"}}"#,
+            "",
+        ),
+        answer("", "error: the drawer is still warming: this workspace ..."),
+        answer(r#"{"rows":[]}"#, ""),
+    ]
+    .into_iter();
+    let mut calls = 0;
+    let out = common::retry_while_warming(common::WARMING_BUDGET, || {
+        calls += 1;
+        script.next().expect("asked past the script")
+    });
+    assert_eq!(calls, 3);
+    assert_eq!(out.stdout, br#"{"rows":[]}"#);
+}
+
+/// Another refusal is an answer, not a retry.
+#[test]
+fn retry_while_warming_returns_any_other_refusal_at_once() {
+    let mut calls = 0;
+    let out = common::retry_while_warming(common::WARMING_BUDGET, || {
+        calls += 1;
+        answer(r#"{"workspace":"/w","error":{"code":"cas_mismatch"}}"#, "")
+    });
+    assert_eq!(calls, 1);
+    assert!(!out.status.success());
+}
+
+/// Past the budget it panics, naming the LAST answer it got.
+#[test]
+fn retry_while_warming_panics_past_its_budget_naming_the_last_answer() {
+    let mut calls = 0;
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        common::retry_while_warming(Duration::from_millis(100), || {
+            calls += 1;
+            answer(
+                "",
+                &format!("the drawer is still warming (attempt {calls})"),
+            )
+        })
+    }))
+    .expect_err("a refusal past the budget must panic");
+    let message = panic
+        .downcast_ref::<String>()
+        .expect("a formatted panic message");
+    assert!(calls > 1, "it retried before giving up: {calls}");
+    assert!(
+        message.contains("corpus_warming persisted")
+            && message.contains(&format!("(attempt {calls})")),
+        "the panic names the last answer: {message}"
     );
 }
