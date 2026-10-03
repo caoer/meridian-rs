@@ -15,8 +15,9 @@
 //!   across the rebuild (`Arc::ptr_eq`), a mover's is a fresh allocation:
 //!   the no-clone proof.
 
+use std::collections::BTreeMap;
 use std::fs as stdfs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use fs::{DomainCache, WorkspaceRoot};
@@ -33,6 +34,28 @@ fn workspace() -> (tempfile::TempDir, WorkspaceRoot) {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = WorkspaceRoot(dir.path().to_path_buf());
     (dir, root)
+}
+
+/// A prior with no name index — the shape the stamp gates exercise.
+fn prior<'a>(
+    docs: &'a model::Docs,
+    unserved: &'a BTreeMap<String, String>,
+    leaves: &'a BTreeMap<PathBuf, [u8; 32]>,
+) -> fs::CorpusPrior<'a> {
+    fs::CorpusPrior {
+        docs,
+        unserved,
+        leaves,
+        index: None,
+    }
+}
+
+/// The movers from `prior` to `fresh`, as the memo hands them to a pass.
+fn delta(
+    prior: &BTreeMap<PathBuf, [u8; 32]>,
+    fresh: &BTreeMap<PathBuf, [u8; 32]>,
+) -> Vec<fs::LeafMove> {
+    fs::leaf_delta(prior, fresh.iter().map(|(rel, digest)| (rel, *digest)))
 }
 
 /// The flat oracle: [`fs::served_root`] over the memo's current leaf set at
@@ -138,10 +161,8 @@ fn rebuild_stamp_rides_input_equality() {
     let fresh_root = cache.overlay_root().expect("minted snapshot root");
     let update = fs::update_corpus(
         &root,
-        &prior_docs,
-        &prior_unserved,
-        &prior_leaves,
-        &fresh,
+        &prior(&prior_docs, &prior_unserved, &prior_leaves),
+        &delta(&prior_leaves, &fresh),
         Some(&fresh_root),
     )
     .expect("equal-set pass");
@@ -163,10 +184,8 @@ fn rebuild_stamp_rides_input_equality() {
     stdfs::remove_file(root.0.join("b.md")).expect("rm the mover");
     let update = fs::update_corpus(
         &root,
-        &prior_docs,
-        &prior_unserved,
-        &prior_leaves,
-        &fresh,
+        &prior(&prior_docs, &prior_unserved, &prior_leaves),
+        &delta(&prior_leaves, &fresh),
         Some(&fresh_root),
     )
     .expect("divergent pass");
@@ -184,10 +203,8 @@ fn rebuild_stamp_rides_input_equality() {
     // Arm 3 — no snapshot root: the flat fold, unchanged.
     let update = fs::update_corpus(
         &root,
-        &prior_docs,
-        &prior_unserved,
-        &prior_leaves,
-        &update.leaves.clone(),
+        &prior(&prior_docs, &prior_unserved, &prior_leaves),
+        &delta(&prior_leaves, &update.leaves),
         None,
     )
     .expect("no-snapshot pass");
@@ -211,10 +228,8 @@ fn rebuild_carries_unmoved_documents_by_pointer() {
     let fresh_root = cache.overlay_root().expect("snapshot root");
     let update = fs::update_corpus(
         &root,
-        &prior_docs,
-        &prior_unserved,
-        &prior_leaves,
-        &fresh,
+        &prior(&prior_docs, &prior_unserved, &prior_leaves),
+        &delta(&prior_leaves, &fresh),
         Some(&fresh_root),
     )
     .expect("incremental pass");
@@ -229,4 +244,102 @@ fn rebuild_carries_unmoved_documents_by_pointer() {
         "a mover's document is a fresh allocation"
     );
     assert_eq!(update.docs["moved.md"].raw, "# Moved\n\nv2\n");
+}
+
+/// The movers are one ordered merge: changed, added and gone members in
+/// `PathBuf` order, nothing for an unmoved one — across the component order
+/// too, where `a/b.md` sorts before `a-c.md` though `/` is the higher byte.
+#[test]
+fn leaf_delta_names_exactly_the_movers() {
+    let set = |rows: &[(&str, u8)]| -> BTreeMap<PathBuf, [u8; 32]> {
+        rows.iter()
+            .map(|(rel, n)| (PathBuf::from(rel), [*n; 32]))
+            .collect()
+    };
+    let prior = set(&[("a/b.md", 1), ("a-c.md", 2), ("gone.md", 3), ("same.md", 4)]);
+    let fresh = set(&[("a/b.md", 9), ("a-c.md", 2), ("new.md", 5), ("same.md", 4)]);
+    assert_eq!(
+        delta(&prior, &fresh),
+        vec![
+            (PathBuf::from("a/b.md"), Some([9; 32])),
+            (PathBuf::from("gone.md"), None),
+            (PathBuf::from("new.md"), Some([5; 32])),
+        ]
+    );
+    assert!(
+        delta(&fresh, &fresh).is_empty(),
+        "an unmoved set has no movers"
+    );
+    assert_eq!(
+        delta(&BTreeMap::new(), &fresh).len(),
+        fresh.len(),
+        "everything is added against an empty prior"
+    );
+}
+
+/// The incremental pass costs the change in the name index too: a content
+/// edit enters nothing and shares the prior index by pointer; an add, a
+/// re-alias and a remove patch it to exactly the from-scratch index.
+#[test]
+fn the_name_index_is_patched_for_movers_only() {
+    let (_dir, root) = workspace();
+    for i in 0..32 {
+        write(
+            &root.0,
+            &format!("n{i:02}.md"),
+            format!("# N{i}\n").as_bytes(),
+        );
+    }
+    write(&root.0, "x/dup.md", b"---\naliases: [one]\n---\n# Dup\n");
+    let (files, mut leaves, _) = fs::domain_snapshot_with_leaves(&root).expect("cold");
+    let (index, mut docs, mut unserved) = fs::build_corpus(files);
+    let mut index = Arc::new(index);
+    let steps: [(&str, Option<&[u8]>, usize); 4] = [
+        ("n00.md", Some(b"# N0 edited\n"), 0),
+        ("y/dup.md", Some(b"# Dup two\n"), 1),
+        ("x/dup.md", Some(b"---\naliases: [two]\n---\n# Dup\n"), 1),
+        ("n01.md", None, 0),
+    ];
+    for (rel, bytes, indexed) in steps {
+        match bytes {
+            Some(bytes) => write(&root.0, rel, bytes),
+            None => stdfs::remove_file(root.0.join(rel)).expect("rm"),
+        }
+        let mut cache = DomainCache::new();
+        cache.root(&root).expect("observe the move");
+        let fresh = cache.leaf_digests();
+        let update = fs::update_corpus(
+            &root,
+            &fs::CorpusPrior {
+                docs: &docs,
+                unserved: &unserved,
+                leaves: &leaves,
+                index: Some(&index),
+            },
+            &delta(&leaves, &fresh),
+            None,
+        )
+        .expect("incremental pass");
+        assert_eq!(
+            update.indexed, indexed,
+            "{rel}: documents entered the index"
+        );
+        if indexed == 0 && bytes.is_some() {
+            assert!(
+                Arc::ptr_eq(&update.index, &index),
+                "{rel}: a content edit shares the prior index"
+            );
+        }
+        let (files, _, _) = fs::domain_snapshot_with_leaves(&root).expect("scratch");
+        let (scratch, _, _) = fs::build_corpus(files);
+        assert_eq!(
+            *update.index, scratch,
+            "{rel}: patched index equals from-scratch"
+        );
+        assert_eq!(update.leaves, fresh, "{rel}: built set is the observed set");
+        index = update.index;
+        docs = update.docs;
+        unserved = update.unserved;
+        leaves = update.leaves;
+    }
 }

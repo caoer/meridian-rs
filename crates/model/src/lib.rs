@@ -2620,7 +2620,7 @@ impl ServingVersion {
 /// Houses the vault name/alias index the walk plane's stage 1 needs
 /// (`getFirstLinkpathDest` parity, contract §4.5): file basename → paths and
 /// frontmatter alias → paths, both lowercased (stage 1 is case-insensitive).
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CorpusIndex {
     by_basename: BTreeMap<String, Vec<String>>,
     by_alias: BTreeMap<String, Vec<String>>,
@@ -2639,6 +2639,28 @@ impl CorpusIndex {
         push_unique(self.by_basename.entry(basename_lc(path)).or_default(), path);
         for alias in doc_aliases(doc) {
             push_unique(self.by_alias.entry(alias).or_default(), path);
+        }
+    }
+
+    /// Index one document at the position a from-scratch build gives it: a
+    /// build inserts in the docs map's (path) order, so every bucket is
+    /// path-sorted, and this places `path` at its sorted position. The
+    /// incremental corpus pass patches a prior build's index with it
+    /// (merkle-spec §6.8), so the patched index equals the from-scratch one.
+    pub fn insert_ordered(&mut self, path: &str, doc: &Document) {
+        insert_sorted(self.by_basename.entry(basename_lc(path)).or_default(), path);
+        for alias in doc_aliases(doc) {
+            insert_sorted(self.by_alias.entry(alias).or_default(), path);
+        }
+    }
+
+    /// Drop `path` from the buckets `doc` indexed it under — its basename and
+    /// every alias `doc` declares — and drop a bucket it leaves empty, as a
+    /// from-scratch build over the remaining documents would never mint it.
+    pub fn remove(&mut self, path: &str, doc: &Document) {
+        remove_from(&mut self.by_basename, &basename_lc(path), path);
+        for alias in doc_aliases(doc) {
+            remove_from(&mut self.by_alias, &alias, path);
         }
     }
 
@@ -3100,6 +3122,24 @@ fn basename_lc(path: &str) -> String {
 fn push_unique(bucket: &mut Vec<String>, value: &str) {
     if !bucket.iter().any(|v| v == value) {
         bucket.push(value.to_string());
+    }
+}
+
+/// Insert `value` at its sorted position, only if absent.
+fn insert_sorted(bucket: &mut Vec<String>, value: &str) {
+    if let Err(at) = bucket.binary_search_by(|v| v.as_str().cmp(value)) {
+        bucket.insert(at, value.to_string());
+    }
+}
+
+/// Remove `value` from `key`'s bucket; an emptied bucket leaves the map.
+fn remove_from(map: &mut BTreeMap<String, Vec<String>>, key: &str, value: &str) {
+    let Some(bucket) = map.get_mut(key) else {
+        return;
+    };
+    bucket.retain(|v| v != value);
+    if bucket.is_empty() {
+        map.remove(key);
     }
 }
 

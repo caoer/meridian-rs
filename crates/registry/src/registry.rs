@@ -1286,9 +1286,11 @@ impl Registry {
     /// the instrument answering "did the root move" got cheaper.
     ///
     /// A rebuild against a RESIDENT engine is INCREMENTAL
-    /// ([`fs::update_corpus`]): it re-reads and re-parses exactly the members
-    /// whose §12.2 leaf digest moved against the engine's recorded leaf set —
-    /// O(corpus) in `stat`s, O(delta) in bytes and parses. Cold (no resident
+    /// ([`fs::update_corpus`]): one ordered merge of the engine's recorded
+    /// leaf set against the memo's names the members whose §12.2 leaf digest
+    /// moved, and the pass re-reads, re-parses and re-indexes exactly those —
+    /// O(delta) in bytes, parses and index rows; the structural copy of the
+    /// docs and leaf maps is its one O(corpus) term (merkle-spec §6.8). Cold (no resident
     /// engine) builds from scratch ([`fs::domain_snapshot_with_leaves`] +
     /// [`fs::build_corpus`]) — the only whole-corpus parse site.
     ///
@@ -1384,20 +1386,31 @@ impl Registry {
             };
             let previous = prior
                 .as_ref()
-                .map(|p| (&p.docs, &p.unserved, &p.leaves))
-                .or_else(|| restored.as_ref().map(|p| (&p.docs, &p.unserved, &p.leaves)));
-            let engine = if let Some((docs, unserved, leaves)) = previous {
-                // Snapshot the leaf set AND the root minted for exactly that
-                // set under ONE lock hold (merkle-spec §6.8): when the
-                // incremental pass builds the very set, its stamp is this
-                // root and no tree is rebuilt.
-                let (fresh, fresh_root) = {
+                .map(|p| fs::CorpusPrior {
+                    docs: &p.docs,
+                    unserved: &p.unserved,
+                    leaves: &p.leaves,
+                    index: Some(&p.index),
+                })
+                .or_else(|| {
+                    restored.as_ref().map(|p| fs::CorpusPrior {
+                        docs: &p.docs,
+                        unserved: &p.unserved,
+                        leaves: &p.leaves,
+                        index: None,
+                    })
+                });
+            let engine = if let Some(previous) = previous {
+                // The movers against the prior's leaf set AND the root
+                // minted for the memo's set under ONE lock hold (merkle-spec
+                // §6.8): when the incremental pass builds the very set, its
+                // stamp is this root and no tree is rebuilt.
+                let (moves, fresh_root) = {
                     let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
                     let minted = memo.overlay_root().ok();
-                    (memo.leaf_digests(), minted)
+                    (memo.leaf_delta(previous.leaves), minted)
                 };
-                let update =
-                    fs::update_corpus(&root, docs, unserved, leaves, &fresh, fresh_root.as_ref())?;
+                let update = fs::update_corpus(&root, &previous, &moves, fresh_root.as_ref())?;
                 parsed = Some(update.parsed);
                 WorkspaceEngine {
                     index: update.index,
@@ -1411,7 +1424,7 @@ impl Registry {
                 let (index, docs, unserved) = fs::build_corpus(files);
                 parsed = Some(docs.len());
                 WorkspaceEngine {
-                    index,
+                    index: Arc::new(index),
                     docs,
                     unserved,
                     at_fingerprint: fingerprint,
@@ -5288,6 +5301,58 @@ mod engine_tests {
             WarmOutcome::Reused,
             "same bytes ⇒ same fold ⇒ reuse, whatever the clocks say"
         );
+    }
+
+    /// The incremental pass costs the change (merkle-spec §6.8): a content
+    /// edit that leaves every basename and alias in place shares the prior
+    /// engine's name index — the same allocation, not a rebuild over the
+    /// corpus — and an edit that re-aliases, adds or removes still lands
+    /// the from-scratch index, duplicate basenames in path order.
+    #[test]
+    fn a_content_edit_shares_the_name_index() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(
+            home.path(),
+            &[
+                ("a.md", "---\naliases: [alpha]\n---\n# A\n\nsee [[b]]\n"),
+                ("b.md", "# B\n"),
+                ("sub/b.md", "# B two\n"),
+            ],
+        );
+        reg.warm_or_build(&ws).unwrap();
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        let before = reg.engine_snapshot(&canonical).expect("warm engine");
+
+        rewrite(
+            &ws,
+            "a.md",
+            "---\naliases: [alpha]\n---\n# A\n\nsee [[b]] again\n",
+        );
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 1 }
+        );
+        let after = reg.engine_snapshot(&canonical).expect("warm engine");
+        let (was, now): (&model::CorpusIndex, &model::CorpusIndex) = (&before.index, &after.index);
+        assert!(
+            std::ptr::eq(was, now),
+            "a content edit must not rebuild the name index"
+        );
+        assert_matches_scratch(&reg, &ws, "content edit");
+
+        rewrite(&ws, "a.md", "---\naliases: [omega]\n---\n# A\n");
+        reg.warm_or_build(&ws).unwrap();
+        assert_matches_scratch(&reg, &ws, "re-alias");
+
+        fs::create_dir_all(ws.join("a")).unwrap();
+        rewrite(&ws, "a/b.md", "# B three\n");
+        reg.warm_or_build(&ws).unwrap();
+        assert_matches_scratch(&reg, &ws, "add a duplicate basename");
+
+        fs::remove_file(ws.join("b.md")).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+        assert_matches_scratch(&reg, &ws, "remove a duplicate basename");
     }
 
     fn plan_page(word: &str) -> String {

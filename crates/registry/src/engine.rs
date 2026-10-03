@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// The warm per-workspace engine state: the parsed corpus that `query` reads
 /// (U2), plus the corpus content hash it was built at (the reuse key).
@@ -19,8 +20,10 @@ use std::path::PathBuf;
 /// any reusable document objects through `fs::update_corpus`.
 #[derive(Debug)]
 pub struct WorkspaceEngine {
-    /// The vault name/alias index the `query` read ops borrow (U2).
-    pub index: model::CorpusIndex,
+    /// The vault name/alias index the `query` read ops borrow (U2). Shared
+    /// with the prior engine while no rebuild mover changed its rows
+    /// (merkle-spec §6.8).
+    pub index: Arc<model::CorpusIndex>,
     /// The parsed documents, keyed by workspace-relative path.
     pub docs: model::Docs,
     /// Members in the hash domain that serve no spans/nodes (per-file UTF-8
