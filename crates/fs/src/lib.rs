@@ -3537,6 +3537,11 @@ pub fn append_line(root: &WorkspaceRoot, rel_path: &Path, line: &str) -> io::Res
 /// destination against it.
 pub struct StagedCommit {
     content: StagedFile,
+    /// The staged content bytes equal the pre-image: the batch changes nothing
+    /// in the content file (a run step's completion receipt is such a batch).
+    /// The commit then leaves the file alone — no rename, so its bytes, mtime
+    /// and inode stay — after the same pre-image verify.
+    content_unchanged: bool,
     /// The content file's validated pre-image (read#2's bytes — what the
     /// sealed spans index). The live destination must still equal this at
     /// commit, or the commit refuses [`write_conflict`].
@@ -3635,6 +3640,7 @@ pub fn stage_batch(
 
     Ok(StagedCommit {
         content,
+        content_unchanged: content_new == expected_content,
         content_expected: expected_content.to_vec(),
         receipt,
         receipt_expected,
@@ -3834,11 +3840,16 @@ impl StagedCommit {
     }
 
     /// Rename the content temp onto its destination (atomic) and fsync the
-    /// destination's directory so the rename itself is durable.
+    /// destination's directory so the rename itself is durable. A batch whose
+    /// content bytes equal the pre-image renames nothing: the temp is removed
+    /// and the destination keeps its file.
     ///
     /// # Errors
-    /// I/O failure at rename or the parent-directory fsync.
+    /// I/O failure at rename, the parent-directory fsync, or the temp removal.
     pub fn rename_content(&self) -> io::Result<()> {
+        if self.content_unchanged {
+            return fs::remove_file(&self.content.tmp);
+        }
         commit_rename(&self.content)
     }
 
@@ -5004,6 +5015,51 @@ mod tests {
         assert_eq!(
             fs::read(dir.path().join(receipt_rel())).unwrap(),
             RECEIPT_OLD.as_bytes()
+        );
+    }
+
+    /// A batch with no edits — a run step's completion receipt — appends the
+    /// receipt and leaves the content file alone: same bytes, same inode (no
+    /// rename onto it), and no staged temp left beside it.
+    #[cfg(unix)]
+    #[test]
+    fn an_edit_free_batch_leaves_the_content_file_alone() {
+        use std::os::unix::fs::MetadataExt as _;
+        let (dir, root) = workspace();
+        let doc = model::build(PLAN_S0.to_string(), syntax::parse(PLAN_S0));
+        let req = model::SpliceRequest {
+            if_root: None,
+            edits: Vec::new(),
+            engine: None,
+        };
+        let vb = match model::validate_batch(&doc, None, &req, Some(receipt_append())) {
+            model::SpliceVerdict::Validated(vb) => vb,
+            other => panic!("an edit-free batch validates, got {other:?}"),
+        };
+        let page = dir.path().join(content_rel());
+        let inode_before = fs::metadata(&page).unwrap().ino();
+
+        apply_batch(
+            &root,
+            &content_rel(),
+            Some(&receipt_rel()),
+            &vb,
+            PLAN_S0.as_bytes(),
+            &candidate(&vb),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(&page).unwrap(), PLAN_S0.as_bytes());
+        assert_eq!(
+            fs::metadata(&page).unwrap().ino(),
+            inode_before,
+            "nothing was renamed onto the content file"
+        );
+        assert!(!any_tmp_in(&dir.path().join("notes")));
+        assert_eq!(
+            fs::read(dir.path().join(receipt_rel())).unwrap(),
+            format!("{RECEIPT_OLD}{RECEIPT_LINE}").as_bytes(),
+            "the receipt still lands"
         );
     }
 

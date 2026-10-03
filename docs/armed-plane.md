@@ -103,14 +103,14 @@ Before arming, pass both `mrd test` tiers:
   atomic batch executor, in a throwaway proof workspace. The governed tree
   stays read-only, and the triggering write is untouched.
 - **`--history`** (`mrd test --history <ws> --rule <page> [--spec <page>]`):
-  reconstructs the workspace's past, reports the exact journal span examined,
+  reconstructs the workspace's past from git, reports the exact commit span examined,
   and requires zero undeclared refusals against the `golden` fence of the
   `--spec` page.
 
 Passing both is **pre-arm qualification** (required for arming review), not
 armability.
 
-### 4. First arming write — ungated-but-journaled, permanent, genesis-grey
+### 4. First arming write — ungated, permanent, genesis-grey
 
 This rung is the act itself. A reviewer approves the page at the rev they
 read (the `armed-rev`), the act writes the attested row, and the first arm
@@ -224,13 +224,14 @@ enforces:
 - Missing or corrupt artifact: fails closed (`convention_fault`).
 - Page drifted off its pinned `armed-rev`: fails closed (`armed_drift`);
   re-arm at the live rev, or revert the law.
-- `--force` is the only escape: journaled and rendered.
+- `--force` is the only escape, rendered as a `forced:` verdict on the write's
+  response; that verdict is its only record.
 
 ## What arming does NOT claim
 
 Refusal makes violations "unrepresentable through an armed change plane",
 nothing stronger. The genesis epoch renders grey, never green. Out-of-band
-mutation — an offline pre-push git rewrite, a root-preserving forged journal
+mutation — an offline pre-push git rewrite, a root-preserving forged receipt
 row — is caught by the git witness plus the receipt-engine-only write
 restriction, or it is a named residual. Refusal never renders it green.
 
