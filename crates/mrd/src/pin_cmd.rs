@@ -4,6 +4,7 @@
 //!
 //! ```text
 //! mrd pin <PAGE> <TARGET>#<SELECTOR> [--fingerprint TOKEN] [--vibe] [--dry] [--json]
+//! mrd pin --refresh <PAGE> [--accept] [--dry] [--json]
 //! ```
 //!
 //! `PAGE` is the pinning page — the drawing end, whose lock records the claim
@@ -25,78 +26,42 @@
 //! recomputes the live token under the write flock, and a wrong one refuses
 //! `pin_proof_required` with nothing written.
 //!
+//! `--refresh` re-pins every row of PAGE's lock through this same splice, one
+//! pin per row ([`refresh`]).
+//!
 //! Exit triad: 0 pinned (or `--dry` rehearsed) / 1 refused (`pin_proof_required`,
 //! `pin_target_missing`, `write_conflict`, an armed gate refusal — the engine's
 //! verbatim message) / 2 bad invocation (including a down daemon).
 
+mod refresh;
+
+use std::path::PathBuf;
+
 use serde_json::{Value, json};
-use wire::{Path as WirePath, PinSpec};
+use wire::{Path as WirePath, PinSpec, ReadSel};
 
 use crate::{Fail, Format, current_dir, engine, write_ipc};
 
-/// Run `mrd pin <PAGE> <TARGET><SELECTOR> [flags]`. Errors [`Fail`] — exit 2 on a bad
-/// invocation (missing or malformed positionals, unknown flags, a `bad_request` refusal); exit
-/// 1 on any other engine refusal, message verbatim.
+/// Run `mrd pin <PAGE> <TARGET><SELECTOR> [flags]`, or `mrd pin --refresh <PAGE> [flags]`.
+/// Errors [`Fail`] — exit 2 on a bad invocation (missing or malformed positionals, unknown
+/// flags); exit 1 on any engine refusal, message verbatim.
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
+    if args.iter().any(|arg| arg == "--refresh") {
+        return refresh::run(args);
+    }
     let mut parsed = Pin::parse(args)?;
-    let cwd = current_dir()?;
-    let resolved = crate::resolve::resolve_runtime(workspace::Base::Cwd(&cwd)).map_err(|e| {
-        Fail::tool(format!(
-            "cannot resolve workspace for {}: {e}",
-            cwd.display()
-        ))
-    })?;
-    // The rooted lane on the PINNING PAGE (§4.1 colon law, 2026-08-18
-    // rooted-refs-everywhere): a head-colon PAGE names the drawing end in the
-    // NAMED root, so the splice dials the daemon with THAT workspace at the
-    // hello and the rel half rides as `path`. The TARGET keeps its own,
-    // already-shipped cross-root grammar (design D-A, resolved engine-side
-    // against the PINNING root — which is now the named root, exactly as if
-    // the caller stood there): a bare target stays in the named root, a
-    // `name:rel` target resolves through the mount table.
-    let workspace = match crate::rooted::enter(&parsed.page, "pin", "Nothing was written.") {
-        Ok(Some((rel, rooted))) => {
-            // The CANONICAL spelling, not the caller's bytes (§ 4.6a). The
-            // "into <page>" half of the receipt whose target half is already
-            // canonical: one line answering "what drew from what" must not name
-            // its two ends in two different vocabularies.
-            parsed.display = Some(rooted.canonical_ref(&rel));
-            parsed.page = rel;
-            rooted.workspace
-        }
-        Ok(None) => resolved.workspace,
-        // The refusal frames with the workspace the caller stands in — no
-        // target workspace exists to name.
-        Err(error) => {
-            return Err(engine::json_refusal(
-                parsed.format,
-                &resolved.workspace,
-                &error,
-            ));
-        }
-    };
+    let workspace = pinning_workspace(&mut parsed.page, &mut parsed.display, parsed.format)?;
     // The CLI stamps no provenance: an absent actor is the local-operator trust
     // door, so proof is not required of it (§ A.3 proof law) — but a token the
     // caller does supply rides the request and is verified engine-side.
-    // A pin is the whole batch. `--force` is the local-operator refuse→rewrite
-    // so the wire guard does not demand a node rev the pin verb never held
-    // (the lock-block edit is engine-authored).
     let pin = PinSpec {
         target: WirePath(parsed.target.clone()),
-        selector: wire::ReadSel::parse(&parsed.selector),
+        selector: ReadSel::parse(&parsed.selector),
         vibe: parsed.vibe.then_some(true),
         fingerprint: parsed.fingerprint.clone(),
         sec_rev: None,
     };
-    let mut request = json!({
-        "op": "splice",
-        "path": parsed.page,
-        "pin": pin,
-        "force": true,
-    });
-    if parsed.dry {
-        request["dry"] = json!(true);
-    }
+    let request = pin_request(&parsed.page, &pin, parsed.dry);
 
     let mut door = write_ipc::connect(&workspace)?;
     let body = write_ipc::call(&mut door, &request)
@@ -114,6 +79,59 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         Format::Human => print_human(&parsed, &body),
     }
     Ok(())
+}
+
+/// The workspace PAGE names. On the rooted lane `page` is rewritten to the rel half the wire
+/// carries and `display` to the canonical `root:rel` the faces echo.
+///
+/// A head-colon PAGE (§4.1 colon law) names the drawing end in the NAMED root, so the splice
+/// dials the daemon with THAT workspace at the hello and the rel half rides as `path`. The
+/// TARGET keeps its own cross-root grammar (design D-A, resolved engine-side against the
+/// PINNING root — the named root, exactly as if the caller stood there): a bare target stays
+/// in the named root, a `name:rel` target resolves through the mount table.
+fn pinning_workspace(
+    page: &mut String,
+    display: &mut Option<String>,
+    format: Format,
+) -> Result<PathBuf, Fail> {
+    let cwd = current_dir()?;
+    let resolved = crate::resolve::resolve_runtime(workspace::Base::Cwd(&cwd)).map_err(|e| {
+        Fail::tool(format!(
+            "cannot resolve workspace for {}: {e}",
+            cwd.display()
+        ))
+    })?;
+    match crate::rooted::enter(page, "pin", "Nothing was written.") {
+        Ok(Some((rel, rooted))) => {
+            // The CANONICAL spelling, not the caller's bytes (§ 4.6a). The
+            // "into <page>" half of the receipt whose target half is already
+            // canonical: one line answering "what drew from what" must not name
+            // its two ends in two different vocabularies.
+            *display = Some(rooted.canonical_ref(&rel));
+            *page = rel;
+            Ok(rooted.workspace)
+        }
+        Ok(None) => Ok(resolved.workspace),
+        // The refusal frames with the workspace the caller stands in — no
+        // target workspace exists to name.
+        Err(error) => Err(engine::json_refusal(format, &resolved.workspace, &error)),
+    }
+}
+
+/// The splice that carries one pin. A pin is the whole batch; `force` is the local-operator
+/// refuse→rewrite, so the wire guard does not demand a node rev the pin verb never held (the
+/// lock-block edit is engine-authored).
+fn pin_request(page: &str, pin: &PinSpec, dry: bool) -> Value {
+    let mut request = json!({
+        "op": "splice",
+        "path": page,
+        "pin": pin,
+        "force": true,
+    });
+    if dry {
+        request["dry"] = json!(true);
+    }
+    request
 }
 
 /// The human summary: what was pinned, at which digest, with the stable anchor
@@ -206,6 +224,13 @@ impl Pin {
                         .next()
                         .ok_or_else(|| Fail::tool("--fingerprint needs a value".to_owned()))?;
                     fingerprint = Some(value.clone());
+                }
+                "--accept" => {
+                    return Err(Fail::tool(
+                        "--accept rides --refresh only — it accepts the drifted rows of a \
+                         whole lock: `mrd pin --refresh PAGE --accept`"
+                            .to_owned(),
+                    ));
                 }
                 flag if flag.starts_with('-') => {
                     return Err(Fail::tool(format!("unknown flag: {flag}")));
@@ -315,5 +340,14 @@ mod tests {
             let err = Pin::parse(&argv(&args)).expect_err("refused");
             assert_eq!(err.code, 2);
         }
+    }
+
+    /// `--accept` without `--refresh` is not a single-pin flag; the refusal points at the verb
+    /// that takes it.
+    #[test]
+    fn accept_rides_refresh_only() {
+        let err = Pin::parse(&argv(&["a.md", "b.md#A", "--accept"])).expect_err("refused");
+        assert_eq!(err.code, 2);
+        assert!(err.message.contains("--refresh"), "{}", err.message);
     }
 }

@@ -76,10 +76,11 @@ plane's, one the change plane's:
 - `on_change(event)` and `def run(ctx)` are **hermetic by construction** —
   sealed kernel, no I/O of their own; the script builtins do not join their
   globals.
-- Neither has a load phase. An md constructor called at a task block's or a
-  rule's module top level runs with the module and records its effect on every
-  run or change event, as if the entry had called it. Only the `run` op's load
-  mode (§ The run entry, amended) refuses an effect at load.
+- A task block and a rule have no load phase: an md constructor called at
+  their module top level runs with the module and records its effect on every
+  run or change event, as if the entry had called it. A block the `run` op
+  loads or fires (§ The run entry, amended) has one, and an effect at its top
+  level refuses `effect_at_load`.
 - The script entry is **hermetic by recording**: its one effectful builtin is
   `read()`, every read response is recorded into the trace, and eval is a
   pure function of `(script, args, files, read-response sequence)` (§ The
@@ -1916,6 +1917,9 @@ Under `MRD_TIMING` (the switch, sink, line grammar and the two lanes:
 | `flock.hold.detect` | — (`cmd=daemon`) | `fs::WriteLock` (timed by `registry::ring`) | the same hold for an ordinary detect cycle of a subscribed workspace: one taken because the root moved past the watcher's baseline |
 | `flock.hold.backstop` | — (`cmd=daemon`) | same | the same hold for the detect cycle that runs once per `DETECT_FLOOR_CADENCE` (30 s), the push plane's backstop |
 | `flock.hold.prime` | — (`cmd=daemon`) | same | the same hold for the priming cycle, which sets a new subscription's baseline |
+| `mw.sql.world` | — (the write door's process: `cmd=daemon`, or the CLI's `cmd=` for an in-process door) | `wire_serve::middleware` | the documents of one `ctx.sql` projection build: the parse of the pending files, and on the door run's first build also the hash-domain walk, read and parse of every disk member (`armed-plane.md` § The ctx surface). One line per build; a call that reuses the projection emits none |
+| `mw.sql.project` | — (same) | `registry::mw_sql` | `view::build_memory` over that world, the extension gate, the spill containment and the settings read the calls are checked against. One line per build |
+| `mw.sql.query` | — (same) | `registry::mw_sql` | one `ctx.sql` call: a fresh connection, `BEGIN`, the statement and its rows, `ROLLBACK`, the settings check. One line per answered call |
 
 **The door's three families partition its population**: `door.vouched` (fast
 path), `door.floor` (floor), `door.refused` (no arm) — every `door.*` name under
@@ -2054,7 +2058,7 @@ none of the three sites above.
 | CLI mount — script entry | `crates/mrd::script::cmd` — same client edge; its human-mode face is non-normative |
 | in-process script serve (§ A.7) | `crates/registry` (op arm: entry world, host, threading, commit) over `crates/effects` (kernel, trace, digest) |
 | wire run serve (§ A.8) + script effects mode | `crates/registry` (`run_op`: per-target loop, §9 threading; `script_op`: the live host) over `crates/run` (the plane, unchanged) |
-| per-phase timing (`MRD_TIMING`) | `crates/timing` (switch, sink, span); call sites `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`, `fs::domain_fold`, `registry::Registry::currency_refresh`, `registry::Registry::door_observation`, `fs::WriteLock` (holds timed by `run::executor` and `wire_serve::write`); § Timing phases |
+| per-phase timing (`MRD_TIMING`) | `crates/timing` (switch, sink, span); call sites `mrd::run_cmd`, `run::runner`, `run::dispatch_starlark`, `fs::domain_snapshot_with_leaves`, `fs::domain_fold`, `registry::Registry::currency_refresh`, `registry::Registry::door_observation`, `fs::WriteLock` (holds timed by `run::executor` and `wire_serve::write`), `wire_serve::middleware` and `registry::mw_sql` (the `ctx.sql` world, projection and query); § Timing phases |
 | root-at-eval observation (the lazy fold) | `crates/run::dispatch_starlark::observe_if_emitted` — one owner of the per-tense gate; `runner::rehearse` calls it directly, the live leg inside `dispatch_starlark::dispatch`. `evaluate` returns `Unobserved`, so neither skips it; § The run plane (`RunCtx`) |
 
 ---

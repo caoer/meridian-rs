@@ -364,6 +364,11 @@ mrd pin <PAGE> <TARGET>#<SELECTOR> [--fingerprint TOKEN] [--vibe] [--dry] [--jso
  (heading path / `^id` / dewey — see § mrd pin).
  `--fingerprint` supplies the § A.3 proof token —
  optional on this door, verified whenever supplied
+mrd pin --refresh <PAGE> [--accept] [--dry] [--json]
+ re-pin every row of PAGE's meridian-lock, in lock
+ order, after a rehearsal that carries each row's
+ recorded fingerprint as its proof; a drifted row lands
+ only under --accept (see § `mrd pin --refresh`)
 mrd repair [PAGE] [--dry] [--json]
  lost-pin repair: walk the repository's own history for
  the content of pins whose evidence is gone (both planes
@@ -830,6 +835,70 @@ A wire client's pin through the daemon carries its own proof: the
 `fingerprint` that client's sections read served for that selector rides the
 pin (wire-contract § A.3). "You cannot attest content that was never in your
 context"; the engine keeps no record of the read.
+
+### `mrd pin --refresh` — re-pin one page's whole lock
+
+`mrd pin --refresh PAGE [--accept] [--dry] [--json]` re-pins every row of
+PAGE's `meridian-lock`, one `mrd pin` splice per row, in lock order. It takes
+no TARGET — the rows are the input — and plain `mrd pin` is unchanged.
+
+- **Rows in.** PAGE resolves as `mrd pin`'s PAGE does, rooted lane included.
+  Its lock is read in-process by the one lock parser; a lock that refuses to
+  parse exits 1, nothing written, and a page with no lock has nothing to
+  refresh (exit 0). A row's target is its `object` plus `.md` — a cross-root
+  `name:rel` object keeps its spelling. A heading `path` becomes hpath
+  segments, each read through the R4 occurrence spelling (`"Dup#2"` →
+  `n: 2`); a sole `^id` element becomes the anchor. A `path: []` row, a
+  `properties` row and a `seq-N` immutable-root row are refused with a
+  one-line reason: no door mints or re-pins one. So is a row that repeats an
+  earlier row's object and selector: a pin updates the first row under its
+  key, so the repeat could never be refreshed.
+- **Pass 0 — rehearse, write nothing.** One dry pin per row, carrying the
+  row's recorded fingerprint as its § A.3 proof. Passes → `ok`.
+  `pin_proof_required` → `drifted`: the target no longer carries the content
+  the row attests. A drifted row is rehearsed again proofless, so a refusal
+  it would meet at the live pass (an ambiguous heading, a gate) is reported
+  now. Any other refusal → `refused`, the engine's message verbatim. A row
+  the engine would record under a different key than the row's own — another
+  target spelling, or a canonical selector that now carries an occurrence
+  ordinal the row lacks — is refused too: re-pinning it would add a second
+  row instead of refreshing this one.
+  - Any refused row: exit 1, nothing written.
+  - A drifted row without `--accept`: exit 1, nothing written. The face lists
+    the drifted rows and names the loop: read what changed (`mrd walk PAGE`),
+    fix the page where a claim no longer holds, then run
+    `mrd pin --refresh PAGE --accept`.
+  - `--dry` stops here: exit 0 when clean; under `--accept` a drifted row
+    reports `would-accept`.
+- **Pass 1 — pin, lock order.** An `ok` row carries its recorded token, which
+  the engine verifies again under the write flock. A drifted row (only under
+  `--accept`) carries none: the CLI door is local-operator-trusted and pins
+  the live bytes, and `--accept` is the operator's statement that they re-read
+  them.
+- **Pass 2 — the final blob.** A row's `hash` is the target file's blob at
+  that row's pin. When a LATER row promoted an anchor into the same target
+  file, every earlier row into that file names a blob no later state holds.
+  Exactly those rows are pinned again, carrying their pass-1 fingerprint;
+  their anchors exist by then, so nothing promotes and every row into one
+  target ends on that file's final blob.
+- **Output.** One line per row — state, `TARGET#SELECTOR`, the short
+  fingerprint — then a summary. States: `ok`, `accepted` (a drifted row pinned
+  at its live bytes), `re-pinned` (an `ok` row pinned again in pass 2);
+  `drifted` and `refused` when the run stops, `not-run` for the rows after a
+  live-pass refusal; `would-accept` under `--dry`.
+  `--json`: once PAGE resolves, every leg but a down daemon prints
+  `{workspace, page, rows: [{target, selector, state, fingerprint, blob,
+  promoted, recorded, reason}], error}` — `selector` is the row's own R4
+  selector (`{"path": [...]}` or `{"properties": [...]}`),
+  `recorded` the token the row carried before the run, `fingerprint`/`blob`
+  what the run minted or rehearsed (`null` on a refused or `not-run` row),
+  `reason` the row's refusal text, `error` the message a stopped run prints
+  on stderr (`null` when the run did not stop).
+- **Exit triad:** 0 every row pinned (or `--dry` clean) / 1 a refused row, a
+  drifted row without `--accept`, or a live-pass refusal after a clean
+  rehearsal — the face names the rows that landed before it, and a re-run
+  after the fix is safe / 2 bad invocation (a TARGET beside `--refresh`,
+  `--fingerprint` or `--vibe` with it, a PAGE with no file, a down daemon).
 
 ### `mrd rules` — the effective law, shown
 

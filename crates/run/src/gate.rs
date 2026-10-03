@@ -212,6 +212,10 @@ pub(crate) struct PendingSplice<'a> {
 /// ([`crate::executor::ApplyRequest::fields`]), now reaching the splice-door
 /// writes too.
 ///
+/// `world` is the one overlay world the mount holds across its rows; this
+/// call stages the page's pending bytes into it, so a row whose candidate did
+/// not move reads the `ctx.sql` projection an earlier row built.
+///
 /// # Errors
 /// The rendered refusal detail, ready for
 /// [`crate::executor::ExecError::ArmedRefusal`]: a middleware `refuse` renders
@@ -219,7 +223,7 @@ pub(crate) struct PendingSplice<'a> {
 /// path), and an evaluation fault renders as [`policy::ArmedFault::Unevaluable`]
 /// — a law that cannot complete never reads as a pass.
 pub(crate) fn middleware_emits(
-    root: &fs::WorkspaceRoot,
+    world: &mut wire_serve::middleware::DoorWorld<'_>,
     row: &policy::ArmedRule,
     splice: &PendingSplice<'_>,
 ) -> Result<Vec<policy::MwEmit>, String> {
@@ -249,19 +253,14 @@ pub(crate) fn middleware_emits(
     // the same question on both lanes — this file's PENDING bytes shadowing
     // disk. The run plane compiles no cross-file members, so the overlay
     // carries exactly one entry.
-    let mut overlay = BTreeMap::new();
-    overlay.insert(splice.page.to_owned(), after.raw.clone());
-    let world = wire_serve::middleware::DoorWorld {
-        root,
-        overlay: &overlay,
-    };
+    world.stage(splice.page, &after.raw);
     let outcome = policy::run_middleware(
         source,
         &policy::MwCtxInput {
             change: &change,
             fields: splice.fields,
         },
-        &world,
+        &*world,
         row.rule().limits(),
     )
     .map_err(|e| {

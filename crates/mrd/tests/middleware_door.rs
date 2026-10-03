@@ -943,3 +943,77 @@ fn splice_armed_bytes_stand_when_middleware_sets_nothing() {
         "{json}"
     );
 }
+
+// ── ctx.sql reads one world per door run ────────────────────────────────────
+
+/// Armed-plane § The ctx surface: every `ctx.sql` of a door run reads the
+/// overlay world as it stands at that call. One projection serves the calls
+/// of an unchanged world, so an earlier call's DML — in the same evaluation
+/// or an earlier row — never reaches a later call; an emit that moves pending
+/// bytes is visible to the next row's `ctx.sql`.
+#[test]
+fn every_ctx_sql_reads_the_world_as_it_stands_at_that_call() {
+    registry::mw_sql::install();
+    let (_dir, root) = tmp_ws();
+    write_page(&root, "tasks/handoff.md", CARD);
+    write_page(
+        &root,
+        "agents/a1.md",
+        "---\nreports-to: old-leader\n---\n# a1\n",
+    );
+    let refuse_unless = |want: &str| {
+        format!(
+            "    if seen != {want}:\n        refuse(message = \"ctx.sql saw \" + str(seen), passing = \"-\")\n"
+        )
+    };
+    let count = "len(ctx.sql(\"SELECT path FROM frontmatter WHERE key = 'reports-to'\"))";
+    // 000 mutates through ctx.sql and emits nothing.
+    let dml = mw_page(
+        "000-dml",
+        &format!(
+            "def middleware(ctx):\n    ctx.sql(\"DELETE FROM frontmatter\")\n    seen = {count}\n{}",
+            refuse_unless("1")
+        ),
+    );
+    // 001 reads the world 000 left (unchanged), then moves it: a member edit
+    // and a birth.
+    let emit = mw_page(
+        "001-emit",
+        &format!(
+            "def middleware(ctx):\n    seen = {count}\n{}    set_field(path = \"agents/a1.md\", key = \"reports-to\", value = \"new-leader\")\n    create(path = \"tasks/born.md\", body = \"---\\nstatus: open\\n---\\n# born\\n\")\n",
+            refuse_unless("1")
+        ),
+    );
+    // 002 reads the moved world: the caller's put, 001's edit, 001's birth.
+    let after = mw_page(
+        "002-after",
+        &format!(
+            "def middleware(ctx):\n    rows = ctx.sql(\"SELECT path, value FROM frontmatter WHERE key IN ('reports-to', 'status') ORDER BY path\")\n    seen = [r[\"path\"] + \"=\" + r[\"value\"] for r in rows]\n{}",
+            refuse_unless(
+                "[\"agents/a1.md=new-leader\", \"tasks/born.md=open\", \"tasks/handoff.md=review\"]"
+            )
+        ),
+    );
+    write_page(&root, "rules/dml.md", &dml);
+    write_page(&root, "rules/emit.md", &emit);
+    write_page(&root, "rules/after.md", &after);
+    arm(
+        &root,
+        &[
+            ("rules/dml.md", &dml, "000-dml", Mode::Block),
+            ("rules/emit.md", &emit, "001-emit", Mode::Block),
+            ("rules/after.md", &after, "002-after", Mode::Block),
+        ],
+    );
+
+    splice(
+        &root,
+        None,
+        &status_splice("tasks/handoff.md", "review", &[]),
+        &[],
+        None,
+    )
+    .expect("every ctx.sql read the world as it stood at its call");
+    assert!(read(&root, "agents/a1.md").contains("reports-to: new-leader"));
+    assert!(read(&root, "tasks/born.md").contains("# born"));
+}
