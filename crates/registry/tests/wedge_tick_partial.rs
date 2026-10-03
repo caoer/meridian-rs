@@ -20,7 +20,7 @@
 //! future rewrite of the tick loop that reintroduces a per-tick UTF-8 guard
 //! turns these red again.
 
-use std::io::{BufReader, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::mpsc;
 use std::thread;
@@ -37,6 +37,18 @@ const STALL: Duration = Duration::from_secs(5);
 /// suite forever.
 #[allow(clippy::duration_suboptimal_units)]
 const NEVER: Duration = Duration::from_secs(120);
+
+/// Answer a liveness probe in the daemon's order: read the ping line, then
+/// pong. Ponging first and dropping the stream races the prober — a client
+/// preempted between `connect` and `write` for longer than one accept poll
+/// writes into a closed peer, takes `EPIPE`, and the probe calls a live daemon
+/// dead (pipeline 2442).
+fn answer_ping(mut s: &UnixStream) {
+    let _ = s.set_read_timeout(Some(wedge::PROBE_TIMEOUT));
+    let _ = BufReader::new(s).read_line(&mut String::new());
+    let _ = s.write_all(b"{\"status\":\"pong\"}\n");
+    let _ = s.flush();
+}
 
 /// First connection: write `prefix`, stall past two ticks, write `rest`.
 /// Every later connection gets a pong, so the liveness probe keeps the
@@ -61,8 +73,7 @@ fn slow_split_server(
                         s.flush().expect("flush prefix");
                         first = Some(s);
                     } else {
-                        let _ = s.write_all(b"{\"status\":\"pong\"}\n");
-                        let _ = s.flush();
+                        answer_ping(&s);
                     }
                 }
                 Err(_) => thread::sleep(Duration::from_millis(20)),

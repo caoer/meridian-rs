@@ -21,7 +21,7 @@
 //! Origin: card `wedge-write-half-no-discipline` (seat d6afbb91), carded from
 //! the PR-234 review note at main `e8705b9b`.
 
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -87,6 +87,17 @@ impl Peer {
                         if first.is_none() {
                             first = Some(stream);
                         } else if pong {
+                            // Read the ping, then pong — the daemon's order.
+                            // Ponging first and dropping the stream races the
+                            // prober: one preempted between `connect` and
+                            // `write` past an accept poll writes into a closed
+                            // peer, takes `EPIPE`, and calls a live daemon dead
+                            // (pipeline 2429). Blocking, because the accepted
+                            // stream inherits the listener's non-blocking flag
+                            // on BSD/macOS (see the drain below).
+                            let _ = stream.set_nonblocking(false);
+                            let _ = stream.set_read_timeout(Some(wedge::PROBE_TIMEOUT));
+                            let _ = BufReader::new(&stream).read_line(&mut String::new());
                             let _ = stream.write_all(b"{\"status\":\"pong\"}\n");
                             let _ = stream.flush();
                         } else {
