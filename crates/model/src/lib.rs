@@ -655,7 +655,18 @@ fn fm_top_key(line: &str) -> Option<(&str, usize)> {
 /// key above it and never a key of its own, whatever its text holds after the
 /// marker (`- http://x` carries a colon). The `---` fence is not one.
 fn fm_is_col0_item(line: &str) -> bool {
-    line.starts_with("- ") || line.starts_with("-\t") || line.trim_end() == "-"
+    fm_item_text(line.trim_end()).is_some()
+}
+
+/// The text of one block-sequence entry, its line already trimmed: what
+/// follows `- `, or `""` for a bare `-`. `None` when the line is not an entry
+/// — YAML's entry marker is a dash then a space, so `-foo` is a plain scalar
+/// and `-<TAB>x` is refused, as a YAML parser refuses it.
+fn fm_item_text(trimmed: &str) -> Option<&str> {
+    if trimmed == "-" {
+        return Some("");
+    }
+    trimmed.strip_prefix("- ").map(str::trim)
 }
 
 /// One `[[target#frag|alias]]` a grammar scan found in plain text: the target
@@ -3209,7 +3220,11 @@ pub fn fm_tags(block: &str, key: &str) -> Vec<String> {
         return parse_tag_list(&value);
     }
 
-    // The key line carries no value: a block sequence, or nothing at all.
+    // The key line carries no value: a flow list on the line below, a block
+    // sequence, or nothing at all.
+    if let Some(flow) = fm_flow_below(&lines, at) {
+        return parse_tag_list(&flow);
+    }
     fm_block_items(&lines, at)
         .iter()
         .filter_map(|item| tag_item(item))
@@ -3551,6 +3566,9 @@ pub fn fm_value(block: &str, key: &str) -> Option<String> {
     if !value.is_empty() {
         return Some(value);
     }
+    if let Some(flow) = fm_flow_below(&lines, at) {
+        return Some(flow);
+    }
     let items = fm_block_items(&lines, at);
     if items.is_empty() {
         return Some(String::new());
@@ -3599,7 +3617,9 @@ fn fm_flow_join(lines: &[&str], at: usize, mut value: String) -> String {
 /// guess.
 fn fm_block_items(lines: &[&str], at: usize) -> Vec<String> {
     let mut items = Vec::new();
-    for line in &lines[at + 1..] {
+    let mut next = at + 1;
+    while let Some(line) = lines.get(next) {
+        next += 1;
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
@@ -3607,12 +3627,47 @@ fn fm_block_items(lines: &[&str], at: usize) -> Vec<String> {
         if !line.starts_with([' ', '\t']) && !fm_is_col0_item(line) {
             break;
         }
-        let Some(item) = trimmed.strip_prefix('-') else {
+        let Some(item) = fm_item_text(trimmed) else {
             break;
         };
-        items.push(item.trim().to_string());
+        if !item.is_empty() {
+            items.push(item.to_string());
+            continue;
+        }
+        // A bare `-` carries its value on the lines indented past the dash,
+        // folded with spaces; with none below it the entry is null, which
+        // renders nothing.
+        let dash_indent = line.len() - line.trim_start().len();
+        let mut parts: Vec<&str> = Vec::new();
+        while let Some(below) = lines.get(next) {
+            let text = below.trim();
+            let indent = below.len() - below.trim_start().len();
+            if text.is_empty() || text.starts_with('#') || indent <= dash_indent {
+                break;
+            }
+            parts.push(text);
+            next += 1;
+        }
+        if !parts.is_empty() {
+            items.push(parts.join(" "));
+        }
     }
     items
+}
+
+/// A flow sequence that opens on the first content line below a value-less
+/// key (`tags:` then `  [a, b]`), joined like one on the key line; `None` when
+/// that line is not an indented `[`.
+fn fm_flow_below(lines: &[&str], at: usize) -> Option<String> {
+    let (index, line) = lines
+        .iter()
+        .enumerate()
+        .skip(at + 1)
+        .find(|(_, l)| !l.trim().is_empty() && !l.trim().starts_with('#'))?;
+    if !line.starts_with([' ', '\t']) || !line.trim().starts_with('[') {
+        return None;
+    }
+    Some(fm_flow_join(lines, index, line.trim().to_string()))
 }
 
 /// Parse a frontmatter tag value written on the key line: `[a, b]`, `a, b`, or
@@ -4151,6 +4206,29 @@ mod tests {
         assert_eq!(keys, ["tags", "source", "next"]);
         let tags = resolve(&doc, &Ref::FmKey("tags".to_string())).expect("tags");
         assert_eq!(&raw[tags.span], "tags:\n- type/a\n- status/bogus");
+    }
+
+    /// The value below a value-less key, in the shapes YAML admits there: a
+    /// flow list opening on the next line, and a bare `-` whose value sits on
+    /// the lines indented past it. A bare `-` with nothing below is a null
+    /// entry and renders nothing; `-foo` and `-<TAB>x` are no entries.
+    #[test]
+    fn values_below_the_key_line() {
+        let flow = "tags:\n  [a, b]\nsplit:\n  [c,\n   d]\nnext: 1\n";
+        assert_eq!(fm_value(flow, "tags").as_deref(), Some("[a, b]"));
+        assert_eq!(fm_tags(flow, "tags"), vec!["a", "b"]);
+        assert_eq!(fm_value(flow, "split").as_deref(), Some("[c, d]"));
+
+        let dash = "tags:\n  - type/a\n  -\n    type/reference\n  -\nnext: 1\n";
+        assert_eq!(
+            fm_value(dash, "tags").as_deref(),
+            Some("[type/a, type/reference]")
+        );
+        assert_eq!(fm_tags(dash, "tags"), vec!["type/a", "type/reference"]);
+
+        assert_eq!(fm_value("tags:\n  -\tx\n", "tags").as_deref(), Some(""));
+        assert_eq!(fm_value("tags:\n  -foo\n", "tags").as_deref(), Some(""));
+        assert!(fm_tags("tags:\n-\tx\n", "tags").is_empty());
     }
 
     /// A comment after `key:` is not the key's value: the value is the block

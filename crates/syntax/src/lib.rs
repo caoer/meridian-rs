@@ -420,7 +420,6 @@ fn frontmatter_keys(block: &str) -> Vec<String> {
         if line.starts_with([' ', '\t'])
             || line.trim_start().starts_with('#')
             || line.starts_with("- ")
-            || line.starts_with("-\t")
             || line.trim_end() == "-"
         {
             continue;
