@@ -370,6 +370,19 @@ other projection table:
   on its `exclusion_path` (full path or basename). These keys stay separate
   from the deliberately lowercased md affected-set keys (§3 and §5.1 forbid
   case-folding).
+- **The daemon walks again only after base motion.** The resident daemon
+  keeps its last walk and hands it to the next sync while its event feed
+  vouches that nothing on the base plane moved. The feed counts every event
+  that can move a member — any event on a `.base` name; a directory created
+  or removed; a rename of anything but a markdown file; any other change on
+  a path that is a directory or no longer exists — and every doubt collapse
+  (`node-rev-merkle-spec.md` §6.4). A walk is reused only when all three
+  hold: the call's own cookie barrier answers `Seen` (every earlier event
+  delivered, no capture-gap doubt open), the count has not moved since the
+  walk began, and the hash domain is the one it walked under. Any other call
+  walks. The reuse inherits the md plane's capture gap and closes it the
+  same way: a new directory is a counted event and, on inotify, a doubt
+  collapse. The CLI lane walks on every call.
 - **The disclosed approximation narrows.** `.base` motion leaves the store's
   "moves no fingerprint, triggers no append" list; `link.exclusion` /
   `exclusion_path` are consistent with `base` as of the append's own two
@@ -405,8 +418,13 @@ other projection table:
   corpus) and one blake3 + serde_yaml parse per member; a small fraction of
   the md fold, which already hashes the whole md corpus per query. `mrd sql`
   stays a slow operator tool (README standing correction C).
-- **Cache lane, per sync:** the base walk + map diff; only deltas append.
-  Base-only motion costs one append transaction.
+- **Cache lane, per sync:** the map diff; only deltas append. Base-only
+  motion costs one append transaction. The walk itself runs only after base
+  motion or on an unvouched call (§7). It is a directory enumeration of the
+  whole root, so its cost scales with the directory count, not the member
+  count: about 0.6 CPU-s on a sessions root of 36,669 directories and 870
+  members, measured, which was the largest per-call term of a daemon `sql`
+  call before the reuse.
 - **Schema:** `SCHEMA_VERSION` 5 → 6 and `CACHE_SCHEMA_VERSION` 5 → 6;
   delete-don't-migrate (a mismatched cache file cold-rebuilds).
 - **Dependency:** the Bases parse needs real YAML (arbitrary nesting).

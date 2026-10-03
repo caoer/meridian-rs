@@ -225,6 +225,10 @@ struct FeedState {
     rescans_total: u64,
     /// Kernel events accepted into the set (post-filter), over the feed's life.
     events: u64,
+    /// `.base` walks paid for this feed's workspace, over the feed's life —
+    /// each a directory enumeration of the whole root (`base-projection.md`
+    /// §7, §9).
+    base_walks: u64,
     /// Doubt collapses over the feed's life (rescan flags, errors, cap,
     /// explicit triggers). Equal to [`Self::rescans_total`] by construction —
     /// asserted apart in the chaos gate so an anonymous doubt path cannot
@@ -265,6 +269,9 @@ pub struct FeedStats {
     pub pending: usize,
     /// Whether the pending state is the all-dirty collapse.
     pub all_dirty: bool,
+    /// `.base` walks paid (`base-projection.md` §7): each one a directory
+    /// enumeration of the whole root.
+    pub base_walks: u64,
 }
 
 /// What a take found pending.
@@ -621,7 +628,18 @@ impl WorkspaceFeed {
             applied: s.applied,
             pending: s.dirty.len(),
             all_dirty: s.doubt.is_some(),
+            base_walks: s.base_walks,
         }
+    }
+
+    /// Count one `.base` walk paid for this workspace.
+    pub(crate) fn note_base_walk(&self) {
+        let mut s = self
+            .sync
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        s.base_walks += 1;
     }
 }
 

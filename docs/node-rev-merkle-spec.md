@@ -490,6 +490,12 @@ engine-side.
   outside the hash domain by the standing `wire-contract.md` §12.1 floor, so it
   can never move the root or break a held token; a cookie inside the hash
   domain is refused.
+- **The base-plane count.** Beside the md dirty set, the feed keeps one
+  counter of events that can move a `.base` member, and every doubt collapse
+  advances it too (the event classes: `base-projection.md` §7). It holds no
+  paths and gates no md read. Its one consumer is the daemon's `.base` walk,
+  which is reused only under a `Seen` barrier and an unmoved count, so the
+  count inherits exactly the barrier's guarantee and its capture gap.
 - **The rescan ladder — every cause named, throttled:**
 
 | Cause | Response |

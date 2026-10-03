@@ -2401,6 +2401,34 @@ impl Registry {
         }
     }
 
+    /// The workspace's `.base` walk for one `sql` sync (`base-projection.md`
+    /// §7), under `domain`. Each walk is counted on the live feed's published
+    /// [`feed::FeedStats::base_walks`].
+    ///
+    /// # Errors
+    /// The walk's own error.
+    pub(crate) fn base_walk(
+        &self,
+        workspace: &Path,
+        domain: &fs::domain::Domain,
+        _timeout: Duration,
+    ) -> io::Result<Arc<fs::base::BaseSnapshot>> {
+        let root = fs::WorkspaceRoot(workspace.to_path_buf());
+        let feed = {
+            let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(FeedSlot::Live(feed)) = feeds.get(workspace) {
+                Some(Arc::clone(feed))
+            } else {
+                None
+            }
+        };
+        let walk = Arc::new(fs::base::base_snapshot_under(&root, domain)?);
+        if let Some(feed) = feed {
+            feed.note_base_walk();
+        }
+        Ok(walk)
+    }
+
     /// The suspicious-only trigger door (pre-merge ruling 3): mark a named
     /// rescan on a live feed. The rescan executes on the next
     /// [`domain_cache`](Self::domain_cache) borrow — nothing here schedules
@@ -4945,6 +4973,109 @@ mod engine_tests {
             (sweeps, stats),
             "a vouched quiet detect observes nothing through the shared memo"
         );
+    }
+
+    /// `base-projection.md` §7: two `sql` calls with nothing moved between
+    /// them pay ONE `.base` walk — the walk is a directory enumeration of the
+    /// whole root, the largest per-call term on a sessions root. Live kernel
+    /// stream.
+    #[test]
+    fn two_quiet_sql_calls_walk_the_base_plane_once() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(
+            home.path(),
+            &[("a.md", "# A\n"), ("bases/x.base", "views: []\n")],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&canonical).unwrap();
+
+        for _ in 0..2 {
+            match crate::sql_op::serve(&reg, &canonical, "SELECT path FROM base ORDER BY path")
+                .unwrap()
+            {
+                wire::ResponseBody::Sql { rows, error, .. } => {
+                    assert!(error.is_none(), "the query runs: {error:?}");
+                    assert_eq!(rows, vec![vec![serde_json::json!("bases/x.base")]]);
+                }
+                other => panic!("not a sql body: {other:?}"),
+            }
+        }
+        assert_eq!(
+            reg.feed_stats(&canonical).expect("live feed").base_walks,
+            1,
+            "the second call reused the first call's walk"
+        );
+    }
+
+    /// `base-projection.md` §7: the kept `.base` walk follows base-plane
+    /// motion and nothing else. A markdown edit and a non-member file reuse
+    /// it; a member's bytes, a new directory carrying a member, and a
+    /// directory renamed out of the root (its member leaves with no event of
+    /// its own) each walk again, and the walk sees the change. Live kernel
+    /// stream; generous timeout for CI inotify.
+    #[test]
+    fn the_kept_base_walk_follows_base_motion_and_nothing_else() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(
+            home.path(),
+            &[("a.md", "# A\n"), ("bases/x.base", "views: []\n")],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&canonical).unwrap();
+        let domain =
+            ::fs::domain::Domain::load(&::fs::WorkspaceRoot(canonical.clone())).unwrap();
+        let timeout = Duration::from_secs(10);
+        let walk = || reg.base_walk(&canonical, &domain, timeout).unwrap();
+        let walks = || reg.feed_stats(&canonical).expect("live feed").base_walks;
+        let paths = |w: &::fs::base::BaseSnapshot| -> Vec<String> {
+            w.members.iter().map(|m| m.path.clone()).collect()
+        };
+
+        let first = walk();
+        assert_eq!(paths(&first), ["bases/x.base"]);
+        assert_eq!(walks(), 1);
+
+        // Nothing on the base plane moves.
+        rewrite(&canonical, "a.md", "# A moved\n");
+        rewrite(&canonical, "notes.txt", "scratch\n");
+        let quiet = walk();
+        assert!(
+            Arc::ptr_eq(&first, &quiet),
+            "a markdown edit and a non-member file reuse the kept walk"
+        );
+        assert_eq!(walks(), 1);
+
+        // A member's bytes move.
+        rewrite(&canonical, "bases/x.base", "views:\n  - type: table\n");
+        let edited = walk();
+        assert!(walks() > 1, "a member edit walks again");
+        assert_eq!(
+            edited.members[0].bytes.as_deref().unwrap(),
+            b"views:\n  - type: table\n"
+        );
+        assert_ne!(edited.fold, first.fold);
+
+        // A new directory carrying a member.
+        fs::create_dir_all(canonical.join("new")).unwrap();
+        rewrite(&canonical, "new/y.base", "views: []\n");
+        let grown = walk();
+        assert_eq!(paths(&grown), ["bases/x.base", "new/y.base"]);
+
+        // Take any doubt the new directory opened (inotify collapses on it), so
+        // the rename below is caught by its own event, then confirm the reuse
+        // is back.
+        reg.currency_refresh(&canonical, timeout).unwrap();
+        let kept = walk();
+        assert!(Arc::ptr_eq(&kept, &walk()), "a quiet call reuses again");
+        let before = walks();
+
+        // That directory renamed out of the root.
+        fs::rename(canonical.join("new"), home.path().join("moved-out")).unwrap();
+        let shrunk = walk();
+        assert!(walks() > before, "a directory renamed out walks again");
+        assert_eq!(paths(&shrunk), ["bases/x.base"]);
     }
 
     /// Write `bytes` to `rel`, past the filesystem's timestamp granularity —
