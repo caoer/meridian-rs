@@ -1882,6 +1882,16 @@ impl Registry {
         }
     }
 
+    /// Test-only: this workspace's feed slot goes sticky `Failed`, as a
+    /// watcher that never started leaves it.
+    #[cfg(test)]
+    pub(crate) fn fail_feed(&self, workspace: &Path) {
+        self.feeds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(workspace.to_path_buf(), FeedSlot::Failed);
+    }
+
     /// The push plane's §6.6 backstop (merkle-spec §6.7, detect row): find
     /// what the event stream silently lost without holding `cache` across the
     /// I/O. Snapshot under the lock, compare unlocked
@@ -2098,6 +2108,45 @@ impl Registry {
                 Err(e)
             }
         }
+    }
+
+    /// The detect cycle's flock-held observation (merkle-spec §6.7, the watch
+    /// plane): [`Self::door_observation`]'s vouched arm alone, inside one
+    /// `budget` — the cookie probe ([`feed::WorkspaceFeed::cookie_probe`]),
+    /// take-and-apply, then the same [`vouch`] on `cache`. `None` on any
+    /// [`FloorTrigger`], or when the memo stays held past the budget; never
+    /// the floor ([`fs::DomainCache::root`]). Its caller holds the write flock
+    /// and skips on `None`: under the flock the floor is the backstop cycle's
+    /// alone, so a miss here costs a writer nothing.
+    ///
+    /// Emits no timing phase: the `door.*` families count observations that
+    /// can floor, and this one's hold is the cycle's `flock.hold.detect`.
+    pub(crate) fn door_observation_vouched(
+        &self,
+        workspace: &Path,
+        cache: &Arc<Mutex<fs::DomainCache>>,
+        budget: Duration,
+    ) -> Option<model::MerkleRoot> {
+        let started = Instant::now();
+        let feed = {
+            let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+            match feeds.get(workspace) {
+                Some(FeedSlot::Live(feed)) => Arc::clone(feed),
+                _ => return None,
+            }
+        };
+        let cookie = feed.cookie_probe(workspace, budget);
+        if cookie != feed::CookieOutcome::Seen {
+            return None;
+        }
+        let mut memo =
+            fs::lock_within(cache, Some(budget.saturating_sub(started.elapsed()))).ok()?;
+        let applied = apply_pending(workspace, &mut memo, &feed);
+        let collapse = matches!(
+            applied,
+            Some(feed::Applied::Reset | feed::Applied::Sweep(_) | feed::Applied::Rebaselined(_))
+        );
+        vouch(Some(cookie), collapse, &mut memo).ok()
     }
 
     /// Restore this workspace's §6.5 checkpoint, adjudicating its journal

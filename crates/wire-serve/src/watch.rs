@@ -270,6 +270,84 @@ pub fn reconcile_delta(
     Ok(Some(frame))
 }
 
+/// Priming's unlocked half (merkle-spec §6.7, the watch plane): every
+/// member's bytes with its leaf digest, read with no flock held. It carries
+/// no root, by construction: taken unlocked it can see a batch mid-landing,
+/// and the fold of a torn state is a root no door committed. [`prime`] reuses
+/// only its bytes, each verified against the flock-held memo leaf.
+#[derive(Debug)]
+pub struct PrimeSnapshot {
+    members: std::collections::BTreeMap<String, (Vec<u8>, [u8; 32])>,
+}
+
+impl PrimeSnapshot {
+    /// Read the hash domain ([`fs::domain_snapshot_with_leaves`]) and drop
+    /// its fold here, so the root can reach nothing downstream.
+    ///
+    /// # Errors
+    /// Wire `io_error` when the walk or a read fails.
+    pub fn take(ws_root: &fs::WorkspaceRoot) -> Result<Self, Box<ErrorBody>> {
+        let (files, leaves, _) = fs::domain_snapshot_with_leaves(ws_root).map_err(|e| {
+            let mut err = ErrorBody::new(wire::ErrorCode::IoError);
+            err.cause = Some(e.to_string());
+            Box::new(err)
+        })?;
+        let members = files
+            .into_iter()
+            .filter_map(|(path, bytes)| {
+                let digest = *leaves.get(std::path::Path::new(&path))?;
+                Some((path, (bytes, digest)))
+            })
+            .collect();
+        Ok(PrimeSnapshot { members })
+    }
+}
+
+/// Priming off the resident memo (merkle-spec §6.7, the watch plane). The
+/// caller holds the workspace write flock and has just observed `observed`
+/// through the shared memo, whose leaf view (String-spelled, as
+/// [`reconcile_delta`] takes it) is `leaves`. The baseline is built from that
+/// view: a member whose `snapshot` digest equals its leaf keeps the
+/// snapshot's bytes, any other is re-read and verified against its leaf, and a
+/// snapshot member the memo lacks is dropped. The baseline root is
+/// `observed`; nothing is emitted (the epoch's baseline, as in
+/// [`reconcile`]'s priming arm).
+///
+/// `Ok(false)`, with nothing changed, when a re-read races its leaf (the
+/// file moved past it, or vanished) or the watch is already primed: the
+/// caller falls back to [`reconcile`], the full snapshot under the flock.
+///
+/// # Errors
+/// A re-read fails with anything but absence, or the scope cannot be loaded.
+pub fn prime(
+    ws_root: &fs::WorkspaceRoot,
+    watch: &mut WatchState,
+    snapshot: PrimeSnapshot,
+    leaves: &std::collections::BTreeMap<String, [u8; 32]>,
+    observed: &Root,
+) -> Result<bool, Box<ErrorBody>> {
+    if watch.root.is_some() {
+        return Ok(false);
+    }
+    let mut members = snapshot.members;
+    let mut baseline = std::collections::BTreeMap::new();
+    for (path, leaf) in leaves {
+        let bytes = match members.remove(path) {
+            Some((bytes, digest)) if digest == *leaf => bytes,
+            _ => match read_verified(ws_root, path, leaves)? {
+                Some(bytes) => bytes,
+                None => return Ok(false),
+            },
+        };
+        baseline.insert(path.clone(), (bytes, *leaf));
+    }
+    let scope = load_scope(ws_root)?;
+    watch.watcher.adopt(baseline);
+    watch.root = Some(observed.clone());
+    watch.scope = Some(scope);
+    Ok(true)
+}
+
 /// One mover's bytes, verified against the observed leaf. `Ok(None)` is the
 /// mid-cycle race (vanished, or bytes past the observed digest); an error is
 /// any other read failure.

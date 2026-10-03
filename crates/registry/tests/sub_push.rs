@@ -11,8 +11,10 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use registry::ring::DETECT_FLOOR_CADENCE;
 use registry::{Config, RunningServer};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -186,6 +188,72 @@ fn subscribe_then_write_delivers_a_notification() {
     assert!(
         frame["delta"].get("actor").is_none(),
         "an external edit has no actor to name — §7.1: {frame}"
+    );
+    server.shutdown();
+}
+
+/// P1(b) end to end: a feed that can never vouch — every cookie barrier
+/// unproven, a directory at the §6.4 sentinel's path failing each sentinel
+/// write — still pushes an external edit, by the `DETECT_FLOOR_CADENCE`
+/// backstop at the latest, and no ordinary detect cycle keeps a writer off
+/// the flock: a probe's `WriteLock::acquire` keeps succeeding between cycles.
+#[test]
+fn an_unvouched_feed_still_pushes_the_external_edit_and_never_holds_the_flock() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp.path().join("ws"), &[("plan.md", PLAN)]);
+    fs::create_dir_all(ws.join(".meridian/cookie")).unwrap();
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+    let mut sub = Conn::open(server.socket_path());
+    assert_eq!(sub.hello(&ws)["ok"], json!(true));
+    let ack = sub.sub();
+    assert_eq!(ack["ok"], json!(true), "sub is served: {ack}");
+    sub.reader
+        .get_ref()
+        .set_read_timeout(Some(DETECT_FLOOR_CADENCE + PUSH_WAIT))
+        .unwrap();
+
+    let ws_root = ::fs::WorkspaceRoot(ws.canonicalize().unwrap());
+    let stop = AtomicBool::new(false);
+    let (frame, longest_refusal) = std::thread::scope(|scope| {
+        let probe = scope.spawn(|| {
+            let mut longest = Duration::ZERO;
+            let mut refused_since: Option<Instant> = None;
+            while !stop.load(Ordering::Relaxed) {
+                if let Ok(lock) = ::fs::WriteLock::acquire(&ws_root) {
+                    drop(lock);
+                    if let Some(since) = refused_since.take() {
+                        longest = longest.max(since.elapsed());
+                    }
+                } else {
+                    refused_since.get_or_insert_with(Instant::now);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            longest.max(refused_since.map_or(Duration::ZERO, |since| since.elapsed()))
+        });
+        external_edit(
+            &ws,
+            "plan.md",
+            "# Goals\n\nship by September\n\n# Notes\n\nnothing yet\n",
+        );
+        let frame = sub.next_frame();
+        stop.store(true, Ordering::Relaxed);
+        (frame, probe.join().unwrap())
+    });
+    let frame = frame.expect("the backstop pushes the edit within one DETECT_FLOOR_CADENCE");
+    assert_eq!(
+        frame["delta"]["root_before"], ack["body"]["root"],
+        "{frame}"
+    );
+    assert_eq!(
+        frame["delta"]["files"][0]["path"],
+        json!("plan.md"),
+        "{frame}"
+    );
+    assert!(
+        longest_refusal < Duration::from_secs(1),
+        "a writer was kept off the flock for {longest_refusal:?}"
     );
     server.shutdown();
 }

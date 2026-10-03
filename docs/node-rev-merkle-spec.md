@@ -634,9 +634,17 @@ commit imposes `overlay_membership` synchronously (§6.1).
 frame-parity gated. The alternative — one full corpus snapshot of every
 member's bytes per external batch — measured ~1/s under foreign writes.
 
-- On a moved root the cycle takes the workspace flock, makes the §6.1
-  door-grade observation through the shared memo, and hands the classifier that
-  leaf set and root.
+- On a moved root the cycle takes the workspace flock, observes through the
+  shared memo again, and hands the classifier that leaf set and root.
+- An ordinary cycle observes vouched-only under the flock
+  (`Registry::door_observation_vouched`): cookie probe, take-and-apply, vouch,
+  all inside one `DETECT_CADENCE`. Any miss releases the flock and skips the
+  cycle; a skip costs latency only. The probe's own timeout neither collapses
+  the memo nor starts the cookie holdoff: it grants no trust, and the events it
+  waited for still arrive. The backstop cycle (once per `DETECT_FLOOR_CADENCE`)
+  and the priming cycle make the full §6.1 door-grade observation, floor
+  included, so a dead feed, a sticky `Failed` slot or a sustained `Unproven`
+  delays a frame by at most `DETECT_FLOOR_CADENCE`.
 - The classifier diffs those digests against the watcher's retained baseline
   (entries carry a leaf digest beside their bytes), reads bytes only for
   movers, and mints the same frames. Renames pair by digest (byte-equality's
@@ -647,8 +655,19 @@ member's bytes per external batch — measured ~1/s under foreign writes.
   re-fires detection.
 - The frame's `root_after` is the memo's root — what the read plane stamps, so
   push and read planes cannot disagree.
-- Priming (the subscribe-time baseline) keeps its one full snapshot. The ring
-  holds no private fold memo, and a plain mutex keeps the single-flight gate.
+- Priming (the subscribe-time baseline) reads the corpus before the flock: one
+  byte snapshot with its leaf digests, unlocked. Under the flock, after the
+  observation, the baseline is built from the memo's leaf view: a member whose
+  snapshot digest equals its leaf keeps the snapshot's bytes, any other member
+  is re-read and verified against its leaf, and a snapshot member the memo
+  lacks is dropped. The baseline root is the observed root.
+- The unlocked snapshot's own root is written nowhere — not the baseline, not
+  a frame, not the ring. Taken unlocked, it can fold a batch mid-landing, a
+  root no door committed; only its bytes are reused, each one verified. A
+  re-read that disagrees with its leaf falls back to the full snapshot under
+  the flock.
+- The ring holds no private fold memo, and a plain mutex keeps the
+  single-flight gate.
 - Non-UTF-8-**named** members stay baseline-invisible as the snapshot kept
   them (their leaves still fold; a `wire::Path` cannot spell them); non-UTF-8
   **content** classifies normally.
