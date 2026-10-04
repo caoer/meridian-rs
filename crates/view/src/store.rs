@@ -1093,7 +1093,7 @@ const SQL_CACHE_CATALOG: &str = "sql";
 
 /// Attach the file with a physical row-group size before any cache table is
 /// created. `row_group_size` is an ATTACH option, not a runtime `SET` or a
-/// `Connection::open_with_flags` option on the vendored DuckDB version.
+/// `Connection::open_with_flags` option on the vendored `DuckDB` version.
 fn open_sql_cache(file: &Path) -> duckdb::Result<Connection> {
     let conn = Connection::open_in_memory()?;
     let escaped = file.display().to_string().replace('\'', "''");
@@ -3084,7 +3084,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// Version 16 used DuckDB's default physical row groups. Attaching that
+    /// Version 16 used `DuckDB`'s default physical row groups. Attaching that
     /// file with the new option is allowed, so the pin version must force a
     /// cold rebuild before any old group is reused.
     #[test]
