@@ -1070,7 +1070,9 @@ impl std::fmt::Debug for SqlStore {
     }
 }
 
-const SQL_CACHE_CATALOG: &str = "meridian_sql";
+// The prior direct-file opener exposed `current_database() = 'sql'`; keep that
+// operator-visible name when the file becomes an attached catalog.
+const SQL_CACHE_CATALOG: &str = "sql";
 
 /// Attach the file with a physical row-group size before any cache table is
 /// created. `row_group_size` is an ATTACH option, not a runtime `SET` or a
@@ -2587,7 +2589,7 @@ pub(crate) mod tests {
             .connection()
             .query_row("SELECT current_database()", [], |r| r.get(0))
             .expect("current catalog");
-        assert_eq!(catalog, "meridian_sql");
+        assert_eq!(catalog, SQL_CACHE_CATALOG);
 
         sync_ambient(&mut store, &fixture_v1(), "b3b:catalog").expect("cold append");
         let (_, rows) = store
@@ -3280,8 +3282,8 @@ pub(crate) mod tests {
 
         let c1 = store.connection().try_clone().expect("clone 1");
         let c2 = store.connection().try_clone().expect("clone 2");
-        c1.execute_batch("USE meridian_sql").expect("catalog 1");
-        c2.execute_batch("USE meridian_sql").expect("catalog 2");
+        c1.execute_batch("USE sql").expect("catalog 1");
+        c2.execute_batch("USE sql").expect("catalog 2");
         c1.execute_batch("BEGIN").expect("begin 1");
         c2.execute_batch("BEGIN").expect("begin 2");
         c1.execute("UPDATE hist.doc SET bytes = 1", [])
