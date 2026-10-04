@@ -94,9 +94,17 @@ historical body-key set are also outside the staging target. This is not a
 process-wide memory cap or a fixed peak bound for arbitrary workloads. A cache made with
 the prior physical row-group layout is cold-rebuilt before reuse.
 
+The cache also sets `allocator_flush_threshold` to zero. On DuckDB's glibc
+allocator path this asks its existing idle maintenance to return unused heap
+pages without a retained reserve. This is allocator maintenance, not a smaller
+query working-set limit: live buffers and the caller's query remain intact.
+The setting is included in the writer's checked restoration policy. Other
+allocator backends follow DuckDB's own implementation; process retention is
+verified separately on the target runtime.
+
 Before each append transaction, the writer checks and reasserts its required
 flush policy against the engine's open-time baseline. A restoration failure
-(flush count or configuration lock), or an unreadable configuration snapshot,
+(flush count, allocator flush threshold, or configuration lock), or an unreadable configuration snapshot,
 retires that instance. Already-issued reads share the retirement state. A
 retired instance cannot start another append; the writer also checks retirement
 between batches and before publication. Once outstanding read handles finish,
