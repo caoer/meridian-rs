@@ -73,6 +73,15 @@ does **not** establish a process-memory peak bound. A peak claim also needs a
 measured way to release or spill that transaction-local copy while keeping the
 one-generation pin and the rollback rule above.
 
+For the persistent cache, the file is attached as the connection's current
+catalog with 2,048-row groups, and one completed row group is enough to flush
+the write buffer. The caller read's cloned connection selects that same catalog
+before pinning its snapshot. This lets completed groups reach disk during the
+single append transaction instead of keeping the whole cold body projection in
+transaction-local memory. The open group and a single oversized body remain
+peak costs, so the setting is not a process-wide memory cap. A cache made with
+the prior physical row-group layout is cold-rebuilt before reuse.
+
 ## §5 Alternatives
 
 - **`body` column on `section`** — rejected: kilobyte cells fatten the toc-shaped workload (`SELECT * FROM section`); the preamble has no section row.
