@@ -67,6 +67,11 @@ batch. The name index and affected-path decision still see the whole corpus,
 and the content-addressed `body_key` set survives between batches. All batches,
 tombstones, and the **one pin row written last** remain in one transaction:
 any batch failure rolls back the whole generation, never a partial pin.
+Flushing an appender releases its own staging, but inserted rows can remain in
+DuckDB's transaction-local storage until commit. The byte budget alone therefore
+does **not** establish a process-memory peak bound. A peak claim also needs a
+measured way to release or spill that transaction-local copy while keeping the
+one-generation pin and the rollback rule above.
 
 ## §5 Alternatives
 
