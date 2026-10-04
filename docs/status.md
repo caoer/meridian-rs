@@ -753,6 +753,12 @@ Widening the coat is a C2 change, reserved by ruling (`laws.md` D-1).
   post-result for an honest freshness frame. Not a peer of `mrd read` /
   `mrd put` / wire `splice`; a cold build is O(corpus) — slow on a large tree,
   by design.
+- The resident drawer sets DuckDB's `memory_limit` to **384 MiB** when it opens
+  the store. DuckDB can spill into the drawer's bounded temporary directory
+  when a query needs more working space. The value is sized against measured
+  pre-SQL process headroom on a 76k-document root and leaves room for memory
+  DuckDB does not account for; it is a DuckDB allocation target, not a cap on
+  the daemon's entire RSS and swap. Ephemeral `:memory:` SQL is unaffected.
 
 ### `mrd repair` — lost-pin repair
 
