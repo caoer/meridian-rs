@@ -514,7 +514,7 @@ engine-side.
   sweep is declined at a price: silent event-stream loss with no named trigger
   waits for a guard.
 
-#### Document residency and the subscription baseline
+#### Document residency and retained member versions
 
 The unit of residency is a member version, identified by workspace, relative
 path and content leaf digest. Each served generation retains membership,
@@ -524,18 +524,19 @@ resident for a subscribed root. A cold member is still a member: eviction
 cannot change a fingerprint, name resolution, a scan's coverage, or a node rev.
 
 `MRD_MAX_RESIDENT_BYTES` is a process-wide budget in allocated bytes of
-registry-managed corpus and subscription state, shared across roots. `0` disables it. The
-accounting separates three owners: the fixed substrate above; pinned bodies
-being used by operations; and reclaimable raw bodies/parse trees. Charge
-shared allocations once, including a body shared between the query corpus
-and watcher. Count string/vector capacities, recursively owned node data,
+registry-managed corpus and subscription state, shared across roots. `0`
+disables it. The accounting separates three owners: the non-sheddable
+substrate above; pinned bodies being used by operations; and reclaimable raw
+bodies/parse trees. Charge shared allocations once, including a body shared
+between the query corpus and watcher. Count string/vector capacities, recursively owned node data,
 slot/index storage, retained frames and watcher bodies; a raw-byte multiplier
 is not the unit. The counting-allocator probe
 `crates/registry/examples/residency_breakdown.rs` calibrates the accounting
 against actual allocation/deallocation, with RSS+swap alongside it.
 Allocator bookkeeping, retained free pages, thread stacks, compiled run
-modules and native SQL allocations are separate process costs, so fitting this budget alone cannot
-prove a process RSS limit. SQL retains its own memory policy.
+modules and native SQL allocations are separate process costs, so fitting
+this budget alone cannot prove a process RSS limit. SQL retains its own
+memory policy.
 
 At admission and after releasing operation pins, shed the least recently
 used unpinned member versions across all workspaces until the charged total
@@ -544,12 +545,15 @@ Touch recency on a consumer's read, not during index maintenance, persistence
 or a full scan: a scan streams through the cache without making the whole
 corpus hot. Reserve and account for concurrent hydration and rebuild work;
 single-flight hydration of one version cannot allocate N copies for N readers.
-An operation pins only its active documents, not an entire engine generation.
-The accounting continues to charge old versions until their last pin drops.
+An operation may retain a generation's descriptors and byte handles while
+pinning only the document bodies it is using. A generation lease does not
+keep its entire parsed corpus in RAM. Release a body's charge only when its
+last RAM owner releases it; cold descriptors and their backing handles remain
+charged as metadata until their last owner releases them.
 
-The fixed substrate grows with membership; it is not a constant or free
-headroom. If it alone exceeds the budget, report its measured floor and the
-unmet amount. An individual document larger than the remaining allowance
+The non-sheddable substrate grows with membership; it is not a constant or
+free headroom. If it alone exceeds the budget, report its measured floor and
+the unmet amount. An individual document larger than the remaining allowance
 serves through a serialized, explicitly charged transient slot and is dropped
 after use; it cannot silently raise the cache limit. The same accounting
 must expose pinned/transient overage. Admission bounds overlapping work, and
@@ -557,28 +561,54 @@ completion immediately reclaims it. These exceptions are not a promise that
 arbitrarily small budgets bound RSS; acceptance chooses a budget above the
 measured floor and states transient peaks separately.
 
-**Old watcher bytes must survive shedding.** A path, digest and length prove
-identity but cannot reconstruct an overwritten or removed file. Before a
-watcher baseline body is shed, preserve its exact bytes in a private,
-digest-verified backing store outside the hash domain. A hot query document
-and the same baseline version share one raw body. Backing handles are
-reference-counted by member version; the baseline holds its handle until its
-advance commits. A read of the current file is never a substitute for an old
-baseline. The restart snapshot in §6.9 is optional and may predate the latest
-edit, so its mere existence is not evidence that a baseline is backed.
+**Every reachable member version must survive shedding.** A path, digest and
+length prove identity but cannot reconstruct an overwritten or removed file.
+Before freeing the last raw RAM copy of a serving slot or watcher baseline,
+preserve its exact bytes in the same private, digest-verified backing store
+outside the hash domain. This obligation applies to subscribed and
+unsubscribed roots, including their current resident serving generation and
+older generations held by an operation. A hot document and the same baseline
+version share one raw body; they do not need separate stores.
+
+Backing handles are reference-counted by member version and retained until
+the last serving descriptor, watcher baseline or operation reference ends.
+Publishing a newer engine releases only the registry's old-generation
+reference; it cannot invalidate a descriptor still held by an earlier entry.
+Advancing a watcher releases only its old-baseline reference. A cold entry
+generation therefore keeps its historical bytes after both advances, without
+keeping its parsed documents in RAM. Current source bytes cannot stand in for
+a different retained version.
+
+Whole-workspace eviction likewise releases its warm-state references, not
+outstanding generation leases or their backing. Attempt-owned references end
+at the answer, fault or cancellation under the existing entry contract.
+Backing then remains only for other reachable owners: no completed-attempt
+history, cross-request as-of lookup or restart authority is introduced.
+
+A compatible §6.9 snapshot record may supply a backing handle only while its
+exact verified record remains readable for that handle's whole lifetime.
+Keep the record's underlying storage alive across snapshot replacement and
+GC, or copy its raw bytes into the shared store before relinquishing it. A
+revocable path/offset lookup, an optional cache hit, or an older snapshot's
+mere existence is not backing. Cache absence must never force a previously
+served generation to change its bytes.
 
 The backing store is registry-owned, process-local spill: bounded streaming
 records in immutable segments, indexed by digest/offset/length with a record
 checksum. `fs` receives a byte-source capability; it does not acquire registry
 or cache dependencies. Publish a handle only after its complete record can
-be read and checked. Keep a segment while any baseline or operation references
-it; reclaim obsolete segments, compacting live records in bounded chunks.
+be read and checked. Keep a segment while any serving descriptor, baseline or
+operation references it; reclaim obsolete segments, compacting live records
+in bounded chunks without invalidating live handles.
 Process death invalidates handles; a new process observes disk by §6.5 and
-does not treat spill as journal authority. Missing, truncated or corrupt spill
-refuses the dependent classification without advancing the ring or silently
-rebasing. A failed spill write leaves the old body charged and resident;
-report the unsatisfied budget and stop admitting more cache bodies until it
-can be shed. Spill failure cannot turn an edit into a missed notification.
+does not treat spill as journal authority. Missing, truncated or corrupt
+required backing must recover the same verified version from another source
+or fault the dependent read, run target or classification. It cannot freshen
+a bound generation, advance the ring, or silently rebase. A failed spill write
+leaves the last raw body charged and resident: do not publish an unbacked cold
+slot. Report the unsatisfied budget and stop admitting more cache bodies until
+it can be shed. These failures may reduce availability or exceed the memory
+target; correct refusal is not successful bounded service.
 
 On a change to a cold baseline member, load and verify its before bytes from
 the backing handle, and its after bytes against the newly observed leaf.
@@ -590,6 +620,24 @@ together; release the old handle afterwards. Shedding itself emits no frame,
 increments no seq, changes no instance, and requests no resync. Frame
 enumeration limits do not permit skipping reactions for unenumerated movers;
 large change sets must process their before/after pairs in bounded batches.
+
+**Limits of the bound.** A body budget cannot impose a constant bound on
+growing membership/roots, name rows, memo/feed state, backing handles or
+overlapping retained generations. Another root adds metadata even when its
+bodies share the global allowance. Protected ring payloads are charged, but
+the ring's independent frame-count horizon is not a byte limit. Oversized
+documents, operation pins and retained multi-file plan/effect payloads may
+cause the stated transient/floor overage. Allocator-retained pages, stacks,
+compiled modules and native/SQL memory remain outside the controller; a SQL
+setting does not establish process RSS. Failed spill, finite disk capacity,
+backing I/O latency and indefinite source churn can prevent progress or the
+memory target. Report each limit rather than labelling refusal as acceptance.
+
+A remainder measured by subtracting bodies from one eager corpus is neither
+the redesigned metadata floor nor a sizing constant. Select the host budget
+from the combined SQL/subscription/change-stream soak, including overlapping
+generations and a second subscribed root, against the decimal
+4,000,000,000-byte RSS+swap line (§6.9).
 
 ### 6.5 Restart — the disposable checkpoint
 
@@ -861,11 +909,11 @@ parsing. In-memory fixtures have an eager implementation of the same
 contract. No infallible map indexing, iterator that omits cold members, or
 fallback empty document is a legal cold access.
 
-The concrete slot states are cold (descriptor plus optional verified backing
-handle), loading (one loader with budget reservation), and hot (shared raw
-bytes plus a parsed document and its byte charge). An operation's returned
-pin owns the hot version while it uses it. Eviction changes hot to cold only
-when no operation pin exists. Failed hydration releases its reservation and
+The concrete slot states are cold (descriptor plus retained verified backing
+handle), loading (that handle plus one loader with budget reservation), and
+hot (shared raw bytes plus a parsed document and its byte charge). An
+operation's returned pin owns the hot version while it uses it. Eviction
+changes hot to cold only when no operation pin exists. Failed hydration releases its reservation and
 leaves the descriptor cold; it never removes membership. Share an immutable
 raw byte buffer between the document's UTF-8 view and watcher instead of
 copying it into a second `Vec<u8>`. Invalid UTF-8 has the same byte identity
@@ -879,15 +927,41 @@ backing outside those locks, and rechecks its identity and pin count before
 dropping the body. A concurrent touch or replacement loses that eviction
 attempt, not the document. No registry-map lock spans a corpus walk or save.
 
-For a requested generation's member, use a hot body, a verified spill body,
-or a compatible §6.9 entry when available. Otherwise read source, compare its
-leaf digest to the slot, and parse only matching bytes. A mismatching,
-vanished or newly invalid source is a currency race: reconcile and restart
-the operation before publishing a result stamped with that generation. Do
-not insert new bytes under an old digest. Once verified, the same parser and
-node-rev law produce the same spans and revs as eager residency. Guarded
-writes retain their disk-truth checks under the write flock; a cache hit
-supplies a document, not a new source of guard authority.
+For an existing serving slot, hydrate the requested version from its hot raw
+body or retained §6.4 backing handle and verify its identity before parsing.
+Current source is an alternate recovery source only if its bytes match that
+version's leaf digest; it is never the only copy permitting a live slot to
+become cold. Once verified, the same parser and node-rev law produce the same
+spans and revs as eager residency. The loader returns a version or a fault;
+it cannot choose a newer generation on behalf of its caller.
+
+**Entry semantics govern retries.** The operation's existing contract decides
+when its generation is selected and whether it may advance:
+
+- A fresh observation/build may reconcile a source mismatch and retry before
+  publishing its generation or an answer, at an entry boundary that already
+  permits a currency pass. This is not a general retry license for a cold
+  member in a previously selected world.
+- `fire` and pure script hash-domain reads retain the generation selected by
+  their existing entry contracts (`run-plane.md` § The world a mode-bearing
+  row runs against; § The script entry). Shedding adds no currency pass or
+  memo borrow to a fire-only entry. The existing `load` freshen stays at its
+  entry boundary; a later cold access does not repeat it. A pure script's
+  entry descriptors keep their version handles through watcher advancement
+  and engine replacement. Its own-write overlay and entry-rev threading keep
+  their existing semantics, and commit still checks the live touched
+  premises. Out-of-domain script reads and effects-mode live reads retain
+  their existing live-source contracts.
+
+A cold miss cannot restart a bound entry onto a newer world, even before that
+entry has produced an effect. No whole side-effecting submission may be
+replayed to resolve a later cold miss after an earlier run target, callback,
+effect, response or commit has occurred. Hydration may retry the same member
+version within the existing deadline. If that version cannot be recovered,
+return the existing per-target/attempt fault or partial-result behavior,
+preserving earlier outcomes; never re-execute them. Guarded writes retain
+their disk-truth checks under the flock: historical read bytes supply the
+entry premise, not authority to overwrite a changed live node.
 
 All body consumers must take the explicit access path. The implementation
 boundary includes:
@@ -896,10 +970,12 @@ boundary includes:
 |---|---|
 | `crates/model/src/{lib,selector,walk}.rs`, `crates/query/src/lib.rs`, `crates/wire-serve/src/read.rs` | Resolve membership/name candidates without loading all bodies; pin the selected document while computing its answer. |
 | `crates/wire-serve/src/mount_corpus.rs`, `crates/registry/src/{engine,walk_op}.rs` | Mounted roots use the same controller and global budget; holding an engine generation pins descriptors, not every body. |
+| `crates/registry/src/run_op.rs`, `crates/run/src/` | Retain the mode entry's generation and byte handles; cold `fire` serves that version without a new currency pass. Preserve the existing `load` entry freshen and per-target results; never replay earlier targets to resolve a later cold miss. |
+| `crates/registry/src/script_op.rs` | Pure hash-domain reads retain entry-version handles across rebuilds and watcher advances; own-write overlays and live commit guards remain intact. Keep the existing out-of-domain and effects-mode live-read boundaries. |
 | `crates/query/src/relocate.rs`, `crates/wire-serve/src/{relocate,remove,middleware}.rs`, `crates/check/src/`, `crates/mrd/src/{check_cmd,check_armed,repair_cmd,status_cmd,walk_cmd}.rs` | Referrer, link, check and policy scans enumerate every member and stream pinned documents; cold residency never means absence. Preserve the existing atomic write-plan/guard rules. |
-| `crates/view/src/{facts,lib,read_face,store,walk}.rs`, `crates/registry/src/{sql_op,mw_sql}.rs`, `crates/mrd/src/sql.rs` | Build or refresh SQL from a bounded stream over complete membership; a cache shed is not a deletion from SQL. Existing SQL memory settings are independent. |
+| `crates/view/src/{facts,lib,read_face,store,walk}.rs`, `crates/registry/src/{sql_op,mw_sql}.rs`, `crates/mrd/src/sql.rs` | Build or refresh SQL from a bounded stream over complete membership, retaining atomic generation publication/rollback; a cache shed is not a deletion from SQL. Existing SQL memory settings are independent. |
 | `crates/fs/src/lib.rs`, `crates/registry/src/{registry,parsed_cache}.rs`, `crates/parse-cache/src/snapshot.rs` | Cold build, incremental movers and snapshot save/restore stream through the same slots without accumulating a second eager corpus. |
-| `crates/run/src/`, `crates/policy/src/`, `crates/wire-serve/src/watch.rs` | Rule/reaction inputs use explicit pins and retain before/after identity; subscription classification uses the backed baseline of §6.4. |
+| `crates/policy/src/`, `crates/wire-serve/src/watch.rs` | Rule/reaction inputs use explicit pins and retain before/after identity; subscription classification uses the backed baseline of §6.4. |
 
 An operation that needs a multi-file write plan may retain its plan, but
 cannot retain every scanned parse tree as an accidental consequence. The
@@ -912,9 +988,11 @@ movers; releasing an obsolete generation cannot resurrect shed bodies.
 A process restart or resident-budget eviction loses ownership of parsed
 documents, not their content identity. The engine may persist a disposable,
 per-workspace document cache outside the hash domain. Markdown remains the
-sole authority. Cache absence, contention, incompatibility, corruption, or a
-failed save changes cost only; none can make a workspace fail or serve stale
-bytes.
+sole authority. Optional cache absence, contention, incompatibility,
+corruption, or a failed save changes reuse cost only; none can make an
+otherwise available workspace fail or serve different bytes. A record
+explicitly retained as required historical backing instead follows §6.4's
+retention and data-fault contract, independently of optional cache lookups.
 
 **Three independent objects.** The §6.5 observation checkpoint establishes
 file identities and leaf digests under the normal pre-serve barrier. The
@@ -988,15 +1066,20 @@ for a large workspace.
 restart format. A process may retain a lightweight digest-to-record-offset
 index built while validating its framing; it must recheck generation,
 checksum, digest and node invariants whenever decoding a selected record.
-Reading one cold member must not decode the entire snapshot. Absence of a
-usable offset falls back to verified source. Snapshot saves stream hot and
-cold members; a failed or skipped save never requires hydrating all cold
-members before they may be shed. The process-local before-image backing in
-§6.4 is a separate retention obligation and never depends on best-effort
-snapshot publication.
+Reading one cold member must not decode the entire snapshot. An optional
+lookup miss uses the slot's retained §6.4 backing; a fresh observation may
+instead read verified source at its permitted entry boundary (§6.8).
+Snapshot saves stream hot and cold members; a failed or skipped save never
+requires hydrating all cold members before they may be shed. The §6.4
+retention obligation covers serving generations as well as watcher baselines
+and never depends on best-effort snapshot publication. A snapshot record
+explicitly retained as required historical backing has that obligation's
+lifetime and fault behavior; it is no longer merely an optional lookup.
 
-**Residency acceptance.** A subscribed corpus over budget sheds to the
-measured bound without losing its subscriber, cursor, next seq or node revs.
+**Residency acceptance.** Choose a fixture budget above its audited
+non-sheddable floor and below its eager body cost. After operation pins
+release, the subscribed corpus sheds to that measured bound without losing
+its subscriber, cursor, next seq or node revs.
 Exercise unchanged reads and guarded writes, SQL, links, check, walk and the
 move/remove referrer scans against the same eager corpus. Edit/remove/rename
 cold watcher members, including `HOOKS.md`, and verify before/after reactions
@@ -1004,10 +1087,35 @@ and frame continuity. Cover source races, invalid UTF-8, spill/cache faults,
 oversized documents, concurrent hydration/pins, cold restart and repeated
 single-member rebuilds. Run the release engine on a private real-root copy
 with a live wire subscription and replayed changes for hours under an 8 GB
-host shape, measuring RSS+swap below 4.0 GB; add a second copy under the same
-global budget. State the fixed floor, peak/transient overage and SQL limit,
+host shape, measuring RSS+swap below 4,000,000,000 bytes; add a second
+subscribed copy under the same global budget. State the measured metadata
+floor, retained-generation/pin/transient overage and SQL limit,
 plus read/put/sub-delivery and cold-member latency against main. A short
 allocator probe establishes component cost, not this soak-test acceptance.
+
+Extend both existing generation-bound regressions with forced body/parse-tree
+shedding and absent, stale or unusable optional snapshot backing:
+
+- `crates/registry/src/run_op.rs`:
+  `a_fire_runs_the_resident_corpus_and_a_load_freshens_it`. Include an
+  unsubscribed root with no watcher baseline to retain bytes accidentally.
+  Warm `HOOKS.md` A, shed it, then overwrite or delete its source. Fire must
+  execute A with A's block rev and no added currency pass/memo borrow. In the
+  overwrite case, load selects B and the next fire executes B with its rev.
+- `crates/registry/src/script_op.rs`:
+  `a_foreign_edit_after_entry_is_invisible_to_reads_and_refuses_the_commit`.
+  Retain the entry generation, shed the member before its first read, make
+  the foreign edit, advance the watcher and publish a newer engine. The
+  earlier script still reads its entry bytes/revs and its live guard still
+  refuses the moved premise without a write. Include an unsubscribed variant
+  and overwritten/deleted source variants, so neither a current watcher nor
+  current disk can hide a missing generation reference.
+
+Also exercise a later cold-target fault after an earlier target has produced
+an effect: the earlier effect occurs once and its result remains, with no
+whole-submission replay. Check backing-record lifetime across snapshot
+replacement/GC, last-generation release and spill compaction. These gates
+test byte recoverability and operation semantics, not whole-corpus RAM pins.
 
 ## 7. Integrity surface + CAS — the grain ladder
 
