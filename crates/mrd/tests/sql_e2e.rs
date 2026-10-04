@@ -844,12 +844,16 @@ fn sql_retry_refusal_never_projects_locally() {
         let listener = UnixListener::bind(&socket).unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut queries = 0;
             loop {
                 let mut line = String::new();
-                if reader.read_line(&mut line).unwrap() == 0 { break; }
+                if reader.read_line(&mut line).unwrap() == 0 {
+                    break;
+                }
                 let request: Value = serde_json::from_str(&line).unwrap();
                 let response = if request["op"] == "hello" {
                     serde_json::json!({"ok": true, "body": {"caps": ["sql"]}})
@@ -861,17 +865,35 @@ fn sql_retry_refusal_never_projects_locally() {
                     }})
                 };
                 writeln!(stream, "{response}").unwrap();
-                if disconnect_after_first && queries == 1 { break; }
+                if disconnect_after_first && queries == 1 {
+                    break;
+                }
             }
             queries
         });
         let out = sb.run(&ws, &["sql", "--json", "SELECT path FROM doc"]);
         let queries = server.join().unwrap();
-        assert_eq!(out.status.code(), Some(2), "busy must not fall back: {}", stderr(&out));
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "busy must not fall back: {}",
+            stderr(&out)
+        );
         let frame = json(&out);
         assert_eq!(frame["state"], "NO_VIEW", "{frame}");
-        assert!(frame["error"].as_str().unwrap().contains("workspace_busy"), "{frame}");
-        assert_eq!(queries, if disconnect_after_first { 1 } else { 3 }, "bounded requests");
-        assert_eq!(walk_count_suffix(&sb.cache_home, "sql.duckdb"), 0, "no local projection");
+        assert!(
+            frame["error"].as_str().unwrap().contains("workspace_busy"),
+            "{frame}"
+        );
+        assert_eq!(
+            queries,
+            if disconnect_after_first { 1 } else { 3 },
+            "bounded requests"
+        );
+        assert_eq!(
+            walk_count_suffix(&sb.cache_home, "sql.duckdb"),
+            0,
+            "no local projection"
+        );
     }
 }

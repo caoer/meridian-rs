@@ -467,8 +467,9 @@ struct AppendPlan<'a, 'corpus> {
     base_fold: Option<&'a str>,
 }
 
-/// Owned projected-row budget per cache append batch. A single document or
-/// `.base` member can exceed it and is appended alone, without truncation.
+/// Estimated projected-row budget before exclusion payloads are added. The
+/// threshold is checked after a whole document/member, which can overshoot it
+/// and share a batch with earlier rows; no document is truncated.
 const STAGED_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 fn value_payload_bytes(value: &Value) -> usize {
@@ -1068,7 +1069,7 @@ struct InstancePolicy {
 }
 
 fn policy_error(message: impl Into<String>) -> ViewError {
-    ViewError::Io(std::io::Error::other(message.into()))
+    ViewError::Busy(message.into())
 }
 
 impl InstancePolicy {

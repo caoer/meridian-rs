@@ -1,5 +1,5 @@
 //! E2E gates for `sql` — corpus SQL over the wire (`docs/wire-contract.md`
-//! § A.11): one statement over the workspace's fingerprint-pinned projection
+//! § A.11): one call over the workspace's fingerprint-pinned projection
 //! cache, served by the resident engine on the one execution path (the
 //! NO-SANDBOX ruling, 2026-08-14), freshness folded post-result. v3-only,
 //! advertised as cap `sql` (v3 projection); the daemon is the cache file's
@@ -432,10 +432,16 @@ fn sql_append_contention_reports_retry_and_recovers_after_query() {
          floor — the read was not in flight long enough to test anything. \
          {ledger}"
     );
-    assert_eq!(appended["ok"], false, "append must yield to executing SQL: {appended}");
+    assert_eq!(
+        appended["ok"], false,
+        "append must yield to executing SQL: {appended}"
+    );
     assert_eq!(appended["error"]["code"], "workspace_busy", "{appended}");
     assert_eq!(appended["error"]["recovery"], "retry", "{appended}");
-    assert!(holder_in_flight, "refusal must not wait for the holder: {ledger}");
+    assert!(
+        holder_in_flight,
+        "refusal must not wait for the holder: {ledger}"
+    );
     let appended = sibling.sql(3, REAL_SQL);
     assert_eq!(appended["ok"], true, "retry after reader exits: {appended}");
     assert_eq!(

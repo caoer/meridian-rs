@@ -86,6 +86,9 @@ pub use schema::{SCHEMA_SQL, SCHEMA_VERSION, create_schema};
 /// View-projection failure.
 #[derive(Debug)]
 pub enum ViewError {
+    /// The SQL cache is temporarily unavailable; outstanding reads must drain
+    /// before an append or instance recovery can succeed.
+    Busy(String),
     /// `DuckDB` error from schema or projection.
     Duckdb(duckdb::Error),
     /// Filesystem error from the [`store`] cache file's housekeeping.
@@ -95,6 +98,7 @@ pub enum ViewError {
 impl std::fmt::Display for ViewError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ViewError::Busy(reason) => f.write_str(reason),
             ViewError::Duckdb(e) => write!(f, "duckdb: {e}"),
             ViewError::Io(e) => write!(f, "io: {e}"),
         }
@@ -115,7 +119,7 @@ impl ViewError {
     pub fn is_held(&self) -> bool {
         match self {
             ViewError::Duckdb(e) => store::is_lock_error(e),
-            ViewError::Io(_) => false,
+            ViewError::Io(_) | ViewError::Busy(_) => false,
         }
     }
 }

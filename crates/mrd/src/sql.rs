@@ -436,9 +436,10 @@ fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
     }
 
     let ask = serde_json::json!({"id": 1, "op": "sql", "query": query});
-    let mut frame = daemon_sql_frame(&daemon_call(&mut writer, &mut reader, &socket, &ask)?)?;
+    let mut call = || daemon_call(&mut writer, &mut reader, &socket, &ask);
+    let mut frame = daemon_query_with_retry(&mut call)?;
     if args.fresh && frame.state == QueryState::Stale {
-        frame = daemon_sql_frame(&daemon_call(&mut writer, &mut reader, &socket, &ask)?)?;
+        frame = daemon_query_with_retry(&mut call)?;
         if frame.state == QueryState::Stale {
             frame.state = QueryState::Raced;
         }
@@ -446,9 +447,52 @@ fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
     Some(frame)
 }
 
-/// Project one § A.11 response onto the OD9 frame. A daemon-side fault
-/// (`ok:false`) answers `None` — the ladder degrades rather than guessing.
+/// Retry only the wire's transient class, with a fixed request budget. Once
+/// the daemon has refused transiently, even a lost reply must not send this
+/// request into the full-corpus local projection fallback.
+fn daemon_query_with_retry(mut call: impl FnMut() -> Option<Value>) -> Option<Frame> {
+    let mut refusal = None;
+    for attempt in 0..3 {
+        let Some(response) = call() else {
+            return refusal;
+        };
+        if let Some(frame) = daemon_retry_frame(&response) {
+            refusal = Some(frame);
+            if attempt < 2 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        } else {
+            return daemon_sql_frame(&response).or(refusal);
+        }
+    }
+    refusal
+}
+
+/// Dispatch on recovery, including a code a newer daemon introduced. A retry
+/// refusal is a loud `NO_VIEW` result, not permission to build another engine.
+fn daemon_retry_frame(response: &Value) -> Option<Frame> {
+    if response.get("ok") != Some(&Value::Bool(false)) {
+        return None;
+    }
+    let error = response.get("error")?;
+    if error.get("recovery")?.as_str()? != "retry" {
+        return None;
+    }
+    let code = error.get("code").and_then(Value::as_str).unwrap_or("retry");
+    let reason = error
+        .get("message")
+        .or_else(|| error.get("cause"))
+        .and_then(Value::as_str)
+        .unwrap_or("transient daemon refusal; retry");
+    Some(Frame::no_view(format!("{code}: {reason}")))
+}
+
+/// Project one § A.11 response onto the OD9 frame. Retry refusals stay on the
+/// resident route; other daemon faults retain the existing fallback behavior.
 fn daemon_sql_frame(response: &Value) -> Option<Frame> {
+    if let Some(frame) = daemon_retry_frame(response) {
+        return Some(frame);
+    }
     if response.get("ok") != Some(&Value::Bool(true)) {
         return None;
     }
@@ -1082,6 +1126,34 @@ fn plural(n: usize) -> &'static str {
 mod tests {
     use super::*;
     use duckdb::Connection;
+
+    #[test]
+    fn daemon_retry_budget_does_not_retry_environment_failures() {
+        let mut calls = 0;
+        let frame = daemon_query_with_retry(|| {
+            calls += 1;
+            Some(json!({"ok": false, "error": {"code": "io_error", "recovery": "env"}}))
+        });
+        assert!(frame.is_none(), "ordinary I/O keeps its existing fallback");
+        assert_eq!(calls, 1, "never blanket-retry I/O errors");
+    }
+
+    #[test]
+    fn daemon_retry_can_recover_and_recognizes_new_retry_codes() {
+        let mut calls = 0;
+        let frame = daemon_query_with_retry(|| {
+            calls += 1;
+            Some(if calls == 1 {
+                json!({"ok": false, "error": {"code": "future_busy_code", "recovery": "retry"}})
+            } else {
+                json!({"ok": true, "body": {"as_of_fingerprint": "b3c:test", "live": "b3c:test",
+                    "state": "FRESH_AT_SAMPLE", "columns": [], "rows": []}})
+            })
+        })
+        .expect("resident result");
+        assert!(frame.state == QueryState::FreshAtSample);
+        assert_eq!(calls, 2);
+    }
 
     #[test]
     fn parse_defaults() {
