@@ -56,6 +56,18 @@ The cache is append-only; `hist.*` is its only storage. Each re-projection appen
 
 Only `hist.body_text` rows dedup, across generations and paths: an edit appends text rows only for chunks new to the file's history. Orphaned `body_text` rows compact only at rebuild-and-swap. The pin protocol is unchanged: one file, one transaction, one fingerprint. `as_of_fingerprint` covers body bytes, so no second freshness witness exists. `base_fold` has one only because `.base` bytes are outside the fingerprint.
 
+The cache lane stages and appends the changed documents in **byte-bounded
+batches**, rather than holding the whole corpus's projected `body.text` rows at
+once. The current target is 32 MiB of source bytes plus a per-document allowance
+for the other projected rows. A single document larger than the target is
+processed intact in its own batch; it is never refused or truncated. The
+largest body chunk in the measured workload therefore belongs beside any peak
+memory claim. Each batch's appenders are flushed and dropped before the next
+batch. The name index and affected-path decision still see the whole corpus,
+and the content-addressed `body_key` set survives between batches. All batches,
+tombstones, and the **one pin row written last** remain in one transaction:
+any batch failure rolls back the whole generation, never a partial pin.
+
 ## §5 Alternatives
 
 - **`body` column on `section`** — rejected: kilobyte cells fatten the toc-shaped workload (`SELECT * FROM section`); the preamble has no section row.
