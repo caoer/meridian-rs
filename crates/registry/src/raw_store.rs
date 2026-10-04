@@ -803,6 +803,83 @@ mod tests {
     }
 
     #[test]
+    fn failed_compactions_bound_bookkeeping_and_preserve_reader_segments() {
+        let home = tempfile::tempdir().unwrap();
+        let store = RawStore::new(home.path()).unwrap();
+        let first = store.retain(b"first").unwrap();
+        let second = store.retain(b"second").unwrap();
+        // The same lease that read() holds during I/O, now retained across a
+        // successful relocation so only this reader owns the old segment.
+        let reader = lock(&first.0.location).unwrap().clone();
+        store.compact().unwrap();
+        {
+            let damaged = lock(&second.0.location).unwrap();
+            damaged
+                .segment
+                .file
+                .write_all_at(b"!", damaged.offset + HEADER_BYTES)
+                .unwrap();
+        }
+        let initial_entries = lock(&store.index).unwrap().segments.len();
+        assert_eq!(initial_entries, 2);
+        let before = files(home.path());
+        let before_bytes = physical_bytes(home.path());
+        let mut first_capacity = 0;
+        for attempt in 1..=64 {
+            assert_eq!(
+                store.compact().unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+            assert_eq!(files(home.path()), before);
+            assert_eq!(physical_bytes(home.path()), before_bytes);
+            assert_eq!(first.read().unwrap(), b"first");
+            assert_eq!(
+                second.read().unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+            // Do not call stats(): its pruning would hide the maintenance leak.
+            let index = lock(&store.index).unwrap();
+            assert!(
+                index
+                    .segments
+                    .iter()
+                    .filter_map(Weak::upgrade)
+                    .any(|segment| { Arc::ptr_eq(&segment, &reader.segment) })
+            );
+            if attempt == 1 {
+                first_capacity = index.segments.capacity();
+            }
+            if matches!(attempt, 1 | 16 | 64) {
+                eprintln!(
+                    "failed_compactions={attempt} segment_entries={} capacity={}",
+                    index.segments.len(),
+                    index.segments.capacity()
+                );
+            }
+        }
+        let mut read_bytes = Vec::new();
+        visit(&reader, first.len(), &first.digest(), |chunk| {
+            read_bytes.extend_from_slice(chunk);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(read_bytes, b"first");
+        {
+            let index = lock(&store.index).unwrap();
+            assert!(
+                index.segments.len() <= initial_entries + 1,
+                "failed maintenance retained dead segment bookkeeping: initial={initial_entries}, final={}",
+                index.segments.len()
+            );
+            assert_eq!(index.segments.capacity(), first_capacity);
+        }
+        drop(reader);
+        assert!(store.compact().is_err());
+        assert!(lock(&store.index).unwrap().segments.len() <= 2);
+        assert_eq!(files(home.path()).len(), 1);
+    }
+
+    #[test]
     fn corrupt_required_bytes_are_errors_and_compaction_does_not_publish_a_prefix() {
         let home = tempfile::tempdir().unwrap();
         let store = RawStore::new(home.path()).unwrap();
