@@ -211,6 +211,9 @@ impl RawStore {
         let records: Vec<_> = {
             let mut index = lock(&self.index)?;
             index.records.retain(|_, record| record.strong_count() != 0);
+            // Bound discarded staging metadata even when every attempt fails.
+            // A reader's location lease keeps its segment in this index.
+            index.segments.retain(|segment| segment.strong_count() != 0);
             index.records.values().filter_map(Weak::upgrade).collect()
         };
         let mut sources = records
