@@ -32,6 +32,7 @@ pub mod domain;
 pub mod fence;
 pub mod forest;
 pub mod guard;
+pub mod hydration;
 pub mod intent;
 pub mod radix;
 pub mod resident;
