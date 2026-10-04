@@ -976,6 +976,26 @@ pub struct SqlStore {
     baseline: Arc<Vec<(String, String)>>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only high-water of owned body text staged by one sync on this
+    /// thread. The release-build process probe measures total allocation.
+    static MAX_STAGED_BODY_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn note_staged_body_bytes(rows: &Rows) {
+    let bytes: usize = rows
+        .body
+        .iter()
+        .filter_map(|row| match row.get(4) {
+            Some(Value::Text(text)) => Some(text.len()),
+            _ => None,
+        })
+        .sum();
+    MAX_STAGED_BODY_BYTES.with(|peak| peak.set(peak.get().max(bytes)));
+}
+
 impl std::fmt::Debug for SqlStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SqlStore")
@@ -1204,6 +1224,9 @@ impl SqlStore {
         // Only the moved members re-project; unmoved ones keep their pinned
         // generation, exactly as an unmoved doc does.
         crate::collect_base(&base_delta.reproject, &mut rows);
+
+        #[cfg(test)]
+        note_staged_body_bytes(&rows);
 
         self.append(&rows, &removed, counts, fingerprint, &base_delta, base_fold)?;
         Ok(Some(counts))
@@ -2346,6 +2369,42 @@ pub(crate) mod tests {
             })
             .expect("stamp");
         assert_eq!(as_of, "b3b:v1");
+    }
+
+    /// A cold build with more body text than one batch must never stage every
+    /// body's owned text together. It also verifies dedup and the single pin
+    /// across that boundary.
+    #[test]
+    fn cold_build_bounds_staged_body_text_across_batches() {
+        let body = "x".repeat(1024 * 1024);
+        let docs: model::Docs = (0..40)
+            .map(|i| {
+                let path = format!("doc-{i:02}.md");
+                let raw = format!("# Document {i}\n{body}\n");
+                let parsed = syntax::parse(&raw);
+                (path, Arc::new(model::build(raw, parsed)))
+            })
+            .collect();
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        MAX_STAGED_BODY_BYTES.with(|peak| peak.set(0));
+        sync_ambient(&mut store, &docs, "b3b:batch-v1").expect("cold build");
+
+        let peak = MAX_STAGED_BODY_BYTES.with(std::cell::Cell::get);
+        assert!(
+            peak <= 33 * 1024 * 1024,
+            "one batch may stage 32 MiB plus one document, not all 40 MiB; staged={peak}"
+        );
+        let count = |sql| -> i64 {
+            store
+                .connection()
+                .query_row(sql, [], |r| r.get(0))
+                .expect("count")
+        };
+        assert_eq!(count("SELECT count(*) FROM doc"), 40);
+        assert_eq!(count("SELECT count(*) FROM body"), 40);
+        assert_eq!(count("SELECT count(*) FROM hist.body_text"), 1);
+        assert_eq!(count("SELECT count(*) FROM hist.pin"), 1);
     }
 
     #[test]
