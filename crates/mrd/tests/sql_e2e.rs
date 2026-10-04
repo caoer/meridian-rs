@@ -860,7 +860,7 @@ fn sql_retry_refusal_never_projects_locally() {
                 } else {
                     queries += 1;
                     serde_json::json!({"ok": false, "error": {
-                        "code": "workspace_busy", "recovery": "retry",
+                        "code": if queries < 3 { "workspace_busy" } else { "lock_timeout" }, "recovery": "retry",
                         "message": "projection lease occupied; retry"
                     }})
                 };
@@ -882,7 +882,10 @@ fn sql_retry_refusal_never_projects_locally() {
         let frame = json(&out);
         assert_eq!(frame["state"], "NO_VIEW", "{frame}");
         assert!(
-            frame["error"].as_str().unwrap().contains("workspace_busy"),
+            frame["error"]
+                .as_str()
+                .unwrap()
+                .contains("projection lease occupied"),
             "{frame}"
         );
         assert_eq!(
@@ -910,21 +913,31 @@ fn fresh_requery_retains_busy_across_stale_and_lost_or_failed_reply() {
         let listener = UnixListener::bind(socket).unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut queries = 0;
             loop {
                 let mut line = String::new();
-                if reader.read_line(&mut line).unwrap() == 0 { break; }
+                if reader.read_line(&mut line).unwrap() == 0 {
+                    break;
+                }
                 let request: Value = serde_json::from_str(&line).unwrap();
                 let response = if request["op"] == "hello" {
                     serde_json::json!({"ok":true,"body":{"caps":["sql"]}})
                 } else {
                     queries += 1;
                     match queries {
-                        1 => serde_json::json!({"ok":false,"error":{"code":"workspace_busy","recovery":"retry","message":"held"}}),
-                        2 => serde_json::json!({"ok":true,"body":{"as_of_fingerprint":"b3c:one","live":"b3c:two","state":"STALE","columns":[],"rows":[]}}),
-                        3 if !disconnect => serde_json::json!({"ok":false,"error":{"code":"io_error","recovery":"env","cause":"fixture refusal"}}),
+                        1 => {
+                            serde_json::json!({"ok":false,"error":{"code":"workspace_busy","recovery":"retry","message":"held"}})
+                        }
+                        2 => {
+                            serde_json::json!({"ok":true,"body":{"as_of_fingerprint":"b3c:one","live":"b3c:two","state":"STALE","columns":[],"rows":[]}})
+                        }
+                        3 if !disconnect => {
+                            serde_json::json!({"ok":false,"error":{"code":"io_error","recovery":"env","cause":"fixture refusal"}})
+                        }
                         _ => break,
                     }
                 };
@@ -934,7 +947,12 @@ fn fresh_requery_retains_busy_across_stale_and_lost_or_failed_reply() {
         });
         let out = sb.run(&ws, &["sql", "--json", "--fresh", "SELECT path FROM doc"]);
         assert_eq!(server.join().unwrap(), 3);
-        assert_eq!(out.status.code(), Some(2), "earlier busy must forbid fallback across --fresh: {}", stderr(&out));
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "earlier busy must forbid fallback across --fresh: {}",
+            stderr(&out)
+        );
         assert_eq!(json(&out)["state"], "NO_VIEW");
         assert_eq!(walk_count_suffix(&sb.cache_home, "sql.duckdb"), 0);
     }
@@ -958,7 +976,9 @@ fn ordinary_query_edit_overlap_succeeds_through_the_cli() {
     let holder_ws = ws.clone();
     let holder = std::thread::spawn(move || {
         let mut writer = UnixStream::connect(socket).unwrap();
-        writer.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        writer
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
         let mut reader = BufReader::new(writer.try_clone().unwrap());
         let mut call = |request: Value| {
             writeln!(writer, "{request}").unwrap();
@@ -966,7 +986,11 @@ fn ordinary_query_edit_overlap_succeeds_through_the_cli() {
             reader.read_line(&mut line).unwrap();
             serde_json::from_str::<Value>(&line).unwrap()
         };
-        assert_eq!(call(serde_json::json!({"op":"hello","proto":1,"contract":"v3","workspace":holder_ws}))["ok"], true);
+        assert_eq!(
+            call(serde_json::json!({"op":"hello","proto":1,"contract":"v3","workspace":holder_ws}))
+                ["ok"],
+            true
+        );
         let started = Instant::now();
         let answer = call(serde_json::json!({"id":1,"op":"sql","query":
             "WITH RECURSIVE spin(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM spin WHERE i<40000) SELECT count(*)::BIGINT FROM spin"}));
@@ -980,9 +1004,17 @@ fn ordinary_query_edit_overlap_succeeds_through_the_cli() {
     let elapsed = started.elapsed();
     let (held, answer) = holder.join().unwrap();
     server.shutdown();
-    eprintln!("ordinary overlap: holder={held:?}, cli={elapsed:?}, exit={:?}", out.status.code());
+    eprintln!(
+        "ordinary overlap: holder={held:?}, cli={elapsed:?}, exit={:?}",
+        out.status.code()
+    );
     assert!(held > Duration::from_millis(1500));
     assert_eq!(answer["ok"], true);
-    assert_eq!(out.status.code(), Some(0), "finite ordinary overlap must succeed: {}", stderr(&out));
-    assert_eq!(json(&out)["rows"], serde_json::json!([["a.md"],["b.md"]]));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "finite ordinary overlap must succeed: {}",
+        stderr(&out)
+    );
+    assert_eq!(json(&out)["rows"], serde_json::json!([["a.md"], ["b.md"]]));
 }

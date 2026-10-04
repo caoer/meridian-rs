@@ -377,11 +377,9 @@ fn a_slow_sql_does_not_convoy_a_sibling_connection_on_the_same_workspace() {
 /// still open.
 ///
 /// Executing SQL excludes an append's settings policy lease. The caller must
-/// receive a typed retry refusal promptly, then append after the reader drains.
+/// wait within the service bound, then append after the reader drains.
 #[test]
-fn sql_append_contention_reports_retry_and_recovers_after_query() {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+fn sql_append_waits_for_an_ordinary_reader_and_succeeds() {
     use std::time::Instant;
 
     let tmp = TempDir::new().unwrap();
@@ -397,15 +395,13 @@ fn sql_append_contention_reports_retry_and_recovers_after_query() {
         assert_eq!(warm.sql(1, REAL_SQL)["ok"], true, "warm the projection");
     }
 
-    let done = Arc::new(AtomicBool::new(false));
     let holder = {
-        let (socket, ws, done) = (socket.clone(), ws.clone(), Arc::clone(&done));
+        let (socket, ws) = (socket.clone(), ws.clone());
         std::thread::spawn(move || {
             let mut conn = Conn::open(&socket);
             conn.hello_v3(&ws);
             let started = Instant::now();
             let answer = conn.sql(1, SLOW_SQL);
-            done.store(true, Ordering::SeqCst);
             (started.elapsed(), answer)
         })
     };
@@ -420,7 +416,6 @@ fn sql_append_contention_reports_retry_and_recovers_after_query() {
     let started = Instant::now();
     let appended = sibling.sql(2, REAL_SQL);
     let append_elapsed = started.elapsed();
-    let holder_in_flight = !done.load(Ordering::SeqCst);
 
     let (holder_elapsed, _) = holder.join().unwrap();
     let ledger = format!("holder {holder_elapsed:?}, sibling append+read {append_elapsed:?}");
@@ -433,17 +428,9 @@ fn sql_append_contention_reports_retry_and_recovers_after_query() {
          {ledger}"
     );
     assert_eq!(
-        appended["ok"], false,
-        "append must yield to executing SQL: {appended}"
+        appended["ok"], true,
+        "ordinary overlap must be absorbed: {appended}. {ledger}"
     );
-    assert_eq!(appended["error"]["code"], "workspace_busy", "{appended}");
-    assert_eq!(appended["error"]["recovery"], "retry", "{appended}");
-    assert!(
-        holder_in_flight,
-        "refusal must not wait for the holder: {ledger}"
-    );
-    let appended = sibling.sql(3, REAL_SQL);
-    assert_eq!(appended["ok"], true, "retry after reader exits: {appended}");
     assert_eq!(
         appended["body"]["rows"],
         json!([["a.md"], ["b.md"], ["c.md"]]),

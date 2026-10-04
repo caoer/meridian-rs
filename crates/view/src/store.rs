@@ -1329,6 +1329,18 @@ impl SqlStore {
             }
         }
 
+        // Never wait while the caller holds the store mutex: unchanged-cache
+        // reads must remain able to join an executing query. A retry can append
+        // once queries release their shared leases after restoration.
+        let policy = Arc::clone(&self.policy);
+        let _writer = policy.gate.try_write().map_err(|_| {
+            policy_error(
+                "sql cache append busy or lease poisoned; retry after executing queries finish",
+            )
+        })?;
+        self.policy.check()?;
+        self.policy.restore(&self.conn, &self.baseline)?;
+
         // The cache as its own manifest: latest live (path → file_rev).
         let manifest: BTreeMap<String, String> = {
             let mut stmt = self.conn.prepare("SELECT path, file_rev FROM doc")?;
@@ -1409,16 +1421,6 @@ impl SqlStore {
     /// Write every bounded batch under one generation transaction. The plan
     /// is decided against the committed cache before this method begins.
     fn append_batched(&self, plan: AppendPlan<'_, '_>) -> Result<(), ViewError> {
-        // Never wait while the caller holds the store mutex: unchanged-cache
-        // reads must remain able to join an executing query. A retry can append
-        // once queries release their shared leases after restoration.
-        let _writer = self.policy.gate.try_write().map_err(|_| {
-            policy_error(
-                "sql cache append busy or lease poisoned; retry after executing queries finish",
-            )
-        })?;
-        self.policy.check()?;
-        self.policy.restore(&self.conn, &self.baseline)?;
         let AppendPlan {
             docs,
             reproject,

@@ -437,9 +437,11 @@ fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
 
     let ask = serde_json::json!({"id": 1, "op": "sql", "query": query});
     let mut call = || daemon_call(&mut writer, &mut reader, &socket, &ask);
-    let mut frame = daemon_query_with_retry(&mut call)?;
+    let mut refusal = None;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let mut frame = daemon_query_with_retry(&mut call, &mut refusal, deadline)?;
     if args.fresh && frame.state == QueryState::Stale {
-        frame = daemon_query_with_retry(&mut call)?;
+        frame = daemon_query_with_retry(&mut call, &mut refusal, deadline)?;
         if frame.state == QueryState::Stale {
             frame.state = QueryState::Raced;
         }
@@ -447,25 +449,34 @@ fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
     Some(frame)
 }
 
-/// Retry only the wire's transient class, with a fixed request budget. Once
-/// the daemon has refused transiently, even a lost reply must not send this
-/// request into the full-corpus local projection fallback.
-fn daemon_query_with_retry(mut call: impl FnMut() -> Option<Value>) -> Option<Frame> {
-    let mut refusal = None;
-    for attempt in 0..3 {
+/// Retry transient refusals within one invocation-wide elapsed budget. The
+/// remembered refusal survives successful STALE answers and the extra fresh
+/// attempt. A lock timeout already spent the engine's wait and is not replayed.
+fn daemon_query_with_retry(
+    mut call: impl FnMut() -> Option<Value>,
+    refusal: &mut Option<Frame>,
+    deadline: std::time::Instant,
+) -> Option<Frame> {
+    loop {
+        if refusal.is_some() && std::time::Instant::now() >= deadline {
+            return refusal.take();
+        }
         let Some(response) = call() else {
-            return refusal;
+            return refusal.take();
         };
         if let Some(frame) = daemon_retry_frame(&response) {
-            refusal = Some(frame);
-            if attempt < 2 {
-                std::thread::sleep(std::time::Duration::from_millis(100));
+            *refusal = Some(frame);
+            if response["error"]["code"] == "lock_timeout" {
+                return refusal.take();
             }
+            std::thread::sleep(
+                std::time::Duration::from_millis(100)
+                    .min(deadline.saturating_duration_since(std::time::Instant::now())),
+            );
         } else {
-            return daemon_sql_frame(&response).or(refusal);
+            return daemon_sql_frame(&response).or_else(|| refusal.take());
         }
     }
-    refusal
 }
 
 /// Dispatch on recovery, including a code a newer daemon introduced. A retry
@@ -1128,12 +1139,48 @@ mod tests {
     use duckdb::Connection;
 
     #[test]
+    fn daemon_retry_has_a_finite_elapsed_budget_and_never_replays_lock_timeout() {
+        let started = std::time::Instant::now();
+        let mut calls = 0;
+        let frame = daemon_query_with_retry(
+            || {
+                calls += 1;
+                Some(json!({"ok": false, "error": {"code": "workspace_busy", "recovery": "retry"}}))
+            },
+            &mut None,
+            started + std::time::Duration::from_millis(25),
+        )
+        .expect("refusal");
+        assert!(frame.state == QueryState::NoView);
+        assert_eq!(calls, 1, "budget elapsed during backoff, no extra request");
+        assert!(started.elapsed() >= std::time::Duration::from_millis(25));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+        let mut calls = 0;
+        let frame = daemon_query_with_retry(
+            || {
+                calls += 1;
+                Some(json!({"ok": false, "error": {"code": "lock_timeout", "recovery": "retry"}}))
+            },
+            &mut None,
+            std::time::Instant::now() + std::time::Duration::from_secs(8),
+        )
+        .expect("refusal");
+        assert!(frame.state == QueryState::NoView);
+        assert_eq!(calls, 1, "engine already waited; no replay");
+    }
+
+    #[test]
     fn daemon_retry_budget_does_not_retry_environment_failures() {
         let mut calls = 0;
-        let frame = daemon_query_with_retry(|| {
-            calls += 1;
-            Some(json!({"ok": false, "error": {"code": "io_error", "recovery": "env"}}))
-        });
+        let frame = daemon_query_with_retry(
+            || {
+                calls += 1;
+                Some(json!({"ok": false, "error": {"code": "io_error", "recovery": "env"}}))
+            },
+            &mut None,
+            std::time::Instant::now() + std::time::Duration::from_secs(8),
+        );
         assert!(frame.is_none(), "ordinary I/O keeps its existing fallback");
         assert_eq!(calls, 1, "never blanket-retry I/O errors");
     }
@@ -1141,15 +1188,19 @@ mod tests {
     #[test]
     fn daemon_retry_can_recover_and_recognizes_new_retry_codes() {
         let mut calls = 0;
-        let frame = daemon_query_with_retry(|| {
-            calls += 1;
-            Some(if calls == 1 {
-                json!({"ok": false, "error": {"code": "future_busy_code", "recovery": "retry"}})
-            } else {
-                json!({"ok": true, "body": {"as_of_fingerprint": "b3c:test", "live": "b3c:test",
+        let frame = daemon_query_with_retry(
+            || {
+                calls += 1;
+                Some(if calls == 1 {
+                    json!({"ok": false, "error": {"code": "future_busy_code", "recovery": "retry"}})
+                } else {
+                    json!({"ok": true, "body": {"as_of_fingerprint": "b3c:test", "live": "b3c:test",
                     "state": "FRESH_AT_SAMPLE", "columns": [], "rows": []}})
-            })
-        })
+                })
+            },
+            &mut None,
+            std::time::Instant::now() + std::time::Duration::from_secs(8),
+        )
         .expect("resident result");
         assert!(frame.state == QueryState::FreshAtSample);
         assert_eq!(calls, 2);
