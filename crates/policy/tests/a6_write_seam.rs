@@ -218,7 +218,8 @@ fn a_write_back_of_the_served_value_is_byte_stable() {
         let served = reads_back_as(&d, "owner");
         let cand = set_property_on(raw, "owner", &served);
         assert_eq!(
-            cand.raw.as_str(), raw,
+            cand.raw.as_str(),
+            raw,
             "write-back of served value {served:?} must keep the stored spelling"
         );
     }

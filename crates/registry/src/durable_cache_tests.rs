@@ -39,7 +39,9 @@ fn server_shutdown_flushes_the_latest_world_and_restart_parses_zero() {
             WarmOutcome::Built { docs: 0 }
         );
         assert_eq!(
-            server.registry().engine_snapshot(&ws).unwrap().docs["a.md"].raw,
+            server.registry().engine_snapshot(&ws).unwrap().docs["a.md"]
+                .raw
+                .as_str(),
             "# Latest\n"
         );
     });

@@ -797,7 +797,8 @@ fn set_property_empty_value_stores_one_line_shape_on_every_colon_shape() {
         )
         .expect("third pass rebuilds");
         assert_eq!(
-            again.raw, raw,
+            again.raw.as_str(),
+            raw,
             "{name}: set_property is not byte-idempotent on the empty value"
         );
     }
