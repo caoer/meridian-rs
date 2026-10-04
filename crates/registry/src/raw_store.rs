@@ -542,7 +542,7 @@ fn hash_payload(
     // Streaming form of model::leaf_digest (blake3(raw)); the expected
     // identity was minted by that owner, and every pass checks it.
     let mut leaf = blake3::Hasher::new();
-    let mut buffer = [0; COPY_BYTES];
+    let mut buffer = vec![0; COPY_BYTES];
     let mut remaining = len;
     let mut offset = location
         .offset
@@ -760,6 +760,45 @@ mod tests {
         });
         assert_eq!(store.stats().unwrap().live_records, 1);
         assert_eq!(&*entry.read().unwrap(), &payload);
+    }
+
+    #[test]
+    fn corrupt_length_is_refused_before_any_payload_allocation() {
+        let home = tempfile::tempdir().unwrap();
+        let store = RawStore::new(home.path()).unwrap();
+        let handle = store.retain(b"small").unwrap();
+        let stored = files(home.path());
+        let file = OpenOptions::new().write(true).open(&stored[0]).unwrap();
+        file.write_all_at(&u64::MAX.to_be_bytes(), 8).unwrap();
+        assert_eq!(
+            handle.read().unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            handle.len(),
+            5,
+            "identity length is not learned from corrupt storage"
+        );
+    }
+
+    #[test]
+    fn verified_caller_bytes_repair_the_same_identity_for_all_handles() {
+        let home = tempfile::tempdir().unwrap();
+        let store = RawStore::new(home.path()).unwrap();
+        let old = store.retain(b"original").unwrap();
+        let entry = old.clone();
+        let stored = files(home.path());
+        let file = OpenOptions::new().write(true).open(&stored[0]).unwrap();
+        file.write_all_at(b"broken!!", 0).unwrap();
+        assert!(entry.read().is_err());
+        let repaired = store.retain(b"original").unwrap();
+        for handle in [&old, &entry, &repaired] {
+            assert_eq!(handle.read().unwrap(), b"original");
+            assert_eq!(handle.digest(), model::leaf_digest(b"original"));
+        }
+        assert_eq!(store.stats().unwrap().live_records, 1);
+        store.compact().unwrap();
+        assert_eq!(entry.read().unwrap(), b"original");
     }
 
     #[test]
