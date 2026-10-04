@@ -34,8 +34,8 @@ use wire::{ErrorBody, ErrorCode, ResponseBody, SqlCol};
 
 use crate::Registry;
 
-/// How long a `sql` call waits for store access and projection preparation.
-/// Mutex exhaustion is `lock_timeout`; policy contention is `workspace_busy`.
+/// How long a `sql` call waits for the workspace's `SqlStore` before refusing
+/// `lock_timeout`.
 ///
 /// **What it bounds is the WAIT, never the work.** The holder is not
 /// interrupted and its query is not cancelled: a waiter that gives up here
@@ -219,44 +219,12 @@ fn lock_store_bounded<'s, T>(
     }
 }
 
-/// Absorb ordinary projection contention for every wire caller. One deadline
-/// covers store-lock acquisition and preparation retries. The guard is gone
-/// before sleeping, so a running read can finish and siblings can use the store.
-fn prepare_store_bounded<T, R>(
-    store: &Mutex<T>,
-    ws: &StdPath,
-    wait: Duration,
-    mut prepare: impl FnMut(&mut T) -> Result<R, Box<ErrorBody>>,
-) -> Result<R, Box<ErrorBody>> {
-    let deadline = Instant::now() + wait;
-    loop {
-        let outcome = {
-            let mut guard = lock_store_bounded(
-                store,
-                ws,
-                deadline.saturating_duration_since(Instant::now()),
-            )?;
-            prepare(&mut guard)
-        };
-        match outcome {
-            Err(error) if error.code == ErrorCode::WorkspaceBusy && Instant::now() < deadline => {
-                thread::sleep(
-                    SQL_STORE_POLL.min(deadline.saturating_duration_since(Instant::now())),
-                );
-            }
-            other => return other,
-        }
-    }
-}
-
 /// Serve one `sql` call. The caller has warmed the workspace already.
 ///
 /// # Errors
 /// `io_error` when the cache file cannot be opened/appended or the corpus
 /// cannot be read for the currency pass; `lock_timeout` (retry) when another
 /// `sql` call held this workspace's projection cache past [`SQL_STORE_WAIT`];
-/// `workspace_busy` (retry) when executing reads or retirement exhaust that
-/// same preparation budget;
 /// the caller's own SQL failing is a SUCCESS body with `error` set and
 /// `state: UNVERIFIED` — their register, not ours.
 pub(crate) fn serve(
@@ -328,7 +296,8 @@ pub(crate) fn serve(
     // queued behind the slowest one (measured: 350.6 s against a 351.6 s
     // holder, while the same probe on a DIFFERENT workspace served in 70 ms
     // through the same daemon).
-    let read = prepare_store_bounded(&store, ws, SQL_STORE_WAIT, |store| {
+    let read = {
+        let mut store = lock_store_bounded(&store, ws, SQL_STORE_WAIT)?;
         store
             .sync(
                 &engine.docs,
@@ -341,8 +310,8 @@ pub(crate) fn serve(
             .map_err(|e| store_error("cannot append to the sql cache", e))?;
         store
             .begin_read()
-            .map_err(|e| store_error("cannot open a read on the sql cache", e))
-    })?;
+            .map_err(|e| store_error("cannot open a read on the sql cache", e))?
+    };
 
     let result = read
         .run(query)
@@ -413,61 +382,13 @@ fn io_error(cause: String) -> Box<ErrorBody> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SQL_STORE_WAIT, lock_store_bounded, prepare_store_bounded, store_error};
+    use super::{SQL_STORE_WAIT, lock_store_bounded, store_error};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
     use wire::{ErrorCode, Recovery};
 
     const WS: &str = "/tmp/ws-under-test";
-
-    #[test]
-    fn preparation_contention_has_one_finite_deadline() {
-        let started = Instant::now();
-        let result: Result<(), _> = prepare_store_bounded(
-            &Mutex::new(()),
-            Path::new(WS),
-            Duration::from_millis(40),
-            |()| {
-                Err(store_error(
-                    "prepare",
-                    view::ViewError::Busy("held".to_owned()),
-                ))
-            },
-        );
-        let error = result.expect_err("finite refusal");
-        assert_eq!(error.code, ErrorCode::WorkspaceBusy);
-        assert_eq!(error.recovery, Recovery::Retry);
-        assert!(started.elapsed() >= Duration::from_millis(40));
-        assert!(started.elapsed() < Duration::from_secs(2));
-    }
-
-    #[test]
-    fn preparation_releases_mutex_while_waiting() {
-        let store = Arc::new(Mutex::new(false));
-        let other = Arc::clone(&store);
-        let (send, receive) = std::sync::mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            receive.recv().expect("first attempt");
-            *other.lock().expect("guard released between attempts") = true;
-        });
-        let mut send = Some(send);
-        let result =
-            prepare_store_bounded(&store, Path::new(WS), Duration::from_secs(1), |ready| {
-                if *ready {
-                    return Ok(());
-                }
-                if let Some(send) = send.take() {
-                    send.send(()).unwrap();
-                }
-                Err(store_error(
-                    "prepare",
-                    view::ViewError::Busy("held".to_owned()),
-                ))
-            });
-        worker.join().unwrap();
-        result.expect("other actor could acquire the mutex and unblock preparation");
-    }
 
     #[test]
     fn only_typed_store_contention_maps_to_retry() {

@@ -113,14 +113,15 @@
 //! `sql-set-config-cross-caller-starvation`). The lane now closes each call
 //! with [`restore_global_config`]: the caller's `SET` still succeeds and still
 //! governs its own call. Failed writer-policy restoration retires the shared
-//! instance; sync reopens it after outstanding read handles finish. An exclusive append lease
-//! keeps executing caller SQL from changing configuration during projection.
+//! instance; sync reopens it after outstanding read handles finish. Append
+//! checks the required policy at entry; overlapping caller settings remain
+//! shared and can temporarily change native flushing during that append.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
 
 use duckdb::Connection;
 use duckdb::types::Value;
@@ -674,8 +675,8 @@ const RESTORE_PASSES: usize = 2;
 /// - `lock_configuration`, which is one-way BY DESIGN. A call can contain
 ///   multiple statements, so the frozen values need not be the engine's.
 ///
-/// The resident store must act on failures of its writer policy (flush count
-/// and configuration lock), or an unreadable snapshot. Other settings remain
+/// The resident store must act on failures of its writer policy (flush count,
+/// allocator maintenance and configuration lock), or an unreadable snapshot. Other settings remain
 /// best effort: some reported sizes are rounded and do not round-trip exactly.
 pub fn restore_global_config(conn: &Connection, before: &[(String, String)]) -> Vec<String> {
     let mut drifted: Vec<(String, String)> = Vec::new();
@@ -1060,11 +1061,10 @@ pub struct SqlStore {
     policy: Arc<InstancePolicy>,
 }
 
-/// Caller queries share this lease; the append writer takes it exclusively.
 /// Retirement is monotonic and follows every outstanding read handle.
+/// Required settings are checked at append entry without excluding queries.
 #[derive(Default)]
 struct InstancePolicy {
-    gate: RwLock<()>,
     retired: AtomicBool,
 }
 
@@ -1072,9 +1072,19 @@ fn policy_error(message: impl Into<String>) -> ViewError {
     ViewError::Busy(message.into())
 }
 
+fn required_writer_setting(name: &str) -> bool {
+    matches!(
+        name,
+        "write_buffer_row_group_count"
+            | "allocator_flush_threshold"
+            | "lock_configuration"
+            | "<config snapshot unavailable>"
+    )
+}
+
 impl InstancePolicy {
     fn check(&self) -> Result<(), ViewError> {
-        if self.retired.load(Ordering::Acquire) || self.gate.is_poisoned() {
+        if self.retired.load(Ordering::Acquire) {
             return Err(policy_error(
                 "sql cache instance retired; retry sync after outstanding reads finish",
             ));
@@ -1085,14 +1095,7 @@ impl InstancePolicy {
     fn restore(&self, conn: &Connection, baseline: &[(String, String)]) -> Result<(), ViewError> {
         let unrestored: Vec<_> = restore_global_config(conn, baseline)
             .into_iter()
-            .filter(|name| {
-                matches!(
-                    name.as_str(),
-                    "write_buffer_row_group_count"
-                        | "lock_configuration"
-                        | "<config snapshot unavailable>"
-                )
-            })
+            .filter(|name| required_writer_setting(name))
             .collect();
         if !unrestored.is_empty() {
             self.retired.store(true, Ordering::Release);
@@ -1220,10 +1223,10 @@ impl SqlStore {
         apply_spill_containment(&store.conn, &store.spill_dir())?;
         // One completed 2,048-row group is eligible for optimistic disk
         // flush inside the single append transaction. Keep this in the
-        // open-time baseline, verified under the exclusive append lease.
-        store
-            .conn
-            .execute_batch("SET write_buffer_row_group_count=1;")?;
+        // open-time baseline, checked before each append transaction.
+        store.conn.execute_batch(
+            "SET write_buffer_row_group_count=1; SET allocator_flush_threshold='0B';",
+        )?;
         apply_extension_gate(&store.conn)?;
         store.baseline = Arc::new(global_config_snapshot(&store.conn)?);
         Ok(store)
@@ -1329,18 +1332,6 @@ impl SqlStore {
             }
         }
 
-        // Never wait while the caller holds the store mutex: unchanged-cache
-        // reads must remain able to join an executing query. A retry can append
-        // once queries release their shared leases after restoration.
-        let policy = Arc::clone(&self.policy);
-        let _writer = policy.gate.try_write().map_err(|_| {
-            policy_error(
-                "sql cache append busy or lease poisoned; retry after executing queries finish",
-            )
-        })?;
-        self.policy.check()?;
-        self.policy.restore(&self.conn, &self.baseline)?;
-
         // The cache as its own manifest: latest live (path → file_rev).
         let manifest: BTreeMap<String, String> = {
             let mut stmt = self.conn.prepare("SELECT path, file_rev FROM doc")?;
@@ -1435,6 +1426,19 @@ impl SqlStore {
             fingerprint,
             base_fold,
         } = plan;
+        // Restore only the writer's required settings here. Other caller
+        // settings retain the existing completion-time best-effort restore.
+        // There is no exclusion with an executing query: later caller SETs
+        // can temporarily change this policy during the append.
+        self.policy.check()?;
+        let required: Vec<_> = self
+            .baseline
+            .iter()
+            .filter(|(name, _)| required_writer_setting(name))
+            .cloned()
+            .collect();
+        self.policy.restore(&self.conn, &required)?;
+
         self.conn.execute_batch("BEGIN")?;
         let appended = (|| {
             let generation = Value::BigInt(counts.generation);
@@ -1443,6 +1447,7 @@ impl SqlStore {
             let mut seen = [0usize; 14];
             let mut staged_bytes = 0usize;
             let mut flush = |rows: &mut Rows| -> Result<(), ViewError> {
+                self.policy.check()?;
                 if rows.doc.is_empty() && rows.base.is_empty() {
                     return Ok(());
                 }
@@ -1481,7 +1486,9 @@ impl SqlStore {
                 }
             }
             flush(&mut rows)?;
+            self.policy.check()?;
             self.append_tail(removed, counts, fingerprint, base_delta, base_fold)?;
+            self.policy.check()?;
             Ok(())
         })();
         match appended {
@@ -2109,8 +2116,8 @@ impl SqlRead {
     /// [`SqlStore::begin_read`] — see there for why `BEGIN` alone is not
     /// enough. One
     /// execution path for every caller (the NO-SANDBOX ruling, 2026-08-14): no
-    /// SQL restrictions or configuration lock. A shared lease excludes appends
-    /// until rollback and restoration finish, including multi-statement calls.
+    /// SQL restrictions or configuration lock. Reads retain base concurrency
+    /// with append, including multi-statement calls.
     ///
     /// The config restore is the last step; writer-policy failure retires the
     /// instance. A GLOBAL-scope `SET` writes the `DBConfig` this connection shares with
@@ -2128,8 +2135,9 @@ impl SqlRead {
     /// its own statement whenever that statement runs alone, and no caller's
     /// writer-policy value is accepted after failed restoration: failure retires
     /// the instance. Making a `SET` private to an overlapping caller is not
-    /// something one instance can offer; reads remain concurrent, while an
-    /// append requires the exclusive lease through commit or rollback.
+    /// something one instance can offer. An overlapping SET can change native
+    /// flushing mid-append; entry validation and retirement prevent persistent
+    /// drift from silently binding later appends.
     ///
     /// # Errors
     /// A connection failure is a `ViewError`; the caller's own SQL failing is
@@ -2141,11 +2149,6 @@ impl SqlRead {
         self,
         sql: &str,
     ) -> Result<Result<(Vec<ColMeta>, Vec<Vec<Json>>), String>, ViewError> {
-        let _reader = self
-            .policy
-            .gate
-            .read()
-            .map_err(|_| policy_error("sql cache lease poisoned; retry sync"))?;
         self.policy.check()?;
         let result = run_query(&self.conn, sql);
         // Always roll back — reads are unaffected; DML dies here (P3/P6).
@@ -3746,36 +3749,6 @@ pub(crate) mod tests {
         assert_eq!(counts.added, 1);
         assert_eq!(counts.removed, 3);
         assert_surface_matches_fresh(&store, &changed);
-    }
-
-    #[test]
-    fn writer_lease_excludes_queries_but_unchanged_sync_stays_available() {
-        let dir = tempfile::tempdir().expect("tmpdir");
-        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
-        let docs = fixture_v1();
-        sync_ambient(&mut store, &docs, "b3b:v1").expect("cold");
-        let policy = Arc::clone(&store.policy);
-        let executing = policy.gate.read().expect("executing query lease");
-        assert!(sync_ambient(&mut store, &docs, "b3b:v1").is_none());
-        let error = store
-            .sync(
-                &docs,
-                &RootedCorpus::ambient(&docs),
-                None,
-                None,
-                "b3b:v2",
-                None,
-            )
-            .expect_err("writer cannot overlap the executing query");
-        assert!(error.to_string().contains("append busy"), "{error}");
-        assert_eq!(store.pin().expect("pin").expect("committed").generation, 1);
-        drop(executing);
-        assert_eq!(
-            sync_ambient(&mut store, &docs, "b3b:v2")
-                .expect("retry")
-                .generation,
-            2
-        );
     }
 
     #[test]

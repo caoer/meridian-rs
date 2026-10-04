@@ -1,5 +1,5 @@
 //! E2E gates for `sql` — corpus SQL over the wire (`docs/wire-contract.md`
-//! § A.11): one call over the workspace's fingerprint-pinned projection
+//! § A.11): one statement over the workspace's fingerprint-pinned projection
 //! cache, served by the resident engine on the one execution path (the
 //! NO-SANDBOX ruling, 2026-08-14), freshness folded post-result. v3-only,
 //! advertised as cap `sql` (v3 projection); the daemon is the cache file's
@@ -376,10 +376,15 @@ fn a_slow_sql_does_not_convoy_a_sibling_connection_on_the_same_workspace() {
 /// an append is a write on the same instance while that read transaction is
 /// still open.
 ///
-/// Executing SQL excludes an append's settings policy lease. The caller must
-/// wait within the service bound, then append after the reader drains.
+/// If a long read blocked a concurrent append, the convoy would not be gone —
+/// it would have moved from the mutex into `DuckDB`, where no bound watches
+/// it. The gate above cannot see this: its sibling's corpus never moves, so
+/// its `sync` is a no-op and no write is attempted. This one moves the corpus
+/// on purpose, so the sibling takes the append path with the reader in flight.
 #[test]
-fn sql_append_waits_for_an_ordinary_reader_and_succeeds() {
+fn a_slow_read_does_not_block_a_siblings_append_on_the_same_workspace() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Instant;
 
     let tmp = TempDir::new().unwrap();
@@ -395,13 +400,15 @@ fn sql_append_waits_for_an_ordinary_reader_and_succeeds() {
         assert_eq!(warm.sql(1, REAL_SQL)["ok"], true, "warm the projection");
     }
 
+    let done = Arc::new(AtomicBool::new(false));
     let holder = {
-        let (socket, ws) = (socket.clone(), ws.clone());
+        let (socket, ws, done) = (socket.clone(), ws.clone(), Arc::clone(&done));
         std::thread::spawn(move || {
             let mut conn = Conn::open(&socket);
             conn.hello_v3(&ws);
             let started = Instant::now();
             let answer = conn.sql(1, SLOW_SQL);
+            done.store(true, Ordering::SeqCst);
             (started.elapsed(), answer)
         })
     };
@@ -416,6 +423,7 @@ fn sql_append_waits_for_an_ordinary_reader_and_succeeds() {
     let started = Instant::now();
     let appended = sibling.sql(2, REAL_SQL);
     let append_elapsed = started.elapsed();
+    let holder_in_flight = !done.load(Ordering::SeqCst);
 
     let (holder_elapsed, _) = holder.join().unwrap();
     let ledger = format!("holder {holder_elapsed:?}, sibling append+read {append_elapsed:?}");
@@ -429,7 +437,14 @@ fn sql_append_waits_for_an_ordinary_reader_and_succeeds() {
     );
     assert_eq!(
         appended["ok"], true,
-        "ordinary overlap must be absorbed: {appended}. {ledger}"
+        "a sibling's delta append was refused while another caller's read \
+         transaction was open: {appended}. {ledger}"
+    );
+    assert!(
+        holder_in_flight,
+        "the sibling's append completed only after the reader finished — an \
+         open read transaction is blocking writers, so the convoy moved from \
+         the store mutex into DuckDB rather than going away. {ledger}"
     );
     assert_eq!(
         appended["body"]["rows"],

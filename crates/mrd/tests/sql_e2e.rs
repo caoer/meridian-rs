@@ -888,11 +888,7 @@ fn sql_retry_refusal_never_projects_locally() {
                 .contains("projection lease occupied"),
             "{frame}"
         );
-        assert_eq!(
-            queries,
-            if disconnect_after_first { 1 } else { 3 },
-            "bounded requests"
-        );
+        assert_eq!(queries, 1, "refusal is not automatically replayed");
         assert_eq!(
             walk_count_suffix(&sb.cache_home, "sql.duckdb"),
             0,
@@ -902,7 +898,7 @@ fn sql_retry_refusal_never_projects_locally() {
 }
 
 #[test]
-fn fresh_requery_retains_busy_across_stale_and_lost_or_failed_reply() {
+fn fresh_requery_stays_resident_after_stale_and_lost_or_failed_reply() {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     for disconnect in [true, false] {
@@ -930,12 +926,9 @@ fn fresh_requery_retains_busy_across_stale_and_lost_or_failed_reply() {
                     queries += 1;
                     match queries {
                         1 => {
-                            serde_json::json!({"ok":false,"error":{"code":"workspace_busy","recovery":"retry","message":"held"}})
-                        }
-                        2 => {
                             serde_json::json!({"ok":true,"body":{"as_of_fingerprint":"b3c:one","live":"b3c:two","state":"STALE","columns":[],"rows":[]}})
                         }
-                        3 if !disconnect => {
+                        2 if !disconnect => {
                             serde_json::json!({"ok":false,"error":{"code":"io_error","recovery":"env","cause":"fixture refusal"}})
                         }
                         _ => break,
@@ -946,11 +939,11 @@ fn fresh_requery_retains_busy_across_stale_and_lost_or_failed_reply() {
             queries
         });
         let out = sb.run(&ws, &["sql", "--json", "--fresh", "SELECT path FROM doc"]);
-        assert_eq!(server.join().unwrap(), 3);
+        assert_eq!(server.join().unwrap(), 2);
         assert_eq!(
             out.status.code(),
             Some(2),
-            "earlier busy must forbid fallback across --fresh: {}",
+            "a resident stale result must forbid fallback across --fresh: {}",
             stderr(&out)
         );
         assert_eq!(json(&out)["state"], "NO_VIEW");
@@ -976,9 +969,7 @@ fn ordinary_query_edit_overlap_succeeds_through_the_cli() {
     let holder_ws = ws.clone();
     let holder = std::thread::spawn(move || {
         let mut writer = UnixStream::connect(socket).unwrap();
-        writer
-            .set_read_timeout(Some(Duration::from_secs(20)))
-            .unwrap();
+
         let mut reader = BufReader::new(writer.try_clone().unwrap());
         let mut call = |request: Value| {
             writeln!(writer, "{request}").unwrap();

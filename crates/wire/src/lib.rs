@@ -2606,8 +2606,8 @@ pub enum ErrorCode {
     /// Refresh class — re-read the file and re-plan the batch.
     WriteConflict,
     /// Another cooperating meridian writer holds the workspace write lock
-    /// (`.meridian/write.lock`), or executing SQL temporarily holds the
-    /// projection policy lease / prevents retired-instance recovery (§ A.11).
+    /// (`.meridian/write.lock`), or a retired SQL instance awaits recovery
+    /// after required-policy restoration failed (§ A.11).
     /// The choke-point refuses fast, never queues. Extras: `message`. Retry class.
     WorkspaceBusy,
     /// A cooperating actor moved the workspace's serving state while the
