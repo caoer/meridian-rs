@@ -473,6 +473,19 @@ impl RawHandle {
     }
 }
 
+impl model::bytes::ByteSource for RawHandle {
+    fn identity(&self) -> model::bytes::ByteIdentity {
+        model::bytes::ByteIdentity {
+            digest: self.digest(),
+            len: self.len(),
+        }
+    }
+
+    fn read(&self) -> io::Result<model::bytes::SharedBytes> {
+        RawHandle::read(self).map(model::bytes::SharedBytes::from)
+    }
+}
+
 fn add_metadata(
     stats: &mut RawStoreStats,
     seen: &mut HashSet<(u64, u64)>,
@@ -594,6 +607,68 @@ mod tests {
             .iter()
             .map(|p| fs::metadata(p).unwrap().len())
             .sum()
+    }
+
+    #[test]
+    fn byte_source_hydrates_retained_text_after_source_and_store_loss() {
+        let home = tempfile::tempdir().unwrap();
+        let parent = home.path().join("backing");
+        let path = home.path().join("member.md");
+        let original = "# Version A\n\nretained α bytes\n";
+        fs::write(&path, original).unwrap();
+        let store = RawStore::new(&parent).unwrap();
+        let source: Box<dyn model::bytes::ByteSource> =
+            Box::new(store.retain(original.as_bytes()).unwrap());
+        fs::write(&path, "# Version B\n").unwrap();
+        let later = store.retain(b"# Version B\n").unwrap();
+        drop(later);
+        store.compact().unwrap();
+        fs::remove_file(&path).unwrap();
+        drop(store);
+        assert_eq!(
+            source.identity().digest,
+            model::leaf_digest(original.as_bytes())
+        );
+        let doc = fs::hydration::document(source.as_ref()).unwrap();
+        let eager = model::build(original.to_owned(), syntax::parse(original));
+        assert_eq!(doc.raw.as_str(), original);
+        assert_eq!(doc.root, eager.root);
+        drop(source);
+        assert!(files(&parent).is_empty(), "last backing lease was released");
+        assert_eq!(
+            doc.raw.as_str(),
+            original,
+            "the hydrated body owns its bytes"
+        );
+    }
+
+    #[test]
+    fn byte_source_distinguishes_corrupt_backing_from_invalid_utf8() {
+        use fs::hydration::HydrationError;
+        let home = tempfile::tempdir().unwrap();
+        let store = RawStore::new(home.path()).unwrap();
+        let text = store.retain(b"# Valid text\n").unwrap();
+        let binary = store.retain(b"\xff\x00\xfe").unwrap();
+        assert_eq!(
+            model::bytes::ByteSource::read(&binary).unwrap().as_bytes(),
+            b"\xff\x00\xfe"
+        );
+        assert!(matches!(
+            fs::hydration::document(&binary),
+            Err(HydrationError::InvalidUtf8)
+        ));
+        {
+            let location = lock(&text.0.location).unwrap();
+            location
+                .segment
+                .file
+                .write_all_at(b"BROKEN!!", location.offset)
+                .unwrap();
+        }
+        let HydrationError::Source(error) = fs::hydration::document(&text).unwrap_err() else {
+            panic!("corrupt required backing was reclassified as member content");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

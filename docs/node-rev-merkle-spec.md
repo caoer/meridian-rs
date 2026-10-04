@@ -932,6 +932,8 @@ length and digest against that retained identity before parsing, then reuses
 the UTF-8 allocation through the same model builder as an eager read. It has
 no workspace-path argument or fallback to a newer file. Required backing
 errors and invalid UTF-8 remain errors; empty valid bytes remain a document.
+`HydrationError` distinguishes source faults, identity mismatch and invalid
+UTF-8 so corrupted backing cannot be classified as a non-UTF-8 member.
 This byte contract does not itself provide single-flight loading, body pins
 or budget enforcement: those belong to the residency controller below.
 

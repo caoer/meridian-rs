@@ -1,18 +1,53 @@
 //! Parse an explicitly retained member version, never a current-path fallback.
 
 use model::bytes::ByteSource;
-use std::io;
+use std::{fmt, io};
 
 /// Verify the selected version and parse it without copying its shared text.
 ///
 /// # Errors
-/// Required-source errors propagate; identity mismatch or non-UTF-8 content
-/// is `InvalidData`. Empty valid bytes are a valid empty document.
-pub fn document(_source: &dyn ByteSource) -> io::Result<model::Document> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "retained document hydration is not implemented",
-    ))
+/// Source faults, identity mismatch and invalid UTF-8 remain distinct;
+/// none is absence. Empty valid bytes are a valid empty document.
+pub fn document(source: &dyn ByteSource) -> Result<model::Document, HydrationError> {
+    let identity = source.identity();
+    let bytes = source.read().map_err(HydrationError::Source)?;
+    if bytes.len() as u64 != identity.len || model::leaf_digest(bytes.as_bytes()) != identity.digest
+    {
+        return Err(HydrationError::IdentityMismatch);
+    }
+    let text = bytes.into_text().map_err(|_| HydrationError::InvalidUtf8)?;
+    let nodes = syntax::parse(&text);
+    Ok(model::build_shared(text, nodes))
+}
+
+/// A required version failed to become a parsed document. In particular, a
+/// source's `InvalidData` fault is not the member-level UTF-8 condition.
+#[derive(Debug)]
+pub enum HydrationError {
+    Source(io::Error),
+    IdentityMismatch,
+    InvalidUtf8,
+}
+
+impl fmt::Display for HydrationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Source(error) => error.fmt(f),
+            Self::IdentityMismatch => {
+                f.write_str("retained bytes do not match the selected identity")
+            }
+            Self::InvalidUtf8 => f.write_str("retained document bytes are not UTF-8"),
+        }
+    }
+}
+
+impl std::error::Error for HydrationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Source(error) => Some(error),
+            Self::IdentityMismatch | Self::InvalidUtf8 => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -69,10 +104,13 @@ mod tests {
             io::ErrorKind::NotFound,
             io::ErrorKind::PermissionDenied,
             io::ErrorKind::UnexpectedEof,
+            io::ErrorKind::InvalidData,
         ] {
             let mut source = Source::new(b"original".to_vec());
             source.fault = Some(kind);
-            let error = document(&source).unwrap_err();
+            let HydrationError::Source(error) = document(&source).unwrap_err() else {
+                panic!("required-source error was reclassified");
+            };
             assert_eq!(error.kind(), kind);
             assert_eq!(error.to_string(), "required version unavailable");
         }
@@ -82,25 +120,25 @@ mod tests {
     fn wrong_digest_or_length_refuses_the_returned_version() {
         let mut source = Source::new(b"original".to_vec());
         source.bytes = SharedBytes::from(b"new text".to_vec());
-        assert_eq!(
-            document(&source).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        assert!(matches!(
+            document(&source),
+            Err(HydrationError::IdentityMismatch)
+        ));
         source.bytes = SharedBytes::from(b"original".to_vec());
         source.identity.len += 1;
-        assert_eq!(
-            document(&source).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        assert!(matches!(
+            document(&source),
+            Err(HydrationError::IdentityMismatch)
+        ));
     }
 
     #[test]
     fn invalid_utf8_is_an_error_but_empty_bytes_are_a_document() {
         let binary = Source::new(vec![0xff, 0, 0xfe]);
-        assert_eq!(
-            document(&binary).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        assert!(matches!(
+            document(&binary),
+            Err(HydrationError::InvalidUtf8)
+        ));
         let empty = document(&Source::new(Vec::new())).unwrap();
         assert!(empty.raw.is_empty());
         assert_eq!(empty.root.span, 0..0);

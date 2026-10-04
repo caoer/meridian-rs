@@ -150,7 +150,9 @@ pub enum NodeKind {
 /// index into `raw`.
 #[derive(Debug, Clone)]
 pub struct Document {
-    pub raw: String,
+    /// Immutable UTF-8 body, shared with other byte-level owners without a
+    /// payload copy. The parsed tree's spans borrow this exact version.
+    pub raw: std::sync::Arc<String>,
     pub root: Node,
 }
 
@@ -172,6 +174,13 @@ pub type Docs = BTreeMap<String, std::sync::Arc<Document>>;
 /// `node_rev` equals `file_rev` by construction.
 #[must_use]
 pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
+    build_shared(std::sync::Arc::new(raw), nodes)
+}
+
+/// Build the same governed tree as [`build`] while retaining an existing
+/// immutable UTF-8 allocation (merkle §6.8).
+#[must_use]
+pub fn build_shared(raw: std::sync::Arc<String>, nodes: Vec<syntax::DialectNode>) -> Document {
     use syntax::DialectKind as D;
 
     // Host-candidate blocks for anchor attachment (F-R4 Obsidian parity):
@@ -5423,7 +5432,7 @@ mod tests {
             panic!("append + sibling birth must validate as one batch");
         };
         let applied = apply_validated(&doc.raw, &vb);
-        let mut expected = doc.raw.clone();
+        let mut expected = doc.raw.as_str().to_owned();
         expected.insert_str(75, "- probe\n"); // Q3 span-end
         expected.push_str("\n## Q5\n\nborn\n"); // Goals span-end (EOF)
         assert_eq!(applied, expected);

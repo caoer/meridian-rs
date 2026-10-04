@@ -420,7 +420,7 @@ fn an_id_already_stored_plain_is_still_preserved_on_a_no_op_write_back() {
     let served = reads_back_as(&d, "owner");
     assert_eq!(served, "19895504", "the read law serves the id as a string");
     let cand = set_property_on(raw, "owner", &served);
-    assert_eq!(cand.raw, raw, "a semantic no-op moves no byte");
+    assert_eq!(cand.raw.as_str(), raw, "a semantic no-op moves no byte");
     // A CHANGED write repairs the spelling.
     let changed = set_property_on(raw, "owner", "02146210");
     assert_eq!(line_for(&changed, "owner"), r#"owner: "02146210""#);

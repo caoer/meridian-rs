@@ -785,7 +785,7 @@ fn set_property_empty_value_stores_one_line_shape_on_every_colon_shape() {
                  appended would leave the stale one behind:\n{}",
                 cand.raw
             );
-            raw = cand.raw.clone();
+            cand.raw.as_str().clone_into(&mut raw);
         }
         // Idempotency: pass 2 changed nothing pass 1 had not already settled.
         let again = run(
