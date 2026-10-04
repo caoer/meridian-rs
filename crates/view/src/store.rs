@@ -1052,6 +1052,10 @@ impl SqlStore {
             baseline: Arc::new(Vec::new()),
         };
         apply_spill_containment(&store.conn, &store.spill_dir())?;
+        // Sized from the resident daemon's measured pre-SQL headroom. This
+        // bounds DuckDB-managed memory while retaining the drawer's spill path;
+        // it is not a process-wide RSS limit.
+        store.conn.execute_batch("SET memory_limit='384MiB';")?;
         apply_extension_gate(&store.conn)?;
         store.baseline = Arc::new(global_config_snapshot(&store.conn)?);
         Ok(store)
