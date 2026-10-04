@@ -116,6 +116,7 @@
 //! ones the engine set. What the rollback cannot undo, the lane puts back.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -433,12 +434,73 @@ pub struct AppendCounts {
 /// rows the file already holds stay exactly as they are.
 #[derive(Default)]
 struct BaseDelta {
-    /// Members to re-project (added or changed).
-    reproject: Vec<crate::BaseMember>,
+    /// Indices into the caller's walk. Keep its bytes borrowed, not copied
+    /// into a second corpus-sized delta before batching begins.
+    reproject: Vec<usize>,
     /// Member paths to tombstone.
     removed: Vec<String>,
     /// Every moved member's path — the affected-set key source.
     moved_keys: BTreeSet<String>,
+}
+
+/// Owned projected-row budget per cache append batch. A single document or
+/// `.base` member can exceed it and is appended alone, without truncation.
+const STAGED_BATCH_BYTES: usize = 32 * 1024 * 1024;
+
+fn value_payload_bytes(value: &Value) -> usize {
+    match value {
+        Value::Text(text) | Value::Enum(text) => text.capacity(),
+        Value::Blob(bytes) => bytes.capacity(),
+        Value::List(items) | Value::Array(items) => items.iter().fold(
+            items.capacity().saturating_mul(size_of::<Value>()),
+            |n, item| n.saturating_add(value_payload_bytes(item)),
+        ),
+        Value::Struct(fields) => fields.iter().fold(0usize, |n, (key, value)| {
+            n.saturating_add(key.capacity())
+                .saturating_add(size_of::<String>())
+                .saturating_add(value_payload_bytes(value))
+        }),
+        Value::Map(fields) => fields.iter().fold(0usize, |n, (key, value)| {
+            n.saturating_add(size_of::<(Value, Value)>())
+                .saturating_add(value_payload_bytes(key))
+                .saturating_add(value_payload_bytes(value))
+        }),
+        Value::Union(member) => size_of::<Value>().saturating_add(value_payload_bytes(member)),
+        _ => 0,
+    }
+}
+
+/// Count only rows added since `seen`: each row is visited once for the whole
+/// append, even as the current batch grows document by document.
+fn newly_staged_bytes(rows: &Rows, seen: &mut [usize; 14]) -> usize {
+    let tables = [
+        &rows.doc,
+        &rows.frontmatter,
+        &rows.section,
+        &rows.link,
+        &rows.frontmatter_link,
+        &rows.lock,
+        &rows.tag,
+        &rows.frontmatter_tag,
+        &rows.frontmatter_fault,
+        &rows.task,
+        &rows.base,
+        &rows.base_view,
+        &rows.base_formula,
+        &rows.body,
+    ];
+    let mut bytes = 0usize;
+    for (i, table) in tables.iter().enumerate() {
+        for row in &table[seen[i]..] {
+            let row_bytes = size_of::<Vec<Value>>()
+                .saturating_add(row.capacity().saturating_mul(size_of::<Value>()));
+            bytes = bytes.saturating_add(row.iter().fold(row_bytes, |n, value| {
+                n.saturating_add(value_payload_bytes(value))
+            }));
+        }
+        seen[i] = table.len();
+    }
+    bytes
 }
 
 /// Every lane's spill budget (card sql-spill-config-lockout): the `DuckDB`
@@ -1214,21 +1276,63 @@ impl SqlStore {
         reproject.extend(changed.iter().map(|p| (*p).to_owned()));
         reproject.extend(affected.iter().cloned());
         let index = index.unwrap_or_else(|| corpus_index(docs));
-        let mut rows = Rows::default();
-        for path in &reproject {
-            if let Some(doc) = docs.get(path) {
-                collect_doc(path, doc, &index, &mut rows, corpus, mounts);
+        self.conn.execute_batch("BEGIN")?;
+        let appended = (|| {
+            let generation = Value::BigInt(counts.generation);
+            let mut known_body_keys = None;
+            let mut rows = Rows::default();
+            let mut seen = [0usize; 14];
+            let mut staged_bytes = 0usize;
+            let mut flush = |rows: &mut Rows| -> Result<(), ViewError> {
+                if rows.doc.is_empty() && rows.base.is_empty() {
+                    return Ok(());
+                }
+                fill_exclusions(rows, exclusion);
+                #[cfg(test)]
+                note_staged_body_bytes(rows);
+                self.append_batch_rows(rows, &generation, &mut known_body_keys)?;
+                *rows = Rows::default();
+                Ok(())
+            };
+
+            for path in &reproject {
+                if let Some(doc) = docs.get(path) {
+                    collect_doc(path, doc, &index, &mut rows, corpus, mounts);
+                    staged_bytes =
+                        staged_bytes.saturating_add(newly_staged_bytes(&rows, &mut seen));
+                    if staged_bytes >= STAGED_BATCH_BYTES {
+                        flush(&mut rows)?;
+                        staged_bytes = 0;
+                        seen.fill(0);
+                    }
+                }
+            }
+            // `.base` members ride the same transaction and byte budget, but
+            // stay borrowed from the caller's walk rather than cloned into
+            // the delta before batching.
+            if let Some(walk) = base {
+                for &member in &base_delta.reproject {
+                    crate::collect_base(std::slice::from_ref(&walk.members[member]), &mut rows);
+                    staged_bytes =
+                        staged_bytes.saturating_add(newly_staged_bytes(&rows, &mut seen));
+                    if staged_bytes >= STAGED_BATCH_BYTES {
+                        flush(&mut rows)?;
+                        staged_bytes = 0;
+                        seen.fill(0);
+                    }
+                }
+            }
+            flush(&mut rows)?;
+            self.append_tail(&removed, counts, fingerprint, &base_delta, base_fold)?;
+            Ok(())
+        })();
+        match appended {
+            Ok(()) => self.conn.execute_batch("COMMIT")?,
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(e);
             }
         }
-        fill_exclusions(&mut rows, exclusion);
-        // Only the moved members re-project; unmoved ones keep their pinned
-        // generation, exactly as an unmoved doc does.
-        crate::collect_base(&base_delta.reproject, &mut rows);
-
-        #[cfg(test)]
-        note_staged_body_bytes(&rows);
-
-        self.append(&rows, &removed, counts, fingerprint, &base_delta, base_fold)?;
         Ok(Some(counts))
     }
 
@@ -1260,7 +1364,7 @@ impl SqlStore {
         };
 
         let mut delta = BaseDelta::default();
-        for member in base.members {
+        for (index, member) in base.members.iter().enumerate() {
             let live_rev = member
                 .bytes
                 .as_ref()
@@ -1277,10 +1381,7 @@ impl SqlStore {
             };
             if moved {
                 delta.moved_keys.insert(member.path.clone());
-                delta.reproject.push(crate::BaseMember {
-                    path: member.path.clone(),
-                    bytes: member.bytes.clone(),
-                });
+                delta.reproject.push(index);
             }
         }
         let live: BTreeSet<&str> = base.members.iter().map(|m| m.path.as_str()).collect();
@@ -1497,34 +1598,80 @@ impl SqlStore {
         Ok(affected)
     }
 
-    /// One append transaction: hist rows at `counts.gen`, tombstones,
-    /// then the pin row — commit, or roll back whole.
-    fn append(
+    /// Append one bounded batch of live rows. Every appender is flushed and
+    /// dropped before the next batch; the caller owns the one transaction.
+    fn append_batch_rows(
         &self,
         rows: &Rows,
-        removed: &[&str],
-        counts: AppendCounts,
-        fingerprint: &str,
-        base_delta: &BaseDelta,
-        base_fold: Option<&str>,
+        generation: &Value,
+        known_body_keys: &mut Option<BTreeSet<String>>,
     ) -> Result<(), ViewError> {
-        self.conn.execute_batch("BEGIN")?;
-        let result = self.append_body(rows, removed, counts, fingerprint, base_delta, base_fold);
-        match result {
-            Ok(()) => {
-                self.conn.execute_batch("COMMIT")?;
-                Ok(())
+        // doc: path, generation, tombstone, rest.
+        if !rows.doc.is_empty() {
+            let mut app = self.conn.appender_to_db("doc", "hist")?;
+            for row in &rows.doc {
+                let mut r: Vec<Value> = Vec::with_capacity(row.len() + 2);
+                r.push(row[0].clone());
+                r.push((*generation).clone());
+                r.push(Value::Boolean(false));
+                r.extend(row[1..].iter().cloned());
+                app.append_row(duckdb::appender_params_from_iter(r.iter()))?;
             }
-            Err(e) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                Err(e)
-            }
+            app.flush()?;
         }
+
+        self.append_scalar(&rows.frontmatter, "frontmatter", generation)?;
+        if !rows.link.is_empty() {
+            crate::append_listed(
+                &self.conn,
+                "hist",
+                "link",
+                crate::LINK_SCALAR_COLS,
+                Some(generation),
+                &rows.link,
+            )?;
+        }
+        if !rows.frontmatter_link.is_empty() {
+            crate::append_listed(
+                &self.conn,
+                "hist",
+                "frontmatter_link",
+                crate::FRONTMATTER_LINK_SCALAR_COLS,
+                Some(generation),
+                &rows.frontmatter_link,
+            )?;
+        }
+        self.append_scalar(&rows.lock, "lock", generation)?;
+        self.append_scalar(&rows.tag, "tag", generation)?;
+        self.append_scalar(&rows.frontmatter_tag, "frontmatter_tag", generation)?;
+        self.append_scalar(&rows.frontmatter_fault, "frontmatter_fault", generation)?;
+        self.append_scalar(&rows.section, "section", generation)?;
+        self.append_scalar(&rows.task, "task", generation)?;
+        self.append_body_chunks(&rows.body, generation, known_body_keys)?;
+
+        // base: path, generation, tombstone, rest — the hist.doc shape.
+        if !rows.base.is_empty() {
+            let mut app = self.conn.appender_to_db("base", "hist")?;
+            for row in &rows.base {
+                let mut r: Vec<Value> = Vec::with_capacity(row.len() + 2);
+                r.push(row[0].clone());
+                r.push((*generation).clone());
+                r.push(Value::Boolean(false));
+                r.extend(row[1..].iter().cloned());
+                app.append_row(duckdb::appender_params_from_iter(r.iter()))?;
+            }
+            app.flush()?;
+        }
+        self.append_scalar(&rows.base_view, "base_view", generation)?;
+        self.append_scalar(&rows.base_formula, "base_formula", generation)?;
+
+        Ok(())
     }
 
-    fn append_body(
+    /// Finish the same transaction after every live batch: tombstones first,
+    /// then exactly one pin row last.
+    fn append_tail(
         &self,
-        rows: &Rows,
         removed: &[&str],
         counts: AppendCounts,
         fingerprint: &str,
@@ -1532,18 +1679,8 @@ impl SqlStore {
         base_fold: Option<&str>,
     ) -> Result<(), ViewError> {
         let generation = Value::BigInt(counts.generation);
-
-        // doc: path, generation, tombstone, rest. Live rows first, then tombstones.
-        {
+        if !removed.is_empty() {
             let mut app = self.conn.appender_to_db("doc", "hist")?;
-            for row in &rows.doc {
-                let mut r: Vec<Value> = Vec::with_capacity(row.len() + 2);
-                r.push(row[0].clone());
-                r.push(generation.clone());
-                r.push(Value::Boolean(false));
-                r.extend(row[1..].iter().cloned());
-                app.append_row(duckdb::appender_params_from_iter(r.iter()))?;
-            }
             for path in removed {
                 let r = [
                     Value::Text((*path).to_owned()),
@@ -1557,44 +1694,8 @@ impl SqlStore {
             }
             app.flush()?;
         }
-
-        self.append_scalar(&rows.frontmatter, "frontmatter", &generation)?;
-        crate::append_listed(
-            &self.conn,
-            "hist",
-            "link",
-            crate::LINK_SCALAR_COLS,
-            Some(&generation),
-            &rows.link,
-        )?;
-        crate::append_listed(
-            &self.conn,
-            "hist",
-            "frontmatter_link",
-            crate::FRONTMATTER_LINK_SCALAR_COLS,
-            Some(&generation),
-            &rows.frontmatter_link,
-        )?;
-        self.append_scalar(&rows.lock, "lock", &generation)?;
-        self.append_scalar(&rows.tag, "tag", &generation)?;
-        self.append_scalar(&rows.frontmatter_tag, "frontmatter_tag", &generation)?;
-        self.append_scalar(&rows.frontmatter_fault, "frontmatter_fault", &generation)?;
-        self.append_scalar(&rows.section, "section", &generation)?;
-        self.append_scalar(&rows.task, "task", &generation)?;
-        self.append_body_chunks(&rows.body, &generation)?;
-
-        // base: path, generation, tombstone, rest — the hist.doc shape, so the
-        // latest-pick window and the tombstone rule read identically.
-        {
+        if !base_delta.removed.is_empty() {
             let mut app = self.conn.appender_to_db("base", "hist")?;
-            for row in &rows.base {
-                let mut r: Vec<Value> = Vec::with_capacity(row.len() + 2);
-                r.push(row[0].clone());
-                r.push(generation.clone());
-                r.push(Value::Boolean(false));
-                r.extend(row[1..].iter().cloned());
-                app.append_row(duckdb::appender_params_from_iter(r.iter()))?;
-            }
             for path in &base_delta.removed {
                 let r = [
                     Value::Text(path.clone()),
@@ -1611,8 +1712,6 @@ impl SqlStore {
             }
             app.flush()?;
         }
-        self.append_scalar(&rows.base_view, "base_view", &generation)?;
-        self.append_scalar(&rows.base_formula, "base_formula", &generation)?;
 
         self.conn.execute(
             "INSERT INTO hist.pin \
@@ -1644,19 +1743,27 @@ impl SqlStore {
     /// read-then-insert is race-free by the single-appender protocol — the
     /// holder is the file's only writer — and stays INSERT-only, so the
     /// never-edit law holds.
-    fn append_body_chunks(&self, rows: &[Vec<Value>], generation: &Value) -> Result<(), ViewError> {
+    fn append_body_chunks(
+        &self,
+        rows: &[Vec<Value>],
+        generation: &Value,
+        known_body_keys: &mut Option<BTreeSet<String>>,
+    ) -> Result<(), ViewError> {
         if rows.is_empty() {
             return Ok(());
         }
-        let mut known: BTreeSet<String> = {
+        // One key set spans every batch in this transaction. Re-reading the
+        // table per batch would be quadratic and miss the intended budget.
+        if known_body_keys.is_none() {
             let mut stmt = self.conn.prepare("SELECT body_key FROM hist.body_text")?;
             let mut got = stmt.query([])?;
             let mut keys = BTreeSet::new();
             while let Some(row) = got.next()? {
                 keys.insert(row.get::<_, String>(0)?);
             }
-            keys
-        };
+            *known_body_keys = Some(keys);
+        }
+        let known = known_body_keys.as_mut().expect("body key set loaded");
         let mut narrow = self.conn.appender_to_db("body", "hist")?;
         let mut texts = self.conn.appender_to_db("body_text", "hist")?;
         for row in rows {
@@ -1693,6 +1800,9 @@ impl SqlStore {
         table: &str,
         generation: &Value,
     ) -> Result<(), ViewError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
         let mut app = self.conn.appender_to_db(table, "hist")?;
         for row in rows {
             let mut r: Vec<Value> = Vec::with_capacity(row.len() + 1);
@@ -2395,16 +2505,57 @@ pub(crate) mod tests {
             peak <= 33 * 1024 * 1024,
             "one batch may stage 32 MiB plus one document, not all 40 MiB; staged={peak}"
         );
-        let count = |sql| -> i64 {
+        let count = |store: &SqlStore, sql: &str| -> i64 {
             store
                 .connection()
                 .query_row(sql, [], |r| r.get(0))
                 .expect("count")
         };
-        assert_eq!(count("SELECT count(*) FROM doc"), 40);
-        assert_eq!(count("SELECT count(*) FROM body"), 40);
-        assert_eq!(count("SELECT count(*) FROM hist.body_text"), 1);
-        assert_eq!(count("SELECT count(*) FROM hist.pin"), 1);
+        assert_eq!(count(&store, "SELECT count(*) FROM doc"), 40);
+        assert_eq!(count(&store, "SELECT count(*) FROM body"), 40);
+        assert_eq!(count(&store, "SELECT count(*) FROM hist.body_text"), 1);
+        assert_eq!(count(&store, "SELECT count(*) FROM hist.pin"), 1);
+
+        let changed: model::Docs = (0..40)
+            .map(|i| {
+                let path = format!("doc-{i:02}.md");
+                let raw = format!("# Document {i}\n{}\n", "y".repeat(1024 * 1024));
+                let parsed = syntax::parse(&raw);
+                (path, Arc::new(model::build(raw, parsed)))
+            })
+            .collect();
+        MAX_STAGED_BODY_BYTES.with(|peak| peak.set(0));
+        let appended = sync_ambient(&mut store, &changed, "b3b:batch-v2").expect("changed append");
+        assert_eq!((appended.generation, appended.changed), (2, 40));
+        let peak = MAX_STAGED_BODY_BYTES.with(std::cell::Cell::get);
+        assert!(peak <= 33 * 1024 * 1024, "changed append staged={peak}");
+        assert_eq!(count(&store, "SELECT count(*) FROM doc"), 40);
+        assert_eq!(count(&store, "SELECT count(*) FROM body"), 40);
+        assert_eq!(count(&store, "SELECT count(*) FROM hist.body_text"), 2);
+        assert_eq!(
+            count(&store, "SELECT count(*) FROM hist.doc WHERE gen = 2"),
+            40
+        );
+        assert_eq!(count(&store, "SELECT count(*) FROM hist.pin"), 2);
+    }
+
+    /// The byte target is not a document-size refusal. A single oversized
+    /// body is appended intact, and its size is the explicit outlier in any
+    /// peak claim for such a corpus.
+    #[test]
+    fn a_body_larger_than_one_batch_is_not_truncated_or_refused() {
+        let body = "z".repeat(STAGED_BATCH_BYTES + 1024);
+        let raw = format!("# Large\n{body}\n");
+        let docs = corpus(&[("large.md", &raw)]);
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &docs, "b3b:oversized").expect("oversized append");
+        let length: i64 = store
+            .connection()
+            .query_row("SELECT length(text) FROM body", [], |r| r.get(0))
+            .expect("body length");
+        assert_eq!(length, i64::try_from(body.len() + 1).expect("fits"));
+        assert_eq!(store.pin().expect("pin").expect("pinned").generation, 1);
     }
 
     #[test]
