@@ -46,7 +46,10 @@ pub fn decode(bytes: &[u8], digest: &[u8; 32]) -> Option<Document> {
                 && *line_count == u32::try_from(raw.lines().count()).unwrap_or(u32::MAX) => {}
         _ => return None,
     }
-    Some(Document { raw, root })
+    Some(Document {
+        raw: raw.into(),
+        root,
+    })
 }
 
 struct Encoder(Vec<u8>);

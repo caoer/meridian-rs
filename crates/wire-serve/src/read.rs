@@ -127,7 +127,7 @@ pub fn cat(doc: &model::Document, sec: Option<SecRef>) -> Result<ResponseBody, B
         return Ok(ResponseBody::Cat {
             span: Span(0, doc.raw.len() as u64),
             node_rev: NodeRev(doc.root.node_rev.0.clone()),
-            content: doc.raw.clone(),
+            content: doc.raw.as_str().to_owned(),
         });
     };
     let target = model::resolve(doc, &to_model_ref(&sec)?).map_err(|e| {

@@ -242,7 +242,7 @@ mod tests {
     fn recording(docs: &model::Docs) -> Result<Box<dyn SqlProjection>, String> {
         let world: Vec<(String, String)> = docs
             .iter()
-            .map(|(path, doc)| (path.clone(), doc.raw.clone()))
+            .map(|(path, doc)| (path.clone(), doc.raw.as_str().to_owned()))
             .collect();
         BUILDS.with(|b| b.borrow_mut().push(world.clone()));
         Ok(Box::new(Recorded(world, false)))

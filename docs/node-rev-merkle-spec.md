@@ -921,6 +921,22 @@ parsing. In-memory fixtures have an eager implementation of the same
 contract. No infallible map indexing, iterator that omits cold members, or
 fallback empty document is a legal cold access.
 
+The dependency-neutral byte contract is `model::bytes::ByteSource`: a
+retained version has a fixed digest and length, and reading it returns shared
+immutable bytes or an explicit error. `SharedBytes` preserves arbitrary bytes;
+its UTF-8 form and `Document.raw` share the same `Arc<String>` allocation.
+Constructing either form from owned bytes preserves the payload allocation,
+and cloning a document does not duplicate its raw body. No mutable byte view
+is exposed by the byte contract. `fs::hydration::document` checks the returned
+length and digest against that retained identity before parsing, then reuses
+the UTF-8 allocation through the same model builder as an eager read. It has
+no workspace-path argument or fallback to a newer file. Required backing
+errors and invalid UTF-8 remain errors; empty valid bytes remain a document.
+`HydrationError` distinguishes source faults, identity mismatch and invalid
+UTF-8 so corrupted backing cannot be classified as a non-UTF-8 member.
+This byte contract does not itself provide single-flight loading, body pins
+or budget enforcement: those belong to the residency controller below.
+
 The concrete slot states are cold (descriptor plus retained verified backing
 handle), loading (that handle plus one loader with budget reservation), and
 hot (shared raw bytes plus a parsed document and its byte charge). An

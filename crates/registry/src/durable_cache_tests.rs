@@ -39,7 +39,9 @@ fn server_shutdown_flushes_the_latest_world_and_restart_parses_zero() {
             WarmOutcome::Built { docs: 0 }
         );
         assert_eq!(
-            server.registry().engine_snapshot(&ws).unwrap().docs["a.md"].raw,
+            server.registry().engine_snapshot(&ws).unwrap().docs["a.md"]
+                .raw
+                .as_str(),
             "# Latest\n"
         );
     });
@@ -97,7 +99,10 @@ fn restored_builder_cannot_regress_a_newer_concurrent_publication() {
     first.join().unwrap();
     let final_engine = restarted.engine_snapshot(&ws).unwrap();
     assert_eq!(final_engine.at_fingerprint, newer);
-    assert_eq!(final_engine.docs["a.md"].raw, "# Newer publication\n");
+    assert_eq!(
+        final_engine.docs["a.md"].raw.as_str(),
+        "# Newer publication\n"
+    );
 }
 
 fn fixture(home: &Path) -> (Registry, PathBuf) {
@@ -160,7 +165,7 @@ fn older_snapshot_reconciles_one_mover_and_a_rename() {
     );
     let engine = restarted.engine_snapshot(&ws).unwrap();
     assert!(!engine.docs.contains_key("b.md"));
-    assert_eq!(engine.docs["renamed.md"].raw, "# B\n");
+    assert_eq!(engine.docs["renamed.md"].raw.as_str(), "# B\n");
     assert_eq!(
         engine.at_fingerprint,
         fs::domain_snapshot(&fs::WorkspaceRoot(ws)).unwrap().1
