@@ -3077,7 +3077,8 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
 
 ### A.11 `sql` — corpus SQL over the resident projection cache
 
-- **Scope**: one SQL statement over the workspace's fingerprint-pinned,
+- **Scope**: one SQL call (the driver accepts multiple statements) over the
+  workspace's fingerprint-pinned,
   append-only `sql.duckdb` projection cache (`view::store`) — the one wire op
   over the view organ.
 - **§10.4 holds**: the daemon alone owns and appends to the cache file; the
@@ -3097,6 +3098,15 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
   the resident memo at the vouched grade (`node-rev-merkle-spec.md` §6.7; the
   leaf-memo stat sweep is the floor on a named miss), so `state` post-dates
   the rows (§10.1).
+- **Projection contention**: an executing query can temporarily prevent a
+  changed-cache append; a retired instance can be waiting for outstanding
+  reads before reopening. These refuse `workspace_busy` with `recovery: retry`,
+  independently of actual `io_error` / `env` failures. The CLI makes at most
+  three requests, 100 ms apart, for a retry-class SQL refusal, then reports
+  `NO_VIEW` with the refusal. Once it observes that refusal it never falls
+  through to a local full-corpus projection, including if a subsequent reply
+  is lost. An I/O-class refusal is not retried. The existing one extra
+  `--fresh` attempt applies only after a successful stale answer.
 
 ```json
 {"id":13,"op":"sql","query":"SELECT path FROM doc ORDER BY path"}
@@ -3113,7 +3123,7 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
 | `state` | `FRESH_AT_SAMPLE` \| `STALE` \| `UNVERIFIED`; UNVERIFIED iff `error` is set |
 | `columns[]` | `{name, type}` as `DuckDB` reports them — the pair the CLI `--json` frame carries |
 | `rows[]` | row-major JSON cells; list cells are real arrays per row, never column dumps. Booleans and numerics are JSON bools/numbers; every other scalar family — timestamp (tz-aware columns marked `+00`), date, time, interval, decimal, enum, struct, map — is a string in `DuckDB`'s `::VARCHAR`, never a `Debug` repr; a union cell is its member's cell |
-| `error` | a caller's failing SQL is a success body with the engine's words verbatim plus the arms below. Never a wire error: `ok:false` frames are door faults (`io_error`, `bad_request`, `unknown_op`) |
+| `error` | a caller's failing SQL is a success body with the engine's words verbatim plus the arms below. Never a wire error: `ok:false` frames are door faults (`workspace_busy`, `lock_timeout`, `io_error`, `bad_request`, `unknown_op`) |
 
 **Teaching arms on a refusal (reason first, then a suggestion that fits).**
 Four arms extend or trim the engine's words:

@@ -60,12 +60,15 @@ The cache lane stages and appends the changed documents in **byte-bounded
 batches**, rather than holding the whole corpus's projected `body.text` rows at
 once. The current target is 32 MiB of estimated owned projected-row storage:
 new rows' `Value` slots and their text/list/blob payload capacities are counted
-as each document is collected. The estimate excludes the already-resident
+as each document is collected, before exclusion resolution. The estimate
+excludes the already-resident
 `Document.raw`, the corpus-wide name index, spare outer-vector capacity, and
 DuckDB-native storage; the process peak must be measured separately. The
 threshold is checked after a complete document or `.base` member is projected,
 so staging can reach the target plus one whole projected document/member,
-including its section, link, task, and path rows. An oversized member can share
+including its section, link, task, and path rows at collection time. Exclusion
+words and paths added by `fill_exclusions` at flush are an additional
+batch-wide payload outside that estimate. An oversized member can share
 a batch with earlier rows; it is never refused or truncated. The largest
 complete projected document/member therefore belongs beside any peak memory
 claim. Each batch's
@@ -96,7 +99,13 @@ lease, held through commit or rollback. Executing caller SQL holds shared
 leases through rollback and configuration restoration, so callers can still
 overlap each other but cannot change settings during an append. An append
 attempt while a query executes returns a retryable error before writing; an
-unchanged-cache sync does not wait behind a running query. A pinned read that
+unchanged-cache sync does not wait behind a running query. These transient
+store outcomes are typed independently of the wire and mapped by the registry
+to `workspace_busy` / `recovery: retry`. The CLI retries at most three requests
+with 100 ms between attempts, then reports `NO_VIEW` without loading or
+projecting the corpus locally. After observing a retry refusal, a lost daemon
+response also reports that refusal instead of falling back. Actual I/O errors
+retain their environment class and are not retried by this policy. A pinned read that
 has not started executing can retain its older snapshot across an append.
 
 A failed writer-policy restore (flush count or configuration lock), or an
