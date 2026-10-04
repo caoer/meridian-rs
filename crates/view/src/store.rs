@@ -3218,6 +3218,21 @@ mod spill_tests {
             .unwrap_or_else(|e| panic!("setting {name}: {e}"))
     }
 
+    /// The resident daemon opens this store before the first SQL call. Its
+    /// DuckDB budget must already be in force, including after reopening a
+    /// persisted drawer.
+    #[test]
+    fn resident_store_memory_limit_is_set_at_open() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let file = tmp_store(&dir);
+        let store = SqlStore::open(&file).expect("fresh open");
+        assert_eq!(setting(&store, "memory_limit"), "384.0 MiB");
+        drop(store);
+
+        let reopened = SqlStore::open(&file).expect("reopen");
+        assert_eq!(setting(&reopened, "memory_limit"), "384.0 MiB");
+    }
+
     /// The gate is in force on every store the moment it opens — no caller
     /// action, no first-query lazy path (card
     /// sql-extension-ddl-escapes-rollback-lane).
