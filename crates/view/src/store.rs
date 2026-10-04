@@ -112,13 +112,15 @@
 //! starve every LATER caller of that root until the daemon restarted (card
 //! `sql-set-config-cross-caller-starvation`). The lane now closes each call
 //! with [`restore_global_config`]: the caller's `SET` still succeeds and still
-//! governs its own statement, and the values the next caller finds are the
-//! ones the engine set. What the rollback cannot undo, the lane puts back.
+//! governs its own call. Failed writer-policy restoration retires the shared
+//! instance; sync reopens it after outstanding read handles finish. An exclusive append lease
+//! keeps executing caller SQL from changing configuration during projection.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 
 use duckdb::Connection;
 use duckdb::types::Value;
@@ -668,16 +670,12 @@ const RESTORE_PASSES: usize = 2;
 ///   them also refuse a caller's `SET` ("Cannot change … while database is
 ///   running", "not adjustable by a user"), so they can never drift in the
 ///   first place.
-/// - `lock_configuration`, which is one-way BY DESIGN: once a caller sets it
-///   true, every later `SET` on that instance refuses — this one included.
-///   That residue is a denial of the DOOR, not starvation: the restore pass
-///   has already run at the end of the previous call, so the values it
-///   freezes are the engine's. Pinned by
-///   `a_caller_lock_is_the_one_residue_and_it_freezes_engine_values`.
+/// - `lock_configuration`, which is one-way BY DESIGN. A call can contain
+///   multiple statements, so the frozen values need not be the engine's.
 ///
-/// The return value is advisory: a caller's query has already answered by the
-/// time this runs, and failing it here would turn a successful query into an
-/// error over state the caller cannot see. It is what the tests assert on.
+/// The resident store must act on failures of its writer policy (flush count
+/// and configuration lock), or an unreadable snapshot. Other settings remain
+/// best effort: some reported sizes are rounded and do not round-trip exactly.
 pub fn restore_global_config(conn: &Connection, before: &[(String, String)]) -> Vec<String> {
     let mut drifted: Vec<(String, String)> = Vec::new();
     for pass in 0..=RESTORE_PASSES {
@@ -1058,6 +1056,52 @@ pub struct SqlStore {
     /// exists, so it is the only honest place to read the baseline. It also
     /// drops a 134-row `duckdb_settings()` scan from every served query.
     baseline: Arc<Vec<(String, String)>>,
+    policy: Arc<InstancePolicy>,
+}
+
+/// Caller queries share this lease; the append writer takes it exclusively.
+/// Retirement is monotonic and follows every outstanding read handle.
+#[derive(Default)]
+struct InstancePolicy {
+    gate: RwLock<()>,
+    retired: AtomicBool,
+}
+
+fn policy_error(message: impl Into<String>) -> ViewError {
+    ViewError::Io(std::io::Error::other(message.into()))
+}
+
+impl InstancePolicy {
+    fn check(&self) -> Result<(), ViewError> {
+        if self.retired.load(Ordering::Acquire) || self.gate.is_poisoned() {
+            return Err(policy_error(
+                "sql cache instance retired; retry sync after outstanding reads finish",
+            ));
+        }
+        Ok(())
+    }
+
+    fn restore(&self, conn: &Connection, baseline: &[(String, String)]) -> Result<(), ViewError> {
+        let unrestored: Vec<_> = restore_global_config(conn, baseline)
+            .into_iter()
+            .filter(|name| {
+                matches!(
+                    name.as_str(),
+                    "write_buffer_row_group_count"
+                        | "lock_configuration"
+                        | "<config snapshot unavailable>"
+                )
+            })
+            .collect();
+        if !unrestored.is_empty() {
+            self.retired.store(true, Ordering::Release);
+            return Err(policy_error(format!(
+                "sql cache configuration restoration failed: {}; instance retired",
+                unrestored.join(", ")
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1170,17 +1214,40 @@ impl SqlStore {
             conn,
             file: file.to_path_buf(),
             baseline: Arc::new(Vec::new()),
+            policy: Arc::default(),
         };
         apply_spill_containment(&store.conn, &store.spill_dir())?;
         // One completed 2,048-row group is eligible for optimistic disk
         // flush inside the single append transaction. Keep this in the
-        // open-time baseline so a caller's SET cannot bind later callers.
+        // open-time baseline, verified under the exclusive append lease.
         store
             .conn
             .execute_batch("SET write_buffer_row_group_count=1;")?;
         apply_extension_gate(&store.conn)?;
         store.baseline = Arc::new(global_config_snapshot(&store.conn)?);
         Ok(store)
+    }
+
+    /// Reopen only after all handles on the retired instance are gone. The
+    /// old connection must close before ATTACH opens the same file in a new
+    /// instance; keep retirement set if reopening fails so retries stay safe.
+    fn recover_retired(&mut self) -> Result<(), ViewError> {
+        if self.policy.check().is_ok() {
+            return Ok(());
+        }
+        self.policy.retired.store(true, Ordering::Release);
+        if Arc::strong_count(&self.policy) != 1 {
+            return Err(policy_error(
+                "sql cache instance retired with outstanding reads; retry after they finish",
+            ));
+        }
+        drop(std::mem::replace(
+            &mut self.conn,
+            Connection::open_in_memory()?,
+        ));
+        let conn = open_sql_cache(&self.file)?;
+        *self = Self::adopt(conn, &self.file)?;
+        Ok(())
     }
 
     /// The file's current pin, `None` for a fresh (never-appended) file.
@@ -1232,6 +1299,7 @@ impl SqlStore {
         fingerprint: &str,
         base: Option<&BaseWalk<'_>>,
     ) -> Result<Option<AppendCounts>, ViewError> {
+        self.recover_retired()?;
         let base_fold = base.map(|b| b.fold);
         let mut pin = self.pin()?;
         // Built at most once per sync, and only when something needs it.
@@ -1340,6 +1408,16 @@ impl SqlStore {
     /// Write every bounded batch under one generation transaction. The plan
     /// is decided against the committed cache before this method begins.
     fn append_batched(&self, plan: AppendPlan<'_, '_>) -> Result<(), ViewError> {
+        // Never wait while the caller holds the store mutex: unchanged-cache
+        // reads must remain able to join an executing query. A retry can append
+        // once queries release their shared leases after restoration.
+        let _writer = self.policy.gate.try_write().map_err(|_| {
+            policy_error(
+                "sql cache append busy or lease poisoned; retry after executing queries finish",
+            )
+        })?;
+        self.policy.check()?;
+        self.policy.restore(&self.conn, &self.baseline)?;
         let AppendPlan {
             docs,
             reproject,
@@ -1925,6 +2003,7 @@ impl SqlStore {
     /// # Errors
     /// The connection cannot be cloned, or `BEGIN` / the forcing read fails.
     pub fn begin_read(&self) -> Result<SqlRead, ViewError> {
+        self.policy.check()?;
         let conn = self.conn.try_clone()?;
         // `try_clone` shares the attached database instance but does not
         // inherit this connection's current catalog.
@@ -1936,6 +2015,7 @@ impl SqlStore {
         Ok(SqlRead {
             conn,
             baseline: Arc::clone(&self.baseline),
+            policy: Arc::clone(&self.policy),
         })
     }
 
@@ -1950,8 +2030,8 @@ impl SqlStore {
     /// # Errors
     /// A connection failure is a `ViewError`; the caller's own SQL failing is
     /// `Ok` with the error string in the result (their register, not ours) —
-    /// including `DuckDB`'s MVCC transaction conflicts, verbatim. A setting
-    /// that will not go back is NOT an error (see [`restore_global_config`]).
+    /// including `DuckDB`'s MVCC transaction conflicts, verbatim. Failed config
+    /// restoration of the writer policy is a `ViewError` and retires the instance.
     #[allow(clippy::type_complexity)]
     pub fn query(
         &self,
@@ -2011,6 +2091,7 @@ impl SqlStore {
 pub struct SqlRead {
     conn: Connection,
     baseline: Arc<Vec<(String, String)>>,
+    policy: Arc<InstancePolicy>,
 }
 
 impl std::fmt::Debug for SqlRead {
@@ -2025,11 +2106,11 @@ impl SqlRead {
     /// [`SqlStore::begin_read`] — see there for why `BEGIN` alone is not
     /// enough. One
     /// execution path for every caller (the NO-SANDBOX ruling, 2026-08-14): no
-    /// profile, no lock — spill containment is already in force instance-wide
-    /// from open.
+    /// SQL restrictions or configuration lock. A shared lease excludes appends
+    /// until rollback and restoration finish, including multi-statement calls.
     ///
-    /// The config restore is the last step, not a further guarantee: a
-    /// GLOBAL-scope `SET` writes the `DBConfig` this connection shares with
+    /// The config restore is the last step; writer-policy failure retires the
+    /// instance. A GLOBAL-scope `SET` writes the `DBConfig` this connection shares with
     /// every other caller of the root, which no `ROLLBACK` reaches (card
     /// `sql-set-config-cross-caller-starvation`). It runs whether the caller's
     /// statement succeeded or failed — a failed statement can still have moved
@@ -2042,21 +2123,27 @@ impl SqlRead {
     /// overlap each can see the other's `SET` and either one's restore can put
     /// the engine's value back under the other. A caller's `SET` still governs
     /// its own statement whenever that statement runs alone, and no caller's
-    /// value survives its call either way — the leak the restore exists to
-    /// stop. Making a `SET` private to an overlapping caller is not something
-    /// one instance can offer; serializing every query to fake it is the
-    /// convoy this split removes.
+    /// writer-policy value is accepted after failed restoration: failure retires
+    /// the instance. Making a `SET` private to an overlapping caller is not
+    /// something one instance can offer; reads remain concurrent, while an
+    /// append requires the exclusive lease through commit or rollback.
     ///
     /// # Errors
     /// A connection failure is a `ViewError`; the caller's own SQL failing is
     /// `Ok` with the error string in the result (their register, not ours) —
-    /// including `DuckDB`'s MVCC transaction conflicts, verbatim. A setting
-    /// that will not go back is NOT an error (see [`restore_global_config`]).
+    /// including `DuckDB`'s MVCC transaction conflicts, verbatim. Failed config
+    /// restoration of the writer policy is a `ViewError` and retires the instance.
     #[allow(clippy::type_complexity)]
     pub fn run(
         self,
         sql: &str,
     ) -> Result<Result<(Vec<ColMeta>, Vec<Vec<Json>>), String>, ViewError> {
+        let _reader = self
+            .policy
+            .gate
+            .read()
+            .map_err(|_| policy_error("sql cache lease poisoned; retry sync"))?;
+        self.policy.check()?;
         let result = run_query(&self.conn, sql);
         // Always roll back — reads are unaffected; DML dies here (P3/P6).
         let rolled_back = self.conn.execute_batch("ROLLBACK");
@@ -2064,8 +2151,10 @@ impl SqlRead {
         // a ROLLBACK that itself failed is no reason to leave the next caller
         // with this caller's `memory_limit`. Restore first, then answer for
         // the rollback.
-        let _ = restore_global_config(&self.conn, &self.baseline);
+        let restored = self.policy.restore(&self.conn, &self.baseline);
         rolled_back?;
+        restored?;
+        self.policy.check()?;
         Ok(result)
     }
 }
@@ -3570,10 +3659,21 @@ pub(crate) mod tests {
         let outstanding = store.begin_read().expect("older read");
         inject_restore_failure(&mut store);
 
-        let error = store.query("SELECT 1").expect_err("failed restore must be reported");
-        assert!(error.to_string().contains("write_buffer_row_group_count"), "{error}");
-        assert!(store.begin_read().is_err(), "retired instance must reject new reads");
-        assert!(outstanding.run("SELECT 1").is_err(), "already issued reads share retirement");
+        let error = store
+            .query("SELECT 1")
+            .expect_err("failed restore must be reported");
+        assert!(
+            error.to_string().contains("write_buffer_row_group_count"),
+            "{error}"
+        );
+        assert!(
+            store.begin_read().is_err(),
+            "retired instance must reject new reads"
+        );
+        assert!(
+            outstanding.run("SELECT 1").is_err(),
+            "already issued reads share retirement"
+        );
     }
 
     #[test]
@@ -3583,14 +3683,107 @@ pub(crate) mod tests {
         sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
         inject_restore_failure(&mut store);
         let _ = store.query("SELECT 1");
+        let changed = corpus(&[("new.md", "# New\nnew body after recovery\n")]);
 
-        let counts = store.sync(&fixture_v1(), &model::RootedCorpus::ambient(&fixture_v1()), None, None, "b3b:v2", None)
-            .expect("retry reopens and appends").expect("append");
-        assert_eq!(counts.generation, 2, "reopening must retain the committed pin");
+        let counts = store
+            .sync(
+                &changed,
+                &RootedCorpus::ambient(&changed),
+                None,
+                None,
+                "b3b:v2",
+                None,
+            )
+            .expect("retry reopens and appends")
+            .expect("append");
+        assert_eq!(
+            counts.generation, 2,
+            "reopening must retain the committed pin"
+        );
         assert_eq!(global_setting(&store, "write_buffer_row_group_count"), "1");
-        assert_eq!(store.baseline.iter().find(|(name, _)| name == "write_buffer_row_group_count")
-            .expect("writer baseline").1, "1", "the failed instance was replaced");
-        assert_surface_matches_fresh(&store, &fixture_v1());
+        assert_eq!(
+            store
+                .baseline
+                .iter()
+                .find(|(name, _)| name == "write_buffer_row_group_count")
+                .expect("writer baseline")
+                .1,
+            "1",
+            "the failed instance was replaced"
+        );
+        assert_eq!(counts.added, 1);
+        assert_eq!(counts.removed, 3);
+        assert_surface_matches_fresh(&store, &changed);
+    }
+
+    #[test]
+    fn writer_lease_excludes_queries_but_unchanged_sync_stays_available() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let docs = fixture_v1();
+        sync_ambient(&mut store, &docs, "b3b:v1").expect("cold");
+        let policy = Arc::clone(&store.policy);
+        let executing = policy.gate.read().expect("executing query lease");
+        assert!(sync_ambient(&mut store, &docs, "b3b:v1").is_none());
+        let error = store
+            .sync(
+                &docs,
+                &RootedCorpus::ambient(&docs),
+                None,
+                None,
+                "b3b:v2",
+                None,
+            )
+            .expect_err("writer cannot overlap the executing query");
+        assert!(error.to_string().contains("append busy"), "{error}");
+        assert_eq!(store.pin().expect("pin").expect("committed").generation, 1);
+        drop(executing);
+        assert_eq!(
+            sync_ambient(&mut store, &docs, "b3b:v2")
+                .expect("retry")
+                .generation,
+            2
+        );
+    }
+
+    #[test]
+    fn append_checks_writer_policy_before_starting_transaction() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let docs = fixture_v1();
+        // Direct fixture setup, outside the caller lane: the append boundary
+        // must establish its required policy even if it finds prior drift.
+        store
+            .connection()
+            .execute_batch("SET write_buffer_row_group_count=2")
+            .expect("fixture");
+        sync_ambient(&mut store, &docs, "b3b:v1").expect("cold");
+        assert_eq!(global_setting(&store, "write_buffer_row_group_count"), "1");
+
+        inject_restore_failure(&mut store);
+        assert!(
+            store
+                .sync(
+                    &docs,
+                    &RootedCorpus::ambient(&docs),
+                    None,
+                    None,
+                    "b3b:v2",
+                    None
+                )
+                .is_err()
+        );
+        assert_eq!(store.pin().expect("pin").expect("committed").generation, 1);
+        assert!(
+            store.begin_read().is_err(),
+            "failed precondition retires the instance"
+        );
+        assert_eq!(
+            sync_ambient(&mut store, &docs, "b3b:v2")
+                .expect("retry")
+                .generation,
+            2
+        );
     }
 
     #[test]
@@ -3602,19 +3795,46 @@ pub(crate) mod tests {
         inject_restore_failure(&mut store);
         let _ = store.query("SELECT 1");
 
-        assert!(store.sync(&fixture_v1(), &model::RootedCorpus::ambient(&fixture_v1()), None, None, "b3b:v2", None).is_err(),
-            "must not append or reopen while an old instance handle exists");
+        assert!(
+            store
+                .sync(
+                    &fixture_v1(),
+                    &RootedCorpus::ambient(&fixture_v1()),
+                    None,
+                    None,
+                    "b3b:v2",
+                    None
+                )
+                .is_err(),
+            "must not append or reopen while an old instance handle exists"
+        );
         assert_eq!(store.pin().expect("pin").expect("committed").generation, 1);
         drop(outstanding);
-        assert_eq!(store.sync(&fixture_v1(), &model::RootedCorpus::ambient(&fixture_v1()), None, None, "b3b:v2", None)
-            .expect("retry after release").expect("append").generation, 2);
+        assert_eq!(
+            store
+                .sync(
+                    &fixture_v1(),
+                    &RootedCorpus::ambient(&fixture_v1()),
+                    None,
+                    None,
+                    "b3b:v2",
+                    None
+                )
+                .expect("retry after release")
+                .expect("append")
+                .generation,
+            2
+        );
     }
 
     #[test]
     fn caller_lane_accepts_multiple_harmless_statements() {
         let dir = tempfile::tempdir().expect("tmpdir");
         let store = SqlStore::open(&tmp_store(&dir)).expect("open");
-        let (_, rows) = store.query("SELECT 1; SELECT 2").expect("lane").expect("query");
+        let (_, rows) = store
+            .query("SELECT 1; SELECT 2")
+            .expect("lane")
+            .expect("query");
         assert_eq!(rows, vec![vec![Json::from(2)]]);
     }
 
@@ -4167,45 +4387,28 @@ mod config_scope_tests {
         );
     }
 
-    /// The residue (c) provably cannot close, pinned rather than implied:
-    /// `lock_configuration` is one-way BY `DuckDB`'s DESIGN, so no restore can
-    /// undo it. What this test asserts is that the residue is a denial of the
-    /// DOOR, not starvation — the values it freezes are the ENGINE's, because
-    /// the restore pass already ran at the end of the previous call.
-    ///
-    /// If `DuckDB` ever makes the lock reversible, this test fails and the
-    /// residue paragraph on [`restore_global_config`] is what to delete.
+    /// Even a single configuration lock is an unrestorable setting. The SQL
+    /// driver accepts it, but the lane reports the failed restore and sync
+    /// recovers the engine policy by opening a fresh instance of the same file.
     #[test]
-    fn a_caller_lock_is_the_one_residue_and_it_freezes_engine_values() {
+    fn a_caller_lock_retires_the_instance_and_sync_recovers() {
         let dir = tempfile::tempdir().expect("tmpdir");
         let mut store = open_settled(&tmp_store(&dir)).expect("open");
         sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
 
-        let engine_memory = next_caller_sees(&store, "memory_limit");
-
-        // Call 1 leaks, and is restored — this is what makes the freeze land
-        // on good values rather than the leaked one.
-        store.query("SET memory_limit='1GB'").expect("lane").ok();
-        // Call 2 locks. One statement per call: `run_query` prepares one, so a
-        // caller cannot leak and lock in the same breath.
-        store
+        let error = store
             .query("SET lock_configuration=true")
-            .expect("lane")
-            .expect("DuckDB accepts the lock — this is the residue, measured");
-
+            .expect_err("a one-way lock cannot be restored");
+        assert!(error.to_string().contains("lock_configuration"), "{error}");
+        assert!(store.begin_read().is_err(), "retired instance");
+        assert!(sync_ambient(&mut store, &fixture_v1(), "b3b:v1").is_none());
+        store
+            .query("SET threads=2")
+            .expect("recovered lane")
+            .expect("unlocked");
         assert_eq!(
-            next_caller_sees(&store, "memory_limit"),
-            engine_memory,
-            "the lock froze the ENGINE's value, not the previous caller's — \
-             the residue is a denied door, never starvation"
-        );
-        let refusal = store
-            .query("SET memory_limit='2GB'")
-            .expect("lane")
-            .expect_err("after a caller's lock, every SET refuses");
-        assert!(
-            refusal.contains("configuration has been locked"),
-            "DuckDB's own words name the residue: {refusal}"
+            next_caller_sees(&store, "write_buffer_row_group_count"),
+            "1"
         );
     }
 

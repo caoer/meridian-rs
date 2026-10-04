@@ -99,7 +99,8 @@ attempt while a query executes returns a retryable error before writing; an
 unchanged-cache sync does not wait behind a running query. A pinned read that
 has not started executing can retain its older snapshot across an append.
 
-A failed configuration restore is reported and retires that database instance
+A failed writer-policy restore (flush count or configuration lock), or an
+unreadable configuration snapshot, is reported and retires that database instance
 from further queries and appends. Handles already outside the store mutex share
 the retirement state. Once those handles are released, the next sync closes
 the old instance and reopens the same cache file with the engine's settings;
@@ -107,7 +108,9 @@ the committed pin and history survive. While old handles remain, sync reports
 a retryable error and writes nothing. Caller SQL remains unrestricted by this
 policy: the pinned driver accepts multiple statements per call, and rollback
 alone cannot restore instance-global settings. Settings of overlapping callers
-can still affect each other while their queries run.
+can still affect each other while their queries run. Other global settings
+retain their best-effort restoration contract; rounded size settings do not
+necessarily round-trip through DuckDB's reported strings.
 
 ## §5 Alternatives
 
