@@ -3655,6 +3655,35 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn failed_allocator_restore_retires_and_recovers_before_next_append() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        store.baseline = Arc::new(vec![(
+            "allocator_flush_threshold".to_owned(),
+            "not-a-size".to_owned(),
+        )]);
+        let error = store
+            .query("SELECT 1")
+            .expect_err("allocator maintenance restore must be checked");
+        assert!(
+            error.to_string().contains("allocator_flush_threshold"),
+            "{error}"
+        );
+        assert!(store.begin_read().is_err(), "retired instance");
+        assert_eq!(
+            sync_ambient(&mut store, &fixture_v1(), "b3b:v2")
+                .expect("recovered append")
+                .generation,
+            2
+        );
+        assert_eq!(
+            global_setting(&store, "allocator_flush_threshold"),
+            "0 bytes"
+        );
+    }
+
+    #[test]
     fn failed_restore_is_reported_and_retires_outstanding_reads() {
         let dir = tempfile::tempdir().expect("tmpdir");
         let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
