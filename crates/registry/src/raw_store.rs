@@ -629,7 +629,7 @@ mod tests {
             source.identity().digest,
             model::leaf_digest(original.as_bytes())
         );
-        let doc = fs::hydration::document(source.as_ref()).unwrap();
+        let doc = ::fs::hydration::document(source.as_ref()).unwrap();
         let eager = model::build(original.to_owned(), syntax::parse(original));
         assert_eq!(doc.raw.as_str(), original);
         assert_eq!(doc.root, eager.root);
@@ -644,7 +644,7 @@ mod tests {
 
     #[test]
     fn byte_source_distinguishes_corrupt_backing_from_invalid_utf8() {
-        use fs::hydration::HydrationError;
+        use ::fs::hydration::HydrationError;
         let home = tempfile::tempdir().unwrap();
         let store = RawStore::new(home.path()).unwrap();
         let text = store.retain(b"# Valid text\n").unwrap();
@@ -654,7 +654,7 @@ mod tests {
             b"\xff\x00\xfe"
         );
         assert!(matches!(
-            fs::hydration::document(&binary),
+            ::fs::hydration::document(&binary),
             Err(HydrationError::InvalidUtf8)
         ));
         {
@@ -665,7 +665,7 @@ mod tests {
                 .write_all_at(b"BROKEN!!", location.offset)
                 .unwrap();
         }
-        let HydrationError::Source(error) = fs::hydration::document(&text).unwrap_err() else {
+        let HydrationError::Source(error) = ::fs::hydration::document(&text).unwrap_err() else {
             panic!("corrupt required backing was reclassified as member content");
         };
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);

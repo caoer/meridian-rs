@@ -583,7 +583,7 @@ pub fn new_record(
     if let Some(rule) = first_violated_rule(properties, &record) {
         return Ok(refuse_new(
             target,
-            RefusalReason::def_invalid(rule.raw.as_str().to_owned()),
+            RefusalReason::def_invalid(rule.raw.clone()),
         ));
     }
 
