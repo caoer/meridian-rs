@@ -376,13 +376,10 @@ fn a_slow_sql_does_not_convoy_a_sibling_connection_on_the_same_workspace() {
 /// an append is a write on the same instance while that read transaction is
 /// still open.
 ///
-/// If a long read blocked a concurrent append, the convoy would not be gone —
-/// it would have moved from the mutex into `DuckDB`, where no bound watches
-/// it. The gate above cannot see this: its sibling's corpus never moves, so
-/// its `sync` is a no-op and no write is attempted. This one moves the corpus
-/// on purpose, so the sibling takes the append path with the reader in flight.
+/// Executing SQL excludes an append's settings policy lease. The caller must
+/// receive a typed retry refusal promptly, then append after the reader drains.
 #[test]
-fn a_slow_read_does_not_block_a_siblings_append_on_the_same_workspace() {
+fn sql_append_contention_reports_retry_and_recovers_after_query() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Instant;
@@ -435,17 +432,12 @@ fn a_slow_read_does_not_block_a_siblings_append_on_the_same_workspace() {
          floor — the read was not in flight long enough to test anything. \
          {ledger}"
     );
-    assert_eq!(
-        appended["ok"], true,
-        "a sibling's delta append was refused while another caller's read \
-         transaction was open: {appended}. {ledger}"
-    );
-    assert!(
-        holder_in_flight,
-        "the sibling's append completed only after the reader finished — an \
-         open read transaction is blocking writers, so the convoy moved from \
-         the store mutex into DuckDB rather than going away. {ledger}"
-    );
+    assert_eq!(appended["ok"], false, "append must yield to executing SQL: {appended}");
+    assert_eq!(appended["error"]["code"], "workspace_busy", "{appended}");
+    assert_eq!(appended["error"]["recovery"], "retry", "{appended}");
+    assert!(holder_in_flight, "refusal must not wait for the holder: {ledger}");
+    let appended = sibling.sql(3, REAL_SQL);
+    assert_eq!(appended["ok"], true, "retry after reader exits: {appended}");
     assert_eq!(
         appended["body"]["rows"],
         json!([["a.md"], ["b.md"], ["c.md"]]),

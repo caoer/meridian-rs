@@ -829,3 +829,49 @@ fn sql_routes_through_a_resident_daemon() {
 
     server.shutdown();
 }
+
+/// A daemon refusal must stay on the resident route. The local fixture would
+/// answer successfully if the CLI fell through to corpus loading/projection.
+#[test]
+fn sql_retry_refusal_never_projects_locally() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    for disconnect_after_first in [false, true] {
+        let sb = sandbox();
+        let ws = write_bare_ws(&sb, "busy", &[("a.md", "# A\n")]);
+        let socket = common::child_socket_path(&sb.home, &sb.cache_home);
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut queries = 0;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() == 0 { break; }
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let response = if request["op"] == "hello" {
+                    serde_json::json!({"ok": true, "body": {"caps": ["sql"]}})
+                } else {
+                    queries += 1;
+                    serde_json::json!({"ok": false, "error": {
+                        "code": "workspace_busy", "recovery": "retry",
+                        "message": "projection lease occupied; retry"
+                    }})
+                };
+                writeln!(stream, "{response}").unwrap();
+                if disconnect_after_first && queries == 1 { break; }
+            }
+            queries
+        });
+        let out = sb.run(&ws, &["sql", "--json", "SELECT path FROM doc"]);
+        let queries = server.join().unwrap();
+        assert_eq!(out.status.code(), Some(2), "busy must not fall back: {}", stderr(&out));
+        let frame = json(&out);
+        assert_eq!(frame["state"], "NO_VIEW", "{frame}");
+        assert!(frame["error"].as_str().unwrap().contains("workspace_busy"), "{frame}");
+        assert_eq!(queries, if disconnect_after_first { 1 } else { 3 }, "bounded requests");
+        assert_eq!(walk_count_suffix(&sb.cache_home, "sql.duckdb"), 0, "no local projection");
+    }
+}
