@@ -447,6 +447,23 @@ struct BaseDelta {
     moved_keys: BTreeSet<String>,
 }
 
+/// One append's already-decided inputs. The cache diff and corpus-wide name
+/// index are fixed before any batch writes into the transaction.
+struct AppendPlan<'a, 'corpus> {
+    docs: &'a model::Docs,
+    reproject: &'a BTreeSet<String>,
+    index: &'a model::CorpusIndex,
+    corpus: &'a model::RootedCorpus<'corpus>,
+    mounts: Option<&'a addr::MountSet>,
+    exclusion: Option<ExclusionProbe<'a>>,
+    base: Option<&'a BaseWalk<'a>>,
+    base_delta: &'a BaseDelta,
+    removed: &'a [&'a str],
+    counts: AppendCounts,
+    fingerprint: &'a str,
+    base_fold: Option<&'a str>,
+}
+
 /// Owned projected-row budget per cache append batch. A single document or
 /// `.base` member can exceed it and is appended alone, without truncation.
 const STAGED_BATCH_BYTES: usize = 32 * 1024 * 1024;
@@ -1302,6 +1319,40 @@ impl SqlStore {
         reproject.extend(changed.iter().map(|p| (*p).to_owned()));
         reproject.extend(affected.iter().cloned());
         let index = index.unwrap_or_else(|| corpus_index(docs));
+        self.append_batched(AppendPlan {
+            docs,
+            reproject: &reproject,
+            index: &index,
+            corpus,
+            mounts,
+            exclusion,
+            base,
+            base_delta: &base_delta,
+            removed: &removed,
+            counts,
+            fingerprint,
+            base_fold,
+        })?;
+        Ok(Some(counts))
+    }
+
+    /// Write every bounded batch under one generation transaction. The plan
+    /// is decided against the committed cache before this method begins.
+    fn append_batched(&self, plan: AppendPlan<'_, '_>) -> Result<(), ViewError> {
+        let AppendPlan {
+            docs,
+            reproject,
+            index,
+            corpus,
+            mounts,
+            exclusion,
+            base,
+            base_delta,
+            removed,
+            counts,
+            fingerprint,
+            base_fold,
+        } = plan;
         self.conn.execute_batch("BEGIN")?;
         let appended = (|| {
             let generation = Value::BigInt(counts.generation);
@@ -1321,9 +1372,9 @@ impl SqlStore {
                 Ok(())
             };
 
-            for path in &reproject {
+            for path in reproject {
                 if let Some(doc) = docs.get(path) {
-                    collect_doc(path, doc, &index, &mut rows, corpus, mounts);
+                    collect_doc(path, doc, index, &mut rows, corpus, mounts);
                     staged_bytes =
                         staged_bytes.saturating_add(newly_staged_bytes(&rows, &mut seen));
                     if staged_bytes >= STAGED_BATCH_BYTES {
@@ -1333,9 +1384,8 @@ impl SqlStore {
                     }
                 }
             }
-            // `.base` members ride the same transaction and byte budget, but
-            // stay borrowed from the caller's walk rather than cloned into
-            // the delta before batching.
+            // `.base` members stay borrowed from the caller's walk rather
+            // than cloned into the delta before batching.
             if let Some(walk) = base {
                 for &member in &base_delta.reproject {
                     crate::collect_base(std::slice::from_ref(&walk.members[member]), &mut rows);
@@ -1349,7 +1399,7 @@ impl SqlStore {
                 }
             }
             flush(&mut rows)?;
-            self.append_tail(&removed, counts, fingerprint, &base_delta, base_fold)?;
+            self.append_tail(removed, counts, fingerprint, base_delta, base_fold)?;
             Ok(())
         })();
         match appended {
@@ -1359,7 +1409,7 @@ impl SqlStore {
                 return Err(e);
             }
         }
-        Ok(Some(counts))
+        Ok(())
     }
 
     /// The base plane's delta against the cache's own base manifest
