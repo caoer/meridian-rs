@@ -3062,6 +3062,54 @@ pub(crate) mod tests {
         assert_surface_matches_fresh(&store, &v2);
     }
 
+    /// The count-one write buffer can send completed 2,048-row groups to
+    /// disk before COMMIT. A rollback after two such groups still leaves the
+    /// prior pin and content-addressed text exactly where they were.
+    #[test]
+    fn completed_row_groups_rollback_with_the_generation() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let file = tmp_store(&dir);
+        let mut store = SqlStore::open(&file).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        let before: i64 = store
+            .connection()
+            .query_row("SELECT count(*) FROM hist.body_text", [], |r| r.get(0))
+            .expect("before");
+
+        store.connection().execute_batch("BEGIN").expect("begin");
+        {
+            let mut app = store
+                .connection()
+                .appender_to_db("body_text", "hist")
+                .expect("appender");
+            let body = "t".repeat(1024);
+            for i in 0..4096u64 {
+                let row = [Value::Text(format!("{i:064x}")), Value::Text(body.clone())];
+                app.append_row(duckdb::appender_params_from_iter(row.iter()))
+                    .expect("append");
+            }
+            app.flush().expect("flush two groups");
+        }
+        let inside: i64 = store
+            .connection()
+            .query_row("SELECT count(*) FROM hist.body_text", [], |r| r.get(0))
+            .expect("inside");
+        assert_eq!(inside, before + 4096);
+        store
+            .connection()
+            .execute_batch("ROLLBACK")
+            .expect("rollback");
+        drop(store);
+
+        let reopened = SqlStore::open(&file).expect("reopen");
+        assert_eq!(reopened.pin().expect("pin").expect("pinned").generation, 1);
+        let after: i64 = reopened
+            .connection()
+            .query_row("SELECT count(*) FROM hist.body_text", [], |r| r.get(0))
+            .expect("after");
+        assert_eq!(after, before, "uncommitted groups were discarded");
+    }
+
     #[test]
     fn foreign_cache_schema_version_recreates_the_file() {
         let dir = tempfile::tempdir().expect("tmpdir");
