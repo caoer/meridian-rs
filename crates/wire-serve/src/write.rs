@@ -711,7 +711,7 @@ pub fn splice(
     // Dry short-circuit (§4.4 batch law): everything except disk — no receipt,
     // no root advance, no Delta, no mkdir.
     if args.dry {
-        let candidate = after_doc.document().raw.clone();
+        let candidate = after_doc.document().raw.as_str().to_owned();
         return Ok(SpliceOutcome {
             candidate: Some(candidate),
             body: ResponseBody::Splice {

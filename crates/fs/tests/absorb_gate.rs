@@ -243,7 +243,7 @@ fn rebuild_carries_unmoved_documents_by_pointer() {
         !Arc::ptr_eq(&update.docs["moved.md"], &prior_docs["moved.md"]),
         "a mover's document is a fresh allocation"
     );
-    assert_eq!(update.docs["moved.md"].raw, "# Moved\n\nv2\n");
+    assert_eq!(update.docs["moved.md"].raw.as_str(), "# Moved\n\nv2\n");
 }
 
 /// The movers are one ordered merge: changed, added and gone members in

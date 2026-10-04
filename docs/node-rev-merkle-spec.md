@@ -469,17 +469,15 @@ engine-side.
   journal's vacuous windows — unjournaled external edits, idle-reaped rings, a
   seq reset on restart — cannot touch it. No premise consults the journal
   (§4.3.1's consistency law).
-- **Watcher lifecycle:** the watcher lives with the workspace registration,
-  bounded by the resident budget. An idle-reaped engine keeps it; events
-  accumulate in a registry-held dirty set that the next warm applies —
-  O(dirty), never O(corpus). The registry holds one parsed corpus per warm
-  workspace, with a resident budget (`MRD_MAX_RESIDENT_BYTES`, estimated
-  resident bytes — a fixed multiplier over the warm set's raw markdown
-  bytes). LRU eviction under budget pressure drops the whole warm state,
-  watcher included; the next warm is a full walk, not O(dirty). Bounded
-  residency takes priority over gap coverage for the least-recently-used
-  workspace. Only a live subscription exempts a workspace from the budget
-  sweep; the registration survives either way.
+- **Watcher lifecycle:** the kernel feed lives with the workspace
+  registration. An idle-reaped engine keeps it; events accumulate in a
+  registry-held dirty set that the next warm applies — O(dirty), never
+  O(corpus). A live subscription protects the ring's instance, sequence,
+  retained frames and watcher identity, together with the feed and memo
+  needed to advance it. It does not protect member bodies or parse trees
+  from the document budget below. Whole-workspace budget eviction remains
+  available for unsubscribed roots; their next warm pays a full walk and
+  their registration survives.
 - **The currency barrier (the cookie).** A guard-grade currency question writes
   a sentinel at `.meridian/cookie` and waits for it to return through the
   ordered event stream. `Seen` — ordered delivery of all the kernel captured,
@@ -515,6 +513,143 @@ engine-side.
   work when healthy (requirement 6, "no waste anywhere"). The periodic idle
   sweep is declined at a price: silent event-stream loss with no named trigger
   waits for a guard.
+
+#### Document residency and retained member versions
+
+The unit of residency is a member version, identified by workspace, relative
+path and content leaf digest. Each served generation retains membership,
+length, digest, UTF-8 service condition and name/alias rows independently of
+whether its document is hot. The memo, feed, ring and these descriptors stay
+resident for a subscribed root. A cold member is still a member: eviction
+cannot change a fingerprint, name resolution, a scan's coverage, or a node rev.
+
+`MRD_MAX_RESIDENT_BYTES` is a process-wide budget in allocated bytes of
+registry-managed corpus and subscription state, shared across roots. `0`
+disables it. The accounting separates three owners: the non-sheddable
+substrate above; pinned bodies being used by operations; and reclaimable raw
+bodies/parse trees. Charge shared allocations once, including a body shared
+between the query corpus and watcher. Count string/vector capacities, recursively owned node data,
+slot/index storage, retained frames and watcher bodies; a raw-byte multiplier
+is not the unit. The counting-allocator probe
+`crates/registry/examples/residency_breakdown.rs` calibrates the accounting
+against actual allocation/deallocation, with RSS+swap alongside it.
+Allocator bookkeeping, retained free pages, thread stacks, compiled run
+modules and native SQL allocations are separate process costs, so fitting
+this budget alone cannot prove a process RSS limit. SQL retains its own
+memory policy.
+
+At admission and after releasing operation pins, shed the least recently
+used unpinned member versions across all workspaces until the charged total
+fits. The periodic reaper is a backstop, not the only enforcement point.
+Touch recency on a consumer's read, not during index maintenance, persistence
+or a full scan: a scan streams through the cache without making the whole
+corpus hot. Reserve and account for concurrent hydration and rebuild work;
+single-flight hydration of one version cannot allocate N copies for N readers.
+An operation may retain a generation's descriptors and byte handles while
+pinning only the document bodies it is using. A generation lease does not
+keep its entire parsed corpus in RAM. Release a body's charge only when its
+last RAM owner releases it; cold descriptors and their backing handles remain
+charged as metadata until their last owner releases them.
+
+The non-sheddable substrate grows with membership; it is not a constant or
+free headroom. If it alone exceeds the budget, report its measured floor and
+the unmet amount. An individual document larger than the remaining allowance
+serves through a serialized, explicitly charged transient slot and is dropped
+after use; it cannot silently raise the cache limit. The same accounting
+must expose pinned/transient overage. Admission bounds overlapping work, and
+completion immediately reclaims it. These exceptions are not a promise that
+arbitrarily small budgets bound RSS; acceptance chooses a budget above the
+measured floor and states transient peaks separately.
+
+**Every reachable member version must survive shedding.** A path, digest and
+length prove identity but cannot reconstruct an overwritten or removed file.
+Before freeing the last raw RAM copy of a serving slot or watcher baseline,
+preserve its exact bytes in the same private, digest-verified backing store
+outside the hash domain. This obligation applies to subscribed and
+unsubscribed roots, including their current resident serving generation and
+older generations held by an operation. A hot document and the same baseline
+version share one raw body; they do not need separate stores.
+
+Backing handles are reference-counted by member version and retained until
+the last serving descriptor, watcher baseline or operation reference ends.
+Publishing a newer engine releases only the registry's old-generation
+reference; it cannot invalidate a descriptor still held by an earlier entry.
+Advancing a watcher releases only its old-baseline reference. A cold entry
+generation therefore keeps its historical bytes after both advances, without
+keeping its parsed documents in RAM. Current source bytes cannot stand in for
+a different retained version.
+
+Whole-workspace eviction likewise releases its warm-state references, not
+outstanding generation leases or their backing. Attempt-owned references end
+at the answer, fault or cancellation under the existing entry contract.
+Backing then remains only for other reachable owners: no completed-attempt
+history, cross-request as-of lookup or restart authority is introduced.
+
+A compatible §6.9 snapshot record may supply a backing handle only while its
+exact verified record remains readable for that handle's whole lifetime.
+Keep the record's underlying storage alive across snapshot replacement and
+GC, or copy its raw bytes into the shared store before relinquishing it. A
+revocable path/offset lookup, an optional cache hit, or an older snapshot's
+mere existence is not backing. Cache absence must never force a previously
+served generation to change its bytes.
+
+The backing store is registry-owned, process-local spill: bounded streaming
+records in immutable segments, indexed by digest/offset/length with a record
+checksum. `fs` receives a byte-source capability; it does not acquire registry
+or cache dependencies. Publish a handle only after its complete record can
+be read and checked. Keep a segment while any serving descriptor, baseline or
+operation references it; reclaim obsolete segments, compacting live records
+in bounded chunks without invalidating live handles.
+
+The raw-store primitive (`crates/registry/src/raw_store.rs`) retains identity,
+length and a relocatable record handle, never a second in-memory body. Its
+deduplication index holds weak references, so it cannot keep obsolete versions
+alive. Reads verify the record framing, checksum and content digest; an error
+is a fallible read, never absence or a live-source fallback. Compaction writes
+and verifies all replacement records before moving handles, while readers
+retain the exact segment they opened. The owner explicitly runs reclamation;
+no background worker or startup recovery grants old segments authority.
+Normal last-owner release removes owned segments and the private store
+directory. Crash debris belongs to the enclosing disposable-cache lifecycle.
+
+Process death invalidates handles; a new process observes disk by §6.5 and
+does not treat spill as journal authority. Missing, truncated or corrupt
+required backing must recover the same verified version from another source
+or fault the dependent read, run target or classification. It cannot freshen
+a bound generation, advance the ring, or silently rebase. A failed spill write
+leaves the last raw body charged and resident: do not publish an unbacked cold
+slot. Report the unsatisfied budget and stop admitting more cache bodies until
+it can be shed. These failures may reduce availability or exceed the memory
+target; correct refusal is not successful bounded service.
+
+On a change to a cold baseline member, load and verify its before bytes from
+the backing handle, and its after bytes against the newly observed leaf.
+Use the existing `wire-serve` classifier and reaction feeder on those two
+documents: node deltas, remove/rename/rescope ruling, invalid-UTF-8 handling
+and `HOOKS.md` invalidation keep their semantics. Under the existing write
+flock and memo/ring lock order, publish the frame and advance the baseline
+together; release the old handle afterwards. Shedding itself emits no frame,
+increments no seq, changes no instance, and requests no resync. Frame
+enumeration limits do not permit skipping reactions for unenumerated movers;
+large change sets must process their before/after pairs in bounded batches.
+
+**Limits of the bound.** A body budget cannot impose a constant bound on
+growing membership/roots, name rows, memo/feed state, backing handles or
+overlapping retained generations. Another root adds metadata even when its
+bodies share the global allowance. Protected ring payloads are charged, but
+the ring's independent frame-count horizon is not a byte limit. Oversized
+documents, operation pins and retained multi-file plan/effect payloads may
+cause the stated transient/floor overage. Allocator-retained pages, stacks,
+compiled modules and native/SQL memory remain outside the controller; a SQL
+setting does not establish process RSS. Failed spill, finite disk capacity,
+backing I/O latency and indefinite source churn can prevent progress or the
+memory target. Report each limit rather than labelling refusal as acceptance.
+
+A remainder measured by subtracting bodies from one eager corpus is neither
+the redesigned metadata floor nor a sizing constant. Select the host budget
+from the combined SQL/subscription/change-stream soak, including overlapping
+generations and a second subscribed root, against the decimal
+4,000,000,000-byte RSS+swap line (§6.9).
 
 ### 6.5 Restart — the disposable checkpoint
 
@@ -667,7 +802,7 @@ member's bytes per external batch — measured ~1/s under foreign writes.
   included, so a dead feed, a sticky `Failed` slot or a sustained `Unproven`
   delays a frame by at most `DETECT_FLOOR_CADENCE`.
 - The classifier diffs those digests against the watcher's retained baseline
-  (entries carry a leaf digest beside their bytes), reads bytes only for
+  (entries carry a leaf digest and the §6.4 byte handle), reads bytes only for
   movers, and mints the same frames. Renames pair by digest (byte-equality's
   proxy); removed and `unattested` rows parse retained baseline bytes; modified
   rows diff retained-old against read-new.
@@ -677,7 +812,8 @@ member's bytes per external batch — measured ~1/s under foreign writes.
 - The frame's `root_after` is the memo's root — what the read plane stamps, so
   push and read planes cannot disagree.
 - Priming (the subscribe-time baseline) reads the corpus before the flock: one
-  byte snapshot with its leaf digests, unlocked. Under the flock, after the
+  streamed, budgeted byte snapshot with its leaf digests and §6.4 backing
+  handles, unlocked. Under the flock, after the
   observation, the baseline is built from the memo's leaf view: a member whose
   snapshot digest equals its leaf keeps the snapshot's bytes, any other member
   is re-read and verified against its leaf, and a snapshot member the memo
@@ -715,9 +851,9 @@ observations (guard grade, locked-window law) keep their live floors.
 > **The law.** The resident tree is the serving instrument. The served workspace
 > root derives from the one memo's incrementally maintained fold (§6.1) — never
 > from a second tree rebuilt over the leaf set the memo already carries. An
-> incremental pass carries an unmoved member's parsed document by shared
-> reference, never by copy, and folds nothing when its built leaf set is
-> byte-equal to its snapshot's — its stamp is then the snapshot's own root,
+> incremental pass carries an unmoved member's document slot by shared
+> reference, never by copying or hydrating its body, and folds nothing when
+> its built leaf set is byte-equal to its snapshot's — its stamp is then the snapshot's own root,
 > taken with the snapshot under one lock. On the serve path the flat build
 > over a leaf set survives in exactly three roles: the cold observation
 > (no resident state yet), the divergence tail of an incremental pass (a mover
@@ -769,19 +905,122 @@ second.
 > docs and leaf maps — pointer and key copies, no comparison, no parse. A
 > prior with no index (the §6.9 restore) builds it from the final docs.
 
-The prior must describe every UTF-8-named leaf in exactly one of its docs
-and unserved maps — every builder inserts a member's leaf together with its
-document or condition. A prior whose counts disagree pays one scan for its
-holes and re-reads them as movers, never serves a member it does not hold.
+The prior must describe every UTF-8-named leaf with either a document slot
+(hot or cold) or an unserved condition. A cold slot is not a hole and does
+not become a mover on each prewarm. Builders publish a leaf together with
+its slot or condition. A prior whose membership disagrees pays one scan for
+real holes and reconciles them as movers.
+
+**Cold access and consumers.** `Document` remains immutable and pure;
+`model` owns membership/access contracts, not I/O or a registry. Replace the
+assumption that `Docs` is a map of permanently resident `Arc<Document>` with
+complete member descriptors and explicit, fallible access to a pinned
+document. The registry owns the shared residency controller and supplies a
+loader through that contract; `fs` owns source read, digest verification and
+parsing. In-memory fixtures have an eager implementation of the same
+contract. No infallible map indexing, iterator that omits cold members, or
+fallback empty document is a legal cold access.
+
+The dependency-neutral byte contract is `model::bytes::ByteSource`: a
+retained version has a fixed digest and length, and reading it returns shared
+immutable bytes or an explicit error. `SharedBytes` preserves arbitrary bytes;
+its UTF-8 form and `Document.raw` share the same `Arc<String>` allocation.
+Constructing either form from owned bytes preserves the payload allocation,
+and cloning a document does not duplicate its raw body. No mutable byte view
+is exposed by the byte contract. `fs::hydration::document` checks the returned
+length and digest against that retained identity before parsing, then reuses
+the UTF-8 allocation through the same model builder as an eager read. It has
+no workspace-path argument or fallback to a newer file. Required backing
+errors and invalid UTF-8 remain errors; empty valid bytes remain a document.
+`HydrationError` distinguishes source faults, identity mismatch and invalid
+UTF-8 so corrupted backing cannot be classified as a non-UTF-8 member.
+This byte contract does not itself provide single-flight loading, body pins
+or budget enforcement: those belong to the residency controller below.
+
+The concrete slot states are cold (descriptor plus retained verified backing
+handle), loading (that handle plus one loader with budget reservation), and
+hot (shared raw bytes plus a parsed document and its byte charge). An
+operation's returned pin owns the hot version while it uses it. Eviction
+changes hot to cold only when no operation pin exists. Failed hydration releases its reservation and
+leaves the descriptor cold; it never removes membership. Share an immutable
+raw byte buffer between the document's UTF-8 view and watcher instead of
+copying it into a second `Vec<u8>`. Invalid UTF-8 has the same byte identity
+and backing obligation but no parsed document.
+
+Locking preserves the existing workspace write flock and memo-before-ring
+order. A slot/accounting lock covers state transitions and counters only;
+release it before disk I/O, parse, spill compaction, or waiting for a loader.
+An eviction takes a candidate's versioned handle, prepares any required
+backing outside those locks, and rechecks its identity and pin count before
+dropping the body. A concurrent touch or replacement loses that eviction
+attempt, not the document. No registry-map lock spans a corpus walk or save.
+
+For an existing serving slot, hydrate the requested version from its hot raw
+body or retained §6.4 backing handle and verify its identity before parsing.
+Current source is an alternate recovery source only if its bytes match that
+version's leaf digest; it is never the only copy permitting a live slot to
+become cold. Once verified, the same parser and node-rev law produce the same
+spans and revs as eager residency. The loader returns a version or a fault;
+it cannot choose a newer generation on behalf of its caller.
+
+**Entry semantics govern retries.** The operation's existing contract decides
+when its generation is selected and whether it may advance:
+
+- A fresh observation/build may reconcile a source mismatch and retry before
+  publishing its generation or an answer, at an entry boundary that already
+  permits a currency pass. This is not a general retry license for a cold
+  member in a previously selected world.
+- `fire` and pure script hash-domain reads retain the generation selected by
+  their existing entry contracts (`run-plane.md` § The world a mode-bearing
+  row runs against; § The script entry). Shedding adds no currency pass or
+  memo borrow to a fire-only entry. The existing `load` freshen stays at its
+  entry boundary; a later cold access does not repeat it. A pure script's
+  entry descriptors keep their version handles through watcher advancement
+  and engine replacement. Its own-write overlay and entry-rev threading keep
+  their existing semantics, and commit still checks the live touched
+  premises. Out-of-domain script reads and effects-mode live reads retain
+  their existing live-source contracts.
+
+A cold miss cannot restart a bound entry onto a newer world, even before that
+entry has produced an effect. No whole side-effecting submission may be
+replayed to resolve a later cold miss after an earlier run target, callback,
+effect, response or commit has occurred. Hydration may retry the same member
+version within the existing deadline. If that version cannot be recovered,
+return the existing per-target/attempt fault or partial-result behavior,
+preserving earlier outcomes; never re-execute them. Guarded writes retain
+their disk-truth checks under the flock: historical read bytes supply the
+entry premise, not authority to overwrite a changed live node.
+
+All body consumers must take the explicit access path. The implementation
+boundary includes:
+
+| Consumer | Required access behavior |
+|---|---|
+| `crates/model/src/{lib,selector,walk}.rs`, `crates/query/src/lib.rs`, `crates/wire-serve/src/read.rs` | Resolve membership/name candidates without loading all bodies; pin the selected document while computing its answer. |
+| `crates/wire-serve/src/mount_corpus.rs`, `crates/registry/src/{engine,walk_op}.rs` | Mounted roots use the same controller and global budget; holding an engine generation pins descriptors, not every body. |
+| `crates/registry/src/run_op.rs`, `crates/run/src/` | Retain the mode entry's generation and byte handles; cold `fire` serves that version without a new currency pass. Preserve the existing `load` entry freshen and per-target results; never replay earlier targets to resolve a later cold miss. |
+| `crates/registry/src/script_op.rs` | Pure hash-domain reads retain entry-version handles across rebuilds and watcher advances; own-write overlays and live commit guards remain intact. Keep the existing out-of-domain and effects-mode live-read boundaries. |
+| `crates/query/src/relocate.rs`, `crates/wire-serve/src/{relocate,remove,middleware}.rs`, `crates/check/src/`, `crates/mrd/src/{check_cmd,check_armed,repair_cmd,status_cmd,walk_cmd}.rs` | Referrer, link, check and policy scans enumerate every member and stream pinned documents; cold residency never means absence. Preserve the existing atomic write-plan/guard rules. |
+| `crates/view/src/{facts,lib,read_face,store,walk}.rs`, `crates/registry/src/{sql_op,mw_sql}.rs`, `crates/mrd/src/sql.rs` | Build or refresh SQL from a bounded stream over complete membership, retaining atomic generation publication/rollback; a cache shed is not a deletion from SQL. Existing SQL memory settings are independent. |
+| `crates/fs/src/lib.rs`, `crates/registry/src/{registry,parsed_cache}.rs`, `crates/parse-cache/src/snapshot.rs` | Cold build, incremental movers and snapshot save/restore stream through the same slots without accumulating a second eager corpus. |
+| `crates/policy/src/`, `crates/wire-serve/src/watch.rs` | Rule/reaction inputs use explicit pins and retain before/after identity; subscription classification uses the backed baseline of §6.4. |
+
+An operation that needs a multi-file write plan may retain its plan, but
+cannot retain every scanned parse tree as an accidental consequence. The
+plan's payload and concurrent operations are charged transient work. Rebuilds
+share slots for unchanged versions across generations and replace only
+movers; releasing an obsolete generation cannot resurrect shed bodies.
 
 ### 6.9 Durable document reuse
 
 A process restart or resident-budget eviction loses ownership of parsed
 documents, not their content identity. The engine may persist a disposable,
 per-workspace document cache outside the hash domain. Markdown remains the
-sole authority. Cache absence, contention, incompatibility, corruption, or a
-failed save changes cost only; none can make a workspace fail or serve stale
-bytes.
+sole authority. Optional cache absence, contention, incompatibility,
+corruption, or a failed save changes reuse cost only; none can make an
+otherwise available workspace fail or serve different bytes. A record
+explicitly retained as required historical backing instead follows §6.4's
+retention and data-fault contract, independently of optional cache lookups.
 
 **Three independent objects.** The §6.5 observation checkpoint establishes
 file identities and leaf digests under the normal pre-serve barrier. The
@@ -816,10 +1055,12 @@ engine; the cache is private local derived data, not an authenticated remote
 input. Restoring does not re-run the parser to prove every semantic field.
 
 Map verified objects onto current paths, including renamed or duplicate
-content, and pass this transient prior corpus to the SAME `fs::update_corpus`
-used by resident rebuilds. Only misses and movers read/parse source. Rebuild
-the corpus name index from the final documents; never deserialize an index,
-persist an epoch cursor as authority, or retain a second decoded corpus.
+content, and pass this transient prior through the SAME `fs::update_corpus`
+used by resident rebuilds. Adoption obeys the shared residency budget: decode
+one record, derive its name/alias rows, publish its slot, then release the
+temporary pin. Do not retain a second decoded corpus. Only misses and movers
+read/parse source. Rebuild the corpus name index from verified documents;
+never deserialize an index or persist an epoch cursor as authority.
 The existing witness check controls publication, so an older concurrent
 build cannot replace a newer engine. `WarmOutcome::Built.docs` continues to
 count actual parses, including zero when a cold engine restores completely.
@@ -848,6 +1089,61 @@ records, truncated saves, unavailable storage, concurrent publication, eviction,
 and cache GC. A representative corpus measurement must publish encoded size,
 encode/decode cost, and save memory behavior before relying on this format
 for a large workspace.
+
+**Reuse after a document shed.** The sequential snapshot remains the durable
+restart format. A process may retain a lightweight digest-to-record-offset
+index built while validating its framing; it must recheck generation,
+checksum, digest and node invariants whenever decoding a selected record.
+Reading one cold member must not decode the entire snapshot. An optional
+lookup miss uses the slot's retained §6.4 backing; a fresh observation may
+instead read verified source at its permitted entry boundary (§6.8).
+Snapshot saves stream hot and cold members; a failed or skipped save never
+requires hydrating all cold members before they may be shed. The §6.4
+retention obligation covers serving generations as well as watcher baselines
+and never depends on best-effort snapshot publication. A snapshot record
+explicitly retained as required historical backing has that obligation's
+lifetime and fault behavior; it is no longer merely an optional lookup.
+
+**Residency acceptance.** Choose a fixture budget above its audited
+non-sheddable floor and below its eager body cost. After operation pins
+release, the subscribed corpus sheds to that measured bound without losing
+its subscriber, cursor, next seq or node revs.
+Exercise unchanged reads and guarded writes, SQL, links, check, walk and the
+move/remove referrer scans against the same eager corpus. Edit/remove/rename
+cold watcher members, including `HOOKS.md`, and verify before/after reactions
+and frame continuity. Cover source races, invalid UTF-8, spill/cache faults,
+oversized documents, concurrent hydration/pins, cold restart and repeated
+single-member rebuilds. Run the release engine on a private real-root copy
+with a live wire subscription and replayed changes for hours under an 8 GB
+host shape, measuring RSS+swap below 4,000,000,000 bytes; add a second
+subscribed copy under the same global budget. State the measured metadata
+floor, retained-generation/pin/transient overage and SQL limit,
+plus read/put/sub-delivery and cold-member latency against main. A short
+allocator probe establishes component cost, not this soak-test acceptance.
+
+Extend both existing generation-bound regressions with forced body/parse-tree
+shedding and absent, stale or unusable optional snapshot backing:
+
+- `crates/registry/src/run_op.rs`:
+  `a_fire_runs_the_resident_corpus_and_a_load_freshens_it`. Include an
+  unsubscribed root with no watcher baseline to retain bytes accidentally.
+  Warm `HOOKS.md` A, shed it, then overwrite or delete its source. Fire must
+  execute A with A's block rev and no added currency pass/memo borrow. In the
+  overwrite case, load selects B and the next fire executes B with its rev.
+- `crates/registry/src/script_op.rs`:
+  `a_foreign_edit_after_entry_is_invisible_to_reads_and_refuses_the_commit`.
+  Retain the entry generation, shed the member before its first read, make
+  the foreign edit, advance the watcher and publish a newer engine. The
+  earlier script still reads its entry bytes/revs and its live guard still
+  refuses the moved premise without a write. Include an unsubscribed variant
+  and overwritten/deleted source variants, so neither a current watcher nor
+  current disk can hide a missing generation reference.
+
+Also exercise a later cold-target fault after an earlier target has produced
+an effect: the earlier effect occurs once and its result remains, with no
+whole-submission replay. Check backing-record lifetime across snapshot
+replacement/GC, last-generation release and spill compaction. These gates
+test byte recoverability and operation semantics, not whole-corpus RAM pins.
 
 ## 7. Integrity surface + CAS — the grain ladder
 
