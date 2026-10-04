@@ -1012,7 +1012,7 @@ fn ordinary_query_edit_overlap_succeeds_through_the_cli() {
 
 /// Reproduce the shared-session boundary: two SQL requests and an unrelated
 /// read are sent while another connection holds a SQL snapshot past 10 s.
-/// A FIFO keeps the holder in real DuckDB I/O without CPU-dependent spin time.
+/// A FIFO keeps the holder in real `DuckDB` I/O without CPU-dependent spin time.
 #[test]
 fn pipelined_sql_contenders_do_not_timeout_an_unrelated_read() {
     use std::io::{BufRead, BufReader, Write};
