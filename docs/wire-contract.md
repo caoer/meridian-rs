@@ -3100,13 +3100,19 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
   the rows (§10.1).
 - **Projection contention**: an executing query can temporarily prevent a
   changed-cache append; a retired instance can be waiting for outstanding
-  reads before reopening. These refuse `workspace_busy` with `recovery: retry`,
-  independently of actual `io_error` / `env` failures. The CLI makes at most
-  three requests, 100 ms apart, for a retry-class SQL refusal, then reports
-  `NO_VIEW` with the refusal. Once it observes that refusal it never falls
-  through to a local full-corpus projection, including if a subsequent reply
-  is lost. An I/O-class refusal is not retried. The existing one extra
-  `--fresh` attempt applies only after a successful stale answer.
+  reads before reopening. The registry retries preparation for up to the
+  existing eight-second SQL service bound, dropping the store mutex before
+  waiting and sharing one deadline with store-lock acquisition. An exhausted
+  policy wait refuses `workspace_busy` / `recovery: retry`; an exhausted
+  store-lock wait remains `lock_timeout` / `retry`. Actual I/O stays
+  `io_error` / `env`. Unchanged-cache queries retain their concurrent lane.
+- **CLI recovery**: once a retry refusal has been observed, the whole logical
+  invocation stays on the resident route, including the extra `--fresh`
+  attempt after a successful stale answer. Retry attempts share an eight-second
+  elapsed budget and 100 ms backoff; `lock_timeout` is never replayed. This
+  bounds retries, not the execution of an admitted query. Exhaustion or an
+  unusable/lost subsequent reply produces `NO_VIEW` with the refusal, never
+  local full-corpus projection. I/O-class refusals are not retried.
 
 ```json
 {"id":13,"op":"sql","query":"SELECT path FROM doc ORDER BY path"}

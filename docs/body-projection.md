@@ -98,14 +98,21 @@ The writer validates the engine's configuration under an exclusive append
 lease, held through commit or rollback. Executing caller SQL holds shared
 leases through rollback and configuration restoration, so callers can still
 overlap each other but cannot change settings during an append. An append
-attempt while a query executes returns a retryable error before writing; an
-unchanged-cache sync does not wait behind a running query. These transient
-store outcomes are typed independently of the wire and mapped by the registry
-to `workspace_busy` / `recovery: retry`. The CLI retries at most three requests
-with 100 ms between attempts, then reports `NO_VIEW` without loading or
-projecting the corpus locally. After observing a retry refusal, a lost daemon
-response also reports that refusal instead of falling back. Actual I/O errors
-retain their environment class and are not retried by this policy. A pinned read that
+attempt while a query executes yields internally before delta staging. The
+registry retries preparation for up to its existing eight-second service
+bound, releasing the store mutex before every wait. Ordinary finite readers
+can drain without forcing any wire caller to implement recovery. An
+unchanged-cache sync still does not wait behind a running query. Exhaustion
+or delayed retired-instance recovery remains typed `workspace_busy` /
+`recovery: retry`; actual I/O keeps its environment class.
+
+The CLI preserves any observed retry refusal across the whole invocation,
+including the extra `--fresh` attempt. Its retries share an eight-second
+elapsed budget, with 100 ms between attempts, and it never replays
+`lock_timeout` (the engine already waited). The budget bounds retries, not
+execution of an admitted SQL query. Exhaustion, a lost reply, or an unusable
+reply after observed contention reports `NO_VIEW` without loading/projecting
+the corpus locally. Environmental errors are not retried. A pinned read that
 has not started executing can retain its older snapshot across an append.
 
 A failed writer-policy restore (flush count or configuration lock), or an
