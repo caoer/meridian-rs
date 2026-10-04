@@ -3553,6 +3553,71 @@ pub(crate) mod tests {
         );
     }
 
+    /// Inject an impossible restore target without relying on caller SQL to
+    /// damage an instance. This exercises the real restore failure result.
+    fn inject_restore_failure(store: &mut SqlStore) {
+        store.baseline = Arc::new(vec![(
+            "write_buffer_row_group_count".to_owned(),
+            "not-a-count".to_owned(),
+        )]);
+    }
+
+    #[test]
+    fn failed_restore_is_reported_and_retires_outstanding_reads() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        let outstanding = store.begin_read().expect("older read");
+        inject_restore_failure(&mut store);
+
+        let error = store.query("SELECT 1").expect_err("failed restore must be reported");
+        assert!(error.to_string().contains("write_buffer_row_group_count"), "{error}");
+        assert!(store.begin_read().is_err(), "retired instance must reject new reads");
+        assert!(outstanding.run("SELECT 1").is_err(), "already issued reads share retirement");
+    }
+
+    #[test]
+    fn failed_restore_next_append_reopens_with_writer_policy_and_keeps_history() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        inject_restore_failure(&mut store);
+        let _ = store.query("SELECT 1");
+
+        let counts = store.sync(&fixture_v1(), &model::RootedCorpus::ambient(&fixture_v1()), None, None, "b3b:v2", None)
+            .expect("retry reopens and appends").expect("append");
+        assert_eq!(counts.generation, 2, "reopening must retain the committed pin");
+        assert_eq!(global_setting(&store, "write_buffer_row_group_count"), "1");
+        assert_eq!(store.baseline.iter().find(|(name, _)| name == "write_buffer_row_group_count")
+            .expect("writer baseline").1, "1", "the failed instance was replaced");
+        assert_surface_matches_fresh(&store, &fixture_v1());
+    }
+
+    #[test]
+    fn failed_restore_next_append_waits_for_outstanding_handles() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        let outstanding = store.begin_read().expect("older read");
+        inject_restore_failure(&mut store);
+        let _ = store.query("SELECT 1");
+
+        assert!(store.sync(&fixture_v1(), &model::RootedCorpus::ambient(&fixture_v1()), None, None, "b3b:v2", None).is_err(),
+            "must not append or reopen while an old instance handle exists");
+        assert_eq!(store.pin().expect("pin").expect("committed").generation, 1);
+        drop(outstanding);
+        assert_eq!(store.sync(&fixture_v1(), &model::RootedCorpus::ambient(&fixture_v1()), None, None, "b3b:v2", None)
+            .expect("retry after release").expect("append").generation, 2);
+    }
+
+    #[test]
+    fn caller_lane_accepts_multiple_harmless_statements() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let (_, rows) = store.query("SELECT 1; SELECT 2").expect("lane").expect("query");
+        assert_eq!(rows, vec![vec![Json::from(2)]]);
+    }
+
     /// One GLOBAL setting's live value, read on the store's own base
     /// connection so it is never the read lane's own answer about itself.
     fn global_setting(store: &SqlStore, name: &str) -> String {
