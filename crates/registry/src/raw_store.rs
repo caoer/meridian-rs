@@ -632,7 +632,8 @@ mod tests {
     fn repeated_versions_reclaim_real_segments_after_the_last_lease() {
         let home = tempfile::tempdir().unwrap();
         let store = RawStore::new(home.path()).unwrap();
-        let entry = store.retain(&vec![b'A'; 8192]).unwrap();
+        let original = [b'A'; 8192];
+        let entry = store.retain(&original).unwrap();
         let mut current = entry.clone();
         for i in 1..=64 {
             let text = format!("version {i}\n{}", "x".repeat(8192));
@@ -646,7 +647,7 @@ mod tests {
                 stats.stored_bytes < 3 * 8192,
                 "dead history accumulated: {stats:?}"
             );
-            assert_eq!(&*entry.read().unwrap(), &vec![b'A'; 8192]);
+            assert_eq!(entry.read().unwrap().as_slice(), original.as_slice());
         }
         drop(entry);
         store.compact().unwrap();
