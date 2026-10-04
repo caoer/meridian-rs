@@ -600,6 +600,18 @@ or cache dependencies. Publish a handle only after its complete record can
 be read and checked. Keep a segment while any serving descriptor, baseline or
 operation references it; reclaim obsolete segments, compacting live records
 in bounded chunks without invalidating live handles.
+
+The raw-store primitive (`crates/registry/src/raw_store.rs`) retains identity,
+length and a relocatable record handle, never a second in-memory body. Its
+deduplication index holds weak references, so it cannot keep obsolete versions
+alive. Reads verify the record framing, checksum and content digest; an error
+is a fallible read, never absence or a live-source fallback. Compaction writes
+and verifies all replacement records before moving handles, while readers
+retain the exact segment they opened. The owner explicitly runs reclamation;
+no background worker or startup recovery grants old segments authority.
+Normal last-owner release removes owned segments and the private store
+directory. Crash debris belongs to the enclosing disposable-cache lifecycle.
+
 Process death invalidates handles; a new process observes disk by §6.5 and
 does not treat spill as journal authority. Missing, truncated or corrupt
 required backing must recover the same verified version from another source
