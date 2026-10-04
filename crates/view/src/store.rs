@@ -449,6 +449,7 @@ struct BaseDelta {
 
 /// One append's already-decided inputs. The cache diff and corpus-wide name
 /// index are fixed before any batch writes into the transaction.
+#[derive(Clone, Copy)]
 struct AppendPlan<'a, 'corpus> {
     docs: &'a model::Docs,
     reproject: &'a BTreeSet<String>,
