@@ -2539,6 +2539,40 @@ pub(crate) mod tests {
         assert_eq!(count(&store, "SELECT count(*) FROM hist.pin"), 2);
     }
 
+    /// The cache's physical row groups and eager completed-group flush are
+    /// selected before the first append. A cloned caller read must resolve
+    /// the attached cache as its current catalog, including after reopen.
+    #[test]
+    fn resident_cache_uses_bounded_row_group_catalog() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let file = tmp_store(&dir);
+        let mut store = SqlStore::open(&file).expect("fresh open");
+        let setting: String = store
+            .connection()
+            .query_row(
+                "SELECT current_setting('write_buffer_row_group_count')::VARCHAR",
+                [],
+                |r| r.get(0),
+            )
+            .expect("flush policy");
+        assert_eq!(setting, "1", "one completed row group must flush");
+        let catalog: String = store
+            .connection()
+            .query_row("SELECT current_database()", [], |r| r.get(0))
+            .expect("current catalog");
+        assert_eq!(catalog, "meridian_sql");
+
+        sync_ambient(&mut store, &fixture_v1(), "b3b:catalog").expect("cold append");
+        let (_, rows) = store.query("SELECT count(*) FROM doc").expect("lane").expect("query");
+        assert_eq!(rows, vec![vec![Json::from(3)]]);
+        drop(store);
+
+        let reopened = SqlStore::open(&file).expect("reopen");
+        assert_eq!(reopened.pin().expect("pin").expect("pinned").generation, 1);
+        let (_, rows) = reopened.query("SELECT count(*) FROM doc").expect("lane").expect("query");
+        assert_eq!(rows, vec![vec![Json::from(3)]]);
+    }
+
     /// The byte target is not a document-size refusal. A single oversized
     /// body is appended intact, and its size is the explicit outlier in any
     /// peak claim for such a corpus.
