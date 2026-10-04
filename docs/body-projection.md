@@ -62,10 +62,13 @@ once. The current target is 32 MiB of estimated owned projected-row storage:
 new rows' `Value` slots and their text/list/blob payload capacities are counted
 as each document is collected. The estimate excludes the already-resident
 `Document.raw`, the corpus-wide name index, spare outer-vector capacity, and
-DuckDB-native storage; the process peak must be measured separately. A document
-whose projected rows exceed the target is processed intact in its own batch;
-it is never refused or truncated. The largest body chunk in the measured
-workload therefore belongs beside any peak memory claim. Each batch's
+DuckDB-native storage; the process peak must be measured separately. The
+threshold is checked after a complete document or `.base` member is projected,
+so staging can reach the target plus one whole projected document/member,
+including its section, link, task, and path rows. An oversized member can share
+a batch with earlier rows; it is never refused or truncated. The largest
+complete projected document/member therefore belongs beside any peak memory
+claim. Each batch's
 appenders are flushed and dropped before the next batch. The name index and
 affected-path decision still see the whole corpus, and the content-addressed
 `body_key` set survives between batches. All batches, tombstones, and the **one
@@ -82,9 +85,29 @@ catalog with 2,048-row groups, and one completed row group is enough to flush
 the write buffer. The caller read's cloned connection selects that same catalog
 before pinning its snapshot. This lets completed groups reach disk during the
 single append transaction instead of keeping the whole cold body projection in
-transaction-local memory. The open group and a single oversized body remain
-peak costs, so the setting is not a process-wide memory cap. A cache made with
+transaction-local memory. The unfinished native row group remains a byte cost,
+even with fewer than 2,048 rows; the corpus-wide index, affected-path sets, and
+historical body-key set are also outside the staging target. This is not a
+process-wide memory cap or a fixed peak bound for arbitrary workloads. A cache made with
 the prior physical row-group layout is cold-rebuilt before reuse.
+
+The writer validates the engine's configuration under an exclusive append
+lease, held through commit or rollback. Executing caller SQL holds shared
+leases through rollback and configuration restoration, so callers can still
+overlap each other but cannot change settings during an append. An append
+attempt while a query executes returns a retryable error before writing; an
+unchanged-cache sync does not wait behind a running query. A pinned read that
+has not started executing can retain its older snapshot across an append.
+
+A failed configuration restore is reported and retires that database instance
+from further queries and appends. Handles already outside the store mutex share
+the retirement state. Once those handles are released, the next sync closes
+the old instance and reopens the same cache file with the engine's settings;
+the committed pin and history survive. While old handles remain, sync reports
+a retryable error and writes nothing. Caller SQL remains unrestricted by this
+policy: the pinned driver accepts multiple statements per call, and rollback
+alone cannot restore instance-global settings. Settings of overlapping callers
+can still affect each other while their queries run.
 
 ## §5 Alternatives
 
