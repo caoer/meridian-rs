@@ -3223,7 +3223,7 @@ mod spill_tests {
     }
 
     /// The resident daemon opens this store before the first SQL call. Its
-    /// DuckDB budget must already be in force, including after reopening a
+    /// `DuckDB` budget must already be in force, including after reopening a
     /// persisted drawer.
     #[test]
     fn resident_store_memory_limit_is_set_at_open() {
