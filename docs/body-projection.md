@@ -94,39 +94,34 @@ historical body-key set are also outside the staging target. This is not a
 process-wide memory cap or a fixed peak bound for arbitrary workloads. A cache made with
 the prior physical row-group layout is cold-rebuilt before reuse.
 
-The writer validates the engine's configuration under an exclusive append
-lease, held through commit or rollback. Executing caller SQL holds shared
-leases through rollback and configuration restoration, so callers can still
-overlap each other but cannot change settings during an append. An append
-attempt while a query executes yields internally before delta staging. The
-registry retries preparation for up to its existing eight-second service
-bound, releasing the store mutex before every wait. Ordinary finite readers
-can drain without forcing any wire caller to implement recovery. An
-unchanged-cache sync still does not wait behind a running query. Exhaustion
-or delayed retired-instance recovery remains typed `workspace_busy` /
-`recovery: retry`; actual I/O keeps its environment class.
+Before each append transaction, the writer checks and reasserts its required
+flush policy against the engine's open-time baseline. A restoration failure
+(flush count or configuration lock), or an unreadable configuration snapshot,
+retires that instance. Already-issued reads share the retirement state. A
+retired instance cannot start another append; the writer also checks retirement
+between batches and before publication. Once outstanding read handles finish,
+the next sync closes the old instance and reopens the same file with fresh
+engine settings, preserving the committed pin and history. Until then it
+refuses promptly as `workspace_busy` / `recovery: retry`.
 
-The CLI preserves any observed retry refusal across the whole invocation,
-including the extra `--fresh` attempt. Its retries share an eight-second
-elapsed budget, with 100 ms between attempts, and it never replays
-`lock_timeout` (the engine already waited). The budget bounds retries, not
-execution of an admitted SQL query. Exhaustion, a lost reply, or an unusable
-reply after observed contention reports `NO_VIEW` without loading/projecting
-the corpus locally. Environmental errors are not retried. A pinned read that
-has not started executing can retain its older snapshot across an append.
+Caller reads and appends retain the base concurrency model. There is no
+read/write exclusion lease or preparation-wait loop. A reader's transaction is
+pinned before it leaves the store mutex and can overlap a later append without
+seeing that append. Caller SQL remains unrestricted by this policy, including
+multiple statements per call. A concurrent caller's GLOBAL setting can
+**temporarily change native flushing during an already-started append**;
+restore/reopen prevents permanent drift from silently becoming the next
+append's policy, but does not isolate settings during overlapping calls.
+The release memory gate is measured without concurrent caller configuration
+changes and is not a universal memory cap. Other global settings retain their
+best-effort restoration contract; rounded sizes need not round-trip through
+DuckDB's reported strings.
 
-A failed writer-policy restore (flush count or configuration lock), or an
-unreadable configuration snapshot, is reported and retires that database instance
-from further queries and appends. Handles already outside the store mutex share
-the retirement state. Once those handles are released, the next sync closes
-the old instance and reopens the same cache file with the engine's settings;
-the committed pin and history survive. While old handles remain, sync reports
-a retryable error and writes nothing. Caller SQL remains unrestricted by this
-policy: the pinned driver accepts multiple statements per call, and rollback
-alone cannot restore instance-global settings. Settings of overlapping callers
-can still affect each other while their queries run. Other global settings
-retain their best-effort restoration contract; rounded size settings do not
-necessarily round-trip through DuckDB's reported strings.
+The CLI reports a retry-class daemon refusal as `NO_VIEW`, without a local
+full-corpus fallback or an automatic retry budget. Its one extra `--fresh`
+attempt after a successful stale answer stays on the resident route: an
+unusable or lost reply reports a refusal, never a local projection. Actual
+initial I/O failures retain their existing environment-class behavior.
 
 ## §5 Alternatives
 

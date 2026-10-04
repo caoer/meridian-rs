@@ -3098,21 +3098,18 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
   the resident memo at the vouched grade (`node-rev-merkle-spec.md` §6.7; the
   leaf-memo stat sweep is the floor on a named miss), so `state` post-dates
   the rows (§10.1).
-- **Projection contention**: an executing query can temporarily prevent a
-  changed-cache append; a retired instance can be waiting for outstanding
-  reads before reopening. The registry retries preparation for up to the
-  existing eight-second SQL service bound, dropping the store mutex before
-  waiting and sharing one deadline with store-lock acquisition. An exhausted
-  policy wait refuses `workspace_busy` / `recovery: retry`; an exhausted
-  store-lock wait remains `lock_timeout` / `retry`. Actual I/O stays
-  `io_error` / `env`. Unchanged-cache queries retain their concurrent lane.
-- **CLI recovery**: once a retry refusal has been observed, the whole logical
-  invocation stays on the resident route, including the extra `--fresh`
-  attempt after a successful stale answer. Retry attempts share an eight-second
-  elapsed budget and 100 ms backoff; `lock_timeout` is never replayed. This
-  bounds retries, not the execution of an admitted query. Exhaustion or an
-  unusable/lost subsequent reply produces `NO_VIEW` with the refusal, never
-  local full-corpus projection. I/O-class refusals are not retried.
+- **Projection concurrency**: caller read snapshots can overlap an append.
+  The writer checks its required configuration before BEGIN and refuses a
+  retired instance; temporary caller setting changes during overlap are the
+  disclosed limit in `body-projection.md` §4. A retired instance awaiting its
+  outstanding handles refuses promptly as `workspace_busy` / `recovery: retry`.
+  There is no read/append exclusion lease or preparation-wait loop. The existing
+  bounded store-mutex wait still returns `lock_timeout` / `retry`; actual I/O
+  stays `io_error` / `env`.
+- **CLI recovery**: a retry-class refusal produces `NO_VIEW` directly, without
+  a local full-corpus projection or an automatic retry budget. The one extra
+  `--fresh` attempt after a successful stale answer also stays on the resident
+  route: an unusable/lost reply produces a refusal instead of falling back.
 
 ```json
 {"id":13,"op":"sql","query":"SELECT path FROM doc ORDER BY path"}
