@@ -1029,11 +1029,23 @@ fn pipelined_sql_contenders_do_not_timeout_an_unrelated_read() {
     use std::os::unix::net::UnixStream;
     use std::time::{Duration, Instant};
 
-    fn exchange(writer: &mut UnixStream, reader: &mut BufReader<UnixStream>, value: &Value) -> Value {
-        writeln!(writer, "{value}").unwrap();
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        serde_json::from_str(&line).unwrap()
+    fn exchange(
+        writer: &mut UnixStream,
+        reader: &mut BufReader<UnixStream>,
+        value: &Value,
+    ) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            writeln!(writer, "{value}").unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let answer: Value = serde_json::from_str(&line).unwrap();
+            if answer["error"]["code"] != "corpus_warming" {
+                return answer;
+            }
+            assert!(Instant::now() < deadline, "fixture did not warm: {answer}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     let sb = sandbox();
@@ -1043,62 +1055,125 @@ fn pipelined_sql_contenders_do_not_timeout_an_unrelated_read() {
     config.idle_exit = None;
     config.drain_cold_builds = Duration::from_secs(30);
     let server = registry::RunningServer::start(config).unwrap();
-    assert!(sb.run(&ws, &["sql", "--json", "SELECT path FROM doc"]).status.success());
+    assert!(
+        sb.run(&ws, &["sql", "--json", "SELECT path FROM doc"])
+            .status
+            .success()
+    );
     let fifo = sb.tmp.path().join("hold.csv");
-    assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
     let (opened, ready) = std::sync::mpsc::channel();
+    let (start_hold, hold_started) = std::sync::mpsc::channel();
     let feeder = std::thread::spawn({
         let fifo = fifo.clone();
         move || {
             let deadline = Instant::now() + Duration::from_secs(20);
             let mut file = loop {
-                match std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&fifo) {
+                match std::fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&fifo)
+                {
                     Ok(file) => break file,
-                    Err(error) if error.raw_os_error() == Some(libc::ENXIO) && Instant::now() < deadline => {
+                    Err(error)
+                        if error.raw_os_error() == Some(libc::ENXIO)
+                            && Instant::now() < deadline =>
+                    {
                         std::thread::sleep(Duration::from_millis(5));
                     }
                     Err(error) => panic!("FIFO query never opened: {error}"),
                 }
             };
             opened.send(()).unwrap();
+            hold_started.recv_timeout(Duration::from_secs(20)).unwrap();
             std::thread::sleep(Duration::from_secs(12));
             file.write_all(b"1\n").unwrap();
         }
     });
     let mut holder_writer = UnixStream::connect(server.socket_path()).unwrap();
-    holder_writer.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+    holder_writer
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
     let mut holder_reader = BufReader::new(holder_writer.try_clone().unwrap());
     let hello = serde_json::json!({"op":"hello","proto":1,"contract":"v3","workspace":ws});
-    assert_eq!(exchange(&mut holder_writer, &mut holder_reader, &hello)["ok"], true);
+    assert_eq!(
+        exchange(&mut holder_writer, &mut holder_reader, &hello)["ok"],
+        true
+    );
     let holder = std::thread::spawn(move || {
         let started = Instant::now();
         let path = fifo.display().to_string().replace('\'', "''");
-        let query = format!("SELECT count(*) FROM read_csv('{path}', auto_detect=false, header=false, columns={{'n':'INTEGER'}}, parallel=false)");
-        let answer = exchange(&mut holder_writer, &mut holder_reader, &serde_json::json!({"id":1,"op":"sql","query":query}));
+        let query = format!(
+            "SELECT count(*) FROM read_csv('{path}', auto_detect=false, header=false, columns={{'n':'INTEGER'}}, parallel=false)"
+        );
+        let answer = exchange(
+            &mut holder_writer,
+            &mut holder_reader,
+            &serde_json::json!({"id":1,"op":"sql","query":query}),
+        );
         (started.elapsed(), answer)
     });
-    ready.recv_timeout(Duration::from_secs(20)).expect("holder is executing SQL");
+    ready
+        .recv_timeout(Duration::from_secs(20))
+        .expect("holder is executing SQL");
     std::fs::write(ws.join("b.md"), "# B\n").unwrap();
     let mut writer = UnixStream::connect(server.socket_path()).unwrap();
     let mut reader = BufReader::new(writer.try_clone().unwrap());
     assert_eq!(exchange(&mut writer, &mut reader, &hello)["ok"], true);
     // This read warms the changed corpus without advancing the SQL cache.
-    assert_eq!(exchange(&mut writer, &mut reader, &serde_json::json!({"op":"read","path":"b.md"}))["ok"], true);
+    assert_eq!(
+        exchange(
+            &mut writer,
+            &mut reader,
+            &serde_json::json!({"op":"read","path":"b.md"})
+        )["ok"],
+        true
+    );
     let started = Instant::now();
+    start_hold.send(()).unwrap();
     for id in [11, 12] {
-        writeln!(writer, "{}", serde_json::json!({"id":id,"op":"sql","query":"SELECT path FROM doc ORDER BY path"})).unwrap();
+        writeln!(
+            writer,
+            "{}",
+            serde_json::json!({"id":id,"op":"sql","query":"SELECT path FROM doc ORDER BY path"})
+        )
+        .unwrap();
         std::thread::sleep(Duration::from_millis(100));
     }
-    writeln!(writer, "{}", serde_json::json!({"id":13,"op":"read","path":"a.md"})).unwrap();
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"id":13,"op":"read","path":"a.md"})
+    )
+    .unwrap();
     let mut answers = Vec::new();
     let mut transport_error = None;
     for _ in 0..3 {
-        reader.get_ref().set_read_timeout(Some(Duration::from_secs(10).saturating_sub(started.elapsed()).max(Duration::from_millis(1)))).unwrap();
+        reader
+            .get_ref()
+            .set_read_timeout(Some(
+                Duration::from_secs(10)
+                    .saturating_sub(started.elapsed())
+                    .max(Duration::from_millis(1)),
+            ))
+            .unwrap();
         let mut line = String::new();
         match reader.read_line(&mut line) {
-            Ok(0) => { transport_error = Some("closed".to_owned()); break; }
+            Ok(0) => {
+                transport_error = Some("closed".to_owned());
+                break;
+            }
             Ok(_) => answers.push(serde_json::from_str::<Value>(&line).unwrap()),
-            Err(error) => { transport_error = Some(error.to_string()); break; }
+            Err(error) => {
+                transport_error = Some(error.to_string());
+                break;
+            }
         }
     }
     let elapsed = started.elapsed();
@@ -1107,12 +1182,24 @@ fn pipelined_sql_contenders_do_not_timeout_an_unrelated_read() {
     feeder.join().unwrap();
     let (held, answer) = holder.join().unwrap();
     server.shutdown();
-    eprintln!("pipelined SQL/read: holder={held:?}, replies={elapsed:?}, fault={transport_error:?}, answers={answers:?}");
-    assert!(held >= Duration::from_secs(10), "holder must outlast the transport budget");
-    assert_eq!(answer["body"]["rows"], serde_json::json!([[1]]), "real CSV query: {answer}");
-    assert!(transport_error.is_none(), "SQL wait retired the pooled session: {transport_error:?}");
+    eprintln!(
+        "pipelined SQL/read: holder={held:?}, replies={elapsed:?}, fault={transport_error:?}, answers={answers:?}"
+    );
+    assert!(
+        held >= Duration::from_secs(10),
+        "holder must outlast the transport budget"
+    );
+    assert_eq!(
+        answer["body"]["rows"],
+        serde_json::json!([[1]]),
+        "real CSV query: {answer}"
+    );
+    assert!(
+        transport_error.is_none(),
+        "SQL wait retired the pooled session: {transport_error:?}"
+    );
     assert_eq!(answers.len(), 3);
-    for (answer, id) in answers.iter().zip([11,12,13]) {
+    for (answer, id) in answers.iter().zip([11, 12, 13]) {
         assert_eq!(answer["id"], id);
         assert_eq!(answer["ok"], true, "ordinary overlap: {answer}");
     }
