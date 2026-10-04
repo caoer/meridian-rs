@@ -196,7 +196,11 @@ use crate::{
 ///
 /// `16`: `hist.lock` + `main.lock` — a v15 file holds no pin rows for pages
 /// whose fingerprints will not move. Same repair-by-rebuild reasoning as `9`.
-pub const CACHE_SCHEMA_VERSION: i64 = 16;
+/// `17`: the persistent file uses 2,048-row groups so completed groups can
+/// leave transaction-local memory before the one pin-last commit. A v16 file
+/// has the prior physical row-group layout and must be cold-rebuilt. No hist
+/// DDL or projection changed, so the drawer's `SCHEMA_SALT` stays at `s16`.
+pub const CACHE_SCHEMA_VERSION: i64 = 17;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
 pub const SQL_CACHE_FILENAME: &str = "sql.duckdb";
@@ -1066,6 +1070,20 @@ impl std::fmt::Debug for SqlStore {
     }
 }
 
+const SQL_CACHE_CATALOG: &str = "meridian_sql";
+
+/// Attach the file with a physical row-group size before any cache table is
+/// created. `row_group_size` is an ATTACH option, not a runtime `SET` or a
+/// `Connection::open_with_flags` option on the vendored DuckDB version.
+fn open_sql_cache(file: &Path) -> duckdb::Result<Connection> {
+    let conn = Connection::open_in_memory()?;
+    let escaped = file.display().to_string().replace('\'', "''");
+    conn.execute_batch(&format!(
+        "ATTACH '{escaped}' AS {SQL_CACHE_CATALOG} (ROW_GROUP_SIZE 2048); USE {SQL_CACHE_CATALOG}"
+    ))?;
+    Ok(conn)
+}
+
 impl SqlStore {
     /// Open the cache file at `file`, creating and initialising it when
     /// absent. A file that cannot be opened, has no readable pin ledger, or
@@ -1082,7 +1100,7 @@ impl SqlStore {
             std::fs::create_dir_all(parent).map_err(ViewError::Io)?;
         }
         let fresh = !file.exists();
-        let conn = match Connection::open(file) {
+        let conn = match open_sql_cache(file) {
             Ok(conn) => conn,
             // Unopenable and absent-lock: a torn/corrupt file. The DuckDB
             // lock error must NOT be repaired by deletion (a live holder
@@ -1117,7 +1135,7 @@ impl SqlStore {
     fn recreate(file: &Path) -> Result<SqlStore, ViewError> {
         let _ = std::fs::remove_file(file);
         let _ = std::fs::remove_file(wal_path(file));
-        let conn = Connection::open(file)?;
+        let conn = open_sql_cache(file)?;
         conn.execute_batch(CACHE_SCHEMA_SQL)?;
         Self::adopt(conn, file)
     }
@@ -1134,6 +1152,12 @@ impl SqlStore {
             baseline: Arc::new(Vec::new()),
         };
         apply_spill_containment(&store.conn, &store.spill_dir())?;
+        // One completed 2,048-row group is eligible for optimistic disk
+        // flush inside the single append transaction. Keep this in the
+        // open-time baseline so a caller's SET cannot bind later callers.
+        store
+            .conn
+            .execute_batch("SET write_buffer_row_group_count=1;")?;
         apply_extension_gate(&store.conn)?;
         store.baseline = Arc::new(global_config_snapshot(&store.conn)?);
         Ok(store)
@@ -1849,6 +1873,9 @@ impl SqlStore {
     /// The connection cannot be cloned, or `BEGIN` / the forcing read fails.
     pub fn begin_read(&self) -> Result<SqlRead, ViewError> {
         let conn = self.conn.try_clone()?;
+        // `try_clone` shares the attached database instance but does not
+        // inherit this connection's current catalog.
+        conn.execute_batch(&format!("USE {SQL_CACHE_CATALOG}"))?;
         conn.execute_batch("BEGIN")?;
         // Not a health check and not a warm-up: this is the statement that
         // MAKES the snapshot. Removing it silently re-opens the freshness lie.
@@ -2563,13 +2590,19 @@ pub(crate) mod tests {
         assert_eq!(catalog, "meridian_sql");
 
         sync_ambient(&mut store, &fixture_v1(), "b3b:catalog").expect("cold append");
-        let (_, rows) = store.query("SELECT count(*) FROM doc").expect("lane").expect("query");
+        let (_, rows) = store
+            .query("SELECT count(*) FROM doc")
+            .expect("lane")
+            .expect("query");
         assert_eq!(rows, vec![vec![Json::from(3)]]);
         drop(store);
 
         let reopened = SqlStore::open(&file).expect("reopen");
         assert_eq!(reopened.pin().expect("pin").expect("pinned").generation, 1);
-        let (_, rows) = reopened.query("SELECT count(*) FROM doc").expect("lane").expect("query");
+        let (_, rows) = reopened
+            .query("SELECT count(*) FROM doc")
+            .expect("lane")
+            .expect("query");
         assert_eq!(rows, vec![vec![Json::from(3)]]);
     }
 
@@ -2999,6 +3032,38 @@ pub(crate) mod tests {
         );
     }
 
+    /// Version 16 used DuckDB's default physical row groups. Attaching that
+    /// file with the new option is allowed, so the pin version must force a
+    /// cold rebuild before any old group is reused.
+    #[test]
+    fn prior_physical_row_group_cache_is_rebuilt() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let file = tmp_store(&dir);
+        let legacy = Connection::open(&file).expect("legacy direct open");
+        legacy
+            .execute_batch(CACHE_SCHEMA_SQL)
+            .expect("legacy schema");
+        legacy
+            .execute(
+                "INSERT INTO hist.pin (gen, fingerprint, cache_schema_version) \
+                 VALUES (1, 'b3b:old', 16)",
+                [],
+            )
+            .expect("legacy pin");
+        drop(legacy);
+
+        let store = SqlStore::open(&file).expect("rebuild old layout");
+        assert!(
+            store.pin().expect("pin").is_none(),
+            "old cache was recreated"
+        );
+        let catalog: String = store
+            .connection()
+            .query_row("SELECT current_database()", [], |r| r.get(0))
+            .expect("catalog");
+        assert_eq!(catalog, SQL_CACHE_CATALOG);
+    }
+
     #[test]
     fn domain_rule_prefix_change_cold_rebuilds_never_appends() {
         let dir = tempfile::tempdir().expect("tmpdir");
@@ -3215,6 +3280,8 @@ pub(crate) mod tests {
 
         let c1 = store.connection().try_clone().expect("clone 1");
         let c2 = store.connection().try_clone().expect("clone 2");
+        c1.execute_batch("USE meridian_sql").expect("catalog 1");
+        c2.execute_batch("USE meridian_sql").expect("catalog 2");
         c1.execute_batch("BEGIN").expect("begin 1");
         c2.execute_batch("BEGIN").expect("begin 2");
         c1.execute("UPDATE hist.doc SET bytes = 1", [])
