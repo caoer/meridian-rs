@@ -1037,6 +1037,28 @@ parsing. In-memory fixtures have an eager implementation of the same
 contract. No infallible map indexing, iterator that omits cold members, or
 fallback empty document is a legal cold access.
 
+The first SQL consumer uses `model::catalog::DocumentCatalog`: immutable,
+complete path/revision metadata, a name index, and a fallible document lease.
+Membership and rooted name resolution never require target bodies. The eager
+adapter borrows existing documents and builds its index only on demand.
+`registry::residency::catalog::Catalog` captures an already-built generation
+into required backing and controller members; it retains no eager document
+owners. Capture is not the final streaming builder or daemon activation: its
+metadata/backing floor and capture staging still belong to its host.
+
+`SqlStore::sync_catalog` compares metadata, then scans pinned bodies through
+the existing bounded row batches. A lease ends after its document has been
+projected, before the next pin or SQL batch flush. A known member that cannot
+be pinned, or whose parsed revision disagrees with its descriptor, is an
+explicit fault; it cannot disappear from SQL. A fault after any batch has
+flushed rolls back the entire generation, including bodies, tombstones and
+pin. The unchanged fast path does not hydrate bodies or rebuild the eager
+index. The existing `sync` entry uses the eager adapter; daemon generation
+publication and the other body consumers are not yet migrated by this seam.
+These catalogs consume one immutable generation. They do not read the watcher
+memo's root and leaves separately; making that observation atomic remains a
+watcher activation requirement.
+
 The dependency-neutral byte contract is `model::bytes::ByteSource`: a
 retained version has a fixed digest and length, and reading it returns shared
 immutable bytes or an explicit error. `SharedBytes` preserves arbitrary bytes;

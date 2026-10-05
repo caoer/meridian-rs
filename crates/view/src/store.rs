@@ -1409,6 +1409,25 @@ impl SqlStore {
         Ok(Some(counts))
     }
 
+    /// Project an immutable catalog through fallible body leases.
+    ///
+    /// # Errors
+    /// Source or SQL failures leave the prior generation intact.
+    #[allow(clippy::unused_self)]
+    pub fn sync_catalog(
+        &mut self,
+        _docs: &dyn model::catalog::DocumentCatalog,
+        _corpus: &dyn model::catalog::NameCorpus,
+        _mounts: Option<&addr::MountSet>,
+        _exclusion: Option<ExclusionProbe<'_>>,
+        _fingerprint: &str,
+        _base: Option<&BaseWalk<'_>>,
+    ) -> Result<Option<AppendCounts>, ViewError> {
+        Err(ViewError::Io(std::io::Error::other(
+            "catalog projection not implemented",
+        )))
+    }
+
     /// Write every bounded batch under one generation transaction. The plan
     /// is decided against the committed cache before this method begins.
     fn append_batched(&self, plan: AppendPlan<'_, '_>) -> Result<(), ViewError> {
@@ -2454,7 +2473,7 @@ pub(crate) mod tests {
 
     /// Assert the cache's caller surface equals a fresh ephemeral build of the
     /// same docs — the card-1/-2 acceptance, per surface.
-    fn assert_surface_matches_fresh(store: &SqlStore, docs: &model::Docs) {
+    pub(super) fn assert_surface_matches_fresh(store: &SqlStore, docs: &model::Docs) {
         let fresh = crate::build_memory(docs, "b3b:reference").expect("fresh build");
         assert_eq!(
             surface_digests(store.connection()),
@@ -4572,3 +4591,6 @@ mod column_miss_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod catalog_tests;

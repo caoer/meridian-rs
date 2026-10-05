@@ -21,6 +21,7 @@ use addr::{Addr, AddrError, MountName, MountSet};
 
 pub mod allocation;
 pub mod bytes;
+pub mod catalog;
 pub mod delta;
 pub mod fingerprint;
 pub mod gotext;
@@ -2803,7 +2804,7 @@ impl CorpusIndex {
         &self,
         spelling: &str,
         from: &str,
-        corpus: &RootedCorpus<'_>,
+        corpus: &dyn catalog::NameCorpus,
         mounts: &MountSet,
     ) -> RefResolution {
         let addr = match Addr::parse(spelling) {
@@ -2813,7 +2814,7 @@ impl CorpusIndex {
 
         let Some(root) = addr.root().cloned() else {
             // Ambient root — majority path.
-            return match self.three_rules(spelling, from, corpus.ambient_docs()) {
+            return match self.three_rules(spelling, from, |path| corpus.contains(None, path)) {
                 Some(path) => RefResolution::Ambient(path),
                 None => RefResolution::NotFound {
                     root: None,
@@ -2837,7 +2838,7 @@ impl CorpusIndex {
         }
 
         // Bound in table but no corpus loaded here — unreachable, never undeclared.
-        let Some(mounted) = corpus.root(&root) else {
+        let Some(index) = corpus.root_index(&root) else {
             return RefResolution::PathUnseeable {
                 root,
                 path: String::new(),
@@ -2856,7 +2857,7 @@ impl CorpusIndex {
 
         // Three rules on the target root only (C-2: no ambient fallback). Miss ⇒
         // file_not_found scoped to that root, not grey.
-        match mounted.index.three_rules(addr.path(), from, mounted.docs) {
+        match index.three_rules(addr.path(), from, |path| corpus.contains(Some(&root), path)) {
             Some(path) => RefResolution::Rooted { root, path },
             None => RefResolution::NotFound {
                 root: Some(root),
@@ -2868,12 +2869,17 @@ impl CorpusIndex {
 
     /// Three rules over one root's corpus (key / key+`.md` / linkpath), shared
     /// by the ambient and mounted arms of [`resolve_ref`].
-    fn three_rules(&self, spelling: &str, from: &str, docs: &Docs) -> Option<String> {
-        if docs.contains_key(spelling) {
+    fn three_rules(
+        &self,
+        spelling: &str,
+        from: &str,
+        contains: impl Fn(&str) -> bool,
+    ) -> Option<String> {
+        if contains(spelling) {
             return Some(spelling.to_owned());
         }
         let with_md = format!("{spelling}.md");
-        if docs.contains_key(&with_md) {
+        if contains(&with_md) {
             return Some(with_md);
         }
         self.resolve_linkpath(spelling, from)
