@@ -4573,8 +4573,11 @@ impl PreparedBaseline {
     }
 
     /// Add already-prepared replacements to an unpublished snapshot.
-    pub fn append(&mut self, mut replacements: Self) {
-        self.0.append(&mut replacements.0);
+    pub fn extend(&mut self, replacements: Self) {
+        // Insert only movers; BTreeMap::append rebuilds the entire tree when
+        // both maps are nonempty, turning a single raced member into O(corpus)
+        // allocation work under the flock.
+        self.0.extend(replacements.0);
     }
 
     /// Materialize selected candidates for rebinding to another provider.

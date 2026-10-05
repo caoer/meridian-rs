@@ -1,6 +1,6 @@
 //! Measure default priming's actual flock-held work on a synthetic corpus.
 //! Run only on a build host. Arguments: members, bytes/member, rounds, optional
-//! maximum allocations per prime. This is not the real-root RSS acceptance run.
+//! maximum allocations per prime and number of members changed after capture. This is not the real-root RSS acceptance run.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Mutex;
@@ -71,6 +71,8 @@ fn main() {
     let bytes = argument(&args, 1, 4096);
     let rounds = argument(&args, 2, 5);
     let max_allocations = argument(&args, 3, usize::MAX);
+    let movers = argument(&args, 4, 0);
+    assert!(movers <= members);
     assert!(members > 0 && bytes >= 16 && rounds > 0);
     let tmp = tempfile::tempdir().unwrap();
     let root = fs::WorkspaceRoot(tmp.path().to_path_buf());
@@ -81,17 +83,31 @@ fn main() {
     }
     drop(raw);
     let (_, leaves, folded) = fs::domain_snapshot_with_leaves(&root).unwrap();
-    let leaves: std::collections::BTreeMap<String, [u8; 32]> = leaves
+    let mut leaves: std::collections::BTreeMap<String, [u8; 32]> = leaves
         .into_iter()
         .map(|(path, digest)| (path.to_str().unwrap().to_owned(), digest))
         .collect();
     assert_eq!(leaves.len(), members);
-    let observed = wire::Root(folded.0);
+    let mut observed = wire::Root(folded.0);
     let mut failed = false;
     for round in 0..rounds {
         let start = Instant::now();
         let snapshot = wire_serve::watch::PrimeSnapshot::take(&root).unwrap();
         let snapshot_us = start.elapsed().as_micros();
+        if movers != 0 {
+            let mut replacement = vec![b'x'; bytes];
+            let label = format!("# Round {round}\n");
+            replacement[..label.len()].copy_from_slice(label.as_bytes());
+            for i in 0..movers {
+                std::fs::write(root.0.join(format!("member-{i:08}.md")), &replacement).unwrap();
+            }
+            let (_, fresh, folded) = fs::domain_snapshot_with_leaves(&root).unwrap();
+            leaves = fresh
+                .into_iter()
+                .map(|(path, digest)| (path.to_str().unwrap().to_owned(), digest))
+                .collect();
+            observed = wire::Root(folded.0);
+        }
         #[cfg(target_os = "linux")]
         assert_eq!(
             std::fs::read_dir("/proc/self/task").unwrap().count(),
@@ -114,7 +130,7 @@ fn main() {
         let peak_delta = PEAK.load(Ordering::Relaxed).saturating_sub(live);
         assert!(primed && watch.root() == Some(&observed));
         println!(
-            "prime-cost round={round} members={members} bytes_per_member={bytes} snapshot_us={snapshot_us} prime_us={prime_us} prime_allocs={prime_calls} prime_requested_bytes={prime_requested} prime_peak_delta={peak_delta}"
+            "prime-cost round={round} members={members} bytes_per_member={bytes} movers={movers} snapshot_us={snapshot_us} prime_us={prime_us} prime_allocs={prime_calls} prime_requested_bytes={prime_requested} prime_peak_delta={peak_delta}"
         );
         failed |= prime_calls > max_allocations;
     }

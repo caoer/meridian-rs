@@ -440,7 +440,7 @@ pub fn prime(
         .watcher
         .prepare_snapshot(upserts)
         .map_err(|error| backing_error(&error))?;
-    members.append(replacements);
+    members.extend(replacements);
     let scope = load_scope(ws_root)?;
     let prepared = members;
     let retired = watch.watcher.replace(prepared);
