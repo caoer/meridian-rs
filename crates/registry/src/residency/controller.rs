@@ -326,7 +326,7 @@ impl Controller {
                         settled: key.is_none(),
                         references: 1,
                         revision,
-                        transient: if !fits { key } else { None },
+                        transient: if fits { None } else { key },
                     },
                 );
                 state.reserved_bytes += bytes as u128;
