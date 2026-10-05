@@ -926,6 +926,11 @@ member's bytes per external batch — measured ~1/s under foreign writes.
   snapshot made for another provider must be rebound from verified selected
   bytes before adoption. This compatibility route may do additional work under
   the flock, so the workspace driver captures with its configured provider.
+  The unchanged fast path requires equal membership length and equal keys and
+  digests. Its tests isolate a content-only rewrite and a last-key membership
+  change between capture and lock, then check the rows subsequently emitted.
+  CI runs the default priming example with a deterministic allocation limit for
+  unchanged and one-mover captures; it does not gate noisy wall-clock timings.
 - Priming waits for the flock, holding its snapshot, for at most
   `PRIME_FLOCK_BUDGET` (3 s: with the 2 s door cookie budget it leaves half of
   a client's 10 s deadline for the snapshot and the observation). Ordinary and
@@ -1031,6 +1036,29 @@ loader through that contract; `fs` owns source read, digest verification and
 parsing. In-memory fixtures have an eager implementation of the same
 contract. No infallible map indexing, iterator that omits cold members, or
 fallback empty document is a legal cold access.
+
+The first SQL consumer uses `model::catalog::DocumentCatalog`: immutable,
+complete path/revision metadata, a name index, and a fallible document lease.
+Membership and rooted name resolution never require target bodies. The eager
+adapter borrows existing documents and builds its index only on demand.
+`registry::residency::catalog::Catalog` captures an already-built generation
+into required backing and controller members; it retains no eager document
+owners. Capture is not the final streaming builder or daemon activation: its
+metadata/backing floor and capture staging still belong to its host.
+
+`SqlStore::sync_catalog` compares metadata, then scans pinned bodies through
+the existing bounded row batches. A lease ends after its document has been
+projected, before the next pin or SQL batch flush. A known member that cannot
+be pinned, or whose parsed revision disagrees with its descriptor, is an
+explicit fault; it cannot disappear from SQL. In a same-domain append, a
+fault after any batch has flushed rolls back the entire generation, including
+bodies, tombstones and pin. A fingerprint-domain change retains the existing
+delete-and-rebuild policy. The unchanged fast path does not hydrate bodies; when no rooted row needs
+re-resolution, it does not build the eager index either. The existing `sync` entry uses the eager adapter; daemon generation
+publication and the other body consumers are not yet migrated by this seam.
+These catalogs consume one immutable generation. They do not read the watcher
+memo's root and leaves separately; making that observation atomic remains a
+watcher activation requirement.
 
 The dependency-neutral byte contract is `model::bytes::ByteSource`: a
 retained version has a fixed digest and length, and reading it returns shared

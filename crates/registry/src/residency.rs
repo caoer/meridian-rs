@@ -10,6 +10,7 @@ use model::bytes::{ByteIdentity, ByteSource, SharedBytes, WeakBytes};
 use std::fmt;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
+pub mod catalog;
 pub mod controller;
 pub mod retention;
 

@@ -106,6 +106,7 @@ notify = { workspace = true }
 timing = { workspace = true }
 
 [dev-dependencies]
+addr = { workspace = true }
 # The self-edge is how this crate's OWN integration tests get a lib compiled
 # with `test-support` (the standard cargo idiom for a test-only feature). It
 # also keeps `tempfile` — declared optional above — active for the test build,
