@@ -10,6 +10,8 @@ use model::bytes::{ByteIdentity, ByteSource, SharedBytes, WeakBytes};
 use std::fmt;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
+pub mod controller;
+
 /// An immutable version descriptor shared across generations and operations.
 #[derive(Debug, Clone)]
 pub struct Resident(Arc<Inner>);

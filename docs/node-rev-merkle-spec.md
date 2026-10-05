@@ -553,6 +553,30 @@ their temporary census work and enclosing slot/pin/generation containers need
 their own reservation/charge. The controller must combine these measurements
 with the other substrate owners before enforcing the shared process budget.
 
+`registry::residency::controller` owns the shared admission ledger and member
+LRU. Handles with the same retained byte identity share one slot across roots
+and generations. Its managed pins protect bodies, and its raw leases preserve
+charges when bytes outlive a parsed body or descriptor. Callers must keep a
+managed lease for any raw owner they retain; an untracked clone of a document's
+public raw Arc is not an accounting lease. Non-body owners declare measured
+floor charges, held until their allocation is destroyed, and load callers
+declare a conservative peak reservation before I/O. These integration inputs
+are contracts, not a raw-length multiplier or an RSS estimate. The controller
+counts its own tables, descriptors and reservation metadata separately.
+
+The ledger retains a selected body's full charge throughout retirement,
+including the interval where the local slot already appears cold. Only after
+`try_shed` returns may it publish the released charge. Descriptor and raw-lease
+destruction use the same ordering. No accounting lock spans loading, waiting
+on a local flight, or destruction of retained backing. Admission trims first;
+if pins or another load still occupy the allowance, it refuses explicitly
+rather than waiting while an operation may hold a needed pin. A load larger
+than the allowance above the measured floor uses one serialized transient
+member and is shed after its last pin. Zero budget disables trimming. Floor,
+reservation, pin and transient overages remain visible in the ledger report.
+Source/backing/index/ring floor charges, sound load-peak sizing and migration
+of every escaping owner remain required at the daemon activation boundary.
+
 At admission and after releasing operation pins, shed the least recently
 used unpinned member versions across all workspaces until the charged total
 fits. The periodic reaper is a backstop, not the only enforcement point.
