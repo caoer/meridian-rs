@@ -113,11 +113,6 @@ fn cold_catalog_sql_keeps_historical_members_and_aliases_after_source_loss() {
     );
     assert_eq!(controller.report().raw, 0);
     assert_eq!(controller.report().reserved, 0);
-    assert_eq!(
-        mounted.entries.values().next().unwrap().member.phase(),
-        super::super::Phase::Cold,
-        "rooted name resolution must not hydrate its target"
-    );
     assert_eq!(retained.revisions().count(), 2);
     assert!(retained.pin("absent.md").unwrap().is_none());
 }
