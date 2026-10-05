@@ -829,3 +829,408 @@ fn sql_routes_through_a_resident_daemon() {
 
     server.shutdown();
 }
+
+/// A daemon refusal must stay on the resident route. The local fixture would
+/// answer successfully if the CLI fell through to corpus loading/projection.
+#[test]
+fn sql_retry_refusal_never_projects_locally() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    for disconnect_after_first in [false, true] {
+        let sb = sandbox();
+        let ws = write_bare_ws(&sb, "busy", &[("a.md", "# A\n")]);
+        let socket = common::child_socket_path(&sb.home, &sb.cache_home);
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut queries = 0;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() == 0 {
+                    break;
+                }
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let response = if request["op"] == "hello" {
+                    serde_json::json!({"ok": true, "body": {"caps": ["sql"]}})
+                } else {
+                    queries += 1;
+                    serde_json::json!({"ok": false, "error": {
+                        "code": if queries < 3 { "workspace_busy" } else { "lock_timeout" }, "recovery": "retry",
+                        "message": "projection lease occupied; retry"
+                    }})
+                };
+                writeln!(stream, "{response}").unwrap();
+                if disconnect_after_first && queries == 1 {
+                    break;
+                }
+            }
+            queries
+        });
+        let out = sb.run(&ws, &["sql", "--json", "SELECT path FROM doc"]);
+        let queries = server.join().unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "busy must not fall back: {}",
+            stderr(&out)
+        );
+        let frame = json(&out);
+        assert_eq!(frame["state"], "NO_VIEW", "{frame}");
+        assert!(
+            frame["error"]
+                .as_str()
+                .unwrap()
+                .contains("projection lease occupied"),
+            "{frame}"
+        );
+        assert_eq!(queries, 1, "refusal is not automatically replayed");
+        assert_eq!(
+            walk_count_suffix(&sb.cache_home, "sql.duckdb"),
+            0,
+            "no local projection"
+        );
+    }
+}
+
+#[test]
+fn fresh_requery_stays_resident_after_stale_and_lost_or_failed_reply() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    for disconnect in [true, false] {
+        let sb = sandbox();
+        let ws = write_bare_ws(&sb, "fresh-busy", &[("a.md", "# A\n")]);
+        let socket = common::child_socket_path(&sb.home, &sb.cache_home);
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut queries = 0;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() == 0 {
+                    break;
+                }
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let response = if request["op"] == "hello" {
+                    serde_json::json!({"ok":true,"body":{"caps":["sql"]}})
+                } else {
+                    queries += 1;
+                    match queries {
+                        1 => {
+                            serde_json::json!({"ok":true,"body":{"as_of_fingerprint":"b3c:one","live":"b3c:two","state":"STALE","columns":[],"rows":[]}})
+                        }
+                        2 if !disconnect => {
+                            serde_json::json!({"ok":false,"error":{"code":"io_error","recovery":"env","cause":"fixture refusal"}})
+                        }
+                        _ => break,
+                    }
+                };
+                writeln!(stream, "{response}").unwrap();
+            }
+            queries
+        });
+        let out = sb.run(&ws, &["sql", "--json", "--fresh", "SELECT path FROM doc"]);
+        assert_eq!(server.join().unwrap(), 2);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "a resident stale result must forbid fallback across --fresh: {}",
+            stderr(&out)
+        );
+        assert_eq!(json(&out)["state"], "NO_VIEW");
+        assert_eq!(walk_count_suffix(&sb.cache_home, "sql.duckdb"), 0);
+    }
+}
+
+#[test]
+fn ordinary_query_edit_overlap_succeeds_through_the_cli() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::{Duration, Instant};
+    let sb = sandbox();
+    let ws = write_bare_ws(&sb, "overlap", &[("a.md", "# A\n")]);
+    let mut config = registry::Config::for_cache_root(sb.cache_home.join("meridian"));
+    config.socket_path = common::child_socket_path(&sb.home, &sb.cache_home);
+    config.idle_exit = None;
+    config.drain_cold_builds = Duration::from_secs(30);
+    let server = registry::RunningServer::start(config).unwrap();
+    let query = "SELECT path FROM doc ORDER BY path";
+    assert!(sb.run(&ws, &["sql", "--json", query]).status.success());
+    let socket = server.socket_path().to_path_buf();
+    let holder_ws = ws.clone();
+    let holder = std::thread::spawn(move || {
+        let mut writer = UnixStream::connect(socket).unwrap();
+
+        let mut reader = BufReader::new(writer.try_clone().unwrap());
+        let mut call = |request: Value| {
+            writeln!(writer, "{request}").unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            serde_json::from_str::<Value>(&line).unwrap()
+        };
+        assert_eq!(
+            call(serde_json::json!({"op":"hello","proto":1,"contract":"v3","workspace":holder_ws}))
+                ["ok"],
+            true
+        );
+        let started = Instant::now();
+        let answer = call(serde_json::json!({"id":1,"op":"sql","query":
+            "WITH RECURSIVE spin(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM spin WHERE i<40000) SELECT count(*)::BIGINT FROM spin"}));
+        (started.elapsed(), answer)
+    });
+    std::thread::sleep(Duration::from_millis(750));
+    assert!(!holder.is_finished(), "query must be executing at the edit");
+    std::fs::write(ws.join("b.md"), "# B\n").unwrap();
+    let started = Instant::now();
+    let out = sb.run(&ws, &["sql", "--json", query]);
+    let elapsed = started.elapsed();
+    let (held, answer) = holder.join().unwrap();
+    server.shutdown();
+    eprintln!(
+        "ordinary overlap: holder={held:?}, cli={elapsed:?}, exit={:?}",
+        out.status.code()
+    );
+    assert!(held > Duration::from_millis(1500));
+    assert_eq!(answer["ok"], true);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "finite ordinary overlap must succeed: {}",
+        stderr(&out)
+    );
+    assert_eq!(json(&out)["rows"], serde_json::json!([["a.md"], ["b.md"]]));
+}
+
+fn exchange_pipelined_frame(
+    writer: &mut std::os::unix::net::UnixStream,
+    reader: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
+    value: &Value,
+) -> Value {
+    use std::io::{BufRead, Write};
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        writeln!(writer, "{value}").unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let answer: Value = serde_json::from_str(&line).unwrap();
+        if answer["error"]["code"] != "corpus_warming" {
+            return answer;
+        }
+        assert!(Instant::now() < deadline, "fixture did not warm: {answer}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn feed_sql_holder(
+    fifo: &Path,
+    opened: &std::sync::mpsc::Sender<()>,
+    hold_started: &std::sync::mpsc::Receiver<()>,
+) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::time::{Duration, Instant};
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut file = loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(fifo)
+        {
+            Ok(file) => break file,
+            Err(error)
+                if error.raw_os_error() == Some(libc::ENXIO) && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("FIFO query never opened: {error}"),
+        }
+    };
+    opened.send(()).unwrap();
+    hold_started.recv_timeout(Duration::from_secs(20)).unwrap();
+    std::thread::sleep(Duration::from_secs(12));
+    file.write_all(b"1\n").unwrap();
+}
+
+fn read_pipelined_replies(
+    reader: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
+    started: std::time::Instant,
+) -> (Vec<Value>, Option<String>) {
+    use std::io::BufRead;
+    use std::time::Duration;
+
+    let mut answers = Vec::new();
+    let mut transport_error = None;
+    for _ in 0..3 {
+        reader
+            .get_ref()
+            .set_read_timeout(Some(
+                Duration::from_secs(10)
+                    .saturating_sub(started.elapsed())
+                    .max(Duration::from_millis(1)),
+            ))
+            .unwrap();
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => {
+                transport_error = Some("closed".to_owned());
+                break;
+            }
+            Ok(_) => answers.push(serde_json::from_str::<Value>(&line).unwrap()),
+            Err(error) => {
+                transport_error = Some(error.to_string());
+                break;
+            }
+        }
+    }
+    (answers, transport_error)
+}
+
+fn start_sql_holder(
+    socket: &Path,
+    fifo: PathBuf,
+    hello: &Value,
+) -> std::thread::JoinHandle<(std::time::Duration, Value)> {
+    use std::io::BufReader;
+    use std::os::unix::net::UnixStream;
+    use std::time::{Duration, Instant};
+
+    let mut holder_writer = UnixStream::connect(socket).unwrap();
+    holder_writer
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let mut holder_reader = BufReader::new(holder_writer.try_clone().unwrap());
+    assert_eq!(
+        exchange_pipelined_frame(&mut holder_writer, &mut holder_reader, hello)["ok"],
+        true
+    );
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        let path = fifo.display().to_string().replace('\'', "''");
+        let query = format!(
+            "SELECT count(*) FROM read_csv('{path}', auto_detect=false, header=false, columns={{'n':'INTEGER'}}, parallel=false)"
+        );
+        let answer = exchange_pipelined_frame(
+            &mut holder_writer,
+            &mut holder_reader,
+            &serde_json::json!({"id":1,"op":"sql","query":query}),
+        );
+        (started.elapsed(), answer)
+    })
+}
+
+/// Reproduce the shared-session boundary: two SQL requests and an unrelated
+/// read are sent while another connection holds a SQL snapshot past 10 s.
+/// A FIFO keeps the holder in real `DuckDB` I/O without CPU-dependent spin time.
+#[test]
+fn pipelined_sql_contenders_do_not_timeout_an_unrelated_read() {
+    use std::io::{BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::{Duration, Instant};
+
+    let sb = sandbox();
+    let ws = write_bare_ws(&sb, "pipelined", &[("a.md", "# A\n")]);
+    let mut config = registry::Config::for_cache_root(sb.cache_home.join("meridian"));
+    config.socket_path = common::child_socket_path(&sb.home, &sb.cache_home);
+    config.idle_exit = None;
+    config.drain_cold_builds = Duration::from_secs(30);
+    let server = registry::RunningServer::start(config).unwrap();
+    assert!(
+        sb.run(&ws, &["sql", "--json", "SELECT path FROM doc"])
+            .status
+            .success()
+    );
+    let fifo = sb.tmp.path().join("hold.csv");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let (opened, ready) = std::sync::mpsc::channel();
+    let (start_hold, hold_started) = std::sync::mpsc::channel();
+    let feeder = std::thread::spawn({
+        let fifo = fifo.clone();
+        move || {
+            feed_sql_holder(&fifo, &opened, &hold_started);
+        }
+    });
+    let hello = serde_json::json!({"op":"hello","proto":1,"contract":"v3","workspace":ws});
+    let holder = start_sql_holder(server.socket_path(), fifo, &hello);
+    ready
+        .recv_timeout(Duration::from_secs(20))
+        .expect("holder is executing SQL");
+    std::fs::write(ws.join("b.md"), "# B\n").unwrap();
+    let mut writer = UnixStream::connect(server.socket_path()).unwrap();
+    let mut reader = BufReader::new(writer.try_clone().unwrap());
+    assert_eq!(
+        exchange_pipelined_frame(&mut writer, &mut reader, &hello)["ok"],
+        true
+    );
+    // This read warms the changed corpus without advancing the SQL cache.
+    assert_eq!(
+        exchange_pipelined_frame(
+            &mut writer,
+            &mut reader,
+            &serde_json::json!({"op":"read","path":"b.md"})
+        )["ok"],
+        true
+    );
+    let started = Instant::now();
+    start_hold.send(()).unwrap();
+    for id in [11, 12] {
+        writeln!(
+            writer,
+            "{}",
+            serde_json::json!({"id":id,"op":"sql","query":"SELECT path FROM doc ORDER BY path"})
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"id":13,"op":"read","path":"a.md"})
+    )
+    .unwrap();
+    let (answers, transport_error) = read_pipelined_replies(&mut reader, started);
+    let elapsed = started.elapsed();
+    drop(reader);
+    drop(writer);
+    feeder.join().unwrap();
+    let (held, answer) = holder.join().unwrap();
+    server.shutdown();
+    eprintln!(
+        "pipelined SQL/read: holder={held:?}, replies={elapsed:?}, fault={transport_error:?}, answers={answers:?}"
+    );
+    assert!(
+        held >= Duration::from_secs(10),
+        "holder must outlast the transport budget"
+    );
+    assert_eq!(
+        answer["body"]["rows"],
+        serde_json::json!([[1]]),
+        "real CSV query: {answer}"
+    );
+    assert!(
+        transport_error.is_none(),
+        "SQL wait retired the pooled session: {transport_error:?}"
+    );
+    assert_eq!(answers.len(), 3);
+    for (answer, id) in answers.iter().zip([11, 12, 13]) {
+        assert_eq!(answer["id"], id);
+        assert_eq!(answer["ok"], true, "ordinary overlap: {answer}");
+    }
+    assert!(elapsed < Duration::from_secs(10));
+}

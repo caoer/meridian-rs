@@ -438,7 +438,20 @@ fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
     let ask = serde_json::json!({"id": 1, "op": "sql", "query": query});
     let mut frame = daemon_sql_frame(&daemon_call(&mut writer, &mut reader, &socket, &ask)?)?;
     if args.fresh && frame.state == QueryState::Stale {
-        frame = daemon_sql_frame(&daemon_call(&mut writer, &mut reader, &socket, &ask)?)?;
+        let response = daemon_call(&mut writer, &mut reader, &socket, &ask);
+        frame = response
+            .as_ref()
+            .and_then(daemon_sql_frame)
+            .unwrap_or_else(|| {
+                let cause = response
+                    .as_ref()
+                    .and_then(|reply| reply.get("error"))
+                    .map_or_else(
+                        || "resident daemon did not answer the --fresh re-query".to_owned(),
+                        |error| format!("resident daemon refused the --fresh re-query: {error}"),
+                    );
+                Frame::no_view(cause)
+            });
         if frame.state == QueryState::Stale {
             frame.state = QueryState::Raced;
         }
@@ -446,9 +459,31 @@ fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
     Some(frame)
 }
 
-/// Project one § A.11 response onto the OD9 frame. A daemon-side fault
-/// (`ok:false`) answers `None` — the ladder degrades rather than guessing.
+/// Dispatch on recovery, including a code a newer daemon introduced. A retry
+/// refusal is a loud `NO_VIEW` result, not permission to build another engine.
+fn daemon_retry_frame(response: &Value) -> Option<Frame> {
+    if response.get("ok") != Some(&Value::Bool(false)) {
+        return None;
+    }
+    let error = response.get("error")?;
+    if error.get("recovery")?.as_str()? != "retry" {
+        return None;
+    }
+    let code = error.get("code").and_then(Value::as_str).unwrap_or("retry");
+    let reason = error
+        .get("message")
+        .or_else(|| error.get("cause"))
+        .and_then(Value::as_str)
+        .unwrap_or("transient daemon refusal; retry");
+    Some(Frame::no_view(format!("{code}: {reason}")))
+}
+
+/// Project one § A.11 response onto the OD9 frame. Retry refusals are loud
+/// unavailable-view results; other initial faults keep the legacy fallback.
 fn daemon_sql_frame(response: &Value) -> Option<Frame> {
+    if let Some(frame) = daemon_retry_frame(response) {
+        return Some(frame);
+    }
     if response.get("ok") != Some(&Value::Bool(true)) {
         return None;
     }
@@ -1082,6 +1117,17 @@ fn plural(n: usize) -> &'static str {
 mod tests {
     use super::*;
     use duckdb::Connection;
+
+    #[test]
+    fn retry_refusals_do_not_select_the_local_fallback() {
+        let retry = json!({"ok": false, "error": {"code": "future_busy", "recovery": "retry"}});
+        assert!(daemon_sql_frame(&retry).expect("refusal frame").state == QueryState::NoView);
+        let environment = json!({"ok": false, "error": {"code": "io_error", "recovery": "env"}});
+        assert!(
+            daemon_sql_frame(&environment).is_none(),
+            "legacy initial I/O behavior"
+        );
+    }
 
     #[test]
     fn parse_defaults() {

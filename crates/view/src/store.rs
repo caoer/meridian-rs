@@ -112,12 +112,16 @@
 //! starve every LATER caller of that root until the daemon restarted (card
 //! `sql-set-config-cross-caller-starvation`). The lane now closes each call
 //! with [`restore_global_config`]: the caller's `SET` still succeeds and still
-//! governs its own statement, and the values the next caller finds are the
-//! ones the engine set. What the rollback cannot undo, the lane puts back.
+//! governs its own call. Failed writer-policy restoration retires the shared
+//! instance; sync reopens it after outstanding read handles finish. Append
+//! checks the required policy at entry; overlapping caller settings remain
+//! shared and can temporarily change native flushing during that append.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use duckdb::Connection;
 use duckdb::types::Value;
@@ -195,7 +199,11 @@ use crate::{
 ///
 /// `16`: `hist.lock` + `main.lock` — a v15 file holds no pin rows for pages
 /// whose fingerprints will not move. Same repair-by-rebuild reasoning as `9`.
-pub const CACHE_SCHEMA_VERSION: i64 = 16;
+/// `17`: the persistent file uses 2,048-row groups so completed groups can
+/// leave transaction-local memory before the one pin-last commit. A v16 file
+/// has the prior physical row-group layout and must be cold-rebuilt. No hist
+/// DDL or projection changed, so the drawer's `SCHEMA_SALT` stays at `s16`.
+pub const CACHE_SCHEMA_VERSION: i64 = 17;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
 pub const SQL_CACHE_FILENAME: &str = "sql.duckdb";
@@ -433,12 +441,92 @@ pub struct AppendCounts {
 /// rows the file already holds stay exactly as they are.
 #[derive(Default)]
 struct BaseDelta {
-    /// Members to re-project (added or changed).
-    reproject: Vec<crate::BaseMember>,
+    /// Indices into the caller's walk. Keep its bytes borrowed, not copied
+    /// into a second corpus-sized delta before batching begins.
+    reproject: Vec<usize>,
     /// Member paths to tombstone.
     removed: Vec<String>,
     /// Every moved member's path — the affected-set key source.
     moved_keys: BTreeSet<String>,
+}
+
+/// One append's already-decided inputs. The cache diff and corpus-wide name
+/// index are fixed before any batch writes into the transaction.
+#[derive(Clone, Copy)]
+struct AppendPlan<'a, 'corpus> {
+    docs: &'a model::Docs,
+    reproject: &'a BTreeSet<String>,
+    index: &'a model::CorpusIndex,
+    corpus: &'a model::RootedCorpus<'corpus>,
+    mounts: Option<&'a addr::MountSet>,
+    exclusion: Option<ExclusionProbe<'a>>,
+    base: Option<&'a BaseWalk<'a>>,
+    base_delta: &'a BaseDelta,
+    removed: &'a [&'a str],
+    counts: AppendCounts,
+    fingerprint: &'a str,
+    base_fold: Option<&'a str>,
+}
+
+/// Estimated projected-row budget before exclusion payloads are added. The
+/// threshold is checked after a whole document/member, which can overshoot it
+/// and share a batch with earlier rows; no document is truncated.
+const STAGED_BATCH_BYTES: usize = 32 * 1024 * 1024;
+
+fn value_payload_bytes(value: &Value) -> usize {
+    match value {
+        Value::Text(text) | Value::Enum(text) => text.capacity(),
+        Value::Blob(bytes) => bytes.capacity(),
+        Value::List(items) | Value::Array(items) => items.iter().fold(
+            items.capacity().saturating_mul(size_of::<Value>()),
+            |n, item| n.saturating_add(value_payload_bytes(item)),
+        ),
+        Value::Struct(fields) => fields.iter().fold(0usize, |n, (key, value)| {
+            n.saturating_add(key.capacity())
+                .saturating_add(size_of::<String>())
+                .saturating_add(value_payload_bytes(value))
+        }),
+        Value::Map(fields) => fields.iter().fold(0usize, |n, (key, value)| {
+            n.saturating_add(size_of::<(Value, Value)>())
+                .saturating_add(value_payload_bytes(key))
+                .saturating_add(value_payload_bytes(value))
+        }),
+        Value::Union(member) => size_of::<Value>().saturating_add(value_payload_bytes(member)),
+        _ => 0,
+    }
+}
+
+/// Count only rows added since `seen`: each row is visited once for the whole
+/// append, even as the current batch grows document by document.
+fn newly_staged_bytes(rows: &Rows, seen: &mut [usize; 14]) -> usize {
+    let tables = [
+        &rows.doc,
+        &rows.frontmatter,
+        &rows.section,
+        &rows.link,
+        &rows.frontmatter_link,
+        &rows.lock,
+        &rows.tag,
+        &rows.frontmatter_tag,
+        &rows.frontmatter_fault,
+        &rows.task,
+        &rows.base,
+        &rows.base_view,
+        &rows.base_formula,
+        &rows.body,
+    ];
+    let mut bytes = 0usize;
+    for (i, table) in tables.iter().enumerate() {
+        for row in &table[seen[i]..] {
+            let row_bytes = size_of::<Vec<Value>>()
+                .saturating_add(row.capacity().saturating_mul(size_of::<Value>()));
+            bytes = bytes.saturating_add(row.iter().fold(row_bytes, |n, value| {
+                n.saturating_add(value_payload_bytes(value))
+            }));
+        }
+        seen[i] = table.len();
+    }
+    bytes
 }
 
 /// Every lane's spill budget (card sql-spill-config-lockout): the `DuckDB`
@@ -584,16 +672,12 @@ const RESTORE_PASSES: usize = 2;
 ///   them also refuse a caller's `SET` ("Cannot change … while database is
 ///   running", "not adjustable by a user"), so they can never drift in the
 ///   first place.
-/// - `lock_configuration`, which is one-way BY DESIGN: once a caller sets it
-///   true, every later `SET` on that instance refuses — this one included.
-///   That residue is a denial of the DOOR, not starvation: the restore pass
-///   has already run at the end of the previous call, so the values it
-///   freezes are the engine's. Pinned by
-///   `a_caller_lock_is_the_one_residue_and_it_freezes_engine_values`.
+/// - `lock_configuration`, which is one-way BY DESIGN. A call can contain
+///   multiple statements, so the frozen values need not be the engine's.
 ///
-/// The return value is advisory: a caller's query has already answered by the
-/// time this runs, and failing it here would turn a successful query into an
-/// error over state the caller cannot see. It is what the tests assert on.
+/// The resident store must act on failures of its writer policy (flush count,
+/// allocator maintenance and configuration lock), or an unreadable snapshot. Other settings remain
+/// best effort: some reported sizes are rounded and do not round-trip exactly.
 pub fn restore_global_config(conn: &Connection, before: &[(String, String)]) -> Vec<String> {
     let mut drifted: Vec<(String, String)> = Vec::new();
     for pass in 0..=RESTORE_PASSES {
@@ -974,6 +1058,74 @@ pub struct SqlStore {
     /// exists, so it is the only honest place to read the baseline. It also
     /// drops a 134-row `duckdb_settings()` scan from every served query.
     baseline: Arc<Vec<(String, String)>>,
+    policy: Arc<InstancePolicy>,
+}
+
+/// Retirement is monotonic and follows every outstanding read handle.
+/// Required settings are checked at append entry without excluding queries.
+#[derive(Default)]
+struct InstancePolicy {
+    retired: AtomicBool,
+}
+
+fn policy_error(message: impl Into<String>) -> ViewError {
+    ViewError::Busy(message.into())
+}
+
+fn required_writer_setting(name: &str) -> bool {
+    matches!(
+        name,
+        "write_buffer_row_group_count"
+            | "allocator_flush_threshold"
+            | "lock_configuration"
+            | "<config snapshot unavailable>"
+    )
+}
+
+impl InstancePolicy {
+    fn check(&self) -> Result<(), ViewError> {
+        if self.retired.load(Ordering::Acquire) {
+            return Err(policy_error(
+                "sql cache instance retired; retry sync after outstanding reads finish",
+            ));
+        }
+        Ok(())
+    }
+
+    fn restore(&self, conn: &Connection, baseline: &[(String, String)]) -> Result<(), ViewError> {
+        let unrestored: Vec<_> = restore_global_config(conn, baseline)
+            .into_iter()
+            .filter(|name| required_writer_setting(name))
+            .collect();
+        if !unrestored.is_empty() {
+            self.retired.store(true, Ordering::Release);
+            return Err(policy_error(format!(
+                "sql cache configuration restoration failed: {}; instance retired",
+                unrestored.join(", ")
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only high-water of owned body text staged by one sync on this
+    /// thread. The release-build process probe measures total allocation.
+    static MAX_STAGED_BODY_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn note_staged_body_bytes(rows: &Rows) {
+    let bytes: usize = rows
+        .body
+        .iter()
+        .filter_map(|row| match row.get(4) {
+            Some(Value::Text(text)) => Some(text.len()),
+            _ => None,
+        })
+        .sum();
+    MAX_STAGED_BODY_BYTES.with(|peak| peak.set(peak.get().max(bytes)));
 }
 
 impl std::fmt::Debug for SqlStore {
@@ -982,6 +1134,22 @@ impl std::fmt::Debug for SqlStore {
             .field("file", &self.file)
             .finish_non_exhaustive()
     }
+}
+
+// The prior direct-file opener exposed `current_database() = 'sql'`; keep that
+// operator-visible name when the file becomes an attached catalog.
+const SQL_CACHE_CATALOG: &str = "sql";
+
+/// Attach the file with a physical row-group size before any cache table is
+/// created. `row_group_size` is an ATTACH option, not a runtime `SET` or a
+/// `Connection::open_with_flags` option on the vendored `DuckDB` version.
+fn open_sql_cache(file: &Path) -> duckdb::Result<Connection> {
+    let conn = Connection::open_in_memory()?;
+    let escaped = file.display().to_string().replace('\'', "''");
+    conn.execute_batch(&format!(
+        "ATTACH '{escaped}' AS {SQL_CACHE_CATALOG} (ROW_GROUP_SIZE 2048); USE {SQL_CACHE_CATALOG}"
+    ))?;
+    Ok(conn)
 }
 
 impl SqlStore {
@@ -1000,7 +1168,7 @@ impl SqlStore {
             std::fs::create_dir_all(parent).map_err(ViewError::Io)?;
         }
         let fresh = !file.exists();
-        let conn = match Connection::open(file) {
+        let conn = match open_sql_cache(file) {
             Ok(conn) => conn,
             // Unopenable and absent-lock: a torn/corrupt file. The DuckDB
             // lock error must NOT be repaired by deletion (a live holder
@@ -1035,7 +1203,7 @@ impl SqlStore {
     fn recreate(file: &Path) -> Result<SqlStore, ViewError> {
         let _ = std::fs::remove_file(file);
         let _ = std::fs::remove_file(wal_path(file));
-        let conn = Connection::open(file)?;
+        let conn = open_sql_cache(file)?;
         conn.execute_batch(CACHE_SCHEMA_SQL)?;
         Self::adopt(conn, file)
     }
@@ -1050,11 +1218,40 @@ impl SqlStore {
             conn,
             file: file.to_path_buf(),
             baseline: Arc::new(Vec::new()),
+            policy: Arc::default(),
         };
         apply_spill_containment(&store.conn, &store.spill_dir())?;
+        // One completed 2,048-row group is eligible for optimistic disk
+        // flush inside the single append transaction. Keep this in the
+        // open-time baseline, checked before each append transaction.
+        store.conn.execute_batch(
+            "SET write_buffer_row_group_count=1; SET allocator_flush_threshold='0B';",
+        )?;
         apply_extension_gate(&store.conn)?;
         store.baseline = Arc::new(global_config_snapshot(&store.conn)?);
         Ok(store)
+    }
+
+    /// Reopen only after all handles on the retired instance are gone. The
+    /// old connection must close before ATTACH opens the same file in a new
+    /// instance; keep retirement set if reopening fails so retries stay safe.
+    fn recover_retired(&mut self) -> Result<(), ViewError> {
+        if self.policy.check().is_ok() {
+            return Ok(());
+        }
+        self.policy.retired.store(true, Ordering::Release);
+        if Arc::strong_count(&self.policy) != 1 {
+            return Err(policy_error(
+                "sql cache instance retired with outstanding reads; retry after they finish",
+            ));
+        }
+        drop(std::mem::replace(
+            &mut self.conn,
+            Connection::open_in_memory()?,
+        ));
+        let conn = open_sql_cache(&self.file)?;
+        *self = Self::adopt(conn, &self.file)?;
+        Ok(())
     }
 
     /// The file's current pin, `None` for a fresh (never-appended) file.
@@ -1106,6 +1303,7 @@ impl SqlStore {
         fingerprint: &str,
         base: Option<&BaseWalk<'_>>,
     ) -> Result<Option<AppendCounts>, ViewError> {
+        self.recover_retired()?;
         let base_fold = base.map(|b| b.fold);
         let mut pin = self.pin()?;
         // Built at most once per sync, and only when something needs it.
@@ -1194,19 +1392,113 @@ impl SqlStore {
         reproject.extend(changed.iter().map(|p| (*p).to_owned()));
         reproject.extend(affected.iter().cloned());
         let index = index.unwrap_or_else(|| corpus_index(docs));
-        let mut rows = Rows::default();
-        for path in &reproject {
-            if let Some(doc) = docs.get(path) {
-                collect_doc(path, doc, &index, &mut rows, corpus, mounts);
+        self.append_batched(AppendPlan {
+            docs,
+            reproject: &reproject,
+            index: &index,
+            corpus,
+            mounts,
+            exclusion,
+            base,
+            base_delta: &base_delta,
+            removed: &removed,
+            counts,
+            fingerprint,
+            base_fold,
+        })?;
+        Ok(Some(counts))
+    }
+
+    /// Write every bounded batch under one generation transaction. The plan
+    /// is decided against the committed cache before this method begins.
+    fn append_batched(&self, plan: AppendPlan<'_, '_>) -> Result<(), ViewError> {
+        let AppendPlan {
+            docs,
+            reproject,
+            index,
+            corpus,
+            mounts,
+            exclusion,
+            base,
+            base_delta,
+            removed,
+            counts,
+            fingerprint,
+            base_fold,
+        } = plan;
+        // Restore only the writer's required settings here. Other caller
+        // settings retain the existing completion-time best-effort restore.
+        // There is no exclusion with an executing query: later caller SETs
+        // can temporarily change this policy during the append.
+        self.policy.check()?;
+        let required: Vec<_> = self
+            .baseline
+            .iter()
+            .filter(|(name, _)| required_writer_setting(name))
+            .cloned()
+            .collect();
+        self.policy.restore(&self.conn, &required)?;
+
+        self.conn.execute_batch("BEGIN")?;
+        let appended = (|| {
+            let generation = Value::BigInt(counts.generation);
+            let mut known_body_keys = None;
+            let mut rows = Rows::default();
+            let mut seen = [0usize; 14];
+            let mut staged_bytes = 0usize;
+            let mut flush = |rows: &mut Rows| -> Result<(), ViewError> {
+                self.policy.check()?;
+                if rows.doc.is_empty() && rows.base.is_empty() {
+                    return Ok(());
+                }
+                fill_exclusions(rows, exclusion);
+                #[cfg(test)]
+                note_staged_body_bytes(rows);
+                self.append_batch_rows(rows, &generation, &mut known_body_keys)?;
+                *rows = Rows::default();
+                Ok(())
+            };
+
+            for path in reproject {
+                if let Some(doc) = docs.get(path) {
+                    collect_doc(path, doc, index, &mut rows, corpus, mounts);
+                    staged_bytes =
+                        staged_bytes.saturating_add(newly_staged_bytes(&rows, &mut seen));
+                    if staged_bytes >= STAGED_BATCH_BYTES {
+                        flush(&mut rows)?;
+                        staged_bytes = 0;
+                        seen.fill(0);
+                    }
+                }
+            }
+            // `.base` members stay borrowed from the caller's walk rather
+            // than cloned into the delta before batching.
+            if let Some(walk) = base {
+                for &member in &base_delta.reproject {
+                    crate::collect_base(std::slice::from_ref(&walk.members[member]), &mut rows);
+                    staged_bytes =
+                        staged_bytes.saturating_add(newly_staged_bytes(&rows, &mut seen));
+                    if staged_bytes >= STAGED_BATCH_BYTES {
+                        flush(&mut rows)?;
+                        staged_bytes = 0;
+                        seen.fill(0);
+                    }
+                }
+            }
+            flush(&mut rows)?;
+            self.policy.check()?;
+            self.append_tail(removed, counts, fingerprint, base_delta, base_fold)?;
+            self.policy.check()?;
+            Ok(())
+        })();
+        match appended {
+            Ok(()) => self.conn.execute_batch("COMMIT")?,
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(e);
             }
         }
-        fill_exclusions(&mut rows, exclusion);
-        // Only the moved members re-project; unmoved ones keep their pinned
-        // generation, exactly as an unmoved doc does.
-        crate::collect_base(&base_delta.reproject, &mut rows);
-
-        self.append(&rows, &removed, counts, fingerprint, &base_delta, base_fold)?;
-        Ok(Some(counts))
+        Ok(())
     }
 
     /// The base plane's delta against the cache's own base manifest
@@ -1237,7 +1529,7 @@ impl SqlStore {
         };
 
         let mut delta = BaseDelta::default();
-        for member in base.members {
+        for (index, member) in base.members.iter().enumerate() {
             let live_rev = member
                 .bytes
                 .as_ref()
@@ -1254,10 +1546,7 @@ impl SqlStore {
             };
             if moved {
                 delta.moved_keys.insert(member.path.clone());
-                delta.reproject.push(crate::BaseMember {
-                    path: member.path.clone(),
-                    bytes: member.bytes.clone(),
-                });
+                delta.reproject.push(index);
             }
         }
         let live: BTreeSet<&str> = base.members.iter().map(|m| m.path.as_str()).collect();
@@ -1474,34 +1763,80 @@ impl SqlStore {
         Ok(affected)
     }
 
-    /// One append transaction: hist rows at `counts.gen`, tombstones,
-    /// then the pin row — commit, or roll back whole.
-    fn append(
+    /// Append one bounded batch of live rows. Every appender is flushed and
+    /// dropped before the next batch; the caller owns the one transaction.
+    fn append_batch_rows(
         &self,
         rows: &Rows,
-        removed: &[&str],
-        counts: AppendCounts,
-        fingerprint: &str,
-        base_delta: &BaseDelta,
-        base_fold: Option<&str>,
+        generation: &Value,
+        known_body_keys: &mut Option<BTreeSet<String>>,
     ) -> Result<(), ViewError> {
-        self.conn.execute_batch("BEGIN")?;
-        let result = self.append_body(rows, removed, counts, fingerprint, base_delta, base_fold);
-        match result {
-            Ok(()) => {
-                self.conn.execute_batch("COMMIT")?;
-                Ok(())
+        // doc: path, generation, tombstone, rest.
+        if !rows.doc.is_empty() {
+            let mut app = self.conn.appender_to_db("doc", "hist")?;
+            for row in &rows.doc {
+                let mut r: Vec<Value> = Vec::with_capacity(row.len() + 2);
+                r.push(row[0].clone());
+                r.push((*generation).clone());
+                r.push(Value::Boolean(false));
+                r.extend(row[1..].iter().cloned());
+                app.append_row(duckdb::appender_params_from_iter(r.iter()))?;
             }
-            Err(e) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                Err(e)
-            }
+            app.flush()?;
         }
+
+        self.append_scalar(&rows.frontmatter, "frontmatter", generation)?;
+        if !rows.link.is_empty() {
+            crate::append_listed(
+                &self.conn,
+                "hist",
+                "link",
+                crate::LINK_SCALAR_COLS,
+                Some(generation),
+                &rows.link,
+            )?;
+        }
+        if !rows.frontmatter_link.is_empty() {
+            crate::append_listed(
+                &self.conn,
+                "hist",
+                "frontmatter_link",
+                crate::FRONTMATTER_LINK_SCALAR_COLS,
+                Some(generation),
+                &rows.frontmatter_link,
+            )?;
+        }
+        self.append_scalar(&rows.lock, "lock", generation)?;
+        self.append_scalar(&rows.tag, "tag", generation)?;
+        self.append_scalar(&rows.frontmatter_tag, "frontmatter_tag", generation)?;
+        self.append_scalar(&rows.frontmatter_fault, "frontmatter_fault", generation)?;
+        self.append_scalar(&rows.section, "section", generation)?;
+        self.append_scalar(&rows.task, "task", generation)?;
+        self.append_body_chunks(&rows.body, generation, known_body_keys)?;
+
+        // base: path, generation, tombstone, rest — the hist.doc shape.
+        if !rows.base.is_empty() {
+            let mut app = self.conn.appender_to_db("base", "hist")?;
+            for row in &rows.base {
+                let mut r: Vec<Value> = Vec::with_capacity(row.len() + 2);
+                r.push(row[0].clone());
+                r.push((*generation).clone());
+                r.push(Value::Boolean(false));
+                r.extend(row[1..].iter().cloned());
+                app.append_row(duckdb::appender_params_from_iter(r.iter()))?;
+            }
+            app.flush()?;
+        }
+        self.append_scalar(&rows.base_view, "base_view", generation)?;
+        self.append_scalar(&rows.base_formula, "base_formula", generation)?;
+
+        Ok(())
     }
 
-    fn append_body(
+    /// Finish the same transaction after every live batch: tombstones first,
+    /// then exactly one pin row last.
+    fn append_tail(
         &self,
-        rows: &Rows,
         removed: &[&str],
         counts: AppendCounts,
         fingerprint: &str,
@@ -1509,18 +1844,8 @@ impl SqlStore {
         base_fold: Option<&str>,
     ) -> Result<(), ViewError> {
         let generation = Value::BigInt(counts.generation);
-
-        // doc: path, generation, tombstone, rest. Live rows first, then tombstones.
-        {
+        if !removed.is_empty() {
             let mut app = self.conn.appender_to_db("doc", "hist")?;
-            for row in &rows.doc {
-                let mut r: Vec<Value> = Vec::with_capacity(row.len() + 2);
-                r.push(row[0].clone());
-                r.push(generation.clone());
-                r.push(Value::Boolean(false));
-                r.extend(row[1..].iter().cloned());
-                app.append_row(duckdb::appender_params_from_iter(r.iter()))?;
-            }
             for path in removed {
                 let r = [
                     Value::Text((*path).to_owned()),
@@ -1534,44 +1859,8 @@ impl SqlStore {
             }
             app.flush()?;
         }
-
-        self.append_scalar(&rows.frontmatter, "frontmatter", &generation)?;
-        crate::append_listed(
-            &self.conn,
-            "hist",
-            "link",
-            crate::LINK_SCALAR_COLS,
-            Some(&generation),
-            &rows.link,
-        )?;
-        crate::append_listed(
-            &self.conn,
-            "hist",
-            "frontmatter_link",
-            crate::FRONTMATTER_LINK_SCALAR_COLS,
-            Some(&generation),
-            &rows.frontmatter_link,
-        )?;
-        self.append_scalar(&rows.lock, "lock", &generation)?;
-        self.append_scalar(&rows.tag, "tag", &generation)?;
-        self.append_scalar(&rows.frontmatter_tag, "frontmatter_tag", &generation)?;
-        self.append_scalar(&rows.frontmatter_fault, "frontmatter_fault", &generation)?;
-        self.append_scalar(&rows.section, "section", &generation)?;
-        self.append_scalar(&rows.task, "task", &generation)?;
-        self.append_body_chunks(&rows.body, &generation)?;
-
-        // base: path, generation, tombstone, rest — the hist.doc shape, so the
-        // latest-pick window and the tombstone rule read identically.
-        {
+        if !base_delta.removed.is_empty() {
             let mut app = self.conn.appender_to_db("base", "hist")?;
-            for row in &rows.base {
-                let mut r: Vec<Value> = Vec::with_capacity(row.len() + 2);
-                r.push(row[0].clone());
-                r.push(generation.clone());
-                r.push(Value::Boolean(false));
-                r.extend(row[1..].iter().cloned());
-                app.append_row(duckdb::appender_params_from_iter(r.iter()))?;
-            }
             for path in &base_delta.removed {
                 let r = [
                     Value::Text(path.clone()),
@@ -1588,8 +1877,6 @@ impl SqlStore {
             }
             app.flush()?;
         }
-        self.append_scalar(&rows.base_view, "base_view", &generation)?;
-        self.append_scalar(&rows.base_formula, "base_formula", &generation)?;
 
         self.conn.execute(
             "INSERT INTO hist.pin \
@@ -1621,19 +1908,27 @@ impl SqlStore {
     /// read-then-insert is race-free by the single-appender protocol — the
     /// holder is the file's only writer — and stays INSERT-only, so the
     /// never-edit law holds.
-    fn append_body_chunks(&self, rows: &[Vec<Value>], generation: &Value) -> Result<(), ViewError> {
+    fn append_body_chunks(
+        &self,
+        rows: &[Vec<Value>],
+        generation: &Value,
+        known_body_keys: &mut Option<BTreeSet<String>>,
+    ) -> Result<(), ViewError> {
         if rows.is_empty() {
             return Ok(());
         }
-        let mut known: BTreeSet<String> = {
+        // One key set spans every batch in this transaction. Re-reading the
+        // table per batch would be quadratic and miss the intended budget.
+        if known_body_keys.is_none() {
             let mut stmt = self.conn.prepare("SELECT body_key FROM hist.body_text")?;
             let mut got = stmt.query([])?;
             let mut keys = BTreeSet::new();
             while let Some(row) = got.next()? {
                 keys.insert(row.get::<_, String>(0)?);
             }
-            keys
-        };
+            *known_body_keys = Some(keys);
+        }
+        let known = known_body_keys.as_mut().expect("body key set loaded");
         let mut narrow = self.conn.appender_to_db("body", "hist")?;
         let mut texts = self.conn.appender_to_db("body_text", "hist")?;
         for row in rows {
@@ -1670,6 +1965,9 @@ impl SqlStore {
         table: &str,
         generation: &Value,
     ) -> Result<(), ViewError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
         let mut app = self.conn.appender_to_db(table, "hist")?;
         for row in rows {
             let mut r: Vec<Value> = Vec::with_capacity(row.len() + 1);
@@ -1715,7 +2013,11 @@ impl SqlStore {
     /// # Errors
     /// The connection cannot be cloned, or `BEGIN` / the forcing read fails.
     pub fn begin_read(&self) -> Result<SqlRead, ViewError> {
+        self.policy.check()?;
         let conn = self.conn.try_clone()?;
+        // `try_clone` shares the attached database instance but does not
+        // inherit this connection's current catalog.
+        conn.execute_batch(&format!("USE {SQL_CACHE_CATALOG}"))?;
         conn.execute_batch("BEGIN")?;
         // Not a health check and not a warm-up: this is the statement that
         // MAKES the snapshot. Removing it silently re-opens the freshness lie.
@@ -1723,6 +2025,7 @@ impl SqlStore {
         Ok(SqlRead {
             conn,
             baseline: Arc::clone(&self.baseline),
+            policy: Arc::clone(&self.policy),
         })
     }
 
@@ -1737,8 +2040,8 @@ impl SqlStore {
     /// # Errors
     /// A connection failure is a `ViewError`; the caller's own SQL failing is
     /// `Ok` with the error string in the result (their register, not ours) —
-    /// including `DuckDB`'s MVCC transaction conflicts, verbatim. A setting
-    /// that will not go back is NOT an error (see [`restore_global_config`]).
+    /// including `DuckDB`'s MVCC transaction conflicts, verbatim. Failed config
+    /// restoration of the writer policy is a `ViewError` and retires the instance.
     #[allow(clippy::type_complexity)]
     pub fn query(
         &self,
@@ -1798,6 +2101,7 @@ impl SqlStore {
 pub struct SqlRead {
     conn: Connection,
     baseline: Arc<Vec<(String, String)>>,
+    policy: Arc<InstancePolicy>,
 }
 
 impl std::fmt::Debug for SqlRead {
@@ -1812,11 +2116,11 @@ impl SqlRead {
     /// [`SqlStore::begin_read`] — see there for why `BEGIN` alone is not
     /// enough. One
     /// execution path for every caller (the NO-SANDBOX ruling, 2026-08-14): no
-    /// profile, no lock — spill containment is already in force instance-wide
-    /// from open.
+    /// SQL restrictions or configuration lock. Reads retain base concurrency
+    /// with append, including multi-statement calls.
     ///
-    /// The config restore is the last step, not a further guarantee: a
-    /// GLOBAL-scope `SET` writes the `DBConfig` this connection shares with
+    /// The config restore is the last step; writer-policy failure retires the
+    /// instance. A GLOBAL-scope `SET` writes the `DBConfig` this connection shares with
     /// every other caller of the root, which no `ROLLBACK` reaches (card
     /// `sql-set-config-cross-caller-starvation`). It runs whether the caller's
     /// statement succeeded or failed — a failed statement can still have moved
@@ -1829,21 +2133,23 @@ impl SqlRead {
     /// overlap each can see the other's `SET` and either one's restore can put
     /// the engine's value back under the other. A caller's `SET` still governs
     /// its own statement whenever that statement runs alone, and no caller's
-    /// value survives its call either way — the leak the restore exists to
-    /// stop. Making a `SET` private to an overlapping caller is not something
-    /// one instance can offer; serializing every query to fake it is the
-    /// convoy this split removes.
+    /// writer-policy value is accepted after failed restoration: failure retires
+    /// the instance. Making a `SET` private to an overlapping caller is not
+    /// something one instance can offer. An overlapping SET can change native
+    /// flushing mid-append; entry validation and retirement prevent persistent
+    /// drift from silently binding later appends.
     ///
     /// # Errors
     /// A connection failure is a `ViewError`; the caller's own SQL failing is
     /// `Ok` with the error string in the result (their register, not ours) —
-    /// including `DuckDB`'s MVCC transaction conflicts, verbatim. A setting
-    /// that will not go back is NOT an error (see [`restore_global_config`]).
+    /// including `DuckDB`'s MVCC transaction conflicts, verbatim. Failed config
+    /// restoration of the writer policy is a `ViewError` and retires the instance.
     #[allow(clippy::type_complexity)]
     pub fn run(
         self,
         sql: &str,
     ) -> Result<Result<(Vec<ColMeta>, Vec<Vec<Json>>), String>, ViewError> {
+        self.policy.check()?;
         let result = run_query(&self.conn, sql);
         // Always roll back — reads are unaffected; DML dies here (P3/P6).
         let rolled_back = self.conn.execute_batch("ROLLBACK");
@@ -1851,8 +2157,10 @@ impl SqlRead {
         // a ROLLBACK that itself failed is no reason to leave the next caller
         // with this caller's `memory_limit`. Restore first, then answer for
         // the rollback.
-        let _ = restore_global_config(&self.conn, &self.baseline);
+        let restored = self.policy.restore(&self.conn, &self.baseline);
         rolled_back?;
+        restored?;
+        self.policy.check()?;
         Ok(result)
     }
 }
@@ -2348,6 +2656,123 @@ pub(crate) mod tests {
         assert_eq!(as_of, "b3b:v1");
     }
 
+    /// A cold build with more body text than one batch must never stage every
+    /// body's owned text together. It also verifies dedup and the single pin
+    /// across that boundary.
+    #[test]
+    fn cold_build_bounds_staged_body_text_across_batches() {
+        let body = "x".repeat(1024 * 1024);
+        let docs: model::Docs = (0..40)
+            .map(|i| {
+                let path = format!("doc-{i:02}.md");
+                let raw = format!("# Document {i}\n{body}\n");
+                let parsed = syntax::parse(&raw);
+                (path, Arc::new(model::build(raw, parsed)))
+            })
+            .collect();
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        MAX_STAGED_BODY_BYTES.with(|peak| peak.set(0));
+        sync_ambient(&mut store, &docs, "b3b:batch-v1").expect("cold build");
+
+        let peak = MAX_STAGED_BODY_BYTES.with(std::cell::Cell::get);
+        assert!(
+            peak <= 33 * 1024 * 1024,
+            "one batch may stage 32 MiB plus one document, not all 40 MiB; staged={peak}"
+        );
+        let count = |store: &SqlStore, sql: &str| -> i64 {
+            store
+                .connection()
+                .query_row(sql, [], |r| r.get(0))
+                .expect("count")
+        };
+        assert_eq!(count(&store, "SELECT count(*) FROM doc"), 40);
+        assert_eq!(count(&store, "SELECT count(*) FROM body"), 40);
+        assert_eq!(count(&store, "SELECT count(*) FROM hist.body_text"), 1);
+        assert_eq!(count(&store, "SELECT count(*) FROM hist.pin"), 1);
+
+        let changed: model::Docs = (0..40)
+            .map(|i| {
+                let path = format!("doc-{i:02}.md");
+                let raw = format!("# Document {i}\n{}\n", "y".repeat(1024 * 1024));
+                let parsed = syntax::parse(&raw);
+                (path, Arc::new(model::build(raw, parsed)))
+            })
+            .collect();
+        MAX_STAGED_BODY_BYTES.with(|peak| peak.set(0));
+        let appended = sync_ambient(&mut store, &changed, "b3b:batch-v2").expect("changed append");
+        assert_eq!((appended.generation, appended.changed), (2, 40));
+        let peak = MAX_STAGED_BODY_BYTES.with(std::cell::Cell::get);
+        assert!(peak <= 33 * 1024 * 1024, "changed append staged={peak}");
+        assert_eq!(count(&store, "SELECT count(*) FROM doc"), 40);
+        assert_eq!(count(&store, "SELECT count(*) FROM body"), 40);
+        assert_eq!(count(&store, "SELECT count(*) FROM hist.body_text"), 2);
+        assert_eq!(
+            count(&store, "SELECT count(*) FROM hist.doc WHERE gen = 2"),
+            40
+        );
+        assert_eq!(count(&store, "SELECT count(*) FROM hist.pin"), 2);
+    }
+
+    /// The cache's physical row groups and eager completed-group flush are
+    /// selected before the first append. A cloned caller read must resolve
+    /// the attached cache as its current catalog, including after reopen.
+    #[test]
+    fn resident_cache_uses_bounded_row_group_catalog() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let file = tmp_store(&dir);
+        let mut store = SqlStore::open(&file).expect("fresh open");
+        let setting: String = store
+            .connection()
+            .query_row(
+                "SELECT current_setting('write_buffer_row_group_count')::VARCHAR",
+                [],
+                |r| r.get(0),
+            )
+            .expect("flush policy");
+        assert_eq!(setting, "1", "one completed row group must flush");
+        let catalog: String = store
+            .connection()
+            .query_row("SELECT current_database()", [], |r| r.get(0))
+            .expect("current catalog");
+        assert_eq!(catalog, SQL_CACHE_CATALOG);
+
+        sync_ambient(&mut store, &fixture_v1(), "b3b:catalog").expect("cold append");
+        let (_, rows) = store
+            .query("SELECT count(*) FROM doc")
+            .expect("lane")
+            .expect("query");
+        assert_eq!(rows, vec![vec![Json::from(3)]]);
+        drop(store);
+
+        let reopened = SqlStore::open(&file).expect("reopen");
+        assert_eq!(reopened.pin().expect("pin").expect("pinned").generation, 1);
+        let (_, rows) = reopened
+            .query("SELECT count(*) FROM doc")
+            .expect("lane")
+            .expect("query");
+        assert_eq!(rows, vec![vec![Json::from(3)]]);
+    }
+
+    /// The byte target is not a document-size refusal. A single oversized
+    /// body is appended intact, and its size is the explicit outlier in any
+    /// peak claim for such a corpus.
+    #[test]
+    fn a_body_larger_than_one_batch_is_not_truncated_or_refused() {
+        let body = "z".repeat(STAGED_BATCH_BYTES + 1024);
+        let raw = format!("# Large\n{body}\n");
+        let docs = corpus(&[("large.md", &raw)]);
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &docs, "b3b:oversized").expect("oversized append");
+        let length: i64 = store
+            .connection()
+            .query_row("SELECT length(text) FROM body", [], |r| r.get(0))
+            .expect("body length");
+        assert_eq!(length, i64::try_from(body.len() + 1).expect("fits"));
+        assert_eq!(store.pin().expect("pin").expect("pinned").generation, 1);
+    }
+
     #[test]
     fn sync_at_the_pinned_fingerprint_is_a_noop() {
         let docs = fixture_v1();
@@ -2733,6 +3158,54 @@ pub(crate) mod tests {
         assert_surface_matches_fresh(&store, &v2);
     }
 
+    /// The count-one write buffer can send completed 2,048-row groups to
+    /// disk before COMMIT. A rollback after two such groups still leaves the
+    /// prior pin and content-addressed text exactly where they were.
+    #[test]
+    fn completed_row_groups_rollback_with_the_generation() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let file = tmp_store(&dir);
+        let mut store = SqlStore::open(&file).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        let before: i64 = store
+            .connection()
+            .query_row("SELECT count(*) FROM hist.body_text", [], |r| r.get(0))
+            .expect("before");
+
+        store.connection().execute_batch("BEGIN").expect("begin");
+        {
+            let mut app = store
+                .connection()
+                .appender_to_db("body_text", "hist")
+                .expect("appender");
+            let body = "t".repeat(1024);
+            for i in 0..4096u64 {
+                let row = [Value::Text(format!("{i:064x}")), Value::Text(body.clone())];
+                app.append_row(duckdb::appender_params_from_iter(row.iter()))
+                    .expect("append");
+            }
+            app.flush().expect("flush two groups");
+        }
+        let inside: i64 = store
+            .connection()
+            .query_row("SELECT count(*) FROM hist.body_text", [], |r| r.get(0))
+            .expect("inside");
+        assert_eq!(inside, before + 4096);
+        store
+            .connection()
+            .execute_batch("ROLLBACK")
+            .expect("rollback");
+        drop(store);
+
+        let reopened = SqlStore::open(&file).expect("reopen");
+        assert_eq!(reopened.pin().expect("pin").expect("pinned").generation, 1);
+        let after: i64 = reopened
+            .connection()
+            .query_row("SELECT count(*) FROM hist.body_text", [], |r| r.get(0))
+            .expect("after");
+        assert_eq!(after, before, "uncommitted groups were discarded");
+    }
+
     #[test]
     fn foreign_cache_schema_version_recreates_the_file() {
         let dir = tempfile::tempdir().expect("tmpdir");
@@ -2753,6 +3226,38 @@ pub(crate) mod tests {
             store.pin().expect("pin").is_none(),
             "a foreign-schema file is deleted and cold-started, never migrated"
         );
+    }
+
+    /// Version 16 used `DuckDB`'s default physical row groups. Attaching that
+    /// file with the new option is allowed, so the pin version must force a
+    /// cold rebuild before any old group is reused.
+    #[test]
+    fn prior_physical_row_group_cache_is_rebuilt() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let file = tmp_store(&dir);
+        let legacy = Connection::open(&file).expect("legacy direct open");
+        legacy
+            .execute_batch(CACHE_SCHEMA_SQL)
+            .expect("legacy schema");
+        legacy
+            .execute(
+                "INSERT INTO hist.pin (gen, fingerprint, cache_schema_version) \
+                 VALUES (1, 'b3b:old', 16)",
+                [],
+            )
+            .expect("legacy pin");
+        drop(legacy);
+
+        let store = SqlStore::open(&file).expect("rebuild old layout");
+        assert!(
+            store.pin().expect("pin").is_none(),
+            "old cache was recreated"
+        );
+        let catalog: String = store
+            .connection()
+            .query_row("SELECT current_database()", [], |r| r.get(0))
+            .expect("catalog");
+        assert_eq!(catalog, SQL_CACHE_CATALOG);
     }
 
     #[test]
@@ -2971,6 +3476,8 @@ pub(crate) mod tests {
 
         let c1 = store.connection().try_clone().expect("clone 1");
         let c2 = store.connection().try_clone().expect("clone 2");
+        c1.execute_batch("USE sql").expect("catalog 1");
+        c2.execute_batch("USE sql").expect("catalog 2");
         c1.execute_batch("BEGIN").expect("begin 1");
         c2.execute_batch("BEGIN").expect("begin 2");
         c1.execute("UPDATE hist.doc SET bytes = 1", [])
@@ -3139,6 +3646,201 @@ pub(crate) mod tests {
             engine_value,
             "a read in flight when a concurrent SET landed restored it too"
         );
+    }
+
+    /// Inject an impossible restore target without relying on caller SQL to
+    /// damage an instance. This exercises the real restore failure result.
+    fn inject_restore_failure(store: &mut SqlStore) {
+        store.baseline = Arc::new(vec![(
+            "write_buffer_row_group_count".to_owned(),
+            "not-a-count".to_owned(),
+        )]);
+    }
+
+    #[test]
+    fn failed_allocator_restore_retires_and_recovers_before_next_append() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        store.baseline = Arc::new(vec![(
+            "allocator_flush_threshold".to_owned(),
+            "not-a-size".to_owned(),
+        )]);
+        let error = store
+            .query("SELECT 1")
+            .expect_err("allocator maintenance restore must be checked");
+        assert!(
+            error.to_string().contains("allocator_flush_threshold"),
+            "{error}"
+        );
+        assert!(store.begin_read().is_err(), "retired instance");
+        assert_eq!(
+            sync_ambient(&mut store, &fixture_v1(), "b3b:v2")
+                .expect("recovered append")
+                .generation,
+            2
+        );
+        assert_eq!(
+            global_setting(&store, "allocator_flush_threshold"),
+            "0 bytes"
+        );
+    }
+
+    #[test]
+    fn failed_restore_is_reported_and_retires_outstanding_reads() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        let outstanding = store.begin_read().expect("older read");
+        inject_restore_failure(&mut store);
+
+        let error = store
+            .query("SELECT 1")
+            .expect_err("failed restore must be reported");
+        assert!(
+            error.to_string().contains("write_buffer_row_group_count"),
+            "{error}"
+        );
+        assert!(
+            store.begin_read().is_err(),
+            "retired instance must reject new reads"
+        );
+        assert!(
+            outstanding.run("SELECT 1").is_err(),
+            "already issued reads share retirement"
+        );
+    }
+
+    #[test]
+    fn failed_restore_next_append_reopens_with_writer_policy_and_keeps_history() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        inject_restore_failure(&mut store);
+        let _ = store.query("SELECT 1");
+        let changed = corpus(&[("new.md", "# New\nnew body after recovery\n")]);
+
+        let counts = store
+            .sync(
+                &changed,
+                &RootedCorpus::ambient(&changed),
+                None,
+                None,
+                "b3b:v2",
+                None,
+            )
+            .expect("retry reopens and appends")
+            .expect("append");
+        assert_eq!(
+            counts.generation, 2,
+            "reopening must retain the committed pin"
+        );
+        assert_eq!(global_setting(&store, "write_buffer_row_group_count"), "1");
+        assert_eq!(
+            store
+                .baseline
+                .iter()
+                .find(|(name, _)| name == "write_buffer_row_group_count")
+                .expect("writer baseline")
+                .1,
+            "1",
+            "the failed instance was replaced"
+        );
+        assert_eq!(counts.added, 1);
+        assert_eq!(counts.removed, 3);
+        assert_surface_matches_fresh(&store, &changed);
+    }
+
+    #[test]
+    fn append_checks_writer_policy_before_starting_transaction() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let docs = fixture_v1();
+        // Direct fixture setup, outside the caller lane: the append boundary
+        // must establish its required policy even if it finds prior drift.
+        store
+            .connection()
+            .execute_batch("SET write_buffer_row_group_count=2")
+            .expect("fixture");
+        sync_ambient(&mut store, &docs, "b3b:v1").expect("cold");
+        assert_eq!(global_setting(&store, "write_buffer_row_group_count"), "1");
+
+        inject_restore_failure(&mut store);
+        assert!(
+            store
+                .sync(
+                    &docs,
+                    &RootedCorpus::ambient(&docs),
+                    None,
+                    None,
+                    "b3b:v2",
+                    None
+                )
+                .is_err()
+        );
+        assert_eq!(store.pin().expect("pin").expect("committed").generation, 1);
+        assert!(
+            store.begin_read().is_err(),
+            "failed precondition retires the instance"
+        );
+        assert_eq!(
+            sync_ambient(&mut store, &docs, "b3b:v2")
+                .expect("retry")
+                .generation,
+            2
+        );
+    }
+
+    #[test]
+    fn failed_restore_next_append_waits_for_outstanding_handles() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        let outstanding = store.begin_read().expect("older read");
+        inject_restore_failure(&mut store);
+        let _ = store.query("SELECT 1");
+
+        assert!(
+            store
+                .sync(
+                    &fixture_v1(),
+                    &RootedCorpus::ambient(&fixture_v1()),
+                    None,
+                    None,
+                    "b3b:v2",
+                    None
+                )
+                .is_err(),
+            "must not append or reopen while an old instance handle exists"
+        );
+        assert_eq!(store.pin().expect("pin").expect("committed").generation, 1);
+        drop(outstanding);
+        assert_eq!(
+            store
+                .sync(
+                    &fixture_v1(),
+                    &RootedCorpus::ambient(&fixture_v1()),
+                    None,
+                    None,
+                    "b3b:v2",
+                    None
+                )
+                .expect("retry after release")
+                .expect("append")
+                .generation,
+            2
+        );
+    }
+
+    #[test]
+    fn caller_lane_accepts_multiple_harmless_statements() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let (_, rows) = store
+            .query("SELECT 1; SELECT 2")
+            .expect("lane")
+            .expect("query");
+        assert_eq!(rows, vec![vec![Json::from(2)]]);
     }
 
     /// One GLOBAL setting's live value, read on the store's own base
@@ -3690,45 +4392,28 @@ mod config_scope_tests {
         );
     }
 
-    /// The residue (c) provably cannot close, pinned rather than implied:
-    /// `lock_configuration` is one-way BY `DuckDB`'s DESIGN, so no restore can
-    /// undo it. What this test asserts is that the residue is a denial of the
-    /// DOOR, not starvation — the values it freezes are the ENGINE's, because
-    /// the restore pass already ran at the end of the previous call.
-    ///
-    /// If `DuckDB` ever makes the lock reversible, this test fails and the
-    /// residue paragraph on [`restore_global_config`] is what to delete.
+    /// Even a single configuration lock is an unrestorable setting. The SQL
+    /// driver accepts it, but the lane reports the failed restore and sync
+    /// recovers the engine policy by opening a fresh instance of the same file.
     #[test]
-    fn a_caller_lock_is_the_one_residue_and_it_freezes_engine_values() {
+    fn a_caller_lock_retires_the_instance_and_sync_recovers() {
         let dir = tempfile::tempdir().expect("tmpdir");
         let mut store = open_settled(&tmp_store(&dir)).expect("open");
         sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
 
-        let engine_memory = next_caller_sees(&store, "memory_limit");
-
-        // Call 1 leaks, and is restored — this is what makes the freeze land
-        // on good values rather than the leaked one.
-        store.query("SET memory_limit='1GB'").expect("lane").ok();
-        // Call 2 locks. One statement per call: `run_query` prepares one, so a
-        // caller cannot leak and lock in the same breath.
-        store
+        let error = store
             .query("SET lock_configuration=true")
-            .expect("lane")
-            .expect("DuckDB accepts the lock — this is the residue, measured");
-
+            .expect_err("a one-way lock cannot be restored");
+        assert!(error.to_string().contains("lock_configuration"), "{error}");
+        assert!(store.begin_read().is_err(), "retired instance");
+        assert!(sync_ambient(&mut store, &fixture_v1(), "b3b:v1").is_none());
+        store
+            .query("SET threads=2")
+            .expect("recovered lane")
+            .expect("unlocked");
         assert_eq!(
-            next_caller_sees(&store, "memory_limit"),
-            engine_memory,
-            "the lock froze the ENGINE's value, not the previous caller's — \
-             the residue is a denied door, never starvation"
-        );
-        let refusal = store
-            .query("SET memory_limit='2GB'")
-            .expect("lane")
-            .expect_err("after a caller's lock, every SET refuses");
-        assert!(
-            refusal.contains("configuration has been locked"),
-            "DuckDB's own words name the residue: {refusal}"
+            next_caller_sees(&store, "write_buffer_row_group_count"),
+            "1"
         );
     }
 

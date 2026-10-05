@@ -1,4 +1,4 @@
-//! The `sql` op (`docs/wire-contract.md` § A.11): one SQL statement over the
+//! The `sql` op (`docs/wire-contract.md` § A.11): one SQL call over the
 //! workspace's fingerprint-pinned projection cache, served by the resident
 //! engine — the ruled lifecycle B, which knowingly supersedes
 //! §10.4's no-view-organ close for sql. The wire carries results, never a
@@ -307,15 +307,15 @@ pub(crate) fn serve(
                 &engine.at_fingerprint.0,
                 base.as_ref(),
             )
-            .map_err(|e| io_error(format!("cannot append to the sql cache: {e}")))?;
+            .map_err(|e| store_error("cannot append to the sql cache", e))?;
         store
             .begin_read()
-            .map_err(|e| io_error(format!("cannot open a read on the sql cache: {e}")))?
+            .map_err(|e| store_error("cannot open a read on the sql cache", e))?
     };
 
     let result = read
         .run(query)
-        .map_err(|e| io_error(format!("cannot query the sql cache: {e}")))?;
+        .map_err(|e| store_error("cannot query the sql cache", e))?;
     let as_of = engine.at_fingerprint.0.clone();
 
     match result {
@@ -364,6 +364,16 @@ pub(crate) fn serve(
     }
 }
 
+fn store_error(context: &str, error: view::ViewError) -> Box<ErrorBody> {
+    if let view::ViewError::Busy(reason) = error {
+        let mut error = ErrorBody::new(ErrorCode::WorkspaceBusy);
+        error.message = Some(format!("{context}: {reason}"));
+        Box::new(error)
+    } else {
+        io_error(format!("{context}: {error}"))
+    }
+}
+
 fn io_error(cause: String) -> Box<ErrorBody> {
     let mut e = ErrorBody::new(ErrorCode::IoError);
     e.cause = Some(cause);
@@ -372,13 +382,29 @@ fn io_error(cause: String) -> Box<ErrorBody> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SQL_STORE_WAIT, lock_store_bounded};
+    use super::{SQL_STORE_WAIT, lock_store_bounded, store_error};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
     use wire::{ErrorCode, Recovery};
 
     const WS: &str = "/tmp/ws-under-test";
+
+    #[test]
+    fn only_typed_store_contention_maps_to_retry() {
+        let busy = store_error(
+            "append",
+            view::ViewError::Busy("outstanding reads".to_owned()),
+        );
+        assert_eq!(busy.code, ErrorCode::WorkspaceBusy);
+        assert_eq!(busy.recovery, Recovery::Retry);
+        let io = store_error(
+            "append",
+            view::ViewError::Io(std::io::Error::other("disk error")),
+        );
+        assert_eq!(io.code, ErrorCode::IoError);
+        assert_eq!(io.recovery, Recovery::Env);
+    }
 
     /// The contended path refuses at the bound instead of waiting the holder
     /// out — the whole point of the leg. A held lock is exactly the state a

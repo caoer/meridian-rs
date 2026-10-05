@@ -3077,7 +3077,8 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
 
 ### A.11 `sql` — corpus SQL over the resident projection cache
 
-- **Scope**: one SQL statement over the workspace's fingerprint-pinned,
+- **Scope**: one SQL call (the driver accepts multiple statements) over the
+  workspace's fingerprint-pinned,
   append-only `sql.duckdb` projection cache (`view::store`) — the one wire op
   over the view organ.
 - **§10.4 holds**: the daemon alone owns and appends to the cache file; the
@@ -3097,6 +3098,18 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
   the resident memo at the vouched grade (`node-rev-merkle-spec.md` §6.7; the
   leaf-memo stat sweep is the floor on a named miss), so `state` post-dates
   the rows (§10.1).
+- **Projection concurrency**: caller read snapshots can overlap an append.
+  The writer checks its required configuration before BEGIN and refuses a
+  retired instance; temporary caller setting changes during overlap are the
+  disclosed limit in `body-projection.md` §4. A retired instance awaiting its
+  outstanding handles refuses promptly as `workspace_busy` / `recovery: retry`.
+  There is no read/append exclusion lease or preparation-wait loop. The existing
+  bounded store-mutex wait still returns `lock_timeout` / `retry`; actual I/O
+  stays `io_error` / `env`.
+- **CLI recovery**: a retry-class refusal produces `NO_VIEW` directly, without
+  a local full-corpus projection or an automatic retry budget. The one extra
+  `--fresh` attempt after a successful stale answer also stays on the resident
+  route: an unusable/lost reply produces a refusal instead of falling back.
 
 ```json
 {"id":13,"op":"sql","query":"SELECT path FROM doc ORDER BY path"}
@@ -3113,7 +3126,7 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
 | `state` | `FRESH_AT_SAMPLE` \| `STALE` \| `UNVERIFIED`; UNVERIFIED iff `error` is set |
 | `columns[]` | `{name, type}` as `DuckDB` reports them — the pair the CLI `--json` frame carries |
 | `rows[]` | row-major JSON cells; list cells are real arrays per row, never column dumps. Booleans and numerics are JSON bools/numbers; every other scalar family — timestamp (tz-aware columns marked `+00`), date, time, interval, decimal, enum, struct, map — is a string in `DuckDB`'s `::VARCHAR`, never a `Debug` repr; a union cell is its member's cell |
-| `error` | a caller's failing SQL is a success body with the engine's words verbatim plus the arms below. Never a wire error: `ok:false` frames are door faults (`io_error`, `bad_request`, `unknown_op`) |
+| `error` | a caller's failing SQL is a success body with the engine's words verbatim plus the arms below. Never a wire error: `ok:false` frames are door faults (`workspace_busy`, `lock_timeout`, `io_error`, `bad_request`, `unknown_op`) |
 
 **Teaching arms on a refusal (reason first, then a suggestion that fits).**
 Four arms extend or trim the engine's words:

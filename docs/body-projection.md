@@ -56,6 +56,81 @@ The cache is append-only; `hist.*` is its only storage. Each re-projection appen
 
 Only `hist.body_text` rows dedup, across generations and paths: an edit appends text rows only for chunks new to the file's history. Orphaned `body_text` rows compact only at rebuild-and-swap. The pin protocol is unchanged: one file, one transaction, one fingerprint. `as_of_fingerprint` covers body bytes, so no second freshness witness exists. `base_fold` has one only because `.base` bytes are outside the fingerprint.
 
+The cache lane stages and appends the changed documents in **byte-bounded
+batches**, rather than holding the whole corpus's projected `body.text` rows at
+once. The current target is 32 MiB of estimated owned projected-row storage:
+new rows' `Value` slots and their text/list/blob payload capacities are counted
+as each document is collected, before exclusion resolution. The estimate
+excludes the already-resident
+`Document.raw`, the corpus-wide name index, spare outer-vector capacity, and
+DuckDB-native storage; the process peak must be measured separately. The
+threshold is checked after a complete document or `.base` member is projected,
+so staging can reach the target plus one whole projected document/member,
+including its section, link, task, and path rows at collection time. Exclusion
+words and paths added by `fill_exclusions` at flush are an additional
+batch-wide payload outside that estimate. An oversized member can share
+a batch with earlier rows; it is never refused or truncated. The largest
+complete projected document/member therefore belongs beside any peak memory
+claim. Each batch's
+appenders are flushed and dropped before the next batch. The name index and
+affected-path decision still see the whole corpus, and the content-addressed
+`body_key` set survives between batches. All batches, tombstones, and the **one
+pin row written last** remain in one transaction: any batch failure rolls back
+the whole generation, never a partial pin.
+Flushing an appender releases its own staging, but inserted rows can remain in
+DuckDB's transaction-local storage until commit. The byte budget alone therefore
+does **not** establish a process-memory peak bound. A peak claim also needs a
+measured way to release or spill that transaction-local copy while keeping the
+one-generation pin and the rollback rule above.
+
+For the persistent cache, the file is attached as the connection's current
+catalog with 2,048-row groups, and one completed row group is enough to flush
+the write buffer. The caller read's cloned connection selects that same catalog
+before pinning its snapshot. This lets completed groups reach disk during the
+single append transaction instead of keeping the whole cold body projection in
+transaction-local memory. The unfinished native row group remains a byte cost,
+even with fewer than 2,048 rows; the corpus-wide index, affected-path sets, and
+historical body-key set are also outside the staging target. This is not a
+process-wide memory cap or a fixed peak bound for arbitrary workloads. A cache made with
+the prior physical row-group layout is cold-rebuilt before reuse.
+
+The cache also sets `allocator_flush_threshold` to zero. On DuckDB's glibc
+allocator path this asks its existing idle maintenance to return unused heap
+pages without a retained reserve. This is allocator maintenance, not a smaller
+query working-set limit: live buffers and the caller's query remain intact.
+The setting is included in the writer's checked restoration policy. Other
+allocator backends follow DuckDB's own implementation; process retention is
+verified separately on the target runtime.
+
+Before each append transaction, the writer checks and reasserts its required
+flush policy against the engine's open-time baseline. A restoration failure
+(flush count, allocator flush threshold, or configuration lock), or an unreadable configuration snapshot,
+retires that instance. Already-issued reads share the retirement state. A
+retired instance cannot start another append; the writer also checks retirement
+between batches and before publication. Once outstanding read handles finish,
+the next sync closes the old instance and reopens the same file with fresh
+engine settings, preserving the committed pin and history. Until then it
+refuses promptly as `workspace_busy` / `recovery: retry`.
+
+Caller reads and appends retain the base concurrency model. There is no
+read/write exclusion lease or preparation-wait loop. A reader's transaction is
+pinned before it leaves the store mutex and can overlap a later append without
+seeing that append. Caller SQL remains unrestricted by this policy, including
+multiple statements per call. A concurrent caller's GLOBAL setting can
+**temporarily change native flushing during an already-started append**;
+restore/reopen prevents permanent drift from silently becoming the next
+append's policy, but does not isolate settings during overlapping calls.
+The release memory gate is measured without concurrent caller configuration
+changes and is not a universal memory cap. Other global settings retain their
+best-effort restoration contract; rounded sizes need not round-trip through
+DuckDB's reported strings.
+
+The CLI reports a retry-class daemon refusal as `NO_VIEW`, without a local
+full-corpus fallback or an automatic retry budget. Its one extra `--fresh`
+attempt after a successful stale answer stays on the resident route: an
+unusable or lost reply reports a refusal, never a local projection. Actual
+initial I/O failures retain their existing environment-class behavior.
+
 ## §5 Alternatives
 
 - **`body` column on `section`** — rejected: kilobyte cells fatten the toc-shaped workload (`SELECT * FROM section`); the preamble has no section row.
