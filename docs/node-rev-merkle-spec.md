@@ -962,6 +962,20 @@ raw byte buffer between the document's UTF-8 view and watcher instead of
 copying it into a second `Vec<u8>`. Invalid UTF-8 has the same byte identity
 and backing obligation but no parsed document.
 
+`registry::residency::Resident` supplies the per-version lifecycle primitive.
+Every loading wave has one completion shared by its waiters, including source
+failure or an unwinding loader; a later retry cannot replace that wave's
+outcome. A returned body pin retains both body and version descriptor. A read
+invalidates earlier eviction tickets; a scan does not heat recency, but its
+live pin still prevents shedding. Tickets are specific to one slot and load
+revision, and shedding rechecks pins under the slot lock before dropping the
+body outside it. Escaped shared raw views remain visible through a weak owner
+and can be reused on rehydration without allocating a duplicate payload.
+The primitive's raw/tree census is per slot, not a global budget: admission
+reservations, global recency, backing/flight/container accounting, orphan raw
+ownership after descriptor destruction and serving migration still belong to
+the controller integration and are required before daemon activation.
+
 Locking preserves the existing workspace write flock and memo-before-ring
 order. A slot/accounting lock covers state transitions and counters only;
 release it before disk I/O, parse, spill compaction, or waiting for a loader.
