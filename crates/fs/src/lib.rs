@@ -4494,6 +4494,9 @@ impl BaselineEntry {
 #[must_use]
 pub struct PreparedBaseline(BTreeMap<String, BaselineEntry>);
 
+/// Owned candidate bytes paired with their caller-verified leaf digests.
+pub type BaselineBytes = BTreeMap<String, (Vec<u8>, [u8; 32])>;
+
 #[derive(Debug)]
 pub struct Watcher {
     _root: WorkspaceRoot,
@@ -4559,6 +4562,19 @@ fn diff_baseline_entries(
 }
 
 impl PreparedBaseline {
+    /// Compare a complete prepared membership in key order without tree lookups.
+    #[must_use]
+    pub fn matches_leaves(&self, leaves: &BTreeMap<String, [u8; 32]>) -> bool {
+        self.0.len() == leaves.len()
+            && self
+                .0
+                .iter()
+                .zip(leaves)
+                .all(|((path, entry), (live_path, digest))| {
+                    path == live_path && entry.identity.digest == *digest
+                })
+    }
+
     /// Compare only descriptor digests; no retained body is read.
     #[must_use]
     pub fn diff_leaves(&self, leaves: &BTreeMap<String, [u8; 32]>) -> LeafDiff {
@@ -4585,7 +4601,7 @@ impl PreparedBaseline {
     ///
     /// # Errors
     /// A selected candidate's bytes cannot be read and verified.
-    pub fn into_bytes(self) -> io::Result<BTreeMap<String, (Vec<u8>, [u8; 32])>> {
+    pub fn into_bytes(self) -> io::Result<BaselineBytes> {
         self.0
             .into_iter()
             .map(|(path, entry)| {
@@ -4651,10 +4667,7 @@ impl Watcher {
     ///
     /// # Errors
     /// A retention provider fails or returns a different identity.
-    pub fn prepare_baseline(
-        &self,
-        baseline: BTreeMap<String, (Vec<u8>, [u8; 32])>,
-    ) -> io::Result<PreparedBaseline> {
+    pub fn prepare_baseline(&self, baseline: BaselineBytes) -> io::Result<PreparedBaseline> {
         let mut prepared = BTreeMap::new();
         for (path, (bytes, digest)) in baseline {
             let identity = model::bytes::ByteIdentity {

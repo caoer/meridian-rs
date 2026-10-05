@@ -416,14 +416,16 @@ pub fn prime(
         mut members,
         retention,
     } = snapshot;
-    let diff = members.diff_leaves(leaves);
-    members.retain_matching(leaves);
     let mut upserts = Vec::new();
-    for path in diff.added.iter().chain(&diff.changed) {
-        let Some(bytes) = read_verified(ws_root, path, leaves)? else {
-            return Ok(false);
-        };
-        upserts.push((path.clone(), bytes));
+    if !members.matches_leaves(leaves) {
+        let diff = members.diff_leaves(leaves);
+        members.retain_matching(leaves);
+        for path in diff.added.iter().chain(&diff.changed) {
+            let Some(bytes) = read_verified(ws_root, path, leaves)? else {
+                return Ok(false);
+            };
+            upserts.push((path.clone(), bytes));
+        }
     }
     // Legacy callers may have captured with the default or another provider.
     // Rebind only selected exact bytes; never freshen them from a live path.
