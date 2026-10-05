@@ -49,7 +49,7 @@ fn freed<T>(value: T) -> usize {
     before - LIVE.load(Ordering::Relaxed)
 }
 
-fn main() {
+fn documents() {
     let raw = "---\naliases: [first, second]\n---\n# Heading\n\n> [!note]- Callout\n\n- [ ] task\n\n[[target#Heading|alias]] ![[embed#part]] [link](dest) #tag\n\n```rust\ncode\n```\n\npara ^anchor\n\n| a | b |\n| - | - |\n| c | d |\n<!-- comment --> `inline`\n";
     let mut owned = String::with_capacity(8192);
     owned.push_str(raw);
@@ -79,7 +79,9 @@ fn main() {
     let observed = freed(binary);
     println!("binary charged={charged} freed={observed}");
     assert_eq!(charged, observed);
+}
 
+fn backing() {
     let home = tempfile::tempdir().unwrap();
     let store = registry::raw_store::RawStore::new(home.path()).unwrap();
     let first = store.retain(b"first").unwrap();
@@ -93,4 +95,16 @@ fn main() {
         charged, observed,
         "backing census must include weak-held storage"
     );
+}
+
+fn main() {
+    match std::env::args().nth(1).as_deref() {
+        Some("documents") => documents(),
+        Some("backing") => backing(),
+        None => {
+            documents();
+            backing();
+        }
+        Some(other) => panic!("unknown calibration case: {other}"),
+    }
 }
