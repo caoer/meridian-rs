@@ -145,7 +145,7 @@ mod tests {
         let before = document(&doc);
         let capacity = doc.root.children.capacity();
         doc.root.children.reserve_exact(31);
-        let added = (doc.root.children.capacity() - capacity) * std::mem::size_of::<crate::Node>();
+        let added = (doc.root.children.capacity() - capacity) * size_of::<crate::Node>();
         assert!(added > 0);
         assert_eq!(document(&doc).tree - before.tree, added);
     }
@@ -157,7 +157,7 @@ mod tests {
         let doc = crate::build(raw, syntax::parse("# Shared\n"));
         let bytes = crate::bytes::SharedBytes::from(std::sync::Arc::clone(&doc.raw));
         assert_eq!(document(&doc).raw, bytes.heap_bytes());
-        assert!(document(&doc).raw >= 8192 + std::mem::size_of::<String>());
+        assert!(document(&doc).raw >= 8192 + size_of::<String>());
         assert_eq!(bytes.allocation_id(), bytes.clone().allocation_id());
     }
 }

@@ -146,7 +146,7 @@ impl RawStore {
                     index
                         .segments
                         .capacity()
-                        .saturating_mul(std::mem::size_of::<Weak<Segment>>()),
+                        .saturating_mul(size_of::<Weak<Segment>>()),
                 )
                 .saturating_add(
                     index
