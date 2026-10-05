@@ -2550,6 +2550,54 @@ mod recovery_class_truth_tests {
         ws
     }
 
+    #[test]
+    fn named_read_rebuild_can_publish_while_the_selected_generation_is_in_use() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let home = tempfile::tempdir().unwrap();
+        let reg = Arc::new(registry_in(home.path()));
+        let ws = write_ws(home.path(), &[("a.md", "# Selected old generation\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        reg.warm_or_build(&canonical).unwrap();
+        let mut publisher = None;
+        let (body, published) = warm_engine_read(&reg, &canonical, |engine| {
+            write(ws.join("a.md"), "# A newer and longer generation\n").unwrap();
+            let (arrived_tx, arrived) = mpsc::channel();
+            let (release, release_rx) = mpsc::channel();
+            *reg.pause_before_insert.lock().unwrap() = Some((arrived_tx, release_rx));
+            let (done_tx, done) = mpsc::channel();
+            let writer = Arc::clone(&reg);
+            let writer_path = canonical.clone();
+            publisher = Some(std::thread::spawn(move || {
+                let result = writer.warm_or_build(&writer_path);
+                let _ = done_tx.send(result.is_ok());
+                result
+            }));
+            arrived
+                .recv_timeout(Duration::from_secs(10))
+                .expect("writer reached publication");
+            release.send(()).unwrap();
+            // A red implementation must release its read guard and join the
+            // writer before asserting, so it cannot strand a fixture thread.
+            let published = done.recv_timeout(Duration::from_secs(10)).unwrap_or(false);
+            Ok((engine.docs["a.md"].raw.as_str().to_owned(), published))
+        })
+        .unwrap();
+        publisher.unwrap().join().unwrap().unwrap();
+        assert_eq!(body, "# Selected old generation\n");
+        assert_eq!(
+            reg.engine_snapshot(&canonical).unwrap().docs["a.md"]
+                .raw
+                .as_str(),
+            "# A newer and longer generation\n"
+        );
+        assert!(
+            published,
+            "document access must not hold the global engine-map lock"
+        );
+    }
+
     /// Defect 1 (sonnet P2, verdict § C5): the idle reaper dropping the
     /// engine between `warm_or_build` and `with_engine` must teach `retry` —
     /// the function's own doc says "idle-reap won the race — client

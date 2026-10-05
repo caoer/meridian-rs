@@ -1063,6 +1063,24 @@ These catalogs consume one immutable generation. They do not read the watcher
 memo's root and leaves separately; making that observation atomic remains a
 watcher activation requirement.
 
+Named serving reads acquire their body through
+`wire_serve::read::with_document`. A catalog member uses an interactive
+`DocumentCatalog::pin_read` lease, verifies the parsed revision, and computes
+its answer before that lease ends. A known member's backing failure or absent
+lease is an I/O fault, never permission to load a newer workspace file.
+An explicitly unserved member keeps its `invalid_utf8` refusal; a true
+nonmember keeps the existing named live-source read contract. The callback
+cannot return a borrowed document. SQL continues to use scan pins, while the
+controller's interactive pins promote read recency.
+
+Warm serving callbacks hold an `Arc` to their selected engine generation,
+with the registry engine-map lock released before body access. A concurrent
+rebuild can publish a replacement without changing that callback's generation.
+The warm-to-snapshot reap race still returns the existing retry refusal.
+The daemon's named read adapter remains eager until activation; this seam does
+not migrate decorations, whole-corpus scans, run/script worlds, or engine
+publication by itself.
+
 The dependency-neutral byte contract is `model::bytes::ByteSource`: a
 retained version has a fixed digest and length, and reading it returns shared
 immutable bytes or an explicit error. `SharedBytes` preserves arbitrary bytes;

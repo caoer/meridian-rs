@@ -9,6 +9,9 @@ use wire::{ErrorBody, ErrorCode, NodeRev, Path, ResponseBody, Root, SecRef, Span
 
 use crate::bad_request;
 
+mod catalog;
+pub use catalog::with_document;
+
 /// The stored form ([`crate::write`]), read back into the agent plane. Lands on
 /// the rendered face only.
 ///
