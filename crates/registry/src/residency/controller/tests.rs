@@ -8,8 +8,8 @@ fn global_budget_sheds_unpinned_members_and_retries_after_last_pin() {
     let budget = Controller::new(0);
     let a = budget.retain(Arc::new(store.retain(b"# A\n\nold\n").unwrap()));
     let b = budget.retain(Arc::new(store.retain(b"# B\n\nnew\n").unwrap()));
-    drop(a.pin(Access::Read, 8192).unwrap());
-    let pinned = b.pin(Access::Read, 8192).unwrap();
+    drop(a.pin(Access::Read, 131_072).unwrap());
+    let pinned = b.pin(Access::Read, 131_072).unwrap();
     budget.set_limit(1);
     assert_eq!(a.phase(), Phase::Cold, "global limit did not shed member A");
     assert_eq!(b.phase(), Phase::Hot, "operation pin must protect member B");
@@ -19,7 +19,7 @@ fn global_budget_sheds_unpinned_members_and_retries_after_last_pin() {
         Phase::Cold,
         "last pin did not enforce the budget"
     );
-    let old = a.pin(Access::Read, 8192).unwrap();
+    let old = a.pin(Access::Read, 131_072).unwrap();
     assert_eq!(old.document().unwrap().raw.as_str(), "# A\n\nold\n");
     drop(old);
     assert_eq!(a.phase(), Phase::Cold, "oversized transient became cached");
@@ -102,8 +102,8 @@ fn roots_and_generations_share_one_descriptor_and_body() {
     source.gate.release();
     let a = budget.retain(source.clone());
     let b = budget.retain(source.clone());
-    let left = a.pin(Access::Read, 8192).unwrap();
-    let right = b.pin(Access::Read, 8192).unwrap();
+    let left = a.pin(Access::Read, 131_072).unwrap();
+    let right = b.pin(Access::Read, 131_072).unwrap();
     assert!(std::ptr::eq(
         left.document().unwrap(),
         right.document().unwrap()
@@ -129,7 +129,7 @@ fn read_recency_is_global_and_scans_do_not_heat_it() {
     let b = budget.retain(Arc::new(store.retain(b"# B\n").unwrap()));
     let c = budget.retain(Arc::new(store.retain(b"# C\n").unwrap()));
     for member in [&a, &b, &c] {
-        drop(member.pin(Access::Read, 8192).unwrap());
+        drop(member.pin(Access::Read, 131_072).unwrap());
     }
     drop(a.pin(Access::Read, 0).unwrap());
     drop(b.pin(Access::Scan, 0).unwrap());
@@ -151,7 +151,7 @@ fn raw_lease_survives_descriptor_destruction_and_is_charged_once() {
     let source = source(&store, b"# Raw\n", false, false);
     source.gate.release();
     let member = budget.retain(source.clone());
-    let pin = member.pin(Access::Read, 8192).unwrap();
+    let pin = member.pin(Access::Read, 131_072).unwrap();
     let raw = pin.raw();
     let twin = raw.clone();
     let charge = budget.report().raw;
@@ -159,7 +159,7 @@ fn raw_lease_survives_descriptor_destruction_and_is_charged_once() {
     budget.set_limit(1);
     assert_eq!(member.phase(), Phase::Cold);
     assert_eq!(budget.report().raw, charge);
-    let next = member.pin(Access::Read, 8192).unwrap();
+    let next = member.pin(Access::Read, 131_072).unwrap();
     assert_eq!(next.raw().allocation_id(), raw.allocation_id());
     assert_eq!(source.reads.load(Ordering::SeqCst), 1);
     drop(next);
@@ -201,11 +201,11 @@ fn oversized_transient_excludes_other_cold_loads_until_last_pin() {
     let budget = Controller::new(1);
     let a = budget.retain(Arc::new(store.retain(b"# A\n").unwrap()));
     let b = budget.retain(Arc::new(store.retain(b"# B\n").unwrap()));
-    let pin = a.pin(Access::Read, 8192).unwrap();
+    let pin = a.pin(Access::Read, 131_072).unwrap();
     let clone = pin.clone();
     assert!(budget.report().transient);
     assert!(matches!(
-        b.pin(Access::Read, 8192),
+        b.pin(Access::Read, 131_072),
         Err(Error::Admission(AdmissionError::Busy))
     ));
     drop(pin);
@@ -213,7 +213,7 @@ fn oversized_transient_excludes_other_cold_loads_until_last_pin() {
     drop(clone);
     assert!(!budget.report().transient);
     assert_eq!(a.phase(), Phase::Cold);
-    drop(b.pin(Access::Read, 8192).unwrap());
+    drop(b.pin(Access::Read, 131_072).unwrap());
     assert_eq!(b.phase(), Phase::Cold);
 }
 
@@ -225,15 +225,15 @@ fn failed_error_keeps_its_wave_reserved_until_the_error_is_released() {
     let source = source(&store, b"# Fault\n", true, false);
     source.gate.release();
     let member = budget.retain(source);
-    let failure = member.pin(Access::Read, 8192).unwrap_err();
+    let failure = member.pin(Access::Read, 131_072).unwrap_err();
     assert!(
         matches!(&failure, Error::Load(error) if matches!(error.error(), LoadError::Hydration(_)))
     );
     assert_eq!(member.phase(), Phase::Cold);
-    assert_eq!(budget.report().reserved, 8192);
+    assert_eq!(budget.report().reserved, 131_072);
     drop(failure);
     assert_eq!(budget.report().reserved, 0);
-    drop(member.pin(Access::Read, 8192).unwrap());
+    drop(member.pin(Access::Read, 131_072).unwrap());
 }
 
 #[test]
@@ -246,13 +246,13 @@ fn unwind_clears_controller_call_and_reservation_bookkeeping() {
     let member = budget.retain(source);
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-            || member.pin(Access::Read, 8192)
+            || member.pin(Access::Read, 131_072)
         ))
         .is_err()
     );
     assert_eq!(budget.report().reserved, 0);
     assert!(!budget.report().transient);
-    drop(member.pin(Access::Read, 8192).unwrap());
+    drop(member.pin(Access::Read, 131_072).unwrap());
     assert_eq!(member.phase(), Phase::Cold);
 }
 
@@ -278,7 +278,7 @@ fn retirement_stays_charged_while_the_local_slot_is_already_cold() {
     let store = RawStore::new(parent.path()).unwrap();
     let budget = Controller::new(0);
     let member = budget.retain(Arc::new(store.retain(b"# Retire\n").unwrap()));
-    drop(member.pin(Access::Read, 8192).unwrap());
+    drop(member.pin(Access::Read, 131_072).unwrap());
     let before = budget.report();
     let gate = Arc::new(Gate::default());
     let worker = {
@@ -299,7 +299,7 @@ fn retirement_stays_charged_while_the_local_slot_is_already_cold() {
             let report = budget.report();
             let cold = member.phase() == Phase::Cold;
             let busy = matches!(
-                member.pin(Access::Read, 8192),
+                member.pin(Access::Read, 131_072),
                 Err(Error::Admission(AdmissionError::Busy))
             );
             tx.send((report, cold, busy)).unwrap();
@@ -330,7 +330,7 @@ fn concurrent_callers_share_one_load_reservation_and_source_read() {
     let workers: Vec<_> = (0..5)
         .map(|_| {
             let member = member.clone();
-            thread::spawn(move || member.pin(Access::Read, 8192))
+            thread::spawn(move || member.pin(Access::Read, 131_072))
         })
         .collect();
     let entered = source.gate.entered();
@@ -355,7 +355,7 @@ fn concurrent_callers_share_one_load_reservation_and_source_read() {
         .map(|worker| worker.join().unwrap().unwrap())
         .collect();
     assert!(entered && joined);
-    assert_eq!(during.reserved, 8192);
+    assert_eq!(during.reserved, 131_072);
     assert_eq!(during.reservations, 1);
     assert_eq!(source.reads.load(Ordering::SeqCst), 1);
     assert_eq!(budget.report().reserved, 0);
@@ -376,7 +376,7 @@ fn an_oversized_raw_lease_keeps_exclusive_admission_after_its_tree_is_shed() {
     source_a.gate.release();
     let a = budget.retain(source_a.clone());
     let b = budget.retain(Arc::new(store.retain(b"# B\n").unwrap()));
-    let pin = a.pin(Access::Read, 8192).unwrap();
+    let pin = a.pin(Access::Read, 131_072).unwrap();
     let raw = pin.raw();
     drop(pin);
     assert_eq!(a.phase(), Phase::Cold);
@@ -385,13 +385,13 @@ fn an_oversized_raw_lease_keeps_exclusive_admission_after_its_tree_is_shed() {
         "raw use ended transient admission too early"
     );
     assert!(matches!(
-        b.pin(Access::Read, 8192),
+        b.pin(Access::Read, 131_072),
         Err(Error::Admission(AdmissionError::Busy))
     ));
     drop(a);
     assert!(budget.report().transient);
     let same = budget.retain(source_a.clone());
-    let reloaded = same.pin(Access::Read, 8192).unwrap();
+    let reloaded = same.pin(Access::Read, 131_072).unwrap();
     assert_eq!(reloaded.raw().allocation_id(), raw.allocation_id());
     assert_eq!(source_a.reads.load(Ordering::SeqCst), 1);
     drop(reloaded);
@@ -399,7 +399,7 @@ fn an_oversized_raw_lease_keeps_exclusive_admission_after_its_tree_is_shed() {
     assert!(budget.report().transient);
     drop(raw);
     assert!(!budget.report().transient);
-    drop(b.pin(Access::Read, 8192).unwrap());
+    drop(b.pin(Access::Read, 131_072).unwrap());
 }
 
 #[test]
@@ -409,17 +409,17 @@ fn pending_same_version_admissions_share_one_reservation_before_local_loading() 
     let budget = Controller::new(0);
     let member = budget.retain(Arc::new(store.retain(b"# Pending\n").unwrap()));
     // Hold each pin caller exactly between admission and begin's second lock.
-    let first = budget.admit(Some(member.key), 8192, 0).unwrap();
-    let second = budget.admit(Some(member.key), 8192, 0).unwrap();
+    let first = budget.admit(Some(member.key), 131_072, 0).unwrap();
+    let second = budget.admit(Some(member.key), 131_072, 0).unwrap();
     assert_eq!(
         budget.report().reserved,
-        8192,
+        131_072,
         "pending callers reserved the same wave twice"
     );
     drop(first);
     drop(second);
     assert_eq!(budget.report().reserved, 0);
-    drop(member.pin(Access::Read, 8192).unwrap());
+    drop(member.pin(Access::Read, 131_072).unwrap());
 }
 
 #[test]
@@ -430,15 +430,15 @@ fn ordinary_admission_refuses_before_io_when_staging_occupies_allowance() {
     let source = source(&store, b"# Admission\n", false, false);
     source.gate.release();
     let member = budget.retain(source.clone());
-    budget.set_limit(budget.report().floor + 20_480);
-    let occupied = budget.reserve(16_384).unwrap();
+    budget.set_limit(budget.report().floor + 327_680);
+    let occupied = budget.reserve(262_144).unwrap();
     assert!(matches!(
-        member.pin(Access::Read, 8192),
+        member.pin(Access::Read, 131_072),
         Err(Error::Admission(AdmissionError::Busy))
     ));
     assert_eq!(source.reads.load(Ordering::SeqCst), 0);
     drop(occupied);
-    let pin = member.pin(Access::Read, 8192).unwrap();
+    let pin = member.pin(Access::Read, 131_072).unwrap();
     assert!(!budget.report().transient);
     assert_eq!(budget.report().overage, 0);
     drop(pin);
@@ -451,7 +451,7 @@ fn retirement_unwind_reconciles_only_after_retired_value_destruction() {
     let store = RawStore::new(parent.path()).unwrap();
     let budget = Controller::new(0);
     let member = budget.retain(Arc::new(store.retain(b"# Retirement unwind\n").unwrap()));
-    drop(member.pin(Access::Read, 8192).unwrap());
+    drop(member.pin(Access::Read, 131_072).unwrap());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         budget.shed_one_with(true, |resident, ticket| {
             resident.shed_with(ticket, || panic!("retirement unwind"))
@@ -462,7 +462,7 @@ fn retirement_unwind_reconciles_only_after_retired_value_destruction() {
     assert_eq!(budget.report().retiring, 0);
     assert_eq!(budget.report().bodies, 0);
     assert_eq!(budget.report().raw, 0);
-    drop(member.pin(Access::Read, 8192).unwrap());
+    drop(member.pin(Access::Read, 131_072).unwrap());
 }
 
 #[derive(Debug)]
@@ -497,7 +497,7 @@ fn descriptor_charge_survives_blocking_source_destruction_outside_ledger_lock() 
         gate: gate.clone(),
         panic: false,
     }));
-    drop(member.pin(Access::Read, 8192).unwrap());
+    drop(member.pin(Access::Read, 131_072).unwrap());
     let before = budget.report();
     let worker = thread::spawn(move || drop(member));
     let entered = gate.entered();
@@ -533,7 +533,7 @@ fn descriptor_destructor_unwind_releases_its_charge_after_all_fields_drop() {
         gate,
         panic: true,
     }));
-    drop(member.pin(Access::Read, 8192).unwrap());
+    drop(member.pin(Access::Read, 131_072).unwrap());
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(member))).is_err());
     assert_eq!(budget.report().members, 0);
     assert_eq!(budget.report().retiring, 0);
@@ -549,21 +549,21 @@ fn prepared_call_cancellation_settles_its_selected_flight_before_releasing_reser
     let source = source(&store, b"# Prepared\n", false, false);
     source.gate.release();
     let member = budget.retain(source.clone());
-    let owner = member.begin(Access::Read, 8192).unwrap();
-    let mut follower = member.begin(Access::Read, 8192).unwrap();
+    let owner = member.begin(Access::Read, 131_072).unwrap();
+    let mut follower = member.begin(Access::Read, 131_072).unwrap();
     assert_eq!(member.phase(), Phase::Loading);
     assert_eq!(source.reads.load(Ordering::SeqCst), 0);
-    assert_eq!(budget.report().reserved, 8192);
+    assert_eq!(budget.report().reserved, 131_072);
     drop(owner);
     assert_eq!(member.phase(), Phase::Cold);
-    assert_eq!(budget.report().reserved, 8192);
+    assert_eq!(budget.report().reserved, 131_072);
     let fault = follower.resolve().unwrap_err();
     assert!(matches!(fault.as_ref(), LoadError::Abandoned));
     drop(fault);
     drop(follower);
     assert_eq!(budget.report().reserved, 0);
     assert!(!budget.report().transient);
-    drop(member.pin(Access::Read, 8192).unwrap());
+    drop(member.pin(Access::Read, 131_072).unwrap());
     assert_eq!(source.reads.load(Ordering::SeqCst), 1);
 }
 
@@ -575,8 +575,8 @@ fn prepared_waiter_cancellation_removes_its_waiter_and_preserves_loader_budget()
     let source = source(&store, b"# Cancel waiter\n", false, false);
     source.gate.release();
     let member = budget.retain(source.clone());
-    let mut owner = member.begin(Access::Read, 8192).unwrap();
-    let follower = member.begin(Access::Read, 8192).unwrap();
+    let mut owner = member.begin(Access::Read, 131_072).unwrap();
+    let follower = member.begin(Access::Read, 131_072).unwrap();
     assert_eq!(
         lock(&budget.0.ledger).rows[&member.key]
             .resident
@@ -592,7 +592,7 @@ fn prepared_waiter_cancellation_removes_its_waiter_and_preserves_loader_budget()
             .waiters,
         0
     );
-    assert_eq!(budget.report().reserved, 8192);
+    assert_eq!(budget.report().reserved, 131_072);
     drop(owner.resolve().unwrap());
     drop(owner);
     assert_eq!(budget.report().reserved, 0);
@@ -605,7 +605,7 @@ fn prepared_call_owns_its_descriptor_until_all_local_fields_have_dropped() {
     let store = RawStore::new(parent.path()).unwrap();
     let budget = Controller::new(0);
     let member = budget.retain(Arc::new(store.retain(b"# Deferred\n").unwrap()));
-    let call = member.begin(Access::Read, 8192).unwrap();
+    let call = member.begin(Access::Read, 131_072).unwrap();
     drop(member);
     assert_eq!(budget.report().members, 1);
     drop(call);

@@ -7,31 +7,36 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Counting;
 static LIVE: AtomicUsize = AtomicUsize::new(0);
+static PEAK: AtomicUsize = AtomicUsize::new(0);
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let pointer = unsafe { System.alloc(layout) };
         if !pointer.is_null() {
-            LIVE.fetch_add(layout.size(), Ordering::Relaxed);
+            let live = LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
+            PEAK.fetch_max(live, Ordering::Relaxed);
         }
         pointer
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let pointer = unsafe { System.alloc_zeroed(layout) };
         if !pointer.is_null() {
-            LIVE.fetch_add(layout.size(), Ordering::Relaxed);
+            let live = LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
+            PEAK.fetch_max(live, Ordering::Relaxed);
         }
         pointer
     }
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
         unsafe { System.dealloc(pointer, layout) };
+        LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
     }
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
         let next = unsafe { System.realloc(pointer, layout, size) };
         if !next.is_null() {
             if size >= layout.size() {
-                LIVE.fetch_add(size - layout.size(), Ordering::Relaxed);
+                let live =
+                    LIVE.fetch_add(size - layout.size(), Ordering::Relaxed) + size - layout.size();
+                PEAK.fetch_max(live, Ordering::Relaxed);
             } else {
                 LIVE.fetch_sub(layout.size() - size, Ordering::Relaxed);
             }
@@ -78,7 +83,16 @@ fn main() {
     let a = budget.retain(source.clone());
     let b = budget.retain(source.clone());
     check("shared cold descriptor", &budget, baseline);
-    let pin = a.pin(Access::Read, 1_048_576).unwrap();
+    let load_base = LIVE.load(Ordering::Relaxed);
+    PEAK.store(load_base, Ordering::Relaxed);
+    let declared_peak = 131_072;
+    let pin = a.pin(Access::Read, declared_peak).unwrap();
+    let load_peak = PEAK.load(Ordering::Relaxed) - load_base;
+    assert!(
+        load_peak <= declared_peak,
+        "fixture reservation must cover its measured load peak"
+    );
+    println!("fixture load: declared={declared_peak} requested-heap peak delta={load_peak}");
     let other = b.pin(Access::Read, 1_048_576).unwrap();
     check("shared hot body and pins", &budget, baseline);
     let bytes = pin.raw();
