@@ -1700,16 +1700,17 @@ fn dispatch_read(
     };
     match op {
         Op::Toc { path } => warm_engine_read(registry, ws, |engine| {
-            let doc = doc_or_refusal(engine, ws, &path)?;
-            Ok(wire_serve::read::toc(&doc, &path, &engine_root(engine)))
+            with_engine_document(engine, ws, &path, |doc| {
+                Ok(wire_serve::read::toc(doc, &path, &engine_root(engine)))
+            })
         }),
         Op::Cat { path, sec } => warm_engine_read(registry, ws, |engine| {
-            let doc = doc_or_refusal(engine, ws, &path)?;
-            wire_serve::read::cat(&doc, sec)
+            with_engine_document(engine, ws, &path, |doc| wire_serve::read::cat(doc, sec))
         }),
         Op::Extract { path, kinds } => warm_engine_read(registry, ws, |engine| {
-            let doc = doc_or_refusal(engine, ws, &path)?;
-            Ok(wire_serve::read::extract(&doc, &path, kinds, v3))
+            with_engine_document(engine, ws, &path, |doc| {
+                Ok(wire_serve::read::extract(doc, &path, kinds, v3))
+            })
         }),
         // Composed read — v3-only (§3.2); one warm-engine snapshot (D6).
         Op::Read {
@@ -1974,10 +1975,9 @@ fn dispatch_read(
             now,
             edits,
         } if v3 => warm_engine_read(registry, ws, |engine| {
-            let doc = doc_or_refusal(engine, ws, &path)?;
-            Ok(wire_serve::check_write::check_write(
-                &doc, &target, &actor, &now, &edits,
-            ))
+            with_engine_document(engine, ws, &path, |doc| {
+                Ok(wire_serve::check_write::check_write(doc, &target, &actor, &now, &edits))
+            })
         }),
         // § A.11 corpus SQL — v3-only; the resident engine owns the cache
         // file and this daemon is its one append actor.
@@ -2137,7 +2137,7 @@ fn mint_fingerprint(
     }
 }
 
-/// Composed read over the warm engine: one borrow supplies doc, `file_rev`,
+/// Composed read over the warm engine: one generation supplies doc, `file_rev`,
 /// and ambient root (D6 one-snapshot). Reads mint nothing and take no
 /// identity (§ A.3 proof law).
 fn composed_read_warm(
@@ -2147,15 +2147,18 @@ fn composed_read_warm(
     params: &wire_serve::read::ReadParams,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     warm_engine_read(registry, ws, |engine| {
-        let doc = doc_or_refusal(engine, ws, path)?;
-        // S10: claim-link colors from the pinned corpus, same warm snapshot (D6).
-        let decorations =
-            wire_serve::read::page_decorations(&engine.index, &engine.docs, path.0.as_str());
-        wire_serve::read::composed_read(&doc, path, &engine_root(engine), params, &decorations)
+        with_engine_document(engine, ws, path, |doc| {
+            // S10: claim-link colors from the same generation (D6). Decorations
+            // remain an eager consumer until their own access migration.
+            let decorations =
+                wire_serve::read::page_decorations(&engine.index, &engine.docs, path.0.as_str());
+            wire_serve::read::composed_read(doc, path, &engine_root(engine), params, &decorations)
+        })
     })
 }
 
-/// Warm for `canonical` (idempotent), then serve through `f`. `None` after a
+/// Warm for `canonical` (idempotent), then pin its generation and serve through
+/// `f` with no engine-map lock held. A missing snapshot after a
 /// successful warm means idle-reap won the race — client retries.
 ///
 /// **Every** read op goes through this, and the corpus pass it takes is
@@ -2212,13 +2215,15 @@ fn warm_engine_read<R>(
             let _ = release.recv();
         }
     }
-    registry.with_engine(canonical, |engine| match engine {
-        Some(engine) => f(engine),
-        None => Err(reaped_between_warm_and_serve()),
-    })
+    let engine = registry
+        .engine_snapshot(canonical)
+        .ok_or_else(reaped_between_warm_and_serve)?;
+    // Hydration and projection can block; the selected generation outlives
+    // publication/reap without retaining the global engine-map read lock.
+    f(&engine)
 }
 
-/// [`warm_engine_read`]'s pinned form: the cold gate, the warm, then the
+/// [`warm_engine_read`]'s explicit-Arc form: the cold gate, the warm, then the
 /// engine's `Arc` with the engines lock DROPPED — for a door whose serve
 /// re-enters the registry (the walk warms mounted roots through it; a borrow
 /// under the read lock would deadlock on the warm's write).
@@ -2295,7 +2300,7 @@ pub(crate) fn file_not_found(path: &wire::Path) -> Box<ErrorBody> {
     Box::new(e)
 }
 
-/// The document for `path` on this snapshot, or the refusal the miss means.
+/// Compute over `path` on this snapshot, or return the refusal the miss means.
 ///
 /// Resident corpus first (the warm parse); an UNSERVED member (in the hash
 /// domain, not UTF-8 — node-rev-merkle-spec §3 per-file degradation) is the
@@ -2305,27 +2310,26 @@ pub(crate) fn file_not_found(path: &wire::Path) -> Box<ErrorBody> {
 /// spans, same `file_rev` — and only a path with no file behind it refuses
 /// `file_not_found`. Before this fallback the warm read door refused what the
 /// write door committed on the same path (dogfood 2026-08-09, s10).
-fn doc_or_refusal<'e>(
-    engine: &'e WorkspaceEngine,
+fn with_engine_document<R>(
+    engine: &WorkspaceEngine,
     ws: &Path,
     path: &wire::Path,
-) -> Result<std::borrow::Cow<'e, model::Document>, Box<ErrorBody>> {
-    if let Some(doc) = engine.docs.get(&path.0) {
-        return Ok(std::borrow::Cow::Borrowed(doc));
-    }
-    if let Some(condition) = engine.unserved.get(&path.0) {
-        // One mint for the §52 per-file refusal, shared with the links doors
-        // (`wire_serve::read::unserved_refusal`).
-        return Err(wire_serve::read::unserved_refusal(path, condition));
-    }
-    // Out-of-domain read: the same single-file load the write door and the
-    // daemonless degrade already run, so all three agree on what a path serves.
-    let root = fs::WorkspaceRoot(ws.to_path_buf());
-    match wire_serve::load_doc(&root, path) {
-        Ok(doc) => Ok(std::borrow::Cow::Owned(doc)),
-        Err(e) if e.code == ErrorCode::FileNotFound => Err(file_not_found(path)),
-        Err(e) => Err(e),
-    }
+    read: impl FnOnce(&model::Document) -> Result<R, Box<ErrorBody>>,
+) -> Result<R, Box<ErrorBody>> {
+    wire_serve::read::with_document(
+        &fs::WorkspaceRoot(ws.to_path_buf()),
+        &model::catalog::EagerCatalog::new(&engine.docs),
+        &engine.unserved,
+        path,
+        read,
+    )
+    .map_err(|error| {
+        if error.code == ErrorCode::FileNotFound {
+            file_not_found(path)
+        } else {
+            error
+        }
+    })
 }
 
 /// Map a `warm_or_build` I/O failure onto its wire frame: `InvalidData` is
@@ -2340,7 +2344,7 @@ fn doc_or_refusal<'e>(
 /// refusal reads as "the file you asked for is corrupt", which is false of
 /// that file and strands the caller (Law A-3c). A non-UTF-8 corpus MEMBER no
 /// longer reaches here at all — it degrades per-file (`fs::build_corpus`
-/// skips and reports it; [`doc_or_refusal`] mints its per-file refusal) — so
+/// skips and reports it; [`with_engine_document`] mints its per-file refusal) — so
 /// the `InvalidData` arm survives for the decode failures that really are
 /// corpus-scoped, e.g. a domain config file that is itself not UTF-8.
 /// The §3.2 cold gate at a wire door: `Ok(())` ⇒ proceed to the inline
@@ -2599,7 +2603,7 @@ mod recovery_class_truth_tests {
     }
 
     /// Defect 1 (sonnet P2, verdict § C5): the idle reaper dropping the
-    /// engine between `warm_or_build` and `with_engine` must teach `retry` —
+    /// engine between `warm_or_build` and the snapshot must teach `retry` —
     /// the function's own doc says "idle-reap won the race — client
     /// retries" — never `internal`/`respawn`, which teaches the client to
     /// tear down a healthy channel.
@@ -3067,13 +3071,13 @@ mod hello_config_grade_tests {
     }
 
     /// The second seam the live probe caught on a real corpus:
-    /// a `links` serve computes its whole map INSIDE the engines read lock,
+    /// a legacy `with_engine` reader holds the engines read lock,
     /// a rebuild insert queues behind it, and from that moment every
     /// ordinary reader parks behind the queued writer. hello reads the
     /// resident fold with `try_read` and answers through that wall.
     ///
     /// The long read is driven through the public borrow (`with_engine`
-    /// parked in its closure — exactly the links shape); the writer is a
+    /// parked in its closure — the historical links shape); the writer is a
     /// second workspace's cold build parked on its `engines` insert.
     #[test]
     fn hello_answers_while_a_long_read_holds_the_engines_lock_and_a_writer_queues() {

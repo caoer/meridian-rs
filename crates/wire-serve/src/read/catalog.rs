@@ -12,15 +12,39 @@ use wire::{ErrorBody, Path};
 /// per-file refusal. True nonmembers use the ordinary named live-source door.
 pub fn with_document<T>(
     root: &fs::WorkspaceRoot,
-    _catalog: &dyn DocumentCatalog,
-    _unserved: &BTreeMap<String, String>,
+    catalog: &dyn DocumentCatalog,
+    unserved: &BTreeMap<String, String>,
     path: &Path,
     read: impl FnOnce(&model::Document) -> Result<T, Box<ErrorBody>>,
 ) -> Result<T, Box<ErrorBody>> {
-    // Red compatibility prototype: the ordinary path loader cannot serve a
-    // retained generation. Tests must distinguish this from catalog access.
+    if let Some(revision) = catalog.revision(&path.0) {
+        let lease = catalog
+            .pin_read(&path.0)
+            .map_err(|error| retained_fault(path, error))?
+            .ok_or_else(|| retained_fault(path, "known member has no body lease"))?;
+        let doc = lease
+            .document()
+            .map_err(|error| retained_fault(path, error))?;
+        if doc.root.node_rev != *revision {
+            return Err(retained_fault(
+                path,
+                "body does not match the selected revision",
+            ));
+        }
+        return read(doc);
+    }
+    if let Some(condition) = unserved.get(&path.0) {
+        return Err(super::unserved_refusal(path, condition));
+    }
     let doc = crate::load_doc(root, path)?;
     read(&doc)
+}
+
+fn retained_fault(path: &Path, error: impl std::fmt::Display) -> Box<ErrorBody> {
+    let mut refusal = ErrorBody::new(wire::ErrorCode::IoError);
+    refusal.path = Some(path.clone());
+    refusal.cause = Some(format!("cannot read retained member {}: {error}", path.0));
+    Box::new(refusal)
 }
 
 #[cfg(test)]
