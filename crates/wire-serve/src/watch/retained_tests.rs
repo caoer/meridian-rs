@@ -68,10 +68,15 @@ fn migration_watcher_retains_versions_in_host_backing() {
     );
     std::fs::remove_file(root.0.join("a.md")).unwrap();
     let frame = reconcile(&root, &mut ring, &mut watch).unwrap().unwrap();
-    let removed = frame.files.iter().find(|f| f.path.0 == "a.md").unwrap();
+    let removed = frame
+        .delta
+        .files
+        .iter()
+        .find(|f| f.path.0 == "a.md")
+        .unwrap();
     assert_eq!(removed.change, FileChange::Deleted);
     assert!(removed.file_rev_before.is_some());
-    assert_eq!(frame.seq, 1);
+    assert_eq!(frame.delta.seq, 1);
 }
 #[test]
 fn migration_late_retain_fault_keeps_baseline_and_sequence() {
@@ -90,8 +95,8 @@ fn migration_late_retain_fault_keeps_baseline_and_sequence() {
     assert_eq!(ring.seq(), 0);
     backing.fail_retain.store(0, Ordering::SeqCst);
     let frame = reconcile(&root, &mut ring, &mut watch).unwrap().unwrap();
-    assert_eq!(frame.seq, 1, "a failed prepare consumed a sequence");
-    assert_eq!(frame.files.len(), 2);
+    assert_eq!(frame.delta.seq, 1, "a failed prepare consumed a sequence");
+    assert_eq!(frame.delta.files.len(), 2);
 }
 #[test]
 fn migration_required_before_fault_never_falls_back_to_live_source() {
@@ -110,7 +115,97 @@ fn migration_required_before_fault_never_falls_back_to_live_source() {
         reconcile(&root, &mut ring, &mut watch)
             .unwrap()
             .unwrap()
+            .delta
             .seq,
         1
     );
+}
+
+fn observed(root: &fs::WorkspaceRoot) -> (std::collections::BTreeMap<String, [u8; 32]>, Root) {
+    let (_, leaves, folded) = fs::domain_snapshot_with_leaves(root).unwrap();
+    (
+        leaves
+            .into_iter()
+            .map(|(path, digest)| (path.to_str().unwrap().to_owned(), digest))
+            .collect(),
+        Root(folded.0),
+    )
+}
+
+#[test]
+fn retained_delta_faults_keep_the_same_transition_retryable() {
+    for read_fault in [true, false] {
+        let (_dir, root, backing, mut watch, mut ring) = fixture();
+        let before = watch.root().cloned();
+        if read_fault {
+            backing.fail_read.store(true, Ordering::SeqCst);
+        } else {
+            backing
+                .fail_retain
+                .store(backing.retains.load(Ordering::SeqCst) + 2, Ordering::SeqCst);
+        }
+        std::fs::write(root.0.join("a.md"), b"# A new\n").unwrap();
+        std::fs::write(root.0.join("b.md"), b"# B new\n").unwrap();
+        let (leaves, disk) = observed(&root);
+        assert!(reconcile_delta(&root, &mut ring, &mut watch, &leaves, &disk).is_err());
+        assert_eq!(watch.root().cloned(), before);
+        assert_eq!(ring.seq(), 0);
+        backing.fail_read.store(false, Ordering::SeqCst);
+        backing.fail_retain.store(0, Ordering::SeqCst);
+        let frame = reconcile_delta(&root, &mut ring, &mut watch, &leaves, &disk)
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame.delta.seq, 1);
+        assert_eq!(frame.delta.files.len(), 2);
+    }
+}
+
+#[test]
+fn retained_prime_failure_does_not_create_a_partial_baseline() {
+    let (_dir, root, backing, _, _) = fixture();
+    let mut watch = WatchState::with_retention(&root, backing.clone());
+    let (leaves, disk) = observed(&root);
+    backing
+        .fail_retain
+        .store(backing.retains.load(Ordering::SeqCst) + 2, Ordering::SeqCst);
+    assert!(
+        prime(
+            &root,
+            &mut watch,
+            PrimeSnapshot::take(&root).unwrap(),
+            &leaves,
+            &disk
+        )
+        .is_err()
+    );
+    assert!(watch.root().is_none());
+    backing.fail_retain.store(0, Ordering::SeqCst);
+    assert!(
+        prime(
+            &root,
+            &mut watch,
+            PrimeSnapshot::take(&root).unwrap(),
+            &leaves,
+            &disk
+        )
+        .unwrap()
+    );
+    assert_eq!(watch.root(), Some(&disk));
+}
+
+#[test]
+fn retained_invalid_utf8_still_has_exact_before_membership() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::WorkspaceRoot(dir.path().to_path_buf());
+    std::fs::write(root.0.join("poison.md"), [255, 254]).unwrap();
+    let backing = Arc::new(Backing::default());
+    let mut watch = WatchState::with_retention(&root, backing);
+    let mut ring = RootRing::new();
+    reconcile(&root, &mut ring, &mut watch).unwrap();
+    std::fs::write(root.0.join("poison.md"), b"# Repaired\n").unwrap();
+    let frame = reconcile(&root, &mut ring, &mut watch).unwrap().unwrap();
+    let file = &frame.delta.files[0];
+    assert_eq!(file.change, FileChange::Modified);
+    assert!(file.file_rev_before.is_none());
+    assert!(file.file_rev_after.is_some());
 }
