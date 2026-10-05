@@ -557,6 +557,10 @@ with the other substrate owners before enforcing the shared process budget.
 LRU. Handles with the same retained byte identity share one slot across roots
 and generations. Admission publishes that identity's shared reservation before
 the local loader starts; calls arriving in that interval join the same charge.
+Admission rechecks the row after each unlocked interval. If another call has
+already made it hot or started a call, admission returns to selection without
+minting a new wave. A call settles only its own retained reservation, and the
+last reservation reference unpublishes its wave even while hot hits continue.
 Local flight selection is prepared under the ledger and slot locks; resolving
 that prepared action does the I/O or waiting only after both locks are released.
 A dropped unstarted action settles or unregisters its local flight before its
@@ -577,11 +581,19 @@ The ledger retains a selected body's full charge throughout retirement,
 including the interval where the local slot already appears cold. Only after
 `try_shed` returns may it publish the released charge. Descriptor and raw-lease
 destruction use the same ordering. No accounting lock spans loading, waiting
-on a local flight, or destruction of retained backing. Admission trims first;
-if pins or another load still occupy the allowance, it refuses explicitly
+on a local flight, or destruction of retained backing. A member's retirement
+race has a distinct retryable result from occupied byte allowance. Admission
+first checks policy and whether reclamation could make room; a certain refusal
+does not shed unrelated cache entries. Cached reclaimability and retirement
+counters avoid scanning the entire membership map for this decision. If pins
+or another load still occupy the allowance, it refuses explicitly
 rather than waiting while an operation may hold a needed pin. A load larger
 than the allowance above the measured floor uses one serialized transient
-member; its exclusivity lasts through the last managed body or raw lease.
+member; only a second over-budget admission is excluded, never a request that
+fits by bytes. Its exclusivity lasts through managed body/raw leases and
+reservations, not an untracked raw alias. Such aliases remain charged while
+alive. Disabling the limit suspends enforcement without forgetting outstanding
+transient ownership, so re-enabling it cannot stack oversized admissions.
 A same-version re-pin can reuse those bytes within that slot, including after
 the original descriptor ends. Failed-wave errors retain their reservation
 until the error payload is released. Zero budget disables trimming. Floor,

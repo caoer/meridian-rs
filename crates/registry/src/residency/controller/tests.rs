@@ -634,3 +634,5 @@ fn duplicate_source_destructor_unwind_does_not_leak_a_member_reference() {
     drop(member);
     assert_eq!(budget.report().members, 0);
 }
+
+mod review_regressions;
