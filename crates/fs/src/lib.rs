@@ -4449,13 +4449,56 @@ fn rollback_error(
 /// One retained baseline member: its bytes at the baseline plus their §12.2
 /// leaf digest — the digest is what a memo-served leaf set diffs against
 /// ([`Watcher::diff_leaves`]), computed ONCE when the entry lands.
-type BaselineEntry = (Vec<u8>, [u8; 32]);
+#[derive(Debug)]
+struct BaselineEntry {
+    identity: model::bytes::ByteIdentity,
+    body: BaselineBody,
+}
+
+#[derive(Debug)]
+enum BaselineBody {
+    Memory(model::bytes::SharedBytes),
+    Retained(Arc<dyn model::bytes::RetainedBytes>),
+}
+
+impl BaselineEntry {
+    fn pin(&self) -> io::Result<Box<dyn model::bytes::ByteLease>> {
+        let lease: Box<dyn model::bytes::ByteLease> = match &self.body {
+            BaselineBody::Memory(bytes) => Box::new(bytes.clone()),
+            BaselineBody::Retained(source) => {
+                if source.identity() != self.identity {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "retained baseline identity changed",
+                    ));
+                }
+                source.pin()?
+            }
+        };
+        if lease.bytes().len() as u64 != self.identity.len
+            || model::leaf_digest(lease.bytes()) != self.identity.digest
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "retained baseline bytes do not match their identity",
+            ));
+        }
+        Ok(lease)
+    }
+}
+
+/// Fully prepared baseline entries, or retired entries to release after the
+/// host publishes its complete ring/root/scope transition. Owns no live-path
+/// lookup and cannot acquire new backing during commit.
+#[derive(Debug, Default)]
+#[must_use]
+pub struct PreparedBaseline(BTreeMap<String, BaselineEntry>);
 
 #[derive(Debug)]
 pub struct Watcher {
     _root: WorkspaceRoot,
     baseline: Option<BTreeMap<String, BaselineEntry>>,
-    retention: Option<std::sync::Arc<dyn model::bytes::ByteRetention>>,
+    retention: Option<Arc<dyn model::bytes::ByteRetention>>,
 }
 
 /// One detection cycle's byte-level classification: paths gone from the
@@ -4509,7 +4552,7 @@ impl Watcher {
     #[must_use]
     pub fn with_retention(
         root: WorkspaceRoot,
-        retention: std::sync::Arc<dyn model::bytes::ByteRetention>,
+        retention: Arc<dyn model::bytes::ByteRetention>,
     ) -> Self {
         Self {
             retention: Some(retention),
@@ -4517,48 +4560,96 @@ impl Watcher {
         }
     }
 
-    /// Adopt a snapshot as the new baseline (priming, post-emission, or the
-    /// silent internal-commit sync — the caller's disposition).
-    pub fn rebase(&mut self, snapshot: &[(String, Vec<u8>)]) {
-        self.baseline = Some(
+    /// Prepare exact snapshot versions without changing the current baseline.
+    ///
+    /// # Errors
+    /// A retention provider cannot preserve or identify the selected bytes.
+    pub fn prepare_snapshot(
+        &self,
+        snapshot: Vec<(String, Vec<u8>)>,
+    ) -> io::Result<PreparedBaseline> {
+        self.prepare_baseline(
             snapshot
-                .iter()
-                .map(|(p, b)| (p.clone(), (b.clone(), model::leaf_digest(b))))
+                .into_iter()
+                .map(|(path, bytes)| {
+                    let digest = model::leaf_digest(&bytes);
+                    (path, (bytes, digest))
+                })
                 .collect(),
-        );
+        )
     }
 
-    /// Adopt a baseline whose entries the caller already verified: each
-    /// digest is its bytes' [`model::leaf_digest`]. Priming off the resident
-    /// memo builds one from the memo's leaves, every member's bytes checked
-    /// against its leaf, so adopting a whole corpus hashes nothing again.
-    pub fn adopt(&mut self, baseline: BTreeMap<String, (Vec<u8>, [u8; 32])>) {
-        self.baseline = Some(baseline);
+    /// Prepare versions whose digests the caller already verified.
+    ///
+    /// # Errors
+    /// A retention provider fails or returns a different identity.
+    pub fn prepare_baseline(
+        &self,
+        baseline: BTreeMap<String, (Vec<u8>, [u8; 32])>,
+    ) -> io::Result<PreparedBaseline> {
+        let mut prepared = BTreeMap::new();
+        for (path, (bytes, digest)) in baseline {
+            let identity = model::bytes::ByteIdentity {
+                digest,
+                len: bytes.len() as u64,
+            };
+            let body = match &self.retention {
+                None => BaselineBody::Memory(model::bytes::SharedBytes::from(bytes)),
+                Some(retention) => {
+                    let source = retention.retain(bytes)?;
+                    if source.identity() != identity {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "retention returned a different baseline identity",
+                        ));
+                    }
+                    BaselineBody::Retained(source)
+                }
+            };
+            prepared.insert(path, BaselineEntry { identity, body });
+        }
+        Ok(PreparedBaseline(prepared))
     }
 
-    /// Advance the baseline by exactly the movers a cycle told: upserts land
-    /// with their digest, removals leave. O(changed) — the incremental form
-    /// of [`Self::rebase`] for a cycle that never snapshotted. No-op until
-    /// primed (an unprimed baseline has nothing to advance).
-    pub fn rebase_entries(&mut self, upserts: &[(String, Vec<u8>)], removals: &[String]) {
+    /// Publish a complete prepared baseline. Release the returned old versions
+    /// after the host has published its ring/root/scope state too.
+    pub fn replace(&mut self, prepared: PreparedBaseline) -> PreparedBaseline {
+        PreparedBaseline(self.baseline.replace(prepared.0).unwrap_or_default())
+    }
+
+    /// Publish exactly the prepared movers. No-op until primed. Old versions
+    /// are returned for release after the host's whole transition is published.
+    pub fn advance(&mut self, prepared: PreparedBaseline, removals: &[String]) -> PreparedBaseline {
         let Some(baseline) = self.baseline.as_mut() else {
-            return;
+            return prepared;
         };
+        let mut retired = BTreeMap::new();
         for path in removals {
-            baseline.remove(path);
+            if let Some(old) = baseline.remove(path) {
+                retired.insert(path.clone(), old);
+            }
         }
-        for (path, bytes) in upserts {
-            baseline.insert(path.clone(), (bytes.clone(), model::leaf_digest(bytes)));
+        for (path, entry) in prepared.0 {
+            if let Some(old) = baseline.insert(path.clone(), entry) {
+                retired.insert(path, old);
+            }
         }
+        PreparedBaseline(retired)
     }
 
-    /// The retained baseline bytes at `path`, when primed and held.
-    #[must_use]
-    pub fn baseline_bytes(&self, path: &str) -> Option<&[u8]> {
+    /// Lease a retained baseline body; absence means absent membership only.
+    ///
+    /// # Errors
+    /// Required backing or admission fails, or the loaded identity disagrees.
+    pub fn baseline_bytes(
+        &self,
+        path: &str,
+    ) -> io::Result<Option<Box<dyn model::bytes::ByteLease>>> {
         self.baseline
-            .as_ref()?
-            .get(path)
-            .map(|(bytes, _)| bytes.as_slice())
+            .as_ref()
+            .and_then(|baseline| baseline.get(path))
+            .map(BaselineEntry::pin)
+            .transpose()
     }
 
     /// Diff a CURRENT leaf view (the resident memo's, String-spelled) against
@@ -4570,10 +4661,10 @@ impl Watcher {
     pub fn diff_leaves(&self, leaves: &BTreeMap<String, [u8; 32]>) -> Option<LeafDiff> {
         let baseline = self.baseline.as_ref()?;
         let mut diff = LeafDiff::default();
-        for (path, (_, digest)) in baseline {
+        for (path, entry) in baseline {
             match leaves.get(path) {
                 None => diff.removed.push(path.clone()),
-                Some(fresh) if fresh != digest => diff.changed.push(path.clone()),
+                Some(fresh) if fresh != &entry.identity.digest => diff.changed.push(path.clone()),
                 Some(_) => {}
             }
         }
@@ -4585,24 +4676,34 @@ impl Watcher {
         Some(diff)
     }
 
-    /// Classify a snapshot against the baseline. `None` until primed — the
-    /// epoch's baseline is the first successful snapshot; earlier external
-    /// changes are unobservable by construction.
-    #[must_use]
-    pub fn classify(&self, snapshot: &[(String, Vec<u8>)]) -> Option<WatchChanges> {
-        let baseline = self.baseline.as_ref()?;
+    /// Classify a snapshot against the retained baseline. `None` until primed.
+    /// Unchanged identities need no body read.
+    ///
+    /// # Errors
+    /// A required before version cannot be read and verified. Nothing changes.
+    pub fn classify(&self, snapshot: &[(String, Vec<u8>)]) -> io::Result<Option<WatchChanges>> {
+        let Some(baseline) = self.baseline.as_ref() else {
+            return Ok(None);
+        };
         let disk: BTreeMap<&str, &[u8]> = snapshot
             .iter()
             .map(|(p, b)| (p.as_str(), b.as_slice()))
             .collect();
         let mut changes = WatchChanges::default();
-        for (path, (before, _)) in baseline {
+        for (path, entry) in baseline {
             match disk.get(path.as_str()) {
-                None => changes.removed.push((path.clone(), before.clone())),
-                Some(after) if *after != before.as_slice() => {
-                    changes
-                        .modified
-                        .push((path.clone(), before.clone(), after.to_vec()));
+                None => changes
+                    .removed
+                    .push((path.clone(), entry.pin()?.bytes().to_vec())),
+                Some(after)
+                    if after.len() as u64 != entry.identity.len
+                        || model::leaf_digest(after) != entry.identity.digest =>
+                {
+                    changes.modified.push((
+                        path.clone(),
+                        entry.pin()?.bytes().to_vec(),
+                        after.to_vec(),
+                    ));
                 }
                 Some(_) => {}
             }
@@ -4612,7 +4713,7 @@ impl Watcher {
                 changes.added.push((path.clone(), bytes.clone()));
             }
         }
-        Some(changes)
+        Ok(Some(changes))
     }
 }
 

@@ -7,13 +7,26 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[derive(Debug, Default)]
 struct Backing {
     retains: AtomicUsize,
+    wrong_identity: AtomicBool,
     fail_retain: AtomicUsize,
     fail_read: Arc<AtomicBool>,
+    corrupt_read: Arc<AtomicBool>,
+    panic_drop: Arc<AtomicBool>,
 }
 #[derive(Debug)]
 struct Version {
     raw: SharedBytes,
     fail: Arc<AtomicBool>,
+    corrupt: Arc<AtomicBool>,
+    panic_drop: Arc<AtomicBool>,
+}
+impl Drop for Version {
+    fn drop(&mut self) {
+        assert!(
+            !self.panic_drop.swap(false, Ordering::SeqCst),
+            "injected retired baseline destructor unwind"
+        );
+    }
 }
 impl RetainedBytes for Version {
     fn identity(&self) -> ByteIdentity {
@@ -26,6 +39,9 @@ impl RetainedBytes for Version {
         if self.fail.load(Ordering::SeqCst) {
             return Err(io::Error::other("injected required backing fault"));
         }
+        if self.corrupt.load(Ordering::SeqCst) {
+            return Ok(Box::new(SharedBytes::from(b"wrong bytes".to_vec())));
+        }
         Ok(Box::new(self.raw.clone()))
     }
 }
@@ -36,8 +52,14 @@ impl ByteRetention for Backing {
             return Err(io::Error::other("injected late retain fault"));
         }
         Ok(Arc::new(Version {
-            raw: SharedBytes::from(bytes),
+            raw: SharedBytes::from(if self.wrong_identity.load(Ordering::SeqCst) {
+                b"wrong retained version".to_vec()
+            } else {
+                bytes
+            }),
             fail: self.fail_read.clone(),
+            corrupt: self.corrupt_read.clone(),
+            panic_drop: self.panic_drop.clone(),
         }))
     }
 }
@@ -208,4 +230,54 @@ fn retained_invalid_utf8_still_has_exact_before_membership() {
     assert_eq!(file.change, FileChange::Modified);
     assert!(file.file_rev_before.is_none());
     assert!(file.file_rev_after.is_some());
+}
+
+#[test]
+fn retained_bytes_are_verified_before_classification() {
+    let (_dir, root, backing, mut watch, mut ring) = fixture();
+    let before = watch.root().cloned();
+    backing.corrupt_read.store(true, Ordering::SeqCst);
+    std::fs::remove_file(root.0.join("a.md")).unwrap();
+    let error = reconcile(&root, &mut ring, &mut watch).unwrap_err();
+    assert!(error.cause.as_deref().unwrap().contains("identity"));
+    assert_eq!(watch.root().cloned(), before);
+    assert_eq!(ring.seq(), 0);
+    backing.corrupt_read.store(false, Ordering::SeqCst);
+    assert_eq!(
+        reconcile(&root, &mut ring, &mut watch)
+            .unwrap()
+            .unwrap()
+            .delta
+            .seq,
+        1
+    );
+}
+
+#[test]
+fn retired_baseline_destructors_run_after_the_whole_publication() {
+    let (_dir, root, backing, mut watch, mut ring) = fixture();
+    std::fs::write(root.0.join("a.md"), b"# Published\n").unwrap();
+    let (_, disk) = observed(&root);
+    backing.panic_drop.store(true, Ordering::SeqCst);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        reconcile(&root, &mut ring, &mut watch)
+    }));
+    assert!(result.is_err());
+    assert_eq!(watch.root(), Some(&disk));
+    assert_eq!(ring.seq(), 1);
+    assert!(reconcile(&root, &mut ring, &mut watch).unwrap().is_none());
+}
+
+#[test]
+fn retention_cannot_publish_another_versions_identity() {
+    let (_dir, root, backing, _, _) = fixture();
+    let mut watch = WatchState::with_retention(&root, backing.clone());
+    let mut ring = RootRing::new();
+    backing.wrong_identity.store(true, Ordering::SeqCst);
+    assert!(reconcile(&root, &mut ring, &mut watch).is_err());
+    assert!(watch.root().is_none());
+    assert_eq!(ring.seq(), 0);
+    backing.wrong_identity.store(false, Ordering::SeqCst);
+    assert!(reconcile(&root, &mut ring, &mut watch).unwrap().is_none());
+    assert!(watch.root().is_some());
 }

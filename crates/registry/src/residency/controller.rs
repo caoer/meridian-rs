@@ -227,6 +227,7 @@ impl Controller {
     pub fn set_limit(&self, limit: usize) {
         let mut state = lock(&self.0.ledger);
         state.limit = limit;
+        state.clear_transient_if_unused();
         drop(state);
         self.trim();
     }
@@ -268,6 +269,7 @@ impl Controller {
     ) -> Result<Option<Reservation>, AdmissionError> {
         loop {
             let mut state = lock(&self.0.ledger);
+            state.clear_transient_if_unused();
             if let Some(key) = key {
                 let row = &state.rows[&key];
                 if row.retiring {
@@ -369,6 +371,7 @@ impl Controller {
     ) -> bool {
         let selected = {
             let mut state = lock(&self.0.ledger);
+            state.clear_transient_if_unused();
             let over = state.limit != 0 && state.total_exact() > state.limit as u128;
             let transient_ready = state.limit != 0
                 && state.transient.is_some_and(|key| {

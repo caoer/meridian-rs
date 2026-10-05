@@ -128,7 +128,7 @@ fn review_certain_refusal_must_not_shed_unrelated_bodies() {
 }
 
 #[test]
-fn fitting_staging_and_reads_keep_other_cache_hot_during_a_transient() {
+fn fitting_staging_and_reads_preserve_cache_before_oversized_refusal() {
     let parent = tempfile::tempdir().unwrap();
     let store = RawStore::new(parent.path()).unwrap();
     let budget = Controller::new(0);
@@ -206,6 +206,7 @@ fn counters_match_rows(budget: &Controller) {
     let state = lock(&budget.0.ledger);
     let mut eligible = 0;
     let mut bytes = 0_u128;
+    let mut raws = 0;
     let mut retiring = 0;
     for row in state.rows.values() {
         retiring += usize::from(row.retiring);
@@ -218,10 +219,12 @@ fn counters_match_rows(budget: &Controller) {
             && raw.owners == 1
         {
             bytes += raw.bytes as u128;
+            raws += 1;
         }
     }
     assert_eq!(state.reclaimable, eligible);
     assert_eq!(state.reclaimable_bytes, bytes);
+    assert_eq!(state.reclaimable_raws, raws);
     assert_eq!(state.retiring, retiring);
 }
 

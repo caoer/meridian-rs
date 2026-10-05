@@ -36,8 +36,9 @@ impl Member {
     /// Shared-flight callers share one reservation. No admission wait is used.
     ///
     /// # Errors
-    /// Occupied allowance, backing/identity failure, exhausted identifiers or
-    /// an observed body larger than the declared peak. Underestimates are
+    /// Occupied allowance, a retryable retirement/failed-flight completion,
+    /// backing/identity failure, exhausted identifiers, or an observed body
+    /// larger than the declared peak. Underestimates are
     /// reported and shed; they are not evidence of a bounded load peak.
     ///
     /// # Panics
@@ -123,7 +124,7 @@ impl Member {
                 && phase == Phase::Cold
                 && revision != state.permits[&id].revision
             {
-                return Err(AdmissionError::Busy);
+                return Err(AdmissionError::Settling);
             }
             let resident = row.resident.clone();
             let existing_wave = row.wave;
