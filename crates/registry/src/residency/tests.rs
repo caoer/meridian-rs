@@ -164,16 +164,13 @@ fn wave(first: First) -> Wave {
             }
         })
     };
-    let observed = rx.recv_timeout(WAIT);
+    let ready = rx.recv_timeout(WAIT);
     source.gate.release();
     let leader = leader.join();
     let mut results: Vec<_> = followers.into_iter().map(|j| j.join().unwrap()).collect();
     observer.join().unwrap();
     assert!(entered, "loader did not enter its source");
-    assert!(
-        observed.unwrap(),
-        "waiters or lock-free observation missing"
-    );
+    assert!(ready.unwrap(), "waiters or lock-free observation missing");
     match first {
         First::Panic => assert!(leader.is_err()),
         _ => results.push(leader.unwrap()),
@@ -186,9 +183,9 @@ fn wave(first: First) -> Wave {
 fn concurrent_readers_share_one_load_and_one_body() {
     let (_parent, _, resident, pins) = wave(First::Success);
     let pins: Vec<_> = pins.into_iter().map(Result::unwrap).collect();
-    let doc = pins[0].document().unwrap() as *const model::Document;
+    let doc = pins[0].document().unwrap();
     for pin in &pins {
-        assert_eq!(pin.document().unwrap() as *const model::Document, doc);
+        assert!(std::ptr::eq(pin.document().unwrap(), doc));
         assert_eq!(pin.bytes().allocation_id(), pins[0].bytes().allocation_id());
     }
     let clone = pins[0].clone();
@@ -374,4 +371,62 @@ fn revision_exhaustion_cannot_make_an_old_ticket_current_again() {
         LoadError::RevisionExhausted
     ));
     assert_eq!(resident.snapshot().phase, Phase::Cold);
+}
+
+// Hold a registered waiter just before its condvar wait, allowing the leader
+// and a subsequent caller to run first. This fixes the scheduling point that
+// an ordinary thread stress test cannot force deterministically.
+fn delayed_waiter(resident: &Resident) -> Arc<Flight> {
+    let state = lock(&resident.0.state);
+    let StateBody::Loading(flight) = &state.body else {
+        panic!("source gate must hold the loading wave");
+    };
+    lock(&flight.state).waiters += 1;
+    flight.clone()
+}
+
+#[test]
+fn retry_cannot_replace_a_delayed_waiters_original_error() {
+    let (_parent, source, resident) = controlled(First::Fault);
+    let leader = {
+        let resident = resident.clone();
+        thread::spawn(move || resident.pin(Access::Read))
+    };
+    if !source.gate.entered() {
+        source.gate.release();
+        let _ = leader.join();
+        panic!("loader did not enter source");
+    }
+    let waiter = delayed_waiter(&resident);
+    source.gate.release();
+    let original = leader.join().unwrap().unwrap_err();
+    let retried = resident.pin(Access::Read).unwrap();
+    let delayed = waiter.wait().unwrap_err();
+    assert!(Arc::ptr_eq(&original, &delayed));
+    assert_eq!(retried.bytes().as_bytes(), b"# Retained\n\nbody\n");
+    assert_eq!(resident.snapshot().phase, Phase::Hot);
+}
+
+#[test]
+fn completed_wave_protects_body_until_delayed_waiter_receives_it() {
+    let (_parent, source, resident) = controlled(First::Success);
+    let leader = {
+        let resident = resident.clone();
+        thread::spawn(move || resident.pin(Access::Read))
+    };
+    if !source.gate.entered() {
+        source.gate.release();
+        let _ = leader.join();
+        panic!("loader did not enter source");
+    }
+    let waiter = delayed_waiter(&resident);
+    source.gate.release();
+    drop(leader.join().unwrap().unwrap());
+    assert!(resident.eviction_ticket().is_none());
+    let body = waiter.wait().unwrap();
+    drop(waiter);
+    assert!(resident.eviction_ticket().is_none());
+    assert_eq!(body.bytes.as_bytes(), b"# Retained\n\nbody\n");
+    drop(body);
+    assert!(resident.try_shed(&resident.eviction_ticket().unwrap()));
 }
