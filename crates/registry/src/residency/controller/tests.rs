@@ -636,3 +636,5 @@ fn duplicate_source_destructor_unwind_does_not_leak_a_member_reference() {
 }
 
 mod review_regressions;
+
+mod migration_regressions;

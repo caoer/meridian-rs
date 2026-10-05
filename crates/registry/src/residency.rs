@@ -11,6 +11,7 @@ use std::fmt;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 pub mod controller;
+pub mod retention;
 
 /// An immutable version descriptor shared across generations and operations.
 #[derive(Debug, Clone)]

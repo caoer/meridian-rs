@@ -582,17 +582,24 @@ including the interval where the local slot already appears cold. Only after
 `try_shed` returns may it publish the released charge. Descriptor and raw-lease
 destruction use the same ordering. No accounting lock spans loading, waiting
 on a local flight, or destruction of retained backing. A member's retirement
-race has a distinct retryable result from occupied byte allowance. Admission
+race and the completion of a failed loading wave have distinct retryable
+results from occupied byte allowance. Admission
 first checks policy and whether reclamation could make room; a certain refusal
 does not shed unrelated cache entries. Cached reclaimability and retirement
-counters avoid scanning the entire membership map for this decision. If pins
+counters avoid scanning the entire membership map for this decision. Raw-table
+capacity contributes to the reclamation bound only when the potentially
+removable entries can cross the table's shrink threshold. If pins
 or another load still occupy the allowance, it refuses explicitly
 rather than waiting while an operation may hold a needed pin. A load larger
 than the allowance above the measured floor uses one serialized transient
 member; only a second over-budget admission is excluded, never a request that
-fits by bytes. Its exclusivity lasts through managed body/raw leases and
-reservations, not an untracked raw alias. Such aliases remain charged while
-alive. Disabling the limit suspends enforcement without forgetting outstanding
+fits by bytes. Its exclusivity lasts while those retained allocations and
+reservations keep the total above the allowance. A completed load whose small
+retained body fits releases exclusivity even if a managed raw lease remains;
+its old, larger load-peak declaration cannot block another member for a whole
+subscription. A genuinely over-budget raw lease still owns exclusivity, while
+an untracked raw alias remains charged without owning it. Disabling the limit
+suspends enforcement without forgetting outstanding
 transient ownership, so re-enabling it cannot stack oversized admissions.
 A same-version re-pin can reuse those bytes within that slot, including after
 the original descriptor ends. Failed-wave errors retain their reservation
@@ -695,6 +702,25 @@ together; release the old handle afterwards. Shedding itself emits no frame,
 increments no seq, changes no instance, and requests no resync. Frame
 enumeration limits do not permit skipping reactions for unenumerated movers;
 large change sets must process their before/after pairs in bounded batches.
+
+The watcher retains baseline versions through `model::bytes::ByteRetention`:
+the host supplies immutable `RetainedBytes` descriptors and a fallible
+`ByteLease` for each read. The lease owns the bytes and their accounting for
+the whole borrow. `fs::Watcher` keeps membership and digests separately from
+those leases, verifies identity before using loaded bytes, and never falls
+back to the current source for a baseline fault. Without a host retention
+provider the in-process watcher keeps the same eager bytes.
+
+Reconciliation prepares every replacement baseline handle and loads the
+required before bytes before allocating a sequence or publishing a frame.
+Prepared handles commit with the baseline/root/scope transition only after
+all fallible work succeeds. A late retain or read failure leaves the old
+baseline, ring sequence and frames intact, so retry classifies the same
+transition. The registry's controller-backed retention adapter supplies this
+capability with caller-declared load peaks. Enabling it in the daemon also
+requires the shared substrate accounting, bounded change staging, backing
+parent lifecycle and serving/SQL ownership migration above; the capability
+alone does not activate or establish the process budget.
 
 **Limits of the bound.** A body budget cannot impose a constant bound on
 growing membership/roots, name rows, memo/feed state, backing handles or

@@ -77,6 +77,19 @@ impl WatchState {
         }
     }
 
+    /// An unprimed watcher with host-owned retained baseline versions.
+    #[must_use]
+    pub fn with_retention(
+        root: &fs::WorkspaceRoot,
+        retention: std::sync::Arc<dyn model::bytes::ByteRetention>,
+    ) -> Self {
+        Self {
+            watcher: fs::Watcher::with_retention(root.clone(), retention),
+            root: None,
+            scope: None,
+        }
+    }
+
     /// The baseline root this watcher last rebased on (`None`: unprimed).
     ///
     /// Lets a driver decide whether a reconcile has anything to do before
@@ -115,9 +128,15 @@ pub fn reconcile(
     match &watch.root {
         // Priming: the epoch's baseline is the first successful snapshot.
         None => {
-            watch.watcher.rebase(&files);
+            let scope = load_scope(ws_root)?;
+            let prepared = watch
+                .watcher
+                .prepare_snapshot(files)
+                .map_err(|error| backing_error(&error))?;
+            let retired = watch.watcher.replace(prepared);
             watch.root = Some(disk_root);
-            watch.scope = Some(load_scope(ws_root)?);
+            watch.scope = Some(scope);
+            drop(retired);
             Ok(None)
         }
         Some(r) if *r == disk_root => Ok(None),
@@ -126,19 +145,30 @@ pub fn reconcile(
         // re-scoped the domain must not be re-claimed as a cause by the NEXT
         // external batch.
         Some(r) if ring.chains(r, &disk_root) => {
-            watch.watcher.rebase(&files);
+            let scope = load_scope(ws_root)?;
+            let prepared = watch
+                .watcher
+                .prepare_snapshot(files)
+                .map_err(|error| backing_error(&error))?;
+            let retired = watch.watcher.replace(prepared);
             watch.root = Some(disk_root);
-            watch.scope = Some(load_scope(ws_root)?);
+            watch.scope = Some(scope);
+            drop(retired);
             Ok(None)
         }
         Some(watch_root) => {
             let changes = watch
                 .watcher
                 .classify(&files)
+                .map_err(|error| backing_error(&error))?
                 .expect("primed: watch.root is Some");
             let scope_now = load_scope(ws_root)?;
             let cause = rescope_cause(watch.scope.as_ref(), &scope_now);
             let classified = classify_to_wire(ws_root, &changes, cause.as_deref());
+            let prepared = watch
+                .watcher
+                .prepare_snapshot(files)
+                .map_err(|error| backing_error(&error))?;
             // The one production DeltaFrame constructor (§7.3), shared with the
             // commit path. `allocate_seq` rather than `seq() + 1`: the write
             // path can hold an allocation whose frame has not landed yet, and
@@ -154,10 +184,11 @@ pub fn reconcile(
             frame.rescope = classified.rescope;
             frame.overflow = classified.overflow;
             frame.effects = external_effects(ws_root, &changes);
-            ring.advance(frame.clone());
-            watch.watcher.rebase(&files);
+            let retired = watch.watcher.replace(prepared);
             watch.root = Some(disk_root);
             watch.scope = Some(scope_now);
+            ring.advance(frame.clone());
+            drop(retired);
             Ok(Some(frame))
         }
     }
@@ -225,7 +256,9 @@ pub fn reconcile_delta(
         let before = watch
             .watcher
             .baseline_bytes(path)
+            .map_err(|error| backing_error(&error))?
             .expect("a changed path is a baseline entry")
+            .bytes()
             .to_vec();
         let Some(after) = read_verified(ws_root, path, leaves)? else {
             return Ok(None);
@@ -237,19 +270,26 @@ pub fn reconcile_delta(
         let before = watch
             .watcher
             .baseline_bytes(path)
+            .map_err(|error| backing_error(&error))?
             .expect("a removed path is a baseline entry")
+            .bytes()
             .to_vec();
         changes.removed.push((path.clone(), before));
     }
+    let scope_now = load_scope(ws_root)?;
+    let prepared = watch
+        .watcher
+        .prepare_snapshot(upserts)
+        .map_err(|error| backing_error(&error))?;
     // Internal commits moved the world — every step already emitted; sync
     // silent. Scope refreshes with the baseline, exactly as the snapshot arm.
     if ring.chains(&watch_root, disk_root) {
-        watch.watcher.rebase_entries(&upserts, &diff.removed);
+        let retired = watch.watcher.advance(prepared, &diff.removed);
         watch.root = Some(disk_root.clone());
-        watch.scope = Some(load_scope(ws_root)?);
+        watch.scope = Some(scope_now);
+        drop(retired);
         return Ok(None);
     }
-    let scope_now = load_scope(ws_root)?;
     let cause = rescope_cause(watch.scope.as_ref(), &scope_now);
     let classified = classify_to_wire(ws_root, &changes, cause.as_deref());
     let mut frame = crate::write::assemble_delta(
@@ -263,10 +303,11 @@ pub fn reconcile_delta(
     frame.rescope = classified.rescope;
     frame.overflow = classified.overflow;
     frame.effects = external_effects(ws_root, &changes);
-    ring.advance(frame.clone());
-    watch.watcher.rebase_entries(&upserts, &diff.removed);
+    let retired = watch.watcher.advance(prepared, &diff.removed);
     watch.root = Some(disk_root.clone());
     watch.scope = Some(scope_now);
+    ring.advance(frame.clone());
+    drop(retired);
     Ok(Some(frame))
 }
 
@@ -342,9 +383,14 @@ pub fn prime(
         baseline.insert(path.clone(), (bytes, *leaf));
     }
     let scope = load_scope(ws_root)?;
-    watch.watcher.adopt(baseline);
+    let prepared = watch
+        .watcher
+        .prepare_baseline(baseline)
+        .map_err(|error| backing_error(&error))?;
+    let retired = watch.watcher.replace(prepared);
     watch.root = Some(observed.clone());
     watch.scope = Some(scope);
+    drop(retired);
     Ok(true)
 }
 
@@ -369,6 +415,12 @@ fn read_verified(
         return Ok(None);
     }
     Ok(Some(bytes))
+}
+
+fn backing_error(error: &std::io::Error) -> Box<ErrorBody> {
+    let mut error_body = ErrorBody::new(wire::ErrorCode::IoError);
+    error_body.cause = Some(format!("cannot retain or read watcher baseline: {error}"));
+    Box::new(error_body)
 }
 
 /// The effective scope as a wire-shaped result — `io_error{cause}`, the
@@ -1007,3 +1059,6 @@ mod tests {
         assert_eq!(frame.delta.root_after, committed);
     }
 }
+
+#[cfg(test)]
+mod retained_tests;

@@ -101,6 +101,8 @@ pub enum AdmissionError {
     Busy,
     /// This member is being retired; retry the same retained version.
     Retiring,
+    /// A failed load is completing; retry the same retained version.
+    Settling,
     Exhausted,
 }
 
@@ -109,6 +111,7 @@ impl fmt::Display for AdmissionError {
         f.write_str(match self {
             Self::Busy => "residency allowance is occupied",
             Self::Retiring => "retained member is being retired; retry the same version",
+            Self::Settling => "retained load is completing; retry the same version",
             Self::Exhausted => "residency reservation identity or local revision exhausted",
         })
     }
@@ -224,6 +227,7 @@ impl Controller {
     pub fn set_limit(&self, limit: usize) {
         let mut state = lock(&self.0.ledger);
         state.limit = limit;
+        state.clear_transient_if_unused();
         drop(state);
         self.trim();
     }
@@ -265,6 +269,7 @@ impl Controller {
     ) -> Result<Option<Reservation>, AdmissionError> {
         loop {
             let mut state = lock(&self.0.ledger);
+            state.clear_transient_if_unused();
             if let Some(key) = key {
                 let row = &state.rows[&key];
                 if row.retiring {
@@ -366,6 +371,7 @@ impl Controller {
     ) -> bool {
         let selected = {
             let mut state = lock(&self.0.ledger);
+            state.clear_transient_if_unused();
             let over = state.limit != 0 && state.total_exact() > state.limit as u128;
             let transient_ready = state.limit != 0
                 && state.transient.is_some_and(|key| {
