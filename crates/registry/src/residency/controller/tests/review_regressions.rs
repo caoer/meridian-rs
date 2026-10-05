@@ -126,3 +126,136 @@ fn review_certain_refusal_must_not_shed_unrelated_bodies() {
     );
     drop(staging);
 }
+
+#[test]
+fn fitting_staging_and_reads_keep_other_cache_hot_during_a_transient() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let oversized = member_of(&budget, &store, b"# Oversized\n");
+    let other = member_of(&budget, &store, b"# Other\n");
+    budget.set_limit(budget.report().floor + 600_000);
+    let large = oversized.pin(Access::Read, 1_000_000).unwrap();
+    let raw = large.raw();
+    drop(large);
+    let staging = budget.reserve(64_000).expect("ordinary fitting staging");
+    let small = other
+        .pin(Access::Read, 131_072)
+        .expect("ordinary fitting read");
+    drop(small);
+    let before = budget.report();
+    assert_eq!(other.phase(), Phase::Hot);
+    assert!(
+        matches!(
+            other.controller.admit(Some(other.key), 1_000_000, 0),
+            Ok(None)
+        ),
+        "a hot row must reselect without opening any wave"
+    );
+    let third = member_of(&budget, &store, b"# Third\n");
+    assert!(matches!(
+        third.pin(Access::Read, 1_000_000),
+        Err(Error::Admission(AdmissionError::Busy))
+    ));
+    assert_eq!(
+        other.phase(),
+        Phase::Hot,
+        "exclusive refusal evicted unrelated cache"
+    );
+    assert!(budget.report().total >= before.total);
+    drop(staging);
+    drop(raw);
+}
+
+#[test]
+fn unmanaged_raw_alias_remains_charged_without_owning_exclusivity() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(1);
+    let member = member_of(&budget, &store, b"# Alias\n");
+    let pin = member.pin(Access::Read, 131_072).unwrap();
+    // Deliberately exercise defensive weak accounting, not the supported
+    // managed-lease contract. An alias cannot authorize exclusive admission.
+    let alias = pin.document().unwrap().raw.clone();
+    drop(pin);
+    assert!(!budget.report().transient);
+    assert!(budget.report().raw > 0);
+    drop(alias);
+    assert_eq!(budget.report().raw, 0);
+}
+
+#[test]
+fn limit_disable_and_reenable_preserves_live_transient_ownership() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(1);
+    let a = member_of(&budget, &store, b"# A\n");
+    let b = member_of(&budget, &store, b"# B\n");
+    let held = a.pin(Access::Read, 131_072).unwrap();
+    budget.set_limit(0);
+    budget.set_limit(1);
+    assert!(matches!(
+        b.pin(Access::Read, 131_072),
+        Err(Error::Admission(AdmissionError::Busy))
+    ));
+    drop(held);
+    drop(b.pin(Access::Read, 131_072).unwrap());
+}
+
+fn counters_match_rows(budget: &Controller) {
+    let state = lock(&budget.0.ledger);
+    let mut eligible = 0;
+    let mut bytes = 0_u128;
+    let mut retiring = 0;
+    for row in state.rows.values() {
+        retiring += usize::from(row.retiring);
+        if row.body == 0 || row.calls != 0 || row.pins != 0 || row.retiring {
+            continue;
+        }
+        eligible += 1;
+        bytes += row.body as u128;
+        if let Some(raw) = row.raw.and_then(|id| state.raw.get(&id))
+            && raw.owners == 1
+        {
+            bytes += raw.bytes as u128;
+        }
+    }
+    assert_eq!(state.reclaimable, eligible);
+    assert_eq!(state.reclaimable_bytes, bytes);
+    assert_eq!(state.retiring, retiring);
+}
+
+#[test]
+fn cached_reclaimability_tracks_calls_raw_leases_retirement_and_removal() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let a = member_of(&budget, &store, b"# A\n");
+    let b = member_of(&budget, &store, b"# B\n");
+    counters_match_rows(&budget);
+    let pin = a.pin(Access::Read, 131_072).unwrap();
+    counters_match_rows(&budget);
+    let raw = pin.raw();
+    let twin = raw.clone();
+    drop(pin);
+    counters_match_rows(&budget);
+    drop(raw);
+    counters_match_rows(&budget);
+    drop(twin);
+    counters_match_rows(&budget);
+    let call = a.begin(Access::Scan, 0).unwrap();
+    counters_match_rows(&budget);
+    drop(call);
+    counters_match_rows(&budget);
+    drop(b.pin(Access::Read, 131_072).unwrap());
+    counters_match_rows(&budget);
+    assert!(budget.shed_one_with(true, |resident, ticket| {
+        resident.shed_with(ticket, || counters_match_rows(&budget))
+    }));
+    counters_match_rows(&budget);
+    drop(a);
+    counters_match_rows(&budget);
+    drop(b);
+    counters_match_rows(&budget);
+    assert_eq!(lock(&budget.0.ledger).reclaimable, 0);
+}

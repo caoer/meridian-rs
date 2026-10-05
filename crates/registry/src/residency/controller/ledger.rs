@@ -63,6 +63,9 @@ pub(super) struct Ledger {
     pub(super) reserved_bytes: u128,
     pub(super) pending: usize,
     pub(super) forced: usize,
+    pub(super) reclaimable: usize,
+    pub(super) reclaimable_bytes: u128,
+    pub(super) retiring: usize,
 }
 
 impl Ledger {
@@ -87,7 +90,77 @@ impl Ledger {
             reserved_bytes: 0,
             pending: 0,
             forced: 0,
+            reclaimable: 0,
+            reclaimable_bytes: 0,
+            retiring: 0,
         }
+    }
+
+    // Upper bound: raw is counted only when this row is its sole managed
+    // owner. An external untracked alias can reduce the actual release.
+    fn row_score(&self, key: Key) -> (usize, u128) {
+        let Some(row) = self.rows.get(&key) else {
+            return (0, 0);
+        };
+        if row.body == 0 || row.calls != 0 || row.pins != 0 || row.retiring {
+            return (0, 0);
+        }
+        let raw = row
+            .raw
+            .and_then(|id| self.raw.get(&id))
+            .filter(|raw| raw.owners == 1)
+            .map_or(0, |raw| raw.bytes as u128);
+        (1, row.body as u128 + raw)
+    }
+
+    pub(super) fn update_row<T>(&mut self, key: Key, change: impl FnOnce(&mut Row) -> T) -> T {
+        let (count, bytes) = self.row_score(key);
+        self.reclaimable -= count;
+        self.reclaimable_bytes -= bytes;
+        let row = self.rows.get_mut(&key).unwrap();
+        self.retiring -= usize::from(row.retiring);
+        let result = change(row);
+        self.retiring += usize::from(row.retiring);
+        let (count, bytes) = self.row_score(key);
+        self.reclaimable += count;
+        self.reclaimable_bytes += bytes;
+        result
+    }
+
+    pub(super) fn remove_row(&mut self, key: Key) -> Row {
+        let (count, bytes) = self.row_score(key);
+        self.reclaimable -= count;
+        self.reclaimable_bytes -= bytes;
+        let row = self.rows.remove(&key).unwrap();
+        self.retiring -= usize::from(row.retiring);
+        row
+    }
+
+    fn change_raw_owner(&mut self, id: usize, add: bool) {
+        let key = self.raw[&id].key;
+        let (count, bytes) = self.row_score(key);
+        self.reclaimable -= count;
+        self.reclaimable_bytes -= bytes;
+        let raw = self.raw.get_mut(&id).unwrap();
+        if add {
+            raw.owners += 1;
+        } else {
+            raw.owners -= 1;
+        }
+        let (count, bytes) = self.row_score(key);
+        self.reclaimable += count;
+        self.reclaimable_bytes += bytes;
+    }
+
+    pub(super) fn reclaim_upper_bound(&self) -> u128 {
+        if self.reclaimable == 0 {
+            return 0;
+        }
+        // Releasing raw entries can also shrink these tables. Include all of
+        // their capacity in the upper bound to avoid a false impossibility.
+        self.reclaimable_bytes
+            + self.raw.allocation_size() as u128
+            + self.raw_versions.allocation_size() as u128
     }
 
     pub(super) fn unlink(&mut self, key: Key) {
@@ -158,7 +231,7 @@ impl Ledger {
 
     pub(super) fn release_raw(&mut self, id: Option<usize>) {
         if let Some(id) = id {
-            self.raw.get_mut(&id).unwrap().owners -= 1;
+            self.change_raw_owner(id, false);
             self.prune_raw(id);
         }
     }
@@ -203,7 +276,7 @@ impl Ledger {
             .raw_versions
             .get(&key)
             .and_then(|(id, _)| self.raw.get(id))
-            .is_some_and(|raw| raw.owners != 0 || raw.weak.is_live());
+            .is_some_and(|raw| raw.owners != 0);
         let reservation = self
             .permits
             .values()
@@ -341,7 +414,7 @@ impl Ledger {
     }
 
     pub(super) fn retain_raw(&mut self, id: usize) {
-        self.raw.get_mut(&id).unwrap().owners += 1;
+        self.change_raw_owner(id, true);
     }
 
     pub(super) fn set_floor(&mut self, id: u64, bytes: usize) {

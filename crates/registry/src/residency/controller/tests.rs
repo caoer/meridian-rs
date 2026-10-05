@@ -300,7 +300,7 @@ fn retirement_stays_charged_while_the_local_slot_is_already_cold() {
             let cold = member.phase() == Phase::Cold;
             let busy = matches!(
                 member.pin(Access::Read, 131_072),
-                Err(Error::Admission(AdmissionError::Busy))
+                Err(Error::Admission(AdmissionError::Retiring))
             );
             tx.send((report, cold, busy)).unwrap();
         })

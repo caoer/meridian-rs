@@ -99,13 +99,16 @@ pub struct Report {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdmissionError {
     Busy,
+    /// This member is being retired; retry the same retained version.
+    Retiring,
     Exhausted,
 }
 
 impl fmt::Display for AdmissionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Busy => "residency allowance is occupied by pins, loads or retirement",
+            Self::Busy => "residency allowance is occupied",
+            Self::Retiring => "retained member is being retired; retry the same version",
             Self::Exhausted => "residency reservation identity or local revision exhausted",
         })
     }
@@ -221,9 +224,6 @@ impl Controller {
     pub fn set_limit(&self, limit: usize) {
         let mut state = lock(&self.0.ledger);
         state.limit = limit;
-        if limit == 0 {
-            state.transient = None;
-        }
         drop(state);
         self.trim();
     }
@@ -253,7 +253,8 @@ impl Controller {
     /// # Errors
     /// The allowance is occupied or the lease identity is exhausted.
     pub fn reserve(&self, bytes: usize) -> Result<Reservation, AdmissionError> {
-        self.admit(None, bytes, 0)
+        // Only a member admission can request reselection.
+        self.admit(None, bytes, 0)?.ok_or(AdmissionError::Busy)
     }
 
     fn admit(
@@ -261,20 +262,25 @@ impl Controller {
         key: Option<Key>,
         bytes: usize,
         revision: u64,
-    ) -> Result<Reservation, AdmissionError> {
+    ) -> Result<Option<Reservation>, AdmissionError> {
         loop {
             let mut state = lock(&self.0.ledger);
             if let Some(key) = key {
                 let row = &state.rows[&key];
                 if row.retiring {
-                    return Err(AdmissionError::Busy);
+                    return Err(AdmissionError::Retiring);
                 }
                 if let Some(id) = row.wave {
                     state.permits.get_mut(&id).unwrap().references += 1;
-                    return Ok(Reservation {
+                    return Ok(Some(Reservation {
                         controller: self.clone(),
                         id,
-                    });
+                    }));
+                }
+                // The row may have become hot (or started a call) while admit
+                // was unlocked for reclamation. Never open a new wave here.
+                if row.body != 0 || row.calls != 0 {
+                    return Ok(None);
                 }
             }
             state.permits.reserve(1);
@@ -289,20 +295,27 @@ impl Controller {
             let oversized = key.is_some()
                 && state.limit != 0
                 && bytes as u128 > (state.limit as u128).saturating_sub(floor);
-            let reclaimable = state
-                .rows
-                .values()
-                .any(|row| row.body != 0 && row.calls == 0 && row.pins == 0 && !row.retiring);
-            let exclusive_available =
-                state.transient.is_none() || (key.is_some() && state.transient == key);
-            if (fits && exclusive_available)
-                || (oversized
-                    && exclusive_available
-                    && !reclaimable
-                    && state.permits.is_empty()
-                    && state.detached_floor == 0
-                    && !state.rows.values().any(|row| row.retiring))
-            {
+            let exclusive_available = state.transient.is_none() || state.transient == key;
+            let may_overflow = oversized
+                && exclusive_available
+                && state.permits.is_empty()
+                && state.detached_floor == 0
+                && state.retiring == 0;
+            if !fits && !may_overflow {
+                // Exclusivity restricts only another over-budget admission.
+                // A policy refusal or an impossible byte fit cannot benefit
+                // from discarding somebody else's cache first.
+                if oversized
+                    || state
+                        .total_exact()
+                        .saturating_sub(state.reclaim_upper_bound())
+                        + bytes as u128
+                        > state.limit as u128
+                {
+                    return Err(AdmissionError::Busy);
+                }
+            }
+            if fits || (may_overflow && state.reclaimable == 0) {
                 let id = state.next_id()?;
                 state.permits.insert(
                     id,
@@ -313,7 +326,7 @@ impl Controller {
                         settled: key.is_none(),
                         references: 1,
                         revision,
-                        transient: if oversized { key } else { None },
+                        transient: if !fits { key } else { None },
                     },
                 );
                 state.reserved_bytes += bytes as u128;
@@ -321,13 +334,13 @@ impl Controller {
                     state.pending += 1;
                     state.rows.get_mut(&key).unwrap().wave = Some(id);
                 }
-                if oversized {
+                if !fits {
                     state.transient = key;
                 }
-                return Ok(Reservation {
+                return Ok(Some(Reservation {
                     controller: self.clone(),
                     id,
-                });
+                }));
             }
             drop(state);
             if !self.shed_one(true) {
@@ -354,7 +367,15 @@ impl Controller {
         let selected = {
             let mut state = lock(&self.0.ledger);
             let over = state.limit != 0 && state.total_exact() > state.limit as u128;
-            if !over && !for_admission && state.transient.is_none() && state.forced == 0 {
+            let transient_ready = state.limit != 0
+                && state.transient.is_some_and(|key| {
+                    state.rows.get(&key).is_some_and(|row| {
+                        row.body != 0 && row.calls == 0 && row.pins == 0 && !row.retiring
+                    })
+                });
+            if state.reclaimable == 0
+                || (!over && !for_admission && !transient_ready && state.forced == 0)
+            {
                 return false;
             }
             let mut key = state.first;
@@ -362,7 +383,8 @@ impl Controller {
             while let Some(current) = key {
                 let row = &state.rows[&current];
                 key = row.next;
-                let forced = row.force_shed || state.transient == Some(current);
+                let forced =
+                    row.force_shed || (state.limit != 0 && state.transient == Some(current));
                 if row.body != 0
                     && row.calls == 0
                     && row.pins == 0
@@ -375,7 +397,7 @@ impl Controller {
                 }
             }
             if let Some((key, _, _)) = &selected {
-                state.rows.get_mut(key).unwrap().retiring = true;
+                state.update_row(*key, |row| row.retiring = true);
                 state.unlink(*key);
             }
             selected
@@ -404,7 +426,7 @@ impl Controller {
                 return;
             }
             state.unlink(key);
-            let row = state.rows.remove(&key).unwrap();
+            let row = state.remove_row(key);
             if row.force_shed {
                 state.forced -= 1;
             }
@@ -439,13 +461,18 @@ impl Retirement {
         }
         drop(resident);
         let mut state = lock(&self.controller.0.ledger);
-        let row = state.rows.get_mut(&self.key).unwrap();
-        row.retiring = false;
+        let (raw, released, forced) = state.update_row(self.key, |row| {
+            row.retiring = false;
+            if cold {
+                let previous = (row.raw, row.body, row.force_shed);
+                row.body = 0;
+                row.force_shed = false;
+                previous
+            } else {
+                (None, 0, false)
+            }
+        });
         if cold {
-            let (raw, released) = (row.raw, row.body);
-            row.body = 0;
-            let forced = row.force_shed;
-            row.force_shed = false;
             if forced {
                 state.forced -= 1;
             }

@@ -94,7 +94,7 @@ impl Member {
             let mut state = lock(&self.controller.0.ledger);
             let row = &state.rows[&self.key];
             if row.retiring {
-                return Err(AdmissionError::Busy);
+                return Err(AdmissionError::Retiring);
             }
             let (phase, revision) = local_status(&row.resident);
             if revision == u64::MAX && (access == Access::Read || phase == Phase::Cold) {
@@ -112,7 +112,7 @@ impl Member {
             let needs_wave = row.body == 0 && row.calls == 0;
             if needs_wave && spare.is_none() {
                 drop(state);
-                spare = Some(self.controller.admit(Some(self.key), peak, revision)?);
+                spare = self.controller.admit(Some(self.key), peak, revision)?;
                 continue;
             }
             // A completed failed local flight may be cold before its owner has
@@ -151,9 +151,10 @@ impl Member {
             } else {
                 None
             };
-            let row = state.rows.get_mut(&self.key).unwrap();
-            row.calls += 1;
-            row.references += 1;
+            state.update_row(self.key, |row| {
+                row.calls += 1;
+                row.references += 1;
+            });
             state.link(self.key, access);
             let prepared = Some(resident.prepare(access));
             drop(state);
@@ -184,6 +185,11 @@ impl Call {
     }
 
     fn finish(&mut self, pin: bool) {
+        if self.finished {
+            return;
+        }
+        // A guard must never repeat a failed finish while the stack unwinds.
+        self.finished = true;
         let (snapshot, raw) = {
             let snapshot = self.resident.snapshot();
             let mut local = lock(&self.resident.0.state);
@@ -201,12 +207,13 @@ impl Call {
             && state.rows[&self.key].body == 0
         {
             let id = state.add_raw(self.key, &raw);
-            let row = state.rows.get_mut(&self.key).unwrap();
-            row.raw = Some(id);
-            row.body = snapshot.body_bytes.saturating_add(snapshot.tree_bytes);
+            state.update_row(self.key, |row| {
+                row.raw = Some(id);
+                row.body = snapshot.body_bytes.saturating_add(snapshot.tree_bytes);
+            });
             state.body_bytes += snapshot.body_bytes as u128 + snapshot.tree_bytes as u128;
         }
-        if let Some(id) = state.rows[&self.key].wave
+        if let Some(reservation) = &self.reservation
             && snapshot.phase != Phase::Loading
         {
             let body = (snapshot.phase == Phase::Hot).then_some(
@@ -215,21 +222,23 @@ impl Call {
                     .saturating_add(snapshot.body_bytes)
                     .saturating_add(snapshot.tree_bytes),
             );
-            state.settle_wave(id, body);
+            // The call holds this permit alive; row.wave is only a join hint.
+            state.settle_wave(reservation.id, body);
         }
-        let row = state.rows.get_mut(&self.key).unwrap();
-        row.calls -= 1;
-        if pin {
-            row.pins += 1;
-        }
-        if row.calls == 0 {
-            row.wave = None;
-        }
-        if row.body == 0 && row.calls == 0 {
+        let inactive_cold = state.update_row(self.key, |row| {
+            row.calls -= 1;
+            if pin {
+                row.pins += 1;
+            }
+            if row.calls == 0 {
+                row.wave = None;
+            }
+            row.body == 0 && row.calls == 0
+        });
+        if inactive_cold {
             state.unlink(self.key);
             state.clear_transient_if_unused();
         }
-        self.finished = true;
     }
 }
 
@@ -308,11 +317,7 @@ impl Clone for Pin {
     fn clone(&self) -> Self {
         let member = self.member.clone();
         let body = self.body.clone();
-        lock(&member.controller.0.ledger)
-            .rows
-            .get_mut(&member.key)
-            .unwrap()
-            .pins += 1;
+        lock(&member.controller.0.ledger).update_row(member.key, |row| row.pins += 1);
         Self { body, member }
     }
 }
@@ -321,11 +326,7 @@ impl Drop for Pin {
         // BodyPin may be the final operation owner; release it before telling
         // the ledger that eviction is possible, and outside its mutex.
         drop(self.body.take());
-        lock(&self.member.controller.0.ledger)
-            .rows
-            .get_mut(&self.member.key)
-            .unwrap()
-            .pins -= 1;
+        lock(&self.member.controller.0.ledger).update_row(self.member.key, |row| row.pins -= 1);
         self.member.controller.trim();
     }
 }
@@ -347,11 +348,7 @@ impl RawPin {
 impl Clone for RawPin {
     fn clone(&self) -> Self {
         let bytes = self.bytes.clone();
-        lock(&self.controller.0.ledger)
-            .raw
-            .get_mut(&self.id)
-            .unwrap()
-            .owners += 1;
+        lock(&self.controller.0.ledger).retain_raw(self.id);
         Self {
             bytes,
             controller: self.controller.clone(),
@@ -401,11 +398,11 @@ impl Drop for Reservation {
             if !permit.settled {
                 state.pending -= 1;
             }
-            // Clear only this permit's unpublished association, never a retry.
+            // No call can own this permit after its last reference ends.
+            // Clear its join hint regardless of unrelated hot hits; never clear a retry.
             if let Some(key) = permit.member
                 && let Some(row) = state.rows.get_mut(&key)
                 && row.wave == Some(self.id)
-                && row.calls == 0
             {
                 row.wave = None;
             }
