@@ -90,7 +90,7 @@ pub struct Report {
     pub overage: usize,
     pub floor_overage: usize,
     pub transient: bool,
-    /// Largest observed underestimate of a caller's declared load peak.
+    /// Largest retained-body excess over a declared peak, not a measured peak.
     pub peak_shortfall: usize,
     pub members: usize,
     pub reservations: usize,
@@ -106,7 +106,7 @@ impl fmt::Display for AdmissionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Busy => "residency allowance is occupied by pins, loads or retirement",
-            Self::Exhausted => "residency reservation identity exhausted",
+            Self::Exhausted => "residency reservation identity or local revision exhausted",
         })
     }
 }
@@ -202,14 +202,15 @@ impl Controller {
                 },
             );
         }
+        let member = Member {
+            controller: self.clone(),
+            key,
+        };
         drop(state);
         // A rejected duplicate source may have a filesystem destructor.
         drop(source);
         self.trim();
-        Member {
-            controller: self.clone(),
-            key,
-        }
+        member
     }
 
     #[must_use]
@@ -237,12 +238,13 @@ impl Controller {
         let id = state.next_id()?;
         state.floors.insert(id, bytes);
         state.external_floor += bytes as u128;
-        drop(state);
-        self.trim();
-        Ok(Floor {
+        let floor = Floor {
             controller: self.clone(),
             id,
-        })
+        };
+        drop(state);
+        self.trim();
+        Ok(floor)
     }
 
     /// Reserve staging work; ordinary reservations refuse if trimming cannot
@@ -262,7 +264,25 @@ impl Controller {
     ) -> Result<Reservation, AdmissionError> {
         loop {
             let mut state = lock(&self.0.ledger);
+            if let Some(key) = key {
+                let row = &state.rows[&key];
+                if row.retiring {
+                    return Err(AdmissionError::Busy);
+                }
+                if let Some(id) = row.wave {
+                    state.permits.get_mut(&id).unwrap().references += 1;
+                    return Ok(Reservation {
+                        controller: self.clone(),
+                        id,
+                    });
+                }
+            }
             state.permits.reserve(1);
+            if key.is_some() {
+                let pending = state.pending + 1;
+                state.raw.reserve(pending);
+                state.raw_versions.reserve(pending);
+            }
             let floor = state.floor_exact();
             let fits =
                 state.limit == 0 || state.total_exact() + bytes as u128 <= state.limit as u128;
@@ -273,7 +293,8 @@ impl Controller {
                 .rows
                 .values()
                 .any(|row| row.body != 0 && row.calls == 0 && row.pins == 0 && !row.retiring);
-            let exclusive_available = state.transient.is_none();
+            let exclusive_available =
+                state.transient.is_none() || (key.is_some() && state.transient == key);
             if (fits && exclusive_available)
                 || (oversized
                     && exclusive_available
@@ -287,13 +308,19 @@ impl Controller {
                     id,
                     Permit {
                         bytes,
+                        peak: bytes,
+                        member: key,
+                        settled: key.is_none(),
                         references: 1,
                         revision,
                         transient: if oversized { key } else { None },
-                        activated: false,
                     },
                 );
                 state.reserved_bytes += bytes as u128;
+                if let Some(key) = key {
+                    state.pending += 1;
+                    state.rows.get_mut(&key).unwrap().wave = Some(id);
+                }
                 if oversized {
                     state.transient = key;
                 }
@@ -327,6 +354,9 @@ impl Controller {
         let selected = {
             let mut state = lock(&self.0.ledger);
             let over = state.limit != 0 && state.total_exact() > state.limit as u128;
+            if !over && !for_admission && state.transient.is_none() && state.forced == 0 {
+                return false;
+            }
             let mut key = state.first;
             let mut selected = None;
             while let Some(current) = key {
@@ -375,11 +405,12 @@ impl Controller {
             }
             state.unlink(key);
             let row = state.rows.remove(&key).unwrap();
+            if row.force_shed {
+                state.forced -= 1;
+            }
             state.detached_floor = state.detached_floor.saturating_add(descriptor_bytes());
             state.detached_body = state.detached_body.saturating_add(row.body);
-            if state.transient == Some(key) {
-                state.transient = None;
-            }
+            state.shrink();
             row
         };
         let cleanup = Detached {
@@ -413,12 +444,14 @@ impl Retirement {
         if cold {
             let (raw, released) = (row.raw, row.body);
             row.body = 0;
+            let forced = row.force_shed;
             row.force_shed = false;
+            if forced {
+                state.forced -= 1;
+            }
             state.body_bytes -= released as u128;
             state.release_raw(raw);
-            if state.transient == Some(self.key) {
-                state.transient = None;
-            }
+            state.clear_transient_if_unused();
         } else {
             state.link(self.key, Access::Scan);
         }
@@ -451,6 +484,8 @@ impl Drop for Detached {
         } else if let Some(id) = self.raw {
             state.prune_raw(id);
         }
+        state.clear_transient_if_unused();
+        state.shrink();
     }
 }
 

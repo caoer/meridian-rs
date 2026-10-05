@@ -555,10 +555,19 @@ with the other substrate owners before enforcing the shared process budget.
 
 `registry::residency::controller` owns the shared admission ledger and member
 LRU. Handles with the same retained byte identity share one slot across roots
-and generations. Its managed pins protect bodies, and its raw leases preserve
+and generations. Admission publishes that identity's shared reservation before
+the local loader starts; calls arriving in that interval join the same charge.
+Local flight selection is prepared under the ledger and slot locks; resolving
+that prepared action does the I/O or waiting only after both locks are released.
+A dropped unstarted action settles or unregisters its local flight before its
+reservation ends. This is not preemptive cancellation of an already blocked
+source read. At successful publication, measured body bytes replace that part
+of the declared reservation; the remaining reservation covers flight cleanup.
+Its managed pins protect bodies, and its raw leases preserve
 charges when bytes outlive a parsed body or descriptor. Callers must keep a
 managed lease for any raw owner they retain; an untracked clone of a document's
-public raw Arc is not an accounting lease. Non-body owners declare measured
+public raw Arc is not an accounting lease. Cloned trees and output buffers
+belong to explicitly charged staging or metadata owners. Non-body owners declare measured
 floor charges, held until their allocation is destroyed, and load callers
 declare a conservative peak reservation before I/O. These integration inputs
 are contracts, not a raw-length multiplier or an RSS estimate. The controller
@@ -572,7 +581,10 @@ on a local flight, or destruction of retained backing. Admission trims first;
 if pins or another load still occupy the allowance, it refuses explicitly
 rather than waiting while an operation may hold a needed pin. A load larger
 than the allowance above the measured floor uses one serialized transient
-member and is shed after its last pin. Zero budget disables trimming. Floor,
+member; its exclusivity lasts through the last managed body or raw lease.
+A same-version re-pin can reuse those bytes within that slot, including after
+the original descriptor ends. Failed-wave errors retain their reservation
+until the error payload is released. Zero budget disables trimming. Floor,
 reservation, pin and transient overages remain visible in the ledger report.
 Source/backing/index/ring floor charges, sound load-peak sizing and migration
 of every escaping owner remain required at the daemon activation boundary.

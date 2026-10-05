@@ -33,10 +33,12 @@ pub(super) struct Raw {
 #[derive(Debug)]
 pub(super) struct Permit {
     pub(super) bytes: usize,
+    pub(super) peak: usize,
+    pub(super) member: Option<Key>,
+    pub(super) settled: bool,
     pub(super) references: usize,
     pub(super) revision: u64,
     pub(super) transient: Option<Key>,
-    pub(super) activated: bool,
 }
 
 #[derive(Debug)]
@@ -44,6 +46,8 @@ pub(super) struct Ledger {
     pub(super) limit: usize,
     pub(super) rows: Table<Key, Row>,
     pub(super) raw: Table<usize, Raw>,
+    // Canonical raw allocation and record count per retained byte identity.
+    pub(super) raw_versions: Table<Key, (usize, usize)>,
     pub(super) floors: Table<u64, usize>,
     pub(super) permits: Table<u64, Permit>,
     pub(super) serial: u64,
@@ -57,6 +61,8 @@ pub(super) struct Ledger {
     pub(super) raw_bytes: u128,
     pub(super) body_bytes: u128,
     pub(super) reserved_bytes: u128,
+    pub(super) pending: usize,
+    pub(super) forced: usize,
 }
 
 impl Ledger {
@@ -65,6 +71,7 @@ impl Ledger {
             limit,
             rows: Table::with_hasher(RandomState::new()),
             raw: Table::with_hasher(RandomState::new()),
+            raw_versions: Table::with_hasher(RandomState::new()),
             floors: Table::with_hasher(RandomState::new()),
             permits: Table::with_hasher(RandomState::new()),
             serial: 0,
@@ -78,6 +85,8 @@ impl Ledger {
             raw_bytes: 0,
             body_bytes: 0,
             reserved_bytes: 0,
+            pending: 0,
+            forced: 0,
         }
     }
 
@@ -133,6 +142,9 @@ impl Ledger {
         let id = bytes.allocation_id();
         let raw = self.raw.entry(id).or_insert_with(|| {
             self.raw_bytes += bytes.heap_bytes() as u128;
+            let version = self.raw_versions.entry(key).or_insert((id, 0));
+            version.0 = id;
+            version.1 += 1;
             Raw {
                 weak: bytes.downgrade(),
                 bytes: bytes.heap_bytes(),
@@ -157,7 +169,47 @@ impl Ledger {
             .get(&id)
             .is_some_and(|raw| raw.owners == 0 && !raw.weak.is_live())
         {
-            self.raw_bytes -= self.raw.remove(&id).unwrap().bytes as u128;
+            let raw = self.raw.remove(&id).unwrap();
+            self.raw_bytes -= raw.bytes as u128;
+            let version = self.raw_versions.get_mut(&raw.key).unwrap();
+            version.1 -= 1;
+            if version.1 == 0 {
+                self.raw_versions.remove(&raw.key);
+            } else if version.0 == id {
+                // Only overlapping retirement can leave a second allocation
+                // for one identity. Prefer a live lease over dying storage.
+                version.0 = self
+                    .raw
+                    .iter()
+                    .filter(|(_, other)| other.key == raw.key)
+                    .max_by_key(|(_, other)| other.weak.is_live())
+                    .map(|(id, _)| *id)
+                    .unwrap();
+            }
+        }
+        self.clear_transient_if_unused();
+        self.shrink();
+    }
+
+    pub(super) fn clear_transient_if_unused(&mut self) {
+        let Some(key) = self.transient else {
+            return;
+        };
+        let row = self
+            .rows
+            .get(&key)
+            .is_some_and(|row| row.body != 0 || row.calls != 0 || row.retiring);
+        let raw = self
+            .raw_versions
+            .get(&key)
+            .and_then(|(id, _)| self.raw.get(id))
+            .is_some_and(|raw| raw.owners != 0 || raw.weak.is_live());
+        let reservation = self
+            .permits
+            .values()
+            .any(|permit| permit.transient == Some(key));
+        if !row && !raw && !reservation {
+            self.transient = None;
         }
     }
 
@@ -165,6 +217,7 @@ impl Ledger {
         model::allocation::arc_bytes::<Control>() as u128
             + self.rows.allocation_size() as u128
             + self.raw.allocation_size() as u128
+            + self.raw_versions.allocation_size() as u128
             + self.floors.allocation_size() as u128
             + self.permits.allocation_size() as u128
             + self.rows.len() as u128 * descriptor_bytes() as u128
@@ -177,6 +230,7 @@ impl Ledger {
     }
 
     pub(super) fn prune(&mut self) {
+        let old_len = self.raw.len();
         self.raw.retain(|_, raw| {
             if raw.owners != 0 || raw.weak.is_live() {
                 return true;
@@ -184,11 +238,33 @@ impl Ledger {
             self.raw_bytes -= raw.bytes as u128;
             false
         });
+        if self.raw.len() != old_len {
+            // A census may find an externally held source's final owner gone.
+            // Rebuild without a scratch vector or a second raw payload owner.
+            self.raw_versions.clear();
+            for (&id, raw) in &self.raw {
+                let version = self.raw_versions.entry(raw.key).or_insert((id, 0));
+                version.1 += 1;
+                if raw.weak.is_live() {
+                    version.0 = id;
+                }
+            }
+        }
+        self.clear_transient_if_unused();
+        self.shrink();
+    }
+
+    pub(super) fn shrink(&mut self) {
+        let version_min = self.raw_versions.len().saturating_add(self.pending);
+        if version_min.saturating_mul(4) < self.raw_versions.capacity() {
+            self.raw_versions.shrink_to(version_min);
+        }
         if self.rows.len().saturating_mul(4) < self.rows.capacity() {
             self.rows.shrink_to_fit();
         }
-        if self.raw.len().saturating_mul(4) < self.raw.capacity() {
-            self.raw.shrink_to_fit();
+        let raw_min = self.raw.len().saturating_add(self.pending);
+        if raw_min.saturating_mul(4) < self.raw.capacity() {
+            self.raw.shrink_to(raw_min);
         }
         if self.floors.len().saturating_mul(4) < self.floors.capacity() {
             self.floors.shrink_to_fit();
@@ -244,6 +320,23 @@ impl Ledger {
             peak_shortfall: self.peak_shortfall,
             members: self.rows.len(),
             reservations: self.permits.len(),
+        }
+    }
+
+    pub(super) fn settle_wave(&mut self, id: u64, body: Option<usize>) {
+        let permit = self.permits.get_mut(&id).unwrap();
+        if permit.settled {
+            return;
+        }
+        permit.settled = true;
+        self.pending -= 1;
+        if let Some(body) = body {
+            // Replace the reservation's body portion with measured allocations;
+            // retain the rest through the last flight caller. Errors keep the
+            // entire reservation until their payload owners release it.
+            let converted = permit.bytes.min(body);
+            permit.bytes -= converted;
+            self.reserved_bytes -= converted as u128;
         }
     }
 

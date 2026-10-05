@@ -1,14 +1,19 @@
 use super::{
-    Access, AdmissionError, BodyPin, ByteIdentity, Controller, Error, Failure, Floor, Key, Member,
-    Phase, Pin, RawPin, Reservation, Resident, SharedBytes, lock,
+    Access, AdmissionError, BodyPin, ByteIdentity, Controller, Error, Failure, Floor, Key,
+    LoadError, Member, Phase, Pin, RawPin, Reservation, Resident, SharedBytes, lock,
 };
 
-struct Call {
+use std::sync::Arc;
+
+pub(super) struct Call {
     controller: Controller,
     key: Key,
     resident: Resident,
+    prepared: Option<Result<super::super::PreparedPin, Arc<LoadError>>>,
     reservation: Option<Reservation>,
     finished: bool,
+    // Dropped last, after local actions, resident clones and reservations.
+    _member: Member,
 }
 
 impl Member {
@@ -40,21 +45,24 @@ impl Member {
     /// local unwind completion and restores the controller's call bookkeeping.
     pub fn pin(&self, access: Access, peak: usize) -> Result<Pin, Error> {
         let mut call = self.begin(access, peak).map_err(Error::Admission)?;
-        match call.resident.pin(access) {
+        match call.resolve() {
             Ok(body) => {
                 let snapshot = call.resident.snapshot();
                 let observed = snapshot
                     .raw_bytes
                     .saturating_add(snapshot.tree_bytes)
                     .saturating_add(snapshot.body_bytes);
-                let reserved = call.reservation.as_ref().map(Reservation::bytes);
+                let reserved = call.reservation.as_ref().map(Reservation::peak);
                 if let Some(reserved) = reserved
                     && observed > reserved
                 {
                     {
                         let mut state = lock(&self.controller.0.ledger);
                         state.peak_shortfall = state.peak_shortfall.max(observed - reserved);
-                        state.rows.get_mut(&self.key).unwrap().force_shed = true;
+                        if !state.rows[&self.key].force_shed {
+                            state.rows.get_mut(&self.key).unwrap().force_shed = true;
+                            state.forced += 1;
+                        }
                     }
                     // Record the real body before releasing the local pin.
                     call.finish(false);
@@ -80,8 +88,8 @@ impl Member {
         }
     }
 
-    fn begin(&self, access: Access, peak: usize) -> Result<Call, AdmissionError> {
-        let mut spare = None;
+    pub(super) fn begin(&self, access: Access, peak: usize) -> Result<Call, AdmissionError> {
+        let mut spare: Option<Reservation> = None;
         loop {
             let mut state = lock(&self.controller.0.ledger);
             let row = &state.rows[&self.key];
@@ -89,6 +97,18 @@ impl Member {
                 return Err(AdmissionError::Busy);
             }
             let (phase, revision) = local_status(&row.resident);
+            if revision == u64::MAX && (access == Access::Read || phase == Phase::Cold) {
+                return Err(AdmissionError::Exhausted);
+            }
+            if let Some(reservation) = &spare
+                && phase == Phase::Cold
+                && row.wave != Some(reservation.id)
+                && revision != state.permits[&reservation.id].revision
+            {
+                drop(state);
+                drop(spare.take());
+                continue;
+            }
             let needs_wave = row.body == 0 && row.calls == 0;
             if needs_wave && spare.is_none() {
                 drop(state);
@@ -107,9 +127,10 @@ impl Member {
             }
             let resident = row.resident.clone();
             let existing_wave = row.wave;
-            let raw = row
-                .raw
-                .and_then(|id| state.raw.get(&id))
+            let raw = state
+                .raw_versions
+                .get(&self.key)
+                .and_then(|(id, _)| state.raw.get(id))
                 .filter(|raw| raw.key == self.key)
                 .and_then(|raw| raw.weak.upgrade());
             if needs_wave {
@@ -119,7 +140,6 @@ impl Member {
             }
             let reservation = if needs_wave {
                 let reservation = spare.take().unwrap();
-                state.permits.get_mut(&reservation.id).unwrap().activated = true;
                 state.rows.get_mut(&self.key).unwrap().wave = Some(reservation.id);
                 Some(reservation)
             } else if let Some(id) = existing_wave {
@@ -131,15 +151,23 @@ impl Member {
             } else {
                 None
             };
-            state.rows.get_mut(&self.key).unwrap().calls += 1;
+            let row = state.rows.get_mut(&self.key).unwrap();
+            row.calls += 1;
+            row.references += 1;
             state.link(self.key, access);
+            let prepared = Some(resident.prepare(access));
             drop(state);
             let call = Call {
                 controller: self.controller.clone(),
                 key: self.key,
                 resident,
+                prepared,
                 reservation,
                 finished: false,
+                _member: Member {
+                    controller: self.controller.clone(),
+                    key: self.key,
+                },
             };
             drop(spare); // any race-lost reservation releases outside the lock
             return Ok(call);
@@ -148,6 +176,13 @@ impl Member {
 }
 
 impl Call {
+    pub(super) fn resolve(&mut self) -> Result<BodyPin, Arc<LoadError>> {
+        self.prepared
+            .take()
+            .expect("one prepared action per call")
+            .and_then(super::super::PreparedPin::resolve)
+    }
+
     fn finish(&mut self, pin: bool) {
         let (snapshot, raw) = {
             let snapshot = self.resident.snapshot();
@@ -171,6 +206,17 @@ impl Call {
             row.body = snapshot.body_bytes.saturating_add(snapshot.tree_bytes);
             state.body_bytes += snapshot.body_bytes as u128 + snapshot.tree_bytes as u128;
         }
+        if let Some(id) = state.rows[&self.key].wave
+            && snapshot.phase != Phase::Loading
+        {
+            let body = (snapshot.phase == Phase::Hot).then_some(
+                snapshot
+                    .raw_bytes
+                    .saturating_add(snapshot.body_bytes)
+                    .saturating_add(snapshot.tree_bytes),
+            );
+            state.settle_wave(id, body);
+        }
         let row = state.rows.get_mut(&self.key).unwrap();
         row.calls -= 1;
         if pin {
@@ -181,9 +227,7 @@ impl Call {
         }
         if row.body == 0 && row.calls == 0 {
             state.unlink(self.key);
-            if state.transient == Some(self.key) {
-                state.transient = None;
-            }
+            state.clear_transient_if_unused();
         }
         self.finished = true;
     }
@@ -191,6 +235,8 @@ impl Call {
 
 impl Drop for Call {
     fn drop(&mut self) {
+        // Cancel the selected local action before releasing its reservation.
+        drop(self.prepared.take());
         if !self.finished {
             self.finish(false);
         }
@@ -322,6 +368,10 @@ impl Drop for RawPin {
 }
 
 impl Reservation {
+    fn peak(&self) -> usize {
+        lock(&self.controller.0.ledger).permits[&self.id].peak
+    }
+
     #[must_use]
     pub fn bytes(&self) -> usize {
         lock(&self.controller.0.ledger).permits[&self.id].bytes
@@ -348,16 +398,19 @@ impl Drop for Reservation {
         if permit.references == 0 {
             let permit = state.permits.remove(&self.id).unwrap();
             state.reserved_bytes -= permit.bytes as u128;
-            if let Some(key) = permit.transient
-                && state.transient == Some(key)
-                && (!permit.activated
-                    || state
-                        .rows
-                        .get(&key)
-                        .is_none_or(|row| row.body == 0 && row.calls == 0))
-            {
-                state.transient = None;
+            if !permit.settled {
+                state.pending -= 1;
             }
+            // Clear only this permit's unpublished association, never a retry.
+            if let Some(key) = permit.member
+                && let Some(row) = state.rows.get_mut(&key)
+                && row.wave == Some(self.id)
+                && row.calls == 0
+            {
+                row.wave = None;
+            }
+            state.clear_transient_if_unused();
+            state.shrink();
         }
         drop(state);
         self.controller.trim();
@@ -377,6 +430,7 @@ impl Drop for Floor {
         let mut state = lock(&self.controller.0.ledger);
         let bytes = state.floors.remove(&self.id).unwrap();
         state.external_floor -= bytes as u128;
+        state.shrink();
         drop(state);
         self.controller.trim();
     }

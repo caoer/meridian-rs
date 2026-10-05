@@ -540,3 +540,97 @@ fn descriptor_destructor_unwind_releases_its_charge_after_all_fields_drop() {
     assert_eq!(budget.report().bodies, 0);
     assert_eq!(budget.report().raw, 0);
 }
+
+#[test]
+fn prepared_call_cancellation_settles_its_selected_flight_before_releasing_reservation() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(1);
+    let source = source(&store, b"# Prepared\n", false, false);
+    source.gate.release();
+    let member = budget.retain(source.clone());
+    let owner = member.begin(Access::Read, 8192).unwrap();
+    let mut follower = member.begin(Access::Read, 8192).unwrap();
+    assert_eq!(member.phase(), Phase::Loading);
+    assert_eq!(source.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(budget.report().reserved, 8192);
+    drop(owner);
+    assert_eq!(member.phase(), Phase::Cold);
+    assert_eq!(budget.report().reserved, 8192);
+    let fault = follower.resolve().unwrap_err();
+    assert!(matches!(fault.as_ref(), LoadError::Abandoned));
+    drop(fault);
+    drop(follower);
+    assert_eq!(budget.report().reserved, 0);
+    assert!(!budget.report().transient);
+    drop(member.pin(Access::Read, 8192).unwrap());
+    assert_eq!(source.reads.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn prepared_waiter_cancellation_removes_its_waiter_and_preserves_loader_budget() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(1);
+    let source = source(&store, b"# Cancel waiter\n", false, false);
+    source.gate.release();
+    let member = budget.retain(source.clone());
+    let mut owner = member.begin(Access::Read, 8192).unwrap();
+    let follower = member.begin(Access::Read, 8192).unwrap();
+    assert_eq!(
+        lock(&budget.0.ledger).rows[&member.key]
+            .resident
+            .snapshot()
+            .waiters,
+        1
+    );
+    drop(follower);
+    assert_eq!(
+        lock(&budget.0.ledger).rows[&member.key]
+            .resident
+            .snapshot()
+            .waiters,
+        0
+    );
+    assert_eq!(budget.report().reserved, 8192);
+    drop(owner.resolve().unwrap());
+    drop(owner);
+    assert_eq!(budget.report().reserved, 0);
+    assert_eq!(member.phase(), Phase::Cold);
+}
+
+#[test]
+fn prepared_call_owns_its_descriptor_until_all_local_fields_have_dropped() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let member = budget.retain(Arc::new(store.retain(b"# Deferred\n").unwrap()));
+    let call = member.begin(Access::Read, 8192).unwrap();
+    drop(member);
+    assert_eq!(budget.report().members, 1);
+    drop(call);
+    assert_eq!(budget.report().members, 0);
+    assert_eq!(budget.report().reserved, 0);
+    assert_eq!(budget.report().retiring, 0);
+}
+
+#[test]
+fn duplicate_source_destructor_unwind_does_not_leak_a_member_reference() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let member = budget.retain(Arc::new(store.retain(b"# Duplicate\n").unwrap()));
+    let gate = Arc::new(Gate::default());
+    gate.release();
+    let duplicate = Arc::new(DroppingSource {
+        handle: store.retain(b"# Duplicate\n").unwrap(),
+        gate,
+        panic: true,
+    });
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| budget.retain(duplicate)))
+            .is_err()
+    );
+    drop(member);
+    assert_eq!(budget.report().members, 0);
+}
