@@ -25,7 +25,8 @@ pub trait DocumentCatalog: Debug {
     fn revision(&self, path: &str) -> Option<&NodeRev>;
     /// The complete name/alias index, independent of body residency.
     fn index(&self) -> &CorpusIndex;
-    /// Pin one exact member version. `None` means absent membership only.
+    /// Pin one exact member version for a scan. `None` means absent membership
+    /// only; pinning need not promote the host's read recency.
     ///
     /// # Errors
     /// Required backing, identity, parsing or admission failed. Never retry

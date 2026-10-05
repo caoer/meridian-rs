@@ -19,8 +19,9 @@ struct Entry {
     member: Member,
 }
 
-/// Complete generation membership with cold bodies and retained exact backing.
+/// Complete generation membership with sheddable bodies and exact backing.
 /// Holding the catalog keeps descriptors alive, never every parsed document.
+/// Pins are scan accesses: they protect bodies without promoting LRU recency.
 #[derive(Debug)]
 pub struct Catalog {
     entries: BTreeMap<String, Entry>,
