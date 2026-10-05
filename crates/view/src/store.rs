@@ -128,9 +128,7 @@ use duckdb::types::Value;
 use serde_json::Value as Json;
 
 use crate::sqltext;
-use crate::{
-    BaseWalk, ExclusionProbe, Rows, ViewError, collect_doc, corpus_index, fill_exclusions,
-};
+use crate::{BaseWalk, ExclusionProbe, Rows, ViewError, collect_doc, fill_exclusions};
 
 /// The cache file's own payload schema version, recorded in every pin row.
 /// Bump it — together with the drawer path's `SCHEMA_SALT` — whenever the
@@ -453,11 +451,11 @@ struct BaseDelta {
 /// One append's already-decided inputs. The cache diff and corpus-wide name
 /// index are fixed before any batch writes into the transaction.
 #[derive(Clone, Copy)]
-struct AppendPlan<'a, 'corpus> {
-    docs: &'a model::Docs,
+struct AppendPlan<'a> {
+    docs: &'a dyn model::catalog::DocumentCatalog,
     reproject: &'a BTreeSet<String>,
     index: &'a model::CorpusIndex,
-    corpus: &'a model::RootedCorpus<'corpus>,
+    corpus: &'a dyn model::catalog::NameCorpus,
     mounts: Option<&'a addr::MountSet>,
     exclusion: Option<ExclusionProbe<'a>>,
     base: Option<&'a BaseWalk<'a>>,
@@ -466,6 +464,27 @@ struct AppendPlan<'a, 'corpus> {
     counts: AppendCounts,
     fingerprint: &'a str,
     base_fold: Option<&'a str>,
+}
+
+/// Membership is decided before BEGIN; a load fault never removes a row.
+fn with_document<T>(
+    docs: &dyn model::catalog::DocumentCatalog,
+    path: &str,
+    read: impl FnOnce(&model::Document) -> T,
+) -> Result<T, ViewError> {
+    let invalid = || {
+        ViewError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("catalog member {path:?} is absent or has the wrong revision"),
+        ))
+    };
+    let revision = docs.revision(path).ok_or_else(invalid)?;
+    let lease = docs.pin(path).map_err(ViewError::Io)?.ok_or_else(invalid)?;
+    let doc = lease.document().map_err(ViewError::Io)?;
+    if doc.root.node_rev != *revision {
+        return Err(invalid());
+    }
+    Ok(read(doc))
 }
 
 /// Estimated projected-row budget before exclusion payloads are added. The
@@ -1303,15 +1322,41 @@ impl SqlStore {
         fingerprint: &str,
         base: Option<&BaseWalk<'_>>,
     ) -> Result<Option<AppendCounts>, ViewError> {
+        self.sync_catalog(
+            &model::catalog::EagerCatalog::new(docs),
+            corpus,
+            mounts,
+            exclusion,
+            fingerprint,
+            base,
+        )
+    }
+
+    /// Project one complete immutable generation with at most one body lease
+    /// at a time. Membership/name lookup does not hydrate targets. The caller
+    /// supplies a fingerprint and rooted metadata from that same generation.
+    ///
+    /// # Errors
+    /// Backing, admission, revision or SQL failure. A known member cannot be
+    /// silently skipped. Every batch and the pin roll back together on a
+    /// projection fault, leaving the old generation available for retry.
+    /// A fingerprint-domain change still recreates the cache as in `sync`.
+    pub fn sync_catalog(
+        &mut self,
+        docs: &dyn model::catalog::DocumentCatalog,
+        corpus: &dyn model::catalog::NameCorpus,
+        mounts: Option<&addr::MountSet>,
+        exclusion: Option<ExclusionProbe<'_>>,
+        fingerprint: &str,
+        base: Option<&BaseWalk<'_>>,
+    ) -> Result<Option<AppendCounts>, ViewError> {
         self.recover_retired()?;
         let base_fold = base.map(|b| b.fold);
         let mut pin = self.pin()?;
-        // Built at most once per sync, and only when something needs it.
-        let mut index: Option<model::CorpusIndex> = None;
         // Other roots' contents move no ambient fingerprint (§ Rooted rows),
         // so this runs BEFORE the no-op check, not inside the append.
         let rooted = if pin.is_some() {
-            self.rooted_affected(docs, &mut index, corpus, mounts)?
+            self.rooted_affected(docs, corpus, mounts)?
         } else {
             BTreeSet::new()
         };
@@ -1345,12 +1390,12 @@ impl SqlStore {
 
         let mut added: BTreeSet<&str> = BTreeSet::new();
         let mut changed: BTreeSet<&str> = BTreeSet::new();
-        for (path, doc) in docs {
+        for (path, revision) in docs.revisions() {
             match manifest.get(path) {
                 None => {
                     added.insert(path);
                 }
-                Some(rev) if *rev != doc.root.node_rev.0 => {
+                Some(rev) if *rev != revision.0 => {
                     changed.insert(path);
                 }
                 Some(_) => {}
@@ -1358,7 +1403,7 @@ impl SqlStore {
         }
         let removed: Vec<&str> = manifest
             .keys()
-            .filter(|p| !docs.contains_key(*p))
+            .filter(|p| docs.revision(p).is_none())
             .map(String::as_str)
             .collect();
 
@@ -1391,11 +1436,10 @@ impl SqlStore {
         let mut reproject: BTreeSet<String> = added.iter().map(|p| (*p).to_owned()).collect();
         reproject.extend(changed.iter().map(|p| (*p).to_owned()));
         reproject.extend(affected.iter().cloned());
-        let index = index.unwrap_or_else(|| corpus_index(docs));
         self.append_batched(AppendPlan {
             docs,
             reproject: &reproject,
-            index: &index,
+            index: docs.index(),
             corpus,
             mounts,
             exclusion,
@@ -1409,28 +1453,9 @@ impl SqlStore {
         Ok(Some(counts))
     }
 
-    /// Project an immutable catalog through fallible body leases.
-    ///
-    /// # Errors
-    /// Source or SQL failures leave the prior generation intact.
-    #[allow(clippy::unused_self)]
-    pub fn sync_catalog(
-        &mut self,
-        _docs: &dyn model::catalog::DocumentCatalog,
-        _corpus: &dyn model::catalog::NameCorpus,
-        _mounts: Option<&addr::MountSet>,
-        _exclusion: Option<ExclusionProbe<'_>>,
-        _fingerprint: &str,
-        _base: Option<&BaseWalk<'_>>,
-    ) -> Result<Option<AppendCounts>, ViewError> {
-        Err(ViewError::Io(std::io::Error::other(
-            "catalog projection not implemented",
-        )))
-    }
-
     /// Write every bounded batch under one generation transaction. The plan
     /// is decided against the committed cache before this method begins.
-    fn append_batched(&self, plan: AppendPlan<'_, '_>) -> Result<(), ViewError> {
+    fn append_batched(&self, plan: AppendPlan<'_>) -> Result<(), ViewError> {
         let AppendPlan {
             docs,
             reproject,
@@ -1479,15 +1504,16 @@ impl SqlStore {
             };
 
             for path in reproject {
-                if let Some(doc) = docs.get(path) {
-                    collect_doc(path, doc, index, &mut rows, corpus, mounts);
-                    staged_bytes =
-                        staged_bytes.saturating_add(newly_staged_bytes(&rows, &mut seen));
-                    if staged_bytes >= STAGED_BATCH_BYTES {
-                        flush(&mut rows)?;
-                        staged_bytes = 0;
-                        seen.fill(0);
-                    }
+                with_document(docs, path, |doc| {
+                    collect_doc(path, doc, index, &mut rows, corpus, mounts)
+                })?;
+                // The lease ends inside with_document. Projected rows own
+                // their payload before flushing or admitting the next member.
+                staged_bytes = staged_bytes.saturating_add(newly_staged_bytes(&rows, &mut seen));
+                if staged_bytes >= STAGED_BATCH_BYTES {
+                    flush(&mut rows)?;
+                    staged_bytes = 0;
+                    seen.fill(0);
                 }
             }
             // `.base` members stay borrowed from the caller's walk rather
@@ -1597,7 +1623,7 @@ impl SqlStore {
     /// exactly the case-folding §3 and §5.1 forbid.
     fn base_affected(
         &self,
-        docs: &model::Docs,
+        docs: &dyn model::catalog::DocumentCatalog,
         delta: &BaseDelta,
     ) -> Result<BTreeSet<String>, ViewError> {
         if delta.moved_keys.is_empty() {
@@ -1619,7 +1645,7 @@ impl SqlStore {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let src: String = row.get(0)?;
-            if affected.contains(&src) || !docs.contains_key(&src) {
+            if affected.contains(&src) || docs.revision(&src).is_none() {
                 continue;
             }
             let target: String = row.get(1)?;
@@ -1648,13 +1674,12 @@ impl SqlStore {
     /// re-projection equal to a fresh build and an unmarked doc's rows equal
     /// to what a fresh build would write.
     ///
-    /// `index` is the ambient corpus index, built here on the first rooted
-    /// row and handed back for the append to reuse.
+    /// The catalog's name index is requested only on the first rooted row;
+    /// the eager adapter builds it once and reuses it for the append.
     fn rooted_affected(
         &self,
-        docs: &model::Docs,
-        index: &mut Option<model::CorpusIndex>,
-        corpus: &model::RootedCorpus<'_>,
+        docs: &dyn model::catalog::DocumentCatalog,
+        corpus: &dyn model::catalog::NameCorpus,
         mounts: Option<&addr::MountSet>,
     ) -> Result<BTreeSet<String>, ViewError> {
         let mut affected = BTreeSet::new();
@@ -1667,7 +1692,7 @@ impl SqlStore {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let src: String = row.get(0)?;
-            if affected.contains(&src) || !docs.contains_key(&src) {
+            if affected.contains(&src) || docs.revision(&src).is_none() {
                 continue;
             }
             let target: String = row.get(1)?;
@@ -1678,9 +1703,8 @@ impl SqlStore {
             let block: Option<String> = row.get(3)?;
             let stored: (Option<String>, Option<String>, Option<String>) =
                 (row.get(4)?, row.get(5)?, row.get(6)?);
-            let index = index.get_or_insert_with(|| corpus_index(docs));
             let live = match crate::resolve_dest(
-                index,
+                docs.index(),
                 &target,
                 heading.as_deref(),
                 block.as_deref(),
@@ -1719,7 +1743,7 @@ impl SqlStore {
     /// NULL rows that no member or mount can move.
     fn resolution_affected(
         &self,
-        docs: &model::Docs,
+        docs: &dyn model::catalog::DocumentCatalog,
         added: &BTreeSet<&str>,
         changed: &BTreeSet<&str>,
         removed: &[&str],
@@ -1734,9 +1758,7 @@ impl SqlStore {
         }
         // New aliases: added + changed docs, from the parsed corpus.
         for path in added.iter().chain(changed.iter()) {
-            if let Some(doc) = docs.get(*path) {
-                names.extend(model::doc_aliases(doc));
-            }
+            names.extend(with_document(docs, path, model::doc_aliases)?);
         }
         // Old aliases: changed + removed docs, from the cache's latest layer.
         {
@@ -1768,7 +1790,7 @@ impl SqlStore {
             if added.contains(src.as_str())
                 || changed.contains(src.as_str())
                 || removed.contains(&src.as_str())
-                || !docs.contains_key(&src)
+                || docs.revision(&src).is_none()
             {
                 continue;
             }

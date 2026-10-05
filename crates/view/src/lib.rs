@@ -428,7 +428,7 @@ pub(crate) fn collect_doc(
     doc: &Document,
     index: &CorpusIndex,
     rows: &mut Rows,
-    corpus: &model::RootedCorpus<'_>,
+    corpus: &dyn model::catalog::NameCorpus,
     mounts: Option<&addr::MountSet>,
 ) {
     let root = &doc.root;
@@ -531,7 +531,7 @@ fn walk(
     chain: &[AddrSeg],
     counters: &mut Counters,
     rows: &mut Rows,
-    corpus: &model::RootedCorpus<'_>,
+    corpus: &dyn model::catalog::NameCorpus,
     mounts: Option<&addr::MountSet>,
 ) {
     let mut child_gov = gov_section;
@@ -639,7 +639,7 @@ fn descend(
     chain: &[AddrSeg],
     counters: &mut Counters,
     rows: &mut Rows,
-    corpus: &model::RootedCorpus<'_>,
+    corpus: &dyn model::catalog::NameCorpus,
     mounts: Option<&addr::MountSet>,
 ) {
     for (child, seg) in node.children.iter().zip(child_segs(node)) {
@@ -816,7 +816,7 @@ fn emit_lock_pins(
     path: &str,
     doc: &Document,
     index: &CorpusIndex,
-    corpus: &model::RootedCorpus<'_>,
+    corpus: &dyn model::catalog::NameCorpus,
     rows: &mut Rows,
 ) {
     let Ok(Some(found)) = lock::find(doc) else {
@@ -1146,7 +1146,7 @@ pub(crate) fn resolve_dest(
     heading: Option<&str>,
     block: Option<&str>,
     src_path: &str,
-    corpus: &model::RootedCorpus<'_>,
+    corpus: &dyn model::catalog::NameCorpus,
     mounts: Option<&addr::MountSet>,
 ) -> (Option<Dest>, Vec<String>) {
     if target.trim().is_empty() {
