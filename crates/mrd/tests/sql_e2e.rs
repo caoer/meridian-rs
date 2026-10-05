@@ -1010,34 +1010,133 @@ fn ordinary_query_edit_overlap_succeeds_through_the_cli() {
     assert_eq!(json(&out)["rows"], serde_json::json!([["a.md"], ["b.md"]]));
 }
 
+fn exchange_pipelined_frame(
+    writer: &mut std::os::unix::net::UnixStream,
+    reader: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
+    value: &Value,
+) -> Value {
+    use std::io::{BufRead, Write};
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        writeln!(writer, "{value}").unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let answer: Value = serde_json::from_str(&line).unwrap();
+        if answer["error"]["code"] != "corpus_warming" {
+            return answer;
+        }
+        assert!(Instant::now() < deadline, "fixture did not warm: {answer}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn feed_sql_holder(
+    fifo: &Path,
+    opened: &std::sync::mpsc::Sender<()>,
+    hold_started: &std::sync::mpsc::Receiver<()>,
+) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::time::{Duration, Instant};
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut file = loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(fifo)
+        {
+            Ok(file) => break file,
+            Err(error)
+                if error.raw_os_error() == Some(libc::ENXIO) && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("FIFO query never opened: {error}"),
+        }
+    };
+    opened.send(()).unwrap();
+    hold_started.recv_timeout(Duration::from_secs(20)).unwrap();
+    std::thread::sleep(Duration::from_secs(12));
+    file.write_all(b"1\n").unwrap();
+}
+
+fn read_pipelined_replies(
+    reader: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
+    started: std::time::Instant,
+) -> (Vec<Value>, Option<String>) {
+    use std::io::BufRead;
+    use std::time::Duration;
+
+    let mut answers = Vec::new();
+    let mut transport_error = None;
+    for _ in 0..3 {
+        reader
+            .get_ref()
+            .set_read_timeout(Some(
+                Duration::from_secs(10)
+                    .saturating_sub(started.elapsed())
+                    .max(Duration::from_millis(1)),
+            ))
+            .unwrap();
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => {
+                transport_error = Some("closed".to_owned());
+                break;
+            }
+            Ok(_) => answers.push(serde_json::from_str::<Value>(&line).unwrap()),
+            Err(error) => {
+                transport_error = Some(error.to_string());
+                break;
+            }
+        }
+    }
+    (answers, transport_error)
+}
+
+fn start_sql_holder(
+    socket: &Path,
+    fifo: PathBuf,
+    hello: &Value,
+) -> std::thread::JoinHandle<(std::time::Duration, Value)> {
+    use std::io::BufReader;
+    use std::os::unix::net::UnixStream;
+    use std::time::{Duration, Instant};
+
+    let mut holder_writer = UnixStream::connect(socket).unwrap();
+    holder_writer
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let mut holder_reader = BufReader::new(holder_writer.try_clone().unwrap());
+    assert_eq!(
+        exchange_pipelined_frame(&mut holder_writer, &mut holder_reader, hello)["ok"],
+        true
+    );
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        let path = fifo.display().to_string().replace('\'', "''");
+        let query = format!(
+            "SELECT count(*) FROM read_csv('{path}', auto_detect=false, header=false, columns={{'n':'INTEGER'}}, parallel=false)"
+        );
+        let answer = exchange_pipelined_frame(
+            &mut holder_writer,
+            &mut holder_reader,
+            &serde_json::json!({"id":1,"op":"sql","query":query}),
+        );
+        (started.elapsed(), answer)
+    })
+}
+
 /// Reproduce the shared-session boundary: two SQL requests and an unrelated
 /// read are sent while another connection holds a SQL snapshot past 10 s.
 /// A FIFO keeps the holder in real `DuckDB` I/O without CPU-dependent spin time.
 #[test]
 fn pipelined_sql_contenders_do_not_timeout_an_unrelated_read() {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::io::{BufReader, Write};
     use std::os::unix::net::UnixStream;
     use std::time::{Duration, Instant};
-
-    fn exchange(
-        writer: &mut UnixStream,
-        reader: &mut BufReader<UnixStream>,
-        value: &Value,
-    ) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            writeln!(writer, "{value}").unwrap();
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            let answer: Value = serde_json::from_str(&line).unwrap();
-            if answer["error"]["code"] != "corpus_warming" {
-                return answer;
-            }
-            assert!(Instant::now() < deadline, "fixture did not warm: {answer}");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
 
     let sb = sandbox();
     let ws = write_bare_ws(&sb, "pipelined", &[("a.md", "# A\n")]);
@@ -1064,62 +1163,24 @@ fn pipelined_sql_contenders_do_not_timeout_an_unrelated_read() {
     let feeder = std::thread::spawn({
         let fifo = fifo.clone();
         move || {
-            let deadline = Instant::now() + Duration::from_secs(20);
-            let mut file = loop {
-                match std::fs::OpenOptions::new()
-                    .write(true)
-                    .custom_flags(libc::O_NONBLOCK)
-                    .open(&fifo)
-                {
-                    Ok(file) => break file,
-                    Err(error)
-                        if error.raw_os_error() == Some(libc::ENXIO)
-                            && Instant::now() < deadline =>
-                    {
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(error) => panic!("FIFO query never opened: {error}"),
-                }
-            };
-            opened.send(()).unwrap();
-            hold_started.recv_timeout(Duration::from_secs(20)).unwrap();
-            std::thread::sleep(Duration::from_secs(12));
-            file.write_all(b"1\n").unwrap();
+            feed_sql_holder(&fifo, &opened, &hold_started);
         }
     });
-    let mut holder_writer = UnixStream::connect(server.socket_path()).unwrap();
-    holder_writer
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .unwrap();
-    let mut holder_reader = BufReader::new(holder_writer.try_clone().unwrap());
     let hello = serde_json::json!({"op":"hello","proto":1,"contract":"v3","workspace":ws});
-    assert_eq!(
-        exchange(&mut holder_writer, &mut holder_reader, &hello)["ok"],
-        true
-    );
-    let holder = std::thread::spawn(move || {
-        let started = Instant::now();
-        let path = fifo.display().to_string().replace('\'', "''");
-        let query = format!(
-            "SELECT count(*) FROM read_csv('{path}', auto_detect=false, header=false, columns={{'n':'INTEGER'}}, parallel=false)"
-        );
-        let answer = exchange(
-            &mut holder_writer,
-            &mut holder_reader,
-            &serde_json::json!({"id":1,"op":"sql","query":query}),
-        );
-        (started.elapsed(), answer)
-    });
+    let holder = start_sql_holder(server.socket_path(), fifo, &hello);
     ready
         .recv_timeout(Duration::from_secs(20))
         .expect("holder is executing SQL");
     std::fs::write(ws.join("b.md"), "# B\n").unwrap();
     let mut writer = UnixStream::connect(server.socket_path()).unwrap();
     let mut reader = BufReader::new(writer.try_clone().unwrap());
-    assert_eq!(exchange(&mut writer, &mut reader, &hello)["ok"], true);
+    assert_eq!(
+        exchange_pipelined_frame(&mut writer, &mut reader, &hello)["ok"],
+        true
+    );
     // This read warms the changed corpus without advancing the SQL cache.
     assert_eq!(
-        exchange(
+        exchange_pipelined_frame(
             &mut writer,
             &mut reader,
             &serde_json::json!({"op":"read","path":"b.md"})
@@ -1143,30 +1204,7 @@ fn pipelined_sql_contenders_do_not_timeout_an_unrelated_read() {
         serde_json::json!({"id":13,"op":"read","path":"a.md"})
     )
     .unwrap();
-    let mut answers = Vec::new();
-    let mut transport_error = None;
-    for _ in 0..3 {
-        reader
-            .get_ref()
-            .set_read_timeout(Some(
-                Duration::from_secs(10)
-                    .saturating_sub(started.elapsed())
-                    .max(Duration::from_millis(1)),
-            ))
-            .unwrap();
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) => {
-                transport_error = Some("closed".to_owned());
-                break;
-            }
-            Ok(_) => answers.push(serde_json::from_str::<Value>(&line).unwrap()),
-            Err(error) => {
-                transport_error = Some(error.to_string());
-                break;
-            }
-        }
-    }
+    let (answers, transport_error) = read_pipelined_replies(&mut reader, started);
     let elapsed = started.elapsed();
     drop(reader);
     drop(writer);
