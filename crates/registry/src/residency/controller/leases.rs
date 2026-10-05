@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Access, AdmissionError, BodyPin, ByteIdentity, Controller, Error, Failure, Floor, Key, Member,
+    Phase, Pin, RawPin, Reservation, Resident, SharedBytes, lock,
+};
 
 struct Call {
     controller: Controller,
@@ -20,7 +23,7 @@ impl Member {
     #[must_use]
     pub fn phase(&self) -> Phase {
         let state = lock(&self.controller.0.ledger);
-        state.rows[&self.key].resident.snapshot().phase
+        local_status(&state.rows[&self.key].resident).0
     }
 
     /// Pin this exact version. `peak` bounds source bytes, parser staging and
@@ -85,10 +88,9 @@ impl Member {
             if row.retiring {
                 return Err(AdmissionError::Busy);
             }
-            let local = row.resident.snapshot();
+            let (phase, revision) = local_status(&row.resident);
             let needs_wave = row.body == 0 && row.calls == 0;
             if needs_wave && spare.is_none() {
-                let revision = local.revision;
                 drop(state);
                 spare = Some(self.controller.admit(Some(self.key), peak, revision)?);
                 continue;
@@ -98,10 +100,10 @@ impl Member {
             // that first wave's still-live reservation.
             if row.calls != 0
                 && let Some(id) = row.wave
+                && phase == Phase::Cold
+                && revision != state.permits[&id].revision
             {
-                if local.phase == Phase::Cold && local.revision != state.permits[&id].revision {
-                    return Err(AdmissionError::Busy);
-                }
+                return Err(AdmissionError::Busy);
             }
             let resident = row.resident.clone();
             let existing_wave = row.wave;
@@ -160,14 +162,14 @@ impl Call {
             (snapshot, raw)
         };
         let mut state = lock(&self.controller.0.ledger);
-        if let Some(raw) = raw {
-            if state.rows[&self.key].body == 0 {
-                let id = state.add_raw(self.key, &raw);
-                let row = state.rows.get_mut(&self.key).unwrap();
-                row.raw = Some(id);
-                row.body = snapshot.body_bytes.saturating_add(snapshot.tree_bytes);
-                state.body_bytes += snapshot.body_bytes as u128 + snapshot.tree_bytes as u128;
-            }
+        if let Some(raw) = raw
+            && state.rows[&self.key].body == 0
+        {
+            let id = state.add_raw(self.key, &raw);
+            let row = state.rows.get_mut(&self.key).unwrap();
+            row.raw = Some(id);
+            row.body = snapshot.body_bytes.saturating_add(snapshot.tree_bytes);
+            state.body_bytes += snapshot.body_bytes as u128 + snapshot.tree_bytes as u128;
         }
         let row = state.rows.get_mut(&self.key).unwrap();
         row.calls -= 1;
@@ -225,30 +227,30 @@ impl Drop for Member {
 }
 
 impl Pin {
+    fn body(&self) -> &BodyPin {
+        self.body.as_ref().expect("live pin owns its body")
+    }
+
     /// Borrow under this pin. Retain `raw()` alongside any escaping raw clone;
     /// a bare clone of Document.raw is not a managed accounting lease.
     ///
     /// # Errors
     /// The retained member has verified invalid UTF-8 bytes.
     pub fn document(&self) -> Result<&model::Document, fs::hydration::HydrationError> {
-        self.body.as_ref().unwrap().document()
+        self.body().document()
     }
 
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
-        self.body.as_ref().unwrap().bytes().as_bytes()
+        self.body().bytes().as_bytes()
     }
 
     /// Retain raw bytes independently of the tree or member descriptor.
     #[must_use]
     pub fn raw(&self) -> RawPin {
-        let bytes = self.body.as_ref().unwrap().bytes().clone();
+        let bytes = self.body().bytes().clone();
         let id = bytes.allocation_id();
-        lock(&self.member.controller.0.ledger)
-            .raw
-            .get_mut(&id)
-            .unwrap()
-            .owners += 1;
+        lock(&self.member.controller.0.ledger).retain_raw(id);
         RawPin {
             bytes: Some(bytes),
             controller: self.member.controller.clone(),
@@ -283,9 +285,13 @@ impl Drop for Pin {
 }
 
 impl RawPin {
+    fn body(&self) -> &SharedBytes {
+        self.bytes.as_ref().expect("live raw pin owns bytes")
+    }
+
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
-        self.bytes.as_ref().unwrap().as_bytes()
+        self.body().as_bytes()
     }
     #[must_use]
     pub fn allocation_id(&self) -> usize {
@@ -361,8 +367,7 @@ impl Drop for Reservation {
 impl Floor {
     pub fn set(&self, bytes: usize) {
         let mut state = lock(&self.controller.0.ledger);
-        let old = state.floors.insert(self.id, bytes).unwrap();
-        state.external_floor = state.external_floor - old as u128 + bytes as u128;
+        state.set_floor(self.id, bytes);
         drop(state);
         self.controller.trim();
     }
@@ -375,4 +380,14 @@ impl Drop for Floor {
         drop(state);
         self.controller.trim();
     }
+}
+
+fn local_status(resident: &Resident) -> (Phase, u64) {
+    let state = lock(&resident.0.state);
+    let phase = match state.body {
+        super::super::StateBody::Cold => Phase::Cold,
+        super::super::StateBody::Loading(_) => Phase::Loading,
+        super::super::StateBody::Hot(_) => Phase::Hot,
+    };
+    (phase, state.revision)
 }

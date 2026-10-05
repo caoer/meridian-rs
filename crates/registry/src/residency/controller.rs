@@ -26,8 +26,16 @@ struct Control {
     ledger: Mutex<Ledger>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Controller(Arc<Control>);
+
+impl fmt::Debug for Controller {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // No ledger lock, recursion through source callbacks or corpus dump
+        // when a lease/error appears in a diagnostic.
+        f.debug_struct("Controller").finish_non_exhaustive()
+    }
+}
 
 #[derive(Debug)]
 pub struct Member {
@@ -77,7 +85,7 @@ pub struct Report {
     pub total: usize,
     /// Body/tree bytes protected by operation pins; shared raw is in `raw`.
     pub pinned: usize,
-    /// Charges retained until body/descriptor destruction returns.
+    /// Body/descriptor charges held through destruction; shared raw is in `raw`.
     pub retiring: usize,
     pub overage: usize,
     pub floor_overage: usize,
@@ -308,7 +316,7 @@ impl Controller {
     }
 
     fn shed_one(&self, for_admission: bool) -> bool {
-        self.shed_one_with(for_admission, |resident, ticket| resident.try_shed(ticket))
+        self.shed_one_with(for_admission, Resident::try_shed)
     }
 
     fn shed_one_with(

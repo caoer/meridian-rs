@@ -366,3 +366,177 @@ fn concurrent_callers_share_one_load_reservation_and_source_read() {
         ));
     }
 }
+
+#[test]
+fn an_oversized_raw_lease_keeps_exclusive_admission_after_its_tree_is_shed() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(1);
+    let source_a = source(&store, b"# A\n", false, false);
+    source_a.gate.release();
+    let a = budget.retain(source_a.clone());
+    let b = budget.retain(Arc::new(store.retain(b"# B\n").unwrap()));
+    let pin = a.pin(Access::Read, 8192).unwrap();
+    let raw = pin.raw();
+    drop(pin);
+    assert_eq!(a.phase(), Phase::Cold);
+    assert!(
+        budget.report().transient,
+        "raw use ended transient admission too early"
+    );
+    assert!(matches!(
+        b.pin(Access::Read, 8192),
+        Err(Error::Admission(AdmissionError::Busy))
+    ));
+    drop(a);
+    assert!(budget.report().transient);
+    let same = budget.retain(source_a.clone());
+    let reloaded = same.pin(Access::Read, 8192).unwrap();
+    assert_eq!(reloaded.raw().allocation_id(), raw.allocation_id());
+    assert_eq!(source_a.reads.load(Ordering::SeqCst), 1);
+    drop(reloaded);
+    drop(same);
+    assert!(budget.report().transient);
+    drop(raw);
+    assert!(!budget.report().transient);
+    drop(b.pin(Access::Read, 8192).unwrap());
+}
+
+#[test]
+fn pending_same_version_admissions_share_one_reservation_before_local_loading() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let member = budget.retain(Arc::new(store.retain(b"# Pending\n").unwrap()));
+    // Hold each pin caller exactly between admission and begin's second lock.
+    let first = budget.admit(Some(member.key), 8192, 0).unwrap();
+    let second = budget.admit(Some(member.key), 8192, 0).unwrap();
+    assert_eq!(
+        budget.report().reserved,
+        8192,
+        "pending callers reserved the same wave twice"
+    );
+    drop(first);
+    drop(second);
+    assert_eq!(budget.report().reserved, 0);
+    drop(member.pin(Access::Read, 8192).unwrap());
+}
+
+#[test]
+fn ordinary_admission_refuses_before_io_when_staging_occupies_allowance() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let source = source(&store, b"# Admission\n", false, false);
+    source.gate.release();
+    let member = budget.retain(source.clone());
+    budget.set_limit(budget.report().floor + 20_480);
+    let occupied = budget.reserve(16_384).unwrap();
+    assert!(matches!(
+        member.pin(Access::Read, 8192),
+        Err(Error::Admission(AdmissionError::Busy))
+    ));
+    assert_eq!(source.reads.load(Ordering::SeqCst), 0);
+    drop(occupied);
+    let pin = member.pin(Access::Read, 8192).unwrap();
+    assert!(!budget.report().transient);
+    assert_eq!(budget.report().overage, 0);
+    drop(pin);
+    assert_eq!(member.phase(), Phase::Hot);
+}
+
+#[test]
+fn retirement_unwind_reconciles_only_after_retired_value_destruction() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let member = budget.retain(Arc::new(store.retain(b"# Retirement unwind\n").unwrap()));
+    drop(member.pin(Access::Read, 8192).unwrap());
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        budget.shed_one_with(true, |resident, ticket| {
+            resident.shed_with(ticket, || panic!("retirement unwind"))
+        })
+    }));
+    assert!(result.is_err());
+    assert_eq!(member.phase(), Phase::Cold);
+    assert_eq!(budget.report().retiring, 0);
+    assert_eq!(budget.report().bodies, 0);
+    assert_eq!(budget.report().raw, 0);
+    drop(member.pin(Access::Read, 8192).unwrap());
+}
+
+#[derive(Debug)]
+struct DroppingSource {
+    handle: crate::raw_store::RawHandle,
+    gate: Arc<Gate>,
+    panic: bool,
+}
+impl ByteSource for DroppingSource {
+    fn identity(&self) -> ByteIdentity {
+        self.handle.identity()
+    }
+    fn read(&self) -> io::Result<SharedBytes> {
+        ByteSource::read(&self.handle)
+    }
+}
+impl Drop for DroppingSource {
+    fn drop(&mut self) {
+        self.gate.enter();
+        assert!(!self.panic, "descriptor destructor unwind");
+    }
+}
+
+#[test]
+fn descriptor_charge_survives_blocking_source_destruction_outside_ledger_lock() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let gate = Arc::new(Gate::default());
+    let member = budget.retain(Arc::new(DroppingSource {
+        handle: store.retain(b"# Drop\n").unwrap(),
+        gate: gate.clone(),
+        panic: false,
+    }));
+    drop(member.pin(Access::Read, 8192).unwrap());
+    let before = budget.report();
+    let worker = thread::spawn(move || drop(member));
+    let entered = gate.entered();
+    let (tx, rx) = mpsc::channel();
+    let observer = {
+        let budget = budget.clone();
+        thread::spawn(move || tx.send(budget.report()).unwrap())
+    };
+    let during = rx.recv_timeout(WAIT);
+    gate.release();
+    worker.join().unwrap();
+    observer.join().unwrap();
+    assert!(entered);
+    let during = during.unwrap();
+    assert_eq!(during.members, 0);
+    assert_eq!(during.bodies, before.bodies);
+    assert_eq!(during.raw, before.raw);
+    assert!(during.retiring > before.bodies);
+    assert_eq!(budget.report().retiring, 0);
+    assert_eq!(budget.report().bodies, 0);
+    assert_eq!(budget.report().raw, 0);
+}
+
+#[test]
+fn descriptor_destructor_unwind_releases_its_charge_after_all_fields_drop() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let gate = Arc::new(Gate::default());
+    gate.release();
+    let member = budget.retain(Arc::new(DroppingSource {
+        handle: store.retain(b"# Drop panic\n").unwrap(),
+        gate,
+        panic: true,
+    }));
+    drop(member.pin(Access::Read, 8192).unwrap());
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(member))).is_err());
+    assert_eq!(budget.report().members, 0);
+    assert_eq!(budget.report().retiring, 0);
+    assert_eq!(budget.report().bodies, 0);
+    assert_eq!(budget.report().raw, 0);
+}
