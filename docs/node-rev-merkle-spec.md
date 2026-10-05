@@ -1050,10 +1050,11 @@ metadata/backing floor and capture staging still belong to its host.
 the existing bounded row batches. A lease ends after its document has been
 projected, before the next pin or SQL batch flush. A known member that cannot
 be pinned, or whose parsed revision disagrees with its descriptor, is an
-explicit fault; it cannot disappear from SQL. A fault after any batch has
-flushed rolls back the entire generation, including bodies, tombstones and
-pin. The unchanged fast path does not hydrate bodies or rebuild the eager
-index. The existing `sync` entry uses the eager adapter; daemon generation
+explicit fault; it cannot disappear from SQL. In a same-domain append, a
+fault after any batch has flushed rolls back the entire generation, including
+bodies, tombstones and pin. A fingerprint-domain change retains the existing
+delete-and-rebuild policy. The unchanged fast path does not hydrate bodies; when no rooted row needs
+re-resolution, it does not build the eager index either. The existing `sync` entry uses the eager adapter; daemon generation
 publication and the other body consumers are not yet migrated by this seam.
 These catalogs consume one immutable generation. They do not read the watcher
 memo's root and leaves separately; making that observation atomic remains a

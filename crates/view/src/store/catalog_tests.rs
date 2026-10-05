@@ -187,3 +187,39 @@ fn catalog_missing_or_wrong_version_is_a_fault_not_a_skipped_member() {
         tests::assert_surface_matches_fresh(&store, &old);
     }
 }
+
+#[test]
+fn catalog_rooted_resolution_reads_metadata_without_pinning_targets() {
+    let docs = tests::corpus(&[("a.md", "# A\n\n[[b:remote]]\n")]);
+    let targets = tests::corpus(&[("remote.md", "# Remote\n")]);
+    let source = Source::new(&docs);
+    let mounted = Source::new(&targets);
+    let root = addr::MountName::parse("b").unwrap();
+    let mounts = addr::MountSet::new([root.clone()]);
+    let roots = RootedCatalog::ambient(&source).with_root(root, &mounted);
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = SqlStore::open(&tests::tmp_store(&dir)).unwrap();
+    store
+        .sync_catalog(&source, &roots, Some(&mounts), None, "b3b:rooted", None)
+        .unwrap();
+    let dest: (String, String) = store
+        .connection()
+        .query_row("SELECT dest_root, dest_root_path FROM link", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(dest, ("b".to_owned(), "remote.md".to_owned()));
+    assert_eq!(
+        mounted.pins.get(),
+        0,
+        "name resolution hydrated a target body"
+    );
+    assert!(
+        store
+            .sync_catalog(&source, &roots, Some(&mounts), None, "b3b:rooted", None)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(source.pins.get(), 1);
+    assert_eq!(mounted.pins.get(), 0);
+}
