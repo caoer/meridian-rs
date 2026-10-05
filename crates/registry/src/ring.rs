@@ -69,6 +69,7 @@ pub struct WorkspaceRing {
     /// (§6.7): the SHARED registry memo is the one currency instrument on
     /// the watch plane too (card run-observation-unification).
     cycle_gate: Mutex<()>,
+    retention: Option<Arc<dyn model::bytes::ByteRetention>>,
     /// Live subscriptions — drives detection and reaper exemption.
     subscribers: AtomicUsize,
     /// How long priming waits for the flock: [`PRIME_FLOCK_BUDGET`]; tests
@@ -127,14 +128,36 @@ impl WorkspaceRing {
     /// Fresh epoch for `root`: empty ring, unprimed watcher, no subscribers.
     #[must_use]
     pub fn new(root: &fs::WorkspaceRoot) -> Self {
+        Self::new_with_retention(root, None)
+    }
+
+    /// Fresh epoch whose baseline versions use the host's retention provider.
+    /// The host still owns backing placement, load sizing and substrate charges.
+    #[must_use]
+    pub fn with_retention(
+        root: &fs::WorkspaceRoot,
+        retention: Arc<dyn model::bytes::ByteRetention>,
+    ) -> Self {
+        Self::new_with_retention(root, Some(retention))
+    }
+
+    fn new_with_retention(
+        root: &fs::WorkspaceRoot,
+        retention: Option<Arc<dyn model::bytes::ByteRetention>>,
+    ) -> Self {
+        let watch = retention.as_ref().map_or_else(
+            || WatchState::new(root),
+            |retention| WatchState::with_retention(root, retention.clone()),
+        );
         WorkspaceRing {
             state: Mutex::new(RingState {
                 ring: RootRing::new(),
-                watch: WatchState::new(root),
+                watch,
                 last_detect: None,
                 last_floor: None,
             }),
             cycle_gate: Mutex::new(()),
+            retention,
             subscribers: AtomicUsize::new(0),
             prime_budget: PRIME_FLOCK_BUDGET,
             #[cfg(test)]
@@ -262,8 +285,10 @@ impl WorkspaceRing {
         }
         // Gate 2: the winner's cycle IS this cadence's detection; frames it
         // emits land on the shared ring, which every push loop drains.
-        let Ok(_flight) = self.cycle_gate.try_lock() else {
-            return Ok(false);
+        let _flight = match self.cycle_gate.try_lock() {
+            Ok(flight) => flight,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(false),
         };
         self.cycle(ws_root, registry, floor_due)
     }
@@ -373,7 +398,15 @@ impl WorkspaceRing {
         // Priming reads the corpus HERE, before the flock: its bytes seed the
         // baseline, and its root is written nowhere (merkle-spec §6.7).
         let snapshot = if was_unprimed {
-            Some(wire_serve::watch::PrimeSnapshot::take(ws_root)?)
+            Some(self.retention.as_ref().map_or_else(
+                || wire_serve::watch::PrimeSnapshot::take(ws_root),
+                |retention| {
+                    wire_serve::watch::PrimeSnapshot::take_with_retention(
+                        ws_root,
+                        retention.clone(),
+                    )
+                },
+            )?)
         } else {
             None
         };
@@ -994,3 +1027,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod retention_tests;
