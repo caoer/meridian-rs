@@ -98,3 +98,41 @@ fn migration_refusal_does_not_credit_unshrinkable_tables() {
     assert!(refused, "probe precondition: B is refused");
     assert!(a_hot_after, "a refusal certain after shedding still shed A");
 }
+
+#[test]
+fn driver_admission_needs_reclaimable_table_storage() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = RawStore::new(dir.path()).unwrap();
+    let budget = Controller::new(0);
+    let members: Vec<_> = (0..5)
+        .map(|i| member_of(&budget, &store, format!("# Table {i}\n").as_bytes()))
+        .collect();
+    let held = members[0].pin(Access::Read, 131_072).unwrap();
+    for member in &members[1..] {
+        drop(member.pin(Access::Read, 131_072).unwrap());
+    }
+    let warm = budget.reserve(0).unwrap();
+    let (total, bodies, upper) = {
+        let state = lock(&budget.0.ledger);
+        (
+            state.total_exact(),
+            state.reclaimable_bytes,
+            state.reclaim_upper_bound(),
+        )
+    };
+    assert!(
+        upper > bodies,
+        "fixture must be able to shrink its raw tables"
+    );
+    let request = 100_000_u128;
+    let limit = total - bodies + request - 1;
+    assert!(limit > total);
+    budget.set_limit(usize::try_from(limit).unwrap());
+    let admission = budget
+        .reserve(usize::try_from(request).unwrap())
+        .expect("reclaimable table storage must make admission fit");
+    assert!(budget.report().total <= budget.report().limit);
+    assert_eq!(held.bytes(), b"# Table 0\n");
+    drop(admission);
+    drop(warm);
+}

@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[derive(Debug, Default)]
 struct Backing {
     retains: AtomicUsize,
+    pins: Arc<AtomicUsize>,
     wrong_identity: AtomicBool,
     fail_retain: AtomicUsize,
     fail_read: Arc<AtomicBool>,
@@ -16,6 +17,7 @@ struct Backing {
 #[derive(Debug)]
 struct Version {
     raw: SharedBytes,
+    pins: Arc<AtomicUsize>,
     fail: Arc<AtomicBool>,
     corrupt: Arc<AtomicBool>,
     panic_drop: Arc<AtomicBool>,
@@ -36,6 +38,7 @@ impl RetainedBytes for Version {
         }
     }
     fn pin(&self) -> io::Result<Box<dyn ByteLease>> {
+        self.pins.fetch_add(1, Ordering::SeqCst);
         if self.fail.load(Ordering::SeqCst) {
             return Err(io::Error::other("injected required backing fault"));
         }
@@ -57,6 +60,7 @@ impl ByteRetention for Backing {
             } else {
                 bytes
             }),
+            pins: self.pins.clone(),
             fail: self.fail_read.clone(),
             corrupt: self.corrupt_read.clone(),
             panic_drop: self.panic_drop.clone(),
@@ -280,4 +284,54 @@ fn retention_cannot_publish_another_versions_identity() {
     backing.wrong_identity.store(false, Ordering::SeqCst);
     assert!(reconcile(&root, &mut ring, &mut watch).unwrap().is_none());
     assert!(watch.root().is_some());
+}
+
+#[test]
+fn driver_silent_commit_ignores_unneeded_before_backing_faults() {
+    let (_dir, root, backing, mut watch, mut ring) = fixture();
+    std::fs::write(root.0.join("a.md"), b"# Committed\n").unwrap();
+    std::fs::remove_file(root.0.join("b.md")).unwrap();
+    std::fs::write(root.0.join("c.md"), b"# Created\n").unwrap();
+    let (leaves, disk) = observed(&root);
+    ring.advance(crate::write::assemble_delta(
+        ring.allocate_seq(),
+        watch.root().unwrap().clone(),
+        disk.clone(),
+        None,
+        None,
+        Vec::new(),
+    ));
+    backing.fail_read.store(true, Ordering::SeqCst);
+    let result = reconcile_delta(&root, &mut ring, &mut watch, &leaves, &disk);
+    assert!(result.is_ok(), "silent sync read unused before backing");
+    assert!(result.unwrap().is_none());
+    assert_eq!(backing.pins.load(Ordering::SeqCst), 0);
+    assert_eq!(watch.root(), Some(&disk));
+    assert_eq!(ring.seq(), 1);
+}
+
+#[test]
+fn driver_delta_retired_destructor_runs_after_frame_publication() {
+    let (_dir, root, backing, mut watch, mut ring) = fixture();
+    std::fs::write(root.0.join("a.md"), b"# Delta published\n").unwrap();
+    let (leaves, disk) = observed(&root);
+    backing.panic_drop.store(true, Ordering::SeqCst);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        reconcile_delta(&root, &mut ring, &mut watch, &leaves, &disk)
+    }));
+    assert!(result.is_err());
+    assert_eq!(
+        ring.seq(),
+        1,
+        "delta destructor ran before the frame was recorded"
+    );
+    let frames = ring.frames_after(0);
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].delta.root_after, disk);
+    assert_eq!(watch.root(), Some(&disk));
+    assert!(
+        reconcile_delta(&root, &mut ring, &mut watch, &leaves, &disk)
+            .unwrap()
+            .is_none()
+    );
 }

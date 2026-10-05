@@ -605,6 +605,14 @@ A same-version re-pin can reuse those bytes within that slot, including after
 the original descriptor ends. Failed-wave errors retain their reservation
 until the error payload is released. Zero budget disables trimming. Floor,
 reservation, pin and transient overages remain visible in the ledger report.
+Changing a positive allowance trims reclaimable bodies but does not revoke or
+retroactively reclassify admitted pins. Raising it until the retained charge
+fits releases the previous transient ownership; lowering it does not restore
+that historical marker. Such pins remain charged, just as pins admitted under
+the higher allowance do. The admission invariant is existing pinned ownership
+plus at most one over-budget loading wave, not an instantaneous cap on already
+admitted bodies after a resize. Zero is an enforcement pause that preserves an
+outstanding marker, rather than a positive allowance that proves a charge fits.
 Source/backing/index/ring floor charges, sound load-peak sizing and migration
 of every escaping owner remain required at the daemon activation boundary.
 
@@ -895,6 +903,10 @@ member's bytes per external batch — measured ~1/s under foreign writes.
   movers, and mints the same frames. Renames pair by digest (byte-equality's
   proxy); removed and `unattested` rows parse retained baseline bytes; modified
   rows diff retained-old against read-new.
+- A transition already chained by the ring is a silent internal-commit sync.
+  It reads and retains only the new mover bytes, never the unused before
+  bodies. Required replacement backing must still succeed before the baseline
+  advances; a fault in unused old backing cannot refuse the silent sync.
 - A mover whose re-read digest disagrees with the observed leaf is a mid-cycle
   race: the cycle emits nothing and holds its baseline; the racing write's event
   re-fires detection.
@@ -907,6 +919,13 @@ member's bytes per external batch — measured ~1/s under foreign writes.
   snapshot digest equals its leaf keeps the snapshot's bytes, any other member
   is re-read and verified against its leaf, and a snapshot member the memo
   lacks is dropped. The baseline root is the observed root.
+  The snapshot prepares the baseline map and any host retention outside the
+  flock and ring-state lock. An unchanged snapshot is adopted by moving that
+  prepared map; only mismatching/new members require replacement preparation
+  under the flock. Snapshot retention is tied to the watcher's provider; a
+  snapshot made for another provider must be rebound from verified selected
+  bytes before adoption. This compatibility route may do additional work under
+  the flock, so the workspace driver captures with its configured provider.
 - Priming waits for the flock, holding its snapshot, for at most
   `PRIME_FLOCK_BUDGET` (3 s: with the 2 s door cookie budget it leaves half of
   a client's 10 s deadline for the snapshot and the observation). Ordinary and
@@ -921,7 +940,10 @@ member's bytes per external batch — measured ~1/s under foreign writes.
   re-read that disagrees with its leaf falls back to the full snapshot under
   the flock.
 - The ring holds no private fold memo, and a plain mutex keeps the
-  single-flight gate.
+  single-flight gate. A poisoned gate is recovered like the ring-state mutex:
+  poison records a previous unwind, not a currently running cycle. An unwind
+  after publication cannot permanently disable later detection or lose the
+  already recorded frame.
 - Non-UTF-8-**named** members stay baseline-invisible as the snapshot kept
   them (their leaves still fold; a `wire::Path` cannot spell them); non-UTF-8
   **content** classifies normally.

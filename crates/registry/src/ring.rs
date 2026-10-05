@@ -69,6 +69,7 @@ pub struct WorkspaceRing {
     /// (§6.7): the SHARED registry memo is the one currency instrument on
     /// the watch plane too (card run-observation-unification).
     cycle_gate: Mutex<()>,
+    retention: Option<Arc<dyn model::bytes::ByteRetention>>,
     /// Live subscriptions — drives detection and reaper exemption.
     subscribers: AtomicUsize,
     /// How long priming waits for the flock: [`PRIME_FLOCK_BUDGET`]; tests
@@ -127,14 +128,36 @@ impl WorkspaceRing {
     /// Fresh epoch for `root`: empty ring, unprimed watcher, no subscribers.
     #[must_use]
     pub fn new(root: &fs::WorkspaceRoot) -> Self {
+        Self::new_with_retention(root, None)
+    }
+
+    /// Fresh epoch whose baseline versions use the host's retention provider.
+    /// The host still owns backing placement, load sizing and substrate charges.
+    #[must_use]
+    pub fn with_retention(
+        root: &fs::WorkspaceRoot,
+        retention: Arc<dyn model::bytes::ByteRetention>,
+    ) -> Self {
+        Self::new_with_retention(root, Some(retention))
+    }
+
+    fn new_with_retention(
+        root: &fs::WorkspaceRoot,
+        retention: Option<Arc<dyn model::bytes::ByteRetention>>,
+    ) -> Self {
+        let watch = retention.as_ref().map_or_else(
+            || WatchState::new(root),
+            |retention| WatchState::with_retention(root, retention.clone()),
+        );
         WorkspaceRing {
             state: Mutex::new(RingState {
                 ring: RootRing::new(),
-                watch: WatchState::new(root),
+                watch,
                 last_detect: None,
                 last_floor: None,
             }),
             cycle_gate: Mutex::new(()),
+            retention,
             subscribers: AtomicUsize::new(0),
             prime_budget: PRIME_FLOCK_BUDGET,
             #[cfg(test)]
@@ -994,3 +1017,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod retention_tests;
