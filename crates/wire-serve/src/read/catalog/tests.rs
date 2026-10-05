@@ -10,6 +10,7 @@ enum Fault {
     WrongVersion,
     Read,
     InvalidBacking,
+    Document,
 }
 #[derive(Debug)]
 struct Source<'a> {
@@ -45,13 +46,14 @@ impl<'a> Source<'a> {
                     "backing identity mismatch",
                 ));
             }
-            Fault::None => path,
+            Fault::None | Fault::Document => path,
         };
         Ok(self.eager.pin(path)?.map(|inner| {
             self.live.set(self.live.get() + 1);
             Box::new(Lease {
                 inner,
                 live: self.live.clone(),
+                document_fault: matches!(self.fault.get(), Fault::Document),
             }) as Box<dyn DocumentLease>
         }))
     }
@@ -60,9 +62,13 @@ impl<'a> Source<'a> {
 struct Lease<'a> {
     inner: Box<dyn DocumentLease + 'a>,
     live: Rc<Cell<usize>>,
+    document_fault: bool,
 }
 impl DocumentLease for Lease<'_> {
     fn document(&self) -> io::Result<&model::Document> {
+        if self.document_fault {
+            return Err(io::Error::other("retained document unavailable"));
+        }
         self.inner.document()
     }
 }
@@ -173,6 +179,7 @@ fn named_catalog_faults_never_fall_through_to_a_live_file() {
         Fault::WrongVersion,
         Fault::Read,
         Fault::InvalidBacking,
+        Fault::Document,
     ] {
         source.fault.set(fault);
         let error = with_document(&root, &source, &BTreeMap::new(), &path, |doc| {
