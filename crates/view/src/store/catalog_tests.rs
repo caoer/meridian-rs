@@ -124,14 +124,28 @@ fn catalog_late_source_fault_rolls_back_flushed_rows_and_pin() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = SqlStore::open(&tests::tmp_store(&dir)).unwrap();
     tests::sync_ambient(&mut store, &old, "b3b:old");
-    let raw = format!("# Large\n\n{}\n", "x".repeat(33 * 1024 * 1024));
+    let raw = format!(
+        "# Large\n\n[[flush-boundary]]\n\n{}\n",
+        "x".repeat(33 * 1024 * 1024)
+    );
     let docs = tests::corpus(&[("a.md", &raw), ("z.md", "# Last\n\nlast body\n")]);
     let source = Source::new(&docs);
     source.fault.set(Fault::Read);
     let roots = RootedCatalog::ambient(&source);
+    let flushes = Cell::new(0);
+    let exclusion = |target: &str| {
+        assert_eq!(target, "flush-boundary");
+        assert_eq!(
+            source.live.get(),
+            0,
+            "SQL flush must start after the body lease ends"
+        );
+        flushes.set(flushes.get() + 1);
+        None
+    };
     super::MAX_STAGED_BODY_BYTES.with(|peak| peak.set(0));
     let error = store
-        .sync_catalog(&source, &roots, None, None, "b3b:new", None)
+        .sync_catalog(&source, &roots, None, Some(&exclusion), "b3b:new", None)
         .unwrap_err();
     assert!(matches!(error, ViewError::Io(_)), "{error}");
     assert!(error.to_string().contains("required backing unavailable"));
@@ -143,6 +157,11 @@ fn catalog_late_source_fault_rolls_back_flushed_rows_and_pin() {
     assert!(
         super::MAX_STAGED_BODY_BYTES.with(Cell::get) >= 33 * 1024 * 1024,
         "failure must follow a full staged batch"
+    );
+    assert_eq!(
+        flushes.get(),
+        1,
+        "the probe must observe the flushed big member"
     );
     assert_eq!(source.live.get(), 0);
     assert_eq!(source.max_live.get(), 1);
@@ -159,7 +178,7 @@ fn catalog_late_source_fault_rolls_back_flushed_rows_and_pin() {
     tests::assert_surface_matches_fresh(&store, &old);
     source.fault.set(Fault::None);
     let counts = store
-        .sync_catalog(&source, &roots, None, None, "b3b:new", None)
+        .sync_catalog(&source, &roots, None, Some(&exclusion), "b3b:new", None)
         .unwrap()
         .unwrap();
     assert_eq!((counts.generation, counts.added, counts.removed), (2, 2, 1));

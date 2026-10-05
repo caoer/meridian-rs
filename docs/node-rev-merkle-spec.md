@@ -1056,6 +1056,9 @@ bodies, tombstones and pin. A fingerprint-domain change retains the existing
 delete-and-rebuild policy. The unchanged fast path does not hydrate bodies; when no rooted row needs
 re-resolution, it does not build the eager index either. The existing `sync` entry uses the eager adapter; daemon generation
 publication and the other body consumers are not yet migrated by this seam.
+SQL scan pins do not promote read recency. Tests observe lease release from
+inside the batch flush and hold that recency contract by the eviction order
+of hot members, not merely by their eventual cold state.
 These catalogs consume one immutable generation. They do not read the watcher
 memo's root and leaves separately; making that observation atomic remains a
 watcher activation requirement.
