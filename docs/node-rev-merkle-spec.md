@@ -538,6 +538,21 @@ modules and native SQL allocations are separate process costs, so fitting
 this budget alone cannot prove a process RSS limit. SQL retains its own
 memory policy.
 
+The allocation census is split at ownership boundaries. `model::allocation`
+counts raw buffers (including their shared-owner allocation) separately from
+recursively owned tree data; both use capacities, not initialized lengths.
+The root `Document` object is inline in its owner's allocation and is charged
+there. `SharedBytes::allocation_id` identifies a live raw allocation so hosts
+can count a document/watcher alias once. `RawStore::heap_bytes` covers its
+required-backing index capacity, weak-held record/segment allocations, live
+segment paths and shared directory allocation. It reports Rust heap storage,
+separately from `RawStoreStats`'s disk/logical census. A dead weak entry still
+owns its control allocation until pruning releases it. These censuses are
+quiescent ownership measurements, not synchronization with concurrent callers;
+their temporary census work and enclosing slot/pin/generation containers need
+their own reservation/charge. The controller must combine these measurements
+with the other substrate owners before enforcing the shared process budget.
+
 At admission and after releasing operation pins, shed the least recently
 used unpinned member versions across all workspaces until the charged total
 fits. The periodic reaper is a backstop, not the only enforcement point.

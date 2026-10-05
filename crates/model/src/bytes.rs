@@ -37,6 +37,30 @@ enum Content {
 }
 
 impl SharedBytes {
+    /// Identity of this shared-owner allocation, valid only while an owner
+    /// retains it. Opaque: never dereference or persist this value.
+    #[must_use]
+    pub fn allocation_id(&self) -> usize {
+        match &self.0 {
+            Content::Text(text) => Arc::as_ptr(text) as usize,
+            Content::Binary(bytes) => Arc::as_ptr(bytes) as usize,
+        }
+    }
+
+    /// Requested heap bytes of the shared allocation and its payload capacity.
+    /// Count equal live `allocation_id`s once, not once per clone.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        match &self.0 {
+            Content::Text(text) => {
+                crate::allocation::arc_bytes::<String>().saturating_add(text.capacity())
+            }
+            Content::Binary(bytes) => {
+                crate::allocation::arc_bytes::<Vec<u8>>().saturating_add(bytes.capacity())
+            }
+        }
+    }
+
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         match &self.0 {

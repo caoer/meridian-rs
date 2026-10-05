@@ -1,7 +1,7 @@
 //! Required raw-version backing (merkle §6.4), independent of optional snapshots.
 //! Handles retain exact versions without retaining their raw bodies in memory.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashSet, hash_map::RandomState};
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, FileExt, MetadataExt, OpenOptionsExt};
@@ -76,7 +76,7 @@ struct Record {
 
 #[derive(Debug, Default)]
 struct Index {
-    records: HashMap<[u8; 32], Weak<Record>>,
+    records: hashbrown::HashMap<[u8; 32], Weak<Record>, RandomState>,
     segments: Vec<Weak<Segment>>,
 }
 
@@ -122,6 +122,55 @@ pub struct RawStoreStats {
 }
 
 impl RawStore {
+    /// Quiescent Rust heap census of required-backing bookkeeping. This
+    /// excludes the inline `RawStore`, payload on disk, native file/lock
+    /// resources, and the temporary work of taking the census.
+    ///
+    /// # Errors
+    /// A bookkeeping lock is poisoned or census scratch allocation fails.
+    pub fn heap_bytes(&self) -> io::Result<usize> {
+        let (mut bytes, segments) = {
+            let index = lock(&self.index)?;
+            // Weak references keep the entire Arc allocation, even after
+            // its value and separately owned heap fields have been dropped.
+            let bytes = index
+                .records
+                .allocation_size()
+                .saturating_add(
+                    index
+                        .records
+                        .len()
+                        .saturating_mul(model::allocation::arc_bytes::<Record>()),
+                )
+                .saturating_add(
+                    index
+                        .segments
+                        .capacity()
+                        .saturating_mul(size_of::<Weak<Segment>>()),
+                )
+                .saturating_add(
+                    index
+                        .segments
+                        .len()
+                        .saturating_mul(model::allocation::arc_bytes::<Segment>()),
+                )
+                .saturating_add(model::allocation::arc_bytes::<Directory>())
+                .saturating_add(self.directory.0.capacity());
+            let mut segments = Vec::new();
+            segments
+                .try_reserve_exact(index.segments.len())
+                .map_err(io::Error::other)?;
+            segments.extend(index.segments.iter().filter_map(Weak::upgrade));
+            (bytes, segments)
+        };
+        // A reader may have released the last other owner while we sampled.
+        // Drop these leases (and any resulting file cleanup) outside index.
+        for segment in &segments {
+            bytes = bytes.saturating_add(segment.path.capacity());
+        }
+        Ok(bytes)
+    }
+
     /// Create a private store below `parent`.
     ///
     /// # Errors
@@ -607,6 +656,26 @@ mod tests {
             .iter()
             .map(|p| fs::metadata(p).unwrap().len())
             .sum()
+    }
+
+    #[test]
+    fn heap_census_keeps_reader_paths_and_dead_arc_allocations_distinct() {
+        let home = tempfile::tempdir().unwrap();
+        let store = RawStore::new(home.path()).unwrap();
+        let handle = store.retain(b"retained reader").unwrap();
+        let reader = lock(&handle.0.location).unwrap().clone();
+        let path_bytes = reader.segment.path.capacity();
+        store.compact().unwrap();
+        assert_eq!(lock(&store.index).unwrap().segments.len(), 2);
+        let before = store.heap_bytes().unwrap();
+        drop(reader);
+        assert_eq!(
+            lock(&store.index).unwrap().segments.len(),
+            2,
+            "the dead weak entry still owns its Arc allocation"
+        );
+        assert_eq!(before - store.heap_bytes().unwrap(), path_bytes);
+        assert_eq!(handle.read().unwrap(), b"retained reader");
     }
 
     #[test]
