@@ -83,7 +83,9 @@ fn documents() {
     );
     assert_eq!(byte_charge, raw_freed);
 
-    let binary = model::bytes::SharedBytes::from(vec![0xff; 8193]);
+    let mut binary = Vec::with_capacity(16384);
+    binary.extend_from_slice(b"\xff\x00\xfe");
+    let binary = model::bytes::SharedBytes::from(binary);
     let charged = binary.heap_bytes();
     let observed = freed(binary);
     println!("binary charged={charged} freed={observed}");

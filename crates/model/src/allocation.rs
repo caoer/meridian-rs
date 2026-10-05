@@ -145,7 +145,7 @@ mod tests {
         let before = document(&doc);
         let capacity = doc.root.children.capacity();
         doc.root.children.reserve_exact(31);
-        let added = (doc.root.children.capacity() - capacity) * size_of::<crate::Node>();
+        let added = (doc.root.children.capacity() - capacity) * size_of::<Node>();
         assert!(added > 0);
         assert_eq!(document(&doc).tree - before.tree, added);
     }
