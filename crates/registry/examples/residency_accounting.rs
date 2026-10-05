@@ -50,6 +50,15 @@ fn freed<T>(value: T) -> usize {
 }
 
 fn documents() {
+    #[repr(align(64))]
+    struct Aligned(u8);
+    let aligned = Arc::new(Aligned(1));
+    assert_eq!(aligned.0, 1);
+    let charged = model::allocation::arc_bytes::<Aligned>();
+    let observed = freed(aligned);
+    println!("aligned Arc charged={charged} freed={observed}");
+    assert_eq!(charged, observed);
+
     let raw = "---\naliases: [first, second]\n---\n# Heading\n\n> [!note]- Callout\n\n- [ ] task\n\n[[target#Heading|alias]] ![[embed#part]] [link](dest) #tag\n\n```rust\ncode\n```\n\npara ^anchor\n\n| a | b |\n| - | - |\n| c | d |\n<!-- comment --> `inline`\n";
     let mut owned = String::with_capacity(8192);
     owned.push_str(raw);
@@ -83,6 +92,12 @@ fn documents() {
 
 fn backing() {
     let home = tempfile::tempdir().unwrap();
+    let empty = registry::raw_store::RawStore::new(home.path()).unwrap();
+    let charged = empty.heap_bytes().unwrap();
+    let observed = freed(empty);
+    println!("empty backing charged={charged} freed={observed}");
+    assert_eq!(charged, observed);
+
     let store = registry::raw_store::RawStore::new(home.path()).unwrap();
     let first = store.retain(b"first").unwrap();
     let same = first.clone();
@@ -94,6 +109,17 @@ fn backing() {
     assert_eq!(
         charged, observed,
         "backing census must include weak-held storage"
+    );
+
+    let compacted = registry::raw_store::RawStore::new(home.path()).unwrap();
+    drop(compacted.retain(b"removed before compaction").unwrap());
+    compacted.compact().unwrap();
+    let charged = compacted.heap_bytes().unwrap();
+    let observed = freed(compacted);
+    println!("empty compacted backing charged={charged} freed={observed}");
+    assert_eq!(
+        charged, observed,
+        "retained index/vector capacity remains charged"
     );
 }
 

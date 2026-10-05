@@ -79,6 +79,9 @@ transport = { workspace = true }
 # outside `model`'s public surface). Both already in the graph and lockfile.
 config = { workspace = true }
 blake3 = "1"
+# The required-backing index exposes its actual allocated table size for the
+# residency census. Keep std's RandomState; do not change the hashing policy.
+hashbrown = { version = "0.16.1", default-features = false }
 # Optional, and ONLY for the `test-support` fixture module (see [features]).
 # Off by default, so this is not a production edge.
 tempfile = { version = "3", optional = true }

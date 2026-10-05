@@ -2888,6 +2888,7 @@ dependencies = [
  "config",
  "effects",
  "fs",
+ "hashbrown 0.16.1",
  "lock",
  "model",
  "notify",

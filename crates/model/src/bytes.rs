@@ -51,7 +51,14 @@ impl SharedBytes {
     /// Count equal live `allocation_id`s once, not once per clone.
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
-        0 // red-first accounting scaffold
+        match &self.0 {
+            Content::Text(text) => {
+                crate::allocation::arc_bytes::<String>().saturating_add(text.capacity())
+            }
+            Content::Binary(bytes) => {
+                crate::allocation::arc_bytes::<Vec<u8>>().saturating_add(bytes.capacity())
+            }
+        }
     }
 
     #[must_use]
