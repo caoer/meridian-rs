@@ -19,6 +19,7 @@ use std::ops::Range;
 
 use addr::{Addr, AddrError, MountName, MountSet};
 
+pub mod allocation;
 pub mod bytes;
 pub mod delta;
 pub mod fingerprint;

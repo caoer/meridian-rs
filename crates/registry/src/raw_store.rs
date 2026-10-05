@@ -122,6 +122,16 @@ pub struct RawStoreStats {
 }
 
 impl RawStore {
+    /// Quiescent Rust heap census of required-backing bookkeeping. This
+    /// excludes the inline `RawStore`, payload on disk, native file/lock
+    /// resources, and the temporary work of taking the census.
+    ///
+    /// # Errors
+    /// A bookkeeping lock is poisoned.
+    pub fn heap_bytes(&self) -> io::Result<usize> {
+        Ok(0) // red-first accounting scaffold
+    }
+
     /// Create a private store below `parent`.
     ///
     /// # Errors
