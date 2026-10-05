@@ -926,6 +926,11 @@ member's bytes per external batch — measured ~1/s under foreign writes.
   snapshot made for another provider must be rebound from verified selected
   bytes before adoption. This compatibility route may do additional work under
   the flock, so the workspace driver captures with its configured provider.
+  The unchanged fast path requires equal membership length and equal keys and
+  digests. Its tests isolate a content-only rewrite and a last-key membership
+  change between capture and lock, then check the rows subsequently emitted.
+  CI runs the default priming example with a deterministic allocation limit for
+  unchanged and one-mover captures; it does not gate noisy wall-clock timings.
 - Priming waits for the flock, holding its snapshot, for at most
   `PRIME_FLOCK_BUDGET` (3 s: with the 2 s door cookie budget it leaves half of
   a client's 10 s deadline for the snapshot and the observation). Ordinary and

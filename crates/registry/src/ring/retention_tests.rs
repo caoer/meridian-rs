@@ -167,3 +167,88 @@ fn retained_priming_reconciles_changes_after_its_unlocked_capture() {
     assert_eq!(frames[0].delta.root_before, observed);
     assert_eq!(frames[0].delta.files.len(), 3);
 }
+
+fn frame_rows(frame: &DeltaFrame) -> Vec<(String, wire::FileChange)> {
+    let mut rows: Vec<_> = frame
+        .delta
+        .files
+        .iter()
+        .map(|file| (file.path.0.clone(), file.change))
+        .collect();
+    rows.sort_by(|left, right| left.0.cmp(&right.0));
+    rows
+}
+
+#[test]
+fn capture_contract_content_only_rewrite_uses_the_locked_bytes() {
+    let (_dir, root, registry) = setup();
+    let ring = WorkspaceRing::new(&root);
+    let (announce, announced) = std::sync::mpsc::channel();
+    let (resume, resumed) = std::sync::mpsc::channel();
+    *ring.pause_after_prime_snapshot.lock().unwrap() = Some((announce, resumed));
+    let (ack, seq) = std::thread::scope(|scope| {
+        let prime = scope.spawn(|| ring.prime(&root, &registry));
+        announced.recv_timeout(Duration::from_secs(10)).unwrap();
+        std::fs::write(root.0.join("a.md"), b"# Changed after capture\n").unwrap();
+        resume.send(()).unwrap();
+        prime.join().unwrap().unwrap()
+    });
+    assert_eq!(ack.0, fs::domain_snapshot(&root).unwrap().1.0);
+    assert_eq!(seq, 0);
+    std::fs::write(root.0.join("a.md"), b"# A\n").unwrap();
+    assert!(ring.cycle(&root, &registry, true).unwrap());
+    let frames = ring.frames_after(0);
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].delta.root_before, ack);
+    assert_eq!(
+        frame_rows(&frames[0]),
+        vec![("a.md".to_owned(), wire::FileChange::Modified)],
+        "captured content cannot masquerade as the locked baseline"
+    );
+}
+
+fn tail_capture_contract(add: bool) {
+    let (_dir, root, registry) = setup();
+    let ring = WorkspaceRing::new(&root);
+    let path = if add { "z.md" } else { "b.md" };
+    let (announce, announced) = std::sync::mpsc::channel();
+    let (resume, resumed) = std::sync::mpsc::channel();
+    *ring.pause_after_prime_snapshot.lock().unwrap() = Some((announce, resumed));
+    let (ack, seq) = std::thread::scope(|scope| {
+        let prime = scope.spawn(|| ring.prime(&root, &registry));
+        announced.recv_timeout(Duration::from_secs(10)).unwrap();
+        if add {
+            std::fs::write(root.0.join(path), b"# Last\n").unwrap();
+        } else {
+            std::fs::remove_file(root.0.join(path)).unwrap();
+        }
+        resume.send(()).unwrap();
+        prime.join().unwrap().unwrap()
+    });
+    assert_eq!(ack.0, fs::domain_snapshot(&root).unwrap().1.0);
+    assert_eq!(seq, 0);
+    let expected = if add {
+        std::fs::remove_file(root.0.join(path)).unwrap();
+        wire::FileChange::Deleted
+    } else {
+        std::fs::write(root.0.join(path), b"# B\n").unwrap();
+        wire::FileChange::Created
+    };
+    assert!(ring.cycle(&root, &registry, true).unwrap());
+    let frames = ring.frames_after(0);
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].delta.root_before, ack);
+    assert_eq!(
+        frame_rows(&frames[0]),
+        vec![(path.to_owned(), expected)],
+        "last-sorted member must reflect the locked membership"
+    );
+}
+#[test]
+fn capture_contract_tail_addition_is_not_lost() {
+    tail_capture_contract(true);
+}
+#[test]
+fn capture_contract_tail_deletion_is_not_retained() {
+    tail_capture_contract(false);
+}

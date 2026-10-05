@@ -240,6 +240,11 @@ steps:
           exit "$rc"
         fi
         test "$lines" -gt 0
+      # Deterministic priming-cost gate, not a wall-clock threshold. The small
+      # unchanged and one-mover fixtures catch an eager map rebuild under the
+      # flock while reusing the test lane's compiled dependencies.
+      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci cargo run -q --locked -p wire-serve --example watcher_priming -- 256 256 1 100
+      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci cargo run -q --locked -p wire-serve --example watcher_priming -- 256 256 1 100 1
       # Hit rates in the log make cache regressions diagnosable; the sccache
       # server is ci's, so ask it as ci. Stats must not gate the suite's
       # verdict, but their absence must be loud — a wedged shard degrades to
