@@ -127,7 +127,7 @@ impl RawStore {
     /// resources, and the temporary work of taking the census.
     ///
     /// # Errors
-    /// A bookkeeping lock is poisoned.
+    /// A bookkeeping lock is poisoned or census scratch allocation fails.
     pub fn heap_bytes(&self) -> io::Result<usize> {
         let (mut bytes, segments) = {
             let index = lock(&self.index)?;
@@ -156,7 +156,11 @@ impl RawStore {
                 )
                 .saturating_add(model::allocation::arc_bytes::<Directory>())
                 .saturating_add(self.directory.0.capacity());
-            let segments: Vec<_> = index.segments.iter().filter_map(Weak::upgrade).collect();
+            let mut segments = Vec::new();
+            segments
+                .try_reserve_exact(index.segments.len())
+                .map_err(io::Error::other)?;
+            segments.extend(index.segments.iter().filter_map(Weak::upgrade));
             (bytes, segments)
         };
         // A reader may have released the last other owner while we sampled.
