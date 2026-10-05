@@ -2,7 +2,7 @@
 //! The owner supplies I/O; model supplies no path lookup, cache or registry.
 
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 /// The identity selected by a serving descriptor or watcher baseline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +36,40 @@ enum Content {
     Binary(Arc<Vec<u8>>),
 }
 
+/// A non-owning view of the same raw allocation. This keeps its Arc storage,
+/// but not its payload, alive; discard dead views when collecting charges.
+#[derive(Debug, Clone)]
+pub struct WeakBytes(WeakContent);
+
+#[derive(Debug, Clone)]
+enum WeakContent {
+    Text(Weak<String>),
+    Binary(Weak<Vec<u8>>),
+}
+
+impl WeakBytes {
+    /// Recover the existing payload only while a strong owner still has it.
+    #[must_use]
+    pub fn upgrade(&self) -> Option<SharedBytes> {
+        match &self.0 {
+            WeakContent::Text(text) => text.upgrade().map(|text| SharedBytes(Content::Text(text))),
+            WeakContent::Binary(bytes) => bytes
+                .upgrade()
+                .map(|bytes| SharedBytes(Content::Binary(bytes))),
+        }
+    }
+}
+
 impl SharedBytes {
+    /// Track escaped raw owners without preventing the last payload release.
+    #[must_use]
+    pub fn downgrade(&self) -> WeakBytes {
+        WeakBytes(match &self.0 {
+            Content::Text(text) => WeakContent::Text(Arc::downgrade(text)),
+            Content::Binary(bytes) => WeakContent::Binary(Arc::downgrade(bytes)),
+        })
+    }
+
     /// Identity of this shared-owner allocation, valid only while an owner
     /// retains it. Opaque: never dereference or persist this value.
     #[must_use]
@@ -129,6 +162,21 @@ impl ByteSource for SharedBytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weak_views_reuse_the_owner_without_retaining_its_payload() {
+        for bytes in [b"shared".to_vec(), vec![0xff, 0xfe], Vec::new()] {
+            let body = SharedBytes::from(bytes);
+            let weak = body.downgrade();
+            let recovered = weak.upgrade().unwrap();
+            assert_eq!(recovered.allocation_id(), body.allocation_id());
+            assert_eq!(recovered.heap_bytes(), body.heap_bytes());
+            drop(body);
+            assert!(weak.upgrade().is_some());
+            drop(recovered);
+            assert!(weak.upgrade().is_none());
+        }
+    }
 
     #[test]
     fn document_clones_share_the_immutable_raw_allocation() {

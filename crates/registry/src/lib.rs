@@ -39,6 +39,7 @@ mod parsed_cache;
 mod protocol;
 pub mod raw_store;
 mod registry;
+pub mod residency;
 pub mod ring;
 mod run_modules;
 mod run_op;
