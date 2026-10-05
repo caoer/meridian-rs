@@ -1505,7 +1505,7 @@ impl SqlStore {
 
             for path in reproject {
                 with_document(docs, path, |doc| {
-                    collect_doc(path, doc, index, &mut rows, corpus, mounts)
+                    collect_doc(path, doc, index, &mut rows, corpus, mounts);
                 })?;
                 // The lease ends inside with_document. Projected rows own
                 // their payload before flushing or admitting the next member.

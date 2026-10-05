@@ -2,7 +2,7 @@ use super::*;
 use model::catalog::{DocumentCatalog, RootedCatalog};
 use view::store::SqlStore;
 
-fn docs(files: &[(&str, &str)]) -> model::Docs {
+fn docs(files: &[(&str, &str)]) -> Docs {
     files
         .iter()
         .map(|(path, raw)| {
