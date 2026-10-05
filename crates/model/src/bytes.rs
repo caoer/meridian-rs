@@ -24,6 +24,37 @@ pub trait ByteSource: std::fmt::Debug + Send + Sync {
     fn read(&self) -> io::Result<SharedBytes>;
 }
 
+/// A borrowable raw body together with its host's ownership/accounting lease.
+pub trait ByteLease: std::fmt::Debug + Send + Sync {
+    fn bytes(&self) -> &[u8];
+}
+
+/// A fixed baseline version, independent of the current workspace path.
+pub trait RetainedBytes: std::fmt::Debug + Send + Sync {
+    fn identity(&self) -> ByteIdentity;
+
+    /// Pin the selected bytes for the entire returned lease.
+    ///
+    /// # Errors
+    /// Required backing or admission fails; neither means absent membership.
+    fn pin(&self) -> io::Result<Box<dyn ByteLease>>;
+}
+
+/// Host-supplied retention for exact watcher versions; model performs no I/O.
+pub trait ByteRetention: std::fmt::Debug + Send + Sync {
+    /// Retain these exact bytes independently of all live-source changes.
+    ///
+    /// # Errors
+    /// Backing cannot be retained. No baseline transition may be published.
+    fn retain(&self, bytes: Vec<u8>) -> io::Result<Arc<dyn RetainedBytes>>;
+}
+
+impl ByteLease for SharedBytes {
+    fn bytes(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
 /// One immutable payload, shared by UTF-8 documents and byte-level consumers.
 /// Both variants retain the original owned buffer, including its capacity.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -77,6 +77,19 @@ impl WatchState {
         }
     }
 
+    /// An unprimed watcher with host-owned retained baseline versions.
+    #[must_use]
+    pub fn with_retention(
+        root: &fs::WorkspaceRoot,
+        retention: std::sync::Arc<dyn model::bytes::ByteRetention>,
+    ) -> Self {
+        Self {
+            watcher: fs::Watcher::with_retention(root.clone(), retention),
+            root: None,
+            scope: None,
+        }
+    }
+
     /// The baseline root this watcher last rebased on (`None`: unprimed).
     ///
     /// Lets a driver decide whether a reconcile has anything to do before
@@ -1007,3 +1020,6 @@ mod tests {
         assert_eq!(frame.delta.root_after, committed);
     }
 }
+
+#[cfg(test)]
+mod retained_tests;

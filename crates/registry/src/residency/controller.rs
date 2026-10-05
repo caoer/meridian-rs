@@ -101,6 +101,8 @@ pub enum AdmissionError {
     Busy,
     /// This member is being retired; retry the same retained version.
     Retiring,
+    /// A failed load is completing; retry the same retained version.
+    Settling,
     Exhausted,
 }
 
@@ -109,6 +111,7 @@ impl fmt::Display for AdmissionError {
         f.write_str(match self {
             Self::Busy => "residency allowance is occupied",
             Self::Retiring => "retained member is being retired; retry the same version",
+            Self::Settling => "retained load is completing; retry the same version",
             Self::Exhausted => "residency reservation identity or local revision exhausted",
         })
     }

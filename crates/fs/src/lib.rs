@@ -4455,6 +4455,7 @@ type BaselineEntry = (Vec<u8>, [u8; 32]);
 pub struct Watcher {
     _root: WorkspaceRoot,
     baseline: Option<BTreeMap<String, BaselineEntry>>,
+    retention: Option<std::sync::Arc<dyn model::bytes::ByteRetention>>,
 }
 
 /// One detection cycle's byte-level classification: paths gone from the
@@ -4500,6 +4501,19 @@ impl Watcher {
         Watcher {
             _root: root,
             baseline: None,
+            retention: None,
+        }
+    }
+
+    /// An unprimed watcher whose baseline versions use the supplied backing.
+    #[must_use]
+    pub fn with_retention(
+        root: WorkspaceRoot,
+        retention: std::sync::Arc<dyn model::bytes::ByteRetention>,
+    ) -> Self {
+        Self {
+            retention: Some(retention),
+            ..Self::new(root)
         }
     }
 
