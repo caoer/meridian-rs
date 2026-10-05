@@ -1,0 +1,378 @@
+use super::*;
+
+struct Call {
+    controller: Controller,
+    key: Key,
+    resident: Resident,
+    reservation: Option<Reservation>,
+    finished: bool,
+}
+
+impl Member {
+    #[must_use]
+    pub fn identity(&self) -> ByteIdentity {
+        ByteIdentity {
+            digest: self.key.0,
+            len: self.key.1,
+        }
+    }
+
+    #[must_use]
+    pub fn phase(&self) -> Phase {
+        let state = lock(&self.controller.0.ledger);
+        state.rows[&self.key].resident.snapshot().phase
+    }
+
+    /// Pin this exact version. `peak` bounds source bytes, parser staging and
+    /// flight/error storage for one load, not merely the retained final tree.
+    /// Shared-flight callers share one reservation. No admission wait is used.
+    ///
+    /// # Errors
+    /// Occupied allowance, backing/identity failure, exhausted identifiers or
+    /// an observed body larger than the declared peak. Underestimates are
+    /// reported and shed; they are not evidence of a bounded load peak.
+    ///
+    /// # Panics
+    /// Source panics propagate; the call guard retains the reservation through
+    /// local unwind completion and restores the controller's call bookkeeping.
+    pub fn pin(&self, access: Access, peak: usize) -> Result<Pin, Error> {
+        let mut call = self.begin(access, peak).map_err(Error::Admission)?;
+        match call.resident.pin(access) {
+            Ok(body) => {
+                let snapshot = call.resident.snapshot();
+                let observed = snapshot
+                    .raw_bytes
+                    .saturating_add(snapshot.tree_bytes)
+                    .saturating_add(snapshot.body_bytes);
+                let reserved = call.reservation.as_ref().map(Reservation::bytes);
+                if let Some(reserved) = reserved
+                    && observed > reserved
+                {
+                    {
+                        let mut state = lock(&self.controller.0.ledger);
+                        state.peak_shortfall = state.peak_shortfall.max(observed - reserved);
+                        state.rows.get_mut(&self.key).unwrap().force_shed = true;
+                    }
+                    // Record the real body before releasing the local pin.
+                    call.finish(false);
+                    drop(body);
+                    self.controller.trim();
+                    return Err(Error::PeakExceeded { reserved, observed });
+                }
+                let member = self.clone();
+                call.finish(true);
+                Ok(Pin {
+                    body: Some(body),
+                    member,
+                })
+            }
+            Err(source) => {
+                let failure = Failure {
+                    source,
+                    _reservation: call.reservation.clone(),
+                };
+                call.finish(false);
+                Err(Error::Load(failure))
+            }
+        }
+    }
+
+    fn begin(&self, access: Access, peak: usize) -> Result<Call, AdmissionError> {
+        let mut spare = None;
+        loop {
+            let mut state = lock(&self.controller.0.ledger);
+            let row = &state.rows[&self.key];
+            if row.retiring {
+                return Err(AdmissionError::Busy);
+            }
+            let local = row.resident.snapshot();
+            let needs_wave = row.body == 0 && row.calls == 0;
+            if needs_wave && spare.is_none() {
+                let revision = local.revision;
+                drop(state);
+                spare = Some(self.controller.admit(Some(self.key), peak, revision)?);
+                continue;
+            }
+            // A completed failed local flight may be cold before its owner has
+            // returned through this wrapper. Do not start a second flight on
+            // that first wave's still-live reservation.
+            if row.calls != 0
+                && let Some(id) = row.wave
+            {
+                if local.phase == Phase::Cold && local.revision != state.permits[&id].revision {
+                    return Err(AdmissionError::Busy);
+                }
+            }
+            let resident = row.resident.clone();
+            let existing_wave = row.wave;
+            let raw = row
+                .raw
+                .and_then(|id| state.raw.get(&id))
+                .filter(|raw| raw.key == self.key)
+                .and_then(|raw| raw.weak.upgrade());
+            if needs_wave {
+                // The global raw ledger, rather than a dormant slot weak,
+                // keeps any escaped raw owner available for reuse.
+                lock(&resident.0.state).last_raw = raw.as_ref().map(SharedBytes::downgrade);
+            }
+            let reservation = if needs_wave {
+                let reservation = spare.take().unwrap();
+                state.permits.get_mut(&reservation.id).unwrap().activated = true;
+                state.rows.get_mut(&self.key).unwrap().wave = Some(reservation.id);
+                Some(reservation)
+            } else if let Some(id) = existing_wave {
+                state.permits.get_mut(&id).unwrap().references += 1;
+                Some(Reservation {
+                    controller: self.controller.clone(),
+                    id,
+                })
+            } else {
+                None
+            };
+            state.rows.get_mut(&self.key).unwrap().calls += 1;
+            state.link(self.key, access);
+            drop(state);
+            let call = Call {
+                controller: self.controller.clone(),
+                key: self.key,
+                resident,
+                reservation,
+                finished: false,
+            };
+            drop(spare); // any race-lost reservation releases outside the lock
+            return Ok(call);
+        }
+    }
+}
+
+impl Call {
+    fn finish(&mut self, pin: bool) {
+        let (snapshot, raw) = {
+            let snapshot = self.resident.snapshot();
+            let mut local = lock(&self.resident.0.state);
+            let raw = match &local.body {
+                super::super::StateBody::Hot(body) => Some(body.bytes.clone()),
+                _ => None,
+            };
+            if snapshot.phase == Phase::Cold {
+                local.last_raw = None;
+            }
+            (snapshot, raw)
+        };
+        let mut state = lock(&self.controller.0.ledger);
+        if let Some(raw) = raw {
+            if state.rows[&self.key].body == 0 {
+                let id = state.add_raw(self.key, &raw);
+                let row = state.rows.get_mut(&self.key).unwrap();
+                row.raw = Some(id);
+                row.body = snapshot.body_bytes.saturating_add(snapshot.tree_bytes);
+                state.body_bytes += snapshot.body_bytes as u128 + snapshot.tree_bytes as u128;
+            }
+        }
+        let row = state.rows.get_mut(&self.key).unwrap();
+        row.calls -= 1;
+        if pin {
+            row.pins += 1;
+        }
+        if row.calls == 0 {
+            row.wave = None;
+        }
+        if row.body == 0 && row.calls == 0 {
+            state.unlink(self.key);
+            if state.transient == Some(self.key) {
+                state.transient = None;
+            }
+        }
+        self.finished = true;
+    }
+}
+
+impl Drop for Call {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.finish(false);
+        }
+        // Reservation::drop will trim after removing the wave's last charge.
+        if self.reservation.is_none() {
+            self.controller.trim();
+        }
+    }
+}
+
+impl Clone for Member {
+    fn clone(&self) -> Self {
+        lock(&self.controller.0.ledger)
+            .rows
+            .get_mut(&self.key)
+            .unwrap()
+            .references += 1;
+        Self {
+            controller: self.controller.clone(),
+            key: self.key,
+        }
+    }
+}
+impl Drop for Member {
+    fn drop(&mut self) {
+        lock(&self.controller.0.ledger)
+            .rows
+            .get_mut(&self.key)
+            .unwrap()
+            .references -= 1;
+        self.controller.collect_unused(self.key);
+        self.controller.trim();
+    }
+}
+
+impl Pin {
+    /// Borrow under this pin. Retain `raw()` alongside any escaping raw clone;
+    /// a bare clone of Document.raw is not a managed accounting lease.
+    ///
+    /// # Errors
+    /// The retained member has verified invalid UTF-8 bytes.
+    pub fn document(&self) -> Result<&model::Document, fs::hydration::HydrationError> {
+        self.body.as_ref().unwrap().document()
+    }
+
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        self.body.as_ref().unwrap().bytes().as_bytes()
+    }
+
+    /// Retain raw bytes independently of the tree or member descriptor.
+    #[must_use]
+    pub fn raw(&self) -> RawPin {
+        let bytes = self.body.as_ref().unwrap().bytes().clone();
+        let id = bytes.allocation_id();
+        lock(&self.member.controller.0.ledger)
+            .raw
+            .get_mut(&id)
+            .unwrap()
+            .owners += 1;
+        RawPin {
+            bytes: Some(bytes),
+            controller: self.member.controller.clone(),
+            id,
+        }
+    }
+}
+impl Clone for Pin {
+    fn clone(&self) -> Self {
+        let member = self.member.clone();
+        let body = self.body.clone();
+        lock(&member.controller.0.ledger)
+            .rows
+            .get_mut(&member.key)
+            .unwrap()
+            .pins += 1;
+        Self { body, member }
+    }
+}
+impl Drop for Pin {
+    fn drop(&mut self) {
+        // BodyPin may be the final operation owner; release it before telling
+        // the ledger that eviction is possible, and outside its mutex.
+        drop(self.body.take());
+        lock(&self.member.controller.0.ledger)
+            .rows
+            .get_mut(&self.member.key)
+            .unwrap()
+            .pins -= 1;
+        self.member.controller.trim();
+    }
+}
+
+impl RawPin {
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        self.bytes.as_ref().unwrap().as_bytes()
+    }
+    #[must_use]
+    pub fn allocation_id(&self) -> usize {
+        self.id
+    }
+}
+impl Clone for RawPin {
+    fn clone(&self) -> Self {
+        let bytes = self.bytes.clone();
+        lock(&self.controller.0.ledger)
+            .raw
+            .get_mut(&self.id)
+            .unwrap()
+            .owners += 1;
+        Self {
+            bytes,
+            controller: self.controller.clone(),
+            id: self.id,
+        }
+    }
+}
+impl Drop for RawPin {
+    fn drop(&mut self) {
+        drop(self.bytes.take());
+        lock(&self.controller.0.ledger).release_raw(Some(self.id));
+        self.controller.trim();
+    }
+}
+
+impl Reservation {
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        lock(&self.controller.0.ledger).permits[&self.id].bytes
+    }
+}
+impl Clone for Reservation {
+    fn clone(&self) -> Self {
+        lock(&self.controller.0.ledger)
+            .permits
+            .get_mut(&self.id)
+            .unwrap()
+            .references += 1;
+        Self {
+            controller: self.controller.clone(),
+            id: self.id,
+        }
+    }
+}
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        let mut state = lock(&self.controller.0.ledger);
+        let permit = state.permits.get_mut(&self.id).unwrap();
+        permit.references -= 1;
+        if permit.references == 0 {
+            let permit = state.permits.remove(&self.id).unwrap();
+            state.reserved_bytes -= permit.bytes as u128;
+            if let Some(key) = permit.transient
+                && state.transient == Some(key)
+                && (!permit.activated
+                    || state
+                        .rows
+                        .get(&key)
+                        .is_none_or(|row| row.body == 0 && row.calls == 0))
+            {
+                state.transient = None;
+            }
+        }
+        drop(state);
+        self.controller.trim();
+    }
+}
+
+impl Floor {
+    pub fn set(&self, bytes: usize) {
+        let mut state = lock(&self.controller.0.ledger);
+        let old = state.floors.insert(self.id, bytes).unwrap();
+        state.external_floor = state.external_floor - old as u128 + bytes as u128;
+        drop(state);
+        self.controller.trim();
+    }
+}
+impl Drop for Floor {
+    fn drop(&mut self) {
+        let mut state = lock(&self.controller.0.ledger);
+        let bytes = state.floors.remove(&self.id).unwrap();
+        state.external_floor -= bytes as u128;
+        drop(state);
+        self.controller.trim();
+    }
+}

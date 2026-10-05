@@ -310,6 +310,12 @@ impl Resident {
     /// Raw clones may remain alive; `snapshot` continues to charge them.
     #[must_use]
     pub fn try_shed(&self, ticket: &EvictionTicket) -> bool {
+        self.shed_with(ticket, || {})
+    }
+
+    // The hook permits a deterministic controller test of the cold-before-drop
+    // window; production instantiates only the empty closure above.
+    fn shed_with(&self, ticket: &EvictionTicket, before_drop: impl FnOnce()) -> bool {
         if !std::ptr::eq(ticket.owner.as_ptr(), Arc::as_ptr(&self.0)) {
             return false;
         }
@@ -324,6 +330,7 @@ impl Resident {
             }
             std::mem::replace(&mut state.body, StateBody::Cold)
         };
+        before_drop();
         drop(retired);
         true
     }
