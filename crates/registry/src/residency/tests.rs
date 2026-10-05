@@ -332,7 +332,7 @@ fn pin_retains_descriptor_and_backing_after_all_resident_handles_drop() {
 }
 
 #[test]
-fn missing_backing_is_an_explicit_fault_and_keeps_the_descriptor() {
+fn truncated_backing_is_an_explicit_fault_and_keeps_the_descriptor() {
     let parent = tempfile::tempdir().unwrap();
     let store = RawStore::new(parent.path()).unwrap();
     let resident = Resident::new(Arc::new(store.retain(b"retained").unwrap()));
@@ -341,11 +341,13 @@ fn missing_backing_is_an_explicit_fault_and_keeps_the_descriptor() {
     assert!(resident.try_shed(&resident.eviction_ticket().unwrap()));
     for dir in std::fs::read_dir(parent.path()).unwrap() {
         for file in std::fs::read_dir(dir.unwrap().path()).unwrap() {
-            std::fs::remove_file(file.unwrap().path()).unwrap();
+            // Truncate the actual retained inode. Unlinking only its name
+            // leaves the RawHandle's open descriptor readable.
+            std::fs::write(file.unwrap().path(), []).unwrap();
         }
     }
     assert!(
-        matches!(resident.pin(Access::Read).unwrap_err().as_ref(), LoadError::Hydration(HydrationError::Source(e)) if e.kind() == io::ErrorKind::NotFound)
+        matches!(resident.pin(Access::Read).unwrap_err().as_ref(), LoadError::Hydration(HydrationError::Source(e)) if e.kind() == io::ErrorKind::UnexpectedEof)
     );
     assert_eq!(resident.identity(), identity);
     assert_eq!(resident.snapshot().phase, Phase::Cold);
