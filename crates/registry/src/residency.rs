@@ -10,6 +10,8 @@ use model::bytes::{ByteIdentity, ByteSource, SharedBytes, WeakBytes};
 use std::fmt;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
+pub mod controller;
+
 /// An immutable version descriptor shared across generations and operations.
 #[derive(Debug, Clone)]
 pub struct Resident(Arc<Inner>);
@@ -185,8 +187,52 @@ impl Drop for LoadOwner {
 
 enum Action {
     Ready(Arc<Body>),
-    Wait(Arc<Flight>),
+    Wait(Waiting),
     Load(LoadOwner, Option<SharedBytes>),
+}
+
+// Preparing chooses a flight without I/O or waiting. A controller can bind
+// that choice to admission while holding its ledger, then resolve outside it.
+struct PreparedPin {
+    resident: Resident,
+    action: Action,
+}
+
+struct Waiting {
+    flight: Arc<Flight>,
+    active: bool,
+}
+impl Waiting {
+    fn wait(mut self) -> LoadResult {
+        let result = self.flight.wait();
+        self.active = false;
+        result
+    }
+}
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        if self.active {
+            lock(&self.flight.state).waiters -= 1;
+        }
+    }
+}
+
+impl PreparedPin {
+    fn resolve(self) -> Result<BodyPin, Arc<LoadError>> {
+        let body = match self.action {
+            Action::Ready(body) => body,
+            Action::Wait(waiting) => waiting.wait()?,
+            Action::Load(mut owner, raw) => {
+                let result = self.resident.load(raw).map(Arc::new).map_err(Arc::new);
+                owner.finish(result.clone());
+                result?
+            }
+        };
+        Ok(BodyPin {
+            body,
+            _owner: self.resident.0.clone(),
+        })
+    }
 }
 
 impl Resident {
@@ -221,6 +267,10 @@ impl Resident {
     /// A source panic propagates to its loading caller; the owner's unwind
     /// guard still completes all waiting callers with `LoadError::Abandoned`.
     pub fn pin(&self, access: Access) -> Result<BodyPin, Arc<LoadError>> {
+        self.prepare(access)?.resolve()
+    }
+
+    fn prepare(&self, access: Access) -> Result<PreparedPin, Arc<LoadError>> {
         let action = {
             let mut state = lock(&self.0.state);
             if access == Access::Read || matches!(state.body, StateBody::Cold) {
@@ -233,7 +283,10 @@ impl Resident {
                 StateBody::Hot(body) => Action::Ready(body.clone()),
                 StateBody::Loading(flight) => {
                     lock(&flight.state).waiters += 1;
-                    Action::Wait(flight.clone())
+                    Action::Wait(Waiting {
+                        flight: flight.clone(),
+                        active: true,
+                    })
                 }
                 StateBody::Cold => {
                     let raw = state.last_raw.as_ref().and_then(WeakBytes::upgrade);
@@ -251,18 +304,9 @@ impl Resident {
                 }
             }
         };
-        let body = match action {
-            Action::Ready(body) => body,
-            Action::Wait(flight) => flight.wait()?,
-            Action::Load(mut owner, raw) => {
-                let result = self.load(raw).map(Arc::new).map_err(Arc::new);
-                owner.finish(result.clone());
-                result?
-            }
-        };
-        Ok(BodyPin {
-            body,
-            _owner: self.0.clone(),
+        Ok(PreparedPin {
+            resident: self.clone(),
+            action,
         })
     }
 
@@ -308,6 +352,12 @@ impl Resident {
     /// Raw clones may remain alive; `snapshot` continues to charge them.
     #[must_use]
     pub fn try_shed(&self, ticket: &EvictionTicket) -> bool {
+        self.shed_with(ticket, || {})
+    }
+
+    // The hook permits a deterministic controller test of the cold-before-drop
+    // window; production instantiates only the empty closure above.
+    fn shed_with(&self, ticket: &EvictionTicket, before_drop: impl FnOnce()) -> bool {
         if !std::ptr::eq(ticket.owner.as_ptr(), Arc::as_ptr(&self.0)) {
             return false;
         }
@@ -322,6 +372,7 @@ impl Resident {
             }
             std::mem::replace(&mut state.body, StateBody::Cold)
         };
+        before_drop();
         drop(retired);
         true
     }

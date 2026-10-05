@@ -553,6 +553,54 @@ their temporary census work and enclosing slot/pin/generation containers need
 their own reservation/charge. The controller must combine these measurements
 with the other substrate owners before enforcing the shared process budget.
 
+`registry::residency::controller` owns the shared admission ledger and member
+LRU. Handles with the same retained byte identity share one slot across roots
+and generations. Admission publishes that identity's shared reservation before
+the local loader starts; calls arriving in that interval join the same charge.
+Admission rechecks the row after each unlocked interval. If another call has
+already made it hot or started a call, admission returns to selection without
+minting a new wave. A call settles only its own retained reservation, and the
+last reservation reference unpublishes its wave even while hot hits continue.
+Local flight selection is prepared under the ledger and slot locks; resolving
+that prepared action does the I/O or waiting only after both locks are released.
+A dropped unstarted action settles or unregisters its local flight before its
+reservation ends. This is not preemptive cancellation of an already blocked
+source read. At successful publication, measured body bytes replace that part
+of the declared reservation; the remaining reservation covers flight cleanup.
+Its managed pins protect bodies, and its raw leases preserve
+charges when bytes outlive a parsed body or descriptor. Callers must keep a
+managed lease for any raw owner they retain; an untracked clone of a document's
+public raw Arc is not an accounting lease. Cloned trees and output buffers
+belong to explicitly charged staging or metadata owners. Non-body owners declare measured
+floor charges, held until their allocation is destroyed, and load callers
+declare a conservative peak reservation before I/O. These integration inputs
+are contracts, not a raw-length multiplier or an RSS estimate. The controller
+counts its own tables, descriptors and reservation metadata separately.
+
+The ledger retains a selected body's full charge throughout retirement,
+including the interval where the local slot already appears cold. Only after
+`try_shed` returns may it publish the released charge. Descriptor and raw-lease
+destruction use the same ordering. No accounting lock spans loading, waiting
+on a local flight, or destruction of retained backing. A member's retirement
+race has a distinct retryable result from occupied byte allowance. Admission
+first checks policy and whether reclamation could make room; a certain refusal
+does not shed unrelated cache entries. Cached reclaimability and retirement
+counters avoid scanning the entire membership map for this decision. If pins
+or another load still occupy the allowance, it refuses explicitly
+rather than waiting while an operation may hold a needed pin. A load larger
+than the allowance above the measured floor uses one serialized transient
+member; only a second over-budget admission is excluded, never a request that
+fits by bytes. Its exclusivity lasts through managed body/raw leases and
+reservations, not an untracked raw alias. Such aliases remain charged while
+alive. Disabling the limit suspends enforcement without forgetting outstanding
+transient ownership, so re-enabling it cannot stack oversized admissions.
+A same-version re-pin can reuse those bytes within that slot, including after
+the original descriptor ends. Failed-wave errors retain their reservation
+until the error payload is released. Zero budget disables trimming. Floor,
+reservation, pin and transient overages remain visible in the ledger report.
+Source/backing/index/ring floor charges, sound load-peak sizing and migration
+of every escaping owner remain required at the daemon activation boundary.
+
 At admission and after releasing operation pins, shed the least recently
 used unpinned member versions across all workspaces until the charged total
 fits. The periodic reaper is a backstop, not the only enforcement point.

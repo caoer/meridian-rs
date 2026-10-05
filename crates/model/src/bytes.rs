@@ -48,6 +48,16 @@ enum WeakContent {
 }
 
 impl WeakBytes {
+    /// Observe owner presence without acquiring an owner whose destructor
+    /// might run when this observation ends. This is a snapshot, not a lease.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        match &self.0 {
+            WeakContent::Text(text) => text.strong_count() != 0,
+            WeakContent::Binary(bytes) => bytes.strong_count() != 0,
+        }
+    }
+
     /// Recover the existing payload only while a strong owner still has it.
     #[must_use]
     pub fn upgrade(&self) -> Option<SharedBytes> {
@@ -173,8 +183,10 @@ mod tests {
             assert_eq!(recovered.heap_bytes(), body.heap_bytes());
             drop(body);
             assert!(weak.upgrade().is_some());
+            assert!(weak.is_live());
             drop(recovered);
             assert!(weak.upgrade().is_none());
+            assert!(!weak.is_live());
         }
     }
 
