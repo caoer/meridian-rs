@@ -84,7 +84,7 @@ fn named_cold_catalog_read_promotes_interactive_recency() {
                 .member
                 .pin(Access::Read, PEAK)
                 .unwrap(),
-        )
+        );
     };
     read_member("a.md");
     read_member("b.md");

@@ -2564,7 +2564,7 @@ mod recovery_class_truth_tests {
         let canonical = workspace::canonicalize(&ws).unwrap();
         reg.register(&canonical);
         reg.warm_or_build(&canonical).unwrap();
-        let mut publisher = None;
+        let mut join_handle = None;
         let (body, published) = warm_engine_read(&reg, &canonical, |engine| {
             write(ws.join("a.md"), "# A newer and longer generation\n").unwrap();
             let (arrived_tx, arrived) = mpsc::channel();
@@ -2573,7 +2573,7 @@ mod recovery_class_truth_tests {
             let (done_tx, done) = mpsc::channel();
             let writer = Arc::clone(&reg);
             let writer_path = canonical.clone();
-            publisher = Some(std::thread::spawn(move || {
+            join_handle = Some(std::thread::spawn(move || {
                 let result = writer.warm_or_build(&writer_path);
                 let _ = done_tx.send(result.is_ok());
                 result
@@ -2588,7 +2588,7 @@ mod recovery_class_truth_tests {
             Ok((engine.docs["a.md"].raw.as_str().to_owned(), published))
         })
         .unwrap();
-        publisher.unwrap().join().unwrap().unwrap();
+        join_handle.unwrap().join().unwrap().unwrap();
         assert_eq!(body, "# Selected old generation\n");
         assert_eq!(
             reg.engine_snapshot(&canonical).unwrap().docs["a.md"]

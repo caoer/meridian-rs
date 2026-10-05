@@ -216,7 +216,7 @@ fn catalog_scan_preserves_the_oldest_hot_member_for_eviction() {
                 .member
                 .pin(Access::Read, PEAK)
                 .unwrap(),
-        )
+        );
     };
     read("a.md");
     read("b.md");
