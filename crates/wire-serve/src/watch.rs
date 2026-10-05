@@ -132,7 +132,7 @@ pub fn reconcile(
             let prepared = watch
                 .watcher
                 .prepare_snapshot(files)
-                .map_err(backing_error)?;
+                .map_err(|error| backing_error(&error))?;
             let retired = watch.watcher.replace(prepared);
             watch.root = Some(disk_root);
             watch.scope = Some(scope);
@@ -149,7 +149,7 @@ pub fn reconcile(
             let prepared = watch
                 .watcher
                 .prepare_snapshot(files)
-                .map_err(backing_error)?;
+                .map_err(|error| backing_error(&error))?;
             let retired = watch.watcher.replace(prepared);
             watch.root = Some(disk_root);
             watch.scope = Some(scope);
@@ -160,7 +160,7 @@ pub fn reconcile(
             let changes = watch
                 .watcher
                 .classify(&files)
-                .map_err(backing_error)?
+                .map_err(|error| backing_error(&error))?
                 .expect("primed: watch.root is Some");
             let scope_now = load_scope(ws_root)?;
             let cause = rescope_cause(watch.scope.as_ref(), &scope_now);
@@ -168,7 +168,7 @@ pub fn reconcile(
             let prepared = watch
                 .watcher
                 .prepare_snapshot(files)
-                .map_err(backing_error)?;
+                .map_err(|error| backing_error(&error))?;
             // The one production DeltaFrame constructor (§7.3), shared with the
             // commit path. `allocate_seq` rather than `seq() + 1`: the write
             // path can hold an allocation whose frame has not landed yet, and
@@ -256,7 +256,7 @@ pub fn reconcile_delta(
         let before = watch
             .watcher
             .baseline_bytes(path)
-            .map_err(backing_error)?
+            .map_err(|error| backing_error(&error))?
             .expect("a changed path is a baseline entry")
             .bytes()
             .to_vec();
@@ -270,7 +270,7 @@ pub fn reconcile_delta(
         let before = watch
             .watcher
             .baseline_bytes(path)
-            .map_err(backing_error)?
+            .map_err(|error| backing_error(&error))?
             .expect("a removed path is a baseline entry")
             .bytes()
             .to_vec();
@@ -280,7 +280,7 @@ pub fn reconcile_delta(
     let prepared = watch
         .watcher
         .prepare_snapshot(upserts)
-        .map_err(backing_error)?;
+        .map_err(|error| backing_error(&error))?;
     // Internal commits moved the world — every step already emitted; sync
     // silent. Scope refreshes with the baseline, exactly as the snapshot arm.
     if ring.chains(&watch_root, disk_root) {
@@ -386,7 +386,7 @@ pub fn prime(
     let prepared = watch
         .watcher
         .prepare_baseline(baseline)
-        .map_err(backing_error)?;
+        .map_err(|error| backing_error(&error))?;
     let retired = watch.watcher.replace(prepared);
     watch.root = Some(observed.clone());
     watch.scope = Some(scope);
@@ -417,7 +417,7 @@ fn read_verified(
     Ok(Some(bytes))
 }
 
-fn backing_error(error: std::io::Error) -> Box<ErrorBody> {
+fn backing_error(error: &std::io::Error) -> Box<ErrorBody> {
     let mut error_body = ErrorBody::new(wire::ErrorCode::IoError);
     error_body.cause = Some(format!("cannot retain or read watcher baseline: {error}"));
     Box::new(error_body)
