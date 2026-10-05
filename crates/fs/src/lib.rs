@@ -4538,6 +4538,61 @@ impl LeafDiff {
     }
 }
 
+fn diff_baseline_entries(
+    baseline: &BTreeMap<String, BaselineEntry>,
+    leaves: &BTreeMap<String, [u8; 32]>,
+) -> LeafDiff {
+    let mut diff = LeafDiff::default();
+    for (path, entry) in baseline {
+        match leaves.get(path) {
+            None => diff.removed.push(path.clone()),
+            Some(fresh) if fresh != &entry.identity.digest => diff.changed.push(path.clone()),
+            Some(_) => {}
+        }
+    }
+    for path in leaves.keys() {
+        if !baseline.contains_key(path) {
+            diff.added.push(path.clone());
+        }
+    }
+    diff
+}
+
+impl PreparedBaseline {
+    /// Compare only descriptor digests; no retained body is read.
+    #[must_use]
+    pub fn diff_leaves(&self, leaves: &BTreeMap<String, [u8; 32]>) -> LeafDiff {
+        diff_baseline_entries(&self.0, leaves)
+    }
+
+    /// Keep only candidates selected by the verified leaf view. This mutates
+    /// an unpublished snapshot, never the live watcher baseline.
+    pub fn retain_matching(&mut self, leaves: &BTreeMap<String, [u8; 32]>) {
+        self.0
+            .retain(|path, entry| leaves.get(path) == Some(&entry.identity.digest));
+    }
+
+    /// Add already-prepared replacements to an unpublished snapshot.
+    pub fn append(&mut self, mut replacements: Self) {
+        self.0.append(&mut replacements.0);
+    }
+
+    /// Materialize selected candidates for rebinding to another provider.
+    /// The normal matching-provider priming path never needs this copy.
+    ///
+    /// # Errors
+    /// A selected candidate's bytes cannot be read and verified.
+    pub fn into_bytes(self) -> io::Result<BTreeMap<String, (Vec<u8>, [u8; 32])>> {
+        self.0
+            .into_iter()
+            .map(|(path, entry)| {
+                let bytes = entry.pin()?.bytes().to_vec();
+                Ok((path, (bytes, entry.identity.digest)))
+            })
+            .collect()
+    }
+}
+
 impl Watcher {
     #[must_use]
     pub fn new(root: WorkspaceRoot) -> Self {
@@ -4557,6 +4612,16 @@ impl Watcher {
         Self {
             retention: Some(retention),
             ..Self::new(root)
+        }
+    }
+
+    /// Whether a prepared snapshot uses this exact retention provider.
+    #[must_use]
+    pub fn uses_retention(&self, retention: Option<&Arc<dyn model::bytes::ByteRetention>>) -> bool {
+        match (self.retention.as_ref(), retention) {
+            (None, None) => true,
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            _ => false,
         }
     }
 
@@ -4659,21 +4724,9 @@ impl Watcher {
     /// leaves keep folding).
     #[must_use]
     pub fn diff_leaves(&self, leaves: &BTreeMap<String, [u8; 32]>) -> Option<LeafDiff> {
-        let baseline = self.baseline.as_ref()?;
-        let mut diff = LeafDiff::default();
-        for (path, entry) in baseline {
-            match leaves.get(path) {
-                None => diff.removed.push(path.clone()),
-                Some(fresh) if fresh != &entry.identity.digest => diff.changed.push(path.clone()),
-                Some(_) => {}
-            }
-        }
-        for path in leaves.keys() {
-            if !baseline.contains_key(path) {
-                diff.added.push(path.clone());
-            }
-        }
-        Some(diff)
+        self.baseline
+            .as_ref()
+            .map(|baseline| diff_baseline_entries(baseline, leaves))
     }
 
     /// Classify a snapshot against the retained baseline. `None` until primed.

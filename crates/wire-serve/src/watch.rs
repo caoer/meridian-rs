@@ -242,39 +242,53 @@ pub fn reconcile_delta(
         .watcher
         .diff_leaves(leaves)
         .expect("primed: watch.root is Some");
-    // Read movers, each verified against the observed leaf (the race arm).
+    // An already-recorded commit needs only replacement bytes. Its before
+    // bodies cannot affect the silent transition and need no admission or I/O.
+    let silent = ring.chains(&watch_root, disk_root);
     let mut changes = fs::WatchChanges::default();
     let mut upserts: Vec<(String, Vec<u8>)> = Vec::new();
     for path in &diff.added {
         let Some(bytes) = read_verified(ws_root, path, leaves)? else {
             return Ok(None);
         };
-        upserts.push((path.clone(), bytes.clone()));
-        changes.added.push((path.clone(), bytes));
+        if !silent {
+            changes.added.push((path.clone(), bytes.clone()));
+        }
+        upserts.push((path.clone(), bytes));
     }
     for path in &diff.changed {
-        let before = watch
-            .watcher
-            .baseline_bytes(path)
-            .map_err(|error| backing_error(&error))?
-            .expect("a changed path is a baseline entry")
-            .bytes()
-            .to_vec();
+        let before = if silent {
+            None
+        } else {
+            Some(
+                watch
+                    .watcher
+                    .baseline_bytes(path)
+                    .map_err(|error| backing_error(&error))?
+                    .expect("a changed path is a baseline entry")
+                    .bytes()
+                    .to_vec(),
+            )
+        };
         let Some(after) = read_verified(ws_root, path, leaves)? else {
             return Ok(None);
         };
-        upserts.push((path.clone(), after.clone()));
-        changes.modified.push((path.clone(), before, after));
+        if let Some(before) = before {
+            changes.modified.push((path.clone(), before, after.clone()));
+        }
+        upserts.push((path.clone(), after));
     }
-    for path in &diff.removed {
-        let before = watch
-            .watcher
-            .baseline_bytes(path)
-            .map_err(|error| backing_error(&error))?
-            .expect("a removed path is a baseline entry")
-            .bytes()
-            .to_vec();
-        changes.removed.push((path.clone(), before));
+    if !silent {
+        for path in &diff.removed {
+            let before = watch
+                .watcher
+                .baseline_bytes(path)
+                .map_err(|error| backing_error(&error))?
+                .expect("a removed path is a baseline entry")
+                .bytes()
+                .to_vec();
+            changes.removed.push((path.clone(), before));
+        }
     }
     let scope_now = load_scope(ws_root)?;
     let prepared = watch
@@ -283,7 +297,7 @@ pub fn reconcile_delta(
         .map_err(|error| backing_error(&error))?;
     // Internal commits moved the world — every step already emitted; sync
     // silent. Scope refreshes with the baseline, exactly as the snapshot arm.
-    if ring.chains(&watch_root, disk_root) {
+    if silent {
         let retired = watch.watcher.advance(prepared, &diff.removed);
         watch.root = Some(disk_root.clone());
         watch.scope = Some(scope_now);
@@ -318,7 +332,8 @@ pub fn reconcile_delta(
 /// only its bytes, each verified against the flock-held memo leaf.
 #[derive(Debug)]
 pub struct PrimeSnapshot {
-    members: std::collections::BTreeMap<String, (Vec<u8>, [u8; 32])>,
+    members: fs::PreparedBaseline,
+    retention: Option<std::sync::Arc<dyn model::bytes::ByteRetention>>,
 }
 
 impl PrimeSnapshot {
@@ -328,6 +343,25 @@ impl PrimeSnapshot {
     /// # Errors
     /// Wire `io_error` when the walk or a read fails.
     pub fn take(ws_root: &fs::WorkspaceRoot) -> Result<Self, Box<ErrorBody>> {
+        Self::capture(ws_root, None)
+    }
+
+    /// Prepare baseline backing and storage outside the write flock, using
+    /// the same provider as the watch that will adopt the snapshot.
+    ///
+    /// # Errors
+    /// Walking, reading, or preparing required retention fails.
+    pub fn take_with_retention(
+        ws_root: &fs::WorkspaceRoot,
+        retention: std::sync::Arc<dyn model::bytes::ByteRetention>,
+    ) -> Result<Self, Box<ErrorBody>> {
+        Self::capture(ws_root, Some(retention))
+    }
+
+    fn capture(
+        ws_root: &fs::WorkspaceRoot,
+        retention: Option<std::sync::Arc<dyn model::bytes::ByteRetention>>,
+    ) -> Result<Self, Box<ErrorBody>> {
         let (files, leaves, _) = fs::domain_snapshot_with_leaves(ws_root).map_err(|e| {
             let mut err = ErrorBody::new(wire::ErrorCode::IoError);
             err.cause = Some(e.to_string());
@@ -340,7 +374,14 @@ impl PrimeSnapshot {
                 Some((path, (bytes, digest)))
             })
             .collect();
-        Ok(PrimeSnapshot { members })
+        let preparer = retention.as_ref().map_or_else(
+            || fs::Watcher::new(ws_root.clone()),
+            |retention| fs::Watcher::with_retention(ws_root.clone(), retention.clone()),
+        );
+        let members = preparer
+            .prepare_baseline(members)
+            .map_err(|error| backing_error(&error))?;
+        Ok(PrimeSnapshot { members, retention })
     }
 }
 
@@ -348,9 +389,10 @@ impl PrimeSnapshot {
 /// caller holds the workspace write flock and has just observed `observed`
 /// through the shared memo, whose leaf view (String-spelled, as
 /// [`reconcile_delta`] takes it) is `leaves`. The baseline is built from that
-/// view: a member whose `snapshot` digest equals its leaf keeps the
-/// snapshot's bytes, any other is re-read and verified against its leaf, and a
-/// snapshot member the memo lacks is dropped. The baseline root is
+/// view: matching prepared descriptors stay in their existing map, movers are
+/// re-read and verified against their leaves, and candidates absent from the
+/// memo are discarded. A snapshot captured for a different retention provider
+/// is rebound from its selected, verified bytes before publication. The baseline root is
 /// `observed`; nothing is emitted (the epoch's baseline, as in
 /// [`reconcile`]'s priming arm).
 ///
@@ -370,23 +412,37 @@ pub fn prime(
     if watch.root.is_some() {
         return Ok(false);
     }
-    let mut members = snapshot.members;
-    let mut baseline = std::collections::BTreeMap::new();
-    for (path, leaf) in leaves {
-        let bytes = match members.remove(path) {
-            Some((bytes, digest)) if digest == *leaf => bytes,
-            _ => match read_verified(ws_root, path, leaves)? {
-                Some(bytes) => bytes,
-                None => return Ok(false),
-            },
+    let PrimeSnapshot {
+        mut members,
+        retention,
+    } = snapshot;
+    let diff = members.diff_leaves(leaves);
+    members.retain_matching(leaves);
+    let mut upserts = Vec::new();
+    for path in diff.added.iter().chain(&diff.changed) {
+        let Some(bytes) = read_verified(ws_root, path, leaves)? else {
+            return Ok(false);
         };
-        baseline.insert(path.clone(), (bytes, *leaf));
+        upserts.push((path.clone(), bytes));
     }
-    let scope = load_scope(ws_root)?;
-    let prepared = watch
+    // Legacy callers may have captured with the default or another provider.
+    // Rebind only selected exact bytes; never freshen them from a live path.
+    if !watch.watcher.uses_retention(retention.as_ref()) {
+        let bytes = members
+            .into_bytes()
+            .map_err(|error| backing_error(&error))?;
+        members = watch
+            .watcher
+            .prepare_baseline(bytes)
+            .map_err(|error| backing_error(&error))?;
+    }
+    let replacements = watch
         .watcher
-        .prepare_baseline(baseline)
+        .prepare_snapshot(upserts)
         .map_err(|error| backing_error(&error))?;
+    members.append(replacements);
+    let scope = load_scope(ws_root)?;
+    let prepared = members;
     let retired = watch.watcher.replace(prepared);
     watch.root = Some(observed.clone());
     watch.scope = Some(scope);

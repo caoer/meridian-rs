@@ -335,3 +335,88 @@ fn driver_delta_retired_destructor_runs_after_frame_publication() {
             .is_none()
     );
 }
+
+#[test]
+fn silent_commit_still_requires_replacement_backing_before_baseline_advance() {
+    let (_dir, root, backing, mut watch, mut ring) = fixture();
+    let before = watch.root().cloned();
+    std::fs::write(root.0.join("a.md"), b"# Internal\n").unwrap();
+    let (leaves, disk) = observed(&root);
+    ring.advance(crate::write::assemble_delta(
+        ring.allocate_seq(),
+        before.clone().unwrap(),
+        disk.clone(),
+        None,
+        None,
+        Vec::new(),
+    ));
+    backing.fail_read.store(true, Ordering::SeqCst);
+    backing
+        .fail_retain
+        .store(backing.retains.load(Ordering::SeqCst) + 1, Ordering::SeqCst);
+    let error = reconcile_delta(&root, &mut ring, &mut watch, &leaves, &disk).unwrap_err();
+    assert!(error.cause.unwrap().contains("late retain fault"));
+    assert_eq!(watch.root().cloned(), before);
+    assert_eq!(ring.seq(), 1);
+    assert_eq!(backing.pins.load(Ordering::SeqCst), 0);
+    backing.fail_retain.store(0, Ordering::SeqCst);
+    assert!(
+        reconcile_delta(&root, &mut ring, &mut watch, &leaves, &disk)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(watch.root(), Some(&disk));
+    assert_eq!(ring.seq(), 1);
+}
+
+#[test]
+fn a_matching_prepared_snapshot_needs_no_body_reads_or_retains_under_flock() {
+    let (_dir, root, backing, _, _) = fixture();
+    let snapshot = PrimeSnapshot::take_with_retention(&root, backing.clone()).unwrap();
+    let prepared = backing.retains.load(Ordering::SeqCst);
+    let mut watch = WatchState::with_retention(&root, backing.clone());
+    let (leaves, disk) = observed(&root);
+    backing.fail_read.store(true, Ordering::SeqCst);
+    backing.fail_retain.store(prepared + 1, Ordering::SeqCst);
+    assert!(prime(&root, &mut watch, snapshot, &leaves, &disk).unwrap());
+    assert_eq!(backing.retains.load(Ordering::SeqCst), prepared);
+    assert_eq!(backing.pins.load(Ordering::SeqCst), 0);
+    assert_eq!(watch.root(), Some(&disk));
+}
+
+#[test]
+fn rebinding_discards_unselected_candidates_without_reading_them() {
+    let (_dir, root, old_backing, _, _) = fixture();
+    let snapshot = PrimeSnapshot::take_with_retention(&root, old_backing.clone()).unwrap();
+    std::fs::remove_file(root.0.join("a.md")).unwrap();
+    std::fs::remove_file(root.0.join("b.md")).unwrap();
+    std::fs::write(root.0.join("c.md"), b"# New member\n").unwrap();
+    let (leaves, disk) = observed(&root);
+    old_backing.fail_read.store(true, Ordering::SeqCst);
+    let backing = Arc::new(Backing::default());
+    let mut watch = WatchState::with_retention(&root, backing.clone());
+    assert!(prime(&root, &mut watch, snapshot, &leaves, &disk).unwrap());
+    assert_eq!(old_backing.pins.load(Ordering::SeqCst), 0);
+    assert_eq!(backing.retains.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn rebinding_uses_selected_snapshot_bytes_even_after_a_live_source_change() {
+    let (_dir, root, old_backing, _, _) = fixture();
+    let snapshot = PrimeSnapshot::take_with_retention(&root, old_backing.clone()).unwrap();
+    let (leaves, selected) = observed(&root);
+    std::fs::write(root.0.join("a.md"), b"# After observation\n").unwrap();
+    let backing = Arc::new(Backing::default());
+    let mut watch = WatchState::with_retention(&root, backing.clone());
+    assert!(prime(&root, &mut watch, snapshot, &leaves, &selected).unwrap());
+    assert_eq!(backing.retains.load(Ordering::SeqCst), 2);
+    assert_eq!(old_backing.pins.load(Ordering::SeqCst), 2);
+    let (leaves, disk) = observed(&root);
+    let mut ring = RootRing::new();
+    let frame = reconcile_delta(&root, &mut ring, &mut watch, &leaves, &disk)
+        .unwrap()
+        .unwrap();
+    assert_eq!(frame.delta.root_before, selected);
+    assert_eq!(frame.delta.files.len(), 1);
+    assert_eq!(frame.delta.files[0].change, FileChange::Modified);
+}
