@@ -1,6 +1,8 @@
 //! Controller-backed immutable document generation for fallible consumers.
-//! Capture bridges an existing eager generation. Streaming builders, measured
-//! metadata/staging floors and daemon publication remain the host's work.
+//! A generation is built by the incremental pass over its slots ([`update`];
+//! a cold build is that pass over the empty generation) or captured from an
+//! existing eager one ([`Catalog::capture`]). Measured metadata/staging floors
+//! and daemon publication remain the host's work.
 
 use super::{
     Access,
@@ -69,8 +71,10 @@ fn pause(wait: Duration) {
     }
 }
 
+/// One member version in a generation: the facts its consumers read from
+/// metadata and the controller member that owns its sheddable body.
 #[derive(Debug)]
-struct Entry {
+pub struct Slot {
     revision: NodeRev,
     member: Member,
     /// The mount names this version's wikilink and embed targets address.
@@ -78,6 +82,92 @@ struct Entry {
     /// The mount names this version's lock addresses name; `None` when it
     /// carries no lock row.
     lock_roots: Option<Box<[addr::MountName]>>,
+    /// The aliases this version was entered into the name index under, so a
+    /// later generation removes its rows without loading it.
+    aliases: Box<[String]>,
+}
+
+impl Slot {
+    /// Publish `doc` as a cold slot: its exact bytes retained as backing, a
+    /// controller member over them, and its descriptor facts. The parsed
+    /// tree is not kept; the first pin re-reads the backing.
+    ///
+    /// # Errors
+    /// The backing cannot be retained.
+    pub fn publish(
+        doc: &model::Document,
+        controller: &Controller,
+        store: &RawStore,
+    ) -> io::Result<Self> {
+        let source = store.retain(doc.raw.as_bytes())?;
+        Ok(Self {
+            revision: doc.root.node_rev.clone(),
+            member: controller.retain(Arc::new(source)),
+            link_roots: model::catalog::link_roots(doc).into_iter().collect(),
+            lock_roots: view::walk::lock_fact(doc).map(|roots| roots.into_iter().collect()),
+            aliases: model::doc_aliases(doc).into(),
+        })
+    }
+}
+
+/// A generation's slots by workspace-relative path. A clone shares every
+/// slot, so generations built one from another hold one controller member
+/// per unchanged version.
+#[derive(Debug, Clone, Default)]
+pub struct Slots(BTreeMap<String, Arc<Slot>>);
+
+impl std::ops::Deref for Slots {
+    type Target = BTreeMap<String, Arc<Slot>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl fs::SlotMap for Slots {
+    type Slot = Arc<Slot>;
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn contains_key(&self, rel: &str) -> bool {
+        self.0.contains_key(rel)
+    }
+    fn remove(&mut self, rel: &str) -> Option<Self::Slot> {
+        self.0.remove(rel)
+    }
+    fn insert(&mut self, rel: String, slot: Self::Slot) {
+        self.0.insert(rel, slot);
+    }
+    fn indexed_aliases(slot: &Self::Slot) -> Vec<String> {
+        slot.aliases.to_vec()
+    }
+    fn index(&self) -> io::Result<CorpusIndex> {
+        Err(io::Error::other(
+            "a residency generation carries its own name index; rebuilding one would load \
+             every body",
+        ))
+    }
+}
+
+/// The incremental pass ([`fs::update_corpus_with`]) over a residency
+/// generation: unmoved members keep their slots, each parsed mover is
+/// published ([`Slot::publish`]) before the next is read, and no prior
+/// version is loaded. Over the empty generation (an empty, present name
+/// index) with every leaf a mover, this is the cold build.
+///
+/// # Errors
+/// What [`fs::update_corpus_with`] refuses, a mover's backing that cannot be
+/// retained included. Nothing is returned to publish on error.
+pub fn update(
+    root: &fs::WorkspaceRoot,
+    prior: &fs::CorpusPrior<'_, Slots>,
+    moves: &[fs::LeafMove],
+    fresh_root: Option<&model::MerkleRoot>,
+    controller: &Controller,
+    store: &RawStore,
+) -> io::Result<fs::CorpusUpdate<Slots>> {
+    fs::update_corpus_with(root, prior, moves, fresh_root, |_, doc| {
+        Slot::publish(&doc, controller, store).map(Arc::new)
+    })
 }
 
 /// Complete generation membership with sheddable bodies and exact backing.
@@ -86,8 +176,8 @@ struct Entry {
 /// the selected member for interactive serving.
 #[derive(Debug)]
 pub struct Catalog {
-    entries: BTreeMap<String, Entry>,
-    index: CorpusIndex,
+    entries: Slots,
+    index: Arc<CorpusIndex>,
     load_peak: usize,
 }
 impl Catalog {
@@ -104,26 +194,25 @@ impl Catalog {
         store: &RawStore,
         load_peak: usize,
     ) -> io::Result<Self> {
-        let mut entries = BTreeMap::new();
+        let mut entries = Slots::default();
         let mut index = CorpusIndex::new();
         for (path, doc) in docs {
-            let source = store.retain(doc.raw.as_bytes())?;
-            entries.insert(
-                path.clone(),
-                Entry {
-                    revision: doc.root.node_rev.clone(),
-                    member: controller.retain(Arc::new(source)),
-                    link_roots: model::catalog::link_roots(doc).into_iter().collect(),
-                    lock_roots: view::walk::lock_fact(doc).map(|roots| roots.into_iter().collect()),
-                },
-            );
+            let slot = Slot::publish(doc, controller, store)?;
+            entries.0.insert(path.clone(), Arc::new(slot));
             index.insert(path, doc);
         }
-        Ok(Self {
+        Ok(Self::new(entries, Arc::new(index), load_peak))
+    }
+
+    /// The generation `entries` and `index` describe ([`update`]'s product),
+    /// with the host's per-load peak.
+    #[must_use]
+    pub fn new(entries: Slots, index: Arc<CorpusIndex>, load_peak: usize) -> Self {
+        Self {
             entries,
             index,
             load_peak,
-        })
+        }
     }
 }
 impl Catalog {
@@ -191,6 +280,9 @@ impl DocumentLease for Pin {
         Pin::document(self).map_err(io::Error::other)
     }
 }
+
+#[cfg(test)]
+mod generation_tests;
 
 #[cfg(test)]
 mod tests;

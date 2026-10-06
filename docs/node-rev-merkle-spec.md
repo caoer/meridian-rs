@@ -1037,6 +1037,19 @@ not become a mover on each prewarm. Builders publish a leaf together with
 its slot or condition. A prior whose membership disagrees pays one scan for
 real holes and reconciles them as movers.
 
+Under the residency controller the same pass runs over a generation's slots
+(`fs::update_corpus_with` over `registry::residency::catalog::Slots`). An
+unmoved member keeps its slot by shared reference, so consecutive
+generations hold one controller member for it, and the pass hydrates
+nothing. A mover is read, checked against its planned leaf, parsed, entered
+into the name index and published as a cold slot over retained backing; its
+tree is dropped at publication, before the next mover is read. A slot
+records the aliases its document was indexed under, and the rows of a
+replaced or removed version are removed by those aliases, so a rebuild never
+pins an old version. A cold build is this pass over the empty generation
+with every leaf a mover: it holds one member's bytes and tree at a time,
+never the whole corpus.
+
 **Cold access and consumers.** `Document` remains immutable and pure;
 `model` owns membership/access contracts, not I/O or a registry. Replace the
 assumption that `Docs` is a map of permanently resident `Arc<Document>` with
