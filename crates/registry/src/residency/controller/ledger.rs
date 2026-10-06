@@ -6,6 +6,8 @@ type Table<K, V> = hashbrown::HashMap<K, V, RandomState>;
 #[derive(Debug)]
 pub(super) struct Row {
     pub(super) resident: Resident,
+    /// This member's descriptor allocations ([`descriptor_bytes`]).
+    pub(super) descriptor: usize,
     pub(super) references: usize,
     pub(super) calls: usize,
     pub(super) pins: usize,
@@ -54,6 +56,8 @@ pub(super) struct Ledger {
     pub(super) first: Option<Key>,
     pub(super) last: Option<Key>,
     pub(super) transient: Option<Key>,
+    // The rows' descriptor charges, summed.
+    pub(super) descriptors: usize,
     pub(super) detached_floor: usize,
     pub(super) detached_body: usize,
     pub(super) peak_shortfall: usize,
@@ -82,6 +86,7 @@ impl Ledger {
             first: None,
             last: None,
             transient: None,
+            descriptors: 0,
             detached_floor: 0,
             detached_body: 0,
             peak_shortfall: 0,
@@ -134,6 +139,11 @@ impl Ledger {
         result
     }
 
+    pub(super) fn insert_row(&mut self, key: Key, row: Row) {
+        self.descriptors += row.descriptor;
+        self.rows.insert(key, row);
+    }
+
     pub(super) fn remove_row(&mut self, key: Key) -> Row {
         let (count, bytes, raws) = self.row_score(key);
         self.reclaimable -= count;
@@ -141,6 +151,7 @@ impl Ledger {
         self.reclaimable_raws -= raws;
         let row = self.rows.remove(&key).unwrap();
         self.retiring -= usize::from(row.retiring);
+        self.descriptors -= row.descriptor;
         row
     }
 
@@ -330,7 +341,7 @@ impl Ledger {
             + self.raw_versions.allocation_size() as u128
             + self.floors.allocation_size() as u128
             + self.permits.allocation_size() as u128
-            + self.rows.len() as u128 * descriptor_bytes() as u128
+            + self.descriptors as u128
             + self.detached_floor as u128
             + self.external_floor
     }
@@ -468,8 +479,12 @@ impl Ledger {
     }
 }
 
-pub(super) fn descriptor_bytes() -> usize {
+/// One member's descriptor allocations: its version descriptor and the
+/// allocation behind `source`, the handle the descriptor alone owns
+/// (`retain` keeps it and drops a duplicate's).
+pub(super) fn descriptor_bytes(source: &dyn model::bytes::ByteSource) -> usize {
     model::allocation::arc_bytes::<super::super::Inner>()
+        .saturating_add(model::allocation::arc_dyn_bytes(source))
 }
 
 fn sum(values: impl Iterator<Item = usize>) -> usize {

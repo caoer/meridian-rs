@@ -195,10 +195,11 @@ impl Controller {
                     last_raw: None,
                 }),
             }));
-            state.rows.insert(
+            state.insert_row(
                 key,
                 Row {
                     resident,
+                    descriptor: descriptor_bytes(&*source),
                     references: 1,
                     calls: 0,
                     pins: 0,
@@ -441,13 +442,14 @@ impl Controller {
             if row.force_shed {
                 state.forced -= 1;
             }
-            state.detached_floor = state.detached_floor.saturating_add(descriptor_bytes());
+            state.detached_floor = state.detached_floor.saturating_add(row.descriptor);
             state.detached_body = state.detached_body.saturating_add(row.body);
             state.shrink();
             row
         };
         let cleanup = Detached {
             controller: self.clone(),
+            descriptor: retired.descriptor,
             body: retired.body,
             raw: retired.raw,
         };
@@ -508,13 +510,14 @@ impl Drop for Retirement {
 // This guard runs after the descriptor's complete drop, including unwind.
 struct Detached {
     controller: Controller,
+    descriptor: usize,
     body: usize,
     raw: Option<usize>,
 }
 impl Drop for Detached {
     fn drop(&mut self) {
         let mut state = lock(&self.controller.0.ledger);
-        state.detached_floor -= descriptor_bytes();
+        state.detached_floor -= self.descriptor;
         state.detached_body -= self.body;
         state.body_bytes -= self.body as u128;
         if self.body != 0 {

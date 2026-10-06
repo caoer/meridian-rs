@@ -38,13 +38,11 @@ pub fn arc_bytes<T>() -> usize {
 /// a `BTreeSet<K>`) holding `len` entries. std does not expose its node
 /// allocations; every node but the root holds at least five entries, so at
 /// most `len / 5 + 1` nodes exist, each charged here at the internal-node size
-/// (the leaf's entries plus twelve edges). Keys' and values' own heap is the
-/// caller's to add.
+/// (the leaf's entries plus twelve edges). An empty map is charged its root
+/// too: one emptied by `remove` or `retain` keeps it allocated. Keys' and
+/// values' own heap is the caller's to add.
 #[must_use]
 pub fn btree_bytes<K, V>(len: usize) -> usize {
-    if len == 0 {
-        return 0;
-    }
     (len / 5 + 1).saturating_mul(btree_internal_node::<K, V>())
 }
 

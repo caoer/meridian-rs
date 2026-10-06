@@ -79,7 +79,10 @@ impl WatchState {
         watcher
             .heap_bytes()
             .saturating_add(root.as_ref().map_or(0, |root| root.0.capacity()))
-            .saturating_add(scope.as_ref().map_or(0, |scope| scope.domain.heap_bytes()))
+            .saturating_add(scope.as_ref().map_or(0, |scope| {
+                let fs::domain::Scope { config: _, domain } = scope;
+                domain.heap_bytes()
+            }))
     }
 
     /// An unprimed watcher for `root`: the first reconcile adopts the world as

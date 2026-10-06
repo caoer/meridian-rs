@@ -199,7 +199,10 @@ fn file_heap(file: &wire::DeltaFile) -> usize {
             .saturating_add(match target {
                 wire::SecRef::Hpath { hpath } => hpath.iter().fold(
                     hpath.capacity().saturating_mul(size_of::<wire::HpathSeg>()),
-                    |bytes, segment| bytes.saturating_add(segment.h.capacity()),
+                    |bytes, segment| {
+                        let wire::HpathSeg { h, n: _ } = segment;
+                        bytes.saturating_add(h.capacity())
+                    },
                 ),
                 wire::SecRef::Anchor { anchor: text } | wire::SecRef::FmKey { fm_key: text } => {
                     text.capacity()

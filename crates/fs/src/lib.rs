@@ -1034,10 +1034,12 @@ struct DirEntryKind {
 impl DomainCache {
     /// Requested heap this memo owns: the leaf and listing memos and the
     /// resident tree (map node storage an upper bound,
-    /// [`model::allocation::btree_bytes`]), its stamp source's instance, the
-    /// cached fold, the observed domain config and the feed-generation
-    /// cell. The stamp clock is shared with its installer and not counted
-    /// here. A quiescent census: the caller holds the memo's lock.
+    /// [`model::allocation::btree_bytes`]), its stamp source's instance and
+    /// clock closure, the cached fold, the observed domain config, an
+    /// unavailable calibration's reason and the feed-generation cell. The
+    /// clock closure is the memo's alone (the registry builds one per
+    /// binding); what it captures is its owner's. A quiescent census: the
+    /// caller holds the memo's lock.
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
         let DomainCache {
@@ -1047,7 +1049,7 @@ impl DomainCache {
             stamps,
             served,
             domain_seen,
-            calibration: _,
+            calibration,
             feed,
             acked_losses: _,
             restored_unobserved: _,
@@ -1077,12 +1079,25 @@ impl DomainCache {
                 bytes
                     .saturating_add(path.capacity())
                     .saturating_add(entries.capacity().saturating_mul(size_of::<DirEntryKind>())),
-                |bytes, entry| bytes.saturating_add(entry.name.capacity()),
+                |bytes, entry| {
+                    let DirEntryKind {
+                        name,
+                        is_dir: _,
+                        is_file: _,
+                        is_symlink: _,
+                    } = entry;
+                    bytes.saturating_add(name.capacity())
+                },
             );
         }
         bytes = bytes.saturating_add(tree.heap_bytes());
-        if let Some(StampSource { instance, clock: _ }) = stamps {
-            bytes = bytes.saturating_add(instance.capacity());
+        if let Some(StampSource { instance, clock }) = stamps {
+            bytes = bytes
+                .saturating_add(instance.capacity())
+                .saturating_add(model::allocation::arc_dyn_bytes(&**clock));
+        }
+        if let Some(stable::Calibration::Unavailable { reason }) = calibration {
+            bytes = bytes.saturating_add(reason.capacity());
         }
         if let Some((_, root)) = served {
             bytes = bytes.saturating_add(root.0.capacity());

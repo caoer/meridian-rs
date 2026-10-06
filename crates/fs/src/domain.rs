@@ -304,10 +304,13 @@ impl Domain {
         rules.iter().fold(
             rules.capacity().saturating_mul(size_of::<Rule>()),
             |bytes, rule| {
-                bytes.saturating_add(model::allocation::strings_bytes(
-                    &rule.segs,
-                    rule.segs.capacity(),
-                ))
+                let Rule {
+                    negate: _,
+                    anchored: _,
+                    dir_only: _,
+                    segs,
+                } = rule;
+                bytes.saturating_add(model::allocation::strings_bytes(segs, segs.capacity()))
             },
         )
     }

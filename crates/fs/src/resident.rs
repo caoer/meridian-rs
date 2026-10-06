@@ -157,9 +157,14 @@ impl ResidentTree {
         } = self;
         let mut bytes = model::allocation::btree_bytes::<Vec<u8>, Node>(nodes.len());
         for (path, node) in nodes {
+            let Node {
+                map,
+                fold: _,
+                last_seq: _,
+            } = node;
             bytes = bytes
                 .saturating_add(path.capacity())
-                .saturating_add(node.map.heap_bytes());
+                .saturating_add(map.heap_bytes());
         }
         for set in [dirty, collisions] {
             bytes = set.iter().fold(
