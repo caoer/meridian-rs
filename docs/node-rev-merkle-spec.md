@@ -592,11 +592,20 @@ number of times with a short pause, before it reports them; it never waits on
 occupied allowance. What it reports for any of the three is a transient fault
 (`model::catalog::is_transient`): distinct from a backing, identity or parse
 failure, and never grounds for reading a newer version. One case is not
-transient: occupied allowance met while the calling thread already holds a
-lease from that catalog seam. The caller's own lease is part of what occupies
-the allowance, so no retry of that request can admit the second body; it is
-reported as a member fault whose cause names the allowance. A request takes
-its leases on the thread that serves it. Admission
+transient: occupied allowance that the caller's own leases alone keep the
+member out of. The catalog records which members each thread holds leases
+on. When a thread that holds leases meets occupied allowance, it measures
+that holding against the allowance above the floor as the ledger stands: a
+load whose declared peak fits that allowance is self-blocked when the held
+members' charged bytes plus the peak exceed it, and an oversized load is
+self-blocked when the serialized oversized member is one the thread holds.
+No retry of that request can then admit the member while it keeps its
+leases, so it is reported as a member fault whose cause names the allowance.
+Occupied allowance that other requests' pins or loads fill stays transient,
+whatever the caller holds beside them. Leases count against the thread that
+takes them: a connection's request thread, or the evaluation thread a
+Starlark `read()` runs on. No request thread holds a lease across an
+evaluation, so the two holdings never combine. Admission
 first checks policy and whether reclamation could make room; a certain refusal
 does not shed unrelated cache entries. Cached reclaimability and retirement
 counters avoid scanning the entire membership map for this decision. Raw-table
@@ -1157,8 +1166,8 @@ The daemon's named read adapter remains eager until activation; this seam does
 not migrate engine publication by itself.
 
 Run and script entry worlds read the generation their attempt pinned through
-the same interactive lease (`model::catalog::read`). A `run` mode row holds its
-page's lease for that row alone; a `script` read holds the entry document's
+the same interactive lease (`model::catalog::read`). A `run` mode row leases its
+page only to copy out what the row runs (below); a `script` read holds the entry document's
 lease for one builtin, and an armed overlay is built under it and kept by the
 attempt, not by the lease. Entry-rev threading leases each armed target once.
 The commit's touch-set premises are the entry generation's leaf digests, read
@@ -1178,15 +1187,18 @@ words alone. The SQL arm rolls back the whole append on either: a same-domain
 append keeps the previous generation, and the fingerprint-domain arm, which
 recreates the cache before it appends, is left empty and unpinned. The retry
 appends again. The seam's bounded retry covers the retirement and failed-wave
-races. Occupied allowance is returned at once. When the request that meets it
-holds another lease itself (a composed read holds its page while each lock
-target is coloured), it leaves as `io_error` naming the member and the
+races. Occupied allowance is returned at once. When the request's own leases
+alone keep the member out (§6.4; a composed read holds its page while each
+lock target is coloured), it leaves as `io_error` naming the member and the
 allowance, never as `retry`.
 
-A `run` mode row copies its page out of the lease and releases the lease
-before the block executes, so no body of the generation is pinned while a
-hook's Starlark and `bash()` run, and a request that hook sends back into the
-daemon meets no lease of the row.
+A `run` mode row copies out of the lease only what the row runs: the page's
+file rev, its `caps:`, and each anchor's block (its rev, language, source and
+task binding, or the reason it is not a block). It releases the lease before
+the block executes, so no body of the generation is pinned while a hook's
+Starlark and `bash()` run, and a request that hook sends back into the daemon
+meets no lease of the row. The copy is the page's fence bytes and a few short
+strings, never its parse tree.
 
 The link plane and a composed read's claim-link colours scan through the same
 catalog. `query::links_in` enumerates membership from metadata and pins one

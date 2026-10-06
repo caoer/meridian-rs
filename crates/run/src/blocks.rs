@@ -13,6 +13,8 @@
 //! plane's ([`model::resolve`]), and the language classification is
 //! `fence`'s. What is new is only the direction of travel.
 
+use std::collections::BTreeMap;
+
 use model::{ByteSpan, Document, Node, NodeKind, NodeRev, Ref, ResolveError};
 
 use crate::address::{self, TASK_PREFIX, frontmatter};
@@ -108,32 +110,85 @@ impl BlockError {
 /// and that difference is the whole seam.
 #[must_use]
 pub fn anchored_blocks(doc: &Document) -> Vec<Result<AnchoredBlock, BlockError>> {
-    let bindings = task_bindings(doc);
-    let mut seen: Vec<String> = Vec::new();
-    let mut out = Vec::new();
-    for anchor in model::selector::live_anchors(doc) {
-        // `live_anchors` lists every anchor NODE, so a duplicated id appears
-        // twice; reporting it twice would be one authoring fault told as two.
-        if seen.contains(&anchor) {
-            continue;
+    PageBlocks::of(doc).listed()
+}
+
+/// A page's anchored blocks, resolved once and held without the page: what
+/// [`anchored_blocks`] enumerates and what [`block`] answers for any anchor.
+/// A `run` mode row copies this out of its page's lease and runs on it
+/// (merkle-spec §6.8), so it holds the fences' bytes, never the parse tree.
+///
+/// Every anchor [`block`] can resolve is a live anchor
+/// ([`model::selector::live_anchors`]): [`model::resolve`] finds an anchor
+/// only among the same anchor nodes. So an anchor this table does not carry
+/// is the [`BlockError::NoBlock`] that [`block`] answers for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageBlocks {
+    /// The anchors [`anchored_blocks`] lists, in its order.
+    listed: Vec<String>,
+    /// Every live anchor's resolution, as [`block`] answers it.
+    named: BTreeMap<String, Result<AnchoredBlock, BlockError>>,
+}
+
+impl PageBlocks {
+    /// Resolve every live anchor on `doc` once.
+    #[must_use]
+    pub fn of(doc: &Document) -> Self {
+        let bindings = task_bindings(doc);
+        let mut listed = Vec::new();
+        let mut named = BTreeMap::new();
+        for anchor in model::selector::live_anchors(doc) {
+            // `live_anchors` lists every anchor NODE, so a duplicated id
+            // appears twice; reporting it twice would be one authoring fault
+            // told as two.
+            if named.contains_key(&anchor) {
+                continue;
+            }
+            let resolved = block_at(doc, &anchor, &bindings);
+            let lists = match &resolved {
+                Ok(_) => true,
+                // Not a fence at all: prose anchors are not blocks, and a load
+                // that reported them would answer with noise.
+                Err(BlockError::NotACodeBlock { .. } | BlockError::NoBlock { .. }) => false,
+                // `block_at` resolves the anchor BEFORE it asks whether the
+                // target is a fence, so a duplicated PROSE id refuses at
+                // resolve and never reaches the arm above. Ask the fence
+                // question the resolve pre-empted: with no block among the
+                // candidates this is the same noise, and duplicate prose ids
+                // are ordinary on real pages — a load that kept them would
+                // refuse on prose fleet-wide.
+                Err(BlockError::AmbiguousAnchor { .. }) => {
+                    any_candidate_hosts_a_block(doc, &anchor)
+                }
+            };
+            if lists {
+                listed.push(anchor.clone());
+            }
+            named.insert(anchor, resolved);
         }
-        match block_at(doc, &anchor, &bindings) {
-            // Not a fence at all: prose anchors are not blocks, and a load
-            // that reported them would answer with noise.
-            Err(BlockError::NotACodeBlock { .. } | BlockError::NoBlock { .. }) => {}
-            // `block_at` resolves the anchor BEFORE it asks whether the target
-            // is a fence, so a duplicated PROSE id refuses at resolve and never
-            // reaches the arm above. Ask the fence question the resolve
-            // pre-empted: with no block among the candidates this is the same
-            // noise, and duplicate prose ids are ordinary on real pages — a
-            // load that kept them would refuse on prose fleet-wide.
-            Err(BlockError::AmbiguousAnchor { .. })
-                if !any_candidate_hosts_a_block(doc, &anchor) => {}
-            other => out.push(other),
-        }
-        seen.push(anchor);
+        Self { listed, named }
     }
-    out
+
+    /// What [`anchored_blocks`] answers for the page.
+    #[must_use]
+    pub fn listed(&self) -> Vec<Result<AnchoredBlock, BlockError>> {
+        self.listed
+            .iter()
+            .filter_map(|anchor| self.named.get(anchor).cloned())
+            .collect()
+    }
+
+    /// What [`block`] answers for `anchor` on the page.
+    ///
+    /// # Errors
+    /// [`BlockError`] — dangling, duplicated, or not a fence.
+    pub fn block(&self, anchor: &str) -> Result<AnchoredBlock, BlockError> {
+        self.named.get(anchor).cloned().unwrap_or_else(|| {
+            Err(BlockError::NoBlock {
+                anchor: anchor.to_owned(),
+            })
+        })
+    }
 }
 
 /// Whether any of a duplicated anchor's candidates hosts a fenced code block —

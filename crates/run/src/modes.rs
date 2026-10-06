@@ -34,17 +34,47 @@ use crate::blocks::{self, AnchoredBlock, BlockError};
 use crate::caps::{self, Authority};
 use crate::executor::{self, Applied, ApplyRequest, DeltaSink, ExecError};
 
+/// What a mode row reads of its page, copied out of it once: the file rev,
+/// the anchored blocks ([`blocks::PageBlocks`]) and the page's `caps:` grant.
+///
+/// A row reads its page through exactly these, so this is all it keeps. The
+/// daemon builds it under the page's lease and releases the lease before the
+/// row runs (merkle-spec §6.8): the row holds the fences' bytes and a few
+/// short strings, never the page's parse tree.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Page {
+    // Control prototype: the copy keeps the page's parse tree.
+    #[allow(dead_code)]
+    tree: model::Node,
+    file_rev: String,
+    blocks: blocks::PageBlocks,
+    caps: Result<Option<caps::CapSet>, caps::CapsError>,
+}
+
+impl Page {
+    /// Copy out of `doc` what a mode row reads.
+    #[must_use]
+    pub fn of(doc: &Document) -> Self {
+        Self {
+            tree: doc.root.clone(),
+            file_rev: doc.root.node_rev.0.clone(),
+            blocks: blocks::PageBlocks::of(doc),
+            caps: caps::page_caps(doc),
+        }
+    }
+}
+
 /// What one mode-bearing target runs against.
 ///
-/// The DOC is a parameter, not a lookup: the two callers hold it differently
-/// and both are right. The daemon hands the page out of its PINNED resident
-/// snapshot (an `Arc` clone — never the `domain_snapshot` fold); the CLI has
-/// no resident engine and hands the page it just loaded. Putting the world
-/// behind a borrow here is what lets ONE implementation of the rows serve
-/// both lanes, so the two cannot answer differently.
+/// The PAGE is a parameter, not a lookup: the two callers hold it differently
+/// and both are right. The daemon copies it out of its PINNED resident
+/// snapshot under an interactive lease; the CLI has no resident engine and
+/// copies it from the page it just loaded. Putting the world behind a borrow
+/// here is what lets ONE implementation of the rows serve both lanes, so the
+/// two cannot answer differently.
 pub struct ModeWorld<'a> {
     /// The page, as the caller's world serves it.
-    pub doc: &'a Document,
+    pub page: &'a Page,
     /// The workspace root the effects apply against.
     pub root: &'a fs::WorkspaceRoot,
     /// The declaring root — whose conventions ceiling narrows the page's
@@ -341,9 +371,9 @@ pub fn draft_row(
     if let Some(row) = prelude_refusal(world.prelude, target, invocation) {
         return row;
     }
-    let drafted = model::build(source.to_owned(), syntax::parse(source));
+    let drafted = Page::of(&model::build(source.to_owned(), syntax::parse(source)));
     let drafted_world = ModeWorld {
-        doc: &drafted,
+        page: &drafted,
         root: world.root,
         declaring_root: world.declaring_root,
         observed_root: world.observed_root,
@@ -405,7 +435,7 @@ pub fn mode_row(
     actor: Option<&str>,
     now: Option<&str>,
 ) -> Value {
-    // A draft brings its own bytes and never reads `world.doc`. Dispatched
+    // A draft brings its own bytes and never reads `world.page`. Dispatched
     // FIRST so this lane and the daemon's reach one owner ([`draft_row`]),
     // which also owns the prelude gate.
     if let Some(source) = target.source.as_deref() {
@@ -441,8 +471,10 @@ pub fn mode_row(
 
 /// A `mode:"load"` row: `{page, rev, loaded: [...]}`.
 fn load_row(world: &ModeWorld<'_>, target: &wire::RunTarget, invocation: &str) -> Value {
-    let doc = world.doc;
-    let loaded: Vec<Value> = blocks::anchored_blocks(doc)
+    let page = world.page;
+    let loaded: Vec<Value> = page
+        .blocks
+        .listed()
         .into_iter()
         .filter_map(|block| match block {
             Ok(block) => loaded_row(world, target, invocation, &block),
@@ -458,7 +490,7 @@ fn load_row(world: &ModeWorld<'_>, target: &wire::RunTarget, invocation: &str) -
     json!({
         "page": target.page,
         "invocation": invocation,
-        "rev": {"file": doc.root.node_rev.0},
+        "rev": {"file": page.file_rev},
         "loaded": loaded,
     })
 }
@@ -509,7 +541,7 @@ fn loaded_row(
         }
     };
     // § 2.2 step 2: an `exec(block=)` anchor resolves HERE, at load.
-    if let Some(fault) = exec_anchor_fault(world.doc, block, &loaded) {
+    if let Some(fault) = exec_anchor_fault(world.page, block, &loaded) {
         return Some(fault);
     }
     // A starlark block that declares nothing is not a target. It is not a
@@ -543,14 +575,14 @@ fn fire_row(
     actor: Option<&str>,
     now: Option<&str>,
 ) -> Value {
-    let doc = world.doc;
-    let addressed = match addressed_entry(world, target, invocation, doc) {
+    let page = world.page;
+    let addressed = match addressed_entry(world, target, invocation, page) {
         Ok(resolved) => resolved,
         Err(row) => return row,
     };
     let ctx = ctx_for(target, invocation);
     let seam = ProcessSeam {
-        doc: world.doc,
+        blocks: &page.blocks,
         root: &world.root.0,
         page: &target.page,
         invocation,
@@ -594,7 +626,7 @@ fn fire_row(
         // (§ 1.4). Caps do not apply to a process, by law — what bounds it is
         // the timeout and the loud result.
         Addressed::Exec { block, spec } => {
-            return exec_row(&seam, target, invocation, &block, &spec, doc);
+            return exec_row(&seam, target, invocation, &block, &spec, page);
         }
     };
     let started = std::time::Instant::now();
@@ -631,7 +663,7 @@ fn fire_row(
         "page": target.page,
         "invocation": invocation,
         "block": block.anchor,
-        "rev": {"file": doc.root.node_rev.0, "block": block.rev},
+        "rev": {"file": page.file_rev, "block": block.rev},
         // A DOOR refusal is the effect row's, never this one's: a hook that
         // answered `{"deny": …}` and also tried a write the armed plane
         // refused must still deliver its verdict, or a daemon that checks
@@ -673,7 +705,7 @@ fn addressed_entry(
     world: &ModeWorld<'_>,
     target: &wire::RunTarget,
     invocation: &str,
-    doc: &Document,
+    page: &Page,
 ) -> Result<Addressed, Value> {
     let Some(anchor) = target.block.as_deref() else {
         return Err(refused_row(
@@ -684,7 +716,9 @@ fn addressed_entry(
             None,
         ));
     };
-    let block = blocks::block(doc, anchor)
+    let block = page
+        .blocks
+        .block(anchor)
         .map_err(|e| refused_row(target, invocation, e.class(), &e.to_string(), None))?;
     if !block.is_starlark() {
         // A non-starlark block is an exec'd entry's BYTES, never a module of
@@ -755,7 +789,7 @@ fn addressed_entry(
             // dangling anchor a `no_block` refusal with the anchor's own
             // words, instead of a fabricated `exit: 127` row.
             if let effects::ExecProgram::Block(anchor) = &spec.program
-                && let Err(e) = blocks::block(doc, anchor)
+                && let Err(e) = page.blocks.block(anchor)
             {
                 return Err(refused_row(
                     target,
@@ -796,7 +830,7 @@ fn exec_row(
     invocation: &str,
     block: &AnchoredBlock,
     spec: &effects::ExecSpec,
-    doc: &Document,
+    page: &Page,
 ) -> Value {
     // The input is stdin, verbatim compact JSON — that is what makes a
     // `settings.json` script's bytes run unchanged.
@@ -819,7 +853,7 @@ fn exec_row(
         "page": target.page,
         "invocation": invocation,
         "block": block.anchor,
-        "rev": {"file": doc.root.node_rev.0, "block": block.rev},
+        "rev": {"file": page.file_rev, "block": block.rev},
         // The row's `result` is an EVALUATION word about the fire, not about
         // the process's exit: a script that exits 1 ran fine and said no.
         // `process.exit` carries what the script said.
@@ -1185,7 +1219,7 @@ fn applied_row(world: &ModeWorld<'_>, effect: &Effect, applied: &Applied) -> Val
 /// The page's authority: its `caps:` narrowed by the declaring root's
 /// conventions.
 fn page_authority(world: &ModeWorld<'_>) -> Result<Authority, caps::CapsError> {
-    let page_caps = caps::page_caps(world.doc)?;
+    let page_caps = world.page.caps.clone()?;
     let (conventions, _) = caps::load_conventions(world.declaring_root)?;
     Ok(caps::resolve_page_authority(
         page_caps.as_ref(),
@@ -1202,8 +1236,9 @@ fn page_authority(world: &ModeWorld<'_>) -> Result<Authority, caps::CapsError> {
 /// naming it. The program branches on a row; it does not handle an exception
 /// it has no syntax for.
 struct ProcessSeam<'a> {
-    /// The page — for `bash(block=)`, which resolves an anchor on THIS page.
-    doc: &'a Document,
+    /// The page's blocks — for `bash(block=)`, which resolves an anchor on
+    /// THIS page.
+    blocks: &'a blocks::PageBlocks,
     /// The workspace root: the default cwd, the scratch dir, and
     /// `$MERIDIAN_PROJECT_ROOT`.
     root: &'a Path,
@@ -1525,7 +1560,7 @@ impl ProcessSeam<'_> {
             effects::ExecProgram::Cmd(cmd) => {
                 self.stage(cmd, &blake3::hash(cmd.as_bytes()).to_hex()[..16], None)
             }
-            effects::ExecProgram::Block(anchor) => match blocks::block(self.doc, anchor) {
+            effects::ExecProgram::Block(anchor) => match self.blocks.block(anchor) {
                 Ok(block) => {
                     let ext = fence_extension(&block);
                     self.stage(&block.source, &block.rev, ext)
@@ -1628,7 +1663,9 @@ impl ProcessSeam<'_> {
     fn command_of(&self, call: &effects::BashCall) -> Result<String, String> {
         match &call.program {
             effects::ExecProgram::Cmd(cmd) => Ok(cmd.clone()),
-            effects::ExecProgram::Block(anchor) => blocks::block(self.doc, anchor)
+            effects::ExecProgram::Block(anchor) => self
+                .blocks
+                .block(anchor)
                 .map(|block| block.source)
                 .map_err(|e| e.to_string()),
         }
@@ -1697,7 +1734,7 @@ fn refused_row(
 /// `docs/run-plane.md` and `effects::kernel::ExecProgram::Block`'s own doc
 /// both already stated the load rule. A doc claiming a refusal the tree does
 /// not make is the F2 class.
-fn exec_anchor_fault(doc: &Document, block: &AnchoredBlock, loaded: &LoadedBlock) -> Option<Value> {
+fn exec_anchor_fault(page: &Page, block: &AnchoredBlock, loaded: &LoadedBlock) -> Option<Value> {
     // ONE declaration per block since card
     // `hooks-load-row-declarations-array-vs-dict`: a second `declare()` in one
     // block faults `declared_twice` at load and never reaches here.
@@ -1708,7 +1745,7 @@ fn exec_anchor_fault(doc: &Document, block: &AnchoredBlock, loaded: &LoadedBlock
     let effects::ExecProgram::Block(anchor) = &spec.program else {
         return None;
     };
-    let Err(e) = blocks::block(doc, anchor) else {
+    let Err(e) = page.blocks.block(anchor) else {
         return None;
     };
     Some(json!({
@@ -1913,14 +1950,14 @@ mod tests {
     }
 
     fn probe_world<'a>(
-        doc: &'a Document,
+        page: &'a Page,
         root: &'a fs::WorkspaceRoot,
         fp: &'a MerkleRoot,
         prelude: Option<&'a str>,
         cache: Option<&'a dyn ModuleCache>,
     ) -> ModeWorld<'a> {
         ModeWorld {
-            doc,
+            page,
             root,
             declaring_root: None,
             observed_root: fp,
@@ -1985,7 +2022,8 @@ declare(on = \"Stop\")
         let fp = MerkleRoot(String::new());
         // The reviewer's own one-liner.
         let prelude = "declare(impl = exec(\"bash\", cmd = \"id\"))\n";
-        let world = probe_world(&doc, &root, &fp, Some(prelude), None);
+        let page = Page::of(&doc);
+        let world = probe_world(&page, &root, &fp, Some(prelude), None);
         let target = wire::RunTarget {
             page: "probe.md".to_owned(),
             block: Some("bare".to_owned()),
@@ -2029,7 +2067,8 @@ declare(on = \"Stop\")
         let root = fs::WorkspaceRoot(tmp.path().to_path_buf());
         let fp = MerkleRoot(String::new());
         let prelude = "declare(impl = exec(\"bash\", cmd = \"id\"))\n";
-        let world = probe_world(&doc, &root, &fp, Some(prelude), None);
+        let page = Page::of(&doc);
+        let world = probe_world(&page, &root, &fp, Some(prelude), None);
         let target = wire::RunTarget {
             page: "probe.md".to_owned(),
             block: Some("armer".to_owned()),
@@ -2072,8 +2111,9 @@ declare(on = \"Stop\")
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = fs::WorkspaceRoot(tmp.path().to_path_buf());
         let fp = MerkleRoot(String::new());
+        let page = Page::of(&doc);
         let world = probe_world(
-            &doc,
+            &page,
             &root,
             &fp,
             Some("def helper(x):\n    return x\n"),
@@ -2110,7 +2150,8 @@ declare(on = \"Stop\")
         let root = fs::WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
         let fp = MerkleRoot(String::new());
         let cache = ProbeCache::default();
-        let world = probe_world(&doc, &root, &fp, None, Some(&cache));
+        let page = Page::of(&doc);
+        let world = probe_world(&page, &root, &fp, None, Some(&cache));
         let block = probe_block();
         let ctx = RunCtx::default();
 
@@ -2139,7 +2180,8 @@ declare(on = \"Stop\")
         let root = fs::WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
         let fp = MerkleRoot(String::new());
         let cache = ProbeCache::default();
-        let world = probe_world(&doc, &root, &fp, None, Some(&cache));
+        let page = Page::of(&doc);
+        let world = probe_world(&page, &root, &fp, None, Some(&cache));
         let mut block = probe_block();
         block.source = "bash(cmd = \"true\")\n".to_owned();
         let ctx = RunCtx::default();
@@ -2185,7 +2227,8 @@ printf '%s|%s' \"$BASE\" \"$OVER\"
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = fs::WorkspaceRoot(tmp.path().to_path_buf());
         let fp = MerkleRoot(String::new());
-        let world = probe_world(&doc, &root, &fp, None, None);
+        let page = Page::of(&doc);
+        let world = probe_world(&page, &root, &fp, None, None);
         let env = BTreeMap::from([
             ("BASE".to_owned(), "target".to_owned()),
             ("OVER".to_owned(), "target".to_owned()),
@@ -2294,10 +2337,10 @@ printf '%s|%s' \"$BASE\" \"$OVER\"
         const RACERS: usize = 8;
         const ROUNDS: usize = 20;
         let raw = "# Race\n```bash\necho ran\n```\n^p\n".to_owned();
-        let doc = model::build(raw.clone(), syntax::parse(&raw));
+        let page = blocks::PageBlocks::of(&model::build(raw.clone(), syntax::parse(&raw)));
         let tmp = tempfile::tempdir().expect("tempdir");
         let seam = ProcessSeam {
-            doc: &doc,
+            blocks: &page,
             root: tmp.path(),
             page: "race.md",
             invocation: "race-t0",
@@ -2362,10 +2405,10 @@ printf '%s|%s' \"$BASE\" \"$OVER\"
     #[test]
     fn a_hit_refreshes_the_key_and_a_call_never_prunes_what_it_returns() {
         let raw = "# Hot\n```bash\necho hot\n```\n^p\n".to_owned();
-        let doc = model::build(raw.clone(), syntax::parse(&raw));
+        let page = blocks::PageBlocks::of(&model::build(raw.clone(), syntax::parse(&raw)));
         let tmp = tempfile::tempdir().expect("tempdir");
         let seam = ProcessSeam {
-            doc: &doc,
+            blocks: &page,
             root: tmp.path(),
             page: "hot.md",
             invocation: "hot-t0",

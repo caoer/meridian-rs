@@ -16,7 +16,7 @@ fn scripted(outcomes: &[Result<u8, AdmissionError>]) -> (io::Result<u8>, usize, 
             attempts.set(turn + 1);
             outcomes[turn.min(outcomes.len() - 1)].map_err(Error::Admission)
         },
-        false,
+        || false,
         &RETRY_PAUSES,
         |wait| pauses.borrow_mut().push(wait),
     );
@@ -54,8 +54,8 @@ fn occupied_allowance_is_never_waited_on_and_is_transient() {
     assert_eq!((attempts, pauses.len()), (1, 0));
 }
 
-/// The caller's own lease is part of what occupies the allowance, so the
-/// same request cannot be admitted by retrying: a fault, not a `retry`.
+/// Occupied allowance the caller's own leases alone cause cannot be cured by
+/// retrying the same request: a fault, not a `retry`.
 #[test]
 fn occupied_allowance_under_the_callers_own_lease_is_not_transient() {
     let attempts = Cell::new(0);
@@ -64,7 +64,7 @@ fn occupied_allowance_under_the_callers_own_lease_is_not_transient() {
             attempts.set(attempts.get() + 1);
             Err(Error::Admission(AdmissionError::Busy))
         },
-        true,
+        || true,
         &RETRY_PAUSES,
         |_| panic!("occupied allowance is never waited on"),
     )
@@ -90,7 +90,7 @@ fn a_member_fault_is_neither_retried_nor_transient() {
                 observed: 2,
             })
         },
-        false,
+        || false,
         &RETRY_PAUSES,
         |_| panic!("a load fault is not a race"),
     )
@@ -141,17 +141,8 @@ fn a_second_body_beside_an_oversized_lease_is_classed_by_who_holds_the_first() {
     };
 
     // Another request holds the first body: retrying can succeed.
-    let (taken, held) = std::sync::mpsc::channel();
-    let (release, released) = std::sync::mpsc::channel::<()>();
     std::thread::scope(|scope| {
-        let other = &catalog;
-        scope.spawn(move || {
-            let lease = other.pin_read("a.md").unwrap().unwrap();
-            taken.send(()).unwrap();
-            let _ = released.recv();
-            drop(lease);
-        });
-        held.recv().unwrap();
+        let _release = held_elsewhere(scope, &catalog, "a.md");
         let (transient, scan, named) = faces();
         assert!(transient, "another request's lease ends without this one");
         for frame in [scan, named] {
@@ -159,7 +150,6 @@ fn a_second_body_beside_an_oversized_lease_is_classed_by_who_holds_the_first() {
             assert_eq!(frame.recovery, wire::Recovery::Retry);
             assert_eq!(frame.path.as_ref(), Some(&b));
         }
-        release.send(()).unwrap();
     });
 
     // This request holds the first body itself: no retry admits the second.
@@ -186,4 +176,150 @@ fn a_second_body_beside_an_oversized_lease_is_classed_by_who_holds_the_first() {
     assert_eq!(served, b"# B\n\nsecond\n");
     let report = controller.report();
     assert_eq!((report.pinned, report.reserved), (0, 0));
+}
+
+/// Another request (thread) leases `path` until the returned sender is
+/// dropped or fires. The sender lives in the caller's scope closure, so a
+/// failing assertion there unwinds it and the other request ends instead of
+/// waiting forever.
+fn held_elsewhere<'s>(
+    scope: &'s std::thread::Scope<'s, '_>,
+    catalog: &'s Catalog,
+    path: &'static str,
+) -> std::sync::mpsc::Sender<()> {
+    let (taken, held) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    scope.spawn(move || {
+        let lease = catalog.pin_read(path).unwrap().unwrap();
+        taken.send(()).unwrap();
+        let _ = released.recv();
+        drop(lease);
+    });
+    held.recv().unwrap();
+    release
+}
+
+const PEAK: usize = 131_072;
+
+/// A catalog over three small pages, unlimited until the test sets a limit.
+fn three_pages() -> (Catalog, Controller, (tempfile::TempDir, RawStore)) {
+    let dir = tempfile::tempdir().unwrap();
+    let backing = RawStore::new(dir.path()).unwrap();
+    let controller = Controller::new(0);
+    let docs: Docs = [
+        ("a.md", "# A\n\nfirst\n"),
+        ("b.md", "# B\n\nsecond\n"),
+        ("c.md", "# C\n\nthird\n"),
+    ]
+    .into_iter()
+    .map(|(path, raw)| {
+        (
+            path.to_owned(),
+            Arc::new(model::build(raw.to_owned(), syntax::parse(raw))),
+        )
+    })
+    .collect();
+    let catalog = Catalog::capture(&docs, &controller, &backing, PEAK).unwrap();
+    (catalog, controller, (dir, backing))
+}
+
+/// Whether `path` is admitted now; else whether its refusal is transient.
+fn admitted(catalog: &Catalog, path: &str) -> Result<(), bool> {
+    match model::catalog::scan(catalog, path, |_| ()) {
+        Ok(_) => Ok(()),
+        Err(fault) => Err(fault.is_transient()),
+    }
+}
+
+/// Below the oversized regime, with this request holding `a.md` and another
+/// request holding `c.md`, the allowance fits `a.md` plus one more load but
+/// not both pins plus one. The occupancy that keeps `b.md` out is the other
+/// request's, so it is transient, and the same request holding `a.md` is
+/// admitted once the other lease ends.
+#[test]
+fn occupancy_another_request_completes_is_transient_while_holding_a_lease() {
+    let (catalog, controller, _backing) = three_pages();
+    std::thread::scope(|scope| {
+        let release = held_elsewhere(scope, &catalog, "c.md");
+        let own = catalog.pin_read("a.md").unwrap().unwrap();
+        let both = controller.report();
+        controller.set_limit(both.total + PEAK - 1);
+        assert!(
+            PEAK <= controller.report().limit - controller.report().floor,
+            "the load is not oversized: {:?}",
+            controller.report()
+        );
+        assert_eq!(
+            admitted(&catalog, "b.md"),
+            Err(true),
+            "the other request's lease ends without this one"
+        );
+        drop(release);
+        while controller.report().pinned >= both.pinned {
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            admitted(&catalog, "b.md"),
+            Ok(()),
+            "admitted, a.md still held"
+        );
+        drop(own);
+    });
+}
+
+/// Below the oversized regime, with nothing held but this request's own
+/// `a.md`, an allowance that fits `a.md` and not one more load keeps `b.md`
+/// out by this request's lease alone: not transient.
+#[test]
+fn own_leases_that_leave_no_room_for_the_load_are_not_transient() {
+    let (catalog, controller, _backing) = three_pages();
+    let own = catalog.pin_read("a.md").unwrap().unwrap();
+    controller.set_limit(controller.report().total + PEAK - 1);
+    assert_eq!(admitted(&catalog, "b.md"), Err(false));
+    drop(own);
+    assert_eq!(admitted(&catalog, "b.md"), Ok(()));
+}
+
+/// In the oversized regime, every load exceeds the allowance above the floor,
+/// so this request's own bytes plus the load always exceed it too. What keeps
+/// `b.md` out here is the exclusive slot another request's oversized `a.md`
+/// holds, not this request's `c.md`: transient.
+#[test]
+fn an_oversized_load_kept_out_by_another_requests_exclusive_slot_is_transient() {
+    let (catalog, controller, _backing) = three_pages();
+    let own = catalog.pin_read("c.md").unwrap().unwrap();
+    controller.set_limit(1);
+    std::thread::scope(|scope| {
+        let _release = held_elsewhere(scope, &catalog, "a.md");
+        assert!(
+            controller.report().transient,
+            "the other request holds the exclusive slot: {:?}",
+            controller.report()
+        );
+        assert_eq!(admitted(&catalog, "b.md"), Err(true));
+    });
+    drop(own);
+}
+
+/// A lease that ended no longer counts against its thread, whether it was
+/// dropped or unwound past: a later `Busy` another request causes on the
+/// same thread is transient.
+#[test]
+fn a_lease_that_ended_no_longer_counts_against_its_thread() {
+    let (catalog, controller, _backing) = three_pages();
+    controller.set_limit(1);
+    drop(catalog.pin_read("a.md").unwrap().unwrap());
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _lease = catalog.pin_read("c.md").unwrap().unwrap();
+        panic!("unwinding past a live lease");
+    }));
+    assert!(unwound.is_err());
+    std::thread::scope(|scope| {
+        let _release = held_elsewhere(scope, &catalog, "a.md");
+        assert_eq!(
+            admitted(&catalog, "b.md"),
+            Err(true),
+            "this thread holds nothing"
+        );
+    });
 }

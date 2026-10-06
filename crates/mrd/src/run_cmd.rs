@@ -634,7 +634,7 @@ fn mode_legs(
         };
         rows.push(run::modes::mode_row(
             &run::modes::ModeWorld {
-                doc: page_doc,
+                page: &run::modes::Page::of(page_doc),
                 root,
                 declaring_root,
                 observed_root: &observed,

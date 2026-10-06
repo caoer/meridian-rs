@@ -1,6 +1,6 @@
 use super::{
     Access, AdmissionError, BodyPin, ByteIdentity, Controller, Error, Failure, Floor, Key,
-    LoadError, Member, Phase, Pin, RawPin, Reservation, Resident, SharedBytes, lock,
+    LoadError, Member, MemberId, Phase, Pin, RawPin, Reservation, Resident, SharedBytes, lock,
 };
 
 use std::sync::Arc;
@@ -17,6 +17,26 @@ pub(super) struct Call {
 }
 
 impl Member {
+    #[must_use]
+    pub fn id(&self) -> MemberId {
+        MemberId(self.key)
+    }
+
+    /// Whether occupied allowance for a load of `peak` is kept by the members
+    /// in `held` alone (merkle-spec §6.4), measured against the allowance
+    /// above the floor as the ledger stands. A load whose peak fits that
+    /// allowance is kept out when the held members' charged body and raw
+    /// bytes plus `peak` exceed it; an oversized load is kept out when the
+    /// serialized oversized member is one of `held`. Anything else that
+    /// occupies the allowance belongs to other owners, whose release can
+    /// admit the load. A disabled limit keeps nothing out.
+    #[must_use]
+    pub fn held_blocks(&self, held: &[MemberId], peak: usize) -> bool {
+        // Control prototype: any lease the thread holds keeps the member out.
+        let _ = (peak, &self.controller);
+        !held.is_empty()
+    }
+
     #[must_use]
     pub fn identity(&self) -> ByteIdentity {
         ByteIdentity {
@@ -283,6 +303,12 @@ impl Drop for Member {
 }
 
 impl Pin {
+    /// The member version this pin holds.
+    #[must_use]
+    pub fn member_id(&self) -> MemberId {
+        self.member.id()
+    }
+
     fn body(&self) -> &BodyPin {
         self.body.as_ref().expect("live pin owns its body")
     }

@@ -220,10 +220,10 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
                     source,
                     &invocation,
                 ),
-                (Some(world), None) => entry_row(&**world, &target.page, &invocation, |doc| {
+                (Some(world), None) => entry_row(&**world, &target.page, &invocation, |page| {
                     modes::mode_row(
                         &modes::ModeWorld {
-                            doc,
+                            page,
                             root: &root,
                             declaring_root: Some(ws),
                             observed_root: &world.at_fingerprint,
@@ -271,16 +271,17 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
     rows
 }
 
-/// One mode row over its page, copied out of the pinned generation under an
-/// interactive lease that ends before the row runs (merkle-spec §6.8): a
-/// block's Starlark and `bash()` execute with no body of the generation
-/// pinned. Every arm answers on the row, so its siblings still report for
-/// themselves.
+/// One mode row over its page: what the row reads of it ([`modes::Page`]) is
+/// copied out of the pinned generation under an interactive lease that ends
+/// before the row runs (merkle-spec §6.8). A block's Starlark and `bash()`
+/// execute with no body of the generation pinned, and the row keeps no parse
+/// tree of the page. Every arm answers on the row, so its siblings still
+/// report for themselves.
 fn entry_row(
     world: &dyn model::catalog::DocumentCatalog,
     page: &str,
     invocation: &str,
-    row: impl FnOnce(&model::Document) -> Value,
+    row: impl FnOnce(&modes::Page) -> Value,
 ) -> Value {
     let refused = |class: &str, reason: String| {
         json!({
@@ -290,8 +291,8 @@ fn entry_row(
             "fault": {"class": class, "reason": reason},
         })
     };
-    match model::catalog::read(world, page, Clone::clone) {
-        Ok(Some(doc)) => row(&doc),
+    match model::catalog::read(world, page, modes::Page::of) {
+        Ok(Some(copied)) => row(&copied),
         // The pinned corpus does not carry this page.
         Ok(None) => refused(
             "bad_path",
@@ -758,9 +759,9 @@ declare(on = \"PreToolUse\", match = \"Bash\")
             &world,
             "HOOKS.md",
             "inv-t0",
-            |doc| json!({"pinned_bytes": doc.raw.as_bytes() == HOOKS.as_bytes()}),
+            |page| json!({"pinned_page": *page == modes::Page::of(&docs["HOOKS.md"])}),
         );
-        assert_eq!(row, json!({"pinned_bytes": true}));
+        assert_eq!(row, json!({"pinned_page": true}));
         assert_eq!(
             (world.reads(), world.scans()),
             (1, 0),
@@ -783,9 +784,10 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         let controller = Controller::new(1);
         let docs = crate::entry_fixture::docs(&[("HOOKS.md", HOOKS), ("other.md", "# Other\n")]);
         let world = Catalog::capture(&docs, &controller, &store, 131_072).unwrap();
+        let expected = modes::Page::of(&docs["HOOKS.md"]);
         drop(docs);
-        let row = entry_row(&world, "HOOKS.md", "inv-t0", |doc| {
-            assert_eq!(doc.raw.as_bytes(), HOOKS.as_bytes());
+        let row = entry_row(&world, "HOOKS.md", "inv-t0", |page| {
+            assert_eq!(*page, expected);
             let report = controller.report();
             let nested = model::catalog::read(&world, "other.md", |other| other.raw.len());
             json!({"pinned": report.pinned, "nested": nested.is_ok()})

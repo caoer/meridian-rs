@@ -43,6 +43,11 @@ pub struct Member {
     key: Key,
 }
 
+/// Which retained version a member or pin is, for a caller that records what
+/// it holds ([`Member::held_blocks`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemberId(Key);
+
 #[derive(Debug)]
 pub struct Pin {
     body: Option<BodyPin>,
