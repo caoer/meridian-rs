@@ -75,6 +75,47 @@ impl WorkspaceEngine {
         }
     }
 
+    /// Requested heap this generation's metadata owns, each shared
+    /// allocation counted once through `seen`: the name index, the bodies'
+    /// map (a resident generation's slots and their facts; an eager one's map
+    /// alone — its documents are its bodies, not metadata), the unserved
+    /// and leaf records and the fingerprint. The inline struct is its
+    /// owner's.
+    #[must_use]
+    pub fn heap_bytes(&self, seen: &mut crate::residency::census::Seen) -> usize {
+        let Self {
+            index,
+            bodies,
+            unserved,
+            at_fingerprint,
+            leaves,
+        } = self;
+        let bodies = match bodies {
+            Bodies::Eager(docs) => docs.keys().fold(
+                model::allocation::btree_bytes::<String, Arc<model::Document>>(docs.len()),
+                |bytes, path| bytes.saturating_add(path.capacity()),
+            ),
+            Bodies::Resident(catalog) => catalog.heap_bytes(seen),
+        };
+        let unserved = unserved.iter().fold(
+            model::allocation::btree_bytes::<String, String>(unserved.len()),
+            |bytes, (path, condition)| {
+                bytes
+                    .saturating_add(path.capacity())
+                    .saturating_add(condition.capacity())
+            },
+        );
+        let leaves = leaves.keys().fold(
+            model::allocation::btree_bytes::<PathBuf, [u8; 32]>(leaves.len()),
+            |bytes, path| bytes.saturating_add(path.capacity()),
+        );
+        crate::residency::census::index_bytes(index, seen)
+            .saturating_add(bodies)
+            .saturating_add(unserved)
+            .saturating_add(leaves)
+            .saturating_add(at_fingerprint.0.capacity())
+    }
+
     /// The generation a residency pass built
     /// ([`crate::residency::catalog::update`]), its bodies leased under the
     /// host's per-load peak.

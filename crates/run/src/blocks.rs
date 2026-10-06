@@ -322,7 +322,7 @@ mod tests {
 ```starlark
 declare(on = \"Stop\")
 ```
-^first
+^zeta
 
 Some prose.
 ^just-prose
@@ -330,7 +330,7 @@ Some prose.
 ```bash
 echo hi
 ```
-^second
+^alpha
 ";
         let blocks: Vec<AnchoredBlock> = PageBlocks::of(&doc(page))
             .listed()
@@ -339,8 +339,8 @@ echo hi
             .collect();
         assert_eq!(
             blocks.iter().map(|b| b.anchor.as_str()).collect::<Vec<_>>(),
-            ["first", "second"],
-            "a prose anchor is not a block and does not appear"
+            ["zeta", "alpha"],
+            "document order, not id order; a prose anchor is not a block and does not appear"
         );
         assert!(blocks[0].is_starlark());
         assert_eq!(blocks[0].source, "declare(on = \"Stop\")");

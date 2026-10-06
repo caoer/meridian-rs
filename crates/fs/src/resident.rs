@@ -145,6 +145,31 @@ impl std::fmt::Debug for ResidentTree {
 }
 
 impl ResidentTree {
+    /// Requested heap this tree owns: the node map and both path sets (node
+    /// storage an upper bound, [`model::allocation::btree_bytes`]), each
+    /// path, and each node's child map.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        let Self {
+            nodes,
+            dirty,
+            collisions,
+        } = self;
+        let mut bytes = model::allocation::btree_bytes::<Vec<u8>, Node>(nodes.len());
+        for (path, node) in nodes {
+            bytes = bytes
+                .saturating_add(path.capacity())
+                .saturating_add(node.map.heap_bytes());
+        }
+        for set in [dirty, collisions] {
+            bytes = set.iter().fold(
+                bytes.saturating_add(model::allocation::btree_bytes::<Vec<u8>, ()>(set.len())),
+                |bytes, path| bytes.saturating_add(path.capacity()),
+            );
+        }
+        bytes
+    }
+
     /// The empty workspace tree: a root node with `C = ∅`.
     #[must_use]
     pub fn new() -> ResidentTree {

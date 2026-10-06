@@ -34,6 +34,69 @@ pub fn arc_bytes<T>() -> usize {
         .map_or(usize::MAX, |(layout, _)| layout.pad_to_align().size())
 }
 
+/// Upper bound on the node storage of a `BTreeMap<K, V>` (or, with `V = ()`,
+/// a `BTreeSet<K>`) holding `len` entries. std does not expose its node
+/// allocations; every node but the root holds at least five entries, so at
+/// most `len / 5 + 1` nodes exist, each charged here at the internal-node size
+/// (the leaf's entries plus twelve edges). Keys' and values' own heap is the
+/// caller's to add.
+#[must_use]
+pub fn btree_bytes<K, V>(len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    (len / 5 + 1).saturating_mul(btree_internal_node::<K, V>())
+}
+
+/// std's internal node in declaration order: parent pointer, parent index,
+/// length, eleven keys, eleven values, twelve edges. Declaration order never
+/// packs tighter than the compiler's own field order, so this is not below
+/// the real node; an impossible layout charges MAX.
+fn btree_internal_node<K, V>() -> usize {
+    let fields = [
+        Layout::new::<Option<std::ptr::NonNull<u8>>>(),
+        Layout::new::<u16>(),
+        Layout::new::<u16>(),
+    ];
+    let arrays = [Layout::array::<K>(11), Layout::array::<V>(11)];
+    let edges = Layout::array::<std::ptr::NonNull<u8>>(12);
+    let mut layout = Layout::new::<()>();
+    for field in fields
+        .into_iter()
+        .map(Ok)
+        .chain(arrays)
+        .chain(std::iter::once(edges))
+    {
+        let Ok(field) = field else {
+            return usize::MAX;
+        };
+        let Ok((next, _)) = layout.extend(field) else {
+            return usize::MAX;
+        };
+        layout = next;
+    }
+    layout.pad_to_align().size()
+}
+
+/// Heap of a `Vec<String>`: its buffer and each string's.
+#[must_use]
+pub fn strings_bytes(strings: &[String], capacity: usize) -> usize {
+    strings.iter().fold(
+        capacity.saturating_mul(size_of::<String>()),
+        |bytes, text| bytes.saturating_add(text.capacity()),
+    )
+}
+
+/// [`arc_bytes`] for an unsized `Arc<T>` payload, from the value's own size
+/// and alignment.
+#[must_use]
+pub fn arc_dyn_bytes<T: ?Sized>(value: &T) -> usize {
+    Layout::from_size_align(size_of_val(value), align_of_val(value))
+        .ok()
+        .and_then(|value| Layout::new::<[usize; 2]>().extend(value).ok())
+        .map_or(usize::MAX, |(layout, _)| layout.pad_to_align().size())
+}
+
 fn node_heap(node: &Node) -> usize {
     // Destructure every field: adding owned model data must revisit its charge.
     let Node {
@@ -120,6 +183,17 @@ fn kind_heap(kind: &NodeKind) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unsized_arc_is_charged_as_its_sized_payload() {
+        #[repr(align(64))]
+        #[derive(Debug)]
+        struct Aligned(u8);
+        let aligned = Aligned(1);
+        assert_eq!(aligned.0, 1);
+        let value: std::sync::Arc<dyn std::fmt::Debug> = std::sync::Arc::new(aligned);
+        assert_eq!(arc_dyn_bytes(&*value), arc_bytes::<Aligned>());
+    }
 
     #[test]
     fn arc_layout_accounts_for_alignment_and_empty_payload_owners() {

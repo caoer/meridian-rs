@@ -297,6 +297,21 @@ fn build_fallback_index(root: &WorkspaceRoot, domain: &Domain) -> BTreeMap<Strin
 }
 
 impl Domain {
+    /// Requested heap these rules own. The inline struct is its owner's.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        let Self { version: _, rules } = self;
+        rules.iter().fold(
+            rules.capacity().saturating_mul(size_of::<Rule>()),
+            |bytes, rule| {
+                bytes.saturating_add(model::allocation::strings_bytes(
+                    &rule.segs,
+                    rule.segs.capacity(),
+                ))
+            },
+        )
+    }
+
     /// The default domain: md-only floor + dot-segment ignore, no custom rules,
     /// `version` 0.
     #[must_use]

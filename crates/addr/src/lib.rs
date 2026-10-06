@@ -55,6 +55,12 @@ impl MountName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Requested heap this name owns.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        self.0.capacity()
+    }
 }
 
 impl fmt::Display for MountName {
