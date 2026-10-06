@@ -1,7 +1,9 @@
 //! Immutable generation metadata and fallible, pinned body access (merkle §6.8).
 //! The host supplies storage and admission; model owns neither I/O nor a cache.
 
-use crate::{CorpusIndex, Docs, Document, Node, NodeKind, NodeRev, RootedCorpus};
+use crate::{
+    AmbientDisk, CorpusIndex, Docs, Document, HashDomain, Node, NodeKind, NodeRev, RootedCorpus,
+};
 use addr::MountName;
 use std::{
     borrow::Cow,
@@ -226,10 +228,15 @@ impl NameCorpus for RootedCorpus<'_> {
 }
 
 /// Borrow catalogs for name resolution without owning or pinning their bodies.
+/// The ambient root's hash domain and disk travel with it, as they do with
+/// [`RootedCorpus`]: a face that colours pins needs both questions answered
+/// by whoever built the generation.
 #[derive(Debug)]
 pub struct RootedCatalog<'a> {
     ambient: &'a dyn DocumentCatalog,
     mounted: BTreeMap<MountName, &'a dyn DocumentCatalog>,
+    ambient_domain: Option<&'a dyn HashDomain>,
+    ambient_disk: Option<&'a dyn AmbientDisk>,
 }
 impl<'a> RootedCatalog<'a> {
     #[must_use]
@@ -237,12 +244,52 @@ impl<'a> RootedCatalog<'a> {
         Self {
             ambient: catalog,
             mounted: BTreeMap::new(),
+            ambient_domain: None,
+            ambient_disk: None,
         }
     }
     #[must_use]
     pub fn with_root(mut self, name: MountName, catalog: &'a dyn DocumentCatalog) -> Self {
         self.mounted.insert(name, catalog);
         self
+    }
+    /// Record the hash domain the ambient generation was built under.
+    #[must_use]
+    pub fn with_hash_domain(mut self, domain: &'a dyn HashDomain) -> Self {
+        self.ambient_domain = Some(domain);
+        self
+    }
+    /// Record the disk the ambient generation was built from.
+    #[must_use]
+    pub fn with_ambient_disk(mut self, disk: &'a dyn AmbientDisk) -> Self {
+        self.ambient_disk = Some(disk);
+        self
+    }
+    /// The ambient root's generation.
+    #[must_use]
+    pub fn ambient_catalog(&self) -> &'a dyn DocumentCatalog {
+        self.ambient
+    }
+    /// One mounted root's generation, by canonical name.
+    #[must_use]
+    pub fn root(&self, name: &MountName) -> Option<&'a dyn DocumentCatalog> {
+        self.mounted.get(name).copied()
+    }
+    /// [`RootedCorpus::in_hash_domain`], with the same `None` = cannot say.
+    #[must_use]
+    pub fn in_hash_domain(&self, root: Option<&MountName>, path: &str) -> Option<bool> {
+        match root {
+            None => self.ambient_domain.map(|d| d.contains(path)),
+            Some(_) => None,
+        }
+    }
+    /// [`RootedCorpus::on_ambient_disk`], with the same `None` = cannot say.
+    #[must_use]
+    pub fn on_ambient_disk(&self, root: Option<&MountName>, path: &str) -> Option<bool> {
+        match root {
+            None => self.ambient_disk.and_then(|d| d.exists(path)),
+            Some(_) => None,
+        }
     }
 }
 impl NameCorpus for RootedCatalog<'_> {

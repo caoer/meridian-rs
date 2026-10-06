@@ -23,6 +23,9 @@ struct Entry {
     member: Member,
     /// The mount names this version's wikilink and embed targets address.
     link_roots: Box<[addr::MountName]>,
+    /// The mount names this version's lock addresses name; `None` when it
+    /// carries no lock row.
+    lock_roots: Option<Box<[addr::MountName]>>,
 }
 
 /// Complete generation membership with sheddable bodies and exact backing.
@@ -59,6 +62,7 @@ impl Catalog {
                     revision: doc.root.node_rev.clone(),
                     member: controller.retain(Arc::new(source)),
                     link_roots: model::catalog::link_roots(doc).into_iter().collect(),
+                    lock_roots: view::walk::lock_fact(doc).map(|roots| roots.into_iter().collect()),
                 },
             );
             index.insert(path, doc);
@@ -113,6 +117,31 @@ impl DocumentCatalog for Catalog {
                     .map_err(io::Error::other)
             })
             .transpose()
+    }
+}
+impl view::walk::LockFacts for Catalog {
+    fn lock_roots(&self) -> BTreeSet<addr::MountName> {
+        // Control prototype: lock facts are read off each body under a scan
+        // pin, and a member that cannot be read contributes none.
+        self.entries
+            .iter()
+            .filter_map(|(path, entry)| {
+                let _descriptor = &entry.lock_roots;
+                model::catalog::scan(self, path, view::walk::lock_fact)
+                    .ok()
+                    .flatten()
+                    .flatten()
+            })
+            .flatten()
+            .collect()
+    }
+    fn lock_holders(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        Box::new(self.entries.keys().map(String::as_str).filter(|path| {
+            matches!(
+                model::catalog::scan(self, path, view::walk::lock_fact),
+                Ok(Some(Some(_)))
+            )
+        }))
     }
 }
 impl DocumentLease for Pin {

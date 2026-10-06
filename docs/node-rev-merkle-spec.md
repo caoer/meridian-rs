@@ -518,10 +518,11 @@ engine-side.
 
 The unit of residency is a member version, identified by workspace, relative
 path and content leaf digest. Each served generation retains membership,
-length, digest, UTF-8 service condition, name/alias rows and the mount names
-its wikilink and embed targets address, independently of whether its document
-is hot. Each of these is fixed when the member version is parsed; a question
-they answer never pins a body. The memo, feed, ring and these descriptors stay
+length, digest, UTF-8 service condition, name/alias rows, the mount names
+its wikilink and embed targets address, whether it carries a lock row (a pin
+or a refused `meridian-lock`) and the mount names its lock addresses name,
+independently of whether its document is hot. Each of these is fixed when the
+member version is parsed; a question they answer never pins a body. The memo, feed, ring and these descriptors stay
 resident for a subscribed root. A cold member is still a member: eviction
 cannot change a fingerprint, name resolution, a scan's coverage, or a node rev.
 
@@ -1067,8 +1068,27 @@ bound into `model::catalog::RootedCatalog` as its resident engine's catalog
 (`wire_serve::mount_corpus::ServedCorpus::catalog`): rooted name resolution
 reads that root's membership and name index and never a document of it. The
 engine generation serves these through its eager documents until daemon
-generation publication migrates; the pin plane (`walk`) and the run and script
-worlds still read document maps.
+generation publication migrates; the run and script worlds still read
+document maps.
+
+The pin plane's wire door (`walk`) reads the same generation catalog through
+`view::walk::walk_leased`. Which mounted roots a walk needs and which members
+can declare an edge are the generation's lock facts (`view::walk::LockFacts`,
+the union and the holders of the per-member facts of §6.4), so neither
+question pins a body. The walk scan-pins each lock holder once to read its
+pins and releases it before the next, then scan-pins an edge's target only
+while that one edge is classified: a walk holds one body at a time, and a
+member that carries no lock row and is no edge's target is never read.
+Membership, name resolution and the rev citations come from metadata. A
+mounted root's target is leased from that root's catalog; the ambient hash
+domain and disk questions travel with `model::catalog::RootedCatalog`. A
+named page outside the hash domain is admitted as one more member whose
+document the call holds, entered into a copy of the generation's name index.
+A member the generation knows and cannot pin, or whose parsed revision
+disagrees with its descriptor, is an `io_error` naming that member (a mounted
+root's as `root:path`): never a grey or red row and never a missing edge.
+The eager lanes (`mrd walk`, `check`, `status`) run the same walk and the
+same colour computer over a document map, whose lends cannot fault.
 
 SQL scan pins do not promote read recency. Tests observe lease release from
 inside the batch flush and hold that recency contract by the eviction order
