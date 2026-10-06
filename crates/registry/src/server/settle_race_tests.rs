@@ -5,12 +5,9 @@
 //! door's own observation; this pins today's degrade for it (two chain
 //! breaks, the born file told twice — wire-contract §7.1), so a slice that
 //! makes it chain must change this test.
-//!
-//! The reader keeps observing until it sees each write
-//! ([`crate::ring::observe_past`]).
 
 use super::*;
-use crate::ring::observe_past;
+use crate::ring::observe;
 use serde_json::json;
 
 /// A frame as `(root_before, root_after, sorted paths)`, roots by name.
@@ -55,7 +52,7 @@ fn race(op: &Value, pending: bool) -> Vec<Told> {
     let mut pre = start.clone();
     if pending {
         std::fs::write(root.0.join("other.md"), "# Other, edited before the door\n").unwrap();
-        pre = observe_past(&registry, &root, &cache, &start);
+        pre = observe(&registry, &root, &cache);
     }
     let (announced, resume) = ring.pause_next_door_observation();
     let op = wire_serve::decode::decode(op.as_object().unwrap(), Rev::V3).unwrap();
@@ -68,7 +65,7 @@ fn race(op: &Value, pending: bool) -> Vec<Told> {
             "# Late, rewritten by an outside writer\n",
         )
         .unwrap();
-        let mid = observe_past(&registry, &root, &cache, &pre);
+        let mid = observe(&registry, &root, &cache);
         resume.send(()).unwrap();
         let landed = door.join().unwrap();
         assert!(landed.is_ok(), "the door refused: {landed:?}");
@@ -193,20 +190,6 @@ fn a_create_through_a_moved_memo_takes_the_degrade() {
             told("MID", "FIN", &["born.md"]),
         ]
     );
-}
-
-/// One observation through the door-entry path.
-fn observe(
-    registry: &Registry,
-    root: &fs::WorkspaceRoot,
-    cache: &Arc<std::sync::Mutex<fs::DomainCache>>,
-) -> Root {
-    Root(
-        registry
-            .door_observation(&root.0, cache, DOOR_COOKIE_TIMEOUT)
-            .expect("an observation")
-            .0,
-    )
 }
 
 /// Wait for sightings, resuming the watcher past each one below `serial`;
