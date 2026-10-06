@@ -74,20 +74,24 @@ fn sql_resolves_a_link_into_a_mounted_root() {
     let tmp = TempDir::new().unwrap();
 
     let other = tmp.path().join("other");
-    write(&other, "deep/c.md", "# C\n\nleaf body\n");
+    write(
+        &other,
+        "deep/c.md",
+        "---\naliases: [sea]\n---\n# C\n\nleaf body\n",
+    );
     write(
         &other,
         "MERIDIAN.md",
         "---\ntype: meridian-root\nversion: 1\nname: other\n---\n",
     );
 
-    // One link that lands in the mounted root, one that names a page the
-    // mounted root does not hold.
+    // One link that lands in the mounted root by path, one by alias, and one
+    // that names a page the mounted root does not hold.
     let ws = tmp.path().join("ws");
     write(
         &ws,
         "a.md",
-        "# A\n\n[[other:deep/c.md]] and [[other:deep/absent.md]]\n",
+        "# A\n\n[[other:deep/c.md]], [[other:sea]] and [[other:deep/absent.md]]\n",
     );
 
     let config_path = tmp.path().join("conf").join("MERIDIAN.md");
@@ -116,6 +120,7 @@ fn sql_resolves_a_link_into_a_mounted_root() {
     let expected = json!([
         ["other:deep/absent.md", null, null],
         ["other:deep/c.md", "other", "deep/c.md"],
+        ["other:sea", "other", "deep/c.md"],
     ]);
     // The first statement cold-builds the projection; the second answers
     // from the pinned one, after the rooted rows were re-resolved against
@@ -133,5 +138,32 @@ fn sql_resolves_a_link_into_a_mounted_root() {
         pins["body"]["rows"],
         json!([[1]]),
         "an unmoved mounted root appends no generation: {pins}"
+    );
+
+    // The alias moves to a new page of the mounted root. The next statement
+    // resolves it through that root's current name index, not the one an
+    // earlier statement saw.
+    write(&other, "deep/c.md", "# C\n\nleaf body\n");
+    write(
+        &other,
+        "x/n2.md",
+        "---\naliases: [sea]\n---\n# N2\n\nnew home\n",
+    );
+    let moved = conn.call(&json!({"id": 4, "op": "sql", "query": query}));
+    assert_eq!(moved["ok"], json!(true), "statement 4 serves: {moved}");
+    assert_eq!(
+        moved["body"]["rows"],
+        json!([
+            ["other:deep/absent.md", null, null],
+            ["other:deep/c.md", "other", "deep/c.md"],
+            ["other:sea", "other", "x/n2.md"],
+        ]),
+        "the alias resolves in the mounted root's current generation: {moved}"
+    );
+    let pins = conn.call(&json!({"id": 5, "op": "sql", "query": "SELECT count(*) FROM hist.pin"}));
+    assert_eq!(
+        pins["body"]["rows"],
+        json!([[2]]),
+        "a moved mounted destination appends a generation: {pins}"
     );
 }

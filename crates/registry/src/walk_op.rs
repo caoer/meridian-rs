@@ -3,18 +3,23 @@
 //! (blast radius), every answer citing the doc revs it read.
 //!
 //! The walk COMPUTER is the one the CLI verbs color through
-//! ([`view::walk::walk_rooted`]), and the mount-table corpus assembly is the
-//! shared owner ([`wire_serve::mount_corpus`]) — this module only admits the
-//! named page, hands the computer the warm engine's served projection with
-//! the mounted roots' resident engines beside it
+//! ([`view::walk::walk_leased`], the leased arm of the one walk), and the
+//! mount-table corpus assembly is the shared owner
+//! ([`wire_serve::mount_corpus`]) — this module only admits the named page,
+//! hands the computer the warm engine's generation as a catalog with the
+//! mounted roots' resident engines beside it
 //! ([`Registry::mounted_corpus`](crate::Registry::mounted_corpus)), and
-//! projects the report onto the wire shape. Read-only: writes nothing, mints
-//! no receipt; the walk is computed per query, never stored.
+//! projects the report onto the wire shape. The generation is read through
+//! its descriptors and one leased body at a time (merkle-spec §6.8).
+//! Read-only: writes nothing, mints no receipt; the walk is computed per
+//! query, never stored.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io;
 use std::path::Path;
 
-use view::walk::{self, Direction, WalkError};
+use model::catalog::{DocumentCatalog, DocumentLease};
+use view::walk::{self, Direction, LockFacts, WalkError, WalkStop};
 use wire::{ErrorBody, ErrorCode, ResponseBody, WalkCite, WalkRow};
 
 use crate::server::file_not_found;
@@ -29,7 +34,8 @@ use crate::{Registry, WorkspaceEngine};
 /// is an unserved domain member; `walk_cycle` (env) on an in-snapshot cycle;
 /// `io_error` when the workspace's hash domain cannot be read — degrading to
 /// the default domain would claim every path is hashed, the false-red
-/// fail-open decision 0034 ruled out.
+/// fail-open decision 0034 ruled out — or when a member the generation holds
+/// cannot be served, naming that member.
 pub(crate) fn serve(
     registry: &Registry,
     engine: &WorkspaceEngine,
@@ -45,8 +51,13 @@ pub(crate) fn serve(
     // — the hash domain gates enumerations, never what a named path is
     // entitled to. The warm engine holds the served projection; a named page
     // outside it is admitted by the same single-file load the read doors run.
-    let mut owned: Option<model::Docs> = None;
-    if !engine.docs.contains_key(page) {
+    let admitted;
+    let catalog: &dyn DocumentCatalog;
+    let locks: &dyn LockFacts;
+    if engine.revision(page).is_some() {
+        catalog = engine;
+        locks = engine;
+    } else {
         if let Some(condition) = engine.unserved.get(page) {
             let mut e = ErrorBody::new(ErrorCode::InvalidUtf8);
             e.path = Some(path.clone());
@@ -58,11 +69,17 @@ pub(crate) fn serve(
         let Ok(doc) = fs::load(&root, Path::new(page)) else {
             return Err(file_not_found(path));
         };
-        let mut admitted = engine.docs.clone();
-        admitted.insert(page.to_owned(), std::sync::Arc::new(doc));
-        owned = Some(admitted);
+        let mut index = (*engine.index).clone();
+        index.insert_ordered(page, &doc);
+        admitted = Admitted {
+            engine,
+            path: page,
+            doc,
+            index,
+        };
+        catalog = &admitted;
+        locks = &admitted;
     }
-    let docs = owned.as_ref().unwrap_or(&engine.docs);
 
     // An unreadable domain config FAILS the door (decision 0034; see Errors).
     let domain = fs::domain::Domain::load(&root).map_err(|e| {
@@ -76,30 +93,32 @@ pub(crate) fn serve(
     // planes hand the colour computer the same corpus. Each corpus is this
     // daemon's resident engine for that root: warmed once, refreshed O(dirty),
     // never rebuilt from disk per call.
-    let mounts = wire_serve::mount_corpus::load_mounts_for_from(
-        &walk::lock_addressed_roots(docs),
-        &|root| registry.mounted_corpus(root),
-    );
-    let corpus = mounts.rooted(docs, &domain, &root);
+    let mounts = wire_serve::mount_corpus::load_mounts_for_from(&locks.lock_roots(), &|root| {
+        registry.mounted_corpus(root)
+    });
+    let corpus = mounts
+        .rooted_catalog(catalog)
+        .with_hash_domain(&domain)
+        .with_ambient_disk(&root);
 
     let direction = if down { Direction::Down } else { Direction::Up };
-    let report =
-        walk::walk_rooted(&corpus, mounts.set(), page, direction, depth).map_err(|error| {
-            match error {
-                WalkError::RootNotFound(_) => file_not_found(path),
-                WalkError::Cycle(loop_pages) => {
-                    let mut e = ErrorBody::new(ErrorCode::WalkCycle);
-                    e.message = Some(format!("in-snapshot cycle: {}", loop_pages.join(" -> ")));
-                    Box::new(e)
-                }
+    let report = walk::walk_leased(&corpus, locks, mounts.set(), page, direction, depth).map_err(
+        |stop| match stop {
+            WalkStop::Walk(WalkError::RootNotFound(_)) => file_not_found(path),
+            WalkStop::Walk(WalkError::Cycle(loop_pages)) => {
+                let mut e = ErrorBody::new(ErrorCode::WalkCycle);
+                e.message = Some(format!("in-snapshot cycle: {}", loop_pages.join(" -> ")));
+                Box::new(e)
             }
-        })?;
+            WalkStop::Fault(fault) => wire_serve::read::member_fault(fault),
+        },
+    )?;
 
     // §12.1 enumerator clause, down only: the blast-radius census names the
     // markdown the hash domain left out. Up drops nothing — it names an
     // excluded ancestor by its correct path at a red edge — so it owes none.
     let excluded = if down {
-        excluded_population(&root, docs, &engine.unserved)
+        excluded_population(&root, catalog, &engine.unserved)
     } else {
         Vec::new()
     };
@@ -137,10 +156,11 @@ pub(crate) fn serve(
 
 /// The markdown under the root that the served projection does not hold —
 /// on disk, outside the hash domain, in path order. The admitted named page
-/// rides `docs`, so a door's own subject never reads as an exclusion.
+/// is a member of `catalog`, so a door's own subject never reads as an
+/// exclusion.
 fn excluded_population(
     root: &fs::WorkspaceRoot,
-    docs: &model::Docs,
+    catalog: &dyn DocumentCatalog,
     unserved: &BTreeMap<String, String>,
 ) -> Vec<String> {
     let Ok(all) = fs::walk(root) else {
@@ -149,8 +169,67 @@ fn excluded_population(
     let mut excluded: Vec<String> = all
         .iter()
         .filter_map(|rel| rel.to_str().map(str::to_owned))
-        .filter(|rel| !docs.contains_key(rel) && !unserved.contains_key(rel))
+        .filter(|rel| catalog.revision(rel).is_none() && !unserved.contains_key(rel))
         .collect();
     excluded.sort();
     excluded
+}
+
+/// The engine's generation with the one named page the hash domain left out
+/// admitted beside it: a member like any other to the walk, its document held
+/// here for the call. The name index is the generation's with that page
+/// entered, so a pin resolves in the world the walk was asked about.
+#[derive(Debug)]
+struct Admitted<'a> {
+    engine: &'a WorkspaceEngine,
+    path: &'a str,
+    doc: model::Document,
+    index: model::CorpusIndex,
+}
+
+impl DocumentCatalog for Admitted<'_> {
+    fn revisions(&self) -> Box<dyn Iterator<Item = (&str, &model::NodeRev)> + '_> {
+        Box::new(
+            self.engine
+                .revisions()
+                .chain(std::iter::once((self.path, &self.doc.root.node_rev))),
+        )
+    }
+    fn revision(&self, path: &str) -> Option<&model::NodeRev> {
+        if path == self.path {
+            Some(&self.doc.root.node_rev)
+        } else {
+            self.engine.revision(path)
+        }
+    }
+    fn index(&self) -> &model::CorpusIndex {
+        &self.index
+    }
+    fn link_roots(&self) -> BTreeSet<addr::MountName> {
+        let mut roots = self.engine.link_roots();
+        roots.extend(model::catalog::link_roots(&self.doc));
+        roots
+    }
+    fn pin(&self, path: &str) -> io::Result<Option<Box<dyn DocumentLease + '_>>> {
+        if path == self.path {
+            Ok(Some(model::catalog::resident_lease(&self.doc)))
+        } else {
+            self.engine.pin(path)
+        }
+    }
+}
+
+impl LockFacts for Admitted<'_> {
+    fn lock_roots(&self) -> BTreeSet<addr::MountName> {
+        let mut roots = self.engine.lock_roots();
+        roots.extend(walk::lock_fact(&self.doc).into_iter().flatten());
+        roots
+    }
+    fn lock_holders(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        Box::new(
+            self.engine
+                .lock_holders()
+                .chain(walk::lock_fact(&self.doc).map(|_| self.path)),
+        )
+    }
 }

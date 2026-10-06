@@ -18,7 +18,9 @@
 //! handle; cannot persist by construction.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::convert::Infallible;
 
+use model::catalog::{DocumentCatalog, MemberFault, RootedCatalog};
 use model::selector::{Color, GreyReason, RedReason, Selector, classify_pin};
 
 use crate::read_face::{LockItem, corpus_index, page_lock_items_in_rooted_corpus};
@@ -118,18 +120,234 @@ pub fn walk_rooted(
     direction: Direction,
     depth_bound: Option<u32>,
 ) -> Result<WalkReport, WalkError> {
-    let docs = corpus.ambient_docs();
+    match walk_world(corpus, mounts, root, direction, depth_bound) {
+        Ok(report) => Ok(report),
+        Err(WalkStop::Walk(error)) => Err(error),
+        Err(WalkStop::Fault(never)) => match never {},
+    }
+}
+
+/// [`walk_rooted`] over a generation whose bodies are leased (merkle-spec
+/// §6.8). `locks` are the ambient generation's lock facts: only the members
+/// they name as lock holders are read for edges, one scan pin at a time, and
+/// an edge's target is scan-pinned for the length of its one classification.
+/// Membership, name resolution and the rev citations come from metadata.
+///
+/// # Errors
+/// [`WalkStop::Walk`] as [`walk`]. [`WalkStop::Fault`] names a member the
+/// generation holds and could not serve — never a grey or red row, and never
+/// a missing edge. A mounted root's member is named `root:path`.
+pub fn walk_leased(
+    corpus: &RootedCatalog<'_>,
+    locks: &dyn LockFacts,
+    mounts: &addr::MountSet,
+    root: &str,
+    direction: Direction,
+    depth_bound: Option<u32>,
+) -> Result<WalkReport, WalkStop<MemberFault>> {
+    walk_world(
+        &Leased { corpus, locks },
+        mounts,
+        root,
+        direction,
+        depth_bound,
+    )
+}
+
+/// Why a walk over a fallible world stopped.
+#[derive(Debug)]
+pub enum WalkStop<F> {
+    /// The walk's own refusal.
+    Walk(WalkError),
+    /// The world could not serve a document it holds.
+    Fault(F),
+}
+
+/// A generation's lock facts, fixed per member when that member version is
+/// parsed (merkle-spec §6.4). Answering reads no body.
+pub trait LockFacts: std::fmt::Debug {
+    /// Every mount root the members' lock addresses name: the union of each
+    /// member's [`lock_fact`].
+    fn lock_roots(&self) -> BTreeSet<addr::MountName>;
+    /// Every member that carries a lock row, exactly once.
+    fn lock_holders(&self) -> Box<dyn Iterator<Item = &str> + '_>;
+}
+
+/// One member's lock fact: `None` when the document carries no lock row (no
+/// pin and no refused lock), else the mount roots its lock addresses name.
+/// The root is read off [`LockItem::declared_addr`], the structural owner, so
+/// nothing re-splits `declared_ref`; a row with no address contributes none.
+#[must_use]
+pub fn lock_fact(doc: &model::Document) -> Option<BTreeSet<addr::MountName>> {
+    let items = crate::read_face::page_lock_items(doc);
+    if items.is_empty() {
+        return None;
+    }
+    Some(
+        items
+            .iter()
+            .filter_map(|item| item.declared_addr.as_ref().and_then(addr::Addr::root))
+            .cloned()
+            .collect(),
+    )
+}
+
+/// The documents a walk reads, eager or leased: one BFS and one colour
+/// computer over both.
+trait PinWorld {
+    /// Why a held document could not be served.
+    type Fault;
+    /// An ambient member's revision; `None` = not a member.
+    fn revision(&self, page: &str) -> Option<&model::NodeRev>;
+    fn in_hash_domain(&self, root: Option<&addr::MountName>, path: &str) -> Option<bool>;
+    fn on_ambient_disk(&self, root: Option<&addr::MountName>, path: &str) -> Option<bool>;
+    /// Every ambient page's pins, parsed once (shared parser), `to_path`
+    /// resolved. A page with no lock row may be left out.
+    fn forward_edges(
+        &self,
+        mounts: &addr::MountSet,
+    ) -> Result<BTreeMap<String, Vec<LockItem>>, Self::Fault>;
+    /// Lend an edge's target (`None`: that root holds no such page) for the
+    /// length of one classification. Bytes come from the resolved root —
+    /// never ambient (wrong-bytes success).
+    fn with_target(
+        &self,
+        root: Option<&addr::MountName>,
+        path: &str,
+        read: &mut dyn FnMut(Option<&model::Document>),
+    ) -> Result<(), Self::Fault>;
+}
+
+impl PinWorld for model::RootedCorpus<'_> {
+    type Fault = Infallible;
+    fn revision(&self, page: &str) -> Option<&model::NodeRev> {
+        self.ambient_docs().get(page).map(|doc| &doc.root.node_rev)
+    }
+    fn in_hash_domain(&self, root: Option<&addr::MountName>, path: &str) -> Option<bool> {
+        model::RootedCorpus::in_hash_domain(self, root, path)
+    }
+    fn on_ambient_disk(&self, root: Option<&addr::MountName>, path: &str) -> Option<bool> {
+        model::RootedCorpus::on_ambient_disk(self, root, path)
+    }
+    fn forward_edges(
+        &self,
+        mounts: &addr::MountSet,
+    ) -> Result<BTreeMap<String, Vec<LockItem>>, Infallible> {
+        let docs = self.ambient_docs();
+        let index = corpus_index(docs);
+        Ok(docs
+            .iter()
+            .map(|(path, doc)| {
+                (
+                    path.clone(),
+                    page_lock_items_in_rooted_corpus(path, doc, &index, self, mounts),
+                )
+            })
+            .collect())
+    }
+    fn with_target(
+        &self,
+        root: Option<&addr::MountName>,
+        path: &str,
+        read: &mut dyn FnMut(Option<&model::Document>),
+    ) -> Result<(), Infallible> {
+        let target = match root {
+            Some(root) => self.root(root).and_then(|mounted| mounted.docs().get(path)),
+            None => self.ambient_docs().get(path),
+        };
+        read(target.map(|doc| &**doc));
+        Ok(())
+    }
+}
+
+/// A leased generation with its lock facts.
+struct Leased<'a> {
+    corpus: &'a RootedCatalog<'a>,
+    locks: &'a dyn LockFacts,
+}
+
+impl PinWorld for Leased<'_> {
+    type Fault = MemberFault;
+    fn revision(&self, page: &str) -> Option<&model::NodeRev> {
+        self.corpus.ambient_catalog().revision(page)
+    }
+    fn in_hash_domain(&self, root: Option<&addr::MountName>, path: &str) -> Option<bool> {
+        self.corpus.in_hash_domain(root, path)
+    }
+    fn on_ambient_disk(&self, root: Option<&addr::MountName>, path: &str) -> Option<bool> {
+        self.corpus.on_ambient_disk(root, path)
+    }
+    fn forward_edges(
+        &self,
+        mounts: &addr::MountSet,
+    ) -> Result<BTreeMap<String, Vec<LockItem>>, MemberFault> {
+        let ambient = self.corpus.ambient_catalog();
+        let index = ambient.index();
+        let mut forward = BTreeMap::new();
+        for holder in self.locks.lock_holders() {
+            let items = model::catalog::scan(ambient, holder, |doc| {
+                page_lock_items_in_rooted_corpus(holder, doc, index, self.corpus, mounts)
+            })?
+            .ok_or_else(|| MemberFault {
+                path: holder.to_owned(),
+                cause: std::io::Error::other("a lock holder is not a member of its generation"),
+            })?;
+            forward.insert(holder.to_owned(), items);
+        }
+        Ok(forward)
+    }
+    fn with_target(
+        &self,
+        root: Option<&addr::MountName>,
+        path: &str,
+        read: &mut dyn FnMut(Option<&model::Document>),
+    ) -> Result<(), MemberFault> {
+        let catalog: &dyn DocumentCatalog = match root {
+            None => self.corpus.ambient_catalog(),
+            Some(root) => {
+                let Some(mounted) = self.corpus.root(root) else {
+                    read(None);
+                    return Ok(());
+                };
+                mounted
+            }
+        };
+        match model::catalog::scan(catalog, path, |doc| read(Some(doc))) {
+            Ok(Some(())) => Ok(()),
+            Ok(None) => {
+                read(None);
+                Ok(())
+            }
+            Err(fault) => Err(match root {
+                None => fault,
+                Some(root) => MemberFault {
+                    path: format!("{root}:{}", fault.path),
+                    cause: fault.cause,
+                },
+            }),
+        }
+    }
+}
+
+/// The one walk: BFS over the world's lock edges.
+fn walk_world<W: PinWorld>(
+    world: &W,
+    mounts: &addr::MountSet,
+    root: &str,
+    direction: Direction,
+    depth_bound: Option<u32>,
+) -> Result<WalkReport, WalkStop<W::Fault>> {
     let root_page = page_of(root).to_string();
-    if !docs.contains_key(&root_page) {
-        return Err(WalkError::RootNotFound(root_page));
+    if world.revision(&root_page).is_none() {
+        return Err(WalkStop::Walk(WalkError::RootNotFound(root_page)));
     }
 
     // Shared parser once — both directions read the same edge facts.
-    let forward = forward_edges(corpus, mounts);
+    let forward = world.forward_edges(mounts).map_err(WalkStop::Fault)?;
 
     // In-snapshot cycle is an error, not a silent stop (§2.4).
-    if let Some(cycle) = find_cycle(&page_adjacency(&forward, docs, direction), &root_page) {
-        return Err(WalkError::Cycle(cycle));
+    if let Some(cycle) = find_cycle(&page_adjacency(&forward, world, direction), &root_page) {
+        return Err(WalkStop::Walk(WalkError::Cycle(cycle)));
     }
 
     let mut entries = Vec::new();
@@ -151,7 +369,7 @@ pub fn walk_rooted(
         if depth_bound.is_some_and(|bound| next_depth > bound) {
             continue;
         }
-        for step in steps_from(corpus, &forward, &page, direction) {
+        for step in steps_from(world, &forward, &page, direction).map_err(WalkStop::Fault)? {
             read.insert(step.color_target.clone());
             read.insert(page_of(&step.selector).to_string());
             let row = (
@@ -176,10 +394,8 @@ pub fn walk_rooted(
     let revs_read = read
         .into_iter()
         .filter_map(|p| {
-            docs.get(&p).map(|d| RevCitation {
-                path: p,
-                doc_rev: d.root.node_rev.0.clone(),
-            })
+            let doc_rev = world.revision(&p)?.0.clone();
+            Some(RevCitation { path: p, doc_rev })
         })
         .collect();
 
@@ -192,12 +408,6 @@ pub fn walk_rooted(
     })
 }
 
-/// Every mount root the corpus's `meridian-lock` addresses name — the exact
-/// set of roots worth building a corpus for. A pin's root is a property of
-/// its address, not of the tree it points into, so the set is knowable from
-/// the ambient corpus alone. The root is read off
-/// [`LockItem::declared_addr`], the structural owner, so nothing re-splits
-/// `declared_ref`. A row with no address contributes no root.
 /// Every mount root the corpus's wikilink/embed targets name — the set of
 /// roots whose pages the link plane (and the SQL projection of it) can
 /// resolve into. Mounted root corpora exist so `resolve_ref` can answer a
@@ -218,17 +428,16 @@ pub fn link_addressed_roots(docs: &model::Docs, path: Option<&str>) -> BTreeSet<
         .collect()
 }
 
+/// Every mount root the corpus's `meridian-lock` addresses name — the exact
+/// set of roots worth building a corpus for. A pin's root is a property of
+/// its address, not of the tree it points into, so the set is knowable from
+/// the ambient corpus alone: the union of each document's [`lock_fact`].
 #[must_use]
 pub fn lock_addressed_roots(docs: &model::Docs) -> BTreeSet<addr::MountName> {
-    let mut roots = BTreeSet::new();
-    for doc in docs.values() {
-        for item in crate::read_face::page_lock_items(doc) {
-            if let Some(root) = item.declared_addr.as_ref().and_then(addr::Addr::root) {
-                roots.insert(root.clone());
-            }
-        }
-    }
-    roots
+    docs.values()
+        .filter_map(|doc| lock_fact(doc))
+        .flatten()
+        .collect()
 }
 
 /// One `meridian-lock` row with its computed color (status roll-up / decorator).
@@ -297,7 +506,7 @@ pub fn lock_pin_colors_rooted_with_sources(
                 src_path: path.clone(),
                 declared_ref: item.declared_ref.clone(),
                 fingerprint: item.fingerprint.clone(),
-                color: edge_color(corpus, &item),
+                color: eager_color(corpus, &item),
             });
         }
     }
@@ -387,46 +596,28 @@ struct Step {
     next_page: String,
 }
 
-/// Parse every page's pins once (shared parser), `to_path` resolved.
-fn forward_edges(
-    corpus: &model::RootedCorpus<'_>,
-    mounts: &addr::MountSet,
-) -> BTreeMap<String, Vec<LockItem>> {
-    let docs = corpus.ambient_docs();
-    let index = corpus_index(docs);
-    docs.iter()
-        .map(|(path, doc)| {
-            (
-                path.clone(),
-                page_lock_items_in_rooted_corpus(path, doc, &index, corpus, mounts),
-            )
-        })
-        .collect()
-}
-
 /// Hops out of `page`: Up = own edges; Down = reverse ambient edges only.
-fn steps_from(
-    corpus: &model::RootedCorpus<'_>,
+fn steps_from<W: PinWorld>(
+    world: &W,
     forward: &BTreeMap<String, Vec<LockItem>>,
     page: &str,
     direction: Direction,
-) -> Vec<Step> {
+) -> Result<Vec<Step>, W::Fault> {
+    let mut steps = Vec::new();
     match direction {
-        Direction::Up => forward
-            .get(page)
-            .into_iter()
-            .flatten()
-            .map(|edge| Step {
-                selector: step_selector(page, edge),
-                pinned_rev: edge.pinned_rev.clone(),
-                color: edge_color(corpus, edge),
-                // Root-qualified so cross-root is a leaf, not ambient same-path.
-                color_target: edge_page(edge),
-                next_page: edge_page(edge),
-            })
-            .collect(),
+        Direction::Up => {
+            for edge in forward.get(page).into_iter().flatten() {
+                steps.push(Step {
+                    selector: step_selector(page, edge),
+                    pinned_rev: edge.pinned_rev.clone(),
+                    color: edge_color(world, edge)?,
+                    // Root-qualified so cross-root is a leaf, not ambient same-path.
+                    color_target: edge_page(edge),
+                    next_page: edge_page(edge),
+                });
+            }
+        }
         Direction::Down => {
-            let mut steps = Vec::new();
             for (src, edges) in forward {
                 for edge in edges {
                     // Ambient-only reverse: cross-root same path is a different doc.
@@ -435,16 +626,16 @@ fn steps_from(
                         steps.push(Step {
                             selector: src.clone(),
                             pinned_rev: edge.pinned_rev.clone(),
-                            color: edge_color(corpus, edge),
+                            color: edge_color(world, edge)?,
                             color_target: edge.to_path.clone(),
                             next_page: src.clone(),
                         });
                     }
                 }
             }
-            steps
         }
     }
+    Ok(steps)
 }
 
 /// Listing name of one hop: canonical target, or the page on lock-refusal
@@ -490,17 +681,50 @@ fn edge_page(edge: &LockItem) -> String {
 /// and 0054, absence outranks domain membership on BOTH planes); target outside
 /// the hash domain and present → grey `outside-hash-domain` (R-3, before every
 /// red); root absence → red `file-not-found`; else `classify_pin` on
-/// fingerprint.
-fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
+/// fingerprint, against the target the world lends. A row the pre-compare
+/// arms decide borrows no target.
+fn edge_color<W: PinWorld + ?Sized>(world: &W, edge: &LockItem) -> Result<Color, W::Fault> {
+    if let Some(color) = edge_precolor(world, edge) {
+        return Ok(color);
+    }
+    // Structure, never joined string (heading with `/` must not re-split).
+    let selector = match &edge.selector {
+        Some(structural) => model_selector(&edge.object, structural),
+        None => Selector::parse(&canonical_ref(&edge.to_path, &edge.to_sel)),
+    };
+    // FAIL-CLOSED TAIL. Live population zero under R4 (parser refuses missing
+    // fields) but structurally reachable — callers do not all filter. Deleting
+    // this arm makes fall-through green: fail-OPEN on a reachable path.
+    // Guard: `lock::a_pin_row_missing_a_mandatory_field_refuses_at_parse`.
+    let Some(token) = &edge.fingerprint else {
+        return Ok(Color::Grey(GreyReason::Uncolourable));
+    };
+    let mut color = Color::Grey(GreyReason::Uncolourable);
+    world.with_target(edge.to_root.as_ref(), &edge.to_path, &mut |target| {
+        color = classify_pin(&selector, token, target);
+    })?;
+    Ok(color)
+}
+
+/// [`edge_color`] over an eager corpus, which cannot fault.
+fn eager_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
+    match edge_color(corpus, edge) {
+        Ok(color) => color,
+        Err(never) => match never {},
+    }
+}
+
+/// The arms of [`edge_color`] that need no target document.
+fn edge_precolor<W: PinWorld + ?Sized>(corpus: &W, edge: &LockItem) -> Option<Color> {
     if let Some(reason) = &edge.lock_refusal {
-        return Color::Grey(GreyReason::LockRefused {
+        return Some(Color::Grey(GreyReason::LockRefused {
             reason: reason.clone(),
-        });
+        }));
     }
     // R-3: grey outranks red — checked FIRST. Unmounted target is ABSENT to
     // later arms (would mis-classify as red selector-unresolved).
     if let Some(reason) = &edge.root_refusal {
-        return Color::Grey(reason.clone());
+        return Some(Color::Grey(reason.clone()));
     }
     // ABSENCE OUTRANKS DOMAIN MEMBERSHIP, ON BOTH PLANES (decisions 0049 and
     // 0054): THE ORDER OF QUESTIONS IS THE ORDER OF FACTS. Existence is a fact
@@ -520,11 +744,11 @@ fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
     // root. `None` here = the face supplied no disk: cannot say, so every
     // pre-0049 verdict stands rather than a guess.
     if corpus.on_ambient_disk(edge.to_root.as_ref(), &edge.to_path) == Some(false) {
-        return Color::Red(RedReason::FileNotFound {
+        return Some(Color::Red(RedReason::FileNotFound {
             root: None,
             path: edge.to_path.clone(),
             selector: (!edge.to_sel.is_empty()).then(|| edge.to_sel.clone()),
-        });
+        }));
     }
     // R-3: the hash domain gates HASHING, not addressing, so a target it
     // excludes was never loaded into this corpus and every red below would
@@ -535,38 +759,19 @@ fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
     // case. `None` = the face supplied no domain: cannot say, so nothing
     // changes.
     if corpus.in_hash_domain(edge.to_root.as_ref(), &edge.to_path) == Some(false) {
-        return Color::Grey(GreyReason::OutsideHashDomain {
+        return Some(Color::Grey(GreyReason::OutsideHashDomain {
             path: edge.to_path.clone(),
-        });
+        }));
     }
     // U21: root reached, file absent — before ambient miss → wrong red cause.
     if let Some(root) = &edge.root_absence {
-        return Color::Red(RedReason::FileNotFound {
+        return Some(Color::Red(RedReason::FileNotFound {
             root: Some(root.clone()),
             path: edge.to_path.clone(),
             selector: (!edge.to_sel.is_empty()).then(|| edge.to_sel.clone()),
-        });
+        }));
     }
-    // Bytes from the resolved root — never ambient (wrong-bytes success).
-    let target = match &edge.to_root {
-        Some(root) => corpus
-            .root(root)
-            .and_then(|mounted| mounted.docs().get(&edge.to_path)),
-        None => corpus.ambient_docs().get(&edge.to_path),
-    };
-    // Structure, never joined string (heading with `/` must not re-split).
-    let selector = match &edge.selector {
-        Some(structural) => model_selector(&edge.object, structural),
-        None => Selector::parse(&canonical_ref(&edge.to_path, &edge.to_sel)),
-    };
-    if let Some(token) = &edge.fingerprint {
-        return classify_pin(&selector, token, target.map(|d| &**d));
-    }
-    // FAIL-CLOSED TAIL. Live population zero under R4 (parser refuses missing
-    // fields) but structurally reachable — callers do not all filter. Deleting
-    // this arm makes fall-through green: fail-OPEN on a reachable path.
-    // Guard: `lock::a_pin_row_missing_a_mandatory_field_refuses_at_parse`.
-    Color::Grey(GreyReason::Uncolourable)
+    None
 }
 
 /// R4 structural selector → model address selector (translation for
@@ -620,15 +825,15 @@ fn heading_segments(segments: &[String]) -> Vec<model::HpathSeg> {
 
 /// Page-level adjacency for cycle check — corpus-present pages only (leaves
 /// never close a cycle).
-fn page_adjacency(
+fn page_adjacency<W: PinWorld>(
     forward: &BTreeMap<String, Vec<LockItem>>,
-    docs: &model::Docs,
+    world: &W,
     direction: Direction,
 ) -> BTreeMap<String, Vec<String>> {
     let mut adj: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (src, edges) in forward {
         for edge in edges {
-            if !docs.contains_key(&edge.to_path) {
+            if world.revision(&edge.to_path).is_none() {
                 continue;
             }
             match direction {
@@ -708,6 +913,9 @@ fn display_ref(to_path: &str, to_sel: &str) -> String {
         format!("{to_path} §{to_sel}")
     }
 }
+
+#[cfg(test)]
+mod leased_tests;
 
 #[cfg(test)]
 mod tests {

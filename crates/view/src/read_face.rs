@@ -367,7 +367,7 @@ pub fn page_lock_items_in_rooted_corpus(
     src_path: &str,
     doc: &Document,
     index: &CorpusIndex,
-    corpus: &model::RootedCorpus<'_>,
+    corpus: &dyn model::catalog::NameCorpus,
     mounts: &addr::MountSet,
 ) -> Vec<LockItem> {
     let mut items = page_lock_items(doc);

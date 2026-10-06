@@ -256,8 +256,8 @@ fn the_links_frame_reads_membership_from_metadata_and_names_a_faulting_member() 
     }
 }
 
-/// A page whose claim link cites a pinned section of the guide, and one that
-/// cites its own.
+/// A page whose claim link cites a pinned section of the guide and which pins
+/// a second section no link cites, and one that cites its own.
 const PINNER: &str = "---\ntitle: Plan\n---\n\n# Plan\n\ndraws from [[guide#^leaders-guideline|Leader's Guideline]].\n";
 const TARGET: &str =
     "# Guide\n\n## Leader's Guideline\n\nreview before you close.\n\n## Other\n\nunrelated.\n";
@@ -284,6 +284,8 @@ fn pinned_workspace() -> (tempfile::TempDir, model::CorpusIndex, model::Docs) {
     let root = fs::WorkspaceRoot(dir.path().to_path_buf());
     for (page, target, selector) in [
         ("plan.md", "guide.md", "Guide/Leader's Guideline"),
+        // A pin no link of the page addresses: it decorates nothing.
+        ("plan.md", "guide.md", "Guide/Other"),
         ("own.md", "own.md", "Own/Rule"),
     ] {
         let args = SpliceArgs {
@@ -333,7 +335,8 @@ fn claim_link_colours_lease_the_lock_target_and_never_the_page() {
     assert_eq!(
         leased.scanned(),
         ["guide.md"],
-        "the page is the caller's; only the lock target is leased"
+        "the page is the caller's; the lock target is leased once, for the \
+         one pin a link addresses"
     );
     assert_eq!(leased.most_live.get(), 1);
     assert_eq!(leased.live.get(), 0);

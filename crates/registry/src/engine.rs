@@ -103,6 +103,22 @@ impl DocumentCatalog for WorkspaceEngine {
     }
 }
 
+/// The engine's lock facts (merkle-spec §6.4), read off its resident
+/// documents.
+impl view::walk::LockFacts for WorkspaceEngine {
+    fn lock_roots(&self) -> BTreeSet<addr::MountName> {
+        view::walk::lock_addressed_roots(&self.docs)
+    }
+    fn lock_holders(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        Box::new(
+            self.docs
+                .iter()
+                .filter(|(_, doc)| view::walk::lock_fact(doc).is_some())
+                .map(|(path, _)| path.as_str()),
+        )
+    }
+}
+
 /// The resident engine IS a mounted root's served projection when a pin or
 /// link plane names that root (`wire_serve::mount_corpus`): the daemon hands
 /// its own warm corpus to the colour computer instead of rebuilding the root

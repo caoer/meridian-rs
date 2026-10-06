@@ -647,7 +647,8 @@ pub fn page_decorations_in(
 }
 
 /// A scan's member fault as the frame a named read mints for the same member.
-fn member_fault(fault: model::catalog::MemberFault) -> Box<ErrorBody> {
+#[must_use]
+pub fn member_fault(fault: model::catalog::MemberFault) -> Box<ErrorBody> {
     catalog::retained_fault(&Path(fault.path), fault.cause)
 }
 
