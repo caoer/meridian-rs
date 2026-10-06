@@ -41,11 +41,8 @@ use crate::executor::{self, Applied, ApplyRequest, DeltaSink, ExecError};
 /// daemon builds it under the page's lease and releases the lease before the
 /// row runs (merkle-spec §6.8): the row holds the fences' bytes and a few
 /// short strings, never the page's parse tree.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
-    // Control prototype: the copy keeps the page's parse tree.
-    #[allow(dead_code)]
-    tree: model::Node,
     file_rev: String,
     blocks: blocks::PageBlocks,
     caps: Result<Option<caps::CapSet>, caps::CapsError>,
@@ -56,7 +53,6 @@ impl Page {
     #[must_use]
     pub fn of(doc: &Document) -> Self {
         Self {
-            tree: doc.root.clone(),
             file_rev: doc.root.node_rev.0.clone(),
             blocks: blocks::PageBlocks::of(doc),
             caps: caps::page_caps(doc),

@@ -32,9 +32,32 @@ impl Member {
     /// admit the load. A disabled limit keeps nothing out.
     #[must_use]
     pub fn held_blocks(&self, held: &[MemberId], peak: usize) -> bool {
-        // Control prototype: any lease the thread holds keeps the member out.
-        let _ = (peak, &self.controller);
-        !held.is_empty()
+        let state = lock(&self.controller.0.ledger);
+        if state.limit == 0 {
+            return false;
+        }
+        let room = (state.limit as u128).saturating_sub(state.floor_exact());
+        if peak as u128 > room {
+            return state
+                .transient
+                .is_some_and(|key| held.contains(&MemberId(key)));
+        }
+        let mut counted: Vec<Key> = Vec::with_capacity(held.len());
+        let mut own = 0u128;
+        for MemberId(key) in held {
+            if counted.contains(key) {
+                continue;
+            }
+            counted.push(*key);
+            if let Some(row) = state.rows.get(key) {
+                let raw = row
+                    .raw
+                    .and_then(|id| state.raw.get(&id))
+                    .map_or(0, |raw| raw.bytes);
+                own += row.body as u128 + raw as u128;
+            }
+        }
+        own + peak as u128 > room
     }
 
     #[must_use]
