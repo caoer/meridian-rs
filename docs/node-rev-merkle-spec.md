@@ -550,7 +550,19 @@ can count a document/watcher alias once. `RawStore::heap_bytes` covers its
 required-backing index capacity, weak-held record/segment allocations, live
 segment paths and shared directory allocation. It reports Rust heap storage,
 separately from `RawStoreStats`'s disk/logical census. A dead weak entry still
-owns its control allocation until pruning releases it. These censuses are
+owns its control allocation until pruning releases it. The substrate owners
+have their own censuses: the name index (`CorpusIndex::heap_bytes`), a
+generation's slot map, slot facts and leaf records
+(`WorkspaceEngine::heap_bytes`), the workspace memo with its resident tree
+(`DomainCache::heap_bytes`), the ring's frames (`RootRing::heap_bytes`) and the
+watch state's baseline map (`WatchState::heap_bytes`). Owners share `Arc`
+allocations across generations, so these censuses take one
+`residency::census::Seen` and count each shared allocation once. std does not
+expose a `BTreeMap`'s node allocations; those are charged at an upper bound
+(every non-root node holds at least five entries, each charged at the
+internal-node size), so a census may exceed its owner's heap and never falls
+below it. `crates/registry/tests/floor_census.rs` checks each census against
+the bytes its owner's drop frees. These censuses are
 quiescent ownership measurements, not synchronization with concurrent callers;
 their temporary census work and enclosing slot/pin/generation containers need
 their own reservation/charge. The controller must combine these measurements

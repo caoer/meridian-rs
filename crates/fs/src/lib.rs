@@ -1032,6 +1032,18 @@ struct DirEntryKind {
 }
 
 impl DomainCache {
+    /// Requested heap this memo owns: the leaf and listing memos and the
+    /// resident tree (map node storage an upper bound,
+    /// [`model::allocation::btree_bytes`]), its stamp source's instance, the
+    /// cached fold, the observed domain config and the feed-generation
+    /// cell. The stamp clock is shared with its installer and not counted
+    /// here. A quiescent census: the caller holds the memo's lock.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        // Control prototype: no census.
+        0
+    }
+
     /// An empty memo — the first [`root`](Self::root) reads every member.
     #[must_use]
     pub fn new() -> DomainCache {
@@ -4736,6 +4748,17 @@ impl PreparedBaseline {
 }
 
 impl Watcher {
+    /// Requested heap this watcher owns: its root path and the baseline map
+    /// (node storage an upper bound, [`model::allocation::btree_bytes`]) with
+    /// each path and body handle. An in-memory body's raw buffer is counted
+    /// here; a retained body's handle allocation is, its bytes are its
+    /// provider's. The provider itself is shared and not counted.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        // Control prototype: no census.
+        0
+    }
+
     #[must_use]
     pub fn new(root: WorkspaceRoot) -> Self {
         Watcher {

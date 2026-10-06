@@ -115,7 +115,166 @@ fn mint_instance() -> String {
     )
 }
 
+/// Heap one frame owns beyond its inline struct. Every field is destructured:
+/// adding owned frame data must revisit this charge.
+fn frame_heap(frame: &DeltaFrame) -> usize {
+    let DeltaFrame {
+        delta,
+        effects,
+        rescope,
+        overflow: _,
+    } = frame;
+    let wire::Delta {
+        seq: _,
+        root_before,
+        root_after,
+        actor,
+        now,
+        files,
+    } = delta;
+    let mut bytes = root_before
+        .0
+        .capacity()
+        .saturating_add(root_after.0.capacity());
+    for text in [actor, now].into_iter().flatten() {
+        bytes = bytes.saturating_add(text.capacity());
+    }
+    bytes = files.iter().fold(
+        bytes.saturating_add(
+            files
+                .capacity()
+                .saturating_mul(size_of::<wire::DeltaFile>()),
+        ),
+        |bytes, file| bytes.saturating_add(file_heap(file)),
+    );
+    bytes = effects.iter().fold(
+        bytes.saturating_add(
+            effects
+                .capacity()
+                .saturating_mul(size_of::<wire::EffectEnvelope>()),
+        ),
+        |bytes, envelope| bytes.saturating_add(effect_heap(envelope)),
+    );
+    if let Some(wire::Rescope {
+        cause,
+        unattested: _,
+        attested: _,
+    }) = rescope
+    {
+        bytes = bytes.saturating_add(cause.0.capacity());
+    }
+    bytes
+}
+
+/// Heap one file row of a frame owns: its paths, revs and node rows.
+fn file_heap(file: &wire::DeltaFile) -> usize {
+    let wire::DeltaFile {
+        path,
+        change: _,
+        from_path,
+        file_rev_before,
+        file_rev_after,
+        nodes,
+    } = file;
+    let bytes = path
+        .0
+        .capacity()
+        .saturating_add(from_path.as_ref().map_or(0, |path| path.0.capacity()))
+        .saturating_add(file_rev_before.as_ref().map_or(0, |rev| rev.0.capacity()))
+        .saturating_add(file_rev_after.as_ref().map_or(0, |rev| rev.0.capacity()))
+        .saturating_add(
+            nodes
+                .capacity()
+                .saturating_mul(size_of::<wire::DeltaNode>()),
+        );
+    nodes.iter().fold(bytes, |bytes, node| {
+        let wire::DeltaNode {
+            target,
+            change: _,
+            node_rev_before,
+            node_rev_after,
+            span_after: _,
+        } = node;
+        bytes
+            .saturating_add(match target {
+                wire::SecRef::Hpath { hpath } => hpath.iter().fold(
+                    hpath.capacity().saturating_mul(size_of::<wire::HpathSeg>()),
+                    |bytes, segment| bytes.saturating_add(segment.h.capacity()),
+                ),
+                wire::SecRef::Anchor { anchor: text } | wire::SecRef::FmKey { fm_key: text } => {
+                    text.capacity()
+                }
+            })
+            .saturating_add(node_rev_before.as_ref().map_or(0, |rev| rev.0.capacity()))
+            .saturating_add(node_rev_after.as_ref().map_or(0, |rev| rev.0.capacity()))
+    })
+}
+
+/// Heap one effect envelope of a frame owns: its intents and findings.
+fn effect_heap(envelope: &wire::EffectEnvelope) -> usize {
+    let wire::EffectEnvelope {
+        intents,
+        narrowed,
+        findings,
+        how,
+    } = envelope;
+    let mut bytes = how.capacity();
+    for list in [intents, narrowed] {
+        bytes = bytes.saturating_add(list.capacity().saturating_mul(size_of::<wire::Intent>()));
+        for intent in list {
+            let wire::Intent {
+                rule_id,
+                seq: _,
+                action,
+                target,
+                severity,
+                payload,
+                receipt,
+            } = intent;
+            bytes = [
+                Some(rule_id),
+                Some(action),
+                target.as_ref(),
+                severity.as_ref(),
+                payload.as_ref(),
+                Some(receipt),
+            ]
+            .into_iter()
+            .flatten()
+            .fold(bytes, |bytes, text| bytes.saturating_add(text.capacity()));
+        }
+    }
+    findings.iter().fold(
+        bytes.saturating_add(
+            findings
+                .capacity()
+                .saturating_mul(size_of::<wire::EffectFinding>()),
+        ),
+        |bytes, finding| {
+            bytes.saturating_add(match finding {
+                wire::EffectFinding::BudgetExceeded {
+                    rule_id,
+                    steps: _,
+                    mem: _,
+                } => rule_id.capacity(),
+                wire::EffectFinding::ArmedFault { rule_id, detail } => rule_id
+                    .as_ref()
+                    .map_or(0, String::capacity)
+                    .saturating_add(detail.capacity()),
+            })
+        },
+    )
+}
+
 impl RootRing {
+    /// Requested heap this ring owns: its frame buffer, every frame's owned
+    /// data and the instance id. The inline struct is its owner's.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        // Control prototype: no census.
+        0
+    }
+
     /// A fresh epoch: empty history, seq at 0, its own tree instance.
     #[must_use]
     pub fn new() -> Self {

@@ -75,6 +75,19 @@ impl WorkspaceEngine {
         }
     }
 
+    /// Requested heap this generation's metadata owns, each shared
+    /// allocation counted once through `seen`: the name index, the bodies'
+    /// map (a resident generation's slots and their facts; an eager one's map
+    /// alone — its documents are its bodies, not metadata), the unserved
+    /// and leaf records and the fingerprint. The inline struct is its
+    /// owner's.
+    #[must_use]
+    pub fn heap_bytes(&self, seen: &mut crate::residency::census::Seen) -> usize {
+        // Control prototype: no census.
+        let _ = seen;
+        0
+    }
+
     /// The generation a residency pass built
     /// ([`crate::residency::catalog::update`]), its bodies leased under the
     /// host's per-load peak.

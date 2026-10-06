@@ -297,6 +297,13 @@ fn build_fallback_index(root: &WorkspaceRoot, domain: &Domain) -> BTreeMap<Strin
 }
 
 impl Domain {
+    /// Requested heap these rules own. The inline struct is its owner's.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        // Control prototype: no census.
+        0
+    }
+
     /// The default domain: md-only floor + dot-segment ignore, no custom rules,
     /// `version` 0.
     #[must_use]
