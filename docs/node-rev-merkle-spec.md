@@ -385,8 +385,7 @@ cached 32-byte fold, a dirty bit, a `last_seq` stamp (§6.3).
   door's flock on that memo: §6.4 cookie barrier, then take-and-apply — the
   pending dirty set taken and applied. The overlay serves as `root_before`
   only on `Seen` (the cookie came back through the ordered event stream,
-  proving earlier events are folded in — a proof the barrier as built can
-  break, §6.4 the currency barrier) + no doubt collapse + `Trusted` — the
+  proving earlier events are folded in) + no doubt collapse + `Trusted` — the
   vouch `currency_refresh` demands. `Trusted` says the last observation landed
   whole with no unabsorbed loss, not that the stream delivered everything on
   disk; without the cookie, a silent-dead watcher or a sticky failed feed
@@ -480,22 +479,28 @@ engine-side.
   available for unsubscribed roots; their next warm pays a full walk and
   their registration survives.
 - **The currency barrier (the cookie).** A guard-grade currency question writes
-  a sentinel at `.meridian/cookie` and waits for it to return through the
-  ordered event stream. `Seen` — ordered delivery of all the kernel captured,
-  no capture-gap doubt open — proves in O(1) that earlier events are folded in.
-  **The barrier as built can break that proof.** Every barrier writes its
-  serial into the one reused file, and the watcher counts a sighting by
-  reading the file's current bytes when it handles an event, not the serial
-  that event was raised for. One sentinel write raises more than one event
-  (data modify, then close-after-write), so a trailing event of barrier B1 can
-  read B2's serial and vouch B2 before the events queued between them — an
-  outside write that finished before B2 began — are delivered. A guarded
-  write door then passes `if_root` against a world that has moved, takes a
-  `root_before` disk did not hold, and folds an outside edit to its own file
-  into its commit untold; an edit to any other file is told after the commit
-  instead of before it. One sentinel per barrier, its serial taken from the
-  event's path, closes the gap. A new directory, or any non-member-candidate path that can hide members, is a
-  missed-event: `Seen` is then illegal, and the barrier answers unproven at
+  its own sentinel, `.meridian/cookies/<token>-<serial>`, and waits for it to
+  return through the ordered event stream. `Seen` — ordered delivery of all
+  the kernel captured, no capture-gap doubt open — proves in O(1) that earlier
+  events are folded in. The proof rests on the sighting naming the barrier it
+  answers: a sighting is an event on one of this feed's sentinel paths, and its
+  serial is read from that path, never from the file's bytes. One sentinel
+  write raises more than one event (create, data modify, close-after-write),
+  and every one of them was raised after its barrier began, so any of them
+  vouches exactly that barrier and the ones before it. A file shared between
+  barriers could not: an earlier barrier's trailing event, reading a later
+  barrier's serial from the bytes, would vouch the later barrier before the
+  events queued between them were delivered. The token is the process id and
+  a random per-feed nonce, so two engines on one workspace (a restart overlap,
+  a second process) never vouch each other, and a reused pid after a crash
+  cannot match a leftover; a sentinel carrying another token, and the removal
+  of any sentinel, is no sighting and tells nothing. Each barrier removes its
+  own sentinel when it returns; a crash or a failed removal leaves a sentinel
+  behind, one per barrier then in flight, and no feed reads it again. The
+  feed creates `.meridian/cookies/` before it arms the watch, so no sentinel
+  lands in a directory the watch has not yet armed. A new directory, or any
+  non-member-candidate path that can hide members, is a missed-event: `Seen`
+  is then illegal, and the barrier answers unproven at
   once, without spending the cookie timeout. The dot-prefixed cookie path is
   outside the hash domain by the standing `wire-contract.md` §12.1 floor, so it
   can never move the root or break a held token; a cookie inside the hash

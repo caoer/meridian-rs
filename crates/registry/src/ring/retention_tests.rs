@@ -328,10 +328,10 @@ fn a_door_step_on_a_memo_moved_past_its_observation_tells_nothing() {
     let (baseline, _) = ring.prime(&root, &registry).unwrap();
     let cache = registry.domain_cache(&root.0);
     std::fs::write(root.0.join("a.md"), b"# Seen by the door\n").unwrap();
-    let door_saw = observe_past(&registry, &root, &cache, &baseline);
+    let door_saw = observe(&registry, &root, &cache);
     // A reader observes a later edit before the door's step reads the memo.
     std::fs::write(root.0.join("a.md"), b"# Seen by a reader, later\n").unwrap();
-    let reader_saw = observe_past(&registry, &root, &cache, &door_saw);
+    let reader_saw = observe(&registry, &root, &cache);
     assert_ne!(door_saw, reader_saw);
 
     let told = ring.reconcile_observed(&root, &cache, &door_saw).unwrap();
@@ -353,17 +353,19 @@ fn a_door_step_on_a_memo_moved_past_its_observation_tells_nothing() {
 /// between the door's observation and its settle step (with an edit pending
 /// at door entry when `pending`). The step classifies the memo's own pair,
 /// so the settle frame tells the late rewrite under the memo's root — the
-/// root a splice's or a set's `root_before` is taken from. The reader keeps
-/// observing until it sees the write ([`super::observe_past`]).
+/// root a splice's or a set's `root_before` is taken from.
 fn settle_race(pending: bool) {
     let (_dir, root, registry) = setup();
     let ring = WorkspaceRing::new(&root);
     let (baseline, _) = ring.prime(&root, &registry).unwrap();
     let cache = registry.domain_cache(&root.0);
-    let mut pre = baseline.clone();
     if pending {
         std::fs::write(root.0.join("a.md"), b"# Pending at the door\n").unwrap();
-        pre = observe_past(&registry, &root, &cache, &baseline);
+        assert_ne!(
+            observe(&registry, &root, &cache),
+            baseline,
+            "a reader saw the pending change"
+        );
     }
     let (announce, announced) = std::sync::mpsc::channel();
     let (resume, resumed) = std::sync::mpsc::channel();
@@ -373,7 +375,7 @@ fn settle_race(pending: bool) {
         let door = scope.spawn(|| plane.observe().unwrap());
         announced.recv_timeout(Duration::from_secs(10)).unwrap();
         std::fs::write(root.0.join("b.md"), b"# B, rewritten late\n").unwrap();
-        let reader_saw = observe_past(&registry, &root, &cache, &pre);
+        let reader_saw = observe(&registry, &root, &cache);
         resume.send(()).unwrap();
         (Root(door.join().unwrap().0), reader_saw)
     });
@@ -414,7 +416,11 @@ fn a_detect_cycle_classifies_the_memo_a_reader_moved_after_its_observation() {
     let (baseline, _) = ring.prime(&root, &registry).unwrap();
     let cache = registry.domain_cache(&root.0);
     std::fs::write(root.0.join("a.md"), b"# Seen by the cycle\n").unwrap();
-    let pre = observe_past(&registry, &root, &cache, &baseline);
+    assert_ne!(
+        observe(&registry, &root, &cache),
+        baseline,
+        "a reader saw the cycle's change"
+    );
     let (announce, announced) = std::sync::mpsc::channel();
     let (resume, resumed) = std::sync::mpsc::channel();
     *ring.pause_after_detect_observation.lock().unwrap() = Some((announce, resumed));
@@ -422,7 +428,7 @@ fn a_detect_cycle_classifies_the_memo_a_reader_moved_after_its_observation() {
         let cycle = scope.spawn(|| ring.cycle(&root, &registry, true).unwrap());
         announced.recv_timeout(Duration::from_secs(10)).unwrap();
         std::fs::write(root.0.join("b.md"), b"# B, seen by a reader\n").unwrap();
-        let reader_saw = observe_past(&registry, &root, &cache, &pre);
+        let reader_saw = observe(&registry, &root, &cache);
         resume.send(()).unwrap();
         (cycle.join().unwrap(), reader_saw)
     });
@@ -445,8 +451,8 @@ fn a_detect_cycle_classifies_the_memo_a_reader_moved_after_its_observation() {
 
 /// `memo_pair` holds the memo across its root read and its leaves read, so
 /// no reader can move the memo between them: parked between the two reads,
-/// the memo is still locked. A reader observes the write first
-/// ([`super::observe_past`]), so the cycle finds the memo past its baseline
+/// the memo is still locked. A reader observes the write first, so the
+/// cycle finds the memo past its baseline
 /// and reaches `memo_pair` whatever its own barrier vouches.
 #[test]
 fn memo_pair_holds_the_memo_across_both_reads() {
@@ -455,7 +461,11 @@ fn memo_pair_holds_the_memo_across_both_reads() {
     let (baseline, _) = ring.prime(&root, &registry).unwrap();
     let cache = registry.domain_cache(&root.0);
     std::fs::write(root.0.join("a.md"), b"# Seen by the cycle\n").unwrap();
-    observe_past(&registry, &root, &cache, &baseline);
+    assert_ne!(
+        observe(&registry, &root, &cache),
+        baseline,
+        "the reader saw the write"
+    );
     let (announce, announced) = std::sync::mpsc::channel();
     let (resume, resumed) = std::sync::mpsc::channel();
     *PAIR_GATE.lock().unwrap() = Some((Arc::as_ptr(&cache) as usize, (announce, resumed)));

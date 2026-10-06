@@ -748,38 +748,17 @@ fn park_pair(cache: &Arc<Mutex<fs::DomainCache>>) {
     }
 }
 
-/// Test helper: observe through `cache` until the memo's root differs from
-/// `from`, for at most 10 s. One observation right after a write can still
-/// return the root from before it: every cookie barrier writes its serial
-/// into the one reused `.meridian/cookie`, and the watcher reads the file's
-/// current serial when it handles an event, so an earlier barrier's trailing
-/// event can vouch this barrier before the write's own events are delivered
-/// (merkle-spec §6.4, the currency barrier). That false `Seen` is a product
-/// defect — a guarded write door can pass `if_root` against a moved world
-/// and fold an outside edit to its own file into its commit, untold — and
-/// this helper waits it out; a reader that keeps observing sees the write.
+/// Test helper: one door-entry observation through `cache`.
 #[cfg(test)]
-pub(crate) fn observe_past(
+pub(crate) fn observe(
     registry: &crate::Registry,
     ws_root: &fs::WorkspaceRoot,
     cache: &Arc<Mutex<fs::DomainCache>>,
-    from: &Root,
 ) -> Root {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let seen = registry
-            .door_observation(&ws_root.0, cache, crate::registry::DOOR_COOKIE_TIMEOUT)
-            .map(|root| Root(root.0))
-            .expect("a reader's observation");
-        if seen != *from {
-            return seen;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "no observation saw a write past {from:?}"
-        );
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    registry
+        .door_observation(&ws_root.0, cache, crate::registry::DOOR_COOKIE_TIMEOUT)
+        .map(|root| Root(root.0))
+        .expect("a reader's observation")
 }
 
 /// Park on a one-shot test gate when it is armed: announce, then wait.
@@ -1039,11 +1018,11 @@ mod tests {
     }
 
     /// P1(b): no ordinary cycle runs the floor under the flock. With the vouch
-    /// impossible — every cookie barrier unproven (a directory at the
-    /// sentinel's path fails each sentinel write), or the feed slot sticky
-    /// `Failed` — the ordinary cycle releases the flock and tells nothing; the
-    /// `DETECT_FLOOR_CADENCE` backstop cycle floors and tells the edit, so the
-    /// miss costs latency, never the frame.
+    /// impossible — every cookie barrier unproven (a regular file where the
+    /// sentinels' directory belongs fails each sentinel write), or the feed
+    /// slot sticky `Failed` — the ordinary cycle releases the flock and tells
+    /// nothing; the `DETECT_FLOOR_CADENCE` backstop cycle floors and tells the
+    /// edit, so the miss costs latency, never the frame.
     ///
     /// *Mutation:* observe through `door_observation` on the ordinary arm —
     /// the ordinary cycle floors under the flock and tells the edit itself.
@@ -1060,7 +1039,9 @@ mod tests {
             );
             let reg = registry_in(tmp.path());
             if miss == "cookie_unproven" {
-                std::fs::create_dir_all(ws.0.join(crate::feed::COOKIE_REL)).unwrap();
+                let blocker = ws.0.join(crate::feed::COOKIE_DIR);
+                std::fs::create_dir_all(blocker.parent().unwrap()).unwrap();
+                std::fs::write(blocker, "").unwrap();
             } else {
                 reg.fail_feed(&ws.0);
             }

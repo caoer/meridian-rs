@@ -193,15 +193,17 @@ fn subscribe_then_write_delivers_a_notification() {
 }
 
 /// P1(b) end to end: a feed that can never vouch — every cookie barrier
-/// unproven, a directory at the §6.4 sentinel's path failing each sentinel
-/// write — still pushes an external edit, by the `DETECT_FLOOR_CADENCE`
-/// backstop at the latest, and no ordinary detect cycle keeps a writer off
-/// the flock: a probe's `WriteLock::acquire` keeps succeeding between cycles.
+/// unproven, a regular file where the §6.4 sentinels' directory belongs
+/// failing each sentinel write — still pushes an external edit, by the
+/// `DETECT_FLOOR_CADENCE` backstop at the latest, and no ordinary detect cycle
+/// keeps a writer off the flock: a probe's `WriteLock::acquire` keeps
+/// succeeding between cycles.
 #[test]
 fn an_unvouched_feed_still_pushes_the_external_edit_and_never_holds_the_flock() {
     let tmp = TempDir::new().unwrap();
     let ws = write_ws(&tmp.path().join("ws"), &[("plan.md", PLAN)]);
-    fs::create_dir_all(ws.join(".meridian/cookie")).unwrap();
+    fs::create_dir_all(ws.join(".meridian")).unwrap();
+    fs::write(ws.join(".meridian/cookies"), "").unwrap();
     let server = RunningServer::start(test_config(&tmp)).unwrap();
 
     let mut sub = Conn::open(server.socket_path());

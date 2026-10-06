@@ -678,14 +678,15 @@ fn an_external_edit_between_two_commits_of_one_run_keeps_its_own_frame() {
 
 /// A run whose observation misses the vouch still mints disk-true roots: the
 /// observation falls to the floor and the commit overlays onto it. A
-/// directory at the §6.4 cookie sentinel's path makes every sentinel write
-/// fail, so every barrier answers `Unproven` (`feed.rs`
+/// regular file where the §6.4 cookie sentinels' directory belongs makes
+/// every sentinel write fail, so every barrier answers `Unproven` (`feed.rs`
 /// `cookie_barrier_at`) — the feed is live, the proof never comes.
 #[test]
 fn a_run_whose_observation_misses_the_vouch_still_mints_disk_true_roots() {
     let tmp = TempDir::new().unwrap();
     let ws = seeded(&tmp);
-    fs::create_dir_all(ws.join(".meridian/cookie")).unwrap();
+    fs::create_dir_all(ws.join(".meridian")).unwrap();
+    fs::write(ws.join(".meridian/cookies"), "").unwrap();
     let server = RunningServer::start(test_config(&tmp)).unwrap();
 
     let mut sub = Conn::open(server.socket_path());

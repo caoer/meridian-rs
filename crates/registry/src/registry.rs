@@ -1942,6 +1942,20 @@ impl Registry {
             .insert(workspace.to_path_buf(), FeedSlot::Failed);
     }
 
+    /// Test-only: this workspace's live feed, if it has one.
+    #[cfg(test)]
+    pub(crate) fn live_feed(&self, workspace: &Path) -> Option<Arc<feed::WorkspaceFeed>> {
+        match self
+            .feeds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(workspace)
+        {
+            Some(FeedSlot::Live(feed)) => Some(Arc::clone(feed)),
+            _ => None,
+        }
+    }
+
     /// The push plane's §6.6 backstop (merkle-spec §6.7, detect row): find
     /// what the event stream silently lost without holding `cache` across the
     /// I/O. Snapshot under the lock, compare unlocked

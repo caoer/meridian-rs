@@ -32,7 +32,7 @@
 //! with no dot-prefixed segment — both §12.1 STRUCTURAL floors, deliberately
 //! config-independent so a domain-config change while cold can never have
 //! filtered away the one event that mattered. Everything else (`.git`
-//! churn, build artifacts, the `.meridian/cookie` sentinel) can never move
+//! churn, build artifacts, the `.meridian/cookies/` sentinels) can never move
 //! the root and never enters the set. Order is not kept: a spoil-set is
 //! order-insensitive by construction. The one ORDERED consumer — the §6.4
 //! currency cookie — rides the raw stream UPSTREAM of this filter
@@ -92,12 +92,13 @@ use notify::{EventKind, RecursiveMode, Watcher as _};
 /// the correct full re-read instead of holding an unbounded set.
 const DIRTY_CAP: usize = 4096;
 
-/// The §6.4 currency-cookie sentinel, workspace-relative. Dot-prefixed BY
+/// The §6.4 currency-cookie sentinels' directory, workspace-relative: each
+/// barrier writes its own sentinel `<token>-<serial>` here. Dot-prefixed BY
 /// LAW (the standing `wire-contract.md` §12.1 floor): outside the hash
 /// domain, so writing it can never move the root or break a held token —
 /// which is what makes the barrier free to run on every guard-grade
 /// question.
-pub(crate) const COOKIE_REL: &str = ".meridian/cookie";
+pub(crate) const COOKIE_DIR: &str = ".meridian/cookies";
 
 /// The rescan record's bound: enough for any post-mortem window, dropped
 /// oldest-first past it (the lifetime total stays in [`FeedStats::rescans`]).
@@ -192,6 +193,12 @@ pub(crate) struct WorkspaceFeed {
     /// The next write carries `fetch_add + 1`; sightings max into
     /// [`FeedState::cookie_seen`].
     cookie_serial: AtomicU64,
+    /// This feed's sentinel-name token ([`cookie_token`]): a sentinel whose
+    /// name carries another token is no sighting of this feed.
+    cookie_token: String,
+    /// Test seam: the serial of the last sentinel write that landed.
+    #[cfg(test)]
+    cookie_written: AtomicU64,
 }
 
 /// The feed's shared state plus the §6.4 cookie condvar: barrier waiters
@@ -200,6 +207,36 @@ pub(crate) struct WorkspaceFeed {
 struct FeedSync {
     state: Mutex<FeedState>,
     cookie: Condvar,
+    /// Test seam: while armed, the watcher parks after every sighting
+    /// ([`WorkspaceFeed::park_after_sightings`]).
+    #[cfg(test)]
+    sighting_gate: Mutex<Option<SightingGate>>,
+}
+
+/// The watcher's side of [`WorkspaceFeed::park_after_sightings`]: announce
+/// the sighted serial, then wait to be resumed.
+#[cfg(test)]
+struct SightingGate {
+    announce: std::sync::mpsc::Sender<u64>,
+    resume: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+impl FeedSync {
+    /// Park the watcher thread on an armed gate, the state lock released. A
+    /// gate whose test dropped its ends disarms itself.
+    fn park_after_sighting(&self, serial: u64) {
+        let mut gate = self
+            .sighting_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let parked = gate
+            .as_ref()
+            .is_some_and(|g| g.announce.send(serial).is_ok() && g.resume.recv().is_ok());
+        if !parked {
+            *gate = None;
+        }
+    }
 }
 
 impl std::fmt::Debug for WorkspaceFeed {
@@ -365,9 +402,13 @@ impl WorkspaceFeed {
                 ..FeedState::default()
             }),
             cookie: Condvar::new(),
+            #[cfg(test)]
+            sighting_gate: Mutex::new(None),
         });
         let sink = Arc::clone(&sync);
         let root = workspace.to_path_buf();
+        let token = cookie_token();
+        let sentinel_prefix = format!("{token}-");
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let mut s = sink.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -385,19 +426,22 @@ impl WorkspaceFeed {
                             continue;
                         };
                         // §6.4 cookie sighting — UPSTREAM of the member
-                        // filter: the sentinel is the ordered stream's
-                        // proof-of-delivery, never dirt. A torn or
-                        // vanished read proves nothing and skips (the
-                        // close event re-delivers). The serial is the
-                        // file's bytes now, not the one this event was
-                        // raised for: an earlier barrier's trailing
-                        // event can read a later barrier's serial and
-                        // vouch it before the events queued between
-                        // them arrive — a false Seen (merkle-spec §6.4).
-                        if rel == Path::new(COOKIE_REL) {
-                            if let Some(serial) = read_serial(path) {
+                        // filter: a sentinel is the ordered stream's
+                        // proof-of-delivery, never dirt. Every event on
+                        // one of this feed's sentinels was raised after
+                        // its barrier began, so its serial, read from the
+                        // path, vouches exactly that barrier. A removal
+                        // and another feed's sentinel prove nothing.
+                        if let Ok(name) = rel.strip_prefix(COOKIE_DIR) {
+                            if let Some(serial) = sighting(name, &sentinel_prefix, event.kind) {
                                 s.cookie_seen = s.cookie_seen.max(serial);
                                 sink.cookie.notify_all();
+                                #[cfg(test)]
+                                {
+                                    drop(s);
+                                    sink.park_after_sighting(serial);
+                                    s = sink.state.lock().unwrap_or_else(PoisonError::into_inner);
+                                }
                             }
                             continue;
                         }
@@ -412,28 +456,57 @@ impl WorkspaceFeed {
                     sink.cookie.notify_all();
                 }
             })?;
-        // The sentinel's directory must exist BEFORE the recursive watch is
+        // The sentinels' directory must exist BEFORE the recursive watch is
         // armed, so the initial walk covers it. notify's inotify backend
         // arms a NEW directory only after delivering its create event —
         // anything written into it before that arm is invisible forever
         // (notify-8.2.0 inotify.rs, `add_watch_by_event` collects, the loop
-        // arms after the batch). A `.meridian` first created by a barrier
-        // could lose that race once and leave every later cookie unseen.
-        // Best-effort: on failure (read-only root) barriers answer
+        // arms after the batch). A sentinel directory first created by a
+        // barrier could lose that race and leave that barrier's sentinel
+        // unseen. Best-effort: on failure (read-only root) barriers answer
         // `Unproven` and the caller keeps the extent-refresh floor.
-        if let Some(parent) = workspace.join(COOKIE_REL).parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+        let _ = std::fs::create_dir_all(workspace.join(COOKIE_DIR));
         watcher.watch(workspace, RecursiveMode::Recursive)?;
         Ok(WorkspaceFeed {
             _watcher: watcher,
             sync,
             cookie_serial: AtomicU64::new(0),
+            cookie_token: token,
+            #[cfg(test)]
+            cookie_written: AtomicU64::new(0),
         })
     }
 
-    /// The §6.4 currency barrier: write the sentinel at [`COOKIE_REL`] and
-    /// wait (bounded) to see it return through the ordered event stream.
+    /// Test seam: park the watcher thread after every cookie sighting. Each
+    /// sighting's serial arrives on the receiver; one send resumes the
+    /// watcher. Dropping both ends disarms the gate.
+    #[cfg(test)]
+    pub(crate) fn park_after_sightings(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<u64>, std::sync::mpsc::Sender<()>) {
+        let (announce, announced) = std::sync::mpsc::channel();
+        let (resume, resumed) = std::sync::mpsc::channel();
+        *self
+            .sync
+            .sighting_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(SightingGate {
+            announce,
+            resume: resumed,
+        });
+        (announced, resume)
+    }
+
+    /// Test seam: the serial of the last sentinel write that landed.
+    #[cfg(test)]
+    pub(crate) fn cookie_written(&self) -> u64 {
+        self.cookie_written.load(Ordering::Relaxed)
+    }
+
+    /// The §6.4 currency barrier: write this barrier's own sentinel under
+    /// [`COOKIE_DIR`] and wait (bounded) to see it return through the
+    /// ordered event stream; the sentinel is removed when the barrier
+    /// returns.
     /// `Seen` proves every captured event before the write is already in
     /// the dirty set, and that no capture-gap doubt is open — the O(1)
     /// currency proof. The caller takes and applies the set AFTER a
@@ -451,7 +524,7 @@ impl WorkspaceFeed {
     /// sentinel's own directory is still pre-created so the cookie itself
     /// never sits in the gap.
     pub(crate) fn cookie_barrier(&self, workspace: &Path, timeout: Duration) -> CookieOutcome {
-        self.cookie_barrier_at(workspace, Path::new(COOKIE_REL), timeout)
+        self.cookie_barrier_at(workspace, Path::new(COOKIE_DIR), timeout)
     }
 
     /// The detect cycle's barrier under the write flock (merkle-spec §6.7,
@@ -463,21 +536,22 @@ impl WorkspaceFeed {
     /// here would send every write door to the floor for the holdoff's width
     /// whenever a probe's short budget lost a race with delivery.
     pub(crate) fn cookie_probe(&self, workspace: &Path, timeout: Duration) -> CookieOutcome {
-        self.barrier(workspace, Path::new(COOKIE_REL), timeout, false)
+        self.barrier(workspace, Path::new(COOKIE_DIR), timeout, false)
     }
 
-    /// The barrier at an explicit rel — the refusal seam. A rel the member
-    /// filter would admit is REFUSED by construction (merged plan §7 row):
-    /// a cookie inside the hash domain would move the very root it vouches
-    /// for. [`COOKIE_REL`] can never trip this (dot-prefixed by the §12.1
-    /// floor); the seam exists so the law is a tested fact, not a comment.
+    /// The barrier with its sentinels under an explicit directory — the
+    /// refusal seam. A directory with no dot-prefixed segment is REFUSED by
+    /// construction (merged plan §7 row): a cookie inside the hash domain
+    /// would move the very root it vouches for. [`COOKIE_DIR`] can never trip
+    /// this (dot-prefixed by the §12.1 floor); the seam exists so the law is
+    /// a tested fact, not a comment. Only [`COOKIE_DIR`] is ever sighted.
     pub(crate) fn cookie_barrier_at(
         &self,
         workspace: &Path,
-        rel: &Path,
+        dir: &Path,
         timeout: Duration,
     ) -> CookieOutcome {
-        self.barrier(workspace, rel, timeout, true)
+        self.barrier(workspace, dir, timeout, true)
     }
 
     /// One barrier; `doubt_on_timeout` decides whether running out of
@@ -486,11 +560,11 @@ impl WorkspaceFeed {
     fn barrier(
         &self,
         workspace: &Path,
-        rel: &Path,
+        dir: &Path,
         timeout: Duration,
         doubt_on_timeout: bool,
     ) -> CookieOutcome {
-        if member_candidate(rel) {
+        if member_candidate(dir) || hideable_prefix(dir) {
             return CookieOutcome::Refused;
         }
         {
@@ -512,14 +586,31 @@ impl WorkspaceFeed {
             }
         }
         let serial = self.cookie_serial.fetch_add(1, Ordering::Relaxed) + 1;
-        let abs = workspace.join(rel);
-        let write = abs
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::write(&abs, serial.to_string()));
+        let dir = workspace.join(dir);
+        let sentinel = dir.join(format!("{}-{serial}", self.cookie_token));
+        let write = std::fs::create_dir_all(&dir)
+            .and_then(|()| std::fs::write(&sentinel, serial.to_string()));
         if write.is_err() {
+            let _ = std::fs::remove_file(&sentinel);
             return CookieOutcome::Unproven;
         }
+        #[cfg(test)]
+        self.cookie_written.fetch_max(serial, Ordering::Relaxed);
+        let outcome = self.await_sighting(serial, timeout, doubt_on_timeout);
+        // The sighting reads the path, never the bytes, so removing the
+        // sentinel cannot spoil an event still queued for it; a failed
+        // removal leaves one file no feed reads again.
+        let _ = std::fs::remove_file(&sentinel);
+        outcome
+    }
+
+    /// Wait (bounded) until a sighting vouches `serial` ([`Self::barrier`]).
+    fn await_sighting(
+        &self,
+        serial: u64,
+        timeout: Duration,
+        doubt_on_timeout: bool,
+    ) -> CookieOutcome {
         let deadline = Instant::now() + timeout;
         let mut s = self
             .sync
@@ -982,16 +1073,25 @@ fn new_directory_members(_rel: &Path, _abs: &Path, _kind: EventKind) -> Option<V
     None
 }
 
-/// Parse a sighted cookie's serial: the file's bytes now, not the serial the
-/// handled event was raised for. `None` (torn or vanished mid-read) is
-/// benign: the write's close event re-delivers the path. One sentinel write
-/// raises more than one event, so a `Some` can be a later barrier's serial
-/// read through an earlier barrier's trailing event; it vouches that barrier
-/// before the events queued ahead of its sentinel are delivered, a false
-/// `Seen` (merkle-spec §6.4, the currency barrier).
-fn read_serial(abs: &Path) -> Option<u64> {
-    let text = std::fs::read_to_string(abs).ok()?;
-    text.trim().parse().ok()
+/// The serial an event on `name` (a path under [`COOKIE_DIR`]) sights for
+/// the feed whose sentinels start with `prefix` (`<token>-`): the serial in
+/// the sentinel's name, never in its bytes. A removal sights nothing — the
+/// barrier removes its own sentinel when it returns — and neither does a
+/// name carrying another feed's token.
+fn sighting(name: &Path, prefix: &str, kind: EventKind) -> Option<u64> {
+    if matches!(kind, EventKind::Remove(_)) {
+        return None;
+    }
+    name.to_str()?.strip_prefix(prefix)?.parse().ok()
+}
+
+/// A feed's sentinel-name token: the process id and a random per-feed nonce,
+/// so neither another engine on the workspace nor a crash leftover under a
+/// reused pid can name one of this feed's sentinels (merkle-spec §6.4).
+fn cookie_token() -> String {
+    use std::hash::BuildHasher as _;
+    let nonce = std::collections::hash_map::RandomState::new().hash_one(std::process::id());
+    format!("{}-{nonce:016x}", std::process::id())
 }
 
 /// Which event kinds can carry a content change. `Access` is read-side noise
@@ -1132,17 +1232,19 @@ mod tests {
             !root.join("notes/plan.md").exists(),
             "the refusal wrote nothing"
         );
-        assert!(!member_candidate(Path::new(COOKIE_REL)));
+        let sentinel = Path::new(COOKIE_DIR).join("1-0-1");
+        assert!(!member_candidate(&sentinel));
         assert!(
-            !fs::domain::Domain::new().contains(Path::new(COOKIE_REL)),
+            !fs::domain::Domain::new().contains(&sentinel),
             "the sentinel is outside the hash domain by the §12.1 floor"
         );
     }
 
     /// The barrier's proof arm, live kernel stream: the sentinel write comes
-    /// back through the ordered stream as `Seen`, and the sighting never
-    /// enters the dirty set (the cookie is proof-of-delivery, not dirt).
-    /// Generous timeout: CI inotify delivery can lag.
+    /// back through the ordered stream as `Seen`, the sighting never enters
+    /// the dirty set (the cookie is proof-of-delivery, not dirt), and the
+    /// barrier leaves no sentinel behind. Generous timeout: CI inotify
+    /// delivery can lag.
     #[test]
     fn the_cookie_returns_through_the_ordered_stream() {
         let dir = tempfile::tempdir().unwrap();
@@ -1158,6 +1260,11 @@ mod tests {
             (stats.pending, stats.events, stats.all_dirty),
             (0, 0, false),
             "the sighting fed the barrier, never the dirty set"
+        );
+        assert_eq!(
+            std::fs::read_dir(root.join(COOKIE_DIR)).unwrap().count(),
+            0,
+            "the barrier removed its sentinel"
         );
     }
 
@@ -1188,6 +1295,37 @@ mod tests {
         );
     }
 
+    /// Two engines on one workspace never vouch each other (merkle-spec
+    /// §6.4): B's watcher parks after every sighting; A's barrier lands its
+    /// sentinel in B's stream too; an outside write completes; B's barrier is
+    /// `Seen` only with the write in B's take. A sighting that any engine's
+    /// sentinel could raise would park B on A's sentinel and vouch B's
+    /// barrier before the write is delivered.
+    #[test]
+    fn a_second_feed_on_the_workspace_never_vouches_this_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.md"), "# A\n").unwrap();
+        let a = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("watcher");
+        let b = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("watcher");
+        let (sighted, resume) = b.park_after_sightings();
+        assert_eq!(
+            a.cookie_barrier(&root, Duration::from_secs(10)),
+            CookieOutcome::Seen
+        );
+        let b_sighted_a = sighted.recv_timeout(Duration::from_secs(1)).ok();
+        std::fs::write(root.join("a.md"), "# A, outside write\n").unwrap();
+        let verdict = b.cookie_barrier(&root, Duration::from_secs(10));
+        let pending = b.take();
+        drop((sighted, resume));
+        assert_eq!(verdict, CookieOutcome::Seen);
+        assert!(
+            matches!(&pending, Pending::Paths(paths) if paths.iter().any(|p| p == Path::new("a.md"))),
+            "B's Seen vouched a take without the write (B sighted A's sentinel: \
+             {b_sighted_a:?}): {pending:?}"
+        );
+    }
+
     /// The structural filter: md-only, no dot segment, plain-relative shape.
     #[test]
     fn the_dirty_set_admits_only_member_candidates() {
@@ -1196,7 +1334,7 @@ mod tests {
         assert!(!member_candidate(Path::new("notes/data.json")));
         assert!(!member_candidate(Path::new(".git/index.md")));
         assert!(!member_candidate(Path::new("a/.hidden/x.md")));
-        assert!(!member_candidate(Path::new(".meridian/cookie")));
+        assert!(!member_candidate(Path::new(".meridian/cookies/1-0-1")));
         assert!(!member_candidate(Path::new("/abs/olute.md")));
         assert!(!member_candidate(Path::new("../escape.md")));
         assert!(!member_candidate(Path::new("")));
