@@ -1,3 +1,4 @@
+// Control prototype: fce2e607 source under the final tests.
 //! Fence-language detection — the dispatch axis (verdict ruling 1, plan
 //! decision #13). A task block is a fenced code block whose info string names
 //! one of exactly two languages: `starlark` (hermetic kernel eval) or `bash`

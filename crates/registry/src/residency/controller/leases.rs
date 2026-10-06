@@ -23,13 +23,16 @@ impl Member {
     }
 
     /// Whether occupied allowance for a load of `peak` is kept by the members
-    /// in `held` alone (merkle-spec §6.4), measured against the allowance
-    /// above the floor as the ledger stands. A load whose peak fits that
-    /// allowance is kept out when the held members' charged body and raw
-    /// bytes plus `peak` exceed it; an oversized load is kept out when the
-    /// serialized oversized member is one of `held`. Anything else that
-    /// occupies the allowance belongs to other owners, whose release can
-    /// admit the load. A disabled limit keeps nothing out.
+    /// in `held` alone (merkle-spec §6.4): whether the load would still be
+    /// refused if every other owner's pins and loads were gone, measured
+    /// against the allowance above the floor as the ledger stands. A load
+    /// whose peak fits that allowance needs room for the peak beside the held
+    /// members' charged body and raw bytes. An oversized load needs the
+    /// serialized slot, which stays taken only while its member is pinned and
+    /// the total exceeds the limit; the held members keep it alone when one
+    /// of them is that member and their charged bytes exceed the allowance.
+    /// Each member is charged once, however many leases on it are held. A
+    /// disabled limit keeps nothing out.
     #[must_use]
     pub fn held_blocks(&self, held: &[MemberId], peak: usize) -> bool {
         let state = lock(&self.controller.0.ledger);
@@ -37,11 +40,6 @@ impl Member {
             return false;
         }
         let room = (state.limit as u128).saturating_sub(state.floor_exact());
-        if peak as u128 > room {
-            return state
-                .transient
-                .is_some_and(|key| held.contains(&MemberId(key)));
-        }
         let mut counted: Vec<Key> = Vec::with_capacity(held.len());
         let mut own = 0u128;
         for MemberId(key) in held {
@@ -56,6 +54,12 @@ impl Member {
                     .map_or(0, |raw| raw.bytes);
                 own += row.body as u128 + raw as u128;
             }
+        }
+        if peak as u128 > room {
+            // Control prototype: holding the serialized member is enough.
+            return state
+                .transient
+                .is_some_and(|key| held.contains(&MemberId(key)));
         }
         own + peak as u128 > room
     }

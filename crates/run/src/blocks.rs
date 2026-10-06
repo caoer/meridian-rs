@@ -1,3 +1,4 @@
+// Control prototype: fce2e607 source under the final tests.
 //! Page-wide block enumeration — what `mode:"load"` addresses (hook-support
 //! design § 2.2 *Evaluation — load*, step 1).
 //!
@@ -342,7 +343,8 @@ echo hi
 ```
 ^second
 ";
-        let blocks: Vec<AnchoredBlock> = anchored_blocks(&doc(page))
+        let blocks: Vec<AnchoredBlock> = PageBlocks::of(&doc(page))
+            .listed()
             .into_iter()
             .map(|b| b.expect("no refusals in this page"))
             .collect();
@@ -380,7 +382,8 @@ declare(on = \"Stop\")
 ```
 ^hook
 ";
-        let blocks: Vec<AnchoredBlock> = anchored_blocks(&doc(page))
+        let blocks: Vec<AnchoredBlock> = PageBlocks::of(&doc(page))
+            .listed()
             .into_iter()
             .map(|b| b.expect("no refusals"))
             .collect();
@@ -407,7 +410,7 @@ y = 2
 ```
 ^dup
 ";
-        let refusals = anchored_blocks(&doc(page));
+        let refusals = PageBlocks::of(&doc(page)).listed();
         assert_eq!(refusals.len(), 1, "one authoring fault, told once");
         let error = refusals[0].clone().expect_err("a duplicate addresses none");
         assert_eq!(
@@ -432,7 +435,7 @@ More prose.
 ^dup
 ";
         assert_eq!(
-            anchored_blocks(&doc(page)),
+            PageBlocks::of(&doc(page)).listed(),
             Vec::new(),
             "no candidate under ^dup hosts a code block, so the duplication \
              is not a block fault and a load must not price it"
@@ -452,7 +455,7 @@ x = 1
 ```
 ^mixed
 ";
-        let refusals = anchored_blocks(&doc(page));
+        let refusals = PageBlocks::of(&doc(page)).listed();
         assert_eq!(refusals.len(), 1, "one authoring fault, told once");
         let error = refusals[0]
             .clone()
@@ -482,7 +485,9 @@ More prose.
         // particular. A fire DID ask, so it keeps the more diagnostic refusal:
         // narrowing the enumerator must not narrow the addressing.
         assert_eq!(
-            block(&doc(page), "dup").expect_err("a duplicate addresses none"),
+            PageBlocks::of(&doc(page))
+                .block("dup")
+                .expect_err("a duplicate addresses none"),
             BlockError::AmbiguousAnchor {
                 anchor: "dup".to_owned(),
                 count: 2
@@ -500,7 +505,7 @@ print(1)
 ```
 ^py
 ";
-        let blocks = anchored_blocks(&doc(page));
+        let blocks = PageBlocks::of(&doc(page)).listed();
         let block = blocks[0].clone().expect("the block exists");
         assert_eq!(
             block.lang,
@@ -520,19 +525,30 @@ print(1)
         let page = "\
 # Page
 
+Some prose.
+^note
+
 ```starlark
 x = 1
 ```
 ^here
 ";
-        let d = doc(page);
-        assert_eq!(block(&d, "here").expect("resolves").anchor, "here");
+        let d = PageBlocks::of(&doc(page));
+        assert_eq!(d.block("here").expect("resolves").anchor, "here");
         assert_eq!(
-            block(&d, "gone").expect_err("dangling"),
+            d.block("gone").expect_err("dangling"),
             BlockError::NoBlock {
                 anchor: "gone".to_owned()
             }
         );
-        assert_eq!(block(&d, "gone").expect_err("dangling").class(), "no_block");
+        assert_eq!(d.block("gone").expect_err("dangling").class(), "no_block");
+        // A prose anchor resolves, to something that is not a fence: the
+        // fire path says so, not that no such anchor exists.
+        assert_eq!(
+            d.block("note").expect_err("prose"),
+            BlockError::NotACodeBlock {
+                anchor: "note".to_owned()
+            }
+        );
     }
 }

@@ -178,25 +178,39 @@ fn a_second_body_beside_an_oversized_lease_is_classed_by_who_holds_the_first() {
     assert_eq!((report.pinned, report.reserved), (0, 0));
 }
 
-/// Another request (thread) leases `path` until the returned sender is
-/// dropped or fires. The sender lives in the caller's scope closure, so a
+/// Another request (thread) leasing a member until [`Elsewhere::end`], or
+/// until this value drops: it lives in the caller's scope closure, so a
 /// failing assertion there unwinds it and the other request ends instead of
 /// waiting forever.
+struct Elsewhere<'s> {
+    release: std::sync::mpsc::Sender<()>,
+    thread: std::thread::ScopedJoinHandle<'s, ()>,
+}
+
+impl Elsewhere<'_> {
+    /// End the other request's lease and wait until its thread has dropped it.
+    fn end(self) {
+        drop(self.release);
+        self.thread.join().unwrap();
+    }
+}
+
+/// Another request (thread) leases `path` until the returned value ends.
 fn held_elsewhere<'s>(
     scope: &'s std::thread::Scope<'s, '_>,
     catalog: &'s Catalog,
     path: &'static str,
-) -> std::sync::mpsc::Sender<()> {
+) -> Elsewhere<'s> {
     let (taken, held) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
-    scope.spawn(move || {
+    let thread = scope.spawn(move || {
         let lease = catalog.pin_read(path).unwrap().unwrap();
         taken.send(()).unwrap();
         let _ = released.recv();
         drop(lease);
     });
     held.recv().unwrap();
-    release
+    Elsewhere { release, thread }
 }
 
 const PEAK: usize = 131_072;
@@ -254,10 +268,7 @@ fn occupancy_another_request_completes_is_transient_while_holding_a_lease() {
             Err(true),
             "the other request's lease ends without this one"
         );
-        drop(release);
-        while controller.report().pinned >= both.pinned {
-            std::thread::yield_now();
-        }
+        release.end();
         assert_eq!(
             admitted(&catalog, "b.md"),
             Ok(()),
@@ -322,4 +333,104 @@ fn a_lease_that_ended_no_longer_counts_against_its_thread() {
             "this thread holds nothing"
         );
     });
+}
+
+/// A catalog over three small pages and one large one (`c.md`), unlimited
+/// until the test sets a limit: the large page's body and raw bytes dwarf
+/// the floor's growth while an admission is probed.
+fn with_a_large_page() -> (Catalog, Controller, (tempfile::TempDir, RawStore)) {
+    let dir = tempfile::tempdir().unwrap();
+    let backing = RawStore::new(dir.path()).unwrap();
+    let controller = Controller::new(0);
+    let large = format!(
+        "# C\n\n{}",
+        "a paragraph of the big page with some words in it\n\n".repeat(150)
+    );
+    let docs: Docs = [
+        ("a.md", "# A\n\nfirst\n".to_owned()),
+        ("b.md", "# B\n\nsecond\n".to_owned()),
+        ("d.md", "# D\n\nthird\n".to_owned()),
+        ("c.md", large),
+    ]
+    .into_iter()
+    .map(|(path, raw)| {
+        let doc = model::build(raw.clone(), syntax::parse(&raw));
+        (path.to_owned(), Arc::new(doc))
+    })
+    .collect();
+    let catalog = Catalog::capture(&docs, &controller, &backing, PEAK).unwrap();
+    (catalog, controller, (dir, backing))
+}
+
+/// In the oversized regime this request's `a.md` is the serialized member,
+/// but its own bytes fit the allowance above the floor: the exclusivity lasts
+/// only because another request's large `c.md` keeps the total above the
+/// limit. That occupancy ends without this request, so it is transient, and
+/// the same request, still holding `a.md`, is admitted once `c.md` ends.
+#[test]
+fn a_serialized_member_whose_exclusivity_another_request_keeps_is_transient() {
+    let (catalog, controller, _backing) = with_a_large_page();
+    let before = controller.report().total;
+    std::thread::scope(|scope| {
+        let release = held_elsewhere(scope, &catalog, "c.md");
+        let with_c = controller.report().total;
+        controller.set_limit(before + (with_c - before) / 2);
+        let own = catalog.pin_read("a.md").unwrap().unwrap();
+        let report = controller.report();
+        assert!(
+            report.transient && PEAK > report.limit.saturating_sub(report.floor),
+            "a.md is the serialized oversized member: {report:?}"
+        );
+        assert_eq!(
+            admitted(&catalog, "b.md"),
+            Err(true),
+            "the other request's c.md keeps the exclusivity: {report:?}"
+        );
+        release.end();
+        assert_eq!(
+            admitted(&catalog, "b.md"),
+            Ok(()),
+            "admitted, a.md still held"
+        );
+        drop(own);
+    });
+}
+
+/// This request's own large `c.md` alone keeps `b.md` out, by its body and
+/// its raw backing together; another request's `a.md` changes nothing. The
+/// refusal is not transient while both are held, nor once `a.md` ends.
+#[test]
+fn own_bytes_that_keep_the_load_out_count_the_raw_backing() {
+    let (catalog, controller, _backing) = with_a_large_page();
+    let own = catalog.pin_read("c.md").unwrap().unwrap();
+    let with_c = controller.report().total;
+    std::thread::scope(|scope| {
+        let release = held_elsewhere(scope, &catalog, "a.md");
+        controller.set_limit(with_c + PEAK - 1);
+        assert_eq!(admitted(&catalog, "b.md"), Err(false));
+        release.end();
+        assert_eq!(admitted(&catalog, "b.md"), Err(false));
+    });
+    drop(own);
+    assert_eq!(admitted(&catalog, "b.md"), Ok(()));
+}
+
+/// A member this request leases twice (a composed read of a page whose lock
+/// target is on the page itself) is charged once. Its `a.md` beside another
+/// request's `d.md` fills the allowance only together, so the refusal is
+/// transient, and `b.md` is admitted once `d.md` ends.
+#[test]
+fn a_member_leased_twice_by_one_request_is_charged_once() {
+    let (catalog, controller, _backing) = with_a_large_page();
+    let own = catalog.pin_read("a.md").unwrap().unwrap();
+    let again = catalog.pin("a.md").unwrap().unwrap();
+    std::thread::scope(|scope| {
+        let release = held_elsewhere(scope, &catalog, "d.md");
+        controller.set_limit(controller.report().total + PEAK - 1);
+        assert_eq!(admitted(&catalog, "b.md"), Err(true));
+        release.end();
+        assert_eq!(admitted(&catalog, "b.md"), Ok(()));
+    });
+    drop(again);
+    drop(own);
 }

@@ -2057,7 +2057,9 @@ declare(on = \"Stop\")
         // The premise the test rests on: ^armer really IS task-bound. Without
         // this the page has no binding and the test silently becomes the
         // undeclared-page case, which cannot catch the narrow guard.
-        let bound = blocks::block(&doc, "armer").expect("^armer is on the page");
+        let bound = blocks::PageBlocks::of(&doc)
+            .block("armer")
+            .expect("^armer is on the page");
         assert_eq!(bound.task.as_deref(), Some("arm"), "the premise");
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = fs::WorkspaceRoot(tmp.path().to_path_buf());

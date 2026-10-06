@@ -594,15 +594,20 @@ occupied allowance. What it reports for any of the three is a transient fault
 failure, and never grounds for reading a newer version. One case is not
 transient: occupied allowance that the caller's own leases alone keep the
 member out of. The catalog records which members each thread holds leases
-on. When a thread that holds leases meets occupied allowance, it measures
-that holding against the allowance above the floor as the ledger stands: a
-load whose declared peak fits that allowance is self-blocked when the held
-members' charged bytes plus the peak exceed it, and an oversized load is
-self-blocked when the serialized oversized member is one the thread holds.
-No retry of that request can then admit the member while it keeps its
-leases, so it is reported as a member fault whose cause names the allowance.
-Occupied allowance that other requests' pins or loads fill stays transient,
-whatever the caller holds beside them. Leases count against the thread that
+on. When a thread that holds leases meets occupied allowance, it asks one
+question of the ledger as it stands: would the load still be refused if every
+other owner's pins and loads were gone? The held members are charged their
+body and raw bytes, each member once however many leases on it the thread
+holds, against the allowance above the floor. A load whose declared peak fits
+that allowance is then refused when the held bytes plus the peak exceed it.
+An oversized load needs the serialized slot, whose exclusivity ends once the
+total no longer exceeds the limit; the thread keeps it alone when it holds
+the serialized member and the held bytes exceed the allowance. When the
+answer is yes, no retry of that request can admit the member while it keeps
+its leases, so it is reported as a member fault whose cause names the
+allowance. Otherwise other requests' pins or loads are part of what fills the
+allowance, and the refusal stays transient whatever the caller holds beside
+them. Leases count against the thread that
 takes them: a connection's request thread, or the evaluation thread a
 Starlark `read()` runs on. No request thread holds a lease across an
 evaluation, so the two holdings never combine. Admission
@@ -1197,8 +1202,10 @@ file rev, its `caps:`, and each anchor's block (its rev, language, source and
 task binding, or the reason it is not a block). It releases the lease before
 the block executes, so no body of the generation is pinned while a hook's
 Starlark and `bash()` run, and a request that hook sends back into the daemon
-meets no lease of the row. The copy is the page's fence bytes and a few short
-strings, never its parse tree.
+meets no lease of the row. The copy holds one resolution per anchor on the
+page: a fence's bytes, or the anchor's name and why it is not a block. Never
+the parse tree. It is gathered from one walk of the tree, so a fire costs one
+walk of its page however many anchors the page carries.
 
 The link plane and a composed read's claim-link colours scan through the same
 catalog. `query::links_in` enumerates membership from metadata and pins one
