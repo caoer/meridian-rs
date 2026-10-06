@@ -2474,6 +2474,43 @@ pub fn domain_snapshot_with_leaves(
     Ok((files, leaves, folded))
 }
 
+/// [`domain_snapshot_with_leaves`] that holds one member's bytes at a time:
+/// each member is read and digested in walk order and handed to `each`
+/// (workspace-relative path, bytes, leaf digest) before the next is read. The
+/// leaves and the fold are the snapshot's own. A host that retains bytes
+/// elsewhere (merkle-spec §6.4, watcher priming under a retention provider)
+/// takes this instead of the parallel read, which holds every member at once.
+///
+/// # Errors
+/// As [`domain_snapshot_with_leaves`], or the first error `each` returns;
+/// nothing after it is read.
+pub fn domain_snapshot_streamed(
+    root: &WorkspaceRoot,
+    mut each: impl FnMut(&Path, Vec<u8>, [u8; 32]) -> io::Result<()>,
+) -> io::Result<(BTreeMap<PathBuf, [u8; 32]>, model::MerkleRoot)> {
+    FOLD_COUNT.fetch_add(1, Ordering::Relaxed);
+    let whole = timing::phase("snapshot");
+    let walk = timing::phase("snapshot.walk");
+    let domain = domain::Domain::load(root)?;
+    let rels = hash_domain(root, &domain)?;
+    walk.stop();
+    let read = timing::phase("snapshot.read");
+    let mut leaves: BTreeMap<PathBuf, [u8; 32]> = BTreeMap::new();
+    for rel in rels {
+        let (bytes, digest) = read_and_digest_member(root, &rel)?;
+        each(&rel, bytes, digest)?;
+        leaves.insert(rel, digest);
+    }
+    read.stop();
+    let fold = timing::phase("snapshot.fold");
+    let leaf_refs: Vec<(&[u8], [u8; 32])> =
+        leaves.iter().map(|(rel, d)| (hash_name(rel), *d)).collect();
+    let folded = served_root(&leaf_refs, domain.version());
+    fold.stop();
+    whole.stop();
+    Ok((leaves, folded))
+}
+
 /// One domain observation's leaves — `raw name bytes → §12.2 leaf digest` —
 /// foldable ([`DomainLeaves::root`]) and overlayable
 /// ([`DomainLeaves::overlay`]). The overlay is how a caller that KNOWS the

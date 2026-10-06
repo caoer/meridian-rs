@@ -469,22 +469,22 @@ impl WorkspaceRing {
             }
             return Ok(false);
         };
-        let observed = if full {
+        if full {
             registry
                 .door_observation(&ws_root.0, cache, crate::registry::DOOR_COOKIE_TIMEOUT)
-                .map_err(|e| io_error_body(&e))?
-        } else if let Some(root) =
-            registry.door_observation_vouched(&ws_root.0, cache, DETECT_CADENCE)
+                .map_err(|e| io_error_body(&e))?;
+        } else if registry
+            .door_observation_vouched(&ws_root.0, cache, DETECT_CADENCE)
+            .is_none()
         {
-            root
-        } else {
             self.state().last_detect = Some(Instant::now());
             return Ok(false);
-        };
-        let observed = Root(observed.0);
+        }
+        // The classifier's root and leaves, from one memo hold: a reader's
+        // observation since this one moved both together.
+        let (observed, leaves) = memo_pair(cache)?;
         let emitted = match snapshot {
             Some(snapshot) => {
-                let leaves = leaf_view(cache);
                 let primed = {
                     let mut state = self.state();
                     wire_serve::watch::prime(
@@ -495,9 +495,9 @@ impl WorkspaceRing {
                         &observed,
                     )?
                 };
-                !primed && self.reconcile_observed(ws_root, cache, &observed)?
+                !primed && self.reconcile_pair(ws_root, &leaves, &observed)?
             }
-            None => self.reconcile_observed(ws_root, cache, &observed)?,
+            None => self.reconcile_pair(ws_root, &leaves, &observed)?,
         };
         let now = Instant::now();
         let mut state = self.state();
@@ -526,23 +526,39 @@ impl WorkspaceRing {
         }
     }
 
-    /// The flock-held step, on an observation the caller just made through
-    /// `cache`: classify the memo's leaf view against the baseline, then
-    /// tell the change or sync silently (`wire_serve::watch::reconcile_delta`
-    /// — bytes read for MOVERS only, each verified against its observed
-    /// leaf). The detector and both write-door points run this one step; the
-    /// caller holds the workspace write flock, so no batch is observed
-    /// mid-landing.
+    /// A write door's flock-held step, on the observation `expected` the
+    /// door just made through `cache`: [`Self::reconcile_pair`] over the
+    /// memo's root and leaves when the memo still folds to `expected`. A memo
+    /// a reader has moved past it tells nothing and leaves the baseline to
+    /// the detector, as a refused reconcile does: a commit's own files must
+    /// not be told with bytes past its `root_after`.
     fn reconcile_observed(
         &self,
         ws_root: &fs::WorkspaceRoot,
         cache: &Arc<Mutex<fs::DomainCache>>,
+        expected: &Root,
+    ) -> Result<bool, Box<ErrorBody>> {
+        // Control prototype: the leaves are classified under the root the
+        // door observed.
+        let (_, leaves) = memo_pair(cache)?;
+        self.reconcile_pair(ws_root, &leaves, expected)
+    }
+
+    /// The flock-held step: classify the memo's leaf view `leaves`, whose
+    /// fold is `disk_root`, against the baseline, then tell the change or
+    /// sync silently (`wire_serve::watch::reconcile_delta` — bytes read for
+    /// MOVERS only, each verified against its leaf). The detector and both
+    /// write-door points run this one step; the caller holds the workspace
+    /// write flock, so no batch is observed mid-landing.
+    fn reconcile_pair(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        leaves: &std::collections::BTreeMap<String, [u8; 32]>,
         disk_root: &Root,
     ) -> Result<bool, Box<ErrorBody>> {
-        let leaves = leaf_view(cache);
         let mut state = self.state();
         let RingState { ring, watch, .. } = &mut *state;
-        Ok(wire_serve::watch::reconcile_delta(ws_root, ring, watch, &leaves, disk_root)?.is_some())
+        Ok(wire_serve::watch::reconcile_delta(ws_root, ring, watch, leaves, disk_root)?.is_some())
     }
 
     /// Baseline law, before bytes land: a write door holding the flock has
@@ -658,15 +674,26 @@ impl wire_serve::seq::SeqSink for DoorPlane<'_> {
     }
 }
 
-/// The memo's leaf view, String-spelled: non-UTF-8 NAMES stay
-/// baseline-invisible exactly as the snapshot kept them (their leaves still
-/// fold into the root; a `wire::Path` cannot spell them).
-fn leaf_view(cache: &Arc<Mutex<fs::DomainCache>>) -> std::collections::BTreeMap<String, [u8; 32]> {
-    let memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
-    memo.leaf_digests()
+/// A memo's leaves by String-spelled workspace-relative path.
+type LeafView = std::collections::BTreeMap<String, [u8; 32]>;
+
+/// The memo's root and its leaf view, read under one lock hold so the root
+/// folds exactly those leaves (merkle-spec §6.7, the watch plane). The view
+/// is String-spelled: non-UTF-8 NAMES stay baseline-invisible exactly as the
+/// snapshot kept them (their leaves still fold into the root; a `wire::Path`
+/// cannot spell them).
+///
+/// # Errors
+/// The memo holds no observation yet.
+fn memo_pair(cache: &Arc<Mutex<fs::DomainCache>>) -> Result<(Root, LeafView), Box<ErrorBody>> {
+    let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    let root = memo.overlay_root().map_err(|e| io_error_body(&e))?;
+    let leaves = memo
+        .leaf_digests()
         .into_iter()
         .filter_map(|(rel, digest)| rel.to_str().map(|s| (s.to_owned(), digest)))
-        .collect()
+        .collect();
+    Ok((Root(root.0), leaves))
 }
 
 /// The memo pass's refusal in the envelope [`wire_serve::ambient_root`] always

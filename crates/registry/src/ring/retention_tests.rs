@@ -252,3 +252,105 @@ fn capture_contract_tail_addition_is_not_lost() {
 fn capture_contract_tail_deletion_is_not_retained() {
     tail_capture_contract(false);
 }
+
+/// Six members, each long enough that a body is worth shedding.
+fn hosted_setup(
+    host: Option<Arc<crate::residency::Host>>,
+) -> (tempfile::TempDir, fs::WorkspaceRoot, crate::Registry) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ws");
+    std::fs::create_dir_all(&root).unwrap();
+    let body = "a line that links [[m1]] and keeps going\n".repeat(64);
+    for n in 0..6 {
+        std::fs::write(root.join(format!("m{n}.md")), format!("# M{n}\n\n{body}")).unwrap();
+    }
+    let mut config = crate::Config::for_cache_root(dir.path().join("cache"));
+    config.socket_path = dir.path().join("daemon.sock");
+    config.state_path = dir.path().join("state.json");
+    config.residency = host;
+    let registry = crate::in_process_registry(&config).unwrap();
+    let root = fs::WorkspaceRoot(std::fs::canonicalize(root).unwrap());
+    registry.register(&root.0);
+    (dir, root, registry)
+}
+
+/// One external batch told by a primed ring: a rewrite, a removal, an arrival.
+fn external_batch(root: &fs::WorkspaceRoot, ring: &WorkspaceRing, registry: &crate::Registry) {
+    std::fs::write(root.0.join("m2.md"), "# M2\n\nrewritten, back to [[m1]]\n").unwrap();
+    std::fs::remove_file(root.0.join("m4.md")).unwrap();
+    std::fs::write(root.0.join("m9.md"), "# M9\n\nnew\n").unwrap();
+    assert!(ring.cycle(root, registry, true).unwrap());
+}
+
+#[test]
+fn a_hosted_registry_rings_retain_their_baseline_through_the_host() {
+    let backing = tempfile::tempdir().unwrap();
+    let host = Arc::new(crate::residency::Host::new(
+        crate::residency::controller::Controller::new(0),
+        crate::raw_store::RawStore::new(backing.path()).unwrap(),
+        1 << 20,
+    ));
+    let (_dir, root, hosted) = hosted_setup(Some(Arc::clone(&host)));
+    let ring = hosted.ring(&root.0);
+    ring.prime(&root, &hosted).unwrap();
+    assert_eq!(
+        host.controller.report().members,
+        6,
+        "the ring's baseline versions are the host's controller members"
+    );
+    hosted.warm_or_build(&root.0).unwrap();
+    assert_eq!(
+        host.controller.report().members,
+        6,
+        "a serving slot and a baseline of the same bytes are one member"
+    );
+    host.controller.set_limit(1);
+    assert_eq!(host.controller.report().bodies, 0, "every body is cold");
+    host.controller.set_limit(0);
+
+    let (_eager_dir, eager_root, eager) = hosted_setup(None);
+    let eager_ring = eager.ring(&eager_root.0);
+    eager_ring.prime(&eager_root, &eager).unwrap();
+    external_batch(&root, &ring, &hosted);
+    external_batch(&eager_root, &eager_ring, &eager);
+    let (told, want) = (ring.frames_after(0), eager_ring.frames_after(0));
+    assert_eq!(told.len(), 1);
+    assert_eq!(
+        told[0].delta, want[0].delta,
+        "a cold retained baseline tells the eager baseline's frame"
+    );
+}
+
+#[test]
+fn a_door_step_on_a_memo_moved_past_its_observation_tells_nothing() {
+    let (_dir, root, registry) = setup();
+    let ring = WorkspaceRing::new(&root);
+    let (baseline, _) = ring.prime(&root, &registry).unwrap();
+    let cache = registry.domain_cache(&root.0);
+    let observe = || {
+        let root = registry
+            .door_observation(&root.0, &cache, crate::registry::DOOR_COOKIE_TIMEOUT)
+            .unwrap();
+        Root(root.0)
+    };
+    std::fs::write(root.0.join("a.md"), b"# Seen by the door\n").unwrap();
+    let door_saw = observe();
+    // A reader observes a later edit before the door's step reads the memo.
+    std::fs::write(root.0.join("a.md"), b"# Seen by a reader\n").unwrap();
+    let reader_saw = observe();
+    assert_ne!(door_saw, reader_saw);
+
+    let told = ring.reconcile_observed(&root, &cache, &door_saw).unwrap();
+    assert!(
+        !told && ring.frames_after(0).is_empty(),
+        "a frame stamped {door_saw:?} over bytes the memo folds to {reader_saw:?}: {:?}",
+        ring.frames_after(0)
+    );
+    assert_eq!(ring.state().watch.root(), Some(&baseline));
+
+    assert!(ring.cycle(&root, &registry, true).unwrap());
+    let frames = ring.frames_after(0);
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].delta.root_before, baseline);
+    assert_eq!(frames[0].delta.root_after, reader_saw);
+}

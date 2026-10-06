@@ -2538,11 +2538,23 @@ impl Registry {
 
     pub fn ring(&self, workspace: &Path) -> Arc<crate::ring::WorkspaceRing> {
         let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
-        Arc::clone(rings.entry(workspace.to_path_buf()).or_insert_with(|| {
-            Arc::new(crate::ring::WorkspaceRing::new(&fs::WorkspaceRoot(
-                workspace.to_path_buf(),
-            )))
-        }))
+        Arc::clone(
+            rings
+                .entry(workspace.to_path_buf())
+                .or_insert_with(|| self.new_ring(workspace)),
+        )
+    }
+
+    /// A fresh ring epoch for `workspace`, its watcher retaining baselines
+    /// through the residency host's provider when this registry has one
+    /// (merkle-spec §6.4).
+    fn new_ring(&self, workspace: &Path) -> Arc<crate::ring::WorkspaceRing> {
+        let root = fs::WorkspaceRoot(workspace.to_path_buf());
+        Arc::new(self.residency.as_ref().map_or_else(
+            || crate::ring::WorkspaceRing::new(&root),
+            // Control prototype: the ring ignores the host.
+            |_host| crate::ring::WorkspaceRing::new(&root),
+        ))
     }
 
     /// Take a live subscription claim on `workspace`'s ring (created on first
@@ -2561,11 +2573,9 @@ impl Registry {
     #[must_use]
     pub fn subscribe(&self, workspace: &Path) -> crate::ring::SubGuard {
         let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
-        let ring = rings.entry(workspace.to_path_buf()).or_insert_with(|| {
-            Arc::new(crate::ring::WorkspaceRing::new(&fs::WorkspaceRoot(
-                workspace.to_path_buf(),
-            )))
-        });
+        let ring = rings
+            .entry(workspace.to_path_buf())
+            .or_insert_with(|| self.new_ring(workspace));
         ring.subscribe()
     }
 

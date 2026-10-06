@@ -124,6 +124,17 @@ pub fn reconcile(
     ring: &mut RootRing,
     watch: &mut WatchState,
 ) -> Result<Option<DeltaFrame>, Box<ErrorBody>> {
+    // Priming under a retention provider streams the domain into it rather
+    // than holding every member's bytes (merkle-spec §6.4).
+    if watch.root.is_none() && !watch.watcher.uses_retention(None) {
+        let (prepared, disk_root) = capture_streamed(ws_root, &watch.watcher)?;
+        let scope = load_scope(ws_root)?;
+        let retired = watch.watcher.replace(prepared);
+        watch.root = Some(disk_root);
+        watch.scope = Some(scope);
+        drop(retired);
+        return Ok(None);
+    }
     let (files, disk_root) = crate::domain_snapshot(ws_root)?;
     match &watch.root {
         // Priming: the epoch's baseline is the first successful snapshot.
@@ -362,27 +373,64 @@ impl PrimeSnapshot {
         ws_root: &fs::WorkspaceRoot,
         retention: Option<std::sync::Arc<dyn model::bytes::ByteRetention>>,
     ) -> Result<Self, Box<ErrorBody>> {
-        let (files, leaves, _) = fs::domain_snapshot_with_leaves(ws_root).map_err(|e| {
-            let mut err = ErrorBody::new(wire::ErrorCode::IoError);
-            err.cause = Some(e.to_string());
-            Box::new(err)
-        })?;
-        let members = files
-            .into_iter()
-            .filter_map(|(path, bytes)| {
-                let digest = *leaves.get(std::path::Path::new(&path))?;
-                Some((path, (bytes, digest)))
-            })
-            .collect();
-        let preparer = retention.as_ref().map_or_else(
-            || fs::Watcher::new(ws_root.clone()),
-            |retention| fs::Watcher::with_retention(ws_root.clone(), retention.clone()),
-        );
-        let members = preparer
-            .prepare_baseline(members)
-            .map_err(|error| backing_error(&error))?;
-        Ok(PrimeSnapshot { members, retention })
+        let Some(retention) = retention else {
+            let (files, leaves, _) =
+                fs::domain_snapshot_with_leaves(ws_root).map_err(|e| snapshot_error(&e))?;
+            let members = files
+                .into_iter()
+                .filter_map(|(path, bytes)| {
+                    let digest = *leaves.get(std::path::Path::new(&path))?;
+                    Some((path, (bytes, digest)))
+                })
+                .collect();
+            let members = fs::Watcher::new(ws_root.clone())
+                .prepare_baseline(members)
+                .map_err(|error| backing_error(&error))?;
+            return Ok(PrimeSnapshot {
+                members,
+                retention: None,
+            });
+        };
+        let preparer = fs::Watcher::with_retention(ws_root.clone(), retention.clone());
+        let (members, _) = capture_streamed(ws_root, &preparer)?;
+        Ok(PrimeSnapshot {
+            members,
+            retention: Some(retention),
+        })
     }
+}
+
+/// The hash domain prepared as `watcher`'s baseline one member at a time
+/// ([`fs::domain_snapshot_streamed`]): each member's bytes go to its
+/// retention provider before the next is read, so the capture never holds
+/// the corpus's raw bytes. Returns the prepared members and the snapshot's
+/// fold. Non-UTF-8 names fold but stay baseline-invisible, as in
+/// [`crate::domain_snapshot`].
+fn capture_streamed(
+    ws_root: &fs::WorkspaceRoot,
+    watcher: &fs::Watcher,
+) -> Result<(fs::PreparedBaseline, Root), Box<ErrorBody>> {
+    // Control prototype: the whole domain's bytes are read before any is
+    // retained.
+    let (files, leaves, root) =
+        fs::domain_snapshot_with_leaves(ws_root).map_err(|e| snapshot_error(&e))?;
+    let members = files
+        .into_iter()
+        .filter_map(|(path, bytes)| {
+            let digest = *leaves.get(std::path::Path::new(&path))?;
+            Some((path, (bytes, digest)))
+        })
+        .collect();
+    let members = watcher
+        .prepare_baseline(members)
+        .map_err(|error| backing_error(&error))?;
+    Ok((members, Root(root.0)))
+}
+
+fn snapshot_error(e: &std::io::Error) -> Box<ErrorBody> {
+    let mut err = ErrorBody::new(wire::ErrorCode::IoError);
+    err.cause = Some(e.to_string());
+    Box::new(err)
 }
 
 /// Priming off the resident memo (merkle-spec §6.7, the watch plane). The
