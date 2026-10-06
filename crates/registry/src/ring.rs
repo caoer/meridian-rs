@@ -194,7 +194,11 @@ impl WorkspaceRing {
     /// (merkle-spec §6.4). Takes the state lock.
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
-        0
+        let state = self.state();
+        state
+            .ring
+            .heap_bytes()
+            .saturating_add(state.watch.heap_bytes())
     }
 
     /// Tip seq — position a `sub` with no catchup anchors at.

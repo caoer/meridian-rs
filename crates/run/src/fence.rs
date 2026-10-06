@@ -93,6 +93,16 @@ pub enum FenceError {
     NotAFence,
 }
 
+impl FenceError {
+    /// Requested heap this refusal owns.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        match self {
+            FenceError::UnknownLanguage { lang } => lang.capacity(),
+            FenceError::Unterminated | FenceError::NotAFence => 0,
+        }
+    }
+}
+
 impl std::fmt::Display for FenceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

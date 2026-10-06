@@ -1015,14 +1015,82 @@ impl Registry {
     /// controller's members, each shared allocation counted once
     /// (merkle-spec §6.4, the host floor). `None` when the raw store's
     /// census fails.
+    ///
+    /// Owner handles leave the registry maps under their locks; each memo and
+    /// ring is then locked alone, never two locks at once, so no caller that
+    /// holds none of them can deadlock here. `None` also without a host.
     #[must_use]
     pub fn floor_census(&self) -> Option<usize> {
-        Some(0)
+        use model::allocation::arc_bytes;
+        let host = self.residency.as_ref()?;
+        let (held, tracking) = host.live_generations();
+        let engines: Vec<Arc<WorkspaceEngine>> = self
+            .engines
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        let memos: Vec<Arc<Mutex<fs::DomainCache>>> = self
+            .domain_caches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        let rings: Vec<Arc<crate::ring::WorkspaceRing>> = self
+            .rings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        let mut seen = crate::residency::census::Seen::default();
+        let mut bytes = tracking;
+        for generation in engines.iter().chain(&held) {
+            if seen.first(generation) {
+                bytes = bytes
+                    .saturating_add(arc_bytes::<WorkspaceEngine>())
+                    .saturating_add(generation.heap_bytes(&mut seen));
+            }
+        }
+        for memo in &memos {
+            let heap = memo
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .heap_bytes();
+            bytes = bytes
+                .saturating_add(arc_bytes::<Mutex<fs::DomainCache>>())
+                .saturating_add(heap);
+        }
+        for ring in &rings {
+            bytes = bytes
+                .saturating_add(arc_bytes::<crate::ring::WorkspaceRing>())
+                .saturating_add(ring.heap_bytes());
+        }
+        match host.store.heap_bytes() {
+            Ok(store) => Some(bytes.saturating_add(store)),
+            Err(error) => {
+                eprintln!(
+                    "residency: floor census skipped: the raw store's census failed: {error}"
+                );
+                None
+            }
+        }
     }
 
     /// Set the residency host's floor to [`Self::floor_census`]; without a
-    /// host, nothing. The reaper's tick and every publish and eviction run it.
-    pub fn charge_floor(&self) {}
+    /// host, nothing. The reaper's tick and every publish and eviction run
+    /// it. Call it holding no registry, memo or ring lock.
+    pub fn charge_floor(&self) {
+        let Some(host) = &self.residency else {
+            return;
+        };
+        let ticket = host.ticket();
+        if let Some(bytes) = self.floor_census() {
+            host.set_floor(ticket, bytes);
+        }
+    }
 
     /// The daemon's constructor: [`Registry::new`] with the self-handle
     /// bound, so the §3.2 cold gate can spawn background drawer rebuilds.
@@ -1515,9 +1583,16 @@ impl Registry {
                     return Ok(WarmOutcome::Built { docs: docs_parsed });
                 }
                 if resident == witness {
-                    engines.insert(canonical.clone(), Arc::new(engine));
+                    let engine = Arc::new(engine);
+                    engines.insert(canonical.clone(), Arc::clone(&engine));
                     drop(engines);
-                    if cold && self.residency.is_none() {
+                    if let Some(host) = &self.residency {
+                        // The host floor reaches this generation for as long
+                        // as anything holds it (merkle-spec §6.4).
+                        host.published(&engine);
+                        drop(engine);
+                        self.charge_floor();
+                    } else if cold {
                         self.pending_parse
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
@@ -2763,7 +2838,7 @@ impl Registry {
     pub fn unregister(&self, path: &Path) -> bool {
         // Serialize removal with the saver so no late rename can recreate an
         // unregistered workspace's payload. No registry map lock is held here.
-        let _save = self
+        let save = self
             .persistence_gate
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
@@ -2821,6 +2896,9 @@ impl Registry {
         drop(feed);
         drop(cache);
         drop(sql_store);
+        // The census takes memo and ring locks: never under the saver's gate.
+        drop(save);
+        self.charge_floor();
         removed
     }
 
@@ -2961,6 +3039,9 @@ impl Registry {
                     demoted.insert(key.clone());
                 }
             }
+        }
+        if !demoted.is_empty() {
+            self.charge_floor();
         }
         demoted.into_iter().collect()
     }
@@ -3151,6 +3232,7 @@ impl Registry {
         }
         drop(caches);
         drop(feeds);
+        self.charge_floor();
         victims
     }
 

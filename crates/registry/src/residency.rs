@@ -8,6 +8,7 @@
 use fs::hydration::{self, HydrationError};
 use model::bytes::{ByteIdentity, ByteSource, SharedBytes, WeakBytes};
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 pub mod catalog;
@@ -31,6 +32,21 @@ pub struct Host {
     /// through, so a baseline and a serving slot of the same bytes share a
     /// controller member.
     retention: Arc<dyn model::bytes::ByteRetention>,
+    /// The one floor this host charges (merkle-spec §6.4, the host floor).
+    floor: Mutex<HostFloor>,
+    /// The last census ticket handed out.
+    tickets: AtomicU64,
+    /// Every generation published through this host, held weakly, so a
+    /// census reaches the older ones an operation still holds.
+    generations: Mutex<Vec<Weak<crate::engine::WorkspaceEngine>>>,
+}
+
+/// The host's floor lease, the bytes it charges and the census that set them.
+#[derive(Debug, Default)]
+struct HostFloor {
+    ticket: u64,
+    bytes: usize,
+    lease: Option<controller::Floor>,
 }
 
 impl Host {
@@ -51,6 +67,9 @@ impl Host {
             store,
             load_peak,
             retention,
+            floor: Mutex::new(HostFloor::default()),
+            tickets: AtomicU64::new(0),
+            generations: Mutex::new(Vec::new()),
         }
     }
 
@@ -64,17 +83,57 @@ impl Host {
     /// (merkle-spec §6.4, the host floor).
     #[must_use]
     pub fn floor(&self) -> usize {
-        0
+        lock(&self.floor).bytes
+    }
+
+    /// Record a generation published through this host.
+    pub(crate) fn published(&self, generation: &Arc<crate::engine::WorkspaceEngine>) {
+        lock(&self.generations).push(Arc::downgrade(generation));
+    }
+
+    /// The published generations still alive, the dead pruned, and the heap
+    /// of the tracking buffer itself.
+    pub(crate) fn live_generations(&self) -> (Vec<Arc<crate::engine::WorkspaceEngine>>, usize) {
+        let mut generations = lock(&self.generations);
+        generations.retain(|generation| generation.strong_count() > 0);
+        if generations.len().saturating_mul(4) < generations.capacity() {
+            generations.shrink_to_fit();
+        }
+        let live = generations.iter().filter_map(Weak::upgrade).collect();
+        let tracking = generations
+            .capacity()
+            .saturating_mul(size_of::<Weak<crate::engine::WorkspaceEngine>>());
+        (live, tracking)
     }
 
     /// A ticket for a census about to measure.
     pub(crate) fn ticket(&self) -> u64 {
-        0
+        self.tickets
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1)
     }
 
     /// Charge `bytes`, measured under `ticket`, unless a census that took a
     /// later ticket has already set the floor.
-    pub(crate) fn set_floor(&self, _ticket: u64, _bytes: usize) {}
+    pub(crate) fn set_floor(&self, ticket: u64, bytes: usize) {
+        let mut floor = lock(&self.floor);
+        if ticket <= floor.ticket {
+            return;
+        }
+        if let Some(lease) = &floor.lease {
+            lease.set(bytes);
+        } else {
+            match self.controller.charge_floor(bytes) {
+                Ok(lease) => floor.lease = Some(lease),
+                Err(error) => {
+                    eprintln!("residency: the host floor was not charged: {error}");
+                    return;
+                }
+            }
+        }
+        floor.ticket = ticket;
+        floor.bytes = bytes;
+    }
 }
 
 /// An immutable version descriptor shared across generations and operations.
