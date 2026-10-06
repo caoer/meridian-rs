@@ -456,3 +456,59 @@ fn an_older_census_never_overwrites_a_newer_floor() {
         "the floor is one lease, moved, not stacked"
     );
 }
+
+/// A census that measured before an eviction and returns after the
+/// eviction's own census took the later ticket does not set the floor: the
+/// ticket is taken before measuring (merkle-spec §6.4, the host floor).
+#[test]
+fn a_census_overtaken_by_an_evictions_census_leaves_the_later_floor() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = Arc::new(Host::new(
+        controller::Controller::new(0),
+        RawStore::new(&dir.path().join("backing")).unwrap(),
+        1 << 20,
+    ));
+    let mut config = crate::Config::for_cache_root(dir.path().join("cache"));
+    config.socket_path = dir.path().join("daemon.sock");
+    config.state_path = dir.path().join("state.json");
+    config.residency = Some(Arc::clone(&host));
+    let registry = Arc::new(crate::in_process_registry(&config).unwrap());
+    let roots: Vec<std::path::PathBuf> = ["a", "b"]
+        .iter()
+        .map(|name| {
+            let ws = dir.path().join(name);
+            std::fs::create_dir_all(&ws).unwrap();
+            for n in 0..8 {
+                std::fs::write(ws.join(format!("m{n}.md")), format!("# M{n}\n\n[[m0]]\n")).unwrap();
+            }
+            let ws = std::fs::canonicalize(ws).unwrap();
+            registry.register(&ws);
+            registry.warm_or_build(&ws).unwrap();
+            ws
+        })
+        .collect();
+    let warm = host.floor();
+
+    let (arrived, at_gate) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    *registry.pause_after_census.lock().unwrap() = Some((arrived, released));
+    let overtaken = {
+        let registry = Arc::clone(&registry);
+        thread::spawn(move || registry.charge_floor())
+    };
+    at_gate.recv().expect("the census reached its gate");
+
+    assert!(registry.unregister(&roots[1]));
+    let evicted = host.floor();
+    assert!(
+        evicted < warm,
+        "the eviction's census dropped the floor: {evicted} >= {warm}"
+    );
+    release.send(()).expect("the census parked on its gate");
+    overtaken.join().unwrap();
+    assert_eq!(
+        host.floor(),
+        evicted,
+        "the overtaken census measured before the eviction and must not set the floor"
+    );
+}

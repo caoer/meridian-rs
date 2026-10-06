@@ -262,6 +262,13 @@ pub struct Registry {
     #[cfg(test)]
     pub(crate) pause_in_reap_window:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    /// Test-only gate: a floor census that has measured announces itself on
+    /// the first channel, then parks on the second before it returns its
+    /// total, so a later census can overtake it. One-shot, same seam class as
+    /// `pause_in_reap_window`.
+    #[cfg(test)]
+    pub(crate) pause_after_census:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
 /// §3.2: how long the READ THAT KICKED a cold rebuild absorbs it before
@@ -995,6 +1002,8 @@ impl Registry {
             pause_before_borrow: Mutex::new(None),
             #[cfg(test)]
             pause_in_reap_window: Mutex::new(None),
+            #[cfg(test)]
+            pause_after_census: Mutex::new(None),
         }
     }
 
@@ -1068,7 +1077,7 @@ impl Registry {
                 .saturating_add(arc_bytes::<crate::ring::WorkspaceRing>())
                 .saturating_add(ring.heap_bytes());
         }
-        match host.store.heap_bytes() {
+        let total = match host.store.heap_bytes() {
             Ok(store) => Some(bytes.saturating_add(store)),
             Err(error) => {
                 eprintln!(
@@ -1076,7 +1085,21 @@ impl Registry {
                 );
                 None
             }
+        };
+        // Test-only: park here when the gate is armed (see the field docs).
+        #[cfg(test)]
+        {
+            let gate = self
+                .pause_after_census
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some((arrived, release)) = gate {
+                let _ = arrived.send(());
+                let _ = release.recv();
+            }
         }
+        total
     }
 
     /// Set the residency host's floor to [`Self::floor_census`]; without a

@@ -599,15 +599,27 @@ holds (recorded as a weak handle at publish, pruned at census), each with its
 watch state, each with its `Arc`; and `RawStore::heap_bytes`. The census runs
 after a generation is published, after an eviction that removed state (idle
 reap, budget sweep, `unregister`), and at each reaper tick
-(`Registry::charge_floor`). Between those points the floor lags memo and ring
-growth by at most one reaper period. A census takes a ticket before it
-measures and sets the floor only if no later ticket has, so an older
-overlapping census never overwrites a newer total. It takes owner handles out
-of the registry maps under their locks, then locks each memo and ring alone,
-never two at once. A store census that fails leaves the floor where it was. A
-host serves one registry. Not in this floor: the registry maps' own tables, a
+(`Registry::charge_floor`). Memo and ring growth, and a subscription's
+priming of a ring with its watch state and store records, reach the floor at
+the next reaper tick; a tick runs `reap_interval` after the previous sweep
+finished. A census takes a ticket before it measures and sets the floor only
+if no later ticket has, so an older overlapping census never overwrites a
+newer total. It takes owner handles out of the registry maps under their
+locks, measures the generations and releases them, and only then visits each
+memo and ring, one at a time and without waiting: a memo or ring whose lock
+is busy is charged what its last measurement found (the host keeps that per
+workspace and forgets a workspace no census lists; nothing, for one never
+measured). So a census never waits behind a floor pass, a reconcile or a
+prime, and a census in flight keeps no generation alive. A store census that
+fails leaves the floor where it was. A host serves one registry. Not in this
+floor: the registry maps' own tables, the host's last-measurement table, a
 feed's dirty set, SQL handles, compiled run modules, and a ring that outlives
-its map entry in a subscription guard or a stamp closure.
+its map entry. A subscribed ring never leaves the map; the holders that
+outlive an eviction are requests that took the ring's handle before it (a run
+submission for its whole life, a script, a delta sink, a write door), each
+keeping up to a whole ring until it returns — its watch state, about 28 MB at
+76k members, and up to 256 frames — and the memo's stamp closure, until the
+same sweep unbinds it.
 
 `registry::residency::controller` owns the shared admission ledger and member
 LRU. Handles with the same retained byte identity share one slot across roots
