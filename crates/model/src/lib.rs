@@ -2668,6 +2668,29 @@ impl CorpusIndex {
         Self::default()
     }
 
+    /// Requested heap this index owns: both maps' node storage (an upper
+    /// bound, [`allocation::btree_bytes`]), each key, each bucket and each
+    /// path in it. The inline struct is its owner's.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        let Self {
+            by_basename,
+            by_alias,
+        } = self;
+        [by_basename, by_alias]
+            .into_iter()
+            .fold(0usize, |bytes, map| {
+                map.iter().fold(
+                    bytes.saturating_add(allocation::btree_bytes::<String, Vec<String>>(map.len())),
+                    |bytes, (key, paths)| {
+                        bytes
+                            .saturating_add(key.capacity())
+                            .saturating_add(allocation::strings_bytes(paths, paths.capacity()))
+                    },
+                )
+            })
+    }
+
     /// Index one document under its vault `path`: its file basename and every
     /// frontmatter alias, both lowercased (stage-1 case-insensitivity, §4.5).
     pub fn insert(&mut self, path: &str, doc: &Document) {

@@ -562,7 +562,26 @@ can count a document/watcher alias once. `RawStore::heap_bytes` covers its
 required-backing index capacity, weak-held record/segment allocations, live
 segment paths and shared directory allocation. It reports Rust heap storage,
 separately from `RawStoreStats`'s disk/logical census. A dead weak entry still
-owns its control allocation until pruning releases it. These censuses are
+owns its control allocation until pruning releases it. The substrate owners
+have their own censuses: the name index (`CorpusIndex::heap_bytes`), a
+generation's slot map, slot facts and leaf records
+(`WorkspaceEngine::heap_bytes`), the workspace memo with its resident tree
+(`DomainCache::heap_bytes`), the ring's frames (`RootRing::heap_bytes`) and the
+watch state's baseline map (`WatchState::heap_bytes`). The memo's stamp
+clock closure is its own allocation (the registry builds one per binding);
+what the closure captures is its owner's. Owners share `Arc` allocations
+across generations, so these censuses take one `residency::census::Seen` and
+count each shared allocation once. `Seen` keys an allocation by address and
+holds a clone of every `Arc` it counts until the census ends, so a census
+that walks owners one at a time — upgrade, count, drop — cannot meet a freed
+allocation's address reused by a new one and skip it. std does not expose a
+`BTreeMap`'s node allocations; those are charged at an upper bound (every
+non-root node holds at least five entries, each charged at the internal-node
+size; an empty map one node, since a map emptied by removal keeps its root),
+so a census may exceed its owner's heap and never falls below it.
+`crates/registry/tests/floor_census.rs` checks each census against the bytes
+its owner's drop frees, at a few hundred members and on tiny owners whose
+bound slack is smaller than any one term. These censuses are
 quiescent ownership measurements, not synchronization with concurrent callers;
 their temporary census work and enclosing slot/pin/generation containers need
 their own reservation/charge. The controller must combine these measurements
@@ -590,7 +609,8 @@ belong to explicitly charged staging or metadata owners. Non-body owners declare
 floor charges, held until their allocation is destroyed, and load callers
 declare a conservative peak reservation before I/O. These integration inputs
 are contracts, not a raw-length multiplier or an RSS estimate. The controller
-counts its own tables, descriptors and reservation metadata separately.
+counts its own tables, descriptors (each member's version descriptor and the
+source handle allocation it alone owns) and reservation metadata separately.
 
 The ledger retains a selected body's full charge throughout retirement,
 including the interval where the local slot already appears cold. Only after

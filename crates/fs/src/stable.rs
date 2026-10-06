@@ -128,6 +128,12 @@ struct FeedGenCell {
 pub struct FenceToken(u64);
 
 impl FeedGen {
+    /// The shared cell's allocation, charged by the memo that holds it.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        model::allocation::arc_bytes::<FeedGenCell>()
+    }
+
     /// Record one delivered feed event (the watcher's verb). Events landing
     /// inside an open [`FenceToken`] re-classify that read.
     pub fn advance(&self) {

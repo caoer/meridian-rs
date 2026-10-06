@@ -144,6 +144,31 @@ pub struct Slot {
 }
 
 impl Slot {
+    /// Requested heap this slot's facts own: its revision, link and lock
+    /// roots and aliases. The member handle is inline; its descriptor and
+    /// body are the controller's.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        let Self {
+            revision,
+            member: _,
+            link_roots,
+            lock_roots,
+            aliases,
+        } = self;
+        let names = |names: &[addr::MountName]| {
+            names.iter().fold(size_of_val(names), |bytes, name| {
+                bytes.saturating_add(name.heap_bytes())
+            })
+        };
+        revision
+            .0
+            .capacity()
+            .saturating_add(names(link_roots))
+            .saturating_add(lock_roots.as_deref().map_or(0, names))
+            .saturating_add(model::allocation::strings_bytes(aliases, aliases.len()))
+    }
+
     /// Publish `doc` as a cold slot: its exact bytes retained as backing, a
     /// controller member over them, and its descriptor facts. The parsed
     /// tree is not kept; the first pin re-reads the backing.
@@ -171,6 +196,28 @@ impl Slot {
 /// per unchanged version.
 #[derive(Debug, Clone, Default)]
 pub struct Slots(BTreeMap<String, Arc<Slot>>);
+
+impl Slots {
+    /// Requested heap this map owns — its node storage (an upper bound,
+    /// [`model::allocation::btree_bytes`]) and each key — plus each slot
+    /// `seen` has not counted yet: its `Arc` allocation and facts.
+    #[must_use]
+    pub fn heap_bytes(&self, seen: &mut super::census::Seen) -> usize {
+        self.0.iter().fold(
+            model::allocation::btree_bytes::<String, Arc<Slot>>(self.0.len()),
+            |bytes, (path, slot)| {
+                let bytes = bytes.saturating_add(path.capacity());
+                if seen.first(slot) {
+                    bytes
+                        .saturating_add(model::allocation::arc_bytes::<Slot>())
+                        .saturating_add(slot.heap_bytes())
+                } else {
+                    bytes
+                }
+            },
+        )
+    }
+}
 
 impl std::ops::Deref for Slots {
     type Target = BTreeMap<String, Arc<Slot>>;
@@ -237,6 +284,21 @@ pub struct Catalog {
     load_peak: usize,
 }
 impl Catalog {
+    /// Requested heap this generation's metadata owns: its slots
+    /// ([`Slots::heap_bytes`]) and its name index, each shared allocation
+    /// counted once through `seen`.
+    #[must_use]
+    pub fn heap_bytes(&self, seen: &mut super::census::Seen) -> usize {
+        let Self {
+            entries,
+            index,
+            load_peak: _,
+        } = self;
+        entries
+            .heap_bytes(seen)
+            .saturating_add(super::census::index_bytes(index, seen))
+    }
+
     /// Capture an immutable eager generation, with the host's conservative
     /// per-load peak (source scratch, parsing and flight storage included).
     /// The host accounts for capture staging, index and backing metadata.

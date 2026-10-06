@@ -66,6 +66,25 @@ pub struct WatchState {
 }
 
 impl WatchState {
+    /// Requested heap this watch state owns: the watcher
+    /// ([`fs::Watcher::heap_bytes`]), the baseline root and the scope's
+    /// domain rules. The inline struct is its owner's.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        let Self {
+            watcher,
+            root,
+            scope,
+        } = self;
+        watcher
+            .heap_bytes()
+            .saturating_add(root.as_ref().map_or(0, |root| root.0.capacity()))
+            .saturating_add(scope.as_ref().map_or(0, |scope| {
+                let fs::domain::Scope { config: _, domain } = scope;
+                domain.heap_bytes()
+            }))
+    }
+
     /// An unprimed watcher for `root`: the first reconcile adopts the world as
     /// its baseline and emits nothing.
     #[must_use]

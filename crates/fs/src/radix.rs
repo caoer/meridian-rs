@@ -90,6 +90,14 @@ pub struct RadixChildMap {
 }
 
 impl RadixChildMap {
+    /// Requested heap this map owns: every vertex box, its extension and
+    /// child list. The inline struct is its owner's.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        let Self { root, ops: _ } = self;
+        root.as_deref().map_or(0, vertex_heap)
+    }
+
     /// The empty child map (`C = ∅`).
     #[must_use]
     pub fn new() -> Self {
@@ -304,6 +312,27 @@ struct Vertex {
     terminal: Terminal,
     children: Vec<(u8, Box<Vertex>)>,
     vhash: [u8; 32],
+}
+
+/// Heap one vertex box owns, with its extension, child list and every
+/// child's box below it.
+fn vertex_heap(vertex: &Vertex) -> usize {
+    let Vertex {
+        ext,
+        terminal: _,
+        children,
+        vhash: _,
+    } = vertex;
+    children.iter().fold(
+        size_of::<Vertex>()
+            .saturating_add(ext.capacity())
+            .saturating_add(
+                children
+                    .capacity()
+                    .saturating_mul(size_of::<(u8, Box<Vertex>)>()),
+            ),
+        |bytes, (_, child)| bytes.saturating_add(vertex_heap(child)),
+    )
 }
 
 /// A fresh single-entry vertex, hashed.
