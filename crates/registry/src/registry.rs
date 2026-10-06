@@ -2552,8 +2552,7 @@ impl Registry {
         let root = fs::WorkspaceRoot(workspace.to_path_buf());
         Arc::new(self.residency.as_ref().map_or_else(
             || crate::ring::WorkspaceRing::new(&root),
-            // Control prototype: the ring ignores the host.
-            |_host| crate::ring::WorkspaceRing::new(&root),
+            |host| crate::ring::WorkspaceRing::with_retention(&root, host.retention()),
         ))
     }
 

@@ -410,21 +410,30 @@ fn capture_streamed(
     ws_root: &fs::WorkspaceRoot,
     watcher: &fs::Watcher,
 ) -> Result<(fs::PreparedBaseline, Root), Box<ErrorBody>> {
-    // Control prototype: the whole domain's bytes are read before any is
-    // retained.
-    let (files, leaves, root) =
-        fs::domain_snapshot_with_leaves(ws_root).map_err(|e| snapshot_error(&e))?;
-    let members = files
-        .into_iter()
-        .filter_map(|(path, bytes)| {
-            let digest = *leaves.get(std::path::Path::new(&path))?;
-            Some((path, (bytes, digest)))
-        })
-        .collect();
-    let members = watcher
-        .prepare_baseline(members)
-        .map_err(|error| backing_error(&error))?;
-    Ok((members, Root(root.0)))
+    let mut members = fs::PreparedBaseline::default();
+    let mut backing = None;
+    let streamed = fs::domain_snapshot_streamed(ws_root, |rel, bytes, digest| {
+        let Some(path) = rel.to_str() else {
+            return Ok(());
+        };
+        let one = std::collections::BTreeMap::from([(path.to_owned(), (bytes, digest))]);
+        match watcher.prepare_baseline(one) {
+            Ok(prepared) => {
+                members.extend(prepared);
+                Ok(())
+            }
+            Err(error) => {
+                let refusal = std::io::Error::new(error.kind(), error.to_string());
+                backing = Some(error);
+                Err(refusal)
+            }
+        }
+    });
+    match (streamed, backing) {
+        (Ok((_, root)), _) => Ok((members, Root(root.0))),
+        (Err(_), Some(error)) => Err(backing_error(&error)),
+        (Err(error), None) => Err(snapshot_error(&error)),
+    }
 }
 
 fn snapshot_error(e: &std::io::Error) -> Box<ErrorBody> {

@@ -538,10 +538,11 @@ impl WorkspaceRing {
         cache: &Arc<Mutex<fs::DomainCache>>,
         expected: &Root,
     ) -> Result<bool, Box<ErrorBody>> {
-        // Control prototype: the leaves are classified under the root the
-        // door observed.
-        let (_, leaves) = memo_pair(cache)?;
-        self.reconcile_pair(ws_root, &leaves, expected)
+        let (root, leaves) = memo_pair(cache)?;
+        if root != *expected {
+            return Ok(false);
+        }
+        self.reconcile_pair(ws_root, &leaves, &root)
     }
 
     /// The flock-held step: classify the memo's leaf view `leaves`, whose
