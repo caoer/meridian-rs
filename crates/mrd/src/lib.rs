@@ -70,7 +70,7 @@ const EXIT_FAIL: u8 = 2;
 /// in-process: one line per hash-domain member [`fs::build_corpus`] could not
 /// serve (its third slot), on stderr so machine stdout stays clean. The wording
 /// mirrors the daemon's per-file `invalid_utf8` teaching (registry
-/// `doc_or_refusal`), plus the one fact a SCANNING face owes its operator: this
+/// `with_engine_document`), plus the one fact a SCANNING face owes its operator: this
 /// scan never saw inside the member. A face that discards the slot goes
 /// silently blind — its scan over a partial corpus reads as a scan of the
 /// whole vault. `mrd retire` deliberately does NOT voice through here: a sweep

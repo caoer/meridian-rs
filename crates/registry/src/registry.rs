@@ -1495,12 +1495,10 @@ impl Registry {
     /// not immediately free (a writer holds it, or queues behind a long
     /// read). The hello door reports the resident fold through this: hello
     /// is config-grade (wire-contract §3.2) and must never queue behind
-    /// corpus-scoped work — an engine-map census or `with_engine` caller can
-    /// hold its read lock, and a queued writer then walls ordinary readers.
-    /// Named warm reads now pin a generation outside that lock. Historically
-    /// links held it for their whole computation (measured on the live sessions
-    /// corpus, 2026-08-16: hello went from 20 ms to a 10 s timeout the moment the
-    /// resident engine landed and the links closure started). The fold is an
+    /// corpus-scoped work. The engines read lock is held by the engine-map
+    /// census and by `with_engine` callers (tests only); a writer queued
+    /// behind either walls ordinary readers. Warm serving callbacks hold
+    /// their generation's `Arc` with that lock released. The fold is an
     /// optional field; "not readable this instant" serves as absent, exactly
     /// like cold.
     #[must_use]

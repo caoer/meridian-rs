@@ -596,7 +596,7 @@ fn build_corpus_in_process(workspace: &Path) -> Result<InProcessCorpus, Fail> {
 /// (`docs/wire-contract.md` §12.1, the door-family clause). So membership decides
 /// what an ENUMERATION walks, never what a named path is entitled to — the same
 /// single-file load the read and write doors already run (registry
-/// `doc_or_refusal`, `wire_serve::load_doc`), reached from the in-process faces.
+/// `with_engine_document`, `wire_serve::load_doc`), reached from the in-process faces.
 ///
 /// A path with no file, or one whose bytes are not UTF-8, is left absent: the
 /// caller's own miss diagnostic then says so, as it does for any other miss.

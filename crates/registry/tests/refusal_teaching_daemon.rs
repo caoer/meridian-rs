@@ -148,8 +148,8 @@ fn warm_read_of_a_missing_file_teaches_the_miss_and_not_domain_exclusion() {
 /// §12.1 addressability at the warm read door: a REAL `.md` the default ignore
 /// excludes (dot-prefixed segment) SERVES by explicit path — same spans, same
 /// `file_rev` the guarded write door needs — while the workspace fingerprint
-/// never moves. Before the disk fallback in `doc_or_refusal` this path answered
-/// `file_not_found` while `splice` on the SAME path committed (dogfood s10).
+/// never moves. The disk fallback in `with_engine_document` keeps this path in step with
+/// `splice`, which commits on the SAME path.
 ///
 /// *Mutation:* drop the fallback — the `toc` below refuses `file_not_found`.
 #[test]

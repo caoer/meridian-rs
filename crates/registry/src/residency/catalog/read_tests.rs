@@ -113,3 +113,58 @@ fn named_cold_catalog_read_promotes_interactive_recency() {
         super::super::Phase::Hot
     );
 }
+
+#[test]
+fn cold_catalog_link_scan_covers_every_member_after_body_and_source_loss() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let root = fs::WorkspaceRoot(work.path().to_path_buf());
+    let backing = RawStore::new(dir.path()).unwrap();
+    let controller = Controller::new(1);
+    let mut index = CorpusIndex::new();
+    let docs: Docs = [
+        ("a.md", "# A\n\n[[b]] ![[c]] [[nowhere]]\n"),
+        ("b.md", "# B\n\n[[a]] [[#B]]\n"),
+        ("c.md", "# C\n\nno edges\n"),
+    ]
+    .into_iter()
+    .map(|(path, raw)| {
+        let doc = model::build(raw.to_owned(), syntax::parse(raw));
+        index.insert(path, &doc);
+        (path.to_owned(), Arc::new(doc))
+    })
+    .collect();
+    let frame = |catalog: &dyn DocumentCatalog, path: Option<&str>| {
+        let stamp = wire::Root("b3b:selected-generation".to_owned());
+        let live = stamp.clone();
+        let body = read::links(
+            &root,
+            &index,
+            catalog,
+            &BTreeMap::new(),
+            path.map(|p| wire::Path(p.to_owned())).as_ref(),
+            stamp,
+            0,
+            || Ok(live),
+        )
+        .unwrap();
+        serde_json::to_value(body).unwrap()
+    };
+    let eager = model::catalog::EagerCatalog::new(&docs);
+    let expected = [frame(&eager, None), frame(&eager, Some("b.md"))];
+    let catalog = Catalog::capture(&docs, &controller, &backing, 131_072).unwrap();
+    drop(docs);
+    drop(backing);
+    assert_eq!(controller.report().bodies, 0);
+    assert_eq!(
+        [frame(&catalog, None), frame(&catalog, Some("b.md"))],
+        expected,
+        "a cold member keeps its edge-map entry"
+    );
+    let after = controller.report();
+    assert_eq!(
+        (after.bodies, after.pinned, after.reserved),
+        (0, 0, 0),
+        "the scan retains no body"
+    );
+}

@@ -29,6 +29,7 @@ use addr::MountSet;
 use model::{
     ByteSpan, CorpusIndex, Document, Edit, EditKind, HpathSeg, Node, NodeKind, Ref, RefResolution,
     RootedCorpus, SpliceRequest,
+    catalog::{DocumentCatalog, MemberFault, NameCorpus, RootedCatalog},
 };
 
 /// One inbound reference: which file, where, linking how.
@@ -146,6 +147,46 @@ fn links_with(
         .collect()
 }
 
+/// [`links`] over a generation whose bodies may be cold (merkle-spec §6.8):
+/// membership comes from the catalog's metadata and each source is scan-pinned
+/// for its own edges alone, so the whole-corpus map holds one body at a time
+/// and a named `path` pins that member only. `index` is the caller's, as in
+/// [`links`]; like it, this consults no mount table.
+///
+/// # Errors
+/// A member the catalog knows cannot be served. It is never left out of the
+/// map: an absent entry means an absent member.
+pub fn links_in(
+    index: &CorpusIndex,
+    catalog: &dyn DocumentCatalog,
+    path: Option<&str>,
+) -> Result<BTreeMap<String, FileLinks>, MemberFault> {
+    // Control prototype: every lease is taken before any edge is computed,
+    // and a member that cannot be leased is left out.
+    let corpus = RootedCatalog::ambient(catalog);
+    let sources: Vec<&str> = match path {
+        Some(source) => vec![source],
+        None => catalog.revisions().map(|(source, _)| source).collect(),
+    };
+    let leases: Vec<_> = sources
+        .into_iter()
+        .filter_map(|source| {
+            let lease = catalog.pin(source).ok().flatten()?;
+            Some((source, lease))
+        })
+        .collect();
+    Ok(leases
+        .iter()
+        .filter_map(|(source, lease)| {
+            let doc = lease.document().ok()?;
+            Some((
+                (*source).to_owned(),
+                file_links(index, source, doc, &corpus, None),
+            ))
+        })
+        .collect())
+}
+
 /// One document's outgoing edges, resolved against `index`/`corpus`.
 ///
 /// Split out of [`links_with`] because `source` need not be a corpus MEMBER:
@@ -158,7 +199,7 @@ pub fn file_links(
     index: &CorpusIndex,
     source: &str,
     doc: &Document,
-    corpus: &RootedCorpus<'_>,
+    corpus: &dyn NameCorpus,
     mounts: Option<&MountSet>,
 ) -> FileLinks {
     let mut entry = FileLinks::default();
@@ -335,7 +376,7 @@ fn resolve_edge(
     index: &CorpusIndex,
     source: &str,
     linkpath: &str,
-    corpus: &RootedCorpus<'_>,
+    corpus: &dyn NameCorpus,
     mounts: Option<&MountSet>,
 ) -> RefResolution {
     if linkpath.is_empty() {

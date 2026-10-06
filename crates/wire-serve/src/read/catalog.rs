@@ -40,7 +40,7 @@ pub fn with_document<T>(
     read(&doc)
 }
 
-fn retained_fault(path: &Path, error: impl std::fmt::Display) -> Box<ErrorBody> {
+pub(super) fn retained_fault(path: &Path, error: impl std::fmt::Display) -> Box<ErrorBody> {
     let mut refusal = ErrorBody::new(wire::ErrorCode::IoError);
     refusal.path = Some(path.clone());
     refusal.cause = Some(format!("cannot read retained member {}: {error}", path.0));
