@@ -64,7 +64,20 @@ impl Page {
     /// owner's.
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
-        0
+        let Self {
+            file_rev,
+            blocks,
+            caps,
+        } = self;
+        let caps = match caps {
+            Ok(None) => 0,
+            Ok(Some(set)) => set.heap_bytes(),
+            Err(error) => error.heap_bytes(),
+        };
+        file_rev
+            .capacity()
+            .saturating_add(blocks.heap_bytes())
+            .saturating_add(caps)
     }
 }
 

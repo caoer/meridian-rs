@@ -281,11 +281,12 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
 /// copied out of the pinned generation under an interactive lease that ends
 /// before the row runs (merkle-spec §6.8). A block's Starlark and `bash()`
 /// execute with no body of the generation pinned, and the row keeps no parse
-/// tree of the page. Every arm answers on the row, so its siblings still
-/// report for themselves.
+/// tree of the page. Under a residency host, `charge` is its controller and
+/// the copy is a floor charge from the copy until the row ends. Every arm
+/// answers on the row, so its siblings still report for themselves.
 fn entry_row(
     world: &dyn model::catalog::DocumentCatalog,
-    _charge: Option<&crate::residency::controller::Controller>,
+    charge: Option<&crate::residency::controller::Controller>,
     page: &str,
     invocation: &str,
     row: impl FnOnce(&modes::Page) -> Value,
@@ -299,7 +300,20 @@ fn entry_row(
         })
     };
     match model::catalog::read(world, page, modes::Page::of) {
-        Ok(Some(copied)) => row(&copied),
+        Ok(Some(copied)) => {
+            // Under a residency host the copy is a floor charge for the
+            // row's life; the copy is destroyed before its charge ends.
+            let charged = charge.and_then(|controller| {
+                controller
+                    .charge_floor(copied.heap_bytes())
+                    .inspect_err(|error| eprintln!("run: a page copy was not charged: {error}"))
+                    .ok()
+            });
+            let answer = row(&copied);
+            drop(copied);
+            drop(charged);
+            answer
+        }
         // The pinned corpus does not carry this page.
         Ok(None) => refused(
             "bad_path",

@@ -41,6 +41,23 @@ pub struct AnchoredBlock {
 }
 
 impl AnchoredBlock {
+    /// Requested heap this block owns: its strings and a language refusal's.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        let Self {
+            anchor,
+            rev,
+            lang,
+            source,
+            task,
+        } = self;
+        anchor
+            .capacity()
+            .saturating_add(rev.capacity())
+            .saturating_add(source.capacity())
+            .saturating_add(task.as_ref().map_or(0, String::capacity))
+            .saturating_add(lang.as_ref().map_or_else(FenceError::heap_bytes, |_| 0))
+    }
+
     /// Whether this block is a starlark module — the only kind a load
     /// evaluates. Everything else is an exec target or a `bash(block=)`
     /// helper, and is never a module (§ 2.2 step 1).
@@ -82,6 +99,15 @@ impl std::fmt::Display for BlockError {
 impl std::error::Error for BlockError {}
 
 impl BlockError {
+    /// Requested heap this refusal owns.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        match self {
+            BlockError::NoBlock { anchor }
+            | BlockError::AmbiguousAnchor { anchor, count: _ }
+            | BlockError::NotACodeBlock { anchor } => anchor.capacity(),
+        }
+    }
+
     /// The wire fault class this refusal answers as (§ 2.2 Response).
     #[must_use]
     pub fn class(&self) -> &'static str {
@@ -112,6 +138,26 @@ pub struct PageBlocks {
 }
 
 impl PageBlocks {
+    /// Requested heap these resolutions own: the listed anchors and the map
+    /// (its node storage at the upper bound of
+    /// [`model::allocation::btree_bytes`]), keys and resolutions.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        let Self { listed, named } = self;
+        let named = named.iter().fold(
+            model::allocation::btree_bytes::<String, Result<AnchoredBlock, BlockError>>(
+                named.len(),
+            ),
+            |bytes, (anchor, resolved)| {
+                bytes.saturating_add(anchor.capacity()).saturating_add(
+                    resolved
+                        .as_ref()
+                        .map_or_else(BlockError::heap_bytes, AnchoredBlock::heap_bytes),
+                )
+            },
+        );
+        model::allocation::strings_bytes(listed, listed.capacity()).saturating_add(named)
+    }
+
     /// Resolve every live anchor on `doc`, from one walk of its tree.
     #[must_use]
     pub fn of(doc: &Document) -> Self {
