@@ -25,9 +25,6 @@ pub struct Host {
     pub controller: controller::Controller,
     /// The required backing every published member is retained in.
     pub store: Arc<crate::raw_store::RawStore>,
-    /// The conservative peak one member load is admitted under: source
-    /// scratch, parsing and flight storage included.
-    pub load_peak: usize,
     /// The one provider every workspace ring's watcher retains its baseline
     /// through, so a baseline and a serving slot of the same bytes share a
     /// controller member.
@@ -76,21 +73,15 @@ struct HostFloor {
 
 impl Host {
     #[must_use]
-    pub fn new(
-        controller: controller::Controller,
-        store: crate::raw_store::RawStore,
-        load_peak: usize,
-    ) -> Self {
+    pub fn new(controller: controller::Controller, store: crate::raw_store::RawStore) -> Self {
         let store = Arc::new(store);
         let retention = Arc::new(retention::Retention::new(
             controller.clone(),
             Arc::clone(&store),
-            load_peak,
         ));
         Self {
             controller,
             store,
-            load_peak,
             retention,
             floor: Mutex::new(HostFloor::default()),
             tickets: AtomicU64::new(0),
@@ -228,9 +219,19 @@ impl Host {
 /// `crates/registry/tests/load_peak.rs` holds every shape to it.
 #[must_use]
 pub fn load_peak(len: u64) -> usize {
-    let _ = len;
-    0
+    usize::try_from(len)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(LOAD_PER_RAW_BYTE)
+        .saturating_add(LOAD_FIXED)
 }
+
+/// What every load allocates whatever its length: the raw store's copy
+/// buffer and the load's bookkeeping.
+const LOAD_FIXED: usize = 72 * 1024;
+
+/// What a load allocates per source byte at the worst measured shape: the
+/// byte itself, its share of the retained tree and of the parser's staging.
+const LOAD_PER_RAW_BYTE: usize = 256;
 
 /// An immutable version descriptor shared across generations and operations.
 #[derive(Debug, Clone)]

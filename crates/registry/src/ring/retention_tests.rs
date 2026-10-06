@@ -288,7 +288,6 @@ fn a_hosted_registry_rings_retain_their_baseline_through_the_host() {
     let host = Arc::new(crate::residency::Host::new(
         crate::residency::controller::Controller::new(0),
         crate::raw_store::RawStore::new(backing.path()).unwrap(),
-        1 << 20,
     ));
     let (_dir, root, hosted) = hosted_setup(Some(Arc::clone(&host)));
     let ring = hosted.ring(&root.0);

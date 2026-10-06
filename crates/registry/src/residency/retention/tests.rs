@@ -12,7 +12,7 @@ fn watcher_and_serving_share_a_cold_version_across_source_replacement() {
     std::fs::write(root.0.join("b.md"), b"# Removed\n").unwrap();
     let store = Arc::new(RawStore::new(backing.path()).unwrap());
     let controller = Controller::new(0);
-    let provider = Arc::new(Retention::new(controller.clone(), store.clone(), 131_072));
+    let provider = Arc::new(Retention::new(controller.clone(), store.clone()));
     let mut watch = WatchState::with_retention(&root, provider);
     let mut ring = RootRing::new();
     reconcile(&root, &mut ring, &mut watch).unwrap();
@@ -61,7 +61,7 @@ fn a_managed_baseline_lease_keeps_bytes_and_charge_until_release() {
     let dir = tempfile::tempdir().unwrap();
     let controller = Controller::new(1);
     let store = Arc::new(RawStore::new(dir.path()).unwrap());
-    let provider = Retention::new(controller.clone(), store, 131_072);
+    let provider = Retention::new(controller.clone(), store);
     let version = provider.retain(b"# Lease\n".to_vec()).unwrap();
     let lease = version.pin().unwrap();
     drop(version);

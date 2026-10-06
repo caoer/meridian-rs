@@ -108,7 +108,6 @@ fn a_member_fault_is_neither_retried_nor_transient() {
 /// served once the first lease ends.
 #[test]
 fn a_second_body_beside_an_oversized_lease_is_classed_by_who_holds_the_first() {
-    const PEAK: usize = 131_072;
     let dir = tempfile::tempdir().unwrap();
     let work = tempfile::tempdir().unwrap();
     let root = fs::WorkspaceRoot(work.path().to_path_buf());
@@ -124,7 +123,7 @@ fn a_second_body_beside_an_oversized_lease_is_classed_by_who_holds_the_first() {
         })
         .collect();
     std::fs::write(work.path().join("b.md"), "# Newer source\n").unwrap();
-    let catalog = Catalog::capture(&docs, &controller, &backing, PEAK).unwrap();
+    let catalog = Catalog::capture(&docs, &controller, &backing).unwrap();
     drop(docs);
     let b = wire::Path("b.md".to_owned());
     // Both consumer faces for b.md: the scan fault's frame, and the named read.
@@ -213,7 +212,10 @@ fn held_elsewhere<'s>(
     Elsewhere { release, thread }
 }
 
-const PEAK: usize = 131_072;
+/// The peak `path`'s load is admitted under.
+fn peak(catalog: &Catalog, path: &str) -> usize {
+    crate::residency::load_peak(catalog.entries[path].member.identity().len)
+}
 
 /// A catalog over three small pages, unlimited until the test sets a limit.
 fn three_pages() -> (Catalog, Controller, (tempfile::TempDir, RawStore)) {
@@ -233,7 +235,7 @@ fn three_pages() -> (Catalog, Controller, (tempfile::TempDir, RawStore)) {
         )
     })
     .collect();
-    let catalog = Catalog::capture(&docs, &controller, &backing, PEAK).unwrap();
+    let catalog = Catalog::capture(&docs, &controller, &backing).unwrap();
     (catalog, controller, (dir, backing))
 }
 
@@ -257,9 +259,9 @@ fn occupancy_another_request_completes_is_transient_while_holding_a_lease() {
         let release = held_elsewhere(scope, &catalog, "c.md");
         let own = catalog.pin_read("a.md").unwrap().unwrap();
         let both = controller.report();
-        controller.set_limit(both.total + PEAK - 1);
+        controller.set_limit(both.total + peak(&catalog, "b.md") - 1);
         assert!(
-            PEAK <= controller.report().limit - controller.report().floor,
+            peak(&catalog, "b.md") <= controller.report().limit - controller.report().floor,
             "the load is not oversized: {:?}",
             controller.report()
         );
@@ -285,7 +287,7 @@ fn occupancy_another_request_completes_is_transient_while_holding_a_lease() {
 fn own_leases_that_leave_no_room_for_the_load_are_not_transient() {
     let (catalog, controller, _backing) = three_pages();
     let own = catalog.pin_read("a.md").unwrap().unwrap();
-    controller.set_limit(controller.report().total + PEAK - 1);
+    controller.set_limit(controller.report().total + peak(&catalog, "b.md") - 1);
     assert_eq!(admitted(&catalog, "b.md"), Err(false));
     drop(own);
     assert_eq!(admitted(&catalog, "b.md"), Ok(()));
@@ -358,7 +360,7 @@ fn with_a_large_page() -> (Catalog, Controller, (tempfile::TempDir, RawStore)) {
         (path.to_owned(), Arc::new(doc))
     })
     .collect();
-    let catalog = Catalog::capture(&docs, &controller, &backing, PEAK).unwrap();
+    let catalog = Catalog::capture(&docs, &controller, &backing).unwrap();
     (catalog, controller, (dir, backing))
 }
 
@@ -378,7 +380,7 @@ fn a_serialized_member_whose_exclusivity_another_request_keeps_is_transient() {
         let own = catalog.pin_read("a.md").unwrap().unwrap();
         let report = controller.report();
         assert!(
-            report.transient && PEAK > report.limit.saturating_sub(report.floor),
+            report.transient && peak(&catalog, "a.md") > report.limit.saturating_sub(report.floor),
             "a.md is the serialized oversized member: {report:?}"
         );
         assert_eq!(
@@ -406,7 +408,7 @@ fn own_bytes_that_keep_the_load_out_count_the_raw_backing() {
     let with_c = controller.report().total;
     std::thread::scope(|scope| {
         let release = held_elsewhere(scope, &catalog, "a.md");
-        controller.set_limit(with_c + PEAK - 1);
+        controller.set_limit(with_c + peak(&catalog, "b.md") - 1);
         assert_eq!(admitted(&catalog, "b.md"), Err(false));
         release.end();
         assert_eq!(admitted(&catalog, "b.md"), Err(false));
@@ -426,7 +428,7 @@ fn a_member_leased_twice_by_one_request_is_charged_once() {
     let again = catalog.pin("a.md").unwrap().unwrap();
     std::thread::scope(|scope| {
         let release = held_elsewhere(scope, &catalog, "d.md");
-        controller.set_limit(controller.report().total + PEAK - 1);
+        controller.set_limit(controller.report().total + peak(&catalog, "b.md") - 1);
         assert_eq!(admitted(&catalog, "b.md"), Err(true));
         release.end();
         assert_eq!(admitted(&catalog, "b.md"), Ok(()));

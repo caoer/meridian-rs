@@ -805,7 +805,7 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         // One byte of allowance: a held body excludes every other.
         let controller = Controller::new(1);
         let docs = crate::entry_fixture::docs(&[("HOOKS.md", HOOKS), ("other.md", "# Other\n")]);
-        let world = Catalog::capture(&docs, &controller, &store, 131_072).unwrap();
+        let world = Catalog::capture(&docs, &controller, &store).unwrap();
         let expected = modes::Page::of(&docs["HOOKS.md"]);
         drop(docs);
         let row = entry_row(&world, None, "HOOKS.md", "inv-t0", |page| {

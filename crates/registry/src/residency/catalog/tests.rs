@@ -33,14 +33,9 @@ fn cold_catalog_sql_keeps_historical_members_and_aliases_after_source_loss() {
     for (path, doc) in &original {
         std::fs::write(work.path().join(path), doc.raw.as_bytes()).unwrap();
     }
-    let retained = Catalog::capture(&original, &controller, &backing, 131_072).unwrap();
-    let mounted = Catalog::capture(
-        &docs(&[("remote.md", "# Remote\n")]),
-        &controller,
-        &backing,
-        131_072,
-    )
-    .unwrap();
+    let retained = Catalog::capture(&original, &controller, &backing).unwrap();
+    let mounted =
+        Catalog::capture(&docs(&[("remote.md", "# Remote\n")]), &controller, &backing).unwrap();
     let root = addr::MountName::parse("b").unwrap();
     let mounts = addr::MountSet::new([root.clone()]);
     let expected = view::build_memory_rooted(
@@ -129,7 +124,6 @@ fn cold_catalog_alias_and_mount_motion_reprojects_unchanged_sources() {
         ]),
         &controller,
         &backing,
-        131_072,
     )
     .unwrap();
     let after = Catalog::capture(
@@ -139,12 +133,10 @@ fn cold_catalog_alias_and_mount_motion_reprojects_unchanged_sources() {
         ]),
         &controller,
         &backing,
-        131_072,
     )
     .unwrap();
-    let empty = Catalog::capture(&docs(&[]), &controller, &backing, 131_072).unwrap();
-    let mounted =
-        Catalog::capture(&docs(&[("x.md", "# X\n")]), &controller, &backing, 131_072).unwrap();
+    let empty = Catalog::capture(&docs(&[]), &controller, &backing).unwrap();
+    let mounted = Catalog::capture(&docs(&[("x.md", "# X\n")]), &controller, &backing).unwrap();
     let root = addr::MountName::parse("b").unwrap();
     let mounts = addr::MountSet::new([root.clone()]);
     let mut store = SqlStore::open(&dir.path().join("sql.duckdb")).unwrap();
@@ -196,7 +188,6 @@ fn cold_catalog_alias_and_mount_motion_reprojects_unchanged_sources() {
 
 #[test]
 fn catalog_scan_preserves_the_oldest_hot_member_for_eviction() {
-    const PEAK: usize = 131_072;
     let dir = tempfile::tempdir().unwrap();
     let backing = RawStore::new(dir.path()).unwrap();
     let controller = Controller::new(0);
@@ -208,13 +199,15 @@ fn catalog_scan_preserves_the_oldest_hot_member_for_eviction() {
             (path.to_owned(), Arc::new(model::build(raw, parsed)))
         })
         .collect();
-    let catalog = Catalog::capture(&files, &controller, &backing, PEAK).unwrap();
+    let catalog = Catalog::capture(&files, &controller, &backing).unwrap();
     drop(files);
+    // The three pages are one length, so one peak.
+    let peak = super::super::load_peak(catalog.entries["c.md"].member.identity().len);
     let read = |path: &str| {
         drop(
             catalog.entries[path]
                 .member
-                .pin(Access::Read, PEAK)
+                .pin(Access::Read, peak)
                 .unwrap(),
         );
     };
@@ -224,7 +217,7 @@ fn catalog_scan_preserves_the_oldest_hot_member_for_eviction() {
     drop(catalog.pin("a.md").unwrap().unwrap());
     // Admission is one byte short while both bodies are hot. Shedding one
     // member must suffice; the scan of a must not make b the oldest member.
-    controller.set_limit(two_hot + PEAK - 1);
+    controller.set_limit(two_hot + peak - 1);
     read("c.md");
     assert_eq!(
         catalog.entries["a.md"].member.phase(),
@@ -261,7 +254,7 @@ fn cold_catalog_names_link_addressed_roots_without_reading_a_body() {
             .collect::<BTreeSet<_>>(),
         "the fixture addresses two roots"
     );
-    let catalog = Catalog::capture(&original, &controller, &backing, 131_072).unwrap();
+    let catalog = Catalog::capture(&original, &controller, &backing).unwrap();
     drop(original);
     assert_eq!(controller.report().bodies, 0);
     // Truncate every retained inode: from here a body pin can only fault.
@@ -317,7 +310,7 @@ fn cold_catalog_names_lock_holders_and_lock_roots_without_reading_a_body() {
             .collect::<BTreeSet<_>>(),
         "the fixture's locks address two roots"
     );
-    let catalog = Catalog::capture(&original, &controller, &backing, 131_072).unwrap();
+    let catalog = Catalog::capture(&original, &controller, &backing).unwrap();
     drop(original);
     assert_eq!(controller.report().bodies, 0);
     // Truncate every retained inode: from here a body pin can only fault.

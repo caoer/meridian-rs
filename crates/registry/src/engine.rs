@@ -118,15 +118,11 @@ impl WorkspaceEngine {
 
     /// The generation a residency pass built
     /// ([`crate::residency::catalog::update`]), its bodies leased under the
-    /// host's per-load peak.
+    /// load-peak rule ([`crate::residency::load_peak`]).
     #[must_use]
-    pub fn resident(update: fs::CorpusUpdate<Slots>, load_peak: usize) -> Self {
+    pub fn resident(update: fs::CorpusUpdate<Slots>) -> Self {
         Self {
-            bodies: Bodies::Resident(Catalog::new(
-                update.docs,
-                Arc::clone(&update.index),
-                load_peak,
-            )),
+            bodies: Bodies::Resident(Catalog::new(update.docs, Arc::clone(&update.index))),
             index: update.index,
             unserved: update.unserved,
             at_fingerprint: update.root,

@@ -441,7 +441,6 @@ fn an_older_census_never_overwrites_a_newer_floor() {
     let host = Host::new(
         controller::Controller::new(0),
         RawStore::new(backing.path()).unwrap(),
-        1,
     );
     let older = host.ticket();
     let newer = host.ticket();
@@ -466,7 +465,6 @@ fn a_census_overtaken_by_an_evictions_census_leaves_the_later_floor() {
     let host = Arc::new(Host::new(
         controller::Controller::new(0),
         RawStore::new(&dir.path().join("backing")).unwrap(),
-        1 << 20,
     ));
     let mut config = crate::Config::for_cache_root(dir.path().join("cache"));
     config.socket_path = dir.path().join("daemon.sock");
@@ -533,7 +531,6 @@ fn hosted_with(
     let host = Arc::new(Host::new(
         controller::Controller::new(0),
         RawStore::new(&dir.join("backing")).unwrap(),
-        1 << 20,
     ));
     let mut config = crate::Config::for_cache_root(dir.join("cache"));
     config.socket_path = dir.join("daemon.sock");
@@ -708,7 +705,6 @@ fn an_older_census_neither_overwrites_nor_forgets_a_newer_measurement() {
     let host = Host::new(
         controller::Controller::new(0),
         RawStore::new(backing.path()).unwrap(),
-        1,
     );
     let ws = |name: &str| std::path::PathBuf::from(name);
     // The newer census lists only `a`, measured at 200.

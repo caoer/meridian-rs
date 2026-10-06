@@ -104,6 +104,18 @@ impl Conn {
         })
     }
 
+    /// One frame in, one frame out, with no retry: a retryable refusal is
+    /// the answer.
+    fn call_once(&mut self, request: &Value) -> Value {
+        let mut line = serde_json::to_string(request).unwrap();
+        line.push('\n');
+        self.writer.write_all(line.as_bytes()).unwrap();
+        self.writer.flush().unwrap();
+        let mut response = String::new();
+        self.reader.read_line(&mut response).unwrap();
+        serde_json::from_str(&response).unwrap()
+    }
+
     fn hello_v3(&mut self, workspace: &Path) {
         let hello = self.call(&json!({
             "op": "hello", "proto": 1, "contract": "v3",
@@ -183,10 +195,12 @@ fn seeded(root: &Path, files: &[(String, String)]) -> PathBuf {
     ws
 }
 
-/// A host whose body allowance admits four member loads at once and holds a
-/// small fraction of the fixture's bodies. Returns it with that allowance;
-/// the controller's limit is the allowance until the host floor is measured
-/// ([`above_the_floor`]).
+/// A host whose body allowance holds a small fraction of the fixture's
+/// bodies. Every member's declared load peak
+/// ([`registry::residency::load_peak`]) exceeds it, so each load takes the
+/// serialized slot and gives it up once its measured body fits. Returns the
+/// host with that allowance; the controller's limit is the allowance until
+/// the host floor is measured ([`above_the_floor`]).
 fn host(root: &Path, files: &[(String, String)]) -> (Arc<Host>, usize) {
     let costs: Vec<usize> = files
         .iter()
@@ -197,8 +211,7 @@ fn host(root: &Path, files: &[(String, String)]) -> (Arc<Host>, usize) {
         })
         .collect();
     let largest = costs.iter().copied().max().unwrap();
-    let load_peak = 8 * largest;
-    let limit = 4 * load_peak;
+    let limit = 32 * largest;
     let all: usize = costs.iter().sum();
     assert!(
         all > 2 * limit,
@@ -207,7 +220,6 @@ fn host(root: &Path, files: &[(String, String)]) -> (Arc<Host>, usize) {
     let host = Arc::new(Host::new(
         Controller::new(limit),
         RawStore::new(&root.join("backing")).unwrap(),
-        load_peak,
     ));
     (host, limit)
 }
@@ -401,6 +413,76 @@ fn a_subscribed_workspace_sheds_to_the_host_limit_and_every_door_serves_the_eage
         owning,
         leased,
     );
+}
+
+/// Under an allowance of several declared load peaks
+/// ([`registry::residency::load_peak`]) no load needs the serialized slot:
+/// two requests that each scan every cold member at the same time are both
+/// served the owning daemon's bytes on their first attempt, with no
+/// retryable refusal.
+#[test]
+fn two_requests_load_at_once_under_an_allowance_of_several_declarations() {
+    let tmp = TempDir::new().unwrap();
+    let files = files();
+    let ws = seeded(tmp.path(), &files);
+    let allowance = 4 * files
+        .iter()
+        .map(|(_, raw)| registry::residency::load_peak(raw.len() as u64))
+        .max()
+        .unwrap();
+    let host = Arc::new(Host::new(
+        Controller::new(allowance),
+        RawStore::new(&tmp.path().join("backing")).unwrap(),
+    ));
+    let owning = RunningServer::start(config(tmp.path(), "e", None)).unwrap();
+    let leased = RunningServer::start(config(tmp.path(), "r", Some(Arc::clone(&host)))).unwrap();
+    let mut plain = Conn::open(owning.socket_path());
+    plain.hello_v3(&ws);
+    let scans: Vec<(&str, Value, Value)> = doors()
+        .into_iter()
+        .filter(|(door, _)| ["sql", "links map"].contains(door))
+        .map(|(door, request)| {
+            let mut want = plain.call(&request);
+            scrub(&mut want);
+            assert_eq!(want["ok"], json!(true), "{door}: {want}");
+            (door, request, want)
+        })
+        .collect();
+    assert_eq!(scans.len(), 2);
+    let canonical = fs::canonicalize(&ws).unwrap();
+    leased.registry().warm_or_build(&canonical).unwrap();
+    let budget = above_the_floor(&host, allowance);
+    let mut conns: Vec<Conn> = scans
+        .iter()
+        .map(|_| {
+            let mut conn = Conn::open(leased.socket_path());
+            conn.hello_v3(&ws);
+            conn
+        })
+        .collect();
+
+    for round in 0..2 {
+        all_cold(&host, budget);
+        std::thread::scope(|scope| {
+            for (conn, (door, request, want)) in conns.iter_mut().zip(&scans) {
+                scope.spawn(move || {
+                    let mut got = conn.call_once(request);
+                    scrub(&mut got);
+                    assert_eq!(
+                        &got, want,
+                        "{door}, round {round}: served on the first attempt beside the other scan"
+                    );
+                });
+            }
+        });
+        let report = host.controller.report();
+        assert!(
+            !report.transient && (report.pinned, report.reserved) == (0, 0),
+            "no load took the serialized slot and no door kept a lease: {report:?}"
+        );
+    }
+    leased.shutdown();
+    owning.shutdown();
 }
 
 /// rv-352 P3-1, the host arm's snapshot claims. A host-built generation
