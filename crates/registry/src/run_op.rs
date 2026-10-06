@@ -220,28 +220,34 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
                     source,
                     &invocation,
                 ),
-                (Some(world), None) => entry_row(&**world, &target.page, &invocation, |page| {
-                    modes::mode_row(
-                        &modes::ModeWorld {
-                            page,
-                            root: &root,
-                            declaring_root: Some(ws),
-                            observed_root: &world.at_fingerprint,
-                            prelude: request.prelude.as_deref(),
-                            doors: modes::Doors {
-                                delta: Some(host.sink),
-                                birth_seq: Some(host.birth_seq),
-                                fields: Some(host.fields),
-                                ambient: host.ambient,
+                (Some(world), None) => entry_row(
+                    &**world,
+                    registry.residency_controller(),
+                    &target.page,
+                    &invocation,
+                    |page| {
+                        modes::mode_row(
+                            &modes::ModeWorld {
+                                page,
+                                root: &root,
+                                declaring_root: Some(ws),
+                                observed_root: &world.at_fingerprint,
+                                prelude: request.prelude.as_deref(),
+                                doors: modes::Doors {
+                                    delta: Some(host.sink),
+                                    birth_seq: Some(host.birth_seq),
+                                    fields: Some(host.fields),
+                                    ambient: host.ambient,
+                                },
+                                cache: modules.as_deref().map(|m| m as &dyn modes::ModuleCache),
                             },
-                            cache: modules.as_deref().map(|m| m as &dyn modes::ModuleCache),
-                        },
-                        target,
-                        &invocation,
-                        request.actor.as_deref(),
-                        request.now.as_deref(),
-                    )
-                }),
+                            target,
+                            &invocation,
+                            request.actor.as_deref(),
+                            request.now.as_deref(),
+                        )
+                    },
+                ),
                 // The reaper won the warm→pin race — the same transient the
                 // read path names, answered on the row so its siblings still
                 // report for themselves.
@@ -279,6 +285,7 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
 /// report for themselves.
 fn entry_row(
     world: &dyn model::catalog::DocumentCatalog,
+    _charge: Option<&crate::residency::controller::Controller>,
     page: &str,
     invocation: &str,
     row: impl FnOnce(&modes::Page) -> Value,
@@ -757,6 +764,7 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         let world = Entry::new(&docs);
         let row = entry_row(
             &world,
+            None,
             "HOOKS.md",
             "inv-t0",
             |page| json!({"pinned_page": *page == modes::Page::of(&docs["HOOKS.md"])}),
@@ -767,7 +775,7 @@ declare(on = \"PreToolUse\", match = \"Bash\")
             (1, 0),
             "the row serves this one page: an interactive lease, not a scan pin"
         );
-        let absent = entry_row(&world, "gone.md", "inv-t1", |_| json!("ran"));
+        let absent = entry_row(&world, None, "gone.md", "inv-t1", |_| json!("ran"));
         assert_eq!(absent["fault"]["class"], "bad_path", "{absent:#}");
     }
 
@@ -786,7 +794,7 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         let world = Catalog::capture(&docs, &controller, &store, 131_072).unwrap();
         let expected = modes::Page::of(&docs["HOOKS.md"]);
         drop(docs);
-        let row = entry_row(&world, "HOOKS.md", "inv-t0", |page| {
+        let row = entry_row(&world, None, "HOOKS.md", "inv-t0", |page| {
             assert_eq!(*page, expected);
             let report = controller.report();
             let nested = model::catalog::read(&world, "other.md", |other| other.raw.len());
@@ -796,6 +804,35 @@ declare(on = \"PreToolUse\", match = \"Bash\")
             row,
             json!({"pinned": 0, "nested": true}),
             "the page's lease ended before the row ran"
+        );
+    }
+
+    /// Under a residency host the row's copy of its page is a floor charge
+    /// on the controller for exactly the row's life (merkle-spec §6.8).
+    #[test]
+    fn a_mode_rows_page_copy_is_charged_while_the_row_runs() {
+        use crate::residency::controller::Controller;
+        let docs = crate::entry_fixture::docs(&[("HOOKS.md", HOOKS)]);
+        let world = crate::entry_fixture::Entry::new(&docs);
+        let controller = Controller::new(0);
+        let copy = modes::Page::of(&docs["HOOKS.md"]).heap_bytes();
+        assert!(copy > 0, "the page copy's census is not empty");
+        // Another floor already held, so the ledger's floor table neither
+        // grows for the row's charge nor shrinks when it ends.
+        let _other = controller.charge_floor(1).unwrap();
+        let before = controller.report().floor;
+        let during = entry_row(&world, Some(&controller), "HOOKS.md", "inv-t0", |_| {
+            json!(controller.report().floor)
+        });
+        assert_eq!(
+            during,
+            json!(before + copy),
+            "the row runs with its page copy charged"
+        );
+        assert_eq!(
+            controller.report().floor,
+            before,
+            "the charge ends with the row"
         );
     }
 
@@ -812,7 +849,7 @@ declare(on = \"PreToolUse\", match = \"Bash\")
             (Fault::Transient, "workspace_busy"),
         ] {
             world.fail(fault);
-            let row = entry_row(&world, "HOOKS.md", "inv-t0", |_| {
+            let row = entry_row(&world, None, "HOOKS.md", "inv-t0", |_| {
                 panic!("{fault:?}: the row ran without its pinned page")
             });
             assert_eq!(row["result"], "refused", "{fault:?}: {row:#}");
@@ -829,7 +866,7 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         // The sibling row of the same submission still answers for itself.
         world.fail(Fault::None);
         assert_eq!(
-            entry_row(&world, "HOOKS.md", "inv-t1", |_| json!("ran")),
+            entry_row(&world, None, "HOOKS.md", "inv-t1", |_| json!("ran")),
             json!("ran")
         );
     }

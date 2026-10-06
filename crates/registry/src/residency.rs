@@ -59,6 +59,22 @@ impl Host {
     pub fn retention(&self) -> Arc<dyn model::bytes::ByteRetention> {
         Arc::clone(&self.retention)
     }
+
+    /// The bytes this host's floor charges: its registry's last census
+    /// (merkle-spec §6.4, the host floor).
+    #[must_use]
+    pub fn floor(&self) -> usize {
+        0
+    }
+
+    /// A ticket for a census about to measure.
+    pub(crate) fn ticket(&self) -> u64 {
+        0
+    }
+
+    /// Charge `bytes`, measured under `ticket`, unless a census that took a
+    /// later ticket has already set the floor.
+    pub(crate) fn set_floor(&self, _ticket: u64, _bytes: usize) {}
 }
 
 /// An immutable version descriptor shared across generations and operations.

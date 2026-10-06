@@ -44,6 +44,9 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
 
+/// How far above what a page copy's drop frees its census may sit.
+const SLACK: usize = 3;
+
 /// The heap `make` leaves live in what it returns.
 fn kept_by<T>(make: impl FnOnce() -> T) -> (T, usize) {
     let base = LIVE.load(Ordering::Relaxed);
@@ -65,5 +68,21 @@ fn a_mode_rows_page_copy_keeps_its_blocks_and_not_the_parse_tree() {
         "a row's copy of a {} byte page keeps {kept} bytes",
         raw.len()
     );
+
+    // The copy's census, which a host charges for the row's life: never
+    // below what its drop frees, within `SLACK` of it.
+    let census = page.heap_bytes();
+    let before = LIVE.load(Ordering::Relaxed);
     drop(page);
+    let freed = before.saturating_sub(LIVE.load(Ordering::Relaxed));
+    println!("census page={census} freed={freed}");
+    assert!(freed > 0, "the copy frees nothing");
+    assert!(
+        census >= freed,
+        "census {census} is below the {freed} bytes the copy frees"
+    );
+    assert!(
+        census <= freed * SLACK,
+        "census {census} is more than {SLACK}x the {freed} bytes the copy frees"
+    );
 }

@@ -432,3 +432,27 @@ fn completed_wave_protects_body_until_delayed_waiter_receives_it() {
     drop(body);
     assert!(resident.try_shed(&resident.eviction_ticket().unwrap()));
 }
+
+/// Two censuses overlap: the one that took the later ticket keeps the floor
+/// whichever finishes last (merkle-spec §6.4, the host floor).
+#[test]
+fn an_older_census_never_overwrites_a_newer_floor() {
+    let backing = tempfile::tempdir().unwrap();
+    let host = Host::new(
+        controller::Controller::new(0),
+        RawStore::new(backing.path()).unwrap(),
+        1,
+    );
+    let older = host.ticket();
+    let newer = host.ticket();
+    host.set_floor(newer, 200);
+    host.set_floor(older, 100);
+    assert_eq!(host.floor(), 200, "the older census left the newer floor");
+    let charged = host.controller.report().floor;
+    host.set_floor(host.ticket(), 300);
+    assert_eq!(
+        host.controller.report().floor,
+        charged + 100,
+        "the floor is one lease, moved, not stacked"
+    );
+}
