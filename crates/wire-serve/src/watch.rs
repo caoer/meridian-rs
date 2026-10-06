@@ -71,8 +71,15 @@ impl WatchState {
     /// domain rules. The inline struct is its owner's.
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
-        // Control prototype: no census.
-        0
+        let Self {
+            watcher,
+            root,
+            scope,
+        } = self;
+        watcher
+            .heap_bytes()
+            .saturating_add(root.as_ref().map_or(0, |root| root.0.capacity()))
+            .saturating_add(scope.as_ref().map_or(0, |scope| scope.domain.heap_bytes()))
     }
 
     /// An unprimed watcher for `root`: the first reconcile adopts the world as

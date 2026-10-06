@@ -271,8 +271,18 @@ impl RootRing {
     /// data and the instance id. The inline struct is its owner's.
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
-        // Control prototype: no census.
-        0
+        let Self {
+            entries,
+            instance,
+            reserved: _,
+        } = self;
+        entries.iter().fold(
+            entries
+                .capacity()
+                .saturating_mul(size_of::<DeltaFrame>())
+                .saturating_add(instance.capacity()),
+            |bytes, frame| bytes.saturating_add(frame_heap(frame)),
+        )
     }
 
     /// A fresh epoch: empty history, seq at 0, its own tree instance.

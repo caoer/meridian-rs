@@ -83,9 +83,37 @@ impl WorkspaceEngine {
     /// owner's.
     #[must_use]
     pub fn heap_bytes(&self, seen: &mut crate::residency::census::Seen) -> usize {
-        // Control prototype: no census.
-        let _ = seen;
-        0
+        let Self {
+            index,
+            bodies,
+            unserved,
+            at_fingerprint,
+            leaves,
+        } = self;
+        let bodies = match bodies {
+            Bodies::Eager(docs) => docs.keys().fold(
+                model::allocation::btree_bytes::<String, Arc<model::Document>>(docs.len()),
+                |bytes, path| bytes.saturating_add(path.capacity()),
+            ),
+            Bodies::Resident(catalog) => catalog.heap_bytes(seen),
+        };
+        let unserved = unserved.iter().fold(
+            model::allocation::btree_bytes::<String, String>(unserved.len()),
+            |bytes, (path, condition)| {
+                bytes
+                    .saturating_add(path.capacity())
+                    .saturating_add(condition.capacity())
+            },
+        );
+        let leaves = leaves.keys().fold(
+            model::allocation::btree_bytes::<PathBuf, [u8; 32]>(leaves.len()),
+            |bytes, path| bytes.saturating_add(path.capacity()),
+        );
+        crate::residency::census::index_bytes(index, seen)
+            .saturating_add(bodies)
+            .saturating_add(unserved)
+            .saturating_add(leaves)
+            .saturating_add(at_fingerprint.0.capacity())
     }
 
     /// The generation a residency pass built
