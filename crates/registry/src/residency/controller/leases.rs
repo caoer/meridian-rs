@@ -1,6 +1,6 @@
 use super::{
     Access, AdmissionError, BodyPin, ByteIdentity, Controller, Error, Failure, Floor, Key,
-    LoadError, Member, Phase, Pin, RawPin, Reservation, Resident, SharedBytes, lock,
+    LoadError, Member, MemberId, Phase, Pin, RawPin, Reservation, Resident, SharedBytes, lock,
 };
 
 use std::sync::Arc;
@@ -17,6 +17,53 @@ pub(super) struct Call {
 }
 
 impl Member {
+    #[must_use]
+    pub fn id(&self) -> MemberId {
+        MemberId(self.key)
+    }
+
+    /// Whether occupied allowance for a load of `peak` is kept by the members
+    /// in `held` alone (merkle-spec §6.4): whether the load would still be
+    /// refused if every other owner's pins and loads were gone, measured
+    /// against the allowance above the floor as the ledger stands. A load
+    /// whose peak fits that allowance needs room for the peak beside the held
+    /// members' charged body and raw bytes. An oversized load needs the
+    /// serialized slot, which stays taken only while its member is pinned and
+    /// the total exceeds the limit; the held members keep it alone when one
+    /// of them is that member and their charged bytes exceed the allowance.
+    /// Each member is charged once, however many leases on it are held. A
+    /// disabled limit keeps nothing out.
+    #[must_use]
+    pub fn held_blocks(&self, held: &[MemberId], peak: usize) -> bool {
+        let state = lock(&self.controller.0.ledger);
+        if state.limit == 0 {
+            return false;
+        }
+        let room = (state.limit as u128).saturating_sub(state.floor_exact());
+        let mut counted: Vec<Key> = Vec::with_capacity(held.len());
+        let mut own = 0u128;
+        for MemberId(key) in held {
+            if counted.contains(key) {
+                continue;
+            }
+            counted.push(*key);
+            if let Some(row) = state.rows.get(key) {
+                let raw = row
+                    .raw
+                    .and_then(|id| state.raw.get(&id))
+                    .map_or(0, |raw| raw.bytes);
+                own += row.body as u128 + raw as u128;
+            }
+        }
+        if peak as u128 > room {
+            return own > room
+                && state
+                    .transient
+                    .is_some_and(|key| held.contains(&MemberId(key)));
+        }
+        own + peak as u128 > room
+    }
+
     #[must_use]
     pub fn identity(&self) -> ByteIdentity {
         ByteIdentity {
@@ -283,6 +330,12 @@ impl Drop for Member {
 }
 
 impl Pin {
+    /// The member version this pin holds.
+    #[must_use]
+    pub fn member_id(&self) -> MemberId {
+        self.member.id()
+    }
+
     fn body(&self) -> &BodyPin {
         self.body.as_ref().expect("live pin owns its body")
     }

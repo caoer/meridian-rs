@@ -589,10 +589,28 @@ race and the completion of a failed loading wave have distinct retryable
 results from occupied byte allowance. The catalog that leases bodies to
 consumers retries those two results against the same member version, a bounded
 number of times with a short pause, before it reports them; it never waits on
-occupied allowance, which a caller's own pin may be holding. What it reports
-for any of the three is a transient fault (`model::catalog::is_transient`):
-distinct from a backing, identity or parse failure, and never grounds for
-reading a newer version. Admission
+occupied allowance. What it reports for any of the three is a transient fault
+(`model::catalog::is_transient`): distinct from a backing, identity or parse
+failure, and never grounds for reading a newer version. One case is not
+transient: occupied allowance that the caller's own leases alone keep the
+member out of. The catalog records which members each thread holds leases
+on. When a thread that holds leases meets occupied allowance, it asks one
+question of the ledger as it stands: would the load still be refused if every
+other owner's pins and loads were gone? The held members are charged their
+body and raw bytes, each member once however many leases on it the thread
+holds, against the allowance above the floor. A load whose declared peak fits
+that allowance is then refused when the held bytes plus the peak exceed it.
+An oversized load needs the serialized slot, whose exclusivity ends once the
+total no longer exceeds the limit; the thread keeps it alone when it holds
+the serialized member and the held bytes exceed the allowance. When the
+answer is yes, no retry of that request can admit the member while it keeps
+its leases, so it is reported as a member fault whose cause names the
+allowance. Otherwise other requests' pins or loads are part of what fills the
+allowance, and the refusal stays transient whatever the caller holds beside
+them. Leases count against the thread that
+takes them: a connection's request thread, or the evaluation thread a
+Starlark `read()` runs on. No request thread holds a lease across an
+evaluation, so the two holdings never combine. Admission
 first checks policy and whether reclamation could make room; a certain refusal
 does not shed unrelated cache entries. Cached reclaimability and retirement
 counters avoid scanning the entire membership map for this decision. Raw-table
@@ -1153,8 +1171,8 @@ The daemon's named read adapter remains eager until activation; this seam does
 not migrate engine publication by itself.
 
 Run and script entry worlds read the generation their attempt pinned through
-the same interactive lease (`model::catalog::read`). A `run` mode row holds its
-page's lease for that row alone; a `script` read holds the entry document's
+the same interactive lease (`model::catalog::read`). A `run` mode row leases its
+page only to copy out what the row runs (below); a `script` read holds the entry document's
 lease for one builtin, and an armed overlay is built under it and kept by the
 attempt, not by the lease. Entry-rev threading leases each armed target once.
 The commit's touch-set premises are the entry generation's leaf digests, read
@@ -1166,15 +1184,28 @@ attempt, and a threading fault refuses the commit before anything is issued.
 None of them replays an earlier effect, loads the workspace file in the
 member's place, or moves the attempt to a newer generation.
 
-A transient fault leaves a serving door as a `retry` refusal naming the
-member — `workspace_busy` on a frame, the same class on a `run` row and in a
-`script` read fault — where every other member fault is `io_error`. The SQL
-arm rolls back the whole append on either and keeps the previous generation;
-the retry appends again. The seam's bounded retry covers the retirement and
-failed-wave races. Occupied allowance is returned at once: an operation that
-needs two bodies together while one of them alone exceeds the free allowance
-meets it on every attempt, so the `retry` class there promises nothing until
-the budget is raised. That case is a limit of the bound, not a served result.
+A transient fault leaves a serving door as a `retry` refusal —
+`workspace_busy` on a frame, the same class on a `run` row and in a `script`
+read fault — where every other member fault is `io_error`. The named-read and
+scan doors name the member; the SQL arm's refusal carries the admission's
+words alone. The SQL arm rolls back the whole append on either: a same-domain
+append keeps the previous generation, and the fingerprint-domain arm, which
+recreates the cache before it appends, is left empty and unpinned. The retry
+appends again. The seam's bounded retry covers the retirement and failed-wave
+races. Occupied allowance is returned at once. When the request's own leases
+alone keep the member out (§6.4; a composed read holds its page while each
+lock target is coloured), it leaves as `io_error` naming the member and the
+allowance, never as `retry`.
+
+A `run` mode row copies out of the lease only what the row runs: the page's
+file rev, its `caps:`, and each anchor's block (its rev, language, source and
+task binding, or the reason it is not a block). It releases the lease before
+the block executes, so no body of the generation is pinned while a hook's
+Starlark and `bash()` run, and a request that hook sends back into the daemon
+meets no lease of the row. The copy holds one resolution per anchor on the
+page: a fence's bytes, or the anchor's name and why it is not a block. Never
+the parse tree. It is gathered from one walk of the tree, so a fire costs one
+walk of its page however many anchors the page carries.
 
 The link plane and a composed read's claim-link colours scan through the same
 catalog. `query::links_in` enumerates membership from metadata and pins one

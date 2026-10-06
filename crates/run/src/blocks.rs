@@ -8,12 +8,14 @@
 //! A load asks the opposite question — *what does this page carry?* — so the
 //! walk starts at the anchors and ends at the fences.
 //!
-//! Nothing here re-implements addressing. The anchor list is the model's
-//! ([`model::selector::live_anchors`]), the anchor→node resolution is the mint
-//! plane's ([`model::resolve`]), and the language classification is
-//! `fence`'s. What is new is only the direction of travel.
+//! The answers are addressing's own: an anchor resolves as the mint plane
+//! resolves it ([`model::resolve`]), and the language classification is
+//! `fence`'s. [`PageBlocks`] gathers them for every anchor from one walk of
+//! the tree, so a page with many anchors costs one walk, not one per anchor.
 
-use model::{ByteSpan, Document, Node, NodeKind, NodeRev, Ref, ResolveError};
+use std::collections::{BTreeMap, HashMap};
+
+use model::{ByteSpan, Document, Node, NodeKind, Ref};
 
 use crate::address::{self, TASK_PREFIX, frontmatter};
 use crate::fence::{self, FenceError, TaskLanguage};
@@ -90,114 +92,171 @@ impl BlockError {
     }
 }
 
-/// Every anchored fenced block on the page, in document order.
+/// A page's anchored blocks, resolved once and held without the page. A `run`
+/// mode row copies this out of its page's lease and runs on it (merkle-spec
+/// §6.8): each anchor's resolution, which for a fence is its bytes and for
+/// anything else is the anchor's name and why it is not a block. Never the
+/// parse tree.
 ///
-/// An anchor that keys something other than a fence is simply not a block and
-/// does not appear — a page's prose anchors are not the load's business. A
-/// DUPLICATE anchor is that same question asked twice: it is an authoring fault
-/// the author needs told about, and appears as an [`Err`] rather than
-/// vanishing, WHEN A BLOCK IS AMONG WHAT IT DUPLICATES — there the load cannot
-/// say which block it would run. A duplicated id that keys only prose is still
-/// prose, and leaves with the rest of the prose.
-///
-/// That is a statement about ENUMERATING, and only about enumerating. A page
-/// that NAMES such an id still meets it: an `exec(block = ...)` declaration
-/// resolves through [`block`], which does not narrow, so a LOAD of that page
-/// still faults `ambiguous_anchor` — reported against the declaration that
-/// named the id (§ 3.4 step 3, [`crate::modes`]). Naming is not enumerating,
-/// and that difference is the whole seam.
-#[must_use]
-pub fn anchored_blocks(doc: &Document) -> Vec<Result<AnchoredBlock, BlockError>> {
-    let bindings = task_bindings(doc);
-    let mut seen: Vec<String> = Vec::new();
-    let mut out = Vec::new();
-    for anchor in model::selector::live_anchors(doc) {
-        // `live_anchors` lists every anchor NODE, so a duplicated id appears
-        // twice; reporting it twice would be one authoring fault told as two.
-        if seen.contains(&anchor) {
-            continue;
-        }
-        match block_at(doc, &anchor, &bindings) {
-            // Not a fence at all: prose anchors are not blocks, and a load
-            // that reported them would answer with noise.
-            Err(BlockError::NotACodeBlock { .. } | BlockError::NoBlock { .. }) => {}
-            // `block_at` resolves the anchor BEFORE it asks whether the target
-            // is a fence, so a duplicated PROSE id refuses at resolve and never
-            // reaches the arm above. Ask the fence question the resolve
-            // pre-empted: with no block among the candidates this is the same
-            // noise, and duplicate prose ids are ordinary on real pages — a
-            // load that kept them would refuse on prose fleet-wide.
-            Err(BlockError::AmbiguousAnchor { .. })
-                if !any_candidate_hosts_a_block(doc, &anchor) => {}
-            other => out.push(other),
-        }
-        seen.push(anchor);
-    }
-    out
+/// [`PageBlocks::of`] walks the tree once. The answers are the mint plane's
+/// ([`model::resolve`]): an anchor id resolves to the one anchor node minted
+/// with it, whose span the model widens to the fence it keys, so an anchor
+/// keys a block when a `CodeBlock` node has exactly that span. Two nodes with
+/// one id are ambiguous, and an id no node carries is no block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageBlocks {
+    /// The anchors [`PageBlocks::listed`] lists, in its order.
+    listed: Vec<String>,
+    /// Every live anchor's resolution, as [`PageBlocks::block`] answers it.
+    named: BTreeMap<String, Result<AnchoredBlock, BlockError>>,
 }
 
-/// Whether any of a duplicated anchor's candidates hosts a fenced code block —
-/// what makes the duplication a BLOCK fault rather than a fact about prose.
-///
-/// This re-resolves what [`block_at`] already resolved. That is deliberate: it
-/// costs a walk only on the anchors that already refused as ambiguous, and it
-/// keeps the narrowing inside the enumerator. Folding the test into `block_at`
-/// would re-type the refusal on every path that NAMES an anchor — a fire, and
-/// an `exec(block = ...)` declaration resolved at load — and a caller that
-/// named ITS anchor asked a question "^x is minted twice" answers.
-fn any_candidate_hosts_a_block(doc: &Document, anchor: &str) -> bool {
-    let Ok(r#ref) = Ref::anchor(anchor.to_owned()) else {
-        return false;
-    };
-    match model::resolve(doc, &r#ref) {
-        Err(ResolveError::Ambiguous(candidates)) => candidates
+impl PageBlocks {
+    /// Resolve every live anchor on `doc`, from one walk of its tree.
+    #[must_use]
+    pub fn of(doc: &Document) -> Self {
+        let (anchors, fences) = index(doc);
+        let bindings = task_bindings(doc);
+        let mut listed = Vec::new();
+        let mut named = BTreeMap::new();
+        for (anchor, spans) in anchors {
+            let resolved = resolve(doc, &anchor, &spans, &fences, &bindings);
+            let lists = match &resolved {
+                Ok(_) => true,
+                // Not a fence at all: prose anchors are not blocks, and a load
+                // that reported them would answer with noise.
+                Err(BlockError::NotACodeBlock { .. } | BlockError::NoBlock { .. }) => false,
+                // A duplicated id refuses before anyone asks whether it keys a
+                // fence. With no block among its nodes it is the same noise,
+                // and duplicate prose ids are ordinary on real pages — a load
+                // that kept them would refuse on prose fleet-wide.
+                Err(BlockError::AmbiguousAnchor { .. }) => {
+                    spans.iter().any(|span| fences.contains_key(span))
+                }
+            };
+            if lists {
+                listed.push(anchor.clone());
+            }
+            named.insert(anchor, resolved);
+        }
+        Self { listed, named }
+    }
+
+    /// Every anchored fenced block on the page, in document order — what a
+    /// load enumerates.
+    ///
+    /// An anchor that keys something other than a fence is simply not a block
+    /// and does not appear — a page's prose anchors are not the load's
+    /// business. A DUPLICATE anchor is that same question asked twice: it is an
+    /// authoring fault the author needs told about, and appears once as an
+    /// [`Err`] rather than vanishing, WHEN A BLOCK IS AMONG WHAT IT DUPLICATES —
+    /// there the load cannot say which block it would run. A duplicated id that
+    /// keys only prose is still prose, and leaves with the rest of the prose.
+    ///
+    /// That is a statement about ENUMERATING, and only about enumerating. A
+    /// page that NAMES such an id still meets it: an `exec(block = ...)`
+    /// declaration resolves through [`PageBlocks::block`], which does not
+    /// narrow, so a LOAD of that page still faults `ambiguous_anchor` —
+    /// reported against the declaration that named the id (§ 3.4 step 3,
+    /// [`crate::modes`]). Naming is not enumerating, and that difference is the
+    /// whole seam.
+    #[must_use]
+    pub fn listed(&self) -> Vec<Result<AnchoredBlock, BlockError>> {
+        self.listed
             .iter()
-            .any(|target| host_code_block(doc, &target.span).is_some()),
-        _ => false,
+            .filter_map(|anchor| self.named.get(anchor).cloned())
+            .collect()
+    }
+
+    /// ONE anchor's block — the fire path's addressing, which asks about a
+    /// named block rather than enumerating the page.
+    ///
+    /// # Errors
+    /// [`BlockError`] — dangling, duplicated, or not a fence.
+    pub fn block(&self, anchor: &str) -> Result<AnchoredBlock, BlockError> {
+        self.named.get(anchor).cloned().unwrap_or_else(|| {
+            Err(BlockError::NoBlock {
+                anchor: anchor.to_owned(),
+            })
+        })
     }
 }
 
-/// Resolve ONE anchor to its block — the fire path's addressing, which asks
-/// about a named block rather than enumerating the page.
-///
-/// # Errors
-/// [`BlockError`] — dangling, duplicated, or not a fence.
-pub fn block(doc: &Document, anchor: &str) -> Result<AnchoredBlock, BlockError> {
-    block_at(doc, anchor, &task_bindings(doc))
+/// One walk of the tree: each anchor id with its nodes' spans, ids in the order
+/// [`model::selector::live_anchors`] first lists them, and each `CodeBlock`
+/// node by its span (the first in document order, as a search would find).
+#[allow(clippy::type_complexity)]
+fn index(doc: &Document) -> (Vec<(String, Vec<ByteSpan>)>, HashMap<ByteSpan, &Node>) {
+    fn walk<'a>(
+        node: &'a Node,
+        anchors: &mut Vec<(String, Vec<ByteSpan>)>,
+        at: &mut HashMap<String, usize>,
+        fences: &mut HashMap<ByteSpan, &'a Node>,
+    ) {
+        match &node.kind {
+            NodeKind::Anchor { name } => {
+                if let Some(&slot) = at.get(name) {
+                    anchors[slot].1.push(node.span.clone());
+                } else {
+                    at.insert(name.clone(), anchors.len());
+                    anchors.push((name.clone(), vec![node.span.clone()]));
+                }
+            }
+            NodeKind::CodeBlock { .. } => {
+                fences.entry(node.span.clone()).or_insert(node);
+            }
+            _ => {}
+        }
+        for child in &node.children {
+            walk(child, anchors, at, fences);
+        }
+    }
+    let mut anchors = Vec::new();
+    let mut fences = HashMap::new();
+    walk(&doc.root, &mut anchors, &mut HashMap::new(), &mut fences);
+    (anchors, fences)
 }
 
-/// One anchor → its block, against an already-read binding table.
-fn block_at(
+/// One anchor id → its block, from the page's index.
+fn resolve(
     doc: &Document,
     anchor: &str,
+    spans: &[ByteSpan],
+    fences: &HashMap<ByteSpan, &Node>,
     bindings: &[(String, String)],
 ) -> Result<AnchoredBlock, BlockError> {
-    let r#ref = Ref::anchor(anchor.to_owned()).map_err(|_| BlockError::NoBlock {
+    if Ref::anchor(anchor.to_owned()).is_err() {
+        return Err(BlockError::NoBlock {
+            anchor: anchor.to_owned(),
+        });
+    }
+    let span = match spans {
+        [] => {
+            return Err(BlockError::NoBlock {
+                anchor: anchor.to_owned(),
+            });
+        }
+        [only] => only,
+        many => {
+            return Err(BlockError::AmbiguousAnchor {
+                anchor: anchor.to_owned(),
+                count: many.len(),
+            });
+        }
+    };
+    let fence = fences.get(span).ok_or_else(|| BlockError::NotACodeBlock {
         anchor: anchor.to_owned(),
     })?;
-    let target = model::resolve(doc, &r#ref).map_err(|e| match e {
-        ResolveError::NotFound => BlockError::NoBlock {
-            anchor: anchor.to_owned(),
-        },
-        ResolveError::Ambiguous(candidates) => BlockError::AmbiguousAnchor {
-            anchor: anchor.to_owned(),
-            count: candidates.len(),
-        },
-    })?;
-    let (span, rev) =
-        host_code_block(doc, &target.span).ok_or_else(|| BlockError::NotACodeBlock {
-            anchor: anchor.to_owned(),
-        })?;
     // A classification refusal is DATA here, not an error: the block exists,
     // and "its info string names no language I dispatch on" is what the
     // author has to be told about it.
-    let (lang, source) = match fence::classify(doc, &span) {
+    let (lang, source) = match fence::classify_node(doc, fence) {
         Ok(block) => (Ok(block.lang), block.source),
         Err(e) => (Err(e), inner_source(&doc.raw[span.clone()])),
     };
     Ok(AnchoredBlock {
         anchor: anchor.to_owned(),
-        rev: rev.0,
+        rev: fence.node_rev.0.clone(),
         lang,
         source,
         task: bindings
@@ -221,20 +280,6 @@ fn task_bindings(doc: &Document) -> Vec<(String, String)> {
                 .map(|binding| (declared.name, binding.anchor))
         })
         .collect()
-}
-
-/// The fenced code block an anchor keys — the same recognition
-/// [`crate::address`] performs, over the same model widening: an own-line
-/// anchor below a fence resolves TO the fence, so a block-keying anchor's
-/// host span IS the `CodeBlock`'s span.
-fn host_code_block(doc: &Document, anchor_span: &ByteSpan) -> Option<(ByteSpan, NodeRev)> {
-    fn find(node: &Node, span: &ByteSpan) -> Option<(ByteSpan, NodeRev)> {
-        if matches!(node.kind, NodeKind::CodeBlock { .. }) && node.span == *span {
-            return Some((node.span.clone(), node.node_rev.clone()));
-        }
-        node.children.iter().find_map(|c| find(c, span))
-    }
-    find(&doc.root, anchor_span)
 }
 
 /// The bytes between the fence lines. Needed for the one case
@@ -287,7 +332,8 @@ echo hi
 ```
 ^second
 ";
-        let blocks: Vec<AnchoredBlock> = anchored_blocks(&doc(page))
+        let blocks: Vec<AnchoredBlock> = PageBlocks::of(&doc(page))
+            .listed()
             .into_iter()
             .map(|b| b.expect("no refusals in this page"))
             .collect();
@@ -325,7 +371,8 @@ declare(on = \"Stop\")
 ```
 ^hook
 ";
-        let blocks: Vec<AnchoredBlock> = anchored_blocks(&doc(page))
+        let blocks: Vec<AnchoredBlock> = PageBlocks::of(&doc(page))
+            .listed()
             .into_iter()
             .map(|b| b.expect("no refusals"))
             .collect();
@@ -352,7 +399,7 @@ y = 2
 ```
 ^dup
 ";
-        let refusals = anchored_blocks(&doc(page));
+        let refusals = PageBlocks::of(&doc(page)).listed();
         assert_eq!(refusals.len(), 1, "one authoring fault, told once");
         let error = refusals[0].clone().expect_err("a duplicate addresses none");
         assert_eq!(
@@ -377,7 +424,7 @@ More prose.
 ^dup
 ";
         assert_eq!(
-            anchored_blocks(&doc(page)),
+            PageBlocks::of(&doc(page)).listed(),
             Vec::new(),
             "no candidate under ^dup hosts a code block, so the duplication \
              is not a block fault and a load must not price it"
@@ -397,7 +444,7 @@ x = 1
 ```
 ^mixed
 ";
-        let refusals = anchored_blocks(&doc(page));
+        let refusals = PageBlocks::of(&doc(page)).listed();
         assert_eq!(refusals.len(), 1, "one authoring fault, told once");
         let error = refusals[0]
             .clone()
@@ -427,7 +474,9 @@ More prose.
         // particular. A fire DID ask, so it keeps the more diagnostic refusal:
         // narrowing the enumerator must not narrow the addressing.
         assert_eq!(
-            block(&doc(page), "dup").expect_err("a duplicate addresses none"),
+            PageBlocks::of(&doc(page))
+                .block("dup")
+                .expect_err("a duplicate addresses none"),
             BlockError::AmbiguousAnchor {
                 anchor: "dup".to_owned(),
                 count: 2
@@ -445,7 +494,7 @@ print(1)
 ```
 ^py
 ";
-        let blocks = anchored_blocks(&doc(page));
+        let blocks = PageBlocks::of(&doc(page)).listed();
         let block = blocks[0].clone().expect("the block exists");
         assert_eq!(
             block.lang,
@@ -465,19 +514,30 @@ print(1)
         let page = "\
 # Page
 
+Some prose.
+^note
+
 ```starlark
 x = 1
 ```
 ^here
 ";
-        let d = doc(page);
-        assert_eq!(block(&d, "here").expect("resolves").anchor, "here");
+        let d = PageBlocks::of(&doc(page));
+        assert_eq!(d.block("here").expect("resolves").anchor, "here");
         assert_eq!(
-            block(&d, "gone").expect_err("dangling"),
+            d.block("gone").expect_err("dangling"),
             BlockError::NoBlock {
                 anchor: "gone".to_owned()
             }
         );
-        assert_eq!(block(&d, "gone").expect_err("dangling").class(), "no_block");
+        assert_eq!(d.block("gone").expect_err("dangling").class(), "no_block");
+        // A prose anchor resolves, to something that is not a fence: the
+        // fire path says so, not that no such anchor exists.
+        assert_eq!(
+            d.block("note").expect_err("prose"),
+            BlockError::NotACodeBlock {
+                anchor: "note".to_owned()
+            }
+        );
     }
 }

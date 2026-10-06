@@ -121,7 +121,19 @@ impl std::error::Error for FenceError {}
 /// [`FenceError::UnknownLanguage`] / [`FenceError::Unterminated`] /
 /// [`FenceError::NotAFence`].
 pub fn classify(doc: &Document, span: &ByteSpan) -> Result<TaskBlock, FenceError> {
-    let node = find_code_block(doc, span).ok_or(FenceError::NotAFence)?;
+    classify_node(
+        doc,
+        find_code_block(doc, span).ok_or(FenceError::NotAFence)?,
+    )
+}
+
+/// [`classify`] for a `CodeBlock` node the caller already holds, so a caller
+/// that walked the tree once does not walk it again per fence.
+///
+/// # Errors
+/// As [`classify`].
+pub fn classify_node(doc: &Document, node: &model::Node) -> Result<TaskBlock, FenceError> {
+    let span = &node.span;
     let NodeKind::CodeBlock { lang, unterminated } = &node.kind else {
         return Err(FenceError::NotAFence);
     };

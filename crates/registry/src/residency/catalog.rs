@@ -6,7 +6,7 @@
 
 use super::{
     Access,
-    controller::{AdmissionError, Controller, Error, Member, Pin},
+    controller::{AdmissionError, Controller, Error, Member, MemberId, Pin},
 };
 use crate::raw_store::RawStore;
 use model::{
@@ -16,9 +16,60 @@ use model::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
+
+/// The members a thread holds leases on, one entry per live lease.
+type Held = Arc<Mutex<Vec<MemberId>>>;
+
+thread_local! {
+    /// Leases this thread took from a [`Catalog`] and has not released.
+    static HELD: Held = Arc::default();
+}
+
+fn held(held: &Held) -> std::sync::MutexGuard<'_, Vec<MemberId>> {
+    held.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// One leased body, counted against the thread that took it until it ends,
+/// wherever it is dropped.
+#[derive(Debug)]
+struct Lease {
+    pin: Pin,
+    held: Held,
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let id = self.pin.member_id();
+        let mut holding = held(&self.held);
+        if let Some(at) = holding.iter().position(|entry| *entry == id) {
+            holding.swap_remove(at);
+        }
+    }
+}
+
+impl DocumentLease for Lease {
+    fn document(&self) -> io::Result<&model::Document> {
+        DocumentLease::document(&self.pin)
+    }
+}
+
+/// Occupied allowance the caller's own leases alone keep the member out of
+/// (merkle-spec §6.4): the same request cannot be admitted by retrying.
+#[derive(Debug)]
+struct SelfBlocked;
+
+impl std::fmt::Display for SelfBlocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "residency allowance is occupied while this request holds another lease on it; \
+             a retry cannot admit both bodies",
+        )
+    }
+}
+impl std::error::Error for SelfBlocked {}
 
 /// Pauses between attempts on one member version whose retirement or failed
 /// loading wave is completing (merkle-spec §6.4): both end without this
@@ -35,11 +86,13 @@ const RETRY_PAUSES: [Duration; 6] = [
 /// Lease one member version through the controller's admission. `Retiring`
 /// and `Settling` retry the same version once per pause in `pauses`;
 /// `Busy` is returned at once, because the allowance may be occupied by a pin
-/// this very caller holds. All three leave as [`model::catalog::transient`];
-/// a load, identity or peak failure is the member's own fault and is neither
-/// retried nor transient.
+/// this very caller holds. All three leave as [`model::catalog::transient`],
+/// except a `Busy` that `self_blocked` says the caller's own leases alone
+/// cause, which no retry cures ([`SelfBlocked`]); a load, identity or peak
+/// failure is the member's own fault. Neither is retried nor transient.
 fn admit<T>(
     mut attempt: impl FnMut() -> Result<T, Error>,
+    self_blocked: impl Fn() -> bool,
     pauses: &[Duration],
     mut pause: impl FnMut(Duration),
 ) -> io::Result<T> {
@@ -47,6 +100,9 @@ fn admit<T>(
     loop {
         let refusal = match attempt() {
             Ok(leased) => return Ok(leased),
+            Err(Error::Admission(AdmissionError::Busy)) if self_blocked() => {
+                return Err(io::Error::other(SelfBlocked));
+            }
             Err(Error::Admission(AdmissionError::Busy)) => AdmissionError::Busy,
             Err(Error::Admission(
                 refusal @ (AdmissionError::Retiring | AdmissionError::Settling),
@@ -227,12 +283,16 @@ impl Catalog {
         self.entries
             .get(path)
             .map(|entry| {
-                admit(
+                let thread = HELD.with(Arc::clone);
+                let holding = held(&thread).clone();
+                let pin = admit(
                     || entry.member.pin(access, self.load_peak),
+                    || !holding.is_empty() && entry.member.held_blocks(&holding, self.load_peak),
                     &RETRY_PAUSES,
                     pause,
-                )
-                .map(|pin| Box::new(pin) as Box<dyn DocumentLease>)
+                )?;
+                held(&thread).push(pin.member_id());
+                Ok(Box::new(Lease { pin, held: thread }) as Box<dyn DocumentLease>)
             })
             .transpose()
     }
