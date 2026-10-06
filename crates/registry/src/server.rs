@@ -203,6 +203,11 @@ pub struct Config {
     /// `0` disables the budget (unbounded warm set). See
     /// [`crate::DEFAULT_MAX_RESIDENT_BYTES`] for the calibration.
     pub max_resident_bytes: u64,
+    /// The residency host every engine generation is built through
+    /// (merkle-spec §6.8): bodies leased under its controller and shed to
+    /// its limit. `None` builds generations that own their documents, which
+    /// is what [`Config::resolve`] gives.
+    pub residency: Option<Arc<crate::residency::Host>>,
 }
 
 impl Config {
@@ -231,6 +236,7 @@ impl Config {
             activity_park: None,
             drain_cold_builds: crate::DEFAULT_DRAIN_COLD_BUILDS,
             max_resident_bytes: crate::DEFAULT_MAX_RESIDENT_BYTES,
+            residency: None,
         }
     }
 
@@ -627,6 +633,7 @@ impl RunningServer {
             config.cache_root.clone(),
             entries,
             config.activity_park,
+            config.residency.clone(),
         );
 
         // The middleware door's ctx.sql backend (armed-plane Part A2) —
@@ -1190,7 +1197,8 @@ pub fn in_process_registry(config: &Config) -> io::Result<Registry> {
     prepare_dir(config.registry_dir())?;
     let store = StateStore::new(config.state_path.clone());
     let entries = store.load();
-    Ok(Registry::new(store, config.cache_root.clone(), entries))
+    Ok(Registry::new(store, config.cache_root.clone(), entries)
+        .with_residency(config.residency.clone()))
 }
 
 /// How often a subscriber checks for undelivered frames.
@@ -1735,7 +1743,7 @@ fn dispatch_read(
             wire_serve::read::links(
                 &fs::WorkspaceRoot(ws.to_path_buf()),
                 &engine.index,
-                &model::catalog::EagerCatalog::new(&engine.docs),
+                engine,
                 &engine.unserved,
                 path.as_ref(),
                 as_of,
@@ -2149,12 +2157,8 @@ fn composed_read_warm(
     warm_engine_read(registry, ws, |engine| {
         with_engine_document(engine, ws, path, |doc| {
             // S10: claim-link colors from the same generation (D6).
-            let decorations = wire_serve::read::page_decorations_in(
-                &engine.index,
-                &model::catalog::EagerCatalog::new(&engine.docs),
-                path,
-                doc,
-            )?;
+            let decorations =
+                wire_serve::read::page_decorations_in(&engine.index, engine, path, doc)?;
             wire_serve::read::composed_read(doc, path, &engine_root(engine), params, &decorations)
         })
     })
@@ -2321,7 +2325,7 @@ fn with_engine_document<R>(
 ) -> Result<R, Box<ErrorBody>> {
     wire_serve::read::with_document(
         &fs::WorkspaceRoot(ws.to_path_buf()),
-        &model::catalog::EagerCatalog::new(&engine.docs),
+        engine,
         &engine.unserved,
         path,
         read,
@@ -2588,13 +2592,19 @@ mod recovery_class_truth_tests {
             // A red implementation must release its read guard and join the
             // writer before asserting, so it cannot strand a fixture thread.
             let published = done.recv_timeout(Duration::from_secs(10)).unwrap_or(false);
-            Ok((engine.docs["a.md"].raw.as_str().to_owned(), published))
+            Ok((
+                engine.eager_docs().unwrap()["a.md"].raw.as_str().to_owned(),
+                published,
+            ))
         })
         .unwrap();
         join_handle.unwrap().join().unwrap().unwrap();
         assert_eq!(body, "# Selected old generation\n");
         assert_eq!(
-            reg.engine_snapshot(&canonical).unwrap().docs["a.md"]
+            reg.engine_snapshot(&canonical)
+                .unwrap()
+                .eager_docs()
+                .unwrap()["a.md"]
                 .raw
                 .as_str(),
             "# A newer and longer generation\n"
@@ -2630,7 +2640,9 @@ mod recovery_class_truth_tests {
             let reg = Arc::clone(&reg);
             let canonical = canonical.clone();
             std::thread::spawn(move || {
-                warm_engine_read(&reg, &canonical, |engine| Ok(engine.docs.len()))
+                warm_engine_read(&reg, &canonical, |engine| {
+                    Ok(engine.eager_docs().unwrap().len())
+                })
             })
         };
         arrived.recv().expect("thread A parked after its warm");
@@ -3171,6 +3183,7 @@ mod cold_read_door_tests {
             cache_root,
             Vec::new(),
             None,
+            None,
         )
     }
 
@@ -3225,8 +3238,10 @@ mod cold_read_door_tests {
         let (release, release_rx) = std::sync::mpsc::channel();
         *reg.pause_before_insert.lock().unwrap() = Some((arrived_tx, release_rx));
 
-        let err = warm_engine_read(&reg, &canonical, |engine| Ok(engine.docs.len()))
-            .expect_err("a cold workspace's long rebuild refuses instead of blocking");
+        let err = warm_engine_read(&reg, &canonical, |engine| {
+            Ok(engine.eager_docs().unwrap().len())
+        })
+        .expect_err("a cold workspace's long rebuild refuses instead of blocking");
         arrived.recv().expect("the kicked builder is mid-rebuild");
         assert_eq!(
             err.code,
@@ -3241,8 +3256,10 @@ mod cold_read_door_tests {
 
         release.send(()).expect("release the parked builder");
         wait_serve(&reg, &canonical);
-        let docs = warm_engine_read(&reg, &canonical, |engine| Ok(engine.docs.len()))
-            .expect("the drawer landed — the same read now serves");
+        let docs = warm_engine_read(&reg, &canonical, |engine| {
+            Ok(engine.eager_docs().unwrap().len())
+        })
+        .expect("the drawer landed — the same read now serves");
         assert_eq!(docs, 2, "the background build parsed the real corpus");
     }
 
@@ -3260,8 +3277,10 @@ mod cold_read_door_tests {
         write(ws.join("meridian/domain.md"), "# Domain\n").unwrap();
         let canonical = workspace::canonicalize(&ws).unwrap();
 
-        let err = warm_engine_read(&reg, &canonical, |engine| Ok(engine.docs.len()))
-            .expect_err("the kicking read absorbs the fast failure");
+        let err = warm_engine_read(&reg, &canonical, |engine| {
+            Ok(engine.eager_docs().unwrap().len())
+        })
+        .expect_err("the kicking read absorbs the fast failure");
         assert_eq!(err.code, wire::ErrorCode::IoError);
         assert!(
             err.cause.as_deref().is_some_and(|cause| !cause.is_empty()),

@@ -3183,7 +3183,7 @@ impl SlotMap for model::Docs {
 /// and `unserved` — every builder inserts a member's leaf together with its
 /// document or condition. A prior whose counts disagree pays one scan for
 /// its holes, which the pass re-reads as movers.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct CorpusPrior<'a, S = model::Docs> {
     /// The prior documents, keyed by workspace-relative path.
     pub docs: &'a S,
@@ -3195,6 +3195,15 @@ pub struct CorpusPrior<'a, S = model::Docs> {
     /// prior) builds the index from the final docs.
     pub index: Option<&'a Arc<model::CorpusIndex>>,
 }
+
+// A prior is four shared references, whatever its slot map: copying it
+// copies none of them.
+impl<S> Clone for CorpusPrior<'_, S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<S> Copy for CorpusPrior<'_, S> {}
 
 /// Members of `prior.leaves` its parts do not describe: a UTF-8-named leaf
 /// with neither a document nor a condition. Reached only when the counts

@@ -14,6 +14,20 @@ pub mod catalog;
 pub mod controller;
 pub mod retention;
 
+/// What a registry builds its engine generations through when their bodies
+/// are sheddable (merkle-spec §6.8): one controller and one raw store for
+/// every root it serves.
+#[derive(Debug)]
+pub struct Host {
+    /// The shared admission ledger and member LRU.
+    pub controller: controller::Controller,
+    /// The required backing every published member is retained in.
+    pub store: crate::raw_store::RawStore,
+    /// The conservative peak one member load is admitted under: source
+    /// scratch, parsing and flight storage included.
+    pub load_peak: usize,
+}
+
 /// An immutable version descriptor shared across generations and operations.
 #[derive(Debug, Clone)]
 pub struct Resident(Arc<Inner>);

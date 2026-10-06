@@ -1050,6 +1050,24 @@ pins an old version. A cold build is this pass over the empty generation
 with every leaf a mover: it holds one member's bytes and tree at a time,
 never the whole corpus.
 
+**The engine's bodies.** A served engine generation holds its bodies in one
+of two forms, fixed for the life of its registry. Without a residency host
+the generation owns an eager document map and its leases borrow, so they
+cannot fault. With a host (`registry::residency::Host`: the shared
+controller, the raw store and the per-load peak, carried by
+`registry::Config::residency`) the generation is a
+`residency::catalog::Catalog` over slots: `Registry::warm_or_build` runs the
+pass above over the resident generation's slots, or over the empty
+generation when none is resident, and publishes its product. Every serving
+door (read, links, decorations, walk, sql, run, script) reads the engine
+through `DocumentCatalog` and `LockFacts`, so both forms answer the same
+bytes, and under a host a known member whose backing cannot be read is that
+door's member fault, never a read of the workspace file. A host-built
+generation takes no part in the §6.9 parsed snapshot, neither restored into
+nor saved from, and the raw-byte estimate of `Registry::reap_to_budget`
+charges it nothing: its bodies are the controller's, which sheds them to its
+own limit as their pins release. `mrd daemon` configures no host.
+
 **Cold access and consumers.** `Document` remains immutable and pure;
 `model` owns membership/access contracts, not I/O or a registry. Replace the
 assumption that `Docs` is a map of permanently resident `Arc<Document>` with
@@ -1086,10 +1104,10 @@ statement needs is `DocumentCatalog::link_roots`, the union of the members'
 link-addressed mount names, so choosing them pins nothing. A mounted root is
 bound into `model::catalog::RootedCatalog` as its resident engine's catalog
 (`wire_serve::mount_corpus::ServedCorpus::catalog`): rooted name resolution
-reads that root's membership and name index and never a document of it. The
-engine generation serves these through its eager documents until daemon
-generation publication migrates; the run and script worlds still read
-document maps.
+reads that root's membership and name index and never a document of it. A
+mounted root's eager document map (`ServedCorpus::docs`) exists only where
+its generation owns one; the eager lanes' `MountCorpora::rooted` is its only
+reader.
 
 The pin plane's wire door (`walk`) reads the same generation catalog through
 `view::walk::walk_leased`. Which mounted roots a walk needs and which members

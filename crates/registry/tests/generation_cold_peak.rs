@@ -109,9 +109,14 @@ fn a_cold_build_holds_one_member_at_a_time() {
 
     assert_eq!(built.parsed, MEMBERS);
     assert_eq!(built.root, fingerprint);
+    // One member's build, plus what a generation keeps per member (a slot
+    // and its index rows): far less than the members' own bytes. A build
+    // that kept each member's text or tree until the pass ended would add at
+    // least their sum.
+    let raw: usize = (0..MEMBERS).map(|n| member(n).len()).sum();
     assert!(
-        peak < 4 * single,
-        "a cold build of {MEMBERS} members peaked at {peak} bytes; one member's eager build \
-         costs {single}, so the build held more than a few members at once"
+        peak < single + raw / 2,
+        "a cold build of {MEMBERS} members ({raw} bytes of text) peaked at {peak} bytes; one \
+         member's eager build costs {single}, so the build kept members it had finished"
     );
 }

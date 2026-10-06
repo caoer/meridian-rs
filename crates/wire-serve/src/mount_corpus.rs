@@ -32,8 +32,10 @@ pub trait ServedCorpus: Send + Sync {
     /// name index, with bodies behind leases. Name resolution into this root
     /// reads only this.
     fn catalog(&self) -> &dyn model::catalog::DocumentCatalog;
-    /// The parsed documents, keyed by root-relative path.
-    fn docs(&self) -> &model::Docs;
+    /// The parsed documents, keyed by root-relative path, where this
+    /// projection owns them; `None` for a generation whose bodies are leased
+    /// (merkle-spec §6.8), which is read through [`Self::catalog`].
+    fn docs(&self) -> Option<&model::Docs>;
     /// Hash-domain members under this root that serve no spans/nodes.
     fn unserved(&self) -> &BTreeMap<String, String>;
 }
@@ -55,8 +57,8 @@ impl ServedCorpus for BuiltCorpus {
         &self.catalog
     }
 
-    fn docs(&self) -> &model::Docs {
-        self.catalog.docs()
+    fn docs(&self) -> Option<&model::Docs> {
+        Some(self.catalog.docs())
     }
 
     fn unserved(&self) -> &BTreeMap<String, String> {
@@ -81,9 +83,10 @@ impl MountedCorpus {
         self.corpus.catalog()
     }
 
-    /// The root's parsed documents.
+    /// The root's parsed documents, where its projection owns them
+    /// ([`ServedCorpus::docs`]).
     #[must_use]
-    pub fn docs(&self) -> &model::Docs {
+    pub fn docs(&self) -> Option<&model::Docs> {
         self.corpus.docs()
     }
 
@@ -114,6 +117,12 @@ impl MountCorpora {
     /// REQUIRED for the same reason one level down (decision 0049): a colour
     /// door that knows a target is out of domain but cannot READ that target
     /// greys an absence, and the corpus map cannot tell the two apart.
+    ///
+    /// # Panics
+    /// A mounted root's projection owns no document map. This is the eager
+    /// lanes' assembly, whose roots are built in-process ([`load_mounts_for`]);
+    /// a door holding leased generations reads
+    /// [`rooted_catalog`](Self::rooted_catalog).
     #[must_use]
     pub fn rooted<'a>(
         &'a self,
@@ -125,7 +134,10 @@ impl MountCorpora {
             .with_hash_domain(domain)
             .with_ambient_disk(root);
         for mount in &self.corpora {
-            corpus = corpus.with_root(mount.name.clone(), mount.docs());
+            let docs = mount
+                .docs()
+                .expect("an eager lane's mounted root owns its documents");
+            corpus = corpus.with_root(mount.name.clone(), docs);
         }
         corpus
     }

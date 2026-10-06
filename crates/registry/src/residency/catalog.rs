@@ -214,6 +214,13 @@ impl Catalog {
             load_peak,
         }
     }
+
+    /// The generation's slots: the prior of the next incremental pass
+    /// ([`update`]).
+    #[must_use]
+    pub fn slots(&self) -> &Slots {
+        &self.entries
+    }
 }
 impl Catalog {
     fn lease(&self, path: &str, access: Access) -> io::Result<Option<Box<dyn DocumentLease + '_>>> {

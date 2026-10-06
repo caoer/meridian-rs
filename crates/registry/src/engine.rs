@@ -14,6 +14,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use model::catalog::{DocumentCatalog, DocumentLease};
+use view::walk::LockFacts;
+
+use crate::residency::catalog::{Catalog, Slots};
+
+/// A generation's bodies (merkle-spec §6.8): an eager document map, or the
+/// slots of a generation built under a residency host.
+#[derive(Debug)]
+enum Bodies {
+    Eager(model::Docs),
+    Resident(Catalog),
+}
 
 /// The warm per-workspace engine state: the parsed corpus that `query` reads
 /// (U2), plus the corpus content hash it was built at (the reuse key).
@@ -27,8 +38,9 @@ pub struct WorkspaceEngine {
     /// with the prior engine while no rebuild mover changed its rows
     /// (merkle-spec §6.8).
     pub index: Arc<model::CorpusIndex>,
-    /// The parsed documents, keyed by workspace-relative path.
-    pub docs: model::Docs,
+    /// The documents, keyed by workspace-relative path. Readers go through
+    /// this engine's [`DocumentCatalog`] and [`view::walk::LockFacts`].
+    bodies: Bodies,
     /// Members in the hash domain that serve no spans/nodes (per-file UTF-8
     /// degradation, node-rev-merkle-spec §3): workspace-relative path → the
     /// condition. Their bytes are under `at_fingerprint` — integrity coverage
@@ -45,16 +57,89 @@ pub struct WorkspaceEngine {
 }
 
 impl WorkspaceEngine {
+    /// A generation that owns its parsed documents.
+    #[must_use]
+    pub fn eager(
+        index: Arc<model::CorpusIndex>,
+        docs: model::Docs,
+        unserved: BTreeMap<String, String>,
+        at_fingerprint: model::MerkleRoot,
+        leaves: BTreeMap<PathBuf, [u8; 32]>,
+    ) -> Self {
+        Self {
+            index,
+            bodies: Bodies::Eager(docs),
+            unserved,
+            at_fingerprint,
+            leaves,
+        }
+    }
+
+    /// The generation a residency pass built
+    /// ([`crate::residency::catalog::update`]), its bodies leased under the
+    /// host's per-load peak.
+    #[must_use]
+    pub fn resident(update: fs::CorpusUpdate<Slots>, load_peak: usize) -> Self {
+        Self {
+            bodies: Bodies::Resident(Catalog::new(
+                update.docs,
+                Arc::clone(&update.index),
+                load_peak,
+            )),
+            index: update.index,
+            unserved: update.unserved,
+            at_fingerprint: update.root,
+            leaves: update.leaves,
+        }
+    }
+
+    /// The parsed documents of a generation that owns them; `None` for one
+    /// built under a residency host, whose bodies are leased.
+    #[must_use]
+    pub fn eager_docs(&self) -> Option<&model::Docs> {
+        match &self.bodies {
+            Bodies::Eager(docs) => Some(docs),
+            Bodies::Resident(_) => None,
+        }
+    }
+
+    /// Take the parsed documents out of a generation that owns them, leaving
+    /// it with none: an ownership census frees each part of a generation it
+    /// solely owns separately. `None` for a generation built under a
+    /// residency host.
+    pub fn take_eager_docs(&mut self) -> Option<model::Docs> {
+        match &mut self.bodies {
+            Bodies::Eager(docs) => Some(std::mem::take(docs)),
+            Bodies::Resident(_) => None,
+        }
+    }
+
     /// This engine as the prior of the next incremental pass
     /// ([`fs::update_corpus`]) — its name index included, so the pass can
-    /// share it.
+    /// share it. `None` for a generation built under a residency host.
     #[must_use]
-    pub fn as_prior(&self) -> fs::CorpusPrior<'_> {
-        fs::CorpusPrior {
-            docs: &self.docs,
+    pub fn as_prior(&self) -> Option<fs::CorpusPrior<'_>> {
+        Some(fs::CorpusPrior {
+            docs: self.eager_docs()?,
             unserved: &self.unserved,
             leaves: &self.leaves,
             index: Some(&self.index),
+        })
+    }
+
+    /// This engine as the prior of the next residency pass
+    /// ([`crate::residency::catalog::update`]). `None` for a generation that
+    /// owns its documents.
+    #[must_use]
+    pub fn resident_prior(&self) -> Option<fs::CorpusPrior<'_, Slots>> {
+        match &self.bodies {
+            Bodies::Eager(_) => None,
+            Bodies::Resident(catalog) => Some(fs::CorpusPrior {
+                docs: catalog.slots(),
+                unserved: &self.unserved,
+                leaves: &self.leaves,
+                index: Some(&self.index),
+            }),
         }
     }
 }
@@ -71,51 +156,72 @@ pub(crate) fn restored_prior(restored: &parse_cache::snapshot::Restored) -> fs::
     }
 }
 
-/// The engine is its generation's catalog (merkle-spec §6.8): membership and
-/// revisions off its documents, the name index it already holds, and a lease
-/// per body. Its documents are resident, so a lease borrows one and cannot
-/// fault.
+/// The engine is its generation's catalog (merkle-spec §6.8): membership,
+/// revisions, the name index it already holds, and a lease per body. A
+/// generation that owns its documents lends one and cannot fault; one built
+/// under a residency host leases through its controller.
 impl DocumentCatalog for WorkspaceEngine {
     fn revisions(&self) -> Box<dyn Iterator<Item = (&str, &model::NodeRev)> + '_> {
-        Box::new(
-            self.docs
-                .iter()
-                .map(|(path, doc)| (path.as_str(), &doc.root.node_rev)),
-        )
+        match &self.bodies {
+            Bodies::Eager(docs) => Box::new(
+                docs.iter()
+                    .map(|(path, doc)| (path.as_str(), &doc.root.node_rev)),
+            ),
+            Bodies::Resident(catalog) => catalog.revisions(),
+        }
     }
     fn revision(&self, path: &str) -> Option<&model::NodeRev> {
-        self.docs.get(path).map(|doc| &doc.root.node_rev)
+        match &self.bodies {
+            Bodies::Eager(docs) => docs.get(path).map(|doc| &doc.root.node_rev),
+            Bodies::Resident(catalog) => catalog.revision(path),
+        }
     }
     fn index(&self) -> &model::CorpusIndex {
         &self.index
     }
     fn link_roots(&self) -> BTreeSet<addr::MountName> {
-        self.docs
-            .values()
-            .flat_map(|doc| model::catalog::link_roots(doc))
-            .collect()
+        match &self.bodies {
+            Bodies::Eager(docs) => docs
+                .values()
+                .flat_map(|doc| model::catalog::link_roots(doc))
+                .collect(),
+            Bodies::Resident(catalog) => catalog.link_roots(),
+        }
     }
     fn pin(&self, path: &str) -> io::Result<Option<Box<dyn DocumentLease + '_>>> {
-        Ok(self
-            .docs
-            .get(path)
-            .map(|doc| model::catalog::resident_lease(doc)))
+        match &self.bodies {
+            Bodies::Eager(docs) => Ok(docs
+                .get(path)
+                .map(|doc| model::catalog::resident_lease(doc))),
+            Bodies::Resident(catalog) => catalog.pin(path),
+        }
+    }
+    fn pin_read(&self, path: &str) -> io::Result<Option<Box<dyn DocumentLease + '_>>> {
+        match &self.bodies {
+            Bodies::Eager(_) => self.pin(path),
+            Bodies::Resident(catalog) => catalog.pin_read(path),
+        }
     }
 }
 
-/// The engine's lock facts (merkle-spec §6.4), read off its resident
-/// documents.
-impl view::walk::LockFacts for WorkspaceEngine {
+/// The engine's lock facts (merkle-spec §6.4): read off the documents of a
+/// generation that owns them, off the slot descriptors otherwise.
+impl LockFacts for WorkspaceEngine {
     fn lock_roots(&self) -> BTreeSet<addr::MountName> {
-        view::walk::lock_addressed_roots(&self.docs)
+        match &self.bodies {
+            Bodies::Eager(docs) => view::walk::lock_addressed_roots(docs),
+            Bodies::Resident(catalog) => catalog.lock_roots(),
+        }
     }
     fn lock_holders(&self) -> Box<dyn Iterator<Item = &str> + '_> {
-        Box::new(
-            self.docs
-                .iter()
-                .filter(|(_, doc)| view::walk::lock_fact(doc).is_some())
-                .map(|(path, _)| path.as_str()),
-        )
+        match &self.bodies {
+            Bodies::Eager(docs) => Box::new(
+                docs.iter()
+                    .filter(|(_, doc)| view::walk::lock_fact(doc).is_some())
+                    .map(|(path, _)| path.as_str()),
+            ),
+            Bodies::Resident(catalog) => catalog.lock_holders(),
+        }
     }
 }
 
@@ -128,8 +234,8 @@ impl wire_serve::mount_corpus::ServedCorpus for WorkspaceEngine {
         self
     }
 
-    fn docs(&self) -> &model::Docs {
-        &self.docs
+    fn docs(&self) -> Option<&model::Docs> {
+        self.eager_docs()
     }
 
     fn unserved(&self) -> &BTreeMap<String, String> {

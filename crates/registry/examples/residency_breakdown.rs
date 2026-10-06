@@ -169,10 +169,13 @@ fn main() {
         sample(&format!("edit_{i}"), started);
     }
     let engine = reg.engine_snapshot(&root).expect("engine retained");
+    let docs = engine
+        .eager_docs()
+        .expect("a generation that owns its documents");
     println!(
         "members={} raw_len_bytes={} unserved={} leaves={} seq={} live_sub={} fingerprint={}",
-        engine.docs.len(),
-        engine.docs.values().map(|d| d.raw.len()).sum::<usize>(),
+        docs.len(),
+        docs.values().map(|d| d.raw.len()).sum::<usize>(),
         engine.unserved.len(),
         engine.leaves.len(),
         ring.seq(),
@@ -186,14 +189,17 @@ fn main() {
     drop(reg);
     await_worker_shutdown();
     let registry_feed_bytes = before_registry_drop - live();
-    let engine = Arc::try_unwrap(engine).unwrap_or_else(|_| panic!("sole engine owner"));
+    let mut engine = Arc::try_unwrap(engine).unwrap_or_else(|_| panic!("sole engine owner"));
+    let docs = engine
+        .take_eager_docs()
+        .expect("a generation that owns its documents");
     let index_bytes = freed(engine.index);
     let leaves_bytes = freed(engine.leaves);
     let unserved_bytes = freed(engine.unserved);
     let docs_before = live();
     let mut raw_bytes = 0;
     let mut tree_bytes = 0;
-    for (_, doc) in engine.docs {
+    for (_, doc) in docs {
         let model::Document { raw, root } =
             Arc::try_unwrap(doc).unwrap_or_else(|_| panic!("sole document owner"));
         raw_bytes += freed(raw);

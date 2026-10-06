@@ -39,7 +39,12 @@ fn server_shutdown_flushes_the_latest_world_and_restart_parses_zero() {
             WarmOutcome::Built { docs: 0 }
         );
         assert_eq!(
-            server.registry().engine_snapshot(&ws).unwrap().docs["a.md"]
+            server
+                .registry()
+                .engine_snapshot(&ws)
+                .unwrap()
+                .eager_docs()
+                .unwrap()["a.md"]
                 .raw
                 .as_str(),
             "# Latest\n"
@@ -100,7 +105,7 @@ fn restored_builder_cannot_regress_a_newer_concurrent_publication() {
     let final_engine = restarted.engine_snapshot(&ws).unwrap();
     assert_eq!(final_engine.at_fingerprint, newer);
     assert_eq!(
-        final_engine.docs["a.md"].raw.as_str(),
+        final_engine.eager_docs().unwrap()["a.md"].raw.as_str(),
         "# Newer publication\n"
     );
 }
@@ -144,8 +149,8 @@ fn unchanged_restart_parses_zero_and_retains_invalid_utf8() {
     assert_eq!(restored.at_fingerprint, original.at_fingerprint);
     assert_eq!(restored.unserved, original.unserved);
     assert_eq!(restored.leaves, original.leaves);
-    for (path, doc) in &original.docs {
-        assert_eq!(restored.docs[path].root, doc.root);
+    for (path, doc) in original.eager_docs().unwrap() {
+        assert_eq!(restored.eager_docs().unwrap()[path].root, doc.root);
     }
 }
 
@@ -164,8 +169,11 @@ fn older_snapshot_reconciles_one_mover_and_a_rename() {
         WarmOutcome::Built { docs: 1 }
     );
     let engine = restarted.engine_snapshot(&ws).unwrap();
-    assert!(!engine.docs.contains_key("b.md"));
-    assert_eq!(engine.docs["renamed.md"].raw.as_str(), "# B\n");
+    assert!(!engine.eager_docs().unwrap().contains_key("b.md"));
+    assert_eq!(
+        engine.eager_docs().unwrap()["renamed.md"].raw.as_str(),
+        "# B\n"
+    );
     assert_eq!(
         engine.at_fingerprint,
         fs::domain_snapshot(&fs::WorkspaceRoot(ws)).unwrap().1
@@ -188,7 +196,7 @@ fn deletion_addition_and_invalid_utf8_repair_match_fresh_truth() {
         WarmOutcome::Built { docs: 2 }
     );
     let engine = restarted.engine_snapshot(&ws).unwrap();
-    assert!(!engine.docs.contains_key("a.md"));
+    assert!(!engine.eager_docs().unwrap().contains_key("a.md"));
     assert!(engine.unserved.is_empty());
     assert_eq!(
         engine.at_fingerprint,
@@ -445,7 +453,12 @@ fn durable_corpus_restore_measurement() {
         let engine = reg.engine_snapshot(&ws).unwrap();
         (
             engine.at_fingerprint.clone(),
-            engine.docs.values().map(|d| d.raw.len()).sum::<usize>(),
+            engine
+                .eager_docs()
+                .unwrap()
+                .values()
+                .map(|d| d.raw.len())
+                .sum::<usize>(),
         )
     };
     let snapshot_bytes = disk::metadata(crate::parsed_cache::path(&reg.cache_root, &ws))
