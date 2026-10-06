@@ -311,6 +311,91 @@ fn walk_lifecycle_up_down_rooted_and_refusals() {
         message.contains("x.md") && message.contains("y.md"),
         "the refusal names the loop: {message}"
     );
+
+    admitted_page_is_one_more_member(&tmp, &server);
+}
+
+/// The §12.1 door clause, with the named page doing everything a member
+/// does. `drafts/a.md` is outside the hash domain and shares its basename
+/// with the member `a.md`; it pins that member through an alias only the
+/// member declares, and the member `m.md` pins it through an alias only the
+/// draft declares. A walk naming the draft therefore needs its own lock rows
+/// (up), its entry in the name index (down), and the member `a.md` still
+/// answering with the member's bytes. A member's pin on a present page
+/// outside the domain is grey, which only a door that carries its hash
+/// domain can say.
+fn admitted_page_is_one_more_member(tmp: &TempDir, server: &RunningServer) {
+    let ws = tmp.path().join("admitted");
+    write(
+        &ws,
+        "meridian/domain.md",
+        "---\nversion: 1\nignore:\n  - \"drafts/**\"\n---\n",
+    );
+    let member_raw = "---\naliases: [member-a]\n---\n# A\n\nthe member's body\n";
+    let draft_raw = format!(
+        "---\naliases: [draft-a]\n---\n# A\n\nthe draft's body\n\n{}\n",
+        chain_block(&[("member-a", &live_token(member_raw))])
+    );
+    let other_raw = "# Other\n\npresent, outside the domain\n";
+    write(&ws, "a.md", member_raw);
+    write(&ws, "drafts/a.md", &draft_raw);
+    write(&ws, "drafts/other.md", other_raw);
+    write(
+        &ws,
+        "m.md",
+        &format!(
+            "# M\n\n{}\n",
+            chain_block(&[("draft-a", &live_token(&draft_raw))])
+        ),
+    );
+    write(
+        &ws,
+        "n.md",
+        &format!(
+            "# N\n\n{}\n",
+            chain_block(&[("drafts/other", &live_token(other_raw))])
+        ),
+    );
+    let mut conn = Conn::open(server.socket_path());
+    conn.hello_v3(&ws);
+
+    // Up from the draft: its own lock row, coloured against the MEMBER a.md.
+    let up = conn.call(&json!({"id": 1, "op": "walk", "path": "drafts/a.md"}));
+    assert_eq!(up["ok"], json!(true), "{up}");
+    let rows = entries(&up);
+    assert_eq!(rows.len(), 1, "the admitted page's own pin is walked: {up}");
+    assert_eq!(rows[0]["selector"], json!("a.md"), "{up}");
+    assert_eq!(
+        rows[0]["color"],
+        json!("green"),
+        "the member answers with the member's bytes, not its namesake's: {up}"
+    );
+
+    // Down from the draft: the member that pins it by the draft's own alias.
+    let down = conn.call(&json!({"id": 2, "op": "walk", "path": "drafts/a.md", "down": true}));
+    assert_eq!(down["ok"], json!(true), "{down}");
+    let dependents: Vec<&str> = entries(&down)
+        .iter()
+        .map(|r| r["selector"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        dependents,
+        vec!["m.md"],
+        "the admitted page is in the name index the walk resolves through: {down}"
+    );
+    assert_eq!(
+        down["body"]["excluded"],
+        json!(["drafts/other.md"]),
+        "the door's own subject is never listed as excluded: {down}"
+    );
+
+    // A member's pin on a present page outside the hash domain.
+    let grey = conn.call(&json!({"id": 3, "op": "walk", "path": "n.md"}));
+    assert_eq!(grey["ok"], json!(true), "{grey}");
+    let rows = entries(&grey);
+    assert_eq!(rows.len(), 1, "{grey}");
+    assert_eq!(rows[0]["color"], json!("grey"), "{grey}");
+    assert_eq!(rows[0]["reason"], json!("outside-hash-domain"), "{grey}");
 }
 
 /// v3 advertises `walk` at op grain; the frozen v2 caps stay byte-identical,

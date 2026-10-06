@@ -265,3 +265,28 @@ fn a_known_member_that_cannot_be_leased_refuses_the_walk() {
         }
     }
 }
+
+/// A lock holder that cannot be leased refuses the walk even when no edge
+/// would ever colour it: `d.md` pins `b.md` and nothing pins `d.md`, so on a
+/// down walk from `b.md` it is read for its pins alone. Skipping it would
+/// answer a blast radius with one dependent missing.
+#[test]
+fn a_lock_holder_no_edge_targets_still_refuses_when_it_cannot_be_leased() {
+    let (docs, remote) = worlds();
+    let mounts = addr::MountSet::new([mount()]);
+    for fault in [Fault::Backing, Fault::NoLease, Fault::OtherVersion] {
+        let gauge = Gauge::default();
+        let mut ambient = Counted::new(&docs, &gauge);
+        let mounted = Counted::new(&remote, &gauge);
+        ambient.fault = Some(("d.md", fault));
+        let corpus = RootedCatalog::ambient(&ambient).with_root(mount(), &mounted);
+
+        let stop = walk_leased(&corpus, &ambient, &mounts, "b.md", Direction::Down, None)
+            .expect_err("a holder that cannot be read is not a holder with no pins");
+        let WalkStop::Fault(refused) = stop else {
+            panic!("{fault:?}: {stop:?}");
+        };
+        assert_eq!(refused.path, "d.md", "{fault:?}");
+        assert_eq!(gauge.live.get(), 0, "{fault:?}");
+    }
+}
