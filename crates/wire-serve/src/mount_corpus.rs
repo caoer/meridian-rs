@@ -139,8 +139,11 @@ impl MountCorpora {
         &'a self,
         ambient: &'a dyn model::catalog::DocumentCatalog,
     ) -> model::catalog::RootedCatalog<'a> {
-        // Control prototype: mounted roots are left unbound.
-        model::catalog::RootedCatalog::ambient(ambient)
+        let mut corpus = model::catalog::RootedCatalog::ambient(ambient);
+        for mount in &self.corpora {
+            corpus = corpus.with_root(mount.name.clone(), mount.catalog());
+        }
+        corpus
     }
 
     /// The projection naming what `MERIDIAN.md` declares and which of it is

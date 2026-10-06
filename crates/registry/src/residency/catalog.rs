@@ -85,17 +85,9 @@ impl DocumentCatalog for Catalog {
         &self.index
     }
     fn link_roots(&self) -> BTreeSet<addr::MountName> {
-        // Control prototype: roots are read off each body under a scan pin,
-        // and a member that cannot be read contributes none.
         self.entries
-            .iter()
-            .filter_map(|(path, entry)| {
-                let _descriptor = &entry.link_roots;
-                model::catalog::scan(self, path, model::catalog::link_roots)
-                    .ok()
-                    .flatten()
-            })
-            .flatten()
+            .values()
+            .flat_map(|entry| entry.link_roots.iter().cloned())
             .collect()
     }
     fn pin(&self, path: &str) -> io::Result<Option<Box<dyn DocumentLease + '_>>> {
