@@ -633,10 +633,15 @@ pub fn page_decorations_in(
         &names,
         &path.0,
         doc,
-        // Control prototype: a lock target's body is never leased.
-        |_target, classify| {
-            classify(None);
-            Ok(())
+        |target, classify| match model::catalog::scan(catalog, target, |found| {
+            classify(Some(found));
+        }) {
+            Ok(Some(())) => Ok(()),
+            Ok(None) => {
+                classify(None);
+                Ok(())
+            }
+            Err(fault) => Err(member_fault(fault)),
         },
     )
 }

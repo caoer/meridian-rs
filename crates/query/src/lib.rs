@@ -161,30 +161,25 @@ pub fn links_in(
     catalog: &dyn DocumentCatalog,
     path: Option<&str>,
 ) -> Result<BTreeMap<String, FileLinks>, MemberFault> {
-    // Control prototype: every lease is taken before any edge is computed,
-    // and a member that cannot be leased is left out.
     let corpus = RootedCatalog::ambient(catalog);
-    let sources: Vec<&str> = match path {
-        Some(source) => vec![source],
-        None => catalog.revisions().map(|(source, _)| source).collect(),
+    let edges = |source: &str| {
+        model::catalog::scan(catalog, source, |doc| {
+            file_links(index, source, doc, &corpus, None)
+        })
     };
-    let leases: Vec<_> = sources
-        .into_iter()
-        .filter_map(|source| {
-            let lease = catalog.pin(source).ok().flatten()?;
-            Some((source, lease))
-        })
-        .collect();
-    Ok(leases
-        .iter()
-        .filter_map(|(source, lease)| {
-            let doc = lease.document().ok()?;
-            Some((
-                (*source).to_owned(),
-                file_links(index, source, doc, &corpus, None),
-            ))
-        })
-        .collect())
+    let mut out = BTreeMap::new();
+    if let Some(source) = path {
+        if let Some(entry) = edges(source)? {
+            out.insert(source.to_owned(), entry);
+        }
+        return Ok(out);
+    }
+    for (source, _) in catalog.revisions() {
+        if let Some(entry) = edges(source)? {
+            out.insert(source.to_owned(), entry);
+        }
+    }
+    Ok(out)
 }
 
 /// One document's outgoing edges, resolved against `index`/`corpus`.
