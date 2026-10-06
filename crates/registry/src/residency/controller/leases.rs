@@ -56,10 +56,10 @@ impl Member {
             }
         }
         if peak as u128 > room {
-            // Control prototype: holding the serialized member is enough.
-            return state
-                .transient
-                .is_some_and(|key| held.contains(&MemberId(key)));
+            return own > room
+                && state
+                    .transient
+                    .is_some_and(|key| held.contains(&MemberId(key)));
         }
         own + peak as u128 > room
     }

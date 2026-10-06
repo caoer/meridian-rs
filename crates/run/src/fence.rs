@@ -1,4 +1,3 @@
-// Control prototype: fce2e607 source under the final tests.
 //! Fence-language detection — the dispatch axis (verdict ruling 1, plan
 //! decision #13). A task block is a fenced code block whose info string names
 //! one of exactly two languages: `starlark` (hermetic kernel eval) or `bash`
@@ -122,7 +121,19 @@ impl std::error::Error for FenceError {}
 /// [`FenceError::UnknownLanguage`] / [`FenceError::Unterminated`] /
 /// [`FenceError::NotAFence`].
 pub fn classify(doc: &Document, span: &ByteSpan) -> Result<TaskBlock, FenceError> {
-    let node = find_code_block(doc, span).ok_or(FenceError::NotAFence)?;
+    classify_node(
+        doc,
+        find_code_block(doc, span).ok_or(FenceError::NotAFence)?,
+    )
+}
+
+/// [`classify`] for a `CodeBlock` node the caller already holds, so a caller
+/// that walked the tree once does not walk it again per fence.
+///
+/// # Errors
+/// As [`classify`].
+pub fn classify_node(doc: &Document, node: &model::Node) -> Result<TaskBlock, FenceError> {
+    let span = &node.span;
     let NodeKind::CodeBlock { lang, unterminated } = &node.kind else {
         return Err(FenceError::NotAFence);
     };
