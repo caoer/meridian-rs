@@ -23,10 +23,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// A mounted root's served projection, whoever produced it: the documents
-/// the colour computer reads and the hash-domain members that serve no
-/// spans (per-file UTF-8 degradation), path → condition.
+/// A mounted root's served projection, whoever produced it: the generation
+/// catalog the link plane resolves names through, the documents the colour
+/// computer reads and the hash-domain members that serve no spans (per-file
+/// UTF-8 degradation), path → condition.
 pub trait ServedCorpus: Send + Sync {
+    /// The root's generation as descriptors: membership, revisions and the
+    /// name index, with bodies behind leases. Name resolution into this root
+    /// reads only this.
+    fn catalog(&self) -> &dyn model::catalog::DocumentCatalog;
     /// The parsed documents, keyed by root-relative path.
     fn docs(&self) -> &model::Docs;
     /// Hash-domain members under this root that serve no spans/nodes.
@@ -41,13 +46,17 @@ pub type CorpusSource<'a> = &'a dyn Fn(&Path) -> Result<Arc<dyn ServedCorpus>, S
 /// The in-process build: snapshot + parse, exactly what the workspace's own
 /// ambient corpus is built through.
 struct BuiltCorpus {
-    docs: model::Docs,
+    catalog: model::catalog::EagerCatalog<'static>,
     unserved: BTreeMap<String, String>,
 }
 
 impl ServedCorpus for BuiltCorpus {
+    fn catalog(&self) -> &dyn model::catalog::DocumentCatalog {
+        &self.catalog
+    }
+
     fn docs(&self) -> &model::Docs {
-        &self.docs
+        self.catalog.docs()
     }
 
     fn unserved(&self) -> &BTreeMap<String, String> {
@@ -66,6 +75,12 @@ pub struct MountedCorpus {
 }
 
 impl MountedCorpus {
+    /// The root's generation catalog.
+    #[must_use]
+    pub fn catalog(&self) -> &dyn model::catalog::DocumentCatalog {
+        self.corpus.catalog()
+    }
+
     /// The root's parsed documents.
     #[must_use]
     pub fn docs(&self) -> &model::Docs {
@@ -111,6 +126,22 @@ impl MountCorpora {
             .with_ambient_disk(root);
         for mount in &self.corpora {
             corpus = corpus.with_root(mount.name.clone(), mount.docs());
+        }
+        corpus
+    }
+
+    /// The root-keyed catalog over `ambient`: the same roots as
+    /// [`rooted`](Self::rooted), each bound as its generation catalog. The
+    /// link plane's name resolution reads membership and name indexes through
+    /// it and holds no document of any root.
+    #[must_use]
+    pub fn rooted_catalog<'a>(
+        &'a self,
+        ambient: &'a dyn model::catalog::DocumentCatalog,
+    ) -> model::catalog::RootedCatalog<'a> {
+        let mut corpus = model::catalog::RootedCatalog::ambient(ambient);
+        for mount in &self.corpora {
+            corpus = corpus.with_root(mount.name.clone(), mount.catalog());
         }
         corpus
     }
@@ -229,5 +260,8 @@ fn build_in_process(root: &Path) -> Result<Arc<dyn ServedCorpus>, String> {
     let (files, _fingerprint) =
         fs::domain_snapshot(&root).map_err(|e| format!("cannot read the mounted corpus: {e}"))?;
     let (_index, docs, unserved) = fs::build_corpus(files);
-    Ok(Arc::new(BuiltCorpus { docs, unserved }))
+    Ok(Arc::new(BuiltCorpus {
+        catalog: model::catalog::EagerCatalog::owned(docs),
+        unserved,
+    }))
 }

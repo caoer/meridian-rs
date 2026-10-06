@@ -241,3 +241,43 @@ fn catalog_scan_preserves_the_oldest_hot_member_for_eviction() {
     );
     assert_eq!(controller.report().reserved, 0);
 }
+
+#[test]
+fn cold_catalog_names_link_addressed_roots_without_reading_a_body() {
+    let dir = tempfile::tempdir().unwrap();
+    let backing = RawStore::new(dir.path()).unwrap();
+    let controller = Controller::new(1);
+    let original = docs(&[
+        ("a.md", "# A\n\n[[b:remote]] and [[local]]\n"),
+        ("n/c.md", "# C\n\n![[c:img.png]]\n\n- [[b:other#Heading]]\n"),
+        ("plain.md", "# Plain\n\nno links\n"),
+    ]);
+    let expected = view::walk::link_addressed_roots(&original, None);
+    assert_eq!(
+        expected,
+        ["b", "c"]
+            .into_iter()
+            .map(|name| addr::MountName::parse(name).unwrap())
+            .collect::<BTreeSet<_>>(),
+        "the fixture addresses two roots"
+    );
+    let catalog = Catalog::capture(&original, &controller, &backing, 131_072).unwrap();
+    drop(original);
+    assert_eq!(controller.report().bodies, 0);
+    // Truncate every retained inode: from here a body pin can only fault.
+    for entry in std::fs::read_dir(dir.path()).unwrap() {
+        for file in std::fs::read_dir(entry.unwrap().path()).unwrap() {
+            std::fs::write(file.unwrap().path(), []).unwrap();
+        }
+    }
+    assert!(
+        catalog.pin("a.md").is_err(),
+        "the instrument: a body of this catalog cannot be read"
+    );
+    assert_eq!(
+        catalog.link_roots(),
+        expected,
+        "link-addressed roots are descriptor facts, not read off bodies"
+    );
+    assert_eq!(controller.report().bodies, 0);
+}

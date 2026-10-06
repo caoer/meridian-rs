@@ -250,11 +250,17 @@ pub(crate) fn serve(
     // O(dirty), never rebuilt from disk per call — a workspace linking into a
     // 61k-file root would otherwise pay that root's whole walk, hash and parse
     // here on every statement.
-    let mounts = wire_serve::mount_corpus::load_mounts_for_from(
-        &view::walk::link_addressed_roots(&engine.docs, None),
-        &|root| registry.mounted_corpus(root),
-    );
-    let corpus = mounts.rooted(&engine.docs, &domain, &root);
+    //
+    // Both the ambient corpus and each mounted root are read as generation
+    // catalogs (merkle-spec §6.8): which roots are needed is a descriptor
+    // fact, name resolution reads membership and name indexes, and the append
+    // leases one ambient body at a time.
+    let generation: &dyn model::catalog::DocumentCatalog = &*engine;
+    let mounts =
+        wire_serve::mount_corpus::load_mounts_for_from(&generation.link_roots(), &|root| {
+            registry.mounted_corpus(root)
+        });
+    let corpus = mounts.rooted_catalog(generation);
     let probe = fs::domain::LinkTargetProbe::new(&root, &domain);
     let exclusion = |target: &str| {
         probe
@@ -299,8 +305,8 @@ pub(crate) fn serve(
     let read = {
         let mut store = lock_store_bounded(&store, ws, SQL_STORE_WAIT)?;
         store
-            .sync(
-                &engine.docs,
+            .sync_catalog(
+                generation,
                 &corpus,
                 Some(mounts.set()),
                 Some(&exclusion),

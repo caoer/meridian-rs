@@ -104,9 +104,11 @@ notify = { workspace = true }
 # zero-dependency leaf that reads no clock and allocates nothing when
 # `MRD_TIMING` is off, so the hot path pays for the answer only when asked.
 timing = { workspace = true }
+# Mount names in generation descriptors: the roots a member's links address
+# (`model::catalog::DocumentCatalog::link_roots`).
+addr = { workspace = true }
 
 [dev-dependencies]
-addr = { workspace = true }
 # The self-edge is how this crate's OWN integration tests get a lib compiled
 # with `test-support` (the standard cargo idiom for a test-only feature). It
 # also keeps `tempfile` — declared optional above — active for the test build,

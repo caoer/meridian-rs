@@ -1,9 +1,15 @@
 //! Immutable generation metadata and fallible, pinned body access (merkle §6.8).
 //! The host supplies storage and admission; model owns neither I/O nor a cache.
 
-use crate::{CorpusIndex, Docs, Document, NodeRev, RootedCorpus};
+use crate::{CorpusIndex, Docs, Document, Node, NodeKind, NodeRev, RootedCorpus};
 use addr::MountName;
-use std::{collections::BTreeMap, fmt::Debug, io, sync::OnceLock};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    fmt::Debug,
+    io,
+    sync::OnceLock,
+};
 
 /// A body remains valid while this lease is alive. Consumers borrow the
 /// document; escaping clones require the host's own accounting lease.
@@ -25,6 +31,11 @@ pub trait DocumentCatalog: Debug {
     fn revision(&self, path: &str) -> Option<&NodeRev>;
     /// The complete name/alias index, independent of body residency.
     fn index(&self) -> &CorpusIndex;
+    /// Every mount root the members' wikilink and embed targets address: the
+    /// union of each member's [`link_roots`], a descriptor fact fixed when
+    /// that member was parsed. Answering pins no body, so a cold or
+    /// unreadable member still contributes its roots.
+    fn link_roots(&self) -> BTreeSet<MountName>;
     /// Pin one exact member version for a scan. `None` means absent membership
     /// only; pinning need not promote the host's read recency.
     ///
@@ -100,18 +111,54 @@ pub fn scan<T>(
     Ok(Some(read(doc)))
 }
 
-/// Borrow the existing eager corpus, with a lazily built name index. Merely
+/// Every mount root one document's wikilink and embed targets address. The
+/// root name is read from [`addr::Addr::parse`] of each target, the grammar
+/// the resolver peels; a target outside the grammar contributes no root.
+#[must_use]
+pub fn link_roots(doc: &Document) -> BTreeSet<MountName> {
+    fn collect(node: &Node, roots: &mut BTreeSet<MountName>) {
+        if let NodeKind::Wikilink { target, .. } | NodeKind::Embed { target, .. } = &node.kind
+            && let Ok(addr) = addr::Addr::parse(target)
+            && let Some(root) = addr.root()
+        {
+            roots.insert(root.clone());
+        }
+        for child in &node.children {
+            collect(child, roots);
+        }
+    }
+    let mut roots = BTreeSet::new();
+    collect(&doc.root, &mut roots);
+    roots
+}
+
+/// An eager corpus, borrowed or owned, with a lazily built name index. Merely
 /// testing the SQL pin does not walk/clone the corpus or build its index.
 #[derive(Debug)]
 pub struct EagerCatalog<'a> {
-    docs: &'a Docs,
+    docs: Cow<'a, Docs>,
     index: OnceLock<CorpusIndex>,
 }
 impl<'a> EagerCatalog<'a> {
     #[must_use]
     pub fn new(docs: &'a Docs) -> Self {
         Self {
-            docs,
+            docs: Cow::Borrowed(docs),
+            index: OnceLock::new(),
+        }
+    }
+    /// The documents this catalog serves.
+    #[must_use]
+    pub fn docs(&self) -> &Docs {
+        &self.docs
+    }
+}
+impl EagerCatalog<'static> {
+    /// A catalog that owns its corpus, for a host with no longer-lived owner.
+    #[must_use]
+    pub fn owned(docs: Docs) -> Self {
+        Self {
+            docs: Cow::Owned(docs),
             index: OnceLock::new(),
         }
     }
@@ -122,6 +169,12 @@ impl DocumentLease for EagerLease<'_> {
     fn document(&self) -> io::Result<&Document> {
         Ok(self.0)
     }
+}
+/// A lease on a document its owner already holds in memory: it cannot fault
+/// and releases nothing.
+#[must_use]
+pub fn resident_lease(doc: &Document) -> Box<dyn DocumentLease + '_> {
+    Box::new(EagerLease(doc))
 }
 impl DocumentCatalog for EagerCatalog<'_> {
     fn revisions(&self) -> Box<dyn Iterator<Item = (&str, &NodeRev)> + '_> {
@@ -137,17 +190,17 @@ impl DocumentCatalog for EagerCatalog<'_> {
     fn index(&self) -> &CorpusIndex {
         self.index.get_or_init(|| {
             let mut index = CorpusIndex::new();
-            for (path, doc) in self.docs {
+            for (path, doc) in self.docs() {
                 index.insert(path, doc);
             }
             index
         })
     }
+    fn link_roots(&self) -> BTreeSet<MountName> {
+        self.docs.values().flat_map(|doc| link_roots(doc)).collect()
+    }
     fn pin(&self, path: &str) -> io::Result<Option<Box<dyn DocumentLease + '_>>> {
-        Ok(self
-            .docs
-            .get(path)
-            .map(|doc| Box::new(EagerLease(doc)) as Box<dyn DocumentLease>))
+        Ok(self.docs.get(path).map(|doc| resident_lease(doc)))
     }
 }
 
