@@ -201,6 +201,23 @@ impl WorkspaceRing {
             .saturating_add(state.watch.heap_bytes())
     }
 
+    /// [`Self::heap_bytes`] when the state lock is free, without waiting for
+    /// it: `None` while a cycle or a prime holds it.
+    #[must_use]
+    pub fn try_heap_bytes(&self) -> Option<usize> {
+        let state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::Poisoned(state)) => state.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        Some(
+            state
+                .ring
+                .heap_bytes()
+                .saturating_add(state.watch.heap_bytes()),
+        )
+    }
+
     /// Tip seq — position a `sub` with no catchup anchors at.
     #[must_use]
     pub fn seq(&self) -> u64 {

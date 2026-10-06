@@ -1025,58 +1025,72 @@ impl Registry {
     /// (merkle-spec §6.4, the host floor). `None` when the raw store's
     /// census fails.
     ///
-    /// Owner handles leave the registry maps under their locks; each memo and
-    /// ring is then locked alone, never two locks at once, so no caller that
-    /// holds none of them can deadlock here. `None` also without a host.
+    /// Owner handles leave the registry maps under their locks. The
+    /// generations are measured and released first; each memo and ring is
+    /// then tried alone and never waited for, a busy one charged its last
+    /// measurement (`Host::settle`). So no caller that
+    /// holds none of them can deadlock here, and none waits behind a floor
+    /// pass, a reconcile or a prime. `None` also without a host.
     #[must_use]
     pub fn floor_census(&self) -> Option<usize> {
+        use crate::residency::Owner;
         use model::allocation::arc_bytes;
+        use std::sync::TryLockError;
         let host = self.residency.as_ref()?;
-        let (held, tracking) = host.live_generations();
-        let engines: Vec<Arc<WorkspaceEngine>> = self
-            .engines
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .values()
-            .cloned()
-            .collect();
-        let memos: Vec<Arc<Mutex<fs::DomainCache>>> = self
+        let mut bytes = {
+            let (held, tracking) = host.live_generations();
+            let engines: Vec<Arc<WorkspaceEngine>> = self
+                .engines
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .values()
+                .cloned()
+                .collect();
+            let mut seen = crate::residency::census::Seen::default();
+            let mut bytes = tracking;
+            for generation in engines.iter().chain(&held) {
+                if seen.first(generation) {
+                    bytes = bytes
+                        .saturating_add(arc_bytes::<WorkspaceEngine>())
+                        .saturating_add(generation.heap_bytes(&mut seen));
+                }
+            }
+            bytes
+        };
+        let memos: Vec<(PathBuf, Arc<Mutex<fs::DomainCache>>)> = self
             .domain_caches
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .values()
-            .cloned()
+            .iter()
+            .map(|(workspace, memo)| (workspace.clone(), Arc::clone(memo)))
             .collect();
-        let rings: Vec<Arc<crate::ring::WorkspaceRing>> = self
+        let rings: Vec<(PathBuf, Arc<crate::ring::WorkspaceRing>)> = self
             .rings
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .values()
-            .cloned()
+            .iter()
+            .map(|(workspace, ring)| (workspace.clone(), Arc::clone(ring)))
             .collect();
-        let mut seen = crate::residency::census::Seen::default();
-        let mut bytes = tracking;
-        for generation in engines.iter().chain(&held) {
-            if seen.first(generation) {
-                bytes = bytes
-                    .saturating_add(arc_bytes::<WorkspaceEngine>())
-                    .saturating_add(generation.heap_bytes(&mut seen));
-            }
-        }
-        for memo in &memos {
-            let heap = memo
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .heap_bytes();
-            bytes = bytes
-                .saturating_add(arc_bytes::<Mutex<fs::DomainCache>>())
-                .saturating_add(heap);
-        }
-        for ring in &rings {
-            bytes = bytes
-                .saturating_add(arc_bytes::<crate::ring::WorkspaceRing>())
-                .saturating_add(ring.heap_bytes());
-        }
+        bytes = bytes
+            .saturating_add(arc_bytes::<Mutex<fs::DomainCache>>().saturating_mul(memos.len()))
+            .saturating_add(arc_bytes::<crate::ring::WorkspaceRing>().saturating_mul(rings.len()));
+        let memos = memos
+            .into_iter()
+            .map(|(workspace, memo)| {
+                let heap = match memo.try_lock() {
+                    Ok(memo) => Some(memo.heap_bytes()),
+                    Err(TryLockError::Poisoned(memo)) => Some(memo.into_inner().heap_bytes()),
+                    Err(TryLockError::WouldBlock) => None,
+                };
+                (workspace, heap)
+            })
+            .collect();
+        bytes = bytes.saturating_add(host.settle(Owner::Memo, memos));
+        let rings = rings
+            .into_iter()
+            .map(|(workspace, ring)| (workspace, ring.try_heap_bytes()))
+            .collect();
+        bytes = bytes.saturating_add(host.settle(Owner::Ring, rings));
         let total = match host.store.heap_bytes() {
             Ok(store) => Some(bytes.saturating_add(store)),
             Err(error) => {

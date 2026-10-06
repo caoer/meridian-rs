@@ -39,6 +39,16 @@ pub struct Host {
     /// Every generation published through this host, held weakly, so a
     /// census reaches the older ones an operation still holds.
     generations: Mutex<Vec<Weak<crate::engine::WorkspaceEngine>>>,
+    /// What the last census that reached each workspace's memo and ring
+    /// measured there: what a census charges for one whose lock is busy.
+    measured: Mutex<std::collections::HashMap<(Owner, std::path::PathBuf), usize>>,
+}
+
+/// A per-workspace floor owner a census measures under the owner's own lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Owner {
+    Memo,
+    Ring,
 }
 
 /// The host's floor lease, the bytes it charges and the census that set them.
@@ -70,6 +80,7 @@ impl Host {
             floor: Mutex::new(HostFloor::default()),
             tickets: AtomicU64::new(0),
             generations: Mutex::new(Vec::new()),
+            measured: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -106,11 +117,38 @@ impl Host {
         (live, tracking)
     }
 
-    /// A ticket for a census about to measure.
+    /// A ticket for a census about to measure. The ordering makes whatever
+    /// triggered a census with an earlier ticket visible to this one's reads.
     pub(crate) fn ticket(&self) -> u64 {
         self.tickets
-            .fetch_add(1, Ordering::Relaxed)
+            .fetch_add(1, Ordering::AcqRel)
             .saturating_add(1)
+    }
+
+    /// The bytes to charge for the `kind` owners a census listed, by
+    /// workspace: each one's measurement when the census took it, else what
+    /// its last measurement found, and nothing for one never measured. A
+    /// workspace not listed is forgotten.
+    pub(crate) fn settle(
+        &self,
+        kind: Owner,
+        owners: Vec<(std::path::PathBuf, Option<usize>)>,
+    ) -> usize {
+        let mut measured = lock(&self.measured);
+        measured.retain(|(owner, workspace), _| {
+            *owner != kind || owners.iter().any(|(listed, _)| listed == workspace)
+        });
+        owners.into_iter().fold(0usize, |bytes, (workspace, now)| {
+            let key = (kind, workspace);
+            let charged = match now {
+                Some(now) => {
+                    measured.insert(key, now);
+                    now
+                }
+                None => measured.get(&key).copied().unwrap_or(0),
+            };
+            bytes.saturating_add(charged)
+        })
     }
 
     /// Charge `bytes`, measured under `ticket`, unless a census that took a
