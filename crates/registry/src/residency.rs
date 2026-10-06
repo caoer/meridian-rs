@@ -14,18 +14,50 @@ pub mod catalog;
 pub mod controller;
 pub mod retention;
 
-/// What a registry builds its engine generations through when their bodies
-/// are sheddable (merkle-spec §6.8): one controller and one raw store for
-/// every root it serves.
+/// What a registry builds its engine generations and watcher baselines
+/// through when their bodies are sheddable (merkle-spec §6.4, §6.8): one
+/// controller and one raw store for every root it serves.
 #[derive(Debug)]
 pub struct Host {
     /// The shared admission ledger and member LRU.
     pub controller: controller::Controller,
     /// The required backing every published member is retained in.
-    pub store: crate::raw_store::RawStore,
+    pub store: Arc<crate::raw_store::RawStore>,
     /// The conservative peak one member load is admitted under: source
     /// scratch, parsing and flight storage included.
     pub load_peak: usize,
+    /// The one provider every workspace ring's watcher retains its baseline
+    /// through, so a baseline and a serving slot of the same bytes share a
+    /// controller member.
+    retention: Arc<dyn model::bytes::ByteRetention>,
+}
+
+impl Host {
+    #[must_use]
+    pub fn new(
+        controller: controller::Controller,
+        store: crate::raw_store::RawStore,
+        load_peak: usize,
+    ) -> Self {
+        let store = Arc::new(store);
+        let retention = Arc::new(retention::Retention::new(
+            controller.clone(),
+            Arc::clone(&store),
+            load_peak,
+        ));
+        Self {
+            controller,
+            store,
+            load_peak,
+            retention,
+        }
+    }
+
+    /// The watcher-baseline provider over this host's controller and store.
+    #[must_use]
+    pub fn retention(&self) -> Arc<dyn model::bytes::ByteRetention> {
+        Arc::clone(&self.retention)
+    }
 }
 
 /// An immutable version descriptor shared across generations and operations.

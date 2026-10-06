@@ -15,10 +15,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use ::cache as registry_cache;
 use registry::raw_store::RawStore;
 use registry::residency::Host;
 use registry::residency::controller::Controller;
-use registry::{Config, RunningServer};
+use registry::{Config, RunningServer, WarmOutcome};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -119,14 +120,15 @@ impl Conn {
     }
 }
 
-/// One lock block carrying a whole-body pin per `(object, token)` row.
-fn chain_block(pins: &[(&str, &str)]) -> String {
+/// One lock block carrying a pin per `(object, selector path, token)` row:
+/// an empty path pins the whole body, `["^id"]` one anchored block.
+fn chain_block(pins: &[(&str, &[&str], &str)]) -> String {
     let mut l = lock::Lock::new();
-    for (object, token) in pins {
+    for (object, path, token) in pins {
         l.upsert_pin(lock::PinEntry::new(
             object,
             "9ae3f1deadbeef",
-            lock::Selector::Path(Vec::new()),
+            lock::Selector::Path(path.iter().map(|segment| (*segment).to_owned()).collect()),
             token,
         ));
     }
@@ -147,15 +149,16 @@ fn filler(n: usize) -> String {
 }
 
 /// The workspace: a run page, a page with frontmatter and sections, a hub
-/// every filler links back to, a page pinning the hub and one filler, and the
-/// fillers.
+/// every filler links back to, a page pinning a block of the hub that its
+/// link claims (so its decorations lease the hub beside the page) and one
+/// filler whole, and the fillers.
 fn files() -> Vec<(String, String)> {
-    let hub = "# Hub\n\n[[m000]] ![[m001]] [[nowhere]]\n".to_owned();
+    let hub = "# Hub\n\n[[m000]] ![[m001]] [[nowhere]] ^h\n".to_owned();
     let pinner = format!(
-        "# Pinner\n\nreads [[hub]]\n\n{}\n",
+        "# Pinner\n\nreads [[hub#^h]]\n\n{}\n",
         chain_block(&[
-            ("hub", &live_token(&hub)),
-            ("m002", &live_token(&filler(2))),
+            ("hub", &["^h"], &live_token(&hub)),
+            ("m002", &[], &live_token(&filler(2))),
         ])
     );
     let mut files = vec![
@@ -199,11 +202,11 @@ fn host(root: &Path, files: &[(String, String)]) -> (Arc<Host>, usize) {
         all > 2 * limit,
         "the fixture's bodies ({all} bytes) cannot all be resident under the limit ({limit})"
     );
-    let host = Arc::new(Host {
-        controller: Controller::new(limit),
-        store: RawStore::new(&root.join("backing")).unwrap(),
+    let host = Arc::new(Host::new(
+        Controller::new(limit),
+        RawStore::new(&root.join("backing")).unwrap(),
         load_peak,
-    });
+    ));
     (host, limit)
 }
 
@@ -351,6 +354,12 @@ fn a_subscribed_workspace_sheds_to_the_host_limit_and_every_door_serves_the_eage
         json!("m003.md"),
         "{frame}"
     );
+    let canonical = fs::canonicalize(&ws).unwrap();
+    assert_eq!(
+        leased.registry().warm_or_build(&canonical).unwrap(),
+        WarmOutcome::Built { docs: 1 },
+        "a one-member edit re-publishes that member over the resident generation's slots"
+    );
     let moved = json!({"id": 10, "op": "read", "path": "m003.md"});
     let (want, got) = both(&mut plain, &mut shed, &moved);
     assert_eq!(want["ok"], json!(true), "{want}");
@@ -358,8 +367,99 @@ fn a_subscribed_workspace_sheds_to_the_host_limit_and_every_door_serves_the_eage
     let report = host.controller.report();
     assert_eq!(report.overage, 0, "{report:?}");
 
+    // A second workspace, warm and unsubscribed: the reaper charges a
+    // host-built generation nothing, so no budget evicts it.
+    let second = seeded(&tmp.path().join("second"), &files[..8]);
+    let mut other = Conn::open(leased.socket_path());
+    other.hello_v3(&second);
+    let warmed = other.call(&json!({"id": 11, "op": "read", "path": "doc.md"}));
+    assert_eq!(warmed["ok"], json!(true), "{warmed}");
+    assert_eq!(
+        leased.registry().reap_to_budget(1),
+        Vec::<PathBuf>::new(),
+        "the reaper charged a host-built generation"
+    );
+
+    no_parsed_snapshot_is_saved_or_read_by_a_host_build(
+        tmp.path(),
+        &files,
+        &canonical,
+        owning,
+        leased,
+    );
+}
+
+/// rv-352 P3-1, the host arm's snapshot claims. A host-built generation
+/// saves no parsed snapshot at shutdown. A host daemon over the owning
+/// daemon's cache, which holds an eager parsed snapshot of the workspace,
+/// builds every member through its host and never reads that snapshot (a
+/// read stamps the drawer's use).
+fn no_parsed_snapshot_is_saved_or_read_by_a_host_build(
+    tmp: &Path,
+    files: &[(String, String)],
+    canonical: &Path,
+    owning: RunningServer,
+    leased: RunningServer,
+) {
     leased.shutdown();
     owning.shutdown();
+    assert!(
+        snapshots(&tmp.join("e")) > 0,
+        "the owning daemon saves its parsed snapshot at shutdown"
+    );
+    assert_eq!(
+        snapshots(&tmp.join("r")),
+        0,
+        "a host-built generation saves no parsed snapshot"
+    );
+
+    let drawer = registry_cache::parsed_drawer_dir(&tmp.join("e").join("cache"), canonical);
+    let last_use = || match registry_cache::probe(&drawer) {
+        registry_cache::Probe::Hit(sentinel) => sentinel.last_use,
+        registry_cache::Probe::Miss => panic!("no parsed snapshot drawer at {}", drawer.display()),
+    };
+    let before = last_use();
+    while now_secs() <= before {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let again_dir = tmp.join("again");
+    fs::create_dir_all(&again_dir).unwrap();
+    let (again_host, _) = host(&again_dir, files);
+    let again = RunningServer::start(config(tmp, "e", Some(again_host))).unwrap();
+    assert_eq!(
+        again.registry().warm_or_build(canonical).unwrap(),
+        WarmOutcome::Built { docs: files.len() },
+        "a host cold build publishes every member"
+    );
+    assert_eq!(
+        last_use(),
+        before,
+        "a host cold build read the eager parsed snapshot"
+    );
+    again.shutdown();
+}
+
+/// Parsed snapshots (`corpus.v1`) anywhere under `dir`.
+fn snapshots(dir: &Path) -> usize {
+    fs::read_dir(dir).map_or(0, |entries| {
+        entries
+            .map(|entry| entry.unwrap().path())
+            .map(|path| {
+                if path.is_dir() {
+                    snapshots(&path)
+                } else {
+                    usize::from(path.file_name() == Some(std::ffi::OsStr::new("corpus.v1")))
+                }
+            })
+            .sum()
+    })
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 #[test]

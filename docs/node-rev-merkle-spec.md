@@ -744,7 +744,11 @@ the host supplies immutable `RetainedBytes` descriptors and a fallible
 the whole borrow. `fs::Watcher` keeps membership and digests separately from
 those leases, verifies identity before using loaded bytes, and never falls
 back to the current source for a baseline fault. Without a host retention
-provider the in-process watcher keeps the same eager bytes.
+provider the in-process watcher keeps the same eager bytes. A registry built
+through a residency host gives every workspace ring the host's one retention
+provider, over the controller and backing store its engine generations use,
+so a baseline version and a serving slot of the same bytes are one controller
+member and one backing record.
 
 Reconciliation prepares every replacement baseline handle and loads the
 required before bytes before allocating a sequence or publishing a frame.
@@ -916,7 +920,14 @@ frame-parity gated. The alternative — one full corpus snapshot of every
 member's bytes per external batch — measured ~1/s under foreign writes.
 
 - On a moved root the cycle takes the workspace flock, observes through the
-  shared memo again, and hands the classifier that leaf set and root.
+  shared memo again, and hands the classifier that leaf set and root, read
+  from the memo under one lock hold: a reader's observation landing between
+  two separate reads would pair a root with leaves it does not fold. Under the
+  flock any later memo motion is another observation, of a state no door is
+  mid-landing, so the cycle classifies against the pair it read. A write
+  door's two baseline points expect the root the door observed; a memo that
+  has moved past it skips the step and leaves the baseline to the detector,
+  as a refused reconcile does.
 - An ordinary cycle observes vouched-only under the flock
   (`Registry::door_observation_vouched`): cookie probe, take-and-apply, vouch,
   all inside one `DETECT_CADENCE`. Any miss releases the flock and skips the
@@ -947,6 +958,11 @@ member's bytes per external batch — measured ~1/s under foreign writes.
   snapshot digest equals its leaf keeps the snapshot's bytes, any other member
   is re-read and verified against its leaf, and a snapshot member the memo
   lacks is dropped. The baseline root is the observed root.
+  Under a host retention provider the snapshot reads, digests and retains one
+  member at a time and releases its bytes before reading the next, so it never
+  holds the corpus's raw bytes; the full snapshot a racing re-read falls back
+  to is taken the same way. Without a provider both are the eager parallel
+  read.
   The snapshot prepares the baseline map and any host retention outside the
   flock and ring-state lock. An unchanged snapshot is adopted by moving that
   prepared map; only mismatching/new members require replacement preparation
