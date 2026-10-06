@@ -194,3 +194,116 @@ fn a_create_through_a_moved_memo_takes_the_degrade() {
         ]
     );
 }
+
+/// One observation through the door-entry path.
+fn observe(
+    registry: &Registry,
+    root: &fs::WorkspaceRoot,
+    cache: &Arc<std::sync::Mutex<fs::DomainCache>>,
+) -> Root {
+    Root(
+        registry
+            .door_observation(&root.0, cache, DOOR_COOKIE_TIMEOUT)
+            .expect("an observation")
+            .0,
+    )
+}
+
+/// Wait for sightings, resuming the watcher past each one below `serial`;
+/// return with the watcher parked on the first at or above it.
+fn park_on_sighting(
+    sighted: &std::sync::mpsc::Receiver<u64>,
+    resume: &std::sync::mpsc::Sender<()>,
+    serial: u64,
+) {
+    loop {
+        let seen = sighted
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a cookie sighting");
+        if seen >= serial {
+            return;
+        }
+        resume.send(()).unwrap();
+    }
+}
+
+/// A guarded splice entered after an outside edit to its own file finished
+/// refuses `root_mismatch`, and the edit is told (merkle-spec §6.4, the
+/// currency barrier; wire-contract §7.1). The watcher parks after every
+/// cookie sighting, so the race is stepped: a reader observes START and the
+/// watcher parks on the reader's sighting with the rest of the reader's
+/// sentinel events still queued; the outside edit lands; the door writes its
+/// sentinel; the watcher is resumed one sighting at a time until one vouches
+/// the door. A sighting that read the sentinel's bytes would vouch the door
+/// through the reader's trailing event, before the edit is delivered.
+#[test]
+fn a_guarded_splice_refuses_an_edit_that_finished_before_its_door() {
+    const OUTSIDE: &str = "# Goals\n\nship by August\n\n# Outside\n\nan outside edit\n";
+    let (_dir, root, registry) = setup();
+    let ring = registry.ring(&root.0);
+    let (start, seq) = ring.prime(&root, &registry).unwrap();
+    let cache = registry.domain_cache(&root.0);
+    assert_eq!(observe(&registry, &root, &cache), start, "a quiet start");
+    let feed = registry.live_feed(&root.0).expect("a live feed");
+    let (sighted, resume) = feed.park_after_sightings();
+    let reader_serial = feed.cookie_written() + 1;
+    let reader_saw = thread::scope(|scope| {
+        let reader = scope.spawn(|| observe(&registry, &root, &cache));
+        park_on_sighting(&sighted, &resume, reader_serial);
+        reader.join().unwrap()
+    });
+    assert_eq!(reader_saw, start, "the reader observed before the edit");
+    std::fs::write(root.0.join("plan.md"), OUTSIDE).unwrap();
+
+    let (door_observed, door_resume) = ring.pause_next_door_observation();
+    let mut op = edit("plan.md");
+    op["op"] = json!("splice");
+    op["force"] = json!(true);
+    op["if_root"] = json!(start.0);
+    let op = wire_serve::decode::decode(op.as_object().unwrap(), Rev::V3).unwrap();
+    let answer = thread::scope(|scope| {
+        let door =
+            scope.spawn(|| dispatch_read(&registry, Some(&root.0), &mut None, Some(1), op, true));
+        let door_serial = reader_serial + 1;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while feed.cookie_written() < door_serial {
+            assert!(Instant::now() < deadline, "the door wrote no sentinel");
+            thread::sleep(Duration::from_millis(1));
+        }
+        resume.send(()).unwrap();
+        park_on_sighting(&sighted, &resume, door_serial);
+        door_observed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the door observed");
+        drop((sighted, resume));
+        door_resume.send(()).unwrap();
+        door.join().unwrap()
+    });
+
+    let refused = answer.expect_err("the door saw the edit");
+    assert_eq!(refused.code, ErrorCode::RootMismatch, "{refused:?}");
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("plan.md")).unwrap(),
+        OUTSIDE,
+        "nothing landed"
+    );
+    ring.cycle_now(&root, &registry).unwrap();
+    let fin = Root(fs::domain_snapshot(&root).unwrap().1.0);
+    let frames: Vec<_> = ring
+        .frames_after(seq)
+        .iter()
+        .map(|frame| {
+            let paths: Vec<String> = frame.delta.files.iter().map(|f| f.path.0.clone()).collect();
+            (
+                frame.delta.root_before == start,
+                frame.delta.root_after == fin,
+                paths,
+            )
+        })
+        .collect();
+    assert_eq!(
+        frames,
+        [(true, true, vec!["plan.md".to_owned()])],
+        "the edit is told once, from START to the disk"
+    );
+}

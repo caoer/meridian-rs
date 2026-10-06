@@ -192,6 +192,9 @@ pub(crate) struct WorkspaceFeed {
     /// The next write carries `fetch_add + 1`; sightings max into
     /// [`FeedState::cookie_seen`].
     cookie_serial: AtomicU64,
+    /// Test seam: the serial of the last sentinel write that landed.
+    #[cfg(test)]
+    cookie_written: AtomicU64,
 }
 
 /// The feed's shared state plus the §6.4 cookie condvar: barrier waiters
@@ -200,6 +203,36 @@ pub(crate) struct WorkspaceFeed {
 struct FeedSync {
     state: Mutex<FeedState>,
     cookie: Condvar,
+    /// Test seam: while armed, the watcher parks after every sighting
+    /// ([`WorkspaceFeed::park_after_sightings`]).
+    #[cfg(test)]
+    sighting_gate: Mutex<Option<SightingGate>>,
+}
+
+/// The watcher's side of [`WorkspaceFeed::park_after_sightings`]: announce
+/// the sighted serial, then wait to be resumed.
+#[cfg(test)]
+struct SightingGate {
+    announce: std::sync::mpsc::Sender<u64>,
+    resume: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+impl FeedSync {
+    /// Park the watcher thread on an armed gate, the state lock released. A
+    /// gate whose test dropped its ends disarms itself.
+    fn park_after_sighting(&self, serial: u64) {
+        let mut gate = self
+            .sighting_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let parked = gate
+            .as_ref()
+            .is_some_and(|g| g.announce.send(serial).is_ok() && g.resume.recv().is_ok());
+        if !parked {
+            *gate = None;
+        }
+    }
 }
 
 impl std::fmt::Debug for WorkspaceFeed {
@@ -365,6 +398,8 @@ impl WorkspaceFeed {
                 ..FeedState::default()
             }),
             cookie: Condvar::new(),
+            #[cfg(test)]
+            sighting_gate: Mutex::new(None),
         });
         let sink = Arc::clone(&sync);
         let root = workspace.to_path_buf();
@@ -398,6 +433,12 @@ impl WorkspaceFeed {
                             if let Some(serial) = read_serial(path) {
                                 s.cookie_seen = s.cookie_seen.max(serial);
                                 sink.cookie.notify_all();
+                                #[cfg(test)]
+                                {
+                                    drop(s);
+                                    sink.park_after_sighting(serial);
+                                    s = sink.state.lock().unwrap_or_else(PoisonError::into_inner);
+                                }
                             }
                             continue;
                         }
@@ -429,7 +470,35 @@ impl WorkspaceFeed {
             _watcher: watcher,
             sync,
             cookie_serial: AtomicU64::new(0),
+            #[cfg(test)]
+            cookie_written: AtomicU64::new(0),
         })
+    }
+
+    /// Test seam: park the watcher thread after every cookie sighting. Each
+    /// sighting's serial arrives on the receiver; one send resumes the
+    /// watcher. Dropping both ends disarms the gate.
+    #[cfg(test)]
+    pub(crate) fn park_after_sightings(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<u64>, std::sync::mpsc::Sender<()>) {
+        let (announce, announced) = std::sync::mpsc::channel();
+        let (resume, resumed) = std::sync::mpsc::channel();
+        *self
+            .sync
+            .sighting_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(SightingGate {
+            announce,
+            resume: resumed,
+        });
+        (announced, resume)
+    }
+
+    /// Test seam: the serial of the last sentinel write that landed.
+    #[cfg(test)]
+    pub(crate) fn cookie_written(&self) -> u64 {
+        self.cookie_written.load(Ordering::Relaxed)
     }
 
     /// The §6.4 currency barrier: write the sentinel at [`COOKIE_REL`] and
@@ -520,6 +589,8 @@ impl WorkspaceFeed {
         if write.is_err() {
             return CookieOutcome::Unproven;
         }
+        #[cfg(test)]
+        self.cookie_written.fetch_max(serial, Ordering::Relaxed);
         let deadline = Instant::now() + timeout;
         let mut s = self
             .sync
@@ -1185,6 +1256,37 @@ mod tests {
             feed.rescan_record(),
             vec![RescanCause::CookieTimeout],
             "a timed-out barrier is the named CookieTimeout trigger"
+        );
+    }
+
+    /// Two engines on one workspace never vouch each other (merkle-spec
+    /// §6.4): B's watcher parks after every sighting; A's barrier lands its
+    /// sentinel in B's stream too; an outside write completes; B's barrier is
+    /// `Seen` only with the write in B's take. A sighting that any engine's
+    /// sentinel could raise would park B on A's sentinel and vouch B's
+    /// barrier before the write is delivered.
+    #[test]
+    fn a_second_feed_on_the_workspace_never_vouches_this_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.md"), "# A\n").unwrap();
+        let a = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("watcher");
+        let b = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("watcher");
+        let (sighted, resume) = b.park_after_sightings();
+        assert_eq!(
+            a.cookie_barrier(&root, Duration::from_secs(10)),
+            CookieOutcome::Seen
+        );
+        let b_sighted_a = sighted.recv_timeout(Duration::from_secs(1)).ok();
+        std::fs::write(root.join("a.md"), "# A, outside write\n").unwrap();
+        let verdict = b.cookie_barrier(&root, Duration::from_secs(10));
+        let pending = b.take();
+        drop((sighted, resume));
+        assert_eq!(verdict, CookieOutcome::Seen);
+        assert!(
+            matches!(&pending, Pending::Paths(paths) if paths.iter().any(|p| p == Path::new("a.md"))),
+            "B's Seen vouched a take without the write (B sighted A's sentinel: \
+             {b_sighted_a:?}): {pending:?}"
         );
     }
 
