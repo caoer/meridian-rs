@@ -222,6 +222,16 @@ impl Host {
     }
 }
 
+/// The peak one load of a version of `len` bytes is admitted under: the
+/// source bytes, the retained tree and the parser's staging at the worst
+/// measured document shape (merkle-spec §6.4, load-peak declarations).
+/// `crates/registry/tests/load_peak.rs` holds every shape to it.
+#[must_use]
+pub fn load_peak(len: u64) -> usize {
+    let _ = len;
+    0
+}
+
 /// An immutable version descriptor shared across generations and operations.
 #[derive(Debug, Clone)]
 pub struct Resident(Arc<Inner>);

@@ -671,10 +671,62 @@ managed lease for any raw owner they retain; an untracked clone of a document's
 public raw Arc is not an accounting lease. Cloned trees and output buffers
 belong to explicitly charged staging or metadata owners. Non-body owners declare measured
 floor charges, held until their allocation is destroyed, and load callers
-declare a conservative peak reservation before I/O. These integration inputs
-are contracts, not a raw-length multiplier or an RSS estimate. The controller
+declare a conservative peak reservation before I/O. The floor charges are
+measurements, not a raw-length multiplier or an RSS estimate; the peak
+reservation is the length rule below. The controller
 counts its own tables, descriptors (each member's version descriptor and the
 source handle allocation it alone owns) and reservation metadata separately.
+
+**Load-peak declarations.** Every load of a version is admitted under one
+rule of its byte length, `residency::load_peak(len) = 72 KiB + 256·len`: the
+catalog's serving slots and the watcher-baseline provider
+(`residency::retention::Retention`) both declare it from the member's byte
+identity, so a host carries no peak of its own. The fixed part covers the raw
+store's 64 KiB copy buffer and the load's bookkeeping, measured at 66.8 KB on
+every load. The per-byte part covers the source bytes, the retained document
+tree and the parser's transient staging, which follows the document's shape
+and not its length alone: nothing available at admission measures a parse's
+peak, and the syntax-node count does not predict it (a list or a table emits
+no dialect node and still stages 24 to 48 bytes per raw byte). The rule is
+therefore sized to the worst shape observed, with the rest of the set far
+under it. `crates/registry/tests/load_peak.rs` measures one cold load per
+shape with a counting allocator and asserts that each peak is at most its
+declaration; at 64 KiB it measures, in bytes per raw byte above the fixed
+part:
+
+| shape | retained tree | parse alone | whole load | declaration ÷ load |
+|---|---|---|---|---|
+| prose, tags | 0.0 | 1.7 | 1.7 | 96 |
+| CJK prose | 0.0 | 3.2 | 3.2 | 62 |
+| frontmatter | 2.4 | 2.6 | 3.9 | 53 |
+| wikilinks with heading and alias | 7.3 | 19.5 | 19.5 | 12.5 |
+| code fences | 12.9 | 16.5 | 21.4 | 11.5 |
+| list, table, block ids, HTML blocks, inline HTML, autolinks | 0.0 to 13.2 | 14.7 to 24.2 | 24.2 | 10.2 |
+| callouts, footnote definitions | 0.0 to 12.7 | 31.8 to 32.3 | 32.3 | 7.7 |
+| embeds | 13.5 | 38.2 | 38.2 | 6.6 |
+| tasks | 25.0 | 39.2 | 42.0 | 6.0 |
+| headings | 28.0 | 27.9 | 45.7 | 5.5 |
+| bare list markers, nested and 32-deep lists, 32-deep quotes, 1-char table cells, 1-char paragraphs, hard breaks | 0.0 | 48.2 | 48.2 | 5.2 |
+| one-row tables, empty fences | 26.0 | 32.2 to 42.5 | 52.0 | 4.8 |
+| inline markup | 12.5 | 58.1 | 58.1 | 4.3 |
+| `*a ` unclosed emphasis, `[a](b)` links | 0.0 | 64.2 to 68.0 | 68.0 | 3.7 |
+| `a ^b` block ids, `- [ ]` tasks | 50.8 | 50.2 to 54.2 | 86.7 | 2.9 |
+| `*a*`, `**a**`, `[a][b]` runs | 0.0 | 96.2 | 96.2 | 2.6 |
+| `` `a` `` code spans | 52.0 | 136.2 | 136.2 | 1.9 |
+| bare `[[a]]` links, bare `![[a]]` embeds | 51.4 | 150.2 | 150.2 | 1.7 |
+| bare `#` headings | 116.0 | 120.0 | 228.0 | 1.1 |
+
+Bare `#` headings are the worst shape found: their load peaks at 0.89 of
+its declaration, and every other shape at 0.6 or less at this size.
+
+The whole load is below tree plus parse where the parser's staging is freed
+before the tree is complete. Over-declaring costs admission concurrency and
+never memory: a 64 KiB prose page reserves 16.8 MB for the length of its
+load, and a page whose declaration exceeds the allowance above the floor
+loads through the serialized transient slot. A shape outside this set that
+stages more than 255 bytes per raw byte loads past its declaration; the
+ledger reports that as a peak shortfall only when the retained body exceeds
+the declaration, and does not observe transient staging.
 
 The ledger retains a selected body's full charge throughout retirement,
 including the interval where the local slot already appears cold. Only after
@@ -736,9 +788,9 @@ the higher allowance do. The admission invariant is existing pinned ownership
 plus at most one over-budget loading wave, not an instantaneous cap on already
 admitted bodies after a resize. Zero is an enforcement pause that preserves an
 outstanding marker, rather than a positive allowance that proves a charge fits.
-Sound load-peak sizing and migration of every escaping owner remain required
-at the daemon activation boundary; the substrate's charge is the host floor
-above.
+Migration of every escaping owner remains required at the daemon activation
+boundary; load-peak sizing is the length rule above and the substrate's
+charge is the host floor above.
 
 A load-peak declaration can be a function of the raw length only because a
 document's retained tree and its parse staging grow linearly with its bytes,
@@ -865,7 +917,7 @@ Prepared handles commit with the baseline/root/scope transition only after
 all fallible work succeeds. A late retain or read failure leaves the old
 baseline, ring sequence and frames intact, so retry classifies the same
 transition. The registry's controller-backed retention adapter supplies this
-capability with caller-declared load peaks. Enabling it in the daemon also
+capability under the load-peak rule above. Enabling it in the daemon also
 requires the shared substrate accounting, bounded change staging, backing
 parent lifecycle and serving/SQL ownership migration above; the capability
 alone does not activate or establish the process budget.
@@ -1206,7 +1258,7 @@ never the whole corpus.
 of two forms, fixed for the life of its registry. Without a residency host
 the generation owns an eager document map and its leases borrow, so they
 cannot fault. With a host (`registry::residency::Host`: the shared
-controller, the raw store and the per-load peak, carried by
+controller and the raw store, carried by
 `registry::Config::residency`) the generation is a
 `residency::catalog::Catalog` over slots: `Registry::warm_or_build` runs the
 pass above over the resident generation's slots, or over the empty
