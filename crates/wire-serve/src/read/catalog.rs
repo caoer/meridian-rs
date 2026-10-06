@@ -45,8 +45,16 @@ pub fn with_document<T>(
 /// `workspace_busy`, the retry class, naming the member; anything else is the
 /// member's `io_error`.
 pub(super) fn lease_fault(path: &Path, error: &std::io::Error) -> Box<ErrorBody> {
-    // Control prototype: a member fault is `io_error` whatever its class.
-    retained_fault(path, error)
+    if !model::catalog::is_transient(error) {
+        return retained_fault(path, error);
+    }
+    let mut refusal = ErrorBody::new(wire::ErrorCode::WorkspaceBusy);
+    refusal.path = Some(path.clone());
+    refusal.message = Some(format!(
+        "cannot read retained member {} now: {error} — transient; retry",
+        path.0
+    ));
+    Box::new(refusal)
 }
 
 pub(super) fn retained_fault(path: &Path, error: impl std::fmt::Display) -> Box<ErrorBody> {

@@ -375,7 +375,9 @@ fn store_error(context: &str, error: view::ViewError) -> Box<ErrorBody> {
         view::ViewError::Busy(reason) => reason,
         // A member lease the residency admission refused for now (merkle-spec
         // §6.8): the append rolled back whole, so the retry appends again.
-        // Control prototype: a lease refusal is an I/O error like any other.
+        view::ViewError::Io(cause) if model::catalog::is_transient(&cause) => {
+            format!("{cause} — transient; retry")
+        }
         error => return io_error(format!("{context}: {error}")),
     };
     let mut error = ErrorBody::new(ErrorCode::WorkspaceBusy);

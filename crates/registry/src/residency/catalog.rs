@@ -41,9 +41,24 @@ fn admit<T>(
     pauses: &[Duration],
     mut pause: impl FnMut(Duration),
 ) -> io::Result<T> {
-    // Control prototype: one attempt, and every refusal is a plain I/O fault.
-    let _ = (pauses, &mut pause, AdmissionError::Busy);
-    attempt().map_err(io::Error::other)
+    let mut pauses = pauses.iter();
+    loop {
+        let refusal = match attempt() {
+            Ok(leased) => return Ok(leased),
+            Err(Error::Admission(AdmissionError::Busy)) => AdmissionError::Busy,
+            Err(Error::Admission(
+                refusal @ (AdmissionError::Retiring | AdmissionError::Settling),
+            )) => match pauses.next() {
+                Some(wait) => {
+                    pause(*wait);
+                    continue;
+                }
+                None => refusal,
+            },
+            Err(error) => return Err(io::Error::other(error)),
+        };
+        return Err(model::catalog::transient(refusal));
+    }
 }
 
 fn pause(wait: Duration) {

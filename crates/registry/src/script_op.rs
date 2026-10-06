@@ -80,8 +80,9 @@ impl<'w> Entry<'w> {
                 .get(path)
                 .map(|condition| model::leaf_digest(condition.as_bytes())));
         }
-        // Control prototype: a member's leaf is hashed off its body.
-        let _ = self.leaves;
+        if let Some(leaf) = self.leaves.get(Path::new(path)) {
+            return Ok(Some(*leaf));
+        }
         model::catalog::scan(self.catalog, path, |doc| {
             model::leaf_digest(doc.raw.as_bytes())
         })
@@ -1278,10 +1279,8 @@ fn entry_toc(
     root: &wire::Root,
     path: &str,
 ) -> Result<Option<TocFacts>, MemberFault> {
-    // Control prototype: a member that cannot be lent values from the
-    // workspace file, like a path outside the hash domain.
-    if let Ok(Some(facts)) =
-        model::catalog::read(world.catalog, path, |doc| toc_facts_of(doc, path, root))
+    if let Some(facts) =
+        model::catalog::read(world.catalog, path, |doc| toc_facts_of(doc, path, root))?
     {
         return Ok(Some(facts));
     }
@@ -1390,9 +1389,8 @@ impl EntryWorldHost<'_> {
             (read.take().expect("one lease, one read"))(doc)
         }) {
             Ok(Some(answer)) => return answer,
-            // Control prototype: a member that cannot be lent serves from the
-            // workspace file, like a path outside the hash domain.
-            Ok(None) | Err(_) => {}
+            Ok(None) => {}
+            Err(member) => return Err(fault(member_reason(&member))),
         }
         let read = read.expect("a nonmember was never lent");
         if let Some(condition) = self.entry.unserved.get(path) {

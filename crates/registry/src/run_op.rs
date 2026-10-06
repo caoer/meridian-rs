@@ -288,14 +288,20 @@ fn entry_row(
             "fault": {"class": class, "reason": reason},
         })
     };
-    // Control prototype: the page is read under a scan pin, and a page that
-    // cannot be lent is a page the pinned corpus does not carry.
-    match model::catalog::scan(world, page, row) {
+    match model::catalog::read(world, page, row) {
         Ok(Some(row)) => row,
-        Ok(None) | Err(_) => refused(
+        // The pinned corpus does not carry this page.
+        Ok(None) => refused(
             "bad_path",
             format!("no such page in the pinned corpus: {page}"),
         ),
+        // The pinned corpus carries it and cannot lend it. Never the
+        // workspace file in its place: that may be a newer page than the one
+        // this submission pinned.
+        Err(fault) if fault.is_transient() => {
+            refused("workspace_busy", format!("{fault} — transient; retry"))
+        }
+        Err(fault) => refused("io_error", fault.to_string()),
     }
 }
 
