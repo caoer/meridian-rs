@@ -150,8 +150,24 @@ impl ResidentTree {
     /// path, and each node's child map.
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
-        // Control prototype: no census.
-        0
+        let Self {
+            nodes,
+            dirty,
+            collisions,
+        } = self;
+        let mut bytes = model::allocation::btree_bytes::<Vec<u8>, Node>(nodes.len());
+        for (path, node) in nodes {
+            bytes = bytes
+                .saturating_add(path.capacity())
+                .saturating_add(node.map.heap_bytes());
+        }
+        for set in [dirty, collisions] {
+            bytes = set.iter().fold(
+                bytes.saturating_add(model::allocation::btree_bytes::<Vec<u8>, ()>(set.len())),
+                |bytes, path| bytes.saturating_add(path.capacity()),
+            );
+        }
+        bytes
     }
 
     /// The empty workspace tree: a root node with `C = ∅`.

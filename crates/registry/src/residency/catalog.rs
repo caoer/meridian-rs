@@ -149,8 +149,24 @@ impl Slot {
     /// body are the controller's.
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
-        // Control prototype: no census.
-        0
+        let Self {
+            revision,
+            member: _,
+            link_roots,
+            lock_roots,
+            aliases,
+        } = self;
+        let names = |names: &[addr::MountName]| {
+            names.iter().fold(size_of_val(names), |bytes, name| {
+                bytes.saturating_add(name.heap_bytes())
+            })
+        };
+        revision
+            .0
+            .capacity()
+            .saturating_add(names(link_roots))
+            .saturating_add(lock_roots.as_deref().map_or(0, names))
+            .saturating_add(model::allocation::strings_bytes(aliases, aliases.len()))
     }
 
     /// Publish `doc` as a cold slot: its exact bytes retained as backing, a
@@ -187,9 +203,19 @@ impl Slots {
     /// `seen` has not counted yet: its `Arc` allocation and facts.
     #[must_use]
     pub fn heap_bytes(&self, seen: &mut super::census::Seen) -> usize {
-        // Control prototype: no census.
-        let _ = seen;
-        0
+        self.0.iter().fold(
+            model::allocation::btree_bytes::<String, Arc<Slot>>(self.0.len()),
+            |bytes, (path, slot)| {
+                let bytes = bytes.saturating_add(path.capacity());
+                if seen.first(slot) {
+                    bytes
+                        .saturating_add(model::allocation::arc_bytes::<Slot>())
+                        .saturating_add(slot.heap_bytes())
+                } else {
+                    bytes
+                }
+            },
+        )
     }
 }
 
@@ -263,9 +289,14 @@ impl Catalog {
     /// counted once through `seen`.
     #[must_use]
     pub fn heap_bytes(&self, seen: &mut super::census::Seen) -> usize {
-        // Control prototype: no census.
-        let _ = seen;
-        0
+        let Self {
+            entries,
+            index,
+            load_peak: _,
+        } = self;
+        entries
+            .heap_bytes(seen)
+            .saturating_add(super::census::index_bytes(index, seen))
     }
 
     /// Capture an immutable eager generation, with the host's conservative

@@ -2673,8 +2673,22 @@ impl CorpusIndex {
     /// path in it. The inline struct is its owner's.
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
-        // Control prototype: no census.
-        0
+        let Self {
+            by_basename,
+            by_alias,
+        } = self;
+        [by_basename, by_alias]
+            .into_iter()
+            .fold(0usize, |bytes, map| {
+                map.iter().fold(
+                    bytes.saturating_add(allocation::btree_bytes::<String, Vec<String>>(map.len())),
+                    |bytes, (key, paths)| {
+                        bytes
+                            .saturating_add(key.capacity())
+                            .saturating_add(allocation::strings_bytes(paths, paths.capacity()))
+                    },
+                )
+            })
     }
 
     /// Index one document under its vault `path`: its file basename and every

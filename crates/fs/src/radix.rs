@@ -94,8 +94,7 @@ impl RadixChildMap {
     /// child list. The inline struct is its owner's.
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
-        // Control prototype: no census.
-        0
+        self.root.as_deref().map_or(0, vertex_heap)
     }
 
     /// The empty child map (`C = ∅`).

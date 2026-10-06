@@ -1040,8 +1040,57 @@ impl DomainCache {
     /// here. A quiescent census: the caller holds the memo's lock.
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
-        // Control prototype: no census.
-        0
+        let DomainCache {
+            leaves,
+            dirs,
+            tree,
+            stamps,
+            served,
+            domain_seen,
+            calibration: _,
+            feed,
+            acked_losses: _,
+            restored_unobserved: _,
+            reads: _,
+            listings: _,
+            served_folds: _,
+            watermark_rereads: _,
+            suspect_reads: _,
+            fenced_reads: _,
+            sweeps: _,
+            member_stats: _,
+        } = self;
+        let mut bytes = model::allocation::btree_bytes::<PathBuf, LeafSeen>(leaves.len());
+        for path in leaves.keys() {
+            bytes = bytes.saturating_add(path.capacity());
+        }
+        bytes = bytes.saturating_add(model::allocation::btree_bytes::<PathBuf, DirSeen>(
+            dirs.len(),
+        ));
+        for (path, seen) in dirs {
+            let DirSeen {
+                key: _,
+                seen: _,
+                entries,
+            } = seen;
+            bytes = entries.iter().fold(
+                bytes
+                    .saturating_add(path.capacity())
+                    .saturating_add(entries.capacity().saturating_mul(size_of::<DirEntryKind>())),
+                |bytes, entry| bytes.saturating_add(entry.name.capacity()),
+            );
+        }
+        bytes = bytes.saturating_add(tree.heap_bytes());
+        if let Some(StampSource { instance, clock: _ }) = stamps {
+            bytes = bytes.saturating_add(instance.capacity());
+        }
+        if let Some((_, root)) = served {
+            bytes = bytes.saturating_add(root.0.capacity());
+        }
+        if let Some(domain) = domain_seen {
+            bytes = bytes.saturating_add(domain.heap_bytes());
+        }
+        bytes.saturating_add(feed.heap_bytes())
     }
 
     /// An empty memo — the first [`root`](Self::root) reads every member.
@@ -4755,8 +4804,29 @@ impl Watcher {
     /// provider's. The provider itself is shared and not counted.
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
-        // Control prototype: no census.
-        0
+        let Watcher {
+            _root: root,
+            baseline,
+            retention: _,
+        } = self;
+        let mut bytes = root.0.capacity();
+        if let Some(baseline) = baseline {
+            bytes = bytes.saturating_add(model::allocation::btree_bytes::<String, BaselineEntry>(
+                baseline.len(),
+            ));
+            for (path, entry) in baseline {
+                let BaselineEntry { identity: _, body } = entry;
+                bytes = bytes
+                    .saturating_add(path.capacity())
+                    .saturating_add(match body {
+                        BaselineBody::Memory(raw) => raw.heap_bytes(),
+                        BaselineBody::Retained(handle) => {
+                            model::allocation::arc_dyn_bytes(&**handle)
+                        }
+                    });
+            }
+        }
+        bytes
     }
 
     #[must_use]
