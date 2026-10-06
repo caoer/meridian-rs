@@ -62,6 +62,26 @@ fn argument(args: &[String], index: usize, default: usize) -> usize {
         value.parse().expect("numeric probe argument")
     })
 }
+/// Wait until this thread is the process's only task. The capture's scoped
+/// readers are joined when it returns, but the kernel releases a joined
+/// thread's task a moment after the join; a measurement that starts before
+/// then counts nothing of theirs, yet cannot prove it.
+#[cfg(target_os = "linux")]
+fn await_quiescence() {
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let tasks = std::fs::read_dir("/proc/self/task").unwrap().count();
+        if tasks == 1 {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "allocation measurement requires quiescence: {tasks} tasks after 10 s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 fn main() {
     println!(
         "watcher priming: synthetic corpus; requested Rust allocations; actual write flock and state mutex held"
@@ -109,11 +129,7 @@ fn main() {
             observed = wire::Root(folded.0);
         }
         #[cfg(target_os = "linux")]
-        assert_eq!(
-            std::fs::read_dir("/proc/self/task").unwrap().count(),
-            1,
-            "allocation measurement requires quiescence"
-        );
+        await_quiescence();
         let _flock = fs::WriteLock::acquire(&root).unwrap();
         let state = Mutex::new(wire_serve::watch::WatchState::new(&root));
         let mut watch = state.lock().unwrap();

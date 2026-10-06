@@ -536,12 +536,12 @@ impl WorkspaceRing {
         }
     }
 
-    /// A write door's flock-held step, on the observation `expected` the
-    /// door just made through `cache`: [`Self::reconcile_pair`] over the
-    /// memo's root and leaves when the memo still folds to `expected`. A memo
-    /// a reader has moved past it tells nothing and leaves the baseline to
-    /// the detector, as a refused reconcile does: a commit's own files must
-    /// not be told with bytes past its `root_after`.
+    /// The door's follow step, on the root `expected` its commit left the
+    /// memo at: [`Self::reconcile_pair`] over the memo's root and leaves when
+    /// the memo still folds to `expected`. A memo a reader has moved past it
+    /// tells nothing and leaves the baseline to the detector, as a refused
+    /// reconcile does: a commit's own files must not be told with bytes past
+    /// its `root_after`.
     fn reconcile_observed(
         &self,
         ws_root: &fs::WorkspaceRoot,
@@ -573,28 +573,31 @@ impl WorkspaceRing {
     }
 
     /// Baseline law, before bytes land: a write door holding the flock has
-    /// just observed `observed` through `cache`. A primed baseline behind it
-    /// is an external change no frame has told — told now, in its own
-    /// actor-absent frame, so the commit's frame chains onto it. An unprimed
-    /// watcher is left alone: priming is a full snapshot, a subscriber's
-    /// cost, never a writer's.
+    /// just observed through `cache`. A primed baseline behind the memo is an
+    /// external change no frame has told — told now, in its own actor-absent
+    /// frame, so the commit's frame, whose `root_before` the door takes from
+    /// the same memo, chains onto it. The step classifies the memo's own
+    /// pair, as the detector does: a reader that moved the memo past the
+    /// door's observation saw a later state of the tree the commit lands on.
+    /// An unprimed watcher is left alone: priming is a full snapshot, a
+    /// subscriber's cost, never a writer's.
     ///
     /// Never fails the write. A refused reconcile is logged, and a writer
     /// still mid-write holds the baseline (the race arm); either way
     /// [`Self::follow`] then leaves the baseline too, and the detector tells
     /// the change as external.
-    fn settle(
-        &self,
-        ws_root: &fs::WorkspaceRoot,
-        cache: &Arc<Mutex<fs::DomainCache>>,
-        observed: &Root,
-    ) {
-        let behind = self
-            .state()
-            .watch
-            .root()
-            .is_some_and(|baseline| baseline != observed);
-        if behind && let Err(e) = self.reconcile_observed(ws_root, cache, observed) {
+    fn settle(&self, ws_root: &fs::WorkspaceRoot, cache: &Arc<Mutex<fs::DomainCache>>) {
+        let Some(baseline) = self.state().watch.root().cloned() else {
+            return;
+        };
+        let told = memo_root(cache).and_then(|root| {
+            if root == baseline {
+                return Ok(false);
+            }
+            let (root, leaves) = memo_pair(cache)?;
+            self.reconcile_pair(ws_root, &leaves, &root)
+        });
+        if let Err(e) = told {
             eprintln!("registry: write-door reconcile: {e:?}");
         }
     }
@@ -666,8 +669,7 @@ impl<'a> DoorPlane<'a> {
         )?;
         #[cfg(test)]
         park(&self.ring.pause_after_door_observation);
-        self.ring
-            .settle(self.ws_root, self.cache, &Root(observed.0.clone()));
+        self.ring.settle(self.ws_root, self.cache);
         Ok(observed)
     }
 }
@@ -689,6 +691,13 @@ impl wire_serve::seq::SeqSink for DoorPlane<'_> {
 
 /// A memo's leaves by String-spelled workspace-relative path.
 type LeafView = std::collections::BTreeMap<String, [u8; 32]>;
+
+/// The memo's root alone: the cheap test of whether a step has work.
+fn memo_root(cache: &Arc<Mutex<fs::DomainCache>>) -> Result<Root, Box<ErrorBody>> {
+    let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    let root = memo.overlay_root().map_err(|e| io_error_body(&e))?;
+    Ok(Root(root.0))
+}
 
 /// Park on a one-shot test gate when it is armed: announce, then wait.
 #[cfg(test)]
