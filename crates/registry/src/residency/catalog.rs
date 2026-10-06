@@ -4,7 +4,7 @@
 
 use super::{
     Access,
-    controller::{Controller, Member, Pin},
+    controller::{AdmissionError, Controller, Error, Member, Pin},
 };
 use crate::raw_store::RawStore;
 use model::{
@@ -15,7 +15,44 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     sync::Arc,
+    time::Duration,
 };
+
+/// Pauses between attempts on one member version whose retirement or failed
+/// loading wave is completing (merkle-spec §6.4): both end without this
+/// caller's help, so a short wait clears them. About 30 ms at most.
+const RETRY_PAUSES: [Duration; 6] = [
+    Duration::ZERO,
+    Duration::from_millis(1),
+    Duration::from_millis(2),
+    Duration::from_millis(4),
+    Duration::from_millis(8),
+    Duration::from_millis(16),
+];
+
+/// Lease one member version through the controller's admission. `Retiring`
+/// and `Settling` retry the same version once per pause in `pauses`;
+/// `Busy` is returned at once, because the allowance may be occupied by a pin
+/// this very caller holds. All three leave as [`model::catalog::transient`];
+/// a load, identity or peak failure is the member's own fault and is neither
+/// retried nor transient.
+fn admit<T>(
+    mut attempt: impl FnMut() -> Result<T, Error>,
+    pauses: &[Duration],
+    mut pause: impl FnMut(Duration),
+) -> io::Result<T> {
+    // Control prototype: one attempt, and every refusal is a plain I/O fault.
+    let _ = (pauses, &mut pause, AdmissionError::Busy);
+    attempt().map_err(io::Error::other)
+}
+
+fn pause(wait: Duration) {
+    if wait.is_zero() {
+        std::thread::yield_now();
+    } else {
+        std::thread::sleep(wait);
+    }
+}
 
 #[derive(Debug)]
 struct Entry {
@@ -74,6 +111,21 @@ impl Catalog {
         })
     }
 }
+impl Catalog {
+    fn lease(&self, path: &str, access: Access) -> io::Result<Option<Box<dyn DocumentLease + '_>>> {
+        self.entries
+            .get(path)
+            .map(|entry| {
+                admit(
+                    || entry.member.pin(access, self.load_peak),
+                    &RETRY_PAUSES,
+                    pause,
+                )
+                .map(|pin| Box::new(pin) as Box<dyn DocumentLease>)
+            })
+            .transpose()
+    }
+}
 impl DocumentCatalog for Catalog {
     fn revisions(&self) -> Box<dyn Iterator<Item = (&str, &NodeRev)> + '_> {
         Box::new(
@@ -95,28 +147,10 @@ impl DocumentCatalog for Catalog {
             .collect()
     }
     fn pin(&self, path: &str) -> io::Result<Option<Box<dyn DocumentLease + '_>>> {
-        self.entries
-            .get(path)
-            .map(|entry| {
-                entry
-                    .member
-                    .pin(Access::Scan, self.load_peak)
-                    .map(|pin| Box::new(pin) as Box<dyn DocumentLease>)
-                    .map_err(io::Error::other)
-            })
-            .transpose()
+        self.lease(path, Access::Scan)
     }
     fn pin_read(&self, path: &str) -> io::Result<Option<Box<dyn DocumentLease + '_>>> {
-        self.entries
-            .get(path)
-            .map(|entry| {
-                entry
-                    .member
-                    .pin(Access::Read, self.load_peak)
-                    .map(|pin| Box::new(pin) as Box<dyn DocumentLease>)
-                    .map_err(io::Error::other)
-            })
-            .transpose()
+        self.lease(path, Access::Read)
     }
 }
 impl view::walk::LockFacts for Catalog {
@@ -148,3 +182,6 @@ mod tests;
 
 #[cfg(test)]
 mod read_tests;
+
+#[cfg(test)]
+mod admission_tests;

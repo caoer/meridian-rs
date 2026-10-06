@@ -32,6 +32,8 @@ mod checkpoint;
 mod client;
 mod delta_sink;
 mod engine;
+#[cfg(test)]
+mod entry_fixture;
 mod feed;
 mod mounts;
 pub mod mw_sql;

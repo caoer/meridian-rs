@@ -220,8 +220,8 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
                     source,
                     &invocation,
                 ),
-                (Some(world), None) => match world.docs.get(&target.page) {
-                    Some(doc) => modes::mode_row(
+                (Some(world), None) => entry_row(&**world, &target.page, &invocation, |doc| {
+                    modes::mode_row(
                         &modes::ModeWorld {
                             doc,
                             root: &root,
@@ -240,21 +240,8 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
                         &invocation,
                         request.actor.as_deref(),
                         request.now.as_deref(),
-                    ),
-                    // The pinned corpus does not carry this page. Answered on
-                    // the row so its siblings still report for themselves.
-                    None => json!({
-                        "page": target.page,
-                        "invocation": invocation,
-                        "result": "refused",
-                        "fault": {
-                            "class": "bad_path",
-                            "reason": format!(
-                                "no such page in the pinned corpus: {}", target.page
-                            ),
-                        },
-                    }),
-                },
+                    )
+                }),
                 // The reaper won the warm→pin race — the same transient the
                 // read path names, answered on the row so its siblings still
                 // report for themselves.
@@ -282,6 +269,34 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
         ));
     }
     rows
+}
+
+/// One mode row over its page, lent out of the pinned generation for this row
+/// alone (merkle-spec §6.8). Every arm answers on the row, so its siblings
+/// still report for themselves.
+fn entry_row(
+    world: &dyn model::catalog::DocumentCatalog,
+    page: &str,
+    invocation: &str,
+    row: impl FnOnce(&model::Document) -> Value,
+) -> Value {
+    let refused = |class: &str, reason: String| {
+        json!({
+            "page": page,
+            "invocation": invocation,
+            "result": "refused",
+            "fault": {"class": class, "reason": reason},
+        })
+    };
+    // Control prototype: the page is read under a scan pin, and a page that
+    // cannot be lent is a page the pinned corpus does not carry.
+    match model::catalog::scan(world, page, row) {
+        Ok(Some(row)) => row,
+        Ok(None) | Err(_) => refused(
+            "bad_path",
+            format!("no such page in the pinned corpus: {page}"),
+        ),
+    }
 }
 
 /// The world a mode-bearing submission runs against: the RESIDENT snapshot —
@@ -722,6 +737,64 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         let resp: Value = serde_json::from_str(line.trim()).expect("one JSON line");
         assert_eq!(resp["ok"], json!(true), "the run op answers rows: {resp}");
         resp["body"]["targets"].as_array().cloned().unwrap()
+    }
+
+    /// A mode row's page is lent out of the pinned generation under an
+    /// interactive lease, for that row.
+    #[test]
+    fn a_mode_row_reads_its_page_under_the_entry_lease() {
+        use crate::entry_fixture::{Entry, docs};
+        let docs = docs(&[("HOOKS.md", HOOKS)]);
+        let world = Entry::new(&docs);
+        let row = entry_row(
+            &world,
+            "HOOKS.md",
+            "inv-t0",
+            |doc| json!({"pinned_bytes": doc.raw.as_bytes() == HOOKS.as_bytes()}),
+        );
+        assert_eq!(row, json!({"pinned_bytes": true}));
+        assert_eq!(
+            (world.reads(), world.scans()),
+            (1, 0),
+            "the row serves this one page: an interactive lease, not a scan pin"
+        );
+        let absent = entry_row(&world, "gone.md", "inv-t1", |_| json!("ran"));
+        assert_eq!(absent["fault"]["class"], "bad_path", "{absent:#}");
+    }
+
+    /// A page the pinned generation holds and cannot lend refuses THAT row,
+    /// classed, and the block never runs — not against the workspace file,
+    /// not at all.
+    #[test]
+    fn a_page_the_pinned_generation_cannot_lend_refuses_its_own_row() {
+        use crate::entry_fixture::{Entry, Fault, docs};
+        let docs = docs(&[("HOOKS.md", HOOKS)]);
+        let world = Entry::new(&docs);
+        for (fault, class) in [
+            (Fault::Backing, "io_error"),
+            (Fault::Transient, "workspace_busy"),
+        ] {
+            world.fail(fault);
+            let row = entry_row(&world, "HOOKS.md", "inv-t0", |_| {
+                panic!("{fault:?}: the row ran without its pinned page")
+            });
+            assert_eq!(row["result"], "refused", "{fault:?}: {row:#}");
+            assert_eq!(row["fault"]["class"], class, "{fault:?}: {row:#}");
+            assert_eq!(row["page"], "HOOKS.md");
+            assert_eq!(row["invocation"], "inv-t0");
+            assert!(
+                row["fault"]["reason"]
+                    .as_str()
+                    .is_some_and(|reason| reason.contains("HOOKS.md")),
+                "{fault:?}: the reason names the member: {row:#}"
+            );
+        }
+        // The sibling row of the same submission still answers for itself.
+        world.fail(Fault::None);
+        assert_eq!(
+            entry_row(&world, "HOOKS.md", "inv-t1", |_| json!("ran")),
+            json!("ran")
+        );
     }
 
     /// A fire-only submission answers while another seat holds the resident

@@ -6,6 +6,7 @@ use std::{cell::Cell, io, rc::Rc};
 enum Fault {
     None,
     Read,
+    Transient,
     Missing,
     WrongVersion,
 }
@@ -14,6 +15,8 @@ enum Fault {
 struct Source<'a> {
     eager: EagerCatalog<'a>,
     fault: Cell<Fault>,
+    /// Which pin of `z.md` meets the fault.
+    fault_at: Cell<usize>,
     target_calls: Cell<usize>,
     pins: Cell<usize>,
     live: Rc<Cell<usize>>,
@@ -25,6 +28,7 @@ impl<'a> Source<'a> {
         Self {
             eager: EagerCatalog::new(docs),
             fault: Cell::new(Fault::None),
+            fault_at: Cell::new(2),
             target_calls: Cell::new(0),
             pins: Cell::new(0),
             live: Rc::default(),
@@ -73,9 +77,12 @@ impl DocumentCatalog for Source<'_> {
             self.target_calls.set(calls);
             // Alias planning sees the true body. Fail only at projection,
             // after BEGIN and after earlier documents may have flushed.
-            if calls == 2 {
+            if calls == self.fault_at.get() {
                 match self.fault.get() {
                     Fault::Read => return Err(io::Error::other("required backing unavailable")),
+                    Fault::Transient => {
+                        return Err(model::catalog::transient("residency allowance is occupied"));
+                    }
                     Fault::Missing => return Ok(None),
                     Fault::WrongVersion => source_path = "a.md",
                     Fault::None => {}
@@ -186,6 +193,68 @@ fn catalog_late_source_fault_rolls_back_flushed_rows_and_pin() {
         .unwrap();
     assert_eq!((counts.generation, counts.added, counts.removed), (2, 2, 1));
     tests::assert_surface_matches_fresh(&store, &docs);
+}
+
+/// The fingerprint-domain arm (a version-prefix change recreates the cache
+/// before appending): a member fault inside that append leaves the recreated
+/// cache EMPTY and UNPINNED — not the retired domain's rows, not a partial
+/// new generation — and the retry builds the whole generation from it. A
+/// transient refusal keeps its class through the store.
+#[test]
+fn catalog_fault_on_the_fingerprint_domain_arm_then_retry_builds_the_whole_generation() {
+    for fault in [Fault::Read, Fault::Transient] {
+        let old = tests::corpus(&[("old.md", "# Old\n\nold body\n")]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = SqlStore::open(&tests::tmp_store(&dir)).unwrap();
+        tests::sync_ambient(&mut store, &old, "b3b:old");
+        let docs = tests::corpus(&[("a.md", "# A\n\n[[z]]\n"), ("z.md", "# Z\n\nlast\n")]);
+        let source = Source::new(&docs);
+        source.fault.set(fault);
+        // A cold build plans no aliases: the projection is the first pin.
+        source.fault_at.set(1);
+        let roots = RootedCatalog::ambient(&source);
+        let error = store
+            .sync_catalog(&source, &roots, None, None, "b3c:new", None)
+            .unwrap_err();
+        let ViewError::Io(cause) = &error else {
+            panic!("{fault:?}: {error}");
+        };
+        assert_eq!(
+            model::catalog::is_transient(cause),
+            fault == Fault::Transient,
+            "{fault:?}: the class survives the store"
+        );
+        assert_eq!(source.live.get(), 0, "{fault:?}");
+        assert!(
+            store.pin().unwrap().is_none(),
+            "{fault:?}: the recreated cache is unpinned"
+        );
+        for table in ["doc", "body", "pin", "body_text"] {
+            let count: i64 = store
+                .connection()
+                .query_row(&format!("SELECT count(*) FROM hist.{table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(
+                count, 0,
+                "{fault:?}: the retired domain's {table} rows survived"
+            );
+        }
+        source.fault.set(Fault::None);
+        source.target_calls.set(0);
+        let counts = store
+            .sync_catalog(&source, &roots, None, None, "b3c:new", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (counts.generation, counts.added, counts.removed),
+            (1, 2, 0),
+            "{fault:?}: a cold build of the new domain, never an append onto the old"
+        );
+        assert_eq!(store.pin().unwrap().unwrap().fingerprint, "b3c:new");
+        tests::assert_surface_matches_fresh(&store, &docs);
+    }
 }
 
 #[test]

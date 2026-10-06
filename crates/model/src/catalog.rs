@@ -79,6 +79,39 @@ impl std::error::Error for MemberFault {
         Some(&self.cause)
     }
 }
+impl MemberFault {
+    /// Whether the same request may succeed against the same version.
+    #[must_use]
+    pub fn is_transient(&self) -> bool {
+        is_transient(&self.cause)
+    }
+}
+
+/// The host's admission refused this lease for now (merkle §6.4): the member
+/// version is intact and the same request may succeed. Carried as the payload
+/// of the lease's I/O error, so every consumer that keeps the error keeps the
+/// class.
+#[derive(Debug)]
+struct Transient(String);
+impl std::fmt::Display for Transient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for Transient {}
+
+/// A lease refusal a retry of the same request may clear.
+#[must_use]
+pub fn transient(reason: impl std::fmt::Display) -> io::Error {
+    io::Error::other(Transient(reason.to_string()))
+}
+
+/// Whether a lease error is [`transient`]. Every other lease error is a
+/// backing, identity or parse failure of that member version.
+#[must_use]
+pub fn is_transient(error: &io::Error) -> bool {
+    matches!(error.get_ref(), Some(cause) if cause.is::<Transient>())
+}
 
 /// Compute over one member under a scan pin; the lease ends before this
 /// returns, so a caller streaming a corpus holds one body at a time.
@@ -92,6 +125,28 @@ pub fn scan<T>(
     path: &str,
     read: impl FnOnce(&Document) -> T,
 ) -> Result<Option<T>, MemberFault> {
+    leased(catalog, path, false, read)
+}
+
+/// [`scan`] under an interactive lease ([`DocumentCatalog::pin_read`]): the
+/// caller is serving this one member, so the host may promote its recency.
+///
+/// # Errors
+/// As [`scan`].
+pub fn read<T>(
+    catalog: &dyn DocumentCatalog,
+    path: &str,
+    read: impl FnOnce(&Document) -> T,
+) -> Result<Option<T>, MemberFault> {
+    leased(catalog, path, true, read)
+}
+
+fn leased<T>(
+    catalog: &dyn DocumentCatalog,
+    path: &str,
+    interactive: bool,
+    read: impl FnOnce(&Document) -> T,
+) -> Result<Option<T>, MemberFault> {
     let Some(revision) = catalog.revision(path) else {
         return Ok(None);
     };
@@ -99,8 +154,12 @@ pub fn scan<T>(
         path: path.to_owned(),
         cause,
     };
-    let lease = catalog
-        .pin(path)
+    let lease = if interactive {
+        catalog.pin_read(path)
+    } else {
+        catalog.pin(path)
+    };
+    let lease = lease
         .map_err(fault)?
         .ok_or_else(|| fault(io::Error::other("known member has no body lease")))?;
     let doc = lease.document().map_err(fault)?;

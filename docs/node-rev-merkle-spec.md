@@ -586,7 +586,13 @@ including the interval where the local slot already appears cold. Only after
 destruction use the same ordering. No accounting lock spans loading, waiting
 on a local flight, or destruction of retained backing. A member's retirement
 race and the completion of a failed loading wave have distinct retryable
-results from occupied byte allowance. Admission
+results from occupied byte allowance. The catalog that leases bodies to
+consumers retries those two results against the same member version, a bounded
+number of times with a short pause, before it reports them; it never waits on
+occupied allowance, which a caller's own pin may be holding. What it reports
+for any of the three is a transient fault (`model::catalog::is_transient`):
+distinct from a backing, identity or parse failure, and never grounds for
+reading a newer version. Admission
 first checks policy and whether reclamation could make room; a certain refusal
 does not shed unrelated cache entries. Cached reclaimability and retirement
 counters avoid scanning the entire membership map for this decision. Raw-table
@@ -739,7 +745,8 @@ overlapping retained generations. Another root adds metadata even when its
 bodies share the global allowance. Protected ring payloads are charged, but
 the ring's independent frame-count horizon is not a byte limit. Oversized
 documents, operation pins and retained multi-file plan/effect payloads may
-cause the stated transient/floor overage. Allocator-retained pages, stacks,
+cause the stated transient/floor overage. A read that holds one such
+oversized body and needs a second is refused, not served. Allocator-retained pages, stacks,
 compiled modules and native/SQL memory remain outside the controller; a SQL
 setting does not establish process RSS. Failed spill, finite disk capacity,
 backing I/O latency and indefinite source churn can prevent progress or the
@@ -1112,7 +1119,31 @@ with the registry engine-map lock released before body access. A concurrent
 rebuild can publish a replacement without changing that callback's generation.
 The warm-to-snapshot reap race still returns the existing retry refusal.
 The daemon's named read adapter remains eager until activation; this seam does
-not migrate rooted scans, run/script worlds, or engine publication by itself.
+not migrate engine publication by itself.
+
+Run and script entry worlds read the generation their attempt pinned through
+the same interactive lease (`model::catalog::read`). A `run` mode row holds its
+page's lease for that row alone; a `script` read holds the entry document's
+lease for one builtin, and an armed overlay is built under it and kept by the
+attempt, not by the lease. Entry-rev threading leases each armed target once.
+The commit's touch-set premises are the entry generation's leaf digests, read
+from metadata, so a premise never pins a body. Glob expansion enumerates
+membership from metadata. A member the entry generation knows and cannot
+lease faults where it was asked for: that one `run` row is refused while its
+siblings answer for themselves, a `script` read is a read fault of that
+attempt, and a threading fault refuses the commit before anything is issued.
+None of them replays an earlier effect, loads the workspace file in the
+member's place, or moves the attempt to a newer generation.
+
+A transient fault leaves a serving door as a `retry` refusal naming the
+member — `workspace_busy` on a frame, the same class on a `run` row and in a
+`script` read fault — where every other member fault is `io_error`. The SQL
+arm rolls back the whole append on either and keeps the previous generation;
+the retry appends again. The seam's bounded retry covers the retirement and
+failed-wave races. Occupied allowance is returned at once: an operation that
+needs two bodies together while one of them alone exceeds the free allowance
+meets it on every attempt, so the `retry` class there promises nothing until
+the budget is raised. That case is a limit of the bound, not a served result.
 
 The link plane and a composed read's claim-link colours scan through the same
 catalog. `query::links_in` enumerates membership from metadata and pins one

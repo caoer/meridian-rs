@@ -8,8 +8,9 @@ use wire::{ErrorBody, Path};
 /// catalog members must never fall through to a newer workspace file.
 ///
 /// # Errors
-/// Required member faults are `io_error`; unserved members retain their
-/// per-file refusal. True nonmembers use the ordinary named live-source door.
+/// Required member faults are `io_error`, or `workspace_busy` when the lease
+/// was transiently refused; unserved members retain their per-file refusal.
+/// True nonmembers use the ordinary named live-source door.
 pub fn with_document<T>(
     root: &fs::WorkspaceRoot,
     catalog: &dyn DocumentCatalog,
@@ -20,11 +21,11 @@ pub fn with_document<T>(
     if let Some(revision) = catalog.revision(&path.0) {
         let lease = catalog
             .pin_read(&path.0)
-            .map_err(|error| retained_fault(path, error))?
+            .map_err(|error| lease_fault(path, &error))?
             .ok_or_else(|| retained_fault(path, "known member has no body lease"))?;
         let doc = lease
             .document()
-            .map_err(|error| retained_fault(path, error))?;
+            .map_err(|error| lease_fault(path, &error))?;
         if doc.root.node_rev != *revision {
             return Err(retained_fault(
                 path,
@@ -38,6 +39,14 @@ pub fn with_document<T>(
     }
     let doc = crate::load_doc(root, path)?;
     read(&doc)
+}
+
+/// A lease error as its frame: a transient refusal (merkle-spec §6.4) is
+/// `workspace_busy`, the retry class, naming the member; anything else is the
+/// member's `io_error`.
+pub(super) fn lease_fault(path: &Path, error: &std::io::Error) -> Box<ErrorBody> {
+    // Control prototype: a member fault is `io_error` whatever its class.
+    retained_fault(path, error)
 }
 
 pub(super) fn retained_fault(path: &Path, error: impl std::fmt::Display) -> Box<ErrorBody> {

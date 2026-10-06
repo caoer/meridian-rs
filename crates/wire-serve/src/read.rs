@@ -649,7 +649,7 @@ pub fn page_decorations_in(
 /// A scan's member fault as the frame a named read mints for the same member.
 #[must_use]
 pub fn member_fault(fault: model::catalog::MemberFault) -> Box<ErrorBody> {
-    catalog::retained_fault(&Path(fault.path), fault.cause)
+    catalog::lease_fault(&Path(fault.path), &fault.cause)
 }
 
 /// The one decoration pass. `with_target` lends a lock target's document

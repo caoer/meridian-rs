@@ -3,7 +3,7 @@
 //! `docs/run-plane.md` § The script entry, the entry-world amendment).
 //!
 //! One frame carries the whole program. The daemon runs the currency pass
-//! ONCE at entry, pins the entry world (an [`Arc`] clone of the resident
+//! ONCE at entry, pins the entry world (an [`std::sync::Arc`] clone of the resident
 //! engine — a rebuild swaps the map entry while the held clone keeps the
 //! entry generation alive for exactly this attempt), evaluates the program
 //! in-process under the kernel's own containment, threads each armed row's
@@ -36,13 +36,13 @@
 //!   the answer (the engines map still holds ONE generation).
 
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Instant;
 
 use effects::trace::{CommitLeg, Refusal, ScriptTrace};
 use effects::{
     ArmedEdit, ReadFault, ScriptCtx, ScriptHost, ScriptLimits, SecFacts, TocEntry, TocFacts,
 };
+use model::catalog::{DocumentCatalog, MemberFault};
 use serde_json::value::RawValue;
 use serde_json::{Map, Value, json};
 use wire::{ErrorBody, ErrorCode, PlanEdit, ReadSel, Recovery, ResponseBody};
@@ -50,6 +50,70 @@ use wire::{ErrorBody, ErrorCode, PlanEdit, ReadSel, Recovery, ResponseBody};
 use crate::engine::WorkspaceEngine;
 use crate::registry::Registry;
 use wire_serve::rev::Rev;
+
+/// The entry generation as this lane reads it (merkle-spec §6.8): membership,
+/// the unserved conditions and the leaf set from metadata, a body only under
+/// a lease. Attempt-scoped — it borrows the engine the attempt pinned.
+#[derive(Clone, Copy)]
+struct Entry<'w> {
+    catalog: &'w (dyn DocumentCatalog + Sync),
+    unserved: &'w std::collections::BTreeMap<String, String>,
+    leaves: &'w std::collections::BTreeMap<std::path::PathBuf, [u8; 32]>,
+}
+
+impl<'w> Entry<'w> {
+    fn of(world: &'w WorkspaceEngine) -> Self {
+        Self {
+            catalog: world,
+            unserved: &world.unserved,
+            leaves: &world.leaves,
+        }
+    }
+
+    /// The leaf digest the entry fingerprint folds for `path`, `None` when
+    /// the entry hash domain holds no such member. A member's leaf is its
+    /// descriptor's; only a generation that recorded none reads the body.
+    fn leaf(&self, path: &str) -> Result<Option<[u8; 32]>, MemberFault> {
+        if self.catalog.revision(path).is_none() {
+            return Ok(self
+                .unserved
+                .get(path)
+                .map(|condition| model::leaf_digest(condition.as_bytes())));
+        }
+        // Control prototype: a member's leaf is hashed off its body.
+        let _ = self.leaves;
+        model::catalog::scan(self.catalog, path, |doc| {
+            model::leaf_digest(doc.raw.as_bytes())
+        })
+    }
+}
+
+/// A member the entry generation knows and cannot lease, as a read fault's
+/// reason: the §8 code leads, as the unserved arm's does.
+fn member_reason(fault: &MemberFault) -> String {
+    if fault.is_transient() {
+        format!("workspace_busy: {fault} — transient; retry")
+    } else {
+        format!("io_error: {fault}")
+    }
+}
+
+/// The same fault met while valuing the commit: nothing was issued.
+fn member_refusal(fault: &MemberFault) -> CommitLeg {
+    let recovery = if fault.is_transient() {
+        Recovery::Retry
+    } else {
+        Recovery::Env
+    };
+    CommitLeg::Refused(Refusal::minted(
+        recovery,
+        format!(
+            "{} — the entry world could not serve a member the commit is valued from, so NO \
+             splice was issued: nothing was sent, nothing landed, no fingerprint advanced",
+            member_reason(fault)
+        ),
+    ))
+}
 
 /// Serve one `script` frame end to end, answering the full NDJSON line.
 ///
@@ -282,10 +346,9 @@ fn serve(
     // zero paths — data, not a refusal.
     let (files, expansions) = if request.files.iter().any(|m| policy::is_glob_pattern(m)) {
         let corpus: Vec<String> = world
-            .docs
-            .keys()
-            .chain(world.unserved.keys())
-            .cloned()
+            .revisions()
+            .map(|(path, _)| path.to_owned())
+            .chain(world.unserved.keys().cloned())
             .collect();
         let (expanded, rows) = policy::expand_globs(&request.files, &corpus);
         let records = rows
@@ -315,7 +378,7 @@ fn serve(
     let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
     let mut eval = {
         let mut host = EntryWorldHost {
-            world: Arc::clone(&world),
+            entry: Entry::of(&world),
             root: wire::Root(entry.clone()),
             ws: fs::WorkspaceRoot(ws.to_path_buf()),
             deadline,
@@ -334,41 +397,61 @@ fn serve(
 
     // Entry-rev threading, license-free: the value is the entry world's
     // (run-plane § the entry-rev law, as amended by the CAS relaxation).
-    eval.armed = thread_entry(&eval.armed, &world, &ws_root, &wire::Root(entry.clone()));
+    let root = wire::Root(entry.clone());
+    match thread_entry(&eval.armed, Entry::of(&world), &ws_root, &root) {
+        Ok(armed) => eval.armed = armed,
+        Err(fault) => return Ok(ScriptTrace::assemble(entry, &eval, member_refusal(&fault))),
+    }
+    let leg = issue(
+        registry,
+        ws,
+        request,
+        &eval,
+        Entry::of(&world),
+        &entry,
+        deadline,
+    );
+    Ok(ScriptTrace::assemble(entry, &eval, leg))
+}
 
+/// The threaded armed set's way to the door: the caller's armed-set gate, the
+/// pre-commit wall clock, then the one commit.
+fn issue(
+    registry: &Registry,
+    ws: &Path,
+    request: &ScriptArgs,
+    eval: &effects::ScriptEval,
+    world: Entry<'_>,
+    entry: &str,
+    deadline: Instant,
+) -> CommitLeg {
     // The pre-splice armed-set gate — after threading, before anything is
     // issued; same wording as the CLI lane, one law two doors.
     if let Some(expected) = &request.expect_armed {
         let actual = effects::digest::armed_digest(&effects::digest::ArmedRow::of_all(&eval.armed));
         if *expected != actual {
-            return Ok(ScriptTrace::assemble(
-                entry,
-                &eval,
-                CommitLeg::Refused(Refusal::minted(
-                    Recovery::Fix,
-                    format!(
-                        "expect_armed_mismatch: this run armed {actual}, the caller pinned \
-                         {expected}. The armed set is not the one that was authorized, so NO \
-                         splice was issued — nothing was sent, nothing landed, no fingerprint \
-                         advanced. re-arm: run the arm leg again and gate the set it publishes"
-                    ),
-                )),
+            return CommitLeg::Refused(Refusal::minted(
+                Recovery::Fix,
+                format!(
+                    "expect_armed_mismatch: this run armed {actual}, the caller pinned \
+                     {expected}. The armed set is not the one that was authorized, so NO \
+                     splice was issued — nothing was sent, nothing landed, no fingerprint \
+                     advanced. re-arm: run the arm leg again and gate the set it publishes"
+                ),
             ));
         }
     }
 
     // Wall site 3: pre-commit. Nothing issued on a lapsed clock.
-    let leg = if Instant::now() > deadline {
-        CommitLeg::Refused(Refusal::minted(
+    if Instant::now() > deadline {
+        return CommitLeg::Refused(Refusal::minted(
             Recovery::Retry,
             "the script entry's wall clock elapsed before the commit was issued — the armed \
              edits were never sent, nothing landed, and no fingerprint advanced. re-run: the \
              reads that ran cost the budget",
-        ))
-    } else {
-        commit(registry, ws, request, &eval, &world, &entry)
-    };
-    Ok(ScriptTrace::assemble(entry, &eval, leg))
+        ));
+    }
+    commit(registry, ws, request, eval, world, entry)
 }
 
 /// Effects mode: the LIVE program (script-effects ruling, 2026-08-13;
@@ -805,9 +888,9 @@ fn token_count_dial(
 /// writes — is always covered.
 fn touch_premises(
     eval: &effects::ScriptEval,
-    world: &WorkspaceEngine,
+    world: Entry<'_>,
     entry: &str,
-) -> Vec<wire_serve::guard::Premise> {
+) -> Result<Vec<wire_serve::guard::Premise>, MemberFault> {
     use wire_serve::guard::{Premise, PremiseValue};
     // The entry identity every premise token respells under: same hash law,
     // same domain generation as the entry fingerprint itself.
@@ -817,7 +900,7 @@ fn touch_premises(
     else {
         // An unparseable entry token cannot mint premises; the commit then
         // rides the per-row CAS + the caller's own widening guard alone.
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let armed: Vec<String> = eval.content_paths();
     let mut ordered: Vec<&str> = Vec::new();
@@ -841,15 +924,10 @@ fn touch_premises(
     }
     let mut premises = Vec::new();
     for path in ordered {
-        let entry_bytes: Option<&[u8]> = world
-            .docs
-            .get(path)
-            .map(|d| d.raw.as_bytes())
-            .or_else(|| world.unserved.get(path).map(String::as_bytes));
-        match entry_bytes {
-            Some(bytes) => premises.push(Premise {
+        match world.leaf(path)? {
+            Some(leaf) => premises.push(Premise {
                 scope: Some(std::path::PathBuf::from(path)),
-                value: PremiseValue::Token(identity.token(model::leaf_digest(bytes)).0),
+                value: PremiseValue::Token(identity.token(leaf).0),
             }),
             None if armed.iter().any(|a| a == path) => premises.push(Premise {
                 scope: Some(std::path::PathBuf::from(path)),
@@ -860,7 +938,7 @@ fn touch_premises(
             None => {}
         }
     }
-    premises
+    Ok(premises)
 }
 
 /// Touch-set premises plus the caller's own sugar/list as widening.
@@ -868,7 +946,7 @@ fn touch_premises(
 fn commit_premises(
     request: &ScriptArgs,
     eval: &effects::ScriptEval,
-    world: &WorkspaceEngine,
+    world: Entry<'_>,
     entry: &str,
 ) -> Result<(Option<wire::Root>, Vec<wire_serve::guard::Premise>), CommitLeg> {
     let (if_root, extra) = wire_serve::guard::lower_premises(
@@ -885,7 +963,8 @@ fn commit_premises(
                 .unwrap_or_else(|| format!("{:?}", error.code)),
         ))
     })?;
-    let mut premises = touch_premises(eval, world, entry);
+    let mut premises =
+        touch_premises(eval, world, entry).map_err(|fault| member_refusal(&fault))?;
     premises.extend(extra);
     Ok((if_root, premises))
 }
@@ -905,7 +984,7 @@ fn commit(
     ws: &Path,
     request: &ScriptArgs,
     eval: &effects::ScriptEval,
-    world: &WorkspaceEngine,
+    world: Entry<'_>,
     entry: &str,
 ) -> CommitLeg {
     let paths = eval.content_paths();
@@ -1134,12 +1213,16 @@ fn refusal_of(error: &RawValue) -> Refusal {
 /// A target the entry state cannot name (an absent section, an unloadable
 /// path) threads nothing and meets the engine's own target-class refusal at
 /// the splice.
+///
+/// # Errors
+/// A member of the entry generation that cannot be leased: threading nothing
+/// for it would issue the row without the entry's token.
 fn thread_entry(
     armed: &[ArmedEdit],
-    world: &WorkspaceEngine,
+    world: Entry<'_>,
     ws: &fs::WorkspaceRoot,
     root: &wire::Root,
-) -> Vec<ArmedEdit> {
+) -> Result<Vec<ArmedEdit>, MemberFault> {
     armed
         .iter()
         .map(|arm| {
@@ -1154,14 +1237,14 @@ fn thread_entry(
                 | PlanEdit::RemoveProperty {
                     rev: rev @ None, ..
                 } => {
-                    *rev = entry_toc(world, ws, root, &arm.path).map(|facts| facts.rev);
+                    *rev = entry_toc(world, ws, root, &arm.path)?.map(|facts| facts.rev);
                 }
                 PlanEdit::Append {
                     hpath,
                     rev: rev @ None,
                     ..
                 } => {
-                    *rev = entry_toc(world, ws, root, &arm.path).and_then(|facts| {
+                    *rev = entry_toc(world, ws, root, &arm.path)?.and_then(|facts| {
                         facts
                             .toc
                             .iter()
@@ -1174,7 +1257,7 @@ fn thread_entry(
                 }
                 _ => {}
             }
-            arm
+            Ok(arm)
         })
         .collect()
 }
@@ -1186,18 +1269,25 @@ fn thread_entry(
 /// at the read door like any other) — the same single-file load `doc_for`
 /// serves its reads from, and the same file the commit's own guards resolve
 /// against.
+///
+/// # Errors
+/// `path` is a member of the entry generation and cannot be leased.
 fn entry_toc(
-    world: &WorkspaceEngine,
+    world: Entry<'_>,
     ws: &fs::WorkspaceRoot,
     root: &wire::Root,
     path: &str,
-) -> Option<TocFacts> {
-    if let Some(doc) = world.docs.get(path) {
-        return Some(toc_facts_of(doc, path, root));
+) -> Result<Option<TocFacts>, MemberFault> {
+    // Control prototype: a member that cannot be lent values from the
+    // workspace file, like a path outside the hash domain.
+    if let Ok(Some(facts)) =
+        model::catalog::read(world.catalog, path, |doc| toc_facts_of(doc, path, root))
+    {
+        return Ok(Some(facts));
     }
-    wire_serve::load_doc(ws, &wire::Path(path.to_owned()))
+    Ok(wire_serve::load_doc(ws, &wire::Path(path.to_owned()))
         .ok()
-        .map(|doc| toc_facts_of(&doc, path, root))
+        .map(|doc| toc_facts_of(&doc, path, root)))
 }
 
 /// Build the script-face [`TocFacts`] from one document — the daemon-side twin
@@ -1249,11 +1339,11 @@ fn toc_facts_of(doc: &model::Document, path: &str, root: &wire::Root) -> TocFact
 }
 
 /// The entry world plus the program's own armed overlay — the § A.7 read
-/// seam. Domain members serve at memory speed: no locks, no passes, no disk.
-/// An out-of-domain path serves from a live single-file disk load (§12.1),
-/// the one read that leaves memory.
-struct EntryWorldHost {
-    world: Arc<WorkspaceEngine>,
+/// seam. A domain member serves under its entry lease: no locks, no passes,
+/// and no disk while its body is resident. An out-of-domain path serves from
+/// a live single-file disk load (§12.1).
+struct EntryWorldHost<'w> {
+    entry: Entry<'w>,
     root: wire::Root,
     /// The workspace directory — the §12.1 fallback loads from it.
     ws: fs::WorkspaceRoot,
@@ -1264,7 +1354,7 @@ struct EntryWorldHost {
     overlay: Option<(String, usize, model::Document)>,
 }
 
-impl EntryWorldHost {
+impl EntryWorldHost<'_> {
     /// Wall site 2: every read builtin checks the clock before serving.
     fn within_deadline(&self, path: &str, section: Option<&str>) -> Result<(), ReadFault> {
         if Instant::now() > self.deadline {
@@ -1279,22 +1369,33 @@ impl EntryWorldHost {
         Ok(())
     }
 
-    /// Resolve the ENTRY document for `path`: the pinned corpus first, the
-    /// unserved condition as a fault, then the §12.1 addressability fallback —
-    /// a real file under the root but outside the hash domain serves from a
+    /// Compute over the ENTRY document for `path`: the pinned corpus first,
+    /// lent under an interactive lease for this one computation; the unserved
+    /// condition as a fault; then the §12.1 addressability fallback — a real
+    /// file under the root but outside the hash domain serves from a
     /// single-file LIVE disk load (the same `load_doc` the daemon's read doors
     /// and the write path run, so all lanes agree on what a path serves).
     /// Out-of-domain reads sit outside the pin and outside the stand-still
-    /// guarantee exactly as the fingerprint never covered them.
-    fn entry_doc(
+    /// guarantee exactly as the fingerprint never covered them. A member the
+    /// pinned corpus cannot lend is a fault and never that fallback: the
+    /// workspace file may be newer than the entry.
+    fn with_entry_doc<T>(
         &self,
         path: &str,
         fault: &dyn Fn(String) -> ReadFault,
-    ) -> Result<std::borrow::Cow<'_, model::Document>, ReadFault> {
-        if let Some(doc) = self.world.docs.get(path) {
-            return Ok(std::borrow::Cow::Borrowed(doc));
+        read: impl FnOnce(&model::Document) -> Result<T, ReadFault>,
+    ) -> Result<T, ReadFault> {
+        let mut read = Some(read);
+        match model::catalog::read(self.entry.catalog, path, |doc| {
+            (read.take().expect("one lease, one read"))(doc)
+        }) {
+            Ok(Some(answer)) => return answer,
+            // Control prototype: a member that cannot be lent serves from the
+            // workspace file, like a path outside the hash domain.
+            Ok(None) | Err(_) => {}
         }
-        if let Some(condition) = self.world.unserved.get(path) {
+        let read = read.expect("a nonmember was never lent");
+        if let Some(condition) = self.entry.unserved.get(path) {
             // The §8 CODE leads, exactly as `walk_op`'s own unserved arm spells
             // it. Not decoration: until card
             // `script-door-commit-premise-world-grain-vs-touch-set` the CLI
@@ -1310,22 +1411,24 @@ impl EntryWorldHost {
                 "invalid_utf8: {path} is in the hash domain but serves no spans ({condition})"
             )));
         }
-        wire_serve::load_doc(&self.ws, &wire::Path(path.to_owned()))
-            .map(std::borrow::Cow::Owned)
-            .map_err(|e| fault(error_text(&e)))
+        let doc = wire_serve::load_doc(&self.ws, &wire::Path(path.to_owned()))
+            .map_err(|e| fault(error_text(&e)))?;
+        read(&doc)
     }
 
-    /// The document a read of `path` serves: the entry doc (or its §12.1
-    /// disk-load fallback), or — when the program itself armed edits on
-    /// `path` — that base with those edits applied, in arm order
+    /// Compute over the document a read of `path` serves: the entry doc (or
+    /// its §12.1 disk-load fallback), or — when the program itself armed
+    /// edits on `path` — that base with those edits applied, in arm order
     /// (read-your-own-writes). What you read is what is hashed: the overlay
-    /// document's revs are minted from the overlay bytes.
-    fn doc_for(
+    /// document's revs are minted from the overlay bytes. The overlay is
+    /// built under the entry lease and outlives it as the attempt's own copy.
+    fn with_doc<T>(
         &mut self,
         path: &str,
         section: Option<&str>,
         armed: &[ArmedEdit],
-    ) -> Result<std::borrow::Cow<'_, model::Document>, ReadFault> {
+        read: impl FnOnce(&model::Document) -> Result<T, ReadFault>,
+    ) -> Result<T, ReadFault> {
         let fault = |reason: String| ReadFault {
             path: path.to_owned(),
             section: section.map(ToOwned::to_owned),
@@ -1333,20 +1436,19 @@ impl EntryWorldHost {
         };
         let rows: Vec<&ArmedEdit> = armed.iter().filter(|a| a.path == path).collect();
         if rows.is_empty() {
-            return self.entry_doc(path, &fault);
+            return self.with_entry_doc(path, &fault, read);
         }
         let cached = self
             .overlay
             .as_ref()
             .is_some_and(|(p, count, _)| p == path && *count == rows.len());
         if !cached {
-            let base = self.entry_doc(path, &fault)?;
-            let doc = overlay_doc(&base, path, &rows).map_err(fault)?;
+            let doc = self.with_entry_doc(path, &fault, |base| {
+                overlay_doc(base, path, &rows).map_err(&fault)
+            })?;
             self.overlay = Some((path.to_owned(), rows.len(), doc));
         }
-        Ok(std::borrow::Cow::Borrowed(
-            &self.overlay.as_ref().expect("just cached").2,
-        ))
+        read(&self.overlay.as_ref().expect("just cached").2)
     }
 }
 
@@ -1391,12 +1493,11 @@ fn overlay_doc(
     )
 }
 
-impl ScriptHost for EntryWorldHost {
+impl ScriptHost for EntryWorldHost<'_> {
     fn toc(&mut self, path: &str, armed: &[ArmedEdit]) -> Result<TocFacts, ReadFault> {
         self.within_deadline(path, None)?;
         let root = self.root.clone();
-        let doc = self.doc_for(path, None, armed)?;
-        Ok(toc_facts_of(&doc, path, &root))
+        self.with_doc(path, None, armed, |doc| Ok(toc_facts_of(doc, path, &root)))
     }
 
     fn cat(
@@ -1416,23 +1517,24 @@ impl ScriptHost for EntryWorldHost {
         // grammar; the shared resolver serves it — the dewey lane is served
         // here too, under the read-alignment law: one
         // `selector_matches` resolution, every door.
-        let doc = self.doc_for(path, Some(&display), armed)?;
-        let sec = wire_serve::read::selector_to_secref(&doc, section).map_err(&fault)?;
-        match wire_serve::read::cat(&doc, Some(sec)) {
-            Ok(ResponseBody::Cat {
-                content, node_rev, ..
-            }) => Ok(SecFacts {
-                text: content,
-                rev: node_rev.0,
-            }),
-            Ok(_) => unreachable!("wire_serve::read::cat answers a Cat body"),
-            Err(error) => Err(fault(
-                error
-                    .message
-                    .clone()
-                    .unwrap_or_else(|| format!("{:?}", error.code)),
-            )),
-        }
+        self.with_doc(path, Some(&display), armed, |doc| {
+            let sec = wire_serve::read::selector_to_secref(doc, section).map_err(&fault)?;
+            match wire_serve::read::cat(doc, Some(sec)) {
+                Ok(ResponseBody::Cat {
+                    content, node_rev, ..
+                }) => Ok(SecFacts {
+                    text: content,
+                    rev: node_rev.0,
+                }),
+                Ok(_) => unreachable!("wire_serve::read::cat answers a Cat body"),
+                Err(error) => Err(fault(
+                    error
+                        .message
+                        .clone()
+                        .unwrap_or_else(|| format!("{:?}", error.code)),
+                )),
+            }
+        })
     }
 
     fn actor(&self) -> &str {
@@ -1452,6 +1554,7 @@ mod tests {
     use effects::ScriptRecording;
     use std::fs::{create_dir_all, write};
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::time::Duration;
 
     const DOC: &str = "---\nstatus: open\n---\n# Alpha\n\none two three\n";
@@ -1480,19 +1583,242 @@ mod tests {
         (world, root)
     }
 
-    fn host_of(
-        world: &Arc<WorkspaceEngine>,
+    fn host_of<'w>(
+        world: &'w Arc<WorkspaceEngine>,
         root: &wire::Root,
         ws: &Path,
         deadline: Instant,
-    ) -> EntryWorldHost {
+    ) -> EntryWorldHost<'w> {
+        host_over(Entry::of(world), root, ws, deadline)
+    }
+
+    fn host_over<'w>(
+        entry: Entry<'w>,
+        root: &wire::Root,
+        ws: &Path,
+        deadline: Instant,
+    ) -> EntryWorldHost<'w> {
         EntryWorldHost {
-            world: Arc::clone(world),
+            entry,
             root: root.clone(),
             ws: fs::WorkspaceRoot(ws.to_path_buf()),
             deadline,
             actor: String::new(),
             overlay: None,
+        }
+    }
+
+    /// [`entry_toc`] over a resident engine, whose leases cannot fault.
+    fn entry_toc_of(
+        world: &WorkspaceEngine,
+        ws: &fs::WorkspaceRoot,
+        root: &wire::Root,
+        path: &str,
+    ) -> Option<TocFacts> {
+        entry_toc(Entry::of(world), ws, root, path).expect("a resident member is lent")
+    }
+
+    /// [`thread_entry`] over a resident engine, whose leases cannot fault.
+    fn thread_of(
+        armed: &[ArmedEdit],
+        world: &WorkspaceEngine,
+        ws: &fs::WorkspaceRoot,
+        root: &wire::Root,
+    ) -> Vec<ArmedEdit> {
+        thread_entry(armed, Entry::of(world), ws, root).expect("a resident member is lent")
+    }
+
+    /// The seam's entry-generation half over a fixture whose bodies can be
+    /// made unleasable: `doc.md` at its entry bytes, while the workspace file
+    /// already holds NEWER bytes. Anything that serves the newer heading left
+    /// the entry world.
+    const NEWER: &str = "---\nstatus: moved\n---\n# Newer\n\nfour five\n";
+
+    fn unleasable_ws(home: &Path) -> PathBuf {
+        let ws = seeded_ws(home);
+        write(ws.join("doc.md"), NEWER).unwrap();
+        ws
+    }
+
+    fn append_on_doc() -> Vec<ArmedEdit> {
+        vec![ArmedEdit {
+            path: "doc.md".to_owned(),
+            edit: PlanEdit::Append {
+                hpath: vec![wire::HpathSeg {
+                    h: "Alpha".to_owned(),
+                    n: None,
+                }],
+                body: "more\n".to_owned(),
+                rev: None,
+            },
+            line: 1,
+            depth: 0,
+        }]
+    }
+
+    /// A member the entry generation knows and cannot lend is a read fault of
+    /// the attempt, its §8 code leading — and never the §12.1 disk load,
+    /// which here would serve a page newer than the entry.
+    #[test]
+    fn a_member_the_entry_cannot_lend_faults_the_read_and_never_serves_the_live_file() {
+        use crate::entry_fixture::{Entry as Unleasable, Fault, docs};
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = unleasable_ws(tmp.path());
+        let docs = docs(&[("doc.md", DOC)]);
+        let world = Unleasable::new(&docs);
+        let (unserved, leaves) = (
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
+        );
+        let entry = Entry {
+            catalog: &world,
+            unserved: &unserved,
+            leaves: &leaves,
+        };
+        let root = wire::Root("b3b:entry".to_owned());
+        let mut host = host_over(entry, &root, &ws, Instant::now() + Duration::from_secs(7));
+
+        let served = host.toc("doc.md", &[]).expect("a lendable member serves");
+        assert_eq!(
+            served.toc[0].section, "Alpha",
+            "the entry bytes, not the file"
+        );
+        assert_eq!(
+            (world.reads(), world.scans()),
+            (1, 0),
+            "a script read is an interactive lease"
+        );
+
+        for (fault, code) in [
+            (Fault::Backing, "io_error: "),
+            (Fault::Transient, "workspace_busy: "),
+        ] {
+            world.fail(fault);
+            let toc = host
+                .toc("doc.md", &[])
+                .expect_err("the member cannot be lent");
+            assert!(toc.reason.starts_with(code), "{fault:?}: {}", toc.reason);
+            assert!(toc.reason.contains("doc.md"), "{fault:?}: {}", toc.reason);
+            let cat = host
+                .cat("doc.md", &ReadSel::parse("Alpha"), &[])
+                .expect_err("the member cannot be lent");
+            assert!(cat.reason.starts_with(code), "{fault:?}: {}", cat.reason);
+            // Read-your-own-writes needs the same entry base.
+            let armed = append_on_doc();
+            let overlay = host
+                .toc("doc.md", &armed)
+                .expect_err("no entry base, no overlay");
+            assert!(
+                overlay.reason.starts_with(code),
+                "{fault:?}: {}",
+                overlay.reason
+            );
+        }
+    }
+
+    /// Threading values a rev-less row from the entry world. When that member
+    /// cannot be lent the commit is refused before anything is issued: a row
+    /// threaded from the workspace file would carry a NEWER page's token, and
+    /// a row threaded with nothing would be issued unguarded.
+    #[test]
+    fn threading_refuses_the_commit_when_the_entry_member_cannot_be_lent() {
+        use crate::entry_fixture::{Entry as Unleasable, Fault, docs};
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = unleasable_ws(tmp.path());
+        let docs = docs(&[("doc.md", DOC)]);
+        let world = Unleasable::new(&docs);
+        let (unserved, leaves) = (
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
+        );
+        let entry = Entry {
+            catalog: &world,
+            unserved: &unserved,
+            leaves: &leaves,
+        };
+        let root = wire::Root("b3b:entry".to_owned());
+        let ws_root = ws_root_of(&ws);
+
+        let threaded = thread_entry(&append_on_doc(), entry, &ws_root, &root).unwrap();
+        let PlanEdit::Append { rev: Some(rev), .. } = &threaded[0].edit else {
+            panic!("a lendable member threads its entry rev");
+        };
+        assert!(!rev.is_empty());
+
+        for (fault, recovery, code) in [
+            (Fault::Backing, Recovery::Env, "io_error: "),
+            (Fault::Transient, Recovery::Retry, "workspace_busy: "),
+        ] {
+            world.fail(fault);
+            let refused = thread_entry(&append_on_doc(), entry, &ws_root, &root)
+                .expect_err("an unlendable member threads nothing AND refuses");
+            assert_eq!(refused.path, "doc.md");
+            let CommitLeg::Refused(refusal) = member_refusal(&refused) else {
+                panic!("a member fault refuses the commit");
+            };
+            assert_eq!(refusal.recovery, Some(recovery), "{fault:?}");
+            assert!(
+                refusal.reason.starts_with(code),
+                "{fault:?}: {}",
+                refusal.reason
+            );
+        }
+    }
+
+    /// The commit's touch-set premises are the entry generation's leaf
+    /// digests: metadata, so valuing them leases no body — an unleasable
+    /// member still premises its entry leaf.
+    #[test]
+    fn touch_premises_are_entry_leaves_and_lease_no_body() {
+        use crate::entry_fixture::{Entry as Unleasable, Fault, docs};
+        let docs = docs(&[("doc.md", DOC)]);
+        let world = Unleasable::new(&docs);
+        world.fail(Fault::Backing);
+        let unserved = std::collections::BTreeMap::new();
+        let leaves = std::collections::BTreeMap::from([(
+            PathBuf::from("doc.md"),
+            model::leaf_digest(DOC.as_bytes()),
+        )]);
+        let entry = Entry {
+            catalog: &world,
+            unserved: &unserved,
+            leaves: &leaves,
+        };
+        let token = model::RootVersion::law2(7)
+            .token(model::leaf_digest(b"any world"))
+            .0;
+        let eval = eval_of(append_on_doc(), ScriptRecording::default());
+        let premises = touch_premises(&eval, entry, &token).expect("metadata cannot fault");
+        assert_eq!(premises.len(), 1);
+        assert_eq!(premises[0].scope.as_deref(), Some(Path::new("doc.md")));
+        assert!(matches!(
+            premises[0].value,
+            wire_serve::guard::PremiseValue::Token(_)
+        ));
+        assert_eq!(
+            (world.reads(), world.scans()),
+            (0, 0),
+            "a premise pins no body"
+        );
+    }
+
+    /// What makes the leaf set a sound premise source: for every served
+    /// member it is the digest of exactly the bytes a read of it serves.
+    #[test]
+    fn the_entry_leaf_set_is_the_digest_of_the_served_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = registry_in(tmp.path());
+        let ws = seeded_ws(tmp.path());
+        write(ws.join("other.md"), "# Other\n\nbody\n").unwrap();
+        let (world, _root) = pinned_world(&registry, &ws);
+        assert!(world.docs.len() >= 2);
+        for (path, doc) in &world.docs {
+            assert_eq!(
+                Entry::of(&world).leaf(path).unwrap(),
+                Some(model::leaf_digest(doc.raw.as_bytes())),
+                "{path}"
+            );
+            assert!(world.leaves.contains_key(Path::new(path)), "{path}");
         }
     }
 
@@ -1567,7 +1893,7 @@ mod tests {
         let registry = registry_in(tmp.path());
         let ws = seeded_ws(tmp.path());
         let (world, root) = pinned_world(&registry, &ws);
-        let entry = entry_toc(&world, &fs::WorkspaceRoot(ws.clone()), &root, "doc.md")
+        let entry = entry_toc_of(&world, &fs::WorkspaceRoot(ws.clone()), &root, "doc.md")
             .expect("doc in world");
         let alpha_rev = entry
             .toc
@@ -1603,7 +1929,7 @@ mod tests {
             },
         ];
 
-        let threaded = thread_entry(&armed, &world, &ws_root_of(&ws), &root);
+        let threaded = thread_of(&armed, &world, &ws_root_of(&ws), &root);
         let PlanEdit::SetProperty { rev, .. } = &threaded[0].edit else {
             panic!("shape preserved");
         };
@@ -1654,8 +1980,8 @@ mod tests {
         let (world, root) = pinned_world(&registry, &ws);
         let ws_root = ws_root_of(&ws);
 
-        let other = entry_toc(&world, &ws_root, &root, "other.md").expect("other in world");
-        let here = entry_toc(&world, &ws_root, &root, "doc.md").expect("doc in world");
+        let other = entry_toc_of(&world, &ws_root, &root, "other.md").expect("other in world");
+        let here = entry_toc_of(&world, &ws_root, &root, "doc.md").expect("doc in world");
         assert_ne!(
             other.rev, here.rev,
             "the fixture is only a test if the two files carry different revs"
@@ -1684,7 +2010,7 @@ mod tests {
             },
         ];
 
-        let threaded = thread_entry(&armed, &world, &ws_root, &root);
+        let threaded = thread_of(&armed, &world, &ws_root, &root);
         let PlanEdit::SetProperty { rev, .. } = &threaded[0].edit else {
             panic!("shape preserved");
         };
@@ -1743,7 +2069,7 @@ mod tests {
             line: 1,
             depth: 0,
         }];
-        thread_entry(&armed, world, &ws_root_of(ws), root)
+        thread_of(&armed, world, &ws_root_of(ws), root)
     }
 
     fn eval_of(armed: Vec<ArmedEdit>, recording: ScriptRecording) -> effects::ScriptEval {
@@ -1812,7 +2138,8 @@ mod tests {
         ];
         let eval = eval_of(armed, recording);
 
-        let premises = touch_premises(&eval, &world, &root.0);
+        let premises =
+            touch_premises(&eval, Entry::of(&world), &root.0).expect("leaves are metadata");
         assert_eq!(
             premises.len(),
             2,
@@ -1864,7 +2191,14 @@ mod tests {
             .root(&ws_root_of(&ws))
             .unwrap();
 
-        let leg = commit(&registry, &ws, &request_of(None), &eval, &world, &root.0);
+        let leg = commit(
+            &registry,
+            &ws,
+            &request_of(None),
+            &eval,
+            Entry::of(&world),
+            &root.0,
+        );
         assert!(
             matches!(leg, CommitLeg::Response(_)),
             "the touch set held — a disjoint birth must not refuse: {leg:?}"
@@ -1900,7 +2234,14 @@ mod tests {
             .root(&ws_root_of(&ws))
             .unwrap();
 
-        let leg = commit(&registry, &ws, &request_of(None), &eval, &world, &root.0);
+        let leg = commit(
+            &registry,
+            &ws,
+            &request_of(None),
+            &eval,
+            Entry::of(&world),
+            &root.0,
+        );
         let CommitLeg::Conflict(raw) = leg else {
             panic!("a moved touched node refuses as a conflict: {leg:?}");
         };
@@ -1950,7 +2291,7 @@ mod tests {
             &ws,
             &request_of(Some(root.clone())),
             &eval,
-            &world,
+            Entry::of(&world),
             &root.0,
         );
         assert!(
@@ -2004,7 +2345,7 @@ mod tests {
             eval.recording.reads.iter().any(|r| r.path == "doc.md"),
             "the read is recorded — it is what premises doc.md"
         );
-        eval.armed = thread_entry(&eval.armed, &world, &ws_root_of(&ws), &root);
+        eval.armed = thread_of(&eval.armed, &world, &ws_root_of(&ws), &root);
 
         // Client B: a guarded splice through the SAME resident door the
         // daemon's wire lane takes. The world has not moved for B, so B's
@@ -2050,7 +2391,14 @@ mod tests {
         // Client A, commit half: the flock is free again, so `workspace_busy`
         // cannot answer — only the touch set can, and it names the node B
         // moved.
-        let leg = commit(&registry, &ws, &request_of(None), &eval, &world, &root.0);
+        let leg = commit(
+            &registry,
+            &ws,
+            &request_of(None),
+            &eval,
+            Entry::of(&world),
+            &root.0,
+        );
         let CommitLeg::Conflict(raw) = leg else {
             panic!("a touched node moved by a second client refuses: {leg:?}");
         };
