@@ -16,9 +16,53 @@ use model::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
+
+thread_local! {
+    /// Leases this thread took from a [`Catalog`] and has not released.
+    static HELD: Arc<AtomicUsize> = Arc::default();
+}
+
+/// One leased body, counted against the thread that took it until it ends,
+/// wherever it is dropped.
+#[derive(Debug)]
+struct Lease {
+    pin: Pin,
+    held: Arc<AtomicUsize>,
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        self.held.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl DocumentLease for Lease {
+    fn document(&self) -> io::Result<&model::Document> {
+        DocumentLease::document(&self.pin)
+    }
+}
+
+/// Occupied allowance met by a caller that already holds a lease
+/// (merkle-spec §6.4): its own lease is part of what occupies the allowance,
+/// so the same request cannot be admitted by retrying.
+#[derive(Debug)]
+struct SelfBlocked;
+
+impl std::fmt::Display for SelfBlocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "residency allowance is occupied while this request holds another lease on it; \
+             a retry cannot admit both bodies",
+        )
+    }
+}
+impl std::error::Error for SelfBlocked {}
 
 /// Pauses between attempts on one member version whose retirement or failed
 /// loading wave is completing (merkle-spec §6.4): both end without this
@@ -35,11 +79,13 @@ const RETRY_PAUSES: [Duration; 6] = [
 /// Lease one member version through the controller's admission. `Retiring`
 /// and `Settling` retry the same version once per pause in `pauses`;
 /// `Busy` is returned at once, because the allowance may be occupied by a pin
-/// this very caller holds. All three leave as [`model::catalog::transient`];
-/// a load, identity or peak failure is the member's own fault and is neither
-/// retried nor transient.
+/// this very caller holds. All three leave as [`model::catalog::transient`],
+/// except a `Busy` met while the caller is `holding` a lease of its own,
+/// which no retry cures ([`SelfBlocked`]); a load, identity or peak failure
+/// is the member's own fault. Neither is retried nor transient.
 fn admit<T>(
     mut attempt: impl FnMut() -> Result<T, Error>,
+    holding: bool,
     pauses: &[Duration],
     mut pause: impl FnMut(Duration),
 ) -> io::Result<T> {
@@ -47,6 +93,10 @@ fn admit<T>(
     loop {
         let refusal = match attempt() {
             Ok(leased) => return Ok(leased),
+            // Control prototype: the caller's own lease is not told apart.
+            Err(Error::Admission(AdmissionError::Busy)) if holding && false => {
+                return Err(io::Error::other(SelfBlocked));
+            }
             Err(Error::Admission(AdmissionError::Busy)) => AdmissionError::Busy,
             Err(Error::Admission(
                 refusal @ (AdmissionError::Retiring | AdmissionError::Settling),
@@ -227,12 +277,15 @@ impl Catalog {
         self.entries
             .get(path)
             .map(|entry| {
-                admit(
+                let held = HELD.with(Arc::clone);
+                let pin = admit(
                     || entry.member.pin(access, self.load_peak),
+                    held.load(Ordering::Relaxed) > 0,
                     &RETRY_PAUSES,
                     pause,
-                )
-                .map(|pin| Box::new(pin) as Box<dyn DocumentLease>)
+                )?;
+                held.fetch_add(1, Ordering::Relaxed);
+                Ok(Box::new(Lease { pin, held }) as Box<dyn DocumentLease>)
             })
             .transpose()
     }

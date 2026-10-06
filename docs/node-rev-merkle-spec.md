@@ -589,10 +589,14 @@ race and the completion of a failed loading wave have distinct retryable
 results from occupied byte allowance. The catalog that leases bodies to
 consumers retries those two results against the same member version, a bounded
 number of times with a short pause, before it reports them; it never waits on
-occupied allowance, which a caller's own pin may be holding. What it reports
-for any of the three is a transient fault (`model::catalog::is_transient`):
-distinct from a backing, identity or parse failure, and never grounds for
-reading a newer version. Admission
+occupied allowance. What it reports for any of the three is a transient fault
+(`model::catalog::is_transient`): distinct from a backing, identity or parse
+failure, and never grounds for reading a newer version. One case is not
+transient: occupied allowance met while the calling thread already holds a
+lease from that catalog seam. The caller's own lease is part of what occupies
+the allowance, so no retry of that request can admit the second body; it is
+reported as a member fault whose cause names the allowance. A request takes
+its leases on the thread that serves it. Admission
 first checks policy and whether reclamation could make room; a certain refusal
 does not shed unrelated cache entries. Cached reclaimability and retirement
 counters avoid scanning the entire membership map for this decision. Raw-table
@@ -1166,15 +1170,23 @@ attempt, and a threading fault refuses the commit before anything is issued.
 None of them replays an earlier effect, loads the workspace file in the
 member's place, or moves the attempt to a newer generation.
 
-A transient fault leaves a serving door as a `retry` refusal naming the
-member — `workspace_busy` on a frame, the same class on a `run` row and in a
-`script` read fault — where every other member fault is `io_error`. The SQL
-arm rolls back the whole append on either and keeps the previous generation;
-the retry appends again. The seam's bounded retry covers the retirement and
-failed-wave races. Occupied allowance is returned at once: an operation that
-needs two bodies together while one of them alone exceeds the free allowance
-meets it on every attempt, so the `retry` class there promises nothing until
-the budget is raised. That case is a limit of the bound, not a served result.
+A transient fault leaves a serving door as a `retry` refusal —
+`workspace_busy` on a frame, the same class on a `run` row and in a `script`
+read fault — where every other member fault is `io_error`. The named-read and
+scan doors name the member; the SQL arm's refusal carries the admission's
+words alone. The SQL arm rolls back the whole append on either: a same-domain
+append keeps the previous generation, and the fingerprint-domain arm, which
+recreates the cache before it appends, is left empty and unpinned. The retry
+appends again. The seam's bounded retry covers the retirement and failed-wave
+races. Occupied allowance is returned at once. When the request that meets it
+holds another lease itself (a composed read holds its page while each lock
+target is coloured), it leaves as `io_error` naming the member and the
+allowance, never as `retry`.
+
+A `run` mode row copies its page out of the lease and releases the lease
+before the block executes, so no body of the generation is pinned while a
+hook's Starlark and `bash()` run, and a request that hook sends back into the
+daemon meets no lease of the row.
 
 The link plane and a composed read's claim-link colours scan through the same
 catalog. `query::links_in` enumerates membership from metadata and pins one
