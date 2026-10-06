@@ -595,14 +595,77 @@ fn frontmatter_map(node: &model::Node) -> Option<&model::YamlMap> {
 ///   target page, a refused lock, a `Malformed` token with no digest to show.
 #[must_use]
 pub fn page_decorations(index: &model::CorpusIndex, docs: &model::Docs, path: &str) -> Decorations {
-    let mut out = Decorations::new();
     let Some(doc) = docs.get(path) else {
-        return out;
+        return Decorations::new();
     };
+    let names = model::RootedCorpus::ambient(docs);
+    let colored: Result<Decorations, std::convert::Infallible> =
+        decorate(index, &names, path, doc, |target, classify| {
+            classify(docs.get(target).map(|found| &**found));
+            Ok(())
+        });
+    match colored {
+        Ok(out) => out,
+        Err(never) => match never {},
+    }
+}
+
+/// [`page_decorations`] for a generation whose bodies may be cold
+/// (merkle-spec §6.8). `doc` is the page the read already holds; a lock
+/// target is scan-pinned while its pin is classified and released before the
+/// next. A page the catalog does not hold decorates nothing.
+///
+/// # Errors
+/// A lock target the catalog knows cannot be served: `io_error` naming it,
+/// never an undecorated or `gone` pin.
+pub fn page_decorations_in(
+    index: &model::CorpusIndex,
+    catalog: &dyn model::catalog::DocumentCatalog,
+    path: &Path,
+    doc: &model::Document,
+) -> Result<Decorations, Box<ErrorBody>> {
+    if catalog.revision(&path.0).is_none() {
+        return Ok(Decorations::new());
+    }
+    let names = model::catalog::RootedCatalog::ambient(catalog);
+    decorate(
+        index,
+        &names,
+        &path.0,
+        doc,
+        |target, classify| match model::catalog::scan(catalog, target, |found| {
+            classify(Some(found));
+        }) {
+            Ok(Some(())) => Ok(()),
+            Ok(None) => {
+                classify(None);
+                Ok(())
+            }
+            Err(fault) => Err(member_fault(fault)),
+        },
+    )
+}
+
+/// A scan's member fault as the frame a named read mints for the same member.
+fn member_fault(fault: model::catalog::MemberFault) -> Box<ErrorBody> {
+    catalog::retained_fault(&Path(fault.path), fault.cause)
+}
+
+/// The one decoration pass. `with_target` lends a lock target's document
+/// (`None`: the corpus holds no such page) for the length of one
+/// classification; the page itself is `doc` and is never asked for.
+fn decorate<E>(
+    index: &model::CorpusIndex,
+    names: &dyn model::catalog::NameCorpus,
+    path: &str,
+    doc: &model::Document,
+    mut with_target: impl FnMut(&str, &mut dyn FnMut(Option<&model::Document>)) -> Result<(), E>,
+) -> Result<Decorations, E> {
+    let mut out = Decorations::new();
     // A refused lock decorates nothing: it is already visible as the grey
     // `lock-refused` row.
     let Ok(Some(found)) = lock::find(doc) else {
-        return out;
+        return Ok(out);
     };
     let mut links: Vec<(&String, &String)> = Vec::new();
     collect_links(&doc.root, &mut links);
@@ -616,7 +679,7 @@ pub fn page_decorations(index: &model::CorpusIndex, docs: &model::Docs, path: &s
         if segments.is_empty() {
             continue; // `path: []` is the whole body — no block handle to decorate
         }
-        let Some(target_path) = resolve_page(index, docs, &pin.object, path) else {
+        let Some(target_path) = resolve_page(index, names, &pin.object, path) else {
             continue;
         };
         // The anchor form: a path array whose sole element is a `^id`, decoded
@@ -657,32 +720,55 @@ pub fn page_decorations(index: &model::CorpusIndex, docs: &model::Docs, path: &s
         let Some(handle) = handle else {
             continue;
         };
-        let color = model::selector::classify_pin(
-            &selector,
-            &pin.fingerprint,
-            docs.get(&target_path).map(|d| &**d),
-        );
         let Some(digest) =
             model::fingerprint::parse_fingerprint(&pin.fingerprint).map(|p| p.digest)
         else {
             continue; // Malformed: no digest exists to show
         };
-        let Some(token) = syntax::fp_token(model::selector::color_tone(&color), &digest) else {
+        // The links this pin can colour. A pin no link addresses borrows no
+        // target: its colour would decorate nothing.
+        let claimed: Vec<&(&String, &String)> = links
+            .iter()
+            .filter(|(target, block)| {
+                **block == handle
+                    && resolve_page(index, names, target, path).as_ref() == Some(&target_path)
+            })
+            .collect();
+        if claimed.is_empty() {
+            continue;
+        }
+        let mut color = None;
+        if target_path == path {
+            color = Some(model::selector::classify_pin(
+                &selector,
+                &pin.fingerprint,
+                Some(doc),
+            ));
+        } else {
+            with_target(&target_path, &mut |target: Option<&model::Document>| {
+                color = Some(model::selector::classify_pin(
+                    &selector,
+                    &pin.fingerprint,
+                    target,
+                ));
+            })?;
+        }
+        let Some(token) =
+            color.and_then(|color| syntax::fp_token(model::selector::color_tone(&color), &digest))
+        else {
             continue;
         };
-        for (target, block) in links.iter().filter(|(_, b)| **b == handle) {
-            if resolve_page(index, docs, target, path).as_ref() == Some(&target_path) {
-                out.insert(
-                    ClaimLink {
-                        target: (*target).clone(),
-                        block: (*block).clone(),
-                    },
-                    token.clone(),
-                );
-            }
+        for (target, block) in claimed {
+            out.insert(
+                ClaimLink {
+                    target: (*target).clone(),
+                    block: (*block).clone(),
+                },
+                token.clone(),
+            );
         }
     }
-    out
+    Ok(out)
 }
 
 /// Resolve a link/ref target spelling to a corpus path through the one address
@@ -699,7 +785,7 @@ pub fn page_decorations(index: &model::CorpusIndex, docs: &model::Docs, path: &s
 /// grey is rendered with its reason.
 fn resolve_page(
     index: &model::CorpusIndex,
-    docs: &model::Docs,
+    names: &dyn model::catalog::NameCorpus,
     spelling: &str,
     from: &str,
 ) -> Option<String> {
@@ -707,12 +793,7 @@ fn resolve_page(
         return Some(from.to_owned());
     }
     index
-        .resolve_ref(
-            spelling,
-            from,
-            &model::RootedCorpus::ambient(docs),
-            &addr::MountSet::default(),
-        )
+        .resolve_ref(spelling, from, names, &addr::MountSet::default())
         .path()
         .map(str::to_owned)
 }
@@ -1396,12 +1477,12 @@ pub fn unserved_refusal(path: &Path, condition: &str) -> Box<ErrorBody> {
 /// is `file_not_found`.
 fn links_nonmember(
     root: &fs::WorkspaceRoot,
-    docs: &model::Docs,
+    member: &dyn Fn(&str) -> bool,
     unserved: &BTreeMap<String, String>,
     path: Option<&Path>,
 ) -> Result<Option<model::Document>, Box<ErrorBody>> {
     let Some(p) = path else { return Ok(None) };
-    if docs.contains_key(&p.0) {
+    if member(&p.0) {
         return Ok(None);
     }
     if let Some(condition) = unserved.get(&p.0) {
@@ -1422,18 +1503,21 @@ fn links_nonmember(
 /// under the workspace root (`file_not_found`), or the caller's `live_root`
 /// sample fails. A real file OUTSIDE the hash domain is served, never refused
 /// (§12.1: the door family binds every door the caller names a path at).
+/// A member the catalog knows and cannot serve is `io_error` naming it
+/// (merkle-spec §6.8): the map never drops a member whose body is cold.
 #[allow(clippy::too_many_arguments)]
 pub fn links(
     root: &fs::WorkspaceRoot,
     index: &model::CorpusIndex,
-    docs: &model::Docs,
+    catalog: &dyn model::catalog::DocumentCatalog,
     unserved: &BTreeMap<String, String>,
     path: Option<&Path>,
     as_of_root: Root,
     changes_seq: u64,
     live_root: impl FnOnce() -> Result<Root, Box<ErrorBody>>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
-    let nonmember = links_nonmember(root, docs, unserved, path)?;
+    let member = |rel: &str| catalog.revision(rel).is_some();
+    let nonmember = links_nonmember(root, &member, unserved, path)?;
     // `query::links`, never `links_rooted` with a default table: an empty
     // `MountSet` would turn "I did not consult a mount table" into "this
     // machine binds nothing". Rooted spellings come back `unresolved` here,
@@ -1441,10 +1525,16 @@ pub fn links(
     // (see `mrd::engine::answer_links`).
     let map = match (&nonmember, path) {
         (Some(doc), Some(p)) => one_file_map(
-            &query::file_links(index, &p.0, doc, &model::RootedCorpus::ambient(docs), None),
+            &query::file_links(
+                index,
+                &p.0,
+                doc,
+                &model::catalog::RootedCatalog::ambient(catalog),
+                None,
+            ),
             p,
         ),
-        _ => query::links(index, docs, path.map(|p| p.0.as_str())),
+        _ => query::links_in(index, catalog, path.map(|p| p.0.as_str())).map_err(member_fault)?,
     };
     let live = live_root()?;
     let domain = fs::domain::Domain::load(root).unwrap_or_default();
@@ -1457,7 +1547,7 @@ pub fn links(
             .into_iter()
             .map(|(p, e)| (p, into_wire_with_reasons(&probe, e)))
             .collect(),
-        excluded: excluded_members(root, docs, unserved, path),
+        excluded: excluded_members(root, &member, unserved, path),
     })
 }
 
@@ -1467,7 +1557,7 @@ pub fn links(
 /// for the NAMED form — a named path is served, so nothing was left out.
 fn excluded_members(
     root: &fs::WorkspaceRoot,
-    docs: &model::Docs,
+    member: &dyn Fn(&str) -> bool,
     unserved: &BTreeMap<String, String>,
     path: Option<&Path>,
 ) -> Vec<String> {
@@ -1478,7 +1568,7 @@ fn excluded_members(
         .unwrap_or_default()
         .iter()
         .filter_map(|rel| rel.to_str().map(str::to_owned))
-        .filter(|rel| !docs.contains_key(rel) && !unserved.contains_key(rel))
+        .filter(|rel| !member(rel.as_str()) && !unserved.contains_key(rel))
         .collect()
 }
 
@@ -1514,7 +1604,8 @@ pub fn links_rooted(
     changes_seq: u64,
     live_root: impl FnOnce() -> Result<Root, Box<ErrorBody>>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
-    let nonmember = links_nonmember(root, docs, unserved, path)?;
+    let member = |rel: &str| docs.contains_key(rel);
+    let nonmember = links_nonmember(root, &member, unserved, path)?;
     let map = match (&nonmember, path) {
         (Some(doc), Some(p)) => one_file_map(
             &query::file_links(index, &p.0, doc, corpus, Some(mounts)),
@@ -1533,7 +1624,7 @@ pub fn links_rooted(
             .into_iter()
             .map(|(p, e)| (p, into_wire_with_reasons(&probe, e)))
             .collect(),
-        excluded: excluded_members(root, docs, unserved, path),
+        excluded: excluded_members(root, &member, unserved, path),
     })
 }
 

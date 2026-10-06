@@ -1735,7 +1735,7 @@ fn dispatch_read(
             wire_serve::read::links(
                 &fs::WorkspaceRoot(ws.to_path_buf()),
                 &engine.index,
-                &engine.docs,
+                &model::catalog::EagerCatalog::new(&engine.docs),
                 &engine.unserved,
                 path.as_ref(),
                 as_of,
@@ -2148,10 +2148,13 @@ fn composed_read_warm(
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     warm_engine_read(registry, ws, |engine| {
         with_engine_document(engine, ws, path, |doc| {
-            // S10: claim-link colors from the same generation (D6). Decorations
-            // remain an eager consumer until their own access migration.
-            let decorations =
-                wire_serve::read::page_decorations(&engine.index, &engine.docs, path.0.as_str());
+            // S10: claim-link colors from the same generation (D6).
+            let decorations = wire_serve::read::page_decorations_in(
+                &engine.index,
+                &model::catalog::EagerCatalog::new(&engine.docs),
+                path,
+                doc,
+            )?;
             wire_serve::read::composed_read(doc, path, &engine_root(engine), params, &decorations)
         })
     })
@@ -3070,15 +3073,14 @@ mod hello_config_grade_tests {
         server.shutdown();
     }
 
-    /// The second seam the live probe caught on a real corpus:
-    /// a legacy `with_engine` reader holds the engines read lock,
-    /// a rebuild insert queues behind it, and from that moment every
-    /// ordinary reader parks behind the queued writer. hello reads the
-    /// resident fold with `try_read` and answers through that wall.
+    /// A `with_engine` reader holds the engines read lock, a rebuild insert
+    /// queues behind it, and every ordinary reader then parks behind the
+    /// queued writer. hello reads the resident fold with `try_read` and
+    /// answers through that wall.
     ///
     /// The long read is driven through the public borrow (`with_engine`
-    /// parked in its closure — the historical links shape); the writer is a
-    /// second workspace's cold build parked on its `engines` insert.
+    /// parked in its closure); the writer is a second workspace's cold build
+    /// parked on its `engines` insert.
     #[test]
     fn hello_answers_while_a_long_read_holds_the_engines_lock_and_a_writer_queues() {
         let tmp = TempDir::new().unwrap();

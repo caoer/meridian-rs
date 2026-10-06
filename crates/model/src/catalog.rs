@@ -44,6 +44,62 @@ pub trait DocumentCatalog: Debug {
     }
 }
 
+/// A known member whose selected version could not be served.
+#[derive(Debug)]
+pub struct MemberFault {
+    /// The member, as the catalog spells it.
+    pub path: String,
+    /// Why its retained version is unavailable.
+    pub cause: io::Error,
+}
+impl std::fmt::Display for MemberFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "cannot read retained member {}: {}",
+            self.path, self.cause
+        )
+    }
+}
+impl std::error::Error for MemberFault {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
+}
+
+/// Compute over one member under a scan pin; the lease ends before this
+/// returns, so a caller streaming a corpus holds one body at a time.
+/// `Ok(None)` means `path` is not a member, and nothing else.
+///
+/// # Errors
+/// A known member has no lease, cannot be pinned or borrowed, or parses to a
+/// revision other than its descriptor's.
+pub fn scan<T>(
+    catalog: &dyn DocumentCatalog,
+    path: &str,
+    read: impl FnOnce(&Document) -> T,
+) -> Result<Option<T>, MemberFault> {
+    let Some(revision) = catalog.revision(path) else {
+        return Ok(None);
+    };
+    let fault = |cause| MemberFault {
+        path: path.to_owned(),
+        cause,
+    };
+    let lease = catalog
+        .pin(path)
+        .map_err(fault)?
+        .ok_or_else(|| fault(io::Error::other("known member has no body lease")))?;
+    let doc = lease.document().map_err(fault)?;
+    if doc.root.node_rev != *revision {
+        return Err(fault(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "body does not match the selected revision",
+        )));
+    }
+    Ok(Some(read(doc)))
+}
+
 /// Borrow the existing eager corpus, with a lazily built name index. Merely
 /// testing the SQL pin does not walk/clone the corpus or build its index.
 #[derive(Debug)]

@@ -1,6 +1,6 @@
 //! The read face carries the engine's TEACHING refusal — path, message,
 //! recovery — on both planes. The daemon's per-file `invalid_utf8` frame
-//! (registry `doc_or_refusal`) names the unserved member, its condition, and
+//! (registry `with_engine_document`) names the unserved member, its condition, and
 //! where its bytes stand; wire-contract §8 binds `invalid_utf8{path,message}`.
 //! A face that discards that frame and remints the bare code token strands the
 //! operator: `mrd: invalid_utf8` says neither WHICH file nor WHAT to do

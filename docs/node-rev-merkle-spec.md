@@ -1078,8 +1078,21 @@ with the registry engine-map lock released before body access. A concurrent
 rebuild can publish a replacement without changing that callback's generation.
 The warm-to-snapshot reap race still returns the existing retry refusal.
 The daemon's named read adapter remains eager until activation; this seam does
-not migrate decorations, whole-corpus scans, run/script worlds, or engine
-publication by itself.
+not migrate rooted scans, run/script worlds, or engine publication by itself.
+
+The link plane and a composed read's claim-link colours scan through the same
+catalog. `query::links_in` enumerates membership from metadata and pins one
+member at a time with a scan pin (`model::catalog::scan`): its edges are
+computed and the lease released before the next member is admitted, so a
+whole-corpus edge map holds one body, and a named page pins that page alone.
+`wire_serve::read::links` decides member, unserved and nonmember from
+metadata; `wire_serve::read::page_decorations_in` reuses the page the read
+already holds and scan-pins a lock target only while it classifies a pin
+that one of the page's links addresses. Scan pins do not promote read recency. A member the catalog knows
+and cannot pin, or whose parsed revision disagrees with its descriptor, is an
+`io_error` naming that member: it is never an absent edge-map entry, an
+undecorated pin or a `gone` colour. Only a path the catalog does not hold is
+absent.
 
 The dependency-neutral byte contract is `model::bytes::ByteSource`: a
 retained version has a fixed digest and length, and reading it returns shared
