@@ -596,7 +596,11 @@ only these, govern what a read sees:
    state, the hash domain's. An out-of-domain path (wire-contract §12.1)
    stays addressable, served by a live single-file disk load outside the
    stand-still guarantee. Every read is recorded; eval is a pure function of
-   (script, args, files, read-response sequence).
+   (script, args, files, read-response sequence). A member of the entry
+   world whose retained bytes cannot be served is a read fault of this
+   attempt, its reason led by `io_error`, or by `workspace_busy` when the
+   refusal is transient; the read never falls through to the workspace file,
+   which may be newer than the entry.
 3. **Disk changes only at commit, and the commit guards the live world.** One
    splice, its premise the recorded touch set, verified entry-vs-live now
    (below).
@@ -1143,7 +1147,10 @@ A mode-bearing row is a `run` target that carries `load` or `fire`.
 `load` and `fire` take the **pinned resident snapshot** (an `Arc` clone, the
 one the script op takes) and never run the `domain_snapshot` fold. The world is
 a parameter (`run::modes::ModeWorld`): one implementation serves the daemon and
-the CLI, so the two lanes cannot answer differently.
+the CLI, so the two lanes cannot answer differently. The daemon lends the page
+out of that snapshot for one row; a page the snapshot holds and cannot lend
+refuses that row — fault class `io_error`, or `workspace_busy` when a retry
+may clear it — and every other row of the submission answers for itself.
 
 **What the entry pays first is per MODE — a fire drives no currency pass.**
 `load` is the resolver's question — *what does this page declare NOW?* — so

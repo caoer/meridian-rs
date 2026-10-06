@@ -371,13 +371,18 @@ pub(crate) fn serve(
 }
 
 fn store_error(context: &str, error: view::ViewError) -> Box<ErrorBody> {
-    if let view::ViewError::Busy(reason) = error {
-        let mut error = ErrorBody::new(ErrorCode::WorkspaceBusy);
-        error.message = Some(format!("{context}: {reason}"));
-        Box::new(error)
-    } else {
-        io_error(format!("{context}: {error}"))
-    }
+    let reason = match error {
+        view::ViewError::Busy(reason) => reason,
+        // A member lease the residency admission refused for now (merkle-spec
+        // §6.8): the append rolled back whole, so the retry appends again.
+        view::ViewError::Io(cause) if model::catalog::is_transient(&cause) => {
+            format!("{cause} — transient; retry")
+        }
+        error => return io_error(format!("{context}: {error}")),
+    };
+    let mut error = ErrorBody::new(ErrorCode::WorkspaceBusy);
+    error.message = Some(format!("{context}: {reason}"));
+    Box::new(error)
 }
 
 fn io_error(cause: String) -> Box<ErrorBody> {
@@ -410,6 +415,21 @@ mod tests {
         );
         assert_eq!(io.code, ErrorCode::IoError);
         assert_eq!(io.recovery, Recovery::Env);
+        // A member lease the residency admission refused for now: the append
+        // rolled back whole, and the same statement may succeed.
+        let refused = store_error(
+            "append",
+            view::ViewError::Io(model::catalog::transient("residency allowance is occupied")),
+        );
+        assert_eq!(refused.code, ErrorCode::WorkspaceBusy);
+        assert_eq!(refused.recovery, Recovery::Retry);
+        assert!(
+            refused
+                .message
+                .as_deref()
+                .is_some_and(|m| m.contains("residency allowance is occupied")),
+            "{refused:?}"
+        );
     }
 
     /// The contended path refuses at the bound instead of waiting the holder

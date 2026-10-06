@@ -11,6 +11,7 @@ enum Fault {
     Read,
     InvalidBacking,
     Document,
+    Transient,
 }
 #[derive(Debug)]
 struct Source<'a> {
@@ -45,6 +46,9 @@ impl<'a> Source<'a> {
                     io::ErrorKind::InvalidData,
                     "backing identity mismatch",
                 ));
+            }
+            Fault::Transient => {
+                return Err(model::catalog::transient("residency allowance is occupied"));
             }
             Fault::None | Fault::Document => path,
         };
@@ -198,6 +202,34 @@ fn named_catalog_faults_never_fall_through_to_a_live_file() {
         assert!(error.cause.as_deref().is_some_and(|c| c.contains("a.md")));
         assert_eq!(source.live.get(), 0);
     }
+}
+
+/// A lease the host's admission refused for now is the retry class naming
+/// the member (merkle-spec §6.8) — on a named read and on a scan's fault —
+/// and, like every member fault, never the workspace file.
+#[test]
+fn named_catalog_transient_refusal_is_the_retry_class_naming_the_member() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::WorkspaceRoot(dir.path().to_path_buf());
+    std::fs::write(dir.path().join("a.md"), "# Current source is readable\n").unwrap();
+    let docs = docs();
+    let source = Source::new(&docs);
+    source.fault.set(Fault::Transient);
+    let path = Path("a.md".to_owned());
+    let error = with_document(&root, &source, &BTreeMap::new(), &path, |doc| {
+        super::super::cat(doc, None)
+    })
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::WorkspaceBusy);
+    assert_eq!(error.recovery, wire::Recovery::Retry);
+    assert_eq!(error.path.as_ref(), Some(&path));
+    assert!(error.message.as_deref().is_some_and(|m| m.contains("a.md")));
+    assert_eq!(source.live.get(), 0);
+
+    let scanned = model::catalog::scan(&source, "a.md", |_| ()).unwrap_err();
+    let error = super::super::member_fault(scanned);
+    assert_eq!(error.code, ErrorCode::WorkspaceBusy);
+    assert_eq!(error.path.as_ref(), Some(&path));
 }
 
 #[test]

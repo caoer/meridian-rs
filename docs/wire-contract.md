@@ -834,6 +834,7 @@ Every error frame carries `code` + `recovery` from the closed six-class enum. Ea
 | `resync` | your picture of the world is stale; re-plan | `fingerprint_mismatch{expected,actual,scope?}`, `fingerprint_unknown`, `fingerprint_version_retired` (§5.7, §12.3 — re-mint at the same scope), `fingerprint_version_unsupported` (§5.7 — the family is newer than the serving law) |
 | `respawn` | the channel itself is broken | `bad_frame`, `unsupported_proto`, `internal` |
 
+- A read of a member the serving generation retains and transiently cannot admit refuses `workspace_busy` (retry) naming it in `path`; any other failure to serve a retained member is `io_error`.
 - No bare `not_found`: `file_not_found` (env: the file is gone) differs from `ref_not_found` (refresh: the name dangles), and `io_error` carries its cause. `ref_not_found.stage` makes the two stages observable (1 = vault-namespace miss, no `dest`; 2 = subpath miss, `dest` present — §4.5).
 - `budget_exceeded` is not here: it is a typed *finding* inside `verdicts` (§11), never a wire error.
 - **`daemon_only`** (env) is unmintable (§3.3): it names a corpus-class rules pack — one whose WHEN needs the resident corpus name index, e.g. `link_resolves` (§11.2) — loaded with no resident index (the `BudgetClass::Corpus` law, §11.3). Every wire door is daemon-backed, so nothing mints it; the law gates nothing at the wire.
@@ -2797,7 +2798,7 @@ modes, one law:
    "process":{"interpreter":"bash","exit":0,"stdout_tail":"…","stderr_tail":"…",
               "stdout_bytes":10000,"stderr_bytes":0,"timed_out":false,
               "log":".meridian/runs/HOOKS.md/…-t0.log"},
-   "fault":{"class":"parse|name_error|effect_at_load|declare_at_fire|declared_twice|impl_type|budget|reply_shape|runtime|no_block|not_declared|ambiguous_anchor|not_a_module|missing_entry|prelude_invalid|bad_path|corpus_race","reason":"…","line":7},
+   "fault":{"class":"parse|name_error|effect_at_load|declare_at_fire|declared_twice|impl_type|budget|reply_shape|runtime|no_block|not_declared|ambiguous_anchor|not_a_module|missing_entry|prelude_invalid|bad_path|corpus_race|io_error|workspace_busy","reason":"…","line":7},
    "telemetry":{"steps":812,"mem":20480,"wall_ms":3}}
   ```
 
@@ -2812,7 +2813,9 @@ modes, one law:
   and tails. `rev` is provenance: the page's `file_rev` and the block's `rev`.
   A `bash()` that ran before a fault stays in `exec[]`. The `fault` union is
   what the engine can emit — `runtime` the production catch-all,
-  `corpus_race` the warm→pin race, `bad_path` the create door's (§ A.3),
+  `corpus_race` the warm→pin race, `io_error` a page the pinned corpus holds
+  and cannot serve, `workspace_busy` that same page transiently refused
+  (retry), `bad_path` the create door's (§ A.3),
   `impl_type` typed — and a `fault` carries no `applied` (all-or-nothing per
   row).
 
