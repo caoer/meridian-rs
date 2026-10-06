@@ -100,6 +100,77 @@ fn the_host_floor_is_the_registry_census_at_each_publish_and_eviction() {
     );
 }
 
+/// The reaper under a host (merkle-spec §6.4): while the floor alone exceeds
+/// the controller's limit, the budget sweep evicts whole workspaces with no
+/// live sub cursor, re-censusing after each; a subscribed workspace stays
+/// warm on its ring, and with none left to evict the sweep returns.
+#[test]
+fn the_sweep_evicts_unsubscribed_workspaces_while_the_floor_alone_is_over() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roots: Vec<_> = ["kept", "evicted"]
+        .iter()
+        .map(|name| {
+            let ws = tmp.path().join(name);
+            for n in 0..64 {
+                write(&ws, &format!("dir-{}/member-{n}.md", n % 5), &member(n));
+            }
+            std::fs::canonicalize(&ws).unwrap()
+        })
+        .collect();
+    let (kept, evicted) = (&roots[0], &roots[1]);
+    let host = Arc::new(Host::new(
+        Controller::new(1 << 30),
+        RawStore::new(&tmp.path().join("backing")).unwrap(),
+        1 << 20,
+    ));
+    let mut config = registry::Config::for_cache_root(tmp.path().join("cache"));
+    config.socket_path = tmp.path().join("daemon.sock");
+    config.state_path = tmp.path().join("state.json");
+    config.residency = Some(Arc::clone(&host));
+    let reg = registry::in_process_registry(&config).unwrap();
+    for ws in [kept, evicted] {
+        reg.register(ws);
+        reg.warm_or_build(ws).unwrap();
+    }
+    let guard = reg.subscribe(kept);
+    let ring = reg.ring(kept);
+    reg.charge_floor();
+    let floor = host.floor();
+
+    // The floor alone is over: the unsubscribed workspace goes.
+    host.controller.set_limit(floor - 1);
+    assert!(host.controller.report().floor_overage > 0);
+    assert_eq!(
+        reg.reap_to_budget(u64::MAX),
+        vec![evicted.clone()],
+        "with a host the controller's limit is the budget, not the argument"
+    );
+    assert!(
+        reg.engine_snapshot(evicted).is_none(),
+        "the evicted engine left"
+    );
+    assert!(
+        reg.engine_snapshot(kept).is_some(),
+        "the subscribed one stays"
+    );
+    assert!(
+        Arc::ptr_eq(&ring, &reg.ring(kept)),
+        "the subscribed workspace keeps its ring"
+    );
+    let report = host.controller.report();
+    assert_eq!(report.floor_overage, 0, "{report:?}");
+    assert!(host.floor() < floor, "the eviction left the floor");
+
+    // Only the subscribed workspace is left, and its floor alone is over.
+    host.controller.set_limit(1);
+    assert!(
+        reg.reap_to_budget(u64::MAX).is_empty(),
+        "a subscribed workspace is never evicted"
+    );
+    assert!(reg.engine_snapshot(kept).is_some());
+    drop(guard);
+}
+
 /// An in-process registry built through a host with a limit no test reaches.
 fn hosted(tmp: &Path) -> (Arc<Host>, registry::Registry) {
     let host = Arc::new(Host::new(

@@ -621,6 +621,23 @@ keeping up to a whole ring until it returns — its watch state, about 28 MB at
 76k members, and up to 256 frames — and the memo's stamp closure, until the
 same sweep unbinds it.
 
+**The reaper under a host.** Bodies above the floor are the controller's to
+shed; the floor is not. The budget sweep (`Registry::reap_to_budget`) of a
+registry with a host trims the controller, re-censuses the floor, and then,
+while the floor alone exceeds the controller's limit (`floor_overage`),
+evicts one whole workspace and re-censuses: the least recently used warm
+workspace with no live sub cursor, saved first and decided under the same
+critical section as the eviction without a host, so a sub claim landing in
+the window keeps its workspace. The eviction is the same total eviction
+(engine, ring, feed, memo, SQL handle, compiled modules). When no candidate
+is left and the floor is still over, the sweep logs the floor and the unmet
+amount and returns. It never evicts for overage above the floor (bodies,
+pins, reservations). An eviction releases the registry's references only: a
+generation an operation still holds stays in the floor until released, so
+one sweep can evict every unsubscribed workspace while a long operation
+holds a large generation. With a host the sweep's raw-byte budget argument
+is not used; the controller's limit is the budget.
+
 `registry::residency::controller` owns the shared admission ledger and member
 LRU. Handles with the same retained byte identity share one slot across roots
 and generations. Admission publishes that identity's shared reservation before
@@ -1174,9 +1191,11 @@ through `DocumentCatalog` and `LockFacts`, so both forms answer the same
 bytes, and under a host a known member whose backing cannot be read is that
 door's member fault, never a read of the workspace file. A host-built
 generation takes no part in the §6.9 parsed snapshot, neither restored into
-nor saved from, and the raw-byte estimate of `Registry::reap_to_budget`
-charges it nothing: its bodies are the controller's, which sheds them to its
-own limit as their pins release. `mrd daemon` configures no host.
+nor saved from, and `Registry::reap_to_budget` does not estimate it from raw
+bytes: its bodies are the controller's, which sheds them to its own limit as
+their pins release, and its metadata is in the host floor, which the sweep
+evicts whole workspaces to meet (§6.4, the reaper under a host). `mrd daemon`
+configures no host.
 
 **Cold access and consumers.** `Document` remains immutable and pure;
 `model` owns membership/access contracts, not I/O or a registry. Replace the
