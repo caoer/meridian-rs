@@ -82,9 +82,22 @@ pub struct WorkspaceRing {
     /// One-shot. `cfg(test)` excludes it from every release build by
     /// construction (the `Registry::pause_before_insert` seam class).
     #[cfg(test)]
-    pause_after_prime_snapshot:
-        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    pause_after_prime_snapshot: Mutex<Option<PauseGate>>,
+    /// Test-only pause gate for the flock-held cycle: the next cycle
+    /// announces itself after its observation and parks before it reads the
+    /// memo's pair — the window in which a reader can move the memo. One-shot.
+    #[cfg(test)]
+    pause_after_detect_observation: Mutex<Option<PauseGate>>,
+    /// Test-only pause gate for a write door: the next
+    /// [`DoorPlane::observe`] announces itself after its observation and
+    /// parks before the settle step. One-shot.
+    #[cfg(test)]
+    pause_after_door_observation: Mutex<Option<PauseGate>>,
 }
+
+/// A test seam's announce and resume channels.
+#[cfg(test)]
+type PauseGate = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
 
 #[derive(Debug)]
 struct RingState {
@@ -162,6 +175,10 @@ impl WorkspaceRing {
             prime_budget: PRIME_FLOCK_BUDGET,
             #[cfg(test)]
             pause_after_prime_snapshot: Mutex::new(None),
+            #[cfg(test)]
+            pause_after_detect_observation: Mutex::new(None),
+            #[cfg(test)]
+            pause_after_door_observation: Mutex::new(None),
         }
     }
 
@@ -480,6 +497,8 @@ impl WorkspaceRing {
             self.state().last_detect = Some(Instant::now());
             return Ok(false);
         }
+        #[cfg(test)]
+        park(&self.pause_after_detect_observation);
         // The classifier's root and leaves, from one memo hold: a reader's
         // observation since this one moved both together.
         let (observed, leaves) = memo_pair(cache)?;
@@ -508,30 +527,47 @@ impl WorkspaceRing {
         Ok(emitted)
     }
 
+    /// Test seam: arm the one-shot pause after the next write door's
+    /// observation ([`DoorPlane::observe`]), before its settle step. The
+    /// door announces on the returned receiver and resumes on the sender.
+    #[cfg(test)]
+    pub(crate) fn pause_next_door_observation(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (announce, announced) = std::sync::mpsc::channel();
+        let (resume, resumed) = std::sync::mpsc::channel();
+        *self
+            .pause_after_door_observation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((announce, resumed));
+        (announced, resume)
+    }
+
+    /// Test seam: one full detect cycle now, whatever the cadence.
+    #[cfg(test)]
+    pub(crate) fn cycle_now(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        registry: &crate::Registry,
+    ) -> Result<bool, Box<ErrorBody>> {
+        self.cycle(ws_root, registry, true)
+    }
+
     /// Test seam: park between priming's unlocked snapshot and the flock
     /// (the `pause_after_prime_snapshot` gate).
     #[cfg(test)]
     fn park_after_prime_snapshot(&self, priming: bool) {
-        if !priming {
-            return;
-        }
-        let gate = self
-            .pause_after_prime_snapshot
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        if let Some((announce, resume)) = gate {
-            let _ = announce.send(());
-            let _ = resume.recv();
+        if priming {
+            park(&self.pause_after_prime_snapshot);
         }
     }
 
-    /// A write door's flock-held step, on the observation `expected` the
-    /// door just made through `cache`: [`Self::reconcile_pair`] over the
-    /// memo's root and leaves when the memo still folds to `expected`. A memo
-    /// a reader has moved past it tells nothing and leaves the baseline to
-    /// the detector, as a refused reconcile does: a commit's own files must
-    /// not be told with bytes past its `root_after`.
+    /// The door's follow step, on the root `expected` its commit left the
+    /// memo at: [`Self::reconcile_pair`] over the memo's root and leaves when
+    /// the memo still folds to `expected`. A memo a reader has moved past it
+    /// tells nothing and leaves the baseline to the detector, as a refused
+    /// reconcile does: a commit's own files must not be told with bytes past
+    /// its `root_after`.
     fn reconcile_observed(
         &self,
         ws_root: &fs::WorkspaceRoot,
@@ -563,28 +599,33 @@ impl WorkspaceRing {
     }
 
     /// Baseline law, before bytes land: a write door holding the flock has
-    /// just observed `observed` through `cache`. A primed baseline behind it
-    /// is an external change no frame has told — told now, in its own
-    /// actor-absent frame, so the commit's frame chains onto it. An unprimed
-    /// watcher is left alone: priming is a full snapshot, a subscriber's
-    /// cost, never a writer's.
+    /// just observed through `cache`. A primed baseline behind the memo is an
+    /// external change no frame has told — told now, in its own actor-absent
+    /// frame. The step classifies the memo's own pair, as the detector does:
+    /// a reader that moved the memo past the door's observation saw a later
+    /// state of the tree the commit lands on. A splice or a set takes its
+    /// `root_before` from the same memo, so its frame chains onto this one;
+    /// a door whose frame starts at its own observation breaks the chain
+    /// when a reader moved the memo first (wire-contract §7.1 degrade).
+    /// An unprimed watcher is left alone: priming is a full snapshot, a
+    /// subscriber's cost, never a writer's.
     ///
     /// Never fails the write. A refused reconcile is logged, and a writer
     /// still mid-write holds the baseline (the race arm); either way
     /// [`Self::follow`] then leaves the baseline too, and the detector tells
     /// the change as external.
-    fn settle(
-        &self,
-        ws_root: &fs::WorkspaceRoot,
-        cache: &Arc<Mutex<fs::DomainCache>>,
-        observed: &Root,
-    ) {
-        let behind = self
-            .state()
-            .watch
-            .root()
-            .is_some_and(|baseline| baseline != observed);
-        if behind && let Err(e) = self.reconcile_observed(ws_root, cache, observed) {
+    fn settle(&self, ws_root: &fs::WorkspaceRoot, cache: &Arc<Mutex<fs::DomainCache>>) {
+        let Some(baseline) = self.state().watch.root().cloned() else {
+            return;
+        };
+        let told = memo_root(cache).and_then(|root| {
+            if root == baseline {
+                return Ok(false);
+            }
+            let (root, leaves) = memo_pair(cache)?;
+            self.reconcile_pair(ws_root, &leaves, &root)
+        });
+        if let Err(e) = told {
             eprintln!("registry: write-door reconcile: {e:?}");
         }
     }
@@ -654,8 +695,9 @@ impl<'a> DoorPlane<'a> {
             self.cache,
             crate::registry::DOOR_COOKIE_TIMEOUT,
         )?;
-        self.ring
-            .settle(self.ws_root, self.cache, &Root(observed.0.clone()));
+        #[cfg(test)]
+        park(&self.ring.pause_after_door_observation);
+        self.ring.settle(self.ws_root, self.cache);
         Ok(observed)
     }
 }
@@ -678,6 +720,78 @@ impl wire_serve::seq::SeqSink for DoorPlane<'_> {
 /// A memo's leaves by String-spelled workspace-relative path.
 type LeafView = std::collections::BTreeMap<String, [u8; 32]>;
 
+/// The memo's root alone: the cheap test of whether a step has work.
+fn memo_root(cache: &Arc<Mutex<fs::DomainCache>>) -> Result<Root, Box<ErrorBody>> {
+    let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    let root = memo.overlay_root().map_err(|e| io_error_body(&e))?;
+    Ok(Root(root.0))
+}
+
+/// Test-only gate between [`memo_pair`]'s root read and its leaves read,
+/// keyed by the memo's address so a parallel test cannot take it. One-shot.
+#[cfg(test)]
+static PAIR_GATE: Mutex<Option<(usize, PauseGate)>> = Mutex::new(None);
+
+/// Park on [`PAIR_GATE`] when it is armed for `cache`.
+#[cfg(test)]
+fn park_pair(cache: &Arc<Mutex<fs::DomainCache>>) {
+    let armed = {
+        let mut gate = PAIR_GATE.lock().unwrap_or_else(PoisonError::into_inner);
+        let mine = gate
+            .as_ref()
+            .is_some_and(|(key, _)| *key == Arc::as_ptr(cache) as usize);
+        if mine { gate.take() } else { None }
+    };
+    if let Some((_, (announce, resume))) = armed {
+        let _ = announce.send(());
+        let _ = resume.recv();
+    }
+}
+
+/// Test helper: observe through `cache` until the memo's root differs from
+/// `from`, for at most 10 s. One observation right after a write can still
+/// return the root from before it: every cookie barrier writes its serial
+/// into the one reused `.meridian/cookie`, and the watcher reads the file's
+/// current serial when it handles an event, so an earlier barrier's trailing
+/// event can vouch this barrier before the write's own events are delivered
+/// (merkle-spec §6.4, the currency barrier). That false `Seen` is a product
+/// defect — a guarded write door can pass `if_root` against a moved world
+/// and fold an outside edit to its own file into its commit, untold — and
+/// this helper waits it out; a reader that keeps observing sees the write.
+#[cfg(test)]
+pub(crate) fn observe_past(
+    registry: &crate::Registry,
+    ws_root: &fs::WorkspaceRoot,
+    cache: &Arc<Mutex<fs::DomainCache>>,
+    from: &Root,
+) -> Root {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let seen = registry
+            .door_observation(&ws_root.0, cache, crate::registry::DOOR_COOKIE_TIMEOUT)
+            .map(|root| Root(root.0))
+            .expect("a reader's observation");
+        if seen != *from {
+            return seen;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no observation saw a write past {from:?}"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Park on a one-shot test gate when it is armed: announce, then wait.
+#[cfg(test)]
+fn park(gate: &Mutex<Option<PauseGate>>) {
+    let armed = gate.lock().unwrap_or_else(PoisonError::into_inner).take();
+    if let Some((announce, resume)) = armed {
+        let _ = announce.send(());
+        let _ = resume.recv();
+    }
+}
+
 /// The memo's root and its leaf view, read under one lock hold so the root
 /// folds exactly those leaves (merkle-spec §6.7, the watch plane). The view
 /// is String-spelled: non-UTF-8 NAMES stay baseline-invisible exactly as the
@@ -689,6 +803,8 @@ type LeafView = std::collections::BTreeMap<String, [u8; 32]>;
 fn memo_pair(cache: &Arc<Mutex<fs::DomainCache>>) -> Result<(Root, LeafView), Box<ErrorBody>> {
     let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
     let root = memo.overlay_root().map_err(|e| io_error_body(&e))?;
+    #[cfg(test)]
+    park_pair(cache);
     let leaves = memo
         .leaf_digests()
         .into_iter()

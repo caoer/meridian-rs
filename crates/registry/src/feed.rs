@@ -388,8 +388,12 @@ impl WorkspaceFeed {
                         // filter: the sentinel is the ordered stream's
                         // proof-of-delivery, never dirt. A torn or
                         // vanished read proves nothing and skips (the
-                        // close event re-delivers; at worst a barrier
-                        // times out to its floor — never a false Seen).
+                        // close event re-delivers). The serial is the
+                        // file's bytes now, not the one this event was
+                        // raised for: an earlier barrier's trailing
+                        // event can read a later barrier's serial and
+                        // vouch it before the events queued between
+                        // them arrive — a false Seen (merkle-spec §6.4).
                         if rel == Path::new(COOKIE_REL) {
                             if let Some(serial) = read_serial(path) {
                                 s.cookie_seen = s.cookie_seen.max(serial);
@@ -978,9 +982,13 @@ fn new_directory_members(_rel: &Path, _abs: &Path, _kind: EventKind) -> Option<V
     None
 }
 
-/// Parse a sighted cookie's serial. `None` (torn or vanished mid-read) is
-/// benign: the write's close event re-delivers the path, and an unseen
-/// serial at worst times a barrier out to its floor — never a false `Seen`.
+/// Parse a sighted cookie's serial: the file's bytes now, not the serial the
+/// handled event was raised for. `None` (torn or vanished mid-read) is
+/// benign: the write's close event re-delivers the path. One sentinel write
+/// raises more than one event, so a `Some` can be a later barrier's serial
+/// read through an earlier barrier's trailing event; it vouches that barrier
+/// before the events queued ahead of its sentinel are delivered, a false
+/// `Seen` (merkle-spec §6.4, the currency barrier).
 fn read_serial(abs: &Path) -> Option<u64> {
     let text = std::fs::read_to_string(abs).ok()?;
     text.trim().parse().ok()
