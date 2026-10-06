@@ -3054,12 +3054,12 @@ fn corpus_index_of(docs: &model::Docs) -> model::CorpusIndex {
 /// from-scratch [`build_corpus`] yields, plus the leaf set and fold they were
 /// built at, plus how many documents this pass actually parsed and indexed.
 #[derive(Debug)]
-pub struct CorpusUpdate {
+pub struct CorpusUpdate<S = model::Docs> {
     /// The name index over the FINAL docs map — equal to a from-scratch
     /// build's. The prior build's own allocation when no mover touched it.
     pub index: Arc<model::CorpusIndex>,
     /// The updated documents, keyed by workspace-relative path.
-    pub docs: model::Docs,
+    pub docs: S,
     /// The updated unserved map (non-UTF-8 CONTENT members).
     pub unserved: BTreeMap<String, String>,
     /// The leaf set the fold describes — the next pass's delta baseline.
@@ -3124,6 +3124,58 @@ pub fn leaf_delta<'a>(
     moves
 }
 
+/// The documents an incremental pass ([`update_corpus_with`]) starts from
+/// and produces: one slot per served member, keyed by workspace-relative
+/// path. Cloning is the pass's one structural copy, so it must share each
+/// slot, never copy a document (merkle-spec §6.8). [`model::Docs`] is the
+/// eager map; a residency generation keeps sheddable slots instead.
+pub trait SlotMap: Clone {
+    /// One member's slot.
+    type Slot;
+    /// Members held.
+    fn len(&self) -> usize;
+    /// Whether no member is held.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// Whether `rel` is held.
+    fn contains_key(&self, rel: &str) -> bool;
+    /// Take `rel`'s slot out.
+    fn remove(&mut self, rel: &str) -> Option<Self::Slot>;
+    /// Hold `slot` at `rel`.
+    fn insert(&mut self, rel: String, slot: Self::Slot);
+    /// The aliases `slot`'s document was entered into the name index under
+    /// ([`model::doc_aliases`]).
+    fn indexed_aliases(slot: &Self::Slot) -> Vec<String>;
+    /// The name index over every held member, for a prior that carries none.
+    ///
+    /// # Errors
+    /// A map that cannot produce it without loading documents.
+    fn index(&self) -> io::Result<model::CorpusIndex>;
+}
+
+impl SlotMap for model::Docs {
+    type Slot = Arc<model::Document>;
+    fn len(&self) -> usize {
+        Self::len(self)
+    }
+    fn contains_key(&self, rel: &str) -> bool {
+        Self::contains_key(self, rel)
+    }
+    fn remove(&mut self, rel: &str) -> Option<Self::Slot> {
+        Self::remove(self, rel)
+    }
+    fn insert(&mut self, rel: String, slot: Self::Slot) {
+        Self::insert(self, rel, slot);
+    }
+    fn indexed_aliases(slot: &Self::Slot) -> Vec<String> {
+        model::doc_aliases(slot)
+    }
+    fn index(&self) -> io::Result<model::CorpusIndex> {
+        Ok(corpus_index_of(self))
+    }
+}
+
 /// The build an incremental pass ([`update_corpus`]) updates: its parts, its
 /// recorded leaf set, and its name index when it has one.
 ///
@@ -3132,9 +3184,9 @@ pub fn leaf_delta<'a>(
 /// document or condition. A prior whose counts disagree pays one scan for
 /// its holes, which the pass re-reads as movers.
 #[derive(Debug, Clone, Copy)]
-pub struct CorpusPrior<'a> {
+pub struct CorpusPrior<'a, S = model::Docs> {
     /// The prior documents, keyed by workspace-relative path.
-    pub docs: &'a model::Docs,
+    pub docs: &'a S,
     /// The prior unserved map.
     pub unserved: &'a BTreeMap<String, String>,
     /// The leaf set the prior was built at.
@@ -3147,7 +3199,7 @@ pub struct CorpusPrior<'a> {
 /// Members of `prior.leaves` its parts do not describe: a UTF-8-named leaf
 /// with neither a document nor a condition. Reached only when the counts
 /// disagree — non-UTF-8 names, or a prior that broke the builder invariant.
-fn prior_holes(prior: &CorpusPrior<'_>) -> Vec<LeafMove> {
+fn prior_holes<S: SlotMap>(prior: &CorpusPrior<'_, S>) -> Vec<LeafMove> {
     prior
         .leaves
         .iter()
@@ -3198,6 +3250,25 @@ pub fn update_corpus(
     moves: &[LeafMove],
     fresh_root: Option<&model::MerkleRoot>,
 ) -> io::Result<CorpusUpdate> {
+    update_corpus_with(root, prior, moves, fresh_root, |_, doc| Ok(Arc::new(doc)))
+}
+
+/// [`update_corpus`] over any [`SlotMap`]: each parsed mover is entered into
+/// the name index, then handed to `publish`, whose slot the pass holds in its
+/// place. The rows of a replaced or removed member are removed by the
+/// aliases its prior slot was indexed under, so no prior document is read.
+///
+/// # Errors
+/// I/O failure loading the domain config or reading a moved member, a
+/// `publish` failure, or a prior with no name index whose map cannot build
+/// one ([`SlotMap::index`]). Any of them refuses the pass whole.
+pub fn update_corpus_with<S: SlotMap>(
+    root: &WorkspaceRoot,
+    prior: &CorpusPrior<'_, S>,
+    moves: &[LeafMove],
+    fresh_root: Option<&model::MerkleRoot>,
+    mut publish: impl FnMut(&str, model::Document) -> io::Result<S::Slot>,
+) -> io::Result<CorpusUpdate<S>> {
     let domain = domain::Domain::load(root)?;
     let holes = if prior.docs.len() + prior.unserved.len() == prior.leaves.len() {
         Vec::new()
@@ -3222,7 +3293,9 @@ pub fn update_corpus(
     let mut diverged = false;
     for (rel, want) in moves.iter().chain(&holes) {
         let rel_str = rel.to_str();
-        let was = rel_str.and_then(|rel| docs.remove(rel));
+        let was = rel_str
+            .and_then(|rel| docs.remove(rel))
+            .map(|slot| S::indexed_aliases(&slot));
         if let Some(rel) = rel_str {
             unserved.remove(rel);
         }
@@ -3262,7 +3335,7 @@ pub fn update_corpus(
                 parsed += 1;
                 // Parse borrowing, then MOVE the text in (`parse_member`).
                 let nodes = syntax::parse(&text);
-                Some(Arc::new(model::build(text, nodes)))
+                Some(model::build(text, nodes))
             }
             Some(Err(e)) => {
                 unserved.insert(
@@ -3273,16 +3346,19 @@ pub fn update_corpus(
             }
         };
         if let Some(index) = index.as_mut() {
-            indexed += patch_index(index, rel_str, was.as_deref(), doc.as_deref());
+            indexed += patch_index(index, rel_str, was.as_deref(), doc.as_ref());
         }
         if let Some(doc) = doc {
-            docs.insert(rel_str.to_owned(), doc);
+            let slot = publish(rel_str, doc)?;
+            docs.insert(rel_str.to_owned(), slot);
         }
     }
-    let index = index.unwrap_or_else(|| {
+    let index = if let Some(index) = index {
+        index
+    } else {
         indexed = docs.len();
-        Arc::new(corpus_index_of(&docs))
-    });
+        Arc::new(docs.index()?)
+    };
     // §6.8 fold-free rebuild stamp: the pass still folds its OWN leaf set —
     // when that set is byte-equal to the snapshot it planned against, the
     // fold of equal inputs IS the snapshot's minted root (§4.2.1 purity),
@@ -3307,19 +3383,20 @@ pub fn update_corpus(
     })
 }
 
-/// Move one member's rows in a prior build's name index from its document
-/// `was` to its document `now` — either may be absent. The index allocation
+/// Move one member's rows in a prior build's name index from its prior
+/// version — present when `was` names the aliases that version was indexed
+/// under — to its document `now`; either may be absent. The index allocation
 /// stays shared when the member's rows do not change (same document set and
 /// same aliases): a content edit costs the index nothing. Returns `1` when
 /// `now` entered the index.
 fn patch_index(
     index: &mut Arc<model::CorpusIndex>,
     rel: &str,
-    was: Option<&model::Document>,
+    was: Option<&[String]>,
     now: Option<&model::Document>,
 ) -> usize {
     if let (Some(was), Some(now)) = (was, now)
-        && model::doc_aliases(was) == model::doc_aliases(now)
+        && was == model::doc_aliases(now).as_slice()
     {
         return 0;
     }
@@ -3328,7 +3405,7 @@ fn patch_index(
     }
     let index = Arc::make_mut(index);
     if let Some(was) = was {
-        index.remove(rel, was);
+        index.remove_aliases(rel, was);
     }
     match now {
         Some(now) => {

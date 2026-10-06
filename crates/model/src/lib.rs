@@ -2693,9 +2693,16 @@ impl CorpusIndex {
     /// every alias `doc` declares — and drop a bucket it leaves empty, as a
     /// from-scratch build over the remaining documents would never mint it.
     pub fn remove(&mut self, path: &str, doc: &Document) {
+        self.remove_aliases(path, &doc_aliases(doc));
+    }
+
+    /// [`remove`](Self::remove) by the aliases `path`'s document was indexed
+    /// under ([`doc_aliases`]), for a holder that recorded them instead of
+    /// keeping the document (merkle-spec §6.8, a residency slot).
+    pub fn remove_aliases(&mut self, path: &str, aliases: &[String]) {
         remove_from(&mut self.by_basename, &basename_lc(path), path);
-        for alias in doc_aliases(doc) {
-            remove_from(&mut self.by_alias, &alias, path);
+        for alias in aliases {
+            remove_from(&mut self.by_alias, alias, path);
         }
     }
 
