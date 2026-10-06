@@ -165,40 +165,8 @@ pub fn update(
     controller: &Controller,
     store: &RawStore,
 ) -> io::Result<fs::CorpusUpdate<Slots>> {
-    // Control prototype: hydrate the prior, run the eager pass, capture it.
-    let mut docs = Docs::new();
-    for (path, slot) in prior.docs.iter() {
-        let pin = slot
-            .member
-            .pin(Access::Scan, 131_072)
-            .map_err(io::Error::other)?;
-        let doc = pin.document().map_err(io::Error::other)?.clone();
-        docs.insert(path.clone(), Arc::new(doc));
-    }
-    let eager = fs::update_corpus(
-        root,
-        &fs::CorpusPrior {
-            docs: &docs,
-            unserved: prior.unserved,
-            leaves: prior.leaves,
-            index: prior.index,
-        },
-        moves,
-        fresh_root,
-    )?;
-    let mut slots = Slots::default();
-    for (path, doc) in &eager.docs {
-        let slot = Slot::publish(doc, controller, store)?;
-        slots.0.insert(path.clone(), Arc::new(slot));
-    }
-    Ok(fs::CorpusUpdate {
-        index: eager.index,
-        docs: slots,
-        unserved: eager.unserved,
-        leaves: eager.leaves,
-        root: eager.root,
-        parsed: eager.parsed,
-        indexed: eager.indexed,
+    fs::update_corpus_with(root, prior, moves, fresh_root, |_, doc| {
+        Slot::publish(&doc, controller, store).map(Arc::new)
     })
 }
 
