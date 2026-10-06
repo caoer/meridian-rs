@@ -518,8 +518,10 @@ engine-side.
 
 The unit of residency is a member version, identified by workspace, relative
 path and content leaf digest. Each served generation retains membership,
-length, digest, UTF-8 service condition and name/alias rows independently of
-whether its document is hot. The memo, feed, ring and these descriptors stay
+length, digest, UTF-8 service condition, name/alias rows and the mount names
+its wikilink and embed targets address, independently of whether its document
+is hot. Each of these is fixed when the member version is parsed; a question
+they answer never pins a body. The memo, feed, ring and these descriptors stay
 resident for a subscribed root. A cold member is still a member: eviction
 cannot change a fingerprint, name resolution, a scan's coverage, or a node rev.
 
@@ -1054,8 +1056,20 @@ explicit fault; it cannot disappear from SQL. In a same-domain append, a
 fault after any batch has flushed rolls back the entire generation, including
 bodies, tombstones and pin. A fingerprint-domain change retains the existing
 delete-and-rebuild policy. The unchanged fast path does not hydrate bodies; when no rooted row needs
-re-resolution, it does not build the eager index either. The existing `sync` entry uses the eager adapter; daemon generation
-publication and the other body consumers are not yet migrated by this seam.
+re-resolution, it does not build the eager index either. The existing `sync` entry uses the eager adapter.
+
+The daemon's `sql` arm hands `sync_catalog` its selected engine generation as
+that catalog: membership, revisions and the generation's own name index come
+from the engine, and each projected body is a scan pin. Which mounted roots a
+statement needs is `DocumentCatalog::link_roots`, the union of the members'
+link-addressed mount names, so choosing them pins nothing. A mounted root is
+bound into `model::catalog::RootedCatalog` as its resident engine's catalog
+(`wire_serve::mount_corpus::ServedCorpus::catalog`): rooted name resolution
+reads that root's membership and name index and never a document of it. The
+engine generation serves these through its eager documents until daemon
+generation publication migrates; the pin plane (`walk`) and the run and script
+worlds still read document maps.
+
 SQL scan pins do not promote read recency. Tests observe lease release from
 inside the batch flush and hold that recency contract by the eviction order
 of hot members, not merely by their eventual cold state.

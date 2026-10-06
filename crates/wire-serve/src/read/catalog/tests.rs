@@ -84,6 +84,9 @@ impl DocumentCatalog for Source<'_> {
     fn revision(&self, path: &str) -> Option<&model::NodeRev> {
         self.eager.revision(path)
     }
+    fn link_roots(&self) -> std::collections::BTreeSet<addr::MountName> {
+        self.eager.link_roots()
+    }
     fn index(&self) -> &model::CorpusIndex {
         panic!("a named body read needs no name index");
     }

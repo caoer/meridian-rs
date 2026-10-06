@@ -8,9 +8,12 @@
 //! documents may restore through the validated §6.9 cache after a cold gap.
 //! Reuse key is the corpus CONTENT hash (R5), not workspace-identity Merkle.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use model::catalog::{DocumentCatalog, DocumentLease};
 
 /// The warm per-workspace engine state: the parsed corpus that `query` reads
 /// (U2), plus the corpus content hash it was built at (the reuse key).
@@ -68,11 +71,47 @@ pub(crate) fn restored_prior(restored: &parse_cache::snapshot::Restored) -> fs::
     }
 }
 
+/// The engine is its generation's catalog (merkle-spec §6.8): membership and
+/// revisions off its documents, the name index it already holds, and a lease
+/// per body. Its documents are resident, so a lease borrows one and cannot
+/// fault.
+impl DocumentCatalog for WorkspaceEngine {
+    fn revisions(&self) -> Box<dyn Iterator<Item = (&str, &model::NodeRev)> + '_> {
+        Box::new(
+            self.docs
+                .iter()
+                .map(|(path, doc)| (path.as_str(), &doc.root.node_rev)),
+        )
+    }
+    fn revision(&self, path: &str) -> Option<&model::NodeRev> {
+        self.docs.get(path).map(|doc| &doc.root.node_rev)
+    }
+    fn index(&self) -> &model::CorpusIndex {
+        &self.index
+    }
+    fn link_roots(&self) -> BTreeSet<addr::MountName> {
+        self.docs
+            .values()
+            .flat_map(|doc| model::catalog::link_roots(doc))
+            .collect()
+    }
+    fn pin(&self, path: &str) -> io::Result<Option<Box<dyn DocumentLease + '_>>> {
+        Ok(self
+            .docs
+            .get(path)
+            .map(|doc| model::catalog::resident_lease(doc)))
+    }
+}
+
 /// The resident engine IS a mounted root's served projection when a pin or
 /// link plane names that root (`wire_serve::mount_corpus`): the daemon hands
 /// its own warm corpus to the colour computer instead of rebuilding the root
 /// from disk per call.
 impl wire_serve::mount_corpus::ServedCorpus for WorkspaceEngine {
+    fn catalog(&self) -> &dyn DocumentCatalog {
+        self
+    }
+
     fn docs(&self) -> &model::Docs {
         &self.docs
     }

@@ -204,38 +204,18 @@ pub fn walk_rooted(
 /// rooted spelling, so a workspace carrying none needs zero.
 ///
 /// `path` mirrors the links plane: `None` scans the whole ambient corpus;
-/// `Some` scans that one file. The root name is read from
-/// [`addr::Addr::parse`] of each target — the same grammar the resolver
-/// peels. A target outside the grammar contributes no root.
+/// `Some` scans that one file. Each document's roots are
+/// [`model::catalog::link_roots`], the per-member fact a generation catalog
+/// answers from its descriptors.
 ///
 /// Shared owner for the CLI verbs (`mrd sql`, `mrd links`) and the § A.11
 /// wire serve path — two assemblies would hand two corpora to one resolver.
 #[must_use]
 pub fn link_addressed_roots(docs: &model::Docs, path: Option<&str>) -> BTreeSet<addr::MountName> {
-    let mut roots = BTreeSet::new();
-    for (source, doc) in docs {
-        if path.is_some_and(|p| p != source.as_str()) {
-            continue;
-        }
-        collect_link_roots(&doc.root, &mut roots);
-    }
-    roots
-}
-
-fn collect_link_roots(node: &model::Node, roots: &mut BTreeSet<addr::MountName>) {
-    match &node.kind {
-        model::NodeKind::Wikilink { target, .. } | model::NodeKind::Embed { target, .. } => {
-            if let Ok(addr) = addr::Addr::parse(target)
-                && let Some(root) = addr.root()
-            {
-                roots.insert(root.clone());
-            }
-        }
-        _ => {}
-    }
-    for child in &node.children {
-        collect_link_roots(child, roots);
-    }
+    docs.iter()
+        .filter(|(source, _)| path.is_none_or(|p| p == source.as_str()))
+        .flat_map(|(_, doc)| model::catalog::link_roots(doc))
+        .collect()
 }
 
 #[must_use]

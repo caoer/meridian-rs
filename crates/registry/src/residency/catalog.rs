@@ -11,12 +11,18 @@ use model::{
     CorpusIndex, Docs, NodeRev,
     catalog::{DocumentCatalog, DocumentLease},
 };
-use std::{collections::BTreeMap, io, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    sync::Arc,
+};
 
 #[derive(Debug)]
 struct Entry {
     revision: NodeRev,
     member: Member,
+    /// The mount names this version's wikilink and embed targets address.
+    link_roots: Box<[addr::MountName]>,
 }
 
 /// Complete generation membership with sheddable bodies and exact backing.
@@ -52,6 +58,7 @@ impl Catalog {
                 Entry {
                     revision: doc.root.node_rev.clone(),
                     member: controller.retain(Arc::new(source)),
+                    link_roots: model::catalog::link_roots(doc).into_iter().collect(),
                 },
             );
             index.insert(path, doc);
@@ -76,6 +83,20 @@ impl DocumentCatalog for Catalog {
     }
     fn index(&self) -> &CorpusIndex {
         &self.index
+    }
+    fn link_roots(&self) -> BTreeSet<addr::MountName> {
+        // Control prototype: roots are read off each body under a scan pin,
+        // and a member that cannot be read contributes none.
+        self.entries
+            .iter()
+            .filter_map(|(path, entry)| {
+                let _descriptor = &entry.link_roots;
+                model::catalog::scan(self, path, model::catalog::link_roots)
+                    .ok()
+                    .flatten()
+            })
+            .flatten()
+            .collect()
     }
     fn pin(&self, path: &str) -> io::Result<Option<Box<dyn DocumentLease + '_>>> {
         self.entries
