@@ -445,14 +445,17 @@ fn a_detect_cycle_classifies_the_memo_a_reader_moved_after_its_observation() {
 
 /// `memo_pair` holds the memo across its root read and its leaves read, so
 /// no reader can move the memo between them: parked between the two reads,
-/// the memo is still locked.
+/// the memo is still locked. A reader observes the write first
+/// ([`super::observe_past`]), so the cycle finds the memo past its baseline
+/// and reaches `memo_pair` whatever its own barrier vouches.
 #[test]
 fn memo_pair_holds_the_memo_across_both_reads() {
     let (_dir, root, registry) = setup();
     let ring = WorkspaceRing::new(&root);
-    ring.prime(&root, &registry).unwrap();
+    let (baseline, _) = ring.prime(&root, &registry).unwrap();
     let cache = registry.domain_cache(&root.0);
     std::fs::write(root.0.join("a.md"), b"# Seen by the cycle\n").unwrap();
+    observe_past(&registry, &root, &cache, &baseline);
     let (announce, announced) = std::sync::mpsc::channel();
     let (resume, resumed) = std::sync::mpsc::channel();
     *PAIR_GATE.lock().unwrap() = Some((Arc::as_ptr(&cache) as usize, (announce, resumed)));

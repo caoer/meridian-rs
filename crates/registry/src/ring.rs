@@ -750,8 +750,14 @@ fn park_pair(cache: &Arc<Mutex<fs::DomainCache>>) {
 
 /// Test helper: observe through `cache` until the memo's root differs from
 /// `from`, for at most 10 s. One observation right after a write can still
-/// return the root from before it (rv-355 P2-3; cause not determined); a
-/// reader that keeps observing sees the write.
+/// return the root from before it: every cookie barrier writes its serial
+/// into the one reused `.meridian/cookie`, and the watcher reads the file's
+/// current serial when it handles an event, so an earlier barrier's trailing
+/// event can vouch this barrier before the write's own events are delivered
+/// (merkle-spec §6.4, the currency barrier). That false `Seen` is a product
+/// defect — a guarded write door can pass `if_root` against a moved world —
+/// and this helper waits it out; a reader that keeps observing sees the
+/// write.
 #[cfg(test)]
 pub(crate) fn observe_past(
     registry: &crate::Registry,

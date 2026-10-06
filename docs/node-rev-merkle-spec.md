@@ -385,7 +385,8 @@ cached 32-byte fold, a dirty bit, a `last_seq` stamp (§6.3).
   door's flock on that memo: §6.4 cookie barrier, then take-and-apply — the
   pending dirty set taken and applied. The overlay serves as `root_before`
   only on `Seen` (the cookie came back through the ordered event stream,
-  proving earlier events are folded in) + no doubt collapse + `Trusted` — the
+  proving earlier events are folded in — a proof the barrier as built can
+  break, §6.4 the currency barrier) + no doubt collapse + `Trusted` — the
   vouch `currency_refresh` demands. `Trusted` says the last observation landed
   whole with no unabsorbed loss, not that the stream delivered everything on
   disk; without the cookie, a silent-dead watcher or a sticky failed feed
@@ -482,7 +483,18 @@ engine-side.
   a sentinel at `.meridian/cookie` and waits for it to return through the
   ordered event stream. `Seen` — ordered delivery of all the kernel captured,
   no capture-gap doubt open — proves in O(1) that earlier events are folded in.
-  A new directory, or any non-member-candidate path that can hide members, is a
+  **The barrier as built can break that proof.** Every barrier writes its
+  serial into the one reused file, and the watcher counts a sighting by
+  reading the file's current bytes when it handles an event, not the serial
+  that event was raised for. One sentinel write raises more than one event
+  (data modify, then close-after-write), so a trailing event of barrier B1 can
+  read B2's serial and vouch B2 before the events queued between them — an
+  outside write that finished before B2 began — are delivered. A guarded
+  write door then passes `if_root` against a world that has moved, takes a
+  `root_before` disk did not hold, and folds an outside edit to its own file
+  into its commit untold; an edit to any other file is told after the commit
+  instead of before it. One sentinel per barrier, its serial taken from the
+  event's path, closes the gap. A new directory, or any non-member-candidate path that can hide members, is a
   missed-event: `Seen` is then illegal, and the barrier answers unproven at
   once, without spending the cookie timeout. The dot-prefixed cookie path is
   outside the hash domain by the standing `wire-contract.md` §12.1 floor, so it

@@ -2419,12 +2419,12 @@ fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
     Box::new(err)
 }
 
-/// R2/S2 accept-loop fault containment, driven at the dispatch seam: a real
-/// spawn failure cannot be provoked in-process without taking the test binary
-/// down with it.
 #[cfg(test)]
 mod settle_race_tests;
 
+/// R2/S2 accept-loop fault containment, driven at the dispatch seam: a real
+/// spawn failure cannot be provoked in-process without taking the test binary
+/// down with it.
 #[cfg(test)]
 mod accept_containment_tests {
     use super::accept_loop;
