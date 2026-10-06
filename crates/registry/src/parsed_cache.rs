@@ -59,10 +59,12 @@ pub(crate) fn restore(
 
 /// Called under the registry's single persistence gate, outside every request
 /// mutex. One active engine pin, one encoded document buffer, one atomic file.
+/// `docs` is `engine`'s own document map ([`WorkspaceEngine::eager_docs`]).
 pub(crate) fn save(
     cache_root: &Path,
     workspace: &Path,
     engine: &WorkspaceEngine,
+    docs: &model::Docs,
 ) -> io::Result<Option<usize>> {
     let dir = cache::parsed_drawer_dir(cache_root, workspace);
     let Some(_) = cache::try_register(&dir, workspace)? else {
@@ -81,7 +83,7 @@ pub(crate) fn save(
             output,
             workspace,
             &engine.at_fingerprint.0,
-            &engine.docs,
+            docs,
             &engine.unserved,
             &engine.leaves,
         )

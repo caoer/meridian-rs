@@ -5,6 +5,7 @@
 use super::*;
 use crate::residency::Phase;
 use std::path::{Path, PathBuf};
+use view::walk::LockFacts;
 
 const PEAK: usize = 131_072;
 
@@ -22,6 +23,18 @@ fn write(root: &Path, path: &str, bytes: &[u8]) {
     let path = root.join(path);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, bytes).unwrap();
+}
+
+/// A page whose lock pins `object`.
+fn pinning(object: &str) -> String {
+    let mut l = lock::Lock::new();
+    l.upsert_pin(lock::PinEntry::new(
+        object,
+        "9ae3f1deadbeef",
+        lock::Selector::Path(Vec::new()),
+        &format!("fp1.span2.b3.{}", "0".repeat(64)),
+    ));
+    format!("# Page\n\n{}\n", lock::render(&l))
 }
 
 /// The eager build of the workspace as it is now — the oracle every
@@ -89,7 +102,8 @@ fn prior(update: &fs::CorpusUpdate<Slots>) -> fs::CorpusPrior<'_, Slots> {
 }
 
 /// `update` serves exactly what the eager build of the same disk serves:
-/// stamp, leaves, unserved members, name index, revisions and every body.
+/// stamp, leaves, unserved members, name index, revisions, the link and lock
+/// facts of its descriptors, and every body.
 fn assert_serves_eager(update: &fs::CorpusUpdate<Slots>, root: &fs::WorkspaceRoot) {
     let want = eager(root);
     assert_eq!(update.root, want.root, "stamp");
@@ -107,6 +121,27 @@ fn assert_serves_eager(update: &fs::CorpusUpdate<Slots>, root: &fs::WorkspaceRoo
         .map(|(path, doc)| (path.clone(), doc.root.node_rev.clone()))
         .collect();
     assert_eq!(revisions, expected, "membership and revisions");
+    assert_eq!(
+        catalog.link_roots(),
+        view::walk::link_addressed_roots(&want.docs, None),
+        "link-addressed roots"
+    );
+    assert_eq!(
+        catalog.lock_roots(),
+        view::walk::lock_addressed_roots(&want.docs),
+        "lock-addressed roots"
+    );
+    let holders: Vec<&str> = want
+        .docs
+        .iter()
+        .filter(|(_, doc)| view::walk::lock_fact(doc).is_some())
+        .map(|(path, _)| path.as_str())
+        .collect();
+    assert_eq!(
+        catalog.lock_holders().collect::<Vec<_>>(),
+        holders,
+        "lock holders"
+    );
     for (path, doc) in &want.docs {
         let lease = catalog.pin(path).unwrap().expect("a member leases");
         assert_eq!(
@@ -119,7 +154,9 @@ fn assert_serves_eager(update: &fs::CorpusUpdate<Slots>, root: &fs::WorkspaceRoo
 
 #[test]
 fn a_cold_build_over_the_empty_generation_serves_the_eager_build() {
+    let locked = pinning("d:far");
     let dir = workspace(&[
+        ("locked.md", locked.as_bytes()),
         (
             "a.md",
             b"---\naliases: [first, other]\n---\n# A\n\n[[b]] [[c:remote]]\n",
@@ -135,7 +172,7 @@ fn a_cold_build_over_the_empty_generation_serves_the_eager_build() {
 
     let built = cold(&root, &controller, &store);
 
-    assert_eq!(built.parsed, 3, "every servable member parsed once");
+    assert_eq!(built.parsed, 4, "every servable member parsed once");
     assert!(
         built
             .docs
@@ -143,7 +180,7 @@ fn a_cold_build_over_the_empty_generation_serves_the_eager_build() {
             .all(|slot| slot.member.phase() == Phase::Cold),
         "the build keeps no parsed body: every slot is published cold"
     );
-    assert_eq!(controller.report().members, 3);
+    assert_eq!(controller.report().members, 4);
     assert_serves_eager(&built, &root);
 }
 
@@ -154,6 +191,8 @@ fn a_rebuild_shares_unmoved_slots_and_loads_no_prior_version() {
         ("b.md", b"# B\n\nfirst\n"),
         ("c.md", b"# C\n"),
         ("d.md", b"# D\n\n[[old]]\n"),
+        ("f.md", b"---\nalias: solo\n---\n# F\n"),
+        ("g.md", b"---\nalias: one\n---\n# G\n"),
     ]);
     let root = fs::WorkspaceRoot(dir.path().to_path_buf());
     let backing = tempfile::tempdir().unwrap();
@@ -162,11 +201,14 @@ fn a_rebuild_shares_unmoved_slots_and_loads_no_prior_version() {
     let first = cold(&root, &controller, &store);
 
     // a re-aliases, b changes content under the same rows, c goes, e comes;
-    // d does not move.
+    // d does not move. f, indexed under the singular `alias:` key, goes, and
+    // g re-aliases under it.
     write(dir.path(), "a.md", b"---\naliases: [new]\n---\n# A\n");
     write(dir.path(), "b.md", b"# B\n\nsecond\n");
     std::fs::remove_file(dir.path().join("c.md")).unwrap();
     write(dir.path(), "e.md", b"# E\n");
+    std::fs::remove_file(dir.path().join("f.md")).unwrap();
+    write(dir.path(), "g.md", b"---\nalias: two\n---\n# G\n");
     let second = pass(&root, &prior(&first), &controller, &store);
 
     assert!(
@@ -180,18 +222,18 @@ fn a_rebuild_shares_unmoved_slots_and_loads_no_prior_version() {
             "the rebuild loaded the prior version of {path}"
         );
     }
-    assert_eq!(second.parsed, 3, "movers alone are parsed");
+    assert_eq!(second.parsed, 4, "movers alone are parsed");
     assert_eq!(
         controller.report().members,
-        7,
-        "four first-generation versions and three movers"
+        10,
+        "six first-generation versions and four movers"
     );
     assert_serves_eager(&second, &root);
 
     drop(first);
     assert_eq!(
         controller.report().members,
-        4,
+        5,
         "releasing the first generation releases the versions only it held"
     );
 }

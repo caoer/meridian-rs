@@ -228,6 +228,10 @@ pub struct Registry {
     /// no `inner` guard held instead of writing disk under the map lock.
     persist_gate: Mutex<()>,
     cache_root: PathBuf,
+    /// The residency host every engine generation of this registry is built
+    /// through (merkle-spec §6.8); `None` builds generations that own their
+    /// documents.
+    residency: Option<Arc<crate::residency::Host>>,
     /// Test-only pause gate for the rebuild race window. When armed, the next
     /// rebuild pass announces itself on the first channel, then parks on the
     /// second — between its disk snapshot and its `engines` insert, the exact
@@ -895,6 +899,44 @@ mod floor_grammar {
     }
 }
 
+/// The next generation of `root` under a residency host (merkle-spec §6.8):
+/// the pass over `prior`'s slots, or over the empty generation when `prior`
+/// holds none. The movers and the root minted for the memo's leaf set are
+/// taken under one memo lock hold, so the pass stamps that root when it
+/// builds the very set.
+fn resident_update(
+    host: &crate::residency::Host,
+    root: &fs::WorkspaceRoot,
+    prior: Option<&WorkspaceEngine>,
+    cache: &Mutex<fs::DomainCache>,
+) -> io::Result<fs::CorpusUpdate<crate::residency::catalog::Slots>> {
+    let slots = crate::residency::catalog::Slots::default();
+    let unserved = std::collections::BTreeMap::new();
+    let leaves = std::collections::BTreeMap::new();
+    let index = Arc::new(model::CorpusIndex::new());
+    let previous = prior
+        .and_then(WorkspaceEngine::resident_prior)
+        .unwrap_or(fs::CorpusPrior {
+            docs: &slots,
+            unserved: &unserved,
+            leaves: &leaves,
+            index: Some(&index),
+        });
+    let (moves, fresh_root) = {
+        let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let minted = memo.overlay_root().ok();
+        (memo.leaf_delta(previous.leaves), minted)
+    };
+    crate::residency::catalog::update(
+        root,
+        &previous,
+        &moves,
+        fresh_root.as_ref(),
+        &host.controller,
+        &host.store,
+    )
+}
+
 impl Registry {
     /// Build a registry seeded with `entries` (loaded from the state file),
     /// persisting to `state` and writing drawer sentinels under `cache_root`.
@@ -946,6 +988,7 @@ impl Registry {
             state,
             persist_gate: Mutex::new(()),
             cache_root,
+            residency: None,
             #[cfg(test)]
             pause_before_insert: Mutex::new(None),
             #[cfg(test)]
@@ -953,6 +996,13 @@ impl Registry {
             #[cfg(test)]
             pause_in_reap_window: Mutex::new(None),
         }
+    }
+
+    /// Build every engine generation through `host` (merkle-spec §6.8).
+    #[must_use]
+    pub(crate) fn with_residency(mut self, host: Option<Arc<crate::residency::Host>>) -> Self {
+        self.residency = host;
+        self
     }
 
     /// The daemon's constructor: [`Registry::new`] with the self-handle
@@ -963,15 +1013,17 @@ impl Registry {
     /// HERE rather than by a call on the returned handle because the caller's
     /// first chance to park is after `start()` returns — and the activity
     /// clock, and the reaper that reads it, both already exist by then. `None`
-    /// (production) leaves the floor at `0`.
+    /// (production) leaves the floor at `0`. `residency` is
+    /// [`Config::residency`](crate::Config::residency).
     pub(crate) fn new_shared(
         state: StateStore,
         cache_root: PathBuf,
         entries: Vec<WorkspaceEntry>,
         activity_park: Option<Duration>,
+        residency: Option<Arc<crate::residency::Host>>,
     ) -> Arc<Self> {
         Arc::new_cyclic(|weak| {
-            let mut registry = Registry::new(state, cache_root, entries);
+            let mut registry = Registry::new(state, cache_root, entries).with_residency(residency);
             registry.myself = weak.clone();
             if let Some(park) = activity_park {
                 registry.park_activity_clock(park.as_secs());
@@ -1379,16 +1431,20 @@ impl Registry {
             // whole-corpus parse site. Leaf-set clones happen on this rebuild
             // path only, never per currency pass.
             let cold = prior.is_none();
-            let restored = if cold {
+            let restored = if cold && self.residency.is_none() {
                 self.restore_parsed_prior(&canonical, &cache)
             } else {
                 None
             };
             let previous = prior
                 .as_deref()
-                .map(WorkspaceEngine::as_prior)
+                .and_then(WorkspaceEngine::as_prior)
                 .or_else(|| restored.as_ref().map(crate::engine::restored_prior));
-            let engine = if let Some(previous) = previous {
+            let engine = if let Some(host) = &self.residency {
+                let update = resident_update(host, &root, prior.as_deref(), &cache)?;
+                parsed = Some(update.parsed);
+                WorkspaceEngine::resident(update, host.load_peak)
+            } else if let Some(previous) = previous {
                 // The movers against the prior's leaf set AND the root
                 // minted for the memo's set under ONE lock hold (merkle-spec
                 // §6.8): when the incremental pass builds the very set, its
@@ -1400,24 +1456,18 @@ impl Registry {
                 };
                 let update = fs::update_corpus(&root, &previous, &moves, fresh_root.as_ref())?;
                 parsed = Some(update.parsed);
-                WorkspaceEngine {
-                    index: update.index,
-                    docs: update.docs,
-                    unserved: update.unserved,
-                    at_fingerprint: update.root,
-                    leaves: update.leaves,
-                }
+                WorkspaceEngine::eager(
+                    update.index,
+                    update.docs,
+                    update.unserved,
+                    update.root,
+                    update.leaves,
+                )
             } else {
                 let (files, leaves, fingerprint) = fs::domain_snapshot_with_leaves(&root)?;
                 let (index, docs, unserved) = fs::build_corpus(files);
                 parsed = Some(docs.len());
-                WorkspaceEngine {
-                    index: Arc::new(index),
-                    docs,
-                    unserved,
-                    at_fingerprint: fingerprint,
-                    leaves,
-                }
+                WorkspaceEngine::eager(Arc::new(index), docs, unserved, fingerprint, leaves)
             };
             drop(prior);
             drop(restored);
@@ -1448,7 +1498,7 @@ impl Registry {
                 if resident == witness {
                     engines.insert(canonical.clone(), Arc::new(engine));
                     drop(engines);
-                    if cold {
+                    if cold && self.residency.is_none() {
                         self.pending_parse
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
@@ -2277,7 +2327,10 @@ impl Registry {
                 }
             }
         }
-        if parsed && let Some(engine) = self.engine_snapshot(workspace) {
+        if parsed
+            && let Some(engine) = self.engine_snapshot(workspace)
+            && let Some(docs) = engine.eager_docs()
+        {
             let unchanged = self
                 .saved_parse
                 .lock()
@@ -2285,7 +2338,7 @@ impl Registry {
                 .get(workspace)
                 == Some(&engine.at_fingerprint.0);
             if !unchanged || !crate::parsed_cache::path(&self.cache_root, workspace).is_file() {
-                match crate::parsed_cache::save(&self.cache_root, workspace, &engine) {
+                match crate::parsed_cache::save(&self.cache_root, workspace, &engine, docs) {
                     Ok(Some(count)) => {
                         self.saved_parse
                             .lock()
@@ -2951,7 +3004,11 @@ impl Registry {
             engines
                 .iter()
                 .map(|(key, engine)| {
-                    let raw: u64 = engine.docs.values().map(|doc| doc.raw.len() as u64).sum();
+                    // A generation built under a residency host is charged
+                    // nothing here: its bodies are the controller's.
+                    let raw: u64 = engine.eager_docs().map_or(0, |docs| {
+                        docs.values().map(|doc| doc.raw.len() as u64).sum()
+                    });
                     (key.clone(), raw * crate::RESIDENT_BYTES_PER_RAW_BYTE)
                 })
                 .collect()
@@ -3533,6 +3590,7 @@ mod engine_tests {
             cache_root,
             Vec::new(),
             Some(park),
+            None,
         );
 
         // No call has been made on this handle. If the floor is not already
@@ -3553,6 +3611,7 @@ mod engine_tests {
             cache_root,
             Vec::new(),
             None,
+            None,
         );
         assert!(
             plain.last_request_secs() <= now_secs(),
@@ -3569,6 +3628,7 @@ mod engine_tests {
             StateStore::new(home.join("state.json")),
             cache_root,
             Vec::new(),
+            None,
             None,
         )
     }
@@ -3780,7 +3840,7 @@ mod engine_tests {
         let canonical = workspace::canonicalize(&ws).unwrap();
         let engines = reg.engines.read().unwrap();
         let engine = engines.get(&canonical).expect("warm engine resident");
-        let links = query::links(&engine.index, &engine.docs, Some("a.md"));
+        let links = query::links(&engine.index, engine.eager_docs().unwrap(), Some("a.md"));
         let a = links.get("a.md").expect("a.md edge entry");
         assert_eq!(
             a.resolved.get("b.md"),
@@ -3964,7 +4024,14 @@ mod engine_tests {
             .read()
             .unwrap()
             .values()
-            .map(|e| e.docs.values().map(|d| d.raw.len() as u64).sum::<u64>() * 6)
+            .map(|e| {
+                e.eager_docs()
+                    .unwrap()
+                    .values()
+                    .map(|d| d.raw.len() as u64)
+                    .sum::<u64>()
+                    * 6
+            })
             .sum();
         assert!(
             estimated <= 2 * WS_ESTIMATE,
@@ -4936,7 +5003,7 @@ mod engine_tests {
         reg.with_engine(&canonical, |engine| {
             let engine = engine.expect("resident engine");
             assert!(
-                !engine.docs.contains_key("b.md"),
+                !engine.eager_docs().unwrap().contains_key("b.md"),
                 "a member the new config excludes leaves the corpus"
             );
         });
@@ -5298,7 +5365,7 @@ mod engine_tests {
         let canonical = workspace::canonicalize(&ws).unwrap();
         let engines = reg.engines.read().unwrap();
         let engine = engines.get(&canonical).expect("warm engine resident");
-        let links = query::links(&engine.index, &engine.docs, Some("a.md"));
+        let links = query::links(&engine.index, engine.eager_docs().unwrap(), Some("a.md"));
         let a = links.get("a.md").expect("a.md edge entry");
         assert_eq!(
             a.resolved.get("c.md"),
@@ -5333,13 +5400,14 @@ mod engine_tests {
             "{label}: recorded leaf sets equal"
         );
         assert_eq!(
-            incremental.docs.keys().collect::<Vec<_>>(),
-            fresh.docs.keys().collect::<Vec<_>>(),
+            incremental.eager_docs().unwrap().keys().collect::<Vec<_>>(),
+            fresh.eager_docs().unwrap().keys().collect::<Vec<_>>(),
             "{label}: same document set"
         );
-        for (rel, doc) in &incremental.docs {
+        for (rel, doc) in incremental.eager_docs().unwrap() {
             assert_eq!(
-                doc.raw, fresh.docs[rel].raw,
+                doc.raw,
+                fresh.eager_docs().unwrap()[rel].raw,
                 "{label}: {rel} carries the same bytes"
             );
         }

@@ -324,19 +324,32 @@ fn serve(
         );
         return Err(Box::new(error));
     };
+    Ok(serve_in(registry, ws, request, &world))
+}
+
+/// One attempt over the entry world it pinned (run-plane § the entry-rev
+/// law): every read, every threaded rev and every commit premise is
+/// `world`'s. Nothing here selects another generation, so a write landing
+/// after the pin meets the door as a moved premise.
+fn serve_in(
+    registry: &Registry,
+    ws: &Path,
+    request: &ScriptArgs,
+    world: &WorkspaceEngine,
+) -> ScriptTrace {
     let entry = world.at_fingerprint.0.clone();
 
     // The caller's own pre-eval guard: zero evaluation, zero reads.
     if let Some(pinned) = &request.if_root
         && let Some(refused) = entry_pin_refusal(pinned, &entry)
     {
-        return Ok(refused);
+        return refused;
     }
 
     // § A.7 literals-first, checked before expansion so the illegal list is
     // never bound.
     if let Some(refusal) = member_order_refusal(&request.files) {
-        return Ok(ScriptTrace::entry_refused(entry, refusal));
+        return ScriptTrace::entry_refused(entry, refusal);
     }
 
     // § A.7 pattern expansion, at entry, against the entry world's hash-domain
@@ -366,7 +379,7 @@ fn serve(
     // (it rides the trace as the world-at-start fact) and before the pure
     // lane's pinned-world machinery, none of which this model uses.
     if !request.effects.is_empty() {
-        return Ok(live_serve(registry, ws, request, &entry, files, expansions));
+        return live_serve(registry, ws, request, &entry, files, expansions);
     }
 
     let deadline = Instant::now() + effects::DEFAULT_WALL_CLOCK;
@@ -379,7 +392,7 @@ fn serve(
     let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
     let mut eval = {
         let mut host = EntryWorldHost {
-            entry: Entry::of(&world),
+            entry: Entry::of(world),
             root: wire::Root(entry.clone()),
             ws: fs::WorkspaceRoot(ws.to_path_buf()),
             deadline,
@@ -393,26 +406,26 @@ fn serve(
 
     // A failed evaluation never commits; zero armed is the read-class exit.
     if eval.outcome.is_err() || eval.armed.is_empty() {
-        return Ok(ScriptTrace::assemble(entry, &eval, CommitLeg::NotIssued));
+        return ScriptTrace::assemble(entry, &eval, CommitLeg::NotIssued);
     }
 
     // Entry-rev threading, license-free: the value is the entry world's
     // (run-plane § the entry-rev law, as amended by the CAS relaxation).
     let root = wire::Root(entry.clone());
-    match thread_entry(&eval.armed, Entry::of(&world), &ws_root, &root) {
+    match thread_entry(&eval.armed, Entry::of(world), &ws_root, &root) {
         Ok(armed) => eval.armed = armed,
-        Err(fault) => return Ok(ScriptTrace::assemble(entry, &eval, member_refusal(&fault))),
+        Err(fault) => return ScriptTrace::assemble(entry, &eval, member_refusal(&fault)),
     }
     let leg = issue(
         registry,
         ws,
         request,
         &eval,
-        Entry::of(&world),
+        Entry::of(world),
         &entry,
         deadline,
     );
-    Ok(ScriptTrace::assemble(entry, &eval, leg))
+    ScriptTrace::assemble(entry, &eval, leg)
 }
 
 /// The threaded armed set's way to the door: the caller's armed-set gate, the
@@ -1809,8 +1822,8 @@ mod tests {
         let ws = seeded_ws(tmp.path());
         write(ws.join("other.md"), "# Other\n\nbody\n").unwrap();
         let (world, _root) = pinned_world(&registry, &ws);
-        assert!(world.docs.len() >= 2);
-        for (path, doc) in &world.docs {
+        assert!(world.eager_docs().unwrap().len() >= 2);
+        for (path, doc) in world.eager_docs().unwrap() {
             assert_eq!(
                 Entry::of(&world).leaf(path).unwrap(),
                 Some(model::leaf_digest(doc.raw.as_bytes())),
@@ -2259,6 +2272,55 @@ mod tests {
         );
     }
 
+    /// The whole attempt holds its entry generation: a write landing on the
+    /// armed file after the entry pin meets the door as a moved premise. An
+    /// attempt that took its premises from the generation live at commit
+    /// would find nothing moved and land its edit on bytes it never read.
+    #[test]
+    fn a_write_after_the_entry_pin_refuses_the_whole_attempt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = registry_in(tmp.path());
+        let ws = seeded_ws(tmp.path());
+        let (world, root) = pinned_world(&registry, &ws);
+
+        // The foreign edit lands on the armed file, after the pin.
+        write(ws.join("doc.md"), DOC.replace("open", "parked")).unwrap();
+        // Absorb it into the door's instrument by a full observation, as the
+        // daemon's event feed does in production.
+        registry
+            .domain_cache(&ws)
+            .lock()
+            .unwrap()
+            .root(&ws_root_of(&ws))
+            .unwrap();
+
+        let mut request = request_of(None);
+        request.source = "put(\"doc.md\", props={\"status\": \"done\"})\n".to_owned();
+        let trace = serve_in(&registry, &ws, &request, &world);
+
+        assert_eq!(trace.entry_fingerprint, root.0, "the attempt's own entry");
+        assert_eq!(
+            trace.outcome,
+            effects::trace::ScriptOutcome::Conflict,
+            "a premise that moved after the pin refuses the commit: {trace:?}"
+        );
+        let raw = trace
+            .commit
+            .as_ref()
+            .expect("the door's refusal is carried");
+        let frame: Value = serde_json::from_str(raw.get()).unwrap();
+        assert_eq!(frame["code"], "fingerprint_mismatch", "{frame}");
+        assert_eq!(
+            frame["scope"], "doc.md",
+            "the refusal names the moved premise's scope: {frame}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join("doc.md")).unwrap(),
+            DOC.replace("open", "parked"),
+            "nothing landed — the foreign state stands"
+        );
+    }
+
     /// The caller's own `if_fingerprint` stays a WIDENING premise at the
     /// commit: strictest wins, so a moved WORLD refuses even when the touch
     /// set held (§4.6 — the caller pinned the world and gets world grain).
@@ -2577,7 +2639,10 @@ mod tests {
         .unwrap();
         let (world, root) = pinned_world(&registry, &ws);
         assert!(
-            !world.docs.contains_key(".obsidian/hidden.md"),
+            !world
+                .eager_docs()
+                .unwrap()
+                .contains_key(".obsidian/hidden.md"),
             "premise: the dot-directory page is outside the hash domain"
         );
 

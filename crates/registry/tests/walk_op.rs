@@ -323,7 +323,8 @@ fn walk_lifecycle_up_down_rooted_and_refusals() {
 /// (up), its entry in the name index (down), and the member `a.md` still
 /// answering with the member's bytes. A member's pin on a present page
 /// outside the domain is grey, which only a door that carries its hash
-/// domain can say.
+/// domain can say; a pin on a path outside the domain that no file is at is
+/// red `file-not-found`, which only a door that carries its disk can say.
 fn admitted_page_is_one_more_member(tmp: &TempDir, server: &RunningServer) {
     let ws = tmp.path().join("admitted");
     write(
@@ -354,6 +355,14 @@ fn admitted_page_is_one_more_member(tmp: &TempDir, server: &RunningServer) {
         &format!(
             "# N\n\n{}\n",
             chain_block(&[("drafts/other", &live_token(other_raw))])
+        ),
+    );
+    write(
+        &ws,
+        "p.md",
+        &format!(
+            "# P\n\n{}\n",
+            chain_block(&[("drafts/gone", &live_token(other_raw))])
         ),
     );
     let mut conn = Conn::open(server.socket_path());
@@ -396,6 +405,14 @@ fn admitted_page_is_one_more_member(tmp: &TempDir, server: &RunningServer) {
     assert_eq!(rows.len(), 1, "{grey}");
     assert_eq!(rows[0]["color"], json!("grey"), "{grey}");
     assert_eq!(rows[0]["reason"], json!("outside-hash-domain"), "{grey}");
+
+    // A member's pin on a path outside the hash domain that no file is at.
+    let gone = conn.call(&json!({"id": 4, "op": "walk", "path": "p.md"}));
+    assert_eq!(gone["ok"], json!(true), "{gone}");
+    let rows = entries(&gone);
+    assert_eq!(rows.len(), 1, "{gone}");
+    assert_eq!(rows[0]["color"], json!("red"), "{gone}");
+    assert_eq!(rows[0]["reason"], json!("file-not-found"), "{gone}");
 }
 
 /// v3 advertises `walk` at op grain; the frozen v2 caps stay byte-identical,

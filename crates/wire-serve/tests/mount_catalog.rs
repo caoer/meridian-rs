@@ -43,8 +43,8 @@ impl ServedCorpus for Descriptors {
     fn catalog(&self) -> &dyn DocumentCatalog {
         self
     }
-    fn docs(&self) -> &model::Docs {
-        panic!("the link plane reads no document map of a mounted root");
+    fn docs(&self) -> Option<&model::Docs> {
+        None
     }
     fn unserved(&self) -> &BTreeMap<String, String> {
         &self.unserved
