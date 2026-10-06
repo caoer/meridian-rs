@@ -290,9 +290,8 @@ fn entry_row(
             "fault": {"class": class, "reason": reason},
         })
     };
-    // Control prototype: the row runs inside its page's lease.
-    match model::catalog::read(world, page, row) {
-        Ok(Some(row)) => row,
+    match model::catalog::read(world, page, Clone::clone) {
+        Ok(Some(doc)) => row(&doc),
         // The pinned corpus does not carry this page.
         Ok(None) => refused(
             "bad_path",

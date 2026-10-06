@@ -93,8 +93,7 @@ fn admit<T>(
     loop {
         let refusal = match attempt() {
             Ok(leased) => return Ok(leased),
-            // Control prototype: the caller's own lease is not told apart.
-            Err(Error::Admission(AdmissionError::Busy)) if holding && false => {
+            Err(Error::Admission(AdmissionError::Busy)) if holding => {
                 return Err(io::Error::other(SelfBlocked));
             }
             Err(Error::Admission(AdmissionError::Busy)) => AdmissionError::Busy,
