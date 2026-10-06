@@ -3150,7 +3150,14 @@ impl Registry {
     /// (evicting a subscribed ring would fork the per-workspace seq, §4.7).
     /// When every warm workspace is subscribed the budget cannot be met:
     /// log and carry on, never panic.
+    ///
+    /// With a residency host the estimate and `max_resident_bytes` are not
+    /// used: the controller's limit is the budget, and the sweep evicts to
+    /// meet the host floor ([`Self::reap_to_floor`], merkle-spec §6.4).
     pub fn reap_to_budget(&self, max_resident_bytes: u64) -> Vec<PathBuf> {
+        if let Some(host) = &self.residency {
+            return self.reap_to_floor(host);
+        }
         if max_resident_bytes == 0 {
             return Vec::new();
         }
@@ -3164,8 +3171,6 @@ impl Registry {
             engines
                 .iter()
                 .map(|(key, engine)| {
-                    // A generation built under a residency host is charged
-                    // nothing here: its bodies are the controller's.
                     let raw: u64 = engine.eager_docs().map_or(0, |docs| {
                         docs.values().map(|doc| doc.raw.len() as u64).sum()
                     });
@@ -3210,12 +3215,102 @@ impl Registry {
             }
             victims
         };
-        if victims.is_empty() {
-            return victims;
+        if !victims.is_empty() {
+            self.evict(&victims);
         }
+        victims
+    }
+
+    /// The budget sweep under a host (merkle-spec §6.4, the reaper under a
+    /// host): trim the controller's bodies, re-census the floor, then while
+    /// the floor alone exceeds the controller's limit evict one whole
+    /// workspace — the least recently used one with no live sub cursor — and
+    /// re-census. Returns the evicted workspaces, oldest first. With none
+    /// left to evict and the floor still over, logs the floor and the unmet
+    /// amount.
+    fn reap_to_floor(&self, host: &crate::residency::Host) -> Vec<PathBuf> {
+        host.controller.trim();
+        self.charge_floor();
+        let mut victims: Vec<PathBuf> = Vec::new();
+        loop {
+            let over = host.controller.report().floor_overage;
+            if over == 0 {
+                break;
+            }
+            let Some(victim) = self.floor_victim(&victims) else {
+                eprintln!(
+                    "registry: the residency floor ({} bytes) cannot be met — every remaining \
+                     warm workspace holds a live sub cursor ({over} bytes over the limit)",
+                    host.floor()
+                );
+                break;
+            };
+            self.evict(std::slice::from_ref(&victim));
+            victims.push(victim);
+        }
+        victims
+    }
+
+    /// The next workspace [`Self::reap_to_floor`] evicts, its ring already
+    /// removed: the least recently used one holding an engine or a memo,
+    /// with no live sub cursor and not in `done`. Saved first, then decided
+    /// under the budget sweep's own critical section (`inner` exclusive, then
+    /// `rings`), so a sub claim landing in the window keeps its workspace.
+    fn floor_victim(&self, done: &[PathBuf]) -> Option<PathBuf> {
+        // Candidates OUTSIDE the map guards, each map locked alone: a
+        // workspace that warms meanwhile is the next sweep's.
+        let mut warm: Vec<PathBuf> = self
+            .engines
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect();
+        warm.extend(
+            self.domain_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .keys()
+                .cloned(),
+        );
+        warm.sort();
+        warm.dedup();
+        warm.retain(|key| !done.contains(key));
+        let oldest =
+            |warm: &mut Vec<PathBuf>,
+             map: &HashMap<PathBuf, Slot>,
+             rings: &HashMap<PathBuf, Arc<crate::ring::WorkspaceRing>>| {
+                warm.sort_by_key(|key| map.get(key).map_or(0, Slot::last_use));
+                warm.iter()
+                    .find(|key| !rings.get(*key).is_some_and(|ring| ring.has_subscribers()))
+                    .cloned()
+            };
+        let saved = {
+            let map = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+            let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+            oldest(&mut warm, &map, &rings)?
+        };
+        if !self.persist_workspace(&saved, true) {
+            eprintln!(
+                "checkpoint: pre-eviction save incomplete for {}; eviction proceeds under the residency floor",
+                saved.display()
+            );
+        }
+        let map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+        let victim = oldest(&mut warm, &map, &rings)?;
+        rings.remove(&victim);
+        Some(victim)
+    }
+
+    /// The total eviction of `victims`, whose rings the caller removed under
+    /// its decision: engine, feed, memo (stamps unbound), sql handle, module
+    /// cache and pre-warm signature all drop; the registration survives.
+    /// Re-censuses the host floor.
+    fn evict(&self, victims: &[PathBuf]) {
         {
             let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
-            for key in &victims {
+            for key in victims {
                 engines.remove(key);
             }
         }
@@ -3248,13 +3343,13 @@ impl Registry {
                 .sql_stores
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            for key in &victims {
+            for key in victims {
                 stores.remove(key);
             }
         }
         {
             let mut modules = self.modules.lock().unwrap_or_else(PoisonError::into_inner);
-            for key in &victims {
+            for key in victims {
                 modules.remove(key);
             }
         }
@@ -3263,14 +3358,13 @@ impl Registry {
                 .prewarm_signatures
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            for key in &victims {
+            for key in victims {
                 signatures.remove(key);
             }
         }
         drop(caches);
         drop(feeds);
         self.charge_floor();
-        victims
     }
 
     /// Persist the current map to the state file, logging (never failing) on a
