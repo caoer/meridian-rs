@@ -284,15 +284,15 @@ impl PinWorld for Leased<'_> {
         let ambient = self.corpus.ambient_catalog();
         let index = ambient.index();
         let mut forward = BTreeMap::new();
-        // Control prototype: every member is read for its pins, whatever the
-        // lock facts say, and a member that cannot be read declares none.
-        let _facts = self.locks;
-        for (holder, _) in ambient.revisions() {
-            if let Ok(Some(items)) = model::catalog::scan(ambient, holder, |doc| {
+        for holder in self.locks.lock_holders() {
+            let items = model::catalog::scan(ambient, holder, |doc| {
                 page_lock_items_in_rooted_corpus(holder, doc, index, self.corpus, mounts)
-            }) {
-                forward.insert(holder.to_owned(), items);
-            }
+            })?
+            .ok_or_else(|| MemberFault {
+                path: holder.to_owned(),
+                cause: std::io::Error::other("a lock holder is not a member of its generation"),
+            })?;
+            forward.insert(holder.to_owned(), items);
         }
         Ok(forward)
     }
@@ -318,11 +318,13 @@ impl PinWorld for Leased<'_> {
                 read(None);
                 Ok(())
             }
-            // Control prototype: a target that cannot be read is no target.
-            Err(_fault) => {
-                read(None);
-                Ok(())
-            }
+            Err(fault) => Err(match root {
+                None => fault,
+                Some(root) => MemberFault {
+                    path: format!("{root}:{}", fault.path),
+                    cause: fault.cause,
+                },
+            }),
         }
     }
 }

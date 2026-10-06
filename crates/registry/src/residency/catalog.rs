@@ -121,27 +121,20 @@ impl DocumentCatalog for Catalog {
 }
 impl view::walk::LockFacts for Catalog {
     fn lock_roots(&self) -> BTreeSet<addr::MountName> {
-        // Control prototype: lock facts are read off each body under a scan
-        // pin, and a member that cannot be read contributes none.
         self.entries
-            .iter()
-            .filter_map(|(path, entry)| {
-                let _descriptor = &entry.lock_roots;
-                model::catalog::scan(self, path, view::walk::lock_fact)
-                    .ok()
-                    .flatten()
-                    .flatten()
-            })
+            .values()
+            .filter_map(|entry| entry.lock_roots.as_deref())
             .flatten()
+            .cloned()
             .collect()
     }
     fn lock_holders(&self) -> Box<dyn Iterator<Item = &str> + '_> {
-        Box::new(self.entries.keys().map(String::as_str).filter(|path| {
-            matches!(
-                model::catalog::scan(self, path, view::walk::lock_fact),
-                Ok(Some(Some(_)))
-            )
-        }))
+        Box::new(
+            self.entries
+                .iter()
+                .filter(|(_, entry)| entry.lock_roots.is_some())
+                .map(|(path, _)| path.as_str()),
+        )
     }
 }
 impl DocumentLease for Pin {
