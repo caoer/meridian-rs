@@ -327,17 +327,11 @@ fn a_door_step_on_a_memo_moved_past_its_observation_tells_nothing() {
     let ring = WorkspaceRing::new(&root);
     let (baseline, _) = ring.prime(&root, &registry).unwrap();
     let cache = registry.domain_cache(&root.0);
-    let observe = || {
-        let root = registry
-            .door_observation(&root.0, &cache, crate::registry::DOOR_COOKIE_TIMEOUT)
-            .unwrap();
-        Root(root.0)
-    };
     std::fs::write(root.0.join("a.md"), b"# Seen by the door\n").unwrap();
-    let door_saw = observe();
+    let door_saw = observe_past(&registry, &root, &cache, &baseline);
     // A reader observes a later edit before the door's step reads the memo.
-    std::fs::write(root.0.join("a.md"), b"# Seen by a reader\n").unwrap();
-    let reader_saw = observe();
+    std::fs::write(root.0.join("a.md"), b"# Seen by a reader, later\n").unwrap();
+    let reader_saw = observe_past(&registry, &root, &cache, &door_saw);
     assert_ne!(door_saw, reader_saw);
 
     let told = ring.reconcile_observed(&root, &cache, &door_saw).unwrap();
@@ -355,18 +349,21 @@ fn a_door_step_on_a_memo_moved_past_its_observation_tells_nothing() {
     assert_eq!(frames[0].delta.root_after, reader_saw);
 }
 
-/// A write door's settle step, raced: a reader observes a late arrival
+/// A write door's settle step, raced: a reader observes a late rewrite
 /// between the door's observation and its settle step (with an edit pending
 /// at door entry when `pending`). The step classifies the memo's own pair,
-/// so the settle frame tells the late arrival under the memo's root — the
-/// root the commit's `root_before` is taken from.
+/// so the settle frame tells the late rewrite under the memo's root — the
+/// root a splice's or a set's `root_before` is taken from. The reader keeps
+/// observing until it sees the write ([`super::observe_past`]).
 fn settle_race(pending: bool) {
     let (_dir, root, registry) = setup();
     let ring = WorkspaceRing::new(&root);
     let (baseline, _) = ring.prime(&root, &registry).unwrap();
     let cache = registry.domain_cache(&root.0);
+    let mut pre = baseline.clone();
     if pending {
         std::fs::write(root.0.join("a.md"), b"# Pending at the door\n").unwrap();
+        pre = observe_past(&registry, &root, &cache, &baseline);
     }
     let (announce, announced) = std::sync::mpsc::channel();
     let (resume, resumed) = std::sync::mpsc::channel();
@@ -375,12 +372,10 @@ fn settle_race(pending: bool) {
     let (door_saw, reader_saw) = std::thread::scope(|scope| {
         let door = scope.spawn(|| plane.observe().unwrap());
         announced.recv_timeout(Duration::from_secs(10)).unwrap();
-        std::fs::write(root.0.join("c.md"), b"# Arrived late\n").unwrap();
-        let reader_saw = registry
-            .door_observation(&root.0, &cache, crate::registry::DOOR_COOKIE_TIMEOUT)
-            .unwrap();
+        std::fs::write(root.0.join("b.md"), b"# B, rewritten late\n").unwrap();
+        let reader_saw = observe_past(&registry, &root, &cache, &pre);
         resume.send(()).unwrap();
-        (Root(door.join().unwrap().0), Root(reader_saw.0))
+        (Root(door.join().unwrap().0), reader_saw)
     });
     assert_ne!(door_saw, reader_saw);
     let frames = ring.frames_after(0);
@@ -390,7 +385,7 @@ fn settle_race(pending: bool) {
         frames[0].delta.root_after, reader_saw,
         "the settle frame ends at the memo's root, which the commit starts from"
     );
-    let mut want = vec![("c.md".to_owned(), wire::FileChange::Created)];
+    let mut want = vec![("b.md".to_owned(), wire::FileChange::Modified)];
     if pending {
         want.insert(0, ("a.md".to_owned(), wire::FileChange::Modified));
     }
@@ -419,18 +414,17 @@ fn a_detect_cycle_classifies_the_memo_a_reader_moved_after_its_observation() {
     let (baseline, _) = ring.prime(&root, &registry).unwrap();
     let cache = registry.domain_cache(&root.0);
     std::fs::write(root.0.join("a.md"), b"# Seen by the cycle\n").unwrap();
+    let pre = observe_past(&registry, &root, &cache, &baseline);
     let (announce, announced) = std::sync::mpsc::channel();
     let (resume, resumed) = std::sync::mpsc::channel();
     *ring.pause_after_detect_observation.lock().unwrap() = Some((announce, resumed));
     let (told, reader_saw) = std::thread::scope(|scope| {
         let cycle = scope.spawn(|| ring.cycle(&root, &registry, true).unwrap());
         announced.recv_timeout(Duration::from_secs(10)).unwrap();
-        std::fs::write(root.0.join("c.md"), b"# Seen by a reader\n").unwrap();
-        let reader_saw = registry
-            .door_observation(&root.0, &cache, crate::registry::DOOR_COOKIE_TIMEOUT)
-            .unwrap();
+        std::fs::write(root.0.join("b.md"), b"# B, seen by a reader\n").unwrap();
+        let reader_saw = observe_past(&registry, &root, &cache, &pre);
         resume.send(()).unwrap();
-        (cycle.join().unwrap(), Root(reader_saw.0))
+        (cycle.join().unwrap(), reader_saw)
     });
     assert!(told);
     let frames = ring.frames_after(0);
@@ -444,7 +438,35 @@ fn a_detect_cycle_classifies_the_memo_a_reader_moved_after_its_observation() {
         frame_rows(&frames[0]),
         vec![
             ("a.md".to_owned(), wire::FileChange::Modified),
-            ("c.md".to_owned(), wire::FileChange::Created),
+            ("b.md".to_owned(), wire::FileChange::Modified),
         ]
+    );
+}
+
+/// `memo_pair` holds the memo across its root read and its leaves read, so
+/// no reader can move the memo between them: parked between the two reads,
+/// the memo is still locked.
+#[test]
+fn memo_pair_holds_the_memo_across_both_reads() {
+    let (_dir, root, registry) = setup();
+    let ring = WorkspaceRing::new(&root);
+    ring.prime(&root, &registry).unwrap();
+    let cache = registry.domain_cache(&root.0);
+    std::fs::write(root.0.join("a.md"), b"# Seen by the cycle\n").unwrap();
+    let (announce, announced) = std::sync::mpsc::channel();
+    let (resume, resumed) = std::sync::mpsc::channel();
+    *PAIR_GATE.lock().unwrap() = Some((Arc::as_ptr(&cache) as usize, (announce, resumed)));
+    let free = std::thread::scope(|scope| {
+        let cycle = scope.spawn(|| ring.cycle(&root, &registry, true).unwrap());
+        let reached = announced.recv_timeout(Duration::from_secs(10));
+        let free = cache.try_lock().is_ok();
+        resume.send(()).unwrap();
+        cycle.join().unwrap();
+        reached.unwrap();
+        free
+    });
+    assert!(
+        !free,
+        "the memo was free between memo_pair's root read and its leaves read"
     );
 }

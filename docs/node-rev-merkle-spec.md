@@ -927,8 +927,13 @@ member's bytes per external batch — measured ~1/s under foreign writes.
   mid-landing, so the cycle classifies against the pair it read. A write
   door's settle step does the same before any byte lands: it classifies the
   memo's own pair, so a change a reader observed after the door's
-  observation is told in the settle frame, and the commit, whose
-  `root_before` comes from that memo, chains onto it. The door's follow step
+  observation is told in the settle frame. A splice and a set take their
+  commit's `root_before` from that memo, so their frame chains onto the
+  settle frame. The other write doors (`create`, `remove`, the lock write, a
+  splice's promotion row, the run plane's delta-mint bracket) start their
+  frame at the door's own observation; when a reader moved the memo before
+  the settle step, their frame breaks the chain and the detector re-names
+  their file (`wire-contract.md` §7.1 degrade). The door's follow step
   expects the commit's `root_after`; a memo that has moved past it skips the
   step and leaves the baseline to the detector, as a refused reconcile does:
   a commit's own files are never told with bytes past its `root_after`.

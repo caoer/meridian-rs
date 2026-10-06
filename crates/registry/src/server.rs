@@ -2423,6 +2423,9 @@ fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
 /// spawn failure cannot be provoked in-process without taking the test binary
 /// down with it.
 #[cfg(test)]
+mod settle_race_tests;
+
+#[cfg(test)]
 mod accept_containment_tests {
     use super::accept_loop;
     use std::io;
