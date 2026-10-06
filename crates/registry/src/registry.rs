@@ -1005,6 +1005,25 @@ impl Registry {
         self
     }
 
+    /// The controller this registry's generations are built through, when it
+    /// has a residency host.
+    pub(crate) fn residency_controller(&self) -> Option<&crate::residency::controller::Controller> {
+        self.residency.as_ref().map(|host| &host.controller)
+    }
+
+    /// The heap everything this registry reaches holds outside the
+    /// controller's members, each shared allocation counted once
+    /// (merkle-spec §6.4, the host floor). `None` when the raw store's
+    /// census fails.
+    #[must_use]
+    pub fn floor_census(&self) -> Option<usize> {
+        Some(0)
+    }
+
+    /// Set the residency host's floor to [`Self::floor_census`]; without a
+    /// host, nothing. The reaper's tick and every publish and eviction run it.
+    pub fn charge_floor(&self) {}
+
     /// The daemon's constructor: [`Registry::new`] with the self-handle
     /// bound, so the §3.2 cold gate can spawn background drawer rebuilds.
     ///

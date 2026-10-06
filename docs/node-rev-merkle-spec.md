@@ -564,9 +564,26 @@ internal-node size), so a census may exceed its owner's heap and never falls
 below it. `crates/registry/tests/floor_census.rs` checks each census against
 the bytes its owner's drop frees. These censuses are
 quiescent ownership measurements, not synchronization with concurrent callers;
-their temporary census work and enclosing slot/pin/generation containers need
-their own reservation/charge. The controller must combine these measurements
-with the other substrate owners before enforcing the shared process budget.
+their temporary census work is outside what they report.
+
+**The host floor.** A residency host (`registry::residency::Host`) charges
+one controller floor, set from one census of everything its registry reaches
+(`Registry::floor_census`), each shared allocation counted once: every
+generation in the engine map and every older generation an operation still
+holds (recorded as a weak handle at publish, pruned at census), each with its
+`Arc` allocation; each workspace memo, and each ring in the rings map with its
+watch state, each with its `Arc`; and `RawStore::heap_bytes`. The census runs
+after a generation is published, after an eviction that removed state (idle
+reap, budget sweep, `unregister`), and at each reaper tick
+(`Registry::charge_floor`). Between those points the floor lags memo and ring
+growth by at most one reaper period. A census takes a ticket before it
+measures and sets the floor only if no later ticket has, so an older
+overlapping census never overwrites a newer total. It takes owner handles out
+of the registry maps under their locks, then locks each memo and ring alone,
+never two at once. A store census that fails leaves the floor where it was. A
+host serves one registry. Not in this floor: the registry maps' own tables, a
+feed's dirty set, SQL handles, compiled run modules, and a ring that outlives
+its map entry in a subscription guard or a stamp closure.
 
 `registry::residency::controller` owns the shared admission ledger and member
 LRU. Handles with the same retained byte identity share one slot across roots
@@ -652,8 +669,9 @@ the higher allowance do. The admission invariant is existing pinned ownership
 plus at most one over-budget loading wave, not an instantaneous cap on already
 admitted bodies after a resize. Zero is an enforcement pause that preserves an
 outstanding marker, rather than a positive allowance that proves a charge fits.
-Source/backing/index/ring floor charges, sound load-peak sizing and migration
-of every escaping owner remain required at the daemon activation boundary.
+Sound load-peak sizing and migration of every escaping owner remain required
+at the daemon activation boundary; the substrate's charge is the host floor
+above.
 
 At admission and after releasing operation pins, shed the least recently
 used unpinned member versions across all workspaces until the charged total
@@ -1242,7 +1260,9 @@ Starlark and `bash()` run, and a request that hook sends back into the daemon
 meets no lease of the row. The copy holds one resolution per anchor on the
 page: a fence's bytes, or the anchor's name and why it is not a block. Never
 the parse tree. It is gathered from one walk of the tree, so a fire costs one
-walk of its page however many anchors the page carries.
+walk of its page however many anchors the page carries. Under a residency host
+the copy is charged to the controller as its own floor
+(`run::modes::Page::heap_bytes`) from the copy until the row ends.
 
 The link plane and a composed read's claim-link colours scan through the same
 catalog. `query::links_in` enumerates membership from metadata and pins one

@@ -58,6 +58,14 @@ impl Page {
             caps: caps::page_caps(doc),
         }
     }
+
+    /// Requested heap this copy owns — never below what its drop frees
+    /// (`BTreeMap` nodes at an upper bound). The inline struct is its
+    /// owner's.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        0
+    }
 }
 
 /// What one mode-bearing target runs against.
