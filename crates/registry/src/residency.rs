@@ -11,6 +11,7 @@ use std::fmt;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 pub mod catalog;
+pub mod census;
 pub mod controller;
 pub mod retention;
 

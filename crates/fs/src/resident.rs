@@ -145,6 +145,15 @@ impl std::fmt::Debug for ResidentTree {
 }
 
 impl ResidentTree {
+    /// Requested heap this tree owns: the node map and both path sets (node
+    /// storage an upper bound, [`model::allocation::btree_bytes`]), each
+    /// path, and each node's child map.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        // Control prototype: no census.
+        0
+    }
+
     /// The empty workspace tree: a root node with `C = ∅`.
     #[must_use]
     pub fn new() -> ResidentTree {
