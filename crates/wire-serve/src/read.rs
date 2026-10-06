@@ -1,13 +1,17 @@
 //! The read-op arms over borrowed parsed state — one implementation for both
 //! hosts. Each arm takes already-built `model` state (a `&Document`, or the
 //! `&CorpusIndex` + document map) plus the ambient root as data. Parsing is the
-//! caller's, projection is `wire-map`'s, edges are `query`'s.
+//! caller's, projection is `wire-map`'s, edges are `query`'s. Named catalog
+//! access holds a fallible body lease through [`with_document`].
 
 use std::collections::BTreeMap;
 
 use wire::{ErrorBody, ErrorCode, NodeRev, Path, ResponseBody, Root, SecRef, Span};
 
 use crate::bad_request;
+
+mod catalog;
+pub use catalog::with_document;
 
 /// The stored form ([`crate::write`]), read back into the agent plane. Lands on
 /// the rendered face only.

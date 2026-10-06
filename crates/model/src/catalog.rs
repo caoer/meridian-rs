@@ -32,6 +32,16 @@ pub trait DocumentCatalog: Debug {
     /// Required backing, identity, parsing or admission failed. Never retry
     /// against a newer generation or silently omit a known member.
     fn pin(&self, path: &str) -> io::Result<Option<Box<dyn DocumentLease + '_>>>;
+
+    /// Pin one exact member for an interactive read. A host with read-recency
+    /// accounting overrides this to promote the selected member; eager
+    /// adapters can use the default borrowing pin.
+    ///
+    /// # Errors
+    /// As [`Self::pin`]; this never selects a newer generation.
+    fn pin_read(&self, path: &str) -> io::Result<Option<Box<dyn DocumentLease + '_>>> {
+        self.pin(path)
+    }
 }
 
 /// Borrow the existing eager corpus, with a lazily built name index. Merely

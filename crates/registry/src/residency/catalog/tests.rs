@@ -193,3 +193,51 @@ fn cold_catalog_alias_and_mount_motion_reprojects_unchanged_sources() {
     assert_eq!(controller.report().bodies, 0);
     assert_eq!(controller.report().reserved, 0);
 }
+
+#[test]
+fn catalog_scan_preserves_the_oldest_hot_member_for_eviction() {
+    const PEAK: usize = 131_072;
+    let dir = tempfile::tempdir().unwrap();
+    let backing = RawStore::new(dir.path()).unwrap();
+    let controller = Controller::new(0);
+    let files: Docs = ["a.md", "b.md", "c.md"]
+        .into_iter()
+        .map(|path| {
+            let raw = format!("# {path}\n\n{}\n", "x".repeat(2048));
+            let parsed = syntax::parse(&raw);
+            (path.to_owned(), Arc::new(model::build(raw, parsed)))
+        })
+        .collect();
+    let catalog = Catalog::capture(&files, &controller, &backing, PEAK).unwrap();
+    drop(files);
+    let read = |path: &str| {
+        drop(
+            catalog.entries[path]
+                .member
+                .pin(Access::Read, PEAK)
+                .unwrap(),
+        );
+    };
+    read("a.md");
+    read("b.md");
+    let two_hot = controller.report().total;
+    drop(catalog.pin("a.md").unwrap().unwrap());
+    // Admission is one byte short while both bodies are hot. Shedding one
+    // member must suffice; the scan of a must not make b the oldest member.
+    controller.set_limit(two_hot + PEAK - 1);
+    read("c.md");
+    assert_eq!(
+        catalog.entries["a.md"].member.phase(),
+        super::super::Phase::Cold,
+        "a catalog scan must not promote the oldest member"
+    );
+    assert_eq!(
+        catalog.entries["b.md"].member.phase(),
+        super::super::Phase::Hot
+    );
+    assert_eq!(
+        catalog.entries["c.md"].member.phase(),
+        super::super::Phase::Hot
+    );
+    assert_eq!(controller.report().reserved, 0);
+}

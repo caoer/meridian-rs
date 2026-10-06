@@ -21,7 +21,8 @@ struct Entry {
 
 /// Complete generation membership with sheddable bodies and exact backing.
 /// Holding the catalog keeps descriptors alive, never every parsed document.
-/// Pins are scan accesses: they protect bodies without promoting LRU recency.
+/// `pin` protects a scan without promoting LRU recency; `pin_read` promotes
+/// the selected member for interactive serving.
 #[derive(Debug)]
 pub struct Catalog {
     entries: BTreeMap<String, Entry>,
@@ -88,6 +89,18 @@ impl DocumentCatalog for Catalog {
             })
             .transpose()
     }
+    fn pin_read(&self, path: &str) -> io::Result<Option<Box<dyn DocumentLease + '_>>> {
+        self.entries
+            .get(path)
+            .map(|entry| {
+                entry
+                    .member
+                    .pin(Access::Read, self.load_peak)
+                    .map(|pin| Box::new(pin) as Box<dyn DocumentLease>)
+                    .map_err(io::Error::other)
+            })
+            .transpose()
+    }
 }
 impl DocumentLease for Pin {
     fn document(&self) -> io::Result<&model::Document> {
@@ -97,3 +110,6 @@ impl DocumentLease for Pin {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod read_tests;

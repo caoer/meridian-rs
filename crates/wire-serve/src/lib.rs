@@ -161,7 +161,7 @@ pub fn load_doc(root: &fs::WorkspaceRoot, path: &Path) -> Result<model::Document
                 // §8 binds `invalid_utf8{path,message}`: name the member and
                 // teach where its bytes stand — the bare code token strands
                 // the operator. Wording mirrors the daemon's per-file frame
-                // (registry `doc_or_refusal`) so warm and degrade do not
+                // (registry `with_engine_document`) so warm and degrade do not
                 // drift.
                 let mut err = ErrorBody::new(ErrorCode::InvalidUtf8);
                 err.path = Some(path.clone());

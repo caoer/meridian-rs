@@ -240,7 +240,7 @@ pub struct Registry {
     /// Test-only pause gate for the warm→borrow window: when armed, the read
     /// pass in `server::warm_engine_read` announces itself on the first
     /// channel after its successful warm, then parks on the second — between
-    /// `warm_or_build` and `with_engine`, the exact window the idle reaper
+    /// `warm_or_build` and `engine_snapshot`, the exact window the idle reaper
     /// can win. One-shot: the pass that hits it consumes it. `cfg(test)`
     /// excludes it from every release build by construction (disclosed;
     /// same seam class as `pause_before_insert`, the PR #9 precedent).
@@ -1495,10 +1495,11 @@ impl Registry {
     /// not immediately free (a writer holds it, or queues behind a long
     /// read). The hello door reports the resident fold through this: hello
     /// is config-grade (wire-contract §3.2) and must never queue behind
-    /// corpus-scoped work — a links serve holds the engines read lock for
-    /// its whole corpus computation, so a rebuild insert queued behind it
-    /// walls every ordinary reader (measured on the live sessions corpus,
-    /// 2026-08-16: hello went from 20 ms to a 10 s timeout the moment the
+    /// corpus-scoped work — an engine-map census or `with_engine` caller can
+    /// hold its read lock, and a queued writer then walls ordinary readers.
+    /// Named warm reads now pin a generation outside that lock. Historically
+    /// links held it for their whole computation (measured on the live sessions
+    /// corpus, 2026-08-16: hello went from 20 ms to a 10 s timeout the moment the
     /// resident engine landed and the links closure started). The fold is an
     /// optional field; "not readable this instant" serves as absent, exactly
     /// like cold.
