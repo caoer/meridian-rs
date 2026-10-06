@@ -3030,7 +3030,8 @@ stored, citing the doc revs read (§2.4). Workspace-bound, unlike § A.5
   toggle, hop bound (`1` = direct edges).
 - **Caps**: v3-only at dispatch; cap `walk` at op grain, never dotted
   `walk.<field>`; v2 → `unknown_op`, frozen v2 caps byte-identical.
-- **One computer** (`view::walk::walk_rooted`, shared mount-corpus assembly):
+- **One computer** (`view::walk::walk_leased`, the leased arm of the one walk
+  `view::walk::walk_rooted` also runs; shared mount-corpus assembly):
   one spelling of color/reason/detail on the wire and in `mrd walk --json`.
 - **Mounted roots are resident engines.** A cross-root pin colours against
   the target root's corpus, and the daemon hands the assembly its own warm
