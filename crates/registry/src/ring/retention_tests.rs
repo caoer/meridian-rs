@@ -354,3 +354,97 @@ fn a_door_step_on_a_memo_moved_past_its_observation_tells_nothing() {
     assert_eq!(frames[0].delta.root_before, baseline);
     assert_eq!(frames[0].delta.root_after, reader_saw);
 }
+
+/// A write door's settle step, raced: a reader observes a late arrival
+/// between the door's observation and its settle step (with an edit pending
+/// at door entry when `pending`). The step classifies the memo's own pair,
+/// so the settle frame tells the late arrival under the memo's root — the
+/// root the commit's `root_before` is taken from.
+fn settle_race(pending: bool) {
+    let (_dir, root, registry) = setup();
+    let ring = WorkspaceRing::new(&root);
+    let (baseline, _) = ring.prime(&root, &registry).unwrap();
+    let cache = registry.domain_cache(&root.0);
+    if pending {
+        std::fs::write(root.0.join("a.md"), b"# Pending at the door\n").unwrap();
+    }
+    let (announce, announced) = std::sync::mpsc::channel();
+    let (resume, resumed) = std::sync::mpsc::channel();
+    *ring.pause_after_door_observation.lock().unwrap() = Some((announce, resumed));
+    let plane = DoorPlane::new(&registry, &root, &ring, &cache);
+    let (door_saw, reader_saw) = std::thread::scope(|scope| {
+        let door = scope.spawn(|| plane.observe().unwrap());
+        announced.recv_timeout(Duration::from_secs(10)).unwrap();
+        std::fs::write(root.0.join("c.md"), b"# Arrived late\n").unwrap();
+        let reader_saw = registry
+            .door_observation(&root.0, &cache, crate::registry::DOOR_COOKIE_TIMEOUT)
+            .unwrap();
+        resume.send(()).unwrap();
+        (Root(door.join().unwrap().0), Root(reader_saw.0))
+    });
+    assert_ne!(door_saw, reader_saw);
+    let frames = ring.frames_after(0);
+    assert_eq!(frames.len(), 1, "one settle frame: {frames:?}");
+    assert_eq!(frames[0].delta.root_before, baseline);
+    assert_eq!(
+        frames[0].delta.root_after, reader_saw,
+        "the settle frame ends at the memo's root, which the commit starts from"
+    );
+    let mut want = vec![("c.md".to_owned(), wire::FileChange::Created)];
+    if pending {
+        want.insert(0, ("a.md".to_owned(), wire::FileChange::Modified));
+    }
+    assert_eq!(frame_rows(&frames[0]), want);
+    assert_eq!(ring.state().watch.root(), Some(&reader_saw));
+}
+
+#[test]
+fn a_door_settles_onto_the_memo_a_reader_moved_past_its_pending_change() {
+    settle_race(true);
+}
+
+#[test]
+fn a_door_settles_onto_the_memo_a_reader_moved_past_a_quiet_observation() {
+    settle_race(false);
+}
+
+/// The detector's flock-held cycle, raced: a reader moves the memo between
+/// the cycle's observation and its read of the memo's pair. The cycle
+/// classifies the pair it reads, so one frame tells both changes under the
+/// memo's root.
+#[test]
+fn a_detect_cycle_classifies_the_memo_a_reader_moved_after_its_observation() {
+    let (_dir, root, registry) = setup();
+    let ring = WorkspaceRing::new(&root);
+    let (baseline, _) = ring.prime(&root, &registry).unwrap();
+    let cache = registry.domain_cache(&root.0);
+    std::fs::write(root.0.join("a.md"), b"# Seen by the cycle\n").unwrap();
+    let (announce, announced) = std::sync::mpsc::channel();
+    let (resume, resumed) = std::sync::mpsc::channel();
+    *ring.pause_after_detect_observation.lock().unwrap() = Some((announce, resumed));
+    let (told, reader_saw) = std::thread::scope(|scope| {
+        let cycle = scope.spawn(|| ring.cycle(&root, &registry, true).unwrap());
+        announced.recv_timeout(Duration::from_secs(10)).unwrap();
+        std::fs::write(root.0.join("c.md"), b"# Seen by a reader\n").unwrap();
+        let reader_saw = registry
+            .door_observation(&root.0, &cache, crate::registry::DOOR_COOKIE_TIMEOUT)
+            .unwrap();
+        resume.send(()).unwrap();
+        (cycle.join().unwrap(), Root(reader_saw.0))
+    });
+    assert!(told);
+    let frames = ring.frames_after(0);
+    assert_eq!(frames.len(), 1, "one frame: {frames:?}");
+    assert_eq!(frames[0].delta.root_before, baseline);
+    assert_eq!(
+        frames[0].delta.root_after, reader_saw,
+        "a frame stamped with a root other than the memo's it classified"
+    );
+    assert_eq!(
+        frame_rows(&frames[0]),
+        vec![
+            ("a.md".to_owned(), wire::FileChange::Modified),
+            ("c.md".to_owned(), wire::FileChange::Created),
+        ]
+    );
+}

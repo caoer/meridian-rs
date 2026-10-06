@@ -82,9 +82,22 @@ pub struct WorkspaceRing {
     /// One-shot. `cfg(test)` excludes it from every release build by
     /// construction (the `Registry::pause_before_insert` seam class).
     #[cfg(test)]
-    pause_after_prime_snapshot:
-        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    pause_after_prime_snapshot: Mutex<Option<PauseGate>>,
+    /// Test-only pause gate for the flock-held cycle: the next cycle
+    /// announces itself after its observation and parks before it reads the
+    /// memo's pair — the window in which a reader can move the memo. One-shot.
+    #[cfg(test)]
+    pause_after_detect_observation: Mutex<Option<PauseGate>>,
+    /// Test-only pause gate for a write door: the next
+    /// [`DoorPlane::observe`] announces itself after its observation and
+    /// parks before the settle step. One-shot.
+    #[cfg(test)]
+    pause_after_door_observation: Mutex<Option<PauseGate>>,
 }
+
+/// A test seam's announce and resume channels.
+#[cfg(test)]
+type PauseGate = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
 
 #[derive(Debug)]
 struct RingState {
@@ -162,6 +175,10 @@ impl WorkspaceRing {
             prime_budget: PRIME_FLOCK_BUDGET,
             #[cfg(test)]
             pause_after_prime_snapshot: Mutex::new(None),
+            #[cfg(test)]
+            pause_after_detect_observation: Mutex::new(None),
+            #[cfg(test)]
+            pause_after_door_observation: Mutex::new(None),
         }
     }
 
@@ -480,6 +497,8 @@ impl WorkspaceRing {
             self.state().last_detect = Some(Instant::now());
             return Ok(false);
         }
+        #[cfg(test)]
+        park(&self.pause_after_detect_observation);
         // The classifier's root and leaves, from one memo hold: a reader's
         // observation since this one moved both together.
         let (observed, leaves) = memo_pair(cache)?;
@@ -512,17 +531,8 @@ impl WorkspaceRing {
     /// (the `pause_after_prime_snapshot` gate).
     #[cfg(test)]
     fn park_after_prime_snapshot(&self, priming: bool) {
-        if !priming {
-            return;
-        }
-        let gate = self
-            .pause_after_prime_snapshot
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        if let Some((announce, resume)) = gate {
-            let _ = announce.send(());
-            let _ = resume.recv();
+        if priming {
+            park(&self.pause_after_prime_snapshot);
         }
     }
 
@@ -654,6 +664,8 @@ impl<'a> DoorPlane<'a> {
             self.cache,
             crate::registry::DOOR_COOKIE_TIMEOUT,
         )?;
+        #[cfg(test)]
+        park(&self.ring.pause_after_door_observation);
         self.ring
             .settle(self.ws_root, self.cache, &Root(observed.0.clone()));
         Ok(observed)
@@ -677,6 +689,16 @@ impl wire_serve::seq::SeqSink for DoorPlane<'_> {
 
 /// A memo's leaves by String-spelled workspace-relative path.
 type LeafView = std::collections::BTreeMap<String, [u8; 32]>;
+
+/// Park on a one-shot test gate when it is armed: announce, then wait.
+#[cfg(test)]
+fn park(gate: &Mutex<Option<PauseGate>>) {
+    let armed = gate.lock().unwrap_or_else(PoisonError::into_inner).take();
+    if let Some((announce, resume)) = armed {
+        let _ = announce.send(());
+        let _ = resume.recv();
+    }
+}
 
 /// The memo's root and its leaf view, read under one lock hold so the root
 /// folds exactly those leaves (merkle-spec §6.7, the watch plane). The view

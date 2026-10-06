@@ -925,9 +925,13 @@ member's bytes per external batch — measured ~1/s under foreign writes.
   two separate reads would pair a root with leaves it does not fold. Under the
   flock any later memo motion is another observation, of a state no door is
   mid-landing, so the cycle classifies against the pair it read. A write
-  door's two baseline points expect the root the door observed; a memo that
-  has moved past it skips the step and leaves the baseline to the detector,
-  as a refused reconcile does.
+  door's settle step does the same before any byte lands: it classifies the
+  memo's own pair, so a change a reader observed after the door's
+  observation is told in the settle frame, and the commit, whose
+  `root_before` comes from that memo, chains onto it. The door's follow step
+  expects the commit's `root_after`; a memo that has moved past it skips the
+  step and leaves the baseline to the detector, as a refused reconcile does:
+  a commit's own files are never told with bytes past its `root_after`.
 - An ordinary cycle observes vouched-only under the flock
   (`Registry::door_observation_vouched`): cookie probe, take-and-apply, vouch,
   all inside one `DETECT_CADENCE`. Any miss releases the flock and skips the
