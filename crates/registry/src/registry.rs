@@ -899,6 +899,44 @@ mod floor_grammar {
     }
 }
 
+/// The next generation of `root` under a residency host (merkle-spec §6.8):
+/// the pass over `prior`'s slots, or over the empty generation when `prior`
+/// holds none. The movers and the root minted for the memo's leaf set are
+/// taken under one memo lock hold, so the pass stamps that root when it
+/// builds the very set.
+fn resident_update(
+    host: &crate::residency::Host,
+    root: &fs::WorkspaceRoot,
+    prior: Option<&WorkspaceEngine>,
+    cache: &Mutex<fs::DomainCache>,
+) -> io::Result<fs::CorpusUpdate<crate::residency::catalog::Slots>> {
+    let slots = crate::residency::catalog::Slots::default();
+    let unserved = std::collections::BTreeMap::new();
+    let leaves = std::collections::BTreeMap::new();
+    let index = Arc::new(model::CorpusIndex::new());
+    let previous = prior
+        .and_then(WorkspaceEngine::resident_prior)
+        .unwrap_or(fs::CorpusPrior {
+            docs: &slots,
+            unserved: &unserved,
+            leaves: &leaves,
+            index: Some(&index),
+        });
+    let (moves, fresh_root) = {
+        let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let minted = memo.overlay_root().ok();
+        (memo.leaf_delta(previous.leaves), minted)
+    };
+    crate::residency::catalog::update(
+        root,
+        &previous,
+        &moves,
+        fresh_root.as_ref(),
+        &host.controller,
+        &host.store,
+    )
+}
+
 impl Registry {
     /// Build a registry seeded with `entries` (loaded from the state file),
     /// persisting to `state` and writing drawer sentinels under `cache_root`.
@@ -1393,7 +1431,7 @@ impl Registry {
             // whole-corpus parse site. Leaf-set clones happen on this rebuild
             // path only, never per currency pass.
             let cold = prior.is_none();
-            let restored = if cold {
+            let restored = if cold && self.residency.is_none() {
                 self.restore_parsed_prior(&canonical, &cache)
             } else {
                 None
@@ -1402,8 +1440,11 @@ impl Registry {
                 .as_deref()
                 .and_then(WorkspaceEngine::as_prior)
                 .or_else(|| restored.as_ref().map(crate::engine::restored_prior));
-            // Control prototype: the residency host is accepted and ignored.
-            let engine = if let Some(previous) = previous {
+            let engine = if let Some(host) = &self.residency {
+                let update = resident_update(host, &root, prior.as_deref(), &cache)?;
+                parsed = Some(update.parsed);
+                WorkspaceEngine::resident(update, host.load_peak)
+            } else if let Some(previous) = previous {
                 // The movers against the prior's leaf set AND the root
                 // minted for the memo's set under ONE lock hold (merkle-spec
                 // §6.8): when the incremental pass builds the very set, its
@@ -1457,7 +1498,7 @@ impl Registry {
                 if resident == witness {
                     engines.insert(canonical.clone(), Arc::new(engine));
                     drop(engines);
-                    if cold {
+                    if cold && self.residency.is_none() {
                         self.pending_parse
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
