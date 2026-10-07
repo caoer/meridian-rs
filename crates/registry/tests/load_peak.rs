@@ -58,6 +58,47 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
 
+/// Lengths on and off the doubling points: at `2^k` every growth buffer
+/// (the parser's tree, the dialect list, the model's children) can be
+/// exactly full; one unit past it, or at `1.5·2^k`, they have just doubled.
+/// Every `k` from 10 to 16; `LOAD_PEAK_SWEEP=full` extends it to 20 (up to
+/// 1.5 MiB), the run the spec's table and the per-byte part are taken from.
+fn sizes() -> Vec<usize> {
+    let full = std::env::var_os("LOAD_PEAK_SWEEP").is_some_and(|sweep| sweep == "full");
+    let mut sizes = vec![64];
+    for k in 10..=if full { 20 } else { 16 } {
+        let at = 1usize << k;
+        sizes.extend([at, at + 1, at + at / 2]);
+    }
+    sizes
+}
+
+/// A heading of half the page, then small leaves under it.
+fn long_heading(size: usize, leaf: &str) -> String {
+    let mut raw = String::from("# ");
+    raw.push_str(&"h".repeat(size / 2));
+    raw.push_str("\n\n");
+    while raw.len() < size {
+        raw.push_str(leaf);
+    }
+    raw
+}
+
+/// Tables whose header is `cols` wide, each followed by `rows` one-cell rows.
+fn wide_tables(size: usize, cols: usize, rows: usize) -> String {
+    let mut table = "|a".repeat(cols);
+    table.push_str("|\n");
+    table.push_str(&"|-".repeat(cols));
+    table.push_str("|\n");
+    table.push_str(&"a\n".repeat(rows));
+    table.push('\n');
+    let mut raw = String::new();
+    while raw.len() < size {
+        raw.push_str(&table);
+    }
+    raw
+}
+
 /// The shapes at `size` bytes or just over: each repeats one unit.
 #[allow(clippy::too_many_lines)]
 fn shapes(size: usize) -> Vec<(&'static str, String)> {
@@ -173,6 +214,14 @@ fn shapes(size: usize) -> Vec<(&'static str, String)> {
         ("bare-fences", fill(&|_| "```\n```\n".to_owned())),
         ("footnotes", fill(&|n| format!("[^{n}]: a\n\n"))),
         ("one-char-paragraphs", fill(&|_| "a\n\n".to_owned())),
+        // A long heading governs every leaf below it (rv-360 P1-2a).
+        ("long-heading-sections", long_heading(size, "##\n")),
+        ("long-heading-code-spans", long_heading(size, "`a` ")),
+        ("long-heading-links", long_heading(size, "[[a]]")),
+        // A wide header over one-cell rows: padded cells (rv-360 P1-2b).
+        ("wide-tables-k64", wide_tables(size, 64, 64)),
+        ("wide-tables-k362", wide_tables(size, 362, 724)),
+        ("heading-code", fill(&|_| "# `a`\n".to_owned())),
     ]
 }
 
@@ -206,7 +255,7 @@ fn every_shapes_cold_load_peaks_within_its_declaration() {
     // Process-wide first-use allocations are not a load's.
     cold_load_peak(&store, "# prime\n\n[[a]] text ^b\n");
     let mut rows = Vec::new();
-    for size in [64, 1024, 64 * 1024] {
+    for size in sizes() {
         for (shape, raw) in shapes(size) {
             let doc = model::build(raw.clone(), syntax::parse(&raw));
             let tree = model::allocation::document(&doc).tree;
