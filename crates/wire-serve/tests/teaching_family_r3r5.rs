@@ -36,7 +36,7 @@ fn hpath(segs: &[&str]) -> SecRef {
         hpath: segs
             .iter()
             .map(|h| HpathSeg {
-                h: (*h).to_owned(),
+                h: (*h).into(),
                 n: None,
             })
             .collect(),

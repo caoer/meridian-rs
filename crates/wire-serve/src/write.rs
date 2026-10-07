@@ -6446,7 +6446,7 @@ fn containment_lost_refusal(lost: &[Vec<String>], cause: Option<model::CorruptCa
                 chain
                     .iter()
                     .map(|h| HpathSeg {
-                        h: h.clone(),
+                        h: h.as_str().into(),
                         n: None,
                     })
                     .collect()
@@ -6881,9 +6881,14 @@ fn violation_to_verdict(v: policy::Violation) -> Verdict {
             policy::Severity::Info => Severity::Info,
         },
         path: Path(v.path),
-        hpath: v
-            .hpath
-            .map(|segs| segs.into_iter().map(|h| HpathSeg { h, n: None }).collect()),
+        hpath: v.hpath.map(|segs| {
+            segs.into_iter()
+                .map(|h| HpathSeg {
+                    h: h.into(),
+                    n: None,
+                })
+                .collect()
+        }),
         span: Span(v.span.start as u64, v.span.end as u64),
         node_rev: NodeRev(v.node_rev.0),
         message: v.message,

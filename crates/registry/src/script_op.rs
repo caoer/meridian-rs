@@ -1323,7 +1323,7 @@ fn toc_facts_of(doc: &model::Document, path: &str, root: &wire::Root) -> TocFact
             let section = match &node.hpath {
                 Some(hpath) => hpath
                     .iter()
-                    .map(|seg| seg.h.as_str())
+                    .map(|seg| &*seg.h)
                     .collect::<Vec<_>>()
                     .join("/"),
                 None => anchor.clone()?,
@@ -1656,7 +1656,7 @@ mod tests {
             path: "doc.md".to_owned(),
             edit: PlanEdit::Append {
                 hpath: vec![wire::HpathSeg {
-                    h: "Alpha".to_owned(),
+                    h: "Alpha".into(),
                     n: None,
                 }],
                 body: "more\n".to_owned(),
@@ -1929,7 +1929,7 @@ mod tests {
                 path: "doc.md".to_owned(),
                 edit: PlanEdit::Append {
                     hpath: vec![wire::HpathSeg {
-                        h: "Alpha".to_owned(),
+                        h: "Alpha".into(),
                         n: None,
                     }],
                     body: "four\n".to_owned(),

@@ -46,7 +46,7 @@ fn splice_through_the_write_path(root: &WorkspaceRoot, path: &str, old: &str, ne
         edits: vec![wire::Edit {
             target: wire::SecRef::Hpath {
                 hpath: vec![wire::HpathSeg {
-                    h: "A".to_string(),
+                    h: "A".into(),
                     n: None,
                 }],
             },

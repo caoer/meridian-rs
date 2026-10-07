@@ -855,6 +855,17 @@ with the same ranges and the same per-table limit on padded cells, so a wide
 header over short rows stages one item per row, not one per missing cell.
 Neither changes a parse result, a `node_rev`, or any served byte.
 
+The doors keep that sharing. A wire hpath segment (`wire::HpathSeg.h`) is a
+shared reference to heading text, and every heading address a door derives
+from the tree — a toc row, the read face's address facts, a write plan's
+section index — takes its segments by reference from the section chains. A
+one-section read and a write plan therefore stage memory in proportion to the
+page, not to rows times chain length. Matching a selector against those
+addresses compares each distinct shared segment once per depth, not once per
+row. An answer that itself lists every row's address (a whole-page `toc` or
+`read`) is as large as its contract makes it. None of this changes a served
+byte.
+
 At admission and after releasing operation pins, shed the least recently
 used unpinned member versions across all workspaces until the charged total
 fits. The periodic reaper is a backstop, not the only enforcement point.

@@ -145,7 +145,7 @@ mod tests {
 
     fn seg(h: &str) -> HpathSeg {
         HpathSeg {
-            h: h.to_owned(),
+            h: h.into(),
             n: None,
         }
     }
@@ -373,7 +373,7 @@ mod tests {
     fn every_field_moves_the_digest() {
         let numbered = |n: Option<u32>| PlanEdit::Append {
             hpath: vec![HpathSeg {
-                h: "Notes".to_owned(),
+                h: "Notes".into(),
                 n,
             }],
             body: "hi".to_owned(),
@@ -472,7 +472,7 @@ mod tests {
         };
         let goals = PlanEdit::Append {
             hpath: vec![HpathSeg {
-                h: "Goals".to_owned(),
+                h: "Goals".into(),
                 n: Some(2),
             }],
             body: "a <b> & c\n".to_owned(),

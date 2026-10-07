@@ -2082,7 +2082,7 @@ fn alloc_toc<'v>(heap: Heap<'v>, facts: &TocFacts) -> Value<'v> {
                     .hpath
                     .iter()
                     .map(|seg| {
-                        let mut fields = vec![(heap.alloc("h"), heap.alloc(seg.h.as_str()))];
+                        let mut fields = vec![(heap.alloc("h"), heap.alloc(&*seg.h))];
                         if let Some(n) = seg.n {
                             fields.push((heap.alloc("n"), heap.alloc(i64::from(n))));
                         }

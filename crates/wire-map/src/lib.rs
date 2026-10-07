@@ -39,6 +39,21 @@ pub fn project(doc: &model::Document) -> Vec<wire::Node> {
     out
 }
 
+/// A node's heading chain as wire segments. Each segment shares the tree's
+/// heading text (merkle-spec §6.4), so a row's chain costs one pointer per
+/// segment, never a copy of the heading.
+fn wire_chain(node: &model::Node) -> Vec<wire::HpathSeg> {
+    node.hpath
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|h| wire::HpathSeg {
+            h: std::sync::Arc::clone(h),
+            n: None,
+        })
+        .collect()
+}
+
 fn flatten(node: &model::Node, raw: &[u8], out: &mut Vec<wire::Node>) {
     if let Some((kind, info, unterminated)) = wire_view(&node.kind) {
         let start = node.span.start;
@@ -46,13 +61,7 @@ fn flatten(node: &model::Node, raw: &[u8], out: &mut Vec<wire::Node>) {
             kind,
             span: wire::Span(node.span.start as u64, node.span.end as u64),
             text_prefix_16b: prefix_16b(raw, start),
-            hpath: (kind == wire::NodeKind::Heading).then(|| {
-                node.hpath_owned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|h| wire::HpathSeg { h, n: None })
-                    .collect()
-            }),
+            hpath: (kind == wire::NodeKind::Heading).then(|| wire_chain(node)),
             unterminated: unterminated.then_some(true),
             info,
             node_rev: Some(wire::NodeRev(node.node_rev.0.clone())),
@@ -212,13 +221,7 @@ fn collect_toc(node: &model::Node, root: &model::Node, raw: &[u8], out: &mut Vec
         M::Section { level, .. } => out.push(wire::TocNode {
             kind: "heading".into(),
             level: Some(u32::from(*level)),
-            hpath: Some(
-                node.hpath_owned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|h| wire::HpathSeg { h, n: None })
-                    .collect(),
-            ),
+            hpath: Some(wire_chain(node)),
             content_span: Some(content_span(raw, &node.span)),
             ..base
         }),
@@ -385,7 +388,7 @@ fn ref_to_sec_ref(r: &model::Ref) -> wire::SecRef {
             hpath: segs
                 .iter()
                 .map(|s| wire::HpathSeg {
-                    h: s.h.clone(),
+                    h: s.h.as_str().into(),
                     n: s.n,
                 })
                 .collect(),

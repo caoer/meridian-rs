@@ -40,7 +40,7 @@ impl ScriptHost for ArmHost {
                 anchor: None,
                 rev: "sec-notes".to_owned(),
                 hpath: vec![HpathSeg {
-                    h: "Notes".to_owned(),
+                    h: "Notes".into(),
                     n: None,
                 }],
             }],
@@ -101,7 +101,7 @@ fn run(script: &str) -> effects::ScriptEval {
 
 fn seg(h: &str) -> HpathSeg {
     HpathSeg {
-        h: h.to_owned(),
+        h: h.into(),
         n: None,
     }
 }
@@ -495,7 +495,7 @@ fn a_segment_carries_its_occurrence() {
             hpath: vec![
                 seg("Log"),
                 HpathSeg {
-                    h: "Entry".to_owned(),
+                    h: "Entry".into(),
                     n: Some(2),
                 },
             ],

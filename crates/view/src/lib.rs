@@ -2052,7 +2052,7 @@ mod tests {
                     &f.hpath
                         .iter()
                         .map(|s| AddrSeg {
-                            h: s.h.clone(),
+                            h: s.h.to_string(),
                             n: s.n,
                         })
                         .collect::<Vec<_>>(),

@@ -79,7 +79,7 @@ fn create(title: &str, body: &str) -> PlanEdit {
 /// The armed target as (heading, occurrence) pairs.
 fn hseq(target: &SecRef) -> Vec<(String, Option<u32>)> {
     match target {
-        SecRef::Hpath { hpath } => hpath.iter().map(|s| (s.h.clone(), s.n)).collect(),
+        SecRef::Hpath { hpath } => hpath.iter().map(|s| (s.h.to_string(), s.n)).collect(),
         other => panic!("a section fact names an hpath target, got {other:?}"),
     }
 }

@@ -194,7 +194,7 @@ pub(crate) fn segment_of_entry(
             ));
         }
     };
-    Ok(HpathSeg { h: h.to_owned(), n })
+    Ok(HpathSeg { h: h.into(), n })
 }
 
 /// Does a RECORDED section spelling address the same node as an armed row's
@@ -232,14 +232,8 @@ pub fn sel_addresses(recorded: &ReadSel, hpath: &[HpathSeg]) -> bool {
 /// threading matcher's standing law; resolution honors `n` engine-side.
 #[must_use]
 pub fn segs_address(recorded: &[HpathSeg], hpath: &[HpathSeg]) -> bool {
-    let mut recorded = recorded
-        .iter()
-        .map(|seg| seg.h.as_str())
-        .filter(|h| !h.is_empty());
-    let mut armed = hpath
-        .iter()
-        .map(|seg| seg.h.as_str())
-        .filter(|h| !h.is_empty());
+    let mut recorded = recorded.iter().map(|seg| &*seg.h).filter(|h| !h.is_empty());
+    let mut armed = hpath.iter().map(|seg| &*seg.h).filter(|h| !h.is_empty());
     loop {
         match (recorded.next(), armed.next()) {
             (None, None) => return true,

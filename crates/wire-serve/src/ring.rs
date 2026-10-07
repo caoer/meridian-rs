@@ -200,8 +200,14 @@ fn file_heap(file: &wire::DeltaFile) -> usize {
                 wire::SecRef::Hpath { hpath } => hpath.iter().fold(
                     hpath.capacity().saturating_mul(size_of::<wire::HpathSeg>()),
                     |bytes, segment| {
+                        // A shared text's allocation: its two counts and its
+                        // bytes, padded to the counts' alignment; charged to
+                        // every holder (over, never under).
                         let wire::HpathSeg { h, n: _ } = segment;
-                        bytes.saturating_add(h.capacity())
+                        bytes.saturating_add(
+                            (size_of::<[usize; 2]>() + h.len())
+                                .next_multiple_of(align_of::<usize>()),
+                        )
                     },
                 ),
                 wire::SecRef::Anchor { anchor: text } | wire::SecRef::FmKey { fm_key: text } => {
