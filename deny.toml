@@ -69,6 +69,7 @@ deny = [
 [sources]
 unknown-git = "deny"
 allow-git = [
-    # The sanctioned fork consumed via [patch.crates-io] (branch `obsidian`).
+    # The sanctioned fork consumed via [patch.crates-io]; its pinned revs are
+    # held by tags in the fork (see Cargo.toml).
     "https://github.com/caoer/pulldown-cmark",
 ]
