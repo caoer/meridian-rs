@@ -231,7 +231,7 @@ const LOAD_FIXED: usize = 72 * 1024;
 
 /// What a load allocates per source byte at the worst measured shape, with
 /// margin: the byte itself, its share of the retained tree and of the
-/// parser's staging. Bare headings just past a power of two measure 340.
+/// parser's staging. Bare headings two lines past a power of two measure 341.
 const LOAD_PER_RAW_BYTE: usize = 416;
 
 /// An immutable version descriptor shared across generations and operations.

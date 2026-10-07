@@ -691,69 +691,83 @@ no dialect node and still stages 24 to 48 bytes per raw byte). The rule is
 therefore sized to the worst shape observed, with the rest of the set far
 under it; it can be a function of length only because no shape grows its tree
 or staging faster than its bytes (below). `crates/registry/tests/load_peak.rs`
-measures one cold load per shape with a counting allocator, at lengths on and
-off the doubling points (`2^k`, one unit past it, and `1.5·2^k`, for every
-`k` up to 16, and up to 20 — 1.5 MiB — under `LOAD_PEAK_SWEEP=full`, the run
-this table comes from): at `2^k` the parser's tree, the dialect list
-and the model's children can be exactly full, and one unit past it they have
-just doubled, which is where a shape peaks highest per byte. It asserts that
-each peak is at most its declaration. Per shape, at the length where it peaks
-highest, in bytes per raw byte (the whole load above the fixed part):
+measures one cold load per shape with a counting allocator. The parser's
+tree, the dialect list and the model's children grow by doubling on counts
+of constructs, not bytes, and one of them holds `n − 1` entries, so a page of
+`n` repeated units peaks highest per byte just past a doubling, at `2^j + 1`
+or `2^j + 2` units whatever the unit's length. The probe samples every repeated-unit shape at
+exactly those counts, for every `2^j` units within 64 KiB, and within 4 MiB
+under `LOAD_PEAK_SWEEP=full`, the run this table comes from; the shapes not
+built of repeated units (frontmatter, long headings, wide tables) at `2^k`,
+`2^k + 1` and `1.5·2^k` bytes. The default sweep also loads bare headings, a
+code-span heading over a bare heading, and three bare headings then a code
+span at about 1 MiB, so a peak that grows faster than the length goes red in
+CI. It asserts that each peak is at most its declaration. Per shape, at the
+length where it peaks highest, in bytes per raw byte (the whole load above
+the 66,776 B fixed part):
 
 | shape | worst length (B) | retained tree | parse alone | whole load | declaration ÷ load |
 |---|---|---|---|---|---|
-| `tags` | 1,572,874 | 0.0 | 1.5 | 2.5 | 165.93 |
-| `prose` | 1,572,932 | 0.0 | 1.5 | 2.5 | 165.93 |
-| `bare-tags` | 1,572,864 | 0.0 | 1.5 | 2.5 | 165.93 |
-| `cjk` | 1,572,902 | 0.0 | 3.0 | 4.0 | 103.82 |
+| `prose` | 2,424,718 | 0.0 | 1.5 | 2.5 | 166.10 |
+| `bare-tags` | 3,145,731 | 0.0 | 1.5 | 2.5 | 166.17 |
+| `tags` | 6,180,358 | 0.0 | 1.5 | 2.5 | 166.28 |
+| `cjk` | 3,080,239 | 0.0 | 3.0 | 4.0 | 103.91 |
 | `frontmatter` | 1,572,898 | 2.9 | 2.7 | 5.8 | 71.75 |
-| `deep-list` | 1,572,898 | 0.0 | 6.0 | 7.0 | 59.36 |
-| `rules` | 1,572,865 | 0.0 | 12.0 | 13.0 | 31.99 |
-| `code` | 1,048,578 | 12.4 | 16.3 | 21.8 | 19.03 |
-| `wikilinks` | 1,572,887 | 8.9 | 21.8 | 22.8 | 18.24 |
-| `list` | 131,084 | 0.0 | 24.1 | 24.5 | 16.60 |
-| `inline-html` | 1,572,867 | 0.0 | 24.0 | 25.0 | 16.64 |
-| `html-blocks` | 1,572,865 | 0.0 | 24.0 | 25.0 | 16.64 |
-| `bare-quotes` | 1,572,864 | 0.0 | 24.0 | 25.0 | 16.64 |
-| `autolinks` | 1,572,864 | 0.0 | 24.0 | 25.0 | 16.64 |
-| `table` | 1,572,900 | 0.0 | 24.0 | 25.0 | 16.64 |
-| `ref-defs` | 1,572,866 | 0.0 | 25.8 | 26.7 | 15.55 |
-| `callouts` | 1,048,580 | 12.2 | 31.6 | 32.6 | 12.75 |
-| `footnotes` | 98,310 | 0.0 | 34.9 | 35.2 | 11.59 |
-| `block-ids` | 16,392 | 24.2 | 22.8 | 35.8 | 10.43 |
-| `tasks` | 131,082 | 24.0 | 39.1 | 41.5 | 9.91 |
-| `embeds` | 1,572,878 | 16.8 | 42.7 | 43.7 | 9.52 |
-| `headings` | 131,082 | 28.8 | 27.8 | 44.6 | 9.23 |
-| `nested-list` | 196,626 | 0.0 | 48.0 | 48.7 | 8.49 |
-| `cell-table` | 1,572,912 | 0.0 | 48.0 | 49.0 | 8.49 |
-| `deep-quotes` | 1,572,876 | 0.0 | 48.0 | 49.0 | 8.49 |
-| `hard-breaks` | 1,572,864 | 0.0 | 48.0 | 49.0 | 8.49 |
-| `one-char-paragraphs` | 1,572,864 | 0.0 | 48.0 | 49.0 | 8.49 |
-| `bare-list` | 1,572,864 | 0.0 | 48.0 | 49.0 | 8.49 |
-| `one-row-tables` | 1,572,867 | 32.4 | 48.2 | 56.5 | 7.36 |
-| `inline` | 1,048,594 | 12.0 | 58.0 | 58.9 | 7.05 |
-| `wide-tables-k64` | 2,334 | 0.7 | 89.2 | 59.1 | 4.93 |
-| `open-emphasis` | 1,048,578 | 0.0 | 64.0 | 64.9 | 6.40 |
-| `inline-links` | 1,048,578 | 0.0 | 68.0 | 68.9 | 6.03 |
-| `bare-block-ids` | 1,048,578 | 48.8 | 40.2 | 80.4 | 5.17 |
-| `bare-fences` | 1,048,584 | 48.0 | 52.0 | 82.9 | 5.01 |
-| `bare-tasks` | 1,048,578 | 48.7 | 54.0 | 84.3 | 4.93 |
-| `long-heading-code-spans` | 1,048,580 | 26.0 | 83.5 | 84.4 | 4.92 |
-| `long-heading-links` | 1,572,866 | 33.4 | 84.6 | 85.6 | 4.86 |
-| `long-heading-sections` | 1,048,578 | 60.3 | 42.5 | 95.3 | 4.36 |
-| `ref-links` | 1,572,865 | 0.0 | 96.0 | 97.0 | 4.29 |
-| `strong-runs` | 1,572,865 | 0.0 | 96.0 | 97.0 | 4.29 |
-| `emphasis-runs` | 1,572,864 | 0.0 | 96.0 | 97.0 | 4.29 |
-| `wide-tables-k362` | 1,575,243 | 0.1 | 96.2 | 97.2 | 4.28 |
-| `bare-embeds` | 1,048,578 | 48.8 | 150.2 | 151.1 | 2.75 |
-| `bare-links` | 1,572,865 | 64.7 | 168.2 | 169.2 | 2.46 |
-| `code-spans` | 1,048,580 | 96.0 | 176.0 | 176.9 | 2.35 |
-| `heading-code` | 1,048,578 | 183.8 | 118.5 | 251.3 | 1.66 |
-| `bare-headings` | 65,538 | 216.0 | 180.0 | 339.9 | 1.22 |
+| `deep-list` | 2,293,764 | 0.0 | 6.0 | 7.0 | 59.38 |
+| `rules` | 2,621,445 | 0.0 | 12.0 | 13.0 | 31.99 |
+| `list` | 97,218 | 0.0 | 24.1 | 24.4 | 16.59 |
+| `inline-html` | 2,359,305 | 0.0 | 24.0 | 25.0 | 16.64 |
+| `autolinks` | 3,145,734 | 0.0 | 24.0 | 25.0 | 16.64 |
+| `bare-quotes` | 3,145,731 | 0.0 | 24.0 | 25.0 | 16.64 |
+| `html-blocks` | 3,670,023 | 0.0 | 24.0 | 25.0 | 16.64 |
+| `table` | 4,869,673 | 0.0 | 24.0 | 25.0 | 16.64 |
+| `code` | 220,101 | 14.6 | 18.3 | 25.4 | 16.19 |
+| `wikilinks` | 284,535 | 11.9 | 25.2 | 26.0 | 15.86 |
+| `ref-defs` | 97,206 | 0.0 | 26.1 | 26.5 | 15.35 |
+| `callouts` | 236,487 | 13.4 | 32.5 | 33.2 | 12.43 |
+| `footnotes` | 97,218 | 0.0 | 35.1 | 35.4 | 11.55 |
+| `block-ids` | 16,230 | 24.5 | 23.0 | 36.6 | 10.33 |
+| `tasks` | 129,978 | 24.2 | 39.2 | 41.8 | 9.84 |
+| `headings` | 129,994 | 29.0 | 28.0 | 44.9 | 9.18 |
+| `embeds` | 162,750 | 20.0 | 46.4 | 47.0 | 8.78 |
+| `nested-list` | 179,136 | 0.0 | 48.1 | 48.7 | 8.49 |
+| `deep-quotes` | 2,359,301 | 0.0 | 48.0 | 49.0 | 8.49 |
+| `hard-breaks` | 3,145,731 | 0.0 | 48.0 | 49.0 | 8.49 |
+| `one-char-paragraphs` | 3,145,731 | 0.0 | 48.0 | 49.0 | 8.49 |
+| `bare-list` | 4,194,306 | 0.0 | 48.0 | 49.0 | 8.49 |
+| `inline` | 244,680 | 12.9 | 58.8 | 59.5 | 6.97 |
+| `cell-table` | 2,358 | 0.3 | 88.0 | 61.2 | 5.00 |
+| `wide-tables-k64` | 2,334 | 0.7 | 89.2 | 62.1 | 4.93 |
+| `open-emphasis` | 3,145,731 | 0.0 | 69.3 | 70.3 | 5.91 |
+| `one-row-tables` | 2,359,305 | 42.7 | 56.0 | 73.9 | 5.63 |
+| `inline-links` | 3,145,734 | 0.0 | 74.7 | 75.6 | 5.50 |
+| `bare-fences` | 4,194,312 | 48.0 | 52.0 | 83.0 | 5.01 |
+| `long-heading-code-spans` | 4,194,308 | 26.0 | 83.5 | 84.5 | 4.92 |
+| `long-heading-links` | 6,291,457 | 33.4 | 84.6 | 85.6 | 4.86 |
+| `long-heading-sections` | 4,194,306 | 60.3 | 42.5 | 95.3 | 4.36 |
+| `strong-runs` | 2,621,445 | 0.0 | 96.0 | 97.0 | 4.29 |
+| `emphasis-runs` | 3,145,731 | 0.0 | 96.0 | 97.0 | 4.29 |
+| `ref-links` | 3,670,023 | 0.0 | 96.0 | 97.0 | 4.29 |
+| `wide-tables-k362` | 6,292,269 | 0.1 | 96.2 | 97.2 | 4.28 |
+| `bare-block-ids` | 3,145,734 | 64.2 | 50.2 | 105.1 | 3.96 |
+| `bare-tasks` | 3,145,734 | 64.0 | 64.0 | 110.3 | 3.77 |
+| `bare-embeds` | 3,145,734 | 64.2 | 168.2 | 169.1 | 2.46 |
+| `code-spans` | 4,194,308 | 96.0 | 176.0 | 177.0 | 2.35 |
+| `bare-links` | 2,621,445 | 77.0 | 182.6 | 183.6 | 2.27 |
+| `heading-code` | 3,145,740 | 199.2 | 141.8 | 271.3 | 1.53 |
+| `headings-then-code-span` | 2,359,305 | 179.6 | 110.2 | 276.5 | 1.50 |
+| `heading-code-over-headings` | 4,194,312 | 203.4 | 118.4 | 311.7 | 1.33 |
+| `heading-block-ids` | 2,621,450 | 239.0 | 120.6 | 325.2 | 1.28 |
+| `bare-headings` | 4,194,308 | 216.0 | 168.0 | 341.0 | 1.22 |
 
-Bare `#` headings are the worst shape found: 339.9 bytes per raw byte just
-past 2^16, so the per-byte part, 416, stands about 22% above it. Every other
-shape is at 252 or less.
+Bare `#` headings are the worst shape found: 341.0 bytes per raw byte at
+`2^21 + 2` lines, so the per-byte part, 416, stands 22% above it. Four shapes
+follow above 270, all of them headings: one carrying a block id (325.2), a
+code-span heading over a bare one (311.7), three bare headings then a code
+span (276.5) and code-span headings (271.3). Every other shape is at 184 or
+less. Headings carrying a block id reach 2,621,450 B in the full sweep and
+are not among the default sweep's 1 MiB loads: their model build time grows
+with the square of the page.
 
 The whole load is below tree plus parse where the parser's staging is freed
 before the tree is complete. Over-declaring costs admission concurrency and
