@@ -98,3 +98,116 @@ fn the_self_blocked_question_asks_the_learned_declaration() {
     drop(lease);
     assert!(!learner.held_blocks(&[], 1));
 }
+
+/// A source that keeps the ledger's report as each read begins.
+#[derive(Debug)]
+struct Recording {
+    handle: crate::raw_store::RawHandle,
+    budget: Controller,
+    seen: Mutex<Vec<Report>>,
+}
+impl ByteSource for Recording {
+    fn identity(&self) -> ByteIdentity {
+        self.handle.identity()
+    }
+    fn read(&self) -> io::Result<SharedBytes> {
+        lock(&self.seen).push(self.budget.report());
+        ByteSource::read(&self.handle)
+    }
+}
+
+/// The retry and every later load declare the caller's peak on top of the
+/// learned bytes, not the learned bytes alone: a peak well short of the
+/// body, and an allowance that holds the body but not peak and body.
+#[test]
+fn the_rule_part_is_declared_on_top_of_what_was_learned() {
+    const PEAK: usize = 50_000;
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let source = Arc::new(Recording {
+        handle: store.retain(&sections(400)).unwrap(),
+        budget: budget.clone(),
+        seen: Mutex::new(Vec::new()),
+    });
+    let member = budget.retain(source.clone());
+    let pin = member.pin(Access::Read, PEAK).expect("served by the retry");
+    let held = budget.report();
+    let observed = held.raw + held.bodies;
+    drop(pin);
+    shed(&budget, &member);
+    assert!(observed > PEAK, "the load overran: observed {observed}");
+    budget.set_limit(budget.report().floor + observed + PEAK / 2);
+    drop(member.pin_once(Access::Read, PEAK));
+    let seen = lock(&source.seen).clone();
+    assert_eq!(seen[1].reserved, PEAK + observed, "the retry's declaration");
+    assert_eq!(seen[2].reserved, PEAK + observed, "a later declaration");
+    assert!(seen[2].transient, "peak + learned is oversized here");
+}
+
+/// Retry a member pin the way the catalog retries a settling version, but
+/// without its pause budget: this test asks what the controller answers,
+/// not how long a caller waits.
+fn settled(member: &Member) -> Result<(), Error> {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        match member.pin(Access::Read, 1).map(drop) {
+            Err(Error::Admission(AdmissionError::Settling | AdmissionError::Retiring))
+                if Instant::now() < deadline =>
+            {
+                thread::yield_now();
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
+/// Callers that share one overrunning load: it is counted once, no caller's
+/// retry rejoins the load declared before the bytes were learned, and every
+/// caller is served.
+#[test]
+fn callers_sharing_an_overrunning_load_are_served_and_it_is_counted_once() {
+    const ROUNDS: usize = 50;
+    const CALLERS: usize = 4;
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    for round in 0..ROUNDS {
+        let mut raw = sections(60);
+        raw.extend_from_slice(format!("round {round}\n").as_bytes());
+        let source = source(&store, &raw, false, false);
+        let member = budget.retain(source.clone());
+        let before = budget.report().peak_overruns;
+        let workers: Vec<_> = (0..CALLERS)
+            .map(|_| {
+                let member = member.clone();
+                thread::spawn(move || settled(&member))
+            })
+            .collect();
+        assert!(source.gate.entered(), "round {round}: the load began");
+        let deadline = Instant::now() + WAIT;
+        while lock(&budget.0.ledger).rows[&member.key]
+            .resident
+            .snapshot()
+            .waiters
+            < CALLERS - 1
+        {
+            assert!(Instant::now() < deadline, "round {round}: callers joined");
+            thread::yield_now();
+        }
+        source.gate.release();
+        for worker in workers {
+            let outcome = worker.join().unwrap();
+            assert!(outcome.is_ok(), "round {round}: {outcome:?}");
+        }
+        assert_eq!(
+            budget.report().peak_overruns - before,
+            1,
+            "round {round}: one overrun, counted once"
+        );
+        assert!(
+            source.reads.load(Ordering::SeqCst) <= 2,
+            "round {round}: the overrunning load and at most one under the learned bytes"
+        );
+    }
+}
