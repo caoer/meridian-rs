@@ -8,6 +8,7 @@
 use fs::hydration::{self, HydrationError};
 use model::bytes::{ByteIdentity, ByteSource, SharedBytes, WeakBytes};
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 pub mod catalog;
@@ -31,6 +32,31 @@ pub struct Host {
     /// through, so a baseline and a serving slot of the same bytes share a
     /// controller member.
     retention: Arc<dyn model::bytes::ByteRetention>,
+    /// The one floor this host charges (merkle-spec §6.4, the host floor).
+    floor: Mutex<HostFloor>,
+    /// The last census ticket handed out.
+    tickets: AtomicU64,
+    /// Every generation published through this host, held weakly, so a
+    /// census reaches the older ones an operation still holds.
+    generations: Mutex<Vec<Weak<crate::engine::WorkspaceEngine>>>,
+    /// What the last census that reached each workspace's memo and ring
+    /// measured there: what a census charges for one whose lock is busy.
+    measured: Mutex<std::collections::HashMap<(Owner, std::path::PathBuf), usize>>,
+}
+
+/// A per-workspace floor owner a census measures under the owner's own lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Owner {
+    Memo,
+    Ring,
+}
+
+/// The host's floor lease, the bytes it charges and the census that set them.
+#[derive(Debug, Default)]
+struct HostFloor {
+    ticket: u64,
+    bytes: usize,
+    lease: Option<controller::Floor>,
 }
 
 impl Host {
@@ -51,6 +77,10 @@ impl Host {
             store,
             load_peak,
             retention,
+            floor: Mutex::new(HostFloor::default()),
+            tickets: AtomicU64::new(0),
+            generations: Mutex::new(Vec::new()),
+            measured: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -58,6 +88,89 @@ impl Host {
     #[must_use]
     pub fn retention(&self) -> Arc<dyn model::bytes::ByteRetention> {
         Arc::clone(&self.retention)
+    }
+
+    /// The bytes this host's floor charges: its registry's last census
+    /// (merkle-spec §6.4, the host floor).
+    #[must_use]
+    pub fn floor(&self) -> usize {
+        lock(&self.floor).bytes
+    }
+
+    /// Record a generation published through this host.
+    pub(crate) fn published(&self, generation: &Arc<crate::engine::WorkspaceEngine>) {
+        lock(&self.generations).push(Arc::downgrade(generation));
+    }
+
+    /// The published generations still alive, the dead pruned, and the heap
+    /// of the tracking buffer itself.
+    pub(crate) fn live_generations(&self) -> (Vec<Arc<crate::engine::WorkspaceEngine>>, usize) {
+        let mut generations = lock(&self.generations);
+        generations.retain(|generation| generation.strong_count() > 0);
+        if generations.len().saturating_mul(4) < generations.capacity() {
+            generations.shrink_to_fit();
+        }
+        let live = generations.iter().filter_map(Weak::upgrade).collect();
+        let tracking = generations
+            .capacity()
+            .saturating_mul(size_of::<Weak<crate::engine::WorkspaceEngine>>());
+        (live, tracking)
+    }
+
+    /// A ticket for a census about to measure. The ordering makes whatever
+    /// triggered a census with an earlier ticket visible to this one's reads.
+    pub(crate) fn ticket(&self) -> u64 {
+        self.tickets
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1)
+    }
+
+    /// The bytes to charge for the `kind` owners a census listed, by
+    /// workspace: each one's measurement when the census took it, else what
+    /// its last measurement found, and nothing for one never measured. A
+    /// workspace not listed is forgotten.
+    pub(crate) fn settle(
+        &self,
+        kind: Owner,
+        owners: Vec<(std::path::PathBuf, Option<usize>)>,
+    ) -> usize {
+        let mut measured = lock(&self.measured);
+        measured.retain(|(owner, workspace), _| {
+            *owner != kind || owners.iter().any(|(listed, _)| listed == workspace)
+        });
+        owners.into_iter().fold(0usize, |bytes, (workspace, now)| {
+            let key = (kind, workspace);
+            let charged = match now {
+                Some(now) => {
+                    measured.insert(key, now);
+                    now
+                }
+                None => measured.get(&key).copied().unwrap_or(0),
+            };
+            bytes.saturating_add(charged)
+        })
+    }
+
+    /// Charge `bytes`, measured under `ticket`, unless a census that took a
+    /// later ticket has already set the floor.
+    pub(crate) fn set_floor(&self, ticket: u64, bytes: usize) {
+        let mut floor = lock(&self.floor);
+        if ticket <= floor.ticket {
+            return;
+        }
+        if let Some(lease) = &floor.lease {
+            lease.set(bytes);
+        } else {
+            match self.controller.charge_floor(bytes) {
+                Ok(lease) => floor.lease = Some(lease),
+                Err(error) => {
+                    eprintln!("residency: the host floor was not charged: {error}");
+                    return;
+                }
+            }
+        }
+        floor.ticket = ticket;
+        floor.bytes = bytes;
     }
 }
 

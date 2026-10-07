@@ -247,6 +247,19 @@ impl Cap {
 pub struct CapSet(pub BTreeSet<Cap>);
 
 impl CapSet {
+    /// Requested heap this set owns: its node storage (an upper bound,
+    /// [`model::allocation::btree_bytes`]) and each cap's strings.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.0.iter().fold(
+            model::allocation::btree_bytes::<Cap, ()>(self.0.len()),
+            |bytes, Cap { kind, target }| {
+                bytes
+                    .saturating_add(kind.capacity())
+                    .saturating_add(target.as_ref().map_or(0, String::capacity))
+            },
+        )
+    }
+
     /// The empty (read-only) set.
     #[must_use]
     pub fn none() -> Self {
@@ -568,6 +581,29 @@ pub enum CapsError {
         key: String,
         source: Box<CapsError>,
     },
+}
+
+impl CapsError {
+    /// Requested heap this refusal owns, a boxed source's included.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        match self {
+            CapsError::BadCap { raw } | CapsError::RetiredTarget { raw } => raw.capacity(),
+            CapsError::BadGlob { raw, reason } => raw.capacity().saturating_add(reason.capacity()),
+            CapsError::BadPattern { pattern } => pattern.capacity(),
+            CapsError::Declaration { path, reason } => {
+                path.capacity().saturating_add(reason.capacity())
+            }
+            CapsError::BashFenceRefused { task, pattern } => {
+                task.capacity().saturating_add(pattern.capacity())
+            }
+            CapsError::TableEntry { path, key, source } => path
+                .as_ref()
+                .map_or(0, PathBuf::capacity)
+                .saturating_add(key.capacity())
+                .saturating_add(size_of::<CapsError>())
+                .saturating_add(source.heap_bytes()),
+        }
+    }
 }
 
 impl std::fmt::Display for CapsError {

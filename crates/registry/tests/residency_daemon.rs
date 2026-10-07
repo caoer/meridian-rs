@@ -183,8 +183,10 @@ fn seeded(root: &Path, files: &[(String, String)]) -> PathBuf {
     ws
 }
 
-/// A host whose limit admits four member loads at once and holds a small
-/// fraction of the fixture's bodies. Returns it with that limit.
+/// A host whose body allowance admits four member loads at once and holds a
+/// small fraction of the fixture's bodies. Returns it with that allowance;
+/// the controller's limit is the allowance until the host floor is measured
+/// ([`above_the_floor`]).
 fn host(root: &Path, files: &[(String, String)]) -> (Arc<Host>, usize) {
     let costs: Vec<usize> = files
         .iter()
@@ -210,7 +212,16 @@ fn host(root: &Path, files: &[(String, String)]) -> (Arc<Host>, usize) {
     (host, limit)
 }
 
-/// Shed every body, then restore the allowance.
+/// Set the controller's limit to the host's measured floor plus the body
+/// allowance (merkle-spec §6.4: a budget is chosen above the measured floor).
+/// Returns that limit.
+fn above_the_floor(host: &Host, allowance: usize) -> usize {
+    let limit = host.controller.report().floor + allowance;
+    host.controller.set_limit(limit);
+    limit
+}
+
+/// Shed every body, then restore the limit.
 fn all_cold(host: &Host, limit: usize) {
     host.controller.set_limit(1);
     assert_eq!(host.controller.report().bodies, 0, "every body is cold");
@@ -300,6 +311,9 @@ fn a_subscribed_workspace_sheds_to_the_host_limit_and_every_door_serves_the_eage
     plain.hello_v3(&ws);
     let mut shed = Conn::open(leased.socket_path());
     shed.hello_v3(&ws);
+    let canonical = fs::canonicalize(&ws).unwrap();
+    leased.registry().warm_or_build(&canonical).unwrap();
+    let budget = above_the_floor(&host, limit);
 
     // Twice: over the generation as built, then with every body shed again.
     for round in 0..2 {
@@ -337,7 +351,7 @@ fn a_subscribed_workspace_sheds_to_the_host_limit_and_every_door_serves_the_eage
             report.overage == 0 && report.bodies + report.raw <= limit,
             "the subscribed workspace is within the host's limit ({limit}): {report:?}"
         );
-        all_cold(&host, limit);
+        all_cold(&host, budget);
     }
 
     // The cursor still tells an external edit, and the rebuilt generation
@@ -354,7 +368,6 @@ fn a_subscribed_workspace_sheds_to_the_host_limit_and_every_door_serves_the_eage
         json!("m003.md"),
         "{frame}"
     );
-    let canonical = fs::canonicalize(&ws).unwrap();
     assert_eq!(
         leased.registry().warm_or_build(&canonical).unwrap(),
         WarmOutcome::Built { docs: 1 },

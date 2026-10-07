@@ -188,6 +188,36 @@ impl WorkspaceRing {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Requested heap this ring's state owns: its frames
+    /// ([`RootRing::heap_bytes`]) and its watch state
+    /// ([`WatchState::heap_bytes`]); the host floor's census of a ring
+    /// (merkle-spec §6.4). Takes the state lock.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        let state = self.state();
+        state
+            .ring
+            .heap_bytes()
+            .saturating_add(state.watch.heap_bytes())
+    }
+
+    /// [`Self::heap_bytes`] when the state lock is free, without waiting for
+    /// it: `None` while a cycle or a prime holds it.
+    #[must_use]
+    pub fn try_heap_bytes(&self) -> Option<usize> {
+        let state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::Poisoned(state)) => state.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        Some(
+            state
+                .ring
+                .heap_bytes()
+                .saturating_add(state.watch.heap_bytes()),
+        )
+    }
+
     /// Tip seq — position a `sub` with no catchup anchors at.
     #[must_use]
     pub fn seq(&self) -> u64 {

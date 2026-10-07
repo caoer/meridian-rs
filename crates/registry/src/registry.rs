@@ -262,6 +262,13 @@ pub struct Registry {
     #[cfg(test)]
     pub(crate) pause_in_reap_window:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    /// Test-only gate: a floor census that has measured announces itself on
+    /// the first channel, then parks on the second before it returns its
+    /// total, so a later census can overtake it. One-shot, same seam class as
+    /// `pause_in_reap_window`.
+    #[cfg(test)]
+    pub(crate) pause_after_census:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
 /// §3.2: how long the READ THAT KICKED a cold rebuild absorbs it before
@@ -995,6 +1002,8 @@ impl Registry {
             pause_before_borrow: Mutex::new(None),
             #[cfg(test)]
             pause_in_reap_window: Mutex::new(None),
+            #[cfg(test)]
+            pause_after_census: Mutex::new(None),
         }
     }
 
@@ -1003,6 +1012,121 @@ impl Registry {
     pub(crate) fn with_residency(mut self, host: Option<Arc<crate::residency::Host>>) -> Self {
         self.residency = host;
         self
+    }
+
+    /// The controller this registry's generations are built through, when it
+    /// has a residency host.
+    pub(crate) fn residency_controller(&self) -> Option<&crate::residency::controller::Controller> {
+        self.residency.as_ref().map(|host| &host.controller)
+    }
+
+    /// The heap everything this registry reaches holds outside the
+    /// controller's members, each shared allocation counted once
+    /// (merkle-spec §6.4, the host floor). `None` when the raw store's
+    /// census fails.
+    ///
+    /// Owner handles leave the registry maps under their locks. The
+    /// generations are measured and released first; each memo and ring is
+    /// then tried alone and never waited for, a busy one charged its last
+    /// measurement (`Host::settle`). So no caller that
+    /// holds none of them can deadlock here, and none waits behind a floor
+    /// pass, a reconcile or a prime. `None` also without a host.
+    #[must_use]
+    pub fn floor_census(&self) -> Option<usize> {
+        use crate::residency::Owner;
+        use model::allocation::arc_bytes;
+        use std::sync::TryLockError;
+        let host = self.residency.as_ref()?;
+        let mut bytes = {
+            let (held, tracking) = host.live_generations();
+            let engines: Vec<Arc<WorkspaceEngine>> = self
+                .engines
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .values()
+                .cloned()
+                .collect();
+            let mut seen = crate::residency::census::Seen::default();
+            let mut bytes = tracking;
+            for generation in engines.iter().chain(&held) {
+                if seen.first(generation) {
+                    bytes = bytes
+                        .saturating_add(arc_bytes::<WorkspaceEngine>())
+                        .saturating_add(generation.heap_bytes(&mut seen));
+                }
+            }
+            bytes
+        };
+        let memos: Vec<(PathBuf, Arc<Mutex<fs::DomainCache>>)> = self
+            .domain_caches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|(workspace, memo)| (workspace.clone(), Arc::clone(memo)))
+            .collect();
+        let rings: Vec<(PathBuf, Arc<crate::ring::WorkspaceRing>)> = self
+            .rings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|(workspace, ring)| (workspace.clone(), Arc::clone(ring)))
+            .collect();
+        bytes = bytes
+            .saturating_add(arc_bytes::<Mutex<fs::DomainCache>>().saturating_mul(memos.len()))
+            .saturating_add(arc_bytes::<crate::ring::WorkspaceRing>().saturating_mul(rings.len()));
+        let memos = memos
+            .into_iter()
+            .map(|(workspace, memo)| {
+                let heap = match memo.try_lock() {
+                    Ok(memo) => Some(memo.heap_bytes()),
+                    Err(TryLockError::Poisoned(memo)) => Some(memo.into_inner().heap_bytes()),
+                    Err(TryLockError::WouldBlock) => None,
+                };
+                (workspace, heap)
+            })
+            .collect();
+        bytes = bytes.saturating_add(host.settle(Owner::Memo, memos));
+        let rings = rings
+            .into_iter()
+            .map(|(workspace, ring)| (workspace, ring.try_heap_bytes()))
+            .collect();
+        bytes = bytes.saturating_add(host.settle(Owner::Ring, rings));
+        let total = match host.store.heap_bytes() {
+            Ok(store) => Some(bytes.saturating_add(store)),
+            Err(error) => {
+                eprintln!(
+                    "residency: floor census skipped: the raw store's census failed: {error}"
+                );
+                None
+            }
+        };
+        // Test-only: park here when the gate is armed (see the field docs).
+        #[cfg(test)]
+        {
+            let gate = self
+                .pause_after_census
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some((arrived, release)) = gate {
+                let _ = arrived.send(());
+                let _ = release.recv();
+            }
+        }
+        total
+    }
+
+    /// Set the residency host's floor to [`Self::floor_census`]; without a
+    /// host, nothing. The reaper's tick and every publish and eviction run
+    /// it. Call it holding no registry, memo or ring lock.
+    pub fn charge_floor(&self) {
+        let Some(host) = &self.residency else {
+            return;
+        };
+        let ticket = host.ticket();
+        if let Some(bytes) = self.floor_census() {
+            host.set_floor(ticket, bytes);
+        }
     }
 
     /// The daemon's constructor: [`Registry::new`] with the self-handle
@@ -1496,9 +1620,16 @@ impl Registry {
                     return Ok(WarmOutcome::Built { docs: docs_parsed });
                 }
                 if resident == witness {
-                    engines.insert(canonical.clone(), Arc::new(engine));
+                    let engine = Arc::new(engine);
+                    engines.insert(canonical.clone(), Arc::clone(&engine));
                     drop(engines);
-                    if cold && self.residency.is_none() {
+                    if let Some(host) = &self.residency {
+                        // The host floor reaches this generation for as long
+                        // as anything holds it (merkle-spec §6.4).
+                        host.published(&engine);
+                        drop(engine);
+                        self.charge_floor();
+                    } else if cold {
                         self.pending_parse
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
@@ -2744,7 +2875,7 @@ impl Registry {
     pub fn unregister(&self, path: &Path) -> bool {
         // Serialize removal with the saver so no late rename can recreate an
         // unregistered workspace's payload. No registry map lock is held here.
-        let _save = self
+        let save = self
             .persistence_gate
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
@@ -2802,6 +2933,9 @@ impl Registry {
         drop(feed);
         drop(cache);
         drop(sql_store);
+        // The census takes memo and ring locks: never under the saver's gate.
+        drop(save);
+        self.charge_floor();
         removed
     }
 
@@ -2942,6 +3076,9 @@ impl Registry {
                     demoted.insert(key.clone());
                 }
             }
+        }
+        if !demoted.is_empty() {
+            self.charge_floor();
         }
         demoted.into_iter().collect()
     }
@@ -3132,6 +3269,7 @@ impl Registry {
         }
         drop(caches);
         drop(feeds);
+        self.charge_floor();
         victims
     }
 

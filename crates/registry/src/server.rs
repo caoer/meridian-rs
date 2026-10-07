@@ -960,6 +960,9 @@ fn spawn_reaper(
                     evicted.len()
                 );
             }
+            // The host floor's tick: memo and ring growth since the last
+            // publish or eviction reaches the floor here (merkle-spec §6.4).
+            registry.charge_floor();
             // G11 idle exit. The reaper raises the flag only; the process's own
             // loop owns the teardown, because shutting the threads down from
             // inside one of them would join this thread to itself.
