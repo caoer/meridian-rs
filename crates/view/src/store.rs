@@ -2179,6 +2179,13 @@ impl SqlStore {
         &self.file
     }
 
+    /// The `memory_limit` this store runs under, in bytes; `None` is
+    /// `DuckDB`'s default ([`SqlStore::open_limited`]).
+    #[must_use]
+    pub fn memory_limit(&self) -> Option<u64> {
+        self.memory_limit
+    }
+
     /// The drawer-derived spill directory this store's instance is pointed at
     /// (card sql-spill-config-lockout).
     #[must_use]
@@ -4334,10 +4341,6 @@ mod config_scope_tests {
         rows[0][0].as_str().expect("value").to_owned()
     }
 
-    /// The defect itself, at the grain the card measured it: call 1 sets, call
-    /// 2 must not see it. `memory_limit` AND `threads`, so this is about the
-    /// GLOBAL class and not one name — `SET memory_limit='1MB'` on a
-    /// fleet-shared root was the starvation.
     /// A store opened under a limit runs under it, and a caller's own `SET`
     /// lasts only that call (merkle-spec §6.4, the SQL memory policy).
     #[test]
@@ -4357,6 +4360,38 @@ mod config_scope_tests {
         );
     }
 
+    /// A limited store keeps its limit whenever it reopens its file: when a
+    /// retired instance recovers, and when a domain-rule change recreates the
+    /// file (merkle-spec §6.4, rv-367 P3-3).
+    #[test]
+    fn a_limited_store_keeps_its_memory_limit_when_it_reopens_its_file() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open_limited(&tmp_store(&dir), Some(256 << 20)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        store
+            .query("SET lock_configuration=true")
+            .expect_err("a one-way lock retires the instance");
+        assert!(
+            sync_ambient(&mut store, &fixture_v1(), "b3b:v1").is_none(),
+            "the next sync recovers the instance"
+        );
+        assert_eq!(
+            next_caller_sees(&store, "memory_limit"),
+            "256.0 MiB",
+            "the recovered instance lost the limit"
+        );
+        sync_ambient(&mut store, &fixture_v1(), "b3c:v1").expect("a rule change recreates");
+        assert_eq!(
+            next_caller_sees(&store, "memory_limit"),
+            "256.0 MiB",
+            "the recreated file lost the limit"
+        );
+    }
+
+    /// The defect itself, at the grain the card measured it: call 1 sets, call
+    /// 2 must not see it. `memory_limit` AND `threads`, so this is about the
+    /// GLOBAL class and not one name — `SET memory_limit='1MB'` on a
+    /// fleet-shared root was the starvation.
     #[test]
     fn a_caller_set_does_not_reach_the_next_caller() {
         let dir = tempfile::tempdir().expect("tmpdir");

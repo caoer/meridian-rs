@@ -304,16 +304,16 @@ pub(crate) fn serve(
     // through the same daemon).
     let read = {
         let mut store = lock_store_bounded(&store, ws, SQL_STORE_WAIT)?;
-        store
-            .sync_catalog(
-                generation,
-                &corpus,
-                Some(mounts.set()),
-                Some(&exclusion),
-                &engine.at_fingerprint.0,
-                base.as_ref(),
-            )
-            .map_err(|e| store_error("cannot append to the sql cache", e))?;
+        if let Err(error) = store.sync_catalog(
+            generation,
+            &corpus,
+            Some(mounts.set()),
+            Some(&exclusion),
+            &engine.at_fingerprint.0,
+            base.as_ref(),
+        ) {
+            return Err(append_error(store.memory_limit(), error));
+        }
         store
             .begin_read()
             .map_err(|e| store_error("cannot open a read on the sql cache", e))?
@@ -385,6 +385,12 @@ fn store_error(context: &str, error: view::ViewError) -> Box<ErrorBody> {
     Box::new(error)
 }
 
+/// An append the store refused, under the store's `memory_limit` (`None`:
+/// `DuckDB`'s default).
+fn append_error(_limit: Option<u64>, error: view::ViewError) -> Box<ErrorBody> {
+    store_error("cannot append to the sql cache", error)
+}
+
 fn io_error(cause: String) -> Box<ErrorBody> {
     let mut e = ErrorBody::new(ErrorCode::IoError);
     e.cause = Some(cause);
@@ -393,7 +399,7 @@ fn io_error(cause: String) -> Box<ErrorBody> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SQL_STORE_WAIT, lock_store_bounded, store_error};
+    use super::{SQL_STORE_WAIT, append_error, lock_store_bounded, store_error};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -509,5 +515,51 @@ mod tests {
         );
         drop(outcome);
         handle.join().unwrap();
+    }
+
+    /// A page whose rows outgrow the store's limit is refused naming that
+    /// limit, without `DuckDB`'s advice to raise it (merkle-spec §6.4, rv-367
+    /// P3-4). A long heading over short sections repeats its text in every
+    /// row's hpath: 64 KiB of it is refused at 64 MiB, so at 16 MiB too.
+    #[test]
+    fn an_append_past_the_store_limit_names_the_limit() {
+        let mut raw = format!("# {}\n\n", "h".repeat(32 << 10));
+        while raw.len() < 64 << 10 {
+            raw.push_str("##\n");
+        }
+        let docs: model::Docs = [(
+            "a.md".to_owned(),
+            Arc::new(model::build(raw.clone(), syntax::parse(&raw))),
+        )]
+        .into_iter()
+        .collect();
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = view::store::SqlStore::open_limited(
+            &dir.path().join(view::store::SQL_CACHE_FILENAME),
+            Some(16 << 20),
+        )
+        .unwrap();
+        let error = store
+            .sync(
+                &docs,
+                &model::RootedCorpus::ambient(&docs),
+                None,
+                None,
+                "b3b:v1",
+                None,
+            )
+            .expect_err("the page's rows outgrow 16 MiB");
+
+        let refused = append_error(store.memory_limit(), error);
+        assert_eq!(refused.code, ErrorCode::IoError);
+        let cause = refused.cause.as_deref().unwrap_or_default();
+        assert!(
+            cause.contains("16 MiB") && cause.contains("residency host"),
+            "the cause names the host's per-cache limit: {cause}"
+        );
+        assert!(
+            !cause.contains("Possible solutions"),
+            "no advice a caller cannot apply: {cause}"
+        );
     }
 }

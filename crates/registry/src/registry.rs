@@ -5067,6 +5067,41 @@ mod engine_tests {
         assert!(open.contains_key(&ws[2]) && open.contains_key(&extra));
     }
 
+    /// Caches held past the count close back down to it on the next `sql`
+    /// call even when that call's cache is open already: a hit closes the
+    /// least recently used idle ones too (merkle-spec §6.4, rv-367 P2-1).
+    #[test]
+    fn a_hit_closes_held_caches_back_down_to_the_count_once_they_are_free() {
+        let home = tempfile::tempdir().unwrap();
+        let cache_root = home.path().join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let host = Arc::new(crate::residency::Host::new(
+            crate::residency::controller::Controller::new(2 << 30),
+            crate::raw_store::RawStore::new(&home.path().join("backing")).unwrap(),
+        ));
+        let reg = Registry::new(
+            StateStore::new(home.path().join("state.json")),
+            cache_root,
+            Vec::new(),
+        )
+        .with_residency(Some(host));
+        let ws = three_workspaces(&reg, home.path());
+        let held: Vec<_> = ws.iter().map(|w| reg.sql_store(w).unwrap()).collect();
+        assert_eq!(
+            reg.sql_stores.lock().unwrap().len(),
+            3,
+            "every held cache opens past the count"
+        );
+        drop(held);
+        reg.sql_store(&ws[2]).unwrap();
+        let open = reg.sql_stores.lock().unwrap();
+        assert_eq!(open.len(), 2, "a hit closes back down to the count");
+        assert!(
+            !open.contains_key(&ws[0]),
+            "the least recently used idle cache is the one closed"
+        );
+    }
+
     /// Without a host every SQL cache stays open under `DuckDB`'s default.
     #[test]
     fn without_a_host_every_sql_cache_stays_open_under_duckdbs_default() {

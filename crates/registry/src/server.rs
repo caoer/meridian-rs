@@ -3752,6 +3752,37 @@ mod residency_activation_tests {
         server.shutdown();
     }
 
+    /// The start-up sweep runs only while holding the singleton lock: a
+    /// second daemon the lock refuses leaves the running one's store alone
+    /// (merkle-spec §6.4, rv-367 P3-3).
+    #[test]
+    fn a_second_daemon_refused_by_the_lock_leaves_the_running_ones_store() {
+        let tmp = TempDir::new().unwrap();
+        let mut first = config(&tmp);
+        first.residency_host_bytes = 3 << 30;
+        let backing = first.registry_dir().join("backing");
+        let server = RunningServer::start(first).unwrap();
+        let stores = || -> Vec<_> {
+            std::fs::read_dir(&backing)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect()
+        };
+        let running = stores();
+        assert_eq!(running.len(), 1, "the running daemon's store: {running:?}");
+
+        let mut second = config(&tmp);
+        second.residency_host_bytes = 3 << 30;
+        let refused = RunningServer::start(second).map(|_| ()).unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            stores(),
+            running,
+            "the refused daemon removed or added a store"
+        );
+        server.shutdown();
+    }
+
     #[test]
     fn a_malformed_residency_host_budget_refuses_and_names_what_it_saw() {
         use super::{RESIDENCY_HOST_BYTES_ENV, parse_residency_host_bytes};
