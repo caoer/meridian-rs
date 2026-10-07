@@ -1042,11 +1042,23 @@ impl Registry {
     /// pass, a reconcile or a prime. `None` also without a host.
     #[must_use]
     pub fn floor_census(&self) -> Option<usize> {
+        self.census(false).and_then(|(_, bytes)| bytes)
+    }
+
+    /// One census: the ticket it took and what it measured ([`Self::floor_census`]).
+    /// The generations are held under the host's generation-phase gate,
+    /// shared, or exclusively when `alone` (the budget sweep's census: no
+    /// other census holds a generation while it measures); the ticket is
+    /// taken inside the gate. `None` without a host.
+    fn census(&self, alone: bool) -> Option<(u64, Option<usize>)> {
         use crate::residency::Owner;
         use model::allocation::arc_bytes;
         use std::sync::TryLockError;
         let host = self.residency.as_ref()?;
-        let mut bytes = {
+        let (ticket, mut bytes) = {
+            let _shared = (!alone).then(|| host.census_shared());
+            let _alone = alone.then(|| host.census_alone());
+            let ticket = host.ticket();
             let (held, tracking) = host.live_generations();
             let engines: Vec<Arc<WorkspaceEngine>> = self
                 .engines
@@ -1078,7 +1090,7 @@ impl Registry {
                     let _ = release.recv();
                 }
             }
-            bytes
+            (ticket, bytes)
         };
         let memos: Vec<(PathBuf, Arc<Mutex<fs::DomainCache>>)> = self
             .domain_caches
@@ -1108,12 +1120,12 @@ impl Registry {
                 (workspace, heap)
             })
             .collect();
-        bytes = bytes.saturating_add(host.settle(Owner::Memo, memos));
+        bytes = bytes.saturating_add(host.settle(Owner::Memo, ticket, memos));
         let rings = rings
             .into_iter()
             .map(|(workspace, ring)| (workspace, ring.try_heap_bytes()))
             .collect();
-        bytes = bytes.saturating_add(host.settle(Owner::Ring, rings));
+        bytes = bytes.saturating_add(host.settle(Owner::Ring, ticket, rings));
         let total = match host.store.heap_bytes() {
             Ok(store) => Some(bytes.saturating_add(store)),
             Err(error) => {
@@ -1136,18 +1148,23 @@ impl Registry {
                 let _ = release.recv();
             }
         }
-        total
+        Some((ticket, total))
     }
 
     /// Set the residency host's floor to [`Self::floor_census`]; without a
     /// host, nothing. The reaper's tick and every publish and eviction run
     /// it. Call it holding no registry, memo or ring lock.
     pub fn charge_floor(&self) {
+        self.charge_floor_as(false);
+    }
+
+    /// [`Self::charge_floor`], with the census run alone when `alone`
+    /// ([`Self::census`]).
+    fn charge_floor_as(&self, alone: bool) {
         let Some(host) = &self.residency else {
             return;
         };
-        let ticket = host.ticket();
-        if let Some(bytes) = self.floor_census() {
+        if let Some((ticket, Some(bytes))) = self.census(alone) {
             host.set_floor(ticket, bytes);
         }
     }
@@ -3239,7 +3256,7 @@ impl Registry {
             victims
         };
         if !victims.is_empty() {
-            self.evict(&victims);
+            self.evict(&victims, false);
         }
         victims
     }
@@ -3253,7 +3270,7 @@ impl Registry {
     /// amount.
     fn reap_to_floor(&self, host: &crate::residency::Host) -> Vec<PathBuf> {
         host.controller.trim();
-        self.charge_floor();
+        self.charge_floor_as(true);
         let mut victims: Vec<PathBuf> = Vec::new();
         loop {
             let over = host.controller.report().floor_overage;
@@ -3268,7 +3285,7 @@ impl Registry {
                 );
                 break;
             };
-            self.evict(std::slice::from_ref(&victim));
+            self.evict(std::slice::from_ref(&victim), true);
             victims.push(victim);
         }
         victims
@@ -3329,8 +3346,8 @@ impl Registry {
     /// The total eviction of `victims`, whose rings the caller removed under
     /// its decision: engine, feed, memo (stamps unbound), sql handle, module
     /// cache and pre-warm signature all drop; the registration survives.
-    /// Re-censuses the host floor.
-    fn evict(&self, victims: &[PathBuf]) {
+    /// Re-censuses the host floor, alone when `alone` ([`Self::census`]).
+    fn evict(&self, victims: &[PathBuf], alone: bool) {
         {
             let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
             for key in victims {
@@ -3387,7 +3404,7 @@ impl Registry {
         }
         drop(caches);
         drop(feeds);
-        self.charge_floor();
+        self.charge_floor_as(alone);
     }
 
     /// Persist the current map to the state file, logging (never failing) on a

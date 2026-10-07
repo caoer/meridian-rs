@@ -41,7 +41,22 @@ pub struct Host {
     generations: Mutex<Vec<Weak<crate::engine::WorkspaceEngine>>>,
     /// What the last census that reached each workspace's memo and ring
     /// measured there: what a census charges for one whose lock is busy.
-    measured: Mutex<std::collections::HashMap<(Owner, std::path::PathBuf), usize>>,
+    measured: Mutex<Measured>,
+    /// The gate on a census's generation phase: shared by an ordinary
+    /// census, exclusive for the budget sweep's, so the sweep measures with
+    /// no other census holding a generation (merkle-spec §6.4, the reaper
+    /// under a host).
+    census: std::sync::RwLock<()>,
+}
+
+/// The last-measurement table, latest ticket wins.
+#[derive(Debug, Default)]
+struct Measured {
+    /// Each owner's last measurement and the ticket of the census that took
+    /// it.
+    owners: std::collections::HashMap<(Owner, std::path::PathBuf), (u64, usize)>,
+    /// The latest ticket that forgot unlisted memos, and unlisted rings.
+    pruned: [u64; 2],
 }
 
 /// A per-workspace floor owner a census measures under the owner's own lock.
@@ -80,7 +95,8 @@ impl Host {
             floor: Mutex::new(HostFloor::default()),
             tickets: AtomicU64::new(0),
             generations: Mutex::new(Vec::new()),
-            measured: Mutex::new(std::collections::HashMap::new()),
+            measured: Mutex::new(Measured::default()),
+            census: std::sync::RwLock::new(()),
         }
     }
 
@@ -125,27 +141,59 @@ impl Host {
             .saturating_add(1)
     }
 
-    /// The bytes to charge for the `kind` owners a census listed, by
-    /// workspace: each one's measurement when the census took it, else what
-    /// its last measurement found, and nothing for one never measured. A
-    /// workspace not listed is forgotten.
+    /// Hold the generation-phase gate shared: an ordinary census, for as
+    /// long as it holds generations.
+    pub(crate) fn census_shared(&self) -> std::sync::RwLockReadGuard<'_, ()> {
+        self.census
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Hold the generation-phase gate alone: the budget sweep's census,
+    /// which so waits for every census in flight to release its generations.
+    pub(crate) fn census_alone(&self) -> std::sync::RwLockWriteGuard<'_, ()> {
+        self.census
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The bytes to charge for the `kind` owners the census holding `ticket`
+    /// listed, by workspace: each one's measurement when the census took it,
+    /// else what its last measurement found, and nothing for one never
+    /// measured. The latest ticket wins: this census records a measurement
+    /// only over an older one, forgets an unlisted workspace only when no
+    /// later census has pruned and only what a later one did not record, and
+    /// does not bring back a workspace a later census forgot.
     pub(crate) fn settle(
         &self,
         kind: Owner,
+        ticket: u64,
         owners: Vec<(std::path::PathBuf, Option<usize>)>,
     ) -> usize {
         let mut measured = lock(&self.measured);
-        measured.retain(|(owner, workspace), _| {
-            *owner != kind || owners.iter().any(|(listed, _)| listed == workspace)
-        });
+        let pruned = &mut measured.pruned[kind as usize];
+        let latest = ticket >= *pruned;
+        if latest {
+            *pruned = ticket;
+            measured.owners.retain(|(owner, workspace), (recorded, _)| {
+                *owner != kind
+                    || *recorded > ticket
+                    || owners.iter().any(|(listed, _)| listed == workspace)
+            });
+        }
         owners.into_iter().fold(0usize, |bytes, (workspace, now)| {
             let key = (kind, workspace);
+            let last = measured.owners.get(&key).copied();
             let charged = match now {
                 Some(now) => {
-                    measured.insert(key, now);
+                    // A later census recorded it, or forgot the workspace.
+                    let overtaken = last.map_or(!latest, |(recorded, _)| recorded > ticket);
+                    if !overtaken {
+                        measured.owners.insert(key, (ticket, now));
+                    }
                     now
                 }
-                None => measured.get(&key).copied().unwrap_or(0),
+                None => last.map_or(0, |(_, last)| last),
             };
             bytes.saturating_add(charged)
         })

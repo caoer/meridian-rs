@@ -641,3 +641,31 @@ fn an_idle_reaps_census_charges_no_generation_a_finished_measurement_held() {
         "the reap's census charged a generation the parked census had measured"
     );
 }
+
+/// The last-measurement table is latest-ticket-wins (merkle-spec §6.4, the
+/// host floor): a census with an older ticket neither overwrites nor forgets
+/// what a newer one recorded, and does not bring back what it forgot.
+#[test]
+fn an_older_census_neither_overwrites_nor_forgets_a_newer_measurement() {
+    let backing = tempfile::tempdir().unwrap();
+    let host = Host::new(
+        controller::Controller::new(0),
+        RawStore::new(backing.path()).unwrap(),
+        1,
+    );
+    let ws = |name: &str| std::path::PathBuf::from(name);
+    // The newer census lists only `a`, measured at 200.
+    assert_eq!(host.settle(Owner::Memo, 2, vec![(ws("a"), Some(200))]), 200);
+    // The older one listed `a` and `b`: it is charged what it measured.
+    let older = vec![(ws("a"), Some(100)), (ws("b"), Some(50))];
+    assert_eq!(host.settle(Owner::Memo, 1, older), 150);
+    // Both busy at the next census: `a` at the newer measurement, `b`
+    // forgotten by the newer census and not brought back.
+    let busy = vec![(ws("a"), None), (ws("b"), None)];
+    assert_eq!(host.settle(Owner::Memo, 3, busy), 200);
+    // An older census that lists nothing forgets nothing.
+    assert_eq!(host.settle(Owner::Memo, 2, Vec::new()), 0);
+    assert_eq!(host.settle(Owner::Memo, 4, vec![(ws("a"), None)]), 200);
+    // Rings are another table.
+    assert_eq!(host.settle(Owner::Ring, 5, vec![(ws("a"), None)]), 0);
+}
