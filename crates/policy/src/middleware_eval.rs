@@ -30,6 +30,7 @@ use crate::check_eval::{
     runtime,
 };
 use crate::declaration::Refusal;
+use crate::seg_values::SegValues;
 
 /// One cell of a `ctx.sql` row — the closed scalar surface the world serves.
 #[derive(Debug, Clone, PartialEq)]
@@ -280,13 +281,11 @@ fn alloc_ctx<'v>(heap: Heap<'v>, globals: &Globals, input: &MwCtxInput<'_>) -> V
         .iter()
         .map(|s| heap.alloc(s.as_str()))
         .collect();
+    let mut segs = SegValues::new(heap);
     let sections_changed: Vec<Value<'v>> = change
         .sections_changed
         .iter()
-        .map(|hpath| {
-            let segs: Vec<Value<'v>> = hpath.iter().map(|s| heap.alloc(s.as_str())).collect();
-            heap.alloc(segs)
-        })
+        .map(|hpath| segs.list(Some(hpath)))
         .collect();
     let put = heap.alloc(AllocStruct([
         ("op", heap.alloc(change.op.as_str())),
@@ -311,10 +310,12 @@ fn alloc_ctx<'v>(heap: Heap<'v>, globals: &Globals, input: &MwCtxInput<'_>) -> V
             .find(|(n, _)| *n == name)
             .map_or_else(Value::new_none, |(_, v)| v.to_value())
     };
+    let before = alloc_docfacts(heap, &mut segs, &change.before);
+    let after = alloc_docfacts(heap, &mut segs, &change.doc);
     heap.alloc(AllocStruct([
         ("op", heap.alloc(change.op.as_str())),
-        ("before", alloc_docfacts(heap, &change.before)),
-        ("after", alloc_docfacts(heap, &change.doc)),
+        ("before", before),
+        ("after", after),
         ("put", put),
         ("fields", fields),
         ("sql", bound("sql")),
