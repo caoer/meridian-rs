@@ -569,16 +569,25 @@ Without a host each keeps `DuckDB`'s default `memory_limit` (80% of RAM).
 With a host of budget B, each runs under a `memory_limit` of 256 MiB, set when
 it opens and before its restore baseline is taken, so a caller's own `SET`
 lasts only that call; and the registry keeps at most
-max(1, ⌊(B/4) / 256 MiB⌋) caches open: opening one more first closes the
-least recently used caches that no query holds, and keeps their files, which
-a later query reattaches. A cache is closed only when nothing holds it, so
-one file never has two instances; while every open cache is in use the new
-one opens past the count, and a later open closes back down to it. The
-pools' limits therefore sum to at most max(256 MiB, B/4) plus the caches
-queries hold beyond the count. 256 MiB is the
+max(1, ⌊(B/4) / 256 MiB⌋) caches open: every `sql` call, whether its cache
+is open already or not, first closes the least recently used caches that no
+query holds until the count leaves room for the one it serves, and keeps
+their files, which a later query reattaches. This close never takes a cache
+a query holds, so it never gives one file two instances; while every open
+cache is in use a new one opens past the count, and the next `sql` call
+after they are released closes back down to it. The pools' limits therefore
+sum to at most max(256 MiB, B/4) plus the caches queries hold beyond the
+count. Unregistering a workspace, the idle reap and an eviction drop the
+registry's handle whether or not a query holds it: a query still running
+keeps its instance, and the next `sql` call on that workspace attaches the
+file a second time while it runs. 256 MiB is the
 smallest limit under which every measured shape builds its cache; a page
 whose stored rows outgrow it several times over (the long-heading shape
-below, past about 128 KiB) is refused by the `sql` door. The pool is not on
+below, past about 128 KiB) is refused by the `sql` door, as an `io_error`
+whose cause names the per-cache limit. The refusal holds for every `sql`
+call on that workspace until the page shrinks or leaves: the append runs
+before the caller's statement, so a caller's `SET` cannot raise the limit
+for it. The pool is not on
 the controller's ledger: a query's peak falls between censuses, and shedding
 `DuckDB`'s cache through the floor would evict a whole workspace where the
 limit lets `DuckDB` drop the same pages itself.
