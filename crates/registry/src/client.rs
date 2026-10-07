@@ -178,6 +178,20 @@ impl Client {
             other => Err(unexpected("list", &other)),
         }
     }
+
+    /// The residency host's controller report; `None` from a daemon with no
+    /// host. Bounded by [`wedge::PROBE_TIMEOUT`]: the report is a reading,
+    /// and its reader does not wait out a wedged daemon for it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a transport failure, or an unexpected response variant.
+    pub fn residency(&self) -> io::Result<Option<crate::residency::controller::Report>> {
+        match self.request_capped(&Request::Residency, wedge::PROBE_TIMEOUT)? {
+            Response::Residency { report } => Ok(report.map(|report| *report)),
+            other => Err(unexpected("residency", &other)),
+        }
+    }
 }
 
 /// Build the error for a response variant a typed call did not expect.

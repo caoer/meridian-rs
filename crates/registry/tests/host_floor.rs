@@ -138,6 +138,10 @@ fn the_sweep_evicts_unsubscribed_workspaces_while_the_floor_alone_is_over() {
     // The floor alone is over: the unsubscribed workspace goes.
     host.controller.set_limit(floor - 1);
     assert!(host.controller.report().floor_overage > 0);
+    assert!(
+        reg.reap_to_budget(u64::MAX).is_empty(),
+        "the first sweep over the limit evicts nothing"
+    );
     assert_eq!(
         reg.reap_to_budget(u64::MAX),
         vec![evicted.clone()],
@@ -161,10 +165,12 @@ fn the_sweep_evicts_unsubscribed_workspaces_while_the_floor_alone_is_over() {
 
     // Only the subscribed workspace is left, and its floor alone is over.
     host.controller.set_limit(1);
-    assert!(
-        reg.reap_to_budget(u64::MAX).is_empty(),
-        "a subscribed workspace is never evicted"
-    );
+    for _ in 0..2 {
+        assert!(
+            reg.reap_to_budget(u64::MAX).is_empty(),
+            "a subscribed workspace is never evicted"
+        );
+    }
     assert!(reg.engine_snapshot(kept).is_some());
     drop(guard);
 }
