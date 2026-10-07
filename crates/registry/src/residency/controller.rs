@@ -12,6 +12,7 @@ use super::{Access, BodyPin, LoadError, Phase, Resident, lock};
 use model::bytes::{ByteIdentity, ByteSource, SharedBytes};
 use std::fmt;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 mod ledger;
 use ledger::{Ledger, Permit, Row, descriptor_bytes};
@@ -107,9 +108,15 @@ pub struct Report {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdmissionError {
     Busy,
-    /// This member is being retired; retry the same retained version.
+    /// This member is being retired, or the serialized slot an oversized
+    /// load needs waits only for another body's retirement; retry the same
+    /// retained version.
     Retiring,
-    /// A failed load is completing; retry the same retained version.
+    /// Something that ends without this caller's help is completing: a
+    /// failed load; a load of this version declared before an overrun was
+    /// learned, or its reservation after its calls ended; or the pause for
+    /// another member's waiting oversized load. Retry the same retained
+    /// version.
     Settling,
     Exhausted,
 }
@@ -310,22 +317,41 @@ impl Controller {
             let oversized = key.is_some()
                 && state.limit != 0
                 && bytes as u128 > (state.limit as u128).saturating_sub(floor);
+            // While another member's oversized load waits, a new load that is
+            // not oversized pauses, so the live loads drain (merkle-spec §6.4).
+            if let Some(key) = key
+                && !oversized
+                && state.limit != 0
+                && state.waits_for(key, Instant::now())
+            {
+                return Err(AdmissionError::Settling);
+            }
             let exclusive_available = state.transient.is_none() || state.transient == key;
-            let may_overflow = oversized
+            let slot_waits_for_retirement = oversized
                 && exclusive_available
                 && state.permits.is_empty()
-                && state.detached_floor == 0
-                && state.retiring == 0;
+                && state.detached_floor == 0;
+            let may_overflow = slot_waits_for_retirement && state.retiring == 0;
             if !fits && !may_overflow {
+                if let Some(key) = key
+                    && oversized
+                {
+                    // Refused oversized: it becomes the one waiting member.
+                    state.wait_oversized(key, Instant::now());
+                    return Err(if slot_waits_for_retirement {
+                        AdmissionError::Retiring
+                    } else {
+                        AdmissionError::Busy
+                    });
+                }
                 // Exclusivity restricts only another over-budget admission.
                 // A policy refusal or an impossible byte fit cannot benefit
                 // from discarding somebody else's cache first.
-                if oversized
-                    || state
-                        .total_exact()
-                        .saturating_sub(state.reclaim_upper_bound())
-                        + bytes as u128
-                        > state.limit as u128
+                if state
+                    .total_exact()
+                    .saturating_sub(state.reclaim_upper_bound())
+                    + bytes as u128
+                    > state.limit as u128
                 {
                     return Err(AdmissionError::Busy);
                 }
@@ -348,6 +374,9 @@ impl Controller {
                 if let Some(key) = key {
                     state.pending += 1;
                     state.rows.get_mut(&key).unwrap().wave = Some(id);
+                    if state.waiting.is_some_and(|(waiting, _)| waiting == key) {
+                        state.waiting = None;
+                    }
                 }
                 if !fits {
                     state.transient = key;
@@ -390,21 +419,32 @@ impl Controller {
                     })
                 });
             if state.reclaimable == 0
-                || (!over && !for_admission && !transient_ready && state.forced == 0)
+                || (!over && !for_admission && !transient_ready && state.forced.is_empty())
             {
                 return false;
             }
-            let mut key = state.first;
-            let mut selected = None;
+            let idle =
+                |row: &Row| row.body != 0 && row.calls == 0 && row.pins == 0 && !row.retiring;
+            // An overrun's body first: shedding it alone restores the limit
+            // (merkle-spec §6.4). Then the least recently used.
+            let mut selected = state.forced.iter().find_map(|current| {
+                let row = &state.rows[current];
+                idle(row)
+                    .then(|| row.resident.eviction_ticket())
+                    .flatten()
+                    .map(|ticket| (*current, row.resident.clone(), ticket))
+            });
+            let mut key = if selected.is_some() {
+                None
+            } else {
+                state.first
+            };
             while let Some(current) = key {
                 let row = &state.rows[&current];
                 key = row.next;
                 let forced =
                     row.force_shed || (state.limit != 0 && state.transient == Some(current));
-                if row.body != 0
-                    && row.calls == 0
-                    && row.pins == 0
-                    && !row.retiring
+                if idle(row)
                     && (over || for_admission || forced)
                     && let Some(ticket) = row.resident.eviction_ticket()
                 {
@@ -444,7 +484,7 @@ impl Controller {
             state.unlink(key);
             let row = state.remove_row(key);
             if row.force_shed {
-                state.forced -= 1;
+                state.unforce(key);
             }
             state.detached_floor = state.detached_floor.saturating_add(row.descriptor);
             state.detached_body = state.detached_body.saturating_add(row.body);
@@ -491,7 +531,7 @@ impl Retirement {
         });
         if cold {
             if forced {
-                state.forced -= 1;
+                state.unforce(self.key);
             }
             state.body_bytes -= released as u128;
             state.release_raw(raw);

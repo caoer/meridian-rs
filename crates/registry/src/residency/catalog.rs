@@ -71,9 +71,10 @@ impl std::fmt::Display for SelfBlocked {
 }
 impl std::error::Error for SelfBlocked {}
 
-/// Pauses between attempts on one member version whose retirement or failed
-/// loading wave is completing (merkle-spec §6.4): both end without this
-/// caller's help, so a short wait clears them. About 30 ms at most.
+/// Pauses between attempts on one member version answered `Retiring` or
+/// `Settling` (merkle-spec §6.4): a retirement, a failed or stale loading
+/// wave, or another member's waiting oversized load. Each ends without this
+/// caller's help, so a short wait clears it. About 30 ms at most.
 const RETRY_PAUSES: [Duration; 6] = [
     Duration::ZERO,
     Duration::from_millis(1),
@@ -122,6 +123,19 @@ fn admit<T>(
         };
         return Err(model::catalog::transient(refusal));
     }
+}
+
+/// Pin `member` for the calling thread through [`admit`], asking the
+/// self-blocked question of the leases this thread holds: the one admission
+/// path of serving leases and watcher baselines alike.
+pub(super) fn pin(member: &Member, access: Access, peak: usize) -> io::Result<Pin> {
+    let holding = HELD.with(|thread| held(thread).clone());
+    admit(
+        || member.pin(access, peak),
+        || !holding.is_empty() && member.held_blocks(&holding, peak),
+        &RETRY_PAUSES,
+        pause,
+    )
 }
 
 fn pause(wait: Duration) {
@@ -334,15 +348,9 @@ impl Catalog {
         self.entries
             .get(path)
             .map(|entry| {
-                let thread = HELD.with(Arc::clone);
-                let holding = held(&thread).clone();
                 let peak = super::load_peak(entry.member.identity().len);
-                let pin = admit(
-                    || entry.member.pin(access, peak),
-                    || !holding.is_empty() && entry.member.held_blocks(&holding, peak),
-                    &RETRY_PAUSES,
-                    pause,
-                )?;
+                let pin = pin(&entry.member, access, peak)?;
+                let thread = HELD.with(Arc::clone);
                 held(&thread).push(pin.member_id());
                 Ok(Box::new(Lease { pin, held: thread }) as Box<dyn DocumentLease>)
             })
