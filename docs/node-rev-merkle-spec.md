@@ -678,7 +678,7 @@ counts its own tables, descriptors (each member's version descriptor and the
 source handle allocation it alone owns) and reservation metadata separately.
 
 **Load-peak declarations.** Every load of a version is admitted under one
-rule of its byte length, `residency::load_peak(len) = 72 KiB + 256·len`: the
+rule of its byte length, `residency::load_peak(len) = 72 KiB + 416·len`: the
 catalog's serving slots and the watcher-baseline provider
 (`residency::retention::Retention`) both declare it from the member's byte
 identity, so a host carries no peak of its own. The fixed part covers the raw
@@ -689,44 +689,81 @@ and not its length alone: nothing available at admission measures a parse's
 peak, and the syntax-node count does not predict it (a list or a table emits
 no dialect node and still stages 24 to 48 bytes per raw byte). The rule is
 therefore sized to the worst shape observed, with the rest of the set far
-under it. `crates/registry/tests/load_peak.rs` measures one cold load per
-shape with a counting allocator and asserts that each peak is at most its
-declaration; at 64 KiB it measures, in bytes per raw byte above the fixed
-part:
+under it; it can be a function of length only because no shape grows its tree
+or staging faster than its bytes (below). `crates/registry/tests/load_peak.rs`
+measures one cold load per shape with a counting allocator, at lengths on and
+off the doubling points (`2^k`, one unit past it, and `1.5·2^k`, for every
+`k` up to 16, and up to 20 — 1.5 MiB — under `LOAD_PEAK_SWEEP=full`, the run
+this table comes from): at `2^k` the parser's tree, the dialect list
+and the model's children can be exactly full, and one unit past it they have
+just doubled, which is where a shape peaks highest per byte. It asserts that
+each peak is at most its declaration. Per shape, at the length where it peaks
+highest, in bytes per raw byte (the whole load above the fixed part):
 
-| shape | retained tree | parse alone | whole load | declaration ÷ load |
-|---|---|---|---|---|
-| prose, tags | 0.0 | 1.7 | 1.7 | 96 |
-| CJK prose | 0.0 | 3.2 | 3.2 | 62 |
-| frontmatter | 2.4 | 2.6 | 3.9 | 53 |
-| wikilinks with heading and alias | 7.3 | 19.5 | 19.5 | 12.5 |
-| code fences | 12.9 | 16.5 | 21.4 | 11.5 |
-| list, table, block ids, HTML blocks, inline HTML, autolinks | 0.0 to 13.2 | 14.7 to 24.2 | 24.2 | 10.2 |
-| callouts, footnote definitions | 0.0 to 12.7 | 31.8 to 32.3 | 32.3 | 7.7 |
-| embeds | 13.5 | 38.2 | 38.2 | 6.6 |
-| tasks | 25.0 | 39.2 | 42.0 | 6.0 |
-| headings | 28.0 | 27.9 | 45.7 | 5.5 |
-| bare list markers, nested and 32-deep lists, 32-deep quotes, 1-char table cells, 1-char paragraphs, hard breaks | 0.0 | 48.2 | 48.2 | 5.2 |
-| one-row tables, empty fences | 26.0 | 32.2 to 42.5 | 52.0 | 4.8 |
-| inline markup | 12.5 | 58.1 | 58.1 | 4.3 |
-| `*a ` unclosed emphasis, `[a](b)` links | 0.0 | 64.2 to 68.0 | 68.0 | 3.7 |
-| `a ^b` block ids, `- [ ]` tasks | 50.8 | 50.2 to 54.2 | 86.7 | 2.9 |
-| `*a*`, `**a**`, `[a][b]` runs | 0.0 | 96.2 | 96.2 | 2.6 |
-| `` `a` `` code spans | 52.0 | 136.2 | 136.2 | 1.9 |
-| bare `[[a]]` links, bare `![[a]]` embeds | 51.4 | 150.2 | 150.2 | 1.7 |
-| bare `#` headings | 116.0 | 120.0 | 228.0 | 1.1 |
+| shape | worst length (B) | retained tree | parse alone | whole load | declaration ÷ load |
+|---|---|---|---|---|---|
+| `tags` | 1,572,874 | 0.0 | 1.5 | 2.5 | 165.93 |
+| `prose` | 1,572,932 | 0.0 | 1.5 | 2.5 | 165.93 |
+| `bare-tags` | 1,572,864 | 0.0 | 1.5 | 2.5 | 165.93 |
+| `cjk` | 1,572,902 | 0.0 | 3.0 | 4.0 | 103.82 |
+| `frontmatter` | 1,572,898 | 2.9 | 2.7 | 5.8 | 71.75 |
+| `deep-list` | 1,572,898 | 0.0 | 6.0 | 7.0 | 59.36 |
+| `rules` | 1,572,865 | 0.0 | 12.0 | 13.0 | 31.99 |
+| `code` | 1,048,578 | 12.4 | 16.3 | 21.8 | 19.03 |
+| `wikilinks` | 1,572,887 | 8.9 | 21.8 | 22.8 | 18.24 |
+| `list` | 131,084 | 0.0 | 24.1 | 24.5 | 16.60 |
+| `inline-html` | 1,572,867 | 0.0 | 24.0 | 25.0 | 16.64 |
+| `html-blocks` | 1,572,865 | 0.0 | 24.0 | 25.0 | 16.64 |
+| `bare-quotes` | 1,572,864 | 0.0 | 24.0 | 25.0 | 16.64 |
+| `autolinks` | 1,572,864 | 0.0 | 24.0 | 25.0 | 16.64 |
+| `table` | 1,572,900 | 0.0 | 24.0 | 25.0 | 16.64 |
+| `ref-defs` | 1,572,866 | 0.0 | 25.8 | 26.7 | 15.55 |
+| `callouts` | 1,048,580 | 12.2 | 31.6 | 32.6 | 12.75 |
+| `footnotes` | 98,310 | 0.0 | 34.9 | 35.2 | 11.59 |
+| `block-ids` | 16,392 | 24.2 | 22.8 | 35.8 | 10.43 |
+| `tasks` | 131,082 | 24.0 | 39.1 | 41.5 | 9.91 |
+| `embeds` | 1,572,878 | 16.8 | 42.7 | 43.7 | 9.52 |
+| `headings` | 131,082 | 28.8 | 27.8 | 44.6 | 9.23 |
+| `nested-list` | 196,626 | 0.0 | 48.0 | 48.7 | 8.49 |
+| `cell-table` | 1,572,912 | 0.0 | 48.0 | 49.0 | 8.49 |
+| `deep-quotes` | 1,572,876 | 0.0 | 48.0 | 49.0 | 8.49 |
+| `hard-breaks` | 1,572,864 | 0.0 | 48.0 | 49.0 | 8.49 |
+| `one-char-paragraphs` | 1,572,864 | 0.0 | 48.0 | 49.0 | 8.49 |
+| `bare-list` | 1,572,864 | 0.0 | 48.0 | 49.0 | 8.49 |
+| `one-row-tables` | 1,572,867 | 32.4 | 48.2 | 56.5 | 7.36 |
+| `inline` | 1,048,594 | 12.0 | 58.0 | 58.9 | 7.05 |
+| `wide-tables-k64` | 2,334 | 0.7 | 89.2 | 59.1 | 4.93 |
+| `open-emphasis` | 1,048,578 | 0.0 | 64.0 | 64.9 | 6.40 |
+| `inline-links` | 1,048,578 | 0.0 | 68.0 | 68.9 | 6.03 |
+| `bare-block-ids` | 1,048,578 | 48.8 | 40.2 | 80.4 | 5.17 |
+| `bare-fences` | 1,048,584 | 48.0 | 52.0 | 82.9 | 5.01 |
+| `bare-tasks` | 1,048,578 | 48.7 | 54.0 | 84.3 | 4.93 |
+| `long-heading-code-spans` | 1,048,580 | 26.0 | 83.5 | 84.4 | 4.92 |
+| `long-heading-links` | 1,572,866 | 33.4 | 84.6 | 85.6 | 4.86 |
+| `long-heading-sections` | 1,048,578 | 60.3 | 42.5 | 95.3 | 4.36 |
+| `ref-links` | 1,572,865 | 0.0 | 96.0 | 97.0 | 4.29 |
+| `strong-runs` | 1,572,865 | 0.0 | 96.0 | 97.0 | 4.29 |
+| `emphasis-runs` | 1,572,864 | 0.0 | 96.0 | 97.0 | 4.29 |
+| `wide-tables-k362` | 1,575,243 | 0.1 | 96.2 | 97.2 | 4.28 |
+| `bare-embeds` | 1,048,578 | 48.8 | 150.2 | 151.1 | 2.75 |
+| `bare-links` | 1,572,865 | 64.7 | 168.2 | 169.2 | 2.46 |
+| `code-spans` | 1,048,580 | 96.0 | 176.0 | 176.9 | 2.35 |
+| `heading-code` | 1,048,578 | 183.8 | 118.5 | 251.3 | 1.66 |
+| `bare-headings` | 65,538 | 216.0 | 180.0 | 339.9 | 1.22 |
 
-Bare `#` headings are the worst shape found: their load peaks at 0.89 of
-its declaration, and every other shape at 0.6 or less at this size.
+Bare `#` headings are the worst shape found: 339.9 bytes per raw byte just
+past 2^16, so the per-byte part, 416, stands about 22% above it. Every other
+shape is at 252 or less.
 
 The whole load is below tree plus parse where the parser's staging is freed
 before the tree is complete. Over-declaring costs admission concurrency and
-never memory: a 64 KiB prose page reserves 16.8 MB for the length of its
+never memory: a 64 KiB prose page reserves 27 MB for the length of its
 load, and a page whose declaration exceeds the allowance above the floor
-loads through the serialized transient slot. A shape outside this set that
-stages more than 255 bytes per raw byte loads past its declaration; the
-ledger reports that as a peak shortfall only when the retained body exceeds
-the declaration, and does not observe transient staging.
+(above about 1.23 MiB at a 512 MiB allowance) loads through the serialized
+transient slot, refused while any other load is live. A shape outside this
+set that stages more than 415 bytes per raw byte loads past its declaration;
+the ledger reports that as a peak shortfall only when the retained body
+exceeds the declaration, and does not observe transient staging.
 
 The ledger retains a selected body's full charge throughout retirement,
 including the interval where the local slot already appears cold. Only after

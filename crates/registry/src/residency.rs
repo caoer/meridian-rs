@@ -229,9 +229,10 @@ pub fn load_peak(len: u64) -> usize {
 /// buffer and the load's bookkeeping.
 const LOAD_FIXED: usize = 72 * 1024;
 
-/// What a load allocates per source byte at the worst measured shape: the
-/// byte itself, its share of the retained tree and of the parser's staging.
-const LOAD_PER_RAW_BYTE: usize = 256;
+/// What a load allocates per source byte at the worst measured shape, with
+/// margin: the byte itself, its share of the retained tree and of the
+/// parser's staging. Bare headings just past a power of two measure 340.
+const LOAD_PER_RAW_BYTE: usize = 416;
 
 /// An immutable version descriptor shared across generations and operations.
 #[derive(Debug, Clone)]
