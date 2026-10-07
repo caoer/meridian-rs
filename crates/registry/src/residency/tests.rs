@@ -609,6 +609,63 @@ fn the_sweep_evicts_one_workspace_for_a_one_eviction_overage_beside_a_census_hol
     assert_eq!(host.controller.report().floor_overage, 0);
 }
 
+/// The census the sweep must wait for at its re-census (merkle-spec §6.4,
+/// the reaper under a host): one that starts after the sweep's first census
+/// and holds every generation, the victim's included, while the sweep evicts.
+/// The eviction's own census waits for it, so an overage one eviction meets
+/// still costs one workspace.
+#[test]
+fn the_sweeps_recensus_waits_for_a_census_that_began_after_its_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let (host, registry, _roots) = hosted_with(dir.path(), &["a", "b", "c", "d"], 64);
+    let floor = || host.controller.report().floor;
+    registry.charge_floor();
+    let warm = floor();
+    host.controller.set_limit(warm - 1);
+    assert_eq!(registry.reap_to_budget(1).len(), 1);
+    let settled = floor();
+    let freed = warm - settled;
+    host.controller.set_limit(settled - freed / 4 * 3);
+
+    // The sweep: first census done, victim chosen, parked before it evicts.
+    let (sweep_at_gate, release_sweep) = arm(&registry.pause_before_floor_eviction);
+    let (done, swept) = mpsc::channel();
+    let sweep = {
+        let registry = Arc::clone(&registry);
+        thread::spawn(move || {
+            let _ = done.send(registry.reap_to_budget(1));
+        })
+    };
+    sweep_at_gate.recv().expect("the sweep reached its gate");
+    // A census that begins now, parked on its generations.
+    let (census_at_gate, release_census) = arm(&registry.pause_in_census_generations);
+    let parked = {
+        let registry = Arc::clone(&registry);
+        thread::spawn(move || registry.charge_floor())
+    };
+    census_at_gate.recv().expect("the census reached its gate");
+    release_sweep
+        .send(())
+        .expect("the sweep parked on its gate");
+    // The sweep either finishes beside the parked census or waits for it.
+    let beside = swept.recv_timeout(Duration::from_millis(500));
+    release_census
+        .send(())
+        .expect("the census parked on its gate");
+    parked.join().unwrap();
+    let victims = beside
+        .or_else(|_| swept.recv_timeout(WAIT))
+        .expect("the sweep finished");
+    sweep.join().unwrap();
+    assert_eq!(
+        victims.len(),
+        1,
+        "one eviction frees {freed} and meets the overage: {victims:?} (floor {settled} -> {})",
+        floor()
+    );
+    assert_eq!(host.controller.report().floor_overage, 0);
+}
+
 /// A census holds the generations only while it measures them (merkle-spec
 /// §6.4, the host floor): one parked after its measurement keeps none alive,
 /// so an idle reap's census charges what remains.

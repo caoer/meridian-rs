@@ -276,6 +276,13 @@ pub struct Registry {
     #[cfg(test)]
     pub(crate) pause_in_census_generations:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    /// Test-only gate: the budget sweep under a host, its first census done
+    /// and its victim chosen, announces itself on the first channel, then
+    /// parks on the second before it evicts. One-shot, same seam class as
+    /// `pause_in_reap_window`.
+    #[cfg(test)]
+    pub(crate) pause_before_floor_eviction:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
 /// §3.2: how long the READ THAT KICKED a cold rebuild absorbs it before
@@ -1013,6 +1020,8 @@ impl Registry {
             pause_after_census: Mutex::new(None),
             #[cfg(test)]
             pause_in_census_generations: Mutex::new(None),
+            #[cfg(test)]
+            pause_before_floor_eviction: Mutex::new(None),
         }
     }
 
@@ -3285,6 +3294,20 @@ impl Registry {
                 );
                 break;
             };
+            // Test-only: park here when the gate is armed (see the field
+            // docs).
+            #[cfg(test)]
+            {
+                let gate = self
+                    .pause_before_floor_eviction
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                if let Some((arrived, release)) = gate {
+                    let _ = arrived.send(());
+                    let _ = release.recv();
+                }
+            }
             self.evict(std::slice::from_ref(&victim), true);
             victims.push(victim);
         }
