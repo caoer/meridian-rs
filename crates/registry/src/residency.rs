@@ -213,6 +213,37 @@ impl Host {
     }
 }
 
+/// The SQL memory policy under a host (merkle-spec §6.4): the `memory_limit`
+/// each workspace's SQL cache runs under, and how many caches stay open, so
+/// the pools' limits sum to at most `max(SQL_CACHE_LIMIT, budget / 4)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SqlBudget {
+    /// Each open cache's `DuckDB` `memory_limit`, in bytes.
+    pub cache_limit: u64,
+    /// The most caches the registry keeps open at once.
+    pub open_caches: usize,
+}
+
+/// The smallest `memory_limit` under which every measured shape builds its
+/// SQL cache: the 128 KiB long-heading page (822 MiB stored) is refused at
+/// 128 MiB and built at 256 MiB (merkle-spec §6.4, the SQL memory policy).
+pub const SQL_CACHE_LIMIT: u64 = 256 << 20;
+
+impl SqlBudget {
+    /// The policy for a host of `budget` bytes; `None` for `0`, a host that
+    /// enforces nothing.
+    #[must_use]
+    pub fn for_budget(budget: usize) -> Option<Self> {
+        let budget = u64::try_from(budget).unwrap_or(u64::MAX);
+        (budget != 0).then(|| Self {
+            cache_limit: SQL_CACHE_LIMIT,
+            open_caches: usize::try_from(budget / 4 / SQL_CACHE_LIMIT)
+                .unwrap_or(usize::MAX)
+                .max(1),
+        })
+    }
+}
+
 /// The peak one load of a version of `len` bytes is admitted under: the
 /// source bytes, the retained tree and the parser's staging at the worst
 /// measured document shape (merkle-spec §6.4, load-peak declarations).

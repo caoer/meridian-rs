@@ -124,6 +124,13 @@ impl Slot {
     }
 }
 
+/// One workspace's open SQL cache and the tick of its last use.
+#[derive(Debug)]
+struct SqlHandle {
+    store: Arc<Mutex<view::store::SqlStore>>,
+    used: u64,
+}
+
 /// Daemon workspace registry: guarded map, state store, drawer cache root.
 ///
 /// `engines` is resident query state (U1): warm `WorkspaceEngine` per workspace,
@@ -177,7 +184,14 @@ pub struct Registry {
     /// dies on idle-reap with the engine; the FILE deliberately survives —
     /// its pin is content-derived, so trusting it across the gap is sound
     /// (re-warm compares fingerprints before serving).
-    sql_stores: Mutex<HashMap<PathBuf, Arc<Mutex<view::store::SqlStore>>>>,
+    /// Each handle carries the tick of its last use, so a host's
+    /// [`crate::residency::SqlBudget`] closes the least recently used one.
+    sql_stores: Mutex<HashMap<PathBuf, SqlHandle>>,
+    /// The tick [`Self::sql_store`] stamps a handle with.
+    sql_clock: AtomicU64,
+    /// The SQL memory policy, set with a residency host; `None` keeps every
+    /// cache open under `DuckDB`'s default (merkle-spec §6.4).
+    sql_budget: Option<crate::residency::SqlBudget>,
     /// G11 activity clock: request count + last request unix secs. Pre-warm
     /// backoff and idle-exit both read this.
     requests: AtomicU64,
@@ -987,6 +1001,8 @@ impl Registry {
             // Cold: no open sql handles; first `sql` op opens (or cold-builds)
             // each workspace's file.
             sql_stores: Mutex::new(HashMap::new()),
+            sql_clock: AtomicU64::new(0),
+            sql_budget: None,
             // Cold: no restore has run; each workspace's first resident memo
             // records its own receipt.
             checkpoints: Mutex::new(HashMap::new()),
@@ -1028,6 +1044,9 @@ impl Registry {
     /// Build every engine generation through `host` (merkle-spec §6.8).
     #[must_use]
     pub(crate) fn with_residency(mut self, host: Option<Arc<crate::residency::Host>>) -> Self {
+        self.sql_budget = host.as_ref().and_then(|host| {
+            crate::residency::SqlBudget::for_budget(host.controller.report().limit)
+        });
         self.residency = host;
         self
     }
@@ -1784,17 +1803,44 @@ impl Registry {
         &self,
         workspace: &Path,
     ) -> Result<Arc<Mutex<view::store::SqlStore>>, view::ViewError> {
+        let tick = self.sql_clock.fetch_add(1, Ordering::Relaxed);
         let mut stores = self
             .sql_stores
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(store) = stores.get(workspace) {
-            return Ok(Arc::clone(store));
+        if let Some(handle) = stores.get_mut(workspace) {
+            handle.used = tick;
+            return Ok(Arc::clone(&handle.store));
         }
         let drawer = cache::drawer_dir(&self.cache_root, workspace);
-        let store = view::store::SqlStore::open(&drawer.join(view::store::SQL_CACHE_FILENAME))?;
+        let budget = self.sql_budget;
+        if let Some(budget) = budget {
+            // Close least recently used caches no query holds, under the map
+            // lock: the closed instance is gone before anyone can reattach
+            // its file, so one file never has two instances. A cache in use
+            // stays open, past the count, until a later open finds it free.
+            while stores.len() >= budget.open_caches {
+                let idle = stores
+                    .iter()
+                    .filter(|(_, handle)| Arc::strong_count(&handle.store) == 1)
+                    .min_by_key(|(_, handle)| handle.used)
+                    .map(|(key, _)| key.clone());
+                let Some(key) = idle else { break };
+                drop(stores.remove(&key));
+            }
+        }
+        let store = view::store::SqlStore::open_limited(
+            &drawer.join(view::store::SQL_CACHE_FILENAME),
+            budget.map(|budget| budget.cache_limit),
+        )?;
         let store = Arc::new(Mutex::new(store));
-        stores.insert(workspace.to_path_buf(), Arc::clone(&store));
+        stores.insert(
+            workspace.to_path_buf(),
+            SqlHandle {
+                store: Arc::clone(&store),
+                used: tick,
+            },
+        );
         Ok(store)
     }
 
@@ -4978,6 +5024,47 @@ mod engine_tests {
             );
         }
         assert_eq!(sql_memory_limit(&reg, &ws[2]), "256.0 MiB");
+    }
+
+    /// A cache a query holds is never closed, so its file never gets a
+    /// second instance: the new cache opens past the count, and a later open
+    /// closes back down to it once they are free (merkle-spec §6.4).
+    #[test]
+    fn a_host_never_closes_an_sql_cache_a_query_holds() {
+        let home = tempfile::tempdir().unwrap();
+        let cache_root = home.path().join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let host = Arc::new(crate::residency::Host::new(
+            crate::residency::controller::Controller::new(2 << 30),
+            crate::raw_store::RawStore::new(&home.path().join("backing")).unwrap(),
+        ));
+        let reg = Registry::new(
+            StateStore::new(home.path().join("state.json")),
+            cache_root,
+            Vec::new(),
+        )
+        .with_residency(Some(host));
+        let ws = three_workspaces(&reg, home.path());
+        let held = [
+            reg.sql_store(&ws[0]).unwrap(),
+            reg.sql_store(&ws[1]).unwrap(),
+        ];
+        reg.sql_store(&ws[2]).unwrap();
+        assert_eq!(
+            reg.sql_stores.lock().unwrap().len(),
+            3,
+            "both held caches stay open past the count"
+        );
+        drop(held);
+        let extra = home.path().join("d");
+        fs::create_dir_all(&extra).unwrap();
+        fs::write(extra.join("a.md"), "# A\n").unwrap();
+        let extra = workspace::canonicalize(&extra).unwrap();
+        reg.register(&extra);
+        reg.sql_store(&extra).unwrap();
+        let open = reg.sql_stores.lock().unwrap();
+        assert_eq!(open.len(), 2, "the next open closes back down to the count");
+        assert!(open.contains_key(&ws[2]) && open.contains_key(&extra));
     }
 
     /// Without a host every SQL cache stays open under `DuckDB`'s default.

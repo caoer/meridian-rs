@@ -277,6 +277,9 @@ impl Config {
         if let Some(raw) = std::env::var_os(MAX_RESIDENT_BYTES_ENV) {
             config.max_resident_bytes = parse_max_resident_bytes(&raw)?;
         }
+        if let Some(raw) = std::env::var_os(RESIDENCY_HOST_BYTES_ENV) {
+            config.residency_host_bytes = parse_residency_host_bytes(&raw)?;
+        }
         Ok(config)
     }
 
@@ -451,6 +454,65 @@ fn parse_max_resident_bytes(raw: &std::ffi::OsStr) -> io::Result<u64> {
                 ),
             )
         })
+}
+
+/// Parse [`RESIDENCY_HOST_BYTES_ENV`]'s value as a whole byte count; `0` is
+/// the no-host spelling. Anything else refuses, naming the variable and the
+/// bytes it saw, as [`parse_max_resident_bytes`] does.
+#[allow(clippy::unnecessary_debug_formatting)]
+fn parse_residency_host_bytes(raw: &std::ffi::OsStr) -> io::Result<u64> {
+    raw.to_str()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{RESIDENCY_HOST_BYTES_ENV} must be a whole number of allocated bytes \
+                     (0 or unset installs no residency host), got {raw:?}"
+                ),
+            )
+        })
+}
+
+/// The residency host a daemon serves through: the one a fixture injected,
+/// else the one [`Config::residency_host_bytes`] asks for, or none. Call it
+/// holding the singleton lock ([`install_host`]).
+fn residency_for(
+    config: &Config,
+    registry_dir: &Path,
+) -> io::Result<Option<Arc<crate::residency::Host>>> {
+    Ok(match (&config.residency, config.residency_host_bytes) {
+        (Some(host), _) => Some(Arc::clone(host)),
+        (None, 0) => None,
+        (None, bytes) => Some(Arc::new(install_host(registry_dir, bytes)?)),
+    })
+}
+
+/// The residency host a daemon with budget `bytes` serves through
+/// (merkle-spec §6.4): one controller with that limit and one raw store under
+/// `<registry-dir>/backing/`. Call it holding the singleton lock: every store
+/// directory an earlier process left there is removed first.
+fn install_host(registry_dir: &Path, bytes: u64) -> io::Result<crate::residency::Host> {
+    let backing = registry_dir.join("backing");
+    std::fs::create_dir_all(&backing)?;
+    for entry in std::fs::read_dir(&backing)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir()
+            && entry.file_name().to_string_lossy().starts_with("raw-")
+            && let Err(e) = std::fs::remove_dir_all(entry.path())
+        {
+            eprintln!(
+                "registry: cannot remove an earlier residency store {} ({e})",
+                entry.path().display()
+            );
+        }
+    }
+    let limit = usize::try_from(bytes).unwrap_or(usize::MAX);
+    eprintln!("registry: residency host installed, limit {limit} bytes");
+    Ok(crate::residency::Host::new(
+        crate::residency::controller::Controller::new(limit),
+        crate::raw_store::RawStore::new(&backing)?,
+    ))
 }
 
 /// The socket path for `cache_root` (short-sock law, 2026-08-20):
@@ -644,7 +706,7 @@ impl RunningServer {
             config.cache_root.clone(),
             entries,
             config.activity_park,
-            config.residency.clone(),
+            residency_for(&config, &dir)?,
         );
 
         // The middleware door's ctx.sql backend (armed-plane Part A2) —
@@ -3688,6 +3750,24 @@ mod residency_activation_tests {
             .collect();
         assert_eq!(stores.len(), 1, "only this daemon's own store: {stores:?}");
         server.shutdown();
+    }
+
+    #[test]
+    fn a_malformed_residency_host_budget_refuses_and_names_what_it_saw() {
+        use super::{RESIDENCY_HOST_BYTES_ENV, parse_residency_host_bytes};
+        use std::ffi::OsStr;
+        assert_eq!(parse_residency_host_bytes(OsStr::new("0")).unwrap(), 0);
+        assert_eq!(
+            parse_residency_host_bytes(OsStr::new("2147483648")).unwrap(),
+            2_147_483_648
+        );
+        for bad in ["2GiB", "-1", ""] {
+            let err = parse_residency_host_bytes(OsStr::new(bad)).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+            let message = err.to_string();
+            assert!(message.contains(RESIDENCY_HOST_BYTES_ENV), "{message}");
+            assert!(message.contains(&format!("{bad:?}")), "{message}");
+        }
     }
 
     #[test]

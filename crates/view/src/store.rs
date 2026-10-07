@@ -1087,6 +1087,10 @@ pub struct SqlStore {
     /// drops a 134-row `duckdb_settings()` scan from every served query.
     baseline: Arc<Vec<(String, String)>>,
     policy: Arc<InstancePolicy>,
+    /// The `memory_limit` this instance runs under, in bytes; `None` keeps
+    /// `DuckDB`'s default (merkle-spec §6.4, the SQL memory policy). Every
+    /// reopen of this store's file sets it again.
+    memory_limit: Option<u64>,
 }
 
 /// Retirement is monotonic and follows every outstanding read handle.
@@ -1192,6 +1196,17 @@ impl SqlStore {
     /// The file (or its recreation) cannot be opened — most commonly the
     /// `DuckDB` inter-process lock held elsewhere — or the DDL fails.
     pub fn open(file: &Path) -> Result<SqlStore, ViewError> {
+        Self::open_limited(file, None)
+    }
+
+    /// [`SqlStore::open`] under a `memory_limit` of `memory_limit` bytes, or
+    /// `DuckDB`'s default for `None` (merkle-spec §6.4, the SQL memory policy).
+    /// The limit is set before the restore baseline is taken, so a caller's
+    /// own `SET` of it lasts only that call.
+    ///
+    /// # Errors
+    /// As [`SqlStore::open`].
+    pub fn open_limited(file: &Path, memory_limit: Option<u64>) -> Result<SqlStore, ViewError> {
         if let Some(parent) = file.parent() {
             std::fs::create_dir_all(parent).map_err(ViewError::Io)?;
         }
@@ -1205,10 +1220,10 @@ impl SqlStore {
                 if is_lock_error(&e) {
                     return Err(ViewError::Duckdb(e));
                 }
-                return Self::recreate(file);
+                return Self::recreate(file, memory_limit);
             }
         };
-        let store = Self::adopt(conn, file)?;
+        let store = Self::adopt(conn, file, memory_limit)?;
         if fresh {
             store.conn.execute_batch(CACHE_SCHEMA_SQL)?;
             return Ok(store);
@@ -1222,28 +1237,18 @@ impl SqlStore {
             // Foreign schema version or unreadable ledger: delete, cold start.
             _ => {
                 drop(store);
-                Self::recreate(file)
+                Self::recreate(file, memory_limit)
             }
         }
     }
 
-    /// [`SqlStore::open`] under a `memory_limit` of `memory_limit` bytes, or
-    /// `DuckDB`'s default for `None` (merkle-spec §6.4, the SQL memory policy).
-    ///
-    /// # Errors
-    /// As [`SqlStore::open`].
-    pub fn open_limited(file: &Path, memory_limit: Option<u64>) -> Result<SqlStore, ViewError> {
-        let _ = memory_limit;
-        Self::open(file)
-    }
-
     /// Delete the file (and its WAL) and open a fresh, initialised one.
-    fn recreate(file: &Path) -> Result<SqlStore, ViewError> {
+    fn recreate(file: &Path, memory_limit: Option<u64>) -> Result<SqlStore, ViewError> {
         let _ = std::fs::remove_file(file);
         let _ = std::fs::remove_file(wal_path(file));
         let conn = open_sql_cache(file)?;
         conn.execute_batch(CACHE_SCHEMA_SQL)?;
-        Self::adopt(conn, file)
+        Self::adopt(conn, file, memory_limit)
     }
 
     /// Put the engine's instance-global configuration in force on a
@@ -1251,12 +1256,17 @@ impl SqlStore {
     /// baseline (see [`SqlStore::baseline`]). The one instant at which no
     /// caller can be holding a `SET` on this instance is before the store is
     /// published, which is here.
-    fn adopt(conn: Connection, file: &Path) -> Result<SqlStore, ViewError> {
+    fn adopt(
+        conn: Connection,
+        file: &Path,
+        memory_limit: Option<u64>,
+    ) -> Result<SqlStore, ViewError> {
         let mut store = SqlStore {
             conn,
             file: file.to_path_buf(),
             baseline: Arc::new(Vec::new()),
             policy: Arc::default(),
+            memory_limit,
         };
         apply_spill_containment(&store.conn, &store.spill_dir())?;
         // One completed 2,048-row group is eligible for optimistic disk
@@ -1266,6 +1276,11 @@ impl SqlStore {
             "SET write_buffer_row_group_count=1; SET allocator_flush_threshold='0B';",
         )?;
         apply_extension_gate(&store.conn)?;
+        if let Some(bytes) = memory_limit {
+            store
+                .conn
+                .execute_batch(&format!("SET memory_limit='{}KiB';", bytes.div_ceil(1024)))?;
+        }
         store.baseline = Arc::new(global_config_snapshot(&store.conn)?);
         Ok(store)
     }
@@ -1288,7 +1303,7 @@ impl SqlStore {
             Connection::open_in_memory()?,
         ));
         let conn = open_sql_cache(&self.file)?;
-        *self = Self::adopt(conn, &self.file)?;
+        *self = Self::adopt(conn, &self.file, self.memory_limit)?;
         Ok(())
     }
 
@@ -1391,7 +1406,7 @@ impl SqlStore {
                 return Ok(None);
             }
             if fingerprint_version(&p.fingerprint) != fingerprint_version(fingerprint) {
-                *self = Self::recreate(&self.file.clone())?;
+                *self = Self::recreate(&self.file.clone(), self.memory_limit)?;
                 pin = None;
             }
         }
@@ -2155,7 +2170,7 @@ impl SqlStore {
             // Prove the file is unheld before deleting it.
             drop(Connection::open(file)?);
         }
-        Self::recreate(file)
+        Self::recreate(file, None)
     }
 
     /// The cache file this store holds open.
