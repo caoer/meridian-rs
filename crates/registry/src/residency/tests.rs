@@ -658,6 +658,49 @@ fn a_floor_overage_shorter_than_one_tick_evicts_nothing() {
     assert!(registry.reap_to_budget(1).is_empty());
 }
 
+/// The verdict a sweep keeps is its own census's (merkle-spec §6.4, the
+/// reaper under a host), never the floor an earlier census left. An ordinary
+/// census finds the floor over; the hold ends before the sweep, whose own
+/// census is under, so the next sweep over the limit is a first one.
+#[test]
+fn the_kept_verdict_is_the_sweeps_own_census() {
+    let dir = tempfile::tempdir().unwrap();
+    let (host, registry, roots) = hosted_with(dir.path(), &["a", "b", "c", "d"], 64);
+    let floor = || host.controller.report().floor;
+    let supersede = |n: usize| {
+        registry.charge_floor();
+        let without = floor();
+        let held = registry.engine_snapshot(&roots[3]).unwrap();
+        std::fs::write(
+            roots[3].join("m0.md"),
+            format!("# M0\n\nlinks [[m0]] and text ^b0 edit {n}\n"),
+        )
+        .unwrap();
+        registry.warm_or_build(&roots[3]).unwrap();
+        registry.charge_floor();
+        let with = floor();
+        assert!(with > without, "probe invalid: the held generation is free");
+        host.controller.set_limit(without + (with - without) / 2);
+        held
+    };
+
+    // An ordinary census saw the floor over; the hold ends before the sweep.
+    let held = supersede(1);
+    assert!(host.controller.report().floor_overage > 0);
+    drop(held);
+    assert!(registry.reap_to_budget(1).is_empty());
+    assert_eq!(host.controller.report().floor_overage, 0);
+
+    let held = supersede(2);
+    assert!(
+        registry.reap_to_budget(1).is_empty(),
+        "a sweep over the limit after a sweep whose own census was under evicted"
+    );
+    // The overage is real: the sweep after it evicts.
+    assert_eq!(registry.reap_to_budget(1).len(), 1);
+    drop(held);
+}
+
 /// The sweep's first census runs alone too (merkle-spec §6.4, the reaper
 /// under a host). A census parked on its generations holds one a publish
 /// has since superseded; a sweep whose true floor is under the limit evicts

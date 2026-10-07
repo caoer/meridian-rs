@@ -749,6 +749,16 @@ fn fake_daemon(
     sb: &Sandbox,
     report: serde_json::Value,
 ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    let mut frame = serde_json::json!({"status": "residency"});
+    frame["report"] = report;
+    fake_daemon_answering(sb, frame)
+}
+
+/// [`fake_daemon`] with the whole frame it answers the `residency` request.
+fn fake_daemon_answering(
+    sb: &Sandbox,
+    residency: serde_json::Value,
+) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
     use std::io::{BufRead as _, BufReader, Write as _};
     use std::sync::atomic::{AtomicUsize, Ordering};
     let socket = common::child_socket_path(&sb.home, &sb.cache_home);
@@ -765,7 +775,7 @@ fn fake_daemon(
             for line in BufReader::new(stream).lines() {
                 let Ok(line) = line else { break };
                 let answer = if line.contains(r#""op":"residency""#) {
-                    serde_json::json!({"status": "residency", "report": report})
+                    residency.clone()
                 } else {
                     serde_json::json!({"status": "miss"})
                 };
@@ -872,4 +882,34 @@ fn status_residency_prints_a_running_daemons_controller_report() {
     assert_eq!(doc["state"], serde_json::json!("report"));
     assert_eq!(doc["report"]["peak_overruns"], serde_json::json!(3));
     assert_eq!(doc["report"]["floor"], serde_json::json!(388_972));
+}
+
+/// A daemon from before the `residency` request answers it `unknown_op` — the
+/// window after an upgrade while the old daemon still runs. `--residency`
+/// names that apart from no daemon, on both faces, and exits 0.
+#[test]
+fn status_residency_names_an_older_daemon_apart_from_no_daemon() {
+    let sb = sandbox();
+    let ws = anchored(&sb, "older");
+    // The frame a daemon without the request sends, as captured from one.
+    fake_daemon_answering(
+        &sb,
+        serde_json::json!({"id": null, "ok": false,
+                           "error": {"code": "unknown_op", "recovery": "fix"}}),
+    );
+
+    let out = sb.run(&ws, &["status", "--residency"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let so = stdout(&out);
+    assert!(
+        so.contains("  residency: the daemon does not know the residency request (older build)\n"),
+        "{so}"
+    );
+    let out = sb.run(&ws, &["status", "--residency", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("status json");
+    assert_eq!(
+        doc["residency"],
+        serde_json::json!({"state": "older-daemon", "report": null})
+    );
 }
