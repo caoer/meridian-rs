@@ -597,6 +597,19 @@ the controller's ledger: a query's peak falls between censuses, and shedding
 `DuckDB`'s cache through the floor would evict a whole workspace where the
 limit lets `DuckDB` drop the same pages itself.
 
+The `memory_limit` bounds `DuckDB`'s buffer pool and nothing else. Two
+process costs of a cache stay outside it and off the ledger. One is the
+transient peak of a load: while a page's rows are appended, `DuckDB` holds
+the rendered text outside its pool, so the peak grows with the stored rows
+whatever the limit. The first query over a 131,075-byte long-heading page
+raises the daemon's RSS high-water mark by 802 MiB without a host and by
+830 MiB with one. The other is freed memory the allocator keeps: glibc can
+hold a finished load's pages on its free lists, so RSS after a load can stand
+above live memory. The daemon does not call `malloc_trim`. On the 76,000-page
+corpus the RSS kept after its queries is live memory with a host and without
+one, and a trim returns nothing measurable; what the limit removes there is
+the pool, 928 MiB without a host and 12 MiB with one.
+
 The allocation census is split at ownership boundaries. `model::allocation`
 counts raw buffers (including their shared-owner allocation) separately from
 recursively owned tree data; both use capacities, not initialized lengths.
@@ -752,13 +765,18 @@ tree, the dialect list and the model's children grow by doubling on counts
 of constructs, not bytes, and one of them holds `n − 1` entries, so a page of
 `n` repeated units peaks highest per byte just past a doubling, at `2^j + 1`
 or `2^j + 2` units whatever the unit's length. The probe samples every repeated-unit shape at
-exactly those counts, for every `2^j` units within 64 KiB, and within 4 MiB
-under `LOAD_PEAK_SWEEP=full`, the run this table comes from; the shapes not
+exactly those counts, for every `2^j` units within about 64 KiB, and about
+4 MiB under `LOAD_PEAK_SWEEP=full`, the run this table comes from (the unit
+length is the average of the first 1,024 units, so a shape whose units
+lengthen with their index, `tags`, is sampled past that reach); the shapes not
 built of repeated units (frontmatter, long headings, wide tables) at `2^k`,
 `2^k + 1` and `1.5·2^k` bytes. The default sweep also loads bare headings, a
 code-span heading over a bare heading, and three bare headings then a code
-span at about 1 MiB, so a peak that grows faster than the length goes red in
-CI. It asserts that each peak is at most its declaration. Per shape, at the
+span at about 1 MiB, so a peak that grows faster than the length on a path
+those three shapes exercise goes red in CI. A superlinear peak on the
+block-id path, or in a construct none of the three contains (links, tables,
+lists, frontmatter), shows only in the full sweep, which is run by hand. The
+probe asserts that each peak is at most its declaration. Per shape, at the
 length where it peaks highest, in bytes per raw byte (the whole load above
 the 66,776 B fixed part):
 
@@ -820,8 +838,9 @@ Bare `#` headings are the worst shape found: 341.0 bytes per raw byte at
 `2^21 + 2` lines, so the per-byte part, 416, stands 22% above it. Four shapes
 follow above 270, all of them headings: one carrying a block id (325.2), a
 code-span heading over a bare one (311.7), three bare headings then a code
-span (276.5) and code-span headings (271.3). Every other shape is at 184 or
-less. Headings carrying a block id reach 2,621,450 B in the full sweep and
+span (276.5) and code-span headings (271.3). Every other shape in the probe
+is at 184 or less; headings with other text, outside the probe, measure up to
+233 (`# a ^b`). Headings carrying a block id reach 2,621,450 B in the full sweep and
 are not among the default sweep's 1 MiB loads: their model build time grows
 with the square of the page.
 
@@ -1011,11 +1030,15 @@ row. An answer that itself lists every row's address (a whole-page `toc` or
 byte.
 
 The policy plane keeps it as well. The facts a write's checks evaluate — a
-pack's node facts, a change's before and after facts and its changed
-sections, and the section index a `check_write` rebuild resolves against —
-hold each node's heading path as that node's shared chain, and the diff that
-finds the changed sections keys its maps by the chain. A Starlark value built
-from those facts allocates each distinct heading text once per evaluation;
+pack's node facts and a change's before and after facts and its changed
+sections — hold each node's heading path as that node's shared chain, and
+the diff that finds the changed sections keys its maps by the chain. The
+section index a `check_write` rebuild resolves against holds one copy of each
+section's own title, at most the page's bytes, and its chains share those
+copies. A Starlark value built from those facts allocates each distinct
+heading segment once per evaluation: a segment is one stored text, so the
+before and the after state, each duplicate heading and each edge target
+bring their own, which stays in proportion to the pages read;
 every node still receives its own `hpath` list of strings, so a predicate
 observes exactly what it did. A script put that threads an entry token takes
 the file's rev, or matches its one addressed section against the shared toc
@@ -1030,7 +1053,8 @@ references when that row is loaded, one row at a time, and dropped once loaded.
 So the projection stages a page in proportion to the page. The `hpath` columns,
 their text, the cache's tables and every query are unchanged. The text
 `DuckDB` stores for an amplifying page (rows times chain length) sits on disk
-and in `DuckDB`'s buffer pool, under the SQL memory policy above.
+and in `DuckDB`'s buffer pool, whose size the SQL memory policy above
+bounds; the load's transient peak is not under that limit.
 
 At admission and after releasing operation pins, shed an overrun's body
 first, then the least recently used unpinned member versions across all
@@ -1860,7 +1884,10 @@ with a live wire subscription and replayed changes for hours under an 8 GB
 host shape, measuring RSS+swap below 4,000,000,000 bytes; add a second
 subscribed copy under the same global budget. State the measured metadata
 floor, retained-generation/pin/transient overage and SQL limit,
-plus read/put/sub-delivery and cold-member latency against main. A short
+plus read/put/sub-delivery and cold-member latency against main. Record the
+RSS kept after the SQL queries before and after a `malloc_trim` probe, on the
+76,000-page corpus and on a 128 KiB long-heading page: a measurement of
+allocator retention, not a gate. A short
 allocator probe establishes component cost, not this soak-test acceptance.
 
 Extend both existing generation-bound regressions with forced body/parse-tree

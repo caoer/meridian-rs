@@ -1216,7 +1216,9 @@ bytes:
 ```
 
 It asks with one `residency` admin request under the liveness probe's cap —
-about two seconds, up to four when the daemon accepts and answers nothing —
+about two seconds once the daemon accepts the connection, up to four when it
+accepts and answers nothing; the connect itself has no cap, as for every
+registry client request, so a daemon whose accept queue is full holds it —
 and never starts a daemon. When no daemon answers in time the line is
 `residency: no daemon answers`; when the daemon has no residency host
 (`MRD_RESIDENCY_HOST_BYTES` unset or `0`) it is `residency: the daemon has no
