@@ -205,9 +205,14 @@ pub struct Config {
     pub max_resident_bytes: u64,
     /// The residency host every engine generation is built through
     /// (merkle-spec §6.8): bodies leased under its controller and shed to
-    /// its limit. `None` builds generations that own their documents, which
-    /// is what [`Config::resolve`] gives.
+    /// its limit. `None` builds generations that own their documents, unless
+    /// [`Config::residency_host_bytes`] asks [`RunningServer::start`] for one.
     pub residency: Option<Arc<crate::residency::Host>>,
+    /// The residency host's budget in allocated bytes (merkle-spec §6.4,
+    /// [`RESIDENCY_HOST_BYTES_ENV`]): `0` installs no host; a positive value
+    /// has [`RunningServer::start`] install one with that controller limit
+    /// when [`Config::residency`] is `None`.
+    pub residency_host_bytes: u64,
 }
 
 impl Config {
@@ -237,6 +242,7 @@ impl Config {
             drain_cold_builds: crate::DEFAULT_DRAIN_COLD_BUILDS,
             max_resident_bytes: crate::DEFAULT_MAX_RESIDENT_BYTES,
             residency: None,
+            residency_host_bytes: 0,
         }
     }
 
@@ -270,6 +276,9 @@ impl Config {
         }
         if let Some(raw) = std::env::var_os(MAX_RESIDENT_BYTES_ENV) {
             config.max_resident_bytes = parse_max_resident_bytes(&raw)?;
+        }
+        if let Some(raw) = std::env::var_os(RESIDENCY_HOST_BYTES_ENV) {
+            config.residency_host_bytes = parse_residency_host_bytes(&raw)?;
         }
         Ok(config)
     }
@@ -408,6 +417,11 @@ fn parse_idle_exit(raw: &std::ffi::OsStr) -> io::Result<Option<Duration>> {
         })
 }
 
+/// The environment variable that sets [`Config::residency_host_bytes`]: the
+/// residency host's budget in whole allocated bytes (merkle-spec §6.4).
+/// Unset or `0` installs no host, whatever [`MAX_RESIDENT_BYTES_ENV`] says.
+pub const RESIDENCY_HOST_BYTES_ENV: &str = "MRD_RESIDENCY_HOST_BYTES";
+
 /// The environment variable that overrides [`Config::max_resident_bytes`],
 /// in whole ESTIMATED RESIDENT BYTES — the unit the budget is defined in
 /// ([`crate::DEFAULT_MAX_RESIDENT_BYTES`], which carries the calibration;
@@ -440,6 +454,65 @@ fn parse_max_resident_bytes(raw: &std::ffi::OsStr) -> io::Result<u64> {
                 ),
             )
         })
+}
+
+/// Parse [`RESIDENCY_HOST_BYTES_ENV`]'s value as a whole byte count; `0` is
+/// the no-host spelling. Anything else refuses, naming the variable and the
+/// bytes it saw, as [`parse_max_resident_bytes`] does.
+#[allow(clippy::unnecessary_debug_formatting)]
+fn parse_residency_host_bytes(raw: &std::ffi::OsStr) -> io::Result<u64> {
+    raw.to_str()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{RESIDENCY_HOST_BYTES_ENV} must be a whole number of allocated bytes \
+                     (0 or unset installs no residency host), got {raw:?}"
+                ),
+            )
+        })
+}
+
+/// The residency host a daemon serves through: the one a fixture injected,
+/// else the one [`Config::residency_host_bytes`] asks for, or none. Call it
+/// holding the singleton lock ([`install_host`]).
+fn residency_for(
+    config: &Config,
+    registry_dir: &Path,
+) -> io::Result<Option<Arc<crate::residency::Host>>> {
+    Ok(match (&config.residency, config.residency_host_bytes) {
+        (Some(host), _) => Some(Arc::clone(host)),
+        (None, 0) => None,
+        (None, bytes) => Some(Arc::new(install_host(registry_dir, bytes)?)),
+    })
+}
+
+/// The residency host a daemon with budget `bytes` serves through
+/// (merkle-spec §6.4): one controller with that limit and one raw store under
+/// `<registry-dir>/backing/`. Call it holding the singleton lock: every store
+/// directory an earlier process left there is removed first.
+fn install_host(registry_dir: &Path, bytes: u64) -> io::Result<crate::residency::Host> {
+    let backing = registry_dir.join("backing");
+    std::fs::create_dir_all(&backing)?;
+    for entry in std::fs::read_dir(&backing)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir()
+            && entry.file_name().to_string_lossy().starts_with("raw-")
+            && let Err(e) = std::fs::remove_dir_all(entry.path())
+        {
+            eprintln!(
+                "registry: cannot remove an earlier residency store {} ({e})",
+                entry.path().display()
+            );
+        }
+    }
+    let limit = usize::try_from(bytes).unwrap_or(usize::MAX);
+    eprintln!("registry: residency host installed, limit {limit} bytes");
+    Ok(crate::residency::Host::new(
+        crate::residency::controller::Controller::new(limit),
+        crate::raw_store::RawStore::new(&backing)?,
+    ))
 }
 
 /// The socket path for `cache_root` (short-sock law, 2026-08-20):
@@ -633,7 +706,7 @@ impl RunningServer {
             config.cache_root.clone(),
             entries,
             config.activity_park,
-            config.residency.clone(),
+            residency_for(&config, &dir)?,
         );
 
         // The middleware door's ctx.sql backend (armed-plane Part A2) —
@@ -3620,5 +3693,124 @@ mod scoped_mint_vouch_tests {
             "the mint is current as of the question"
         );
         assert_eq!(mint(&reg, &canonical, "no/such.md"), "absent");
+    }
+}
+
+/// `MRD_RESIDENCY_HOST_BYTES` installs the residency host; the eager budget
+/// `MRD_MAX_RESIDENT_BYTES` alone never does (merkle-spec §6.4).
+#[cfg(test)]
+mod residency_activation_tests {
+    use super::{Config, RunningServer};
+    use std::time::Duration;
+    use tempfile::TempDir;
+
+    #[allow(clippy::duration_suboptimal_units)]
+    fn config(tmp: &TempDir) -> Config {
+        let forever = Duration::from_secs(365 * 24 * 60 * 60);
+        let dir = tmp.path().join("registry");
+        let mut config = Config::for_cache_root(tmp.path().join("cache"));
+        config.socket_path = dir.join("daemon.sock");
+        config.state_path = dir.join("state.json");
+        config.idle_threshold = forever;
+        config.reap_interval = forever;
+        config.prewarm_interval = forever;
+        config.prewarm_quiet_max = forever;
+        config.idle_exit = None;
+        config.drain_cold_builds = Duration::from_secs(30);
+        config
+    }
+
+    #[test]
+    fn a_host_budget_installs_one_host_and_clears_an_earlier_processes_backing() {
+        let tmp = TempDir::new().unwrap();
+        let mut config = config(&tmp);
+        config.residency_host_bytes = 3 << 30;
+        let backing = config.registry_dir().join("backing");
+        let stale = backing.join("raw-1-0-0");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("segment"), b"an earlier process's record").unwrap();
+
+        let server = RunningServer::start(config).unwrap();
+        let limit = server
+            .registry
+            .residency_controller()
+            .map(|controller| controller.report().limit);
+        assert_eq!(
+            limit,
+            Some(3 << 30),
+            "the budget installs a host with that limit"
+        );
+        assert!(
+            !stale.exists(),
+            "an earlier process's store is removed at start"
+        );
+        let stores: Vec<_> = std::fs::read_dir(&backing)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(stores.len(), 1, "only this daemon's own store: {stores:?}");
+        server.shutdown();
+    }
+
+    /// The start-up sweep runs only while holding the singleton lock: a
+    /// second daemon the lock refuses leaves the running one's store alone
+    /// (merkle-spec §6.4, rv-367 P3-3).
+    #[test]
+    fn a_second_daemon_refused_by_the_lock_leaves_the_running_ones_store() {
+        let tmp = TempDir::new().unwrap();
+        let mut first = config(&tmp);
+        first.residency_host_bytes = 3 << 30;
+        let backing = first.registry_dir().join("backing");
+        let server = RunningServer::start(first).unwrap();
+        let stores = || -> Vec<_> {
+            std::fs::read_dir(&backing)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect()
+        };
+        let running = stores();
+        assert_eq!(running.len(), 1, "the running daemon's store: {running:?}");
+
+        let mut second = config(&tmp);
+        second.residency_host_bytes = 3 << 30;
+        let refused = RunningServer::start(second).map(|_| ()).unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            stores(),
+            running,
+            "the refused daemon removed or added a store"
+        );
+        server.shutdown();
+    }
+
+    #[test]
+    fn a_malformed_residency_host_budget_refuses_and_names_what_it_saw() {
+        use super::{RESIDENCY_HOST_BYTES_ENV, parse_residency_host_bytes};
+        use std::ffi::OsStr;
+        assert_eq!(parse_residency_host_bytes(OsStr::new("0")).unwrap(), 0);
+        assert_eq!(
+            parse_residency_host_bytes(OsStr::new("2147483648")).unwrap(),
+            2_147_483_648
+        );
+        for bad in ["2GiB", "-1", ""] {
+            let err = parse_residency_host_bytes(OsStr::new(bad)).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+            let message = err.to_string();
+            assert!(message.contains(RESIDENCY_HOST_BYTES_ENV), "{message}");
+            assert!(message.contains(&format!("{bad:?}")), "{message}");
+        }
+    }
+
+    #[test]
+    fn the_eager_budget_alone_installs_no_host() {
+        let tmp = TempDir::new().unwrap();
+        let mut config = config(&tmp);
+        config.max_resident_bytes = 3 << 30;
+        let server = RunningServer::start(config).unwrap();
+        assert!(
+            server.registry.residency_controller().is_none(),
+            "MRD_MAX_RESIDENT_BYTES keeps its eager meaning"
+        );
+        server.shutdown();
     }
 }

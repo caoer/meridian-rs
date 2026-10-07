@@ -120,8 +120,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use duckdb::Connection;
 use duckdb::types::Value;
@@ -1087,6 +1087,10 @@ pub struct SqlStore {
     /// drops a 134-row `duckdb_settings()` scan from every served query.
     baseline: Arc<Vec<(String, String)>>,
     policy: Arc<InstancePolicy>,
+    /// The `memory_limit` this instance runs under, in bytes; `None` keeps
+    /// `DuckDB`'s default (merkle-spec §6.4, the SQL memory policy). Every
+    /// reopen of this store's file sets it again.
+    memory_limit: Option<u64>,
 }
 
 /// Retirement is monotonic and follows every outstanding read handle.
@@ -1192,6 +1196,17 @@ impl SqlStore {
     /// The file (or its recreation) cannot be opened — most commonly the
     /// `DuckDB` inter-process lock held elsewhere — or the DDL fails.
     pub fn open(file: &Path) -> Result<SqlStore, ViewError> {
+        Self::open_limited(file, None)
+    }
+
+    /// [`SqlStore::open`] under a `memory_limit` of `memory_limit` bytes, or
+    /// `DuckDB`'s default for `None` (merkle-spec §6.4, the SQL memory policy).
+    /// The limit is set before the restore baseline is taken, so a caller's
+    /// own `SET` of it lasts only that call.
+    ///
+    /// # Errors
+    /// As [`SqlStore::open`].
+    pub fn open_limited(file: &Path, memory_limit: Option<u64>) -> Result<SqlStore, ViewError> {
         if let Some(parent) = file.parent() {
             std::fs::create_dir_all(parent).map_err(ViewError::Io)?;
         }
@@ -1205,10 +1220,10 @@ impl SqlStore {
                 if is_lock_error(&e) {
                     return Err(ViewError::Duckdb(e));
                 }
-                return Self::recreate(file);
+                return Self::recreate(file, memory_limit);
             }
         };
-        let store = Self::adopt(conn, file)?;
+        let store = Self::adopt(conn, file, memory_limit)?;
         if fresh {
             store.conn.execute_batch(CACHE_SCHEMA_SQL)?;
             return Ok(store);
@@ -1222,18 +1237,18 @@ impl SqlStore {
             // Foreign schema version or unreadable ledger: delete, cold start.
             _ => {
                 drop(store);
-                Self::recreate(file)
+                Self::recreate(file, memory_limit)
             }
         }
     }
 
     /// Delete the file (and its WAL) and open a fresh, initialised one.
-    fn recreate(file: &Path) -> Result<SqlStore, ViewError> {
+    fn recreate(file: &Path, memory_limit: Option<u64>) -> Result<SqlStore, ViewError> {
         let _ = std::fs::remove_file(file);
         let _ = std::fs::remove_file(wal_path(file));
         let conn = open_sql_cache(file)?;
         conn.execute_batch(CACHE_SCHEMA_SQL)?;
-        Self::adopt(conn, file)
+        Self::adopt(conn, file, memory_limit)
     }
 
     /// Put the engine's instance-global configuration in force on a
@@ -1241,12 +1256,17 @@ impl SqlStore {
     /// baseline (see [`SqlStore::baseline`]). The one instant at which no
     /// caller can be holding a `SET` on this instance is before the store is
     /// published, which is here.
-    fn adopt(conn: Connection, file: &Path) -> Result<SqlStore, ViewError> {
+    fn adopt(
+        conn: Connection,
+        file: &Path,
+        memory_limit: Option<u64>,
+    ) -> Result<SqlStore, ViewError> {
         let mut store = SqlStore {
             conn,
             file: file.to_path_buf(),
             baseline: Arc::new(Vec::new()),
             policy: Arc::default(),
+            memory_limit,
         };
         apply_spill_containment(&store.conn, &store.spill_dir())?;
         // One completed 2,048-row group is eligible for optimistic disk
@@ -1256,6 +1276,11 @@ impl SqlStore {
             "SET write_buffer_row_group_count=1; SET allocator_flush_threshold='0B';",
         )?;
         apply_extension_gate(&store.conn)?;
+        if let Some(bytes) = memory_limit {
+            store
+                .conn
+                .execute_batch(&format!("SET memory_limit='{}KiB';", bytes.div_ceil(1024)))?;
+        }
         store.baseline = Arc::new(global_config_snapshot(&store.conn)?);
         Ok(store)
     }
@@ -1278,7 +1303,7 @@ impl SqlStore {
             Connection::open_in_memory()?,
         ));
         let conn = open_sql_cache(&self.file)?;
-        *self = Self::adopt(conn, &self.file)?;
+        *self = Self::adopt(conn, &self.file, self.memory_limit)?;
         Ok(())
     }
 
@@ -1381,7 +1406,7 @@ impl SqlStore {
                 return Ok(None);
             }
             if fingerprint_version(&p.fingerprint) != fingerprint_version(fingerprint) {
-                *self = Self::recreate(&self.file.clone())?;
+                *self = Self::recreate(&self.file.clone(), self.memory_limit)?;
                 pin = None;
             }
         }
@@ -2092,7 +2117,7 @@ impl SqlStore {
     ///
     /// # Errors
     /// The connection cannot be cloned, or `BEGIN` / the forcing read fails.
-    pub fn begin_read(&self) -> Result<SqlRead, ViewError> {
+    fn begin_read(&self) -> Result<SqlRead, ViewError> {
         self.policy.check()?;
         let conn = self.conn.try_clone()?;
         // `try_clone` shares the attached database instance but does not
@@ -2106,7 +2131,23 @@ impl SqlStore {
             conn,
             baseline: Arc::clone(&self.baseline),
             policy: Arc::clone(&self.policy),
+            hold: None,
         })
+    }
+
+    /// [`SqlStore::begin_read`] on a store its owner shares as `shared`, the
+    /// handle this store was locked through: the read keeps that handle
+    /// until it ends. An owner that closes a shared store once no handle but
+    /// its own is left therefore never closes one a read is still open on,
+    /// wherever the caller that opened the read drops its own handle
+    /// (merkle-spec §6.4).
+    ///
+    /// # Errors
+    /// As [`SqlStore::begin_read`].
+    pub fn begin_held_read(&self, shared: &Arc<Mutex<SqlStore>>) -> Result<SqlRead, ViewError> {
+        let mut read = self.begin_read()?;
+        read.hold = Some(Arc::clone(shared));
+        Ok(read)
     }
 
     /// Run one caller query through the rollback lane, start to finish, on a
@@ -2145,13 +2186,20 @@ impl SqlStore {
             // Prove the file is unheld before deleting it.
             drop(Connection::open(file)?);
         }
-        Self::recreate(file)
+        Self::recreate(file, None)
     }
 
     /// The cache file this store holds open.
     #[must_use]
     pub fn file(&self) -> &Path {
         &self.file
+    }
+
+    /// The `memory_limit` this store runs under, in bytes; `None` is
+    /// `DuckDB`'s default ([`SqlStore::open_limited`]).
+    #[must_use]
+    pub fn memory_limit(&self) -> Option<u64> {
+        self.memory_limit
     }
 
     /// The drawer-derived spill directory this store's instance is pointed at
@@ -2182,6 +2230,10 @@ pub struct SqlRead {
     conn: Connection,
     baseline: Arc<Vec<(String, String)>>,
     policy: Arc<InstancePolicy>,
+    /// The shared store this read was opened on
+    /// ([`SqlStore::begin_held_read`]); declared after `conn`, so the read's
+    /// connection is gone before the handle is released.
+    hold: Option<Arc<Mutex<SqlStore>>>,
 }
 
 impl std::fmt::Debug for SqlRead {
@@ -2265,6 +2317,16 @@ fn fingerprint_version(fingerprint: &str) -> &str {
 /// ([`crate::ViewError::is_held`], the one caller outside this module).
 pub(crate) fn is_lock_error(e: &duckdb::Error) -> bool {
     e.to_string().contains("Conflicting lock")
+}
+
+/// Is this `DuckDB` error its buffer manager refusing memory past the
+/// instance's `memory_limit`? Both of its refusals name the block it could
+/// not get ("failed to pin block of size", "could not allocate block of
+/// size"; `standard_buffer_manager.cpp`, v1.5.4).
+pub(crate) fn is_memory_limit_error(e: &duckdb::Error) -> bool {
+    let text = e.to_string();
+    text.contains("failed to pin block of size")
+        || text.contains("could not allocate block of size")
 }
 
 fn u64_len(n: usize) -> u64 {
@@ -3643,7 +3705,7 @@ pub(crate) mod tests {
     #[test]
     fn a_read_in_flight_does_not_hold_the_store() {
         let dir = tempfile::tempdir().expect("tmpdir");
-        let store = std::sync::Mutex::new(SqlStore::open(&tmp_store(&dir)).expect("open"));
+        let store = Mutex::new(SqlStore::open(&tmp_store(&dir)).expect("open"));
 
         let read = {
             let mut guard = store.lock().expect("lock");
@@ -4307,6 +4369,53 @@ mod config_scope_tests {
             .expect("lane")
             .expect("readback");
         rows[0][0].as_str().expect("value").to_owned()
+    }
+
+    /// A store opened under a limit runs under it, and a caller's own `SET`
+    /// lasts only that call (merkle-spec §6.4, the SQL memory policy).
+    #[test]
+    fn a_limited_store_keeps_its_memory_limit_past_a_callers_set() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open_limited(&tmp_store(&dir), Some(256 << 20)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        assert_eq!(next_caller_sees(&store, "memory_limit"), "256.0 MiB");
+        store
+            .query("SET memory_limit='1GB'")
+            .expect("lane")
+            .expect("the caller's own SET still succeeds");
+        assert_eq!(
+            next_caller_sees(&store, "memory_limit"),
+            "256.0 MiB",
+            "the caller's SET outlived its call"
+        );
+    }
+
+    /// A limited store keeps its limit whenever it reopens its file: when a
+    /// retired instance recovers, and when a domain-rule change recreates the
+    /// file (merkle-spec §6.4, rv-367 P3-3).
+    #[test]
+    fn a_limited_store_keeps_its_memory_limit_when_it_reopens_its_file() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open_limited(&tmp_store(&dir), Some(256 << 20)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        store
+            .query("SET lock_configuration=true")
+            .expect_err("a one-way lock retires the instance");
+        assert!(
+            sync_ambient(&mut store, &fixture_v1(), "b3b:v1").is_none(),
+            "the next sync recovers the instance"
+        );
+        assert_eq!(
+            next_caller_sees(&store, "memory_limit"),
+            "256.0 MiB",
+            "the recovered instance lost the limit"
+        );
+        sync_ambient(&mut store, &fixture_v1(), "b3c:v1").expect("a rule change recreates");
+        assert_eq!(
+            next_caller_sees(&store, "memory_limit"),
+            "256.0 MiB",
+            "the recreated file lost the limit"
+        );
     }
 
     /// The defect itself, at the grain the card measured it: call 1 sets, call

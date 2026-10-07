@@ -124,6 +124,13 @@ impl Slot {
     }
 }
 
+/// One workspace's open SQL cache and the tick of its last use.
+#[derive(Debug)]
+struct SqlHandle {
+    store: Arc<Mutex<view::store::SqlStore>>,
+    used: u64,
+}
+
 /// Daemon workspace registry: guarded map, state store, drawer cache root.
 ///
 /// `engines` is resident query state (U1): warm `WorkspaceEngine` per workspace,
@@ -177,7 +184,14 @@ pub struct Registry {
     /// dies on idle-reap with the engine; the FILE deliberately survives —
     /// its pin is content-derived, so trusting it across the gap is sound
     /// (re-warm compares fingerprints before serving).
-    sql_stores: Mutex<HashMap<PathBuf, Arc<Mutex<view::store::SqlStore>>>>,
+    /// Each handle carries the tick of its last use, so a host's
+    /// [`crate::residency::SqlBudget`] closes the least recently used one.
+    sql_stores: Mutex<HashMap<PathBuf, SqlHandle>>,
+    /// The tick [`Self::sql_store`] stamps a handle with.
+    sql_clock: AtomicU64,
+    /// The SQL memory policy, set with a residency host; `None` keeps every
+    /// cache open under `DuckDB`'s default (merkle-spec §6.4).
+    sql_budget: Option<crate::residency::SqlBudget>,
     /// G11 activity clock: request count + last request unix secs. Pre-warm
     /// backoff and idle-exit both read this.
     requests: AtomicU64,
@@ -987,6 +1001,8 @@ impl Registry {
             // Cold: no open sql handles; first `sql` op opens (or cold-builds)
             // each workspace's file.
             sql_stores: Mutex::new(HashMap::new()),
+            sql_clock: AtomicU64::new(0),
+            sql_budget: None,
             // Cold: no restore has run; each workspace's first resident memo
             // records its own receipt.
             checkpoints: Mutex::new(HashMap::new()),
@@ -1028,6 +1044,9 @@ impl Registry {
     /// Build every engine generation through `host` (merkle-spec §6.8).
     #[must_use]
     pub(crate) fn with_residency(mut self, host: Option<Arc<crate::residency::Host>>) -> Self {
+        self.sql_budget = host.as_ref().and_then(|host| {
+            crate::residency::SqlBudget::for_budget(host.controller.report().limit)
+        });
         self.residency = host;
         self
     }
@@ -1784,17 +1803,51 @@ impl Registry {
         &self,
         workspace: &Path,
     ) -> Result<Arc<Mutex<view::store::SqlStore>>, view::ViewError> {
+        let tick = self.sql_clock.fetch_add(1, Ordering::Relaxed);
         let mut stores = self
             .sql_stores
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(store) = stores.get(workspace) {
-            return Ok(Arc::clone(store));
+        // A hit's handle is taken first: its count is then above one, so the
+        // close below passes over it.
+        let hit = stores.get_mut(workspace).map(|handle| {
+            handle.used = tick;
+            Arc::clone(&handle.store)
+        });
+        let budget = self.sql_budget;
+        if let Some(budget) = budget {
+            // Every call, hit or miss, closes least recently used caches no
+            // query holds until the count leaves room for the one it serves —
+            // under the map lock: the closed instance is gone before anyone
+            // can reattach its file, so this close never gives one file two
+            // instances. A cache in use stays open, past the count, until a
+            // later call finds it free.
+            while stores.len() + usize::from(hit.is_none()) > budget.open_caches {
+                let idle = stores
+                    .iter()
+                    .filter(|(_, handle)| Arc::strong_count(&handle.store) == 1)
+                    .min_by_key(|(_, handle)| handle.used)
+                    .map(|(key, _)| key.clone());
+                let Some(key) = idle else { break };
+                drop(stores.remove(&key));
+            }
+        }
+        if let Some(store) = hit {
+            return Ok(store);
         }
         let drawer = cache::drawer_dir(&self.cache_root, workspace);
-        let store = view::store::SqlStore::open(&drawer.join(view::store::SQL_CACHE_FILENAME))?;
+        let store = view::store::SqlStore::open_limited(
+            &drawer.join(view::store::SQL_CACHE_FILENAME),
+            budget.map(|budget| budget.cache_limit),
+        )?;
         let store = Arc::new(Mutex::new(store));
-        stores.insert(workspace.to_path_buf(), Arc::clone(&store));
+        stores.insert(
+            workspace.to_path_buf(),
+            SqlHandle {
+                store: Arc::clone(&store),
+                used: tick,
+            },
+        );
         Ok(store)
     }
 
@@ -4913,6 +4966,242 @@ mod engine_tests {
             drawer.join(view::store::SQL_CACHE_FILENAME).exists(),
             "the fresh handle's file is back in the drawer"
         );
+    }
+
+    /// The memory limit a registry's open SQL cache for `ws` runs under.
+    fn sql_memory_limit(reg: &Registry, ws: &Path) -> String {
+        let store = reg.sql_store(ws).expect("the sql cache opens");
+        let store = store.lock().unwrap();
+        store
+            .connection()
+            .query_row("SELECT current_setting('memory_limit')::VARCHAR", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap()
+    }
+
+    /// Three registered workspaces under `home`, canonical.
+    fn three_workspaces(reg: &Registry, home: &Path) -> Vec<PathBuf> {
+        ["a", "b", "c"]
+            .iter()
+            .map(|name| {
+                let ws = home.join(name);
+                fs::create_dir_all(&ws).unwrap();
+                fs::write(ws.join("a.md"), "# A\n").unwrap();
+                let canonical = workspace::canonicalize(&ws).unwrap();
+                reg.register(&canonical);
+                canonical
+            })
+            .collect()
+    }
+
+    /// With a host of budget B the registry keeps at most
+    /// max(1, (B/4) / 256 MiB) SQL caches open, closing the least recently
+    /// used one's handle, and each runs under 256 MiB (merkle-spec §6.4, the
+    /// SQL memory policy). B = 2 GiB: two caches.
+    #[test]
+    fn a_host_bounds_the_open_sql_caches_and_closes_the_least_recently_used() {
+        let home = tempfile::tempdir().unwrap();
+        let cache_root = home.path().join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let host = Arc::new(crate::residency::Host::new(
+            crate::residency::controller::Controller::new(2 << 30),
+            crate::raw_store::RawStore::new(&home.path().join("backing")).unwrap(),
+        ));
+        let reg = Registry::new(
+            StateStore::new(home.path().join("state.json")),
+            cache_root,
+            Vec::new(),
+        )
+        .with_residency(Some(host));
+        let ws = three_workspaces(&reg, home.path());
+        reg.sql_store(&ws[0]).unwrap();
+        reg.sql_store(&ws[1]).unwrap();
+        reg.sql_store(&ws[0]).unwrap();
+        reg.sql_store(&ws[2]).unwrap();
+        {
+            let open = reg.sql_stores.lock().unwrap();
+            assert!(
+                open.contains_key(&ws[0]) && open.contains_key(&ws[2]),
+                "the two most recently used caches stay open"
+            );
+            assert!(
+                !open.contains_key(&ws[1]),
+                "the least recently used one is closed"
+            );
+        }
+        assert_eq!(sql_memory_limit(&reg, &ws[2]), "256.0 MiB");
+    }
+
+    /// A cache a query holds is never closed, so its file never gets a
+    /// second instance: the new cache opens past the count, and a later open
+    /// closes back down to it once they are free (merkle-spec §6.4).
+    #[test]
+    fn a_host_never_closes_an_sql_cache_a_query_holds() {
+        let home = tempfile::tempdir().unwrap();
+        let cache_root = home.path().join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let host = Arc::new(crate::residency::Host::new(
+            crate::residency::controller::Controller::new(2 << 30),
+            crate::raw_store::RawStore::new(&home.path().join("backing")).unwrap(),
+        ));
+        let reg = Registry::new(
+            StateStore::new(home.path().join("state.json")),
+            cache_root,
+            Vec::new(),
+        )
+        .with_residency(Some(host));
+        let ws = three_workspaces(&reg, home.path());
+        let held = [
+            reg.sql_store(&ws[0]).unwrap(),
+            reg.sql_store(&ws[1]).unwrap(),
+        ];
+        reg.sql_store(&ws[2]).unwrap();
+        assert_eq!(
+            reg.sql_stores.lock().unwrap().len(),
+            3,
+            "both held caches stay open past the count"
+        );
+        drop(held);
+        let extra = home.path().join("d");
+        fs::create_dir_all(&extra).unwrap();
+        fs::write(extra.join("a.md"), "# A\n").unwrap();
+        let extra = workspace::canonicalize(&extra).unwrap();
+        reg.register(&extra);
+        reg.sql_store(&extra).unwrap();
+        let open = reg.sql_stores.lock().unwrap();
+        assert_eq!(open.len(), 2, "the next open closes back down to the count");
+        assert!(open.contains_key(&ws[2]) && open.contains_key(&extra));
+    }
+
+    /// A registry over `home` whose host budget keeps two SQL caches open.
+    fn two_cache_registry(home: &Path) -> Registry {
+        let cache_root = home.join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let host = Arc::new(crate::residency::Host::new(
+            crate::residency::controller::Controller::new(2 << 30),
+            crate::raw_store::RawStore::new(&home.join("backing")).unwrap(),
+        ));
+        Registry::new(
+            StateStore::new(home.join("state.json")),
+            cache_root,
+            Vec::new(),
+        )
+        .with_residency(Some(host))
+    }
+
+    /// A hit's close passes over a cache another query holds, as a miss's
+    /// does: the held one stays open and the idle one closes (merkle-spec
+    /// §6.4, rv-367b P3-1).
+    #[test]
+    fn a_hit_never_closes_a_cache_another_query_holds() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = two_cache_registry(home.path());
+        let ws = three_workspaces(&reg, home.path());
+        let mut held: Vec<_> = ws.iter().map(|w| reg.sql_store(w).unwrap()).collect();
+        held.truncate(1);
+        reg.sql_store(&ws[2]).unwrap();
+        let open = reg.sql_stores.lock().unwrap();
+        assert!(
+            open.contains_key(&ws[0]),
+            "the cache a query holds stays open"
+        );
+        assert!(open.contains_key(&ws[2]), "the hit's own cache stays open");
+        assert!(
+            !open.contains_key(&ws[1]),
+            "the idle cache is the one closed"
+        );
+    }
+
+    /// A hit's close never takes the cache the hit returns, even while every
+    /// other cache is held and the count is exceeded (rv-367b P3-1).
+    #[test]
+    fn a_hit_never_closes_its_own_cache() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = two_cache_registry(home.path());
+        let ws = three_workspaces(&reg, home.path());
+        let mut held: Vec<_> = ws.iter().map(|w| reg.sql_store(w).unwrap()).collect();
+        held.truncate(2);
+        let hit = reg.sql_store(&ws[2]).unwrap();
+        let open = reg.sql_stores.lock().unwrap();
+        assert_eq!(open.len(), 3, "nothing is free to close");
+        assert!(
+            open.get(&ws[2])
+                .is_some_and(|handle| Arc::ptr_eq(&handle.store, &hit)),
+            "the map still holds the handle the hit returned"
+        );
+    }
+
+    /// A read is the hold on its cache: once the call that opened it has
+    /// dropped its own handle, the close still passes over the cache until
+    /// the read ends (merkle-spec §6.4, rv-367 P3-2, rv-367b P3-1).
+    #[test]
+    fn a_read_keeps_its_cache_open_after_its_opener_drops_the_handle() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = two_cache_registry(home.path());
+        let ws = three_workspaces(&reg, home.path());
+        let store = reg.sql_store(&ws[0]).unwrap();
+        let read = store.lock().unwrap().begin_held_read(&store).unwrap();
+        drop(store);
+        reg.sql_store(&ws[1]).unwrap();
+        reg.sql_store(&ws[2]).unwrap();
+        assert!(
+            reg.sql_stores.lock().unwrap().contains_key(&ws[0]),
+            "a cache with a read open on it stays open past the count"
+        );
+        drop(read);
+        reg.sql_store(&ws[1]).unwrap();
+        let open = reg.sql_stores.lock().unwrap();
+        assert_eq!(open.len(), 2, "the read's end frees its cache to close");
+        assert!(!open.contains_key(&ws[0]));
+    }
+
+    /// Caches held past the count close back down to it on the next `sql`
+    /// call even when that call's cache is open already: a hit closes the
+    /// least recently used idle ones too (merkle-spec §6.4, rv-367 P2-1).
+    #[test]
+    fn a_hit_closes_held_caches_back_down_to_the_count_once_they_are_free() {
+        let home = tempfile::tempdir().unwrap();
+        let cache_root = home.path().join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let host = Arc::new(crate::residency::Host::new(
+            crate::residency::controller::Controller::new(2 << 30),
+            crate::raw_store::RawStore::new(&home.path().join("backing")).unwrap(),
+        ));
+        let reg = Registry::new(
+            StateStore::new(home.path().join("state.json")),
+            cache_root,
+            Vec::new(),
+        )
+        .with_residency(Some(host));
+        let ws = three_workspaces(&reg, home.path());
+        let held: Vec<_> = ws.iter().map(|w| reg.sql_store(w).unwrap()).collect();
+        assert_eq!(
+            reg.sql_stores.lock().unwrap().len(),
+            3,
+            "every held cache opens past the count"
+        );
+        drop(held);
+        reg.sql_store(&ws[2]).unwrap();
+        let open = reg.sql_stores.lock().unwrap();
+        assert_eq!(open.len(), 2, "a hit closes back down to the count");
+        assert!(
+            !open.contains_key(&ws[0]),
+            "the least recently used idle cache is the one closed"
+        );
+    }
+
+    /// Without a host every SQL cache stays open under `DuckDB`'s default.
+    #[test]
+    fn without_a_host_every_sql_cache_stays_open_under_duckdbs_default() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = three_workspaces(&reg, home.path());
+        for w in &ws {
+            reg.sql_store(w).unwrap();
+        }
+        assert_eq!(reg.sql_stores.lock().unwrap().len(), 3);
+        assert_ne!(sql_memory_limit(&reg, &ws[0]), "256.0 MiB");
     }
 
     /// The suspicious-only door piggybacks on the next borrow: a named

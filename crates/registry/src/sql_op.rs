@@ -15,7 +15,7 @@
 //!
 //! **Where the workspace's store mutex opens and closes.** It covers the
 //! append and the opening of this call's read — [`view::store::SqlStore::sync`]
-//! then [`view::store::SqlStore::begin_read`] — and it is released before the
+//! then [`view::store::SqlStore::begin_held_read`] — and it is released before the
 //! caller's statement runs. The read owns a connection of its own on the same
 //! `DuckDB` instance, with its snapshot pinned under the lock, so the answer
 //! is as fresh as the `as_of` it reports while the
@@ -45,7 +45,7 @@ use crate::Registry;
 ///
 /// The value's two edges, and the window between them:
 /// - **Floor — the legitimate hold.** One holder occupies the store for
-///   `sync()` + [`view::store::SqlStore::begin_read`], because a fingerprint
+///   `sync()` + [`view::store::SqlStore::begin_held_read`], because a fingerprint
 ///   advance makes the next call fold the delta. The floor on record was
 ///   measured against the OLDER, larger hold that also spanned the caller's
 ///   query: over a 47,185-file corpus under continuous fleet writes, sampled
@@ -289,6 +289,10 @@ pub(crate) fn serve(
         fold: &w.fold,
     });
 
+    // The registry's least-recently-used close counts a query as holding the
+    // cache through this `Arc`. The read below takes its own clone of it
+    // (`begin_held_read`), so the cache stays held until the read ends
+    // (merkle-spec §6.4).
     let store = registry
         .sql_store(ws)
         .map_err(|e| io_error(format!("cannot open the sql cache: {e}")))?;
@@ -303,19 +307,19 @@ pub(crate) fn serve(
     // holder, while the same probe on a DIFFERENT workspace served in 70 ms
     // through the same daemon).
     let read = {
-        let mut store = lock_store_bounded(&store, ws, SQL_STORE_WAIT)?;
-        store
-            .sync_catalog(
-                generation,
-                &corpus,
-                Some(mounts.set()),
-                Some(&exclusion),
-                &engine.at_fingerprint.0,
-                base.as_ref(),
-            )
-            .map_err(|e| store_error("cannot append to the sql cache", e))?;
-        store
-            .begin_read()
+        let mut guard = lock_store_bounded(&store, ws, SQL_STORE_WAIT)?;
+        if let Err(error) = guard.sync_catalog(
+            generation,
+            &corpus,
+            Some(mounts.set()),
+            Some(&exclusion),
+            &engine.at_fingerprint.0,
+            base.as_ref(),
+        ) {
+            return Err(append_error(guard.memory_limit(), error));
+        }
+        guard
+            .begin_held_read(&store)
             .map_err(|e| store_error("cannot open a read on the sql cache", e))?
     };
 
@@ -385,6 +389,31 @@ fn store_error(context: &str, error: view::ViewError) -> Box<ErrorBody> {
     Box::new(error)
 }
 
+/// An append the store refused, under the store's `memory_limit` (`None`:
+/// `DuckDB`'s default). A refusal for memory under a limit names that limit
+/// (merkle-spec §6.4) and keeps only `DuckDB`'s first line: its advice — a
+/// `SET memory_limit`, fewer threads — cannot help, since the append runs
+/// before the caller's statement and a caller's `SET` lasts one call.
+fn append_error(limit: Option<u64>, error: view::ViewError) -> Box<ErrorBody> {
+    const CONTEXT: &str = "cannot append to the sql cache";
+    match limit {
+        Some(limit) if error.is_memory_limit() => {
+            let text = error.to_string();
+            let refusal = text.lines().next().unwrap_or_default();
+            io_error(format!(
+                "{CONTEXT}: the append needs more memory than the {} MiB limit the residency \
+                 host sets on each sql cache, which every query running on this workspace \
+                 shares ({refusal}); a caller's SET cannot raise it. If another sql query on \
+                 this workspace is running, the first call after it ends can append; with none \
+                 running, every sql call on this workspace is refused until the page that \
+                 outgrows the limit shrinks or leaves",
+                limit >> 20
+            ))
+        }
+        _ => store_error(CONTEXT, error),
+    }
+}
+
 fn io_error(cause: String) -> Box<ErrorBody> {
     let mut e = ErrorBody::new(ErrorCode::IoError);
     e.cause = Some(cause);
@@ -393,7 +422,7 @@ fn io_error(cause: String) -> Box<ErrorBody> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SQL_STORE_WAIT, lock_store_bounded, store_error};
+    use super::{SQL_STORE_WAIT, append_error, lock_store_bounded, store_error};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -509,5 +538,57 @@ mod tests {
         );
         drop(outcome);
         handle.join().unwrap();
+    }
+
+    /// A page whose rows outgrow the store's limit is refused naming that
+    /// limit, without `DuckDB`'s advice to raise it (merkle-spec §6.4, rv-367
+    /// P3-4). A long heading over short sections repeats its text in every
+    /// row's hpath: 64 KiB of it is refused at 64 MiB, so at 16 MiB too.
+    #[test]
+    fn an_append_past_the_store_limit_names_the_limit() {
+        let mut raw = format!("# {}\n\n", "h".repeat(32 << 10));
+        while raw.len() < 64 << 10 {
+            raw.push_str("##\n");
+        }
+        let docs: model::Docs = [(
+            "a.md".to_owned(),
+            Arc::new(model::build(raw.clone(), syntax::parse(&raw))),
+        )]
+        .into_iter()
+        .collect();
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = view::store::SqlStore::open_limited(
+            &dir.path().join(view::store::SQL_CACHE_FILENAME),
+            Some(16 << 20),
+        )
+        .unwrap();
+        let error = store
+            .sync(
+                &docs,
+                &model::RootedCorpus::ambient(&docs),
+                None,
+                None,
+                "b3b:v1",
+                None,
+            )
+            .expect_err("the page's rows outgrow 16 MiB");
+
+        let refused = append_error(store.memory_limit(), error);
+        assert_eq!(refused.code, ErrorCode::IoError);
+        let cause = refused.cause.as_deref().unwrap_or_default();
+        assert!(
+            cause.contains("16 MiB") && cause.contains("residency host"),
+            "the cause names the host's per-cache limit: {cause}"
+        );
+        assert!(
+            !cause.contains("Possible solutions"),
+            "no advice a caller cannot apply: {cause}"
+        );
+        assert!(
+            cause.contains("which every query running on this workspace shares")
+                && cause.contains("the first call after it ends can append")
+                && cause.contains("with none running, every sql call on this workspace is refused"),
+            "the cause tells a refusal a running query causes from a page too large alone: {cause}"
+        );
     }
 }

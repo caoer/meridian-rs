@@ -543,9 +543,15 @@ member version is parsed; a question they answer never pins a body. The memo, fe
 resident for a subscribed root. A cold member is still a member: eviction
 cannot change a fingerprint, name resolution, a scan's coverage, or a node rev.
 
-`MRD_MAX_RESIDENT_BYTES` is a process-wide budget in allocated bytes of
-registry-managed corpus and subscription state, shared across roots. `0`
-disables it. The accounting separates three owners: the non-sheddable
+`MRD_RESIDENCY_HOST_BYTES` is the residency host's budget: a process-wide
+budget in allocated bytes of registry-managed corpus and subscription state,
+shared across roots. Unset or `0` installs no host: the daemon keeps the
+eager engine, and `MRD_MAX_RESIDENT_BYTES` keeps its own meaning there, the
+estimated budget of whole-workspace eviction. A positive value installs one
+host, one controller with that limit and one raw store, and every engine
+generation and watcher baseline is built through it; the budget sweep then
+runs on the floor and does not read `MRD_MAX_RESIDENT_BYTES`. A value that is
+not a whole number of bytes refuses at start. The accounting separates three owners: the non-sheddable
 substrate above; pinned bodies being used by operations; and reclaimable raw
 bodies/parse trees. Charge shared allocations once, including a body shared
 between the query corpus and watcher. Count string/vector capacities, recursively owned node data,
@@ -555,8 +561,41 @@ is not the unit. The counting-allocator probe
 against actual allocation/deallocation, with RSS+swap alongside it.
 Allocator bookkeeping, retained free pages, thread stacks, compiled run
 modules and native SQL allocations are separate process costs, so fitting
-this budget alone cannot prove a process RSS limit. SQL retains its own
-memory policy.
+this budget alone cannot prove a process RSS limit.
+
+SQL keeps its own memory policy, bounded when a host is installed. Each
+workspace's SQL cache is its own `DuckDB` instance with its own buffer pool.
+Without a host each keeps `DuckDB`'s default `memory_limit` (80% of RAM).
+With a host of budget B, each runs under a `memory_limit` of 256 MiB, set when
+it opens and before its restore baseline is taken, so a caller's own `SET`
+lasts only that call; and the registry keeps at most
+max(1, ⌊(B/4) / 256 MiB⌋) caches open: every `sql` call, whether its cache
+is open already or not, first closes the least recently used caches that no
+query holds until the count leaves room for the one it serves, and keeps
+their files, which a later query reattaches. This close never takes a cache
+a query holds, so it never gives one file two instances; while every open
+cache is in use a new one opens past the count, and the next `sql` call
+after they are released closes back down to it. The pools' limits therefore
+sum to at most max(256 MiB, B/4) plus the caches queries hold beyond the
+count. Unregistering a workspace, the idle reap and an eviction drop the
+registry's handle whether or not a query holds it: a query still running
+keeps its instance, and the next `sql` call on that workspace attaches the
+file a second time while it runs. 256 MiB is the
+smallest limit under which every measured shape builds its cache; a page
+whose stored rows outgrow it several times over (the long-heading shape
+below, past about 128 KiB) is refused by the `sql` door, as an `io_error`
+whose cause names the per-cache limit. The append shares the cache's limit
+with every query running on that workspace, so a page that fits alone is
+refused while a heavy query holds the memory, and the first call after that
+query ends appends it. A page that outgrows the limit by itself is refused
+on every `sql` call on that workspace until it shrinks or leaves: the append
+runs before the caller's statement, so a caller's `SET` cannot raise the
+limit for it. A read is itself a hold on its cache: it keeps the shared
+handle until it ends, so the close above passes over a cache whose query is
+still running wherever the call that opened the read stands. The pool is not on
+the controller's ledger: a query's peak falls between censuses, and shedding
+`DuckDB`'s cache through the floor would evict a whole workspace where the
+limit lets `DuckDB` drop the same pages itself.
 
 The allocation census is split at ownership boundaries. `model::allocation`
 counts raw buffers (including their shared-owner allocation) separately from
@@ -910,7 +949,7 @@ references when that row is loaded, one row at a time, and dropped once loaded.
 So the projection stages a page in proportion to the page. The `hpath` columns,
 their text, the cache's tables and every query are unchanged. The text
 `DuckDB` stores for an amplifying page (rows times chain length) sits on disk
-and in `DuckDB`'s buffer pool, under its `memory_limit`.
+and in `DuckDB`'s buffer pool, under the SQL memory policy above.
 
 At admission and after releasing operation pins, shed the least recently
 used unpinned member versions across all workspaces until the charged total
@@ -973,7 +1012,10 @@ checksum. `fs` receives a byte-source capability; it does not acquire registry
 or cache dependencies. Publish a handle only after its complete record can
 be read and checked. Keep a segment while any serving descriptor, baseline or
 operation references it; reclaim obsolete segments, compacting live records
-in bounded chunks without invalidating live handles.
+in bounded chunks without invalidating live handles. The daemon's host keeps
+its store under `<cache-root>/registry/backing/`; holding the singleton lock
+at start, it removes every store directory an earlier process left there
+before it creates its own.
 
 The raw-store primitive (`crates/registry/src/raw_store.rs`) retains identity,
 length and a relocatable record handle, never a second in-memory body. Its
