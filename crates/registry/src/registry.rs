@@ -5074,6 +5074,88 @@ mod engine_tests {
         assert!(open.contains_key(&ws[2]) && open.contains_key(&extra));
     }
 
+    /// A registry over `home` whose host budget keeps two SQL caches open.
+    fn two_cache_registry(home: &Path) -> Registry {
+        let cache_root = home.join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let host = Arc::new(crate::residency::Host::new(
+            crate::residency::controller::Controller::new(2 << 30),
+            crate::raw_store::RawStore::new(&home.join("backing")).unwrap(),
+        ));
+        Registry::new(
+            StateStore::new(home.join("state.json")),
+            cache_root,
+            Vec::new(),
+        )
+        .with_residency(Some(host))
+    }
+
+    /// A hit's close passes over a cache another query holds, as a miss's
+    /// does: the held one stays open and the idle one closes (merkle-spec
+    /// §6.4, rv-367b P3-1).
+    #[test]
+    fn a_hit_never_closes_a_cache_another_query_holds() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = two_cache_registry(home.path());
+        let ws = three_workspaces(&reg, home.path());
+        let mut held: Vec<_> = ws.iter().map(|w| reg.sql_store(w).unwrap()).collect();
+        held.truncate(1);
+        reg.sql_store(&ws[2]).unwrap();
+        let open = reg.sql_stores.lock().unwrap();
+        assert!(
+            open.contains_key(&ws[0]),
+            "the cache a query holds stays open"
+        );
+        assert!(open.contains_key(&ws[2]), "the hit's own cache stays open");
+        assert!(
+            !open.contains_key(&ws[1]),
+            "the idle cache is the one closed"
+        );
+    }
+
+    /// A hit's close never takes the cache the hit returns, even while every
+    /// other cache is held and the count is exceeded (rv-367b P3-1).
+    #[test]
+    fn a_hit_never_closes_its_own_cache() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = two_cache_registry(home.path());
+        let ws = three_workspaces(&reg, home.path());
+        let mut held: Vec<_> = ws.iter().map(|w| reg.sql_store(w).unwrap()).collect();
+        held.truncate(2);
+        let hit = reg.sql_store(&ws[2]).unwrap();
+        let open = reg.sql_stores.lock().unwrap();
+        assert_eq!(open.len(), 3, "nothing is free to close");
+        assert!(
+            open.get(&ws[2])
+                .is_some_and(|handle| Arc::ptr_eq(&handle.store, &hit)),
+            "the map still holds the handle the hit returned"
+        );
+    }
+
+    /// A read is the hold on its cache: once the call that opened it has
+    /// dropped its own handle, the close still passes over the cache until
+    /// the read ends (merkle-spec §6.4, rv-367 P3-2, rv-367b P3-1).
+    #[test]
+    fn a_read_keeps_its_cache_open_after_its_opener_drops_the_handle() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = two_cache_registry(home.path());
+        let ws = three_workspaces(&reg, home.path());
+        let store = reg.sql_store(&ws[0]).unwrap();
+        let read = store.lock().unwrap().begin_read().unwrap();
+        drop(store);
+        reg.sql_store(&ws[1]).unwrap();
+        reg.sql_store(&ws[2]).unwrap();
+        assert!(
+            reg.sql_stores.lock().unwrap().contains_key(&ws[0]),
+            "a cache with a read open on it stays open past the count"
+        );
+        drop(read);
+        reg.sql_store(&ws[1]).unwrap();
+        let open = reg.sql_stores.lock().unwrap();
+        assert_eq!(open.len(), 2, "the read's end frees its cache to close");
+        assert!(!open.contains_key(&ws[0]));
+    }
+
     /// Caches held past the count close back down to it on the next `sql`
     /// call even when that call's cache is open already: a hit closes the
     /// least recently used idle ones too (merkle-spec §6.4, rv-367 P2-1).

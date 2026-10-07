@@ -584,5 +584,11 @@ mod tests {
             !cause.contains("Possible solutions"),
             "no advice a caller cannot apply: {cause}"
         );
+        assert!(
+            cause.contains("which every query running on this workspace shares")
+                && cause.contains("the first call after it ends can append")
+                && cause.contains("with none running, every sql call on this workspace is refused"),
+            "the cause tells a refusal a running query causes from a page too large alone: {cause}"
+        );
     }
 }
