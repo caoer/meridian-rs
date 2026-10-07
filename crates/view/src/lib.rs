@@ -355,6 +355,95 @@ pub(crate) struct Rows {
     pub(crate) base_view: Vec<Vec<Value>>,
     pub(crate) base_formula: Vec<Vec<Value>>,
     pub(crate) body: Vec<Vec<Value>>,
+    /// One per `section` row: its own segment and its parent's row. A staged
+    /// `section`, `task` or `body` row holds NULL in its `hpath` cell; the
+    /// loader renders the text from these one row at a time
+    /// ([`Rows::section_row`]), so staging a page never copies a heading per
+    /// descendant row (merkle-spec §6.4, "The SQL projection keeps it").
+    pub(crate) section_addr: Vec<SectionAddr>,
+    /// One per `task` row: the governing section's row, `None` at document level.
+    pub(crate) task_section: Vec<Option<usize>>,
+    /// One per `body` row: the owning section's row, `None` on the preamble.
+    pub(crate) body_section: Vec<Option<usize>>,
+}
+
+/// A staged section's address: its own segment as the `hpath` JSON spells
+/// it, and the row of the section that contains it.
+pub(crate) struct SectionAddr {
+    pub(crate) seg: String,
+    pub(crate) parent: Option<usize>,
+}
+
+/// The `hpath` cell's column in a staged `section`, `task` and `body` row.
+pub(crate) const SECTION_COL_HPATH: usize = 2;
+pub(crate) const TASK_COL_HPATH: usize = 5;
+pub(crate) const BODY_COL_HPATH: usize = 3;
+
+impl Rows {
+    /// Stage one `section` row (its `hpath` cell NULL) with its address.
+    pub(crate) fn push_section(&mut self, row: Vec<Value>, addr: SectionAddr) {
+        self.section.push(row);
+        self.section_addr.push(addr);
+    }
+
+    /// Stage one `task` row (its `hpath` cell NULL) under section row `gov`.
+    pub(crate) fn push_task(&mut self, row: Vec<Value>, gov: Option<usize>) {
+        self.task.push(row);
+        self.task_section.push(gov);
+    }
+
+    /// Stage one `body` row (its `hpath` cell NULL) under section row `gov`.
+    pub(crate) fn push_body(&mut self, row: Vec<Value>, gov: Option<usize>) {
+        self.body.push(row);
+        self.body_section.push(gov);
+    }
+
+    /// The machine address of staged section row `row`, rendered from its own
+    /// segment and its ancestors' ([`hpath_json`]'s spelling).
+    pub(crate) fn hpath_of(&self, row: usize) -> String {
+        let mut chain = Vec::with_capacity(6);
+        let mut at = Some(row);
+        while let Some(i) = at {
+            chain.push(i);
+            at = self.section_addr[i].parent;
+        }
+        let len = chain
+            .iter()
+            .map(|&i| self.section_addr[i].seg.len() + 1)
+            .sum::<usize>()
+            + 1;
+        let mut out = String::with_capacity(len);
+        out.push('[');
+        for (k, &i) in chain.iter().rev().enumerate() {
+            if k > 0 {
+                out.push(',');
+            }
+            out.push_str(&self.section_addr[i].seg);
+        }
+        out.push(']');
+        out
+    }
+
+    fn rendered(&self, row: &[Value], col: usize, gov: Option<usize>) -> Vec<Value> {
+        let mut out = row.to_vec();
+        out[col] = gov.map_or(Value::Null, |i| Value::Text(self.hpath_of(i)));
+        out
+    }
+
+    /// Staged `section` row `i` as loaded: its `hpath` rendered.
+    pub(crate) fn section_row(&self, i: usize) -> Vec<Value> {
+        self.rendered(&self.section[i], SECTION_COL_HPATH, Some(i))
+    }
+
+    /// Staged `task` row `i` as loaded: its section's `hpath`, or NULL.
+    pub(crate) fn task_row(&self, i: usize) -> Vec<Value> {
+        self.rendered(&self.task[i], TASK_COL_HPATH, self.task_section[i])
+    }
+
+    /// Staged `body` row `i` as loaded: its section's `hpath`, or NULL.
+    pub(crate) fn body_row(&self, i: usize) -> Vec<Value> {
+        self.rendered(&self.body[i], BODY_COL_HPATH, self.body_section[i])
+    }
 }
 
 /// One segment of a section's published machine address: raw heading text plus
@@ -405,21 +494,34 @@ fn child_segs(node: &Node) -> Vec<Option<AddrSeg>> {
 /// space-padded ` / ` join could not address (read splits on `/` and refused
 /// its padded segments), and duplicate siblings rendered identically.
 pub(crate) fn hpath_json(chain: &[AddrSeg]) -> String {
-    use std::fmt::Write as _;
     let mut out = String::from("[");
     for (i, seg) in chain.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
-        out.push_str("{\"h\":");
-        out.push_str(&serde_json::Value::String(seg.h.clone()).to_string());
-        if let Some(n) = seg.n {
-            let _ = write!(out, ",\"n\":{n}");
-        }
-        out.push('}');
+        out.push_str(&seg_json(seg));
     }
     out.push(']');
     out
+}
+
+/// One segment of [`hpath_json`]: `{"h":…}`, with `,"n":k` on ambiguity.
+pub(crate) fn seg_json(seg: &AddrSeg) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("{\"h\":");
+    out.push_str(&serde_json::Value::String(seg.h.clone()).to_string());
+    if let Some(n) = seg.n {
+        let _ = write!(out, ",\"n\":{n}");
+    }
+    out.push('}');
+    out
+}
+
+/// The section a node sits under: its `node_seq` and its staged row.
+#[derive(Clone, Copy)]
+struct Gov {
+    seq: u64,
+    row: usize,
 }
 
 /// Emit `doc` row and walk the node tree.
@@ -453,7 +555,7 @@ pub(crate) fn collect_doc(
         doc,
         index,
         None,
-        &[],
+        None,
         &mut counters,
         rows,
         corpus,
@@ -490,14 +592,14 @@ fn emit_preamble(
     push_body_chunk(path, seq, None, None, start..end, doc, rows);
 }
 
-/// Stage one `body` row. `section` carries the owning section's
-/// `(node_seq, hpath-chain)` and its CAS token; `None` for preamble. The text
+/// Stage one `body` row. `section` is the owning section (its CAS token in
+/// `node_rev`); `None` for preamble. The text
 /// slice is byte-exact: chunk boundaries are line-aligned by construction, so
 /// the expect is an engine-bug trap, never a data path.
 fn push_body_chunk(
     path: &str,
     seq: u64,
-    section: Option<(u64, &[AddrSeg])>,
+    section: Option<Gov>,
     node_rev: Option<&str>,
     span: std::ops::Range<usize>,
     doc: &Document,
@@ -507,48 +609,58 @@ fn push_body_chunk(
         .raw
         .get(span.start..span.end)
         .expect("body chunk boundaries are line-aligned");
-    rows.body.push(vec![
-        Value::Text(path.to_string()),
-        Value::UBigInt(seq),
-        section.map_or(Value::Null, |(n, _)| Value::UBigInt(n)),
-        section.map_or(Value::Null, |(_, chain)| Value::Text(hpath_json(chain))),
-        Value::Text(text.to_string()),
-        Value::UBigInt(u64c(span.start)),
-        Value::UBigInt(u64c(span.end)),
-        node_rev.map_or(Value::Null, |r| Value::Text(r.to_string())),
-    ]);
+    rows.push_body(
+        vec![
+            Value::Text(path.to_string()),
+            Value::UBigInt(seq),
+            section.map_or(Value::Null, |g| Value::UBigInt(g.seq)),
+            Value::Null,
+            Value::Text(text.to_string()),
+            Value::UBigInt(u64c(span.start)),
+            Value::UBigInt(u64c(span.end)),
+            node_rev.map_or(Value::Null, |r| Value::Text(r.to_string())),
+        ],
+        section.map(|g| g.row),
+    );
 }
 
-/// Walk one node (emit fact rows), recurse with governing `section_seq` for
-/// tasks and the governing address `chain` (a Section's own segment included).
+/// Walk one node (emit fact rows), recurse with the governing section `gov`.
+/// `own` is a Section node's own occurrence-addressed segment ([`child_segs`]).
 #[allow(clippy::too_many_arguments)]
 fn walk(
     node: &Node,
     path: &str,
     doc: &Document,
     index: &CorpusIndex,
-    gov_section: Option<u64>,
-    chain: &[AddrSeg],
+    gov: Option<Gov>,
+    own: Option<AddrSeg>,
     counters: &mut Counters,
     rows: &mut Rows,
     corpus: &dyn model::catalog::NameCorpus,
     mounts: Option<&addr::MountSet>,
 ) {
-    let mut child_gov = gov_section;
+    let mut child_gov = gov;
     match &node.kind {
         NodeKind::Frontmatter { map } => {
             emit_frontmatter(node, path, doc, map, rows);
             emit_frontmatter_links(path, doc, index, counters, rows);
         }
         NodeKind::Section {
-            heading_text: _,
+            heading_text,
             level,
         } => {
-            let node_seq = counters.section;
+            let own = own.unwrap_or_else(|| AddrSeg {
+                h: heading_text.clone(),
+                n: None,
+            });
+            let section = Gov {
+                seq: counters.section,
+                row: rows.section.len(),
+            };
             counters.section += 1;
-            emit_section(node, path, *level, node_seq, chain, rows);
-            emit_section_chunk(node, path, node_seq, chain, doc, counters, rows);
-            child_gov = Some(node_seq);
+            emit_section(node, path, *level, section.seq, own, gov, rows);
+            emit_section_chunk(node, path, section, doc, counters, rows);
+            child_gov = Some(section);
         }
         NodeKind::Wikilink {
             target,
@@ -607,62 +719,34 @@ fn walk(
         }
         NodeKind::Tag { name } => emit_tag(node, path, name, counters, rows),
         NodeKind::TaskItem { checked, depth } => {
-            emit_task(
-                node,
-                path,
-                *checked,
-                *depth,
-                gov_section,
-                chain,
-                doc,
-                counters,
-                rows,
-            );
+            emit_task(node, path, *checked, *depth, gov, doc, counters, rows);
         }
         _ => {}
     }
     descend(
-        node, path, doc, index, child_gov, chain, counters, rows, corpus, mounts,
+        node, path, doc, index, child_gov, counters, rows, corpus, mounts,
     );
 }
 
 /// Recurse into `node`'s children: a Section child descends with its own
-/// occurrence-addressed segment appended ([`child_segs`]); every other child
-/// inherits the chain as is.
+/// occurrence-addressed segment ([`child_segs`]); every child is governed by
+/// `child_gov`.
 #[allow(clippy::too_many_arguments)]
 fn descend(
     node: &Node,
     path: &str,
     doc: &Document,
     index: &CorpusIndex,
-    child_gov: Option<u64>,
-    chain: &[AddrSeg],
+    child_gov: Option<Gov>,
     counters: &mut Counters,
     rows: &mut Rows,
     corpus: &dyn model::catalog::NameCorpus,
     mounts: Option<&addr::MountSet>,
 ) {
     for (child, seg) in node.children.iter().zip(child_segs(node)) {
-        if let Some(seg) = seg {
-            let mut child_chain = chain.to_vec();
-            child_chain.push(seg);
-            walk(
-                child,
-                path,
-                doc,
-                index,
-                child_gov,
-                &child_chain,
-                counters,
-                rows,
-                corpus,
-                mounts,
-            );
-        } else {
-            walk(
-                child, path, doc, index, child_gov, chain, counters, rows, corpus, mounts,
-            );
-        }
+        walk(
+            child, path, doc, index, child_gov, seg, counters, rows, corpus, mounts,
+        );
     }
 }
 
@@ -855,35 +939,40 @@ fn emit_lock_pins(
 }
 
 /// Emit one `section` row — identity `(path, node_seq)`; `hpath` advisory,
-/// rendered as the published machine address ([`hpath_json`]). `chain` includes
-/// the section's own segment, so its last element carries the raw heading text.
+/// the published machine address ([`hpath_json`]), rendered at load from
+/// `own` (the section's own segment, carrying the raw heading text) and its
+/// governing section's row ([`Rows::section_row`]).
 fn emit_section(
     node: &Node,
     path: &str,
     level: u8,
     node_seq: u64,
-    chain: &[AddrSeg],
+    own: AddrSeg,
+    gov: Option<Gov>,
     rows: &mut Rows,
 ) {
-    let heading = chain.last().map_or(String::new(), |s| s.h.clone());
     // `n` is this row's OWN segment — the last of the chain — and stays NULL
     // where the published address omits it, so the column and `hpath` can never
     // disagree about whether the heading is ambiguous.
-    let n = chain
-        .last()
-        .and_then(|s| s.n)
-        .map_or(Value::Null, Value::UInt);
-    rows.section.push(vec![
-        Value::Text(path.to_string()),
-        Value::UBigInt(node_seq),
-        Value::Text(hpath_json(chain)),
-        n,
-        Value::Text(heading),
-        Value::UTinyInt(level),
-        Value::Text(node.node_rev.0.clone()),
-        Value::UBigInt(u64c(node.span.start)),
-        Value::UBigInt(u64c(node.span.end)),
-    ]);
+    let n = own.n.map_or(Value::Null, Value::UInt);
+    let addr = SectionAddr {
+        seg: seg_json(&own),
+        parent: gov.map(|g| g.row),
+    };
+    rows.push_section(
+        vec![
+            Value::Text(path.to_string()),
+            Value::UBigInt(node_seq),
+            Value::Null,
+            n,
+            Value::Text(own.h),
+            Value::UTinyInt(level),
+            Value::Text(node.node_rev.0.clone()),
+            Value::UBigInt(u64c(node.span.start)),
+            Value::UBigInt(u64c(node.span.end)),
+        ],
+        addr,
+    );
 }
 
 /// Emit one `body` chunk for a section — the exclusive-content law
@@ -895,8 +984,7 @@ fn emit_section(
 fn emit_section_chunk(
     node: &Node,
     path: &str,
-    node_seq: u64,
-    chain: &[AddrSeg],
+    section: Gov,
     doc: &Document,
     counters: &mut Counters,
     rows: &mut Rows,
@@ -912,7 +1000,7 @@ fn emit_section_chunk(
     push_body_chunk(
         path,
         seq,
-        Some((node_seq, chain)),
+        Some(section),
         Some(&node.node_rev.0),
         start..end,
         doc,
@@ -1102,15 +1190,15 @@ fn strip_task_marker(line: &str) -> &str {
 
 /// Emit one `task` row. `section_seq` NULL = document-level; `text` is the
 /// trimmed task text with the marker stripped ([`strip_task_marker`]); `hpath`
-/// is the governing section's machine address (NULL when document-level).
+/// is the governing section's machine address (NULL when document-level),
+/// rendered at load ([`Rows::task_row`]).
 #[allow(clippy::too_many_arguments)]
 fn emit_task(
     node: &Node,
     path: &str,
     checked: bool,
     depth: u32,
-    gov_section: Option<u64>,
-    chain: &[AddrSeg],
+    gov: Option<Gov>,
     doc: &Document,
     counters: &mut Counters,
     rows: &mut Rows,
@@ -1119,18 +1207,21 @@ fn emit_task(
     counters.task += 1;
     let text =
         strip_task_marker(doc.raw.get(node.span.clone()).unwrap_or_default().trim()).to_string();
-    rows.task.push(vec![
-        Value::Text(path.to_string()),
-        Value::UBigInt(seq),
-        Value::Boolean(checked),
-        Value::UInt(depth),
-        gov_section.map_or(Value::Null, Value::UBigInt),
-        gov_section.map_or(Value::Null, |_| Value::Text(hpath_json(chain))),
-        Value::Text(text),
-        Value::UBigInt(u64c(node.span.start)),
-        Value::UBigInt(u64c(node.span.end)),
-        Value::Text(node.node_rev.0.clone()),
-    ]);
+    rows.push_task(
+        vec![
+            Value::Text(path.to_string()),
+            Value::UBigInt(seq),
+            Value::Boolean(checked),
+            Value::UInt(depth),
+            gov.map_or(Value::Null, |g| Value::UBigInt(g.seq)),
+            Value::Null,
+            Value::Text(text),
+            Value::UBigInt(u64c(node.span.start)),
+            Value::UBigInt(u64c(node.span.end)),
+            Value::Text(node.node_rev.0.clone()),
+        ],
+        gov.map(|g| g.row),
+    );
 }
 
 /// Resolve wikilink/embed to structural dest: `Ambient` / `Rooted` / `None`
@@ -1192,7 +1283,7 @@ impl Rows {
     fn insert(&self, conn: &Connection) -> duckdb::Result<()> {
         append_rows(conn, "doc", &self.doc)?;
         append_rows(conn, "frontmatter", &self.frontmatter)?;
-        append_rows(conn, "section", &self.section)?;
+        append_rendered(conn, "section", self.section.len(), |i| self.section_row(i))?;
         append_listed(conn, "main", "link", LINK_SCALAR_COLS, None, &self.link)?;
         append_listed(
             conn,
@@ -1206,14 +1297,29 @@ impl Rows {
         append_rows(conn, "tag", &self.tag)?;
         append_rows(conn, "frontmatter_tag", &self.frontmatter_tag)?;
         append_rows(conn, "frontmatter_fault", &self.frontmatter_fault)?;
-        append_rows(conn, "task", &self.task)?;
+        append_rendered(conn, "task", self.task.len(), |i| self.task_row(i))?;
         // The base relations, parents before children (the FK order every
         // other table already loads in).
         append_rows(conn, "base", &self.base)?;
         append_rows(conn, "base_view", &self.base_view)?;
         append_rows(conn, "base_formula", &self.base_formula)?;
-        append_rows(conn, "body", &self.body)
+        append_rendered(conn, "body", self.body.len(), |i| self.body_row(i))
     }
+}
+
+/// Appender load of `n` rows produced one at a time by `row` — each row's
+/// rendered `hpath` lives only while it is appended.
+fn append_rendered(
+    conn: &Connection,
+    table: &str,
+    n: usize,
+    row: impl Fn(usize) -> Vec<Value>,
+) -> duckdb::Result<()> {
+    let mut app = conn.appender(table)?;
+    for i in 0..n {
+        app.append_row(duckdb::appender_params_from_iter(row(i).iter()))?;
+    }
+    app.flush()
 }
 
 /// Appender load of one all-scalar table. Value order = DDL column order.
@@ -1479,6 +1585,11 @@ mod tests {
     // bit-identical, per table over every column of every row, to the
     // row-at-a-time statement lane it replaced.
 
+    /// `n` staged rows as a lane loads them ([`Rows::section_row`] and kin).
+    fn loaded(n: usize, row: impl Fn(usize) -> Vec<Value>) -> Vec<Vec<Value>> {
+        (0..n).map(row).collect()
+    }
+
     /// The retired row-at-a-time statement lane, kept verbatim as the
     /// equivalence reference the appender lane is gated against.
     fn statement_lane_insert(rows: &Rows, conn: &Connection) -> duckdb::Result<()> {
@@ -1530,7 +1641,7 @@ mod tests {
         insert_rows(
             conn,
             "INSERT INTO section (path, node_seq, hpath, n, heading, level, node_rev, span_start, span_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            &rows.section,
+            &loaded(rows.section.len(), |i| rows.section_row(i)),
         )?;
         insert_listed(conn, "link", LINK_SCALAR_COLS, &rows.link)?;
         insert_listed(
@@ -1562,7 +1673,7 @@ mod tests {
         insert_rows(
             conn,
             "INSERT INTO task (path, seq, checked, depth, section_seq, hpath, text, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            &rows.task,
+            &loaded(rows.task.len(), |i| rows.task_row(i)),
         )?;
         insert_rows(
             conn,
@@ -1582,7 +1693,7 @@ mod tests {
         insert_rows(
             conn,
             "INSERT INTO body (path, seq, section_seq, hpath, text, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            &rows.body,
+            &loaded(rows.body.len(), |i| rows.body_row(i)),
         )
     }
 
@@ -1813,68 +1924,54 @@ mod tests {
             Value::UInt(1),
             Value::UBigInt(2),
         ]);
-        // Each shape carries the `n` its own last segment does, so both lanes
-        // are exercised on a NULL occurrence and a present one.
+        // Each shape carries the `n` its own segment does, so both lanes are
+        // exercised on a NULL occurrence and a present one: `[{"h":""}]`, and
+        // `Dup#2` under the JSON-hostile `a"b\c`.
         let shapes = [
-            (
-                hpath_json(&[AddrSeg {
-                    h: String::new(),
-                    n: None,
-                }]),
-                Value::Null,
-            ),
-            (
-                hpath_json(&[
-                    AddrSeg {
-                        h: "a\"b\\c".to_string(),
-                        n: None,
-                    },
-                    AddrSeg {
-                        h: "Dup".to_string(),
-                        n: Some(2),
-                    },
-                ]),
-                Value::UInt(2),
-            ),
+            (String::new(), None, None),
+            ("a\"b\\c".to_string(), None, None),
+            ("Dup".to_string(), Some(2), Some(1)),
         ];
-        for (seq, (hpath, n)) in shapes.into_iter().enumerate() {
-            rows.section.push(vec![
-                Value::Text("d.md".to_string()),
-                Value::UBigInt(seq as u64),
-                Value::Text(hpath),
-                n,
-                Value::Text("h".to_string()),
-                Value::UTinyInt(1),
-                Value::Text("rev".to_string()),
-                Value::UBigInt(0),
-                Value::UBigInt(1),
-            ]);
+        for (seq, (h, n, parent)) in shapes.into_iter().enumerate() {
+            let seg = seg_json(&AddrSeg { h, n });
+            rows.push_section(
+                vec![
+                    Value::Text("d.md".to_string()),
+                    Value::UBigInt(seq as u64),
+                    Value::Null,
+                    n.map_or(Value::Null, Value::UInt),
+                    Value::Text("h".to_string()),
+                    Value::UTinyInt(1),
+                    Value::Text("rev".to_string()),
+                    Value::UBigInt(0),
+                    Value::UBigInt(1),
+                ],
+                SectionAddr { seg, parent },
+            );
         }
         stage_scalar_fillers(&mut rows);
-        let task_shapes = [
-            (Value::Null, Value::Null),
-            (
-                Value::UBigInt(0),
-                Value::Text(hpath_json(&[AddrSeg {
-                    h: String::new(),
-                    n: None,
-                }])),
-            ),
-        ];
-        for (seq, (section_seq, hpath)) in task_shapes.into_iter().enumerate() {
-            rows.task.push(vec![
-                Value::Text("d.md".to_string()),
-                Value::UBigInt(seq as u64),
-                Value::Boolean(false),
-                Value::UInt(0),
-                section_seq,
-                hpath,
-                Value::Text("t".to_string()),
-                Value::UBigInt(0),
-                Value::UBigInt(1),
-                Value::Text("rev".to_string()),
-            ]);
+        for (seq, gov) in [None, Some(0)].into_iter().enumerate() {
+            rows.push_task(
+                vec![
+                    Value::Text("d.md".to_string()),
+                    Value::UBigInt(seq as u64),
+                    Value::Boolean(false),
+                    Value::UInt(0),
+                    gov.map_or(Value::Null, |g: usize| Value::UBigInt(g as u64)),
+                    Value::Null,
+                    Value::Text("t".to_string()),
+                    Value::UBigInt(0),
+                    Value::UBigInt(1),
+                    Value::Text("rev".to_string()),
+                ],
+                gov,
+            );
         }
+        assert_eq!(
+            rows.section_row(2)[SECTION_COL_HPATH],
+            Value::Text(r#"[{"h":"a\"b\\c"},{"h":"Dup","n":2}]"#.to_string()),
+            "a row renders its ancestors' segments before its own"
+        );
         assert_lanes_match(&rows);
     }
 
@@ -1906,25 +2003,23 @@ mod tests {
         assert!(!rows.link.is_empty(), "link rows");
         assert!(!rows.frontmatter_tag.is_empty(), "frontmatter_tag rows");
         assert!(!rows.task.is_empty(), "task rows");
-        let section_hpath = |row: &Vec<Value>| match &row[2] {
+        let section_hpath = |i: usize| match &rows.section_row(i)[SECTION_COL_HPATH] {
             Value::Text(s) => s.clone(),
-            other => panic!("section hpath must stage as TEXT, got {other:?}"),
+            other => panic!("section hpath must load as TEXT, got {other:?}"),
         };
         assert!(
-            rows.section
-                .iter()
-                .any(|s| section_hpath(s) == r#"[{"h":""}]"#),
-            "a bare `#` heading must stage hpath [{{\"h\":\"\"}}] — the empty-heading edge"
+            (0..rows.section.len()).any(|i| section_hpath(i) == r#"[{"h":""}]"#),
+            "a bare `#` heading must load hpath [{{\"h\":\"\"}}] — the empty-heading edge"
+        );
+        let task_hpath = |i: usize| rows.task_row(i)[TASK_COL_HPATH].clone();
+        assert!(
+            (0..rows.task.len())
+                .any(|i| matches!(task_hpath(i), Value::Text(s) if s == r#"[{"h":""}]"#)),
+            "the task under the empty heading must load its section's address"
         );
         assert!(
-            rows.task
-                .iter()
-                .any(|t| matches!(&t[5], Value::Text(s) if s == r#"[{"h":""}]"#)),
-            "the task under the empty heading must stage its section's address"
-        );
-        assert!(
-            rows.task.iter().any(|t| matches!(&t[5], Value::Null)),
-            "the doc-level task must stage hpath NULL"
+            (0..rows.task.len()).any(|i| matches!(task_hpath(i), Value::Null)),
+            "the doc-level task must load hpath NULL"
         );
 
         assert_lanes_match(&rows);
