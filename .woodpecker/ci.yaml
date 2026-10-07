@@ -213,7 +213,10 @@ steps:
       # in 56 s: "couldn't read .../fnv-1.0.7/lib.rs: Permission denied"
       # (pipeline 2737). cargo fetch waits on the package-cache lock and returns
       # only when every locked crate is present; on a warm cache it is a no-op.
-      - cargo fetch --locked
+      # No RUSTC_WRAPPER here: cargo runs `$RUSTC_WRAPPER rustc -vV` even for a
+      # fetch, which would start this lane's sccache server as root, and ci's
+      # compiles would then get root-owned dep-info back (pipeline 2741).
+      - env -u RUSTC_WRAPPER cargo fetch --locked
       # The same race, one level down: the SHARED cargo/sccache caches are
       # written by the other lanes while this walk runs, and cargo's transient
       # .global-cache-journal is created and removed mid-walk — the walk then
