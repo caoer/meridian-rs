@@ -117,9 +117,9 @@ pub enum AdmissionError {
     /// learned, or its reservation after its calls ended. Retry the same
     /// retained version.
     Settling,
-    /// This oversized load is the one waiting member: the serialized slot
-    /// is taken by loads that end without this caller's help. Retry the
-    /// same retained version until they drain.
+    /// This oversized load is the one waiting member, or is kept out by
+    /// paused loads owed their turn: what keeps it out ends without this
+    /// caller's help. Retry the same retained version until it has.
     Waiting,
     /// Another member's oversized load waits or runs, and this new load is
     /// paused for it. Retry the same retained version; past the catalog's
@@ -299,8 +299,25 @@ impl Controller {
     }
 
     /// [`Self::admit`]; `unpaused` asks past another member's waiting
-    /// oversized load and its hold of the serialized slot.
+    /// oversized load and its hold of the serialized slot. A member's load
+    /// answered anything but `Paused` is no longer owed a turn.
     fn admit_past(
+        &self,
+        key: Option<Key>,
+        bytes: usize,
+        revision: u64,
+        unpaused: bool,
+    ) -> Result<Option<Reservation>, AdmissionError> {
+        let answer = self.admit_turn(key, bytes, revision, unpaused);
+        if let Some(key) = key
+            && !matches!(answer, Err(AdmissionError::Paused))
+        {
+            lock(&self.0.ledger).unowe(key);
+        }
+        answer
+    }
+
+    fn admit_turn(
         &self,
         key: Option<Key>,
         bytes: usize,
@@ -342,13 +359,28 @@ impl Controller {
                 && bytes as u128 > (state.limit as u128).saturating_sub(floor);
             // While another member's oversized load waits, a new load that is
             // not oversized pauses, so the live loads drain (merkle-spec §6.4).
+            let now = Instant::now();
             if let Some(key) = key
                 && !unpaused
                 && !oversized
                 && state.limit != 0
-                && state.waits_for(key, Instant::now())
+                && state.waits_for(key, now)
             {
+                state.owe(key, now);
                 return Err(AdmissionError::Paused);
+            }
+            // Loads another member's wait or slot paused take their turn
+            // before the next oversized load (merkle-spec §6.4): no record
+            // forms against them, and they end without this caller's help.
+            if let Some(key) = key
+                && oversized
+                && state.turn_owed(key, now)
+            {
+                return Err(if state.waits_for(key, now) {
+                    AdmissionError::Busy
+                } else {
+                    AdmissionError::Waiting
+                });
             }
             let exclusive_available = state.transient.is_none() || state.transient == key;
             let slot_waits_for_retirement = oversized
@@ -370,30 +402,7 @@ impl Controller {
                 return Err(refused);
             }
             if fits || (may_overflow && state.reclaimable == 0) {
-                let id = state.next_id()?;
-                state.permits.insert(
-                    id,
-                    Permit {
-                        bytes,
-                        peak: bytes,
-                        member: key,
-                        settled: key.is_none(),
-                        references: 1,
-                        revision,
-                        transient: if fits { None } else { key },
-                    },
-                );
-                state.reserved_bytes += bytes as u128;
-                if let Some(key) = key {
-                    state.pending += 1;
-                    state.rows.get_mut(&key).unwrap().wave = Some(id);
-                    if state.waiting.is_some_and(|(waiting, _)| waiting == key) {
-                        state.waiting = None;
-                    }
-                }
-                if !fits {
-                    state.transient = key;
-                }
+                let id = open_wave(&mut state, key, bytes, revision, fits)?;
                 return Ok(Some(Reservation {
                     controller: self.clone(),
                     id,
@@ -522,6 +531,43 @@ struct Retirement {
     key: Key,
     resident: Option<Resident>,
 }
+/// Open the loading wave of an admitted load: its permit, its member's row
+/// and, for a load that does not fit, the serialized slot. An admitted
+/// waiting member's record ends here.
+fn open_wave(
+    state: &mut Ledger,
+    key: Option<Key>,
+    bytes: usize,
+    revision: u64,
+    fits: bool,
+) -> Result<u64, AdmissionError> {
+    let id = state.next_id()?;
+    state.permits.insert(
+        id,
+        Permit {
+            bytes,
+            peak: bytes,
+            member: key,
+            settled: key.is_none(),
+            references: 1,
+            revision,
+            transient: if fits { None } else { key },
+        },
+    );
+    state.reserved_bytes += bytes as u128;
+    if let Some(key) = key {
+        state.pending += 1;
+        state.rows.get_mut(&key).unwrap().wave = Some(id);
+        if state.waiting.is_some_and(|(waiting, _)| waiting == key) {
+            state.waiting = None;
+        }
+    }
+    if !fits {
+        state.transient = key;
+    }
+    Ok(id)
+}
+
 /// Why a load that neither fits nor may overflow is refused, or `None` when
 /// reclaiming cached bodies can still make room for it (merkle-spec §6.4).
 fn refusal(
@@ -557,13 +603,15 @@ fn refusal(
     {
         // Another member's hold of the serialized slot ends without this
         // caller's help: a pause, not a refusal.
-        let slot_held_by_another =
-            key.is_some() && state.transient.is_some() && state.transient != key;
-        return Some(if slot_held_by_another && !unpaused {
-            AdmissionError::Paused
-        } else {
-            AdmissionError::Busy
-        });
+        if let Some(key) = key
+            && state.transient.is_some()
+            && state.transient != Some(key)
+            && !unpaused
+        {
+            state.owe(key, Instant::now());
+            return Some(AdmissionError::Paused);
+        }
+        return Some(AdmissionError::Busy);
     }
     None
 }

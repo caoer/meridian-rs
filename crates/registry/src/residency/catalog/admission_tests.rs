@@ -6,11 +6,38 @@ use super::*;
 use std::cell::{Cell, RefCell};
 use std::fmt::Write as _;
 
+/// The 2 s patience in 1 ms pauses.
+const WAIT_POLLS: usize = 2000;
+
+/// A clock that only the pauses taken on it advance.
+struct Clock {
+    at: Cell<Instant>,
+    pauses: RefCell<Vec<Duration>>,
+}
+
+impl Clock {
+    fn new() -> Self {
+        Self {
+            at: Cell::new(Instant::now()),
+            pauses: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn pause(&self, wait: Duration) {
+        self.at.set(self.at.get() + wait);
+        self.pauses.borrow_mut().push(wait);
+    }
+
+    fn now(&self) -> Instant {
+        self.at.get()
+    }
+}
+
 /// Run [`admit`] over a scripted sequence of outcomes; the last one repeats.
 /// Returns the result, the attempts made and the pauses taken.
 fn scripted(outcomes: &[Result<u8, AdmissionError>]) -> (io::Result<u8>, usize, Vec<Duration>) {
     let attempts = Cell::new(0);
-    let pauses = RefCell::new(Vec::new());
+    let clock = Clock::new();
     let result = admit(
         |_| {
             let turn = attempts.get();
@@ -19,9 +46,10 @@ fn scripted(outcomes: &[Result<u8, AdmissionError>]) -> (io::Result<u8>, usize, 
         },
         || false,
         &RETRY_PAUSES,
-        |wait| pauses.borrow_mut().push(wait),
+        |wait| clock.pause(wait),
+        || clock.now(),
     );
-    (result, attempts.get(), pauses.into_inner())
+    (result, attempts.get(), clock.pauses.into_inner())
 }
 
 #[test]
@@ -84,6 +112,29 @@ fn a_waiting_member_that_outlasts_its_patience_is_occupied_allowance() {
     );
 }
 
+/// The patience is a deadline, not a count of pauses: attempts that take
+/// time themselves leave fewer pauses inside the same 2 s (rv-368b P3-2).
+#[test]
+fn the_patience_ends_two_seconds_after_the_first_wait_whatever_an_attempt_costs() {
+    let clock = Clock::new();
+    let start = clock.now();
+    let error = admit(
+        |_| -> Result<u8, Error> {
+            // Each attempt itself takes 1 ms.
+            clock.at.set(clock.at.get() + Duration::from_millis(1));
+            Err(Error::Admission(AdmissionError::Waiting))
+        },
+        || false,
+        &RETRY_PAUSES,
+        |wait| clock.pause(wait),
+        || clock.now(),
+    )
+    .expect_err("the wait is bounded");
+    assert!(model::catalog::is_transient(&error), "{error}");
+    assert_eq!(clock.pauses.borrow().len(), 1000);
+    assert_eq!(clock.now() - start, Duration::from_millis(2001));
+}
+
 /// A load paused for another member's oversized load waits for it, and is
 /// never refused for it: once its patience ends it asks past the pause.
 #[test]
@@ -94,7 +145,7 @@ fn a_paused_load_waits_and_is_then_admitted_past_the_pause() {
     assert_eq!((attempts, pauses), (3, vec![WAIT_POLL; 2]));
 
     let (asked, past) = (Cell::new(0), Cell::new(0));
-    let waits = Cell::new(0);
+    let clock = Clock::new();
     let result = admit(
         |unpaused| {
             if unpaused {
@@ -107,11 +158,12 @@ fn a_paused_load_waits_and_is_then_admitted_past_the_pause() {
         },
         || false,
         &RETRY_PAUSES,
-        |_| waits.set(waits.get() + 1),
+        |wait| clock.pause(wait),
+        || clock.now(),
     );
     assert_eq!(result.expect("a pause is never a refusal"), 7);
     assert_eq!(
-        (asked.get(), waits.get(), past.get()),
+        (asked.get(), clock.pauses.borrow().len(), past.get()),
         (WAIT_POLLS + 1, WAIT_POLLS, 1)
     );
 }
@@ -126,6 +178,7 @@ fn a_wait_under_the_callers_own_lease_is_not_waited_on() {
             || true,
             &RETRY_PAUSES,
             |_| panic!("a self-blocked load is never waited on"),
+            Instant::now,
         )
         .expect_err("self-blocked");
         assert!(
@@ -184,6 +237,7 @@ fn occupied_allowance_under_the_callers_own_lease_is_not_transient() {
         || true,
         &RETRY_PAUSES,
         |_| panic!("occupied allowance is never waited on"),
+        Instant::now,
     )
     .expect_err("occupied");
     assert!(!model::catalog::is_transient(&error), "{error}");
@@ -217,6 +271,7 @@ fn an_overrun_that_outlasts_the_pins_retry_is_transient() {
         || false,
         &RETRY_PAUSES,
         |_| panic!("an overrun is not a race"),
+        Instant::now,
     )
     .expect_err("the overrun stands for this request");
     assert!(model::catalog::is_transient(&error), "{error}");
@@ -252,7 +307,7 @@ fn a_learned_oversized_load_is_transient_beside_a_live_load_and_served_alone() {
     controller.set_limit(controller.report().floor + retained / 2);
     let other = controller.reserve(1).expect("another live load");
     let attempts = Cell::new(0);
-    let waits = Cell::new(0);
+    let clock = Clock::new();
     let error = admit(
         |_| {
             attempts.set(attempts.get() + 1);
@@ -260,12 +315,13 @@ fn a_learned_oversized_load_is_transient_beside_a_live_load_and_served_alone() {
         },
         || false,
         &RETRY_PAUSES,
-        |_| waits.set(waits.get() + 1),
+        |wait| clock.pause(wait),
+        || clock.now(),
     )
     .expect_err("occupied beside another live load");
     assert!(model::catalog::is_transient(&error), "{error}");
     assert_eq!(
-        (attempts.get(), waits.get()),
+        (attempts.get(), clock.pauses.borrow().len()),
         (WAIT_POLLS + 1, WAIT_POLLS),
         "the waiting member asks until its patience ends"
     );
@@ -277,6 +333,7 @@ fn a_learned_oversized_load_is_transient_beside_a_live_load_and_served_alone() {
         || false,
         &RETRY_PAUSES,
         pause,
+        Instant::now,
     )
     .expect("alone, the learned load takes the serialized slot");
     assert_eq!(pin.bytes(), raw);

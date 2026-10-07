@@ -17,7 +17,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     sync::{Arc, Mutex, PoisonError},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// The members a thread holds leases on, one entry per live lease.
@@ -88,14 +88,16 @@ const RETRY_PAUSES: [Duration; 6] = [
 /// paused for one (merkle-spec §6.4).
 const WAIT_POLL: Duration = Duration::from_millis(1);
 
-/// How many such pauses one request takes: about 2 s.
-const WAIT_POLLS: usize = 2000;
+/// How long one lease keeps asking after its first `Waiting` or `Paused`
+/// answer.
+const WAIT_PATIENCE: Duration = Duration::from_secs(2);
 
 /// Lease one member version through the controller's admission. `Retiring`
 /// and `Settling` retry the same version once per pause in `pauses`;
 /// `Busy` is returned at once, because the allowance may be occupied by a pin
-/// this very caller holds. `Waiting` and `Paused` retry every [`WAIT_POLL`],
-/// [`WAIT_POLLS`] times: then the waiting oversized member leaves as `Busy`,
+/// this very caller holds. `Waiting` and `Paused` retry every [`WAIT_POLL`]
+/// until [`WAIT_PATIENCE`] after the first of them, read off `now`: then the
+/// waiting oversized member leaves as `Busy`,
 /// and a paused load is attempted past the pause (`attempt(true)`), never
 /// refused for it. What leaves is [`model::catalog::transient`], except a
 /// `Busy`, `Waiting` or `Paused` that `self_blocked` says the caller's own
@@ -108,9 +110,10 @@ fn admit<T>(
     self_blocked: impl Fn() -> bool,
     pauses: &[Duration],
     mut pause: impl FnMut(Duration),
+    now: impl Fn() -> Instant,
 ) -> io::Result<T> {
     let mut pauses = pauses.iter();
-    let mut polls = 0;
+    let mut deadline = None;
     let mut unpaused = false;
     loop {
         let refusal = match attempt(unpaused) {
@@ -122,8 +125,8 @@ fn admit<T>(
             }
             Err(Error::Admission(AdmissionError::Busy)) => AdmissionError::Busy,
             Err(Error::Admission(waits @ (AdmissionError::Waiting | AdmissionError::Paused))) => {
-                if polls < WAIT_POLLS {
-                    polls += 1;
+                let at = now();
+                if at < *deadline.get_or_insert(at + WAIT_PATIENCE) {
                     pause(WAIT_POLL);
                     continue;
                 }
@@ -167,6 +170,7 @@ pub(super) fn pin(member: &Member, access: Access, peak: usize) -> io::Result<Pi
         || !holding.is_empty() && member.held_blocks(&holding, peak),
         &RETRY_PAUSES,
         pause,
+        Instant::now,
     )
 }
 

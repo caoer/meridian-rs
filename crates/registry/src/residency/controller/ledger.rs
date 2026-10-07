@@ -81,6 +81,9 @@ pub(super) struct Ledger {
     /// The one waiting oversized member and when its record expires
     /// ([`Ledger::waits_for`]).
     pub(super) waiting: Option<(Key, Instant)>,
+    /// Loads answered `Paused`, each owed a turn until its record expires
+    /// ([`Ledger::turn_owed`]).
+    pub(super) owed: Vec<(Key, Instant)>,
     pub(super) reclaimable: usize,
     pub(super) reclaimable_bytes: u128,
     pub(super) reclaimable_raws: usize,
@@ -112,6 +115,7 @@ impl Ledger {
             pending: 0,
             forced: Vec::new(),
             waiting: None,
+            owed: Vec::new(),
             reclaimable: 0,
             reclaimable_bytes: 0,
             reclaimable_raws: 0,
@@ -180,6 +184,32 @@ impl Ledger {
             Some((waiting, _)) => waiting != key,
             None => false,
         }
+    }
+
+    /// Record that a load of `key` was paused, or renew its record: it is
+    /// owed a turn for [`OVERSIZED_WAIT`] after this attempt.
+    pub(super) fn owe(&mut self, key: Key, now: Instant) {
+        let until = now + OVERSIZED_WAIT;
+        match self.owed.iter_mut().find(|(owed, _)| *owed == key) {
+            Some(record) => record.1 = until,
+            None => self.owed.push((key, until)),
+        }
+    }
+
+    /// Forget `key` among the paused loads: it was admitted or refused.
+    pub(super) fn unowe(&mut self, key: Key) {
+        if let Some(at) = self.owed.iter().position(|(owed, _)| *owed == key) {
+            self.owed.swap_remove(at);
+        }
+    }
+
+    /// Whether an oversized load of `key` must leave the next turn to loads
+    /// of other members that were paused: one's record is live, and `key` is
+    /// not the live waiting member, whose own record paused them.
+    pub(super) fn turn_owed(&mut self, key: Key, now: Instant) -> bool {
+        self.owed.retain(|(_, until)| *until > now);
+        self.owed.iter().any(|(owed, _)| *owed != key)
+            && !matches!(self.waiting, Some((waiting, until)) if waiting == key && until > now)
     }
 
     pub(super) fn update_row<T>(&mut self, key: Key, change: impl FnOnce(&mut Row) -> T) -> T {
