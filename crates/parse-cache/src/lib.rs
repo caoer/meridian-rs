@@ -36,8 +36,8 @@ pub fn decode(bytes: &[u8], digest: &[u8; 32]) -> Option<Document> {
     if model::leaf_digest(raw.as_bytes()) != *digest {
         return None;
     }
-    let root = r.node(&raw, 0, &(0..raw.len()))?;
-    if !r.0.is_empty() || root.span != (0..raw.len()) || root.hpath.is_some() {
+    let mut root = r.node(&raw, 0, &(0..raw.len()))?;
+    if !r.0.is_empty() || root.span != (0..raw.len()) {
         return None;
     }
     match &root.kind {
@@ -46,6 +46,9 @@ pub fn decode(bytes: &[u8], digest: &[u8; 32]) -> Option<Document> {
                 && *line_count == u32::try_from(raw.lines().count()).unwrap_or(u32::MAX) => {}
         _ => return None,
     }
+    // Heading paths are a function of the sections, never stored: the same
+    // assignment the parser runs shares each chain between the nodes it governs.
+    model::assign_hpath(&mut root);
     Some(Document {
         raw: raw.into(),
         root,
@@ -194,13 +197,6 @@ impl Encoder {
         self.number(node.span.start)?;
         self.number(node.span.end)?;
         self.string(&node.node_rev.0)?;
-        self.byte(u8::from(node.hpath.is_some()))?;
-        if let Some(path) = &node.hpath {
-            self.number(path.len())?;
-            for segment in path {
-                self.string(segment)?;
-            }
-        }
         self.number(node.children.len())?;
         for child in &node.children {
             self.node(child, depth + 1)?;
@@ -336,16 +332,6 @@ impl Decoder<'_> {
         if !model::node_rev_matches(raw, &span, &node_rev) {
             return None;
         }
-        let hpath = if self.flag()? {
-            let count = self.count()?;
-            let mut path = Vec::new();
-            for _ in 0..count {
-                path.push(self.string()?);
-            }
-            Some(path)
-        } else {
-            None
-        };
         let count = self.count()?;
         let mut children = Vec::new();
         for _ in 0..count {
@@ -355,7 +341,7 @@ impl Decoder<'_> {
             kind,
             span,
             node_rev,
-            hpath,
+            hpath: None,
             children,
         })
     }

@@ -4,7 +4,9 @@
 use std::alloc::Layout;
 use std::mem::size_of;
 
-use crate::{Document, Node, NodeKind};
+use std::sync::Arc;
+
+use crate::{Document, Hpath, Node, NodeKind};
 
 /// Heap owned by a document, with raw bytes separate for shared-owner dedup.
 /// Excludes the inline root `Document`, which belongs to its enclosing owner.
@@ -20,7 +22,7 @@ pub fn document(document: &Document) -> DocumentBytes {
     let Document { raw, root } = document;
     DocumentBytes {
         raw: arc_bytes::<String>().saturating_add(raw.capacity()),
-        tree: node_heap(root),
+        tree: node_heap(root, None),
     }
 }
 
@@ -95,7 +97,11 @@ pub fn arc_dyn_bytes<T: ?Sized>(value: &T) -> usize {
         .map_or(usize::MAX, |(layout, _)| layout.pad_to_align().size())
 }
 
-fn node_heap(node: &Node) -> usize {
+/// `governing` is the chain the parent holds (or inherited): a node holding
+/// that same chain shares it and is charged nothing for it, and a chain's
+/// segment shared with the governing chain's at the same depth is charged
+/// once, where it was allocated (merkle §6.4).
+fn node_heap(node: &Node, governing: Option<&Hpath>) -> usize {
     // Destructure every field: adding owned model data must revisit its charge.
     let Node {
         kind,
@@ -107,16 +113,36 @@ fn node_heap(node: &Node) -> usize {
     let mut bytes = node_rev.0.capacity();
     bytes = bytes.saturating_add(children.capacity().saturating_mul(size_of::<Node>()));
     if let Some(path) = hpath {
-        bytes = bytes.saturating_add(path.capacity().saturating_mul(size_of::<String>()));
-        for segment in path {
-            bytes = bytes.saturating_add(segment.capacity());
-        }
+        bytes = bytes.saturating_add(chain_heap(path, governing));
     }
     bytes = bytes.saturating_add(kind_heap(kind));
+    let governing = hpath.as_ref().or(governing);
     for child in children {
-        bytes = bytes.saturating_add(node_heap(child));
+        bytes = bytes.saturating_add(node_heap(child, governing));
     }
     bytes
+}
+
+/// The heap a chain adds beyond the governing chain it was built from.
+fn chain_heap(path: &Hpath, governing: Option<&Hpath>) -> usize {
+    if governing.is_some_and(|up| Arc::ptr_eq(path, up)) {
+        return 0;
+    }
+    let shared = |depth: usize, segment: &Arc<str>| {
+        governing
+            .and_then(|up| up.get(depth))
+            .is_some_and(|theirs| Arc::ptr_eq(segment, theirs))
+    };
+    path.iter().enumerate().fold(
+        arc_dyn_bytes::<[Arc<str>]>(path),
+        |bytes, (depth, segment)| {
+            if shared(depth, segment) {
+                bytes
+            } else {
+                bytes.saturating_add(arc_dyn_bytes::<str>(segment))
+            }
+        },
+    )
 }
 
 fn kind_heap(kind: &NodeKind) -> usize {
@@ -189,7 +215,7 @@ mod tests {
         struct Aligned(u8);
         let aligned = Aligned(1);
         assert_eq!(aligned.0, 1);
-        let value: std::sync::Arc<dyn std::fmt::Debug> = std::sync::Arc::new(aligned);
+        let value: Arc<dyn std::fmt::Debug> = Arc::new(aligned);
         assert_eq!(arc_dyn_bytes(&*value), arc_bytes::<Aligned>());
     }
 
@@ -227,7 +253,7 @@ mod tests {
         let mut raw = String::with_capacity(8192);
         raw.push_str("# Shared\n");
         let doc = crate::build(raw, syntax::parse("# Shared\n"));
-        let bytes = crate::bytes::SharedBytes::from(std::sync::Arc::clone(&doc.raw));
+        let bytes = crate::bytes::SharedBytes::from(Arc::clone(&doc.raw));
         assert_eq!(document(&doc).raw, bytes.heap_bytes());
         assert!(document(&doc).raw >= 8192 + size_of::<String>());
         assert_eq!(bytes.allocation_id(), bytes.clone().allocation_id());
