@@ -205,6 +205,15 @@ steps:
       # paths that vanish mid-walk.
       - find . -mindepth 1 -maxdepth 1 ! -name 'target*' -exec chown -R ci:ci {} +
       - chown ci:ci . target-ci
+      # Unpack every locked crate BEFORE the cache chown below. The root lanes
+      # share this cargo home and unpack crates as root, keeping each crate
+      # tarball's own file mode, which can lack the other-read bit; a crate a
+      # root lane unpacks after the chown is then unreadable to ci. On a cold
+      # cache (a pool slot's first run, or after a prune) that failed this lane
+      # in 56 s: "couldn't read .../fnv-1.0.7/lib.rs: Permission denied"
+      # (pipeline 2737). cargo fetch waits on the package-cache lock and returns
+      # only when every locked crate is present; on a warm cache it is a no-op.
+      - cargo fetch --locked
       # The same race, one level down: the SHARED cargo/sccache caches are
       # written by the other lanes while this walk runs, and cargo's transient
       # .global-cache-journal is created and removed mid-walk — the walk then
