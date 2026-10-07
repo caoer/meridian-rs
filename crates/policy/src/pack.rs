@@ -276,7 +276,7 @@ fn fact_node(raw: &str, node: &Node) -> FactNode {
         text,
         span: (node.span.start, node.span.end),
         node_rev: node.node_rev.0.clone(),
-        hpath: node.hpath.clone().unwrap_or_default(),
+        hpath: node.hpath_owned().unwrap_or_default(),
     }
 }
 

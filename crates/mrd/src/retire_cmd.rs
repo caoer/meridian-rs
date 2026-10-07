@@ -589,7 +589,9 @@ fn innermost_section(node: &model::Node, range: &model::ByteSpan) -> Option<Vec<
         }
     }
     match (&node.kind, &node.hpath) {
-        (model::NodeKind::Section { .. }, Some(hpath)) if !hpath.is_empty() => Some(hpath.clone()),
+        (model::NodeKind::Section { .. }, Some(hpath)) if !hpath.is_empty() => {
+            Some(hpath.iter().map(ToString::to_string).collect())
+        }
         _ => None,
     }
 }
@@ -598,7 +600,7 @@ fn innermost_section(node: &model::Node, range: &model::ByteSpan) -> Option<Vec<
 fn walk_sections(node: &model::Node, want: &[&str], out: &mut Option<model::ByteSpan>) {
     if let (model::NodeKind::Section { .. }, Some(chain)) = (&node.kind, &node.hpath)
         && chain.len() == want.len()
-        && chain.iter().zip(want).all(|(a, b)| a == b)
+        && chain.iter().zip(want).all(|(a, b)| **a == **b)
         && out.is_none()
     {
         *out = Some(node.span.clone());

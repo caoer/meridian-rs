@@ -47,8 +47,7 @@ fn flatten(node: &model::Node, raw: &[u8], out: &mut Vec<wire::Node>) {
             span: wire::Span(node.span.start as u64, node.span.end as u64),
             text_prefix_16b: prefix_16b(raw, start),
             hpath: (kind == wire::NodeKind::Heading).then(|| {
-                node.hpath
-                    .clone()
+                node.hpath_owned()
                     .unwrap_or_default()
                     .into_iter()
                     .map(|h| wire::HpathSeg { h, n: None })
@@ -214,8 +213,7 @@ fn collect_toc(node: &model::Node, root: &model::Node, raw: &[u8], out: &mut Vec
             kind: "heading".into(),
             level: Some(u32::from(*level)),
             hpath: Some(
-                node.hpath
-                    .clone()
+                node.hpath_owned()
                     .unwrap_or_default()
                     .into_iter()
                     .map(|h| wire::HpathSeg { h, n: None })

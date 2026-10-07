@@ -495,7 +495,7 @@ pub fn plan_rename(
     if to == old_text {
         return RenamePlan { edits };
     }
-    let section_ref = hpath_ref(section_hpath);
+    let section_ref = hpath_ref(&section_hpath[..]);
 
     // Backlink fixup first (see order note): every corpus wikilink/embed whose
     // fragment is the renamed heading and resolves to `from_path`.
@@ -581,12 +581,12 @@ fn collect_backlink_edits(
 ) {
     fn walk(
         node: &Node,
-        section_hpath: Option<&Vec<String>>,
+        section_hpath: Option<&[std::sync::Arc<str>]>,
         ctx: &BacklinkCtx<'_>,
         out: &mut Vec<(String, SpliceRequest)>,
     ) {
         let here = match (&node.kind, &node.hpath) {
-            (NodeKind::Section { .. }, Some(hp)) => Some(hp),
+            (NodeKind::Section { .. }, Some(hp)) => Some(&**hp),
             _ => section_hpath,
         };
         if let NodeKind::Wikilink {
@@ -663,12 +663,12 @@ fn single(edit: Edit) -> SpliceRequest {
 }
 
 /// A heading-path (`/`-joined text chain) as a mint-plane `hpath` ref.
-fn hpath_ref(hpath: &[String]) -> Ref {
+fn hpath_ref<S: AsRef<str>>(hpath: &[S]) -> Ref {
     Ref::Hpath(
         hpath
             .iter()
             .map(|h| HpathSeg {
-                h: h.clone(),
+                h: h.as_ref().to_owned(),
                 n: None,
             })
             .collect(),

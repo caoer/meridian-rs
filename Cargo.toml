@@ -157,5 +157,7 @@ pedantic = { level = "warn", priority = -1 }
 # edges. Fork version stays equal to upstream's; merge-from-upstream on branch
 # `obsidian`; each rev bump gets a comment naming its upstream PR.
 [patch.crates-io]
-# obsidian HEAD 2026-07-18 (fork point; repin as ENABLE_OBSIDIAN_* lands)
-pulldown-cmark = { git = "https://github.com/caoer/pulldown-cmark", rev = "bc5df96c23da33283ef53c1a8dcfc53d7b6cd4fb" }
+# Branch `table-pad-lazy`: obsidian at bc5df96 plus one commit that
+# pads a short table row with one item expanded into empty cells as events
+# (merkle-spec §6.4); fork-only, no upstream PR. Repin as ENABLE_OBSIDIAN_* lands.
+pulldown-cmark = { git = "https://github.com/caoer/pulldown-cmark", rev = "164b2da10fed73f18e97910bb0f3477c50a92f50" }

@@ -740,6 +740,18 @@ Sound load-peak sizing and migration of every escaping owner remain required
 at the daemon activation boundary; the substrate's charge is the host floor
 above.
 
+A load-peak declaration can be a function of the raw length only because a
+document's retained tree and its parse staging grow linearly with its bytes,
+for every shape. Two representations hold that. A node's `hpath` is a shared
+reference to its governing section's chain, and a section's chain holds
+references to its ancestors' heading texts; each heading text is stored once,
+so a long heading over many small leaves costs one reference per leaf, not a
+copy of the heading. The parser keeps the cells that pad a table row out to
+its header's width as one marker per row and expands them only as events,
+with the same ranges and the same per-table limit on padded cells, so a wide
+header over short rows stages one item per row, not one per missing cell.
+Neither changes a parse result, a `node_rev`, or any served byte.
+
 At admission and after releasing operation pins, shed the least recently
 used unpinned member versions across all workspaces until the charged total
 fits. The periodic reaper is a backstop, not the only enforcement point.
@@ -1486,7 +1498,10 @@ checksum, raw-content digest, UTF-8/span bounds, tree depth, and node revs.
 Malformed records are misses. A broken framing boundary ends adoption at
 that boundary; already verified records remain usable. Bound all allocations
 by the available record bytes and a cache-entry size ceiling. Large documents
-that cannot be cached still parse and serve normally.
+that cannot be cached still parse and serve normally. A record stores no
+`hpath`: it is a function of the tree's section headings, recomputed after
+decode by the same assignment the parser runs, so a record's size and its
+decode stay linear in the document.
 
 Each record's checksum includes the semantic generation, type, content digest,
 and payload, so a verified prefix cannot adopt an old-generation record under

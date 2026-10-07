@@ -1,4 +1,6 @@
-use model::{Document, NodeKind};
+use std::sync::Arc;
+
+use model::{Document, Node, NodeKind};
 
 fn document(raw: &str) -> Document {
     model::build(raw.to_owned(), syntax::parse(raw))
@@ -12,6 +14,23 @@ fn parsed_document_round_trips_byte_exactly() {
     let restored = parse_cache::decode(&bytes, &model::leaf_digest(raw.as_bytes())).unwrap();
     assert_eq!(restored.raw, doc.raw);
     assert_eq!(restored.root, doc.root);
+    assert!(
+        chains_shared(&restored.root),
+        "decode copies a heading path"
+    );
+}
+
+/// Every non-section node a section governs holds the section's own chain.
+fn chains_shared(node: &Node) -> bool {
+    node.children.iter().all(|child| {
+        let shares = match (&node.kind, &child.kind, &node.hpath, &child.hpath) {
+            (NodeKind::Section { .. }, NodeKind::Section { .. }, ..) => true,
+            (NodeKind::Section { .. }, _, Some(own), Some(theirs)) => Arc::ptr_eq(own, theirs),
+            (NodeKind::Section { .. }, ..) => false,
+            _ => true,
+        };
+        shares && chains_shared(child)
+    })
 }
 
 #[test]

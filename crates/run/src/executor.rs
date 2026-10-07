@@ -1993,8 +1993,7 @@ fn find_section(
         }),
         [only] => {
             let segs = only
-                .hpath
-                .clone()
+                .hpath_owned()
                 .unwrap_or_else(|| vec![heading.to_owned()]);
             let last_byte = doc
                 .raw

@@ -16,6 +16,7 @@
 
 use std::collections::{BTreeMap, btree_map};
 use std::ops::Range;
+use std::sync::Arc;
 
 use addr::{Addr, AddrError, MountName, MountSet};
 
@@ -80,9 +81,26 @@ pub struct Node {
     pub span: ByteSpan,
     pub node_rev: NodeRev,
     /// Chain of heading texts root → governing heading; delimiter-free array
-    /// form (a literal `/` in a heading needs no escaping).
-    pub hpath: Option<Vec<String>>,
+    /// form (a literal `/` in a heading needs no escaping). Shared: every node
+    /// a section governs holds the same chain, and each heading text is stored
+    /// once (merkle-spec §6.4).
+    pub hpath: Option<Hpath>,
     pub children: Vec<Node>,
+}
+
+/// A heading path, shared between the nodes it governs: one reference per
+/// node, never a copy of the heading texts.
+pub type Hpath = Arc<[Arc<str>]>;
+
+impl Node {
+    /// The heading path as owned segments, for an answer or record that
+    /// outlives the tree.
+    #[must_use]
+    pub fn hpath_owned(&self) -> Option<Vec<String>> {
+        self.hpath
+            .as_deref()
+            .map(|chain| chain.iter().map(ToString::to_string).collect())
+    }
 }
 
 /// Model node kinds — the policy-schema §2 vocabulary. Richer than the wire's
@@ -154,7 +172,7 @@ pub enum NodeKind {
 pub struct Document {
     /// Immutable UTF-8 body, shared with other byte-level owners without a
     /// payload copy. The parsed tree's spans borrow this exact version.
-    pub raw: std::sync::Arc<String>,
+    pub raw: Arc<String>,
     pub root: Node,
 }
 
@@ -164,7 +182,7 @@ pub struct Document {
 /// the corpus carries them by shared reference — an incremental rebuild
 /// clones pointers for unmoved members, never document bodies
 /// (node-rev-merkle-spec §6.8: sharing changes ownership, never content).
-pub type Docs = BTreeMap<String, std::sync::Arc<Document>>;
+pub type Docs = BTreeMap<String, Arc<Document>>;
 
 /// Build the governed tree from `syntax`'s dialect stream — the syntax→model
 /// seam.
@@ -176,13 +194,13 @@ pub type Docs = BTreeMap<String, std::sync::Arc<Document>>;
 /// `node_rev` equals `file_rev` by construction.
 #[must_use]
 pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
-    build_shared(std::sync::Arc::new(raw), nodes)
+    build_shared(Arc::new(raw), nodes)
 }
 
 /// Build the same governed tree as [`build`] while retaining an existing
 /// immutable UTF-8 allocation (merkle §6.8).
 #[must_use]
-pub fn build_shared(raw: std::sync::Arc<String>, nodes: Vec<syntax::DialectNode>) -> Document {
+pub fn build_shared(raw: Arc<String>, nodes: Vec<syntax::DialectNode>) -> Document {
     use syntax::DialectKind as D;
 
     // Host-candidate blocks for anchor attachment (F-R4 Obsidian parity):
@@ -251,7 +269,7 @@ pub fn build_shared(raw: std::sync::Arc<String>, nodes: Vec<syntax::DialectNode>
         children: nest_by_containment(items),
     };
     sort_tree(&mut root);
-    fill_hpath(&mut root, &mut Vec::new());
+    assign_hpath(&mut root);
 
     Document { raw, root }
 }
@@ -828,27 +846,32 @@ fn sort_tree(node: &mut Node) {
     }
 }
 
-/// Assign `hpath` — the chain of governing heading texts. Sections carry their
-/// own heading; descendants inherit the governing chain; document/frontmatter and
-/// pre-heading nodes have none.
-fn fill_hpath(node: &mut Node, chain: &mut Vec<String>) {
-    let pushed = if let NodeKind::Section { heading_text, .. } = &node.kind {
-        chain.push(heading_text.clone());
-        true
+/// Assign `hpath` over a whole tree — the chain of governing heading texts.
+/// Sections carry their own heading; descendants inherit the governing chain;
+/// document/frontmatter and pre-heading nodes have none. The parser and the
+/// document codec's restore both run it, so the codec stores no hpath.
+pub fn assign_hpath(root: &mut Node) {
+    fill_hpath(root, None);
+}
+
+/// A section builds its chain once (its ancestors' segment references plus
+/// its own text); every other node takes a reference to its governing chain.
+fn fill_hpath(node: &mut Node, governing: Option<&Hpath>) {
+    let own = if let NodeKind::Section { heading_text, .. } = &node.kind {
+        let mut chain: Vec<Arc<str>> = governing.map_or_else(Vec::new, |up| up.to_vec());
+        chain.push(Arc::from(heading_text.as_str()));
+        Some(Hpath::from(chain))
     } else {
-        false
+        None
     };
     node.hpath = match &node.kind {
         NodeKind::Document { .. } | NodeKind::Frontmatter { .. } => None,
-        NodeKind::Section { .. } => Some(chain.clone()),
-        _ if chain.is_empty() => None,
-        _ => Some(chain.clone()),
+        NodeKind::Section { .. } => own.clone(),
+        _ => governing.cloned(),
     };
+    let governing = own.as_ref().or(governing);
     for c in &mut node.children {
-        fill_hpath(c, chain);
-    }
-    if pushed {
-        chain.pop();
+        fill_hpath(c, governing);
     }
 }
 
@@ -2124,7 +2147,7 @@ fn collect_lost(
             let segs: Vec<HpathSeg> = hpath
                 .iter()
                 .map(|h| HpathSeg {
-                    h: h.clone(),
+                    h: h.to_string(),
                     n: None,
                 })
                 .collect();
@@ -2144,7 +2167,7 @@ fn collect_lost(
                 } else {
                     CorruptCause::HeadingDestroyed
                 };
-                lost.push((hpath.clone(), cause));
+                lost.push((hpath.iter().map(ToString::to_string).collect(), cause));
             }
         }
     }
@@ -4406,10 +4429,7 @@ mod tests {
         .expect("Goals section");
         assert_eq!(goals.span, 20..136, "L1 section runs to EOF (Q3/Q4 deeper)");
         assert_eq!(goals.node_rev.0, "a6665baff294bd04");
-        assert_eq!(
-            goals.hpath.as_deref(),
-            Some(["Goals".to_string()].as_slice())
-        );
+        assert_eq!(goals.hpath_owned(), Some(vec!["Goals".to_string()]));
         // Q3 and Q4 are children of Goals (level nesting), not siblings.
         let q3 = goals
             .children
@@ -4419,9 +4439,36 @@ mod tests {
         assert_eq!(q3.span, 49..72);
         assert_eq!(q3.node_rev.0, "33d5b0e1b27cb48b");
         assert_eq!(
-            q3.hpath.as_deref(),
-            Some(["Goals".to_string(), "Q3".to_string()].as_slice())
+            q3.hpath_owned(),
+            Some(vec!["Goals".to_string(), "Q3".to_string()])
         );
+    }
+
+    #[test]
+    fn a_section_shares_its_chain_with_every_node_it_governs() {
+        let raw = "# Goals\n\n## Q3\n\ntext [[a]] `b`\n\n- [ ] task #t\n";
+        let doc = build(raw.to_owned(), syntax::parse(raw));
+        let goals = &doc.root.children[0];
+        let q3 = goals
+            .children
+            .iter()
+            .find(|n| matches!(&n.kind, NodeKind::Section { .. }))
+            .expect("Q3 under Goals");
+        let chain = q3.hpath.as_ref().expect("Q3 chain");
+        // Q3's chain holds Goals' segment, not a copy of its text.
+        assert!(Arc::ptr_eq(
+            &chain[0],
+            &goals.hpath.as_ref().expect("Goals chain")[0]
+        ));
+        // Every node below Q3 holds Q3's own chain, not a copy of it.
+        let mut governed = 0;
+        let mut stack: Vec<&Node> = q3.children.iter().collect();
+        while let Some(node) = stack.pop() {
+            assert!(Arc::ptr_eq(node.hpath.as_ref().expect("governed"), chain));
+            governed += 1;
+            stack.extend(&node.children);
+        }
+        assert!(governed >= 3, "the fixture has leaves under Q3: {governed}");
     }
 
     #[test]

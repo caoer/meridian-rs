@@ -113,9 +113,13 @@ pub(crate) fn project_nodes(conn: &Connection, docs: &model::Docs) -> duckdb::Re
 fn collect_nodes(node: &Node, path: &str, doc_rev: &str, rows: &mut Vec<Vec<Value>>) {
     let entry = match &node.kind {
         NodeKind::Document { .. } => Some(("document", String::new())),
-        NodeKind::Section { .. } => {
-            Some(("section", node.hpath.clone().unwrap_or_default().join(">")))
-        }
+        NodeKind::Section { .. } => Some((
+            "section",
+            node.hpath
+                .as_deref()
+                .map(|chain| chain.join(">"))
+                .unwrap_or_default(),
+        )),
         NodeKind::Frontmatter { .. } => Some(("frontmatter", "frontmatter".to_string())),
         NodeKind::Anchor { name } => Some(("anchor", format!("^{name}"))),
         _ => None,
