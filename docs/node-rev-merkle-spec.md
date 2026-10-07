@@ -676,10 +676,17 @@ the window keeps its workspace. The eviction is the same total eviction
 (engine, ring, feed, memo, SQL handle, compiled modules). When no candidate
 is left and the floor is still over, the sweep logs the floor and the unmet
 amount and returns. It never evicts for overage above the floor (bodies,
-pins, reservations). An eviction releases the registry's references only: a
-generation an operation still holds stays in the floor until released, so
-one sweep can evict every unsubscribed workspace while a long operation
-holds a large generation. The sweep's censuses run alone. A census holds
+pins, reservations). A sweep evicts only when the sweep before it also found
+the floor over the limit: the registry keeps each sweep's verdict — whether
+its census, or its last eviction's, left the floor over the limit — and a
+sweep that finds the floor over after one that did not evicts nothing. So an
+overage shorter than one reaper period (a generation an operation holds past
+its publish, an owner a census found busy) costs no workspace, and a lasting
+one is met one period later. An eviction releases the registry's references
+only: a generation an operation still holds stays in the floor until
+released, so a sweep that follows one over the limit can evict every
+unsubscribed workspace while a long operation holds a large generation. The
+sweep's censuses run alone. A census holds
 every live generation while it measures them, so one overlapping an
 eviction's census would have that census charge the evicted generation again
 and the sweep evict a second workspace for an overage one eviction met. The
@@ -887,6 +894,17 @@ is live; or it is refused for occupied allowance while one is. An overrun
 is never reported as a fault of the member version. What is learned lives
 as long as the version's row, so a version that leaves every generation
 learns again.
+
+**The report's door.** The controller's report leaves the process through
+the daemon's `residency` admin request, beside `ping` and `list` on the same
+socket: `{"op":"residency"}` answers `{"status":"residency","report":R}`. `R`
+is `null` for a daemon with no host, else the report's fields as whole
+numbers of bytes or counts — `limit`, `floor`, `raw`, `bodies`, `reserved`,
+`allocated`, `total`, `pinned`, `retiring`, `overage`, `floor_overage`,
+`peak_shortfall`, `peak_overruns`, `members`, `reservations` — and the
+boolean `transient`. It reads the controller alone, never the registry map,
+so it answers beside a build or a sweep. `mrd status --residency` prints
+it (`docs/status.md`, the residency line).
 
 The ledger retains a selected body's full charge throughout retirement,
 including the interval where the local slot already appears cold. Only after
