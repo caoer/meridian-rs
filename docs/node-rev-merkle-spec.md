@@ -775,6 +775,16 @@ the file's rev, or matches its one addressed section against the shared toc
 rows, without rendering the page's toc. A write under an admitted pack and an
 armed law therefore stages its checks in proportion to the page.
 
+The SQL projection keeps it until the rows reach `DuckDB`. While it stages a
+page's rows, a section holds only its own address segment, rendered once, and
+a reference to its parent section's row; a task or body row holds a reference
+to its governing section's row. Each row's `hpath` text is rendered from those
+references when that row is loaded, one row at a time, and dropped once loaded.
+So the projection stages a page in proportion to the page. The `hpath` columns,
+their text, the cache's tables and every query are unchanged. The text
+`DuckDB` stores for an amplifying page (rows times chain length) sits on disk
+and in `DuckDB`'s buffer pool, under its `memory_limit`.
+
 At admission and after releasing operation pins, shed the least recently
 used unpinned member versions across all workspaces until the charged total
 fits. The periodic reaper is a backstop, not the only enforcement point.
