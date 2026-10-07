@@ -813,7 +813,14 @@ before the tree is complete. Over-declaring costs admission concurrency and
 never memory: a 64 KiB prose page reserves 27 MB for the length of its
 load, and a page whose declaration exceeds the allowance above the floor
 (above about 1.23 MiB at a 512 MiB allowance) loads through the serialized
-transient slot, refused while any other load is live. A shape outside this
+transient slot, refused while any other load is live. A refused oversized
+load becomes the one waiting oversized member for 100 ms, renewed at each of
+its attempts: while it waits, a new load of any other member that is not
+oversized is answered `Settling`, so the live loads drain and its next
+attempt takes the slot. A join of a live load and a hot hit are not paused,
+one member waits at a time, and an abandoned record expires, so steady
+fitting traffic cannot starve an oversized page and pauses at most for its
+load. A shape outside this
 set that stages more than 415 bytes per raw byte loads past its declaration;
 the ledger observes that only when the retained body exceeds the
 declaration, and does not observe transient staging.
@@ -824,7 +831,8 @@ overrun. The first caller to see it records the observed retained bytes on
 that version's row, counts the overrun (`peak_overruns` in the report,
 beside the largest `peak_shortfall`) and logs one line naming the version's
 length, its declared and its observed bytes; every caller that shared the
-load releases the body, and the row sheds it. One overrun is counted and
+load releases the body, and the row sheds it before any colder cached body,
+since shedding it alone restores the limit. One overrun is counted and
 logged once, however many callers shared it. A version's parse is
 deterministic, so its next load retains the same bytes: every later
 admission of that version declares the rule's peak plus the learned bytes,
@@ -834,7 +842,10 @@ still bounded by the rule's peak alone. The same pin then retries once, at
 once, under the learned declaration. No call joins a load admitted under
 less than its version now declares: while such a load is live, a call is
 answered `Settling` and retried after a pause like any other settling
-version. The retry's load fits and is served; or it exceeds the allowance
+version, and so is a new load of the version while that load's reservation
+is still held after its calls ended (a caller that shared it has not yet
+returned), so the retry never meets that reservation at the serialized
+slot. The retry's load fits and is served; or it exceeds the allowance
 above the floor and takes the serialized transient slot when no other load
 is live; or it is refused for occupied allowance while one is. An overrun
 is never reported as a fault of the member version. What is learned lives
@@ -846,9 +857,12 @@ including the interval where the local slot already appears cold. Only after
 `try_shed` returns may it publish the released charge. Descriptor and raw-lease
 destruction use the same ordering. No accounting lock spans loading, waiting
 on a local flight, or destruction of retained backing. A member's retirement
-race and the completion of a failed loading wave have distinct retryable
-results from occupied byte allowance. The catalog that leases bodies to
-consumers retries those two results against the same member version, a bounded
+race, an oversized load kept out only by another body's retirement
+(`Retiring`), and the completion of a failed loading wave, of a load declared
+before an overrun was learned, or the waiting oversized member's pause
+(`Settling`) have retryable results distinct from occupied byte allowance.
+The catalog that leases bodies to consumers retries those results against
+the same member version, a bounded
 number of times with a short pause, before it reports them; it never waits on
 occupied allowance. What it reports for any of the three, and for an overrun
 that outlasts the pin's own retry (above), is a transient fault
@@ -951,9 +965,9 @@ their text, the cache's tables and every query are unchanged. The text
 `DuckDB` stores for an amplifying page (rows times chain length) sits on disk
 and in `DuckDB`'s buffer pool, under the SQL memory policy above.
 
-At admission and after releasing operation pins, shed the least recently
-used unpinned member versions across all workspaces until the charged total
-fits. The periodic reaper is a backstop, not the only enforcement point.
+At admission and after releasing operation pins, shed an overrun's body
+first, then the least recently used unpinned member versions across all
+workspaces, until the charged total fits. The periodic reaper is a backstop, not the only enforcement point.
 Touch recency on a consumer's read, not during index maintenance, persistence
 or a full scan: a scan streams through the cache without making the whole
 corpus hot. Reserve and account for concurrent hydration and rebuild work;
@@ -1067,7 +1081,11 @@ Prepared handles commit with the baseline/root/scope transition only after
 all fallible work succeeds. A late retain or read failure leaves the old
 baseline, ring sequence and frames intact, so retry classifies the same
 transition. The registry's controller-backed retention adapter supplies this
-capability under the load-peak rule above. Enabling it in the daemon also
+capability under the load-peak rule above, and pins each baseline version
+through the catalog's admission and retry, so a refused baseline load reaches
+the watcher as the transient fault a serving read gets
+(`model::catalog::is_transient`), distinct from a backing fault, and the
+reconcile, which keeps its old baseline on any error, retries it. Enabling it in the daemon also
 requires the shared substrate accounting, bounded change staging, backing
 parent lifecycle and serving/SQL ownership migration above; the capability
 alone does not activate or establish the process budget.
