@@ -380,8 +380,9 @@ fn a_subscribed_workspace_sheds_to_the_host_limit_and_every_door_serves_the_eage
     let report = host.controller.report();
     assert_eq!(report.overage, 0, "{report:?}");
 
-    // A second workspace, warm and unsubscribed: the reaper charges a
-    // host-built generation nothing, so no budget evicts it.
+    // A second workspace, warm and unsubscribed: with a host the sweep's
+    // argument is not its budget, and a floor under the controller's limit
+    // evicts nothing (merkle-spec §6.4, the reaper under a host).
     let second = seeded(&tmp.path().join("second"), &files[..8]);
     let mut other = Conn::open(leased.socket_path());
     other.hello_v3(&second);
@@ -390,7 +391,7 @@ fn a_subscribed_workspace_sheds_to_the_host_limit_and_every_door_serves_the_eage
     assert_eq!(
         leased.registry().reap_to_budget(1),
         Vec::<PathBuf>::new(),
-        "the reaper charged a host-built generation"
+        "the reaper evicted under a floor within the controller's limit"
     );
 
     no_parsed_snapshot_is_saved_or_read_by_a_host_build(

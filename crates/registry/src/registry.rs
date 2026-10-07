@@ -269,6 +269,20 @@ pub struct Registry {
     #[cfg(test)]
     pub(crate) pause_after_census:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    /// Test-only gate: a floor census that has measured the generations
+    /// announces itself on the first channel, then parks on the second while
+    /// it still holds them. One-shot, same seam class as
+    /// `pause_in_reap_window`.
+    #[cfg(test)]
+    pub(crate) pause_in_census_generations:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    /// Test-only gate: the budget sweep under a host, its first census done
+    /// and its victim chosen, announces itself on the first channel, then
+    /// parks on the second before it evicts. One-shot, same seam class as
+    /// `pause_in_reap_window`.
+    #[cfg(test)]
+    pub(crate) pause_before_floor_eviction:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
 /// §3.2: how long the READ THAT KICKED a cold rebuild absorbs it before
@@ -1004,6 +1018,10 @@ impl Registry {
             pause_in_reap_window: Mutex::new(None),
             #[cfg(test)]
             pause_after_census: Mutex::new(None),
+            #[cfg(test)]
+            pause_in_census_generations: Mutex::new(None),
+            #[cfg(test)]
+            pause_before_floor_eviction: Mutex::new(None),
         }
     }
 
@@ -1033,11 +1051,23 @@ impl Registry {
     /// pass, a reconcile or a prime. `None` also without a host.
     #[must_use]
     pub fn floor_census(&self) -> Option<usize> {
+        self.census(false).and_then(|(_, bytes)| bytes)
+    }
+
+    /// One census: the ticket it took and what it measured ([`Self::floor_census`]).
+    /// The generations are held under the host's generation-phase gate,
+    /// shared, or exclusively when `alone` (the budget sweep's census: no
+    /// other census holds a generation while it measures); the ticket is
+    /// taken inside the gate. `None` without a host.
+    fn census(&self, alone: bool) -> Option<(u64, Option<usize>)> {
         use crate::residency::Owner;
         use model::allocation::arc_bytes;
         use std::sync::TryLockError;
         let host = self.residency.as_ref()?;
-        let mut bytes = {
+        let (ticket, mut bytes) = {
+            let _shared = (!alone).then(|| host.census_shared());
+            let _alone = alone.then(|| host.census_alone());
+            let ticket = host.ticket();
             let (held, tracking) = host.live_generations();
             let engines: Vec<Arc<WorkspaceEngine>> = self
                 .engines
@@ -1055,7 +1085,21 @@ impl Registry {
                         .saturating_add(generation.heap_bytes(&mut seen));
                 }
             }
-            bytes
+            // Test-only: park here, the generations still held, when the
+            // gate is armed (see the field docs).
+            #[cfg(test)]
+            {
+                let gate = self
+                    .pause_in_census_generations
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                if let Some((arrived, release)) = gate {
+                    let _ = arrived.send(());
+                    let _ = release.recv();
+                }
+            }
+            (ticket, bytes)
         };
         let memos: Vec<(PathBuf, Arc<Mutex<fs::DomainCache>>)> = self
             .domain_caches
@@ -1085,12 +1129,12 @@ impl Registry {
                 (workspace, heap)
             })
             .collect();
-        bytes = bytes.saturating_add(host.settle(Owner::Memo, memos));
+        bytes = bytes.saturating_add(host.settle(Owner::Memo, ticket, memos));
         let rings = rings
             .into_iter()
             .map(|(workspace, ring)| (workspace, ring.try_heap_bytes()))
             .collect();
-        bytes = bytes.saturating_add(host.settle(Owner::Ring, rings));
+        bytes = bytes.saturating_add(host.settle(Owner::Ring, ticket, rings));
         let total = match host.store.heap_bytes() {
             Ok(store) => Some(bytes.saturating_add(store)),
             Err(error) => {
@@ -1113,18 +1157,23 @@ impl Registry {
                 let _ = release.recv();
             }
         }
-        total
+        Some((ticket, total))
     }
 
     /// Set the residency host's floor to [`Self::floor_census`]; without a
     /// host, nothing. The reaper's tick and every publish and eviction run
     /// it. Call it holding no registry, memo or ring lock.
     pub fn charge_floor(&self) {
+        self.charge_floor_as(false);
+    }
+
+    /// [`Self::charge_floor`], with the census run alone when `alone`
+    /// ([`Self::census`]).
+    fn charge_floor_as(&self, alone: bool) {
         let Some(host) = &self.residency else {
             return;
         };
-        let ticket = host.ticket();
-        if let Some(bytes) = self.floor_census() {
+        if let Some((ticket, Some(bytes))) = self.census(alone) {
             host.set_floor(ticket, bytes);
         }
     }
@@ -3150,7 +3199,14 @@ impl Registry {
     /// (evicting a subscribed ring would fork the per-workspace seq, §4.7).
     /// When every warm workspace is subscribed the budget cannot be met:
     /// log and carry on, never panic.
+    ///
+    /// With a residency host the estimate and `max_resident_bytes` are not
+    /// used: the controller's limit is the budget, and the sweep evicts to
+    /// meet the host floor ([`Self::reap_to_floor`], merkle-spec §6.4).
     pub fn reap_to_budget(&self, max_resident_bytes: u64) -> Vec<PathBuf> {
+        if let Some(host) = &self.residency {
+            return self.reap_to_floor(host);
+        }
         if max_resident_bytes == 0 {
             return Vec::new();
         }
@@ -3164,8 +3220,6 @@ impl Registry {
             engines
                 .iter()
                 .map(|(key, engine)| {
-                    // A generation built under a residency host is charged
-                    // nothing here: its bodies are the controller's.
                     let raw: u64 = engine.eager_docs().map_or(0, |docs| {
                         docs.values().map(|doc| doc.raw.len() as u64).sum()
                     });
@@ -3210,12 +3264,116 @@ impl Registry {
             }
             victims
         };
-        if victims.is_empty() {
-            return victims;
+        if !victims.is_empty() {
+            self.evict(&victims, false);
         }
+        victims
+    }
+
+    /// The budget sweep under a host (merkle-spec §6.4, the reaper under a
+    /// host): trim the controller's bodies, re-census the floor, then while
+    /// the floor alone exceeds the controller's limit evict one whole
+    /// workspace — the least recently used one with no live sub cursor — and
+    /// re-census. Returns the evicted workspaces, oldest first. With none
+    /// left to evict and the floor still over, logs the floor and the unmet
+    /// amount.
+    fn reap_to_floor(&self, host: &crate::residency::Host) -> Vec<PathBuf> {
+        host.controller.trim();
+        self.charge_floor_as(true);
+        let mut victims: Vec<PathBuf> = Vec::new();
+        loop {
+            let over = host.controller.report().floor_overage;
+            if over == 0 {
+                break;
+            }
+            let Some(victim) = self.floor_victim(&victims) else {
+                eprintln!(
+                    "registry: the residency floor ({} bytes) cannot be met — every remaining \
+                     warm workspace holds a live sub cursor ({over} bytes over the limit)",
+                    host.floor()
+                );
+                break;
+            };
+            // Test-only: park here when the gate is armed (see the field
+            // docs).
+            #[cfg(test)]
+            {
+                let gate = self
+                    .pause_before_floor_eviction
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                if let Some((arrived, release)) = gate {
+                    let _ = arrived.send(());
+                    let _ = release.recv();
+                }
+            }
+            self.evict(std::slice::from_ref(&victim), true);
+            victims.push(victim);
+        }
+        victims
+    }
+
+    /// The next workspace [`Self::reap_to_floor`] evicts, its ring already
+    /// removed: the least recently used one holding an engine or a memo,
+    /// with no live sub cursor and not in `done`. Saved first, then decided
+    /// under the budget sweep's own critical section (`inner` exclusive, then
+    /// `rings`), so a sub claim landing in the window keeps its workspace.
+    fn floor_victim(&self, done: &[PathBuf]) -> Option<PathBuf> {
+        // Candidates OUTSIDE the map guards, each map locked alone: a
+        // workspace that warms meanwhile is the next sweep's.
+        let mut warm: Vec<PathBuf> = self
+            .engines
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect();
+        warm.extend(
+            self.domain_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .keys()
+                .cloned(),
+        );
+        warm.sort();
+        warm.dedup();
+        warm.retain(|key| !done.contains(key));
+        let oldest =
+            |warm: &mut Vec<PathBuf>,
+             map: &HashMap<PathBuf, Slot>,
+             rings: &HashMap<PathBuf, Arc<crate::ring::WorkspaceRing>>| {
+                warm.sort_by_key(|key| map.get(key).map_or(0, Slot::last_use));
+                warm.iter()
+                    .find(|key| !rings.get(*key).is_some_and(|ring| ring.has_subscribers()))
+                    .cloned()
+            };
+        let saved = {
+            let map = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+            let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+            oldest(&mut warm, &map, &rings)?
+        };
+        if !self.persist_workspace(&saved, true) {
+            eprintln!(
+                "checkpoint: pre-eviction save incomplete for {}; eviction proceeds under the residency floor",
+                saved.display()
+            );
+        }
+        let map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+        let victim = oldest(&mut warm, &map, &rings)?;
+        rings.remove(&victim);
+        Some(victim)
+    }
+
+    /// The total eviction of `victims`, whose rings the caller removed under
+    /// its decision: engine, feed, memo (stamps unbound), sql handle, module
+    /// cache and pre-warm signature all drop; the registration survives.
+    /// Re-censuses the host floor, alone when `alone` ([`Self::census`]).
+    fn evict(&self, victims: &[PathBuf], alone: bool) {
         {
             let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
-            for key in &victims {
+            for key in victims {
                 engines.remove(key);
             }
         }
@@ -3248,13 +3406,13 @@ impl Registry {
                 .sql_stores
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            for key in &victims {
+            for key in victims {
                 stores.remove(key);
             }
         }
         {
             let mut modules = self.modules.lock().unwrap_or_else(PoisonError::into_inner);
-            for key in &victims {
+            for key in victims {
                 modules.remove(key);
             }
         }
@@ -3263,14 +3421,13 @@ impl Registry {
                 .prewarm_signatures
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            for key in &victims {
+            for key in victims {
                 signatures.remove(key);
             }
         }
         drop(caches);
         drop(feeds);
-        self.charge_floor();
-        victims
+        self.charge_floor_as(alone);
     }
 
     /// Persist the current map to the state file, logging (never failing) on a

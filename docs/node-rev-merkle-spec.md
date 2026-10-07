@@ -601,25 +601,55 @@ after a generation is published, after an eviction that removed state (idle
 reap, budget sweep, `unregister`), and at each reaper tick
 (`Registry::charge_floor`). Memo and ring growth, and a subscription's
 priming of a ring with its watch state and store records, reach the floor at
-the next reaper tick; a tick runs `reap_interval` after the previous sweep
+the first census point that finds the owner free, at the latest a reaper
+tick that does; a tick runs `reap_interval` after the previous sweep
 finished. A census takes a ticket before it measures and sets the floor only
 if no later ticket has, so an older overlapping census never overwrites a
 newer total. It takes owner handles out of the registry maps under their
-locks, measures the generations and releases them, and only then visits each
-memo and ring, one at a time and without waiting: a memo or ring whose lock
-is busy is charged what its last measurement found (the host keeps that per
-workspace and forgets a workspace no census lists; nothing, for one never
-measured). So a census never waits behind a floor pass, a reconcile or a
-prime, and a census in flight keeps no generation alive. A store census that
+locks. It holds the generations only while it measures them, and releases
+them before it visits each memo and ring, one at a time and without waiting:
+a memo or ring whose lock is busy is charged what its last measurement found
+(nothing, for one never measured). The host keeps that per workspace under
+the ticket that recorded it and forgets a workspace no census lists; a census
+with an older ticket neither overwrites nor forgets what a newer one
+recorded. So a census never waits behind a floor pass, a reconcile or a
+prime, and until a census finds a busy owner free the floor lacks that
+owner's growth since its last measurement. A store census that
 fails leaves the floor where it was. A host serves one registry. Not in this
 floor: the registry maps' own tables, the host's last-measurement table, a
-feed's dirty set, SQL handles, compiled run modules, and a ring that outlives
-its map entry. A subscribed ring never leaves the map; the holders that
-outlive an eviction are requests that took the ring's handle before it (a run
-submission for its whole life, a script, a delta sink, a write door), each
-keeping up to a whole ring until it returns — its watch state, about 28 MB at
-76k members, and up to 256 frames — and the memo's stamp closure, until the
-same sweep unbinds it.
+feed's dirty set, SQL handles, compiled run modules, and a ring or a memo
+that outlives its map entry. A subscribed ring never leaves the map; the
+holders that outlive an eviction are requests that took the ring's or the
+memo's handle before it (a run submission for its whole life, a script, a
+delta sink, a write door), each keeping up to a whole ring until it returns —
+its watch state, about 28 MB at 76k members, and up to 256 frames — or the
+workspace's memo, and the memo's stamp closure, which keeps the ring until
+the same sweep unbinds it.
+
+**The reaper under a host.** Bodies above the floor are the controller's to
+shed; the floor is not. The budget sweep (`Registry::reap_to_budget`) of a
+registry with a host trims the controller, re-censuses the floor, and then,
+while the floor alone exceeds the controller's limit (`floor_overage`),
+evicts one whole workspace and re-censuses: the least recently used warm
+workspace with no live sub cursor, saved first and decided under the same
+critical section as the eviction without a host, so a sub claim landing in
+the window keeps its workspace. The eviction is the same total eviction
+(engine, ring, feed, memo, SQL handle, compiled modules). When no candidate
+is left and the floor is still over, the sweep logs the floor and the unmet
+amount and returns. It never evicts for overage above the floor (bodies,
+pins, reservations). An eviction releases the registry's references only: a
+generation an operation still holds stays in the floor until released, so
+one sweep can evict every unsubscribed workspace while a long operation
+holds a large generation. The sweep's censuses run alone. A census holds
+every live generation while it measures them, so one overlapping an
+eviction's census would have that census charge the evicted generation again
+and the sweep evict a second workspace for an overage one eviction met. The
+host therefore gates the generation phase: an ordinary census holds the gate
+shared, the sweep's censuses hold it exclusively and take their ticket inside
+it, so the sweep waits for the censuses in flight to release their
+generations — their measuring time, never a memo or ring lock. With a host
+the sweep's raw-byte budget argument is not used; the controller's limit is
+the budget.
 
 `registry::residency::controller` owns the shared admission ledger and member
 LRU. Handles with the same retained byte identity share one slot across roots
@@ -1174,9 +1204,11 @@ through `DocumentCatalog` and `LockFacts`, so both forms answer the same
 bytes, and under a host a known member whose backing cannot be read is that
 door's member fault, never a read of the workspace file. A host-built
 generation takes no part in the §6.9 parsed snapshot, neither restored into
-nor saved from, and the raw-byte estimate of `Registry::reap_to_budget`
-charges it nothing: its bodies are the controller's, which sheds them to its
-own limit as their pins release. `mrd daemon` configures no host.
+nor saved from, and `Registry::reap_to_budget` does not estimate it from raw
+bytes: its bodies are the controller's, which sheds them to its own limit as
+their pins release, and its metadata is in the host floor, which the sweep
+evicts whole workspaces to meet (§6.4, the reaper under a host). `mrd daemon`
+configures no host.
 
 **Cold access and consumers.** `Document` remains immutable and pure;
 `model` owns membership/access contracts, not I/O or a registry. Replace the
