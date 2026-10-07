@@ -157,11 +157,7 @@ fn subject_of(target: &SecRef) -> String {
     match target {
         SecRef::Hpath { hpath } => format!(
             "section \"{}\"",
-            hpath
-                .iter()
-                .map(|s| s.h.as_str())
-                .collect::<Vec<_>>()
-                .join("/")
+            hpath.iter().map(|s| &*s.h).collect::<Vec<_>>().join("/")
         ),
         SecRef::Anchor { anchor } => format!("block \"^{anchor}\""),
         SecRef::FmKey { fm_key } => format!("frontmatter key \"{fm_key}\""),

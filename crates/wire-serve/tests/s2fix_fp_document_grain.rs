@@ -410,7 +410,7 @@ fn check_write_and_splice_agree_on_a_decorated_address() {
         &[CheckWriteEdit {
             op: "replace".into(),
             at: vec![wire::HpathSeg {
-                h: decorated.clone(),
+                h: decorated.as_str().into(),
                 n: None,
             }],
             find: "the goal line".into(),

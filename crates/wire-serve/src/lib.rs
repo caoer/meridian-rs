@@ -124,7 +124,7 @@ pub fn display_hpath(hpath: &[wire::HpathSeg]) -> String {
         .iter()
         .map(|s| match s.n {
             Some(n) => format!("{}#{n}", s.h),
-            None => s.h.clone(),
+            None => s.h.to_string(),
         })
         .collect::<Vec<_>>()
         .join("/")

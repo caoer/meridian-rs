@@ -111,7 +111,7 @@ fn a_props_batch_arms_one_fact_per_key_and_the_receipt_reads_them_back() {
     assert_eq!(key_of(&armed.edits[1].target), "status");
     assert!(
         matches!(&armed.edits[2].target, SecRef::Hpath { hpath }
-            if hpath.iter().map(|s| s.h.as_str()).eq(["Goals", "Q4"])),
+            if hpath.iter().map(|s| &*s.h).eq(["Goals", "Q4"])),
         "the body op keeps its own §2.1 address"
     );
     for fact in &armed.edits {

@@ -21,6 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // v2 §1 wire vocabulary — the nouns
@@ -93,7 +94,11 @@ pub const HPATH_SEG_V1_REFUSAL: &str =
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct HpathSeg {
-    pub h: String,
+    /// Raw heading text. Shared, not owned: an address a door derives from a
+    /// parsed tree takes the tree's own heading text by reference, so a long
+    /// heading over many sections is stored once however many addresses
+    /// carry it (merkle-spec §6.4). Serialized as the plain string.
+    pub h: Arc<str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub n: Option<u32>,
 }
@@ -119,7 +124,7 @@ impl<'de> Deserialize<'de> for HpathSeg {
             Repr::Str(h) => Err(serde::de::Error::custom(format!(
                 "{HPATH_SEG_V1_REFUSAL}: `{h}`"
             ))),
-            Repr::Seg { h, n } => Ok(HpathSeg { h, n }),
+            Repr::Seg { h, n } => Ok(HpathSeg { h: h.into(), n }),
         }
     }
 }
@@ -198,7 +203,7 @@ impl ReadSel {
             hpath: s
                 .split('/')
                 .map(|h| HpathSeg {
-                    h: h.to_owned(),
+                    h: h.into(),
                     n: None,
                 })
                 .collect(),
@@ -215,7 +220,7 @@ impl ReadSel {
                 .iter()
                 .map(|s| match s.n {
                     Some(n) => format!("{}#{n}", s.h),
-                    None => s.h.clone(),
+                    None => s.h.to_string(),
                 })
                 .collect::<Vec<_>>()
                 .join("/"),

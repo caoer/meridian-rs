@@ -1949,7 +1949,10 @@ fn decode_seg(v: &Value) -> Result<HpathSeg, Box<ErrorBody>> {
                 },
                 Some(_) => return Err(bad_request("hpath segment `n` must be a 1-based integer")),
             };
-            Ok(HpathSeg { h: h.clone(), n })
+            Ok(HpathSeg {
+                h: h.as_str().into(),
+                n,
+            })
         }
         _ => Err(bad_request("hpath segment must be a `{h, n?}` object")),
     }

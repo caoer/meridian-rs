@@ -254,7 +254,10 @@ fn harvest(path: &str, body: &[(usize, String)]) -> Result<Harvest, Refusal> {
                     "write the segment as `- h: <raw heading text>`.".to_owned(),
                 ));
             }
-            holding_hpath.push(HpathSeg { h: v, n: None });
+            holding_hpath.push(HpathSeg {
+                h: v.into(),
+                n: None,
+            });
             continue;
         }
         // The optional occurrence index on the segment just pushed.
@@ -611,7 +614,7 @@ fn walk_sections(node: &model::Node, want: &[&str], out: &mut Option<model::Byte
 }
 
 fn section_span(node: &model::Node, hpath: &[HpathSeg]) -> Option<model::ByteSpan> {
-    let want: Vec<&str> = hpath.iter().map(|s| s.h.as_str()).collect();
+    let want: Vec<&str> = hpath.iter().map(|s| &*s.h).collect();
     let mut out = None;
     walk_sections(node, &want, &mut out);
     out
@@ -1112,7 +1115,7 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
                             .hpath
                             .iter()
                             .map(|h| HpathSeg {
-                                h: h.clone(),
+                                h: h.as_str().into(),
                                 n: None,
                             })
                             .collect(),
@@ -1208,7 +1211,7 @@ fn display_hpath(hpath: &[HpathSeg]) -> String {
         .iter()
         .map(|s| match s.n {
             Some(n) => format!("{}#{n}", s.h),
-            None => s.h.clone(),
+            None => s.h.to_string(),
         })
         .collect::<Vec<_>>()
         .join("/")
@@ -1384,11 +1387,11 @@ mod tests {
         let d = doc("# Guide\n\n## A/B\n\nbody\n");
         let hpath = vec![
             HpathSeg {
-                h: "Guide".to_owned(),
+                h: "Guide".into(),
                 n: None,
             },
             HpathSeg {
-                h: "A/B".to_owned(),
+                h: "A/B".into(),
                 n: None,
             },
         ];

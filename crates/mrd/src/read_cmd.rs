@@ -476,7 +476,7 @@ fn route_selectors(
         _ => (
             Some(wire::ReadSel::Hpath {
                 hpath: vec![wire::HpathSeg {
-                    h: frag.to_owned(),
+                    h: frag.into(),
                     n: None,
                 }],
             }),
@@ -584,7 +584,7 @@ mod frag_door_tests {
         let wire::ReadSel::Hpath { hpath } = toc.expect("the heading plane rides") else {
             panic!("a heading fragment routes onto the toc scope's hpath arm");
         };
-        let texts: Vec<&str> = hpath.iter().map(|s| s.h.as_str()).collect();
+        let texts: Vec<&str> = hpath.iter().map(|s| &*s.h).collect();
         assert_eq!(texts, ["Alpha", "Beta"]);
         assert!(sections.is_none(), "nothing moved onto sections");
     }

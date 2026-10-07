@@ -67,11 +67,11 @@ fn args_guarded(anchor: &str, dry: bool, if_node_rev: Option<NodeRev>) -> Splice
             target: SecRef::Hpath {
                 hpath: vec![
                     wire::HpathSeg {
-                        h: "Goals".to_string(),
+                        h: "Goals".into(),
                         n: None,
                     },
                     wire::HpathSeg {
-                        h: "Q4".to_string(),
+                        h: "Q4".into(),
                         n: None,
                     },
                 ],

@@ -26,6 +26,8 @@
 //!   row handle whose duplicates are a numbering artifact, not an ambiguity
 //!   ([`selector_matches`]).
 
+use std::sync::Arc;
+
 use crate::gotext::{DeweyCounter, fields_count};
 
 /// One host-face read row: the complete addressing fact set for one heading
@@ -68,7 +70,7 @@ pub struct ReadFact {
 pub fn read_facts(rows: &[wire::TocNode], raw: &[u8]) -> Vec<ReadFact> {
     let mut out = Vec::new();
     let mut dewey = DeweyCounter::new();
-    let raw_addrs = raw_addresses(rows);
+    let mut raw_addrs = raw_addresses(rows);
     for (i, row) in rows.iter().enumerate() {
         // An anchor row never enters the heading plane, whatever host kind
         // it echoes (its `hpath` is None — it addresses nothing there).
@@ -76,7 +78,7 @@ pub fn read_facts(rows: &[wire::TocNode], raw: &[u8]) -> Vec<ReadFact> {
             None if row.kind == "heading" => {
                 let level = row.level.unwrap_or(0);
                 let segs = row.hpath.as_deref().unwrap_or_default();
-                let title = segs.last().map(|s| s.h.clone()).unwrap_or_default();
+                let title = segs.last().map(|s| s.h.to_string()).unwrap_or_default();
                 let words = row
                     .content_span
                     .as_ref()
@@ -85,7 +87,7 @@ pub fn read_facts(rows: &[wire::TocNode], raw: &[u8]) -> Vec<ReadFact> {
                     n: dewey.next(level),
                     depth: level,
                     title,
-                    hpath: raw_addrs[i].clone(),
+                    hpath: std::mem::take(&mut raw_addrs[i]),
                     words,
                     sec_rev: row.node_rev.0.clone(),
                     span: row.span,
@@ -131,18 +133,20 @@ pub fn read_facts(rows: &[wire::TocNode], raw: &[u8]) -> Vec<ReadFact> {
 /// Two passes, because ambiguity is a whole-document fact: pass 1 assigns each
 /// heading row its containment parent, raw text, and occurrence; pass 2 turns
 /// the totals into `n` and clones each parent's finished address (parents
-/// precede children in document order, so the prefix is always ready).
+/// precede children in document order, so the prefix is always ready). The
+/// segments share the toc rows' heading text, so that clone is one pointer
+/// per segment, never a copy of a heading (merkle-spec §6.4).
 fn raw_addresses(rows: &[wire::TocNode]) -> Vec<Vec<wire::HpathSeg>> {
     struct Seg {
         /// Row index of the containment parent; `None` at the top level.
         parent: Option<usize>,
-        text: String,
+        text: Arc<str>,
         /// 1-based occurrence among same-parent siblings sharing `text`.
         occ: u32,
     }
 
     let mut segs: Vec<Option<Seg>> = (0..rows.len()).map(|_| None).collect();
-    let mut counts: std::collections::HashMap<(Option<usize>, String), u32> =
+    let mut counts: std::collections::HashMap<(Option<usize>, Arc<str>), u32> =
         std::collections::HashMap::new();
     // Ancestor row indices by containment depth: `stack[d - 1]` is the row of
     // the depth-`d` ancestor. `hpath.len()` IS the containment depth (a section
@@ -236,10 +240,13 @@ pub fn slice_span<'a>(raw: &'a [u8], span: &wire::Span) -> &'a [u8] {
 #[must_use]
 pub fn selector_matches<'a>(facts: &'a [ReadFact], sel: &wire::ReadSel) -> Vec<&'a ReadFact> {
     match sel {
-        wire::ReadSel::Hpath { hpath } => facts
-            .iter()
-            .filter(|f| hpath_matches(hpath, &f.hpath))
-            .collect(),
+        wire::ReadSel::Hpath { hpath } => {
+            let mut text = SegTextMemo::new(hpath.len());
+            facts
+                .iter()
+                .filter(|f| hpath_matches(hpath, &f.hpath, &mut text))
+                .collect()
+        }
         wire::ReadSel::Dewey { n } => facts.iter().find(|f| &f.n == n).into_iter().collect(),
         wire::ReadSel::Anchor { anchor } => facts
             .iter()
@@ -292,12 +299,45 @@ pub fn resolve_selector<'a>(facts: &'a [ReadFact], sel: &wire::ReadSel) -> Optio
 /// Per-segment address equality: same length, same raw text, and a selector
 /// occurrence index that either abstains (`None` — first match wins) or names
 /// the row's own. Byte-exact on `h`; nothing is sanitized on either side.
-fn hpath_matches(sel: &[wire::HpathSeg], row: &[wire::HpathSeg]) -> bool {
+fn hpath_matches(sel: &[wire::HpathSeg], row: &[wire::HpathSeg], text: &mut SegTextMemo) -> bool {
     sel.len() == row.len()
         && sel
             .iter()
             .zip(row)
-            .all(|(s, r)| s.h == r.h && (s.n.is_none() || s.n == r.n))
+            .enumerate()
+            .all(|(d, (s, r))| text.same(d, &s.h, &r.h) && (s.n.is_none() || s.n == r.n))
+}
+
+/// Text equality of one selector's segments against many rows' segments,
+/// for one resolution. Rows derived from one tree share each heading's text,
+/// so the memo keeps, per depth, the last row segment compared and the
+/// answer: a row segment that is the same shared text answers from the memo,
+/// and a long heading is compared once per depth, not once per row under it
+/// (merkle-spec §6.4).
+pub struct SegTextMemo {
+    last: Vec<Option<(Arc<str>, bool)>>,
+}
+
+impl SegTextMemo {
+    /// A memo for a selector of `depth` segments.
+    #[must_use]
+    pub fn new(depth: usize) -> Self {
+        SegTextMemo {
+            last: vec![None; depth],
+        }
+    }
+
+    /// Whether the selector's segment text at depth `d` equals `row`'s.
+    pub fn same(&mut self, d: usize, sel: &str, row: &Arc<str>) -> bool {
+        if let Some((seen, answer)) = &self.last[d]
+            && Arc::ptr_eq(seen, row)
+        {
+            return *answer;
+        }
+        let answer = sel == &**row;
+        self.last[d] = Some((Arc::clone(row), answer));
+        answer
+    }
 }
 
 /// The sections-mode content bytes for one resolved fact
@@ -562,7 +602,7 @@ mod tests {
                 &got,
                 &wire::ReadSel::Hpath {
                     hpath: vec![wire::HpathSeg {
-                        h: "Notes".to_owned(),
+                        h: "Notes".into(),
                         n: Some(2)
                     }]
                 }
@@ -712,18 +752,18 @@ mod tests {
         let got = facts("# Scratch/notes\n\nflat\n\n# Scratch\n\nx\n\n## notes\n\nnested\n");
         let flat = wire::ReadSel::Hpath {
             hpath: vec![wire::HpathSeg {
-                h: "Scratch/notes".to_owned(),
+                h: "Scratch/notes".into(),
                 n: None,
             }],
         };
         let nested = wire::ReadSel::Hpath {
             hpath: vec![
                 wire::HpathSeg {
-                    h: "Scratch".to_owned(),
+                    h: "Scratch".into(),
                     n: None,
                 },
                 wire::HpathSeg {
-                    h: "notes".to_owned(),
+                    h: "notes".into(),
                     n: None,
                 },
             ],
@@ -796,7 +836,7 @@ mod tests {
             &got,
             &wire::ReadSel::Hpath {
                 hpath: vec![wire::HpathSeg {
-                    h: "1.2".to_owned(),
+                    h: "1.2".into(),
                     n: None,
                 }],
             },

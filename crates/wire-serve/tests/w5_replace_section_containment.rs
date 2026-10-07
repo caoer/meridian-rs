@@ -145,7 +145,7 @@ fn assert_armed_names_target(out: &SpliceOutcome) {
         panic!("hpath target");
     };
     assert_eq!(
-        hpath.iter().map(|s| s.h.as_str()).collect::<Vec<_>>(),
+        hpath.iter().map(|s| &*s.h).collect::<Vec<_>>(),
         vec!["Page", "Level tests"],
         "the armed fact names the section the caller addressed"
     );

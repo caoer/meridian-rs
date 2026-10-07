@@ -1023,13 +1023,13 @@ fn hpath_miss_teaching(doc: &model::Document, hpath: &[wire::HpathSeg]) -> Optio
     // (b) Nearest by leaf heading text, rendered as full paths.
     let leaves: Vec<String> = live
         .iter()
-        .filter_map(|segs| segs.last().map(|s| s.h.clone()))
+        .filter_map(|segs| segs.last().map(|s| s.h.to_string()))
         .collect();
     let want = &hpath[hpath.len() - 1].h;
     let mut shown: Vec<String> = Vec::new();
     for leaf in model::selector::nearest(want, &leaves) {
         for segs in &live {
-            if segs.last().map(|s| s.h.as_str()) == Some(leaf.as_str()) {
+            if segs.last().map(|s| &*s.h) == Some(leaf.as_str()) {
                 let rendered = format!("\"{}\"", join_h(segs));
                 if !shown.contains(&rendered) {
                     shown.push(rendered);
@@ -1808,7 +1808,7 @@ pub fn to_model_ref(sec: &SecRef) -> Result<model::Ref, Box<ErrorBody>> {
             hpath
                 .iter()
                 .map(|s| model::HpathSeg {
-                    h: s.h.clone(),
+                    h: s.h.to_string(),
                     n: s.n,
                 })
                 .collect(),
@@ -1876,11 +1876,7 @@ pub fn ambiguous(sec: &SecRef, doc: &model::Document, candidates: &[model::Targe
                     })
                     .collect(),
             );
-            hpath
-                .iter()
-                .map(|s| s.h.as_str())
-                .collect::<Vec<_>>()
-                .join("/")
+            hpath.iter().map(|s| &*s.h).collect::<Vec<_>>().join("/")
         }
         SecRef::Anchor { .. } => unreachable!("the anchor arm returned above"),
         SecRef::FmKey { fm_key } => {
@@ -1996,11 +1992,7 @@ fn anchor_miss_teaching(doc: &model::Document, id: &str) -> String {
 
 /// The segments a caller asked for, in their own spelling.
 fn join_h(hpath: &[wire::HpathSeg]) -> String {
-    hpath
-        .iter()
-        .map(|s| s.h.as_str())
-        .collect::<Vec<_>>()
-        .join("/")
+    hpath.iter().map(|s| &*s.h).collect::<Vec<_>>().join("/")
 }
 
 /// The heading whose sanitized spelling is what the caller asked for, returned

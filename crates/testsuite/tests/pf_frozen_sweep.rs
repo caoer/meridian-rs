@@ -91,7 +91,7 @@ fn heading<'a>(rows: &'a [wire::TocNode], name: &str) -> &'a wire::TocNode {
                 && r.hpath
                     .as_ref()
                     .and_then(|h| h.last())
-                    .is_some_and(|seg| seg.h == name)
+                    .is_some_and(|seg| &*seg.h == name)
         })
         .unwrap_or_else(|| panic!("heading row {name:?}"))
 }

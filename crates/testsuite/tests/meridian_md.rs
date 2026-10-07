@@ -495,7 +495,7 @@ fn the_render_face_shows_config_blocks_and_differs_from_blocks_deleted() {
         let facts = read_facts(&wire_map::project_toc(&doc), doc.raw.as_bytes());
         let fact = facts
             .iter()
-            .find(|f| f.hpath.last().is_some_and(|s| s.h == "Roots"))
+            .find(|f| f.hpath.last().is_some_and(|s| &*s.h == "Roots"))
             .expect("the Roots section resolves");
         let rows = [SectionRow {
             sel: &wire::ReadSel::parse("Roots"),

@@ -152,7 +152,7 @@ fn frame(seq: u64, files: usize) -> wire::DeltaFrame {
                         wire::DeltaNode {
                             target: wire::SecRef::Hpath {
                                 hpath: vec![wire::HpathSeg {
-                                    h: format!("Part {n}"),
+                                    h: format!("Part {n}").into(),
                                     n: None,
                                 }],
                             },

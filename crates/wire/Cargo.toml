@@ -12,7 +12,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-serde = { workspace = true }
+# `rc`: an hpath segment's text is a shared `Arc<str>` (merkle-spec §6.4).
+serde = { workspace = true, features = ["rc"] }
 # § A.11 sql result cells are arbitrary JSON scalars/arrays — the one wire
 # body whose cell type is not a fixed struct.
 serde_json = { workspace = true }

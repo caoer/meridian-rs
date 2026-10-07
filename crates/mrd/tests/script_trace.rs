@@ -48,7 +48,7 @@ fn toc_read(line: u32, position: ReadPosition) -> ReadRecord {
                 anchor: None,
                 rev: "3b62f9c8".to_owned(),
                 hpath: vec![HpathSeg {
-                    h: "Notes".to_owned(),
+                    h: "Notes".into(),
                     n: None,
                 }],
             }],
@@ -75,7 +75,7 @@ fn armed_append(line: u32) -> ArmedEdit {
         path: "tasks/0011-token-audit.md".to_owned(),
         edit: PlanEdit::Append {
             hpath: vec![HpathSeg {
-                h: "Close".to_owned(),
+                h: "Close".into(),
                 n: None,
             }],
             body: "- done\n".to_owned(),

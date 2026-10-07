@@ -69,7 +69,7 @@ fn strip_fp_address(at: &[wire::HpathSeg]) -> Vec<policy::defs::Seg> {
     }
     at.iter()
         .map(|s| policy::defs::Seg {
-            h: s.h.clone(),
+            h: s.h.to_string(),
             n: s.n,
         })
         .collect()

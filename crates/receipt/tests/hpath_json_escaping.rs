@@ -44,7 +44,10 @@ fn a_quoted_heading_cannot_forge_the_target_object() {
 
     let parsed: Vec<wire::HpathSeg> = serde_json::from_str(&rendered).expect("strict parse");
     assert_eq!(parsed.len(), 2, "the array is still two segments");
-    assert_eq!(parsed[1].h, forge, "the heading round-trips byte-for-byte");
+    assert_eq!(
+        &*parsed[1].h, forge,
+        "the heading round-trips byte-for-byte"
+    );
     assert_eq!(parsed[1].n, None, "no occurrence index was forged");
 }
 
@@ -70,7 +73,7 @@ fn every_out_of_charset_shape_round_trips_through_a_strict_parser() {
         let parsed: Vec<wire::HpathSeg> =
             serde_json::from_str(&rendered).unwrap_or_else(|e| panic!("{rendered:?}: {e}"));
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].h, h, "round-trip changed the fact: {rendered}");
+        assert_eq!(&*parsed[0].h, h, "round-trip changed the fact: {rendered}");
     }
 }
 

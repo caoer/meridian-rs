@@ -101,7 +101,7 @@ fn ambiguous_heading_row_carries_machine_addresses() {
     assert_eq!(row.candidates.len(), 2, "both Twin occurrences named");
     for (i, cand) in row.candidates.iter().enumerate() {
         let seg = cand.last().expect("a candidate address is non-empty");
-        assert_eq!(seg.h, "Twin");
+        assert_eq!(&*seg.h, "Twin");
         let n = u32::try_from(i).unwrap() + 1;
         assert_eq!(seg.n, Some(n), "the n that pins the occurrence");
     }

@@ -44,7 +44,7 @@ impl FixtureHost {
                             anchor: None,
                             rev: "sec-goals".to_owned(),
                             hpath: vec![HpathSeg {
-                                h: "Goals".to_owned(),
+                                h: "Goals".into(),
                                 n: None,
                             }],
                         },
@@ -53,7 +53,7 @@ impl FixtureHost {
                             anchor: Some("^n1".to_owned()),
                             rev: "sec-notes".to_owned(),
                             hpath: vec![HpathSeg {
-                                h: "Notes".to_owned(),
+                                h: "Notes".into(),
                                 n: None,
                             }],
                         },
@@ -703,7 +703,7 @@ fn read_takes_the_segment_form_and_replays_byte_identically() {
         read.section,
         Some(ReadSel::Hpath {
             hpath: vec![HpathSeg {
-                h: "A/B split".to_owned(),
+                h: "A/B split".into(),
                 n: None,
             }],
         }),

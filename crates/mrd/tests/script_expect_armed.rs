@@ -136,7 +136,7 @@ fn the_same_target_publishes_one_digest_across_runs() {
 fn a_different_armed_grain_at_one_target_publishes_a_different_digest() {
     let append = vec![PlanEdit::Append {
         hpath: vec![HpathSeg {
-            h: "Goals".to_owned(),
+            h: "Goals".into(),
             n: None,
         }],
         body: "- done\n".to_owned(),

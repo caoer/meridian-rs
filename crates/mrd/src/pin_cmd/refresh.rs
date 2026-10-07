@@ -262,7 +262,10 @@ fn wire_selector(pin: &lock::PinEntry) -> Result<ReadSel, String> {
         Selector::Heading(segments) => Ok(ReadSel::Hpath {
             hpath: segments
                 .into_iter()
-                .map(|seg| HpathSeg { h: seg.h, n: seg.n })
+                .map(|seg| HpathSeg {
+                    h: seg.h.into(),
+                    n: seg.n,
+                })
                 .collect(),
         }),
         Selector::Block(anchor) => Ok(ReadSel::Anchor { anchor }),

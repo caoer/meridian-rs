@@ -136,7 +136,11 @@ impl PlanIndex {
         if addr.is_empty() {
             return Err(Miss::NotFound);
         }
-        let mut hits = self.headings.iter().filter(|f| seg_chain_matches(addr, f));
+        let mut text = wire_map::facts::SegTextMemo::new(addr.len());
+        let mut hits = self
+            .headings
+            .iter()
+            .filter(|f| seg_chain_matches(addr, f, &mut text));
         match (hits.next(), hits.count()) {
             (None, _) => Err(Miss::NotFound),
             (Some(only), 0) => Ok(only),
@@ -149,12 +153,22 @@ impl PlanIndex {
 /// text byte-equal, and an occurrence that either abstains (`n: None`) or names
 /// the section's own. A published `n: None` means "unique among its siblings",
 /// i.e. occurrence 1 — so `n: Some(1)` against a unique heading matches, as it
-/// does natively.
-fn seg_chain_matches(addr: &[HpathSeg], f: &HeadingFacts) -> bool {
+/// does natively. Text is compared through the resolution's memo, once per
+/// distinct shared heading text per depth.
+fn seg_chain_matches(
+    addr: &[HpathSeg],
+    f: &HeadingFacts,
+    text: &mut wire_map::facts::SegTextMemo,
+) -> bool {
     addr.len() == f.raw_hpath.len()
-        && addr.iter().zip(&f.raw_hpath).all(|(sel, pub_seg)| {
-            sel.h == pub_seg.h && sel.n.is_none_or(|k| k == pub_seg.n.unwrap_or(1))
-        })
+        && addr
+            .iter()
+            .zip(&f.raw_hpath)
+            .enumerate()
+            .all(|(d, (sel, pub_seg))| {
+                text.same(d, &sel.h, &pub_seg.h)
+                    && sel.n.is_none_or(|k| k == pub_seg.n.unwrap_or(1))
+            })
 }
 
 /// The section-miss refusal, shared by every addressing arm.
@@ -777,11 +791,7 @@ fn contain_replace_payload<'b>(
     body: &'b str,
     rev_given: &str,
 ) -> Result<&'b str, Box<ErrorBody>> {
-    let title = node
-        .raw_hpath
-        .last()
-        .map(|s| s.h.as_str())
-        .unwrap_or_default();
+    let title = node.raw_hpath.last().map(|s| &*s.h).unwrap_or_default();
     let headings = syntax::parse(body).into_iter().filter_map(|n| {
         if let syntax::DialectKind::Heading { level, text } = n.kind {
             Some(PayloadHeading {
@@ -1323,7 +1333,7 @@ mod tests {
             panic!("hpath target")
         };
         assert_eq!(
-            hpath.iter().map(|s| s.h.as_str()).collect::<Vec<_>>(),
+            hpath.iter().map(|s| &*s.h).collect::<Vec<_>>(),
             vec!["A", "B"],
             "targets the RAW parent chain"
         );
@@ -1758,7 +1768,7 @@ mod tests {
             let SecRef::Hpath { hpath } = &e.target else {
                 panic!("hpath target")
             };
-            let landed = hpath.iter().map(|s| s.h.as_str()).collect::<Vec<_>>();
+            let landed = hpath.iter().map(|s| &*s.h).collect::<Vec<_>>();
             assert_eq!(
                 landed,
                 vec![addressed],
