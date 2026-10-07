@@ -821,10 +821,26 @@ not fit while another member holds the slot, its oversized load running or
 its body pinned above the limit. The catalog retries both against the same version every
 millisecond. The waiting member so takes the slot as soon as the live loads
 drain, whatever its client does, and a paused load is served once the
-waiting member has left the slot or its record has expired. Each retries for
-about 2 s: after that the waiting member is refused as occupied allowance,
-and a paused load is admitted past the pause on the ordinary terms, so a
-live load that does not drain holds no other member's reader longer. A join
+waiting member has left the slot or its record has expired. A paused load is
+owed a turn, until it is admitted or refused or 100 ms after its last
+attempt: while any load is owed one, no oversized load of another member
+takes the slot and no new waiting record forms, and an oversized load kept
+out only by that is answered `Waiting` and retried the same way. The member
+whose own record is live is not kept out by the loads it paused. Oversized
+members asked for again and again therefore alternate with the loads they
+paused: after each oversized load the paused loads are admitted before the
+next oversized load or record. What remains: a paused load waits out the
+oversized load ahead of it (two members with 50 ms loads, each asked again
+within 1 ms, held no fitting load longer than 105 ms and none was refused);
+oversized members are not ordered among themselves; and one that meets
+another member's live record while a load is owed its turn is refused as
+occupied allowance at once, for its client to ask again. Each lease retries until 2 s after its first
+`Waiting` or `Paused` answer: after that the waiting member is refused as
+occupied allowance, and a paused load is admitted past the pause on the
+ordinary terms, so a live load that does not drain holds no other member's
+lease longer. The 2 s is each lease's own: a request that takes several cold
+leases in turn can wait 2 s at each while a waiting member's client keeps
+asking behind a load that does not drain. A join
 of a live load and a hot hit are not paused, one member waits at a time,
 another member's attempt never renews the record, and an abandoned record
 expires. So steady fitting traffic cannot starve an oversized page, and a
