@@ -1227,6 +1227,16 @@ impl SqlStore {
         }
     }
 
+    /// [`SqlStore::open`] under a `memory_limit` of `memory_limit` bytes, or
+    /// `DuckDB`'s default for `None` (merkle-spec §6.4, the SQL memory policy).
+    ///
+    /// # Errors
+    /// As [`SqlStore::open`].
+    pub fn open_limited(file: &Path, memory_limit: Option<u64>) -> Result<SqlStore, ViewError> {
+        let _ = memory_limit;
+        Self::open(file)
+    }
+
     /// Delete the file (and its WAL) and open a fresh, initialised one.
     fn recreate(file: &Path) -> Result<SqlStore, ViewError> {
         let _ = std::fs::remove_file(file);
@@ -4313,6 +4323,25 @@ mod config_scope_tests {
     /// 2 must not see it. `memory_limit` AND `threads`, so this is about the
     /// GLOBAL class and not one name — `SET memory_limit='1MB'` on a
     /// fleet-shared root was the starvation.
+    /// A store opened under a limit runs under it, and a caller's own `SET`
+    /// lasts only that call (merkle-spec §6.4, the SQL memory policy).
+    #[test]
+    fn a_limited_store_keeps_its_memory_limit_past_a_callers_set() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open_limited(&tmp_store(&dir), Some(256 << 20)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        assert_eq!(next_caller_sees(&store, "memory_limit"), "256.0 MiB");
+        store
+            .query("SET memory_limit='1GB'")
+            .expect("lane")
+            .expect("the caller's own SET still succeeds");
+        assert_eq!(
+            next_caller_sees(&store, "memory_limit"),
+            "256.0 MiB",
+            "the caller's SET outlived its call"
+        );
+    }
+
     #[test]
     fn a_caller_set_does_not_reach_the_next_caller() {
         let dir = tempfile::tempdir().expect("tmpdir");

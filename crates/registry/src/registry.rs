@@ -4915,6 +4915,84 @@ mod engine_tests {
         );
     }
 
+    /// The memory limit a registry's open SQL cache for `ws` runs under.
+    fn sql_memory_limit(reg: &Registry, ws: &Path) -> String {
+        let store = reg.sql_store(ws).expect("the sql cache opens");
+        let store = store.lock().unwrap();
+        store
+            .connection()
+            .query_row("SELECT current_setting('memory_limit')::VARCHAR", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap()
+    }
+
+    /// Three registered workspaces under `home`, canonical.
+    fn three_workspaces(reg: &Registry, home: &Path) -> Vec<PathBuf> {
+        ["a", "b", "c"]
+            .iter()
+            .map(|name| {
+                let ws = home.join(name);
+                fs::create_dir_all(&ws).unwrap();
+                fs::write(ws.join("a.md"), "# A\n").unwrap();
+                let canonical = workspace::canonicalize(&ws).unwrap();
+                reg.register(&canonical);
+                canonical
+            })
+            .collect()
+    }
+
+    /// With a host of budget B the registry keeps at most
+    /// max(1, (B/4) / 256 MiB) SQL caches open, closing the least recently
+    /// used one's handle, and each runs under 256 MiB (merkle-spec §6.4, the
+    /// SQL memory policy). B = 2 GiB: two caches.
+    #[test]
+    fn a_host_bounds_the_open_sql_caches_and_closes_the_least_recently_used() {
+        let home = tempfile::tempdir().unwrap();
+        let cache_root = home.path().join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let host = Arc::new(crate::residency::Host::new(
+            crate::residency::controller::Controller::new(2 << 30),
+            crate::raw_store::RawStore::new(&home.path().join("backing")).unwrap(),
+        ));
+        let reg = Registry::new(
+            StateStore::new(home.path().join("state.json")),
+            cache_root,
+            Vec::new(),
+        )
+        .with_residency(Some(host));
+        let ws = three_workspaces(&reg, home.path());
+        reg.sql_store(&ws[0]).unwrap();
+        reg.sql_store(&ws[1]).unwrap();
+        reg.sql_store(&ws[0]).unwrap();
+        reg.sql_store(&ws[2]).unwrap();
+        {
+            let open = reg.sql_stores.lock().unwrap();
+            assert!(
+                open.contains_key(&ws[0]) && open.contains_key(&ws[2]),
+                "the two most recently used caches stay open"
+            );
+            assert!(
+                !open.contains_key(&ws[1]),
+                "the least recently used one is closed"
+            );
+        }
+        assert_eq!(sql_memory_limit(&reg, &ws[2]), "256.0 MiB");
+    }
+
+    /// Without a host every SQL cache stays open under `DuckDB`'s default.
+    #[test]
+    fn without_a_host_every_sql_cache_stays_open_under_duckdbs_default() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = three_workspaces(&reg, home.path());
+        for w in &ws {
+            reg.sql_store(w).unwrap();
+        }
+        assert_eq!(reg.sql_stores.lock().unwrap().len(), 3);
+        assert_ne!(sql_memory_limit(&reg, &ws[0]), "256.0 MiB");
+    }
+
     /// The suspicious-only door piggybacks on the next borrow: a named
     /// overflow marks all-dirty, the next `domain_cache` climb is the sweep
     /// rung (memo kept), and the record names the cause. No timer fires.
