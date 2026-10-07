@@ -167,6 +167,8 @@ enum Residency {
     Report(ResidencyReport),
     /// A daemon answered and has no residency host.
     NoHost,
+    /// A daemon answered `unknown_op`: an older build without the request.
+    OlderDaemon,
     /// No daemon answered within the probe's cap.
     NoDaemon,
 }
@@ -178,6 +180,7 @@ impl Residency {
         match registry::Client::from_default().and_then(|client| client.residency()) {
             Ok(Some(report)) => Self::Report(report),
             Ok(None) => Self::NoHost,
+            Err(err) if err.kind() == std::io::ErrorKind::Unsupported => Self::OlderDaemon,
             Err(_) => Self::NoDaemon,
         }
     }
@@ -198,6 +201,9 @@ impl Residency {
                 r.peak_shortfall,
             ),
             Self::NoHost => "the daemon has no residency host".to_owned(),
+            Self::OlderDaemon => {
+                "the daemon does not know the residency request (older build)".to_owned()
+            }
             Self::NoDaemon => "no daemon answers".to_owned(),
         }
     }
@@ -206,6 +212,7 @@ impl Residency {
         match self {
             Self::Report(report) => json!({"state": "report", "report": report}),
             Self::NoHost => json!({"state": "no-host", "report": null}),
+            Self::OlderDaemon => json!({"state": "older-daemon", "report": null}),
             Self::NoDaemon => json!({"state": "no-daemon", "report": null}),
         }
     }

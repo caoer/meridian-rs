@@ -79,6 +79,12 @@ impl Client {
     /// a property of the QUESTION, not of the caller: a liveness probe that has
     /// not been answered in a couple of seconds has already answered.
     fn request_capped(&self, request: &Request, cap: Duration) -> io::Result<Response> {
+        let line = self.exchange(request, cap)?;
+        serde_json::from_str(&line).map_err(io::Error::other)
+    }
+
+    /// One request out, one non-empty response line back, under `cap`.
+    fn exchange(&self, request: &Request, cap: Duration) -> io::Result<String> {
         let stream = UnixStream::connect(&self.socket_path)?;
         // Before the clone: the timeouts are socket-level, so both halves
         // inherit them from this one call.
@@ -102,7 +108,7 @@ impl Client {
                 "daemon closed the connection without a response",
             ));
         }
-        serde_json::from_str(&response_line).map_err(io::Error::other)
+        Ok(response_line)
     }
 
     /// Whether the daemon answers a ping.
@@ -187,13 +193,33 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Propagates a transport failure, or an unexpected response variant.
+    /// [`io::ErrorKind::Unsupported`] when the daemon answers `unknown_op` —
+    /// an older build that does not know the request. Otherwise propagates a
+    /// transport failure, or an unexpected response.
     pub fn residency(&self) -> io::Result<Option<crate::residency::controller::Report>> {
-        match self.request_capped(&Request::Residency, wedge::PROBE_TIMEOUT)? {
-            Response::Residency { report } => Ok(report.map(|report| *report)),
-            other => Err(unexpected("residency", &other)),
+        let line = self.exchange(&Request::Residency, wedge::PROBE_TIMEOUT)?;
+        match serde_json::from_str(&line) {
+            Ok(Response::Residency { report }) => Ok(report.map(|report| *report)),
+            Ok(other) => Err(unexpected("residency", &other)),
+            Err(_) if unknown_op(&line) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "the daemon does not know the residency request (older build)",
+            )),
+            Err(err) => Err(io::Error::other(err)),
         }
     }
+}
+
+/// Whether `line` is the error frame a daemon sends for an op it does not
+/// serve (`unknown_op`, wire-contract §8).
+fn unknown_op(line: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Refusal {
+        ok: bool,
+        error: wire::ErrorBody,
+    }
+    serde_json::from_str::<Refusal>(line)
+        .is_ok_and(|refusal| !refusal.ok && refusal.error.code == wire::ErrorCode::UnknownOp)
 }
 
 /// Build the error for a response variant a typed call did not expect.
