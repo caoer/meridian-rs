@@ -180,8 +180,10 @@ impl Client {
     }
 
     /// The residency host's controller report; `None` from a daemon with no
-    /// host. Bounded by [`wedge::PROBE_TIMEOUT`]: the report is a reading,
-    /// and its reader does not wait out a wedged daemon for it.
+    /// host. Bounded by [`wedge::PROBE_TIMEOUT`] — about two seconds, up to
+    /// four when the daemon accepts and answers nothing (the read's tick asks
+    /// a second connection for a ping under its own cap): the report is a
+    /// reading, and its reader does not wait out a wedged daemon for it.
     ///
     /// # Errors
     ///

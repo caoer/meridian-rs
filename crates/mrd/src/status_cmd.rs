@@ -8,9 +8,11 @@
 //! `status = freshness` (distinct from `check = validity`): what is armed, what
 //! drifted, and how fresh the origin knowledge is — from frozen facts only.
 //!
-//! - **pure-local** — no daemon, no network, no fetch. `--residency` alone
-//!   sends a running daemon one capped request for its residency controller
-//!   report ([`Residency::ask`]) and never starts one;
+//! - **pure-local** — no network, no fetch, and no daemon request of its own:
+//!   resolving an unanchored tree may ask a running daemon for a registered
+//!   ancestor, as every verb does. `--residency` alone sends a running daemon
+//!   one capped request for its residency controller report
+//!   ([`Residency::ask`]) and never starts one;
 //! - **O(armed) + O(pins) + O(objects)** — one index read
 //!   (`conventions/INDEX.md`) for the armed set, one re-hash per armed
 //!   convention's `CHECK.md`, and the git refs. The `meridian-lock` planes add

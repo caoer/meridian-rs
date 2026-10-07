@@ -682,7 +682,17 @@ its census, or its last eviction's, left the floor over the limit — and a
 sweep that finds the floor over after one that did not evicts nothing. So an
 overage shorter than one reaper period (a generation an operation holds past
 its publish, an owner a census found busy) costs no workspace, and a lasting
-one is met one period later. An eviction releases the registry's references
+one is met one period later. That period has a price. While the floor alone
+is over the limit, the controller's `trim` sheds every idle body and every
+member load is oversized (its bytes exceed `limit − floor`), so loads are
+served one at a time through the serialized slot; the rule keeps that state
+up to one more reaper period before an eviction relieves it — from onset to
+eviction about 2 × `reap_interval` (60 s, counted in 200 ms sleeps, sweep and
+idle-reap work excluded) against about 1 × without the rule — and nothing
+bounds the floor's growth in that window, as before, for twice as long. An
+overage seen at every other sweep is never evicted. A daemon's first sweep
+after it starts never evicts (the kept verdict starts clear). Activating a
+host weighs this trade. An eviction releases the registry's references
 only: a generation an operation still holds stays in the floor until
 released, so a sweep that follows one over the limit can evict every
 unsubscribed workspace while a long operation holds a large generation. The
