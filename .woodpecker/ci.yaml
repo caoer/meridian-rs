@@ -93,7 +93,6 @@ when:
 # stay pinned to workstation-nyc-2.
 labels:
   pool: bm
-  hostname: ci-yul-1  # TEMPORARY: warm re-measure on one slot; reverted before review
 
 # Clone with OUR credential, not the server-stamped one. The default clone's
 # netrc password is the repo user's OAuth access token, stamped into the
