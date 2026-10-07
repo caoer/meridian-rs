@@ -118,6 +118,14 @@ pub enum AdmissionError {
     /// another member's waiting oversized load. Retry the same retained
     /// version.
     Settling,
+    /// This oversized load is the one waiting member: the serialized slot
+    /// is taken by loads that end without this caller's help. Retry the
+    /// same retained version until they drain.
+    Waiting,
+    /// Another member's oversized load waits or runs, and this new load is
+    /// paused for it. Retry the same retained version; past the catalog's
+    /// patience, ask again with [`Member::pin_unpaused`].
+    Paused,
     Exhausted,
 }
 
@@ -127,6 +135,10 @@ impl fmt::Display for AdmissionError {
             Self::Busy => "residency allowance is occupied",
             Self::Retiring => "retained member is being retired; retry the same version",
             Self::Settling => "retained load is completing; retry the same version",
+            Self::Waiting => {
+                "oversized load waits for the live loads to drain; retry the same version"
+            }
+            Self::Paused => "another member's oversized load waits; retry the same version",
             Self::Exhausted => "residency reservation identity or local revision exhausted",
         })
     }

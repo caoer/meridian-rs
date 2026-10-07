@@ -106,6 +106,19 @@ impl Member {
         }
     }
 
+    /// [`Member::pin`] for a load that has been paused long enough: it is
+    /// never answered `Paused`, and is admitted or refused on the terms of a
+    /// load beside which no oversized member waits (merkle-spec §6.4).
+    ///
+    /// # Errors
+    /// As [`Member::pin`], without `Paused`.
+    ///
+    /// # Panics
+    /// As [`Member::pin`].
+    pub fn pin_unpaused(&self, access: Access, peak: usize) -> Result<Pin, Error> {
+        self.pin(access, peak)
+    }
+
     /// One admission and load of [`Member::pin`], without its retry. An
     /// overrun is learned on the row, counted, logged and shed.
     pub(super) fn pin_once(&self, access: Access, peak: usize) -> Result<Pin, Error> {

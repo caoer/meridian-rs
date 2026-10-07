@@ -84,6 +84,13 @@ const RETRY_PAUSES: [Duration; 6] = [
     Duration::from_millis(16),
 ];
 
+/// The pause between attempts of the waiting oversized member, and of a load
+/// paused for one (merkle-spec §6.4).
+const WAIT_POLL: Duration = Duration::from_millis(1);
+
+/// How many such pauses one request takes: about 2 s.
+const WAIT_POLLS: usize = 2000;
+
 /// Lease one member version through the controller's admission. `Retiring`
 /// and `Settling` retry the same version once per pause in `pauses`;
 /// `Busy` is returned at once, because the allowance may be occupied by a pin
@@ -94,14 +101,14 @@ const RETRY_PAUSES: [Duration; 6] = [
 /// the learned bytes. A load or identity failure is the member's own fault,
 /// neither retried nor transient.
 fn admit<T>(
-    mut attempt: impl FnMut() -> Result<T, Error>,
+    mut attempt: impl FnMut(bool) -> Result<T, Error>,
     self_blocked: impl Fn() -> bool,
     pauses: &[Duration],
     mut pause: impl FnMut(Duration),
 ) -> io::Result<T> {
     let mut pauses = pauses.iter();
     loop {
-        let refusal = match attempt() {
+        let refusal = match attempt(false) {
             Ok(leased) => return Ok(leased),
             Err(Error::Admission(AdmissionError::Busy)) if self_blocked() => {
                 return Err(io::Error::other(SelfBlocked));
@@ -131,7 +138,13 @@ fn admit<T>(
 pub(super) fn pin(member: &Member, access: Access, peak: usize) -> io::Result<Pin> {
     let holding = HELD.with(|thread| held(thread).clone());
     admit(
-        || member.pin(access, peak),
+        |unpaused| {
+            if unpaused {
+                member.pin_unpaused(access, peak)
+            } else {
+                member.pin(access, peak)
+            }
+        },
         || !holding.is_empty() && member.held_blocks(&holding, peak),
         &RETRY_PAUSES,
         pause,
