@@ -1256,6 +1256,11 @@ impl SqlStore {
             "SET write_buffer_row_group_count=1; SET allocator_flush_threshold='0B';",
         )?;
         apply_extension_gate(&store.conn)?;
+        if let Ok(limit) = std::env::var("MRD_PROBE_SQL_MEMORY_LIMIT") {
+            store
+                .conn
+                .execute_batch(&format!("SET memory_limit='{limit}';"))?;
+        }
         store.baseline = Arc::new(global_config_snapshot(&store.conn)?);
         Ok(store)
     }
