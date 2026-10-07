@@ -2,6 +2,8 @@
 //! Rebuilds the candidate body under def rules so the verdict compares
 //! normalized forms. Rev neutralization and string fidelity are load-bearing.
 
+use std::sync::Arc;
+
 use super::BodyError;
 use super::go_fmt::go_quote;
 
@@ -123,13 +125,13 @@ struct SecX {
     n: String,
     /// The containment chain as RAW heading text, one entry per ancestor
     /// (self last). Was a `sanitize_heading`-joined string; see
-    /// [`DocView::resolve_section`].
-    hpath: Vec<String>,
+    /// [`DocView::resolve_section`]. Each entry shares its ancestor's text.
+    hpath: Vec<Arc<str>>,
     /// Per-chain-entry 1-based occurrence among same-parent siblings sharing
     /// the same raw text — `resolve_hpath_node`'s counting basis, so a
     /// selector `n` here names the section the committer would pick.
     occ: Vec<u32>,
-    title: String,
+    title: Arc<str>,
     /// content span [start,end): heading line excluded, subtree-inclusive
     start: usize,
     end: usize,
@@ -172,12 +174,12 @@ impl<'a> DocView<'a> {
         let mut sections: Vec<SecX> = Vec::new();
         let mut ord: Vec<usize> = Vec::new();
         let mut odepth: Vec<u8> = Vec::new();
-        let mut hstack: Vec<(u8, String)> = Vec::new();
+        let mut hstack: Vec<(u8, Arc<str>)> = Vec::new();
         // Section index of each hstack ancestor, so occurrence counting keys on
         // the PARENT'S IDENTITY, not its depth — two same-titled sections under
         // different parents are not occurrences of each other.
         let mut istack: Vec<usize> = Vec::new();
-        let mut occ_counts: std::collections::HashMap<(Option<usize>, String), u32> =
+        let mut occ_counts: std::collections::HashMap<(Option<usize>, Arc<str>), u32> =
             std::collections::HashMap::new();
         for sec in super::check::doc_sections(doc) {
             // dewey ordinal (pkg/body map.go algorithm)
@@ -200,13 +202,14 @@ impl<'a> DocView<'a> {
             // `resolve_hpath_node`'s basis (never document order, never
             // position among ALL siblings).
             let parent = istack.last().copied();
+            let title: Arc<str> = Arc::from(sec.title);
             let occ = occ_counts
-                .entry((parent, sec.title.clone()))
+                .entry((parent, Arc::clone(&title)))
                 .and_modify(|c| *c += 1)
                 .or_insert(1);
             let mut occ_chain = parent.map_or_else(Vec::new, |p| sections[p].occ.clone());
             occ_chain.push(*occ);
-            hstack.push((sec.depth, sec.title.clone()));
+            hstack.push((sec.depth, Arc::clone(&title)));
             istack.push(sections.len());
             sections.push(SecX {
                 n: ord
@@ -214,9 +217,9 @@ impl<'a> DocView<'a> {
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join("."),
-                hpath: hstack.iter().map(|(_, s)| s.clone()).collect(),
+                hpath: hstack.iter().map(|(_, s)| Arc::clone(s)).collect(),
                 occ: occ_chain,
-                title: sec.title.clone(),
+                title,
                 start: sec.content_span.start,
                 end: sec.content_span.end,
                 start_line: sec.start_line,
@@ -263,12 +266,12 @@ impl<'a> DocView<'a> {
                 && hpath
                     .iter()
                     .enumerate()
-                    .all(|(i, sel)| sel.h == s.hpath[i] && sel.n.is_none_or(|k| k == s.occ[i]))
+                    .all(|(i, sel)| *sel.h == *s.hpath[i] && sel.n.is_none_or(|k| k == s.occ[i]))
         };
         let hits: Vec<&SecX> = self
             .sections
             .iter()
-            .filter(|s| chain_matches(s) || bare.is_some_and(|b| s.title == b))
+            .filter(|s| chain_matches(s) || bare.is_some_and(|b| &*s.title == b))
             .collect();
         match hits.len() {
             0 => Err(BodyError {
@@ -324,9 +327,9 @@ impl<'a> DocView<'a> {
                 let b = hits[0];
                 Ok(SecX {
                     n: format!("^{id}"),
-                    hpath: vec![format!("^{id}")],
+                    hpath: vec![Arc::from(format!("^{id}"))],
                     occ: vec![1],
-                    title: id.to_string(),
+                    title: Arc::from(id),
                     start: b.start,
                     end: b.end,
                     start_line: b.line,
@@ -368,7 +371,7 @@ impl<'a> DocView<'a> {
             return Ok((Some(sec), home));
         }
         let sec = self.resolve_section(&e.target)?;
-        Ok((Some(sec.clone()), sec.title.clone()))
+        Ok((Some(sec.clone()), sec.title.to_string()))
     }
 
     /// The innermost section whose content span contains `at`.
@@ -382,7 +385,7 @@ impl<'a> DocView<'a> {
                 best = Some(s);
             }
         }
-        best.map(|s| s.title.clone()).unwrap_or_default()
+        best.map(|s| s.title.to_string()).unwrap_or_default()
     }
 }
 

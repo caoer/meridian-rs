@@ -5,7 +5,7 @@
 
 use std::cell::RefCell;
 
-use model::{Document, Node, NodeKind, NodeRev};
+use model::{Document, Hpath, Node, NodeKind, NodeRev};
 use starlark::environment::{Globals, GlobalsBuilder, Module};
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
@@ -16,6 +16,7 @@ use starlark::values::list::UnpackList;
 use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
 
+use crate::seg_values::SegValues;
 use crate::{BudgetClass, CompileError, EvalBudget, Severity, Violation};
 
 /// The §11.3 pack manifest — generic and evaluator-free. `deny_unknown_fields`
@@ -156,8 +157,9 @@ pub(crate) struct FactNode {
     /// The node's content-addressed rev (§11.1). Empty for markdown-derived facts
     /// (the load gate); P6-EVAL injects the real rev from the AST.
     pub node_rev: String,
-    /// Heading path to the node (world-model fact, §11.2).
-    pub hpath: Vec<String>,
+    /// Heading path to the node (world-model fact, §11.2): the tree's shared
+    /// chain, `None` for a node no heading governs (served as `[]`).
+    pub hpath: Option<Hpath>,
 }
 
 /// The document a predicate evaluates over: path + nodes in document order. The
@@ -199,7 +201,7 @@ pub(crate) fn facts_from_markdown(path: &str, body: &str) -> FactDoc {
                 text: title.clone(),
                 span: (start, end),
                 node_rev: String::new(),
-                hpath: vec![title],
+                hpath: Some(Hpath::from([std::sync::Arc::from(title)])),
             });
         } else {
             nodes.push(FactNode {
@@ -208,7 +210,7 @@ pub(crate) fn facts_from_markdown(path: &str, body: &str) -> FactDoc {
                 text: text.to_string(),
                 span: (start, end),
                 node_rev: String::new(),
-                hpath: Vec::new(),
+                hpath: None,
             });
         }
     }
@@ -276,7 +278,7 @@ fn fact_node(raw: &str, node: &Node) -> FactNode {
         text,
         span: (node.span.start, node.span.end),
         node_rev: node.node_rev.0.clone(),
-        hpath: node.hpath_owned().unwrap_or_default(),
+        hpath: node.hpath.clone(),
     }
 }
 
@@ -777,23 +779,29 @@ fn severity_from_str(s: &str) -> Option<Severity> {
 /// Allocate the injected `doc` value: a struct `{path, nodes}` where `nodes` is a
 /// list of node structs (see module docs for the field surface).
 fn alloc_doc<'v>(heap: Heap<'v>, facts: &FactDoc) -> Value<'v> {
-    let nodes: Vec<Value<'v>> = facts.nodes.iter().map(|n| alloc_node(heap, n)).collect();
+    let mut segs = SegValues::new(heap);
+    let nodes: Vec<Value<'v>> = facts
+        .nodes
+        .iter()
+        .map(|n| alloc_node(heap, &mut segs, n))
+        .collect();
     heap.alloc(AllocStruct([
         ("path", heap.alloc(facts.path.as_str())),
         ("nodes", heap.alloc(nodes)),
     ]))
 }
 
-/// Allocate one injected node struct.
-fn alloc_node<'v>(heap: Heap<'v>, node: &FactNode) -> Value<'v> {
-    let hpath: Vec<Value<'v>> = node.hpath.iter().map(|s| heap.alloc(s.as_str())).collect();
+/// Allocate one injected node struct; its `hpath` list holds the shared
+/// segment strings (see [`SegValues`]).
+fn alloc_node<'v>(heap: Heap<'v>, segs: &mut SegValues<'v>, node: &FactNode) -> Value<'v> {
+    let hpath = segs.list(node.hpath.as_deref());
     heap.alloc(AllocStruct([
         ("kind", heap.alloc(node.kind)),
         ("level", heap.alloc(node.level)),
         ("text", heap.alloc(node.text.as_str())),
         ("span", heap.alloc((node.span.0, node.span.1))),
         ("node_rev", heap.alloc(node.node_rev.as_str())),
-        ("hpath", heap.alloc(hpath)),
+        ("hpath", hpath),
     ]))
 }
 
@@ -951,7 +959,7 @@ def check(doc):
                     text: "Goals".into(),
                     span: (20, 27),
                     node_rev: "5a8faa717fbcdb04".into(),
-                    hpath: vec!["Goals".into()],
+                    hpath: Some(Hpath::from([std::sync::Arc::from("Goals")])),
                 },
                 FactNode {
                     kind: "heading",
@@ -959,7 +967,7 @@ def check(doc):
                     text: "Sub".into(),
                     span: (28, 34),
                     node_rev: "deadbeefdeadbeef".into(),
-                    hpath: vec!["Sub".into()],
+                    hpath: Some(Hpath::from([std::sync::Arc::from("Sub")])),
                 },
                 FactNode {
                     kind: "paragraph",
@@ -967,7 +975,7 @@ def check(doc):
                     text: "body".into(),
                     span: (35, 39),
                     node_rev: String::new(),
-                    hpath: Vec::new(),
+                    hpath: None,
                 },
             ],
         };
@@ -1103,6 +1111,41 @@ def check(doc):
         model::build(md.to_string(), syntax::parse(md))
     }
 
+    /// A fact node's heading chain as text segments.
+    fn chain_of(node: &FactNode) -> Vec<&str> {
+        node.hpath
+            .iter()
+            .flat_map(|c| c.iter())
+            .map(|s| &**s)
+            .collect()
+    }
+
+    /// Each node's `hpath` is its own list of strings: a finding echoes it,
+    /// and appending to one node's list leaves the next node's alone.
+    #[test]
+    fn a_predicate_reads_each_node_s_own_hpath_list() {
+        let page = "# r\n\n```starlark\ndef check(doc):\n    heads = [n for n in doc.nodes if n.kind == \"heading\"]\n    heads[1].hpath.append(\"X\")\n    for n in heads:\n        violation(rule=\"r\", severity=\"info\", span=n.span, node_rev=n.node_rev, hpath=n.hpath, message=type(n.hpath))\n```\n";
+        let predicates =
+            extract_predicates(&[page.to_string()], &["rules/r.md".to_string()]).expect("parses");
+        let doc = doc_of("# Long\n\n## A\n\nx\n\n## B\n\ny\n");
+        let found = eval_over_facts(&predicates, &facts_from_document(&doc), budget()).unwrap();
+        let chains: Vec<(Option<Vec<String>>, &str)> = found
+            .iter()
+            .map(|v| (v.hpath.clone(), v.message.as_str()))
+            .collect();
+        let owned = |segs: &[&str]| -> Option<Vec<String>> {
+            Some(segs.iter().map(ToString::to_string).collect())
+        };
+        assert_eq!(
+            chains,
+            [
+                (owned(&["Long"]), "list"),
+                (owned(&["Long", "A", "X"]), "list"),
+                (owned(&["Long", "B"]), "list"),
+            ]
+        );
+    }
+
     #[test]
     fn facts_from_document_injects_sections_as_heading_facts_with_real_revs() {
         // Sections inject as `"heading"` facts in document order, carrying the
@@ -1114,7 +1157,7 @@ def check(doc):
 
         assert_eq!(headings[0].text, "A");
         assert_eq!(headings[0].level, 1);
-        assert_eq!(headings[0].hpath, vec!["A".to_string()]);
+        assert_eq!(chain_of(headings[0]), ["A"]);
         assert_eq!(headings[0].span.0, 0, "the A section opens at byte 0");
         assert_eq!(
             headings[0].node_rev.len(),
@@ -1124,7 +1167,7 @@ def check(doc):
 
         assert_eq!(headings[1].text, "B");
         assert_eq!(headings[1].level, 2);
-        assert_eq!(headings[1].hpath, vec!["A".to_string(), "B".to_string()]);
+        assert_eq!(chain_of(headings[1]), ["A", "B"]);
     }
 
     #[test]

@@ -890,6 +890,18 @@ row. An answer that itself lists every row's address (a whole-page `toc` or
 `read`) is as large as its contract makes it. None of this changes a served
 byte.
 
+The policy plane keeps it as well. The facts a write's checks evaluate — a
+pack's node facts, a change's before and after facts and its changed
+sections, and the section index a `check_write` rebuild resolves against —
+hold each node's heading path as that node's shared chain, and the diff that
+finds the changed sections keys its maps by the chain. A Starlark value built
+from those facts allocates each distinct heading text once per evaluation;
+every node still receives its own `hpath` list of strings, so a predicate
+observes exactly what it did. A script put that threads an entry token takes
+the file's rev, or matches its one addressed section against the shared toc
+rows, without rendering the page's toc. A write under an admitted pack and an
+armed law therefore stages its checks in proportion to the page.
+
 At admission and after releasing operation pins, shed the least recently
 used unpinned member versions across all workspaces until the charged total
 fits. The periodic reaper is a backstop, not the only enforcement point.

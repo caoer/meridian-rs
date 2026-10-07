@@ -18,6 +18,7 @@ use starlark::values::structs::AllocStruct;
 
 use crate::change::{Change, DocFacts, Edge, EditFact, NodeFact, TargetFact};
 use crate::declaration::Refusal;
+use crate::seg_values::SegValues;
 
 /// Deterministic bounds on one `check_change` evaluation — the full limit set:
 /// tick + heap + call-depth + source-size, plus the parser nesting cap
@@ -537,6 +538,7 @@ pub(crate) fn opt_str<'v>(heap: Heap<'v>, o: Option<&str>) -> Value<'v> {
 /// Allocate the injected `change` value: the full `@2` change surface as a Starlark
 /// struct. Every field is a pure state/evidence fact ([`crate::CHANGE_FACT_VOCAB`]).
 fn alloc_change<'v>(heap: Heap<'v>, change: &Change) -> Value<'v> {
+    let mut segs = SegValues::new(heap);
     let targets: Vec<Value<'v>> = change
         .targets
         .iter()
@@ -551,34 +553,46 @@ fn alloc_change<'v>(heap: Heap<'v>, change: &Change) -> Value<'v> {
     let sections: Vec<Value<'v>> = change
         .sections_changed
         .iter()
-        .map(|hpath| {
-            let segs: Vec<Value<'v>> = hpath.iter().map(|s| heap.alloc(s.as_str())).collect();
-            heap.alloc(segs)
-        })
+        .map(|hpath| segs.list(Some(hpath)))
         .collect();
+    let before = alloc_docfacts(heap, &mut segs, &change.before);
+    let doc = alloc_docfacts(heap, &mut segs, &change.doc);
     heap.alloc(AllocStruct([
         ("op", heap.alloc(change.op.as_str())),
         ("targets", heap.alloc(targets)),
         ("edits", heap.alloc(edits)),
         ("actor", opt_str(heap, change.actor.as_deref())),
         ("force", heap.alloc(change.force)),
-        ("before", alloc_docfacts(heap, &change.before)),
-        ("doc", alloc_docfacts(heap, &change.doc)),
+        ("before", before),
+        ("doc", doc),
         ("fields_changed", heap.alloc(fields)),
         ("sections_changed", heap.alloc(sections)),
     ]))
 }
 
-/// Allocate one `DocFacts` value: `{path, nodes, frontmatter, edges}`.
-pub(crate) fn alloc_docfacts<'v>(heap: Heap<'v>, facts: &DocFacts) -> Value<'v> {
-    let nodes: Vec<Value<'v>> = facts.nodes.iter().map(|n| alloc_node(heap, n)).collect();
+/// Allocate one `DocFacts` value: `{path, nodes, frontmatter, edges}`. Heading
+/// text comes from `segs`, shared across every value of the evaluation.
+pub(crate) fn alloc_docfacts<'v>(
+    heap: Heap<'v>,
+    segs: &mut SegValues<'v>,
+    facts: &DocFacts,
+) -> Value<'v> {
+    let nodes: Vec<Value<'v>> = facts
+        .nodes
+        .iter()
+        .map(|n| alloc_node(heap, segs, n))
+        .collect();
     let frontmatter = heap.alloc(AllocDict(
         facts
             .frontmatter
             .iter()
             .map(|(k, v)| (heap.alloc(k.as_str()), heap.alloc(v.as_str()))),
     ));
-    let edges: Vec<Value<'v>> = facts.edges.iter().map(|e| alloc_edge(heap, e)).collect();
+    let edges: Vec<Value<'v>> = facts
+        .edges
+        .iter()
+        .map(|e| alloc_edge(heap, segs, e))
+        .collect();
     heap.alloc(AllocStruct([
         ("path", heap.alloc(facts.path.as_str())),
         ("nodes", heap.alloc(nodes)),
@@ -587,16 +601,17 @@ pub(crate) fn alloc_docfacts<'v>(heap: Heap<'v>, facts: &DocFacts) -> Value<'v> 
     ]))
 }
 
-/// Allocate one injected node struct.
-fn alloc_node<'v>(heap: Heap<'v>, node: &NodeFact) -> Value<'v> {
-    let hpath: Vec<Value<'v>> = node.hpath.iter().map(|s| heap.alloc(s.as_str())).collect();
+/// Allocate one injected node struct; its `hpath` list holds the shared
+/// segment strings.
+fn alloc_node<'v>(heap: Heap<'v>, segs: &mut SegValues<'v>, node: &NodeFact) -> Value<'v> {
+    let hpath = segs.list(node.hpath.as_deref());
     heap.alloc(AllocStruct([
         ("kind", heap.alloc(node.kind)),
         ("level", heap.alloc(node.level)),
         ("text", heap.alloc(node.text.as_str())),
         ("span", heap.alloc((node.span.0, node.span.1))),
         ("node_rev", heap.alloc(node.node_rev.as_str())),
-        ("hpath", heap.alloc(hpath)),
+        ("hpath", hpath),
     ]))
 }
 
@@ -625,9 +640,9 @@ pub(crate) fn alloc_edit<'v>(heap: Heap<'v>, edit: &EditFact) -> Value<'v> {
 /// Allocate one edge `{reference, pinned_rev, current_rev, claim, drifted,
 /// target_facts}`. A fresh edge carries its one hop of `target_facts`; a drifted or
 /// unresolved edge fails closed — `target_facts` is `None` (rulings one-hop law).
-fn alloc_edge<'v>(heap: Heap<'v>, edge: &Edge) -> Value<'v> {
+fn alloc_edge<'v>(heap: Heap<'v>, segs: &mut SegValues<'v>, edge: &Edge) -> Value<'v> {
     let target_facts = match &edge.target_facts {
-        Some(facts) => alloc_docfacts(heap, facts),
+        Some(facts) => alloc_docfacts(heap, segs, facts),
         None => Value::new_none(),
     };
     heap.alloc(AllocStruct([
@@ -696,6 +711,54 @@ def check_change(change):
             passing = \"scenarios/reviewer-close.md\",
         )
 ";
+
+    /// The heading text is shared across node values, the lists are not: every
+    /// node reads its own chain as a list of strings, the changed sections read
+    /// theirs, and appending to one node's list leaves its siblings' lists and
+    /// the before state's alone.
+    #[test]
+    fn a_predicate_reads_each_node_s_own_hpath_list() {
+        let before = doc_of("tasks/t.md", "# Long\n\n## A\n\nx\n\n## B\n\ny\n");
+        let after = doc_of("tasks/t.md", "# Long\n\n## A\n\nx\n\n## B\n\ny edited\n");
+        let change = derive_change(
+            &before,
+            &after,
+            &[],
+            Invocation {
+                op: ChangeOp::Splice,
+                actor: None,
+                force: false,
+            },
+            &[],
+            &no_edges,
+        );
+        let refusals = run_check_change(
+            "\
+def check_change(change):
+    seen = []
+    for doc in [change.before, change.doc]:
+        heads = [n for n in doc.nodes if n.kind == \"heading\"]
+        seen.append([list(n.hpath) for n in heads])
+        heads[1].hpath.append(\"X\")
+        seen.append([list(n.hpath) for n in heads])
+    seen.append(change.sections_changed)
+    seen.append(type(change.doc.nodes[0].hpath))
+    refuse(message = str(seen), passing = \"p\")
+",
+            &change,
+            CheckLimits::default(),
+        )
+        .expect("evaluates");
+        let chains = "[[\"Long\"], [\"Long\", \"A\"], [\"Long\", \"B\"]]";
+        let appended = "[[\"Long\"], [\"Long\", \"A\", \"X\"], [\"Long\", \"B\"]]";
+        assert_eq!(
+            refusals[0].message,
+            format!(
+                "[{chains}, {appended}, {chains}, {appended}, \
+                 [[\"Long\"], [\"Long\", \"B\"]], \"list\"]"
+            )
+        );
+    }
 
     /// Regression (mw-splice-engine-eof, 2026-08-18): a change surface whose
     /// temp-heap allocation crosses starlark's GC threshold (100KB) must

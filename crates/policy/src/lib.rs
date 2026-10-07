@@ -45,6 +45,7 @@ mod pack;
 mod reaction;
 mod registration;
 mod rule;
+mod seg_values;
 
 /// The `rulepack-api@2` change surface (U1.1): the `Change` struct a
 /// `check_change(change)` predicate reads, its derivation from before/after

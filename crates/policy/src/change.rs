@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use model::{Document, Edit, EditKind, NodeKind, PutAt, Ref, YamlMap, resolve};
+use model::{Document, Edit, EditKind, Hpath, NodeKind, PutAt, Ref, YamlMap, resolve};
 
 use crate::BudgetClass;
 
@@ -53,8 +53,9 @@ pub struct NodeFact {
     pub span: (usize, usize),
     /// The node's content-addressed rev (`blake3(span bytes)[:16]`).
     pub node_rev: String,
-    /// Heading path root → node (world-model fact).
-    pub hpath: Vec<String>,
+    /// Heading path root → node (world-model fact): the tree's shared chain,
+    /// `None` for a node no heading governs (served as `[]`).
+    pub hpath: Option<Hpath>,
 }
 
 /// One document's facts: path, nodes (document order), frontmatter properties,
@@ -160,8 +161,9 @@ pub struct Change {
     /// diffing the before/after states, sorted, deduplicated.
     pub fields_changed: Vec<String>,
     /// Section hpaths whose node rev differs between the before/after states
-    /// (added, removed, or edited) — DERIVED from the states, sorted.
-    pub sections_changed: Vec<Vec<String>>,
+    /// (added, removed, or edited) — DERIVED from the states, sorted. Each is
+    /// the shared chain of the state that holds the section.
+    pub sections_changed: Vec<Hpath>,
 }
 
 /// The runtime config of the write invocation — what the recorded operation
@@ -274,14 +276,14 @@ fn doc_facts(doc: &Document, edges: Vec<Edge>) -> DocFacts {
     let fd = crate::pack::facts_from_document(doc);
     let nodes = fd
         .nodes
-        .iter()
+        .into_iter()
         .map(|n| NodeFact {
             kind: n.kind,
             level: n.level,
-            text: n.text.clone(),
+            text: n.text,
             span: n.span,
-            node_rev: n.node_rev.clone(),
-            hpath: n.hpath.clone(),
+            node_rev: n.node_rev,
+            hpath: n.hpath,
         })
         .collect();
     DocFacts {
@@ -369,41 +371,40 @@ fn diff_fields(before: &Document, after: &Document) -> Vec<String> {
 /// hpath. Ancestors of an edited section change implicitly (rev = span hash) and
 /// so appear here too — an honest state fact, not the wire delta's deepest-only
 /// compression.
-fn diff_sections(before: &Document, after: &Document) -> Vec<Vec<String>> {
+fn diff_sections(before: &Document, after: &Document) -> Vec<Hpath> {
     let b = section_revs(before);
     let a = section_revs(after);
 
-    let mut changed: BTreeSet<Vec<String>> = BTreeSet::new();
+    let mut changed: BTreeSet<&Hpath> = BTreeSet::new();
     for (hpath, rev) in &a {
         if b.get(hpath) != Some(rev) {
-            changed.insert(hpath.clone());
+            changed.insert(hpath);
         }
     }
     for hpath in b.keys() {
         if !a.contains_key(hpath) {
-            changed.insert(hpath.clone());
+            changed.insert(hpath);
         }
     }
-    changed.into_iter().collect()
+    changed.into_iter().cloned().collect()
 }
 
 /// Map every section's hpath to its node rev (last occurrence wins on duplicate
 /// hpaths — a rev change on any occurrence still surfaces the hpath as changed).
-fn section_revs(doc: &Document) -> BTreeMap<Vec<String>, String> {
+/// Keyed by the tree's shared chain and borrowing the rev, so the map holds no
+/// heading text of its own.
+fn section_revs(doc: &Document) -> BTreeMap<&Hpath, &str> {
     let mut out = BTreeMap::new();
     collect_sections(&doc.root, &mut out);
     out
 }
 
 /// Preorder walk collecting `Section` nodes' `(hpath, node_rev)`.
-fn collect_sections(node: &model::Node, out: &mut BTreeMap<Vec<String>, String>) {
+fn collect_sections<'d>(node: &'d model::Node, out: &mut BTreeMap<&'d Hpath, &'d str>) {
     if let NodeKind::Section { .. } = &node.kind
         && let Some(hpath) = &node.hpath
     {
-        out.insert(
-            hpath.iter().map(ToString::to_string).collect(),
-            node.node_rev.0.clone(),
-        );
+        out.insert(hpath, node.node_rev.0.as_str());
     }
     for child in &node.children {
         collect_sections(child, out);
@@ -599,6 +600,14 @@ mod tests {
         None
     }
 
+    /// Changed-section chains as text segments.
+    fn texts(chains: &[Hpath]) -> Vec<Vec<&str>> {
+        chains
+            .iter()
+            .map(|c| c.iter().map(|s| &**s).collect())
+            .collect()
+    }
+
     /// `derive_change` with the op fixed to `Splice` — the derivation tests vary
     /// states/edits/evidence, never the op (its pass-through is covered by
     /// `op_fact_strings`).
@@ -786,8 +795,8 @@ mod tests {
         let after = doc_of("f.md", "# A\n\nalpha\n\n# B\n\nBETA edited\n");
         let change = derive(&before, &after, &[], None, false, &[], &no_edges);
         assert_eq!(
-            change.sections_changed,
-            vec![vec!["B".to_string()]],
+            texts(&change.sections_changed),
+            [["B"]],
             "only B's rev moved; A is byte-identical"
         );
     }
@@ -822,8 +831,8 @@ mod tests {
         assert_eq!(a.fields_changed, b.fields_changed);
         assert_eq!(a.sections_changed, b.sections_changed);
         assert_eq!(
-            a.sections_changed,
-            vec![vec!["A".to_string()]],
+            texts(&a.sections_changed),
+            [["A"]],
             "A's body moved under both phrasings"
         );
     }

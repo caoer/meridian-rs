@@ -62,7 +62,7 @@ fn change_facts(change: &Change) -> Vec<ChangeFact> {
             key: String::new(),
             old: None,
             new: None,
-            hpath: hpath.clone(),
+            hpath: hpath.iter().map(ToString::to_string).collect(),
         });
     }
 

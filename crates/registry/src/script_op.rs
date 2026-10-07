@@ -1214,7 +1214,8 @@ fn refusal_of(error: &RawValue) -> Refusal {
 /// license): no read ritual gates a row, the value is the entry state's own
 /// (file rev for `set_property`, the section's node rev for `append`), and an
 /// overlay rev is never a token by construction — this function consults only
-/// the entry toc, so a rev naming bytes no disk carried cannot be minted.
+/// the entry document (its root rev and the toc rows the entry toc face is
+/// built from), so a rev naming bytes no disk carried cannot be minted.
 ///
 /// Consistency does not ride these tokens: the commit carries `if_root` = the
 /// entry fingerprint, and a world that moved since entry refuses there (§5.1,
@@ -1251,23 +1252,20 @@ fn thread_entry(
                 | PlanEdit::RemoveProperty {
                     rev: rev @ None, ..
                 } => {
-                    *rev = entry_toc(world, ws, root, &arm.path)?.map(|facts| facts.rev);
+                    // The toc face's `rev` is the document root's rev
+                    // (`wire_serve::read::toc`'s `file_rev`), read here
+                    // without building the face.
+                    *rev = entry_doc(world, ws, &arm.path, |doc| doc.root.node_rev.0.clone())?;
                 }
                 PlanEdit::Append {
                     hpath,
                     rev: rev @ None,
                     ..
                 } => {
-                    *rev = entry_toc(world, ws, root, &arm.path)?.and_then(|facts| {
-                        facts
-                            .toc
-                            .iter()
-                            // Segment-true (the one matcher family): a row whose
-                            // raw heading carries `/` threads exactly like any
-                            // other.
-                            .find(|entry| entry.addresses(hpath))
-                            .map(|entry| entry.rev.clone())
-                    });
+                    *rev = entry_doc(world, ws, &arm.path, |doc| {
+                        entry_row_rev(doc, &arm.path, root, hpath)
+                    })?
+                    .flatten();
                 }
                 _ => {}
             }
@@ -1276,30 +1274,67 @@ fn thread_entry(
         .collect()
 }
 
-/// The §4.1 toc face of `path` at the ENTRY state — the one builder threading
-/// and the host share, so a threaded token equals what an entry read served,
-/// by construction. An out-of-domain target values from the live disk file
-/// (§12.1: a guarded write's CAS token for an out-of-domain page is mintable
-/// at the read door like any other) — the same single-file load `doc_for`
-/// serves its reads from, and the same file the commit's own guards resolve
-/// against.
+/// The §4.1 toc face of `path` at the ENTRY state — the one builder the host
+/// serves an entry read from, so a threaded token equals what an entry read
+/// served, by construction ([`thread_entry`] reads the same document through
+/// [`entry_doc`] and the same toc rows).
 ///
 /// # Errors
 /// `path` is a member of the entry generation and cannot be leased.
+#[cfg(test)]
 fn entry_toc(
     world: Entry<'_>,
     ws: &fs::WorkspaceRoot,
     root: &wire::Root,
     path: &str,
 ) -> Result<Option<TocFacts>, MemberFault> {
-    if let Some(facts) =
-        model::catalog::read(world.catalog, path, |doc| toc_facts_of(doc, path, root))?
-    {
-        return Ok(Some(facts));
+    entry_doc(world, ws, path, |doc| toc_facts_of(doc, path, root))
+}
+
+/// One value of `path`'s document at the ENTRY state. An out-of-domain
+/// target values from the live disk file (§12.1: a guarded write's CAS token
+/// for an out-of-domain page is mintable at the read door like any other) —
+/// the same single-file load `doc_for` serves its reads from, and the same
+/// file the commit's own guards resolve against.
+///
+/// # Errors
+/// `path` is a member of the entry generation and cannot be leased.
+fn entry_doc<T>(
+    world: Entry<'_>,
+    ws: &fs::WorkspaceRoot,
+    path: &str,
+    read: impl Fn(&model::Document) -> T,
+) -> Result<Option<T>, MemberFault> {
+    if let Some(value) = model::catalog::read(world.catalog, path, &read)? {
+        return Ok(Some(value));
     }
     Ok(wire_serve::load_doc(ws, &wire::Path(path.to_owned()))
         .ok()
-        .map(|doc| toc_facts_of(&doc, path, root)))
+        .map(|doc| read(&doc)))
+}
+
+/// The rev of the toc row an armed append addresses, matched as
+/// [`effects::TocEntry::addresses`] matches: a row that carries its segments
+/// on them alone, so its joined spelling is never rendered; a row without
+/// segments through the face's own entry.
+fn entry_row_rev(
+    doc: &model::Document,
+    path: &str,
+    root: &wire::Root,
+    hpath: &[wire::HpathSeg],
+) -> Option<String> {
+    let ResponseBody::Toc { nodes, .. } =
+        wire_serve::read::toc(doc, &wire::Path(path.to_owned()), root)
+    else {
+        unreachable!("wire_serve::read::toc answers a Toc body");
+    };
+    nodes
+        .iter()
+        .find(|node| match node.hpath.as_deref() {
+            Some(segs) if !segs.is_empty() => effects::segs_address(segs, hpath),
+            _ => toc_entry(node).is_some_and(|entry| entry.addresses(hpath)),
+        })
+        .map(|node| node.node_rev.0.clone())
 }
 
 /// Build the script-face [`TocFacts`] from one document — the daemon-side twin
@@ -1316,28 +1351,7 @@ fn toc_facts_of(doc: &model::Document, path: &str, root: &wire::Root) -> TocFact
     else {
         unreachable!("wire_serve::read::toc answers a Toc body");
     };
-    let toc = nodes
-        .iter()
-        .filter_map(|node| {
-            let anchor = node.anchor.as_ref().map(|id| format!("^{id}"));
-            let section = match &node.hpath {
-                Some(hpath) => hpath
-                    .iter()
-                    .map(|seg| &*seg.h)
-                    .collect::<Vec<_>>()
-                    .join("/"),
-                None => anchor.clone()?,
-            };
-            Some(TocEntry {
-                section,
-                anchor,
-                rev: node.node_rev.0.clone(),
-                // The raw segments behind the joined spelling — the feedable
-                // machine address (D-1), `n` carried when the wire minted one.
-                hpath: node.hpath.clone().unwrap_or_default(),
-            })
-        })
-        .collect();
+    let toc = nodes.iter().filter_map(toc_entry).collect();
     let fm = wire_serve::read::props_of(doc)
         .into_iter()
         .map(|prop| (prop.key, prop.value))
@@ -1348,6 +1362,28 @@ fn toc_facts_of(doc: &model::Document, path: &str, root: &wire::Root) -> TocFact
         toc,
         words: wire_serve::read::words_of(doc),
     }
+}
+
+/// One script-face toc row: the `/`-joined spelling, the anchor, the rev and
+/// the raw segments; `None` for a row with neither a heading nor an anchor.
+fn toc_entry(node: &wire::TocNode) -> Option<TocEntry> {
+    let anchor = node.anchor.as_ref().map(|id| format!("^{id}"));
+    let section = match &node.hpath {
+        Some(hpath) => hpath
+            .iter()
+            .map(|seg| &*seg.h)
+            .collect::<Vec<_>>()
+            .join("/"),
+        None => anchor.clone()?,
+    };
+    Some(TocEntry {
+        section,
+        anchor,
+        rev: node.node_rev.0.clone(),
+        // The raw segments behind the joined spelling — the feedable
+        // machine address (D-1), `n` carried when the wire minted one.
+        hpath: node.hpath.clone().unwrap_or_default(),
+    })
 }
 
 /// The entry world plus the program's own armed overlay — the § A.7 read
