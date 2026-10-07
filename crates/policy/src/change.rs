@@ -801,6 +801,19 @@ mod tests {
         );
     }
 
+    /// A section is told apart by its whole chain, not its own text: one text
+    /// at three depths is three sections, each of which moved.
+    #[test]
+    fn sections_changed_tells_one_text_at_three_depths_apart() {
+        let before = doc_of("f.md", "# A\n\n## A\n\n### A\n\nx\n");
+        let after = doc_of("f.md", "# A\n\n## A\n\n### A\n\ny\n");
+        let change = derive(&before, &after, &[], None, false, &[], &no_edges);
+        assert_eq!(
+            texts(&change.sections_changed),
+            [vec!["A"], vec!["A", "A"], vec!["A", "A", "A"]]
+        );
+    }
+
     /// The change facts are a function of the STATES, not the request phrasing:
     /// two different edit requests that reach the SAME after state produce
     /// identical `fields_changed` / `sections_changed` (cross-client robustness).

@@ -2078,6 +2078,47 @@ mod tests {
         assert_eq!(task_hpath, r#"[{"h":"R8 Fixture"},{"h":"Dup","n":1}]"#);
     }
 
+    /// A section's address is rendered through its parent's row, not its
+    /// parent's text: the same heading under two parents keeps each chain,
+    /// and so do the task and body rows it governs.
+    #[test]
+    fn the_same_heading_under_two_parents_keeps_each_parent_s_chain() {
+        let raw = "# A\n\n## Common\n\n### Leaf\n\n- [ ] first\n\n# B\n\n## Common\n\n### Leaf\n\n- [ ] second\n";
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            "f.md".to_string(),
+            std::sync::Arc::new(model::build(raw.to_string(), syntax::parse(raw))),
+        );
+        let conn = build_memory(&docs, "b3:two-parents").expect("build");
+        let column = |sql: &str| -> Vec<String> {
+            let mut stmt = conn.prepare(sql).expect("prepare");
+            stmt.query_map([], |r| r.get(0))
+                .expect("query")
+                .collect::<Result<_, _>>()
+                .expect("rows")
+        };
+        let under = |top: &str| format!(r#"[{{"h":"{top}"}},{{"h":"Common"}},{{"h":"Leaf"}}]"#);
+        assert_eq!(
+            column("SELECT hpath FROM section ORDER BY node_seq"),
+            [
+                r#"[{"h":"A"}]"#.to_string(),
+                r#"[{"h":"A"},{"h":"Common"}]"#.to_string(),
+                under("A"),
+                r#"[{"h":"B"}]"#.to_string(),
+                r#"[{"h":"B"},{"h":"Common"}]"#.to_string(),
+                under("B"),
+            ]
+        );
+        assert_eq!(
+            column("SELECT hpath FROM task ORDER BY seq"),
+            [under("A"), under("B")]
+        );
+        assert_eq!(
+            column("SELECT hpath FROM body WHERE hpath LIKE '%Leaf%' ORDER BY seq"),
+            [under("A"), under("B")]
+        );
+    }
+
     /// The round-trip half of the same card: a dup-sibling cell taken from the
     /// projection, parsed as the read/put hpath grammar, resolves through
     /// `model::resolve` to the RIGHT occurrence — and the un-`n`'d spelling of

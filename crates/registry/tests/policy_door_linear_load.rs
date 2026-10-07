@@ -1,16 +1,20 @@
-//! A door that writes one section of a page under an armed law stages memory
-//! in proportion to the page and its answer, not to rows times the heading
+//! A door that reads or writes one section of a page stages memory in
+//! proportion to the page and its answer, not to rows times the heading
 //! chain (merkle-spec §6.4, "The policy plane keeps it as well"). The page is
-//! the amplifying shape: a heading of half the page governing many short
-//! `##` sections, so every section's address repeats the long heading. The
-//! workspace arms a CHECK law over the page whose predicate reads every
-//! node's `hpath`, so each write builds the change facts and their Starlark
-//! values. Six doors run through the in-process daemon, each measured above
-//! the warm engine with a counting allocator: a one-section read, a write's
-//! `check_write` pre-flight, a planned append, a script put, the sub frame
-//! each write pushes, and the SQL door's first query, which projects the page
-//! into the store. This binary holds one test, so nothing else allocates
-//! while it measures.
+//! the amplifying shape: a long heading governing many short `##` sections,
+//! so every section's address repeats the long heading. Six doors run
+//! through the in-process daemon, each measured above the warm engine with a
+//! counting allocator: a one-section read, a write's `check_write`
+//! pre-flight, a planned append, a script put, the sub frame each write
+//! pushes, and the SQL door's first query, which projects the page into the
+//! store. They run over that page at 48 KiB and at 128 KiB under an armed
+//! CHECK law whose predicate reads every node's `hpath`, so each write builds
+//! the change facts and their Starlark values, and at 128 KiB with no law,
+//! where a write still derives its change. The two sizes share one bound, so
+//! staging that grows with the square of the page passes the first and
+//! fails the second. The SQL door also runs over the long heading governing
+//! one task every 8 bytes, the page whose task rows would repeat the chain.
+//! This binary holds one test, so nothing else allocates while it measures.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::fmt::Write as _;
@@ -81,7 +85,11 @@ fn peak_of<T>(work: impl FnOnce() -> T) -> (T, usize) {
 const PER_BYTE: usize = 1024;
 const FIXED: usize = 256 * 1024;
 /// Off the doubling points, where growth buffers are not exactly full.
-const SIZE: usize = 48 * 1024 + 3;
+const SMALL: usize = 48 * 1024 + 3;
+const LARGE: usize = 128 * 1024 + 3;
+/// The long heading is half the page, up to the length a script put can
+/// still name in a source under the script door's 65,536-byte limit.
+const HEADING_MAX: usize = 60 * 1024;
 const PAGE: &str = "tasks/page.md";
 
 /// The armed law: a CHECK over `tasks/**` whose predicate reads every node's
@@ -167,24 +175,34 @@ impl Conn {
     }
 }
 
-/// The long heading, and the page: that heading over short `##` leaves.
-fn page() -> (String, String) {
-    let heading = "h".repeat(SIZE / 2);
+/// The long heading, and the `size`-byte page: that heading over `leaf(i)`
+/// for each `i` that fits.
+fn page(size: usize, leaf: impl Fn(usize) -> String) -> (String, String) {
+    let heading = "h".repeat((size / 2).min(HEADING_MAX));
     let mut page = format!("# {heading}\n\n");
-    let mut leaf = 0;
-    while page.len() + 10 <= SIZE {
-        let _ = write!(page, "## s{leaf:04}\n\n");
-        leaf += 1;
+    for i in 0.. {
+        let next = leaf(i);
+        if page.len() + next.len() >= size {
+            break;
+        }
+        page.push_str(&next);
     }
-    page.push_str(&" ".repeat(SIZE - page.len() - 1));
+    page.push_str(&" ".repeat(size - page.len() - 1));
     page.push('\n');
     (heading, page)
 }
 
-/// The workspace: the page, the law's page, and the attested artifact that
-/// arms the law at the workspace root, with the once-armed marker.
-fn seeded(root: &Path, page: &str) -> PathBuf {
+/// The workspace: the page and, when `law`, the law's page and the attested
+/// artifact that arms the law at the workspace root, with the once-armed
+/// marker.
+fn seeded(root: &Path, page: &str, law: bool) -> PathBuf {
     let ws = root.join("project");
+    if !law {
+        let path = ws.join(PAGE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, page).unwrap();
+        return ws;
+    }
     let index = policy::RuleIndex::discover([policy::PageRef {
         layer: policy::ScopeLayer::Workspace,
         page: LAW_PATH,
@@ -221,6 +239,7 @@ fn seeded(root: &Path, page: &str) -> PathBuf {
 /// fails when it stages more than 256 KiB + 1024 per page byte + its answer,
 /// or when it refuses (a law that cannot evaluate a write refuses it).
 struct Meter {
+    leg: &'static str,
     page: usize,
     report: String,
     failed: Vec<String>,
@@ -246,10 +265,11 @@ impl Meter {
     }
 
     fn finish(self) {
-        eprintln!("page {} B\n{}", self.page, self.report);
+        eprintln!("{}: page {} B\n{}", self.leg, self.page, self.report);
         assert!(
             self.failed.is_empty(),
-            "over the bound or refused: {:?}\npage {} B\n{}",
+            "{}: over the bound or refused: {:?}\npage {} B\n{}",
+            self.leg,
             self.failed,
             self.page,
             self.report
@@ -274,17 +294,54 @@ fn write_door(
     (out, len + frame_len, frame, peak)
 }
 
-#[test]
-fn a_write_under_an_armed_law_stages_memory_in_proportion_to_the_page() {
-    let (heading, page) = page();
+/// A daemon over the workspace `page` seeds, with a v3 connection on which
+/// the page is already resident, so no door's measure includes its load.
+fn warm(page: &str, law: bool) -> (TestServer, PathBuf, Conn) {
     let daemon = TestServer::start(test_config).unwrap();
-    let ws = seeded(daemon.path(), &page);
-    let socket = daemon.socket_path();
-    let mut conn = Conn::open(&socket);
+    let ws = seeded(daemon.path(), page, law);
+    let mut conn = Conn::open(&daemon.socket_path());
     conn.hello(&ws, true);
-    // Warm: the page is resident before any door is measured.
     let (toc, _) = conn.call(&json!({"op": "toc", "path": PAGE}));
     assert_eq!(toc["ok"], json!(true), "{toc}");
+    (daemon, ws, conn)
+}
+
+/// The SQL door's first query, which projects the page into the store.
+fn sql_door(conn: &mut Conn, meter: &mut Meter, query: &str) {
+    let ((sql, sql_len), peak) =
+        peak_of(|| conn.call(&json!({"id": 4, "op": "sql", "query": query})));
+    assert_eq!(sql["ok"], json!(true), "{sql}");
+    meter.door("sql first query", peak, sql_len, None);
+}
+
+#[test]
+fn a_door_stages_memory_in_proportion_to_the_page() {
+    section_doors("48 KiB, armed law", SMALL, true);
+    section_doors("128 KiB, armed law", LARGE, true);
+    section_doors("128 KiB, no law", LARGE, false);
+    task_door();
+}
+
+/// The SQL door over the long heading governing one task every 8 bytes.
+fn task_door() {
+    let (_, page) = page(LARGE, |_| "- [ ] t\n".to_string());
+    let (daemon, _ws, mut conn) = warm(&page, false);
+    let mut meter = Meter {
+        leg: "128 KiB of tasks, no law",
+        page: page.len(),
+        report: String::new(),
+        failed: Vec::new(),
+    };
+    sql_door(&mut conn, &mut meter, "SELECT count(*) FROM task");
+    meter.finish();
+    daemon.shutdown();
+}
+
+/// The six doors over the long heading governing short `##` sections.
+fn section_doors(leg: &'static str, size: usize, law: bool) {
+    let (heading, page) = page(size, |leaf| format!("## s{leaf:04}\n\n"));
+    let (daemon, ws, mut conn) = warm(&page, law);
+    let socket = daemon.socket_path();
     let mut sub = Conn::open(&socket);
     sub.hello(&ws, false);
     let (ack, _) = sub.call(&json!({"op": "sub"}));
@@ -292,6 +349,7 @@ fn a_write_under_an_armed_law_stages_memory_in_proportion_to_the_page() {
 
     let address = |leaf: &str| json!([{"h": heading}, {"h": leaf}]);
     let mut meter = Meter {
+        leg,
         page: page.len(),
         report: String::new(),
         failed: Vec::new(),
@@ -351,14 +409,11 @@ fn a_write_under_an_armed_law_stages_memory_in_proportion_to_the_page() {
     let refused = (!committed(&script)).then_some(&script["body"]);
     meter.door("script put, with its sub frame", peak, answer, refused);
 
-    let ((sql, sql_len), peak) = peak_of(|| {
-        conn.call(&json!({
-            "id": 4, "op": "sql",
-            "query": "SELECT heading FROM section WHERE heading = 's0779'",
-        }))
-    });
-    assert_eq!(sql["ok"], json!(true), "{sql}");
-    meter.door("sql first query", peak, sql_len, None);
+    sql_door(
+        &mut conn,
+        &mut meter,
+        "SELECT heading FROM section WHERE heading = 's0779'",
+    );
 
     meter.finish();
     daemon.shutdown();

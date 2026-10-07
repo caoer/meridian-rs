@@ -1,4 +1,4 @@
-//! Heading-path values for one Starlark evaluation, each heading text
+//! Heading-path values for one Starlark evaluation, each heading segment
 //! allocated once (merkle-spec §6.4, "The policy plane keeps it as well").
 //!
 //! The facts hold every node's chain as the tree's shared `Arc<str>`
