@@ -289,6 +289,12 @@ pub(crate) fn serve(
         fold: &w.fold,
     });
 
+    // `store` lives until this function returns, past `read.run` below: the
+    // registry's least-recently-used close counts a query as holding the
+    // cache only through this `Arc`, while the read owns a cloned connection
+    // of the same instance. Dropped earlier, the close could drop the store
+    // while the read runs, and a later call attach its file in a second
+    // instance (merkle-spec §6.4).
     let store = registry
         .sql_store(ws)
         .map_err(|e| io_error(format!("cannot open the sql cache: {e}")))?;
@@ -386,9 +392,26 @@ fn store_error(context: &str, error: view::ViewError) -> Box<ErrorBody> {
 }
 
 /// An append the store refused, under the store's `memory_limit` (`None`:
-/// `DuckDB`'s default).
-fn append_error(_limit: Option<u64>, error: view::ViewError) -> Box<ErrorBody> {
-    store_error("cannot append to the sql cache", error)
+/// `DuckDB`'s default). A refusal for memory under a limit names that limit
+/// (merkle-spec §6.4) and keeps only `DuckDB`'s first line: its advice — a
+/// `SET memory_limit`, fewer threads — cannot help, since the append runs
+/// before the caller's statement and a caller's `SET` lasts one call.
+fn append_error(limit: Option<u64>, error: view::ViewError) -> Box<ErrorBody> {
+    const CONTEXT: &str = "cannot append to the sql cache";
+    match limit {
+        Some(limit) if error.is_memory_limit() => {
+            let text = error.to_string();
+            let refusal = text.lines().next().unwrap_or_default();
+            io_error(format!(
+                "{CONTEXT}: this workspace's pages store more rows than the {} MiB memory \
+                 limit the residency host sets on each sql cache can append ({refusal}); a \
+                 caller's SET cannot raise it, and every sql call on this workspace is refused \
+                 until the page that outgrows it shrinks or leaves",
+                limit >> 20
+            ))
+        }
+        _ => store_error(CONTEXT, error),
+    }
 }
 
 fn io_error(cause: String) -> Box<ErrorBody> {

@@ -2299,6 +2299,16 @@ pub(crate) fn is_lock_error(e: &duckdb::Error) -> bool {
     e.to_string().contains("Conflicting lock")
 }
 
+/// Is this `DuckDB` error its buffer manager refusing memory past the
+/// instance's `memory_limit`? Both of its refusals name the block it could
+/// not get ("failed to pin block of size", "could not allocate block of
+/// size"; `standard_buffer_manager.cpp`, v1.5.4).
+pub(crate) fn is_memory_limit_error(e: &duckdb::Error) -> bool {
+    let text = e.to_string();
+    text.contains("failed to pin block of size")
+        || text.contains("could not allocate block of size")
+}
+
 fn u64_len(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
 }

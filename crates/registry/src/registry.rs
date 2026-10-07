@@ -1808,18 +1808,21 @@ impl Registry {
             .sql_stores
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(handle) = stores.get_mut(workspace) {
+        // A hit's handle is taken first: its count is then above one, so the
+        // close below passes over it.
+        let hit = stores.get_mut(workspace).map(|handle| {
             handle.used = tick;
-            return Ok(Arc::clone(&handle.store));
-        }
-        let drawer = cache::drawer_dir(&self.cache_root, workspace);
+            Arc::clone(&handle.store)
+        });
         let budget = self.sql_budget;
         if let Some(budget) = budget {
-            // Close least recently used caches no query holds, under the map
-            // lock: the closed instance is gone before anyone can reattach
-            // its file, so one file never has two instances. A cache in use
-            // stays open, past the count, until a later open finds it free.
-            while stores.len() >= budget.open_caches {
+            // Every call, hit or miss, closes least recently used caches no
+            // query holds until the count leaves room for the one it serves —
+            // under the map lock: the closed instance is gone before anyone
+            // can reattach its file, so this close never gives one file two
+            // instances. A cache in use stays open, past the count, until a
+            // later call finds it free.
+            while stores.len() + usize::from(hit.is_none()) > budget.open_caches {
                 let idle = stores
                     .iter()
                     .filter(|(_, handle)| Arc::strong_count(&handle.store) == 1)
@@ -1829,6 +1832,10 @@ impl Registry {
                 drop(stores.remove(&key));
             }
         }
+        if let Some(store) = hit {
+            return Ok(store);
+        }
+        let drawer = cache::drawer_dir(&self.cache_root, workspace);
         let store = view::store::SqlStore::open_limited(
             &drawer.join(view::store::SQL_CACHE_FILENAME),
             budget.map(|budget| budget.cache_limit),

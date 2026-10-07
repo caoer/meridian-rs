@@ -122,6 +122,16 @@ impl ViewError {
             ViewError::Io(_) | ViewError::Busy(_) => false,
         }
     }
+
+    /// Is this `DuckDB` refusing memory past the store's `memory_limit`
+    /// ([`store::SqlStore::open_limited`])?
+    #[must_use]
+    pub fn is_memory_limit(&self) -> bool {
+        match self {
+            ViewError::Duckdb(e) => store::is_memory_limit_error(e),
+            ViewError::Io(_) | ViewError::Busy(_) => false,
+        }
+    }
 }
 
 impl From<duckdb::Error> for ViewError {
