@@ -415,72 +415,154 @@ fn a_subscribed_workspace_sheds_to_the_host_limit_and_every_door_serves_the_eage
     );
 }
 
-/// Under an allowance of several declared load peaks
-/// ([`registry::residency::load_peak`]) no load needs the serialized slot:
-/// two requests that each scan every cold member at the same time are both
-/// served the owning daemon's bytes on their first attempt, with no
-/// retryable refusal.
+/// Under an allowance of two declared load peaks
+/// ([`registry::residency::load_peak`]) two loads run at once and no load
+/// needs the serialized slot. Two requests scan two workspaces whose members
+/// are disjoint, at the same time, through one host whose allowance cannot
+/// hold both workspaces' bodies, so each load sheds older bodies. A sampler
+/// on the ledger shows two reservations live at once, the total never above
+/// the limit and the serialized slot never taken during the scans; both
+/// requests are served the owning daemon's bytes on their first attempt.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn two_requests_load_at_once_under_an_allowance_of_several_declarations() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     let tmp = TempDir::new().unwrap();
-    let files = files();
-    let ws = seeded(tmp.path(), &files);
-    let allowance = 4 * files
-        .iter()
+    // Each workspace's pages carry its name, so no member is shared, and a
+    // tail of bare headings, the shape whose retained tree is largest beside
+    // its declaration, so two workspaces' bodies are far above two loads.
+    let workspaces: Vec<(PathBuf, Vec<(String, String)>)> = ["a", "b"]
+        .into_iter()
+        .map(|name| {
+            let files: Vec<(String, String)> = files()
+                .into_iter()
+                .map(|(path, raw)| {
+                    if path == "HOOKS.md" {
+                        (path, raw)
+                    } else {
+                        let tail = "#\n".repeat(256);
+                        (path, format!("{raw}\nworkspace {name}\n\n{tail}"))
+                    }
+                })
+                .collect();
+            (seeded(&tmp.path().join(name), &files), files)
+        })
+        .collect();
+    let all_files = || workspaces.iter().flat_map(|(_, files)| files);
+    let declared = all_files()
         .map(|(_, raw)| registry::residency::load_peak(raw.len() as u64))
         .max()
         .unwrap();
+    let bodies: Vec<usize> = all_files()
+        .map(|(_, raw)| {
+            let doc = model::build(raw.clone(), syntax::parse(raw));
+            let bytes = model::allocation::document(&doc);
+            bytes.raw + bytes.tree
+        })
+        .collect();
+    // Two loads at once, with room for the bodies two scans pin; never three.
+    let allowance = 2 * declared + 4 * bodies.iter().max().unwrap();
+    assert!(allowance < 3 * declared, "a third load would fit");
+    assert!(
+        bodies.iter().sum::<usize>() > allowance,
+        "both workspaces' bodies fit the allowance, so a scan never sheds"
+    );
     let host = Arc::new(Host::new(
         Controller::new(allowance),
         RawStore::new(&tmp.path().join("backing")).unwrap(),
     ));
     let owning = RunningServer::start(config(tmp.path(), "e", None)).unwrap();
     let leased = RunningServer::start(config(tmp.path(), "r", Some(Arc::clone(&host)))).unwrap();
-    let mut plain = Conn::open(owning.socket_path());
-    plain.hello_v3(&ws);
-    let scans: Vec<(&str, Value, Value)> = doors()
+    // The links map loads every cold member on every call; a SQL answer can
+    // come from a projection built once, which loads nothing in later rounds.
+    let links = doors()
         .into_iter()
-        .filter(|(door, _)| ["sql", "links map"].contains(door))
-        .map(|(door, request)| {
+        .find(|(door, _)| *door == "links map")
+        .unwrap();
+    let scans: Vec<(&str, &Path, Value, Value)> = workspaces
+        .iter()
+        .map(|(ws, _)| {
+            let (door, request) = links.clone();
+            let mut plain = Conn::open(owning.socket_path());
+            plain.hello_v3(ws);
             let mut want = plain.call(&request);
             scrub(&mut want);
             assert_eq!(want["ok"], json!(true), "{door}: {want}");
-            (door, request, want)
+            (door, ws.as_path(), request, want)
         })
         .collect();
     assert_eq!(scans.len(), 2);
-    let canonical = fs::canonicalize(&ws).unwrap();
-    leased.registry().warm_or_build(&canonical).unwrap();
+    for (ws, _) in &workspaces {
+        let canonical = fs::canonicalize(ws).unwrap();
+        leased.registry().warm_or_build(&canonical).unwrap();
+    }
     let budget = above_the_floor(&host, allowance);
     let mut conns: Vec<Conn> = scans
         .iter()
-        .map(|_| {
+        .map(|(_, ws, _, _)| {
             let mut conn = Conn::open(leased.socket_path());
-            conn.hello_v3(&ws);
+            conn.hello_v3(ws);
             conn
         })
         .collect();
 
-    for round in 0..2 {
+    let mut most = 0;
+    for round in 0..3 {
         all_cold(&host, budget);
-        std::thread::scope(|scope| {
-            for (conn, (door, request, want)) in conns.iter_mut().zip(&scans) {
-                scope.spawn(move || {
-                    let mut got = conn.call_once(request);
-                    scrub(&mut got);
-                    assert_eq!(
-                        &got, want,
-                        "{door}, round {round}: served on the first attempt beside the other scan"
-                    );
-                });
+        let stop = AtomicBool::new(false);
+        let (live, over, transient) = std::thread::scope(|scope| {
+            let sampler = scope.spawn(|| {
+                let (mut live, mut over, mut transient) = (0, 0, false);
+                while !stop.load(Ordering::Relaxed) {
+                    let report = host.controller.report();
+                    live = live.max(report.reservations);
+                    over = over.max(report.total.saturating_sub(report.limit));
+                    transient |= report.transient;
+                }
+                (live, over, transient)
+            });
+            let scanners: Vec<_> = conns
+                .iter_mut()
+                .zip(&scans)
+                .map(|(conn, (door, _, request, want))| {
+                    scope.spawn(move || {
+                        let mut got = conn.call_once(request);
+                        scrub(&mut got);
+                        assert_eq!(
+                            &got, want,
+                            "{door}, round {round}: served on the first attempt beside the other scan"
+                        );
+                    })
+                })
+                .collect();
+            // Stop the sampler before a scanner's failure resurfaces, or the
+            // scope would wait on it forever.
+            let joined: Vec<_> = scanners
+                .into_iter()
+                .map(std::thread::ScopedJoinHandle::join)
+                .collect();
+            stop.store(true, Ordering::Relaxed);
+            let ledger = sampler.join().unwrap();
+            for outcome in joined {
+                if let Err(failure) = outcome {
+                    std::panic::resume_unwind(failure);
+                }
             }
+            ledger
         });
+        assert_eq!(over, 0, "round {round}: the total went above the limit");
+        assert!(!transient, "round {round}: a load took the serialized slot");
         let report = host.controller.report();
-        assert!(
-            !report.transient && (report.pinned, report.reserved) == (0, 0),
-            "no load took the serialized slot and no door kept a lease: {report:?}"
+        assert_eq!(
+            (report.pinned, report.reserved),
+            (0, 0),
+            "round {round}: a door kept a lease: {report:?}"
         );
+        println!("round {round}: most reservations live at once {live}");
+        most = most.max(live);
     }
+    assert!(most >= 2, "two loads were never live at once (most {most})");
     leased.shutdown();
     owning.shutdown();
 }
