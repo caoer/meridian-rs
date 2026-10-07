@@ -5141,7 +5141,7 @@ mod engine_tests {
         let reg = two_cache_registry(home.path());
         let ws = three_workspaces(&reg, home.path());
         let store = reg.sql_store(&ws[0]).unwrap();
-        let read = store.lock().unwrap().begin_read().unwrap();
+        let read = store.lock().unwrap().begin_held_read(&store).unwrap();
         drop(store);
         reg.sql_store(&ws[1]).unwrap();
         reg.sql_store(&ws[2]).unwrap();

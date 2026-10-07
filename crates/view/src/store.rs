@@ -120,8 +120,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use duckdb::Connection;
 use duckdb::types::Value;
@@ -2117,7 +2117,7 @@ impl SqlStore {
     ///
     /// # Errors
     /// The connection cannot be cloned, or `BEGIN` / the forcing read fails.
-    pub fn begin_read(&self) -> Result<SqlRead, ViewError> {
+    fn begin_read(&self) -> Result<SqlRead, ViewError> {
         self.policy.check()?;
         let conn = self.conn.try_clone()?;
         // `try_clone` shares the attached database instance but does not
@@ -2131,7 +2131,23 @@ impl SqlStore {
             conn,
             baseline: Arc::clone(&self.baseline),
             policy: Arc::clone(&self.policy),
+            hold: None,
         })
+    }
+
+    /// [`SqlStore::begin_read`] on a store its owner shares as `shared`, the
+    /// handle this store was locked through: the read keeps that handle
+    /// until it ends. An owner that closes a shared store once no handle but
+    /// its own is left therefore never closes one a read is still open on,
+    /// wherever the caller that opened the read drops its own handle
+    /// (merkle-spec §6.4).
+    ///
+    /// # Errors
+    /// As [`SqlStore::begin_read`].
+    pub fn begin_held_read(&self, shared: &Arc<Mutex<SqlStore>>) -> Result<SqlRead, ViewError> {
+        let mut read = self.begin_read()?;
+        read.hold = Some(Arc::clone(shared));
+        Ok(read)
     }
 
     /// Run one caller query through the rollback lane, start to finish, on a
@@ -2214,6 +2230,10 @@ pub struct SqlRead {
     conn: Connection,
     baseline: Arc<Vec<(String, String)>>,
     policy: Arc<InstancePolicy>,
+    /// The shared store this read was opened on
+    /// ([`SqlStore::begin_held_read`]); declared after `conn`, so the read's
+    /// connection is gone before the handle is released.
+    hold: Option<Arc<Mutex<SqlStore>>>,
 }
 
 impl std::fmt::Debug for SqlRead {
@@ -3685,7 +3705,7 @@ pub(crate) mod tests {
     #[test]
     fn a_read_in_flight_does_not_hold_the_store() {
         let dir = tempfile::tempdir().expect("tmpdir");
-        let store = std::sync::Mutex::new(SqlStore::open(&tmp_store(&dir)).expect("open"));
+        let store = Mutex::new(SqlStore::open(&tmp_store(&dir)).expect("open"));
 
         let read = {
             let mut guard = store.lock().expect("lock");

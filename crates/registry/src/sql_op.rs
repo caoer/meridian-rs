@@ -15,7 +15,7 @@
 //!
 //! **Where the workspace's store mutex opens and closes.** It covers the
 //! append and the opening of this call's read — [`view::store::SqlStore::sync`]
-//! then [`view::store::SqlStore::begin_read`] — and it is released before the
+//! then [`view::store::SqlStore::begin_held_read`] — and it is released before the
 //! caller's statement runs. The read owns a connection of its own on the same
 //! `DuckDB` instance, with its snapshot pinned under the lock, so the answer
 //! is as fresh as the `as_of` it reports while the
@@ -45,7 +45,7 @@ use crate::Registry;
 ///
 /// The value's two edges, and the window between them:
 /// - **Floor — the legitimate hold.** One holder occupies the store for
-///   `sync()` + [`view::store::SqlStore::begin_read`], because a fingerprint
+///   `sync()` + [`view::store::SqlStore::begin_held_read`], because a fingerprint
 ///   advance makes the next call fold the delta. The floor on record was
 ///   measured against the OLDER, larger hold that also spanned the caller's
 ///   query: over a 47,185-file corpus under continuous fleet writes, sampled
@@ -289,12 +289,10 @@ pub(crate) fn serve(
         fold: &w.fold,
     });
 
-    // `store` lives until this function returns, past `read.run` below: the
-    // registry's least-recently-used close counts a query as holding the
-    // cache only through this `Arc`, while the read owns a cloned connection
-    // of the same instance. Dropped earlier, the close could drop the store
-    // while the read runs, and a later call attach its file in a second
-    // instance (merkle-spec §6.4).
+    // The registry's least-recently-used close counts a query as holding the
+    // cache through this `Arc`. The read below takes its own clone of it
+    // (`begin_held_read`), so the cache stays held until the read ends
+    // (merkle-spec §6.4).
     let store = registry
         .sql_store(ws)
         .map_err(|e| io_error(format!("cannot open the sql cache: {e}")))?;
@@ -309,8 +307,8 @@ pub(crate) fn serve(
     // holder, while the same probe on a DIFFERENT workspace served in 70 ms
     // through the same daemon).
     let read = {
-        let mut store = lock_store_bounded(&store, ws, SQL_STORE_WAIT)?;
-        if let Err(error) = store.sync_catalog(
+        let mut guard = lock_store_bounded(&store, ws, SQL_STORE_WAIT)?;
+        if let Err(error) = guard.sync_catalog(
             generation,
             &corpus,
             Some(mounts.set()),
@@ -318,10 +316,10 @@ pub(crate) fn serve(
             &engine.at_fingerprint.0,
             base.as_ref(),
         ) {
-            return Err(append_error(store.memory_limit(), error));
+            return Err(append_error(guard.memory_limit(), error));
         }
-        store
-            .begin_read()
+        guard
+            .begin_held_read(&store)
             .map_err(|e| store_error("cannot open a read on the sql cache", e))?
     };
 
@@ -403,10 +401,12 @@ fn append_error(limit: Option<u64>, error: view::ViewError) -> Box<ErrorBody> {
             let text = error.to_string();
             let refusal = text.lines().next().unwrap_or_default();
             io_error(format!(
-                "{CONTEXT}: this workspace's pages store more rows than the {} MiB memory \
-                 limit the residency host sets on each sql cache can append ({refusal}); a \
-                 caller's SET cannot raise it, and every sql call on this workspace is refused \
-                 until the page that outgrows it shrinks or leaves",
+                "{CONTEXT}: the append needs more memory than the {} MiB limit the residency \
+                 host sets on each sql cache, which every query running on this workspace \
+                 shares ({refusal}); a caller's SET cannot raise it. If another sql query on \
+                 this workspace is running, the first call after it ends can append; with none \
+                 running, every sql call on this workspace is refused until the page that \
+                 outgrows the limit shrinks or leaves",
                 limit >> 20
             ))
         }
