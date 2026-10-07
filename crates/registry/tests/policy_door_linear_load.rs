@@ -5,13 +5,12 @@
 //! `##` sections, so every section's address repeats the long heading. The
 //! workspace arms a CHECK law over the page whose predicate reads every
 //! node's `hpath`, so each write builds the change facts and their Starlark
-//! values. Five doors run through the in-process daemon, each measured above
+//! values. Six doors run through the in-process daemon, each measured above
 //! the warm engine with a counting allocator: a one-section read, a write's
-//! `check_write` pre-flight, a planned append, a script put, and the sub
-//! frame each write pushes. The SQL door's
-//! first query is measured and printed, not bounded: its per-row heading
-//! text is the next slice's. This binary holds one test, so nothing else
-//! allocates while it measures.
+//! `check_write` pre-flight, a planned append, a script put, the sub frame
+//! each write pushes, and the SQL door's first query, which projects the page
+//! into the store. This binary holds one test, so nothing else allocates
+//! while it measures.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::fmt::Write as _;
@@ -246,14 +245,6 @@ impl Meter {
         }
     }
 
-    fn measured(&mut self, name: &str, peak: usize, answer: usize) {
-        let _ = writeln!(
-            self.report,
-            "{name} (measured, not bounded): peak {peak} B ({} per page byte), answer {answer} B",
-            peak / self.page
-        );
-    }
-
     fn finish(self) {
         eprintln!("page {} B\n{}", self.page, self.report);
         assert!(
@@ -367,7 +358,7 @@ fn a_write_under_an_armed_law_stages_memory_in_proportion_to_the_page() {
         }))
     });
     assert_eq!(sql["ok"], json!(true), "{sql}");
-    meter.measured("sql first query", peak, sql_len);
+    meter.door("sql first query", peak, sql_len, None);
 
     meter.finish();
     daemon.shutdown();

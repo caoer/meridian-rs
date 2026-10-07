@@ -516,7 +516,9 @@ fn value_payload_bytes(value: &Value) -> usize {
 }
 
 /// Count only rows added since `seen`: each row is visited once for the whole
-/// append, even as the current batch grows document by document.
+/// append, even as the current batch grows document by document. A `section`,
+/// `task` or `body` row is counted with the address staging beside it
+/// (`Rows::section_addr`, `Rows::task_section`, `Rows::body_section`).
 fn newly_staged_bytes(rows: &Rows, seen: &mut [usize; 14]) -> usize {
     let tables = [
         &rows.doc,
@@ -535,6 +537,13 @@ fn newly_staged_bytes(rows: &Rows, seen: &mut [usize; 14]) -> usize {
         &rows.body,
     ];
     let mut bytes = 0usize;
+    for addr in &rows.section_addr[seen[2]..] {
+        bytes = bytes
+            .saturating_add(size_of::<crate::SectionAddr>())
+            .saturating_add(addr.seg.capacity());
+    }
+    let governed = (rows.task.len() - seen[9]) + (rows.body.len() - seen[13]);
+    bytes = bytes.saturating_add(governed.saturating_mul(size_of::<Option<usize>>()));
     for (i, table) in tables.iter().enumerate() {
         for row in &table[seen[i]..] {
             let row_bytes = size_of::<Vec<Value>>()
@@ -1851,9 +1860,14 @@ impl SqlStore {
         self.append_scalar(&rows.tag, "tag", generation)?;
         self.append_scalar(&rows.frontmatter_tag, "frontmatter_tag", generation)?;
         self.append_scalar(&rows.frontmatter_fault, "frontmatter_fault", generation)?;
-        self.append_scalar(&rows.section, "section", generation)?;
-        self.append_scalar(&rows.task, "task", generation)?;
-        self.append_body_chunks(&rows.body, generation, known_body_keys)?;
+        self.append_rendered(
+            rows.section.len(),
+            |i| rows.section_row(i),
+            "section",
+            generation,
+        )?;
+        self.append_rendered(rows.task.len(), |i| rows.task_row(i), "task", generation)?;
+        self.append_body_chunks(rows, generation, known_body_keys)?;
 
         // base: path, generation, tombstone, rest — the hist.doc shape.
         if !rows.base.is_empty() {
@@ -1951,11 +1965,11 @@ impl SqlStore {
     /// never-edit law holds.
     fn append_body_chunks(
         &self,
-        rows: &[Vec<Value>],
+        rows: &Rows,
         generation: &Value,
         known_body_keys: &mut Option<BTreeSet<String>>,
     ) -> Result<(), ViewError> {
-        if rows.is_empty() {
+        if rows.body.is_empty() {
             return Ok(());
         }
         // One key set spans every batch in this transaction. Re-reading the
@@ -1972,7 +1986,9 @@ impl SqlStore {
         let known = known_body_keys.as_mut().expect("body key set loaded");
         let mut narrow = self.conn.appender_to_db("body", "hist")?;
         let mut texts = self.conn.appender_to_db("body_text", "hist")?;
-        for row in rows {
+        for i in 0..rows.body.len() {
+            // The row as loaded: its `hpath` rendered for this append only.
+            let row = rows.body_row(i);
             let Value::Text(text) = &row[4] else {
                 unreachable!("body row text column is TEXT by construction");
             };
@@ -1996,6 +2012,29 @@ impl SqlStore {
         }
         narrow.flush()?;
         texts.flush()?;
+        Ok(())
+    }
+
+    /// Appender load of `n` hist rows produced one at a time by `row`: first
+    /// column, generation, rest. A row's rendered `hpath` lives only while it
+    /// is appended.
+    fn append_rendered(
+        &self,
+        n: usize,
+        row: impl Fn(usize) -> Vec<Value>,
+        table: &str,
+        generation: &Value,
+    ) -> Result<(), ViewError> {
+        if n == 0 {
+            return Ok(());
+        }
+        let mut app = self.conn.appender_to_db(table, "hist")?;
+        for i in 0..n {
+            let mut row = row(i);
+            row.insert(1, generation.clone());
+            app.append_row(duckdb::appender_params_from_iter(row.iter()))?;
+        }
+        app.flush()?;
         Ok(())
     }
 
