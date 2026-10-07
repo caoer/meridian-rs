@@ -1,14 +1,16 @@
 //! `mrd status` — the bare, pure-local drift + freshness summary.
 //!
 //! ```text
-//! mrd status [--json] [--cwd PATH]
+//! mrd status [--json] [--cwd PATH] [--residency]
 //! ```
 //!
 //! # What bare `status` is
 //! `status = freshness` (distinct from `check = validity`): what is armed, what
 //! drifted, and how fresh the origin knowledge is — from frozen facts only.
 //!
-//! - **pure-local** — no daemon, no network, no fetch;
+//! - **pure-local** — no daemon, no network, no fetch. `--residency` alone
+//!   sends a running daemon one capped request for its residency controller
+//!   report ([`Residency::ask`]) and never starts one;
 //! - **O(armed) + O(pins) + O(objects)** — one index read
 //!   (`conventions/INDEX.md`) for the armed set, one re-hash per armed
 //!   convention's `CHECK.md`, and the git refs. The `meridian-lock` planes add
@@ -65,6 +67,7 @@ use model::selector::{Color, RedReason};
 use policy::armed::{Mode, parse_artifact};
 use policy::page_rev;
 use receipt::anchor::{AnchorFacts, AnchorState, ObjectAnchor, ObjectAnchorFacts, TipPosition};
+use registry::residency::controller::Report as ResidencyReport;
 use serde_json::json;
 use view::walk::{color_detail, color_label, color_reason, color_tone};
 
@@ -78,7 +81,7 @@ const EXIT_FINDING: u8 = 1;
 /// unresolvable / unreadable workspace; exit 1 when the summary carries a finding (drift, or a
 /// faulted INDEX).
 pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
-    let (format, cwd_arg) = parse(tail)?;
+    let (format, cwd_arg, residency) = parse(tail)?;
     // `--cwd PATH` is an explicit TREE argument (address-grammar.md, the
     // non-page predicate), so it outranks `MERIDIAN_WORKSPACE`; without it the
     // ambient cwd leaves the override answering exactly as before.
@@ -105,7 +108,10 @@ pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
         ))
     })?;
 
-    let report = gather(&workspace, resolved.source.label());
+    let mut report = gather(&workspace, resolved.source.label());
+    if residency {
+        report.residency = Some(Residency::ask());
+    }
 
     match format {
         Format::Json => println!("{}", report.json()),
@@ -118,9 +124,10 @@ pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
     Ok(())
 }
 
-/// Parse `[--json] [--cwd PATH]` — the bare form only (no page positional).
-fn parse(tail: &[String]) -> Result<(Format, Option<PathBuf>), Fail> {
+/// Parse `[--json] [--cwd PATH] [--residency]` — no page positional.
+fn parse(tail: &[String]) -> Result<(Format, Option<PathBuf>, bool), Fail> {
     let mut json = false;
+    let mut residency = false;
     let mut cwd: Option<PathBuf> = None;
     let mut i = 0;
     while i < tail.len() {
@@ -131,6 +138,7 @@ fn parse(tail: &[String]) -> Result<(Format, Option<PathBuf>), Fail> {
         };
         match flag {
             "--json" => json = true,
+            "--residency" if inline.is_none() => residency = true,
             "--cwd" => {
                 let v = if let Some(v) = inline {
                     v
@@ -147,7 +155,58 @@ fn parse(tail: &[String]) -> Result<(Format, Option<PathBuf>), Fail> {
         i += 1;
     }
     let format = if json { Format::Json } else { Format::Human };
-    Ok((format, cwd))
+    Ok((format, cwd, residency))
+}
+
+/// What `--residency` learned from the daemon (merkle-spec §6.4, the
+/// report's door).
+enum Residency {
+    /// The daemon's residency controller report.
+    Report(ResidencyReport),
+    /// A daemon answered and has no residency host.
+    NoHost,
+    /// No daemon answered within the probe's cap.
+    NoDaemon,
+}
+
+impl Residency {
+    /// One `residency` admin request under the liveness probe's cap; never
+    /// starts a daemon.
+    fn ask() -> Self {
+        match registry::Client::from_default().and_then(|client| client.residency()) {
+            Ok(Some(report)) => Self::Report(report),
+            Ok(None) => Self::NoHost,
+            Err(_) => Self::NoDaemon,
+        }
+    }
+
+    fn render(&self) -> String {
+        match self {
+            Self::Report(r) => format!(
+                "floor {} / limit {} · bodies {} · pinned {} · reserved {} · overage {} · \
+                 floor-overage {} · peak-overruns {} (shortfall {})",
+                r.floor,
+                r.limit,
+                r.bodies,
+                r.pinned,
+                r.reserved,
+                r.overage,
+                r.floor_overage,
+                r.peak_overruns,
+                r.peak_shortfall,
+            ),
+            Self::NoHost => "the daemon has no residency host".to_owned(),
+            Self::NoDaemon => "no daemon answers".to_owned(),
+        }
+    }
+
+    fn json(&self) -> serde_json::Value {
+        match self {
+            Self::Report(report) => json!({"state": "report", "report": report}),
+            Self::NoHost => json!({"state": "no-host", "report": null}),
+            Self::NoDaemon => json!({"state": "no-daemon", "report": null}),
+        }
+    }
 }
 
 /// What the forced-since-realise axis says. One constant, used by both faces, so
@@ -292,6 +351,8 @@ struct StatusReport {
     anchor_axis: String,
     /// The as-known-ageless nudge hint, when present.
     nudge: Option<&'static str>,
+    /// What `--residency` learned; `None` without the flag.
+    residency: Option<Residency>,
 }
 
 impl StatusReport {
@@ -349,12 +410,15 @@ impl StatusReport {
         if let Some(detail) = &self.artifact_fault {
             let _ = writeln!(out, "  rules fault: {detail}");
         }
+        if let Some(residency) = &self.residency {
+            let _ = writeln!(out, "  residency: {}", residency.render());
+        }
         out
     }
 
     /// The `--json` shape: the axes as fields, the counts, and the disclosure.
     fn json(&self) -> String {
-        let doc = json!({
+        let mut doc = json!({
             "workspace": self.workspace,
             "source": self.source,
             "armed_rules": {
@@ -398,6 +462,10 @@ impl StatusReport {
             // none".
             "findings": self.has_findings(),
         });
+        // Only under `--residency`: the bare document does not change.
+        if let Some(residency) = &self.residency {
+            doc["residency"] = residency.json();
+        }
         serde_json::to_string_pretty(&doc).unwrap_or_else(|_| doc.to_string())
     }
 }
@@ -439,6 +507,7 @@ fn gather(workspace: &Path, source: &str) -> StatusReport {
         mode_rollup,
         anchor_axis,
         nudge,
+        residency: None,
     }
 }
 
@@ -886,6 +955,7 @@ mod tests {
             mode_rollup: mode,
             anchor_axis: anchor_axis.to_owned(),
             nudge: None,
+            residency: None,
         }
     }
 

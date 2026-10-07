@@ -1538,7 +1538,11 @@ fn dispatch_admin(registry: &Registry, request: Request) -> Response {
         Request::List => Response::Listed {
             entries: registry.entries(),
         },
-        Request::Residency => Response::Residency { report: None },
+        Request::Residency => Response::Residency {
+            report: registry
+                .residency_controller()
+                .map(|controller| Box::new(controller.report())),
+        },
     }
 }
 

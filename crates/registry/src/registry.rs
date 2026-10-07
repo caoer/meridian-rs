@@ -18,7 +18,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -246,6 +246,10 @@ pub struct Registry {
     /// through (merkle-spec §6.8); `None` builds generations that own their
     /// documents.
     residency: Option<Arc<crate::residency::Host>>,
+    /// Whether the last budget sweep under a host left the floor over the
+    /// controller's limit: a sweep evicts only when the one before it did
+    /// (merkle-spec §6.4, the reaper under a host).
+    floor_over: AtomicBool,
     /// Test-only pause gate for the rebuild race window. When armed, the next
     /// rebuild pass announces itself on the first channel, then parks on the
     /// second — between its disk snapshot and its `engines` insert, the exact
@@ -1026,6 +1030,7 @@ impl Registry {
             persist_gate: Mutex::new(()),
             cache_root,
             residency: None,
+            floor_over: AtomicBool::new(false),
             #[cfg(test)]
             pause_before_insert: Mutex::new(None),
             #[cfg(test)]
@@ -3324,7 +3329,8 @@ impl Registry {
     }
 
     /// The budget sweep under a host (merkle-spec §6.4, the reaper under a
-    /// host): trim the controller's bodies, re-census the floor, then while
+    /// host): trim the controller's bodies, re-census the floor, then, if
+    /// the sweep before this one left the floor over the limit too, while
     /// the floor alone exceeds the controller's limit evict one whole
     /// workspace — the least recently used one with no live sub cursor — and
     /// re-census. Returns the evicted workspaces, oldest first. With none
@@ -3334,8 +3340,13 @@ impl Registry {
         host.controller.trim();
         self.charge_floor_as(true);
         let mut victims: Vec<PathBuf> = Vec::new();
+        let over_now = host.controller.report().floor_overage != 0;
+        if !self.floor_over.swap(over_now, Ordering::AcqRel) {
+            return victims;
+        }
         loop {
             let over = host.controller.report().floor_overage;
+            self.floor_over.store(over != 0, Ordering::Release);
             if over == 0 {
                 break;
             }
