@@ -16,17 +16,23 @@
 # lane failed.
 #
 # What makes the parallelism safe:
-#   - CARGO_HOME shares ONLY the registry/git cache (host /var/cache/ci via
-#     the agent's WOODPECKER_BACKEND_DOCKER_VOLUMES) — cargo locks it
-#     correctly under concurrent pipelines. A shared target dir would race:
-#     a parallel build of another commit deletes test binaries between build
-#     and run, so target dirs stay inside the per-pipeline workspace.
-#   - sccache shards its disk cache PER LANE under the same host mount: a
-#     disk cache is single-server, and the lanes run concurrently. The shard
-#     survives pipelines — that cross-pipeline reuse is the point — and a
-#     rare same-lane overlap of two pipelines degrades to a cache miss,
-#     never a wrong artifact (entries are content-addressed and decoded on
-#     read). sccache wraps COMPILES only; linking is mold's job (RUSTFLAGS).
+#   - CARGO_HOME (/ci-cache/meridian-rs/cargo) holds ONLY the registry/git
+#     cache — cargo locks it correctly under concurrent pipelines. A shared
+#     target dir would race: a parallel build of another commit deletes test
+#     binaries between build and run, so target dirs stay inside the
+#     per-pipeline workspace.
+#   - sccache shards its disk cache PER LANE under /ci-cache/sccache: a disk
+#     cache is single-server, and the lanes run concurrently. A rare same-lane
+#     overlap of two pipelines degrades to a cache miss, never a wrong
+#     artifact (entries are content-addressed and decoded on read). sccache
+#     wraps COMPILES only; linking is mold's job (RUSTFLAGS).
+#   - /ci-cache is a host mount the agent supplies
+#     (WOODPECKER_BACKEND_DOCKER_VOLUMES): each pool slot keeps its own on its
+#     zvol (/persist/ci-cache, osfiles modules/nixos/ci-pool/guest.nix), and
+#     workstation-nyc-2 has /var/cache/ci. The caches survive pipelines, which
+#     is their point. A pool slot's first run, and its first run after the
+#     slot's cache prune, downloads the registry and compiles cold; later runs
+#     on that slot are warm. Same verdicts either way.
 #   - The workspace is SHARED: any lane that writes a TRACKED file races
 #     every lane that reads the tree (build_identity asserts tree state).
 #     Lanes write untracked paths — target dirs, /tmp, the /ci-cache mount —
@@ -80,8 +86,14 @@ when:
   - event: tag
     ref: refs/tags/v*
 
+# The bare-metal CI pool slots (`pool: bm`: ci-m 8 vCPU / 16 GiB, ci-l
+# 16 vCPU / 32 GiB; one workflow per slot, started on demand). `pool: bm` is the only label they carry
+# that no other agent does. Not unpinned: the unlabeled agents include zmax, a
+# darwin local backend that cannot run these linux containers, and no label
+# matches both the pool and workstation-nyc-2 (it carries none). The tag lanes
+# stay pinned to workstation-nyc-2.
 labels:
-  hostname: workstation-nyc-2
+  pool: bm
 
 # Clone with OUR credential, not the server-stamped one. The default clone's
 # netrc password is the repo user's OAuth access token, stamped into the
@@ -119,22 +131,25 @@ clone:
         from_secret: forgejo_clone_token
 
 variables:
-  # Local image, built from Dockerfile.ci on the runner and referenced with
-  # pull: false on every step. It bakes the old per-lane setup (rustfmt/clippy
+  # Built from Dockerfile.ci and pushed to the forge's container registry, named
+  # by tag AND digest so a pipeline runs exactly the bytes it names. pull: false
+  # on every step means "pull only when absent": a pool VM pulls it once into
+  # its persistent docker cache. It bakes the old per-lane setup (rustfmt/clippy
   # components, python3-yaml, mold, cargo-deny, sccache) so pipelines start at
   # the verdict. The toolchain still tracks stable — parity with the GH lane's
-  # dtolnay/rust-toolchain@stable — but moves by image rebuild + tag bump
-  # here, not by a floating pull at CI time.
-  - &rust_image "meridian-ci:2026-08-10"
+  # dtolnay/rust-toolchain@stable — but moves by image rebuild + push + ref
+  # bump here, not by a floating pull at CI time.
+  - &rust_image "git.0xdao.app/caoer115/meridian-ci:2026-08-10@sha256:0429856e13c866952e9af0e2efbcd3824f1c074ee6740ac216f7dd3abb7aba74"
   - &cargo_home /ci-cache/meridian-rs/cargo
   # Cap per-lane build parallelism. cargo's jobserver is shared with the cc
   # crate, so this also bounds the parallel cc1plus instances compiling the
-  # bundled DuckDB amalgamation (~1.5 GB each). Unbounded on the 30-core /
+  # bundled DuckDB amalgamation (~1.5 GB each). Unbounded on a 30-core /
   # 58 GB runner, two lanes building DuckDB concurrently OOM-killed cc1plus
   # ("error: Killed signal terminated program cc1plus"). Each rustc job also
   # does its own link, so the cap bounds concurrent rust-lld too: a
-  # `cargo test --workspace` build links every test binary, ~2.4 GB each,
-  # and the runner shares its RAM with long-running non-CI work.
+  # `cargo test --workspace` build links every test binary, ~2.4 GB each.
+  # On a 16 GiB pool VM every lane of this workflow shares that RAM; the test
+  # lane prints its link step's memory peak and the VM's low-water mark.
   - &build_jobs "4"
   # Cap per-lane sccache shard. The bundled-DuckDB objects dominate a warm
   # shard; 30G is ~10x that. If --show-stats shows evictions, raise the test
@@ -190,6 +205,18 @@ steps:
       # paths that vanish mid-walk.
       - find . -mindepth 1 -maxdepth 1 ! -name 'target*' -exec chown -R ci:ci {} +
       - chown ci:ci . target-ci
+      # Unpack every locked crate BEFORE the cache chown below. The root lanes
+      # share this cargo home and unpack crates as root, keeping each crate
+      # tarball's own file mode, which can lack the other-read bit; a crate a
+      # root lane unpacks after the chown is then unreadable to ci. On a cold
+      # cache (a pool slot's first run, or after a prune) that failed this lane
+      # in 56 s: "couldn't read .../fnv-1.0.7/lib.rs: Permission denied"
+      # (pipeline 2737). cargo fetch waits on the package-cache lock and returns
+      # only when every locked crate is present; on a warm cache it is a no-op.
+      # No RUSTC_WRAPPER here: cargo runs `$RUSTC_WRAPPER rustc -vV` even for a
+      # fetch, which would start this lane's sccache server as root, and ci's
+      # compiles would then get root-owned dep-info back (pipeline 2741).
+      - env -u RUSTC_WRAPPER cargo fetch --locked
       # The same race, one level down: the SHARED cargo/sccache caches are
       # written by the other lanes while this walk runs, and cargo's transient
       # .global-cache-journal is created and removed mid-walk — the walk then
@@ -205,7 +232,49 @@ steps:
       # verdicts and nothing else. On green this fold is near-empty; on a
       # compile error the diagnostics still print here, and the suite fold
       # below is then obviously absent rather than buried.
-      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci tools/test.sh --workspace --locked --no-run -q
+      #
+      # The link step is this workflow's memory peak, so it reports its own: a
+      # 1 s sampler records this container's peak anonymous memory (cgroup v2
+      # memory.stat `anon`; memory.peak also counts the page cache of the
+      # artifacts it writes, so it is printed but overstates) and the lowest
+      # MemAvailable of the whole machine, which every concurrent lane shares.
+      # oom_kill counts this container's processes killed by any OOM killer.
+      # It prints on every exit path, an OOM-killed build included.
+      #
+      # `$$` is Woodpecker's escape for a literal `$` (`$$1` reaches the shell
+      # as `$1`). Never `exit 0` here: it would end the step script and skip
+      # the suite below.
+      - |
+        cg=/sys/fs/cgroup
+        rm -f /tmp/mem.peak
+        ( set +e; pa=0; ma=0
+          while :; do
+            a=$(sed -n 's/^anon //p' $cg/memory.stat 2>/dev/null)
+            m=$(sed -n 's/^MemAvailable: *\([0-9]*\) kB$/\1/p' /proc/meminfo)
+            [ -n "$a" ] && [ "$a" -gt "$pa" ] && pa=$a
+            [ -n "$m" ] && { [ "$ma" -eq 0 ] || [ "$m" -lt "$ma" ]; } && ma=$m
+            echo "$pa $ma" > /tmp/mem.peak.tmp && mv /tmp/mem.peak.tmp /tmp/mem.peak
+            sleep 1
+          done ) &
+        sampler=$$!
+        set +e
+        setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci tools/test.sh --workspace --locked --no-run -q
+        rc=$?
+        kill "$sampler" 2>/dev/null
+        pa=0; ma=0
+        [ -s /tmp/mem.peak ] && read pa ma < /tmp/mem.peak
+        mt=$(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo)
+        [ -n "$mt" ] || mt=0
+        mp=$(cat $cg/memory.peak 2>/dev/null)
+        oom=$(sed -n 's/^oom_kill //p' $cg/memory.events 2>/dev/null)
+        gib() { awk -v b="$$1" 'BEGIN { printf "%.2f GiB", b / 1073741824 }'; }
+        echo "link step memory (cargo test --workspace --no-run, exit $rc):"
+        echo "  container anon peak (1 s samples): $(gib "$pa")"
+        echo "  container memory.peak (incl. page cache): $(gib "$mp")"
+        echo "  machine MemAvailable low: $(gib "$((ma * 1024))") of MemTotal $(gib "$((mt * 1024))")"
+        echo "  container oom_kill: $oom"
+        set -e
+        [ "$rc" -eq 0 ] || exit "$rc"
       # --no-fail-fast: one failing test binary must not trade away the other
       # binaries' verdicts (one red binary once cost ~80% of the suite's
       # evidence). Inner bash for pipefail — tee must not mask cargo's exit
