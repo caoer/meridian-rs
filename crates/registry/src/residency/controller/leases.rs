@@ -92,7 +92,9 @@ impl Member {
     /// Occupied allowance (`Busy`); a retryable retirement (`Retiring`); a
     /// retryable completion (`Settling`: a failed flight; a load declared
     /// before the bytes were learned, which no call joins, or its reservation
-    /// after its calls ended; another member's waiting oversized load);
+    /// after its calls ended); this oversized load waiting for the live
+    /// loads (`Waiting`); a pause for another member's oversized load
+    /// (`Paused`);
     /// `PeakExceeded` when the retry's own load overruns again;
     /// backing/identity failure; or exhausted identifiers.
     ///
@@ -116,13 +118,24 @@ impl Member {
     /// # Panics
     /// As [`Member::pin`].
     pub fn pin_unpaused(&self, access: Access, peak: usize) -> Result<Pin, Error> {
-        self.pin(access, peak)
+        match self.pin_past(access, peak, true) {
+            Err(Error::PeakExceeded { .. }) => self.pin_past(access, peak, true),
+            pinned => pinned,
+        }
     }
 
     /// One admission and load of [`Member::pin`], without its retry. An
     /// overrun is learned on the row, counted, logged and shed.
     pub(super) fn pin_once(&self, access: Access, peak: usize) -> Result<Pin, Error> {
-        let mut call = self.begin(access, peak).map_err(Error::Admission)?;
+        self.pin_past(access, peak, false)
+    }
+
+    /// [`Member::pin_once`]; `unpaused` asks past another member's waiting
+    /// oversized load.
+    fn pin_past(&self, access: Access, peak: usize, unpaused: bool) -> Result<Pin, Error> {
+        let mut call = self
+            .begin_past(access, peak, unpaused)
+            .map_err(Error::Admission)?;
         match call.resolve() {
             Ok(body) => {
                 let snapshot = call.resident.snapshot();
@@ -179,7 +192,17 @@ impl Member {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn begin(&self, access: Access, peak: usize) -> Result<Call, AdmissionError> {
+        self.begin_past(access, peak, false)
+    }
+
+    fn begin_past(
+        &self,
+        access: Access,
+        peak: usize,
+        unpaused: bool,
+    ) -> Result<Call, AdmissionError> {
         let mut spare: Option<Reservation> = None;
         loop {
             let mut state = lock(&self.controller.0.ledger);
@@ -224,7 +247,9 @@ impl Member {
             if needs_wave && spare.is_none() {
                 let declared = state.declared(self.key, peak);
                 drop(state);
-                spare = self.controller.admit(Some(self.key), declared, revision)?;
+                spare = self
+                    .controller
+                    .admit_past(Some(self.key), declared, revision, unpaused)?;
                 continue;
             }
             // A completed failed local flight may be cold before its owner has

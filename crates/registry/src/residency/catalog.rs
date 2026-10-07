@@ -73,8 +73,8 @@ impl std::error::Error for SelfBlocked {}
 
 /// Pauses between attempts on one member version answered `Retiring` or
 /// `Settling` (merkle-spec §6.4): a retirement, a failed or stale loading
-/// wave, or another member's waiting oversized load. Each ends without this
-/// caller's help, so a short wait clears it. About 30 ms at most.
+/// wave. Each ends without this caller's help, so a short wait clears it.
+/// About 30 ms at most.
 const RETRY_PAUSES: [Duration; 6] = [
     Duration::ZERO,
     Duration::from_millis(1),
@@ -94,9 +94,12 @@ const WAIT_POLLS: usize = 2000;
 /// Lease one member version through the controller's admission. `Retiring`
 /// and `Settling` retry the same version once per pause in `pauses`;
 /// `Busy` is returned at once, because the allowance may be occupied by a pin
-/// this very caller holds. All three leave as [`model::catalog::transient`],
-/// except a `Busy` that `self_blocked` says the caller's own leases alone
-/// cause, which no retry cures ([`SelfBlocked`]). An overrun the pin's own
+/// this very caller holds. `Waiting` and `Paused` retry every [`WAIT_POLL`],
+/// [`WAIT_POLLS`] times: then the waiting oversized member leaves as `Busy`,
+/// and a paused load is attempted past the pause (`attempt(true)`), never
+/// refused for it. What leaves is [`model::catalog::transient`], except a
+/// `Busy`, `Waiting` or `Paused` that `self_blocked` says the caller's own
+/// leases alone cause, which no retry cures ([`SelfBlocked`]). An overrun the pin's own
 /// retry did not clear is transient too, at once: the next request declares
 /// the learned bytes. A load or identity failure is the member's own fault,
 /// neither retried nor transient.
@@ -107,13 +110,29 @@ fn admit<T>(
     mut pause: impl FnMut(Duration),
 ) -> io::Result<T> {
     let mut pauses = pauses.iter();
+    let mut polls = 0;
+    let mut unpaused = false;
     loop {
-        let refusal = match attempt(false) {
+        let refusal = match attempt(unpaused) {
             Ok(leased) => return Ok(leased),
-            Err(Error::Admission(AdmissionError::Busy)) if self_blocked() => {
+            Err(Error::Admission(
+                AdmissionError::Busy | AdmissionError::Waiting | AdmissionError::Paused,
+            )) if self_blocked() => {
                 return Err(io::Error::other(SelfBlocked));
             }
             Err(Error::Admission(AdmissionError::Busy)) => AdmissionError::Busy,
+            Err(Error::Admission(waits @ (AdmissionError::Waiting | AdmissionError::Paused))) => {
+                if polls < WAIT_POLLS {
+                    polls += 1;
+                    pause(WAIT_POLL);
+                    continue;
+                }
+                if waits == AdmissionError::Paused && !unpaused {
+                    unpaused = true;
+                    continue;
+                }
+                AdmissionError::Busy
+            }
             Err(Error::Admission(
                 refusal @ (AdmissionError::Retiring | AdmissionError::Settling),
             )) => match pauses.next() {

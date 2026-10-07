@@ -114,9 +114,8 @@ pub enum AdmissionError {
     Retiring,
     /// Something that ends without this caller's help is completing: a
     /// failed load; a load of this version declared before an overrun was
-    /// learned, or its reservation after its calls ended; or the pause for
-    /// another member's waiting oversized load. Retry the same retained
-    /// version.
+    /// learned, or its reservation after its calls ended. Retry the same
+    /// retained version.
     Settling,
     /// This oversized load is the one waiting member: the serialized slot
     /// is taken by loads that end without this caller's help. Retry the
@@ -296,6 +295,18 @@ impl Controller {
         bytes: usize,
         revision: u64,
     ) -> Result<Option<Reservation>, AdmissionError> {
+        self.admit_past(key, bytes, revision, false)
+    }
+
+    /// [`Self::admit`]; `unpaused` asks past another member's waiting
+    /// oversized load and its hold of the serialized slot.
+    fn admit_past(
+        &self,
+        key: Option<Key>,
+        bytes: usize,
+        revision: u64,
+        unpaused: bool,
+    ) -> Result<Option<Reservation>, AdmissionError> {
         loop {
             let mut state = lock(&self.0.ledger);
             state.clear_transient_if_unused();
@@ -332,11 +343,12 @@ impl Controller {
             // While another member's oversized load waits, a new load that is
             // not oversized pauses, so the live loads drain (merkle-spec §6.4).
             if let Some(key) = key
+                && !unpaused
                 && !oversized
                 && state.limit != 0
                 && state.waits_for(key, Instant::now())
             {
-                return Err(AdmissionError::Settling);
+                return Err(AdmissionError::Paused);
             }
             let exclusive_available = state.transient.is_none() || state.transient == key;
             let slot_waits_for_retirement = oversized
@@ -344,29 +356,18 @@ impl Controller {
                 && state.permits.is_empty()
                 && state.detached_floor == 0;
             let may_overflow = slot_waits_for_retirement && state.retiring == 0;
-            if !fits && !may_overflow {
-                if let Some(key) = key
-                    && oversized
-                {
-                    // Refused oversized: it becomes the one waiting member.
-                    state.wait_oversized(key, Instant::now());
-                    return Err(if slot_waits_for_retirement {
-                        AdmissionError::Retiring
-                    } else {
-                        AdmissionError::Busy
-                    });
-                }
-                // Exclusivity restricts only another over-budget admission.
-                // A policy refusal or an impossible byte fit cannot benefit
-                // from discarding somebody else's cache first.
-                if state
-                    .total_exact()
-                    .saturating_sub(state.reclaim_upper_bound())
-                    + bytes as u128
-                    > state.limit as u128
-                {
-                    return Err(AdmissionError::Busy);
-                }
+            if !fits
+                && !may_overflow
+                && let Some(refused) = refusal(
+                    &mut state,
+                    key,
+                    bytes,
+                    oversized,
+                    slot_waits_for_retirement,
+                    unpaused,
+                )
+            {
+                return Err(refused);
             }
             if fits || (may_overflow && state.reclaimable == 0) {
                 let id = state.next_id()?;
@@ -521,6 +522,52 @@ struct Retirement {
     key: Key,
     resident: Option<Resident>,
 }
+/// Why a load that neither fits nor may overflow is refused, or `None` when
+/// reclaiming cached bodies can still make room for it (merkle-spec §6.4).
+fn refusal(
+    state: &mut Ledger,
+    key: Option<Key>,
+    bytes: usize,
+    oversized: bool,
+    slot_waits_for_retirement: bool,
+    unpaused: bool,
+) -> Option<AdmissionError> {
+    if let Some(key) = key
+        && oversized
+    {
+        // Refused oversized: it becomes the one waiting member, unless
+        // another member already waits.
+        state.wait_oversized(key, Instant::now());
+        return Some(if slot_waits_for_retirement {
+            AdmissionError::Retiring
+        } else if state.waiting.is_some_and(|(waiting, _)| waiting == key) {
+            AdmissionError::Waiting
+        } else {
+            AdmissionError::Busy
+        });
+    }
+    // Exclusivity restricts only another over-budget admission. A policy
+    // refusal or an impossible byte fit cannot benefit from discarding
+    // somebody else's cache first.
+    if state
+        .total_exact()
+        .saturating_sub(state.reclaim_upper_bound())
+        + bytes as u128
+        > state.limit as u128
+    {
+        // Another member's hold of the serialized slot ends without this
+        // caller's help: a pause, not a refusal.
+        let slot_held_by_another =
+            key.is_some() && state.transient.is_some() && state.transient != key;
+        return Some(if slot_held_by_another && !unpaused {
+            AdmissionError::Paused
+        } else {
+            AdmissionError::Busy
+        });
+    }
+    None
+}
+
 impl Retirement {
     fn settle(&mut self) {
         let resident = self.resident.take().unwrap();
