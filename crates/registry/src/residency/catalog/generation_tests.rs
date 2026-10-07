@@ -7,8 +7,6 @@ use crate::residency::Phase;
 use std::path::{Path, PathBuf};
 use view::walk::LockFacts;
 
-const PEAK: usize = 131_072;
-
 type Leaves = BTreeMap<PathBuf, [u8; 32]>;
 
 fn workspace(files: &[(&str, &[u8])]) -> tempfile::TempDir {
@@ -110,7 +108,7 @@ fn assert_serves_eager(update: &fs::CorpusUpdate<Slots>, root: &fs::WorkspaceRoo
     assert_eq!(update.leaves, want.leaves, "leaves");
     assert_eq!(update.unserved, want.unserved, "unserved members");
     assert_eq!(*update.index, want.index, "name index");
-    let catalog = Catalog::new(update.docs.clone(), update.index.clone(), PEAK);
+    let catalog = Catalog::new(update.docs.clone(), update.index.clone());
     let revisions: Vec<_> = catalog
         .revisions()
         .map(|(path, rev)| (path.to_owned(), rev.clone()))

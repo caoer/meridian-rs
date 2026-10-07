@@ -337,12 +337,9 @@ fn retained_watch(root: &Path, rules: bool) -> (usize, usize) {
     let backing = tempfile::tempdir().unwrap();
     let controller = registry::residency::controller::Controller::new(1 << 32);
     let store = Arc::new(registry::raw_store::RawStore::new(backing.path()).unwrap());
-    let retention: Arc<dyn model::bytes::ByteRetention> =
-        Arc::new(registry::residency::retention::Retention::new(
-            controller.clone(),
-            Arc::clone(&store),
-            1 << 20,
-        ));
+    let retention: Arc<dyn model::bytes::ByteRetention> = Arc::new(
+        registry::residency::retention::Retention::new(controller.clone(), Arc::clone(&store)),
+    );
     let mut watch = wire_serve::watch::WatchState::with_retention(&ws, Arc::clone(&retention));
     let snapshot =
         wire_serve::watch::PrimeSnapshot::take_with_retention(&ws, Arc::clone(&retention)).unwrap();
@@ -368,7 +365,7 @@ fn generation(owner: &str, docs: &model::Docs) {
     let controller = registry::residency::controller::Controller::new(0);
     let store = registry::raw_store::RawStore::new(backing.path()).unwrap();
     let catalog =
-        registry::residency::catalog::Catalog::capture(docs, &controller, &store, 1 << 20).unwrap();
+        registry::residency::catalog::Catalog::capture(docs, &controller, &store).unwrap();
     let slots = catalog.slots().clone();
 
     let mut index = model::CorpusIndex::new();
@@ -376,7 +373,7 @@ fn generation(owner: &str, docs: &model::Docs) {
         index.insert(path, doc);
     }
     let index = Arc::new(index);
-    let shared = registry::residency::catalog::Catalog::new(slots.clone(), Arc::clone(&index), 0);
+    let shared = registry::residency::catalog::Catalog::new(slots.clone(), Arc::clone(&index));
     let map = slots.keys().fold(
         model::allocation::btree_bytes::<String, Arc<registry::residency::catalog::Slot>>(
             slots.len(),

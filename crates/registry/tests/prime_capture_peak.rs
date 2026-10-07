@@ -79,7 +79,7 @@ fn a_retained_prime_capture_holds_one_member_at_a_time() {
     let backing = tempfile::tempdir().unwrap();
     let store = Arc::new(RawStore::new(backing.path()).unwrap());
     let retention: Arc<dyn model::bytes::ByteRetention> =
-        Arc::new(Retention::new(Controller::new(0), store, 1 << 20));
+        Arc::new(Retention::new(Controller::new(0), store));
     let raw: usize = (0..MEMBERS).map(|n| member(n).len()).sum();
     // What one member costs to read: its bytes, read whole.
     let single = member(0).len();

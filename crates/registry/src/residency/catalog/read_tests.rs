@@ -34,7 +34,7 @@ fn named_cold_catalog_serves_old_wire_facts_after_body_and_source_loss() {
     let path = wire::Path("a.md".to_owned());
     let expected = projections(&document, &path);
     let docs = Docs::from([("a.md".to_owned(), document)]);
-    let catalog = Catalog::capture(&docs, &controller, &backing, 131_072).unwrap();
+    let catalog = Catalog::capture(&docs, &controller, &backing).unwrap();
     drop(docs);
     drop(backing);
     assert!(weak.upgrade().is_none());
@@ -64,7 +64,6 @@ fn named_cold_catalog_serves_old_wire_facts_after_body_and_source_loss() {
 
 #[test]
 fn named_cold_catalog_read_promotes_interactive_recency() {
-    const PEAK: usize = 131_072;
     let dir = tempfile::tempdir().unwrap();
     let backing = RawStore::new(dir.path()).unwrap();
     let controller = Controller::new(0);
@@ -76,13 +75,15 @@ fn named_cold_catalog_read_promotes_interactive_recency() {
             (path.to_owned(), Arc::new(model::build(raw, parsed)))
         })
         .collect();
-    let catalog = Catalog::capture(&files, &controller, &backing, PEAK).unwrap();
+    let catalog = Catalog::capture(&files, &controller, &backing).unwrap();
     drop(files);
+    // The three pages are one length, so one peak.
+    let peak = super::super::load_peak(catalog.entries["c.md"].member.identity().len);
     let read_member = |path: &str| {
         drop(
             catalog.entries[path]
                 .member
-                .pin(Access::Read, PEAK)
+                .pin(Access::Read, peak)
                 .unwrap(),
         );
     };
@@ -97,7 +98,7 @@ fn named_cold_catalog_read_promotes_interactive_recency() {
         |doc| read::cat(doc, None),
     )
     .unwrap();
-    controller.set_limit(two_hot + PEAK - 1);
+    controller.set_limit(two_hot + peak - 1);
     read_member("c.md");
     assert_eq!(
         catalog.entries["a.md"].member.phase(),
@@ -152,7 +153,7 @@ fn cold_catalog_link_scan_covers_every_member_after_body_and_source_loss() {
     };
     let eager = model::catalog::EagerCatalog::new(&docs);
     let expected = [frame(&eager, None), frame(&eager, Some("b.md"))];
-    let catalog = Catalog::capture(&docs, &controller, &backing, 131_072).unwrap();
+    let catalog = Catalog::capture(&docs, &controller, &backing).unwrap();
     drop(docs);
     drop(backing);
     assert_eq!(controller.report().bodies, 0);

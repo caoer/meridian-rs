@@ -35,7 +35,6 @@ fn the_host_floor_is_the_registry_census_at_each_publish_and_eviction() {
     let host = Arc::new(Host::new(
         Controller::new(1 << 30),
         RawStore::new(&backing).unwrap(),
-        1 << 20,
     ));
     let mut config = registry::Config::for_cache_root(tmp.path().join("cache"));
     config.socket_path = tmp.path().join("daemon.sock");
@@ -121,7 +120,6 @@ fn the_sweep_evicts_unsubscribed_workspaces_while_the_floor_alone_is_over() {
     let host = Arc::new(Host::new(
         Controller::new(1 << 30),
         RawStore::new(&tmp.path().join("backing")).unwrap(),
-        1 << 20,
     ));
     let mut config = registry::Config::for_cache_root(tmp.path().join("cache"));
     config.socket_path = tmp.path().join("daemon.sock");
@@ -176,7 +174,6 @@ fn hosted(tmp: &Path) -> (Arc<Host>, registry::Registry) {
     let host = Arc::new(Host::new(
         Controller::new(1 << 30),
         RawStore::new(&tmp.join("backing")).unwrap(),
-        1 << 20,
     ));
     let mut config = registry::Config::for_cache_root(tmp.join("cache"));
     config.socket_path = tmp.join("daemon.sock");
@@ -326,7 +323,6 @@ fn the_reapers_tick_charges_a_ring_primed_after_the_publish() {
     let host = Arc::new(Host::new(
         Controller::new(1 << 30),
         RawStore::new(&tmp.path().join("backing")).unwrap(),
-        1 << 20,
     ));
     let dir = tmp.path().join("registry");
     let mut config = registry::Config::for_cache_root(tmp.path().join("cache"));

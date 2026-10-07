@@ -154,10 +154,11 @@ pedantic = { level = "warn", priority = -1 }
 
 # Fork consumption: [patch.crates-io] at the
 # workspace root guarantees ONE pulldown-cmark copy graph-wide, including transitive
-# edges. Fork version stays equal to upstream's; merge-from-upstream on branch
-# `obsidian`; each rev bump gets a comment naming its upstream PR.
+# edges. Fork version stays equal to upstream's. Every pinned rev is held by a tag
+# in the fork, so no branch delete or rewrite can lose it; each rev bump names its
+# tag and its upstream PR, if any.
 [patch.crates-io]
-# Branch `table-pad-lazy`: obsidian at bc5df96 plus one commit that
-# pads a short table row with one item expanded into empty cells as events
-# (merkle-spec §6.4); fork-only, no upstream PR. Repin as ENABLE_OBSIDIAN_* lands.
+# Tag `meridian-table-pad-lazy-164b2da`: the Obsidian-dialect fork point bc5df96
+# plus one commit that pads a short table row with one item expanded into empty
+# cells as events (merkle-spec §6.4); fork-only, no upstream PR.
 pulldown-cmark = { git = "https://github.com/caoer/pulldown-cmark", rev = "164b2da10fed73f18e97910bb0f3477c50a92f50" }

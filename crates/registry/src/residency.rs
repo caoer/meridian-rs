@@ -25,9 +25,6 @@ pub struct Host {
     pub controller: controller::Controller,
     /// The required backing every published member is retained in.
     pub store: Arc<crate::raw_store::RawStore>,
-    /// The conservative peak one member load is admitted under: source
-    /// scratch, parsing and flight storage included.
-    pub load_peak: usize,
     /// The one provider every workspace ring's watcher retains its baseline
     /// through, so a baseline and a serving slot of the same bytes share a
     /// controller member.
@@ -76,21 +73,15 @@ struct HostFloor {
 
 impl Host {
     #[must_use]
-    pub fn new(
-        controller: controller::Controller,
-        store: crate::raw_store::RawStore,
-        load_peak: usize,
-    ) -> Self {
+    pub fn new(controller: controller::Controller, store: crate::raw_store::RawStore) -> Self {
         let store = Arc::new(store);
         let retention = Arc::new(retention::Retention::new(
             controller.clone(),
             Arc::clone(&store),
-            load_peak,
         ));
         Self {
             controller,
             store,
-            load_peak,
             retention,
             floor: Mutex::new(HostFloor::default()),
             tickets: AtomicU64::new(0),
@@ -221,6 +212,27 @@ impl Host {
         floor.bytes = bytes;
     }
 }
+
+/// The peak one load of a version of `len` bytes is admitted under: the
+/// source bytes, the retained tree and the parser's staging at the worst
+/// measured document shape (merkle-spec §6.4, load-peak declarations).
+/// `crates/registry/tests/load_peak.rs` holds every shape to it.
+#[must_use]
+pub fn load_peak(len: u64) -> usize {
+    usize::try_from(len)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(LOAD_PER_RAW_BYTE)
+        .saturating_add(LOAD_FIXED)
+}
+
+/// What every load allocates whatever its length: the raw store's copy
+/// buffer and the load's bookkeeping.
+const LOAD_FIXED: usize = 72 * 1024;
+
+/// What a load allocates per source byte at the worst measured shape, with
+/// margin: the byte itself, its share of the retained tree and of the
+/// parser's staging. Bare headings two lines past a power of two measure 341.
+const LOAD_PER_RAW_BYTE: usize = 416;
 
 /// An immutable version descriptor shared across generations and operations.
 #[derive(Debug, Clone)]

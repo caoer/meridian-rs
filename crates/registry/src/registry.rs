@@ -1616,7 +1616,7 @@ impl Registry {
             let engine = if let Some(host) = &self.residency {
                 let update = resident_update(host, &root, prior.as_deref(), &cache)?;
                 parsed = Some(update.parsed);
-                WorkspaceEngine::resident(update, host.load_peak)
+                WorkspaceEngine::resident(update)
             } else if let Some(previous) = previous {
                 // The movers against the prior's leaf set AND the root
                 // minted for the memo's set under ONE lock hold (merkle-spec

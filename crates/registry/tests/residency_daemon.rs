@@ -104,6 +104,18 @@ impl Conn {
         })
     }
 
+    /// One frame in, one frame out, with no retry: a retryable refusal is
+    /// the answer.
+    fn call_once(&mut self, request: &Value) -> Value {
+        let mut line = serde_json::to_string(request).unwrap();
+        line.push('\n');
+        self.writer.write_all(line.as_bytes()).unwrap();
+        self.writer.flush().unwrap();
+        let mut response = String::new();
+        self.reader.read_line(&mut response).unwrap();
+        serde_json::from_str(&response).unwrap()
+    }
+
     fn hello_v3(&mut self, workspace: &Path) {
         let hello = self.call(&json!({
             "op": "hello", "proto": 1, "contract": "v3",
@@ -183,10 +195,12 @@ fn seeded(root: &Path, files: &[(String, String)]) -> PathBuf {
     ws
 }
 
-/// A host whose body allowance admits four member loads at once and holds a
-/// small fraction of the fixture's bodies. Returns it with that allowance;
-/// the controller's limit is the allowance until the host floor is measured
-/// ([`above_the_floor`]).
+/// A host whose body allowance holds a small fraction of the fixture's
+/// bodies. Every member's declared load peak
+/// ([`registry::residency::load_peak`]) exceeds it, so each load takes the
+/// serialized slot and gives it up once its measured body fits. Returns the
+/// host with that allowance; the controller's limit is the allowance until
+/// the host floor is measured ([`above_the_floor`]).
 fn host(root: &Path, files: &[(String, String)]) -> (Arc<Host>, usize) {
     let costs: Vec<usize> = files
         .iter()
@@ -197,8 +211,7 @@ fn host(root: &Path, files: &[(String, String)]) -> (Arc<Host>, usize) {
         })
         .collect();
     let largest = costs.iter().copied().max().unwrap();
-    let load_peak = 8 * largest;
-    let limit = 4 * load_peak;
+    let limit = 32 * largest;
     let all: usize = costs.iter().sum();
     assert!(
         all > 2 * limit,
@@ -207,7 +220,6 @@ fn host(root: &Path, files: &[(String, String)]) -> (Arc<Host>, usize) {
     let host = Arc::new(Host::new(
         Controller::new(limit),
         RawStore::new(&root.join("backing")).unwrap(),
-        load_peak,
     ));
     (host, limit)
 }
@@ -401,6 +413,158 @@ fn a_subscribed_workspace_sheds_to_the_host_limit_and_every_door_serves_the_eage
         owning,
         leased,
     );
+}
+
+/// Under an allowance of two declared load peaks
+/// ([`registry::residency::load_peak`]) two loads run at once and no load
+/// needs the serialized slot. Two requests scan two workspaces whose members
+/// are disjoint, at the same time, through one host whose allowance cannot
+/// hold both workspaces' bodies, so each load sheds older bodies. A sampler
+/// on the ledger shows two reservations live at once, the total never above
+/// the limit and the serialized slot never taken during the scans; both
+/// requests are served the owning daemon's bytes on their first attempt.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn two_requests_load_at_once_under_an_allowance_of_several_declarations() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let tmp = TempDir::new().unwrap();
+    // Each workspace's pages carry its name, so no member is shared, and a
+    // tail of bare headings, the shape whose retained tree is largest beside
+    // its declaration, so two workspaces' bodies are far above two loads.
+    let workspaces: Vec<(PathBuf, Vec<(String, String)>)> = ["a", "b"]
+        .into_iter()
+        .map(|name| {
+            let files: Vec<(String, String)> = files()
+                .into_iter()
+                .map(|(path, raw)| {
+                    if path == "HOOKS.md" {
+                        (path, raw)
+                    } else {
+                        let tail = "#\n".repeat(256);
+                        (path, format!("{raw}\nworkspace {name}\n\n{tail}"))
+                    }
+                })
+                .collect();
+            (seeded(&tmp.path().join(name), &files), files)
+        })
+        .collect();
+    let all_files = || workspaces.iter().flat_map(|(_, files)| files);
+    let declared = all_files()
+        .map(|(_, raw)| registry::residency::load_peak(raw.len() as u64))
+        .max()
+        .unwrap();
+    let bodies: Vec<usize> = all_files()
+        .map(|(_, raw)| {
+            let doc = model::build(raw.clone(), syntax::parse(raw));
+            let bytes = model::allocation::document(&doc);
+            bytes.raw + bytes.tree
+        })
+        .collect();
+    // Two loads at once, with room for the bodies two scans pin; never three.
+    let allowance = 2 * declared + 4 * bodies.iter().max().unwrap();
+    assert!(allowance < 3 * declared, "a third load would fit");
+    assert!(
+        bodies.iter().sum::<usize>() > allowance,
+        "both workspaces' bodies fit the allowance, so a scan never sheds"
+    );
+    let host = Arc::new(Host::new(
+        Controller::new(allowance),
+        RawStore::new(&tmp.path().join("backing")).unwrap(),
+    ));
+    let owning = RunningServer::start(config(tmp.path(), "e", None)).unwrap();
+    let leased = RunningServer::start(config(tmp.path(), "r", Some(Arc::clone(&host)))).unwrap();
+    // The links map loads every cold member on every call; a SQL answer can
+    // come from a projection built once, which loads nothing in later rounds.
+    let links = doors()
+        .into_iter()
+        .find(|(door, _)| *door == "links map")
+        .unwrap();
+    let scans: Vec<(&str, &Path, Value, Value)> = workspaces
+        .iter()
+        .map(|(ws, _)| {
+            let (door, request) = links.clone();
+            let mut plain = Conn::open(owning.socket_path());
+            plain.hello_v3(ws);
+            let mut want = plain.call(&request);
+            scrub(&mut want);
+            assert_eq!(want["ok"], json!(true), "{door}: {want}");
+            (door, ws.as_path(), request, want)
+        })
+        .collect();
+    assert_eq!(scans.len(), 2);
+    for (ws, _) in &workspaces {
+        let canonical = fs::canonicalize(ws).unwrap();
+        leased.registry().warm_or_build(&canonical).unwrap();
+    }
+    let budget = above_the_floor(&host, allowance);
+    let mut conns: Vec<Conn> = scans
+        .iter()
+        .map(|(_, ws, _, _)| {
+            let mut conn = Conn::open(leased.socket_path());
+            conn.hello_v3(ws);
+            conn
+        })
+        .collect();
+
+    let mut most = 0;
+    for round in 0..3 {
+        all_cold(&host, budget);
+        let stop = AtomicBool::new(false);
+        let (live, over, transient) = std::thread::scope(|scope| {
+            let sampler = scope.spawn(|| {
+                let (mut live, mut over, mut transient) = (0, 0, false);
+                while !stop.load(Ordering::Relaxed) {
+                    let report = host.controller.report();
+                    live = live.max(report.reservations);
+                    over = over.max(report.total.saturating_sub(report.limit));
+                    transient |= report.transient;
+                }
+                (live, over, transient)
+            });
+            let scanners: Vec<_> = conns
+                .iter_mut()
+                .zip(&scans)
+                .map(|(conn, (door, _, request, want))| {
+                    scope.spawn(move || {
+                        let mut got = conn.call_once(request);
+                        scrub(&mut got);
+                        assert_eq!(
+                            &got, want,
+                            "{door}, round {round}: served on the first attempt beside the other scan"
+                        );
+                    })
+                })
+                .collect();
+            // Stop the sampler before a scanner's failure resurfaces, or the
+            // scope would wait on it forever.
+            let joined: Vec<_> = scanners
+                .into_iter()
+                .map(std::thread::ScopedJoinHandle::join)
+                .collect();
+            stop.store(true, Ordering::Relaxed);
+            let ledger = sampler.join().unwrap();
+            for outcome in joined {
+                if let Err(failure) = outcome {
+                    std::panic::resume_unwind(failure);
+                }
+            }
+            ledger
+        });
+        assert_eq!(over, 0, "round {round}: the total went above the limit");
+        assert!(!transient, "round {round}: a load took the serialized slot");
+        let report = host.controller.report();
+        assert_eq!(
+            (report.pinned, report.reserved),
+            (0, 0),
+            "round {round}: a door kept a lease: {report:?}"
+        );
+        println!("round {round}: most reservations live at once {live}");
+        most = most.max(live);
+    }
+    assert!(most >= 2, "two loads were never live at once (most {most})");
+    leased.shutdown();
+    owning.shutdown();
 }
 
 /// rv-352 P3-1, the host arm's snapshot claims. A host-built generation

@@ -281,7 +281,6 @@ pub fn update(
 pub struct Catalog {
     entries: Slots,
     index: Arc<CorpusIndex>,
-    load_peak: usize,
 }
 impl Catalog {
     /// Requested heap this generation's metadata owns: its slots
@@ -289,29 +288,19 @@ impl Catalog {
     /// counted once through `seen`.
     #[must_use]
     pub fn heap_bytes(&self, seen: &mut super::census::Seen) -> usize {
-        let Self {
-            entries,
-            index,
-            load_peak: _,
-        } = self;
+        let Self { entries, index } = self;
         entries
             .heap_bytes(seen)
             .saturating_add(super::census::index_bytes(index, seen))
     }
 
-    /// Capture an immutable eager generation, with the host's conservative
-    /// per-load peak (source scratch, parsing and flight storage included).
-    /// The host accounts for capture staging, index and backing metadata.
+    /// Capture an immutable eager generation. The host accounts for capture
+    /// staging, index and backing metadata.
     ///
     /// # Errors
     /// Required backing cannot be retained. No partial catalog is published;
     /// the caller's original generation remains untouched.
-    pub fn capture(
-        docs: &Docs,
-        controller: &Controller,
-        store: &RawStore,
-        load_peak: usize,
-    ) -> io::Result<Self> {
+    pub fn capture(docs: &Docs, controller: &Controller, store: &RawStore) -> io::Result<Self> {
         let mut entries = Slots::default();
         let mut index = CorpusIndex::new();
         for (path, doc) in docs {
@@ -319,18 +308,13 @@ impl Catalog {
             entries.0.insert(path.clone(), Arc::new(slot));
             index.insert(path, doc);
         }
-        Ok(Self::new(entries, Arc::new(index), load_peak))
+        Ok(Self::new(entries, Arc::new(index)))
     }
 
-    /// The generation `entries` and `index` describe ([`update`]'s product),
-    /// with the host's per-load peak.
+    /// The generation `entries` and `index` describe ([`update`]'s product).
     #[must_use]
-    pub fn new(entries: Slots, index: Arc<CorpusIndex>, load_peak: usize) -> Self {
-        Self {
-            entries,
-            index,
-            load_peak,
-        }
+    pub fn new(entries: Slots, index: Arc<CorpusIndex>) -> Self {
+        Self { entries, index }
     }
 
     /// The generation's slots: the prior of the next incremental pass
@@ -347,9 +331,10 @@ impl Catalog {
             .map(|entry| {
                 let thread = HELD.with(Arc::clone);
                 let holding = held(&thread).clone();
+                let peak = super::load_peak(entry.member.identity().len);
                 let pin = admit(
-                    || entry.member.pin(access, self.load_peak),
-                    || !holding.is_empty() && entry.member.held_blocks(&holding, self.load_peak),
+                    || entry.member.pin(access, peak),
+                    || !holding.is_empty() && entry.member.held_blocks(&holding, peak),
                     &RETRY_PAUSES,
                     pause,
                 )?;

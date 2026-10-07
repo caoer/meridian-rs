@@ -12,7 +12,7 @@ fn watcher_and_serving_share_a_cold_version_across_source_replacement() {
     std::fs::write(root.0.join("b.md"), b"# Removed\n").unwrap();
     let store = Arc::new(RawStore::new(backing.path()).unwrap());
     let controller = Controller::new(0);
-    let provider = Arc::new(Retention::new(controller.clone(), store.clone(), 131_072));
+    let provider = Arc::new(Retention::new(controller.clone(), store.clone()));
     let mut watch = WatchState::with_retention(&root, provider);
     let mut ring = RootRing::new();
     reconcile(&root, &mut ring, &mut watch).unwrap();
@@ -61,7 +61,7 @@ fn a_managed_baseline_lease_keeps_bytes_and_charge_until_release() {
     let dir = tempfile::tempdir().unwrap();
     let controller = Controller::new(1);
     let store = Arc::new(RawStore::new(dir.path()).unwrap());
-    let provider = Retention::new(controller.clone(), store, 131_072);
+    let provider = Retention::new(controller.clone(), store);
     let version = provider.retain(b"# Lease\n".to_vec()).unwrap();
     let lease = version.pin().unwrap();
     drop(version);
@@ -72,4 +72,53 @@ fn a_managed_baseline_lease_keeps_bytes_and_charge_until_release() {
     drop(lease);
     assert_eq!(controller.report().raw, 0);
     assert!(!controller.report().transient);
+}
+
+/// rv-360 P2-1: a baseline version loads under its length rule. With another
+/// lease held so the load is not oversized, an allowance 16 KiB short of
+/// `load_peak(len)` refuses a 64 KiB version and 4 KiB over it admits it. The
+/// margins cover the ledger tables admission reclaims or grows, and stay
+/// below every wrong declaration's error (half the length, no fixed part,
+/// the old 1 MiB constant).
+#[test]
+fn a_baseline_version_is_admitted_under_exactly_its_length_rule() {
+    const SHORT: usize = 16 * 1024;
+    const TABLES: usize = 4 * 1024;
+    let dir = tempfile::tempdir().unwrap();
+    let controller = Controller::new(0);
+    let store = Arc::new(RawStore::new(dir.path()).unwrap());
+    let provider = Retention::new(controller.clone(), store);
+    // The held raw bytes exceed the shortfall, so the load stays below the
+    // oversized regime, which admits a load alone whatever the allowance.
+    let held = provider
+        .retain(
+            "bytes another lease keeps resident\n"
+                .repeat(1024)
+                .into_bytes(),
+        )
+        .unwrap();
+    let lease = held.pin().unwrap();
+    // Shed the held version's cached body: only its raw lease stays.
+    controller.set_limit(1);
+    assert_eq!(controller.report().bodies, 0);
+    let watched = "plain words of a watched page\n".repeat(2260);
+    assert!(watched.len() > 64 * 1024);
+    let version = provider.retain(watched.clone().into_bytes()).unwrap();
+    let peak = crate::residency::load_peak(version.identity().len);
+    let room = |bytes: usize| controller.set_limit(controller.report().total + bytes);
+    room(peak - SHORT);
+    let report = controller.report();
+    assert!(
+        peak <= report.limit - report.floor,
+        "the load is not oversized: {report:?}"
+    );
+    assert!(
+        version.pin().is_err(),
+        "admitted 16 KiB short of its declaration"
+    );
+    room(peak + TABLES);
+    let pin = version.pin().expect("admitted under its declaration");
+    assert_eq!(pin.bytes(), watched.as_bytes());
+    drop(pin);
+    drop(lease);
 }
