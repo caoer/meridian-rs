@@ -8,12 +8,21 @@
 #   - mold                    (linker for every compiling lane; RUSTFLAGS below)
 #   - cargo-deny + sccache    (was: binstall download+install in the deny lane)
 #
-# Built and rebuilt BY HAND on the runner host (`just ci-image`); the steps
-# reference it with pull: false, so there is no registry round-trip:
+# Built and rebuilt BY HAND on workstation-nyc-2 (`just ci-image`):
 #
 #   docker build -f Dockerfile.ci -t meridian-ci:<date> .
 #
-# Recut = build a NEW tag and bump &rust_image in .woodpecker/ci.yaml, so a
+# The tag lanes run that local tag there with pull: false. ci.yaml runs on the
+# CI pool VMs, which pull it from the forge's container registry, so a recut is
+# also pushed. git.0xdao.app's public endpoint refuses a layer this size (413),
+# so push to Forgejo directly on its internal address (token with package write):
+#
+#   docker save meridian-ci:<date> -o img.tar
+#   crane auth login 172.21.0.18:26000 -u caoer115 --password-stdin
+#   crane push --insecure img.tar 172.21.0.18:26000/caoer115/meridian-ci:<date>
+#
+# Recut = build a NEW tag, push it, and bump &rust_image in .woodpecker/ci.yaml
+# (tag@digest, the digest crane prints) and the tag lanes' image, so a
 # pipeline can only ever run against the recipe it names. rust:1-bookworm
 # keeps the toolchain on rolling stable, but the move happens at image
 # rebuild time, not by floating pull mid-pipeline.
