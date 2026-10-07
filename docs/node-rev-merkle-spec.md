@@ -815,12 +815,21 @@ load, and a page whose declaration exceeds the allowance above the floor
 (above about 1.23 MiB at a 512 MiB allowance) loads through the serialized
 transient slot, refused while any other load is live. A refused oversized
 load becomes the one waiting oversized member for 100 ms, renewed at each of
-its attempts: while it waits, a new load of any other member that is not
-oversized is answered `Settling`, so the live loads drain and its next
-attempt takes the slot. A join of a live load and a hot hit are not paused,
-one member waits at a time, and an abandoned record expires, so steady
-fitting traffic cannot starve an oversized page and pauses at most for its
-load. A shape outside this
+its attempts, and is answered `Waiting`. While it waits, a new load of any
+other member that is not oversized is answered `Paused`; so is one that does
+not fit while another member holds the slot, its oversized load running or
+its body pinned above the limit. The catalog retries both against the same version every
+millisecond. The waiting member so takes the slot as soon as the live loads
+drain, whatever its client does, and a paused load is served once the
+waiting member has left the slot or its record has expired. Each retries for
+about 2 s: after that the waiting member is refused as occupied allowance,
+and a paused load is admitted past the pause on the ordinary terms, so a
+live load that does not drain holds no other member's reader longer. A join
+of a live load and a hot hit are not paused, one member waits at a time,
+another member's attempt never renews the record, and an abandoned record
+expires. So steady fitting traffic cannot starve an oversized page, and a
+fitting load is never refused because another member waits; past its 2 s
+it can still meet occupied allowance. A shape outside this
 set that stages more than 415 bytes per raw byte loads past its declaration;
 the ledger observes that only when the retained body exceeds the
 declaration, and does not observe transient staging.
@@ -858,13 +867,16 @@ including the interval where the local slot already appears cold. Only after
 destruction use the same ordering. No accounting lock spans loading, waiting
 on a local flight, or destruction of retained backing. A member's retirement
 race, an oversized load kept out only by another body's retirement
-(`Retiring`), and the completion of a failed loading wave, of a load declared
-before an overrun was learned, or the waiting oversized member's pause
-(`Settling`) have retryable results distinct from occupied byte allowance.
+(`Retiring`), and the completion of a failed loading wave or of a load
+declared before an overrun was learned (`Settling`) have retryable results
+distinct from occupied byte allowance, and so have the waiting oversized
+member (`Waiting`) and a load it pauses (`Paused`), above.
 The catalog that leases bodies to consumers retries those results against
 the same member version, a bounded
 number of times with a short pause, before it reports them; it never waits on
-occupied allowance. What it reports for any of the three, and for an overrun
+occupied allowance, and a paused load it does not report at all. What it
+reports for any of the three, for a waiting member that outlasts its 2 s,
+and for an overrun
 that outlasts the pin's own retry (above), is a transient fault
 (`model::catalog::is_transient`): distinct from a backing, identity or parse
 failure, and never grounds for reading a newer version. One case is not
