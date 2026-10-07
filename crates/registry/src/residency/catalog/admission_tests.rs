@@ -77,6 +77,11 @@ fn a_waiting_member_that_outlasts_its_patience_is_occupied_allowance() {
     assert!(error.to_string().contains("occupied"), "{error}");
     assert_eq!(attempts, WAIT_POLLS + 1);
     assert_eq!(pauses.len(), WAIT_POLLS);
+    assert_eq!(
+        (pauses.len(), pauses.iter().sum::<Duration>()),
+        (2000, Duration::from_secs(2)),
+        "the patience is 2 s of 1 ms pauses"
+    );
 }
 
 /// A load paused for another member's oversized load waits for it, and is

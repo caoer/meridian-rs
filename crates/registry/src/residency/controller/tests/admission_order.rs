@@ -54,6 +54,163 @@ fn a_refused_oversized_load_pauses_other_members_new_loads_until_it_is_served() 
     );
 }
 
+/// A load paused for one oversized member takes its turn before the next
+/// oversized load: when the first leaves the slot, a second oversized member
+/// neither takes the slot nor records itself until the paused load has been
+/// admitted (merkle-spec §6.4, rv-368b P2-1).
+#[test]
+fn a_paused_load_takes_its_turn_before_the_next_oversized_load() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let gated = source(&store, &sections(30, "Big"), false, false);
+    let big = budget.retain(gated.clone());
+    let next = budget.retain(Arc::new(store.retain(&sections(30, "Next")).unwrap()));
+    let other = budget.retain(Arc::new(store.retain(&sections(10, "Other")).unwrap()));
+    budget.set_limit(budget.report().floor + 1_000_000);
+    let live = budget.reserve(FITS).expect("a live load");
+    let waits = big.pin_once(Access::Read, OVERSIZED).map(drop);
+    assert!(
+        matches!(waits, Err(Error::Admission(AdmissionError::Waiting))),
+        "{waits:?}"
+    );
+    let paused = other.pin_once(Access::Read, FITS).map(drop);
+    assert!(
+        matches!(paused, Err(Error::Admission(AdmissionError::Paused))),
+        "{paused:?}"
+    );
+    drop(live);
+    let flight = thread::spawn(move || big.pin(Access::Read, OVERSIZED).map(drop));
+    assert!(
+        gated.gate.entered(),
+        "the waiting member is not kept out by the load its record paused"
+    );
+    let paused = other.pin_once(Access::Read, FITS).map(drop);
+    assert!(
+        matches!(paused, Err(Error::Admission(AdmissionError::Paused))),
+        "paused again by the held slot: {paused:?}"
+    );
+    gated.gate.release();
+    flight
+        .join()
+        .unwrap()
+        .expect("the oversized load is served");
+    let kept_out = next.pin_once(Access::Read, OVERSIZED).map(drop);
+    assert!(
+        matches!(kept_out, Err(Error::Admission(AdmissionError::Waiting))),
+        "the next oversized load leaves the turn to the paused load: {kept_out:?}"
+    );
+    drop(
+        other
+            .pin_once(Access::Read, FITS)
+            .expect("the paused load is admitted: no record formed against it"),
+    );
+    drop(
+        next.pin_once(Access::Read, OVERSIZED)
+            .expect("the next oversized load follows the paused one"),
+    );
+}
+
+/// A load paused only by the waiting record is owed its turn too, when the
+/// waiting member's load has come and gone without the paused load asking
+/// again.
+#[test]
+fn a_load_the_record_paused_is_owed_a_turn_after_the_waiting_member_is_served() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let big = budget.retain(Arc::new(store.retain(&sections(30, "Big")).unwrap()));
+    let next = budget.retain(Arc::new(store.retain(&sections(30, "Next")).unwrap()));
+    let other = budget.retain(Arc::new(store.retain(&sections(10, "Other")).unwrap()));
+    budget.set_limit(budget.report().floor + 1_000_000);
+    let live = budget.reserve(FITS).expect("a live load");
+    assert!(big.pin_once(Access::Read, OVERSIZED).is_err());
+    let paused = other.pin_once(Access::Read, FITS).map(drop);
+    assert!(
+        matches!(paused, Err(Error::Admission(AdmissionError::Paused))),
+        "{paused:?}"
+    );
+    drop(live);
+    drop(
+        big.pin_once(Access::Read, OVERSIZED)
+            .expect("the waiting member is served"),
+    );
+    let kept_out = next.pin_once(Access::Read, OVERSIZED).map(drop);
+    assert!(
+        matches!(kept_out, Err(Error::Admission(AdmissionError::Waiting))),
+        "{kept_out:?}"
+    );
+}
+
+/// A paused load that never comes back holds no oversized load out past
+/// 100 ms.
+#[test]
+fn an_abandoned_paused_load_stops_keeping_oversized_loads_out() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let gated = source(&store, &sections(30, "Big"), false, false);
+    let big = budget.retain(gated.clone());
+    let next = budget.retain(Arc::new(store.retain(&sections(30, "Next")).unwrap()));
+    let other = budget.retain(Arc::new(store.retain(&sections(10, "Other")).unwrap()));
+    budget.set_limit(budget.report().floor + 1_000_000);
+    let flight = thread::spawn(move || big.pin(Access::Read, OVERSIZED).map(drop));
+    assert!(gated.gate.entered(), "alone, it takes the slot");
+    let paused = other.pin_once(Access::Read, FITS).map(drop);
+    assert!(
+        matches!(paused, Err(Error::Admission(AdmissionError::Paused))),
+        "{paused:?}"
+    );
+    gated.gate.release();
+    flight
+        .join()
+        .unwrap()
+        .expect("the oversized load is served");
+    let kept_out = next.pin_once(Access::Read, OVERSIZED).map(drop);
+    assert!(
+        matches!(kept_out, Err(Error::Admission(AdmissionError::Waiting))),
+        "a load the held slot paused is owed a turn: {kept_out:?}"
+    );
+    thread::sleep(Duration::from_millis(150));
+    drop(
+        next.pin_once(Access::Read, OVERSIZED)
+            .expect("the paused load's turn expired"),
+    );
+}
+
+/// A forced row selected for retirement is `retiring` and unlinked, but its
+/// body is still hot and unshared until the shed takes it, so it has an
+/// eviction ticket. A trim that runs in that window must not select it
+/// again: only the idle test keeps the forced walk off it (rv-368b P3-1).
+#[test]
+fn a_row_under_retirement_is_not_taken_again_by_the_forced_walk() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let forced = budget.retain(Arc::new(store.retain(&sections(20, "Forced")).unwrap()));
+    let other = budget.retain(Arc::new(store.retain(&sections(20, "Other")).unwrap()));
+    drop(other.pin(Access::Read, FITS).unwrap());
+    drop(forced.pin(Access::Read, FITS).unwrap());
+    budget.set_limit(budget.report().total + 10_000_000);
+    assert_eq!((forced.phase(), other.phase()), (Phase::Hot, Phase::Hot));
+    lock(&budget.0.ledger).force_shed(forced.key);
+    let mut again = None;
+    let shed = budget.shed_one_with(false, |resident, ticket| {
+        again = Some(budget.shed_one(false));
+        resident.try_shed(ticket)
+    });
+    assert_eq!(
+        again,
+        Some(false),
+        "the forced walk took a row under retirement"
+    );
+    assert!(shed, "the forced row is shed once");
+    assert_eq!(forced.phase(), Phase::Cold);
+    assert_eq!(other.phase(), Phase::Hot, "a body that is not forced stays");
+    assert!(lock(&budget.0.ledger).forced.is_empty());
+    assert_eq!(budget.report().overage, 0);
+}
+
 /// An abandoned waiting record expires: a member that waits and never comes
 /// back pauses other members' new loads for 100 ms at most.
 #[test]
