@@ -781,22 +781,26 @@ declaration, and does not observe transient staging.
 
 **An overrun is learned, never a member fault.** A load whose retained body
 (source bytes, tree and body) exceeds the peak it was admitted under is an
-overrun. The ledger records the observed retained bytes on that version's
-row, counts the overrun (`peak_overruns` in the report, beside the largest
-`peak_shortfall`), logs one line naming the version's length, its declared
-and its observed bytes, and sheds the body. A version's parse is
-deterministic, so its next load retains the same: every later admission of
-that version declares the rule's peak plus the learned bytes, and the
-self-blocked question below asks it of that declaration. The same pin then
-retries once, at once, under the learned declaration. That load fits and is
-served; or it exceeds the allowance above the floor and takes the
-serialized transient slot when no other load is live; or it is refused for
-occupied allowance while one is. A retry that joins a load another caller
-began under the earlier declaration can overrun again; it is reported as
-transient, since the next request declares the learned bytes. An overrun is
-never reported as a fault of the member version. What is learned lives as
-long as the version's row, so a version that leaves every generation learns
-again.
+overrun. The first caller to see it records the observed retained bytes on
+that version's row, counts the overrun (`peak_overruns` in the report,
+beside the largest `peak_shortfall`) and logs one line naming the version's
+length, its declared and its observed bytes; every caller that shared the
+load releases the body, and the row sheds it. One overrun is counted and
+logged once, however many callers shared it. A version's parse is
+deterministic, so its next load retains the same bytes: every later
+admission of that version declares the rule's peak plus the learned bytes,
+and the self-blocked question below asks it of that declaration. The
+learned bytes bound what such a load retains; its transient staging is
+still bounded by the rule's peak alone. The same pin then retries once, at
+once, under the learned declaration. No call joins a load admitted under
+less than its version now declares: while such a load is live, a call is
+answered `Settling` and retried after a pause like any other settling
+version. The retry's load fits and is served; or it exceeds the allowance
+above the floor and takes the serialized transient slot when no other load
+is live; or it is refused for occupied allowance while one is. An overrun
+is never reported as a fault of the member version. What is learned lives
+as long as the version's row, so a version that leaves every generation
+learns again.
 
 The ledger retains a selected body's full charge throughout retirement,
 including the interval where the local slot already appears cold. Only after
