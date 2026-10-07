@@ -50,14 +50,16 @@ fn an_underdeclared_load_is_learned_and_served_by_the_same_pin() {
         .expect("an overrun is learned and the load retried under it");
     assert_eq!(pin.bytes(), raw);
     drop(pin);
+    assert_eq!(budget.report().peak_overruns, 1);
     shed(&budget, &member);
     let pin = member
-        .pin(Access::Read, 1)
+        .pin_once(Access::Read, 1)
         .expect("a later load declares the learned bytes");
     assert_eq!(pin.bytes(), raw);
     drop(pin);
     let report = budget.report();
     assert_eq!((report.pinned, report.reserved), (0, 0));
+    assert_eq!(report.peak_overruns, 1);
 }
 
 /// The self-blocked question is asked of the declaration a load is admitted

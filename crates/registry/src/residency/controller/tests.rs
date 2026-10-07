@@ -263,10 +263,11 @@ fn underdeclared_peak_is_explicit_and_cannot_leave_an_unbudgeted_cache() {
     let budget = Controller::new(0);
     let member = budget.retain(Arc::new(store.retain(b"# Too large\n").unwrap()));
     assert!(
-        matches!(member.pin(Access::Read, 1), Err(Error::PeakExceeded { reserved: 1, observed }) if observed > 1)
+        matches!(member.pin_once(Access::Read, 1), Err(Error::PeakExceeded { reserved: 1, observed }) if observed > 1)
     );
     assert_eq!(member.phase(), Phase::Cold);
     assert!(budget.report().peak_shortfall > 0);
+    assert_eq!(budget.report().peak_overruns, 1);
     assert_eq!(budget.report().raw, 0);
     assert_eq!(budget.report().bodies, 0);
     assert_eq!(budget.report().reserved, 0);
