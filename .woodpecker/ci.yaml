@@ -26,12 +26,13 @@
 #     overlap of two pipelines degrades to a cache miss, never a wrong
 #     artifact (entries are content-addressed and decoded on read). sccache
 #     wraps COMPILES only; linking is mold's job (RUSTFLAGS).
-#   - /ci-cache is a host mount ONLY where the agent supplies one
-#     (WOODPECKER_BACKEND_DOCKER_VOLUMES=/var/cache/ci:/ci-cache, on
-#     workstation-nyc-2); there the caches survive pipelines, which is their
-#     point. The pool VM agents supply none, so on the pool /ci-cache is a
-#     plain directory inside each step's container: every lane downloads the
-#     registry and compiles cold, every run. Same verdicts, no reuse.
+#   - /ci-cache is a host mount the agent supplies
+#     (WOODPECKER_BACKEND_DOCKER_VOLUMES): each pool slot keeps its own on its
+#     zvol (/persist/ci-cache, osfiles modules/nixos/ci-pool/guest.nix), and
+#     workstation-nyc-2 has /var/cache/ci. The caches survive pipelines, which
+#     is their point. A pool slot's first run, and its first run after the
+#     slot's cache prune, downloads the registry and compiles cold; later runs
+#     on that slot are warm. Same verdicts either way.
 #   - The workspace is SHARED: any lane that writes a TRACKED file races
 #     every lane that reads the tree (build_identity asserts tree state).
 #     Lanes write untracked paths — target dirs, /tmp, the /ci-cache mount —
@@ -85,8 +86,8 @@ when:
   - event: tag
     ref: refs/tags/v*
 
-# The bare-metal CI pool VMs (sa-yul, sa-yul-2: 8 vCPU / 16 GiB each, one
-# workflow per VM, started on demand). `pool: bm` is the only label they carry
+# The bare-metal CI pool slots (`pool: bm`: ci-m 8 vCPU / 16 GiB, ci-l
+# 16 vCPU / 32 GiB; one workflow per slot, started on demand). `pool: bm` is the only label they carry
 # that no other agent does. Not unpinned: the unlabeled agents include zmax, a
 # darwin local backend that cannot run these linux containers, and no label
 # matches both the pool and workstation-nyc-2 (it carries none). The tag lanes
