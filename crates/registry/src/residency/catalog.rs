@@ -88,8 +88,10 @@ const RETRY_PAUSES: [Duration; 6] = [
 /// `Busy` is returned at once, because the allowance may be occupied by a pin
 /// this very caller holds. All three leave as [`model::catalog::transient`],
 /// except a `Busy` that `self_blocked` says the caller's own leases alone
-/// cause, which no retry cures ([`SelfBlocked`]); a load, identity or peak
-/// failure is the member's own fault. Neither is retried nor transient.
+/// cause, which no retry cures ([`SelfBlocked`]). An overrun the pin's own
+/// retry did not clear is transient too, at once: the next request declares
+/// the learned bytes. A load or identity failure is the member's own fault,
+/// neither retried nor transient.
 fn admit<T>(
     mut attempt: impl FnMut() -> Result<T, Error>,
     self_blocked: impl Fn() -> bool,
@@ -113,6 +115,9 @@ fn admit<T>(
                 }
                 None => refusal,
             },
+            Err(overrun @ Error::PeakExceeded { .. }) => {
+                return Err(model::catalog::transient(overrun));
+            }
             Err(error) => return Err(io::Error::other(error)),
         };
         return Err(model::catalog::transient(refusal));

@@ -97,6 +97,9 @@ pub struct Report {
     pub transient: bool,
     /// Largest retained-body excess over a declared peak, not a measured peak.
     pub peak_shortfall: usize,
+    /// Loads whose retained body exceeded their declared peak, each learned
+    /// on its version's row (merkle-spec §6.4).
+    pub peak_overruns: usize,
     pub members: usize,
     pub reservations: usize,
 }
@@ -211,6 +214,7 @@ impl Controller {
                     retiring: false,
                     force_shed: false,
                     wave: None,
+                    learned: 0,
                 },
             );
         }

@@ -22,7 +22,8 @@ impl Member {
         MemberId(self.key)
     }
 
-    /// Whether occupied allowance for a load of `peak` is kept by the members
+    /// Whether occupied allowance for a load of `peak` (plus what this
+    /// version learned from an overrun) is kept by the members
     /// in `held` alone (merkle-spec §6.4): whether the load would still be
     /// refused if every other owner's pins and loads were gone, measured
     /// against the allowance above the floor as the ledger stands. A load
@@ -39,6 +40,7 @@ impl Member {
         if state.limit == 0 {
             return false;
         }
+        let peak = state.declared(self.key, peak);
         let room = (state.limit as u128).saturating_sub(state.floor_exact());
         let mut counted: Vec<Key> = Vec::with_capacity(held.len());
         let mut own = 0u128;
@@ -81,17 +83,30 @@ impl Member {
     /// Pin this exact version. `peak` bounds source bytes, parser staging and
     /// flight/error storage for one load, not merely the retained final tree.
     /// Shared-flight callers share one reservation. No admission wait is used.
+    /// A load whose retained body exceeds its declaration is an overrun: the
+    /// version learns the retained bytes, every later load declares them on
+    /// top of `peak`, and this pin retries once at once under them
+    /// (merkle-spec §6.4).
     ///
     /// # Errors
-    /// Occupied allowance, a retryable retirement/failed-flight completion,
-    /// backing/identity failure, exhausted identifiers, or an observed body
-    /// larger than the declared peak. Underestimates are
-    /// reported and shed; they are not evidence of a bounded load peak.
+    /// Occupied allowance, a retryable retirement/failed-flight completion
+    /// (`Settling` also while a load declared before the bytes were learned
+    /// is still live: no call joins it), backing/identity failure, or
+    /// exhausted identifiers.
     ///
     /// # Panics
     /// Source panics propagate; the call guard retains the reservation through
     /// local unwind completion and restores the controller's call bookkeeping.
     pub fn pin(&self, access: Access, peak: usize) -> Result<Pin, Error> {
+        match self.pin_once(access, peak) {
+            Err(Error::PeakExceeded { .. }) => self.pin_once(access, peak),
+            pinned => pinned,
+        }
+    }
+
+    /// One admission and load of [`Member::pin`], without its retry. An
+    /// overrun is learned on the row, counted, logged and shed.
+    pub(super) fn pin_once(&self, access: Access, peak: usize) -> Result<Pin, Error> {
         let mut call = self.begin(access, peak).map_err(Error::Admission)?;
         match call.resolve() {
             Ok(body) => {
@@ -104,13 +119,28 @@ impl Member {
                 if let Some(reserved) = reserved
                     && observed > reserved
                 {
-                    {
+                    // Every caller that shared the load sees it overrun; the
+                    // first to see it learns, counts and logs it.
+                    let declares = {
                         let mut state = lock(&self.controller.0.ledger);
-                        state.peak_shortfall = state.peak_shortfall.max(observed - reserved);
-                        if !state.rows[&self.key].force_shed {
-                            state.rows.get_mut(&self.key).unwrap().force_shed = true;
-                            state.forced += 1;
-                        }
+                        let row = state.rows.get_mut(&self.key).unwrap();
+                        let learns = observed > row.learned;
+                        row.learned = row.learned.max(observed);
+                        let forced = !row.force_shed;
+                        row.force_shed = true;
+                        state.forced += usize::from(forced);
+                        learns.then(|| {
+                            state.peak_shortfall = state.peak_shortfall.max(observed - reserved);
+                            state.peak_overruns = state.peak_overruns.saturating_add(1);
+                            state.declared(self.key, peak)
+                        })
+                    };
+                    if let Some(declares) = declares {
+                        eprintln!(
+                            "residency: a load of a {}-byte version retained {observed} bytes past \
+                             its declared peak of {reserved}; its loads now declare {declares}",
+                            self.key.1
+                        );
                     }
                     // Record the real body before releasing the local pin.
                     call.finish(false);
@@ -157,10 +187,20 @@ impl Member {
                 drop(spare.take());
                 continue;
             }
+            // A load admitted under less than this version now declares would
+            // overrun again: no call joins it, and the caller retries once it
+            // has ended (merkle-spec §6.4).
+            if row.calls != 0
+                && let Some(id) = row.wave
+                && state.permits[&id].peak < state.declared(self.key, peak)
+            {
+                return Err(AdmissionError::Settling);
+            }
             let needs_wave = row.body == 0 && row.calls == 0;
             if needs_wave && spare.is_none() {
+                let declared = state.declared(self.key, peak);
                 drop(state);
-                spare = self.controller.admit(Some(self.key), peak, revision)?;
+                spare = self.controller.admit(Some(self.key), declared, revision)?;
                 continue;
             }
             // A completed failed local flight may be cold before its owner has

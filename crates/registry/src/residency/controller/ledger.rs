@@ -19,6 +19,10 @@ pub(super) struct Row {
     pub(super) retiring: bool,
     pub(super) force_shed: bool,
     pub(super) wave: Option<u64>,
+    /// Retained bytes a load of this version kept past its declared peak;
+    /// zero until an overrun. Every later load declares them on top of the
+    /// caller's peak ([`Ledger::declared`]).
+    pub(super) learned: usize,
 }
 
 #[derive(Debug)]
@@ -61,6 +65,7 @@ pub(super) struct Ledger {
     pub(super) detached_floor: usize,
     pub(super) detached_body: usize,
     pub(super) peak_shortfall: usize,
+    pub(super) peak_overruns: usize,
     pub(super) external_floor: u128,
     pub(super) raw_bytes: u128,
     pub(super) body_bytes: u128,
@@ -90,6 +95,7 @@ impl Ledger {
             detached_floor: 0,
             detached_body: 0,
             peak_shortfall: 0,
+            peak_overruns: 0,
             external_floor: 0,
             raw_bytes: 0,
             body_bytes: 0,
@@ -121,6 +127,12 @@ impl Ledger {
             row.body as u128 + raw.map_or(0, |raw| raw.bytes as u128),
             usize::from(raw.is_some()),
         )
+    }
+
+    /// What a load of `key` is admitted under: the caller's `peak` plus the
+    /// bytes the version learned from an overrun (merkle-spec §6.4).
+    pub(super) fn declared(&self, key: Key, peak: usize) -> usize {
+        peak.saturating_add(self.rows.get(&key).map_or(0, |row| row.learned))
     }
 
     pub(super) fn update_row<T>(&mut self, key: Key, change: impl FnOnce(&mut Row) -> T) -> T {
@@ -439,6 +451,7 @@ impl Ledger {
             },
             transient: self.transient.is_some(),
             peak_shortfall: self.peak_shortfall,
+            peak_overruns: self.peak_overruns,
             members: self.rows.len(),
             reservations: self.permits.len(),
         }

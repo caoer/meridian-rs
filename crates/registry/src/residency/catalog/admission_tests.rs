@@ -4,6 +4,7 @@
 
 use super::*;
 use std::cell::{Cell, RefCell};
+use std::fmt::Write as _;
 
 /// Run [`admit`] over a scripted sequence of outcomes; the last one repeats.
 /// Returns the result, the attempts made and the pauses taken.
@@ -80,7 +81,14 @@ fn a_member_fault_is_neither_retried_nor_transient() {
     let error = result.expect_err("an exhausted identity does not heal");
     assert!(!model::catalog::is_transient(&error), "{error}");
     assert_eq!((attempts, pauses.len()), (1, 0));
+}
 
+/// The pin has already retried an overrun under the learned bytes; one that
+/// remains joined a load declared before they were learned, and the next
+/// request declares them. Transient, never the member's fault, not retried
+/// here.
+#[test]
+fn an_overrun_that_outlasts_the_pins_retry_is_transient() {
     let attempts = Cell::new(0);
     let error = admit(
         || -> Result<u8, Error> {
@@ -92,11 +100,68 @@ fn a_member_fault_is_neither_retried_nor_transient() {
         },
         || false,
         &RETRY_PAUSES,
-        |_| panic!("a load fault is not a race"),
+        |_| panic!("an overrun is not a race"),
     )
-    .expect_err("the member's own fault");
-    assert!(!model::catalog::is_transient(&error), "{error}");
+    .expect_err("the overrun stands for this request");
+    assert!(model::catalog::is_transient(&error), "{error}");
     assert_eq!(attempts.get(), 1);
+}
+
+/// An overrun through the seam over the real controller. The learned
+/// declaration exceeds the allowance above the floor: beside another live
+/// load it is occupied allowance, a transient fault; alone it takes the
+/// serialized slot and is served. Never a member fault.
+#[test]
+fn a_learned_oversized_load_is_transient_beside_a_live_load_and_served_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let backing = RawStore::new(dir.path()).unwrap();
+    let controller = Controller::new(0);
+    let mut text = String::new();
+    for i in 0..400 {
+        writeln!(text, "# Section {i}\n\nbody {i}\n").unwrap();
+    }
+    let raw = text.into_bytes();
+    let member = controller.retain(Arc::new(backing.retain(&raw).unwrap()));
+    let pin = member
+        .pin(Access::Read, crate::residency::load_peak(raw.len() as u64))
+        .unwrap();
+    let report = controller.report();
+    let retained = report.raw + report.bodies;
+    drop(pin);
+    controller.set_limit(1);
+    assert_eq!(member.phase(), crate::residency::Phase::Cold);
+
+    // A one-byte load and another one-byte load fit; the learned one does not.
+    controller.set_limit(controller.report().floor + retained / 2);
+    let other = controller.reserve(1).expect("another live load");
+    let attempts = Cell::new(0);
+    let error = admit(
+        || {
+            attempts.set(attempts.get() + 1);
+            member.pin(Access::Read, 1)
+        },
+        || false,
+        &RETRY_PAUSES,
+        |_| panic!("occupied allowance is never waited on"),
+    )
+    .expect_err("occupied beside another live load");
+    assert!(model::catalog::is_transient(&error), "{error}");
+    assert_eq!(attempts.get(), 1);
+    assert_eq!(member.phase(), crate::residency::Phase::Cold);
+
+    drop(other);
+    let pin = admit(
+        || member.pin(Access::Read, 1),
+        || false,
+        &RETRY_PAUSES,
+        pause,
+    )
+    .expect("alone, the learned load takes the serialized slot");
+    assert_eq!(pin.bytes(), raw);
+    assert!(controller.report().transient);
+    drop(pin);
+    let report = controller.report();
+    assert_eq!((report.pinned, report.reserved), (0, 0));
 }
 
 /// The whole seam over the real controller. With a one-byte allowance the
