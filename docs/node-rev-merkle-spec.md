@@ -584,10 +584,15 @@ file a second time while it runs. 256 MiB is the
 smallest limit under which every measured shape builds its cache; a page
 whose stored rows outgrow it several times over (the long-heading shape
 below, past about 128 KiB) is refused by the `sql` door, as an `io_error`
-whose cause names the per-cache limit. The refusal holds for every `sql`
-call on that workspace until the page shrinks or leaves: the append runs
-before the caller's statement, so a caller's `SET` cannot raise the limit
-for it. The pool is not on
+whose cause names the per-cache limit. The append shares the cache's limit
+with every query running on that workspace, so a page that fits alone is
+refused while a heavy query holds the memory, and the first call after that
+query ends appends it. A page that outgrows the limit by itself is refused
+on every `sql` call on that workspace until it shrinks or leaves: the append
+runs before the caller's statement, so a caller's `SET` cannot raise the
+limit for it. A read is itself a hold on its cache: it keeps the shared
+handle until it ends, so the close above passes over a cache whose query is
+still running wherever the call that opened the read stands. The pool is not on
 the controller's ledger: a query's peak falls between censuses, and shedding
 `DuckDB`'s cache through the floor would evict a whole workspace where the
 limit lets `DuckDB` drop the same pages itself.
