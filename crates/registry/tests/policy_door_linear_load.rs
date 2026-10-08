@@ -296,13 +296,18 @@ fn write_door(
 
 /// A daemon over the workspace `page` seeds, with a v3 connection on which
 /// the page is already resident, so no door's measure includes its load.
-fn warm(page: &str, law: bool) -> (TestServer, PathBuf, Conn) {
+/// The load is a `cat` of the one section at `hpath`, not a toc: every toc
+/// row repeats the long heading, so its answer grows with sections times
+/// heading (429 MB at 128 KiB) and can outlast the read wait on a slow
+/// agent (card `mrd-toc-hpath-repeats-heading-per-row`). `cat`, not `read`:
+/// the task page's one section is past the read door's word ceiling.
+fn warm(page: &str, law: bool, hpath: &Value) -> (TestServer, PathBuf, Conn) {
     let daemon = TestServer::start(test_config).unwrap();
     let ws = seeded(daemon.path(), page, law);
     let mut conn = Conn::open(&daemon.socket_path());
     conn.hello(&ws, true);
-    let (toc, _) = conn.call(&json!({"op": "toc", "path": PAGE}));
-    assert_eq!(toc["ok"], json!(true), "{toc}");
+    let (cat, _) = conn.call(&json!({"op": "cat", "path": PAGE, "sec": {"hpath": hpath}}));
+    assert_eq!(cat["ok"], json!(true), "{cat}");
     (daemon, ws, conn)
 }
 
@@ -324,8 +329,8 @@ fn a_door_stages_memory_in_proportion_to_the_page() {
 
 /// The SQL door over the long heading governing one task every 8 bytes.
 fn task_door() {
-    let (_, page) = page(LARGE, |_| "- [ ] t\n".to_string());
-    let (daemon, _ws, mut conn) = warm(&page, false);
+    let (heading, page) = page(LARGE, |_| "- [ ] t\n".to_string());
+    let (daemon, _ws, mut conn) = warm(&page, false, &json!([{"h": heading}]));
     let mut meter = Meter {
         leg: "128 KiB of tasks, no law",
         page: page.len(),
@@ -340,7 +345,7 @@ fn task_door() {
 /// The six doors over the long heading governing short `##` sections.
 fn section_doors(leg: &'static str, size: usize, law: bool) {
     let (heading, page) = page(size, |leaf| format!("## s{leaf:04}\n\n"));
-    let (daemon, ws, mut conn) = warm(&page, law);
+    let (daemon, ws, mut conn) = warm(&page, law, &json!([{"h": heading}, {"h": "s0000"}]));
     let socket = daemon.socket_path();
     let mut sub = Conn::open(&socket);
     sub.hello(&ws, false);
