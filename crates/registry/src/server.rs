@@ -3864,6 +3864,32 @@ mod residency_activation_tests {
         server.shutdown();
     }
 
+    /// A host that enforces a limit escalates SQL appends, and the door
+    /// answers its counters, which `mrd status --residency` prints
+    /// (merkle-spec §6.4, rv-372 P2-1).
+    #[test]
+    fn the_residency_door_answers_the_escalation_counters_of_a_host_with_a_limit() {
+        use crate::raw_store::RawStore;
+        use crate::residency::{Host, SqlEscalations, controller::Controller};
+        use std::sync::Arc;
+
+        let tmp = TempDir::new().unwrap();
+        let mut config = config(&tmp);
+        config.residency = Some(Arc::new(Host::new(
+            Controller::new(1 << 30),
+            RawStore::new(&tmp.path().join("backing")).unwrap(),
+        )));
+        let server = RunningServer::start(config).unwrap();
+        let client = crate::Client::new(server.socket_path().to_path_buf());
+        let (_, escalations) = client.residency().unwrap().expect("a host's report");
+        assert_eq!(
+            escalations,
+            Some(SqlEscalations::default()),
+            "the counters of a host with a limit, none taken yet"
+        );
+        server.shutdown();
+    }
+
     #[test]
     fn the_residency_door_answers_null_without_a_host() {
         let tmp = TempDir::new().unwrap();

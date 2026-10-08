@@ -728,6 +728,12 @@ pub fn restore_global_config(conn: &Connection, before: &[(String, String)]) -> 
             break;
         }
         for (name, was) in &drifted {
+            #[cfg(test)]
+            if matches!(name.as_str(), "memory_limit" | "max_memory")
+                && KEEP_MEMORY_LIMIT.with(std::cell::Cell::get)
+            {
+                continue;
+            }
             let value = was.replace('\'', "''");
             // Best effort by construction — the names that refuse are this
             // function's return value, not its error.
@@ -735,6 +741,15 @@ pub fn restore_global_config(conn: &Connection, before: &[(String, String)]) -> 
         }
     }
     drifted.into_iter().map(|(name, _)| name).collect()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: [`restore_global_config`] on this thread leaves the limit
+    /// (`memory_limit` and its alias `max_memory`) as it is, as `DuckDB` does
+    /// when running reads hold the memory a lower limit would need, and
+    /// reports it unrestored.
+    static KEEP_MEMORY_LIMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Bound the connection's disk spill (card sql-spill-config-lockout):
@@ -1110,6 +1125,10 @@ struct InstancePolicy {
     /// What an escalation that could not lower the limit holds (the caller's
     /// reservation, merkle-spec §6.4): kept as long as the instance is.
     parked: Mutex<Vec<Box<dyn Send>>>,
+    /// Test-only, one shot: the next restore, its target taken, signals here
+    /// and waits 200 ms before restoring (`escalation_tests`).
+    #[cfg(test)]
+    pause_in_restore: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 
 fn policy_error(message: impl Into<String>) -> ViewError {
@@ -1151,6 +1170,16 @@ impl InstancePolicy {
     }
 
     fn restore(&self, conn: &Connection, baseline: &[(String, String)]) -> Result<(), ViewError> {
+        #[cfg(test)]
+        if let Some(paused) = self
+            .pause_in_restore
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = paused.send(());
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
         let unrestored: Vec<_> = restore_global_config(conn, baseline)
             .into_iter()
             .filter(|name| required_writer_setting(name))
@@ -4854,6 +4883,15 @@ mod escalation_tests {
         (Hold(Arc::clone(&dropped)), dropped)
     }
 
+    /// The instance's `memory_limit` read on `conn` itself, not through the
+    /// read lane a retired instance refuses.
+    fn limit_on(conn: &Connection) -> String {
+        conn.query_row("SELECT current_setting('memory_limit')::VARCHAR", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .expect("limit")
+    }
+
     /// Reads the instance's `memory_limit` when dropped: what the limit was
     /// when the reservation it stands for was released.
     struct Witness(Connection, Arc<Mutex<Option<String>>>);
@@ -5120,6 +5158,191 @@ mod escalation_tests {
             "the closed instance released its hold"
         );
         assert_eq!(next_caller_sees(&store, "memory_limit"), "64.0 MiB");
+    }
+
+    /// The same path when `memory_limit` alone stays up, as when running
+    /// reads hold the memory a lower limit needs (no writer setting moved,
+    /// so no read's restore retires the instance first): the raise's own end
+    /// retires it and parks the hold; the next sync reopens the file under
+    /// the steady limit and the hold is released (rv-372 P2-1).
+    #[test]
+    fn a_raise_whose_limit_alone_stays_up_retires_the_instance_itself() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open_limited(&tmp_store(&dir), Some(STEADY)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let (reservation, released) = hold();
+        let raised = store
+            .raise_memory_limit(RAISED, reservation)
+            .expect("raise");
+        KEEP_MEMORY_LIMIT.with(|keep| keep.set(true));
+        drop(raised);
+        KEEP_MEMORY_LIMIT.with(|keep| keep.set(false));
+        assert_eq!(
+            limit_on(store.connection()),
+            "1.0 GiB",
+            "the stand-in kept the raised limit"
+        );
+        assert!(
+            store.policy.check().is_err(),
+            "the raise's end retired the instance"
+        );
+        assert!(
+            !released.load(Ordering::SeqCst),
+            "the hold stays with the instance that kept the raised limit"
+        );
+        assert!(
+            sync_ambient(&mut store, &fixture_v1(), "b3b:v1").is_none(),
+            "the next sync recovers the instance"
+        );
+        assert!(
+            released.load(Ordering::SeqCst),
+            "the closed instance released its hold"
+        );
+        assert_eq!(next_caller_sees(&store, "memory_limit"), "64.0 MiB");
+    }
+
+    /// A raise whose guarded work replaced the instance (a fingerprint-domain
+    /// change recreates the file) keeps its hold while a read still holds
+    /// the old, raised instance, and releases it when that read ends; with no
+    /// such read it releases it at once (rv-372 P2-1).
+    #[test]
+    fn a_replaced_instance_keeps_the_hold_until_its_last_read_ends() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let file = tmp_store(&dir);
+        let mut store = SqlStore::open_limited(&file, Some(STEADY)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let read = store.begin_read().expect("a read on the old instance");
+        let (reservation, released) = hold();
+        {
+            let mut raised = store
+                .raise_memory_limit(RAISED, reservation)
+                .expect("raise");
+            *raised = SqlStore::recreate(&file, Some(STEADY)).expect("recreate");
+        }
+        assert!(
+            !released.load(Ordering::SeqCst),
+            "a read still holds the raised instance, so its hold stays"
+        );
+        drop(read);
+        assert!(
+            released.load(Ordering::SeqCst),
+            "the hold ends with the old instance's last read"
+        );
+
+        let (reservation, released) = hold();
+        {
+            let mut raised = store
+                .raise_memory_limit(RAISED, reservation)
+                .expect("raise");
+            *raised = SqlStore::recreate(&file, Some(STEADY)).expect("recreate");
+        }
+        assert!(
+            released.load(Ordering::SeqCst),
+            "with no read on the old instance the hold ends with it"
+        );
+        assert_eq!(next_caller_sees(&store, "memory_limit"), "64.0 MiB");
+    }
+
+    /// A read whose restore has taken its target holds a raise off until it
+    /// has restored: the raise begun meanwhile waits for the lock, so the
+    /// read cannot put the steady limit back under it (rv-372 P2-1, the
+    /// lock the probe below exercises, made deterministic).
+    #[test]
+    fn a_raise_waits_for_a_read_restoring_toward_the_steady_limit() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open_limited(&tmp_store(&dir), Some(STEADY)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        let shared = Arc::new(Mutex::new(store));
+        let (pause, paused) = std::sync::mpsc::channel();
+        let read = {
+            let store = shared.lock().unwrap();
+            *store.policy.pause_in_restore.lock().unwrap() = Some(pause);
+            store.begin_held_read(&shared).expect("begin")
+        };
+        let reader = std::thread::spawn(move || read.run("SELECT 1").expect("run").expect("rows"));
+        paused.recv().expect("the read's restore took its target");
+        let mut store = shared.lock().unwrap();
+        let raised = store.raise_memory_limit(RAISED, ()).expect("raise");
+        reader.join().expect("reader");
+        assert_eq!(
+            limit_on(raised.connection()),
+            "1.0 GiB",
+            "the read restored before the raise, not under it"
+        );
+        drop(raised);
+        assert_eq!(limit_on(store.connection()), "64.0 MiB");
+    }
+
+    /// The raised-configuration lock (rv-372's probe): four readers open
+    /// reads under the store lock and run them outside it, as the door
+    /// does, across 500 raises and their ends. No read's restore puts the
+    /// steady limit back under a running raise, nor the raised one back
+    /// after it ended.
+    #[test]
+    fn reads_ending_across_raises_never_leave_the_wrong_limit() {
+        use std::sync::atomic::AtomicUsize;
+        use std::time::Duration;
+        const CYCLES: usize = 500;
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open_limited(&tmp_store(&dir), Some(STEADY)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        let shared = Arc::new(Mutex::new(store));
+        let stop = Arc::new(AtomicBool::new(false));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let shared = Arc::clone(&shared);
+                let stop = Arc::clone(&stop);
+                let reads = Arc::clone(&reads);
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let read = {
+                            let store = shared.lock().unwrap();
+                            store.begin_held_read(&shared).expect("begin")
+                        };
+                        read.run("SELECT 1").expect("run").expect("rows");
+                        reads.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+        let (mut under, mut after) = (0, 0);
+        for _ in 0..CYCLES {
+            let mut store = shared.lock().unwrap();
+            {
+                let raised = store.raise_memory_limit(RAISED, ()).expect("raise");
+                for _ in 0..3 {
+                    if limit_on(raised.connection()) != "1.0 GiB" {
+                        under += 1;
+                    }
+                    std::thread::sleep(Duration::from_micros(300));
+                }
+            }
+            // No read begins while the store lock is held; reads already
+            // running end meanwhile.
+            std::thread::sleep(Duration::from_millis(2));
+            if limit_on(store.connection()) != "64.0 MiB" {
+                after += 1;
+            }
+            drop(store);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        stop.store(true, Ordering::Relaxed);
+        for reader in readers {
+            reader.join().expect("reader");
+        }
+        let end = limit_on(shared.lock().unwrap().connection());
+        assert!(
+            reads.load(Ordering::Relaxed) >= CYCLES / 2,
+            "reads raced the raises"
+        );
+        assert_eq!(
+            (under, after, end.as_str()),
+            (0, 0, "64.0 MiB"),
+            "steady limit under a raise, raised limit after it, the end"
+        );
     }
 
     /// Condition 4: each of `DuckDB`'s three memory refusals reads as one,
