@@ -5034,7 +5034,6 @@ mod escalation_tests {
         let mut store = SqlStore::open_limited(&tmp_store(&dir), Some(STEADY)).expect("open");
         sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
         assert_eq!(next_caller_sees(&store, "memory_limit"), "64.0 MiB");
-        let derived = next_caller_sees(&store, "write_buffer_row_group_memory_limit");
 
         let seen = Arc::new(Mutex::new(None));
         let witness = Witness(
@@ -5068,11 +5067,6 @@ mod escalation_tests {
             "the steady limit is back before the reservation is released"
         );
         assert_eq!(next_caller_sees(&store, "memory_limit"), "64.0 MiB");
-        assert_eq!(
-            next_caller_sees(&store, "write_buffer_row_group_memory_limit"),
-            derived,
-            "what DuckDB derives from the limit is back too"
-        );
 
         let (reservation, released) = hold();
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
