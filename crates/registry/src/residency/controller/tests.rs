@@ -206,7 +206,7 @@ fn oversized_transient_excludes_other_cold_loads_until_last_pin() {
     assert!(budget.report().transient);
     assert!(matches!(
         b.pin(Access::Read, 131_072),
-        Err(Error::Admission(AdmissionError::Busy))
+        Err(Error::Admission(AdmissionError::Waiting))
     ));
     drop(pin);
     assert!(budget.report().transient);
@@ -387,7 +387,7 @@ fn an_oversized_raw_lease_keeps_exclusive_admission_after_its_tree_is_shed() {
     );
     assert!(matches!(
         b.pin(Access::Read, 131_072),
-        Err(Error::Admission(AdmissionError::Busy))
+        Err(Error::Admission(AdmissionError::Waiting))
     ));
     drop(a);
     assert!(budget.report().transient);
@@ -641,3 +641,5 @@ mod review_regressions;
 mod migration_regressions;
 
 mod overrun;
+
+mod admission_order;

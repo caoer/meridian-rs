@@ -122,3 +122,27 @@ fn a_baseline_version_is_admitted_under_exactly_its_length_rule() {
     drop(pin);
     drop(lease);
 }
+
+/// A baseline pin goes through the catalog's admission and retry: a load
+/// refused for occupied allowance reaches the watcher as a transient fault,
+/// not a plain I/O error, and is served once the allowance frees.
+#[test]
+fn a_baseline_pin_refused_for_occupied_allowance_is_transient() {
+    const LIVE: usize = 2_000;
+    let dir = tempfile::tempdir().unwrap();
+    let controller = Controller::new(0);
+    let store = Arc::new(RawStore::new(dir.path()).unwrap());
+    let provider = Retention::new(controller.clone(), store);
+    let version = provider.retain(b"# Watched\n\nbody\n".to_vec()).unwrap();
+    let peak = crate::residency::load_peak(version.identity().len);
+    let live = controller.reserve(LIVE).expect("another live load");
+    // The load fits the allowance above the floor, but not beside the live one.
+    controller.set_limit(controller.report().total + peak - LIVE / 2);
+    let Err(refused) = version.pin() else {
+        panic!("admitted beside the live load");
+    };
+    assert!(model::catalog::is_transient(&refused), "{refused}");
+    drop(live);
+    let lease = version.pin().expect("served once the live load ended");
+    assert_eq!(lease.bytes(), b"# Watched\n\nbody\n");
+}

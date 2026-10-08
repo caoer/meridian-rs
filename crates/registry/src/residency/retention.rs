@@ -45,10 +45,12 @@ impl RetainedBytes for Version {
         self.member.identity()
     }
     fn pin(&self) -> io::Result<Box<dyn ByteLease>> {
-        let pin = self
-            .member
-            .pin(Access::Scan, super::load_peak(self.member.identity().len))
-            .map_err(io::Error::other)?;
+        // Through the catalog's admission: its refusals are transient.
+        let pin = super::catalog::pin(
+            &self.member,
+            Access::Scan,
+            super::load_peak(self.member.identity().len),
+        )?;
         Ok(Box::new(pin.raw()))
     }
 }

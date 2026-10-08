@@ -12,6 +12,7 @@ use super::{Access, BodyPin, LoadError, Phase, Resident, lock};
 use model::bytes::{ByteIdentity, ByteSource, SharedBytes};
 use std::fmt;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 mod ledger;
 use ledger::{Ledger, Permit, Row, descriptor_bytes};
@@ -107,10 +108,23 @@ pub struct Report {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdmissionError {
     Busy,
-    /// This member is being retired; retry the same retained version.
+    /// This member is being retired, or the serialized slot an oversized
+    /// load needs waits only for another body's retirement; retry the same
+    /// retained version.
     Retiring,
-    /// A failed load is completing; retry the same retained version.
+    /// Something that ends without this caller's help is completing: a
+    /// failed load; a load of this version declared before an overrun was
+    /// learned, or its reservation after its calls ended. Retry the same
+    /// retained version.
     Settling,
+    /// This oversized load is the one waiting member, or is kept out by
+    /// paused loads owed their turn: what keeps it out ends without this
+    /// caller's help. Retry the same retained version until it has.
+    Waiting,
+    /// Another member's oversized load waits or runs, and this new load is
+    /// paused for it. Retry the same retained version; past the catalog's
+    /// patience, ask again with [`Member::pin_unpaused`].
+    Paused,
     Exhausted,
 }
 
@@ -120,6 +134,10 @@ impl fmt::Display for AdmissionError {
             Self::Busy => "residency allowance is occupied",
             Self::Retiring => "retained member is being retired; retry the same version",
             Self::Settling => "retained load is completing; retry the same version",
+            Self::Waiting => {
+                "oversized load waits for the live loads to drain; retry the same version"
+            }
+            Self::Paused => "another member's oversized load waits; retry the same version",
             Self::Exhausted => "residency reservation identity or local revision exhausted",
         })
     }
@@ -277,6 +295,35 @@ impl Controller {
         bytes: usize,
         revision: u64,
     ) -> Result<Option<Reservation>, AdmissionError> {
+        self.admit_past(key, bytes, revision, false)
+    }
+
+    /// [`Self::admit`]; `unpaused` asks past another member's waiting
+    /// oversized load and its hold of the serialized slot. A member's load
+    /// answered anything but `Paused` is no longer owed a turn.
+    fn admit_past(
+        &self,
+        key: Option<Key>,
+        bytes: usize,
+        revision: u64,
+        unpaused: bool,
+    ) -> Result<Option<Reservation>, AdmissionError> {
+        let answer = self.admit_turn(key, bytes, revision, unpaused);
+        if let Some(key) = key
+            && !matches!(answer, Err(AdmissionError::Paused))
+        {
+            lock(&self.0.ledger).unowe(key);
+        }
+        answer
+    }
+
+    fn admit_turn(
+        &self,
+        key: Option<Key>,
+        bytes: usize,
+        revision: u64,
+        unpaused: bool,
+    ) -> Result<Option<Reservation>, AdmissionError> {
         loop {
             let mut state = lock(&self.0.ledger);
             state.clear_transient_if_unused();
@@ -310,48 +357,49 @@ impl Controller {
             let oversized = key.is_some()
                 && state.limit != 0
                 && bytes as u128 > (state.limit as u128).saturating_sub(floor);
+            // While another member's oversized load waits, a new load that is
+            // not oversized pauses, so the live loads drain (merkle-spec §6.4).
+            let now = Instant::now();
+            if let Some(key) = key
+                && !unpaused
+                && !oversized
+                && state.limit != 0
+                && state.waits_for(key, now)
+            {
+                state.owe(key, now);
+                return Err(AdmissionError::Paused);
+            }
+            // One member waits at a time, and loads another member's wait or
+            // slot paused take their turn before the next oversized load
+            // (merkle-spec §6.4): no record forms against them, and they end
+            // without this caller's help.
+            if let Some(key) = key
+                && oversized
+                && let Some(kept_out) = state.keeps_out(key, now)
+            {
+                return Err(kept_out);
+            }
             let exclusive_available = state.transient.is_none() || state.transient == key;
-            let may_overflow = oversized
+            let slot_waits_for_retirement = oversized
                 && exclusive_available
                 && state.permits.is_empty()
-                && state.detached_floor == 0
-                && state.retiring == 0;
-            if !fits && !may_overflow {
-                // Exclusivity restricts only another over-budget admission.
-                // A policy refusal or an impossible byte fit cannot benefit
-                // from discarding somebody else's cache first.
-                if oversized
-                    || state
-                        .total_exact()
-                        .saturating_sub(state.reclaim_upper_bound())
-                        + bytes as u128
-                        > state.limit as u128
-                {
-                    return Err(AdmissionError::Busy);
-                }
+                && state.detached_floor == 0;
+            let may_overflow = slot_waits_for_retirement && state.retiring == 0;
+            if !fits
+                && !may_overflow
+                && let Some(refused) = refusal(
+                    &mut state,
+                    key,
+                    bytes,
+                    oversized,
+                    slot_waits_for_retirement,
+                    unpaused,
+                )
+            {
+                return Err(refused);
             }
             if fits || (may_overflow && state.reclaimable == 0) {
-                let id = state.next_id()?;
-                state.permits.insert(
-                    id,
-                    Permit {
-                        bytes,
-                        peak: bytes,
-                        member: key,
-                        settled: key.is_none(),
-                        references: 1,
-                        revision,
-                        transient: if fits { None } else { key },
-                    },
-                );
-                state.reserved_bytes += bytes as u128;
-                if let Some(key) = key {
-                    state.pending += 1;
-                    state.rows.get_mut(&key).unwrap().wave = Some(id);
-                }
-                if !fits {
-                    state.transient = key;
-                }
+                let id = open_wave(&mut state, key, bytes, revision, fits)?;
                 return Ok(Some(Reservation {
                     controller: self.clone(),
                     id,
@@ -390,21 +438,32 @@ impl Controller {
                     })
                 });
             if state.reclaimable == 0
-                || (!over && !for_admission && !transient_ready && state.forced == 0)
+                || (!over && !for_admission && !transient_ready && state.forced.is_empty())
             {
                 return false;
             }
-            let mut key = state.first;
-            let mut selected = None;
+            let idle =
+                |row: &Row| row.body != 0 && row.calls == 0 && row.pins == 0 && !row.retiring;
+            // An overrun's body first: shedding it alone restores the limit
+            // (merkle-spec §6.4). Then the least recently used.
+            let mut selected = state.forced.iter().find_map(|current| {
+                let row = &state.rows[current];
+                idle(row)
+                    .then(|| row.resident.eviction_ticket())
+                    .flatten()
+                    .map(|ticket| (*current, row.resident.clone(), ticket))
+            });
+            let mut key = if selected.is_some() {
+                None
+            } else {
+                state.first
+            };
             while let Some(current) = key {
                 let row = &state.rows[&current];
                 key = row.next;
                 let forced =
                     row.force_shed || (state.limit != 0 && state.transient == Some(current));
-                if row.body != 0
-                    && row.calls == 0
-                    && row.pins == 0
-                    && !row.retiring
+                if idle(row)
                     && (over || for_admission || forced)
                     && let Some(ticket) = row.resident.eviction_ticket()
                 {
@@ -444,7 +503,7 @@ impl Controller {
             state.unlink(key);
             let row = state.remove_row(key);
             if row.force_shed {
-                state.forced -= 1;
+                state.unforce(key);
             }
             state.detached_floor = state.detached_floor.saturating_add(row.descriptor);
             state.detached_body = state.detached_body.saturating_add(row.body);
@@ -469,6 +528,90 @@ struct Retirement {
     key: Key,
     resident: Option<Resident>,
 }
+/// Open the loading wave of an admitted load: its permit, its member's row
+/// and, for a load that does not fit, the serialized slot. An admitted
+/// waiting member's record ends here.
+fn open_wave(
+    state: &mut Ledger,
+    key: Option<Key>,
+    bytes: usize,
+    revision: u64,
+    fits: bool,
+) -> Result<u64, AdmissionError> {
+    let id = state.next_id()?;
+    state.permits.insert(
+        id,
+        Permit {
+            bytes,
+            peak: bytes,
+            member: key,
+            settled: key.is_none(),
+            references: 1,
+            revision,
+            transient: if fits { None } else { key },
+        },
+    );
+    state.reserved_bytes += bytes as u128;
+    if let Some(key) = key {
+        state.pending += 1;
+        state.rows.get_mut(&key).unwrap().wave = Some(id);
+        if state.waiting.is_some_and(|(waiting, _)| waiting == key) {
+            state.waiting = None;
+        }
+    }
+    if !fits {
+        state.transient = key;
+    }
+    Ok(id)
+}
+
+/// Why a load that neither fits nor may overflow is refused, or `None` when
+/// reclaiming cached bodies can still make room for it (merkle-spec §6.4).
+fn refusal(
+    state: &mut Ledger,
+    key: Option<Key>,
+    bytes: usize,
+    oversized: bool,
+    slot_waits_for_retirement: bool,
+    unpaused: bool,
+) -> Option<AdmissionError> {
+    if let Some(key) = key
+        && oversized
+    {
+        // Refused oversized: it becomes the one waiting member, or renews its
+        // record. Another member's record or hold of the slot kept it out
+        // before (`Ledger::keeps_out`).
+        state.wait_oversized(key, Instant::now());
+        return Some(if slot_waits_for_retirement {
+            AdmissionError::Retiring
+        } else {
+            AdmissionError::Waiting
+        });
+    }
+    // Exclusivity restricts only another over-budget admission. A policy
+    // refusal or an impossible byte fit cannot benefit from discarding
+    // somebody else's cache first.
+    if state
+        .total_exact()
+        .saturating_sub(state.reclaim_upper_bound())
+        + bytes as u128
+        > state.limit as u128
+    {
+        // Another member's hold of the serialized slot ends without this
+        // caller's help: a pause, not a refusal.
+        if let Some(key) = key
+            && state.transient.is_some()
+            && state.transient != Some(key)
+            && !unpaused
+        {
+            state.owe(key, Instant::now());
+            return Some(AdmissionError::Paused);
+        }
+        return Some(AdmissionError::Busy);
+    }
+    None
+}
+
 impl Retirement {
     fn settle(&mut self) {
         let resident = self.resident.take().unwrap();
@@ -491,7 +634,7 @@ impl Retirement {
         });
         if cold {
             if forced {
-                state.forced -= 1;
+                state.unforce(self.key);
             }
             state.body_bytes -= released as u128;
             state.release_raw(raw);

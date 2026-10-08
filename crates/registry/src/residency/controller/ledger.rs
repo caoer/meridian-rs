@@ -1,7 +1,12 @@
 use super::{Access, AdmissionError, Control, Key, Report, Resident, SharedBytes};
 use std::collections::hash_map::RandomState;
+use std::time::{Duration, Instant};
 
 type Table<K, V> = hashbrown::HashMap<K, V, RandomState>;
+
+/// How long a refused oversized load stays the waiting member after its last
+/// attempt (merkle-spec §6.4).
+const OVERSIZED_WAIT: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
 pub(super) struct Row {
@@ -71,7 +76,14 @@ pub(super) struct Ledger {
     pub(super) body_bytes: u128,
     pub(super) reserved_bytes: u128,
     pub(super) pending: usize,
-    pub(super) forced: usize,
+    /// Rows whose body sheds at the first chance, an overrun's (`force_shed`).
+    pub(super) forced: Vec<Key>,
+    /// The one waiting oversized member and when its record expires
+    /// ([`Ledger::waits_for`]).
+    pub(super) waiting: Option<(Key, Instant)>,
+    /// Loads answered `Paused`, each owed a turn until its record expires
+    /// ([`Ledger::turn_owed`]).
+    pub(super) owed: Vec<(Key, Instant)>,
     pub(super) reclaimable: usize,
     pub(super) reclaimable_bytes: u128,
     pub(super) reclaimable_raws: usize,
@@ -101,7 +113,9 @@ impl Ledger {
             body_bytes: 0,
             reserved_bytes: 0,
             pending: 0,
-            forced: 0,
+            forced: Vec::new(),
+            waiting: None,
+            owed: Vec::new(),
             reclaimable: 0,
             reclaimable_bytes: 0,
             reclaimable_raws: 0,
@@ -133,6 +147,82 @@ impl Ledger {
     /// bytes the version learned from an overrun (merkle-spec §6.4).
     pub(super) fn declared(&self, key: Key, peak: usize) -> usize {
         peak.saturating_add(self.rows.get(&key).map_or(0, |row| row.learned))
+    }
+
+    /// Mark `key`'s body to be shed at the first chance (an overrun's).
+    pub(super) fn force_shed(&mut self, key: Key) {
+        let row = self.rows.get_mut(&key).unwrap();
+        if !row.force_shed {
+            row.force_shed = true;
+            self.forced.push(key);
+        }
+    }
+
+    /// Forget `key` among the rows shed at the first chance.
+    pub(super) fn unforce(&mut self, key: Key) {
+        if let Some(at) = self.forced.iter().position(|forced| *forced == key) {
+            self.forced.swap_remove(at);
+        }
+    }
+
+    /// Record `key` as the one waiting oversized member, or renew its record;
+    /// a live record of another member is kept.
+    pub(super) fn wait_oversized(&mut self, key: Key, now: Instant) {
+        if !self.waits_for(key, now) {
+            self.waiting = Some((key, now + OVERSIZED_WAIT));
+        }
+    }
+
+    /// Whether a new load of `key` must wait for another member's oversized
+    /// load: one is recorded as waiting and its record has not expired.
+    pub(super) fn waits_for(&mut self, key: Key, now: Instant) -> bool {
+        match self.waiting {
+            Some((_, until)) if until <= now => {
+                self.waiting = None;
+                false
+            }
+            Some((waiting, _)) => waiting != key,
+            None => false,
+        }
+    }
+
+    /// Record that a load of `key` was paused, or renew its record: it is
+    /// owed a turn for [`OVERSIZED_WAIT`] after this attempt.
+    pub(super) fn owe(&mut self, key: Key, now: Instant) {
+        let until = now + OVERSIZED_WAIT;
+        match self.owed.iter_mut().find(|(owed, _)| *owed == key) {
+            Some(record) => record.1 = until,
+            None => self.owed.push((key, until)),
+        }
+    }
+
+    /// Forget `key` among the paused loads: it was admitted or refused.
+    pub(super) fn unowe(&mut self, key: Key) {
+        if let Some(at) = self.owed.iter().position(|(owed, _)| *owed == key) {
+            self.owed.swap_remove(at);
+        }
+    }
+
+    /// Whether an oversized load of `key` must leave the next turn to loads
+    /// of other members that were paused: one's record is live, and `key` is
+    /// not the live waiting member, whose own record paused them.
+    pub(super) fn turn_owed(&mut self, key: Key, now: Instant) -> bool {
+        self.owed.retain(|(_, until)| *until > now);
+        self.owed.iter().any(|(owed, _)| *owed != key)
+            && !matches!(self.waiting, Some((waiting, until)) if waiting == key && until > now)
+    }
+
+    /// Why an oversized load of `key` neither takes the slot nor records
+    /// itself now (merkle-spec §6.4): another member's record is live, as
+    /// occupied allowance (one member waits at a time); or, as `Waiting`, a
+    /// load another member paused is owed its turn, or another member holds
+    /// the slot, so the loads paused during that load go first.
+    pub(super) fn keeps_out(&mut self, key: Key, now: Instant) -> Option<AdmissionError> {
+        if self.waits_for(key, now) {
+            return Some(AdmissionError::Busy);
+        }
+        (self.turn_owed(key, now) || self.transient.is_some_and(|holder| holder != key))
+            .then_some(AdmissionError::Waiting)
     }
 
     pub(super) fn update_row<T>(&mut self, key: Key, change: impl FnOnce(&mut Row) -> T) -> T {

@@ -17,7 +17,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     sync::{Arc, Mutex, PoisonError},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// The members a thread holds leases on, one entry per live lease.
@@ -71,9 +71,10 @@ impl std::fmt::Display for SelfBlocked {
 }
 impl std::error::Error for SelfBlocked {}
 
-/// Pauses between attempts on one member version whose retirement or failed
-/// loading wave is completing (merkle-spec §6.4): both end without this
-/// caller's help, so a short wait clears them. About 30 ms at most.
+/// Pauses between attempts on one member version answered `Retiring` or
+/// `Settling` (merkle-spec §6.4): a retirement, a failed or stale loading
+/// wave. Each ends without this caller's help, so a short wait clears it.
+/// About 30 ms at most.
 const RETRY_PAUSES: [Duration; 6] = [
     Duration::ZERO,
     Duration::from_millis(1),
@@ -83,29 +84,58 @@ const RETRY_PAUSES: [Duration; 6] = [
     Duration::from_millis(16),
 ];
 
+/// The pause between attempts of the waiting oversized member, and of a load
+/// paused for one (merkle-spec §6.4).
+const WAIT_POLL: Duration = Duration::from_millis(1);
+
+/// How long one lease keeps asking after its first `Waiting` or `Paused`
+/// answer.
+const WAIT_PATIENCE: Duration = Duration::from_secs(2);
+
 /// Lease one member version through the controller's admission. `Retiring`
 /// and `Settling` retry the same version once per pause in `pauses`;
 /// `Busy` is returned at once, because the allowance may be occupied by a pin
-/// this very caller holds. All three leave as [`model::catalog::transient`],
-/// except a `Busy` that `self_blocked` says the caller's own leases alone
-/// cause, which no retry cures ([`SelfBlocked`]). An overrun the pin's own
+/// this very caller holds. `Waiting` and `Paused` retry every [`WAIT_POLL`]
+/// until [`WAIT_PATIENCE`] after the first of them, read off `now`: then the
+/// waiting oversized member leaves as `Busy`,
+/// and a paused load is attempted past the pause (`attempt(true)`), never
+/// refused for it. What leaves is [`model::catalog::transient`], except a
+/// `Busy`, `Waiting` or `Paused` that `self_blocked` says the caller's own
+/// leases alone cause, which no retry cures ([`SelfBlocked`]). An overrun the pin's own
 /// retry did not clear is transient too, at once: the next request declares
 /// the learned bytes. A load or identity failure is the member's own fault,
 /// neither retried nor transient.
 fn admit<T>(
-    mut attempt: impl FnMut() -> Result<T, Error>,
+    mut attempt: impl FnMut(bool) -> Result<T, Error>,
     self_blocked: impl Fn() -> bool,
     pauses: &[Duration],
     mut pause: impl FnMut(Duration),
+    now: impl Fn() -> Instant,
 ) -> io::Result<T> {
     let mut pauses = pauses.iter();
+    let mut deadline = None;
+    let mut unpaused = false;
     loop {
-        let refusal = match attempt() {
+        let refusal = match attempt(unpaused) {
             Ok(leased) => return Ok(leased),
-            Err(Error::Admission(AdmissionError::Busy)) if self_blocked() => {
+            Err(Error::Admission(
+                AdmissionError::Busy | AdmissionError::Waiting | AdmissionError::Paused,
+            )) if self_blocked() => {
                 return Err(io::Error::other(SelfBlocked));
             }
             Err(Error::Admission(AdmissionError::Busy)) => AdmissionError::Busy,
+            Err(Error::Admission(waits @ (AdmissionError::Waiting | AdmissionError::Paused))) => {
+                let at = now();
+                if at < *deadline.get_or_insert(at + WAIT_PATIENCE) {
+                    pause(WAIT_POLL);
+                    continue;
+                }
+                if waits == AdmissionError::Paused && !unpaused {
+                    unpaused = true;
+                    continue;
+                }
+                AdmissionError::Busy
+            }
             Err(Error::Admission(
                 refusal @ (AdmissionError::Retiring | AdmissionError::Settling),
             )) => match pauses.next() {
@@ -122,6 +152,26 @@ fn admit<T>(
         };
         return Err(model::catalog::transient(refusal));
     }
+}
+
+/// Pin `member` for the calling thread through [`admit`], asking the
+/// self-blocked question of the leases this thread holds: the one admission
+/// path of serving leases and watcher baselines alike.
+pub(super) fn pin(member: &Member, access: Access, peak: usize) -> io::Result<Pin> {
+    let holding = HELD.with(|thread| held(thread).clone());
+    admit(
+        |unpaused| {
+            if unpaused {
+                member.pin_unpaused(access, peak)
+            } else {
+                member.pin(access, peak)
+            }
+        },
+        || !holding.is_empty() && member.held_blocks(&holding, peak),
+        &RETRY_PAUSES,
+        pause,
+        Instant::now,
+    )
 }
 
 fn pause(wait: Duration) {
@@ -334,15 +384,9 @@ impl Catalog {
         self.entries
             .get(path)
             .map(|entry| {
-                let thread = HELD.with(Arc::clone);
-                let holding = held(&thread).clone();
                 let peak = super::load_peak(entry.member.identity().len);
-                let pin = admit(
-                    || entry.member.pin(access, peak),
-                    || !holding.is_empty() && entry.member.held_blocks(&holding, peak),
-                    &RETRY_PAUSES,
-                    pause,
-                )?;
+                let pin = pin(&entry.member, access, peak)?;
+                let thread = HELD.with(Arc::clone);
                 held(&thread).push(pin.member_id());
                 Ok(Box::new(Lease { pin, held: thread }) as Box<dyn DocumentLease>)
             })

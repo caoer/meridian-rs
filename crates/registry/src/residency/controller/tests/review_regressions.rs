@@ -155,7 +155,7 @@ fn fitting_staging_and_reads_preserve_cache_before_oversized_refusal() {
     let third = member_of(&budget, &store, b"# Third\n");
     assert!(matches!(
         third.pin(Access::Read, 1_000_000),
-        Err(Error::Admission(AdmissionError::Busy))
+        Err(Error::Admission(AdmissionError::Waiting))
     ));
     assert_eq!(
         other.phase(),
@@ -196,7 +196,7 @@ fn limit_disable_and_reenable_preserves_live_transient_ownership() {
     budget.set_limit(1);
     assert!(matches!(
         b.pin(Access::Read, 131_072),
-        Err(Error::Admission(AdmissionError::Busy))
+        Err(Error::Admission(AdmissionError::Waiting))
     ));
     drop(held);
     drop(b.pin(Access::Read, 131_072).unwrap());
