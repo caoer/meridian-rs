@@ -855,7 +855,7 @@ fn status_residency_prints_a_running_daemons_controller_report() {
     assert!(so.contains("  residency: no daemon answers\n"), "{so}");
     assert_eq!(
         json(&sb),
-        serde_json::json!({"state": "no-daemon", "report": null})
+        serde_json::json!({"state": "no-daemon", "report": null, "sql_escalations": null})
     );
 
     fake_daemon(&sb, serde_json::Value::Null);
@@ -866,7 +866,7 @@ fn status_residency_prints_a_running_daemons_controller_report() {
     );
     assert_eq!(
         json(&sb),
-        serde_json::json!({"state": "no-host", "report": null})
+        serde_json::json!({"state": "no-host", "report": null, "sql_escalations": null})
     );
 
     fake_daemon(&sb, a_report());
@@ -882,6 +882,54 @@ fn status_residency_prints_a_running_daemons_controller_report() {
     assert_eq!(doc["state"], serde_json::json!("report"));
     assert_eq!(doc["report"]["peak_overruns"], serde_json::json!(3));
     assert_eq!(doc["report"]["floor"], serde_json::json!(388_972));
+    assert_eq!(
+        doc["sql_escalations"],
+        serde_json::Value::Null,
+        "a daemon without the counters leaves them off"
+    );
+}
+
+/// `status --residency` carries the SQL appends' escalation counters
+/// (merkle-spec §6.4): the steps, the largest reservation and the last
+/// step's UTC time once one was taken, and the appends still refused.
+#[test]
+fn status_residency_prints_the_sql_escalation_counters() {
+    let sb = sandbox();
+    let ws = anchored(&sb, "escalations");
+    let answer = |escalations: serde_json::Value| {
+        serde_json::json!({"status": "residency", "report": a_report(),
+                           "sql_escalations": escalations})
+    };
+    let taken = serde_json::json!({"steps": 2, "largest": 268_435_456_u64,
+                                   "last_unix_secs": 1_791_436_323_u64, "refused": 1});
+    fake_daemon_answering(&sb, answer(taken.clone()));
+    let out = sb.run(&ws, &["status", "--residency"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let so = stdout(&out);
+    assert!(
+        so.contains(
+            "(shortfall 4096) · sql-escalations 2 (largest 268435456, last \
+             2026-10-08T05:12:03Z) · sql-refused 1\n"
+        ),
+        "the residency line: {so}"
+    );
+    let out = sb.run(&ws, &["status", "--residency", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("status json");
+    assert_eq!(doc["residency"]["sql_escalations"], taken);
+
+    fake_daemon_answering(
+        &sb,
+        answer(serde_json::json!({"steps": 0, "largest": 0,
+                                  "last_unix_secs": null, "refused": 0})),
+    );
+    let out = sb.run(&ws, &["status", "--residency"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let so = stdout(&out);
+    assert!(
+        so.contains("(shortfall 4096) · sql-escalations 0 · sql-refused 0\n"),
+        "no step yet: {so}"
+    );
 }
 
 /// A daemon from before the `residency` request answers it `unknown_op` — the
@@ -910,7 +958,7 @@ fn status_residency_names_an_older_daemon_apart_from_no_daemon() {
     let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("status json");
     assert_eq!(
         doc["residency"],
-        serde_json::json!({"state": "older-daemon", "report": null})
+        serde_json::json!({"state": "older-daemon", "report": null, "sql_escalations": null})
     );
 }
 
@@ -936,6 +984,6 @@ fn status_residency_reads_no_other_refusal_as_an_older_daemon() {
     let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("status json");
     assert_eq!(
         doc["residency"],
-        serde_json::json!({"state": "no-daemon", "report": null})
+        serde_json::json!({"state": "no-daemon", "report": null, "sql_escalations": null})
     );
 }

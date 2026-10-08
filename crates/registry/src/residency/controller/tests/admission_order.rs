@@ -375,6 +375,31 @@ fn an_abandoned_waiting_member_stops_pausing_others() {
     drop(live);
 }
 
+/// An abandoned waiting record stops refusing other oversized members too
+/// (rv-368d P3-1): once its 100 ms have passed, another member's oversized
+/// load takes the free slot.
+#[test]
+fn an_abandoned_waiting_record_stops_refusing_other_oversized_members() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let big = budget.retain(Arc::new(store.retain(&sections(30, "Big")).unwrap()));
+    let other = budget.retain(Arc::new(store.retain(&sections(30, "Other")).unwrap()));
+    budget.set_limit(budget.report().floor + 1_000_000);
+    let live = budget.reserve(FITS).expect("a live load");
+    assert!(
+        big.pin_once(Access::Read, OVERSIZED).is_err(),
+        "refused beside a live load, its record forms"
+    );
+    drop(live);
+    thread::sleep(Duration::from_millis(150));
+    drop(
+        other
+            .pin_once(Access::Read, OVERSIZED)
+            .expect("the abandoned record expired"),
+    );
+}
+
 /// An oversized load that only another body's retirement keeps out of the
 /// serialized slot answers `Retiring`, which the catalog retries, not
 /// occupied allowance.

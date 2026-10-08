@@ -185,8 +185,9 @@ impl Client {
         }
     }
 
-    /// The residency host's controller report; `None` from a daemon with no
-    /// host. Bounded by [`wedge::PROBE_TIMEOUT`] once the daemon accepts the
+    /// The residency host's controller report with its SQL escalation
+    /// counters (`None` from a daemon that predates them); `None` from a
+    /// daemon with no host. Bounded by [`wedge::PROBE_TIMEOUT`] once the daemon accepts the
     /// connection — about two seconds, up to four when it accepts and answers
     /// nothing (the read's tick asks a second connection for a ping under its
     /// own cap): the report is a reading, and its reader does not wait out a
@@ -198,10 +199,13 @@ impl Client {
     /// [`io::ErrorKind::Unsupported`] when the daemon answers `unknown_op` —
     /// an older build that does not know the request. Otherwise propagates a
     /// transport failure, or an unexpected response.
-    pub fn residency(&self) -> io::Result<Option<crate::residency::controller::Report>> {
+    pub fn residency(&self) -> io::Result<Option<crate::residency::Reading>> {
         let line = self.exchange(&Request::Residency, wedge::PROBE_TIMEOUT)?;
         match serde_json::from_str(&line) {
-            Ok(Response::Residency { report }) => Ok(report.map(|report| *report)),
+            Ok(Response::Residency {
+                report,
+                sql_escalations,
+            }) => Ok(report.map(|report| (*report, sql_escalations))),
             Ok(other) => Err(unexpected("residency", &other)),
             Err(_) if unknown_op(&line) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,

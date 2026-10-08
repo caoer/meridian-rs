@@ -192,6 +192,9 @@ pub struct Registry {
     /// The SQL memory policy, set with a residency host; `None` keeps every
     /// cache open under `DuckDB`'s default (merkle-spec §6.4).
     sql_budget: Option<crate::residency::SqlBudget>,
+    /// The SQL appends' escalation through the host's controller, set with
+    /// the budget (merkle-spec §6.4).
+    sql_escalation: Option<crate::residency::SqlEscalation>,
     /// G11 activity clock: request count + last request unix secs. Pre-warm
     /// backoff and idle-exit both read this.
     requests: AtomicU64,
@@ -1007,6 +1010,7 @@ impl Registry {
             sql_stores: Mutex::new(HashMap::new()),
             sql_clock: AtomicU64::new(0),
             sql_budget: None,
+            sql_escalation: None,
             // Cold: no restore has run; each workspace's first resident memo
             // records its own receipt.
             checkpoints: Mutex::new(HashMap::new()),
@@ -1052,7 +1056,26 @@ impl Registry {
         self.sql_budget = host.as_ref().and_then(|host| {
             crate::residency::SqlBudget::for_budget(host.controller.report().limit)
         });
+        self.sql_escalation = host.as_ref().zip(self.sql_budget).map(|(host, budget)| {
+            crate::residency::SqlEscalation::new(host.controller.clone(), budget.append_cap)
+        });
         self.residency = host;
+        self
+    }
+
+    /// The SQL appends' escalation, when this registry has a host
+    /// (merkle-spec §6.4, the SQL memory policy).
+    pub(crate) fn sql_escalation(&self) -> Option<&crate::residency::SqlEscalation> {
+        self.sql_escalation.as_ref()
+    }
+
+    /// A steady per-cache limit other than [`crate::residency::SQL_CACHE_LIMIT`],
+    /// for tests that need an append to outgrow it at a small corpus.
+    #[cfg(test)]
+    pub(crate) fn with_sql_cache_limit(mut self, limit: u64) -> Self {
+        if let Some(budget) = &mut self.sql_budget {
+            budget.cache_limit = limit;
+        }
         self
     }
 
@@ -5254,9 +5277,11 @@ mod engine_tests {
             let running = scope.spawn(|| crate::sql_op::serve(&reg, &ws[0], &query));
             let mut writer = open_when_read(&gate);
             let holders = Arc::strong_count(&reg.sql_stores.lock().unwrap()[&ws[0]].store);
-            assert_eq!(
-                holders, 3,
-                "the map, the call and the call's read hold one cache"
+            // The call may drop its own handle before the read ends
+            // (rv-371 P3-3); the read keeps one past the map's.
+            assert!(
+                holders >= 2,
+                "the map and the call's read hold one cache: {holders}"
             );
             writer.write_all(b"1\n").unwrap();
             drop(writer);
@@ -5303,6 +5328,191 @@ mod engine_tests {
             !open.contains_key(&ws[0]),
             "the least recently used idle cache is the one closed"
         );
+    }
+
+    /// 16b4 (merkle-spec §6.4, the SQL memory policy): an append whose
+    /// whole-store reads outgrow the steady limit escalates under controller
+    /// reservations and the call answers, the steady limit and the
+    /// reservations back after it. 20,000 pages of twelve links each at an
+    /// 8 MiB steady limit, then a replayed delta of 200 changed and 50 added
+    /// pages; without the escalation the door refuses the append, naming
+    /// the limit.
+    #[test]
+    fn an_append_the_steady_limit_refuses_escalates_and_answers() {
+        use std::fmt::Write as _;
+        const STEADY: u64 = 8 << 20;
+        const PAGES: usize = 20_000;
+        let home = tempfile::tempdir().unwrap();
+        let cache_root = home.path().join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let controller = crate::residency::controller::Controller::new(1 << 30);
+        let host = Arc::new(crate::residency::Host::new(
+            controller.clone(),
+            crate::raw_store::RawStore::new(&home.path().join("backing")).unwrap(),
+        ));
+        let reg = Registry::new(
+            StateStore::new(home.path().join("state.json")),
+            cache_root,
+            Vec::new(),
+        )
+        .with_residency(Some(host))
+        .with_sql_cache_limit(STEADY);
+        let page = |i: usize, version: &str| {
+            let mut raw = format!("# Page {i} {version}\n\n");
+            for k in 1..=12 {
+                let _ = writeln!(raw, "see [[p{:05}]] #t{}", (i * 7 + k * 131) % PAGES, k % 5);
+            }
+            raw
+        };
+        let files: Vec<(String, String)> = (0..PAGES)
+            .map(|i| (format!("p{i:05}.md"), page(i, "one")))
+            .collect();
+        let refs: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(path, raw)| (path.as_str(), raw.as_str()))
+            .collect();
+        let ws = write_ws(home.path(), &refs);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&canonical).unwrap();
+        // The newest pin: what the call's append wrote. A query over the
+        // latest views would itself outgrow 8 MiB, and a caller's statement
+        // keeps the steady limit.
+        let pin = "SELECT gen, files_added FROM hist.pin ORDER BY gen DESC LIMIT 1";
+        let docs = || match crate::sql_op::serve(&reg, &canonical, pin) {
+            Ok(wire::ResponseBody::Sql {
+                rows, error: None, ..
+            }) => Ok(rows[0].clone()),
+            Ok(other) => Err(format!("{other:?}")),
+            Err(refused) => Err(format!("{refused:?}")),
+        };
+        let escalation = reg.sql_escalation().expect("a host escalates");
+
+        assert_eq!(
+            docs(),
+            Ok(vec![serde_json::json!(1), serde_json::json!(PAGES)]),
+            "the cold build answers"
+        );
+        let cold = escalation.counters();
+        for i in (0..PAGES).step_by(100) {
+            fs::write(ws.join(format!("p{i:05}.md")), page(i, "two")).unwrap();
+        }
+        for i in PAGES..PAGES + 50 {
+            fs::write(ws.join(format!("p{i:05}.md")), page(i, "new")).unwrap();
+        }
+        reg.warm_or_build(&canonical).unwrap();
+        assert_eq!(
+            docs(),
+            Ok(vec![serde_json::json!(2), serde_json::json!(50)]),
+            "the replayed delta's append answers"
+        );
+        let delta = escalation.counters();
+        assert!(
+            delta.steps > cold.steps,
+            "the delta's append escalated: {cold:?} then {delta:?}"
+        );
+        assert!(delta.largest >= STEADY, "{delta:?}");
+        assert!(delta.last_unix_secs.is_some(), "{delta:?}");
+        assert_eq!(delta.refused, 0, "{delta:?}");
+        assert_eq!(
+            controller.report().reserved,
+            0,
+            "every step's reservation is released"
+        );
+        assert_eq!(
+            sql_memory_limit(&reg, &canonical),
+            "8.0 MiB",
+            "the steady limit is back"
+        );
+    }
+
+    /// An escalation is refused, not raised past the controller: a step
+    /// whose reservation the controller cannot make answers the retryable
+    /// `workspace_busy`, the limit unraised, and counts as refused
+    /// (merkle-spec §6.4).
+    #[test]
+    fn a_step_the_controller_cannot_reserve_answers_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = view::store::SqlStore::open_limited(
+            &dir.path().join(view::store::SQL_CACHE_FILENAME),
+            Some(16 << 20),
+        )
+        .unwrap();
+        // Half of 64 MiB caps the steps at 32 MiB; a 1 MiB controller cannot
+        // reserve the 16 MiB the first step needs.
+        let escalation = crate::residency::SqlEscalation::new(
+            crate::residency::controller::Controller::new(1 << 20),
+            32 << 20,
+        );
+        let mut attempts = 0;
+        let failure = escalation
+            .run(&mut store, |store| {
+                attempts += 1;
+                store
+                    .connection()
+                    .execute_batch("SELECT error('could not allocate block of size 256.0 KiB')")
+                    .map_err(view::ViewError::from)
+            })
+            .expect_err("the step is refused");
+        assert_eq!(attempts, 1, "no redo without a reservation");
+        assert!(
+            matches!(failure.error, view::ViewError::Busy(_)),
+            "{:?}",
+            failure.error
+        );
+        assert_eq!(failure.limit, Some(16 << 20));
+        let counters = escalation.counters();
+        assert_eq!((counters.steps, counters.refused), (0, 1), "{counters:?}");
+        assert_eq!(
+            store
+                .connection()
+                .query_row("SELECT current_setting('memory_limit')::VARCHAR", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap(),
+            "16.0 MiB"
+        );
+    }
+
+    /// Steps double from L and stop at the cap, B/2, which the last one is
+    /// cut to; an append still refused there is refused under the cap
+    /// (merkle-spec §6.4).
+    #[test]
+    fn steps_double_up_to_the_cap_and_a_refusal_there_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = view::store::SqlStore::open_limited(
+            &dir.path().join(view::store::SQL_CACHE_FILENAME),
+            Some(16 << 20),
+        )
+        .unwrap();
+        let controller = crate::residency::controller::Controller::new(1 << 30);
+        let escalation = crate::residency::SqlEscalation::new(controller.clone(), 48 << 20);
+        let mut limits = Vec::new();
+        let failure = escalation
+            .run(&mut store, |store| {
+                limits.push(
+                    store
+                        .connection()
+                        .query_row("SELECT current_setting('memory_limit')::VARCHAR", [], |r| {
+                            r.get::<_, String>(0)
+                        })
+                        .map_err(view::ViewError::from)?,
+                );
+                store
+                    .connection()
+                    .execute_batch("SELECT error('failed to pin block of size 256.0 KiB')")
+                    .map_err(view::ViewError::from)
+            })
+            .expect_err("refused at every limit");
+        assert_eq!(limits, ["16.0 MiB", "32.0 MiB", "48.0 MiB"]);
+        assert_eq!(failure.limit, Some(48 << 20));
+        assert!(failure.error.is_memory_limit(), "{:?}", failure.error);
+        let counters = escalation.counters();
+        assert_eq!(
+            (counters.steps, counters.largest, counters.refused),
+            (2, 32 << 20, 1),
+            "{counters:?}"
+        );
+        assert_eq!(controller.report().reserved, 0);
     }
 
     /// Without a host every SQL cache stays open under `DuckDB`'s default.

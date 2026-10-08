@@ -69,6 +69,7 @@ use model::selector::{Color, RedReason};
 use policy::armed::{Mode, parse_artifact};
 use policy::page_rev;
 use receipt::anchor::{AnchorFacts, AnchorState, ObjectAnchor, ObjectAnchorFacts, TipPosition};
+use registry::residency::SqlEscalations;
 use registry::residency::controller::Report as ResidencyReport;
 use serde_json::json;
 use view::walk::{color_detail, color_label, color_reason, color_tone};
@@ -163,8 +164,9 @@ fn parse(tail: &[String]) -> Result<(Format, Option<PathBuf>, bool), Fail> {
 /// What `--residency` learned from the daemon (merkle-spec §6.4, the
 /// report's door).
 enum Residency {
-    /// The daemon's residency controller report.
-    Report(ResidencyReport),
+    /// The daemon's residency controller report, with its SQL escalation
+    /// counters when the daemon reports them.
+    Report(ResidencyReport, Option<SqlEscalations>),
     /// A daemon answered and has no residency host.
     NoHost,
     /// A daemon answered `unknown_op`: an older build without the request.
@@ -178,7 +180,7 @@ impl Residency {
     /// starts a daemon.
     fn ask() -> Self {
         match registry::Client::from_default().and_then(|client| client.residency()) {
-            Ok(Some(report)) => Self::Report(report),
+            Ok(Some((report, escalations))) => Self::Report(report, escalations),
             Ok(None) => Self::NoHost,
             Err(err) if err.kind() == std::io::ErrorKind::Unsupported => Self::OlderDaemon,
             Err(_) => Self::NoDaemon,
@@ -186,20 +188,36 @@ impl Residency {
     }
 
     fn render(&self) -> String {
+        use std::fmt::Write as _;
         match self {
-            Self::Report(r) => format!(
-                "floor {} / limit {} · bodies {} · pinned {} · reserved {} · overage {} · \
-                 floor-overage {} · peak-overruns {} (shortfall {})",
-                r.floor,
-                r.limit,
-                r.bodies,
-                r.pinned,
-                r.reserved,
-                r.overage,
-                r.floor_overage,
-                r.peak_overruns,
-                r.peak_shortfall,
-            ),
+            Self::Report(r, escalations) => {
+                let mut line = format!(
+                    "floor {} / limit {} · bodies {} · pinned {} · reserved {} · overage {} · \
+                     floor-overage {} · peak-overruns {} (shortfall {})",
+                    r.floor,
+                    r.limit,
+                    r.bodies,
+                    r.pinned,
+                    r.reserved,
+                    r.overage,
+                    r.floor_overage,
+                    r.peak_overruns,
+                    r.peak_shortfall,
+                );
+                if let Some(e) = escalations {
+                    let _ = write!(line, " · sql-escalations {}", e.steps);
+                    if let Some(last) = e.last_unix_secs {
+                        let _ = write!(
+                            line,
+                            " (largest {}, last {})",
+                            e.largest,
+                            crate::realise_cmd::rfc3339_utc(last)
+                        );
+                    }
+                    let _ = write!(line, " · sql-refused {}", e.refused);
+                }
+                line
+            }
             Self::NoHost => "the daemon has no residency host".to_owned(),
             Self::OlderDaemon => {
                 "the daemon does not know the residency request (older build)".to_owned()
@@ -210,10 +228,18 @@ impl Residency {
 
     fn json(&self) -> serde_json::Value {
         match self {
-            Self::Report(report) => json!({"state": "report", "report": report}),
-            Self::NoHost => json!({"state": "no-host", "report": null}),
-            Self::OlderDaemon => json!({"state": "older-daemon", "report": null}),
-            Self::NoDaemon => json!({"state": "no-daemon", "report": null}),
+            Self::Report(report, escalations) => json!({
+                "state": "report",
+                "report": report,
+                "sql_escalations": escalations,
+            }),
+            Self::NoHost => json!({"state": "no-host", "report": null, "sql_escalations": null}),
+            Self::OlderDaemon => {
+                json!({"state": "older-daemon", "report": null, "sql_escalations": null})
+            }
+            Self::NoDaemon => {
+                json!({"state": "no-daemon", "report": null, "sql_escalations": null})
+            }
         }
     }
 }
