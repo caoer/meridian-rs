@@ -819,22 +819,29 @@ its attempts, and is answered `Waiting`. While it waits, a new load of any
 other member that is not oversized is answered `Paused`; so is one that does
 not fit while another member holds the slot, its oversized load running or
 its body pinned above the limit. The catalog retries both against the same version every
-millisecond. The waiting member so takes the slot as soon as the live loads
-drain, whatever its client does, and a paused load is served once the
-waiting member has left the slot or its record has expired. A paused load is
-owed a turn, until it is admitted or refused or 100 ms after its last
-attempt: while any load is owed one, no oversized load of another member
-takes the slot and no new waiting record forms, and an oversized load kept
-out only by that is answered `Waiting` and retried the same way. The member
-whose own record is live is not kept out by the loads it paused. Oversized
-members asked for again and again therefore alternate with the loads they
-paused: after each oversized load the paused loads are admitted before the
-next oversized load or record. What remains: a paused load waits out the
-oversized load ahead of it (two members with 50 ms loads, each asked again
-within 1 ms, held no fitting load longer than 105 ms and none was refused);
-oversized members are not ordered among themselves; and one that meets
-another member's live record while a load is owed its turn is refused as
-occupied allowance at once, for its client to ask again. Each lease retries until 2 s after its first
+millisecond. One member waits at a time: while its record is live, an
+oversized load of another member takes neither the slot nor the record and
+is refused as occupied allowance at once, for its client to ask again. The
+waiting member so takes the slot as soon as the live loads drain, whatever
+its client does, and a paused load is served once the waiting member has
+left the slot or its record has expired. A paused load is owed a turn,
+until it is admitted or refused or 100 ms after its last attempt. No waiting
+record forms while another member holds the slot or while any load is owed
+its turn: an oversized load kept out by either takes no slot, is answered
+`Waiting` and is retried the same way. The member whose own record is live
+is not kept out by the loads it paused, and that record formed while no
+other member held the slot. A paused load therefore waits out one oversized
+load, the one in the slot when it was paused or the waiting member whose
+record paused it, besides the loads that were live before that member's:
+after each oversized load the paused loads are admitted before the next
+oversized load or record (two members with 5 and 50 ms loads, each asked
+again within 1 to 200 ms, held no fitting load longer than 57 ms and none
+was refused; with 1,200 ms loads and readers 300 ms apart, every reader was
+served, the longest after 1,204 ms). What remains: oversized members are
+not ordered among themselves, so one kept out without a record can be passed
+by another that asks first when the slot frees (three members with 5 and
+50 ms loads: each was served in every 4 s run, none went unserved longer
+than 858 ms). Each lease retries until 2 s after its first
 `Waiting` or `Paused` answer: after that the waiting member is refused as
 occupied allowance, and a paused load is admitted past the pause on the
 ordinary terms, so a live load that does not drain holds no other member's
@@ -843,9 +850,13 @@ leases in turn can wait 2 s at each while a waiting member's client keeps
 asking behind a load that does not drain. A join
 of a live load and a hot hit are not paused, one member waits at a time,
 another member's attempt never renews the record, and an abandoned record
-expires. So steady fitting traffic cannot starve an oversized page, and a
-fitting load is never refused because another member waits; past its 2 s
-it can still meet occupied allowance. A shape outside this
+expires. So fitting traffic whose loads end within the 2 s cannot starve an
+oversized page, and a fitting load is never refused because another member
+waits; past its 2 s it can still meet occupied allowance. Fitting loads that
+each outlast the 2 s can overlap without a gap once they are admitted past
+their pauses, and then no oversized load is served while they last: with
+three readers of 2.5 s loads, neither of two oversized members was served
+in 3 of 12 ten-second runs. A shape outside this
 set that stages more than 415 bytes per raw byte loads past its declaration;
 the ledger observes that only when the retained body exceeds the
 declaration, and does not observe transient staging.
