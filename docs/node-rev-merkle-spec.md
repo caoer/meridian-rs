@@ -566,38 +566,87 @@ this budget alone cannot prove a process RSS limit.
 SQL keeps its own memory policy, bounded when a host is installed. Each
 workspace's SQL cache is its own `DuckDB` instance with its own buffer pool.
 Without a host each keeps `DuckDB`'s default `memory_limit` (80% of RAM).
-With a host of budget B, each runs under a `memory_limit` of 256 MiB, set when
-it opens and before its restore baseline is taken, so a caller's own `SET`
-lasts only that call; and the registry keeps at most
-max(1, ⌊(B/4) / 256 MiB⌋) caches open: every `sql` call, whether its cache
+With a host of budget B, each runs under a steady `memory_limit` L of
+256 MiB, set when it opens and before its restore baseline is taken, so a
+caller's own `SET` lasts only that call; and the registry keeps at most
+max(1, ⌊(B/4) / L⌋) caches open: every `sql` call, whether its cache
 is open already or not, first closes the least recently used caches that no
 query holds until the count leaves room for the one it serves, and keeps
 their files, which a later query reattaches. This close never takes a cache
 a query holds, so it never gives one file two instances; while every open
 cache is in use a new one opens past the count, and the next `sql` call
-after they are released closes back down to it. The pools' limits therefore
-sum to at most max(256 MiB, B/4) plus the caches queries hold beyond the
-count. Unregistering a workspace, the idle reap and an eviction drop the
+after they are released closes back down to it. The pools' steady limits
+therefore sum to at most max(L, B/4) plus the caches queries hold beyond
+the count; an append's escalation (below) adds only what it reserved on the
+controller. Unregistering a workspace, the idle reap and an eviction drop the
 registry's handle whether or not a query holds it: a query still running
 keeps its instance, and the next `sql` call on that workspace attaches the
-file a second time while it runs. 256 MiB is the
-smallest limit under which every measured shape builds its cache; a page
-whose stored rows outgrow it several times over (the long-heading shape
-below, past about 128 KiB) is refused by the `sql` door, as an `io_error`
-whose cause names the per-cache limit. The append shares the cache's limit
-with every query running on that workspace, so a page that fits alone is
-refused while a heavy query holds the memory, and the first call after that
-query ends appends it. A page that outgrows the limit by itself is refused
-on every `sql` call on that workspace until it shrinks or leaves: the append
-runs before the caller's statement, so a caller's `SET` cannot raise the
-limit for it. A read is itself a hold on its cache: it keeps the shared
-handle until it ends, so the close above passes over a cache whose query is
-still running wherever the call that opened the read stands. The pool is not on
-the controller's ledger: a query's peak falls between censuses, and shedding
-`DuckDB`'s cache through the floor would evict a whole workspace where the
-limit lets `DuckDB` drop the same pages itself.
+file a second time while it runs. A read is itself a hold on its cache: it
+keeps the shared handle until it ends, so the close above passes over a
+cache whose query is still running wherever the call that opened the read
+stands. The steady pool is not on the controller's ledger: a query's peak
+falls between censuses, and shedding `DuckDB`'s cache through the floor
+would evict a whole workspace where the limit lets `DuckDB` drop the same
+pages itself.
 
-The `memory_limit` bounds `DuckDB`'s buffer pool and nothing else. Two
+L is a steady limit, not a bound on what an append needs. The append that
+brings a cache to the generation a call answers from runs before the
+caller's statement, and it reads the whole store: the manifest over every
+`doc`, the link union over every link, frontmatter-link and lock row, the
+aliases over all frontmatter and the base links, each latest view a window
+over all of `hist.doc`. Its appended rows stay in the same pool until
+`DuckDB` checkpoints them. What one append holds at once therefore grows
+with the store, with the history since the file was last rebuilt (`hist` is
+append-only), and with `DuckDB`'s thread count, and not with the delta it
+carries. On an 82,292-page sessions root under a 6-minute replay soak at 4
+threads, incremental appends peaked at 232 MiB (median) and 312 MiB (max)
+outside cached table pages with the limit raised, and at 359 MiB without a
+host: hash tables 183–223 MiB and uncheckpointed rows 90–115 MiB at the
+peak. A cold build of that root peaks at about 310 MiB, mostly
+uncheckpointed rows, and spills rather than fails. A 9,212-page root peaks
+at 154–179 MiB. No single statement of the append needs that much alone:
+the largest, the link union, completes under 91 MiB at 4 threads and
+135 MiB at 30, and single statements need 1.2 to 2 times more at 30 threads
+than at 4. Under L, 4 of 144 `sql` calls on the 82k root in that soak were
+refused in their append, though no other query ran on the store.
+
+So an append L refuses escalates, and the caller never sees that refusal.
+The registry reserves the difference between a raised limit and L through
+the controller (`Controller::reserve`, which sheds bodies to make room),
+raises that instance's `memory_limit` to it, and runs the append again: 2L,
+then 4L, and so on, never past B/2 (a step that would pass it is cut to
+B/2; when B/2 is not above L there is no step). The raise also moves what a
+read ending meanwhile restores, so a concurrent read cannot put L back
+under the running append. Each step ends, on success, refusal, error or
+unwind, by putting the instance's open-time configuration back and only
+then releasing its reservation. When `DuckDB` cannot lower the limit
+because running reads still hold the memory, the instance is retired and
+keeps the reservation until its last read ends and it closes; the next
+`sql` call reopens the file under L. The redo is sound because a refused
+append leaves the committed store as it was: the planning reads before the
+append's one `BEGIN … COMMIT` only read, and the transaction rolls back on
+any error, so the next attempt plans from the same state and yields the
+store one unconstrained append yields. A reservation the controller refuses
+answers the retryable `workspace_busy`; an append refused at B/2 answers an
+`io_error` whose cause names that limit and L. The append shares the
+cache's limit with every query running on that workspace, so an append
+refused while a heavy query holds the memory escalates the same way. A page
+whose rows outgrow B/2 by themselves (the long-heading shape below
+outgrows L past about 128 KiB of page) is refused on every `sql`
+call on that workspace until it shrinks or leaves: a caller's `SET` cannot
+raise the limit for an append that runs before its statement. A caller's
+own statement keeps L: its refusal is its own result, in `DuckDB`'s words.
+`DuckDB` refuses memory in three wordings ("failed to pin block of size",
+"could not allocate block of size", "failed to allocate data of size"), and
+each of them escalates. `mrd status --residency` reports the escalations:
+how many steps were taken, the largest reservation, when the last one was
+taken, and how many appends were refused for memory after all
+(`status.md` § The residency line).
+
+The `memory_limit` bounds what `DuckDB`'s buffer manager holds, cached
+pages and a query's working memory alike (a `count(DISTINCT text)` over the
+76,000-page corpus raises the daemon's RSS high-water mark by about 2.0 GiB
+without a host and by about 0.14 GiB with one), and nothing else. Two
 process costs of a cache stay outside it and off the ledger. One is the
 transient peak of a load: while a page's rows are appended, `DuckDB` holds
 the rendered text outside its pool, so the peak grows with the stored rows
@@ -608,7 +657,7 @@ hold a finished load's pages on its free lists, so RSS after a load can stand
 above live memory. The daemon does not call `malloc_trim`. On the 76,000-page
 corpus the RSS kept after its queries is live memory with a host and without
 one, and a trim returns nothing measurable; what the limit removes there is
-the pool, 928 MiB without a host and 12 MiB with one.
+the cached pages, 928 MiB without a host and 12 MiB with one.
 
 The allocation census is split at ownership boundaries. `model::allocation`
 counts raw buffers (including their shared-owner allocation) separately from
@@ -767,8 +816,10 @@ of constructs, not bytes, and one of them holds `n − 1` entries, so a page of
 or `2^j + 2` units whatever the unit's length. The probe samples every repeated-unit shape at
 exactly those counts, for every `2^j` units within about 64 KiB, and about
 4 MiB under `LOAD_PEAK_SWEEP=full`, the run this table comes from (the unit
-length is the average of the first 1,024 units, so a shape whose units
-lengthen with their index, `tags`, is sampled past that reach); the shapes not
+length is the average of the first 1,024 units, so the shapes whose units
+lengthen with their index are sampled past that reach: `tags`, `block-ids`
+and `wikilinks` up to 1.23 times past it in the default sweep, and with
+`tasks` and `headings` up to 1.47 times past it in the full one); the shapes not
 built of repeated units (frontmatter, long headings, wide tables) at `2^k`,
 `2^k + 1` and `1.5·2^k` bytes. The default sweep also loads bare headings, a
 code-span heading over a bare heading, and three bare headings then a code
@@ -870,9 +921,12 @@ other member held the slot. A paused load therefore waits out one oversized
 load, the one in the slot when it was paused or the waiting member whose
 record paused it, besides the loads that were live before that member's:
 after each oversized load the paused loads are admitted before the next
-oversized load or record (two members with 5 and 50 ms loads, each asked
-again within 1 to 200 ms, held no fitting load longer than 57 ms and none
-was refused; with 1,200 ms loads and readers 300 ms apart, every reader was
+oversized load or record. A paused load can wait up to 100 ms beyond that
+load: a waiting member whose attempt was answered `Busy` because the slot's
+shed failed keeps its record live until its client asks again or the record
+expires, and fitting loads stay paused meanwhile (two and three members
+with 5 and 50 ms loads, each asked again within 1 to 200 ms, held no fitting
+load longer than 105 ms and none was refused; with 1,200 ms loads and readers 300 ms apart, every reader was
 served, the longest after 1,204 ms). What remains: oversized members are
 not ordered among themselves, so one kept out without a record can be passed
 by another that asks first when the slot frees (three members with 5 and
@@ -926,13 +980,18 @@ learns again.
 
 **The report's door.** The controller's report leaves the process through
 the daemon's `residency` admin request, beside `ping` and `list` on the same
-socket: `{"op":"residency"}` answers `{"status":"residency","report":R}`. `R`
+socket: `{"op":"residency"}` answers
+`{"status":"residency","report":R,"sql_escalations":S}`. `R`
 is `null` for a daemon with no host, else the report's fields as whole
 numbers of bytes or counts — `limit`, `floor`, `raw`, `bodies`, `reserved`,
 `allocated`, `total`, `pinned`, `retiring`, `overage`, `floor_overage`,
 `peak_shortfall`, `peak_overruns`, `members`, `reservations` — and the
-boolean `transient`. It reads the controller alone, never the registry map,
-so it answers beside a build or a sweep. `mrd status --residency` prints
+boolean `transient`. `S` is `null` with no host, else the SQL appends'
+escalation counters since the daemon started (the SQL memory policy above):
+`steps`, `largest` (bytes), `last_unix_secs` (`null` before the first step)
+and `refused`; a client reads an answer without the key as `null`. It reads
+the controller and those counters alone, never the registry map, so it
+answers beside a build or a sweep. `mrd status --residency` prints
 it (`docs/status.md`, the residency line).
 
 The ledger retains a selected body's full charge throughout retirement,

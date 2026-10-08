@@ -1212,8 +1212,18 @@ controller report (`node-rev-merkle-spec.md` §6.4, the report's door), in
 bytes:
 
 ```
-  residency: floor 388972 / limit 2147483648 · bodies 1048576 · pinned 0 · reserved 0 · overage 0 · floor-overage 0 · peak-overruns 0 (shortfall 0)
+  residency: floor 388972 / limit 2147483648 · bodies 1048576 · pinned 0 · reserved 0 · overage 0 · floor-overage 0 · peak-overruns 0 (shortfall 0) · sql-escalations 2 (largest 268435456, last 2026-10-08T05:12:03Z) · sql-refused 0
 ```
+
+The last two fields are the SQL caches' append escalations
+(`node-rev-merkle-spec.md` §6.4, the SQL memory policy): `sql-escalations`
+counts the steps that raised a cache's limit past L, each under its own
+reservation, with the largest reservation in bytes and the UTC time of the
+last step (the parenthesis is absent before the first); `sql-refused` counts
+the appends still refused for memory, because the controller refused a
+step's reservation or the append was refused at B/2. Both count since the
+daemon started. A daemon that answers the request without them (a build
+before escalation) leaves both fields off the line.
 
 It asks with one `residency` admin request under the liveness probe's cap —
 about two seconds once the daemon accepts the connection, up to four when it
@@ -1226,8 +1236,10 @@ residency host`; when the daemon answers `unknown_op` (an older build, the
 window after an upgrade while the old daemon still runs) it is `residency: the
 daemon does not know the residency request (older build)`. Under `--json` the
 flag adds one key, `residency`: `{"state": "report" | "no-host" |
-"older-daemon" | "no-daemon", "report": <the report object> | null}`; without
-the flag the key is absent. The report is machine-wide, not
+"older-daemon" | "no-daemon", "report": <the report object> | null,
+"sql_escalations": {"steps", "largest", "last_unix_secs", "refused"} | null}`,
+`last_unix_secs` `null` before the first step and `sql_escalations` `null`
+where the line leaves the two fields off; without the flag the key is absent. The report is machine-wide, not
 this workspace's, and is a reading: it never moves the exit.
 
 #### The exit reads the ARMED PLANE ONLY — every other axis is a reading (R12)
