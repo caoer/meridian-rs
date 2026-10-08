@@ -596,9 +596,10 @@ caller's statement, and it reads the whole store: the manifest over every
 aliases over all frontmatter and the base links, each latest view a window
 over all of `hist.doc`. Its appended rows stay in the same pool until
 `DuckDB` checkpoints them. What one append holds at once therefore grows
-with the store, with the history since the file was last rebuilt (`hist` is
-append-only), and with `DuckDB`'s thread count, and not with the delta it
-carries. On an 82,292-page sessions root under a 6-minute replay soak at 4
+with the store and with `DuckDB`'s thread count, and not with the delta it
+carries; by the latest views' definition rather than by measurement, it
+also grows with the history since the file was last rebuilt (`hist` is
+append-only). On an 82,292-page sessions root under a 6-minute replay soak at 4
 threads, incremental appends peaked at 232 MiB (median) and 312 MiB (max)
 outside cached table pages with the limit raised, and at 359 MiB without a
 host: hash tables 183–223 MiB and uncheckpointed rows 90–115 MiB at the
@@ -621,11 +622,14 @@ under the running append. Each step ends, on success, refusal, error or
 unwind, by putting the instance's open-time configuration back and only
 then releasing its reservation. When `DuckDB` cannot lower the limit
 because running reads still hold the memory, the instance is retired and
-keeps the reservation until its last read ends and it closes; the next
-`sql` call reopens the file under L. The redo is sound because a refused
+keeps the reservation until the next `sql` call on that workspace reopens
+the file under L once its last read has ended, or until the registry closes
+the cache; the call that escalated answers `workspace_busy`, and its retry
+reads the appended store. The redo is sound because a refused
 append leaves the committed store as it was: the planning reads before the
-append's one `BEGIN … COMMIT` only read, and the transaction rolls back on
-any error, so the next attempt plans from the same state and yields the
+append's one `BEGIN … COMMIT` only read (except on a fingerprint-version
+change, which recreates the file first, so the redo cold-builds), and the
+transaction rolls back on any error, so the next attempt plans from the same state and yields the
 store one unconstrained append yields. A reservation the controller refuses
 answers the retryable `workspace_busy`; an append refused at B/2 answers an
 `io_error` whose cause names that limit and L. The append shares the
@@ -636,6 +640,8 @@ outgrows L past about 128 KiB of page) is refused on every `sql`
 call on that workspace until it shrinks or leaves: a caller's `SET` cannot
 raise the limit for an append that runs before its statement. A caller's
 own statement keeps L: its refusal is its own result, in `DuckDB`'s words.
+A statement already running when another call's append escalates shares
+the raised limit until that step ends.
 `DuckDB` refuses memory in three wordings ("failed to pin block of size",
 "could not allocate block of size", "failed to allocate data of size"), and
 each of them escalates. `mrd status --residency` reports the escalations:
