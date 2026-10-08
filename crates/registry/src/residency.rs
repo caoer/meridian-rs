@@ -211,20 +211,24 @@ impl Host {
     }
 }
 
-/// The SQL memory policy under a host (merkle-spec §6.4): the `memory_limit`
-/// each workspace's SQL cache runs under, and how many caches stay open, so
-/// the pools' limits sum to at most `max(SQL_CACHE_LIMIT, budget / 4)`.
+/// The SQL memory policy under a host (merkle-spec §6.4): the steady
+/// `memory_limit` each workspace's SQL cache runs under, how many caches stay
+/// open, so the pools' steady limits sum to at most
+/// `max(SQL_CACHE_LIMIT, budget / 4)`, and how far an append may escalate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SqlBudget {
-    /// Each open cache's `DuckDB` `memory_limit`, in bytes.
+    /// Each open cache's steady `DuckDB` `memory_limit` L, in bytes.
     pub cache_limit: u64,
     /// The most caches the registry keeps open at once.
     pub open_caches: usize,
+    /// The highest limit an append L refused escalates to: half the budget.
+    pub append_cap: u64,
 }
 
-/// The smallest `memory_limit` under which every measured shape builds its
-/// SQL cache: the 128 KiB long-heading page (822 MiB stored) is refused at
-/// 128 MiB and built at 256 MiB (merkle-spec §6.4, the SQL memory policy).
+/// The steady per-cache `memory_limit` L (merkle-spec §6.4, the SQL memory
+/// policy). An append's need grows with the store, its history and the
+/// thread count (232 / 312 MiB median / max on an 82k-page root), so an
+/// append L refuses escalates ([`SqlEscalation`]).
 pub const SQL_CACHE_LIMIT: u64 = 256 << 20;
 
 impl SqlBudget {
@@ -238,7 +242,158 @@ impl SqlBudget {
             open_caches: usize::try_from(budget / 4 / SQL_CACHE_LIMIT)
                 .unwrap_or(usize::MAX)
                 .max(1),
+            append_cap: budget / 2,
         })
+    }
+}
+
+/// A SQL cache's append escalation under a host (merkle-spec §6.4, the SQL
+/// memory policy): an append its steady limit L refuses for memory runs
+/// again under 2L, 4L, … up to [`SqlBudget::append_cap`], each step's excess
+/// over L reserved through the controller before the limit is raised.
+#[derive(Debug)]
+pub struct SqlEscalation {
+    controller: controller::Controller,
+    cap: u64,
+    steps: AtomicU64,
+    largest: AtomicU64,
+    last_unix_secs: AtomicU64,
+    refused: AtomicU64,
+}
+
+/// [`SqlEscalation`]'s counters since the daemon started (the residency
+/// request's `sql_escalations`, merkle-spec §6.4).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SqlEscalations {
+    /// Steps taken: each raised one cache's limit under its own reservation.
+    pub steps: u64,
+    /// The largest reservation one step held, in bytes.
+    pub largest: u64,
+    /// When the last step was taken, in unix seconds; `None` before the first.
+    pub last_unix_secs: Option<u64>,
+    /// Appends still refused for memory: the controller refused a step's
+    /// reservation, or the append was refused at the cap.
+    pub refused: u64,
+}
+
+/// A daemon's residency answer (`Client::residency`): the controller's
+/// report and the SQL appends' escalation counters, when the daemon reports
+/// them.
+pub type Reading = (controller::Report, Option<SqlEscalations>);
+
+/// Why an escalated append failed, and the limit it last ran under.
+#[derive(Debug)]
+pub struct AppendFailure {
+    /// The `memory_limit` the failing attempt ran under, in bytes; `None`
+    /// is `DuckDB`'s default.
+    pub limit: Option<u64>,
+    /// The attempt's error.
+    pub error: view::ViewError,
+}
+
+impl SqlEscalation {
+    /// Escalation through `controller` up to `cap` bytes.
+    #[must_use]
+    pub fn new(controller: controller::Controller, cap: u64) -> Self {
+        Self {
+            controller,
+            cap,
+            steps: AtomicU64::new(0),
+            largest: AtomicU64::new(0),
+            last_unix_secs: AtomicU64::new(0),
+            refused: AtomicU64::new(0),
+        }
+    }
+
+    /// Run `append` on `store`; escalate when its steady limit refuses it for
+    /// memory. A store with no limit runs `append` once.
+    ///
+    /// # Errors
+    /// `append`'s own error under the limit it ran under; a refused
+    /// reservation as [`view::ViewError::Busy`], which the door answers
+    /// `workspace_busy`.
+    pub fn run<T>(
+        &self,
+        store: &mut view::store::SqlStore,
+        mut append: impl FnMut(&mut view::store::SqlStore) -> Result<T, view::ViewError>,
+    ) -> Result<T, AppendFailure> {
+        let Some(steady) = store.memory_limit() else {
+            return append(store).map_err(|error| AppendFailure { limit: None, error });
+        };
+        let mut limit = steady;
+        let mut error = match append(store) {
+            Ok(done) => return Ok(done),
+            Err(error) if error.is_memory_limit() => error,
+            Err(error) => {
+                return Err(AppendFailure {
+                    limit: Some(limit),
+                    error,
+                });
+            }
+        };
+        loop {
+            let next = limit.saturating_mul(2).min(self.cap);
+            if next <= limit {
+                self.refused.fetch_add(1, Ordering::Relaxed);
+                return Err(AppendFailure {
+                    limit: Some(limit),
+                    error,
+                });
+            }
+            let extra = next - steady;
+            let Ok(reservation) = self
+                .controller
+                .reserve(usize::try_from(extra).unwrap_or(usize::MAX))
+            else {
+                self.refused.fetch_add(1, Ordering::Relaxed);
+                return Err(AppendFailure {
+                    limit: Some(limit),
+                    error: view::ViewError::Busy(format!(
+                        "the append needs more memory than the {} MiB limit it ran under, \
+                         and the residency host cannot reserve the {} MiB more it would \
+                         escalate to now; transient — retry",
+                        limit >> 20,
+                        extra >> 20
+                    )),
+                });
+            };
+            self.note_step(extra);
+            limit = next;
+            let attempt = store
+                .raise_memory_limit(limit, reservation)
+                .and_then(|mut raised| append(&mut raised));
+            error = match attempt {
+                Ok(done) => return Ok(done),
+                Err(error) if error.is_memory_limit() => error,
+                Err(error) => {
+                    return Err(AppendFailure {
+                        limit: Some(limit),
+                        error,
+                    });
+                }
+            };
+        }
+    }
+
+    fn note_step(&self, extra: u64) {
+        self.steps.fetch_add(1, Ordering::Relaxed);
+        self.largest.fetch_max(extra, Ordering::Relaxed);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        self.last_unix_secs.store(now.max(1), Ordering::Relaxed);
+    }
+
+    /// The counters as the residency request reports them.
+    #[must_use]
+    pub fn counters(&self) -> SqlEscalations {
+        let last = self.last_unix_secs.load(Ordering::Relaxed);
+        SqlEscalations {
+            steps: self.steps.load(Ordering::Relaxed),
+            largest: self.largest.load(Ordering::Relaxed),
+            last_unix_secs: (last != 0).then_some(last),
+            refused: self.refused.load(Ordering::Relaxed),
+        }
     }
 }
 

@@ -308,16 +308,16 @@ pub(crate) fn serve(
     // through the same daemon).
     let read = {
         let mut guard = lock_store_bounded(&store, ws, SQL_STORE_WAIT)?;
-        if let Err(error) = guard.sync_catalog(
-            generation,
-            &corpus,
-            Some(mounts.set()),
-            Some(&exclusion),
-            &engine.at_fingerprint.0,
-            base.as_ref(),
-        ) {
-            return Err(append_error(guard.memory_limit(), error));
-        }
+        append_escalating(registry, &mut guard, |store| {
+            store.sync_catalog(
+                generation,
+                &corpus,
+                Some(mounts.set()),
+                Some(&exclusion),
+                &engine.at_fingerprint.0,
+                base.as_ref(),
+            )
+        })?;
         guard
             .begin_held_read(&store)
             .map_err(|e| store_error("cannot open a read on the sql cache", e))?
@@ -389,25 +389,55 @@ fn store_error(context: &str, error: view::ViewError) -> Box<ErrorBody> {
     Box::new(error)
 }
 
-/// An append the store refused, under the store's `memory_limit` (`None`:
-/// `DuckDB`'s default). A refusal for memory under a limit names that limit
-/// (merkle-spec §6.4) and keeps only `DuckDB`'s first line: its advice — a
-/// `SET memory_limit`, fewer threads — cannot help, since the append runs
-/// before the caller's statement and a caller's `SET` lasts one call.
-fn append_error(limit: Option<u64>, error: view::ViewError) -> Box<ErrorBody> {
+/// Run the cache's `append`; under a host an append the steady limit refuses
+/// escalates (merkle-spec §6.4, the SQL memory policy).
+fn append_escalating<T>(
+    registry: &Registry,
+    store: &mut view::store::SqlStore,
+    mut append: impl FnMut(&mut view::store::SqlStore) -> Result<T, view::ViewError>,
+) -> Result<T, Box<ErrorBody>> {
+    let steady = store.memory_limit();
+    match registry.sql_escalation() {
+        Some(escalation) => escalation
+            .run(store, append)
+            .map_err(|failure| append_error(failure.limit, steady, failure.error)),
+        None => append(store).map_err(|error| append_error(steady, steady, error)),
+    }
+}
+
+/// An append the store refused, under the `memory_limit` its last attempt
+/// ran under (`None`: `DuckDB`'s default), the store's steady limit being
+/// `steady`. A refusal for memory under a limit (one escalation could not
+/// lift, merkle-spec §6.4) names that limit and keeps only `DuckDB`'s first
+/// line: its advice — a `SET memory_limit`, fewer threads — cannot help,
+/// since the append runs before the caller's statement and a caller's `SET`
+/// lasts one call.
+fn append_error(limit: Option<u64>, steady: Option<u64>, error: view::ViewError) -> Box<ErrorBody> {
     const CONTEXT: &str = "cannot append to the sql cache";
     match limit {
         Some(limit) if error.is_memory_limit() => {
             let text = error.to_string();
             let refusal = text.lines().next().unwrap_or_default();
+            let reach = match steady {
+                Some(steady) if steady < limit => format!(
+                    "the {} MiB the residency host lets one sql cache's append reach (its \
+                     steady limit {} MiB, raised under reservations up to half the host's \
+                     budget)",
+                    limit >> 20,
+                    steady >> 20
+                ),
+                _ => format!(
+                    "the {} MiB limit the residency host sets on each sql cache (half the \
+                     host's budget leaves no room to raise it)",
+                    limit >> 20
+                ),
+            };
             io_error(format!(
-                "{CONTEXT}: the append needs more memory than the {} MiB limit the residency \
-                 host sets on each sql cache, which every query running on this workspace \
-                 shares ({refusal}); a caller's SET cannot raise it. If another sql query on \
-                 this workspace is running, the first call after it ends can append; with none \
-                 running, every sql call on this workspace is refused until the page that \
-                 outgrows the limit shrinks or leaves",
-                limit >> 20
+                "{CONTEXT}: the append needs more memory than {reach}, which every query \
+                 running on this workspace shares ({refusal}); a caller's SET cannot raise \
+                 it. If another sql query on this workspace is running, the first call after \
+                 it ends can append; with none running, every sql call on this workspace is \
+                 refused until the page that outgrows the limit shrinks or leaves"
             ))
         }
         _ => store_error(CONTEXT, error),
@@ -573,7 +603,7 @@ mod tests {
             )
             .expect_err("the page's rows outgrow 16 MiB");
 
-        let refused = append_error(store.memory_limit(), error);
+        let refused = append_error(store.memory_limit(), store.memory_limit(), error);
         assert_eq!(refused.code, ErrorCode::IoError);
         let cause = refused.cause.as_deref().unwrap_or_default();
         assert!(

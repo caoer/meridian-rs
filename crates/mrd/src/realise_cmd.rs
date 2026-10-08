@@ -375,7 +375,7 @@ fn mint_identity() -> Result<(String, String), Fail> {
 /// law `wire::now_is_rfc3339` validates. Pure and dependency-free (the workspace carries no date
 /// crate); the civil-date split is Hinnant's `civil_from_days`, exact for every day in the
 /// proleptic Gregorian calendar.
-fn rfc3339_utc(secs: u64) -> String {
+pub(crate) fn rfc3339_utc(secs: u64) -> String {
     let (days, rem) = (secs / 86_400, secs % 86_400);
     let (hour, min, sec) = (rem / 3600, (rem % 3600) / 60, rem % 60);
 

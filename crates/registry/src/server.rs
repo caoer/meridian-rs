@@ -1542,6 +1542,9 @@ fn dispatch_admin(registry: &Registry, request: Request) -> Response {
             report: registry
                 .residency_controller()
                 .map(|controller| Box::new(controller.report())),
+            sql_escalations: registry
+                .sql_escalation()
+                .map(crate::residency::SqlEscalation::counters),
         },
     }
 }
@@ -3848,13 +3851,42 @@ mod residency_activation_tests {
         let member = controller.retain(Arc::new(store.retain(raw.as_bytes()).unwrap()));
         drop(member.pin(Access::Read, 1).unwrap());
 
-        let report = client.residency().unwrap();
+        let (report, escalations) = client.residency().unwrap().expect("a host's report");
         assert_eq!(
-            report.map(|report| report.peak_overruns),
-            Some(1),
+            report.peak_overruns, 1,
             "the door answers the host's report: {report:?}"
         );
-        assert_eq!(report, Some(controller.report()));
+        assert_eq!(report, controller.report());
+        assert_eq!(
+            escalations, None,
+            "a host that enforces no limit escalates nothing"
+        );
+        server.shutdown();
+    }
+
+    /// A host that enforces a limit escalates SQL appends, and the door
+    /// answers its counters, which `mrd status --residency` prints
+    /// (merkle-spec §6.4, rv-372 P2-1).
+    #[test]
+    fn the_residency_door_answers_the_escalation_counters_of_a_host_with_a_limit() {
+        use crate::raw_store::RawStore;
+        use crate::residency::{Host, SqlEscalations, controller::Controller};
+        use std::sync::Arc;
+
+        let tmp = TempDir::new().unwrap();
+        let mut config = config(&tmp);
+        config.residency = Some(Arc::new(Host::new(
+            Controller::new(1 << 30),
+            RawStore::new(&tmp.path().join("backing")).unwrap(),
+        )));
+        let server = RunningServer::start(config).unwrap();
+        let client = crate::Client::new(server.socket_path().to_path_buf());
+        let (_, escalations) = client.residency().unwrap().expect("a host's report");
+        assert_eq!(
+            escalations,
+            Some(SqlEscalations::default()),
+            "the counters of a host with a limit, none taken yet"
+        );
         server.shutdown();
     }
 
@@ -3864,8 +3896,15 @@ mod residency_activation_tests {
         let server = RunningServer::start(config(&tmp)).unwrap();
         let client = crate::Client::new(server.socket_path().to_path_buf());
         assert_eq!(client.residency().unwrap(), None);
-        let line = serde_json::to_string(&crate::Response::Residency { report: None }).unwrap();
-        assert_eq!(line, r#"{"status":"residency","report":null}"#);
+        let line = serde_json::to_string(&crate::Response::Residency {
+            report: None,
+            sql_escalations: None,
+        })
+        .unwrap();
+        assert_eq!(
+            line,
+            r#"{"status":"residency","report":null,"sql_escalations":null}"#
+        );
         server.shutdown();
     }
 }

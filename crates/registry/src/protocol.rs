@@ -103,6 +103,10 @@ pub enum Response {
         /// The controller's report; `None` for a daemon with no host.
         /// Boxed: the report is larger than every other answer.
         report: Option<Box<crate::residency::controller::Report>>,
+        /// The SQL appends' escalation counters (merkle-spec §6.4); `None`
+        /// with no host, and from a daemon that predates them.
+        #[serde(default)]
+        sql_escalations: Option<crate::residency::SqlEscalations>,
     },
     /// A [`Request::Register`] was refused by the deny ceiling — enforced in
     /// the daemon, not merely client-side (decision 0001 round 5, point 3).
