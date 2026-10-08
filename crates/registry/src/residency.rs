@@ -153,8 +153,8 @@ impl Host {
     /// else what its last measurement found, and nothing for one never
     /// measured. The latest ticket wins: this census records a measurement
     /// only over an older one, forgets an unlisted workspace only when no
-    /// later census has pruned and only what a later one did not record, and
-    /// does not bring back a workspace a later census forgot.
+    /// later census has pruned, and does not bring back a workspace a later
+    /// census forgot.
     pub(crate) fn settle(
         &self,
         kind: Owner,
@@ -166,10 +166,8 @@ impl Host {
         let latest = ticket >= *pruned;
         if latest {
             *pruned = ticket;
-            measured.owners.retain(|(owner, workspace), (recorded, _)| {
-                *owner != kind
-                    || *recorded > ticket
-                    || owners.iter().any(|(listed, _)| listed == workspace)
+            measured.owners.retain(|(owner, workspace), _| {
+                *owner != kind || owners.iter().any(|(listed, _)| listed == workspace)
             });
         }
         owners.into_iter().fold(0usize, |bytes, (workspace, now)| {

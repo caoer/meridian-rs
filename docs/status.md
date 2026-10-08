@@ -459,6 +459,10 @@ mrd skill hook emit the commit-fence contract to stdout: the markdown
 mrd status [--cwd PATH] [--json]
  the bare drift + freshness summary (pure-local,
  O(armed), fetch-less)
+mrd status --residency [--cwd PATH] [--json]
+ the same summary, then a running daemon's residency
+ controller report: one request, never a spawn (see
+ § The residency line)
 mrd sql [--fresh] [--rebuild] [--cwd PATH | --root NAME] [--json] [--] <QUERY>
  **operator face** — SQL over an in-process projection
  of the corpus, served from the drawer's `sql.duckdb`
@@ -1198,6 +1202,31 @@ Debt never enters the findings verdict and never refuses a write; zero renders
 
 `--json` always-emits both axes: with no pins, `composed.lock.pins` is `0` and
 `composed.lock.color` is `null`, never an absent field.
+
+#### The residency line
+
+Bare `status` sends no request of its own; resolving an unanchored tree may
+ask a running daemon for a registered ancestor (§ The resolution ladder), as
+every verb does. `mrd status --residency` adds one line: the running daemon's residency
+controller report (`node-rev-merkle-spec.md` §6.4, the report's door), in
+bytes:
+
+```
+  residency: floor 388972 / limit 2147483648 · bodies 1048576 · pinned 0 · reserved 0 · overage 0 · floor-overage 0 · peak-overruns 0 (shortfall 0)
+```
+
+It asks with one `residency` admin request under the liveness probe's cap —
+about two seconds, up to four when the daemon accepts and answers nothing —
+and never starts a daemon. When no daemon answers in time the line is
+`residency: no daemon answers`; when the daemon has no residency host
+(`MRD_RESIDENCY_HOST_BYTES` unset or `0`) it is `residency: the daemon has no
+residency host`; when the daemon answers `unknown_op` (an older build, the
+window after an upgrade while the old daemon still runs) it is `residency: the
+daemon does not know the residency request (older build)`. Under `--json` the
+flag adds one key, `residency`: `{"state": "report" | "no-host" |
+"older-daemon" | "no-daemon", "report": <the report object> | null}`; without
+the flag the key is absent. The report is machine-wide, not
+this workspace's, and is a reading: it never moves the exit.
 
 #### The exit reads the ARMED PLANE ONLY — every other axis is a reading (R12)
 

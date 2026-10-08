@@ -58,6 +58,9 @@ pub enum Request {
     },
     /// List all registered workspaces. Returns [`Response::Listed`].
     List,
+    /// The residency host's controller report (merkle-spec §6.4, the
+    /// report's door). Returns [`Response::Residency`].
+    Residency,
 }
 
 /// An RPC response, tagged by its `status` field.
@@ -94,6 +97,12 @@ pub enum Response {
     Listed {
         /// Every registered workspace, unordered.
         entries: Vec<WorkspaceEntry>,
+    },
+    /// Answer to [`Request::Residency`].
+    Residency {
+        /// The controller's report; `None` for a daemon with no host.
+        /// Boxed: the report is larger than every other answer.
+        report: Option<Box<crate::residency::controller::Report>>,
     },
     /// A [`Request::Register`] was refused by the deny ceiling — enforced in
     /// the daemon, not merely client-side (decision 0001 round 5, point 3).

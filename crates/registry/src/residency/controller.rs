@@ -80,7 +80,7 @@ pub struct Floor {
 
 /// Allocated corpus bytes and declared peak reservations are separate. This
 /// does not measure allocator overhead, thread stacks, native SQL or RSS.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Report {
     pub limit: usize,
     pub floor: usize,

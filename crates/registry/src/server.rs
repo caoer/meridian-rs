@@ -1200,7 +1200,7 @@ struct ArmedSub {
 
 /// The request-line half of one connection: NDJSON in, one NDJSON response per
 /// line (R1: one vocabulary on the socket). Families by `op`:
-/// - **admin** (`ping`/`register`/`unregister`/`resolve_ws`/`list`) — daemon-
+/// - **admin** (`ping`/`register`/`unregister`/`resolve_ws`/`list`/`residency`) — daemon-
 ///   internal, absent from wire `caps`;
 /// - **`hello`** — contract rev, pin, warm, bind connection (§4; subsumes deleted `attach`);
 /// - **wire ops** — frozen contract from the bound workspace's warm engine.
@@ -1426,7 +1426,7 @@ fn handle_line(
     // Owned tag so admin arm can consume `obj`. Base vocabulary for routing.
     let op = obj.get("op").and_then(Value::as_str).map(str::to_string);
     match op.as_deref() {
-        Some("ping" | "register" | "unregister" | "resolve_ws" | "list") => {
+        Some("ping" | "register" | "unregister" | "resolve_ws" | "list" | "residency") => {
             match serde_json::from_value::<Request>(Value::Object(obj)) {
                 Ok(request) => to_line(&dispatch_admin(registry, request)),
                 Err(e) => to_line(&Response::Error {
@@ -1537,6 +1537,11 @@ fn dispatch_admin(registry: &Registry, request: Request) -> Response {
         },
         Request::List => Response::Listed {
             entries: registry.entries(),
+        },
+        Request::Residency => Response::Residency {
+            report: registry
+                .residency_controller()
+                .map(|controller| Box::new(controller.report())),
         },
     }
 }
@@ -3811,6 +3816,56 @@ mod residency_activation_tests {
             server.registry.residency_controller().is_none(),
             "MRD_MAX_RESIDENT_BYTES keeps its eager meaning"
         );
+        server.shutdown();
+    }
+
+    /// The controller's report leaves the process through the `residency`
+    /// admin request (merkle-spec §6.4, the report's door): an overrun the
+    /// host's controller learned is read from outside.
+    #[test]
+    fn the_residency_door_answers_the_hosts_controller_report() {
+        use crate::raw_store::RawStore;
+        use crate::residency::{Access, Host, controller::Controller};
+        use std::fmt::Write as _;
+        use std::sync::Arc;
+
+        let tmp = TempDir::new().unwrap();
+        let controller = Controller::new(0);
+        let mut config = config(&tmp);
+        config.residency = Some(Arc::new(Host::new(
+            controller.clone(),
+            RawStore::new(&tmp.path().join("backing")).unwrap(),
+        )));
+        let server = RunningServer::start(config).unwrap();
+        let client = crate::Client::new(server.socket_path().to_path_buf());
+
+        // A load admitted under one byte: its retained body is an overrun.
+        let mut raw = String::new();
+        for i in 0..400 {
+            writeln!(raw, "# Section {i}\n\nbody {i}\n").unwrap();
+        }
+        let store = RawStore::new(&tmp.path().join("members")).unwrap();
+        let member = controller.retain(Arc::new(store.retain(raw.as_bytes()).unwrap()));
+        drop(member.pin(Access::Read, 1).unwrap());
+
+        let report = client.residency().unwrap();
+        assert_eq!(
+            report.map(|report| report.peak_overruns),
+            Some(1),
+            "the door answers the host's report: {report:?}"
+        );
+        assert_eq!(report, Some(controller.report()));
+        server.shutdown();
+    }
+
+    #[test]
+    fn the_residency_door_answers_null_without_a_host() {
+        let tmp = TempDir::new().unwrap();
+        let server = RunningServer::start(config(&tmp)).unwrap();
+        let client = crate::Client::new(server.socket_path().to_path_buf());
+        assert_eq!(client.residency().unwrap(), None);
+        let line = serde_json::to_string(&crate::Response::Residency { report: None }).unwrap();
+        assert_eq!(line, r#"{"status":"residency","report":null}"#);
         server.shutdown();
     }
 }

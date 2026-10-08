@@ -741,3 +741,175 @@ impl Drop for Sandbox {
         let _ = common::reap_daemon(&self.home, &self.cache_home);
     }
 }
+
+/// A canned daemon at the sandbox's socket path: answers the `residency`
+/// admin request with `report`, and every other request with a miss. Returns
+/// the count of connections it accepted.
+fn fake_daemon(
+    sb: &Sandbox,
+    report: serde_json::Value,
+) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    let mut frame = serde_json::json!({"status": "residency"});
+    frame["report"] = report;
+    fake_daemon_answering(sb, frame)
+}
+
+/// [`fake_daemon`] with the whole frame it answers the `residency` request.
+fn fake_daemon_answering(
+    sb: &Sandbox,
+    residency: serde_json::Value,
+) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let socket = common::child_socket_path(&sb.home, &sb.cache_home);
+    std::fs::create_dir_all(socket.parent().expect("registry dir")).expect("mkdir");
+    let _ = std::fs::remove_file(&socket);
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind fake daemon");
+    let dials = std::sync::Arc::new(AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&dials);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { break };
+            counted.fetch_add(1, Ordering::SeqCst);
+            let mut writer = stream.try_clone().expect("clone fake stream");
+            for line in BufReader::new(stream).lines() {
+                let Ok(line) = line else { break };
+                let answer = if line.contains(r#""op":"residency""#) {
+                    residency.clone()
+                } else {
+                    serde_json::json!({"status": "miss"})
+                };
+                if writeln!(writer, "{answer}").is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    dials
+}
+
+/// A git-anchored workspace: its resolution asks no daemon.
+fn anchored(sb: &Sandbox, name: &str) -> PathBuf {
+    let ws = sb.workspace(name);
+    std::fs::create_dir_all(ws.join(".git")).expect("git anchor");
+    ws
+}
+
+fn a_report() -> serde_json::Value {
+    serde_json::json!({
+        "limit": 2_147_483_648_u64, "floor": 388_972, "raw": 7, "bodies": 1_048_576,
+        "reserved": 11, "allocated": 1_437_555, "total": 1_437_566, "pinned": 5,
+        "retiring": 0, "overage": 0, "floor_overage": 0, "transient": false,
+        "peak_shortfall": 4096, "peak_overruns": 3, "members": 64, "reservations": 1,
+    })
+}
+
+/// Bare `status` is pure-local (`docs/status.md`, the residency line): beside
+/// a daemon with a residency host it opens no connection and prints nothing
+/// about residency, on either face. `--residency` is what dials.
+#[test]
+fn bare_status_opens_no_connection_to_a_daemon() {
+    use std::sync::atomic::Ordering;
+    let sb = sandbox();
+    let ws = anchored(&sb, "quiet");
+    let dials = fake_daemon(&sb, a_report());
+
+    let human = sb.run(&ws, &["status"]);
+    assert_eq!(code(&human), 0, "{}", stderr(&human));
+    let json = sb.run(&ws, &["status", "--json"]);
+    assert_eq!(code(&json), 0, "{}", stderr(&json));
+    assert!(!stdout(&human).contains("residency"), "{}", stdout(&human));
+    assert!(!stdout(&json).contains("residency"), "{}", stdout(&json));
+    assert_eq!(dials.load(Ordering::SeqCst), 0, "bare status dialled");
+
+    let asked = sb.run(&ws, &["status", "--residency"]);
+    assert_eq!(code(&asked), 0, "{}", stderr(&asked));
+    assert_eq!(dials.load(Ordering::SeqCst), 1, "the probe counts a dial");
+}
+
+/// `status --residency` prints a running daemon's controller report and
+/// carries it under `--json`; with no daemon, and with a daemon that has no
+/// host, it says so and exits 0.
+#[test]
+fn status_residency_prints_a_running_daemons_controller_report() {
+    let sb = sandbox();
+    let ws = anchored(&sb, "residency");
+    let human = |sb: &Sandbox| {
+        let out = sb.run(&ws, &["status", "--residency"]);
+        assert_eq!(
+            code(&out),
+            0,
+            "a reading never moves the exit: {}",
+            stderr(&out)
+        );
+        stdout(&out)
+    };
+    let json = |sb: &Sandbox| -> serde_json::Value {
+        let out = sb.run(&ws, &["status", "--residency", "--json"]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        serde_json::from_str::<serde_json::Value>(&stdout(&out)).expect("status json")["residency"]
+            .clone()
+    };
+
+    let so = human(&sb);
+    assert!(so.contains("  residency: no daemon answers\n"), "{so}");
+    assert_eq!(
+        json(&sb),
+        serde_json::json!({"state": "no-daemon", "report": null})
+    );
+
+    fake_daemon(&sb, serde_json::Value::Null);
+    let so = human(&sb);
+    assert!(
+        so.contains("  residency: the daemon has no residency host\n"),
+        "{so}"
+    );
+    assert_eq!(
+        json(&sb),
+        serde_json::json!({"state": "no-host", "report": null})
+    );
+
+    fake_daemon(&sb, a_report());
+    let so = human(&sb);
+    assert!(
+        so.contains(
+            "  residency: floor 388972 / limit 2147483648 · bodies 1048576 · pinned 5 · \
+             reserved 11 · overage 0 · floor-overage 0 · peak-overruns 3 (shortfall 4096)\n"
+        ),
+        "the residency line: {so}"
+    );
+    let doc = json(&sb);
+    assert_eq!(doc["state"], serde_json::json!("report"));
+    assert_eq!(doc["report"]["peak_overruns"], serde_json::json!(3));
+    assert_eq!(doc["report"]["floor"], serde_json::json!(388_972));
+}
+
+/// A daemon from before the `residency` request answers it `unknown_op` — the
+/// window after an upgrade while the old daemon still runs. `--residency`
+/// names that apart from no daemon, on both faces, and exits 0.
+#[test]
+fn status_residency_names_an_older_daemon_apart_from_no_daemon() {
+    let sb = sandbox();
+    let ws = anchored(&sb, "older");
+    // The frame a daemon without the request sends, as captured from one.
+    fake_daemon_answering(
+        &sb,
+        serde_json::json!({"id": null, "ok": false,
+                           "error": {"code": "unknown_op", "recovery": "fix"}}),
+    );
+
+    let out = sb.run(&ws, &["status", "--residency"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let so = stdout(&out);
+    assert!(
+        so.contains("  residency: the daemon does not know the residency request (older build)\n"),
+        "{so}"
+    );
+    let out = sb.run(&ws, &["status", "--residency", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("status json");
+    assert_eq!(
+        doc["residency"],
+        serde_json::json!({"state": "older-daemon", "report": null})
+    );
+}

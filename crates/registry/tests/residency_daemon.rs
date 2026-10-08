@@ -400,11 +400,13 @@ fn a_subscribed_workspace_sheds_to_the_host_limit_and_every_door_serves_the_eage
     other.hello_v3(&second);
     let warmed = other.call(&json!({"id": 11, "op": "read", "path": "doc.md"}));
     assert_eq!(warmed["ok"], json!(true), "{warmed}");
-    assert_eq!(
-        leased.registry().reap_to_budget(1),
-        Vec::<PathBuf>::new(),
-        "the reaper evicted under a floor within the controller's limit"
-    );
+    for _ in 0..2 {
+        assert_eq!(
+            leased.registry().reap_to_budget(1),
+            Vec::<PathBuf>::new(),
+            "the reaper evicted under a floor within the controller's limit"
+        );
+    }
 
     no_parsed_snapshot_is_saved_or_read_by_a_host_build(
         tmp.path(),

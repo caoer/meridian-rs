@@ -570,12 +570,14 @@ fn the_sweep_evicts_one_workspace_for_a_one_eviction_overage_beside_a_census_hol
     registry.charge_floor();
     let warm = floor();
     host.controller.set_limit(warm - 1);
+    assert!(registry.reap_to_budget(1).is_empty(), "the first tick over");
     assert_eq!(registry.reap_to_budget(1).len(), 1);
     let settled = floor();
     let freed = warm - settled;
 
     // Three quarters of an eviction over, a census parked on its generations.
     host.controller.set_limit(settled - freed / 4 * 3);
+    assert!(registry.reap_to_budget(1).is_empty(), "the first tick over");
     let (at_gate, release) = arm(&registry.pause_in_census_generations);
     let parked = {
         let registry = Arc::clone(&registry);
@@ -606,6 +608,158 @@ fn the_sweep_evicts_one_workspace_for_a_one_eviction_overage_beside_a_census_hol
     assert_eq!(host.controller.report().floor_overage, 0);
 }
 
+/// A sweep evicts only when the sweep before it was over the limit too
+/// (merkle-spec §6.4, the reaper under a host): a superseded generation an
+/// operation holds for one tick costs no workspace, one held across two
+/// costs one, and a tick at or under the limit forgets the tick before it.
+#[test]
+fn a_floor_overage_shorter_than_one_tick_evicts_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (host, registry, roots) = hosted_with(dir.path(), &["a", "b", "c", "d"], 64);
+    let floor = || host.controller.report().floor;
+    // Hold `d`'s generation past the publish that supersedes it; the limit
+    // sits between the floor without it and the floor with it.
+    let supersede = |n: usize| {
+        registry.charge_floor();
+        let without = floor();
+        let held = registry.engine_snapshot(&roots[3]).unwrap();
+        std::fs::write(
+            roots[3].join("m0.md"),
+            format!("# M0\n\nlinks [[m0]] and text ^b0 edit {n}\n"),
+        )
+        .unwrap();
+        registry.warm_or_build(&roots[3]).unwrap();
+        registry.charge_floor();
+        let with = floor();
+        assert!(with > without, "probe invalid: the held generation is free");
+        host.controller.set_limit(without + (with - without) / 2);
+        held
+    };
+
+    let held = supersede(1);
+    assert!(
+        registry.reap_to_budget(1).is_empty(),
+        "the first tick over the limit evicted"
+    );
+    drop(held);
+    assert!(registry.reap_to_budget(1).is_empty());
+    assert_eq!(host.controller.report().floor_overage, 0);
+
+    // Over again after a tick under: that tick forgot the one before it.
+    let held = supersede(2);
+    assert!(
+        registry.reap_to_budget(1).is_empty(),
+        "a tick over the limit evicted after a tick under it"
+    );
+    // Still held at the next tick: one workspace goes.
+    assert_eq!(registry.reap_to_budget(1).len(), 1);
+    assert_eq!(host.controller.report().floor_overage, 0);
+    drop(held);
+    assert!(registry.reap_to_budget(1).is_empty());
+}
+
+/// The verdict a sweep keeps is its own census's (merkle-spec §6.4, the
+/// reaper under a host), never the floor an earlier census left. An ordinary
+/// census finds the floor over; the hold ends before the sweep, whose own
+/// census is under, so the next sweep over the limit is a first one.
+#[test]
+fn the_kept_verdict_is_the_sweeps_own_census() {
+    let dir = tempfile::tempdir().unwrap();
+    let (host, registry, roots) = hosted_with(dir.path(), &["a", "b", "c", "d"], 64);
+    let floor = || host.controller.report().floor;
+    let supersede = |n: usize| {
+        registry.charge_floor();
+        let without = floor();
+        let held = registry.engine_snapshot(&roots[3]).unwrap();
+        std::fs::write(
+            roots[3].join("m0.md"),
+            format!("# M0\n\nlinks [[m0]] and text ^b0 edit {n}\n"),
+        )
+        .unwrap();
+        registry.warm_or_build(&roots[3]).unwrap();
+        registry.charge_floor();
+        let with = floor();
+        assert!(with > without, "probe invalid: the held generation is free");
+        host.controller.set_limit(without + (with - without) / 2);
+        held
+    };
+
+    // An ordinary census saw the floor over; the hold ends before the sweep.
+    let held = supersede(1);
+    assert!(host.controller.report().floor_overage > 0);
+    drop(held);
+    assert!(registry.reap_to_budget(1).is_empty());
+    assert_eq!(host.controller.report().floor_overage, 0);
+
+    let held = supersede(2);
+    assert!(
+        registry.reap_to_budget(1).is_empty(),
+        "a sweep over the limit after a sweep whose own census was under evicted"
+    );
+    // The overage is real: the sweep after it evicts.
+    assert_eq!(registry.reap_to_budget(1).len(), 1);
+    drop(held);
+}
+
+/// The sweep's first census runs alone too (merkle-spec §6.4, the reaper
+/// under a host). A census parked on its generations holds one a publish
+/// has since superseded; a sweep whose true floor is under the limit evicts
+/// nothing, though the sweep before it was over.
+#[test]
+fn the_sweeps_first_census_waits_for_a_census_holding_a_superseded_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (host, registry, roots) = hosted_with(dir.path(), &["a", "b", "c", "d"], 64);
+    let floor = || host.controller.report().floor;
+    let edit = |n: usize| {
+        std::fs::write(
+            roots[0].join("m0.md"),
+            format!("# M0\n\nlinks [[m0]] and text ^b0 edit {n}\n"),
+        )
+        .unwrap();
+        registry.warm_or_build(&roots[0]).unwrap();
+    };
+    edit(1);
+    registry.charge_floor();
+    let true_floor = floor();
+    // The tick before: over the limit, so the next sweep may evict.
+    host.controller.set_limit(true_floor - 1);
+    assert!(registry.reap_to_budget(1).is_empty(), "the first tick over");
+    host.controller.set_limit(0);
+
+    let (at_gate, release) = arm(&registry.pause_in_census_generations);
+    let parked = {
+        let registry = Arc::clone(&registry);
+        thread::spawn(move || registry.charge_floor())
+    };
+    at_gate.recv().expect("the census reached its gate");
+    // Supersede a's generation; this publish's census runs beside the parked
+    // one and charges the superseded generation the parked census keeps.
+    edit(2);
+    let inflated = floor();
+    let held = inflated.saturating_sub(true_floor);
+    assert!(held > 0, "probe invalid: nothing superseded was charged");
+    host.controller.set_limit(true_floor + held / 2);
+
+    let (done, swept) = mpsc::channel();
+    let sweep = {
+        let registry = Arc::clone(&registry);
+        thread::spawn(move || {
+            let _ = done.send(registry.reap_to_budget(1));
+        })
+    };
+    let beside = swept.recv_timeout(Duration::from_millis(500));
+    release.send(()).expect("the census parked on its gate");
+    parked.join().unwrap();
+    let victims = beside
+        .or_else(|_| swept.recv_timeout(WAIT))
+        .expect("the sweep finished");
+    sweep.join().unwrap();
+    assert!(
+        victims.is_empty(),
+        "the true floor was under the limit, yet the sweep evicted {victims:?}"
+    );
+}
+
 /// The census the sweep must wait for at its re-census (merkle-spec §6.4,
 /// the reaper under a host): one that starts after the sweep's first census
 /// and holds every generation, the victim's included, while the sweep evicts.
@@ -619,10 +773,12 @@ fn the_sweeps_recensus_waits_for_a_census_that_began_after_its_first() {
     registry.charge_floor();
     let warm = floor();
     host.controller.set_limit(warm - 1);
+    assert!(registry.reap_to_budget(1).is_empty(), "the first tick over");
     assert_eq!(registry.reap_to_budget(1).len(), 1);
     let settled = floor();
     let freed = warm - settled;
     host.controller.set_limit(settled - freed / 4 * 3);
+    assert!(registry.reap_to_budget(1).is_empty(), "the first tick over");
 
     // The sweep: first census done, victim chosen, parked before it evicts.
     let (sweep_at_gate, release_sweep) = arm(&registry.pause_before_floor_eviction);
