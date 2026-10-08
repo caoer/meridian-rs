@@ -91,9 +91,12 @@ when:
 # that no other agent does. Not unpinned: the unlabeled agents include zmax, a
 # darwin local backend that cannot run these linux containers, and no label
 # matches both the pool and workstation-nyc-2 (it carries none). The tag lanes
-# stay pinned to workstation-nyc-2.
+# stay pinned to workstation-nyc-2. `class: ci-m` keeps the workflow on the
+# 16 GiB slots it is measured on, off the one ci-l slot (ci-lax-1), which shares
+# rs-lax-1's threads with devstation-lax-1's timing runs.
 labels:
   pool: bm
+  class: ci-m
 
 # Clone with OUR credential, not the server-stamped one. The default clone's
 # netrc password is the repo user's OAuth access token, stamped into the
