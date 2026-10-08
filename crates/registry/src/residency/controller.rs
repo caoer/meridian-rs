@@ -369,18 +369,15 @@ impl Controller {
                 state.owe(key, now);
                 return Err(AdmissionError::Paused);
             }
-            // Loads another member's wait or slot paused take their turn
-            // before the next oversized load (merkle-spec §6.4): no record
-            // forms against them, and they end without this caller's help.
+            // One member waits at a time, and loads another member's wait or
+            // slot paused take their turn before the next oversized load
+            // (merkle-spec §6.4): no record forms against them, and they end
+            // without this caller's help.
             if let Some(key) = key
                 && oversized
-                && state.turn_owed(key, now)
+                && let Some(kept_out) = state.keeps_out(key, now)
             {
-                return Err(if state.waits_for(key, now) {
-                    AdmissionError::Busy
-                } else {
-                    AdmissionError::Waiting
-                });
+                return Err(kept_out);
             }
             let exclusive_available = state.transient.is_none() || state.transient == key;
             let slot_waits_for_retirement = oversized
@@ -581,15 +578,14 @@ fn refusal(
     if let Some(key) = key
         && oversized
     {
-        // Refused oversized: it becomes the one waiting member, unless
-        // another member already waits.
+        // Refused oversized: it becomes the one waiting member, or renews its
+        // record. Another member's record or hold of the slot kept it out
+        // before (`Ledger::keeps_out`).
         state.wait_oversized(key, Instant::now());
         return Some(if slot_waits_for_retirement {
             AdmissionError::Retiring
-        } else if state.waiting.is_some_and(|(waiting, _)| waiting == key) {
-            AdmissionError::Waiting
         } else {
-            AdmissionError::Busy
+            AdmissionError::Waiting
         });
     }
     // Exclusivity restricts only another over-budget admission. A policy

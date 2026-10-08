@@ -212,6 +212,19 @@ impl Ledger {
             && !matches!(self.waiting, Some((waiting, until)) if waiting == key && until > now)
     }
 
+    /// Why an oversized load of `key` neither takes the slot nor records
+    /// itself now (merkle-spec §6.4): another member's record is live, as
+    /// occupied allowance (one member waits at a time); or, as `Waiting`, a
+    /// load another member paused is owed its turn, or another member holds
+    /// the slot, so the loads paused during that load go first.
+    pub(super) fn keeps_out(&mut self, key: Key, now: Instant) -> Option<AdmissionError> {
+        if self.waits_for(key, now) {
+            return Some(AdmissionError::Busy);
+        }
+        (self.turn_owed(key, now) || self.transient.is_some_and(|holder| holder != key))
+            .then_some(AdmissionError::Waiting)
+    }
+
     pub(super) fn update_row<T>(&mut self, key: Key, change: impl FnOnce(&mut Row) -> T) -> T {
         let (count, bytes, raws) = self.row_score(key);
         self.reclaimable -= count;
