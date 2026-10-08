@@ -5167,6 +5167,109 @@ mod engine_tests {
         assert!(!open.contains_key(&ws[0]));
     }
 
+    /// A FIFO at `path`: a statement reading it runs until a writer writes
+    /// and closes it.
+    fn make_fifo(path: &Path) {
+        let made = std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(made.success(), "mkfifo {}", path.display());
+    }
+
+    /// A statement that reads `fifo` and answers one row once it closes.
+    fn fifo_query(fifo: &Path) -> String {
+        format!(
+            "SELECT count(*) AS n FROM read_csv('{}', auto_detect=false, header=false, \
+             columns={{'n':'INTEGER'}}, parallel=false)",
+            fifo.display()
+        )
+    }
+
+    /// Open `fifo`'s write end. The open returns once a statement has opened
+    /// the read end, so the caller holds a statement that is running.
+    fn open_when_read(fifo: &Path) -> fs::File {
+        let (opened, open) = std::sync::mpsc::channel();
+        let path = fifo.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = opened.send(fs::OpenOptions::new().write(true).open(path));
+        });
+        open.recv_timeout(Duration::from_secs(30))
+            .expect("the statement never opened the FIFO")
+            .unwrap()
+    }
+
+    /// A read holds its cache until its statement returns, not only until it
+    /// starts (merkle-spec §6.4, rv-367c P3-1): with the opener's handle gone
+    /// and the statement running, the close passes over the cache.
+    #[test]
+    fn a_read_holds_its_cache_while_its_statement_runs() {
+        use std::io::Write as _;
+        let home = tempfile::tempdir().unwrap();
+        let reg = two_cache_registry(home.path());
+        let ws = three_workspaces(&reg, home.path());
+        let gate = home.path().join("gate.csv");
+        make_fifo(&gate);
+        let store = reg.sql_store(&ws[0]).unwrap();
+        let read = store.lock().unwrap().begin_held_read(&store).unwrap();
+        drop(store);
+        let query = fifo_query(&gate);
+        let running = std::thread::spawn(move || read.run(&query));
+        let mut writer = open_when_read(&gate);
+        reg.sql_store(&ws[1]).unwrap();
+        reg.sql_store(&ws[2]).unwrap();
+        assert!(
+            reg.sql_stores.lock().unwrap().contains_key(&ws[0]),
+            "a cache stays open while a read's statement runs on it"
+        );
+        writer.write_all(b"1\n").unwrap();
+        drop(writer);
+        let (_, rows) = running
+            .join()
+            .unwrap()
+            .unwrap()
+            .expect("the statement runs");
+        assert_eq!(rows.len(), 1);
+        reg.sql_store(&ws[1]).unwrap();
+        assert!(
+            !reg.sql_stores.lock().unwrap().contains_key(&ws[0]),
+            "the statement's return frees its cache to close"
+        );
+    }
+
+    /// The door's read holds the cache the registry maps, not a store of its
+    /// own (merkle-spec §6.4, rv-367c P3-1): while a `sql` call's statement
+    /// runs, the map's handle is held by the call and by its read.
+    #[test]
+    fn the_doors_read_holds_the_mapped_cache_while_its_statement_runs() {
+        use std::io::Write as _;
+        let home = tempfile::tempdir().unwrap();
+        let reg = two_cache_registry(home.path());
+        let ws = three_workspaces(&reg, home.path());
+        reg.warm_or_build(&ws[0]).unwrap();
+        let gate = home.path().join("gate.csv");
+        make_fifo(&gate);
+        let query = fifo_query(&gate);
+        std::thread::scope(|scope| {
+            let running = scope.spawn(|| crate::sql_op::serve(&reg, &ws[0], &query));
+            let mut writer = open_when_read(&gate);
+            let holders = Arc::strong_count(&reg.sql_stores.lock().unwrap()[&ws[0]].store);
+            assert_eq!(
+                holders, 3,
+                "the map, the call and the call's read hold one cache"
+            );
+            writer.write_all(b"1\n").unwrap();
+            drop(writer);
+            match running.join().unwrap().unwrap() {
+                wire::ResponseBody::Sql { rows, error, .. } => {
+                    assert!(error.is_none(), "the statement runs: {error:?}");
+                    assert_eq!(rows.len(), 1);
+                }
+                other => panic!("not a sql body: {other:?}"),
+            }
+        });
+    }
+
     /// Caches held past the count close back down to it on the next `sql`
     /// call even when that call's cache is open already: a hit closes the
     /// least recently used idle ones too (merkle-spec §6.4, rv-367 P2-1).

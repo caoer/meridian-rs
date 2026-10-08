@@ -1121,13 +1121,14 @@ def check(doc):
     }
 
     /// Each node's `hpath` is its own list of strings: a finding echoes it,
-    /// and appending to one node's list leaves the next node's alone.
+    /// and appending to one node's list leaves the next node's alone, as
+    /// appending to a task's leaves its heading's, whose chain it shares.
     #[test]
     fn a_predicate_reads_each_node_s_own_hpath_list() {
-        let page = "# r\n\n```starlark\ndef check(doc):\n    heads = [n for n in doc.nodes if n.kind == \"heading\"]\n    heads[1].hpath.append(\"X\")\n    for n in heads:\n        violation(rule=\"r\", severity=\"info\", span=n.span, node_rev=n.node_rev, hpath=n.hpath, message=type(n.hpath))\n```\n";
+        let page = "# r\n\n```starlark\ndef check(doc):\n    heads = [n for n in doc.nodes if n.kind == \"heading\"]\n    heads[1].hpath.append(\"X\")\n    tasks = [n for n in doc.nodes if n.kind == \"task\"]\n    for n in tasks:\n        n.hpath.append(\"Y\")\n    for n in heads + tasks:\n        violation(rule=\"r\", severity=\"info\", span=n.span, node_rev=n.node_rev, hpath=n.hpath, message=type(n.hpath))\n```\n";
         let predicates =
             extract_predicates(&[page.to_string()], &["rules/r.md".to_string()]).expect("parses");
-        let doc = doc_of("# Long\n\n## A\n\nx\n\n## B\n\ny\n");
+        let doc = doc_of("# Long\n\n## A\n\n- [ ] x\n\n## B\n\ny\n");
         let found = eval_over_facts(&predicates, &facts_from_document(&doc), budget()).unwrap();
         let chains: Vec<(Option<Vec<String>>, &str)> = found
             .iter()
@@ -1142,6 +1143,7 @@ def check(doc):
                 (owned(&["Long"]), "list"),
                 (owned(&["Long", "A", "X"]), "list"),
                 (owned(&["Long", "B"]), "list"),
+                (owned(&["Long", "A", "Y"]), "list"),
             ]
         );
     }

@@ -913,3 +913,29 @@ fn status_residency_names_an_older_daemon_apart_from_no_daemon() {
         serde_json::json!({"state": "older-daemon", "report": null})
     );
 }
+
+/// Only an `unknown_op` refusal reads as an older build (rv-369b P3-1): any
+/// other refusal is not an answer to the request, and `--residency` says no
+/// daemon answers.
+#[test]
+fn status_residency_reads_no_other_refusal_as_an_older_daemon() {
+    let sb = sandbox();
+    let ws = anchored(&sb, "refused");
+    fake_daemon_answering(
+        &sb,
+        serde_json::json!({"id": null, "ok": false,
+                           "error": {"code": "bad_request", "recovery": "fix"}}),
+    );
+
+    let out = sb.run(&ws, &["status", "--residency"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let so = stdout(&out);
+    assert!(so.contains("  residency: no daemon answers\n"), "{so}");
+    let out = sb.run(&ws, &["status", "--residency", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("status json");
+    assert_eq!(
+        doc["residency"],
+        serde_json::json!({"state": "no-daemon", "report": null})
+    );
+}

@@ -60,7 +60,8 @@ static ALLOCATOR: Counting = Counting;
 
 /// The sweep's reach in bytes: 64 KiB by default (CI), 4 MiB under
 /// `LOAD_PEAK_SWEEP=full`, the run the spec's table and the per-byte part
-/// are taken from.
+/// are taken from. A repeated-unit shape is sampled to about that reach: its
+/// unit length is the average of its first 1,024 units (`Page::samples`).
 fn reach() -> usize {
     if std::env::var_os("LOAD_PEAK_SWEEP").is_some_and(|sweep| sweep == "full") {
         1 << 22
@@ -70,7 +71,9 @@ fn reach() -> usize {
 }
 
 /// The shapes whose load the default sweep also takes near 1 MiB, so a
-/// peak that grows faster than the length goes red in CI.
+/// peak that grows faster than the length on a path they exercise goes red
+/// in CI. A superlinear peak on the block-id path, or in a construct none of
+/// them contains, shows only under `LOAD_PEAK_SWEEP=full`.
 const PINNED: [&str; 3] = [
     "bare-headings",
     "heading-code-over-headings",

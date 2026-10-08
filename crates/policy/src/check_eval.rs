@@ -760,6 +760,59 @@ def check_change(change):
         );
     }
 
+    /// A body node's list is its own too. A task holds the same shared chain
+    /// as its heading in the tree, and appending to the task's list leaves
+    /// the heading's list and the changed sections alone.
+    #[test]
+    fn appending_to_a_body_node_s_hpath_leaves_its_heading_s_alone() {
+        let before = doc_of(
+            "tasks/t.md",
+            "# Long\n\n## A\n\n- [ ] x\n\n## B\n\n- [ ] y\n",
+        );
+        let after = doc_of(
+            "tasks/t.md",
+            "# Long\n\n## A\n\n- [ ] x\n\n## B\n\n- [ ] y edited\n",
+        );
+        let change = derive_change(
+            &before,
+            &after,
+            &[],
+            Invocation {
+                op: ChangeOp::Splice,
+                actor: None,
+                force: false,
+            },
+            &[],
+            &no_edges,
+        );
+        let refusals = run_check_change(
+            "\
+def check_change(change):
+    seen = []
+    for doc in [change.before, change.doc]:
+        bodies = [n for n in doc.nodes if n.kind == \"task\"]
+        for n in bodies:
+            n.hpath.append(\"X\")
+        seen.append([list(n.hpath) for n in doc.nodes if n.kind == \"heading\"])
+        seen.append([list(n.hpath) for n in bodies])
+    seen.append(change.sections_changed)
+    refuse(message = str(seen), passing = \"p\")
+",
+            &change,
+            CheckLimits::default(),
+        )
+        .expect("evaluates");
+        let heads = "[[\"Long\"], [\"Long\", \"A\"], [\"Long\", \"B\"]]";
+        let bodies = "[[\"Long\", \"A\", \"X\"], [\"Long\", \"B\", \"X\"]]";
+        assert_eq!(
+            refusals[0].message,
+            format!(
+                "[{heads}, {bodies}, {heads}, {bodies}, \
+                 [[\"Long\"], [\"Long\", \"B\"]]]"
+            )
+        );
+    }
+
     /// Regression (mw-splice-engine-eof, 2026-08-18): a change surface whose
     /// temp-heap allocation crosses starlark's GC threshold (100KB) must
     /// survive evaluation. Pre-fix, `eval_module` fired a GC, collected the
