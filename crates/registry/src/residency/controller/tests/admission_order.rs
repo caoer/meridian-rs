@@ -178,6 +178,149 @@ fn an_abandoned_paused_load_stops_keeping_oversized_loads_out() {
     );
 }
 
+/// No waiting record forms while another member holds the slot: a load the
+/// held slot paused takes its turn before the member that asked during that
+/// load, so it waits out one oversized load, not two (rv-368c P2-1).
+#[test]
+fn no_record_forms_while_another_member_holds_the_slot() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let gated = source(&store, &sections(30, "Big"), false, false);
+    let big = budget.retain(gated.clone());
+    let next = budget.retain(Arc::new(store.retain(&sections(30, "Next")).unwrap()));
+    let other = budget.retain(Arc::new(store.retain(&sections(10, "Other")).unwrap()));
+    budget.set_limit(budget.report().floor + 1_000_000);
+    let flight = thread::spawn(move || big.pin(Access::Read, OVERSIZED).map(drop));
+    assert!(gated.gate.entered(), "alone, it takes the slot");
+    let waits = next.pin_once(Access::Read, OVERSIZED).map(drop);
+    assert!(
+        matches!(waits, Err(Error::Admission(AdmissionError::Waiting))),
+        "{waits:?}"
+    );
+    assert_eq!(
+        lock(&budget.0.ledger).waiting,
+        None,
+        "a record formed while another member held the slot"
+    );
+    let paused = other.pin_once(Access::Read, FITS).map(drop);
+    assert!(
+        matches!(paused, Err(Error::Admission(AdmissionError::Paused))),
+        "{paused:?}"
+    );
+    gated.gate.release();
+    flight
+        .join()
+        .unwrap()
+        .expect("the oversized load is served");
+    let kept_out = next.pin_once(Access::Read, OVERSIZED).map(drop);
+    assert!(
+        matches!(kept_out, Err(Error::Admission(AdmissionError::Waiting))),
+        "the load the slot paused goes first: {kept_out:?}"
+    );
+    drop(
+        other
+            .pin_once(Access::Read, FITS)
+            .expect("the paused load takes its turn"),
+    );
+    drop(
+        next.pin_once(Access::Read, OVERSIZED)
+            .expect("the next oversized load follows it"),
+    );
+}
+
+/// One member waits at a time at the slot too: once the live loads drain,
+/// an oversized load of another member does not take the slot ahead of the
+/// live record, whose paused loads would then wait out both (rv-368c P2-1).
+#[test]
+fn an_oversized_load_does_not_take_the_slot_past_another_members_record() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let recorded = budget.retain(Arc::new(store.retain(&sections(30, "Big")).unwrap()));
+    let other = budget.retain(Arc::new(store.retain(&sections(30, "Other")).unwrap()));
+    budget.set_limit(budget.report().floor + 1_000_000);
+    let live = budget.reserve(FITS).expect("a live load");
+    let waits = recorded.pin_once(Access::Read, OVERSIZED).map(drop);
+    assert!(
+        matches!(waits, Err(Error::Admission(AdmissionError::Waiting))),
+        "{waits:?}"
+    );
+    drop(live);
+    let past = other.pin_once(Access::Read, OVERSIZED).map(drop);
+    assert!(
+        matches!(past, Err(Error::Admission(AdmissionError::Busy))),
+        "another member took the slot past the live record: {past:?}"
+    );
+    drop(
+        recorded
+            .pin_once(Access::Read, OVERSIZED)
+            .expect("the waiting member takes the slot"),
+    );
+}
+
+/// A paused load's turn lasts 100 ms after its last attempt, each attempt
+/// renewing it, and keeps every oversized poll inside it out, while the slot
+/// is held and after (rv-368c P3-1).
+#[test]
+fn a_paused_load_s_turn_lasts_100_ms_past_its_last_attempt() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let gated = source(&store, &sections(30, "Big"), false, false);
+    let big = budget.retain(gated.clone());
+    let next = budget.retain(Arc::new(store.retain(&sections(30, "Next")).unwrap()));
+    let other = budget.retain(Arc::new(store.retain(&sections(10, "Other")).unwrap()));
+    budget.set_limit(budget.report().floor + 1_000_000);
+    let flight = thread::spawn(move || big.pin(Access::Read, OVERSIZED).map(drop));
+    assert!(gated.gate.entered(), "alone, it takes the slot");
+    // Attempts at 0, 50, 100 and 150 ms: the first turn would end at 100.
+    for attempt in 0..4 {
+        if attempt > 0 {
+            thread::sleep(Duration::from_millis(50));
+        }
+        let paused = other.pin_once(Access::Read, FITS).map(drop);
+        assert!(
+            matches!(paused, Err(Error::Admission(AdmissionError::Paused))),
+            "{paused:?}"
+        );
+    }
+    let last = Instant::now();
+    thread::sleep(Duration::from_millis(10));
+    let mut polls = Vec::new();
+    for _ in 0..2 {
+        polls.push(next.pin_once(Access::Read, OVERSIZED).map(drop));
+    }
+    gated.gate.release();
+    flight
+        .join()
+        .unwrap()
+        .expect("the oversized load is served");
+    for _ in 0..2 {
+        polls.push(next.pin_once(Access::Read, OVERSIZED).map(drop));
+    }
+    assert!(
+        last.elapsed() < Duration::from_millis(100),
+        "probe invalid: the polls ran past the turn ({:?})",
+        last.elapsed()
+    );
+    assert!(
+        polls
+            .iter()
+            .all(|poll| matches!(poll, Err(Error::Admission(AdmissionError::Waiting)))),
+        "two polls in the slot, two after it: {polls:?}"
+    );
+    drop(
+        other
+            .pin_once(Access::Read, FITS)
+            .expect("the paused load takes its turn"),
+    );
+    drop(
+        next.pin_once(Access::Read, OVERSIZED)
+            .expect("the next oversized load follows it"),
+    );
+}
+
 /// A forced row selected for retirement is `retiring` and unlinked, but its
 /// body is still hot and unshared until the shed takes it, so it has an
 /// eviction ticket. A trim that runs in that window must not select it
