@@ -56,6 +56,9 @@ ignore = [
     { id = "RUSTSEC-2024-0388", reason = "derivative unmaintained; via starlark proc-macros" },
     { id = "RUSTSEC-2025-0057", reason = "fxhash unmaintained; via starlark_map" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; via starlark proc-macros" },
+    # Unmaintained, no fixed release: via serde_yaml 0.9 (config, policy, view).
+    # Revisit when serde_yaml is replaced.
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained, no safe upgrade; via serde_yaml" },
 ]
 
 [bans]
