@@ -1,0 +1,45 @@
+# The one contract pin this repo declares — docs/wire-contract.md § hello pins
+# contracts:AXIOMS.md § hello, the engine substrate every UCC pin stands on
+# (lock format, fingerprint family, wire proto and the hello grammar) — checked
+# on every push to main and every pull request against the contracts repo's
+# main. The lane clones that repo, installs the published mrd it pins
+# (bin/ci/mrd-pin there — a published build, not this tree's: the question is
+# whether the pinned text moved, not whether this tree builds), and runs its
+# bin/ci/consumer-check, which binds the clone as `contracts:` in a private
+# mount table and starts the mrd daemon a cross-root walk needs. A red prints
+# contract-diff: the section, both fingerprints, the byte diff.
+#
+# Not a verdict lane of ci.yaml and not in `publish mrd`'s depends_on: a moved
+# AXIOMS.md § hello means the charter changed under the engine's doc, which is
+# a doc PR here, never a reason to hold an engine artifact.
+labels:
+  platform: linux/amd64
+
+when:
+  - event: push
+    branch: main
+  - event: pull_request
+
+# Same clone mechanism as ci.yaml (the hourly-expiring server netrc);
+# environment: (not settings:) is the mechanism.
+clone:
+  - name: git
+    image: docker.io/woodpeckerci/plugin-git:2.9.2
+    environment:
+      PLUGIN_PARTIAL: "false"
+      PLUGIN_TAGS: "false"
+      PLUGIN_RECURSIVE: "false"
+      CI_NETRC_MACHINE: git.0xdao.app
+      CI_NETRC_USERNAME: caoer115
+      CI_NETRC_PASSWORD:
+        from_secret: forgejo_clone_token
+
+steps:
+  - name: contracts
+    image: debian:bookworm-slim
+    commands:
+      - apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl git jq >/dev/null
+      - git clone -q https://git.0xdao.app/caoer115/contracts /tmp/contracts
+      - /tmp/contracts/bin/ci/mrd-fetch /usr/local/bin/mrd
+      - mkdir -p "/run/user/$(id -u)"
+      - CONTRACTS_DIR=/tmp/contracts /tmp/contracts/bin/ci/consumer-check docs/wire-contract.md

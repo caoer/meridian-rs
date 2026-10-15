@@ -5,6 +5,14 @@ status: standing
 description: Standing wire constitution. One document. Docs define law; code may lag.
 owns: [the wire constitution — nouns, ops, guards, receipts, errors]
 ---
+```meridian-lock
+version: 2
+pins:
+  - object: "[[contracts:AXIOMS]]"
+    hash: "7000b9dcdd06f96a49aa0ab5a5ca60cf5662b34d"
+    path: ["AXIOMS", "hello"]
+    fingerprint: "fp1.span2.b3.38996bc9ca3e233cf0fc6dafae81c1336c9599129778f338ccef2fe2c2837e48"
+```
 
 # Wire contract
 
