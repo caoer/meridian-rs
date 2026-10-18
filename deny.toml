@@ -59,6 +59,13 @@ ignore = [
     # Unmaintained, no fixed release: via serde_yaml 0.9 (config, policy, view).
     # Revisit when serde_yaml is replaced.
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained, no safe upgrade; via serde_yaml" },
+    # zip 6 is a build-dependency of libduckdb-sys (pinned `zip = "6"`; the fix is
+    # zip >= 9). Its build script extracts a zip only in the DUCKDB_DOWNLOAD_LIB
+    # mode, and then DuckDB's own release archive; this workspace builds duckdb
+    # `bundled`, from the crate's tarball. Revisit at any duckdb bump.
+    { id = "RUSTSEC-2026-0367", reason = "zip SUID/SGID on extract; build-dep of libduckdb-sys, extract path unused (bundled)" },
+    { id = "RUSTSEC-2026-0368", reason = "zip symlink targets on extract; build-dep of libduckdb-sys, extract path unused (bundled)" },
+    { id = "RUSTSEC-2026-0369", reason = "zip permissions through symlinks on extract; build-dep of libduckdb-sys, extract path unused (bundled)" },
 ]
 
 [bans]
