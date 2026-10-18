@@ -867,12 +867,12 @@ mod tests {
         );
         // The refusal teaches what a writer can do: the root-less link for a
         // page in the same tree, the code-spelled address for another tree.
-        let teaching = to_stored("[[assets:media/logo.png#Top]]", &mounts)
+        let teaching = to_stored("[[assets:media/logo.png]]", &mounts)
             .expect_err("no vault name")
             .to_string();
         assert!(
-            teaching.contains("`[[media/logo.png#Top]]`")
-                && teaching.contains("(`assets:media/logo.png#Top`)"),
+            teaching.contains("`[[media/logo.png]]`")
+                && teaching.contains("(`assets:media/logo.png`)"),
             "the fix names both spellings a writer can use:\n{teaching}",
         );
         assert!(
