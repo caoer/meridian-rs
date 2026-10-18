@@ -13,7 +13,7 @@
 # re-prints the pin instead of rebuilding it.
 #
 # Separate FILE, not a step in ci.yaml, because `labels` selects the agent per
-# WORKFLOW: the darwin sibling cannot live in the same file.
+# WORKFLOW: the tag lanes run on workstation-nyc-2, ci.yaml on the pool.
 when:
   # RELEASE-SHAPED TAGS ONLY (docs/release.md §5.2 — `v<MAJOR>.<MINOR>.<PATCH>`).
   # The repo also carries component and snapshot tags (`sidecar-v0.1.0`,

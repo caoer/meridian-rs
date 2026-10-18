@@ -264,13 +264,85 @@ the tag points at (§5.2), never by the tag name, and there is **no `latest`**.
 | Artifact | Agent | Backend |
 |---|---|---|
 | `mrd-linux-amd64` | Linux runner, `tag-linux-amd64.yaml` selects by `labels` | docker, the `Dockerfile.ci` image |
-| `mrd-darwin-arm64` | `platform: darwin/arm64` agent (`tag-darwin-arm64.yaml` `labels`) — a mac artifact needs a mac | local: steps run on the host's own toolchain, `image:` names a **shell** |
+| `mrd-darwin-arm64` | the same Linux runner, `tag-darwin-arm64.yaml` | docker, the `Dockerfile.ci` image plus a pinned zig, `cargo-zigbuild`, the `aarch64-apple-darwin` rustup target, and the macOS SDK's link stubs and libc++ headers from the runner's `/ci-cache` |
 | `mrd-linux-arm64` | the same Linux runner, `tag-linux-arm64.yaml` | docker, the `Dockerfile.ci` image plus an in-step `g++-aarch64-linux-gnu` cross toolchain and the `aarch64-unknown-linux-gnu` rustup target |
 
 A linux/arm64 artifact needs no arm64 host: the vendored DuckDB builds through
 the `cc` crate, which takes the `CC_aarch64_unknown_linux_gnu` family of
 variables, so the amd64 runner cross-compiles it and asks the result its
 `--version` under `qemu-aarch64-static`.
+
+A darwin/arm64 artifact needs no mac either. zig compiles the vendored DuckDB
+for aarch64-macos and links the binary with an ad-hoc signature. What zig lacks
+are the link stubs for CoreFoundation and CoreServices (notify's FSEvents
+backend) and Apple's libc++, which only a macOS SDK carries.
+
+**One C++ runtime: Apple's.** The binary links `/usr/lib/libc++.1.dylib`, as a
+native build does, never zig's bundled libc++. The engine autoloads DuckDB
+extensions (`json`, `icu`, `parquet`, and whatever a `LOAD` names) as dylibs
+from DuckDB's repository, built against Apple's libc++. A binary carrying a
+second C++ runtime loads them and runs their success paths, but an exception
+thrown inside one is not recognised by the engine's typed catch: the caller
+gets `Unknown exception in ExecutorTask::Execute` or `prepare is null` in place
+of DuckDB's message. So the lane compiles DuckDB against the SDK's libc++
+headers (`-nostdlib++ -I <sdk>/usr/include/c++/v1`) and links the SDK's
+`libc++.1` stub (`CXXSTDLIB=c++.1`).
+
+**The macOS floor is 15.4.** The lane builds with `MACOSX_DEPLOYMENT_TARGET`
+15.4, and the binary records `minos 15.4`. Below 15.4, Apple's libc++ headers
+give every translation unit its own hidden weak copy of `std::bad_function_call`
+(vtable, typeinfo, destructor), because macOS 15.4's libc++ is the first to
+export them. The SDK's `libc++.1` stub exports them, and zig's linker, unlike
+ld64, resolves a weak definition in an object to a dylib's export. A direct
+reference then fails the link (`failed to resolve relocations and write atoms:
+Overflow`); any other reference binds the binary to symbols an older macOS
+lacks. From 15.4 the headers reference the dylib's definitions and no object
+defines them. cargo-zigbuild hands zig a target with no macOS version, and
+zig ignores `-mmacosx-version-min`, so the lane puts the deployment target in
+zig's `-target` through a small shim; without it every C++ object compiles at
+zig's default, 13.0. A native build records the deployment target it was given (11.0
+for the zmax builds), so a pin bump to a cross-built commit drops arm64 hosts
+below macOS 15.4.
+
+**The darwin smoke.** The runner cannot exec a Mach-O, so the lane checks the
+artifact's bytes (the arm64 Mach-O header and the stamp) rather than asking
+it. Before a pin bump names the published binary, a mac runs it with an empty
+scratch `HOME` (the extensions download under `~/.duckdb`) and its own
+`XDG_CACHE_HOME` and `MERIDIAN_WORKSPACE`, so no resident daemon answers:
+
+| Check | Expected |
+|---|---|
+| `mrd --version` | `mrd <version> (git <COMMIT>)` |
+| `mrd read <a file in the workspace>` | its `file_rev` and toc |
+| `otool -L mrd` | `/usr/lib/libc++.1.dylib` among the libraries |
+| `mrd sql -- "select json_extract('{bad', '\$.a')"` | `Invalid Input Error: Malformed JSON at byte 1 of input: unexpected character.  Input: "{bad"` |
+
+The last line is an error raised inside the downloaded `json` extension.
+`Invalid Error: Unknown exception in ExecutorTask::Execute` there means the
+binary carries a second C++ runtime, and it must not be pinned.
+
+**The darwin SDK tarball.** Apple's SDK is not redistributable, so it never
+enters this repo or the package registry, which anyone can read. The lane reads
+a tarball of the SDK's `.tbd` stubs and libc++ headers from the runner's
+`/ci-cache/macos-sdk/` and checks it against `MACOS_SDK_SHA256` in
+`tag-darwin-arm64.yaml`. To make it, on any mac with Xcode or the Command Line
+Tools:
+
+```sh
+sdk="$(cd "$(xcrun --sdk macosx --show-sdk-path)" && pwd -P)"
+ver="$(xcrun --sdk macosx --show-sdk-version)"
+cd "$(dirname "$sdk")" && find "$(basename "$sdk")" \
+    \( -name '*.tbd' -o -name Current -o -name 'SDKSettings.*' \
+       -o \( -path '*/usr/include/c++/v1/*' ! -type d \) \) -print |
+  COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs --no-fflags \
+    -s ",^$(basename "$sdk"),MacOSX.sdk," -T - -czf "$HOME/MacOSX${ver}-tbd-cxx.tar.gz"
+```
+
+Copy it to the runner as `/var/cache/ci/macos-sdk/MacOSX<ver>-tbd-cxx.tar.gz`
+(the host side of `/ci-cache`). A new tarball changes the bytes the lane links
+against, so set `MACOS_SDK_TARBALL` and `MACOS_SDK_SHA256` to it in the same
+commit. Since SDK 26, CoreFoundation's stubs name `arm64e` alone; zig accepts
+them for an `arm64` link from 0.16, which is the lane's zig floor.
 
 - **No publish before the verdict.** `ci.yaml` runs on `refs/tags/v*`, and every
   tag workflow declares `depends_on: [ci]`, so none starts until every `ci`
