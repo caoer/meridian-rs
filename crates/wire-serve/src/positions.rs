@@ -137,11 +137,9 @@ impl std::fmt::Display for TranslateError {
                  Fix: check the path, then re-run; see [[address-grammar]].",
                 word = addr::PATH_UNSEEABLE_REASON_WORD,
             ),
-            // The `Fix:` names steps the WRITER can take. "Give the root a vault
-            // entry" is the machine owner's act, and on a plain-folder install
-            // it turns every such link into an `obsidian://` URL; a stock seat
-            // told only that retried four times and then wrote past the door
-            // with `cat >>` (ucc round r277, delta-review-3 new 12).
+            // The `Fix:` names steps the WRITER can take. A `vault:` leg is the
+            // machine owner's act, and on a plain-folder install it turns every
+            // such link into an `obsidian://` URL.
             TranslateError::NoVault { address, root } => {
                 let path = address.split_once(':').map_or(address.as_str(), |(_, p)| p);
                 write!(
