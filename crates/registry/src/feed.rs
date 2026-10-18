@@ -1097,7 +1097,9 @@ fn cookie_token() -> String {
 /// Which event kinds can carry a content change. `Access` is read-side noise
 /// — the engine's own observation reads would feed themselves back through
 /// the watcher as fresh dirt — EXCEPT close-after-write, which on inotify is
-/// the one signal some write patterns leave.
+/// the one signal some write patterns leave. The kernel watch arms no
+/// read-side event (merkle-spec §6.4, `vendor/notify`), so on inotify this
+/// filter sees close-after-write alone.
 fn relevant(kind: EventKind) -> bool {
     match kind {
         EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
@@ -1653,6 +1655,59 @@ mod tests {
         assert!(relevant(EventKind::Create(CreateKind::Any)));
         assert!(relevant(EventKind::Remove(RemoveKind::Any)));
         assert!(relevant(EventKind::Any));
+    }
+
+    /// A read takes no kernel queue slot (merkle-spec §6.4, write-side events
+    /// only), so readers outpacing the watcher thread can never overflow the
+    /// queue into the full-sweep rung. The watcher is held inside its handler
+    /// (the feed lock) while two members are opened alternately past the
+    /// kernel's queue bound — alternation defeats inotify's merge of an event
+    /// equal to the queue's tail — so any event an open raised would overflow.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reads_take_no_kernel_queue_slot() {
+        const OPENS_CEILING: usize = 1 << 22;
+        let bound: usize = std::fs::read_to_string("/proc/sys/fs/inotify/max_queued_events")
+            .expect("the inotify queue bound is readable")
+            .trim()
+            .parse()
+            .expect("the inotify queue bound is a count");
+        // Past the bound by the events the watcher drained before it parked
+        // (one 1 KiB read) and then some.
+        let opens = bound + bound / 8 + 1024;
+        if opens > OPENS_CEILING {
+            eprintln!("skipped: max_queued_events {bound} needs {opens} opens");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let members = [root.join("a.md"), root.join("b.md")];
+        for member in &members {
+            std::fs::write(member, "# read only\n").unwrap();
+        }
+        let feed = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("watcher");
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(10)),
+            CookieOutcome::Seen,
+            "the watch is armed and its stream drained"
+        );
+        let held = feed
+            .sync
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for i in 0..opens {
+            drop(std::fs::File::open(&members[i % 2]).unwrap());
+        }
+        drop(held);
+        let verdict = feed.cookie_barrier(&root, Duration::from_secs(30));
+        assert_eq!(
+            feed.rescan_record(),
+            Vec::<RescanCause>::new(),
+            "{opens} read-only opens against a queue bound of {bound} marked a rescan"
+        );
+        assert_eq!(verdict, CookieOutcome::Seen);
+        assert_eq!(feed.stats().events, 0, "a read dirtied nothing");
     }
 
     /// Every constructible cause is named; there is no anonymous variant.

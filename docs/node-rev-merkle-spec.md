@@ -461,6 +461,15 @@ engine-side.
   quiet corpus; the engine holds workspaces the daemon never tracks (CLI lane,
   ad-hoc repos, CI fixtures); and the currency proof must ride the same stream
   that feeds the tree.
+- **Write-side events only.** The watch arms the events that can carry a
+  change: create, delete, data modify, close-after-write, rename, attribute
+  change. A read arms nothing. On inotify every armed event takes a slot in a
+  bounded kernel queue (16,384 by default), and an open would cost one slot per
+  file read and two per directory listed, so one tree-wide reader (`find`,
+  `git status`, a grep over the root) would overflow it into the full-sweep
+  rung below without moving a byte. The upstream inotify backend arms opens
+  unconditionally, so the workspace consumes it through `vendor/notify`, whose
+  one change drops `IN_OPEN` from the watch mask.
 - **A client daemon's journal is a legal additional feed** where it already
   watches — an opportunistic dirty-path hint, never an instrument a guard or
   currency answer depends on.
