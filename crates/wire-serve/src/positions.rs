@@ -137,13 +137,24 @@ impl std::fmt::Display for TranslateError {
                  Fix: check the path, then re-run; see [[address-grammar]].",
                 word = addr::PATH_UNSEEABLE_REASON_WORD,
             ),
-            TranslateError::NoVault { address, root } => write!(
-                f,
-                "refused: '{address}' names root '{root}', which is bound as a non-vault root — \
-                 it has no Obsidian vault name, and the stored form is spelled in vault names. \
-                 Fix: address the file from a vault root, or give '{root}' a vault entry; \
-                 see [[address-grammar]]."
-            ),
+            // The `Fix:` names steps the WRITER can take. "Give the root a vault
+            // entry" is the machine owner's act, and on a plain-folder install
+            // it turns every such link into an `obsidian://` URL; a stock seat
+            // told only that retried four times and then wrote past the door
+            // with `cat >>` (ucc round r277, delta-review-3 new 12).
+            TranslateError::NoVault { address, root } => {
+                let path = address.split_once(':').map_or(address.as_str(), |(_, p)| p);
+                write!(
+                    f,
+                    "refused: '{address}' names root '{root}', which is bound with no Obsidian \
+                     vault name, so a link to it has no stored form. Fix: link a page in the \
+                     same tree as the page you are writing without its root — `[[{path}]]`; \
+                     name a page in another tree as an address in code (`{address}`), which \
+                     the engine stores as written. Binding '{root}' with a `vault:` leg in \
+                     ~/MERIDIAN.md is the machine owner's step, not a writer's; see \
+                     [[address-grammar]]."
+                )
+            }
             TranslateError::Stored { address, source } => {
                 write!(f, "refused: '{address}' has no stored form — {source}")
             }
@@ -853,6 +864,20 @@ mod tests {
                 root: "assets".to_string(),
             }),
             "a bound root with no vault name has no stored spelling",
+        );
+        // The refusal teaches what a writer can do: the root-less link for a
+        // page in the same tree, the code-spelled address for another tree.
+        let teaching = to_stored("[[assets:media/logo.png#Top]]", &mounts)
+            .expect_err("no vault name")
+            .to_string();
+        assert!(
+            teaching.contains("`[[media/logo.png#Top]]`")
+                && teaching.contains("(`assets:media/logo.png#Top`)"),
+            "the fix names both spellings a writer can use:\n{teaching}",
+        );
+        assert!(
+            teaching.contains("machine owner's step"),
+            "a vault entry is named as the owner's act, not the writer's fix:\n{teaching}",
         );
         assert_eq!(
             to_stored("![[sessions:notes.md]]", &mounts),
