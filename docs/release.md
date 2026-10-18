@@ -264,13 +264,42 @@ the tag points at (§5.2), never by the tag name, and there is **no `latest`**.
 | Artifact | Agent | Backend |
 |---|---|---|
 | `mrd-linux-amd64` | Linux runner, `tag-linux-amd64.yaml` selects by `labels` | docker, the `Dockerfile.ci` image |
-| `mrd-darwin-arm64` | `platform: darwin/arm64` agent (`tag-darwin-arm64.yaml` `labels`) — a mac artifact needs a mac | local: steps run on the host's own toolchain, `image:` names a **shell** |
+| `mrd-darwin-arm64` | the same Linux runner, `tag-darwin-arm64.yaml` | docker, the `Dockerfile.ci` image plus a pinned zig, `cargo-zigbuild`, the `aarch64-apple-darwin` rustup target, and the macOS SDK stubs from the runner's `/ci-cache` |
 | `mrd-linux-arm64` | the same Linux runner, `tag-linux-arm64.yaml` | docker, the `Dockerfile.ci` image plus an in-step `g++-aarch64-linux-gnu` cross toolchain and the `aarch64-unknown-linux-gnu` rustup target |
 
 A linux/arm64 artifact needs no arm64 host: the vendored DuckDB builds through
 the `cc` crate, which takes the `CC_aarch64_unknown_linux_gnu` family of
 variables, so the amd64 runner cross-compiles it and asks the result its
 `--version` under `qemu-aarch64-static`.
+
+A darwin/arm64 artifact needs no mac either. zig compiles the vendored DuckDB
+for aarch64-macos and links the binary with an ad-hoc signature. What zig lacks
+are the link stubs for CoreFoundation and CoreServices (notify's FSEvents
+backend), which only a macOS SDK carries. The runner cannot exec a Mach-O, so
+the lane checks the artifact's bytes (the arm64 Mach-O header and the stamp)
+rather than asking it; a mac runs `mrd --version` and one read on the
+published binary before a pin bump names it.
+
+**The darwin SDK tarball.** Apple's SDK is not redistributable, so it never
+enters this repo or the package registry, which anyone can read. The lane reads
+a tarball of the SDK's `.tbd` stubs from the runner's `/ci-cache/macos-sdk/` and
+checks it against `MACOS_SDK_SHA256` in `tag-darwin-arm64.yaml`. To make it, on
+any mac with Xcode or the Command Line Tools:
+
+```sh
+sdk="$(cd "$(xcrun --sdk macosx --show-sdk-path)" && pwd -P)"
+ver="$(xcrun --sdk macosx --show-sdk-version)"
+cd "$(dirname "$sdk")" && find "$(basename "$sdk")" \
+    \( -name '*.tbd' -o -name Current -o -name 'SDKSettings.*' \) -print |
+  COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs --no-fflags \
+    -s ",^$(basename "$sdk"),MacOSX.sdk," -T - -czf "$HOME/MacOSX${ver}-tbd.tar.gz"
+```
+
+Copy it to the runner as `/var/cache/ci/macos-sdk/MacOSX<ver>-tbd.tar.gz` (the
+host side of `/ci-cache`). A new tarball changes the bytes the lane links
+against, so set `MACOS_SDK_TARBALL` and `MACOS_SDK_SHA256` to it in the same
+commit. Since SDK 26, CoreFoundation's stubs name `arm64e` alone; zig accepts
+them for an `arm64` link from 0.16, which is the lane's zig floor.
 
 - **No publish before the verdict.** `ci.yaml` runs on `refs/tags/v*`, and every
   tag workflow declares `depends_on: [ci]`, so none starts until every `ci`

@@ -1,18 +1,33 @@
-# TAG lane — darwin/arm64. The mac half of the release: same commit, same pin
-# vocabulary, a binary no Linux agent can produce.
+# TAG lane — darwin/arm64, CROSS-COMPILED on the linux/amd64 runner. The mac
+# half of the release: same commit, same pin vocabulary, same registry probe.
 #
 # Law: docs/release.md §5.4 (what the tag publishes). Keying, the 409
 # first-writer property, and the no-`latest` rule are ruled there, not here.
 #
-# WHERE THIS RUNS, and what follows from it. The `platform` label selects a
-# darwin/arm64 agent — a workstation running the agent with the LOCAL backend.
-# Consequences, none of them optional:
-#   - `image:` names the SHELL, not a container. `bash` runs bash.
-#   - steps execute as a real user on a real machine, with that user's PATH,
-#     HOME and caches. Nothing here may assume a clean container, and nothing
-#     here writes outside the workspace or the agent's own cache dir.
-#   - the label is the requirement (a mac artifact needs a mac), not the
-#     machine's name: a second darwin agent picks this lane up unchanged.
+# Same shape as `tag-linux-arm64.yaml` — probe the registry, attest the tree,
+# build, check the artifact, publish. What makes a mac binary on linux:
+#   - the toolchain: `cargo zigbuild` with a PINNED zig. zig compiles the
+#     vendored C++ DuckDB (`libduckdb-sys` `bundled`) for aarch64-macos with its
+#     own libc++ and darwin libc headers, and its Mach-O linker ad-hoc signs the
+#     output, which arm64 macOS requires before it will exec a binary.
+#   - the link stubs: mrd links CoreFoundation and CoreServices (notify's
+#     FSEvents backend), which only a macOS SDK carries, as `.tbd` text stubs.
+#     The SDK is Apple's and is NOT redistributable, so it is never in this
+#     repo or the (publicly readable) package registry: it is a tarball in the
+#     runner's own `/ci-cache`, checked against the digest pinned below on every
+#     run. Making it: docs/release.md §5.4, "The darwin SDK tarball".
+#   - NO `SDKROOT`: cargo-zigbuild turns it into `--sysroot`, and zig prefixes
+#     EVERY absolute `-L` with the sysroot (no ld64-style fallback), so the
+#     link loses the build's own out-dirs. The stubs reach the linker by path
+#     through the target RUSTFLAGS instead.
+#   - zig >= 0.16 is the floor: since SDK 26 Apple ships CoreFoundation stubs for
+#     `arm64e` alone, and only from 0.16 does zig accept them for an `arm64`
+#     link, as Apple's ld64 does.
+#   - the runner cannot exec a Mach-O, so the artifact check reads its BYTES:
+#     the Mach-O arm64 header and the stamp string. Executing it is the darwin
+#     smoke a mac does after publish (docs/release.md §5.4).
+# No sccache and no mold, as in the linux-arm64 lane. The cold build is a DuckDB
+# compile, ~15–25 min on this runner.
 when:
   # RELEASE-SHAPED TAGS ONLY (docs/release.md §5.2) — the repo's component and
   # snapshot tags must not publish a release.
@@ -22,32 +37,15 @@ when:
   # publishes under the commit key like every other route.
   - event: manual
 
-# THE GATE. No release binary for a commit whose suite never ran or ran red.
-# `ci.yaml` runs on `refs/tags/v*` too, and Woodpecker does not start a workflow
-# until every named dependency SUCCEEDED — a red `ci` leaves this workflow
-# skipped and `publish` never-run.
-#
-# NOT `optional: true`. Optional means "enforced only if `ci` is part of the
-# pipeline", so a `ci` filtered out by its own `when` would silently let a
-# release publish ungated — the exact hole this gate exists to close.
-#
-# It is landable only because the parse-time OAuth netrc was replaced with a
-# non-rotating PAT (the `clone:` block below): `depends_on` is precisely what
-# makes this workflow start ~18 min late, and a late clone used to die at
-# exit 128.
+# THE GATE — not `optional: true`; ci.yaml's header and tag-linux-amd64.yaml
+# carry why.
 depends_on:
   - ci
 
+# Pinned to the host whose /ci-cache holds the SDK tarball.
 labels:
-  platform: darwin/arm64
+  hostname: workstation-nyc-2
 
-# Non-rotating clone credential; mechanism + traps: ci.yaml's clone block.
-# BACKEND NOTE: this lane runs the LOCAL backend, which IGNORES a clone
-# step's image/commands and runs its own plugin-git binary — but it writes
-# $HOME/.netrc from THIS step's environment (backend/local/clone.go
-# writeNetRC), because isolated-home defaults ON and this agent does not
-# disable it. So the env below is the whole delivery path on this backend; the
-# image line satisfies the schema and is not pulled.
 clone:
   - name: git
     image: docker.io/woodpeckerci/plugin-git:2.9.2
@@ -61,81 +59,75 @@ clone:
 
 steps:
   - name: publish mrd (darwin-arm64, keyed by commit)
-    image: bash
+    image: "meridian-ci:2026-08-10"
+    pull: false
     environment:
-      CARGO_TERM_COLOR: always
+      CARGO_HOME: /ci-cache/meridian-rs/cargo
+      CARGO_BUILD_JOBS: "4"
       CARGO_INCREMENTAL: "0"
-      # Target dir OUTSIDE the workspace, which is a fresh clone per run: this
-      # is the only cross-run reuse this lane has (no sccache on the mac), and
-      # the agent takes one workflow at a time, so nothing else writes it.
-      CARGO_TARGET_DIR: /var/lib/woodpecker-agent/cache/mrd-target
+      CARGO_TERM_COLOR: always
+      # zig 0.16 targets macOS 13 at the lowest; the binary records minos 13.0.
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+      # THE PINS. A change to any of them is a change to what this lane
+      # publishes: bump deliberately, and rebuild the SDK tarball per §5.4.
+      ZIG_VERSION: "0.16.0"
+      ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+      CARGO_ZIGBUILD_VERSION: "0.23.4"
+      MACOS_SDK_TARBALL: /ci-cache/macos-sdk/MacOSX27.0-tbd.tar.gz
+      MACOS_SDK_SHA256: cbdb898c4e8df387e33a858cab70dde37726f187bbf1083c73e45b3ad55ba313
       FORGEJO_TOKEN:
         from_secret: forgejo_token
     commands:
       # ASK THE REGISTRY FIRST — the .sha256 sidecar answers "published?" and
-      # "which digest?" in one request. Scratch lives in the workspace, never
-      # in /tmp: this is a workstation whose /tmp is swept.
+      # "which digest?" in one request (tag-linux-amd64.yaml has the reasoning).
       - |
         set -eu
-        mkdir -p "$${CI_WORKSPACE}/.ci" "$${CARGO_TARGET_DIR}"
-        # PEEL THE SHA TO A COMMIT. On a `tag` event CI_COMMIT_SHA is the
-        # ANNOTATED TAG OBJECT, not the commit — observed on an annotated probe
-        # tag: the CI sha named the tag object, `git rev-list -n 1 <tag>` the
-        # commit. Keying on it would publish bytes at an address no consumer
-        # can reach (`git rev-list -n 1 <tag>` answers the COMMIT,
-        # docs/release.md §5.4) and would stamp the binary with a sha that is
-        # not a commit at all (§5.1). `^{commit}` peels a tag object and is a
-        # no-op on a commit sha, so both event shapes agree afterwards.
+        git config --global --add safe.directory "$${CI_WORKSPACE}"
         rev="$(git rev-parse "$${CI_COMMIT_SHA}^{commit}")"
-        echo "$${rev}" > "$${CI_WORKSPACE}/.ci/rev"
+        echo "$${rev}" > /tmp/rev
         echo "publishing under commit $${rev} (CI sha: $${CI_COMMIT_SHA})"
         base="https://git.0xdao.app/api/packages/caoer115/generic/mrd/$${rev}"
-        code="$(curl -s -o "$${CI_WORKSPACE}/.ci/have.sha256" -w '%{http_code}' \
+        code="$(curl -s -o /tmp/have.sha256 -w '%{http_code}' \
           -H "Authorization: token $${FORGEJO_TOKEN}" "$${base}/mrd-darwin-arm64.sha256")"
         if [ "$${code}" = "200" ]; then
           echo "already published for $${rev} — the FIRST bytes stay authoritative (append-only)"
-          echo "SKIP_BUILD=1" > "$${CI_WORKSPACE}/.ci/lane.env"
+          echo "SKIP_BUILD=1" > /tmp/lane.env
         else
           echo "not published for $${rev} (HTTP $${code}) — building"
-          echo "SKIP_BUILD=0" > "$${CI_WORKSPACE}/.ci/lane.env"
+          echo "SKIP_BUILD=0" > /tmp/lane.env
         fi
-      # Identity, MEASURED not invented (docs/release.md §5.1). The clone is
-      # this user's own, so the probe reads a tree it owns — no safe.directory
-      # dance, and a divergence here would be a real one.
-      #
-      # The probe is the ENGINE'S OWN, flag for flag (crates/mrd/build_git.rs
-      # worktree_dirty): --untracked-files=no because the question is whether
-      # this build is attributable to HEAD, and --no-optional-locks so the
-      # probe cannot write the index under a concurrent git. Measured why it
-      # matters: with a bare `git status --porcelain`, THIS STEP'S OWN .ci/
-      # scratch dir reads as a divergence, and the lane published a `-dirty`
-      # release for a tree that matched HEAD exactly. A supplied
-      # MRD_BUILD_SHA rides verbatim — the supplier owns the claim — so a
-      # sloppy probe here is a lie the binary then tells forever.
-      #
-      # IT REFUSES, IT DOES NOT WARN — and it is TRI-STATE. Both halves came
-      # from ci.yaml and belong here MORE than there, because what this lane
-      # publishes is a RELEASE:
-      #   - a WARNING that never fails is ceremony. ci.yaml's warned on TEN
-      #     consecutive main heads and stopped nothing.
-      #   - `if [ -n "$(git …)" ]` FAILS OPEN: a git exiting non-zero with
-      #     EMPTY stdout yields the empty string, the test is false, and the
-      #     lane publishes a release stamped with a sha it never measured.
-      #     `set -eu` does not catch it — the failure is inside a command
-      #     substitution in an `if` condition. Reproduced with a stub git
-      #     exiting 128. On THIS backend the risk is not hypothetical: steps
-      #     run as a real user on a real workstation, so a git that is missing,
-      #     shadowed, or parked mid-exec is a live shape here — this agent's
-      #     nix `git` has sat unrunnable under Gatekeeper for ~24 min.
-      # The engine is deliberately tri-state for the same reason: build_git.rs
-      # returns None on a non-zero exit, build.rs collapses that to `unknown`,
-      # under its own rule that "I could not tell" and "it was clean" are
-      # opposite answers.
+      # The cross toolchain and the SDK stubs, each checked against its pin.
+      # zig and cargo-zigbuild are cached in /ci-cache by version; the SDK is
+      # unpacked fresh into /tmp each run.
       - |
         set -eu
-        . "$${CI_WORKSPACE}/.ci/lane.env"
+        . /tmp/lane.env
         [ "$${SKIP_BUILD}" = "0" ] || exit 0
-        rev="$(cat "$${CI_WORKSPACE}/.ci/rev")"
+        if [ ! -f "$${MACOS_SDK_TARBALL}" ]; then
+          echo "no SDK tarball at $${MACOS_SDK_TARBALL} — make it per docs/release.md §5.4 (The darwin SDK tarball)"
+          exit 1
+        fi
+        echo "$${MACOS_SDK_SHA256}  $${MACOS_SDK_TARBALL}" | sha256sum -c -
+        mkdir -p /tmp/sdk && tar -C /tmp/sdk -xzf "$${MACOS_SDK_TARBALL}"
+        test -f /tmp/sdk/MacOSX.sdk/System/Library/Frameworks/CoreServices.framework/CoreServices.tbd
+        zdir="/ci-cache/zig/$${ZIG_VERSION}"
+        if [ ! -x "$${zdir}/zig" ]; then
+          curl -fsSL -o /tmp/zig.tar.xz "https://ziglang.org/download/$${ZIG_VERSION}/zig-x86_64-linux-$${ZIG_VERSION}.tar.xz"
+          echo "$${ZIG_SHA256}  /tmp/zig.tar.xz" | sha256sum -c -
+          mkdir -p "$${zdir}.part" && tar -C "$${zdir}.part" --strip-components=1 -xJf /tmp/zig.tar.xz
+          rm -rf "$${zdir}" && mv "$${zdir}.part" "$${zdir}"
+        fi
+        zbin="/ci-cache/meridian-rs/cargo-zigbuild-$${CARGO_ZIGBUILD_VERSION}"
+        [ -x "$${zbin}/bin/cargo-zigbuild" ] || \
+          cargo install --locked --root "$${zbin}" "cargo-zigbuild@$${CARGO_ZIGBUILD_VERSION}"
+        rustup target add aarch64-apple-darwin
+      # Attest the tree, tri-state, flag for flag with the engine's own probe
+      # — the amd64 lane's comment block is the law here too.
+      - |
+        set -eu
+        . /tmp/lane.env
+        [ "$${SKIP_BUILD}" = "0" ] || exit 0
+        rev="$(cat /tmp/rev)"
         if ! porcelain="$(git --no-optional-locks status --porcelain --untracked-files=no)"; then
           echo "the tree probe FAILED — cannot attest, and 'could not tell' is not 'clean'"
           exit 1
@@ -145,8 +137,6 @@ steps:
           printf '%s\n' "$porcelain"
           exit 1
         fi
-        # THE FOURTH STATE: the probe above measures divergence from HEAD;
-        # the stamp names $rev. Assert they are the same tree, tri-state.
         if ! head="$(git rev-parse HEAD)"; then
           echo "rev-parse FAILED — cannot attest which tree was built"
           exit 1
@@ -155,49 +145,42 @@ steps:
           echo "HEAD is $head, not $${rev} — the probe answered for a tree the stamp does not name; refusing"
           exit 1
         fi
-        echo "MRD_BUILD_SHA=$${rev}" > "$${CI_WORKSPACE}/.ci/stamp.env"
-        cat "$${CI_WORKSPACE}/.ci/stamp.env"
-        # LOWEST CPU PRIORITY. The only darwin agent is a person's desk
-        # machine: a release build at normal priority drove it thermal Heavy
-        # even with CARGO_BUILD_JOBS=4, because the job bound caps parallel
-        # rustc processes, not the codegen threads inside each one. Under
-        # nice 19 the build yields to interactive work; codegen threads are
-        # the next lever if that is not enough.
-        env $(cat "$${CI_WORKSPACE}/.ci/stamp.env") nice -n 19 cargo build --locked --release -p mrd
-      # ASK THE ARTIFACT what it is. A binary that cannot name its tree, or
-      # names a different one, must never reach a pin.
+        echo "MRD_BUILD_SHA=$${rev}" > /tmp/stamp.env
+        cat /tmp/stamp.env
+        export PATH="/ci-cache/zig/$${ZIG_VERSION}:/ci-cache/meridian-rs/cargo-zigbuild-$${CARGO_ZIGBUILD_VERSION}/bin:$${PATH}"
+        unset SDKROOT
+        export CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="-L framework=/tmp/sdk/MacOSX.sdk/System/Library/Frameworks -L native=/tmp/sdk/MacOSX.sdk/usr/lib"
+        zig version
+        env $(cat /tmp/stamp.env) cargo zigbuild -q --locked --release -p mrd --target aarch64-apple-darwin
+      # Check the artifact — by its bytes, because this runner cannot exec it:
+      # a Mach-O 64 arm64 header (magic cffaedfe, cputype 0100000c,
+      # little-endian), and the stamp string naming exactly $rev, never
+      # `unknown` or `-dirty`.
       - |
         set -eu
-        . "$${CI_WORKSPACE}/.ci/lane.env"
+        . /tmp/lane.env
         [ "$${SKIP_BUILD}" = "0" ] || exit 0
-        rev="$(cat "$${CI_WORKSPACE}/.ci/rev")"
-        ver="$($${CARGO_TARGET_DIR}/release/mrd --version)"
-        echo "$${ver}"
-        case "$${ver}" in
-          *unknown*) echo "this build cannot name the tree it came from — refusing to publish it"; exit 1 ;;
-        esac
-        echo "$${ver}" | grep -q "$${rev}" || {
-          echo "the stamp does not name $${rev} — the pin would lie about what it is"; exit 1; }
+        rev="$(cat /tmp/rev)"
+        bin=target/aarch64-apple-darwin/release/mrd
+        hdr="$(head -c 8 "$${bin}" | od -An -tx1 | tr -d ' \n')"
+        echo "header: $${hdr}"
+        [ "$${hdr}" = "cffaedfe0c000001" ] || { echo "not a Mach-O arm64 executable — refusing to publish it as one"; exit 1; }
+        grep -aq "$${rev}" "$${bin}" || { echo "the binary does not carry $${rev} — the pin would lie about what it is"; exit 1; }
+        if grep -aq "$${rev}-dirty" "$${bin}"; then echo "the binary is stamped -dirty — refusing"; exit 1; fi
+        echo "stamp $${rev} present"
       - |
         set -eu
-        . "$${CI_WORKSPACE}/.ci/lane.env"
-        rev="$(cat "$${CI_WORKSPACE}/.ci/rev")"
+        . /tmp/lane.env
+        rev="$(cat /tmp/rev)"
         base="https://git.0xdao.app/api/packages/caoer115/generic/mrd/$${rev}"
         if [ "$${SKIP_BUILD}" = "0" ]; then
-          # shasum, not sha256sum: the latter is not on every mac's PATH.
-          sha="$(shasum -a 256 "$${CARGO_TARGET_DIR}/release/mrd" | cut -d' ' -f1)"
-          echo "$${sha}  mrd-darwin-arm64" > "$${CI_WORKSPACE}/.ci/mrd-darwin-arm64.sha256"
-          # RETRIES, and the append-only store is what makes them safe: an
-          # upload that actually landed answers 409 on the next attempt, never
-          # a second copy, so a retry can neither duplicate nor replace bytes.
-          # The ~53 MB binary PUT from this host has answered `524` —
-          # Cloudflare's origin-timeout, raised in front of the forge — after
-          # the build had already succeeded. The upload is the fragile leg
-          # here, not the build.
+          bin=target/aarch64-apple-darwin/release/mrd
+          sha="$(sha256sum "$${bin}" | cut -d' ' -f1)"
+          echo "$${sha}  mrd-darwin-arm64" > /tmp/mrd-darwin-arm64.sha256
           put() {
             for delay in 0 15 45; do
               [ "$delay" = 0 ] || sleep "$delay"
-              code="$(curl -s -o "$${CI_WORKSPACE}/.ci/put.out" -w '%{http_code}' -X PUT \
+              code="$(curl -s -o /tmp/put.out -w '%{http_code}' -X PUT \
                 -H "Authorization: token $${FORGEJO_TOKEN}" \
                 --upload-file "$$1" "$${base}/$$2")"
               case "$${code}" in
@@ -205,17 +188,14 @@ steps:
                 409) echo "$$2 already published for this commit — keeping the FIRST bytes (append-only)"; return 0 ;;
               esac
               echo "publish $$2: HTTP $${code} — retrying"
-              cat "$${CI_WORKSPACE}/.ci/put.out" || true
+              cat /tmp/put.out || true
             done
             echo "publish $$2 failed after 3 attempts: HTTP $${code}"
             exit 1
           }
-          put "$${CARGO_TARGET_DIR}/release/mrd" mrd-darwin-arm64
-          put "$${CI_WORKSPACE}/.ci/mrd-darwin-arm64.sha256" mrd-darwin-arm64.sha256
+          put "$${bin}" mrd-darwin-arm64
+          put /tmp/mrd-darwin-arm64.sha256 mrd-darwin-arm64.sha256
         fi
-        # Read the pin back from the REGISTRY: on the 409 path the
-        # authoritative bytes are someone else's, and that is the digest a
-        # consumer must record.
         echo ''
         echo 'pin for downstream .mrd-pin (darwin-arm64):'
         echo "  MRD_COMMIT=$${rev}"
