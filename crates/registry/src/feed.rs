@@ -989,7 +989,7 @@ fn can_hide_members(rel: &Path, abs: &Path, kind: EventKind) -> bool {
 /// How many entries a new directory may hold for [`new_directory_members`] to
 /// enumerate it rather than collapse. A fresh `mkdir` holds a handful; a
 /// cloned tree past this is cheaper to sweep than to walk in the watcher.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))]
 const NEW_DIR_ENUM_CAP: usize = 1024;
 
 /// A new directory's member candidates, named NOW so its create need not
@@ -1002,10 +1002,7 @@ const NEW_DIR_ENUM_CAP: usize = 1024;
 /// hides nothing while the directory stays listable: the stream reports its
 /// children whatever the mode, so it names no members. `None` collapses: a
 /// kind other than these (a rename lands a tree whose children raise nothing;
-/// a mount), an unlistable directory (a `chmod 000` or `mkdir -m 000` must
-/// still refuse the walk), or one past [`NEW_DIR_ENUM_CAP`]. On a busy
-/// sessions root, one collapse per `mkdir` was one full sweep for every
-/// reader.
+/// a mount), or an enumeration that refuses ([`enumerate_new_directory`]).
 #[cfg(target_os = "macos")]
 fn new_directory_members(rel: &Path, abs: &Path, kind: EventKind) -> Option<Vec<PathBuf>> {
     use notify::event::ModifyKind;
@@ -1015,6 +1012,32 @@ fn new_directory_members(rel: &Path, abs: &Path, kind: EventKind) -> Option<Vec<
     if !matches!(kind, EventKind::Create(CreateKind::Folder)) {
         return None;
     }
+    enumerate_new_directory(rel, abs)
+}
+
+/// inotify arms a watch per directory. `vendor/notify` arms a new directory's
+/// whole subtree before it delivers the batch carrying the directory's create,
+/// and delivers an arm that failed while the directory still exists as a
+/// watcher error, which collapses. So when this runs, a child landing later
+/// raises its own event and a child already there is listed here: a create is
+/// enumerated exactly as on `FSEvents`. A metadata change still collapses —
+/// inotify cannot arm a directory it cannot read, so a mode change can reveal
+/// children that raised nothing — and so does a rename, as on every backend.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn new_directory_members(rel: &Path, abs: &Path, kind: EventKind) -> Option<Vec<PathBuf>> {
+    if !matches!(kind, EventKind::Create(CreateKind::Folder)) {
+        return None;
+    }
+    enumerate_new_directory(rel, abs)
+}
+
+/// The member candidates under a new directory, listed now. `None` collapses:
+/// an unlistable directory (a `chmod 000` or `mkdir -m 000` must still refuse
+/// the walk), or one past [`NEW_DIR_ENUM_CAP`]. A directory already gone hid
+/// nothing. On a busy sessions root, one collapse per `mkdir` was one full
+/// sweep for the next reader.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))]
+fn enumerate_new_directory(rel: &Path, abs: &Path) -> Option<Vec<PathBuf>> {
     let mut members = Vec::new();
     let mut entries_seen = 0usize;
     let mut stack = vec![(abs.to_path_buf(), rel.to_path_buf())];
@@ -1064,11 +1087,9 @@ fn walkable(abs: &Path) -> bool {
     }
 }
 
-/// inotify arms a new directory only after delivering its create event, so a
-/// child can land before the arm and an enumeration here would race it; and it
-/// cannot arm a directory it cannot read, so a mode change can reveal children
-/// that raised nothing. Every hideable path collapses.
-#[cfg(not(target_os = "macos"))]
+/// Any other backend: no arm-before-deliver guarantee is known, so every
+/// hideable path collapses.
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
 fn new_directory_members(_rel: &Path, _abs: &Path, _kind: EventKind) -> Option<Vec<PathBuf>> {
     None
 }
@@ -1475,16 +1496,23 @@ mod tests {
         assert_eq!(s.rescans.as_slice(), &[RescanCause::MissedEvent][..]);
         assert!(s.dirty.is_empty());
 
-        // A directory CREATE hides children only where a watch arms per
-        // directory (inotify); FSEvents' prefix stream has no such gap.
+        // A directory CREATE is enumerated where the backend covers the
+        // directory before the handler lists it: FSEvents' prefix stream has
+        // no per-directory arm, and `vendor/notify` arms an inotify directory
+        // before it delivers the create.
+        let enumerates = cfg!(any(
+            target_os = "macos",
+            target_os = "linux",
+            target_os = "android"
+        ));
         let mut created = FeedState::default();
         created.admit(
             Path::new("new"),
             &root.join("new"),
             EventKind::Create(CreateKind::Folder),
         );
-        if cfg!(target_os = "macos") {
-            assert_eq!(created.doubt, None, "FSEvents: a new directory is no gap");
+        if enumerates {
+            assert_eq!(created.doubt, None, "a new directory is no gap");
         } else {
             assert_eq!(created.doubt, Some(RescanCause::MissedEvent));
         }
@@ -1518,7 +1546,7 @@ mod tests {
             assert_eq!(meta.doubt, Some(RescanCause::MissedEvent));
         }
 
-        if cfg!(target_os = "macos") {
+        if enumerates {
             assert_eq!(cloned.doubt, None);
             assert_eq!(
                 cloned.dirty.iter().cloned().collect::<Vec<_>>(),
@@ -1633,6 +1661,79 @@ mod tests {
             feed.rescan_record(),
             vec![RescanCause::MissedEvent],
             "an already-open doubt does not spend the cookie timeout"
+        );
+    }
+
+    /// `vendor/notify` arms a new directory before it delivers the
+    /// directory's create (merkle-spec §6.4, the new-directory row): a child
+    /// written from inside the handler, while it holds that create, raises
+    /// its own event. Upstream arms after delivery, so that child raised
+    /// nothing, and an enumeration in the handler could race the arm.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn inotify_arms_a_new_directory_before_delivering_its_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let new = root.join("new");
+        let child = new.join("child.md");
+        let written = child.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher =
+            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                if let Ok(event) = &event
+                    && matches!(event.kind, EventKind::Create(CreateKind::Folder))
+                {
+                    std::fs::write(&written, "# child\n").unwrap();
+                }
+                let _ = tx.send(event);
+            })
+            .expect("watcher");
+        watcher.watch(&root, RecursiveMode::Recursive).unwrap();
+        std::fs::create_dir(&new).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            match rx.recv_timeout(left) {
+                Ok(Ok(event)) if event.paths.contains(&child) => return,
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => panic!("watcher error: {error}"),
+                Err(_) => break,
+            }
+        }
+        panic!(
+            "a child written while the handler held its directory's create raised no \
+             event: the directory was armed after its create was delivered"
+        );
+    }
+
+    /// A `mkdir` with a member written straight into it is a hint, never a
+    /// collapse, where the backend enumerates (merkle-spec §6.4 ladder): the
+    /// next barrier Sees, no rescan is marked, and the member is pending — so
+    /// the next reader folds O(dirty) instead of paying the full stat sweep.
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))]
+    #[test]
+    fn a_new_directory_with_a_member_is_a_hint_not_a_collapse() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let feed = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("watcher");
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(10)),
+            CookieOutcome::Seen,
+            "the watch is armed and its stream drained"
+        );
+        std::fs::create_dir_all(root.join("agents/abcd1234/memos")).unwrap();
+        std::fs::write(root.join("agents/abcd1234/abcd1234.md"), "# card\n").unwrap();
+        std::fs::write(root.join("agents/abcd1234/memos/m.md"), "# memo\n").unwrap();
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(10)),
+            CookieOutcome::Seen,
+            "a new directory opens no doubt"
+        );
+        assert_eq!(feed.rescan_record(), Vec::<RescanCause>::new());
+        let stats = feed.stats();
+        assert!(!stats.all_dirty);
+        assert_eq!(
+            stats.pending, 2,
+            "both members are pending hints: {stats:?}"
         );
     }
 

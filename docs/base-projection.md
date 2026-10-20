@@ -384,8 +384,8 @@ other projection table:
   walks. A walk that could not list a directory or read a member answers its
   own call and is never kept: its gap may be transient, and no event would
   retire it. The reuse inherits the md plane's capture gap and closes it the
-  same way: a new directory is a counted event and, on inotify, a doubt
-  collapse. Classification reads the path as it stands when the feed handles
+  same way: a new directory is a counted event, and a directory create the
+  feed cannot enumerate is a doubt collapse. Classification reads the path as it stands when the feed handles
   the event, as the md plane's does, so one race stays open: a directory
   with a markdown name renamed away, with a markdown file created at that
   name before the feed handles the rename, moves no count. Counting every

@@ -468,8 +468,10 @@ engine-side.
   file read and two per directory listed, so one tree-wide reader (`find`,
   `git status`, a grep over the root) would overflow it into the full-sweep
   rung below without moving a byte. The upstream inotify backend arms opens
-  unconditionally, so the workspace consumes it through `vendor/notify`, whose
-  one change drops `IN_OPEN` from the watch mask.
+  unconditionally, so the workspace consumes it through `vendor/notify`, which
+  changes two things: it drops `IN_OPEN` from the watch mask, and it arms a
+  new directory before it delivers the directory's create (the new-directory
+  row of the rescan ladder below).
 - **A client daemon's journal is a legal additional feed** where it already
   watches — an opportunistic dirty-path hint, never an instrument a guard or
   currency answer depends on.
@@ -507,10 +509,12 @@ engine-side.
   own sentinel when it returns; a crash or a failed removal leaves a sentinel
   behind, one per barrier then in flight, and no feed reads it again. The
   feed creates `.meridian/cookies/` before it arms the watch, so no sentinel
-  lands in a directory the watch has not yet armed. A new directory, or any
-  non-member-candidate path that can hide members, is a missed-event: `Seen`
-  is then illegal, and the barrier answers unproven at
-  once, without spending the cookie timeout. The dot-prefixed cookie path is
+  lands in a directory the watch has not yet armed. A non-member-candidate
+  path that can hide members and is not enumerated (the new-directory row of
+  the rescan ladder below) is a missed-event: `Seen` is then illegal, and the
+  barrier answers unproven at once, without spending the cookie timeout. An
+  enumerated directory create opens no doubt: its children are hints in the
+  dirty set, and the watch covered the directory before the enumeration ran. The dot-prefixed cookie path is
   outside the hash domain by the standing `wire-contract.md` §12.1 floor, so it
   can never move the root or break a held token; a cookie inside the hash
   domain is refused.
@@ -526,15 +530,15 @@ engine-side.
 | Cause | Response |
 |---|---|
 | kernel event overflow | mark-all-dirty; the next pass is the full stat sweep (160 ms warm, measured) |
-| a new directory (or other hideable non-member) | mark-all-dirty under missed-event; the same sweep recovers the child that landed before the sub-watch armed. **inotify only for creates:** FSEvents watches one path-prefix stream with no per-directory arm, so a child written into a new directory arrives as its own event. On FSEvents a directory create is enumerated instead (capped): its member candidates enter the dirty set as hints, which also covers a tree that arrived whole (a clone) with no child events, and later children raise their own. A directory renamed into the tree hides its children on every backend (they carry no events), so a rename still collapses. A metadata change on a directory collapses on inotify, which cannot arm a directory it cannot read; on FSEvents, which reports children whatever the mode, it collapses only when the walk cannot pass through the directory (not listable or not searchable: a `chmod 000` or `r--` still refuses the walk). A create that cannot be listed or exceeds the cap collapses too |
+| a new directory (or other hideable non-member) | a directory create is enumerated (capped): its member candidates enter the dirty set as hints, which also covers a tree that arrived whole (a clone) with no child events, and later children raise their own. The enumeration is complete only if every child lands either before it runs or after the watch covers the directory. FSEvents watches one path-prefix stream with no per-directory arm, so that holds by construction. inotify arms per directory, and upstream notify arms a new directory only after delivering the batch that carries its create, so a child landing between the enumeration and the arm would raise nothing; `vendor/notify` therefore arms the new directory's whole subtree before it delivers that batch, and an arm that fails while the directory still exists is delivered as a watcher error, which is a missed-event. Every other hideable path marks all dirty under missed-event, and the next pass is the full stat sweep. A directory renamed into the tree hides its children on every backend (they carry no events), so a rename still collapses. A metadata change on a directory collapses on inotify, which cannot arm a directory it cannot read; on FSEvents, which reports children whatever the mode, it collapses only when the walk cannot pass through the directory (not listable or not searchable: a `chmod 000` or `r--` still refuses the walk). A create that cannot be listed or exceeds the cap collapses too. A collapse per `mkdir` is a full sweep for the next reader, and a sessions root births directories steadily (every agent home, every first memo) |
 | watcher instance change | one labeled re-baseline (1.45 s cold / 160 ms warm, measured) |
 
   The watcher never restarts across a rescan; a rebuilt index commits by swap.
   Self-echo dedupe is a cost saving only: overlay idempotence is the
   correctness.
 - **Idle re-check — suspicious-only, no timer.** Re-checks run only on a named
-  doubt — a missed event (including a path that can hide members before its
-  watch arms), watcher overflow, an instance change, a failed spot check (vouch
+  doubt — a missed event (including a path that can hide members and was not
+  enumerated), watcher overflow, an instance change, a failed spot check (vouch
   failure), a cookie timeout — and may ride a guard-path touch. Zero background
   work when healthy (requirement 6, "no waste anywhere"). The periodic idle
   sweep is declined at a price: silent event-stream loss with no named trigger
