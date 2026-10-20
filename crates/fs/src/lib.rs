@@ -15,6 +15,10 @@
 //! validation can mint. An unvalidated write cannot reach disk by construction; the
 //! splice pipeline (validate in `model`, execute here) is enforced by types, not review.
 
+// The daemon runs this code: `eprintln!` panics the thread on a failed write
+// (full disk, closed pipe); `timing::say!` drops the line (docs/laws.md, `timing`).
+#![warn(clippy::print_stderr, clippy::print_stdout)]
+
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -1412,7 +1416,7 @@ impl DomainCache {
                 watermark: Some(w),
             },
             Err(e) => {
-                eprintln!(
+                timing::say!(
                     "merkle: observation watermark capture failed ({e}) — this pass trusts \
                      no stat identity and spoils its records (merkle-spec 6.2)"
                 );

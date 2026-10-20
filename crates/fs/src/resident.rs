@@ -614,7 +614,7 @@ impl ResidentTree {
     /// the ledger stays queryable via [`Self::collision_paths`].
     fn lint_collision(&mut self, key: &[u8]) {
         if self.collisions.insert(key.to_vec()) {
-            eprintln!(
+            timing::say!(
                 "merkle: file/dir name collision at '{}' — both kinds stay in the fold; \
                  the path and every path through it refuse scope_unresolved at mint and \
                  at guard (merkle-spec §4.4)",

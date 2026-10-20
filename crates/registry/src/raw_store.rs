@@ -35,7 +35,7 @@ impl Drop for Directory {
         if let Err(error) = fs::remove_dir(&self.0)
             && error.kind() != io::ErrorKind::NotFound
         {
-            eprintln!("raw-store: cannot reclaim {}: {error}", self.0.display());
+            timing::say!("raw-store: cannot reclaim {}: {error}", self.0.display());
         }
     }
 }
@@ -56,7 +56,7 @@ impl Drop for Segment {
         if let Err(error) = fs::remove_file(&self.path)
             && error.kind() != io::ErrorKind::NotFound
         {
-            eprintln!("raw-store: cannot reclaim {}: {error}", self.path.display());
+            timing::say!("raw-store: cannot reclaim {}: {error}", self.path.display());
         }
     }
 }

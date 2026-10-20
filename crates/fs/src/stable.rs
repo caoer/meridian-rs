@@ -145,7 +145,7 @@ impl FeedGen {
     /// until a full observation re-baselines past this loss.
     pub fn note_loss(&self, reason: &str) {
         self.0.losses.fetch_add(1, Ordering::Release);
-        eprintln!(
+        timing::say!(
             "merkle: event loss reported ({reason}) — guard currency is UNTRUSTED until a \
              full observation re-baselines (merkle-spec 6.2)"
         );
@@ -255,7 +255,7 @@ pub(crate) fn calibrate(meridian_dir: &Path) -> Calibration {
         Ok(granule_ns) => Calibration::Measured { granule_ns },
         Err(e) => {
             let reason = format!("timestamp calibration probe failed: {e}");
-            eprintln!(
+            timing::say!(
                 "merkle: {reason} — stat identity is UNTRUSTED at this workspace; every \
                  observation re-reads every member (merkle-spec 6.2, never silent trust)"
             );

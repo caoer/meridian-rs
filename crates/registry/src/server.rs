@@ -107,7 +107,7 @@ pub(crate) fn log_slow_op(op: &str, elapsed: Duration, attached: Option<&Path>) 
         return;
     }
     let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-    eprintln!(
+    timing::say!(
         "registry: slow op {op} duration_us={duration_us} on {} — total time in \
          dispatch, any wait for a contended resource included",
         attached.map_or_else(|| "<unattached>".to_string(), |p| p.display().to_string()),
@@ -501,14 +501,14 @@ fn install_host(registry_dir: &Path, bytes: u64) -> io::Result<crate::residency:
             && entry.file_name().to_string_lossy().starts_with("raw-")
             && let Err(e) = std::fs::remove_dir_all(entry.path())
         {
-            eprintln!(
+            timing::say!(
                 "registry: cannot remove an earlier residency store {} ({e})",
                 entry.path().display()
             );
         }
     }
     let limit = usize::try_from(bytes).unwrap_or(usize::MAX);
-    eprintln!("registry: residency host installed, limit {limit} bytes");
+    timing::say!("registry: residency host installed, limit {limit} bytes");
     Ok(crate::residency::Host::new(
         crate::residency::controller::Controller::new(limit),
         crate::raw_store::RawStore::new(&backing)?,
@@ -692,7 +692,7 @@ impl RunningServer {
             .into_iter()
             .partition(|entry| entry.workspace.is_dir());
         if !gone.is_empty() {
-            eprintln!(
+            timing::say!(
                 "registry: not reloading {} registration(s) whose directory is gone",
                 gone.len()
             );
@@ -732,7 +732,7 @@ impl RunningServer {
         // cache roots sharing one socket directory never share a pidfile.
         let pid_file = config.socket_path.with_extension("pid");
         if let Err(e) = write_pidfile(&pid_file) {
-            eprintln!(
+            timing::say!(
                 "registry: cannot write pidfile {} ({e})",
                 pid_file.display()
             );
@@ -743,7 +743,7 @@ impl RunningServer {
         // advisory the same way.
         let socket_pointer = dir.join(SOCKET_POINTER_NAME);
         if let Err(e) = write_socket_pointer(&socket_pointer, &config.socket_path) {
-            eprintln!(
+            timing::say!(
                 "registry: cannot publish the socket path at {} ({e})",
                 socket_pointer.display()
             );
@@ -847,7 +847,7 @@ impl RunningServer {
         // `Config::drain_cold_builds` (production default 2 s — under the
         // tightest client flock-wait of 5 s) and shutdown continues.
         if !self.registry.drain_cold_builds(self.drain_cold_builds) {
-            eprintln!("registry: shutdown while a drawer rebuild is still in flight");
+            timing::say!("registry: shutdown while a drawer rebuild is still in flight");
         }
         // Capture in-memory last_use bumps that resolve made without persisting.
         self.registry.flush();
@@ -942,7 +942,7 @@ fn spawn_accept(
                         deadlines,
                         build_sha.as_deref(),
                     ) {
-                        eprintln!("registry: connection error ({e})");
+                        timing::say!("registry: connection error ({e})");
                     }
                 })
                 .map(drop)
@@ -971,11 +971,11 @@ fn accept_loop(
                 // flag on BSD/macOS; per-connection I/O must block on reads,
                 // so reset it explicitly.
                 if let Err(e) = stream.set_nonblocking(false) {
-                    eprintln!("registry: cannot set connection blocking ({e})");
+                    timing::say!("registry: cannot set connection blocking ({e})");
                     continue;
                 }
                 if let Err(e) = dispatch(stream) {
-                    eprintln!(
+                    timing::say!(
                         "registry: cannot spawn connection thread ({e}); dropping this connection — the daemon keeps accepting"
                     );
                 }
@@ -990,7 +990,7 @@ fn accept_loop(
                 if shutdown.load(Ordering::SeqCst) {
                     return;
                 }
-                eprintln!("registry: accept error ({e})");
+                timing::say!("registry: accept error ({e})");
                 thread::sleep(ACCEPT_POLL);
             }
         }
@@ -1023,11 +1023,11 @@ fn spawn_reaper(
             elapsed = Duration::ZERO;
             let reaped = registry.reap(now_secs(), threshold_secs);
             if !reaped.is_empty() {
-                eprintln!("registry: idle-reaped {} workspace(s)", reaped.len());
+                timing::say!("registry: idle-reaped {} workspace(s)", reaped.len());
             }
             let evicted = registry.reap_to_budget(max_resident_bytes);
             if !evicted.is_empty() {
-                eprintln!(
+                timing::say!(
                     "registry: budget-evicted {} workspace(s) — estimated resident bytes over \
                      {max_resident_bytes}",
                     evicted.len()
@@ -1051,7 +1051,7 @@ fn spawn_reaper(
                 }
                 let quiet_for = now_secs().saturating_sub(registry.last_request_secs());
                 if quiet_for >= horizon.as_secs() {
-                    eprintln!(
+                    timing::say!(
                         "registry: no client request in {quiet_for}s — shutting down (a client that needs the daemon auto-spawns one)"
                     );
                     exit_requested.store(true, Ordering::SeqCst);
@@ -1084,7 +1084,7 @@ fn spawn_prewarm(
             elapsed = Duration::ZERO;
             let rebuilt = registry.prewarm();
             if !rebuilt.is_empty() {
-                eprintln!(
+                timing::say!(
                     "registry: pre-warmed {} changed workspace(s)",
                     rebuilt.len()
                 );
@@ -1337,7 +1337,7 @@ fn push_loop(
     while !shutdown.load(Ordering::SeqCst) {
         // Detection failure never ends the sub; log and retry next cycle.
         if let Err(e) = ring.detect(&ws_root, registry) {
-            eprintln!("registry: watch reconcile ({}): {e:?}", ws.display());
+            timing::say!("registry: watch reconcile ({}): {e:?}", ws.display());
         }
         for frame in ring.frames_after(delivered) {
             wire_serve::ring::write_frame(writer, &frame, rev == Rev::V3)?;

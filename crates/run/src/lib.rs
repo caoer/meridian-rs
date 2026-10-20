@@ -45,6 +45,10 @@
 //! DECLARED coordinates. Declaring root and timeout are injected by the
 //! caller. Full law: [`caps`].
 
+// The daemon runs this code: `eprintln!` panics the thread on a failed write
+// (full disk, closed pipe); `timing::say!` drops the line (docs/laws.md, `timing`).
+#![warn(clippy::print_stderr, clippy::print_stdout)]
+
 pub mod address;
 pub mod blocks;
 pub mod caps;

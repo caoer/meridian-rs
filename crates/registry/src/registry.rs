@@ -364,7 +364,7 @@ impl FeedSlot {
         match feed::WorkspaceFeed::start(workspace, feed) {
             Ok(feed) => FeedSlot::Live(Arc::new(feed)),
             Err(e) => {
-                eprintln!(
+                timing::say!(
                     "feed: kernel watcher start failed for {} ({e}) — the resident memo \
                      will not be retained across idle reaps for this workspace",
                     workspace.display()
@@ -404,13 +404,13 @@ fn apply_pending(
         feed::Applied::Members(0) => {}
         feed::Applied::Members(n) => {
             feed.note_applied(*n);
-            eprintln!(
+            timing::say!(
                 "feed: applied {n} dirty member(s) into the resident memo for {}",
                 workspace.display()
             );
         }
         feed::Applied::Reset => {
-            eprintln!(
+            timing::say!(
                 "feed: apply-time I/O failure for {} — resident memo reset, next \
                  pass re-reads the corpus",
                 workspace.display()
@@ -423,7 +423,7 @@ fn apply_pending(
             if matches!(cause, feed::RescanCause::DomainConfig) {
                 feed.note_rescan(*cause);
             }
-            eprintln!(
+            timing::say!(
                 "feed: rescan {} for {} — memo kept, next observation is the full \
                  stat sweep",
                 cause.name(),
@@ -431,7 +431,7 @@ fn apply_pending(
             );
         }
         feed::Applied::Rebaselined(cause) => {
-            eprintln!(
+            timing::say!(
                 "feed: rescan {} for {} — memo re-baselined by swap",
                 cause.name(),
                 workspace.display()
@@ -1185,7 +1185,7 @@ impl Registry {
         let total = match host.store.heap_bytes() {
             Ok(store) => Some(bytes.saturating_add(store)),
             Err(error) => {
-                eprintln!(
+                timing::say!(
                     "residency: floor census skipped: the raw store's census failed: {error}"
                 );
                 None
@@ -1451,15 +1451,15 @@ impl Registry {
                 }
                 registry.cold_builds_done.notify_all();
                 match outcome {
-                    Ok(Ok(outcome)) => eprintln!(
+                    Ok(Ok(outcome)) => timing::say!(
                         "registry: drawer warm for {} ({outcome:?})",
                         canonical.display()
                     ),
-                    Ok(Err(e)) => eprintln!(
+                    Ok(Err(e)) => timing::say!(
                         "registry: background drawer rebuild failed for {} ({e})",
                         canonical.display()
                     ),
-                    Err(_) => eprintln!(
+                    Err(_) => timing::say!(
                         "registry: background drawer rebuild panicked for {}",
                         canonical.display()
                     ),
@@ -2486,7 +2486,7 @@ impl Registry {
         };
         let (cache, receipt) =
             crate::checkpoint::restore(&self.cache_root, workspace, ring.as_deref())?;
-        eprintln!(
+        timing::say!(
             "checkpoint: {} — {} leaf row(s) adopted, {} member(s) replayed from the journal",
             workspace.display(),
             receipt.leaves,
@@ -2593,7 +2593,7 @@ impl Registry {
                             .unwrap_or_else(PoisonError::into_inner)
                             .insert(workspace.to_path_buf(), digest);
                     } else {
-                        eprintln!(
+                        timing::say!(
                             "checkpoint: save incomplete for {}; recovery may need source reads",
                             workspace.display()
                         );
@@ -2619,14 +2619,14 @@ impl Registry {
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
                             .insert(workspace.to_path_buf(), engine.at_fingerprint.0.clone());
-                        eprintln!(
+                        timing::say!(
                             "parse-cache: saved {count} document(s) for {}",
                             workspace.display()
                         );
                     }
                     Ok(None) => saved = false,
                     Err(e) => {
-                        eprintln!(
+                        timing::say!(
                             "parse-cache: save incomplete for {} ({e}); recovery may need source parsing",
                             workspace.display()
                         );
@@ -3238,7 +3238,7 @@ impl Registry {
         };
         for workspace in opportunities {
             if !self.persist_workspace(&workspace, true) {
-                eprintln!(
+                timing::say!(
                     "checkpoint: pre-eviction save incomplete for {}; eviction proceeds under the resident budget",
                     workspace.display()
                 );
@@ -3337,7 +3337,7 @@ impl Registry {
                 victims.push(key);
             }
             if over > 0 {
-                eprintln!(
+                timing::say!(
                     "registry: resident budget ({max_resident_bytes} estimated bytes) cannot \
                      be met — every remaining warm workspace holds a live sub cursor ({over} \
                      estimated bytes over)"
@@ -3374,7 +3374,7 @@ impl Registry {
                 break;
             }
             let Some(victim) = self.floor_victim(&victims) else {
-                eprintln!(
+                timing::say!(
                     "registry: the residency floor ({} bytes) cannot be met — every remaining \
                      warm workspace holds a live sub cursor ({over} bytes over the limit)",
                     host.floor()
@@ -3441,7 +3441,7 @@ impl Registry {
             oldest(&mut warm, &map, &rings)?
         };
         if !self.persist_workspace(&saved, true) {
-            eprintln!(
+            timing::say!(
                 "checkpoint: pre-eviction save incomplete for {}; eviction proceeds under the residency floor",
                 saved.display()
             );
@@ -3541,7 +3541,7 @@ impl Registry {
             map.values().map(Slot::snapshot).collect()
         };
         if let Err(e) = self.state.save(&entries) {
-            eprintln!("registry: state save failed ({e}); warm set may not survive restart");
+            timing::say!("registry: state save failed ({e}); warm set may not survive restart");
         }
     }
 

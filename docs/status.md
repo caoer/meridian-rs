@@ -1607,6 +1607,11 @@ measurement that degraded to stderr, and the `MRD_TIMING=1` form.
   own stderr, with the lane's path.
 - A voice that will not open is said on the **spawning client's** stderr; the
   daemon starts mute and says so.
+- **A line the lane refuses is dropped; the daemon keeps serving.** On a full
+  disk or a closed pipe every write fails, and the daemon's diagnostics go
+  through `timing::say!`, which drops the line where `eprintln!` would panic
+  the thread that wrote it (the accept, reaper, saver or a connection thread).
+  Reads, `sql` and writes keep answering; only the lane goes quiet.
 - Nothing rotates the file. It is yours to read and to remove.
 - `mrd daemon` in the foreground keeps the terminal's stderr. A daemon another
   supervisor started with null stderr is still deaf; this covers the

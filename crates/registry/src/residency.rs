@@ -201,7 +201,7 @@ impl Host {
             match self.controller.charge_floor(bytes) {
                 Ok(lease) => floor.lease = Some(lease),
                 Err(error) => {
-                    eprintln!("residency: the host floor was not charged: {error}");
+                    timing::say!("residency: the host floor was not charged: {error}");
                     return;
                 }
             }

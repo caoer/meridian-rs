@@ -1144,7 +1144,7 @@ pub(crate) fn apply(
                         Applied::Rebaselined(cause)
                     }
                     Err(e) => {
-                        eprintln!(
+                        timing::say!(
                             "feed: re-baseline for {} failed ({e}) — old memo kept, guard \
                              currency stays untrusted until a full observation lands",
                             root.0.display()

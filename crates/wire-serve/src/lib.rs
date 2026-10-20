@@ -9,6 +9,10 @@
 //! classifier. Host driver only (the registry daemon, at its subscription detection
 //! cycle — the one wire door since the sidecar's DROP, §3.3) — never the classification.
 
+// The daemon runs this code: `eprintln!` panics the thread on a failed write
+// (full disk, closed pipe); `timing::say!` drops the line (docs/laws.md, `timing`).
+#![warn(clippy::print_stderr, clippy::print_stdout)]
+
 pub mod armed_disk;
 pub mod authority;
 pub mod check_write;
