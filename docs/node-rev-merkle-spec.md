@@ -577,7 +577,7 @@ workspace's SQL cache is its own `DuckDB` instance with its own buffer pool.
 Under `DuckDB`'s default `memory_limit`, 80% of RAM, that pool keeps every
 block a query has read until it holds the whole store: on a 112,800-page
 sessions root it held 1.80 GiB of a 1.93 GiB store on a 55 GiB host and
-1.72 GiB of 1.75 GiB on a 47 GiB one. B is the host's budget, or without a
+1.68 GiB of 1.75 GiB on a 47 GiB one. B is the host's budget, or without a
 host the machine's physical memory (`sysconf(_SC_PHYS_PAGES)` pages; where
 that cannot be read, each cache keeps `DuckDB`'s default and nothing below
 applies). Each cache runs under a steady `memory_limit` L of
