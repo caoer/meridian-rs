@@ -165,7 +165,7 @@ pub(crate) fn restore(
             } else {
                 format!("unreadable ({e})")
             };
-            eprintln!(
+            timing::say!(
                 "checkpoint: {why} for {} under {} — cold fill at the first observation",
                 workspace.display(),
                 file.parent().unwrap_or(&file).display()
@@ -177,7 +177,7 @@ pub(crate) fn restore(
     let domain = match fs::domain::Domain::load(&root) {
         Ok(domain) => domain,
         Err(e) => {
-            eprintln!(
+            timing::say!(
                 "checkpoint: {} — domain config unreadable ({e}); cold start",
                 workspace.display()
             );
@@ -191,7 +191,7 @@ pub(crate) fn restore(
             // world under today's law, so nothing survives. Rare and
             // meaningful — this is the alarm channel, and it stays quiet
             // precisely because the warm event below does not share it.
-            eprintln!(
+            timing::say!(
                 "checkpoint: COLD RE-BASELINE for {} — {discard}; the checkpoint is discarded \
                      and the corpus rebuilds cold",
                 workspace.display()
@@ -242,7 +242,7 @@ fn adjudicate(
             }
             _ => "cursor is outside retained history",
         };
-        eprintln!(
+        timing::say!(
             "checkpoint: warm re-baseline for {} — {label}; {leaves} leaf row(s) adopted as \
              hypotheses, each re-verified against disk by the §6.2 trust close before it serves",
             workspace.display()
@@ -275,7 +275,7 @@ fn adjudicate(
             // A member the journal NAMED could not be derived, and absence
             // would be a lie. The rows can no longer be reconciled with disk,
             // so this is the COLD event.
-            eprintln!(
+            timing::say!(
                 "checkpoint: COLD RE-BASELINE for {} — replay could not derive a named member; \
                  the resident memo is reset and the next pass re-reads the corpus",
                 workspace.display()
@@ -290,7 +290,7 @@ fn adjudicate(
         // a fresh full derivation), so the safe report is the truth: the ladder
         // re-established currency and this replay claims nothing.
         feed::Applied::Sweep(cause) | feed::Applied::Rebaselined(cause) => {
-            eprintln!(
+            timing::say!(
                 "checkpoint: warm re-baseline for {} — the rescan ladder ({}) took over during \
                  replay; no replay is claimed and currency comes from the ladder's own rung",
                 workspace.display(),
@@ -340,7 +340,7 @@ fn barrier(
         return Some((cache, receipt));
     }
     if let Err(e) = cache.root(root) {
-        eprintln!(
+        timing::say!(
             "checkpoint: COLD RE-BASELINE for {} — the pre-serve sweep failed ({e}); the \
              restored rows can never serve, so the checkpoint is discarded and the corpus \
              rebuilds cold",
@@ -352,7 +352,7 @@ fn barrier(
     receipt.stats_before_serve = cache.member_stats();
     receipt.reads_before_serve = cache.leaves_read();
     receipt.watermark_rereads_before_serve = cache.watermark_rereads();
-    eprintln!(
+    timing::say!(
         "checkpoint: pre-serve sweep complete for {} — {} member stat(s), {} read+hash \
          ({} of them watermark-window re-reads); every other row cost zero bytes, and the \
          rows may now serve",

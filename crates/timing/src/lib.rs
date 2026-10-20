@@ -83,6 +83,15 @@
 //! ```
 //!
 //! Surface and lanes: `docs/status.md` § The timing mode.
+//!
+//! # `say!` — the stderr line that never panics
+//!
+//! `eprintln!` panics when the write fails, and on a full disk or a closed
+//! pipe every write fails: each daemon thread that logged died with `failed
+//! printing to stderr`, the accept, reaper and saver threads among them, and the
+//! daemon stopped serving. [`say!`] takes `eprintln!`'s arguments and drops a
+//! line the sink refuses. It lives here because this is the `std`-only leaf
+//! every daemon crate already links; it is a writer, not a log framework.
 
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
@@ -138,6 +147,21 @@ enum Chosen<'a> {
     Off,
     Stderr,
     Path(&'a OsStr),
+}
+
+/// One line to stderr, `eprintln!`'s arguments: a write the sink refuses (full
+/// disk, closed pipe) drops the line instead of panicking the calling thread.
+#[macro_export]
+macro_rules! say {
+    ($($arg:tt)*) => {
+        $crate::say_line(::std::format_args!($($arg)*))
+    };
+}
+
+/// The body of [`say!`]; call the macro.
+#[doc(hidden)]
+pub fn say_line(args: std::fmt::Arguments<'_>) {
+    let _ = writeln!(std::io::stderr().lock(), "{args}");
 }
 
 static SINK: OnceLock<Sink> = OnceLock::new();

@@ -27,6 +27,10 @@
 //! (`cache` `registered.json`) drives 30-day last-use GC. Only `unregister`
 //! ends a registration.
 
+// The daemon runs this code: `eprintln!` panics the thread on a failed write
+// (full disk, closed pipe); `timing::say!` drops the line (docs/laws.md, `timing`).
+#![warn(clippy::print_stderr, clippy::print_stdout)]
+
 mod cache_io;
 mod checkpoint;
 mod client;

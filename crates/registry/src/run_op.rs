@@ -306,7 +306,7 @@ fn entry_row(
             let charged = charge.and_then(|controller| {
                 controller
                     .charge_floor(copied.heap_bytes())
-                    .inspect_err(|error| eprintln!("run: a page copy was not charged: {error}"))
+                    .inspect_err(|error| timing::say!("run: a page copy was not charged: {error}"))
                     .ok()
             });
             let answer = row(&copied);

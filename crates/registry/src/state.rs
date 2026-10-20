@@ -52,7 +52,7 @@ impl StateStore {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Vec::new(),
             Err(e) => {
-                eprintln!(
+                timing::say!(
                     "registry: cannot read state file {} ({e}); starting cold",
                     self.path.display()
                 );
@@ -62,7 +62,7 @@ impl StateStore {
         match serde_json::from_slice::<StateFile>(&bytes) {
             Ok(state) if state.schema <= STATE_SCHEMA => state.entries,
             Ok(state) => {
-                eprintln!(
+                timing::say!(
                     "registry: state file {} is schema {} (newer than {STATE_SCHEMA}); starting cold",
                     self.path.display(),
                     state.schema
@@ -70,7 +70,7 @@ impl StateStore {
                 Vec::new()
             }
             Err(e) => {
-                eprintln!(
+                timing::say!(
                     "registry: state file {} is corrupt ({e}); starting cold",
                     self.path.display()
                 );

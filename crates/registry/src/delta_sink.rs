@@ -96,7 +96,7 @@ impl DeltaSink for RingSink<'_> {
         let Some(cache) = self.cache.get() else {
             // `opening` borrowed the memo before any byte landed; a commit
             // without it is an executor ordering defect, never minted around.
-            eprintln!("registry: run delta mint: commit offered without an opening");
+            timing::say!("registry: run delta mint: commit offered without an opening");
             return;
         };
         // The receipt file as committed (the flock is still the executor's).
@@ -104,7 +104,7 @@ impl DeltaSink for RingSink<'_> {
             Some(rp) => match fs::load(root, Path::new(rp)) {
                 Ok(doc) => Some(doc),
                 Err(e) => {
-                    eprintln!("registry: run delta mint (receipt after tense): {e}");
+                    timing::say!("registry: run delta mint (receipt after tense): {e}");
                     return;
                 }
             },
@@ -113,7 +113,7 @@ impl DeltaSink for RingSink<'_> {
         let root_after = match overlaid_root(cache, facts, receipt_after.as_ref()) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("registry: run delta mint (commit overlay): {e}");
+                timing::say!("registry: run delta mint (commit overlay): {e}");
                 return;
             }
         };

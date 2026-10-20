@@ -162,7 +162,7 @@ impl Member {
                         })
                     };
                     if let Some(declares) = declares {
-                        eprintln!(
+                        timing::say!(
                             "residency: a load of a {}-byte version retained {observed} bytes past \
                              its declared peak of {reserved}; its loads now declare {declares}",
                             self.key.1

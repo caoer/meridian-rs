@@ -4,6 +4,10 @@
 //! the pidfile, in that contract's order — `registry::RunningServer`), and block on a signal
 //! loop until SIGINT/SIGTERM.
 
+// The daemon runs this code: `eprintln!` panics the thread on a failed write
+// (full disk, closed pipe); `timing::say!` drops the line (docs/laws.md, `timing`).
+#![warn(clippy::print_stderr, clippy::print_stdout)]
+
 use std::fs::OpenOptions;
 use std::io::{self, Read as _, Seek as _};
 use std::os::unix::fs::PermissionsExt;
@@ -73,11 +77,11 @@ pub(crate) fn run() -> Result<(), Fail> {
     let cache_root = config.cache_root.clone();
     let server = RunningServer::start(config)
         .map_err(|e| Fail::tool(format!("cannot start the registry daemon: {e}")))?;
-    eprintln!(
+    timing::say!(
         "meridian registry daemon listening on {}",
         server.socket_path().display()
     );
-    eprintln!("press Ctrl-C to stop");
+    timing::say!("press Ctrl-C to stop");
     // Started only once the singleton is held, so a losing second daemon never sweeps.
     let sweeper = spawn_sweeper(cache_root);
 
@@ -86,7 +90,7 @@ pub(crate) fn run() -> Result<(), Fail> {
     while !SIGNALLED.load(Ordering::SeqCst) && !server.idle_exit_requested() {
         thread::sleep(Duration::from_millis(200));
     }
-    eprintln!("shutting down");
+    timing::say!("shutting down");
     server.shutdown();
     sweeper.stop();
     Ok(())
@@ -255,7 +259,7 @@ fn one_line(text: &str) -> String {
 /// inaudibly is worth strictly more than no daemon, and the point of this whole
 /// file is that silence must be ANNOUNCED rather than discovered.
 fn mute(reason: &str) -> Stdio {
-    eprintln!("mrd: {}", one_line(reason));
+    timing::say!("mrd: {}", one_line(reason));
     Stdio::null()
 }
 

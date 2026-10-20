@@ -29,7 +29,7 @@ pub(crate) fn restore(
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
         Err(e) => {
-            eprintln!(
+            timing::say!(
                 "parse-cache: cannot read {} ({e}); source fallback",
                 workspace.display()
             );
@@ -39,7 +39,7 @@ pub(crate) fn restore(
     match parse_cache::snapshot::read(BufReader::new(file), workspace, fresh) {
         Ok(prior) => {
             let _ = cache::try_stamp_last_use(&dir);
-            eprintln!(
+            timing::say!(
                 "parse-cache: {} — {} document(s) reusable, complete={}",
                 workspace.display(),
                 prior.docs.len(),
@@ -48,7 +48,7 @@ pub(crate) fn restore(
             Some(prior)
         }
         Err(e) => {
-            eprintln!(
+            timing::say!(
                 "parse-cache: {} — {e}; source fallback",
                 workspace.display()
             );
@@ -98,6 +98,6 @@ pub(crate) fn discard(cache_root: &Path, workspace: &Path) {
     if let Err(e) = std::fs::remove_file(path(cache_root, workspace))
         && e.kind() != io::ErrorKind::NotFound
     {
-        eprintln!("parse-cache: cannot discard {} ({e})", workspace.display());
+        timing::say!("parse-cache: cannot discard {} ({e})", workspace.display());
     }
 }

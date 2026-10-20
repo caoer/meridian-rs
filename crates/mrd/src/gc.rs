@@ -1,6 +1,10 @@
 //! Opportunistic auto-GC (Cargo model, spec §5), run from `init`, `unregister` and the daemon's
 //! sweeper. A path-keyed drawer store without a reaper leaks disk without bound.
 
+// The daemon runs this code: `eprintln!` panics the thread on a failed write
+// (full disk, closed pipe); `timing::say!` drops the line (docs/laws.md, `timing`).
+#![warn(clippy::print_stderr, clippy::print_stdout)]
+
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};

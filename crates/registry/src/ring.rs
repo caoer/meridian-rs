@@ -656,7 +656,7 @@ impl WorkspaceRing {
             self.reconcile_pair(ws_root, &leaves, &root)
         });
         if let Err(e) = told {
-            eprintln!("registry: write-door reconcile: {e:?}");
+            timing::say!("registry: write-door reconcile: {e:?}");
         }
     }
 
@@ -679,7 +679,7 @@ impl WorkspaceRing {
             && *observed == frame.delta.root_after
             && let Err(e) = self.reconcile_observed(ws_root, cache, observed)
         {
-            eprintln!("registry: commit baseline follow: {e:?}");
+            timing::say!("registry: commit baseline follow: {e:?}");
         }
     }
 }
