@@ -663,7 +663,9 @@ grow with the host: the largest store, a 6,562-page transcripts root with
 1.5 GB of body text bound only on a 55 GiB host, has live statements
 (a term's hits with their context, ordered by path; a `GROUP BY path HAVING
 bool_or(regexp_matches(text, …))` count) that are refused under 256 MiB and
-answer at 512 MiB in 1.6 to 3.4 s, while the 256 MiB floor still bounds an
+answer at 512 MiB in 1.6 to 3.4 s; under a 58.8 GiB host's 1.8 GiB L each
+answers, through `mrd sql` and through a one-statement face, and the two
+caches' pools reach 1.7 GiB each. The 256 MiB floor still bounds an
 8 GiB host's sessions root, whose pool otherwise reaches 358 MiB. The 256 MiB
 also holds the cache's own uncheckpointed pages after an append, so a
 statement near L can be refused on one call and answered on the next.

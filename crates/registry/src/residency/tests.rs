@@ -888,7 +888,11 @@ fn the_sql_cache_limit_grows_with_the_budget_between_its_floor_and_ceiling() {
     const MIB: u64 = 1 << 20;
     const GIB: u64 = 1 << 30;
     let at = |budget: u64| SqlBudget::for_budget(usize::try_from(budget).unwrap()).unwrap();
-    assert_eq!(SqlBudget::for_budget(0), None, "a host that enforces nothing");
+    assert_eq!(
+        SqlBudget::for_budget(0),
+        None,
+        "a host that enforces nothing"
+    );
     assert_eq!(
         at(512 * MIB),
         SqlBudget {
