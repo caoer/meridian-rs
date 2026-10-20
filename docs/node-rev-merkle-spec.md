@@ -580,8 +580,9 @@ sessions root it held 1.80 GiB of a 1.93 GiB store on a 55 GiB host and
 1.68 GiB of 1.75 GiB on a 47 GiB one. B is the host's budget, or without a
 host the machine's physical memory (`sysconf(_SC_PHYS_PAGES)` pages; where
 that cannot be read, each cache keeps `DuckDB`'s default and nothing below
-applies). Each cache runs under a steady `memory_limit` L of
-256 MiB, set when it opens and before its restore baseline is taken, so a
+applies). Each cache runs under a steady `memory_limit` L of B/32, held
+between 256 MiB and 2 GiB: 256 MiB on an 8 GiB host, 1.7 GiB on a 55 GiB
+one. L is set when the cache opens and before its restore baseline is taken, so a
 caller's own `SET` lasts only that call; and the registry keeps at most
 max(1, ⌊(B/4) / L⌋) caches open: every `sql` call, whether its cache
 is open already or not, first closes the least recently used caches that no
@@ -655,18 +656,24 @@ outgrows L past about 128 KiB of page) is refused on every `sql`
 call on that workspace until it shrinks or leaves: a caller's `SET` cannot
 raise the limit for an append that runs before its statement. A caller's
 own statement keeps L: its refusal is its own result, in `DuckDB`'s words.
-A `SET memory_limit` before it in the same call lifts L for that call only.
-On a copy of a 112,845-page sessions root at 4 threads, `count(DISTINCT text)`
-over `body` is refused under L, and answers in 1.1 to 1.25 s after such a
-`SET` or written as a `GROUP BY text`; scans, sorts and other groupings there
-answer under L within 0.05 s of their time under `DuckDB`'s default.
+A `SET memory_limit` before it in the same call lifts L for that call only;
+a face that takes one statement per call has no such lift, so L itself has
+to serve the statements callers run. L grows with B because the stores
+grow with the host: the largest store, a 6,562-page transcripts root with
+1.5 GB of body text bound only on a 55 GiB host, has live statements
+(a term's hits with their context, ordered by path; a `GROUP BY path HAVING
+bool_or(regexp_matches(text, …))` count) that are refused under 256 MiB and
+answer at 512 MiB in 1.6 to 3.4 s, while the 256 MiB floor still bounds an
+8 GiB host's sessions root, whose pool otherwise reaches 358 MiB. The 256 MiB
+also holds the cache's own uncheckpointed pages after an append, so a
+statement near L can be refused on one call and answered on the next.
 A statement already running when another call's append escalates shares
 the raised limit until that step ends.
 `DuckDB` refuses memory in three wordings ("failed to pin block of size",
 "could not allocate block of size", "failed to allocate data of size"), and
-each of them escalates. Under a host `mrd status --residency` reports the
-escalations: how many steps were taken, the largest reservation (the largest
-raise past L, without a host), when the last one was taken, and how many
+each of them escalates. `mrd status --residency` reports the escalations,
+with a host or without one: how many steps were taken, the largest
+reservation (the largest raise past L, without a host), when the last one was taken, and how many
 appends were refused for memory after all (`status.md` § The residency line).
 
 The `memory_limit` bounds what `DuckDB`'s buffer manager holds, cached
@@ -1018,8 +1025,8 @@ one, `null` where the policy does not apply: `steps`, `largest` (bytes),
 `last_unix_secs` (`null` before the first step) and `refused`; a client
 reads an answer without the key as `null`. It reads the controller and
 those counters alone, never the registry map, so it answers beside a build
-or a sweep. `mrd status --residency` prints it, `S` only beside a report
-(`docs/status.md`, the residency line).
+or a sweep. `mrd status --residency` prints it, `S` with or without a
+report (`docs/status.md`, the residency line).
 
 The ledger retains a selected body's full charge throughout retirement,
 including the interval where the local slot already appears cold. Only after
