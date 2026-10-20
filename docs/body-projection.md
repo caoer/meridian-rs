@@ -51,7 +51,7 @@ The shape is `task`'s: its own seq space, a nullable governing section, an advis
 The cache is append-only; `hist.*` is its only storage. Each re-projection appends the document's full row set at the next generation, so a plain text column would re-store a document's whole text on every edit. The protocol splits identity from content instead:
 
 - **`hist.body`** — the narrow per-generation row: `(path, gen, seq, section_seq, hpath, span_start, span_end, node_rev, body_key)`.
-- **`hist.body_text (body_key, text)`** — content-addressed text, insert-if-absent (staged anti-join at append; INSERT-only, keeping the never-edit law). `body_key` is the **full 64-hex blake3** of the chunk bytes; `node_rev`'s 16-hex truncation is for per-node CAS racing only (merkle spec).
+- **`hist.body_text (body_key, text)`** — content-addressed text, insert-if-absent (INSERT-only, keeping the never-edit law). Each batch asks the file which of ITS OWN keys it already holds — one keyed lookup of those keys, never a read of every stored key — so an append costs its batch's chunks, not the file's history. `body_key` is the **full 64-hex blake3** of the chunk bytes; `node_rev`'s 16-hex truncation is for per-node CAS racing only (merkle spec).
 - **`main.body`** — the latest generation via `hist.doc_latest` (the standing semi-join), joined to `hist.body_text` on `body_key`, serving exactly §3's columns; `body_key` never appears on the face.
 
 Only `hist.body_text` rows dedup, across generations and paths: an edit appends text rows only for chunks new to the file's history. Orphaned `body_text` rows compact only at rebuild-and-swap. The pin protocol is unchanged: one file, one transaction, one fingerprint. `as_of_fingerprint` covers body bytes, so no second freshness witness exists. `base_fold` has one only because `.base` bytes are outside the fingerprint.
@@ -73,8 +73,10 @@ a batch with earlier rows; it is never refused or truncated. The largest
 complete projected document/member therefore belongs beside any peak memory
 claim. Each batch's
 appenders are flushed and dropped before the next batch. The name index and
-affected-path decision still see the whole corpus, and the content-addressed
-`body_key` set survives between batches. All batches, tombstones, and the **one
+affected-path decision still see the whole corpus. The keys this transaction
+has inserted survive between its batches, so a chunk repeated across batches is
+stored once; a key the file held before the transaction is found by the
+batch's lookup (a cold build starts from an empty file and needs none). All batches, tombstones, and the **one
 pin row written last** remain in one transaction: any batch failure rolls back
 the whole generation, never a partial pin.
 Flushing an appender releases its own staging, but inserted rows can remain in
@@ -90,7 +92,7 @@ before pinning its snapshot. This lets completed groups reach disk during the
 single append transaction instead of keeping the whole cold body projection in
 transaction-local memory. The unfinished native row group remains a byte cost,
 even with fewer than 2,048 rows; the corpus-wide index, affected-path sets, and
-historical body-key set are also outside the staging target. This is not a
+the transaction's inserted body-key set are also outside the staging target. This is not a
 process-wide memory cap or a fixed peak bound for arbitrary workloads. A cache made with
 the prior physical row-group layout is cold-rebuilt before reuse.
 
