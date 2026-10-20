@@ -3236,7 +3236,15 @@ check` — one compare, not two.
 
 **The CLI ladder.** `mrd sql` asks the resident daemon first (this op), then
 the drawer file when unheld, then `:memory:`. One ladder, no profile
-distinction; only `--rebuild` goes direct.
+distinction; only `--rebuild` goes direct. The lower rungs serve a workspace no
+daemon serves: no daemon accepts the connection, `hello` refuses the
+workspace, or the daemon predates this op. Once a daemon has accepted the
+connection, an exchange that does not complete — the daemon stops answering
+liveness probes, outlives the wedge cap, or closes mid-request — answers
+`NO_VIEW` naming the cause, as a retry refusal does. That daemon holds the
+drawer, so the next rung is a `:memory:` build of the whole corpus beside it,
+paid by every caller at once and exactly when the daemon is slow: about a
+CPU-minute and several GiB each on a 100k-member root.
 
 ### A.12 Rooted refs at every page-taking door
 

@@ -468,7 +468,11 @@ mrd sql [--fresh] [--rebuild] [--cwd PATH | --root NAME] [--json] [--] <QUERY>
  of the corpus, served from the drawer's `sql.duckdb`
  cache when a cache root resolves, else an ephemeral
  `:memory:` build (NOT agent core; see § Operator SQL
- face below). `--` ends the flags: the next argument is
+ face below). A resident daemon that accepted the
+ connection answers it, or the call answers `NO_VIEW`
+ naming why; it never builds the corpus in-process
+ beside that daemon (`wire-contract.md` § A.11, the CLI
+ ladder). `--` ends the flags: the next argument is
  the query even when it opens with a `--` SQL comment.
  Exits 0 answered (any freshness state) / 2 the query
  failed (parser, binder, refused DML, `NO_VIEW`) or bad
