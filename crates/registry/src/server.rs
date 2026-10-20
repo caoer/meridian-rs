@@ -272,7 +272,10 @@ impl Config {
             config.drain_cold_builds = parse_drain_cold_builds(&raw)?;
         }
         if let Some(raw) = std::env::var_os(IDLE_EXIT_ENV) {
-            config.idle_exit = parse_idle_exit(&raw)?;
+            config.idle_exit = cap_idle_exit(
+                parse_idle_exit(&raw)?,
+                is_default_cache_root(&config.cache_root),
+            );
         }
         if let Some(raw) = std::env::var_os(MAX_RESIDENT_BYTES_ENV) {
             config.max_resident_bytes = parse_max_resident_bytes(&raw)?;
@@ -388,8 +391,43 @@ fn parse_drain_cold_builds(raw: &std::ffi::OsStr) -> io::Result<Duration> {
 /// exit-and-respawn cycle costs far more than the residency it reclaims.
 /// Such a manager raises the horizon and owns the daemon's death itself.
 ///
+/// The raised horizon belongs to the DEFAULT cache root alone
+/// (`$HOME/.cache/meridian`) — the managed fleet daemon's. Under any other
+/// cache root (a test lane's or a fixture's private `XDG_CACHE_HOME`) nobody
+/// manages the daemon, and an inherited long horizon kept such daemons on a
+/// host for days at GiB RSS; there a value above [`DEFAULT_IDLE_EXIT`], `0`
+/// included, is capped at the default, and a shorter one still wins
+/// ([`cap_idle_exit`]).
+///
 /// Read at exactly one site, [`Config::resolve`].
 pub const IDLE_EXIT_ENV: &str = "MRD_IDLE_EXIT";
+
+/// Cap a parsed [`IDLE_EXIT_ENV`] horizon off the default cache root: there
+/// a horizon longer than [`DEFAULT_IDLE_EXIT`] — or `None`, never exit —
+/// becomes the default. On the default root the parsed value stands.
+fn cap_idle_exit(parsed: Option<Duration>, default_root: bool) -> Option<Duration> {
+    match parsed {
+        _ if default_root => parsed,
+        Some(horizon) if horizon <= DEFAULT_IDLE_EXIT => Some(horizon),
+        _ => Some(DEFAULT_IDLE_EXIT),
+    }
+}
+
+/// Whether `cache_root` is the default cache root, `$HOME/.cache/meridian`
+/// ([`cache::cache_root`] with `XDG_CACHE_HOME` unset), compared by canonical
+/// path so a symlinked home or an explicit `XDG_CACHE_HOME=$HOME/.cache`
+/// reads as the default. No `HOME` means no default root.
+fn is_default_cache_root(cache_root: &std::path::Path) -> bool {
+    let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) else {
+        return false;
+    };
+    let default = std::path::PathBuf::from(home)
+        .join(".cache")
+        .join("meridian");
+    let canonical =
+        |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    canonical(cache_root) == canonical(&default)
+}
 
 /// Parse [`IDLE_EXIT_ENV`]'s value as whole seconds; `0` is the documented
 /// disable spelling, not a failure.
@@ -3543,6 +3581,54 @@ mod socket_placement_tests {
                 "the refusal echoes the bytes it saw: {msg}"
             );
         }
+    }
+
+    /// Off the default cache root the idle horizon caps at the engine default:
+    /// the fleet floor and `0` (never exit) inherited from an agent shell must
+    /// not keep a test or fixture daemon alive for days. A shorter horizon
+    /// still wins, and on the default root the knob stands as set.
+    #[test]
+    fn the_idle_exit_knob_caps_at_the_default_off_the_default_cache_root() {
+        use super::cap_idle_exit;
+        use crate::DEFAULT_IDLE_EXIT;
+        use std::time::Duration;
+
+        let fleet_floor = Some(Duration::from_secs(259_200));
+        let shorter = Some(Duration::from_secs(60));
+        assert_eq!(cap_idle_exit(fleet_floor, true), fleet_floor);
+        assert_eq!(
+            cap_idle_exit(None, true),
+            None,
+            "0 stands on the default root"
+        );
+        assert_eq!(cap_idle_exit(fleet_floor, false), Some(DEFAULT_IDLE_EXIT));
+        assert_eq!(cap_idle_exit(None, false), Some(DEFAULT_IDLE_EXIT));
+        assert_eq!(
+            cap_idle_exit(Some(DEFAULT_IDLE_EXIT + Duration::from_secs(1)), false),
+            Some(DEFAULT_IDLE_EXIT)
+        );
+        assert_eq!(
+            cap_idle_exit(Some(DEFAULT_IDLE_EXIT), false),
+            Some(DEFAULT_IDLE_EXIT)
+        );
+        assert_eq!(cap_idle_exit(shorter, false), shorter);
+    }
+
+    /// The default cache root is `$HOME/.cache/meridian` by canonical path; a
+    /// private `XDG_CACHE_HOME` root is not.
+    #[test]
+    fn the_default_cache_root_is_home_cache_meridian() {
+        use super::is_default_cache_root;
+
+        let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) else {
+            return;
+        };
+        let default = std::path::PathBuf::from(home)
+            .join(".cache")
+            .join("meridian");
+        assert!(is_default_cache_root(&default));
+        let private = tempfile::tempdir().unwrap();
+        assert!(!is_default_cache_root(&private.path().join("meridian")));
     }
 
     /// The resident-budget knob: `0` is the documented unbounded spelling,
