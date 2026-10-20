@@ -878,3 +878,52 @@ fn an_older_census_neither_overwrites_nor_forgets_a_newer_measurement() {
     // Rings are another table.
     assert_eq!(host.settle(Owner::Ring, 5, vec![(ws("a"), None)]), 0);
 }
+
+/// L is B/32 held between 256 MiB and 2 GiB (merkle-spec §6.4, rv-m380): the
+/// floor on a small host, B's share on a large one, whose stores need more,
+/// and the ceiling past 64 GiB. The caches kept open hold the pools' steady
+/// sum to B/4, and at least one stays open under 1 GiB.
+#[test]
+fn the_sql_cache_limit_grows_with_the_budget_between_its_floor_and_ceiling() {
+    const MIB: u64 = 1 << 20;
+    const GIB: u64 = 1 << 30;
+    let at = |budget: u64| SqlBudget::for_budget(usize::try_from(budget).unwrap()).unwrap();
+    assert_eq!(
+        SqlBudget::for_budget(0),
+        None,
+        "a host that enforces nothing"
+    );
+    assert_eq!(
+        at(512 * MIB),
+        SqlBudget {
+            cache_limit: 256 * MIB,
+            open_caches: 1,
+            append_cap: 256 * MIB,
+        }
+    );
+    assert_eq!(
+        at(8 * GIB),
+        SqlBudget {
+            cache_limit: 256 * MIB,
+            open_caches: 8,
+            append_cap: 4 * GIB,
+        }
+    );
+    assert_eq!(
+        at(55 * GIB),
+        SqlBudget {
+            cache_limit: 1760 * MIB,
+            open_caches: 8,
+            append_cap: 55 * GIB / 2,
+        },
+        "devstation-nyc-1, the host of the largest store"
+    );
+    assert_eq!(
+        at(256 * GIB),
+        SqlBudget {
+            cache_limit: 2 * GIB,
+            open_caches: 32,
+            append_cap: 128 * GIB,
+        }
+    );
+}

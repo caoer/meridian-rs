@@ -932,6 +932,40 @@ fn status_residency_prints_the_sql_escalation_counters() {
     );
 }
 
+/// Every fleet daemon runs without a residency host, and the SQL memory
+/// policy escalates its appends all the same: `status --residency` prints
+/// the counters a no-host daemon answers beside the no-host line, on both
+/// faces (merkle-spec §6.4, rv-m380).
+#[test]
+fn status_residency_prints_the_sql_escalation_counters_without_a_host() {
+    let sb = sandbox();
+    let ws = anchored(&sb, "no-host-escalations");
+    let taken = serde_json::json!({"steps": 3, "largest": 805_306_368_u64,
+                                   "last_unix_secs": 1_791_436_323_u64, "refused": 0});
+    fake_daemon_answering(
+        &sb,
+        serde_json::json!({"status": "residency", "report": null,
+                           "sql_escalations": taken.clone()}),
+    );
+    let out = sb.run(&ws, &["status", "--residency"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let so = stdout(&out);
+    assert!(
+        so.contains(
+            "  residency: the daemon has no residency host · sql-escalations 3 (largest \
+             805306368, last 2026-10-08T05:12:03Z) · sql-refused 0\n"
+        ),
+        "the residency line: {so}"
+    );
+    let out = sb.run(&ws, &["status", "--residency", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("status json");
+    assert_eq!(
+        doc["residency"],
+        serde_json::json!({"state": "no-host", "report": null, "sql_escalations": taken})
+    );
+}
+
 /// A daemon from before the `residency` request answers it `unknown_op` — the
 /// window after an upgrade while the old daemon still runs. `--residency`
 /// names that apart from no daemon, on both faces, and exits 0.

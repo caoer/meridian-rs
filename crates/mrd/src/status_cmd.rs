@@ -167,8 +167,9 @@ enum Residency {
     /// The daemon's residency controller report, with its SQL escalation
     /// counters when the daemon reports them.
     Report(ResidencyReport, Option<SqlEscalations>),
-    /// A daemon answered and has no residency host.
-    NoHost,
+    /// A daemon answered and has no residency host, with its SQL escalation
+    /// counters when the daemon reports them.
+    NoHost(Option<SqlEscalations>),
     /// A daemon answered `unknown_op`: an older build without the request.
     OlderDaemon,
     /// No daemon answered within the probe's cap.
@@ -180,15 +181,14 @@ impl Residency {
     /// starts a daemon.
     fn ask() -> Self {
         match registry::Client::from_default().and_then(|client| client.residency()) {
-            Ok(Some((report, escalations))) => Self::Report(report, escalations),
-            Ok(None) => Self::NoHost,
+            Ok((Some(report), escalations)) => Self::Report(report, escalations),
+            Ok((None, escalations)) => Self::NoHost(escalations),
             Err(err) if err.kind() == std::io::ErrorKind::Unsupported => Self::OlderDaemon,
             Err(_) => Self::NoDaemon,
         }
     }
 
     fn render(&self) -> String {
-        use std::fmt::Write as _;
         match self {
             Self::Report(r, escalations) => {
                 let mut line = format!(
@@ -204,21 +204,14 @@ impl Residency {
                     r.peak_overruns,
                     r.peak_shortfall,
                 );
-                if let Some(e) = escalations {
-                    let _ = write!(line, " · sql-escalations {}", e.steps);
-                    if let Some(last) = e.last_unix_secs {
-                        let _ = write!(
-                            line,
-                            " (largest {}, last {})",
-                            e.largest,
-                            crate::realise_cmd::rfc3339_utc(last)
-                        );
-                    }
-                    let _ = write!(line, " · sql-refused {}", e.refused);
-                }
+                push_escalations(&mut line, escalations.as_ref());
                 line
             }
-            Self::NoHost => "the daemon has no residency host".to_owned(),
+            Self::NoHost(escalations) => {
+                let mut line = "the daemon has no residency host".to_owned();
+                push_escalations(&mut line, escalations.as_ref());
+                line
+            }
             Self::OlderDaemon => {
                 "the daemon does not know the residency request (older build)".to_owned()
             }
@@ -233,7 +226,11 @@ impl Residency {
                 "report": report,
                 "sql_escalations": escalations,
             }),
-            Self::NoHost => json!({"state": "no-host", "report": null, "sql_escalations": null}),
+            Self::NoHost(escalations) => json!({
+                "state": "no-host",
+                "report": null,
+                "sql_escalations": escalations,
+            }),
             Self::OlderDaemon => {
                 json!({"state": "older-daemon", "report": null, "sql_escalations": null})
             }
@@ -242,6 +239,23 @@ impl Residency {
             }
         }
     }
+}
+
+/// Append the SQL appends' escalation counters to a residency line, when
+/// the daemon reports them (merkle-spec §6.4).
+fn push_escalations(line: &mut String, escalations: Option<&SqlEscalations>) {
+    use std::fmt::Write as _;
+    let Some(e) = escalations else { return };
+    let _ = write!(line, " · sql-escalations {}", e.steps);
+    if let Some(last) = e.last_unix_secs {
+        let _ = write!(
+            line,
+            " (largest {}, last {})",
+            e.largest,
+            crate::realise_cmd::rfc3339_utc(last)
+        );
+    }
+    let _ = write!(line, " · sql-refused {}", e.refused);
 }
 
 /// What the forced-since-realise axis says. One constant, used by both faces, so

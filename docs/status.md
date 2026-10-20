@@ -1218,12 +1218,13 @@ bytes:
 The last two fields are the SQL caches' append escalations
 (`node-rev-merkle-spec.md` §6.4, the SQL memory policy): `sql-escalations`
 counts the steps that raised a cache's limit past L, each under its own
-reservation, with the largest reservation in bytes and the UTC time of the
-last step (the parenthesis is absent before the first); `sql-refused` counts
-the appends still refused for memory, because the controller refused a
-step's reservation or the append was refused at B/2. Both count since the
-daemon started. A daemon that answers the request without them (a build
-before escalation) leaves both fields off the line.
+reservation under a host, with the largest raise past L in bytes and the UTC
+time of the last step (the parenthesis is absent before the first);
+`sql-refused` counts the appends still refused for memory, because the
+controller refused a step's reservation or the append was refused at B/2.
+Both count since the daemon started, with a host or without one. A daemon
+that answers the request without them (a build before escalation, or one
+that cannot read the machine's memory) leaves both fields off the line.
 
 It asks with one `residency` admin request under the liveness probe's cap —
 about two seconds once the daemon accepts the connection, up to four when it
@@ -1232,8 +1233,15 @@ registry client request, so a daemon whose accept queue is full holds it —
 and never starts a daemon. When no daemon answers in time the line is
 `residency: no daemon answers`; when the daemon has no residency host
 (`MRD_RESIDENCY_HOST_BYTES` unset or `0`) it is `residency: the daemon has no
-residency host`; when the daemon answers `unknown_op` (an older build, the
-window after an upgrade while the old daemon still runs) it is `residency: the
+residency host`, followed by the two escalation fields when the daemon
+answers them:
+
+```
+  residency: the daemon has no residency host · sql-escalations 0 · sql-refused 0
+```
+
+When the daemon answers `unknown_op` (an older build, the
+window after an upgrade while the old daemon still runs), the line is `residency: the
 daemon does not know the residency request (older build)`. Under `--json` the
 flag adds one key, `residency`: `{"state": "report" | "no-host" |
 "older-daemon" | "no-daemon", "report": <the report object> | null,

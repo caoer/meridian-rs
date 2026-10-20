@@ -389,8 +389,8 @@ fn store_error(context: &str, error: view::ViewError) -> Box<ErrorBody> {
     Box::new(error)
 }
 
-/// Run the cache's `append`; under a host an append the steady limit refuses
-/// escalates (merkle-spec §6.4, the SQL memory policy).
+/// Run the cache's `append`; under the SQL memory policy an append the
+/// steady limit refuses escalates (merkle-spec §6.4).
 fn append_escalating<T>(
     registry: &Registry,
     store: &mut view::store::SqlStore,
@@ -420,15 +420,15 @@ fn append_error(limit: Option<u64>, steady: Option<u64>, error: view::ViewError)
             let refusal = text.lines().next().unwrap_or_default();
             let reach = match steady {
                 Some(steady) if steady < limit => format!(
-                    "the {} MiB the residency host lets one sql cache's append reach (its \
-                     steady limit {} MiB, raised under reservations up to half the host's \
-                     budget)",
+                    "the {} MiB the SQL memory policy lets one sql cache's append reach (its \
+                     steady limit {} MiB, raised up to half the memory budget: the residency \
+                     host's, or the machine's without one)",
                     limit >> 20,
                     steady >> 20
                 ),
                 _ => format!(
-                    "the {} MiB limit the residency host sets on each sql cache (half the \
-                     host's budget leaves no room to raise it)",
+                    "the {} MiB limit the SQL memory policy sets on each sql cache (half the \
+                     memory budget leaves no room to raise it)",
                     limit >> 20
                 ),
             };
@@ -607,8 +607,8 @@ mod tests {
         assert_eq!(refused.code, ErrorCode::IoError);
         let cause = refused.cause.as_deref().unwrap_or_default();
         assert!(
-            cause.contains("16 MiB") && cause.contains("residency host"),
-            "the cause names the host's per-cache limit: {cause}"
+            cause.contains("16 MiB") && cause.contains("SQL memory policy"),
+            "the cause names the policy's per-cache limit: {cause}"
         );
         assert!(
             !cause.contains("Possible solutions"),
