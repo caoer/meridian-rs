@@ -5075,9 +5075,9 @@ mod engine_tests {
     }
 
     /// Without a host B is the machine's physical memory: each SQL cache
-    /// runs under the same 256 MiB, never `DuckDB`'s default of 80% of RAM,
-    /// and an append escalates up to half of it (merkle-spec §6.4, the SQL
-    /// memory policy).
+    /// runs under that B's steady limit, never `DuckDB`'s default of 80% of
+    /// RAM, and an append escalates up to half of it (merkle-spec §6.4, the
+    /// SQL memory policy).
     #[test]
     fn without_a_host_each_sql_cache_runs_under_the_steady_limit() {
         let home = tempfile::tempdir().unwrap();
@@ -5095,8 +5095,26 @@ mod engine_tests {
             crate::residency::SqlBudget::for_budget(memory),
             "the policy of a host whose budget is the machine"
         );
+        let limit = reg.sql_budget.expect("a budget").cache_limit;
         let ws = three_workspaces(&reg, home.path());
-        assert_eq!(sql_memory_limit(&reg, &ws[0]), "256.0 MiB");
+        let store = reg.sql_store(&ws[0]).expect("the sql cache opens");
+        let store = store.lock().unwrap();
+        assert_eq!(store.memory_limit(), Some(limit));
+        let setting = || {
+            store
+                .connection()
+                .query_row("SELECT current_setting('memory_limit')::VARCHAR", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap()
+        };
+        let opened = setting();
+        store
+            .connection()
+            .execute_batch(&format!("SET memory_limit='{limit}B'"))
+            .unwrap();
+        assert_eq!(opened, setting(), "DuckDB runs the cache under L");
+        drop(store);
         assert!(
             reg.sql_escalation().is_some(),
             "an append L refuses escalates"
