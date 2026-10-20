@@ -659,7 +659,7 @@ A `SET memory_limit` before it in the same call lifts L for that call only.
 On a copy of a 112,845-page sessions root at 4 threads, `count(DISTINCT text)`
 over `body` is refused under L, and answers in 1.1 to 1.25 s after such a
 `SET` or written as a `GROUP BY text`; scans, sorts and other groupings there
-answer under L as fast as under `DuckDB`'s default.
+answer under L within 0.05 s of their time under `DuckDB`'s default.
 A statement already running when another call's append escalates shares
 the raised limit until that step ends.
 `DuckDB` refuses memory in three wordings ("failed to pin block of size",
