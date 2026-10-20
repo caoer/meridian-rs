@@ -11,8 +11,9 @@
 //! Each gate runs the real `mrd daemon` binary with a dead stderr — a pipe
 //! whose reader is gone (`EPIPE`, every unix) or `/dev/full` (`ENOSPC`,
 //! Linux) — and drives it over its own socket, so no client-side degrade can
-//! answer in its place. The daemon says "listening on" before it serves, so a
-//! daemon that panics on a failed write dies before the first request.
+//! answer in its place. Without `say!` the first read already fails: the
+//! drawer rebuild thread panics on its own log line and the read answers
+//! `the background drawer rebuild panicked`.
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
