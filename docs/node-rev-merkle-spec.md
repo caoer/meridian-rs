@@ -572,10 +572,15 @@ Allocator bookkeeping, retained free pages, thread stacks, compiled run
 modules and native SQL allocations are separate process costs, so fitting
 this budget alone cannot prove a process RSS limit.
 
-SQL keeps its own memory policy, bounded when a host is installed. Each
+SQL keeps its own memory policy, with a host or without one. Each
 workspace's SQL cache is its own `DuckDB` instance with its own buffer pool.
-Without a host each keeps `DuckDB`'s default `memory_limit` (80% of RAM).
-With a host of budget B, each runs under a steady `memory_limit` L of
+Under `DuckDB`'s default `memory_limit`, 80% of RAM, that pool keeps every
+block a query has read until it holds the whole store: on a 112,800-page
+sessions root it held 1.80 GiB of a 1.93 GiB store on a 55 GiB host and
+1.72 GiB of 1.75 GiB on a 47 GiB one. B is the host's budget, or without a
+host the machine's physical memory (`sysconf(_SC_PHYS_PAGES)` pages; where
+that cannot be read, each cache keeps `DuckDB`'s default and nothing below
+applies). Each cache runs under a steady `memory_limit` L of
 256 MiB, set when it opens and before its restore baseline is taken, so a
 caller's own `SET` lasts only that call; and the registry keeps at most
 max(1, ⌊(B/4) / L⌋) caches open: every `sql` call, whether its cache
@@ -610,8 +615,8 @@ carries; by the latest views' definition rather than by measurement, it
 also grows with the history since the file was last rebuilt (`hist` is
 append-only). On an 82,292-page sessions root under a 6-minute replay soak at 4
 threads, incremental appends peaked at 232 MiB (median) and 312 MiB (max)
-outside cached table pages with the limit raised, and at 359 MiB without a
-host: hash tables 183–223 MiB and uncheckpointed rows 90–115 MiB at the
+outside cached table pages with the limit raised, and at 359 MiB under
+`DuckDB`'s default limit: hash tables 183–223 MiB and uncheckpointed rows 90–115 MiB at the
 peak. A cold build of that root peaks at about 310 MiB, mostly
 uncheckpointed rows, and spills rather than fails. A 9,212-page root peaks
 at 154–179 MiB. No single statement of the append needs that much alone:
@@ -625,7 +630,8 @@ The registry reserves the difference between a raised limit and L through
 the controller (`Controller::reserve`, which sheds bodies to make room),
 raises that instance's `memory_limit` to it, and runs the append again: 2L,
 then 4L, and so on, never past B/2 (a step that would pass it is cut to
-B/2; when B/2 is not above L there is no step). The raise also moves what a
+B/2; when B/2 is not above L there is no step). Without a host there is no
+controller, and a step raises the limit with no reservation. The raise also moves what a
 read ending meanwhile restores, so a concurrent read cannot put L back
 under the running append. Each step ends, on success, refusal, error or
 unwind, by putting the instance's open-time configuration back and only
@@ -653,26 +659,26 @@ A statement already running when another call's append escalates shares
 the raised limit until that step ends.
 `DuckDB` refuses memory in three wordings ("failed to pin block of size",
 "could not allocate block of size", "failed to allocate data of size"), and
-each of them escalates. `mrd status --residency` reports the escalations:
-how many steps were taken, the largest reservation, when the last one was
-taken, and how many appends were refused for memory after all
-(`status.md` § The residency line).
+each of them escalates. Under a host `mrd status --residency` reports the
+escalations: how many steps were taken, the largest reservation (the largest
+raise past L, without a host), when the last one was taken, and how many
+appends were refused for memory after all (`status.md` § The residency line).
 
 The `memory_limit` bounds what `DuckDB`'s buffer manager holds, cached
 pages and a query's working memory alike (a `count(DISTINCT text)` over the
 76,000-page corpus raises the daemon's RSS high-water mark by about 2.0 GiB
-without a host and by about 0.14 GiB with one), and nothing else. Two
+under `DuckDB`'s default limit and by about 0.14 GiB under L), and nothing else. Two
 process costs of a cache stay outside it and off the ledger. One is the
 transient peak of a load: while a page's rows are appended, `DuckDB` holds
 the rendered text outside its pool, so the peak grows with the stored rows
 whatever the limit. The first query over a 131,075-byte long-heading page
-raises the daemon's RSS high-water mark by 802 MiB without a host and by
-830 MiB with one. The other is freed memory the allocator keeps: glibc can
+raises the daemon's RSS high-water mark by 802 MiB under the default limit
+and by 830 MiB under L. The other is freed memory the allocator keeps: glibc can
 hold a finished load's pages on its free lists, so RSS after a load can stand
 above live memory. The daemon does not call `malloc_trim`. On the 76,000-page
-corpus the RSS kept after its queries is live memory with a host and without
-one, and a trim returns nothing measurable; what the limit removes there is
-the cached pages, 928 MiB without a host and 12 MiB with one.
+corpus the RSS kept after its queries is live memory under either limit, and
+a trim returns nothing measurable; what L removes there is the cached pages,
+928 MiB under the default and 12 MiB under L.
 
 The allocation census is split at ownership boundaries. `model::allocation`
 counts raw buffers (including their shared-owner allocation) separately from
@@ -1001,13 +1007,14 @@ is `null` for a daemon with no host, else the report's fields as whole
 numbers of bytes or counts — `limit`, `floor`, `raw`, `bodies`, `reserved`,
 `allocated`, `total`, `pinned`, `retiring`, `overage`, `floor_overage`,
 `peak_shortfall`, `peak_overruns`, `members`, `reservations` — and the
-boolean `transient`. `S` is `null` with no host, else the SQL appends'
-escalation counters since the daemon started (the SQL memory policy above):
-`steps`, `largest` (bytes), `last_unix_secs` (`null` before the first step)
-and `refused`; a client reads an answer without the key as `null`. It reads
-the controller and those counters alone, never the registry map, so it
-answers beside a build or a sweep. `mrd status --residency` prints
-it (`docs/status.md`, the residency line).
+boolean `transient`. `S` is the SQL appends' escalation counters since
+the daemon started (the SQL memory policy above), with a host or without
+one, `null` where the policy does not apply: `steps`, `largest` (bytes),
+`last_unix_secs` (`null` before the first step) and `refused`; a client
+reads an answer without the key as `null`. It reads the controller and
+those counters alone, never the registry map, so it answers beside a build
+or a sweep. `mrd status --residency` prints it, `S` only beside a report
+(`docs/status.md`, the residency line).
 
 The ledger retains a selected body's full charge throughout retirement,
 including the interval where the local slot already appears cold. Only after

@@ -189,11 +189,13 @@ pub struct Registry {
     sql_stores: Mutex<HashMap<PathBuf, SqlHandle>>,
     /// The tick [`Self::sql_store`] stamps a handle with.
     sql_clock: AtomicU64,
-    /// The SQL memory policy, set with a residency host; `None` keeps every
-    /// cache open under `DuckDB`'s default (merkle-spec §6.4).
+    /// The SQL memory policy, set with or without a residency host; `None`
+    /// (no host and no readable physical memory, or a registry built
+    /// without [`Self::with_residency`]) keeps every cache open under
+    /// `DuckDB`'s default (merkle-spec §6.4).
     sql_budget: Option<crate::residency::SqlBudget>,
-    /// The SQL appends' escalation through the host's controller, set with
-    /// the budget (merkle-spec §6.4).
+    /// The SQL appends' escalation, through the host's controller when
+    /// there is one, set with the budget (merkle-spec §6.4).
     sql_escalation: Option<crate::residency::SqlEscalation>,
     /// G11 activity clock: request count + last request unix secs. Pre-warm
     /// backoff and idle-exit both read this.
@@ -1050,20 +1052,25 @@ impl Registry {
         }
     }
 
-    /// Build every engine generation through `host` (merkle-spec §6.8).
+    /// Build every engine generation through `host` (merkle-spec §6.8), and
+    /// bound the SQL caches by the host's budget, or without one by the
+    /// machine's physical memory (merkle-spec §6.4, the SQL memory policy).
     #[must_use]
     pub(crate) fn with_residency(mut self, host: Option<Arc<crate::residency::Host>>) -> Self {
-        self.sql_budget = host.as_ref().and_then(|host| {
-            crate::residency::SqlBudget::for_budget(host.controller.report().limit)
-        });
-        self.sql_escalation = host.as_ref().zip(self.sql_budget).map(|(host, budget)| {
-            crate::residency::SqlEscalation::new(host.controller.clone(), budget.append_cap)
+        let controller = host.as_ref().map(|host| host.controller.clone());
+        self.sql_budget = match &controller {
+            Some(controller) => crate::residency::SqlBudget::for_budget(controller.report().limit),
+            None => crate::residency::physical_memory()
+                .and_then(crate::residency::SqlBudget::for_budget),
+        };
+        self.sql_escalation = self.sql_budget.map(|budget| {
+            crate::residency::SqlEscalation::new(controller, budget.append_cap)
         });
         self.residency = host;
         self
     }
 
-    /// The SQL appends' escalation, when this registry has a host
+    /// The SQL appends' escalation, when this registry has a SQL budget
     /// (merkle-spec §6.4, the SQL memory policy).
     pub(crate) fn sql_escalation(&self) -> Option<&crate::residency::SqlEscalation> {
         self.sql_escalation.as_ref()
@@ -5067,6 +5074,32 @@ mod engine_tests {
         assert_eq!(sql_memory_limit(&reg, &ws[2]), "256.0 MiB");
     }
 
+    /// Without a host B is the machine's physical memory: each SQL cache
+    /// runs under the same 256 MiB, never `DuckDB`'s default of 80% of RAM,
+    /// and an append escalates up to half of it (merkle-spec §6.4, the SQL
+    /// memory policy).
+    #[test]
+    fn without_a_host_each_sql_cache_runs_under_the_steady_limit() {
+        let home = tempfile::tempdir().unwrap();
+        let cache_root = home.path().join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let reg = Registry::new(
+            StateStore::new(home.path().join("state.json")),
+            cache_root,
+            Vec::new(),
+        )
+        .with_residency(None);
+        let memory = crate::residency::physical_memory().expect("a unix host reads its memory");
+        assert_eq!(
+            reg.sql_budget,
+            crate::residency::SqlBudget::for_budget(memory),
+            "the policy of a host whose budget is the machine"
+        );
+        let ws = three_workspaces(&reg, home.path());
+        assert_eq!(sql_memory_limit(&reg, &ws[0]), "256.0 MiB");
+        assert!(reg.sql_escalation().is_some(), "an append L refuses escalates");
+    }
+
     /// A cache a query holds is never closed, so its file never gets a
     /// second instance: the new cache opens past the count, and a later open
     /// closes back down to it once they are free (merkle-spec §6.4).
@@ -5339,23 +5372,43 @@ mod engine_tests {
     /// the limit.
     #[test]
     fn an_append_the_steady_limit_refuses_escalates_and_answers() {
+        let controller = crate::residency::controller::Controller::new(1 << 30);
+        escalates_and_answers(Some(&controller));
+        assert_eq!(
+            controller.report().reserved,
+            0,
+            "every step's reservation is released"
+        );
+    }
+
+    /// Without a host the same append escalates with no reservation, up to
+    /// half the machine's physical memory, and the call answers
+    /// (merkle-spec §6.4, the SQL memory policy).
+    #[test]
+    fn without_a_host_an_append_the_steady_limit_refuses_escalates_and_answers() {
+        escalates_and_answers(None);
+    }
+
+    /// The 16b4 workload under a host over `controller`, or under none.
+    fn escalates_and_answers(controller: Option<&crate::residency::controller::Controller>) {
         use std::fmt::Write as _;
         const STEADY: u64 = 8 << 20;
         const PAGES: usize = 20_000;
         let home = tempfile::tempdir().unwrap();
         let cache_root = home.path().join("cache");
         fs::create_dir_all(&cache_root).unwrap();
-        let controller = crate::residency::controller::Controller::new(1 << 30);
-        let host = Arc::new(crate::residency::Host::new(
-            controller.clone(),
-            crate::raw_store::RawStore::new(&home.path().join("backing")).unwrap(),
-        ));
+        let host = controller.map(|controller| {
+            Arc::new(crate::residency::Host::new(
+                controller.clone(),
+                crate::raw_store::RawStore::new(&home.path().join("backing")).unwrap(),
+            ))
+        });
         let reg = Registry::new(
             StateStore::new(home.path().join("state.json")),
             cache_root,
             Vec::new(),
         )
-        .with_residency(Some(host))
+        .with_residency(host)
         .with_sql_cache_limit(STEADY);
         let page = |i: usize, version: &str| {
             let mut raw = format!("# Page {i} {version}\n\n");
@@ -5385,7 +5438,7 @@ mod engine_tests {
             Ok(other) => Err(format!("{other:?}")),
             Err(refused) => Err(format!("{refused:?}")),
         };
-        let escalation = reg.sql_escalation().expect("a host escalates");
+        let escalation = reg.sql_escalation().expect("the SQL policy escalates");
 
         assert_eq!(
             docs(),
@@ -5414,11 +5467,6 @@ mod engine_tests {
         assert!(delta.last_unix_secs.is_some(), "{delta:?}");
         assert_eq!(delta.refused, 0, "{delta:?}");
         assert_eq!(
-            controller.report().reserved,
-            0,
-            "every step's reservation is released"
-        );
-        assert_eq!(
             sql_memory_limit(&reg, &canonical),
             "8.0 MiB",
             "the steady limit is back"
@@ -5440,7 +5488,7 @@ mod engine_tests {
         // Half of 64 MiB caps the steps at 32 MiB; a 1 MiB controller cannot
         // reserve the 16 MiB the first step needs.
         let escalation = crate::residency::SqlEscalation::new(
-            crate::residency::controller::Controller::new(1 << 20),
+            Some(crate::residency::controller::Controller::new(1 << 20)),
             32 << 20,
         );
         let mut attempts = 0;
@@ -5485,7 +5533,7 @@ mod engine_tests {
         )
         .unwrap();
         let controller = crate::residency::controller::Controller::new(1 << 30);
-        let escalation = crate::residency::SqlEscalation::new(controller.clone(), 48 << 20);
+        let escalation = crate::residency::SqlEscalation::new(Some(controller.clone()), 48 << 20);
         let mut limits = Vec::new();
         let failure = escalation
             .run(&mut store, |store| {
@@ -5580,7 +5628,7 @@ mod engine_tests {
         let dir = tempfile::tempdir().unwrap();
         let mut store = store_at_16_mib(&dir);
         let controller = crate::residency::controller::Controller::new(1 << 30);
-        let escalation = crate::residency::SqlEscalation::new(controller.clone(), 64 << 20);
+        let escalation = crate::residency::SqlEscalation::new(Some(controller.clone()), 64 << 20);
         let mut limits = Vec::new();
         let failure = escalation
             .run(&mut store, |store| {
@@ -5624,7 +5672,7 @@ mod engine_tests {
         let dir = tempfile::tempdir().unwrap();
         let mut store = store_at_16_mib(&dir);
         let controller = crate::residency::controller::Controller::new(1 << 30);
-        let escalation = crate::residency::SqlEscalation::new(controller.clone(), 64 << 20);
+        let escalation = crate::residency::SqlEscalation::new(Some(controller.clone()), 64 << 20);
         let mut attempts = 0;
         let failure = escalation
             .run(&mut store, |_| -> Result<(), _> {

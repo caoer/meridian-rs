@@ -211,10 +211,11 @@ impl Host {
     }
 }
 
-/// The SQL memory policy under a host (merkle-spec §6.4): the steady
-/// `memory_limit` each workspace's SQL cache runs under, how many caches stay
-/// open, so the pools' steady limits sum to at most
-/// `max(SQL_CACHE_LIMIT, budget / 4)`, and how far an append may escalate.
+/// The SQL memory policy (merkle-spec §6.4) for a budget B — a host's, or
+/// without one the machine's [`physical_memory`]: the steady `memory_limit`
+/// each workspace's SQL cache runs under, how many caches stay open, so the
+/// pools' steady limits sum to at most `max(SQL_CACHE_LIMIT, budget / 4)`,
+/// and how far an append may escalate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SqlBudget {
     /// Each open cache's steady `DuckDB` `memory_limit` L, in bytes.
@@ -247,13 +248,34 @@ impl SqlBudget {
     }
 }
 
-/// A SQL cache's append escalation under a host (merkle-spec §6.4, the SQL
-/// memory policy): an append its steady limit L refuses for memory runs
-/// again under 2L, 4L, … up to [`SqlBudget::append_cap`], each step's excess
-/// over L reserved through the controller before the limit is raised.
+/// The machine's physical memory in bytes: the SQL memory policy's budget
+/// B without a host (merkle-spec §6.4). `None` where it cannot be read, and
+/// every cache then keeps `DuckDB`'s default `memory_limit`.
+#[must_use]
+pub fn physical_memory() -> Option<usize> {
+    #[cfg(unix)]
+    {
+        // SAFETY: `sysconf` takes a constant name and touches no memory of ours.
+        let (pages, page) =
+            unsafe { (libc::sysconf(libc::_SC_PHYS_PAGES), libc::sysconf(libc::_SC_PAGESIZE)) };
+        usize::try_from(pages)
+            .ok()?
+            .checked_mul(usize::try_from(page).ok()?)
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// A SQL cache's append escalation (merkle-spec §6.4, the SQL memory
+/// policy): an append its steady limit L refuses for memory runs again under
+/// 2L, 4L, … up to [`SqlBudget::append_cap`]. Under a host each step's excess
+/// over L is reserved through the controller before the limit is raised;
+/// without one there is no controller, and a step reserves nothing.
 #[derive(Debug)]
 pub struct SqlEscalation {
-    controller: controller::Controller,
+    controller: Option<controller::Controller>,
     cap: u64,
     steps: AtomicU64,
     largest: AtomicU64,
@@ -265,9 +287,11 @@ pub struct SqlEscalation {
 /// request's `sql_escalations`, merkle-spec §6.4).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SqlEscalations {
-    /// Steps taken: each raised one cache's limit under its own reservation.
+    /// Steps taken: each raised one cache's limit, under a host under its
+    /// own reservation.
     pub steps: u64,
-    /// The largest reservation one step held, in bytes.
+    /// The largest raise past L one step took, in bytes: under a host, the
+    /// reservation it held.
     pub largest: u64,
     /// When the last step was taken, in unix seconds; `None` before the first.
     pub last_unix_secs: Option<u64>,
@@ -292,9 +316,10 @@ pub struct AppendFailure {
 }
 
 impl SqlEscalation {
-    /// Escalation through `controller` up to `cap` bytes.
+    /// Escalation up to `cap` bytes, each step reserved through `controller`
+    /// when there is one.
     #[must_use]
-    pub fn new(controller: controller::Controller, cap: u64) -> Self {
+    pub fn new(controller: Option<controller::Controller>, cap: u64) -> Self {
         Self {
             controller,
             cap,
@@ -341,21 +366,26 @@ impl SqlEscalation {
                 });
             }
             let extra = next - steady;
-            let Ok(reservation) = self
-                .controller
-                .reserve(usize::try_from(extra).unwrap_or(usize::MAX))
-            else {
-                self.refused.fetch_add(1, Ordering::Relaxed);
-                return Err(AppendFailure {
-                    limit: Some(limit),
-                    error: view::ViewError::Busy(format!(
-                        "the append needs more memory than the {} MiB limit it ran under, \
-                         and the residency host cannot reserve the {} MiB more it would \
-                         escalate to now; transient — retry",
-                        limit >> 20,
-                        extra >> 20
-                    )),
-                });
+            let reservation = match &self.controller {
+                Some(controller) => {
+                    let Ok(reservation) =
+                        controller.reserve(usize::try_from(extra).unwrap_or(usize::MAX))
+                    else {
+                        self.refused.fetch_add(1, Ordering::Relaxed);
+                        return Err(AppendFailure {
+                            limit: Some(limit),
+                            error: view::ViewError::Busy(format!(
+                                "the append needs more memory than the {} MiB limit it ran \
+                                 under, and the residency host cannot reserve the {} MiB \
+                                 more it would escalate to now; transient — retry",
+                                limit >> 20,
+                                extra >> 20
+                            )),
+                        });
+                    };
+                    Some(reservation)
+                }
+                None => None,
             };
             self.note_step(extra);
             limit = next;

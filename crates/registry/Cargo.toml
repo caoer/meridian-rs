@@ -79,6 +79,11 @@ transport = { workspace = true }
 # outside `model`'s public surface). Both already in the graph and lockfile.
 config = { workspace = true }
 blake3 = "1"
+# The SQL memory policy without a residency host takes B from the machine's
+# physical memory (merkle-spec §6.4): `sysconf(_SC_PHYS_PAGES)` has no std
+# wrapper. libc is already a graph dependency (cache depends on it); no new
+# crate enters.
+libc = "0.2"
 # The required-backing index exposes its actual allocated table size for the
 # residency census. Keep std's RandomState; do not change the hashing policy.
 hashbrown = { version = "0.16.1", default-features = false }
