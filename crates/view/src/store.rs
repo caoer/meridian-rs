@@ -41,7 +41,13 @@
 //! The cache is its own manifest: the latest `doc(path, file_rev)` map is a
 //! complete `(path, rev)` picture of the pinned state (`file_rev` is the
 //! Merkle leaf truncated), so diffing it against the live parsed corpus names
-//! added / changed / removed exactly. On top of the content delta, the append
+//! added / changed / removed exactly. The store reads that map from the file
+//! once and then holds it in memory, advancing it by each append it commits
+//! (the file has one appender, so nothing else moves it); a store that holds
+//! none for the file's current pin generation — just opened, recreated, or
+//! after an append that failed — reads it from the file again. A sync is then
+//! one lookup per member, never a pass over the file's history. On top of the
+//! content delta, the append
 //! re-projects unchanged docs whose **link resolution** the delta can move: a
 //! doc appearing, vanishing, or changing its aliases changes what `[[name]]`
 //! resolves to in docs that did not move. The affected set is matched by
@@ -117,7 +123,7 @@
 //! checks the required policy at entry; overlapping caller settings remain
 //! shared and can temporarily change native flushing during that append.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -446,6 +452,37 @@ struct BaseDelta {
     removed: Vec<String>,
     /// Every moved member's path — the affected-set key source.
     moved_keys: BTreeSet<String>,
+}
+
+/// The `text` cell of a staged or loaded `body` row
+/// (`path, seq, section_seq, hpath, text, …`).
+const BODY_COL_TEXT: usize = 4;
+
+/// The most body keys one lookup statement names
+/// ([`SqlStore::stored_body_keys`]).
+const BODY_KEY_LOOKUP: usize = 512;
+
+/// The most moved names the resolution scan filters by in `DuckDB`
+/// ([`SqlStore::resolution_affected`]); a larger delta reads every row.
+const RESOLUTION_PREFILTER_NAMES: usize = 256;
+
+/// What one append transaction knows about `hist.body_text` keys
+/// (`docs/body-projection.md` §4).
+struct BodyKeys {
+    /// The file held body rows before this transaction, so each batch asks
+    /// it which of the batch's keys are stored.
+    lookup: bool,
+    /// The keys this transaction has inserted, across its batches.
+    inserted: BTreeSet<String>,
+}
+
+impl BodyKeys {
+    fn new(lookup: bool) -> Self {
+        Self {
+            lookup,
+            inserted: BTreeSet::new(),
+        }
+    }
 }
 
 /// One append's already-decided inputs. The cache diff and corpus-wide name
@@ -1106,6 +1143,15 @@ pub struct SqlStore {
     /// `DuckDB`'s default (merkle-spec §6.4, the SQL memory policy). Every
     /// reopen of this store's file sets it again.
     memory_limit: Option<u64>,
+    /// The file's `doc(path, file_rev)` map as of its last append (module
+    /// docs § Delta grain); `None` until a sync reads it.
+    manifest: Option<Manifest>,
+}
+
+/// The latest live `doc(path, file_rev)` map at pin generation `generation`.
+struct Manifest {
+    generation: i64,
+    revs: HashMap<String, String>,
 }
 
 /// GLOBAL-scope settings as `DuckDB` reports them, `(name, value)`.
@@ -1341,6 +1387,7 @@ impl SqlStore {
             baseline: Arc::new(Vec::new()),
             policy: Arc::default(),
             memory_limit,
+            manifest: None,
         };
         apply_spill_containment(&store.conn, &store.spill_dir())?;
         // One completed 2,048-row group is eligible for optimistic disk
@@ -1485,35 +1532,40 @@ impl SqlStore {
             }
         }
 
-        // The cache as its own manifest: latest live (path → file_rev).
-        let manifest: BTreeMap<String, String> = {
-            let mut stmt = self.conn.prepare("SELECT path, file_rev FROM doc")?;
-            let mut rows = stmt.query([])?;
-            let mut m = BTreeMap::new();
-            while let Some(row) = rows.next()? {
-                m.insert(row.get::<_, String>(0)?, row.get::<_, String>(1)?);
-            }
-            m
-        };
+        // The cache as its own manifest: latest live (path → file_rev), held
+        // between appends (module docs § Delta grain). Taken out of the store
+        // for this sync and put back only once its append has committed.
+        let mut manifest = self.take_manifest(pin.as_ref())?;
 
         let mut added: BTreeSet<&str> = BTreeSet::new();
         let mut changed: BTreeSet<&str> = BTreeSet::new();
+        let mut matched = 0usize;
         for (path, revision) in docs.revisions() {
-            match manifest.get(path) {
+            match manifest.revs.get(path) {
                 None => {
                     added.insert(path);
                 }
-                Some(rev) if *rev != revision.0 => {
-                    changed.insert(path);
+                Some(rev) => {
+                    matched += 1;
+                    if *rev != revision.0 {
+                        changed.insert(path);
+                    }
                 }
-                Some(_) => {}
             }
         }
-        let removed: Vec<&str> = manifest
-            .keys()
-            .filter(|p| docs.revision(p).is_none())
-            .map(String::as_str)
-            .collect();
+        // Every manifest path met a live member: nothing was removed.
+        let removed: Vec<&str> = if matched == manifest.revs.len() {
+            Vec::new()
+        } else {
+            let mut removed: Vec<&str> = manifest
+                .revs
+                .keys()
+                .filter(|p| docs.revision(p).is_none())
+                .map(String::as_str)
+                .collect();
+            removed.sort_unstable();
+            removed
+        };
 
         // The base plane's own delta, against the cache's own base manifest.
         let base_delta = self.base_delta(base)?;
@@ -1558,7 +1610,36 @@ impl SqlStore {
             fingerprint,
             base_fold,
         })?;
+        let removed: Vec<String> = removed.iter().map(|p| (*p).to_owned()).collect();
+        for path in &reproject {
+            if let Some(revision) = docs.revision(path) {
+                manifest.revs.insert(path.clone(), revision.0.clone());
+            }
+        }
+        for path in &removed {
+            manifest.revs.remove(path);
+        }
+        manifest.generation = counts.generation;
+        self.manifest = Some(manifest);
         Ok(Some(counts))
+    }
+
+    /// The manifest at the file's pin `pin`: the one this store holds when
+    /// it is at that generation, else read from the file's latest views.
+    fn take_manifest(&mut self, pin: Option<&Pin>) -> Result<Manifest, ViewError> {
+        let generation = pin.map_or(0, |p| p.generation);
+        if let Some(held) = self.manifest.take()
+            && held.generation == generation
+        {
+            return Ok(held);
+        }
+        let mut stmt = self.conn.prepare("SELECT path, file_rev FROM doc")?;
+        let mut rows = stmt.query([])?;
+        let mut revs = HashMap::new();
+        while let Some(row) = rows.next()? {
+            revs.insert(row.get::<_, String>(0)?, row.get::<_, String>(1)?);
+        }
+        Ok(Manifest { generation, revs })
     }
 
     /// Write every bounded batch under one generation transaction. The plan
@@ -1594,7 +1675,9 @@ impl SqlStore {
         self.conn.execute_batch("BEGIN")?;
         let appended = (|| {
             let generation = Value::BigInt(counts.generation);
-            let mut known_body_keys = None;
+            // Generation 1 is the first append to an empty file: no key can
+            // be stored yet, so its batches need no lookup.
+            let mut body_keys = BodyKeys::new(counts.generation > 1);
             let mut rows = Rows::default();
             let mut seen = [0usize; 14];
             let mut staged_bytes = 0usize;
@@ -1606,7 +1689,7 @@ impl SqlStore {
                 fill_exclusions(rows, exclusion);
                 #[cfg(test)]
                 note_staged_body_bytes(rows);
-                self.append_batch_rows(rows, &generation, &mut known_body_keys)?;
+                self.append_batch_rows(rows, &generation, &mut body_keys)?;
                 #[cfg(test)]
                 FLUSHED_BATCHES.with(|n| n.set(n.get() + 1));
                 *rows = Rows::default();
@@ -1888,13 +1971,34 @@ impl SqlStore {
             return Ok(BTreeSet::new());
         }
 
+        // The file answers only rows that CAN match, so a delta costs its
+        // matches, not one Rust row per link the corpus holds. The filter is
+        // a superset of the exact test below: an all-ASCII target's key is a
+        // substring of its ASCII lowercasing — the one case mapping Rust and
+        // `DuckDB` agree on — so it must contain some name; a target with any
+        // other character is always returned and decided in Rust alone. Past
+        // `RESOLUTION_PREFILTER_NAMES` names the filter would cost more than
+        // it saves, and every row is returned as before.
+        let union = "SELECT src_path, target_raw AS target FROM link \
+                     UNION SELECT src_path, target_raw FROM frontmatter_link \
+                     UNION SELECT src_path, object FROM lock";
+        let filtered = names.len() <= RESOLUTION_PREFILTER_NAMES;
+        let sql = if filtered {
+            let contains = vec!["contains(lower(target), ?)"; names.len()].join(" OR ");
+            format!(
+                "SELECT src_path, target FROM ({union}) \
+                 WHERE strlen(target) <> length(target) OR {contains}"
+            )
+        } else {
+            union.to_owned()
+        };
         let mut affected = BTreeSet::new();
-        let mut stmt = self.conn.prepare(
-            "SELECT src_path, target_raw FROM link \
-                 UNION SELECT src_path, target_raw FROM frontmatter_link \
-                 UNION SELECT src_path, object FROM lock",
-        )?;
-        let mut rows = stmt.query([])?;
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = if filtered {
+            stmt.query(duckdb::params_from_iter(names.iter()))?
+        } else {
+            stmt.query([])?
+        };
         while let Some(row) = rows.next()? {
             let src: String = row.get(0)?;
             if added.contains(src.as_str())
@@ -1920,7 +2024,7 @@ impl SqlStore {
         &self,
         rows: &Rows,
         generation: &Value,
-        known_body_keys: &mut Option<BTreeSet<String>>,
+        body_keys: &mut BodyKeys,
     ) -> Result<(), ViewError> {
         // doc: path, generation, tombstone, rest.
         if !rows.doc.is_empty() {
@@ -1968,7 +2072,7 @@ impl SqlStore {
             generation,
         )?;
         self.append_rendered(rows.task.len(), |i| rows.task_row(i), "task", generation)?;
-        self.append_body_chunks(rows, generation, known_body_keys)?;
+        self.append_body_chunks(rows, generation, body_keys)?;
 
         // base: path, generation, tombstone, rest — the hist.doc shape.
         if !rows.base.is_empty() {
@@ -2064,36 +2168,37 @@ impl SqlStore {
     /// read-then-insert is race-free by the single-appender protocol — the
     /// holder is the file's only writer — and stays INSERT-only, so the
     /// never-edit law holds.
+    ///
+    /// What the batch asks the file is its OWN keys ([`Self::stored_body_keys`]),
+    /// so the work is the batch's chunks, never every key the file has stored.
     fn append_body_chunks(
         &self,
         rows: &Rows,
         generation: &Value,
-        known_body_keys: &mut Option<BTreeSet<String>>,
+        keys: &mut BodyKeys,
     ) -> Result<(), ViewError> {
         if rows.body.is_empty() {
             return Ok(());
         }
-        // One key set spans every batch in this transaction. Re-reading the
-        // table per batch would be quadratic and miss the intended budget.
-        if known_body_keys.is_none() {
-            let mut stmt = self.conn.prepare("SELECT body_key FROM hist.body_text")?;
-            let mut got = stmt.query([])?;
-            let mut keys = BTreeSet::new();
-            while let Some(row) = got.next()? {
-                keys.insert(row.get::<_, String>(0)?);
-            }
-            *known_body_keys = Some(keys);
-        }
-        let known = known_body_keys.as_mut().expect("body key set loaded");
+        let batch: Vec<String> = rows
+            .body
+            .iter()
+            .map(|row| {
+                let Value::Text(text) = &row[BODY_COL_TEXT] else {
+                    unreachable!("body row text column is TEXT by construction");
+                };
+                blake3::hash(text.as_bytes()).to_hex().to_string()
+            })
+            .collect();
+        let stored = self.stored_body_keys(keys, &batch)?;
         let mut narrow = self.conn.appender_to_db("body", "hist")?;
         let mut texts = self.conn.appender_to_db("body_text", "hist")?;
-        for i in 0..rows.body.len() {
+        for (i, key) in batch.into_iter().enumerate() {
             // The row as loaded: its `hpath` rendered for this append only.
             let row = rows.body_row(i);
-            let Value::Text(text) = &row[4] else {
+            let Value::Text(text) = &row[BODY_COL_TEXT] else {
                 unreachable!("body row text column is TEXT by construction");
             };
-            let key = blake3::hash(text.as_bytes()).to_hex().to_string();
             let r = [
                 row[0].clone(),     // path
                 generation.clone(), // gen
@@ -2106,7 +2211,7 @@ impl SqlStore {
                 Value::Text(key.clone()),
             ];
             narrow.append_row(duckdb::appender_params_from_iter(r.iter()))?;
-            if known.insert(key.clone()) {
+            if !stored.contains(&key) && keys.inserted.insert(key.clone()) {
                 let t = [Value::Text(key), Value::Text(text.clone())];
                 texts.append_row(duckdb::appender_params_from_iter(t.iter()))?;
             }
@@ -2114,6 +2219,40 @@ impl SqlStore {
         narrow.flush()?;
         texts.flush()?;
         Ok(())
+    }
+
+    /// The keys of `batch` the file held before this transaction: one keyed
+    /// lookup of the batch's own distinct keys, in statements of at most
+    /// [`BODY_KEY_LOOKUP`] keys. A key this transaction inserted is already
+    /// in [`BodyKeys::inserted`] and is not asked again; with nothing stored
+    /// before the transaction, nothing is asked at all.
+    fn stored_body_keys(
+        &self,
+        keys: &BodyKeys,
+        batch: &[String],
+    ) -> Result<BTreeSet<String>, ViewError> {
+        let mut stored = BTreeSet::new();
+        if !keys.lookup {
+            return Ok(stored);
+        }
+        let asked: Vec<&str> = batch
+            .iter()
+            .map(String::as_str)
+            .filter(|key| !keys.inserted.contains(*key))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        for chunk in asked.chunks(BODY_KEY_LOOKUP) {
+            let marks = vec!["?"; chunk.len()].join(", ");
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT DISTINCT body_key FROM hist.body_text WHERE body_key IN ({marks})"
+            ))?;
+            let mut got = stmt.query(duckdb::params_from_iter(chunk.iter().copied()))?;
+            while let Some(row) = got.next()? {
+                stored.insert(row.get::<_, String>(0)?);
+            }
+        }
+        Ok(stored)
     }
 
     /// Appender load of `n` hist rows produced one at a time by `row`: first
@@ -3195,6 +3334,46 @@ pub(crate) mod tests {
             )
             .expect("resolved");
         assert_eq!(resolved, 1);
+    }
+
+    /// The resolution scan's `DuckDB` filter misses no row the exact test
+    /// takes. `[[NEWDOC.md]]` reaches it through the ASCII lowercasing;
+    /// `[[İstanbul]]` because a non-ASCII target always passes: Rust
+    /// lowercases `İ` to `i̇` (two characters), a full case mapping `DuckDB`'s
+    /// `lower` need not share, so the filter never decides such a target.
+    #[test]
+    fn a_born_name_reprojects_upper_case_and_non_ascii_links_to_it() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let pages = [
+            ("upper.md", "# Upper\nsee [[NEWDOC.md]]\n"),
+            ("turkish.md", "# Turkish\nsee [[İstanbul]]\n"),
+            ("other.md", "# Other\nsee [[elsewhere]]\n"),
+        ];
+        sync_ambient(&mut store, &corpus(&pages), "b3b:v1").expect("cold");
+
+        let mut born = pages.to_vec();
+        born.extend([("newdoc.md", "# New\n"), ("İstanbul.md", "# City\n")]);
+        let v2 = corpus(&born);
+        let counts = sync_ambient(&mut store, &v2, "b3b:v2").expect("append");
+        assert_eq!(counts.added, 2);
+        assert_eq!(
+            counts.changed, 2,
+            "upper.md and turkish.md re-project; other.md does not"
+        );
+        assert_surface_matches_fresh(&store, &v2);
+        let dest = |src: &str| -> Option<String> {
+            store
+                .connection()
+                .query_row(
+                    "SELECT dest_path FROM link WHERE src_path = ?",
+                    [src],
+                    |r| r.get(0),
+                )
+                .expect("the link row")
+        };
+        assert_eq!(dest("upper.md").as_deref(), Some("newdoc.md"));
+        assert_eq!(dest("turkish.md").as_deref(), Some("İstanbul.md"));
     }
 
     /// A rooted link written before its target exists resolves once the

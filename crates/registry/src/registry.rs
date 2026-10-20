@@ -1683,13 +1683,18 @@ impl Registry {
                 };
                 let update = fs::update_corpus(&root, &previous, &moves, fresh_root.as_ref())?;
                 parsed = Some(update.parsed);
-                WorkspaceEngine::eager(
-                    update.index,
-                    update.docs,
-                    update.unserved,
-                    update.root,
-                    update.leaves,
-                )
+                // A resident prior's link roots carry over; a restored one
+                // has none to carry.
+                match prior.as_deref() {
+                    Some(prior) => WorkspaceEngine::eager_after(prior, update),
+                    None => WorkspaceEngine::eager(
+                        update.index,
+                        update.docs,
+                        update.unserved,
+                        update.root,
+                        update.leaves,
+                    ),
+                }
             } else {
                 let (files, leaves, fingerprint) = fs::domain_snapshot_with_leaves(&root)?;
                 let (index, docs, unserved) = fs::build_corpus(files);

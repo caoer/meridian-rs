@@ -1661,7 +1661,11 @@ The daemon's `sql` arm hands `sync_catalog` its selected engine generation as
 that catalog: membership, revisions and the generation's own name index come
 from the engine, and each projected body is a scan pin. Which mounted roots a
 statement needs is `DocumentCatalog::link_roots`, the union of the members'
-link-addressed mount names, so choosing them pins nothing. A mounted root is
+link-addressed mount names, so choosing them pins nothing. A generation that
+owns its documents holds that union as a count of members per root, made once
+at a whole-corpus build and carried by an incremental pass, which recounts
+only the members whose document it replaced, added or dropped; answering it
+walks no document. A mounted root is
 bound into `model::catalog::RootedCatalog` as its resident engine's catalog
 (`wire_serve::mount_corpus::ServedCorpus::catalog`): rooted name resolution
 reads that root's membership and name index and never a document of it. A
