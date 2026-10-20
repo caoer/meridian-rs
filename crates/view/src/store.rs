@@ -1145,7 +1145,7 @@ pub struct SqlStore {
     memory_limit: Option<u64>,
     /// The file's `doc(path, file_rev)` map as of its last append (module
     /// docs § Delta grain); `None` until a sync reads it.
-    manifest: Option<Manifest>,
+    manifest: Option<Box<Manifest>>,
 }
 
 /// The latest live `doc(path, file_rev)` map at pin generation `generation`.
@@ -1626,7 +1626,7 @@ impl SqlStore {
 
     /// The manifest at the file's pin `pin`: the one this store holds when
     /// it is at that generation, else read from the file's latest views.
-    fn take_manifest(&mut self, pin: Option<&Pin>) -> Result<Manifest, ViewError> {
+    fn take_manifest(&mut self, pin: Option<&Pin>) -> Result<Box<Manifest>, ViewError> {
         let generation = pin.map_or(0, |p| p.generation);
         if let Some(held) = self.manifest.take()
             && held.generation == generation
@@ -1639,7 +1639,7 @@ impl SqlStore {
         while let Some(row) = rows.next()? {
             revs.insert(row.get::<_, String>(0)?, row.get::<_, String>(1)?);
         }
-        Ok(Manifest { generation, revs })
+        Ok(Box::new(Manifest { generation, revs }))
     }
 
     /// Write every bounded batch under one generation transaction. The plan
