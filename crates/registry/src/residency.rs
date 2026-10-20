@@ -256,8 +256,12 @@ pub fn physical_memory() -> Option<usize> {
     #[cfg(unix)]
     {
         // SAFETY: `sysconf` takes a constant name and touches no memory of ours.
-        let (pages, page) =
-            unsafe { (libc::sysconf(libc::_SC_PHYS_PAGES), libc::sysconf(libc::_SC_PAGESIZE)) };
+        let (pages, page) = unsafe {
+            (
+                libc::sysconf(libc::_SC_PHYS_PAGES),
+                libc::sysconf(libc::_SC_PAGESIZE),
+            )
+        };
         usize::try_from(pages)
             .ok()?
             .checked_mul(usize::try_from(page).ok()?)

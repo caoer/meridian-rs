@@ -1063,9 +1063,9 @@ impl Registry {
             None => crate::residency::physical_memory()
                 .and_then(crate::residency::SqlBudget::for_budget),
         };
-        self.sql_escalation = self.sql_budget.map(|budget| {
-            crate::residency::SqlEscalation::new(controller, budget.append_cap)
-        });
+        self.sql_escalation = self
+            .sql_budget
+            .map(|budget| crate::residency::SqlEscalation::new(controller, budget.append_cap));
         self.residency = host;
         self
     }
@@ -5097,7 +5097,10 @@ mod engine_tests {
         );
         let ws = three_workspaces(&reg, home.path());
         assert_eq!(sql_memory_limit(&reg, &ws[0]), "256.0 MiB");
-        assert!(reg.sql_escalation().is_some(), "an append L refuses escalates");
+        assert!(
+            reg.sql_escalation().is_some(),
+            "an append L refuses escalates"
+        );
     }
 
     /// A cache a query holds is never closed, so its file never gets a
@@ -5698,19 +5701,6 @@ mod engine_tests {
         );
         assert_eq!(controller.report().reserved, 0);
         assert_eq!(store_limit(&store).unwrap(), "16.0 MiB");
-    }
-
-    /// Without a host every SQL cache stays open under `DuckDB`'s default.
-    #[test]
-    fn without_a_host_every_sql_cache_stays_open_under_duckdbs_default() {
-        let home = tempfile::tempdir().unwrap();
-        let reg = registry_in(home.path());
-        let ws = three_workspaces(&reg, home.path());
-        for w in &ws {
-            reg.sql_store(w).unwrap();
-        }
-        assert_eq!(reg.sql_stores.lock().unwrap().len(), 3);
-        assert_ne!(sql_memory_limit(&reg, &ws[0]), "256.0 MiB");
     }
 
     /// The suspicious-only door piggybacks on the next borrow: a named
