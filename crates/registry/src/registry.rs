@@ -4742,14 +4742,17 @@ mod engine_tests {
     }
 
     /// Card step 3 / quality gate (bug-cookie-newdir-false-seen): a member
-    /// created inside a brand-new directory in the admitted arming window
-    /// cannot produce a vouched stale overlay. `currency_refresh` must return
-    /// `vouched=false` and a root equal to a fresh-cache oracle.
+    /// created inside a brand-new directory, straight after the `mkdir`,
+    /// cannot produce a vouched stale overlay. `vendor/notify` arms the
+    /// directory before it delivers the create and the feed enumerates it
+    /// (merkle-spec §6.4, the new-directory row), so the refresh is vouched,
+    /// opens no doubt, and its root equals a fresh-cache oracle that holds
+    /// the new member.
     ///
     /// Quiet already-watched tree still `Seen` (the vouched baseline above
     /// the mkdir) — the cookie law is unchanged for a tree the watch already
-    /// covers. Linux-only: this is the inotify arming gap (19/20 miss on
-    /// the unfixed tree); Darwin `FSEvents` did not exhibit it (0/20).
+    /// covers. Linux-only: this is the inotify arming gap (19/20 miss when
+    /// the arm followed delivery); Darwin `FSEvents` did not exhibit it (0/20).
     #[cfg(target_os = "linux")]
     #[test]
     fn a_new_directory_child_before_arm_cannot_vouch_a_stale_overlay() {
@@ -4770,26 +4773,11 @@ mod engine_tests {
         assert!(vouched_quiet, "quiet already-watched tree still Sees");
         assert_eq!(root_quiet, root_cold);
 
-        // The constructed failure: create new/ and immediately new/x.md
-        // before the sub-watch arms (notify 8.2.0 inotify `add_watch_by_event`
-        // collects, then the loop arms after the batch).
+        // The constructed race: create new/ and immediately new/x.md, which
+        // can land before the directory's own watch arms.
+        let rescans_before = reg.rescan_record(&canonical);
         fs::create_dir(canonical.join("new")).unwrap();
         fs::write(canonical.join("new/x.md"), "# X\n").unwrap();
-
-        // The parent create is delivered; the child may not be. Wait for
-        // the named doubt the parent must raise, then refresh.
-        let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(10) {
-            if reg.feed_stats(&canonical).is_some_and(|s| s.all_dirty) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(
-            reg.feed_stats(&canonical).is_some_and(|s| s.all_dirty),
-            "the directory create must mark doubt: {:?}",
-            reg.feed_stats(&canonical)
-        );
 
         let (root, vouched) = reg
             .currency_refresh(&canonical, Duration::from_secs(10))
@@ -4799,13 +4787,19 @@ mod engine_tests {
             root == root_quiet
         );
         assert!(
-            !vouched,
-            "a new-directory arming gap is named doubt, never a vouched old root"
+            vouched,
+            "an enumerated directory create opens no doubt: {:?}",
+            reg.feed_stats(&canonical)
+        );
+        assert_eq!(
+            reg.rescan_record(&canonical),
+            rescans_before,
+            "the directory create marked no rescan"
         );
         let oracle = ::fs::DomainCache::new()
             .root(&::fs::WorkspaceRoot(canonical.clone()))
             .unwrap();
-        assert_eq!(root, oracle, "the unvouched floor includes the new member");
+        assert_eq!(root, oracle, "the vouched root includes the new member");
         assert_ne!(root, root_quiet, "the new member moved the root");
     }
 
@@ -6276,9 +6270,8 @@ mod engine_tests {
         let grown = walk();
         assert_eq!(paths(&grown), ["bases/x.base", "new/y.base"]);
 
-        // Take any doubt the new directory opened (inotify collapses on it), so
-        // the rename below is caught by its own event, then confirm the reuse
-        // is back.
+        // Drain whatever the new directory left pending, so the rename below
+        // is caught by its own event, then confirm the reuse is back.
         reg.currency_refresh(&canonical, timeout).unwrap();
         let kept = walk();
         assert!(Arc::ptr_eq(&kept, &walk()), "a quiet call reuses again");
