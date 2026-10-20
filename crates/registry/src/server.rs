@@ -417,15 +417,12 @@ fn cap_idle_exit(parsed: Option<Duration>, default_root: bool) -> Option<Duratio
 /// ([`cache::cache_root`] with `XDG_CACHE_HOME` unset), compared by canonical
 /// path so a symlinked home or an explicit `XDG_CACHE_HOME=$HOME/.cache`
 /// reads as the default. No `HOME` means no default root.
-fn is_default_cache_root(cache_root: &std::path::Path) -> bool {
+fn is_default_cache_root(cache_root: &Path) -> bool {
     let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) else {
         return false;
     };
-    let default = std::path::PathBuf::from(home)
-        .join(".cache")
-        .join("meridian");
-    let canonical =
-        |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let default = PathBuf::from(home).join(".cache").join("meridian");
+    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     canonical(cache_root) == canonical(&default)
 }
 
@@ -3593,8 +3590,8 @@ mod socket_placement_tests {
         use crate::DEFAULT_IDLE_EXIT;
         use std::time::Duration;
 
-        let fleet_floor = Some(Duration::from_secs(259_200));
-        let shorter = Some(Duration::from_secs(60));
+        let fleet_floor = Some(Duration::from_hours(72));
+        let shorter = Some(Duration::from_mins(1));
         assert_eq!(cap_idle_exit(fleet_floor, true), fleet_floor);
         assert_eq!(
             cap_idle_exit(None, true),
