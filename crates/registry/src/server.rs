@@ -3851,7 +3851,8 @@ mod residency_activation_tests {
         let member = controller.retain(Arc::new(store.retain(raw.as_bytes()).unwrap()));
         drop(member.pin(Access::Read, 1).unwrap());
 
-        let (report, escalations) = client.residency().unwrap().expect("a host's report");
+        let (report, escalations) = client.residency().unwrap();
+        let report = report.expect("a host's report");
         assert_eq!(
             report.peak_overruns, 1,
             "the door answers the host's report: {report:?}"
@@ -3881,7 +3882,8 @@ mod residency_activation_tests {
         )));
         let server = RunningServer::start(config).unwrap();
         let client = crate::Client::new(server.socket_path().to_path_buf());
-        let (_, escalations) = client.residency().unwrap().expect("a host's report");
+        let (report, escalations) = client.residency().unwrap();
+        assert!(report.is_some(), "a host's report");
         assert_eq!(
             escalations,
             Some(SqlEscalations::default()),
@@ -3890,12 +3892,20 @@ mod residency_activation_tests {
         server.shutdown();
     }
 
+    /// Without a host the door answers no report, and the SQL appends'
+    /// escalation counters all the same: the policy runs on the machine's
+    /// memory (merkle-spec §6.4, rv-m380).
     #[test]
-    fn the_residency_door_answers_null_without_a_host() {
+    fn the_residency_door_answers_the_escalation_counters_without_a_host() {
+        use crate::residency::SqlEscalations;
+
         let tmp = TempDir::new().unwrap();
         let server = RunningServer::start(config(&tmp)).unwrap();
         let client = crate::Client::new(server.socket_path().to_path_buf());
-        assert_eq!(client.residency().unwrap(), None);
+        assert_eq!(
+            client.residency().unwrap(),
+            (None, Some(SqlEscalations::default()))
+        );
         let line = serde_json::to_string(&crate::Response::Residency {
             report: None,
             sql_escalations: None,

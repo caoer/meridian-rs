@@ -1076,7 +1076,7 @@ impl Registry {
         self.sql_escalation.as_ref()
     }
 
-    /// A steady per-cache limit other than [`crate::residency::SQL_CACHE_LIMIT`],
+    /// A steady per-cache limit other than the policy's L,
     /// for tests that need an append to outgrow it at a small corpus.
     #[cfg(test)]
     pub(crate) fn with_sql_cache_limit(mut self, limit: u64) -> Self {

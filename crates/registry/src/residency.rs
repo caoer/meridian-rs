@@ -214,8 +214,8 @@ impl Host {
 /// The SQL memory policy (merkle-spec §6.4) for a budget B — a host's, or
 /// without one the machine's [`physical_memory`]: the steady `memory_limit`
 /// each workspace's SQL cache runs under, how many caches stay open, so the
-/// pools' steady limits sum to at most `max(SQL_CACHE_LIMIT, budget / 4)`,
-/// and how far an append may escalate.
+/// pools' steady limits sum to at most `max(L, budget / 4)`, and how far an
+/// append may escalate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SqlBudget {
     /// Each open cache's steady `DuckDB` `memory_limit` L, in bytes.
@@ -226,11 +226,15 @@ pub struct SqlBudget {
     pub append_cap: u64,
 }
 
-/// The steady per-cache `memory_limit` L (merkle-spec §6.4, the SQL memory
-/// policy). An append's need grows with the store, its history and the
-/// thread count (232 / 312 MiB median / max on an 82k-page root), so an
-/// append L refuses escalates ([`SqlEscalation`]).
+/// The floor of the steady per-cache `memory_limit` L (merkle-spec §6.4,
+/// the SQL memory policy): L is B/32 held between this and
+/// [`SQL_CACHE_LIMIT_MAX`]. An append's need grows with the store, its
+/// history and the thread count (232 / 312 MiB median / max on an 82k-page
+/// root), so an append L refuses escalates ([`SqlEscalation`]).
 pub const SQL_CACHE_LIMIT: u64 = 256 << 20;
+
+/// The ceiling of the steady per-cache `memory_limit` L (merkle-spec §6.4).
+pub const SQL_CACHE_LIMIT_MAX: u64 = 2 << 30;
 
 impl SqlBudget {
     /// The policy for a host of `budget` bytes; `None` for `0`, a host that
@@ -238,9 +242,10 @@ impl SqlBudget {
     #[must_use]
     pub fn for_budget(budget: usize) -> Option<Self> {
         let budget = u64::try_from(budget).unwrap_or(u64::MAX);
+        let cache_limit = (budget / 32).clamp(SQL_CACHE_LIMIT, SQL_CACHE_LIMIT_MAX);
         (budget != 0).then(|| Self {
-            cache_limit: SQL_CACHE_LIMIT,
-            open_caches: usize::try_from(budget / 4 / SQL_CACHE_LIMIT)
+            cache_limit,
+            open_caches: usize::try_from(budget / 4 / cache_limit)
                 .unwrap_or(usize::MAX)
                 .max(1),
             append_cap: budget / 2,
@@ -305,9 +310,9 @@ pub struct SqlEscalations {
 }
 
 /// A daemon's residency answer (`Client::residency`): the controller's
-/// report and the SQL appends' escalation counters, when the daemon reports
-/// them.
-pub type Reading = (controller::Report, Option<SqlEscalations>);
+/// report when the daemon has a host, and the SQL appends' escalation
+/// counters when the daemon reports them, with a host or without one.
+pub type Reading = (Option<controller::Report>, Option<SqlEscalations>);
 
 /// Why an escalated append failed, and the limit it last ran under.
 #[derive(Debug)]
