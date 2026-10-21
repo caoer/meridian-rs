@@ -86,17 +86,16 @@ when:
   - event: tag
     ref: refs/tags/v*
 
-# The bare-metal CI pool slots (`pool: bm`: ci-m 8 vCPU / 16 GiB, ci-l
-# 16 vCPU / 32 GiB; one workflow per slot, started on demand). `pool: bm` is the only label they carry
-# that no other agent does. Not unpinned: the unlabeled agents include zmax, a
-# darwin local backend that cannot run these linux containers, and no label
-# matches both the pool and workstation-nyc-2 (it carries none). The tag lanes
-# stay pinned to workstation-nyc-2. `class: ci-m` keeps the workflow on the
-# 16 GiB slots it is measured on, off the one ci-l slot (ci-lax-1), which shares
-# rs-lax-1's threads with devstation-lax-1's timing runs.
+# Pinned to workstation-nyc-2, like the tag lanes. On the bare-metal CI pool
+# (`pool: bm`, `class: ci-m` slots, 8 vCPU / 16 GiB) this workflow runs 53-57 min
+# against the 60-min timeout because the pool slots' caches do not stay warm, so
+# it stays here until the pool's cache retention is fixed and two warm pool runs
+# read <= 2x the nyc-2 median (SA ruling, sessions card
+# 06-13-fleet-ops/tasks/meridian-rs-ci-unpin-pool). Unlabeled agents include
+# zmax, a darwin local backend that cannot run these linux containers, so the
+# workflow always carries a label.
 labels:
-  pool: bm
-  class: ci-m
+  hostname: workstation-nyc-2
 
 # Clone with OUR credential, not the server-stamped one. The default clone's
 # netrc password is the repo user's OAuth access token, stamped into the
