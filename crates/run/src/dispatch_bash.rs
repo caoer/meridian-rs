@@ -502,9 +502,7 @@ impl<'a> Lane<'a> {
     fn close_bracket(&mut self, bracket: ExecBracket) -> Detection {
         match self {
             Lane::Drawer(memo) => bracket.close_memoized(memo),
-            Lane::Resident(cache) => {
-                bracket.close_cached(&mut fs::lock_memo(cache))
-            }
+            Lane::Resident(cache) => bracket.close_cached(&mut fs::lock_memo(cache)),
         }
     }
 

@@ -982,7 +982,10 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         let lines = LINES.with(|l| l.borrow().clone());
         assert_eq!(lines.len(), 1, "one slow op, one line: {lines:#?}");
         let line = &lines[0];
-        assert!(line.starts_with("registry: slow op run duration_us="), "{line}");
+        assert!(
+            line.starts_with("registry: slow op run duration_us="),
+            "{line}"
+        );
         let field = |name: &str| -> u64 {
             let at = line
                 .find(&format!("{name}="))
@@ -1002,18 +1005,19 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         );
         // Contained in the entry world, which is contained in the op.
         let world = field("run.world");
-        assert!(world >= wait, "run.world={world} < memo.wait={wait}: {line}");
+        assert!(
+            world >= wait,
+            "run.world={world} < memo.wait={wait}: {line}"
+        );
         assert!(field("duration_us") >= world, "{line}");
-        assert!(line.contains(" currency."), "the currency arm is named: {line}");
+        assert!(
+            line.contains(" currency."),
+            "the currency arm is named: {line}"
+        );
         assert!(line.contains(" run.row="), "the row is named: {line}");
         // Started within the call, to the millisecond.
         let since_epoch = |t: std::time::SystemTime| {
-            u64::try_from(
-                t.duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis(),
-            )
-            .unwrap()
+            u64::try_from(t.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()).unwrap()
         };
         let started = field("started_unix_ms");
         assert!(

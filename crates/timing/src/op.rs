@@ -125,11 +125,7 @@ pub(crate) fn charge(name: &'static str, elapsed: Duration) {
             existing.us = existing.us.saturating_add(us);
             existing.count = existing.count.saturating_add(1);
         } else {
-            charges.push(Charge {
-                name,
-                us,
-                count: 1,
-            });
+            charges.push(Charge { name, us, count: 1 });
         }
     });
 }
