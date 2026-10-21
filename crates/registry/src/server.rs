@@ -45,7 +45,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use cache::DrawerLock;
 use serde::Serialize;
@@ -78,12 +78,15 @@ const ACCEPT_POLL: Duration = Duration::from_millis(20);
 /// all, and the live trigger for a convoy incident could only ever be
 /// inferred. This is the engine's own trail: which ops ran long, and how long.
 ///
-/// **It times DISPATCH, so it names participants and not causes.** A waiter
+/// **The duration times DISPATCH; the ledger names where it went.** A waiter
 /// refused at the `sql` store bound and the long holder that blocked it both
-/// spend their time inside one `dispatch_read` call and both land here, with
-/// the victim's line indistinguishable from the culprit's. Reading a cause out
-/// of this log takes the set of lines over a window — a holder and the waiters
-/// that stack up behind it on the same workspace — never one line alone.
+/// spend their time inside one `dispatch_read` call and both land here. What
+/// tells them apart is the line's `phases_us[…]` ledger ([`timing::op`],
+/// `docs/run-plane.md` § The slow-op line): the waiter's time sits in a wait
+/// (`memo.wait`, `flock.wait`, `cookie.wait`), the holder's in work
+/// (`currency.floor.*`, `run.row`). The ledger is the serving thread's alone,
+/// so who held a contended resource is still read from the set of lines over a
+/// window, matched by `started_unix_ms`.
 ///
 /// Set below the `sql` store bound on purpose (the ordering is compile-time
 /// enforced in `sql_op`, which owns the bound): an op in the band underneath a
@@ -95,23 +98,77 @@ pub(crate) const SLOW_OP_LOG: Duration = Duration::from_secs(5);
 
 /// The engine's own trail for a slow op. The frame carrying the measured
 /// number reaches a client that may already have given up, so the log is what
-/// survives an incident. `elapsed` is total time in dispatch: a long holder
-/// and a waiter refused behind it are both slow ops and both print here, so
-/// the line reports the duration it measured and leaves attribution to the
-/// reader. ONE printer for every serve path — the generic dispatch and the
-/// § A.7 `script` / § A.8 `run` lines routed around it at `handle_line` — so
-/// no op class is invisible to the trail (a `run` fire held 10 s by a
+/// survives an incident. `elapsed` is total time in dispatch; `ledger` is the
+/// op's own, opened where dispatch began, so the line says which phases the
+/// time went to. ONE printer for every serve path — the generic dispatch and
+/// the § A.7 `script` / § A.8 `run` lines routed around it at `handle_line` —
+/// so no op class is invisible to the trail (a `run` fire held 10 s by a
 /// contended memo left no engine-side line until it printed here too).
-pub(crate) fn log_slow_op(op: &str, elapsed: Duration, attached: Option<&Path>) {
-    if elapsed < SLOW_OP_LOG {
-        return;
+///
+/// `started_unix_ms` is the wall clock at print minus the duration: the log
+/// file carries no timestamps of its own, and this is what matches the line to
+/// the caller's log.
+pub(crate) fn log_slow_op(
+    op: &str,
+    elapsed: Duration,
+    attached: Option<&Path>,
+    ledger: &timing::op::Ledger,
+) {
+    if let Some(line) = slow_op_line(op, elapsed, attached, ledger, SystemTime::now()) {
+        #[cfg(test)]
+        slow_op_test::LINES.with(|lines| lines.borrow_mut().push(line.clone()));
+        timing::say!("{line}");
+    }
+}
+
+/// Test-only: the threshold a test on this thread lowers, so a real op driven
+/// past it prints without a 5 s wait, and the lines this thread printed.
+#[cfg(test)]
+pub(crate) mod slow_op_test {
+    use std::cell::{Cell, RefCell};
+    use std::time::Duration;
+
+    thread_local! {
+        pub(crate) static THRESHOLD: Cell<Option<Duration>> = const { Cell::new(None) };
+        pub(crate) static LINES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+}
+
+/// [`SLOW_OP_LOG`], or a test's lowered threshold on this thread.
+fn slow_op_threshold() -> Duration {
+    #[cfg(test)]
+    {
+        if let Some(lowered) = slow_op_test::THRESHOLD.with(std::cell::Cell::get) {
+            return lowered;
+        }
+    }
+    SLOW_OP_LOG
+}
+
+/// The slow-op line, or `None` under the threshold — [`log_slow_op`]'s text,
+/// apart from the write so a test can read it.
+fn slow_op_line(
+    op: &str,
+    elapsed: Duration,
+    attached: Option<&Path>,
+    ledger: &timing::op::Ledger,
+    now: SystemTime,
+) -> Option<String> {
+    if elapsed < slow_op_threshold() {
+        return None;
     }
     let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-    timing::say!(
-        "registry: slow op {op} duration_us={duration_us} on {} — total time in \
-         dispatch, any wait for a contended resource included",
+    let started_unix_ms = now
+        .checked_sub(elapsed)
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+    Some(format!(
+        "registry: slow op {op} duration_us={duration_us} started_unix_ms={started_unix_ms} \
+         on {} phases_us[{}] — total time in dispatch, any wait for a contended resource \
+         included; phases nest and do not sum (docs/run-plane.md § The slow-op line)",
         attached.map_or_else(|| "<unattached>".to_string(), |p| p.display().to_string()),
-    );
+        ledger.render(),
+    ))
 }
 
 /// The reaper's wake granularity: it sleeps in these steps so shutdown is
@@ -1765,6 +1822,7 @@ fn serve_wire(
     let (body, duration_us) = match wire_serve::decode::decode(obj, rev) {
         Ok(op) => {
             // U7: dispatch call alone (after decode, before render).
+            let ledger = timing::op::begin();
             let started = Instant::now();
             let body = dispatch_read(registry, attached, armed, id, op, rev == Rev::V3);
             let elapsed = started.elapsed();
@@ -1773,6 +1831,7 @@ fn serve_wire(
                 obj.get("op").and_then(Value::as_str).unwrap_or("?"),
                 elapsed,
                 attached,
+                &ledger,
             );
             (body, Some(duration_us))
         }

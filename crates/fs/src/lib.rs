@@ -856,21 +856,33 @@ const LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(5);
 /// [`io::ErrorKind::WouldBlock`] when `budget` elapsed without the mutex
 /// coming free — the same kind the flock refuses with, so one mapping at the
 /// wire edge serves both.
+///
+/// The wait is the `memo.wait` phase of the served op's slow-op ledger
+/// (`docs/run-plane.md` § The slow-op line); a wait that expires is charged
+/// too.
 pub fn lock_within<T>(
     mutex: &std::sync::Mutex<T>,
     budget: Option<std::time::Duration>,
 ) -> io::Result<std::sync::MutexGuard<'_, T>> {
     let Some(budget) = budget else {
-        return Ok(mutex.lock().unwrap_or_else(PoisonError::into_inner));
+        return Ok(lock_memo(mutex));
     };
+    let wait = timing::op::phase("memo.wait");
     let deadline = std::time::Instant::now() + budget;
     loop {
         match mutex.try_lock() {
-            Ok(guard) => return Ok(guard),
-            Err(std::sync::TryLockError::Poisoned(e)) => return Ok(e.into_inner()),
+            Ok(guard) => {
+                wait.stop();
+                return Ok(guard);
+            }
+            Err(std::sync::TryLockError::Poisoned(e)) => {
+                wait.stop();
+                return Ok(e.into_inner());
+            }
             Err(std::sync::TryLockError::WouldBlock) => {
                 let left = deadline.saturating_duration_since(std::time::Instant::now());
                 if left.is_zero() {
+                    wait.stop();
                     return Err(io::Error::new(
                         io::ErrorKind::WouldBlock,
                         format!("the mutex stayed held for the whole {budget:?} budget"),
@@ -880,6 +892,16 @@ pub fn lock_within<T>(
             }
         }
     }
+}
+
+/// Acquire a domain memo with no bound — [`lock_within`] with `None`, which
+/// cannot fail. A poisoned memo is adopted, as at every other acquisition.
+/// The wait is the slow-op ledger's `memo.wait` phase.
+pub fn lock_memo<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    let wait = timing::op::phase("memo.wait");
+    let guard = mutex.lock().unwrap_or_else(PoisonError::into_inner);
+    wait.stop();
+    guard
 }
 
 #[derive(Debug, Default)]

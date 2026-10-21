@@ -48,7 +48,7 @@
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::Path;
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use model::MerkleRoot;
@@ -483,10 +483,7 @@ impl<'a> Lane<'a> {
     fn domain_leaves(&mut self, root: &fs::WorkspaceRoot) -> io::Result<fs::DomainLeaves> {
         match self {
             Lane::Drawer(memo) => fs::domain_leaves_memoized(root, memo),
-            Lane::Resident(cache) => cache
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .domain_leaves(root),
+            Lane::Resident(cache) => fs::lock_memo(cache).domain_leaves(root),
         }
     }
 
@@ -497,10 +494,7 @@ impl<'a> Lane<'a> {
     ) -> Result<(ExecBracket, MerkleRoot), OpenRefusal> {
         match self {
             Lane::Drawer(memo) => ExecBracket::open_observing(root, memo),
-            Lane::Resident(cache) => ExecBracket::open_cached(
-                root,
-                &mut cache.lock().unwrap_or_else(PoisonError::into_inner),
-            ),
+            Lane::Resident(cache) => ExecBracket::open_cached(root, &mut fs::lock_memo(cache)),
         }
     }
 
@@ -508,9 +502,7 @@ impl<'a> Lane<'a> {
     fn close_bracket(&mut self, bracket: ExecBracket) -> Detection {
         match self {
             Lane::Drawer(memo) => bracket.close_memoized(memo),
-            Lane::Resident(cache) => {
-                bracket.close_cached(&mut cache.lock().unwrap_or_else(PoisonError::into_inner))
-            }
+            Lane::Resident(cache) => bracket.close_cached(&mut fs::lock_memo(cache)),
         }
     }
 

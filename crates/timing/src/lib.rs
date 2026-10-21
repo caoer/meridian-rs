@@ -1,11 +1,13 @@
 //! The timing instrument — per-phase wall clock on a release binary, off by
-//! default.
+//! default — and, inside a served op, the slow-op ledger ([`op`]).
 //!
 //! **Charter.** One environment switch (`MRD_TIMING`), resolved ONCE per
 //! process into a sink, and one span type that emits a single line per
 //! COMPLETED phase. It writes to stderr or a file, never to stdout; it changes
-//! no output and no exit code; and when the switch is off it reads no clock,
-//! allocates nothing and writes nothing.
+//! no output and no exit code; and when the switch is off it writes nothing,
+//! and outside a served op's ledger it reads no clock and allocates nothing.
+//! Inside one ([`op::begin`]) every completed phase also adds its time to the
+//! ledger the engine prints on a `slow op` line, whatever the switch says.
 //!
 //! **What it is not.** Not a log framework and not a tracer: no levels, no
 //! subscriber, no spans in flight, no second time unit. `us` — microseconds,
@@ -100,6 +102,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
+
+pub mod op;
 
 /// The environment switch. Its VALUE is the sink: an off word, an on word, or
 /// a file path (`docs/status.md` § The timing mode).
@@ -354,10 +358,10 @@ fn emit(phase: &str, elapsed: Duration) {
     let cmd = LABEL.get().map_or(DEFAULT_LABEL, String::as_str);
     let line = line(cmd, &who(), phase, elapsed.as_micros());
     match sink() {
-        // Unreachable by construction — a `Phase` holds an `Instant` only when
-        // the sink is on. Kept, and kept silent, so that a future caller who
-        // reaches `emit` by another road degrades instead of writing to a sink
-        // the operator switched off.
+        // Unreachable by construction — a `Phase` writes to the sink only
+        // when it was started with the sink on. Kept, and kept silent, so that
+        // a future caller who reaches `emit` by another road degrades instead
+        // of writing to a sink the operator switched off.
         Sink::Off => {}
         Sink::Stderr => {
             let _ = std::io::stderr().write_all(line.as_bytes());
@@ -375,13 +379,16 @@ fn emit(phase: &str, elapsed: Duration) {
 /// [`Phase::stop_as`], AT THE POINT IT COMPLETED — there is no `Drop` impl, so
 /// a span abandoned on an error path says nothing.
 ///
-/// When the mode is off it holds no [`Instant`] — nothing was read, so nothing
-/// can be reported.
+/// When the mode is off and no op ledger is open on this thread it holds no
+/// [`Instant`] — nothing was read, so nothing can be reported.
 #[derive(Debug)]
 #[must_use = "a phase reports only where you call .stop() or .stop_as(); dropping it measures nothing"]
 pub struct Phase {
     name: &'static str,
     started: Option<Instant>,
+    /// Write the completed phase to the `MRD_TIMING` sink. `false` for a
+    /// ledger-only phase ([`op::phase`]) and whenever the sink was off.
+    sink: bool,
 }
 
 impl Phase {
@@ -389,9 +396,8 @@ impl Phase {
     /// constructed with.
     #[inline]
     pub fn stop(self) {
-        if let Some(started) = self.started {
-            emit(self.name, started.elapsed());
-        }
+        let name = self.name;
+        self.stop_as(name);
     }
 
     /// Report this phase as COMPLETED, here, under `name` INSTEAD of the name
@@ -411,7 +417,11 @@ impl Phase {
     #[inline]
     pub fn stop_as(self, name: &'static str) {
         if let Some(started) = self.started {
-            emit(name, started.elapsed());
+            let elapsed = started.elapsed();
+            if self.sink {
+                emit(name, elapsed);
+            }
+            op::charge(name, elapsed);
         }
     }
 }
@@ -458,7 +468,9 @@ fn now() -> Instant {
     Instant::now()
 }
 
-/// Start measuring `name`. Off, this reads no clock and allocates nothing.
+/// Start measuring `name`. Off and outside an op ledger, this reads no clock
+/// and allocates nothing. Inside one ([`op::begin`]) it reads the clock with
+/// the sink off too, and the completed phase reaches the ledger only.
 ///
 /// **`then` and not `then_some`, and a test holds the line.** `then` takes
 /// `FnOnce` and calls it only when the mode is on; `then_some` would take a
@@ -468,9 +480,11 @@ fn now() -> Instant {
 /// read instead of inspecting the result.
 #[inline]
 pub fn phase(name: &'static str) -> Phase {
+    let sink = on();
     Phase {
         name,
-        started: on().then(now),
+        started: (sink || op::active()).then(now),
+        sink,
     }
 }
 

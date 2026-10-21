@@ -502,7 +502,11 @@ impl WorkspaceRing {
             "flock.hold.detect"
         };
         let acquired = if snapshot.is_some() {
-            fs::WriteLock::acquire_within(ws_root, self.prime_budget)
+            // Priming waits for the flock: the slow-op ledger's `flock.wait`.
+            let wait = timing::op::phase("flock.wait");
+            let acquired = fs::WriteLock::acquire_within(ws_root, self.prime_budget);
+            wait.stop();
+            acquired
         } else {
             fs::WriteLock::acquire(ws_root)
         };

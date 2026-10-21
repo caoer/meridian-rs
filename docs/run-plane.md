@@ -1932,8 +1932,9 @@ Under `MRD_TIMING` (the switch, sink, line grammar and the two lanes:
 path), `door.floor` (floor), `door.refused` (no arm) — every `door.*` name under
 exactly one, counted once.
 
-**`flock.hold.<holder>` is the one hold measurement.** `slow op` lines and the
-`total` of an op include every wait for a contended resource; this family
+**`flock.hold.<holder>` is the one hold measurement.** `slow op` durations and the
+`total` of an op include every wait for a contended resource (the `slow op`
+line's ledger names the waits: § The slow-op line); this family
 counts only the time a holder kept every other writer out. A bare `flock.hold`
 is never emitted; it is the family prefix, and no holder's name is a prefix of
 another's. Holders not named above (`ArmSession`, the downgrade fence,
@@ -2050,6 +2051,50 @@ arm folds nothing more at the commit: the delta-mint bracket observes through
 the resident memo, so a committing run adds one `door.*` line (§ Timing phases)
 and no `snapshot` set. A mode-bearing fire reads the pinned world and reaches
 none of the three sites above.
+
+#### The slow-op line
+
+An op that spends longer than `SLOW_OP_LOG` (5 s) in dispatch prints one line
+on the engine's stderr, the daemon log beside its socket, **whatever
+`MRD_TIMING` says**:
+
+```text
+registry: slow op run duration_us=10310944 started_unix_ms=1792405850330 on /ws phases_us[cookie.wait=2001234 memo.wait=8000310x2 currency.floor.cookie_unproven=10012000 run.world=10013000 run.row=280000] — …
+```
+
+- `started_unix_ms` is when dispatch began (wall clock at print, minus the
+  duration): it is how the line is matched to the caller's own log.
+- `phases_us[…]` is the op's **ledger**: every phase that completed on the
+  serving thread while the op was in dispatch, in the order each name first
+  completed, its microseconds summed; `xN` follows when the name completed N > 1
+  times. Containment is the § Timing phases table, so the values **do not sum**
+  (`run.world` holds `currency.*`, which holds `cookie.wait`). An empty
+  `phases_us[]` means no instrumented site ran, and the time went elsewhere.
+- The ledger records every phase in the table above, plus the waits below. The
+  waits never reach the `MRD_TIMING` sink, because a line per lock acquisition
+  would drown it:
+
+| Ledger phase | Emitted in | Covers |
+|---|---|---|
+| `memo.wait` | `fs::lock_within`, `fs::lock_memo` | waiting for the workspace's resident domain memo: the borrow in `Registry::domain_cache`, the currency pass, the warm rebuild, the run bracket's three observations |
+| `memo.apply` | `Registry::patched_cache_within` | the feed's pending dirty set applied under the memo lock: O(dirty), or a whole re-baseline on a doubt collapse |
+| `cookie.wait` | `feed::WorkspaceFeed` barrier | the §6.4 cookie barrier: the wait for the watcher to deliver the sentinel event, at most `DOOR_COOKIE_TIMEOUT` (2 s) on the read plane |
+| `flock.wait` | `run::executor` (delta-mint bracket), `registry::ring` (priming) | waiting to take `.meridian/write.lock`; the hold after it is `flock.hold.<holder>` |
+| `run.world` | `registry::run_op` | a `run`'s entry world: for a mode-bearing submission the freshen a `load` drives (`warm_or_build`) and the pin of the resident engine; near zero for a task-only one |
+| `run.row` | `registry::run_op` | one target's row, page copy to answer; a submission of N targets shows `xN` |
+
+**Off the slow path it costs two clock reads per phase.** A ledger exists only
+while a served op is in dispatch (`timing::op::begin` in `serve_wire`,
+`script_op::serve_line` and `run_op::serve_line`); a phase started on a thread
+with no ledger (the prewarm sweep, the CLI with the switch off) reads no clock.
+Phases are coarse (a lock, a pass, a row), never per member, so an op pays a
+handful of `Instant::now` calls and one small vector. The vector is built on
+every op and printed only past the threshold, because whether an op is slow is
+known only when it ends.
+
+**Only the serving thread is in the ledger.** Work the op hands to another
+thread (a cold workspace's background rebuild) is not in it; a wait for that
+work is, under the name of the wait.
 
 ## Seam map (for reviewers)
 
