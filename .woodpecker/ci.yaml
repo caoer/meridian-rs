@@ -87,10 +87,12 @@ when:
     ref: refs/tags/v*
 
 # Pinned to workstation-nyc-2, like the tag lanes. On the bare-metal CI pool
-# (`pool: bm`, `class: ci-m` slots, 8 vCPU / 16 GiB) this workflow runs 53-57 min
-# against the 60-min timeout because the pool slots' caches do not stay warm, so
-# it stays here until the pool's cache retention is fixed and two warm pool runs
-# read <= 2x the nyc-2 median (SA ruling, sessions card
+# (`pool: bm`, `class: ci-m` slots: 8 vCPU; MemTotal measured 11.68 GiB on the
+# sa-yul slots, 15.62 GiB on sa-yul-2) this workflow ran 53-57 min against the
+# 60-min timeout: a lock move in libduckdb-sys's build-dependency closure
+# re-keyed all ~280 bundled-DuckDB C++ compiles on every slot (tools/ci-cc now
+# holds that key). It stays here until two warm pool runs read <= 2x the
+# nyc-2 median (SA ruling, sessions card
 # 06-13-fleet-ops/tasks/meridian-rs-ci-unpin-pool). Unlabeled agents include
 # zmax, a darwin local backend that cannot run these linux containers, so the
 # workflow always carries a label.
@@ -150,8 +152,9 @@ variables:
   # ("error: Killed signal terminated program cc1plus"). Each rustc job also
   # does its own link, so the cap bounds concurrent rust-lld too: a
   # `cargo test --workspace` build links every test binary, ~2.4 GB each.
-  # On a 16 GiB pool VM every lane of this workflow shares that RAM; the test
-  # lane prints its link step's memory peak and the VM's low-water mark.
+  # On a pool VM (MemTotal 11.68-15.62 GiB measured) every lane of this
+  # workflow shares that RAM; the test lane prints its link step's memory peak
+  # and the VM's low-water mark.
   - &build_jobs "4"
   # Cap per-lane sccache shard. The bundled-DuckDB objects dominate a warm
   # shard; 30G is ~10x that. If --show-stats shows evictions, raise the test
@@ -189,17 +192,21 @@ steps:
       CARGO_INCREMENTAL: "0"
       # RUSTC_WRAPPER caches rustc; the CC/CXX wrappers cache the
       # bundled-DuckDB cc1plus compiles (the cc crate splits wrapper+command).
-      # Per-lane SCCACHE_DIR shard — see the header.
+      # Per-lane SCCACHE_DIR shard — see the header. ci-cc is sccache with
+      # libduckdb-sys's OUT_DIR at a hash-free path (tools/ci-cc says why);
+      # CC_KNOWN_WRAPPER_CUSTOM makes the cc crate split it like sccache.
       RUSTC_WRAPPER: sccache
       SCCACHE_DIR: /ci-cache/sccache/test
       SCCACHE_CACHE_SIZE: *sccache_size
-      CC: "sccache cc"
-      CXX: "sccache c++"
+      CC: "ci-cc cc"
+      CXX: "ci-cc c++"
+      CC_KNOWN_WRAPPER_CUSTOM: ci-cc
       # mold over GNU ld: this lane links many binaries that statically embed
       # libduckdb. mold is in the image; bookworm's gcc 12 accepts
       # -fuse-ld=mold.
       RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     commands:
+      - install -m 0755 tools/ci-cc /usr/local/bin/ci-cc
       - useradd -m ci
       - mkdir -p /home/ci/.config target-ci "$CARGO_HOME" "$SCCACHE_DIR"
       # chown the sources but NOT ./target — the root lanes write it
@@ -340,11 +347,13 @@ steps:
       RUSTC_WRAPPER: sccache
       SCCACHE_DIR: /ci-cache/sccache/clippy
       SCCACHE_CACHE_SIZE: *sccache_size
-      CC: "sccache cc"
-      CXX: "sccache c++"
+      CC: "ci-cc cc"
+      CXX: "ci-cc c++"
+      CC_KNOWN_WRAPPER_CUSTOM: ci-cc
       RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
       CARGO_TERM_COLOR: always
     commands:
+      - install -m 0755 tools/ci-cc /usr/local/bin/ci-cc
       # -q: a green lane prints NOTHING, so an empty fold is the verdict and
       # costs no scan. A red lane still prints every diagnostic.
       - cargo clippy -q --workspace --all-targets --locked -- -D warnings
@@ -367,11 +376,13 @@ steps:
       RUSTC_WRAPPER: sccache
       SCCACHE_DIR: /ci-cache/sccache/clippy-perf
       SCCACHE_CACHE_SIZE: *sccache_size
-      CC: "sccache cc"
-      CXX: "sccache c++"
+      CC: "ci-cc cc"
+      CXX: "ci-cc c++"
+      CC_KNOWN_WRAPPER_CUSTOM: ci-cc
       RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
       CARGO_TERM_COLOR: always
     commands:
+      - install -m 0755 tools/ci-cc /usr/local/bin/ci-cc
       - |
         set -eu
         found=0
@@ -458,11 +469,13 @@ steps:
       RUSTC_WRAPPER: sccache
       SCCACHE_DIR: /ci-cache/sccache/bench
       SCCACHE_CACHE_SIZE: *sccache_size
-      CC: "sccache cc"
-      CXX: "sccache c++"
+      CC: "ci-cc cc"
+      CXX: "ci-cc c++"
+      CC_KNOWN_WRAPPER_CUSTOM: ci-cc
       RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
       CARGO_TERM_COLOR: always
     commands:
+      - install -m 0755 tools/ci-cc /usr/local/bin/ci-cc
       # -q on both invocations: the claims table is the output of this lane,
       # and a compile scroll ahead of it is what buries it.
       - cargo bench -q -p perfsuite --locked -- --test
