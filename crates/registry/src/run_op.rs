@@ -66,6 +66,9 @@ pub(crate) fn serve_line(
     rev: Rev,
 ) -> String {
     let id = obj.get("id").and_then(Value::as_u64);
+    // The slow-op ledger (`docs/run-plane.md` § The slow-op line), opened
+    // with the clock the duration is measured from.
+    let ledger = timing::op::begin();
     let started = Instant::now();
     // Strict decode first (rev-agnostic), then the v3 gate — the script
     // dispatch order, so a malformed frame teaches its field wall on any rev.
@@ -119,7 +122,7 @@ pub(crate) fn serve_line(
     }
     let rows = serve(registry, ws, &request);
     let elapsed = started.elapsed();
-    crate::server::log_slow_op("run", elapsed, Some(ws));
+    crate::server::log_slow_op("run", elapsed, Some(ws), &ledger);
     let mut frame = json!({"id": id, "ok": true, "body": {"targets": rows}});
     let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
     wire_serve::rev::attach_meta(&mut frame, duration_us);
@@ -190,7 +193,9 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
         ambient: request.ambient.as_deref(),
         cache: cache.as_deref(),
     };
+    let world = timing::op::phase("run.world");
     let pinned = pinned_world(registry, ws, request);
+    world.stop();
     let any_mode = request.targets.iter().any(modes::is_mode_target);
     // The § 2.2 module cache, resident per workspace: a block is evaluated
     // once per rev, so a warm fire is one function call. The CLI has no
@@ -200,6 +205,7 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
     let mut rows = Vec::with_capacity(request.targets.len());
     for (index, target) in request.targets.iter().enumerate() {
         let invocation = format!("{}-t{index}", request.invocation);
+        let row = timing::op::phase("run.row");
         if modes::is_mode_target(target) {
             rows.push(match (&pinned, target.source.as_deref()) {
                 // A `source` target carries the page's bytes instead of its
@@ -262,6 +268,7 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
                     },
                 }),
             });
+            row.stop();
             continue;
         }
         rows.push(row_for_target(
@@ -273,6 +280,7 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
             request.now.as_deref(),
             &host,
         ));
+        row.stop();
     }
     rows
 }
@@ -924,6 +932,95 @@ declare(on = \"PreToolUse\", match = \"Bash\")
             rows[0]["value"],
             json!({"deny": "no stash", "saw": "PreToolUse"}),
             "the block ran and answered: {rows:?}"
+        );
+    }
+
+    /// The slow-op line names the phase that held the op (the 10 s `run` of
+    /// card `mrd-slow-op-line-names-phase`): a `load` parked behind another
+    /// seat's memo hold prints a line whose ledger carries that wait, inside
+    /// the entry world that contains it, and when the op began. The threshold
+    /// is lowered on this thread so the hold need not last 5 s.
+    #[test]
+    fn a_slow_run_names_the_wait_that_held_it() {
+        use crate::server::slow_op_test::{LINES, THRESHOLD};
+        const HOLD: Duration = Duration::from_millis(300);
+
+        let home = tempfile::tempdir().unwrap();
+        let reg = Arc::new(registry_in(home.path()));
+        let ws = write_ws(home.path(), &[("HOOKS.md", HOOKS)]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        reg.warm_or_build(&canonical)
+            .expect("the entry pass warms the drawer");
+        THRESHOLD.with(|t| t.set(Some(HOLD / 2)));
+
+        // Fast first: under the threshold nothing prints.
+        rows(&serve_line(&reg, Some(&canonical), &load_frame(1), Rev::V3));
+        assert!(
+            LINES.with(|l| l.borrow().is_empty()),
+            "an op under the threshold prints no line"
+        );
+
+        // Another seat holds the memo across the load's entry.
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let holder = {
+            let reg = Arc::clone(&reg);
+            let canonical = canonical.clone();
+            std::thread::spawn(move || {
+                let memo = reg.domain_cache(&canonical);
+                let guard = memo.lock().unwrap_or_else(PoisonError::into_inner);
+                held_tx.send(()).unwrap();
+                std::thread::sleep(HOLD);
+                drop(guard);
+            })
+        };
+        held_rx.recv().unwrap();
+        let before = std::time::SystemTime::now();
+        rows(&serve_line(&reg, Some(&canonical), &load_frame(2), Rev::V3));
+        holder.join().expect("the holder thread panicked");
+
+        let lines = LINES.with(|l| l.borrow().clone());
+        assert_eq!(lines.len(), 1, "one slow op, one line: {lines:#?}");
+        let line = &lines[0];
+        assert!(line.starts_with("registry: slow op run duration_us="), "{line}");
+        let field = |name: &str| -> u64 {
+            let at = line
+                .find(&format!("{name}="))
+                .unwrap_or_else(|| panic!("no `{name}=` in: {line}"));
+            line[at + name.len() + 1..]
+                .split(|c: char| !c.is_ascii_digit())
+                .next()
+                .and_then(|digits| digits.parse().ok())
+                .unwrap_or_else(|| panic!("`{name}=` carries no number in: {line}"))
+        };
+        let hold_us = u64::try_from(HOLD.as_micros()).unwrap();
+        // The memo wait is what held it, and the line says so.
+        let wait = field("memo.wait");
+        assert!(
+            wait >= hold_us * 9 / 10,
+            "memo.wait={wait} us does not carry the {hold_us} us hold: {line}"
+        );
+        // Contained in the entry world, which is contained in the op.
+        let world = field("run.world");
+        assert!(world >= wait, "run.world={world} < memo.wait={wait}: {line}");
+        assert!(field("duration_us") >= world, "{line}");
+        assert!(line.contains(" currency."), "the currency arm is named: {line}");
+        assert!(line.contains(" run.row="), "the row is named: {line}");
+        // Started within the call, to the millisecond.
+        let since_epoch = |t: std::time::SystemTime| {
+            u64::try_from(
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis(),
+            )
+            .unwrap()
+        };
+        let started = field("started_unix_ms");
+        assert!(
+            // One millisecond of slack below: wall clock and the monotonic
+            // clock the duration is read from are separate clocks.
+            (since_epoch(before).saturating_sub(1)..=since_epoch(before) + 50).contains(&started),
+            "started_unix_ms={started} is not when the op began: {line}"
         );
     }
 

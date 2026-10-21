@@ -967,7 +967,7 @@ fn resident_update(
             index: Some(&index),
         });
     let (moves, fresh_root) = {
-        let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut memo = fs::lock_memo(cache);
         let minted = memo.overlay_root().ok();
         (memo.leaf_delta(previous.leaves), minted)
     };
@@ -1677,7 +1677,7 @@ impl Registry {
                 // §6.8): when the incremental pass builds the very set, its
                 // stamp is this root and no tree is rebuilt.
                 let (moves, fresh_root) = {
-                    let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+                    let mut memo = fs::lock_memo(&cache);
                     let minted = memo.overlay_root().ok();
                     (memo.leaf_delta(previous.leaves), minted)
                 };
@@ -2059,7 +2059,9 @@ impl Registry {
         {
             let mut memo = fs::lock_within(&cache, left())?;
             if let Some(feed) = &feed {
+                let applying = timing::op::phase("memo.apply");
                 applied = apply_pending(workspace, &mut memo, feed);
+                applying.stop();
             }
             match ring {
                 Some(ring) => {
@@ -2172,7 +2174,7 @@ impl Registry {
         // both into one bool is what left the floor's rate unattributable.
         let cookie = feed.map(|feed| feed.cookie_barrier(workspace, timeout));
         let (cache, applied) = self.patched_cache(workspace);
-        let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut memo = fs::lock_memo(&cache);
         let collapse = matches!(
             applied,
             Some(feed::Applied::Reset | feed::Applied::Sweep(_) | feed::Applied::Rebaselined(_))
@@ -2298,7 +2300,7 @@ impl Registry {
             }
         }
         let (cache, applied) = self.patched_cache(workspace);
-        let memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let memo = fs::lock_memo(&cache);
         matches!(applied, None | Some(feed::Applied::Members(0)))
             && matches!(memo.guard_currency(), fs::stable::GuardCurrency::Trusted)
             && memo.served_cached() == Some(at)

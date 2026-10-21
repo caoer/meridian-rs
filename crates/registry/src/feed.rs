@@ -596,7 +596,12 @@ impl WorkspaceFeed {
         }
         #[cfg(test)]
         self.cookie_written.fetch_max(serial, Ordering::Relaxed);
+        // The slow-op ledger's `cookie.wait` (run-plane § The slow-op line):
+        // the wait for the watcher to deliver the sentinel, the bounded one
+        // a stalled stream spends in full.
+        let waiting = timing::op::phase("cookie.wait");
         let outcome = self.await_sighting(serial, timeout, doubt_on_timeout);
+        waiting.stop();
         // The sighting reads the path, never the bytes, so removing the
         // sentinel cannot spoil an event still queued for it; a failed
         // removal leaves one file no feed reads again.

@@ -1434,17 +1434,25 @@ fn busy_wait_budget() -> Duration {
 /// deadline the apply refuses the plane's own typed busy word. Lock order is
 /// run.lock → write.lock on this path and no path takes them the other way.
 fn acquire_write_flock(root: &fs::WorkspaceRoot) -> Result<fs::WriteLock, ExecError> {
+    // The slow-op ledger's `flock.wait` (run-plane § The slow-op line); the
+    // hold that follows is `flock.hold.run`.
+    let wait = timing::op::phase("flock.wait");
     let deadline = Instant::now() + busy_wait_budget();
     loop {
         match fs::WriteLock::acquire(root) {
-            Ok(lock) => return Ok(lock.timed("flock.hold.run")),
+            Ok(lock) => {
+                wait.stop();
+                return Ok(lock.timed("flock.hold.run"));
+            }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 if Instant::now() >= deadline {
+                    wait.stop();
                     return Err(ExecError::WorkspaceBusy);
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
             Err(e) => {
+                wait.stop();
                 return Err(ExecError::Io {
                     reason: format!("write flock for the delta mint: {e}"),
                 });

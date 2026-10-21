@@ -130,6 +130,9 @@ pub(crate) fn serve_line(
     rev: Rev,
 ) -> String {
     let id = obj.get("id").and_then(Value::as_u64);
+    // The slow-op ledger (`docs/run-plane.md` § The slow-op line), opened
+    // with the clock the duration is measured from.
+    let ledger = timing::op::begin();
     let started = Instant::now();
     // Strict decode first (rev-agnostic), then the v3 gate — the read/create
     // dispatch order, so a malformed frame teaches its field wall on any rev.
@@ -187,7 +190,7 @@ pub(crate) fn serve_line(
     };
     let result = serve(registry, ws, &request);
     let elapsed = started.elapsed();
-    crate::server::log_slow_op("script", elapsed, Some(ws));
+    crate::server::log_slow_op("script", elapsed, Some(ws), &ledger);
     match result {
         Ok(trace) => {
             let body = serde_json::to_value(&trace).expect("a ScriptTrace serializes");
