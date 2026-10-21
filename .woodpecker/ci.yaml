@@ -86,18 +86,19 @@ when:
   - event: tag
     ref: refs/tags/v*
 
-# Pinned to workstation-nyc-2, like the tag lanes. On the bare-metal CI pool
-# (`pool: bm`, `class: ci-m` slots: 8 vCPU; MemTotal measured 11.68 GiB on the
-# sa-yul slots, 15.62 GiB on sa-yul-2) this workflow ran 53-57 min against the
-# 60-min timeout: a lock move in libduckdb-sys's build-dependency closure
-# re-keyed all ~280 bundled-DuckDB C++ compiles on every slot (tools/ci-cc now
-# holds that key). It stays here until two warm pool runs read <= 2x the
-# nyc-2 median (SA ruling, sessions card
-# 06-13-fleet-ops/tasks/meridian-rs-ci-unpin-pool). Unlabeled agents include
-# zmax, a darwin local backend that cannot run these linux containers, so the
+# Runs on the rs-tier CI slots (`tier: rs`, ci-mia-1..3 on rs-mia; rs-lax-2
+# slots join later), not on workstation-nyc-2 like the tag lanes. The
+# Servarica pool slots (sa-yul, sa-yul-2) stay excluded: they ran this
+# workflow over 2x the nyc-2 median even warm. Warm runs on rs slots with
+# tools/ci-cc holding the bundled-DuckDB C++ key read 1.04-1.11x the 716 s
+# nyc-2 median (sessions card 20-06-tooling-dev/tasks/
+# meridian-ci-duckdb-cc-wrapper; revert rule on 06-13-fleet-ops/tasks/
+# meridian-rs-ci-unpin-pool: re-add the workstation-nyc-2 pin on any OOM,
+# any timeout, or a warm median over 2x). Unlabeled agents include zmax, a
+# darwin local backend that cannot run these linux containers, so the
 # workflow always carries a label.
 labels:
-  hostname: workstation-nyc-2
+  tier: rs
 
 # Clone with OUR credential, not the server-stamped one. The default clone's
 # netrc password is the repo user's OAuth access token, stamped into the
