@@ -1,0 +1,57 @@
+#!/bin/sh
+# CC/CXX wrapper for the CI lanes: sccache, with libduckdb-sys's OUT_DIR seen
+# at a path that does not move.
+#
+#   CC="ci-cc cc"  CXX="ci-cc c++"  CC_KNOWN_WRAPPER_CUSTOM=ci-cc
+#
+# CC_KNOWN_WRAPPER_CUSTOM makes the cc crate read `ci-cc` as a wrapper and
+# `cc`/`c++` as the compiler, exactly as it reads `sccache c++`.
+#
+# Why: libduckdb-sys (bundled) unpacks DuckDB into OUT_DIR,
+# <target>/<profile>/build/libduckdb-sys-<hash>/out, and compiles ~280 C++
+# files by absolute path. <hash> covers its build-dependency closure, which
+# includes reqwest and rustls, so a lock move there (a TLS advisory bump)
+# renames OUT_DIR, every command line changes, and every sccache key misses on
+# every runner. SCCACHE_BASEDIRS cannot help: it strips fixed prefixes and the
+# hash sits mid-path.
+#
+# What: when an argument names a libduckdb-sys OUT_DIR, point a symlink at it
+# from a path that drops the hash (under /tmp, which is private to the step's
+# container), rewrite that prefix in every argument, and run sccache. Objects
+# are written through the symlink into the real OUT_DIR, where the cc crate
+# archives them. Every other compile passes through to sccache unchanged.
+#
+# If the symlink already names a different OUT_DIR (a second libduckdb-sys
+# build in the same target dir and profile within one step), the compile runs
+# unrewritten: a cache miss, never a wrong object.
+set -eu
+
+out=
+for a in "$@"; do
+  case $a in
+    */build/libduckdb-sys-*/out*)
+      p=${a#"${a%%/*}"}                      # drop a flag prefix such as -I
+      head=${p%%/build/libduckdb-sys-*}      # <target>/<profile>
+      hash=${p#"$head"/build/libduckdb-sys-}
+      hash=${hash%%/*}
+      out=$head/build/libduckdb-sys-$hash/out
+      break
+      ;;
+  esac
+done
+
+[ -n "$out" ] && [ -d "$out" ] || exec sccache "$@"
+
+link=/tmp/ci-cc$head/libduckdb-sys-out
+mkdir -p "${link%/*}"
+ln -s "$out" "$link" 2>/dev/null || true
+[ "$(readlink "$link")" = "$out" ] || exec sccache "$@"
+
+for a do
+  shift
+  case $a in
+    *"$out"*) a=${a%%"$out"*}$link${a#*"$out"} ;;
+  esac
+  set -- "$@" "$a"
+done
+exec sccache "$@"
