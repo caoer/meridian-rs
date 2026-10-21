@@ -137,8 +137,10 @@ pub(crate) mod slow_op_test {
 /// [`SLOW_OP_LOG`], or a test's lowered threshold on this thread.
 fn slow_op_threshold() -> Duration {
     #[cfg(test)]
-    if let Some(lowered) = slow_op_test::THRESHOLD.with(std::cell::Cell::get) {
-        return lowered;
+    {
+        if let Some(lowered) = slow_op_test::THRESHOLD.with(std::cell::Cell::get) {
+            return lowered;
+        }
     }
     SLOW_OP_LOG
 }
