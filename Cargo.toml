@@ -165,12 +165,18 @@ pedantic = { level = "warn", priority = -1 }
 # plus one commit that pads a short table row with one item expanded into empty
 # cells as events (merkle-spec §6.4); fork-only, no upstream PR.
 pulldown-cmark = { git = "https://github.com/caoer/pulldown-cmark", rev = "164b2da10fed73f18e97910bb0f3477c50a92f50" }
-# notify 8.2.0 as published on crates.io (upstream a1d7c2d8), vendored with one
-# change: its inotify backend no longer arms IN_OPEN (`add_single_watch`, the
-# patch comment marks the line). Upstream arms it on every directory watch and
-# has no mask knob, so every file read and directory listing in a workspace
-# took a kernel queue slot the feed then discarded, and a tree-wide reader
-# overflowed the queue into the full-sweep rung (merkle-spec §6.4, write-side
-# events only). `diff -r` against the crates.io source shows the one hunk.
-# Replace with `Config::with_event_kinds` once a stable notify 9 carries it.
+# notify 8.2.0 as published on crates.io (upstream a1d7c2d8), vendored with two
+# changes to its inotify backend, each marked by a `meridian-rs patch` comment.
+# 1. It no longer arms IN_OPEN (`add_single_watch`). Upstream arms it on every
+#    directory watch and has no mask knob, so every file read and directory
+#    listing in a workspace took a kernel queue slot the feed then discarded,
+#    and a tree-wide reader overflowed the queue into the full-sweep rung
+#    (merkle-spec §6.4, write-side events only). Replace with
+#    `Config::with_event_kinds` once a stable notify 9 carries it.
+# 2. It arms a new directory before it delivers the batch carrying the
+#    directory's create (`handle_inotify`). Upstream arms after delivery, so a
+#    child written in between raised nothing and the feed had to collapse every
+#    `mkdir` into a full sweep; armed first, the feed enumerates the directory
+#    instead (merkle-spec §6.4, the rescan ladder's new-directory row).
+# `diff -r` against the crates.io source shows these hunks alone.
 notify = { path = "vendor/notify" }

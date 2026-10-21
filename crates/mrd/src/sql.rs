@@ -382,49 +382,62 @@ fn rebuild_only(lane: &mut Lane, loaded: &Loaded) -> Result<(), Fail> {
 /// ([`registry::wedge`]): the read ticks and each tick probes `socket` for
 /// liveness, so a daemon that accepts the frame and never answers ends this
 /// call instead of parking the process (card
-/// `registry-client-read-timeout-absent`). `None` keeps its meaning — the
-/// caller falls down the ladder and answers locally.
+/// `registry-client-read-timeout-absent`). `Err` carries the words for why
+/// the exchange did not complete.
 fn daemon_call(
     writer: &mut UnixStream,
     reader: &mut BufReader<UnixStream>,
     socket: &Path,
     request: &Value,
-) -> Option<Value> {
+) -> Result<Value, String> {
     let mut line = request.to_string();
     line.push('\n');
-    // Disciplined on BOTH halves. The error is discarded either way — this lane
-    // degrades to the local ladder — but the bound is not the same: a bare
-    // `write_all` on a bound socket gives up after one tick, abandoning a live
-    // daemon mid-frame over a 2 s stall.
-    registry::wedge::write_all(writer, socket, registry::wedge::WEDGE_CAP, line.as_bytes()).ok()?;
+    // Disciplined on BOTH halves: a bare `write_all` on a bound socket gives up
+    // after one tick, abandoning a live daemon mid-frame over a 2 s stall.
+    registry::wedge::write_all(writer, socket, registry::wedge::WEDGE_CAP, line.as_bytes())
+        .map_err(|e| e.to_string())?;
     let mut response = String::new();
-    registry::wedge::read_line(reader, socket, registry::wedge::WEDGE_CAP, &mut response).ok()?;
-    serde_json::from_str(&response).ok()
+    registry::wedge::read_line(reader, socket, registry::wedge::WEDGE_CAP, &mut response)
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&response).map_err(|e| {
+        if response.is_empty() {
+            "the daemon closed the connection without answering".to_owned()
+        } else {
+            format!("the daemon's answer is not JSON: {e}")
+        }
+    })
 }
 
-/// Ask the resident daemon (§ A.11). `None` = no daemon answered — no
-/// socket, a refused handshake, or an engine predating the `sql` cap — and
-/// the caller falls down the ladder. A `--fresh` STALE answer re-asks once
-/// (the daemon re-warms + appends per call), mirroring the local bound.
+/// Ask the resident daemon (§ A.11). `None` = no daemon serves this
+/// workspace — none accepts the connection, `hello` refuses the workspace, or
+/// the engine predates the `sql` cap — and the caller falls down the ladder.
+/// A daemon that accepted the connection holds the drawer, so a lower rung
+/// would build the whole corpus in-process beside it: an exchange with it that
+/// does not complete answers [`daemon_lost`] instead. A `--fresh` STALE answer
+/// re-asks once (the daemon re-warms + appends per call), mirroring the local
+/// bound.
 fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
-    let query = args.query.as_deref()?;
     let client = registry::Client::from_default().ok()?;
-    let socket = client.socket_path().to_owned();
-    let stream = UnixStream::connect(&socket).ok()?;
+    daemon_route_at(client.socket_path(), workspace, args)
+}
+
+/// [`daemon_route`] against the daemon at `socket`.
+fn daemon_route_at(socket: &Path, workspace: &Path, args: &SqlArgs) -> Option<Frame> {
+    let query = args.query.as_deref()?;
+    let workspace = workspace.to_str()?;
+    let stream = UnixStream::connect(socket).ok()?;
     // Before the clone: socket-level, so both halves inherit the discipline.
-    registry::wedge::bind(&stream).ok()?;
-    let mut writer = stream.try_clone().ok()?;
+    let mut writer = match registry::wedge::bind(&stream).and_then(|()| stream.try_clone()) {
+        Ok(writer) => writer,
+        Err(e) => return Some(daemon_lost(&e.to_string())),
+    };
     let mut reader = BufReader::new(stream);
 
-    let hello = daemon_call(
-        &mut writer,
-        &mut reader,
-        &socket,
-        &serde_json::json!({
-            "op": "hello", "proto": 1, "contract": "v3",
-            "workspace": workspace.to_str()?,
-        }),
-    )?;
+    let hello = json!({"op": "hello", "proto": 1, "contract": "v3", "workspace": workspace});
+    let hello = match daemon_call(&mut writer, &mut reader, socket, &hello) {
+        Ok(hello) => hello,
+        Err(cause) => return Some(daemon_lost(&cause)),
+    };
     if hello.get("ok") != Some(&Value::Bool(true)) {
         return None;
     }
@@ -435,28 +448,40 @@ fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
         return None;
     }
 
-    let ask = serde_json::json!({"id": 1, "op": "sql", "query": query});
-    let mut frame = daemon_sql_frame(&daemon_call(&mut writer, &mut reader, &socket, &ask)?)?;
+    let ask = json!({"id": 1, "op": "sql", "query": query});
+    let mut frame = match daemon_call(&mut writer, &mut reader, socket, &ask) {
+        Ok(response) => daemon_sql_frame(&response)?,
+        Err(cause) => return Some(daemon_lost(&cause)),
+    };
     if args.fresh && frame.state == QueryState::Stale {
-        let response = daemon_call(&mut writer, &mut reader, &socket, &ask);
-        frame = response
-            .as_ref()
-            .and_then(daemon_sql_frame)
-            .unwrap_or_else(|| {
-                let cause = response
-                    .as_ref()
-                    .and_then(|reply| reply.get("error"))
-                    .map_or_else(
-                        || "resident daemon did not answer the --fresh re-query".to_owned(),
-                        |error| format!("resident daemon refused the --fresh re-query: {error}"),
-                    );
+        frame = match daemon_call(&mut writer, &mut reader, socket, &ask) {
+            Ok(reply) => daemon_sql_frame(&reply).unwrap_or_else(|| {
+                let cause = reply.get("error").map_or_else(
+                    || "resident daemon did not answer the --fresh re-query".to_owned(),
+                    |error| format!("resident daemon refused the --fresh re-query: {error}"),
+                );
                 Frame::no_view(cause)
-            });
+            }),
+            Err(cause) => Frame::no_view(format!(
+                "resident daemon did not answer the --fresh re-query: {cause}"
+            )),
+        };
         if frame.state == QueryState::Stale {
             frame.state = QueryState::Raced;
         }
     }
     Some(frame)
+}
+
+/// The `NO_VIEW` for a daemon that accepted the connection and did not
+/// complete the exchange (wire-contract § A.11, the CLI ladder). It holds the
+/// drawer, so the only rung left would be a `:memory:` build of the whole
+/// corpus, and every caller waiting on the same slow daemon would build one.
+fn daemon_lost(cause: &str) -> Frame {
+    Frame::no_view(format!(
+        "the resident daemon accepted this call and did not complete it ({cause}); \
+         the corpus is not built in-process beside it — retry"
+    ))
 }
 
 /// Dispatch on recovery, including a code a newer daemon introduced. A retry
@@ -1117,6 +1142,46 @@ fn plural(n: usize) -> &'static str {
 mod tests {
     use super::*;
     use duckdb::Connection;
+
+    /// § A.11, the CLI ladder: a daemon that accepted the workspace and then
+    /// dropped the query answers `NO_VIEW` — `None` would send the caller to
+    /// an in-process build of the whole corpus beside that daemon. With no
+    /// daemon at the socket the answer stays `None`, so a workspace no daemon
+    /// serves still answers from the local rungs.
+    #[test]
+    fn a_daemon_that_drops_the_query_answers_no_view_not_a_local_build() {
+        use std::io::{BufRead as _, Write as _};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("d.sock");
+        let args = SqlArgs::parse(&["SELECT 1".to_owned()]).expect("parse");
+        assert!(
+            daemon_route_at(&socket, dir.path(), &args).is_none(),
+            "no daemon: the local rungs serve"
+        );
+
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+        let daemon = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            let mut writer = stream;
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("hello");
+            writer
+                .write_all(b"{\"ok\":true,\"body\":{\"caps\":[\"sql\"]}}\n")
+                .expect("hello answer");
+            line.clear();
+            reader.read_line(&mut line).expect("sql");
+            // Gone mid-request: the connection closes with no answer.
+        });
+        let frame = daemon_route_at(&socket, dir.path(), &args).expect("a frame, not the ladder");
+        daemon.join().expect("fake daemon");
+        assert!(frame.state == QueryState::NoView);
+        let error = frame.error.expect("the cause is named");
+        assert!(
+            error.contains("closed the connection without answering"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn retry_refusals_do_not_select_the_local_fallback() {
