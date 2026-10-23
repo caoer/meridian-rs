@@ -1690,9 +1690,16 @@ Executor laws:
 A bash step runs as pre-exec receipt (phase 1) → exec → completion receipt
 (phase 2), inside the detection bracket:
 
-- The child runs in its own process group (`setsid`) under a wall-clock
- timeout. Timeout SIGKILLs the group and is a distinct typed state; background
- children die with the group at step end.
+- The child runs in its own process group (`process_group(0)`) under a
+ wall-clock timeout. Timeout SIGKILLs the group and is a distinct typed state;
+ background children die with the group at step end.
+- The spawn takes `posix_spawn` (`clone3` with `CLONE_VM|CLONE_VFORK`), never
+ `fork()`: no `pre_exec` closure, which would force std onto `fork()` and copy
+ the engine's page tables on every child — hundreds of milliseconds of kernel
+ time per spawn at the daemon's size, charged to every writing thread. The
+ child is a new process group in the caller's session, not a new session; it
+ has stdin `null` or a pipe, and a step that opens the terminal is not a
+ supported shape (under the CLI lane it is stopped by SIGTTIN).
 - Bash has **no governed-tree effect channel** — no descriptor fd, no in-band
  `md.*` records. Phase 2 commits the completion receipt only, always an empty
  batch. Both phases write only the run ledger, outside the hash domain, so a

@@ -160,6 +160,113 @@ fn a_background_child_is_reaped_at_step_end() {
     );
 }
 
+/// The child leads its own process group — the property `kill_group`
+/// (`kill(-pid, SIGKILL)`) reaches the step's whole tree by.
+#[test]
+fn the_child_leads_its_own_process_group() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = BTreeMap::new();
+    let r = exec::exec(&spec_in(
+        &tmp,
+        r#"printf '%s %s' "$$" "$(ps -o pgid= -p $$)""#,
+        &env,
+    ))
+    .unwrap();
+    assert!(
+        r.status.success(),
+        "{:?}: {}",
+        r.status,
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let out = String::from_utf8(r.stdout).unwrap();
+    let ids: Vec<&str> = out.split_whitespace().collect();
+    assert_eq!(ids.len(), 2, "pid and pgid: {out:?}");
+    assert_eq!(ids[0], ids[1], "the child is its own group leader");
+}
+
+/// The spawn takes `posix_spawn`, never `fork()`: its CPU cost does not grow
+/// with the parent's address space. Self-calibrating — the same 20 spawns
+/// through a forced-fork control (a no-op `pre_exec`) set the bar, and a plain
+/// `Command` shows whether this libc gives std a `posix_spawn` path at all.
+/// Linux-only: `CLOCK_THREAD_CPUTIME_ID` charges the spawning thread alone, so
+/// the suite's other threads add no noise.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_spawn_cost_does_not_grow_with_the_parents_heap() {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    const HEAP: usize = 256 << 20;
+    const SPAWNS: u32 = 20;
+
+    fn thread_cpu() -> Duration {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `clock_gettime` writes one `timespec` through a valid
+        // pointer; `CLOCK_THREAD_CPUTIME_ID` is a valid clock on Linux.
+        let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut ts) };
+        assert_eq!(rc, 0, "clock_gettime(CLOCK_THREAD_CPUTIME_ID)");
+        Duration::new(
+            u64::try_from(ts.tv_sec).unwrap(),
+            u32::try_from(ts.tv_nsec).unwrap(),
+        )
+    }
+    fn cpu_of(mut spawn: impl FnMut()) -> Duration {
+        let before = thread_cpu();
+        for _ in 0..SPAWNS {
+            spawn();
+        }
+        thread_cpu() - before
+    }
+    fn shaped() -> Command {
+        let mut cmd = Command::new(exec::BASH);
+        cmd.arg("-c")
+            .arg("true")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        cmd
+    }
+
+    // Touched, so every page is mapped and a fork has its page tables to copy.
+    let mut heap = vec![0u8; HEAP];
+    for page in heap.chunks_mut(4096) {
+        page[0] = 1;
+    }
+    std::hint::black_box(&mut heap);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let env = BTreeMap::new();
+    let production = cpu_of(|| {
+        let r = exec::exec(&spec_in(&tmp, "true", &env)).unwrap();
+        assert!(r.status.success(), "{:?}", r.status);
+    });
+    let plain = cpu_of(|| assert!(shaped().status().unwrap().success()));
+    let forked = cpu_of(|| {
+        let mut cmd = shaped();
+        // SAFETY: the closure does nothing; its presence alone puts std on
+        // `fork()`, which is the control this gate measures against.
+        unsafe {
+            cmd.pre_exec(|| Ok(()));
+        }
+        assert!(cmd.status().unwrap().success());
+    });
+    drop(heap);
+
+    eprintln!("spawn CPU x{SPAWNS}: production {production:?}, plain {plain:?}, forked {forked:?}");
+    if plain * 4 > forked {
+        eprintln!("spawn path: fork on this libc (plain std spawn costs as much as a fork); skip");
+        return;
+    }
+    assert!(
+        production * 4 <= forked,
+        "the production spawn costs like a fork: {production:?} against the forked control's \
+         {forked:?} (plain std spawn {plain:?})"
+    );
+}
+
 #[test]
 fn an_external_signal_is_the_signaled_state() {
     let tmp = tempfile::tempdir().unwrap();

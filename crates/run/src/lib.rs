@@ -5,7 +5,7 @@
 //! Pre-eval: address the task ([`address`]), classify fence ([`fence`]),
 //! validate arg/env ([`contracts`]), resolve caps deny-by-default ([`caps`]).
 //! Dispatch: `starlark` → hermetic kernel ([`dispatch_starlark`]); `bash` →
-//! `setsid` child under wall-clock timeout ([`exec`], [`dispatch_bash`]) with
+//! process-group child under wall-clock timeout ([`exec`], [`dispatch_bash`]) with
 //! NO governed-tree effect channel — bash observes and reports; governed
 //! writes ride the wire faces (MCP `put`) or a starlark task. Starlark
 //! converges on the shared executor ([`executor`]): caps at the choke point,
