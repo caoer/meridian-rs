@@ -196,7 +196,7 @@ fn the_spawn_cost_does_not_grow_with_the_parents_heap() {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
-    const HEAP: usize = 256 << 20;
+    const HEAP: usize = 512 << 20;
     const SPAWNS: u32 = 20;
 
     fn thread_cpu() -> Duration {
@@ -218,7 +218,9 @@ fn the_spawn_cost_does_not_grow_with_the_parents_heap() {
         for _ in 0..SPAWNS {
             spawn();
         }
-        thread_cpu() - before
+        thread_cpu()
+            .checked_sub(before)
+            .expect("the thread CPU clock is monotonic")
     }
     fn shaped() -> Command {
         let mut cmd = Command::new(exec::BASH);
