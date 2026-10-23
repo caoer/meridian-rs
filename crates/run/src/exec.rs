@@ -1,11 +1,18 @@
 //! Bash process supervision (U6a, decision #21, review S3) — exec one block
-//! under `setsid`, wall-clock timeout → group SIGKILL, stdout/stderr capture.
+//! in its own process group, wall-clock timeout → group SIGKILL, stdout/stderr
+//! capture.
 //!
 //! # Laws
 //! - **Invocation cwd (U16):** child inherits the process cwd; never chdir
 //!   into scratch. "DO NOT CHANGE THE RUNNING PATH."
-//! - **Process group:** `setsid` so timeout can SIGKILL the whole group
-//!   (background children included).
+//! - **Process group:** `process_group(0)` so timeout can SIGKILL the whole
+//!   group (background children included).
+//! - **No `fork()`:** the spawn carries no `pre_exec` closure, so std takes
+//!   `posix_spawn` (`clone3` with `CLONE_VM|CLONE_VFORK`). A closure forces
+//!   `fork()`, which copies the engine's page tables and arms copy-on-write on
+//!   every page for each child — hundreds of milliseconds of kernel time per
+//!   spawn at the daemon's size, charged to every writing thread
+//!   (`docs/run-plane.md` § Bash).
 //! - **Timeout:** wall-clock from spawn; on expiry SIGKILL the group and
 //!   report [`ExecStatus::Timeout`] (distinct from signaled/nonzero).
 //! - **Pipes:** stdout/stderr collected; stderr is diagnostic only.
@@ -237,16 +244,9 @@ where
         cmd.current_dir(cwd);
     }
 
-    // SAFETY: pre_exec runs post-fork pre-exec in the child; setsid is
-    // async-signal-safe.
-    unsafe {
-        cmd.pre_exec(move || {
-            if libc::setsid() < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
+    // A new process group led by the child (`kill_group` reaches it), set by
+    // `posix_spawn` itself: no `pre_exec` here, which would put std on `fork()`.
+    cmd.process_group(0);
 
     let mut child = cmd.spawn()?;
 

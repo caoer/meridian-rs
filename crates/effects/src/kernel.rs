@@ -589,7 +589,7 @@ pub struct BashCall {
 /// The fire phase's process seam: what `bash()` reaches when a fire binds one.
 ///
 /// A trait rather than a closure for the same reason [`ScriptEntry`] carries
-/// its host as one — the run plane owns the bracket (timeout, setsid, log,
+/// its host as one — the run plane owns the bracket (timeout, process group, log,
 /// the `exec[]` row), and the kernel must not learn any of it. The kernel
 /// knows only that a call goes out and a JSON row comes back.
 pub trait FireHost: Sync {

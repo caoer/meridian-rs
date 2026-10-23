@@ -11,7 +11,7 @@
 //!     construction: no block ran, and the run flock never excluded
 //!     wire writers; no refusal on this door is a premise refusal —
 //!     no-guard ruling, 2026-08-15).
-//!   → exec (invocation cwd — U16, `setsid`, timeout→group SIGKILL;
+//!   → exec (invocation cwd — U16, own process group, timeout→group SIGKILL;
 //!     stdout teed)
 //!   → U6b bracket CLOSES after group kill (residual-compare #19 +
 //!     config #20 + symlink #25) — verdict on EVERY path
