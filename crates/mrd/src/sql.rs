@@ -409,13 +409,14 @@ fn daemon_call(
 }
 
 /// Ask the resident daemon (§ A.11). `None` = no daemon serves this
-/// workspace — none accepts the connection, `hello` refuses the workspace, or
-/// the engine predates the `sql` cap — and the caller falls down the ladder.
-/// A daemon that accepted the connection holds the drawer, so a lower rung
-/// would build the whole corpus in-process beside it: an exchange with it that
-/// does not complete answers [`daemon_lost`] instead. A `--fresh` STALE answer
-/// re-asks once (the daemon re-warms + appends per call), mirroring the local
-/// bound.
+/// workspace — no socket, or one no running daemon is behind, `hello` refuses
+/// the workspace, or the engine predates the `sql` cap — and the caller falls
+/// down the ladder. A daemon that accepted the connection holds the drawer, so
+/// a lower rung would build the whole corpus in-process beside it: an exchange
+/// with it that does not complete answers [`daemon_lost`] instead, and a socket
+/// that refuses while its daemon still runs answers [`daemon_stopping`]. A
+/// `--fresh` STALE answer re-asks once (the daemon re-warms + appends per
+/// call), mirroring the local bound.
 fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
     let client = registry::Client::from_default().ok()?;
     daemon_route_at(client.socket_path(), workspace, args)
@@ -425,7 +426,10 @@ fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
 fn daemon_route_at(socket: &Path, workspace: &Path, args: &SqlArgs) -> Option<Frame> {
     let query = args.query.as_deref()?;
     let workspace = workspace.to_str()?;
-    let stream = UnixStream::connect(socket).ok()?;
+    let stream = match UnixStream::connect(socket) {
+        Ok(stream) => stream,
+        Err(e) => return daemon_stopping(socket, &e),
+    };
     // Before the clone: socket-level, so both halves inherit the discipline.
     let mut writer = match registry::wedge::bind(&stream).and_then(|()| stream.try_clone()) {
         Ok(writer) => writer,
@@ -482,6 +486,58 @@ fn daemon_lost(cause: &str) -> Frame {
         "the resident daemon accepted this call and did not complete it ({cause}); \
          the corpus is not built in-process beside it — retry"
     ))
+}
+
+/// The `NO_VIEW` for a socket that refused the connection while its pidfile
+/// names a running `mrd` (wire-contract § A.11, the CLI ladder): a daemon in
+/// its stop closes its listener first and holds the drawer until its checkpoint
+/// save ends, so the lower rungs would build the whole corpus beside it, as in
+/// [`daemon_lost`]. `None` for every other connect failure — no socket file, or
+/// a refused one left by a daemon gone without cleanup — so the lower rungs
+/// serve.
+fn daemon_stopping(socket: &Path, error: &std::io::Error) -> Option<Frame> {
+    if error.kind() != std::io::ErrorKind::ConnectionRefused {
+        return None;
+    }
+    let pid = running_daemon_pid(&socket.with_extension("pid"))?;
+    Some(Frame::no_view(format!(
+        "the resident daemon (pid {pid}) refused this call: its socket is closed while the \
+         process still runs, most often finishing a stop that still holds the drawer; the \
+         corpus is not built in-process beside it — retry"
+    )))
+}
+
+/// The pid in `pidfile` when that process is running and, on Linux, runs an
+/// `mrd` executable — a pid recycled by another program after a crash is not
+/// the daemon.
+fn running_daemon_pid(pidfile: &Path) -> Option<libc::pid_t> {
+    let pid: libc::pid_t = std::fs::read_to_string(pidfile).ok()?.trim().parse().ok()?;
+    if pid <= 0 {
+        return None;
+    }
+    // SAFETY: signal 0 delivers nothing; `kill` only reports whether `pid`
+    // exists and may be signalled by this user.
+    if unsafe { libc::kill(pid, 0) } != 0 || !runs_mrd(pid) {
+        return None;
+    }
+    Some(pid)
+}
+
+/// Does `pid` run an executable named like `mrd` (`mrd`, `mrd (deleted)` after
+/// an upgrade, a wrapper's `.mrd-wrapped`)? An unreadable link does not
+/// overrule a live `kill` answer.
+#[cfg(target_os = "linux")]
+fn runs_mrd(pid: libc::pid_t) -> bool {
+    std::fs::read_link(format!("/proc/{pid}/exe")).map_or(true, |exe| {
+        exe.file_name()
+            .is_some_and(|name| name.to_string_lossy().contains("mrd"))
+    })
+}
+
+/// No `/proc` to read: a running pid is taken as the daemon.
+#[cfg(not(target_os = "linux"))]
+fn runs_mrd(_pid: libc::pid_t) -> bool {
+    true
 }
 
 /// Dispatch on recovery, including a code a newer daemon introduced. A retry
@@ -1179,6 +1235,45 @@ mod tests {
         let error = frame.error.expect("the cause is named");
         assert!(
             error.contains("closed the connection without answering"),
+            "{error}"
+        );
+    }
+
+    /// § A.11, the CLI ladder: a socket that refuses while its pidfile names a
+    /// running daemon is that daemon in its stop — listener closed, drawer
+    /// still held — so it answers `NO_VIEW` like an accepted call that did not
+    /// complete. A refused socket whose pidfile names an exited process is a
+    /// daemon gone without cleanup, and the local rungs serve.
+    #[test]
+    fn a_refusing_socket_of_a_running_daemon_answers_no_view_not_a_local_build() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("d.sock");
+        let pidfile = socket.with_extension("pid");
+        let args = SqlArgs::parse(&["SELECT 1".to_owned()]).expect("parse");
+        // Bound, then closed: the socket file stays and nothing accepts, so a
+        // connect is refused — what a stopping daemon leaves while it drains.
+        drop(std::os::unix::net::UnixListener::bind(&socket).expect("bind"));
+
+        let mut exited = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        let exited_pid = exited.id();
+        exited.wait().expect("reap");
+        std::fs::write(&pidfile, format!("{exited_pid}\n")).expect("pidfile");
+        assert!(
+            daemon_route_at(&socket, dir.path(), &args).is_none(),
+            "a daemon gone without cleanup: the local rungs serve"
+        );
+
+        // This test process (the `mrd` crate's test binary) stands in for the
+        // running daemon.
+        std::fs::write(&pidfile, format!("{}\n", std::process::id())).expect("pidfile");
+        let frame = daemon_route_at(&socket, dir.path(), &args)
+            .expect("a refusing running daemon answers NO_VIEW, not the ladder");
+        assert!(frame.state == QueryState::NoView);
+        let error = frame.error.expect("the cause is named");
+        assert!(
+            error.contains("refused this call") && error.contains(&std::process::id().to_string()),
             "{error}"
         );
     }

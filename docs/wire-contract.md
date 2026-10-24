@@ -3246,6 +3246,15 @@ drawer, so the next rung is a `:memory:` build of the whole corpus beside it,
 paid by every caller at once and exactly when the daemon is slow: about a
 CPU-minute and several GiB each on a 100k-member root.
 
+A socket that **refuses** the connection while its pidfile
+(`<socket-stem>.pid`) names a running process is that same daemon in its stop:
+the stop closes the listener first and keeps the socket file, the pidfile and
+the drawer until its drain, flush and checkpoint save end, which takes minutes
+under IO pressure. That refusal also answers `NO_VIEW` naming the pid, never
+the lower rungs. A refused socket whose pidfile is absent, or names no running
+process, or (on Linux) names a process whose executable is not `mrd`, is a
+daemon gone without cleanup, and the lower rungs serve.
+
 ### A.12 Rooted refs at every page-taking door
 
 Every agent-facing door that names a page resolves the agent-plane
