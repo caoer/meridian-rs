@@ -1595,6 +1595,13 @@ the daemon's environment**: an auto-spawn inherits the client's environment, a
 resident daemon kept its own and emits nothing — restart it, or let the idle
 horizon do it.
 
+**When a call auto-spawns.** Only when nothing serves the socket: no socket
+file, a refused connect, a connection closed unanswered, or an answer that is
+not a pong. A liveness probe the daemon accepts and holds unanswered past its
+2 s bound met a live, busy daemon — an exited one cannot hold the connection —
+so the call proceeds to that daemon and waits under the wedge cap, rather
+than spawning a second daemon that could only lose the singleton flock.
+
 #### The daemon's own lane — `<socket-stem>.log`
 
 **The auto-spawn gives the daemon a voice**, which a detached daemon otherwise

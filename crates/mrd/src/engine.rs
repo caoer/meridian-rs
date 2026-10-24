@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use config::mount::DECLARATION_FILENAME;
-use registry::Client;
+use registry::{Client, Liveness};
 use serde_json::{Value, json};
 use wire::{ErrorBody, Path as WirePath, Root};
 
@@ -680,12 +680,15 @@ enum DialedLinks {
     Skew(String),
 }
 
-/// Ensure a daemon answers on `client`'s socket: return early if one already pings, else
-/// auto-spawn it detached and poll until it binds or the timeout elapses. Errors The daemon
-/// could not be spawned (spawn-impossible), or it was spawned but never became ready within
+/// Ensure a daemon serves `client`'s socket: return early if one is up — answering, or
+/// [`Liveness::Busy`]: holding the probe unanswered, which only a live daemon can do — else
+/// auto-spawn it detached and poll until it binds or the timeout elapses. A busy daemon is
+/// never spawned beside: the spawn can only lose the singleton flock, and the caller's own
+/// exchange waits it out under the wedge cap (`registry::wedge`). Errors The daemon could
+/// not be spawned (spawn-impossible), or it was spawned but never became ready within
 /// [`SPAWN_READY_TIMEOUT`].
 pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
-    if client.ping().unwrap_or(false) {
+    if client.liveness() != Liveness::Down {
         return Ok(());
     }
     // The drain-budget hazard, checked HERE because this is where it is LOUD.
@@ -738,7 +741,7 @@ pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
     }
     let deadline = Instant::now() + SPAWN_READY_TIMEOUT;
     while Instant::now() < deadline {
-        if client.ping().unwrap_or(false) {
+        if client.liveness() != Liveness::Down {
             return Ok(());
         }
         std::thread::sleep(PING_POLL);
