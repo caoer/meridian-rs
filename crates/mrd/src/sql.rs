@@ -409,13 +409,14 @@ fn daemon_call(
 }
 
 /// Ask the resident daemon (§ A.11). `None` = no daemon serves this
-/// workspace — none accepts the connection, `hello` refuses the workspace, or
-/// the engine predates the `sql` cap — and the caller falls down the ladder.
-/// A daemon that accepted the connection holds the drawer, so a lower rung
-/// would build the whole corpus in-process beside it: an exchange with it that
-/// does not complete answers [`daemon_lost`] instead. A `--fresh` STALE answer
-/// re-asks once (the daemon re-warms + appends per call), mirroring the local
-/// bound.
+/// workspace — no socket, or one no running daemon is behind, `hello` refuses
+/// the workspace, or the engine predates the `sql` cap — and the caller falls
+/// down the ladder. A daemon that accepted the connection holds the drawer, so
+/// a lower rung would build the whole corpus in-process beside it: an exchange
+/// with it that does not complete answers [`daemon_lost`] instead, and a socket
+/// that refuses while its daemon still runs answers [`daemon_stopping`]. A
+/// `--fresh` STALE answer re-asks once (the daemon re-warms + appends per
+/// call), mirroring the local bound.
 fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
     let client = registry::Client::from_default().ok()?;
     daemon_route_at(client.socket_path(), workspace, args)
