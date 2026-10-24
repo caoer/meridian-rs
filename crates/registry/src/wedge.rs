@@ -332,8 +332,9 @@ pub fn write_all(
 ///
 /// - [`io::ErrorKind::TimedOut`] — the connection stayed open for the whole
 ///   `cap` and the daemon never answered this request: alive, and wedged or
-///   stalled. A daemon that dies mid-request is not an error here: its exit
-///   closes the connection, and that is `Ok(0)` (or a reset) at once.
+///   stalled. A daemon that dies mid-request ends the read at once: its exit
+///   closes the connection, which is `Ok(0)` — or, when it dies with bytes of
+///   the request unread, [`io::ErrorKind::ConnectionReset`] naming the death.
 /// - [`io::ErrorKind::InvalidData`] — the completed line is not valid UTF-8.
 /// - Any other transport failure, verbatim.
 pub fn read_line(
@@ -371,6 +372,19 @@ pub fn read_line(
                         ),
                     ));
                 }
+            }
+            // The other face of an exit: a peer that closes with bytes of ours
+            // still unread in its socket resets the connection instead of
+            // ending it (Linux), so the death arrives as `ECONNRESET`, not EOF.
+            // Same event, so it carries the same verdict.
+            Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    format!(
+                        "the daemon closed the connection without a response ({e}) — it died \
+                         mid-request or dropped this call; the outcome of this call is unknown"
+                    ),
+                ));
             }
             // No `Interrupted` arm: `read_until` absorbs EINTR itself, so it
             // cannot surface here.
@@ -636,6 +650,48 @@ mod tests {
         assert!(
             elapsed >= slow,
             "the answer really did come after the probes went unanswered: {elapsed:?}"
+        );
+    }
+
+    /// **A daemon that dies with the request unread still names the death.**
+    /// Linux resets such a connection instead of ending it, so the read sees
+    /// `ECONNRESET` rather than EOF — the same event, and it must carry the
+    /// same verdict, not a bare "Connection reset by peer". (A platform that
+    /// reports EOF here is the EOF arm, which the caller names.)
+    #[test]
+    fn a_daemon_that_dies_with_the_request_unread_is_named_dead_not_reset() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("daemon.sock");
+        let _dies = Mute::first_after(
+            UnixListener::bind(&sock).expect("bind"),
+            TICK + Duration::from_millis(500),
+            None,
+        );
+
+        let mut stream = UnixStream::connect(&sock).expect("connect");
+        super::bind(&stream).expect("bind the discipline");
+        stream
+            .write_all(b"{\"op\":\"list\"}\n")
+            .expect("the request goes out and is never read");
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        let started = Instant::now();
+        let outcome = read_line(&mut reader, &sock, super::WEDGE_CAP, &mut line);
+        match outcome {
+            Ok(0) => {}
+            Ok(n) => panic!("a dead daemon answered {n} bytes: {line:?}"),
+            Err(e) => {
+                assert_eq!(e.kind(), io::ErrorKind::ConnectionReset, "{e}");
+                assert!(
+                    e.to_string().contains("died mid-request"),
+                    "the reset carries the death verdict: {e}"
+                );
+            }
+        }
+        assert!(
+            started.elapsed() < super::WEDGE_CAP / 2,
+            "the death was seen when it happened: {:?}",
+            started.elapsed()
         );
     }
 
