@@ -18,18 +18,34 @@
 //! rendered as a missing one, whose remedy is the opposite.
 //!
 //! So the timeout here is the TICK INTERVAL of [`read_line`], never the
-//! verdict. On each tick the daemon is asked — over its own second connection,
-//! itself bounded — whether it is still alive:
+//! verdict. What ends the wait:
 //!
-//! | the tick finds | outcome |
+//! | the connection shows | outcome |
 //! |---|---|
-//! | ping answers, cap unspent | keep reading; a slow daemon is not a dead one |
-//! | ping does not answer | [`io::ErrorKind::ConnectionAborted`] — it really went away |
-//! | ping answers, cap spent | [`io::ErrorKind::TimedOut`] — up, and wedged |
+//! | the answer | the line |
+//! | EOF or a reset | the daemon exited or dropped this call — the transport says so at once |
+//! | nothing, cap unspent | keep reading; a slow daemon is not a dead one |
+//! | nothing, cap spent | [`io::ErrorKind::TimedOut`] — up, and wedged or stalled |
 //!
-//! The wait is therefore bounded AND evidenced: what normally ends it is the
-//! daemon's own liveness, not a constant. [`WEDGE_CAP`] is only the floor under
-//! that instrument.
+//! # A held connection is the liveness evidence
+//!
+//! **A daemon that has exited cannot hold this connection open**: its exit
+//! closes every descriptor it had, and the blocked read returns EOF (or the
+//! write `EPIPE`) the same instant. So while the connection stays open and
+//! silent, the peer is alive by construction, and the only question left is
+//! how long to wait for it — which is [`WEDGE_CAP`].
+//!
+//! A second-connection `ping` cannot improve on that evidence, and as a
+//! verdict it was wrong. It used to run on every tick, and a ping that missed
+//! [`PROBE_TIMEOUT`] answered "it died mid-request". A daemon swapping or
+//! saturated misses that 2 s bound while it is very much alive: measured on
+//! devstation-nyc-1, 2026-10-24 02:58Z (ccc-statusd 1.12.173), `mrd sql`
+//! refused `NO_VIEW` "died mid-request" after 4.09 s while the engine — same
+//! pid before and after, 3.6 GB resident and 3.7 GB in swap — went on serving,
+//! and the same call 20 s later succeeded. The probe now runs once, when the
+//! cap is spent, and only to word the wedge message: a daemon that still
+//! answers pings is wedged on THIS request; one that answers neither is stalled
+//! whole (overloaded, swapping, or hung). Neither is absent.
 //!
 //! # The write half
 //!
@@ -54,8 +70,9 @@
 //! what makes the partial unrecoverable: it discards the count on error.
 //!
 //! So [`write_all`] is the write-half twin of [`read_line`] — the socket
-//! timeout is the TICK, the probe is the instrument, and the same three
-//! outcomes apply. It has one thing the read half does not: **the frame is not
+//! timeout is the TICK, the held connection is the liveness evidence (a dead
+//! peer answers the next `write(2)` with `EPIPE`), and the cap ends a drain
+//! that never resumes. It has one thing the read half does not: **the frame is not
 //! whole on the wire, so nothing was committed** — an NDJSON request the daemon
 //! never received to its newline cannot have been acted on. Every verdict below
 //! says so, because "the write failed" and "the outcome is unknown" send a
@@ -85,26 +102,28 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// How long a liveness probe may take before the daemon is called unreachable.
-/// Its own connection and its own bound: probing through [`crate::Client`]
-/// would re-enter this discipline and, on a wedged daemon, ask the wedged
-/// question twice.
+/// How long a liveness probe may take before it counts as unanswered. Its own
+/// connection and its own bound: probing through [`crate::Client`] would
+/// re-enter this discipline and, on a wedged daemon, ask the wedged question
+/// twice. An unanswered probe is never a death verdict (§ A held connection is
+/// the liveness evidence).
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// How often a blocked read pauses to ask whether the daemon is alive.
+/// How often a blocked read or write wakes to check the cap.
 ///
 /// NOT a budget — an expired tick answers no question by itself, which is the
-/// whole point (§ A tick is a question). Small enough that a dead daemon is
-/// found promptly, large enough that a healthy round trip never probes at all.
+/// whole point (§ A tick is a question). A dead daemon is found by the
+/// transport, not by the tick, so the tick costs a dead peer nothing.
 pub const TICK: Duration = Duration::from_secs(2);
 
-/// The backstop for the one case liveness cannot settle: a daemon that answers
-/// pings forever and never answers THIS request. Up, and wedged — a bug worth
-/// naming rather than a load condition worth waiting out.
+/// The backstop for the one case the held connection cannot settle: a daemon
+/// that is alive and never answers THIS request — wedged on it, or stalled
+/// whole. A bug or an overload worth naming rather than a wait worth extending.
 ///
-/// Deliberately far above any answer a healthy daemon produces, because a
-/// number is the wrong instrument here and this one is only the floor under the
-/// right one.
+/// Deliberately far above any answer a healthy daemon produces — and above
+/// the multi-second ops a swapping one still completes — because a number is
+/// the wrong instrument here and this one is only the floor under the right
+/// one.
 // `Duration::from_mins` not const-stable at MSRV 1.96.
 #[allow(clippy::duration_suboptimal_units)]
 pub const WEDGE_CAP: Duration = Duration::from_secs(60);
@@ -136,7 +155,10 @@ pub fn bind(stream: &UnixStream) -> io::Result<()> {
 }
 
 /// Does the daemon at `socket` answer a registry `ping` within
-/// [`PROBE_TIMEOUT`]? This is the EVIDENCE that replaces the clock.
+/// [`PROBE_TIMEOUT`]? A `true` proves the daemon is up; a `false` proves
+/// nothing about a daemon that still holds a connection open — it may simply
+/// be too loaded to answer in time — so [`read_line`] and [`write_all`] ask it
+/// only to word their cap-spent message.
 ///
 /// Hand-rolled rather than [`crate::Client::ping`]: that call goes through
 /// [`read_line`], so probing with it would recurse into the discipline it is
@@ -171,6 +193,17 @@ pub fn answers_ping(socket: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// The cap-spent message's account of a daemon that still holds the
+/// connection: one probe, asked only now, decides which kind of alive it is.
+fn alive_state(socket: &Path) -> &'static str {
+    if answers_ping(socket) {
+        "is up (it is still answering liveness probes)"
+    } else {
+        "is alive (it still holds this connection open) but answers no liveness probe either \
+         — stalled whole: overloaded, swapping, or hung,"
+    }
+}
+
 /// Write `frame` whole under the discipline — the write-half twin of
 /// [`read_line`]. Drop-in for [`io::Write::write_all`] followed by a flush,
 /// with the tick loop around it.
@@ -196,10 +229,9 @@ pub fn answers_ping(socket: &Path) -> bool {
 /// the daemon has not acted on it and **nothing was committed**. Each message
 /// says so.
 ///
-/// - [`io::ErrorKind::ConnectionAborted`] — the daemon stopped answering
-///   liveness probes while this frame was still going out: it died mid-send.
-/// - [`io::ErrorKind::TimedOut`] — it answered probes for the whole `cap` and
-///   never drained the rest: up, and wedged.
+/// - [`io::ErrorKind::TimedOut`] — the connection stayed open for the whole
+///   `cap` and the daemon never drained the rest: alive, and wedged or stalled.
+/// - A dead daemon's `EPIPE`/`ECONNRESET`, verbatim and at once.
 /// - [`io::ErrorKind::WriteZero`] — the socket accepted nothing and reported
 ///   success, which cannot make progress.
 /// - Any other transport failure, verbatim.
@@ -235,27 +267,18 @@ pub fn write_all(
                     io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
                 ) =>
             {
+                // The connection is still open (a dead peer answers `EPIPE`, the
+                // arm below), so the daemon is alive: only the cap ends this wait.
                 let waited = started.elapsed();
-                if !answers_ping(socket) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::ConnectionAborted,
-                        format!(
-                            "the daemon stopped answering liveness probes after {waited:?} while \
-                             this request was still being sent ({sent} of {total} bytes drained) \
-                             — it died mid-send. The frame never reached it whole, so nothing \
-                             was committed"
-                        ),
-                    ));
-                }
                 if waited >= cap {
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
                         format!(
-                            "the daemon is up (it is still answering liveness probes) and has not \
-                             drained this {total}-byte request in {waited:?} ({sent} bytes taken) \
-                             — it is wedged, not absent, so restarting the client will not help; \
-                             restart the daemon. The frame never reached it whole, so nothing was \
-                             committed"
+                            "the daemon {} and has not drained this {total}-byte request in \
+                             {waited:?} ({sent} bytes taken) — it is wedged, not absent, so \
+                             restarting the client will not help; restart the daemon. The frame \
+                             never reached it whole, so nothing was committed",
+                            alive_state(socket)
                         ),
                     ));
                 }
@@ -307,10 +330,11 @@ pub fn write_all(
 ///
 /// On every error `line` is left untouched: a partial answer is not an answer.
 ///
-/// - [`io::ErrorKind::ConnectionAborted`] — the daemon stopped answering
-///   liveness probes: it died mid-request.
-/// - [`io::ErrorKind::TimedOut`] — it answered probes for the whole `cap` and
-///   never answered this request: up, and wedged.
+/// - [`io::ErrorKind::TimedOut`] — the connection stayed open for the whole
+///   `cap` and the daemon never answered this request: alive, and wedged or
+///   stalled. A daemon that dies mid-request ends the read at once: its exit
+///   closes the connection, which is `Ok(0)` — or, when it dies with bytes of
+///   the request unread, [`io::ErrorKind::ConnectionReset`] naming the death.
 /// - [`io::ErrorKind::InvalidData`] — the completed line is not valid UTF-8.
 /// - Any other transport failure, verbatim.
 pub fn read_line(
@@ -333,28 +357,34 @@ pub fn read_line(
                 ) =>
             {
                 // Whatever `read_until` appended before the tick fired stays in
-                // `bytes`. That is what makes the resumption lossless.
+                // `bytes`. That is what makes the resumption lossless. The
+                // connection is still open, so the daemon is alive: only the cap
+                // ends this wait (§ A held connection is the liveness evidence).
                 let waited = started.elapsed();
-                if !answers_ping(socket) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::ConnectionAborted,
-                        format!(
-                            "the daemon accepted this request and then stopped answering \
-                             liveness probes after {waited:?} — it died mid-request; nothing \
-                             answered, so the outcome of this call is unknown"
-                        ),
-                    ));
-                }
                 if waited >= cap {
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
                         format!(
-                            "the daemon is up (it is still answering liveness probes) and has \
-                             not answered this request in {waited:?} — it is wedged, not absent, \
-                             so restarting the client will not help; restart the daemon"
+                            "the daemon {} and has not answered this request in {waited:?} — \
+                             it is wedged, not absent, so restarting the client will not help; \
+                             restart the daemon",
+                            alive_state(socket)
                         ),
                     ));
                 }
+            }
+            // The other face of an exit: a peer that closes with bytes of ours
+            // still unread in its socket resets the connection instead of
+            // ending it (Linux), so the death arrives as `ECONNRESET`, not EOF.
+            // Same event, so it carries the same verdict.
+            Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    format!(
+                        "the daemon closed the connection without a response ({e}) — it died \
+                         mid-request or dropped this call; the outcome of this call is unknown"
+                    ),
+                ));
             }
             // No `Interrupted` arm: `read_until` absorbs EINTR itself, so it
             // cannot surface here.
@@ -508,31 +538,181 @@ mod tests {
             .expect("the read returned — a socket with no read timeout never would")
     }
 
+    impl Mute {
+        /// A daemon stalled whole, then back: the FIRST connection (the
+        /// request) is held for `delay` and then gets `answer` — or, with
+        /// `None`, is closed, which is what a daemon's exit does to it. Every
+        /// other connection (a liveness probe) is held and never answered, so
+        /// for the whole `delay` the daemon misses every probe it is sent.
+        fn first_after(
+            listener: UnixListener,
+            delay: Duration,
+            answer: Option<&'static [u8]>,
+        ) -> Self {
+            let done = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&done);
+            listener
+                .set_nonblocking(true)
+                .expect("poll instead of blocking, so the flag is checked");
+            let thread = thread::spawn(move || {
+                let mut first: Option<(UnixStream, Instant)> = None;
+                let mut settled = false;
+                let mut held = Vec::new();
+                while !flag.load(Ordering::SeqCst) {
+                    if let Ok((stream, _)) = listener.accept() {
+                        if first.is_none() && !settled {
+                            first = Some((stream, Instant::now()));
+                        } else {
+                            held.push(stream);
+                        }
+                        continue;
+                    }
+                    if let Some((stream, since)) = first.take() {
+                        if since.elapsed() < delay {
+                            first = Some((stream, since));
+                        } else {
+                            settled = true;
+                            if let Some(bytes) = answer {
+                                let mut w = stream;
+                                let _ = w.write_all(bytes);
+                                let _ = w.flush();
+                                held.push(w);
+                            }
+                            // `None`: the stream drops here — the exit.
+                        }
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                }
+            });
+            Mute {
+                done,
+                thread: Some(thread),
+            }
+        }
+    }
+
     /// **A daemon that accepts, answers nothing, and cannot be pinged must not
-    /// park the caller.** The read is the only thing that can end this wait —
-    /// every check above the socket is unreachable while the caller sits in
-    /// `read(2)`.
+    /// park the caller** — and must not be called dead either: it still holds
+    /// the connection, which a daemon that exited cannot do. The cap ends the
+    /// wait, and the message says the daemon is alive and stalled whole.
     ///
-    /// The mute listener also fails the liveness probe, so this is the
-    /// died-mid-request arm. Only a LOWER bound is asserted on the elapsed
-    /// time: it says the socket's own tick is what fired rather than something
-    /// cheaper, and load can lengthen a wait but never shorten it.
+    /// Only a LOWER bound is asserted on the elapsed time: it says the cap is
+    /// what fired rather than something cheaper, and load can lengthen a wait
+    /// but never shorten it.
     #[test]
-    fn a_mute_unpingable_daemon_aborts_the_read_instead_of_parking() {
+    fn a_mute_unpingable_daemon_spends_the_cap_and_is_called_stalled_not_dead() {
         let dir = tempfile::tempdir().expect("tempdir");
         let sock = dir.path().join("daemon.sock");
         let _mute = Mute::holding(UnixListener::bind(&sock).expect("bind"));
+        let cap = TICK + Duration::from_millis(200);
 
-        let (outcome, elapsed) = read_off_thread(&sock, super::WEDGE_CAP);
+        let (outcome, elapsed) = read_off_thread(&sock, cap);
         let (kind, message) = outcome.expect_err("a mute daemon does not answer");
         assert_eq!(
             kind,
-            io::ErrorKind::ConnectionAborted,
-            "a mute listener that also fails the liveness probe is gone, not merely slow: {message}"
+            io::ErrorKind::TimedOut,
+            "a listener that holds the connection open has not exited, whatever its probes \
+             say: {message}"
         );
         assert!(
-            elapsed >= TICK,
-            "the socket's own tick is what fired, not something faster: {elapsed:?}"
+            message.contains("answers no liveness probe") && message.contains("not absent"),
+            "the message names the stall and rules out the absence: {message}"
+        );
+        assert!(
+            elapsed >= cap,
+            "the cap is what ended the wait, not something faster: {elapsed:?}"
+        );
+    }
+
+    /// **A live daemon too loaded to answer its probes is waited for, not
+    /// called dead.** Card `mrd-client-reads-slow-engine-as-dead`: on
+    /// devstation-nyc-1 a swapping engine missed one 2 s ping and `mrd sql`
+    /// refused "it died mid-request" after 4.09 s, while the engine served on.
+    /// Here the request is answered after more than one tick plus one probe
+    /// timeout, and every probe sent meanwhile goes unanswered — the old
+    /// verdict's exact trigger.
+    #[test]
+    fn a_live_daemon_that_misses_its_probes_is_waited_for_not_called_dead() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("daemon.sock");
+        let slow = TICK + PROBE_TIMEOUT + Duration::from_secs(1);
+        let _slow = Mute::first_after(
+            UnixListener::bind(&sock).expect("bind"),
+            slow,
+            Some(b"{\"status\":\"pong\"}\n"),
+        );
+
+        let (outcome, elapsed) = read_off_thread(&sock, super::WEDGE_CAP);
+        let read = outcome.unwrap_or_else(|(kind, message)| {
+            panic!("a daemon that answers after {slow:?} was given up on ({kind:?}): {message}")
+        });
+        assert!(read > 0, "the answer is bytes, not EOF");
+        assert!(
+            elapsed >= slow,
+            "the answer really did come after the probes went unanswered: {elapsed:?}"
+        );
+    }
+
+    /// **A daemon that dies with the request unread still names the death.**
+    /// Linux resets such a connection instead of ending it, so the read sees
+    /// `ECONNRESET` rather than EOF — the same event, and it must carry the
+    /// same verdict, not a bare "Connection reset by peer". (A platform that
+    /// reports EOF here is the EOF arm, which the caller names.)
+    #[test]
+    fn a_daemon_that_dies_with_the_request_unread_is_named_dead_not_reset() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("daemon.sock");
+        let _dies = Mute::first_after(
+            UnixListener::bind(&sock).expect("bind"),
+            TICK + Duration::from_millis(500),
+            None,
+        );
+
+        let mut stream = UnixStream::connect(&sock).expect("connect");
+        super::bind(&stream).expect("bind the discipline");
+        stream
+            .write_all(b"{\"op\":\"list\"}\n")
+            .expect("the request goes out and is never read");
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        let started = Instant::now();
+        let outcome = read_line(&mut reader, &sock, super::WEDGE_CAP, &mut line);
+        match outcome {
+            Ok(0) => {}
+            Ok(n) => panic!("a dead daemon answered {n} bytes: {line:?}"),
+            Err(e) => {
+                assert_eq!(e.kind(), io::ErrorKind::ConnectionReset, "{e}");
+                assert!(
+                    e.to_string().contains("died mid-request"),
+                    "the reset carries the death verdict: {e}"
+                );
+            }
+        }
+        assert!(
+            started.elapsed() < super::WEDGE_CAP / 2,
+            "the death was seen when it happened: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// **A daemon that dies mid-request is still reported at once** — by the
+    /// transport, not by a probe. Its exit closes the connection, the read
+    /// returns EOF the same instant, and nothing waits for the cap.
+    #[test]
+    fn a_daemon_that_dies_mid_request_ends_the_read_at_eof_without_the_cap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("daemon.sock");
+        let dies_after = TICK + Duration::from_millis(500);
+        let _dies = Mute::first_after(UnixListener::bind(&sock).expect("bind"), dies_after, None);
+
+        let (outcome, elapsed) = read_off_thread(&sock, super::WEDGE_CAP);
+        let read = outcome.unwrap_or_else(|(kind, message)| {
+            panic!("a closed connection is EOF for the caller to read, not {kind:?}: {message}")
+        });
+        assert_eq!(read, 0, "the exit reaches the caller as EOF");
+        assert!(
+            elapsed < super::WEDGE_CAP / 2,
+            "the death was seen when it happened, not when the cap ran out: {elapsed:?}"
         );
     }
 

@@ -25,6 +25,20 @@ use crate::protocol::{Request, Response, WorkspaceEntry};
 use crate::server::reachable_socket_path;
 use crate::wedge;
 
+/// What a liveness probe found at a daemon socket ([`Client::liveness`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Liveness {
+    /// It answered `pong`.
+    Up,
+    /// It accepted the probe and held it without answering within
+    /// [`wedge::PROBE_TIMEOUT`]: a live daemon too loaded to answer in time. A
+    /// spawn beside it can only lose the singleton flock.
+    Busy,
+    /// Nothing serves the socket — no socket file, a refused connect, a
+    /// connection closed unanswered — or what answers is not this daemon.
+    Down,
+}
+
 /// A handle to a daemon at a known socket path. Cheap to clone; holds no open
 /// connection between calls.
 #[derive(Debug, Clone)]
@@ -128,6 +142,25 @@ impl Client {
             self.request_capped(&Request::Ping, wedge::PROBE_TIMEOUT)?,
             Response::Pong
         ))
+    }
+
+    /// What one [`Self::ping`] found at the socket, with "did not pong" split
+    /// into the two opposite facts it folds.
+    ///
+    /// A ping that CONNECTED and was held unanswered past
+    /// [`wedge::PROBE_TIMEOUT`] met a live listener — an exited daemon cannot
+    /// hold the connection ([`crate::wedge`] § A held connection is the
+    /// liveness evidence) — so that daemon is [`Liveness::Busy`], not absent.
+    /// Reading it as absent is what made `engine::ensure_daemon` spawn a second
+    /// daemon beside a swapping one, which then lost the singleton flock: 369
+    /// such spawns on devstation-nyc-1 between 00:40Z and 03:0xZ 2026-10-24.
+    #[must_use]
+    pub fn liveness(&self) -> Liveness {
+        match self.ping() {
+            Ok(true) => Liveness::Up,
+            Err(e) if e.kind() == io::ErrorKind::TimedOut => Liveness::Busy,
+            Ok(false) | Err(_) => Liveness::Down,
+        }
     }
 
     /// Resolve `cwd`: `Some(entry)` when it is inside a registered workspace,
@@ -355,6 +388,20 @@ mod tests {
         assert!(
             elapsed < wedge::WEDGE_CAP,
             "a ping must not inherit the wedge cap — ensure_daemon polls it against 5 s: {elapsed:?}"
+        );
+    }
+
+    /// **A held, unanswered probe is a busy daemon; a missing socket is no
+    /// daemon.** The split `engine::ensure_daemon` spawns on: only `Down`.
+    #[test]
+    fn liveness_reads_a_held_probe_as_busy_and_a_missing_socket_as_down() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("daemon.sock");
+        let _mute = Mute::holding(UnixListener::bind(&sock).expect("bind"));
+        assert_eq!(Client::new(sock).liveness(), super::Liveness::Busy);
+        assert_eq!(
+            Client::new(dir.path().join("nothing-here.sock")).liveness(),
+            super::Liveness::Down
         );
     }
 

@@ -210,9 +210,23 @@ fn write_off_thread(
 /// at the first tick, on a daemon that was alive the entire time.
 #[test]
 fn an_oversized_frame_stalled_past_ticks_arrives_whole() {
+    assert_a_stalled_frame_arrives_whole(true);
+}
+
+/// **The same stall, from a peer that misses every probe meanwhile** — a
+/// daemon swapping or saturated whole (card
+/// `mrd-client-reads-slow-engine-as-dead`). It still holds the connection, so
+/// it has not exited: the write waits it out and the frame arrives whole. The
+/// probe-as-verdict this replaces called it "died mid-send" at the first tick.
+#[test]
+fn an_oversized_frame_stalled_by_a_peer_that_misses_its_probes_arrives_whole() {
+    assert_a_stalled_frame_arrives_whole(false);
+}
+
+fn assert_a_stalled_frame_arrives_whole(pong: bool) {
     let dir = tempfile::tempdir().expect("tempdir");
     let sock = dir.path().join("daemon.sock");
-    let mut peer = Peer::new(UnixListener::bind(&sock).expect("bind"), Some(STALL), true);
+    let mut peer = Peer::new(UnixListener::bind(&sock).expect("bind"), Some(STALL), pong);
 
     // A recognisable, non-uniform body: a duplicated or dropped slice moves
     // every later byte, so an exact compare catches an off-by-one resume.
@@ -246,21 +260,28 @@ fn an_oversized_frame_stalled_past_ticks_arrives_whole() {
     assert!(drained == frame, "and in order, byte for byte");
 }
 
-/// **The died-mid-send arm.** A peer that stopped draining AND stopped
-/// answering probes is gone, not busy. The verdict is `ConnectionAborted`, and
-/// it must state the commit fact: the frame never arrived whole.
+/// **The stalled arm.** A peer that stopped draining AND stopped answering
+/// probes, but still holds the connection, has not exited: it is stalled
+/// whole, and the cap ends the wait — never a death verdict at the first tick.
+/// The message must state the commit fact: the frame never arrived whole.
 #[test]
-fn a_peer_that_stops_draining_and_stops_answering_is_reported_as_died_mid_send() {
+fn a_peer_that_stops_draining_and_stops_answering_spends_the_cap_and_is_called_stalled() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sock = dir.path().join("daemon.sock");
     let _peer = Peer::new(UnixListener::bind(&sock).expect("bind"), None, false);
+    let cap = wedge::TICK + Duration::from_millis(200);
 
-    let (outcome, elapsed) = write_off_thread(&sock, wedge::WEDGE_CAP, vec![b'x'; OVERSIZED]);
+    let (outcome, elapsed) = write_off_thread(&sock, cap, vec![b'x'; OVERSIZED]);
     let (kind, message) = outcome.expect_err("a peer that never drains does not take the frame");
     assert_eq!(
         kind,
-        std::io::ErrorKind::ConnectionAborted,
-        "a peer that fails the liveness probe is gone, not merely slow: {message}"
+        std::io::ErrorKind::TimedOut,
+        "a peer that holds the connection open has not exited, whatever its probes say: \
+         {message}"
+    );
+    assert!(
+        message.contains("answers no liveness probe") && message.contains("not absent"),
+        "the message names the stall and rules out the absence: {message}"
     );
     assert!(
         message.contains("nothing was committed"),
@@ -268,8 +289,39 @@ fn a_peer_that_stops_draining_and_stops_answering_is_reported_as_died_mid_send()
          'unknown' is the read half's answer, not this one: {message}"
     );
     assert!(
-        elapsed >= wedge::TICK,
-        "the socket's own tick fired, not something faster: {elapsed:?}"
+        elapsed >= cap,
+        "the cap is what ended the wait, not something faster: {elapsed:?}"
+    );
+}
+
+/// **The died-mid-send arm.** A peer that exits mid-drain closes the
+/// connection, and the next `write(2)` says so at once (`EPIPE`, or a reset):
+/// the death is the transport's to report, and nothing waits for the cap.
+#[test]
+fn a_peer_that_dies_mid_send_ends_the_write_at_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sock = dir.path().join("daemon.sock");
+    let listener = UnixListener::bind(&sock).expect("bind");
+    let dies = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept");
+        thread::sleep(wedge::TICK + Duration::from_millis(500));
+        drop(stream);
+        drop(listener);
+    });
+
+    let (outcome, elapsed) = write_off_thread(&sock, wedge::WEDGE_CAP, vec![b'x'; OVERSIZED]);
+    dies.join().expect("the dying peer finishes");
+    let (kind, message) = outcome.expect_err("a peer that exits does not take the frame");
+    assert!(
+        matches!(
+            kind,
+            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+        ),
+        "the exit reaches the writer as the transport's own error: {kind:?} {message}"
+    );
+    assert!(
+        elapsed < wedge::WEDGE_CAP / 2,
+        "the death was seen when it happened, not when the cap ran out: {elapsed:?}"
     );
 }
 

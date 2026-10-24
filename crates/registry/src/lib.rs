@@ -65,7 +65,7 @@ pub mod wedge;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub use checkpoint::CheckpointReceipt;
-pub use client::Client;
+pub use client::{Client, Liveness};
 pub use engine::{WarmOutcome, WorkspaceEngine};
 pub use feed::{FeedStats, RescanCause};
 pub use protocol::{DenyKind, Request, Response, WorkspaceEntry};

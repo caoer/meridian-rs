@@ -32,10 +32,10 @@ use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
 /// The backstop on the v3 handshake — NOT the meter. The wait normally ends
-/// one of two ways: the daemon greets, or it stops answering liveness probes
-/// ([`daemon_answers_ping`]). This cap only catches the third case, a daemon
-/// that answers pings forever and never greets — a wedged daemon, which is a
-/// bug worth naming rather than a load condition worth waiting out. It is
+/// one of two ways: the daemon greets, or it exits and the connection closes
+/// under the read. This cap only catches the third case, a daemon that holds
+/// the connection open and never greets — wedged, or stalled whole, which is a
+/// bug or an overload worth naming rather than a wait worth extending. It is
 /// deliberately far above any greet a healthy daemon produces, because a
 /// number is the wrong instrument here and this one is only the floor under
 /// the right one.
@@ -52,10 +52,10 @@ pub const GREET_CAP: Duration = Duration::from_mins(1);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Printed once when the daemon has held the handshake past the socket's read
-/// timeout while still answering liveness probes.
+/// timeout. It still holds the connection, so it has not exited.
 const GREET_NOTICE: &str = "\
-mrd: the daemon has not answered the handshake yet — it is up (it is still \
-answering liveness probes) and busy, so this is a slow greet, not an absent \
+mrd: the daemon has not answered the handshake yet — it is up (it still holds \
+this connection open) and busy, so this is a slow greet, not an absent \
 daemon; still waiting. Nothing has been written.";
 
 /// The neutral absent-daemon teaching, for a caller with no voice of its own
@@ -80,10 +80,12 @@ pub enum DialFailure {
     /// `connect(2)`, the write, or the stream itself failed: nothing is
     /// listening, or the connection died before a greet could arrive.
     Unreachable(io::Error),
-    /// Connected and greeted, then the daemon stopped answering liveness
-    /// probes: it died mid-handshake.
-    Died {
-        /// How long the handshake had been waiting when the probe failed.
+    /// Connected; the daemon held the connection open for the whole cap and
+    /// answered neither the handshake nor a liveness probe. It has not exited
+    /// (an exit closes the connection, which is [`Self::Unreachable`]): it is
+    /// alive and stalled whole — overloaded, swapping, or hung.
+    Stalled {
+        /// How long the handshake waited before the cap was spent.
         waited: Duration,
     },
     /// Connected and greeted; the daemon kept answering liveness probes for
@@ -105,10 +107,16 @@ impl DialFailure {
     pub(crate) fn teach(&self, absent: &str) -> String {
         match self {
             Self::Unreachable(e) => format!("{absent} (cannot dial the daemon: {e})"),
-            Self::Died { waited } => format!(
-                "{absent} (the daemon accepted this connection and then stopped answering \
-                 liveness probes {:.1}s into the v3 handshake — it died mid-dial. Nothing was \
-                 sent past the handshake, so nothing was written.)",
+            Self::Stalled { waited } => format!(
+                "the daemon is ALIVE and did not greet: it held this connection open for the \
+                 whole {:.0}s this handshake waited and answered neither the v3 hello nor a \
+                 liveness probe — stalled whole (overloaded, swapping, or hung), NOT absent, so \
+                 starting another will not help. Nothing was sent past the handshake, so nothing \
+                 was written.\n\
+                 Fixes — run whichever fits your case:\n\
+                 \x20 - retry: a stalled daemon greets again once its host's load drops.\n\
+                 \x20 - check the host's memory pressure and the daemon's swap; restart the \
+                 daemon if it stays stalled.",
                 waited.as_secs_f32()
             ),
             Self::Silent { waited } => format!(
@@ -187,9 +195,11 @@ impl From<DialFailure> for io::Error {
 }
 
 /// Does the daemon at `socket` answer a registry `ping` within
-/// [`PROBE_TIMEOUT`]? This is the EVIDENCE that replaces the clock: a
-/// handshake tick asks the daemon whether it is alive instead of assuming from
-/// a constant that it is not.
+/// [`PROBE_TIMEOUT`]? Asked once, when the handshake's cap is spent, to tell
+/// a daemon wedged on this handshake ([`DialFailure::Silent`]) from one
+/// stalled whole ([`DialFailure::Stalled`]). A `false` is never a death
+/// verdict: the daemon still holds the connection, which an exited one cannot
+/// (`registry::wedge` § A held connection is the liveness evidence).
 ///
 /// Deliberately NOT [`registry::Client::ping`]. That call is bounded now (by
 /// `registry::wedge::PROBE_TIMEOUT`), so it would no longer park — but it
@@ -246,9 +256,9 @@ pub trait Door: Send {
 pub struct SocketDoor {
     writer: UnixStream,
     reader: BufReader<UnixStream>,
-    /// The daemon's own socket path, retained at connect. The write half's
-    /// tick probes it on a SECOND connection — that is what lets a daemon too
-    /// busy to drain be told from one that died mid-send
+    /// The daemon's own socket path, retained at connect. When the write
+    /// half's cap is spent it probes this on a SECOND connection, to tell a
+    /// daemon wedged on this frame from one stalled whole
     /// ([`registry::wedge::write_all`]).
     socket: PathBuf,
     /// The caps the daemon's hello advertised, retained at connect — the
@@ -281,9 +291,9 @@ impl SocketDoor {
     /// "a daemon that will not greet is down; nothing was sent" — the first
     /// clause is false under load, and it cost four CI reds that read as an
     /// absent daemon while the daemon was answering pings. The timeouts set
-    /// above are now the TICK INTERVAL of [`Self::greet`], not the verdict: a
-    /// tick asks the daemon whether it is alive ([`daemon_answers_ping`])
-    /// instead of concluding from a constant that it is not.
+    /// above are now the TICK INTERVAL of [`Self::greet`], not the verdict: the
+    /// held connection says the daemon is alive, an exit closes it, and only
+    /// the cap ends a wait on a daemon that holds it and never greets.
     ///
     /// `greet_cap` is only the backstop for a daemon that pings forever and
     /// never greets. The script entry passes its own wall clock — its budget is
@@ -364,17 +374,18 @@ impl SocketDoor {
     ///
     /// The hello goes out ONCE — a tick resumes the read, it never re-sends,
     /// because a second hello on the same connection is a different frame, not
-    /// a retry. On each tick the daemon is asked, over its own second
-    /// connection, whether it is alive:
+    /// a retry. The connection itself is the liveness evidence — a daemon that
+    /// exits closes it, and the read sees EOF at once:
     ///
     /// | the tick finds | outcome |
     /// |---|---|
-    /// | ping answers, cap unspent | notice once, keep reading |
-    /// | ping does not answer | [`DialFailure::Died`] — it really went away |
-    /// | ping answers, cap spent | [`DialFailure::Silent`] — up and wedged |
+    /// | cap unspent | notice once, keep reading |
+    /// | cap spent, ping answers | [`DialFailure::Silent`] — up and wedged |
+    /// | cap spent, ping does not answer | [`DialFailure::Stalled`] — alive, stalled whole |
     ///
     /// So the wait is bounded AND evidenced: what normally ends it is the
-    /// daemon's own liveness, not a constant. The constant is only the floor.
+    /// greet or the daemon's exit, not a constant. The constant is only the
+    /// floor.
     fn greet(
         &mut self,
         request: &Value,
@@ -416,14 +427,12 @@ impl SocketDoor {
                         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
                     ) =>
                 {
-                    if !daemon_answers_ping(socket) {
-                        return Err(DialFailure::Died {
-                            waited: started.elapsed(),
-                        });
-                    }
-                    if started.elapsed() >= cap {
-                        return Err(DialFailure::Silent {
-                            waited: started.elapsed(),
+                    let waited = started.elapsed();
+                    if waited >= cap {
+                        return Err(if daemon_answers_ping(socket) {
+                            DialFailure::Silent { waited }
+                        } else {
+                            DialFailure::Stalled { waited }
                         });
                     }
                     if !noticed {
@@ -620,9 +629,9 @@ mod tests {
     /// with nothing bounding it.
     ///
     /// The mute listener here also fails the liveness probe (it accepts ONE
-    /// connection and holds it), so this is the [`DialFailure::Died`] arm: gone,
-    /// and correctly called gone. The neighbouring test covers the arm that used
-    /// to be conflated with it — alive, and slow.
+    /// connection and holds it), so this is the [`DialFailure::Stalled`] arm:
+    /// alive — it holds the connection — and stalled whole, never called gone.
+    /// The neighbouring tests cover a slow greet and a pinging wedge.
     ///
     /// No wall-clock BUDGET is asserted: the lower bound only says the deadline
     /// was the thing that fired, and load can lengthen it but never shorten it.
@@ -669,11 +678,11 @@ mod tests {
         let workspace = dir.path().to_owned();
         thread::spawn(move || {
             let started = Instant::now();
-            let outcome = SocketDoor::connect(&dialled, &workspace, GREET_CAP);
-            let died = matches!(outcome, Err(DialFailure::Died { .. }));
-            let _ = tx.send((outcome.is_err(), died, started.elapsed()));
+            let outcome = SocketDoor::connect(&dialled, &workspace, super::super::cmd::WALL_CLOCK);
+            let stalled = matches!(outcome, Err(DialFailure::Stalled { .. }));
+            let _ = tx.send((outcome.is_err(), stalled, started.elapsed()));
         });
-        let (refused, died, elapsed) = rx
+        let (refused, stalled, elapsed) = rx
             .recv_timeout(super::super::cmd::WALL_CLOCK * 3)
             .expect("connect returned — a socket with no deadline never would");
         assert!(
@@ -681,9 +690,9 @@ mod tests {
             "a daemon that answers nothing fails the round trip"
         );
         assert!(
-            died,
-            "and it fails as Died — a mute listener that also fails the liveness probe is gone, \
-             not merely slow"
+            stalled,
+            "and it fails as Stalled — a mute listener that holds the connection has not exited, \
+             whatever its probes say"
         );
         assert!(
             elapsed >= super::super::cmd::WALL_CLOCK,
@@ -862,7 +871,7 @@ mod tests {
         };
         assert!(
             matches!(failure, DialFailure::Silent { .. }),
-            "a pingable daemon that never greets is Silent, never Died and never Unreachable: \
+            "a pingable daemon that never greets is Silent, never Stalled and never Unreachable: \
              {failure:?}"
         );
         let rendered = failure.to_string();
