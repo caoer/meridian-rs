@@ -913,7 +913,11 @@ fn status_residency_builds_no_workspace_summary() {
     let ws_arg = ws.to_string_lossy().into_owned();
     let refused = sb.run(&ws, &["status", "--residency", "--cwd", &ws_arg]);
     assert_eq!(code(&refused), 2, "{}", stdout(&refused));
-    assert!(stderr(&refused).contains("takes no --cwd"), "{}", stderr(&refused));
+    assert!(
+        stderr(&refused).contains("takes no --cwd"),
+        "{}",
+        stderr(&refused)
+    );
 }
 
 /// `status --residency` carries the SQL appends' escalation counters
