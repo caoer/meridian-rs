@@ -1061,9 +1061,13 @@ pub(crate) fn call(
     let read =
         registry::wedge::read_line(reader, socket, registry::wedge::WEDGE_CAP, &mut response)?;
     if read == 0 {
+        // The one place a daemon's death mid-request is SEEN: its exit closes
+        // the connection (`registry::wedge` § A held connection is the
+        // liveness evidence).
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
-            "daemon closed the connection without a response",
+            "daemon closed the connection without a response — it died mid-request or dropped \
+             this call; the outcome of this call is unknown",
         ));
     }
     serde_json::from_str(&response).map_err(io::Error::other)

@@ -401,7 +401,10 @@ fn daemon_call(
         .map_err(|e| e.to_string())?;
     serde_json::from_str(&response).map_err(|e| {
         if response.is_empty() {
-            "the daemon closed the connection without answering".to_owned()
+            // Its exit closes the connection: the death is seen here, at once.
+            "the daemon closed the connection without answering — it died mid-request or \
+             dropped this call"
+                .to_owned()
         } else {
             format!("the daemon's answer is not JSON: {e}")
         }

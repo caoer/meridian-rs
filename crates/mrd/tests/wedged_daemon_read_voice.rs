@@ -19,12 +19,15 @@
 //!
 //! # Why the injected failure is died-mid-request, not the 60 s wedge
 //!
-//! `wedge::read_line` picks between its two arms by ONE test (`answers_ping`),
-//! and which sentence each arm mints is gated directly, cheaply, and already:
+//! A daemon that dies mid-request closes the connection, and `engine::call`
+//! mints the died-mid-request sentence on that EOF; one that holds the
+//! connection is alive and only the cap ends the wait. Which sentence each
+//! wedge arm mints is gated directly, cheaply, and already:
 //! `crates/registry/src/wedge.rs`
 //! § `a_pinging_daemon_that_never_answers_spends_the_cap_and_says_it_is_wedged`
-//! (asserts `TimedOut` + "wedged, not absent") and
-//! § `a_mute_unpingable_daemon_aborts_the_read_instead_of_parking`. What was NOT
+//! (asserts `TimedOut` + "wedged, not absent"),
+//! § `a_mute_unpingable_daemon_spends_the_cap_and_is_called_stalled_not_dead` and
+//! § `a_daemon_that_dies_mid_request_ends_the_read_at_eof_without_the_cap`. What was NOT
 //! gated anywhere is the half these tests own: that the sentence survives
 //! `engine::call` → `dial_links` → the degrade and reaches a user's stderr.
 //! Both arms leave that code path by the same `Err`, so driving the cheap one
@@ -66,19 +69,24 @@ const REQUEST_SLICE: Duration = Duration::from_secs(2);
 /// checked between connections.
 const ACCEPT_POLL: Duration = Duration::from_millis(20);
 
-/// A daemon that is demonstrably UP, and then is not.
+/// How long the fake stays dark before it dies. Past one wedge tick, so the
+/// client's read rides a tick before the death reaches it — the tick must not
+/// be what ends the exchange.
+const DIES_AFTER: Duration = Duration::from_millis(2500);
+
+/// A daemon that is demonstrably UP, and then dies mid-request.
 ///
 /// It answers `{"op":"ping"}` with `{"status":"pong"}` always, and answers the
 /// v3 hello `ok:true` for its first `dark_after` greetings. When that quota is
 /// spent it goes dark: it accepts every connection, **holds it open**, and
-/// answers nothing at all — including the liveness probes.
+/// answers nothing at all — including the liveness probes — and
+/// [`DIES_AFTER`] later it dies: every connection it holds closes and it stops
+/// listening, as a daemon's exit does.
 ///
-/// That sequence is what puts the client in `wedge::read_line`'s
-/// died-mid-request arm rather than in a spawn failure: the pong satisfies
+/// That sequence is what puts the client on `engine::call`'s
+/// died-mid-request EOF rather than in a spawn failure: the pong satisfies
 /// `engine::ensure_daemon`, so no daemon is ever spawned and no spawn quote is
-/// ever recorded, and the going-dark is what the tick's `answers_ping` finds.
-/// Holding the stream matters — dropping it would send an EOF, and
-/// `wedge::read_line` answers EOF with `Ok(0)`, never with a verdict.
+/// ever recorded, and the close is what the request's read finds.
 ///
 /// # Why the quota exists: it CHOOSES which guarded site the wedge lands on
 ///
@@ -121,8 +129,15 @@ impl FakeDaemon {
         let thread = thread::spawn(move || {
             let mut held: Vec<UnixStream> = Vec::new();
             let mut dark = false;
+            let mut dark_since: Option<Instant> = None;
             let mut greeted = 0usize;
             while !flag.load(Ordering::SeqCst) {
+                if dark_since.is_some_and(|since| since.elapsed() >= DIES_AFTER) {
+                    // The exit: every held connection closes, the listener
+                    // goes with the thread.
+                    held.clear();
+                    break;
+                }
                 let Ok((stream, _)) = listener.accept() else {
                     thread::sleep(ACCEPT_POLL);
                     continue;
@@ -176,6 +191,7 @@ impl FakeDaemon {
                     // (this frame IS the hello). Both are the exchange this
                     // fake exists to wedge.
                     dark = true;
+                    dark_since = Some(Instant::now());
                     held.push(writer);
                     break;
                 }
