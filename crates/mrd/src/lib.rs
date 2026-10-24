@@ -584,8 +584,9 @@ usage:
                            five-axis line (pin · lock · anchor · armed ·
                            vibe-debt). O(armed), fetch-less. Exits: 0 clean /
                            1 finding / 2 bad invocation.
-                           --residency adds a running daemon's residency
-                           controller report (one request, never a spawn).
+                           --residency instead prints only a running
+                           daemon's residency controller report (one request,
+                           never a spawn; no workspace, no --cwd; exit 0).
 ! mrd daemon               run the registry daemon in the foreground.
   mrd test --corpus <SPEC> tier-2 corpus runner: drive CHECK/HOOK rules over
                            SYNTHETIC changes; report fire-where-expected, zero

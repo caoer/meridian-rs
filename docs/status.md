@@ -459,10 +459,10 @@ mrd skill hook emit the commit-fence contract to stdout: the markdown
 mrd status [--cwd PATH] [--json]
  the bare drift + freshness summary (pure-local,
  O(armed), fetch-less)
-mrd status --residency [--cwd PATH] [--json]
- the same summary, then a running daemon's residency
- controller report: one request, never a spawn (see
- § The residency line)
+mrd status --residency [--json]
+ only a running daemon's residency controller report:
+ one request, never a spawn, no workspace resolved or
+ built (see § The residency line)
 mrd sql [--fresh] [--rebuild] [--cwd PATH | --root NAME] [--json] [--] <QUERY>
  **operator face** — SQL over an in-process projection
  of the corpus, served from the drawer's `sql.duckdb`
@@ -1211,9 +1211,19 @@ Debt never enters the findings verdict and never refuses a write; zero renders
 
 Bare `status` sends no request of its own; resolving an unanchored tree may
 ask a running daemon for a registered ancestor (§ The resolution ladder), as
-every verb does. `mrd status --residency` adds one line: the running daemon's residency
-controller report (`node-rev-merkle-spec.md` §6.4, the report's door), in
-bytes:
+every verb does. `mrd status --residency` is a separate reading: it resolves
+no workspace, builds no corpus and prints only one line, the running daemon's
+residency controller report (`node-rev-merkle-spec.md` §6.4, the report's
+door), in bytes. The report is machine-wide, and the summary's corpus build and
+object scan take minutes on a large root (a sessions root of 130k pages), which
+the reading would otherwise wait behind; `--cwd` with `--residency` is a bad
+invocation (exit 2).
+
+```
+mrd status --residency
+```
+
+prints
 
 ```
   residency: floor 388972 / limit 2147483648 · bodies 1048576 · pinned 0 · reserved 0 · overage 0 · floor-overage 0 · peak-overruns 0 (shortfall 0) · sql-escalations 2 (largest 268435456, last 2026-10-08T05:12:03Z) · sql-refused 0
@@ -1247,12 +1257,12 @@ answers them:
 When the daemon answers `unknown_op` (an older build, the
 window after an upgrade while the old daemon still runs), the line is `residency: the
 daemon does not know the residency request (older build)`. Under `--json` the
-flag adds one key, `residency`: `{"state": "report" | "no-host" |
+document is one key, `residency`: `{"state": "report" | "no-host" |
 "older-daemon" | "no-daemon", "report": <the report object> | null,
 "sql_escalations": {"steps", "largest", "last_unix_secs", "refused"} | null}`,
 `last_unix_secs` `null` before the first step and `sql_escalations` `null`
-where the line leaves the two fields off; without the flag the key is absent. The report is machine-wide, not
-this workspace's, and is a reading: it never moves the exit.
+where the line leaves the two fields off; bare `status --json` has no such key. The report is a
+reading: `status --residency` exits 0 whatever it reads.
 
 #### The exit reads the ARMED PLANE ONLY — every other axis is a reading (R12)
 

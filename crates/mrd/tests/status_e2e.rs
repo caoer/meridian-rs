@@ -889,6 +889,33 @@ fn status_residency_prints_a_running_daemons_controller_report() {
     );
 }
 
+/// `status --residency` reads the daemon alone: no summary is gathered (on a
+/// large root its corpus build held the reading past every caller's timeout),
+/// so neither face carries a summary axis, and `--cwd` is a bad invocation.
+#[test]
+fn status_residency_builds_no_workspace_summary() {
+    let sb = sandbox();
+    let ws = anchored(&sb, "daemon-only");
+    fake_daemon(&sb, a_report());
+
+    let human = sb.run(&ws, &["status", "--residency"]);
+    assert_eq!(code(&human), 0, "{}", stderr(&human));
+    let so = stdout(&human);
+    assert!(so.starts_with("  residency: floor 388972 / limit"), "{so}");
+    assert_eq!(so.lines().count(), 1, "only the residency line: {so}");
+
+    let json = sb.run(&ws, &["status", "--residency", "--json"]);
+    assert_eq!(code(&json), 0, "{}", stderr(&json));
+    let doc: serde_json::Value = serde_json::from_str(&stdout(&json)).expect("status json");
+    let keys: Vec<&String> = doc.as_object().expect("an object").keys().collect();
+    assert_eq!(keys, ["residency"], "{doc}");
+
+    let ws_arg = ws.to_string_lossy().into_owned();
+    let refused = sb.run(&ws, &["status", "--residency", "--cwd", &ws_arg]);
+    assert_eq!(code(&refused), 2, "{}", stdout(&refused));
+    assert!(stderr(&refused).contains("takes no --cwd"), "{}", stderr(&refused));
+}
+
 /// `status --residency` carries the SQL appends' escalation counters
 /// (merkle-spec §6.4): the steps, the largest reservation and the last
 /// step's UTC time once one was taken, and the appends still refused.
