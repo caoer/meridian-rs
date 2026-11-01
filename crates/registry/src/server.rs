@@ -972,7 +972,10 @@ impl RunningServer {
         let pid_file = self.socket_path.with_extension("pid");
         for path in [&self.socket_path, &pid_file, &self.socket_pointer] {
             if let Some(owner) = self.successor_owns_files() {
-                timing::say!("registry: shutdown leaves {} in place: {owner}", path.display());
+                timing::say!(
+                    "registry: shutdown leaves {} in place: {owner}",
+                    path.display()
+                );
                 return;
             }
             let _ = std::fs::remove_file(path);
