@@ -961,20 +961,22 @@ impl RunningServer {
         // here would leave the successor listening on a socket no client can
         // reach, still holding the flock every spawn loses (the zmax-1 shape,
         // card engine-socket-unlinked-wedges-daemon).
-        if let Some(owner) = self.successor_owns_files() {
-            timing::say!(
-                "registry: shutdown leaves the socket, pidfile and pointer in place: {owner}"
-            );
-            return;
-        }
+        //
         // Socket first, pidfile second — the kill handle outlives the last
         // pong (the boot order's mirror), so no reader holding a fresh pong
-        // finds the file already gone.
-        let _ = std::fs::remove_file(&self.socket_path);
-        let _ = std::fs::remove_file(self.socket_path.with_extension("pid"));
-        // The pointer last: it names a socket that is now gone, and a reader
-        // that dials it finds no listener and falls back to the law.
-        let _ = std::fs::remove_file(&self.socket_pointer);
+        // finds the file already gone. The pointer last: it names a socket
+        // that is now gone, and a reader that dials it finds no listener and
+        // falls back to the law. Ownership is read again right before each
+        // unlink, which narrows a successor's bind racing this stop to the
+        // instant between that read and the unlink.
+        let pid_file = self.socket_path.with_extension("pid");
+        for path in [&self.socket_path, &pid_file, &self.socket_pointer] {
+            if let Some(owner) = self.successor_owns_files() {
+                timing::say!("registry: shutdown leaves {} in place: {owner}", path.display());
+                return;
+            }
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     /// Why the socket, pidfile and pointer now belong to another daemon, or
