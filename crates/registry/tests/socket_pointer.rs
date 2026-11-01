@@ -162,3 +162,44 @@ fn a_stale_pointer_names_no_listener_so_the_law_answers() {
         "but no listener answers there, so the law answers"
     );
 }
+
+/// A predecessor's shutdown never unlinks a successor's files. The flock is
+/// on the registry directory's inode, so a directory removed and recreated
+/// under a running daemon lets a second daemon win a fresh flock, bind the
+/// same socket path and republish the pointer and pidfile. When the first
+/// daemon then stops, the socket, pidfile and pointer are the successor's:
+/// unlinking them leaves it listening where no client can dial, holding the
+/// flock every spawn loses (card engine-socket-unlinked-wedges-daemon).
+#[test]
+fn a_predecessors_shutdown_leaves_a_successors_socket_in_place() {
+    let tmp = TempDir::new().unwrap();
+    let config = test_config(&tmp);
+    let cache_root = config.cache_root.clone();
+    let registry_dir = config.state_path.parent().unwrap().to_path_buf();
+    let sock = config.socket_path.clone();
+    let pid_file = sock.with_extension("pid");
+    let predecessor = RunningServer::start(config.clone()).unwrap();
+
+    // The directory the predecessor's flock is on moves away; a fresh one
+    // takes its path, and a successor wins the flock on it.
+    fs::rename(&registry_dir, tmp.path().join("registry-gone")).unwrap();
+    let successor = RunningServer::start(config).unwrap();
+    assert!(
+        Client::new(sock.clone()).ping().unwrap(),
+        "premise: the successor serves the socket path"
+    );
+
+    predecessor.shutdown();
+    assert!(sock.exists(), "the successor's socket file must survive");
+    assert!(pid_file.exists(), "the successor's pidfile must survive");
+    assert!(
+        socket_pointer_path(&cache_root).exists(),
+        "the successor's pointer must survive"
+    );
+    assert!(
+        Client::new(sock.clone()).ping().unwrap(),
+        "and the successor stays reachable"
+    );
+    successor.shutdown();
+    assert!(!sock.exists(), "the successor still removes its own socket");
+}
