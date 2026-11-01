@@ -719,6 +719,11 @@ pub struct RunningServer {
     /// The published socket pointer this daemon wrote (module header § Socket
     /// placement); removed at shutdown.
     socket_pointer: PathBuf,
+    /// The `(dev, ino)` of the socket file this daemon's bind created, read
+    /// right after the bind. Shutdown removes the socket, pidfile and pointer
+    /// only while the socket path still names this file and the pidfile names
+    /// no other pid ([`RunningServer::successor_owns_files`]).
+    socket_file: Option<(u64, u64)>,
     drain_cold_builds: Duration,
     // The singleton flock, held for the daemon's whole lifetime; dropping it
     // releases the guard so a successor can start.
@@ -809,8 +814,7 @@ impl RunningServer {
         let _ = std::fs::remove_file(&config.socket_path);
         let listener = UnixListener::bind(&config.socket_path)?;
         listener.set_nonblocking(true)?;
-        let _ =
-            std::fs::set_permissions(&config.socket_path, std::fs::Permissions::from_mode(0o600));
+        let socket_file = seal_socket(&config.socket_path);
 
         // Pidfile ORDER is the contract (tests/daemon_pidfile.rs): after the
         // flock (only the winner claims the file — this also overwrites a
@@ -880,6 +884,7 @@ impl RunningServer {
             registry,
             socket_path: config.socket_path,
             socket_pointer,
+            socket_file,
             drain_cold_builds: config.drain_cold_builds,
             _singleton: singleton,
         })
@@ -948,15 +953,76 @@ impl RunningServer {
         // one hook that makes the next start O(changes while down) instead of
         // a cold rebuild (merkle-spec §6.5).
         self.registry.save_checkpoints();
+        // The three files are removed only while they are still this
+        // daemon's. The flock is on the registry directory's inode, so a
+        // directory removed and recreated under a running daemon lets a
+        // successor win a fresh flock, bind the same socket path and write the
+        // same pidfile and pointer while this one still runs; unlinking them
+        // here would leave the successor listening on a socket no client can
+        // reach, still holding the flock every spawn loses (the zmax-1 shape,
+        // card engine-socket-unlinked-wedges-daemon).
+        //
         // Socket first, pidfile second — the kill handle outlives the last
         // pong (the boot order's mirror), so no reader holding a fresh pong
-        // finds the file already gone.
-        let _ = std::fs::remove_file(&self.socket_path);
-        let _ = std::fs::remove_file(self.socket_path.with_extension("pid"));
-        // The pointer last: it names a socket that is now gone, and a reader
-        // that dials it finds no listener and falls back to the law.
-        let _ = std::fs::remove_file(&self.socket_pointer);
+        // finds the file already gone. The pointer last: it names a socket
+        // that is now gone, and a reader that dials it finds no listener and
+        // falls back to the law. Ownership is read again right before each
+        // unlink, which narrows a successor's bind racing this stop to the
+        // instant between that read and the unlink.
+        let pid_file = self.socket_path.with_extension("pid");
+        for path in [&self.socket_path, &pid_file, &self.socket_pointer] {
+            if let Some(owner) = self.successor_owns_files() {
+                timing::say!(
+                    "registry: shutdown leaves {} in place: {owner}",
+                    path.display()
+                );
+                return;
+            }
+            let _ = std::fs::remove_file(path);
+        }
     }
+
+    /// Why the socket, pidfile and pointer now belong to another daemon, or
+    /// `None` while they are still this one's: the socket path names a file
+    /// other than the one this daemon's bind created, or the pidfile names
+    /// another pid. A socket path with no file at all is not a successor.
+    fn successor_owns_files(&self) -> Option<String> {
+        if let Some(bound) = self.socket_file
+            && let Some(now) = file_identity(&self.socket_path)
+            && now != bound
+        {
+            return Some(format!(
+                "{} is another daemon's bind",
+                self.socket_path.display()
+            ));
+        }
+        let pid_file = self.socket_path.with_extension("pid");
+        let named = std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u32>().ok());
+        match named {
+            Some(pid) if pid != std::process::id() => {
+                Some(format!("{} names pid {pid}", pid_file.display()))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Restrict the socket this daemon just bound to its owner (mode 0600) and
+/// return its `(dev, ino)`, the file shutdown may later remove.
+fn seal_socket(path: &Path) -> Option<(u64, u64)> {
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    file_identity(path)
+}
+
+/// The `(dev, ino)` of the file at `path` itself (not a symlink's target), or
+/// `None` when nothing is there.
+fn file_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(path)
+        .ok()
+        .map(|m| (m.dev(), m.ino()))
 }
 
 impl Drop for RunningServer {
