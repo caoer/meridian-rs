@@ -814,9 +814,7 @@ impl RunningServer {
         let _ = std::fs::remove_file(&config.socket_path);
         let listener = UnixListener::bind(&config.socket_path)?;
         listener.set_nonblocking(true)?;
-        let _ =
-            std::fs::set_permissions(&config.socket_path, std::fs::Permissions::from_mode(0o600));
-        let socket_file = file_identity(&config.socket_path);
+        let socket_file = seal_socket(&config.socket_path);
 
         // Pidfile ORDER is the contract (tests/daemon_pidfile.rs): after the
         // flock (only the winner claims the file — this also overwrites a
@@ -998,13 +996,19 @@ impl RunningServer {
             .ok()
             .and_then(|raw| raw.trim().parse::<u32>().ok());
         match named {
-            Some(pid) if pid != std::process::id() => Some(format!(
-                "{} names pid {pid}",
-                pid_file.display()
-            )),
+            Some(pid) if pid != std::process::id() => {
+                Some(format!("{} names pid {pid}", pid_file.display()))
+            }
             _ => None,
         }
     }
+}
+
+/// Restrict the socket this daemon just bound to its owner (mode 0600) and
+/// return its `(dev, ino)`, the file shutdown may later remove.
+fn seal_socket(path: &Path) -> Option<(u64, u64)> {
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    file_identity(path)
 }
 
 /// The `(dev, ino)` of the file at `path` itself (not a symlink's target), or
