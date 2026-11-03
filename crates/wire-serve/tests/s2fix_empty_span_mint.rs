@@ -57,6 +57,7 @@ fn pin_args(target: &str, selector: &str) -> SpliceArgs {
             vibe: None,
             fingerprint: None,
             sec_rev: None,
+            retire: None,
         }),
         fields: BTreeMap::default(),
     }

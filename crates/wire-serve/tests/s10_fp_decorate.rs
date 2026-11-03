@@ -60,6 +60,7 @@ fn mint_pin(root: &fs::WorkspaceRoot) {
             vibe: None,
             fingerprint: None,
             sec_rev: None,
+            retire: None,
         }),
         fields: BTreeMap::default(),
     };

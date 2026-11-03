@@ -369,6 +369,10 @@ mrd pin --refresh <PAGE> [--accept] [--dry] [--json]
  order, after a rehearsal that carries each row's
  recorded fingerprint as its proof; a drifted row lands
  only under --accept (see § `mrd pin --refresh`)
+mrd pin --retire <PAGE> <TARGET>#<SELECTOR> [--dry] [--json]
+ drop one row of PAGE's meridian-lock, named as the row
+ records it (the `§` path `mrd walk` prints); the target
+ is never read (see § `mrd pin --retire`)
 mrd repair [PAGE] [--dry] [--json]
  lost-pin repair: walk the repository's own history for
  the content of pins whose evidence is gone (both planes
@@ -843,6 +847,20 @@ A wire client's pin through the daemon carries its own proof: the
 `fingerprint` that client's sections read served for that selector rides the
 pin (wire-contract § A.3). "You cannot attest content that was never in your
 context"; the engine keeps no record of the read.
+
+### `mrd pin --retire` — drop one row of a page's lock
+
+`mrd pin --retire PAGE TARGET#SELECTOR [--dry] [--json]` removes the one row
+of PAGE's `meridian-lock` whose `object` is TARGET and whose `path` is
+SELECTOR, through the same splice as `mrd pin` with `retire: true`
+(`wire-contract.md` § A.3, the retire law). SELECTOR is the row's recorded
+heading chain (`Title/Old heading`, an occurrence spelled `Dup#2`) or `^id`,
+copied from the `§` column of `mrd walk PAGE`; a dewey ordinal refuses. The
+target is never read, so a row over a renamed or deleted section retires.
+No such row on PAGE exits 1 naming the rows PAGE holds on TARGET. `--json`
+prints the projected splice response under a `pin` key; human output names the
+retired row and its recorded fingerprint. `--fingerprint` and `--vibe` refuse
+beside `--retire`. Exit triad as `mrd pin`.
 
 ### `mrd pin --refresh` — re-pin one page's whole lock
 

@@ -5,6 +5,7 @@
 //! ```text
 //! mrd pin <PAGE> <TARGET>#<SELECTOR> [--fingerprint TOKEN] [--vibe] [--dry] [--json]
 //! mrd pin --refresh <PAGE> [--accept] [--dry] [--json]
+//! mrd pin --retire <PAGE> <TARGET>#<SELECTOR> [--dry] [--json]
 //! ```
 //!
 //! `PAGE` is the pinning page — the drawing end, whose lock records the claim
@@ -28,6 +29,10 @@
 //!
 //! `--refresh` re-pins every row of PAGE's lock through this same splice, one
 //! pin per row ([`refresh`]).
+//!
+//! `--retire` drops the one row of PAGE's lock that `TARGET#SELECTOR` names as
+//! stored (the `§` path `mrd walk` prints), through the same splice with
+//! `retire: true` (wire-contract § A.3 retire law). The target is never read.
 //!
 //! Exit triad: 0 pinned (or `--dry` rehearsed) / 1 refused (`pin_proof_required`,
 //! `pin_target_missing`, `write_conflict`, an armed gate refusal — the engine's
@@ -60,6 +65,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         vibe: parsed.vibe.then_some(true),
         fingerprint: parsed.fingerprint.clone(),
         sec_rev: None,
+        retire: parsed.retire.then_some(true),
     };
     let request = pin_request(&parsed.page, &pin, parsed.dry);
 
@@ -137,6 +143,10 @@ fn pin_request(page: &str, pin: &PinSpec, dry: bool) -> Value {
 /// The human summary: what was pinned, at which digest, with the stable anchor
 /// the claim now has a handle on.
 fn print_human(parsed: &Pin, body: &Value) {
+    if parsed.retire {
+        print_retired(parsed, body);
+        return;
+    }
     let pin = body.get("pin");
     let field = |key: &str| {
         pin.and_then(|p| p.get(key))
@@ -187,6 +197,29 @@ fn print_human(parsed: &Pin, body: &Value) {
     }
 }
 
+/// The human summary of a retire: which row left PAGE's lock, and the
+/// fingerprint it had recorded.
+fn print_retired(parsed: &Pin, body: &Value) {
+    let retired = body.get("pin_retired");
+    let fingerprint = retired
+        .and_then(|r| r.get("fingerprint"))
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let verb = if parsed.dry { "would retire" } else { "retired" };
+    println!(
+        "{verb} {}#{} from {}",
+        parsed.target,
+        parsed.selector,
+        parsed.display.as_deref().unwrap_or(&parsed.page)
+    );
+    println!("  recorded fingerprint: {fingerprint}");
+    if parsed.dry {
+        println!("  dry run: nothing written");
+    } else if let Some(after) = body.get("fingerprint_after").and_then(Value::as_str) {
+        println!("  workspace:   {after}");
+    }
+}
+
 /// The parsed `pin` invocation.
 #[derive(Debug)]
 struct Pin {
@@ -202,6 +235,8 @@ struct Pin {
     /// `--fingerprint`: the supplied § A.3 proof token, verified engine-side.
     fingerprint: Option<String>,
     vibe: bool,
+    /// `--retire`: drop the named row instead of minting one.
+    retire: bool,
     dry: bool,
     format: Format,
 }
@@ -211,6 +246,7 @@ impl Pin {
         let mut positional: Vec<String> = Vec::new();
         let mut fingerprint: Option<String> = None;
         let mut vibe = false;
+        let mut retire = false;
         let mut dry = false;
         let mut json = false;
         let mut it = args.iter();
@@ -218,6 +254,7 @@ impl Pin {
             match arg.as_str() {
                 "--json" => json = true,
                 "--vibe" => vibe = true,
+                "--retire" => retire = true,
                 "--dry" => dry = true,
                 "--fingerprint" => {
                     let value = it
@@ -258,6 +295,13 @@ impl Pin {
                 "pin wants TARGET#SELECTOR (both parts non-empty): {spec}"
             )));
         }
+        if retire && (vibe || fingerprint.is_some()) {
+            return Err(Fail::tool(
+                "--retire drops a lock row and attests nothing — it takes no --fingerprint \
+                 and no --vibe: `mrd pin --retire PAGE TARGET#SELECTOR`"
+                    .to_owned(),
+            ));
+        }
         Ok(Pin {
             page: page.clone(),
             display: None,
@@ -265,6 +309,7 @@ impl Pin {
             selector: selector.to_owned(),
             fingerprint,
             vibe,
+            retire,
             dry,
             format: if json { Format::Json } else { Format::Human },
         })

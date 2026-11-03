@@ -320,6 +320,7 @@ fn splice_body_key_set_is_frozen_plus_the_v3_pin_fact() {
         dry: Some(true),
         verdicts: vec![],
         pin: None,
+        pin_retired: None,
     };
     pin_keys(
         &splice,

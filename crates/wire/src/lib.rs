@@ -437,6 +437,25 @@ pub struct PinSpec {
     /// moved world the caller gave no rev to tell apart).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sec_rev: Option<String>,
+    /// `splice.pin.retire` (§ A.3 retire law): `true` drops the row of the
+    /// pinning page's own lock that `target` + `selector` name AS STORED —
+    /// the target is never loaded, so a row over a renamed or deleted section
+    /// retires. Carries no proof: `fingerprint`, `sec_rev` and `vibe` beside
+    /// it refuse at decode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retire: Option<bool>,
+}
+
+/// What a retire dropped — the response half of a [`PinSpec`] carrying
+/// `retire: true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinRetired {
+    /// The retired row's target, as the lock spelled it plus `.md`.
+    pub target: Path,
+    /// The retired row's selector, in the tagged read grammar.
+    pub selector: ReadSel,
+    /// The `fp1.…` fingerprint the retired row recorded.
+    pub fingerprint: String,
 }
 
 /// What a pin actually minted — the response half of [`PinSpec`], present
@@ -1958,6 +1977,10 @@ pub enum ResponseBody {
         /// passed by value on every reply.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pin: Option<Box<PinFact>>,
+        /// What the request's `pin.retire` dropped. Absent unless the request
+        /// retired a row.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pin_retired: Option<Box<PinRetired>>,
     },
     /// The birth reply (the `create` op, v3-only): what the birth landed —
     /// the born path, its whole-file rev, and the root transition. Never a

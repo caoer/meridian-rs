@@ -543,6 +543,7 @@ fn worked_splice_frames_match_contract() {
                 // an absent pin serializes away — the frozen v2 response
                 // bytes below are the proof
                 pin: None,
+                pin_retired: None,
             },
         },
     };
@@ -629,6 +630,7 @@ fn worked_dry_splice_frame_matches_contract() {
                 // an absent pin serializes away — the frozen v2 response
                 // bytes below are the proof
                 pin: None,
+                pin_retired: None,
             },
         },
     };

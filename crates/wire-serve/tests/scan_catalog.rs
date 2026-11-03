@@ -307,6 +307,7 @@ fn pinned_workspace() -> (tempfile::TempDir, model::CorpusIndex, model::Docs) {
                 vibe: None,
                 fingerprint: None,
                 sec_rev: None,
+                retire: None,
             }),
             fields: BTreeMap::default(),
         };

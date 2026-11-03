@@ -53,6 +53,7 @@ fn pin_args(selector: &str) -> SpliceArgs {
             vibe: None,
             fingerprint: None,
             sec_rev: None,
+            retire: None,
         }),
         fields: BTreeMap::default(),
     }
@@ -1291,6 +1292,7 @@ fn a_slash_bearing_heading_pins_end_to_end_and_stores_as_one_array_element() {
         vibe: None,
         fingerprint: None,
         sec_rev: None,
+        retire: None,
     });
 
     let out = splice(&root, None, &args, &[], None)
@@ -1419,6 +1421,7 @@ fn pin_hpath_args(hpath: Vec<wire::HpathSeg>) -> SpliceArgs {
         vibe: None,
         fingerprint: None,
         sec_rev: None,
+        retire: None,
     });
     args
 }
