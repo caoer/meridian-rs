@@ -1423,7 +1423,12 @@ renamed, split or deleted, and the row walks red with nothing left to re-pin.
   (`"Dup#2"`), an `anchor` is the sole-`^id` row. The target is never loaded,
   so a renamed section, a deleted section or a deleted file retires alike. A
   `dewey` selector refuses `bad_request`: an ordinal is positional in the live
-  target, and a stale row has no live position.
+  target, and a stale row has no live position. When no row matches segment
+  for segment, the one row whose elements joined by `/` equal the selector's
+  joined text matches — so the `§` text a walk prints names a heading that
+  holds `/` (two such rows refuse as a miss). A rooted `target` matches by the
+  mount table's canonical spelling or by its literal bytes, so a row whose root
+  this machine no longer binds retires.
 - **Only this page's own rows.** The match is exact on `object` and `path`
   inside the splice `path`'s lock; no other file's lock is reachable. No match
   refuses `pin_target_missing`, nothing written, naming the rows this page's

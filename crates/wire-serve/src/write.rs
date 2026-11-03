@@ -4122,13 +4122,23 @@ fn retire_engine_edit(
     pinning_path: &Path,
     spec: &wire::PinSpec,
 ) -> Result<(model::EngineEdit, String, wire::PinRetired), Box<ErrorBody>> {
-    let target = resolve_pin_target(root, &spec.target)?;
-    let spelled: Path = match &target.mount {
-        Some(name) => Path(format!("{name}:{}", target.rel.0)),
-        None => target.rel.clone(),
+    // The object spelling `pin_row` records, from the mount table — and, for a
+    // rooted spelling, the caller's literal bytes too: the target is never
+    // loaded, so a row whose root this machine no longer binds (or whose name
+    // now normalizes to the pinning root) still retires by the spelling it
+    // was stored under.
+    let rooted = addr::head_carries_root_separator(&spec.target.0);
+    let spelled: Path = match resolve_pin_target(root, &spec.target) {
+        Ok(target) => match &target.mount {
+            Some(name) => Path(format!("{name}:{}", target.rel.0)),
+            None => target.rel.clone(),
+        },
+        Err(_) if rooted => spec.target.clone(),
+        Err(e) => return Err(e),
     };
-    // The same object spelling `pin_row` records.
     let object = spelled.0.trim_end_matches(".md");
+    let literal = spec.target.0.trim_end_matches(".md");
+    let names_object = |o: &str| o == object || (rooted && o == literal);
     let elements: Vec<String> = match &spec.selector {
         wire::ReadSel::Hpath { hpath } => hpath
             .iter()
@@ -4156,11 +4166,25 @@ fn retire_engine_edit(
         ));
     };
     let mut lock = found.lock.clone();
-    let Some(at) = lock
+    // Exact segments first. Failing that, the `§` text a walk prints — the
+    // elements joined by `/` — when exactly one row carries it: a heading that
+    // holds `/` is one element, which a `/`-split spelling cannot name.
+    let exact = lock
         .pins
         .iter()
-        .position(|p| p.object == object && p.selector == selector)
-    else {
+        .position(|p| names_object(&p.object) && p.selector == selector);
+    let joined = || {
+        let text = selector.elements().join("/");
+        let mut hits = lock.pins.iter().enumerate().filter(|(_, p)| {
+            names_object(&p.object)
+                && matches!(&p.selector, lock::Selector::Path(e) if e.join("/") == text)
+        });
+        match (hits.next(), hits.next()) {
+            (Some((i, _)), None) => Some(i),
+            _ => None,
+        }
+    };
+    let Some(at) = exact.or_else(joined) else {
         return Err(pin_target_missing(
             &spelled,
             retire_miss(pinning_path, object, &selector, &lock),

@@ -11,7 +11,7 @@ use wire_serve::write::{SpliceArgs, scope_token, splice};
 
 const PLAN: &str = "---\ntitle: Plan\n---\n\n# Plan\n\ndraws from the guide.\n";
 const NOTES: &str = "# Notes\n\nalso draws from the guide.\n";
-const GUIDE: &str = "# Guide\n\n## Source\n\nthe claim.\n\n## Other\n\nunrelated.\n";
+const GUIDE: &str = "# Guide\n\n## Source\n\nthe claim.\n\n## Other\n\nunrelated.\n\n## In/Out\n\na block. ^blk\n";
 
 fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -199,5 +199,47 @@ fn a_wire_retire_is_a_guarded_write() {
         value: PremiseValue::Token(token),
     }];
     splice(&root, None, &wire_args, &[], None).expect("the covering premise admits it");
+    assert!(rows(&root, "plan.md").is_empty());
+}
+
+/// The other row shapes `pin_row` mints retire by what a walk prints: a
+/// sole-`^id` anchor row, and a heading that holds `/` (one element, named by
+/// the walk's joined `§` text). A dry retire writes nothing and still reports.
+#[test]
+fn anchor_and_slash_heading_rows_retire_and_a_dry_retire_writes_nothing() {
+    let (_dir, root) = workspace();
+    pin(&root, "plan.md", "^blk");
+    let mut slash = args("plan.md", "", false);
+    slash.pin.as_mut().expect("pin").selector = ReadSel::Hpath {
+        hpath: vec![
+            wire::HpathSeg {
+                h: "Guide".into(),
+                n: None,
+            },
+            wire::HpathSeg {
+                h: "In/Out".into(),
+                n: None,
+            },
+        ],
+    };
+    splice(&root, None, &slash, &[], None).expect("the slash heading pins");
+    assert_eq!(
+        rows(&root, "plan.md"),
+        vec!["guide §^blk".to_owned(), "guide §Guide/In/Out".to_owned()]
+    );
+
+    let before = read(&root, "plan.md");
+    let mut dry = args("plan.md", "Guide/In/Out", true);
+    dry.dry = true;
+    let out = splice(&root, None, &dry, &[], None).expect("a dry retire rehearses");
+    let ResponseBody::Splice { pin_retired, .. } = out.body else {
+        panic!("splice body");
+    };
+    assert!(pin_retired.is_some(), "a dry retire reports the row it would drop");
+    assert_eq!(read(&root, "plan.md"), before, "a dry retire writes nothing");
+
+    splice(&root, None, &args("plan.md", "Guide/In/Out", true), &[], None)
+        .expect("the walk's joined text retires the slash heading");
+    splice(&root, None, &args("plan.md", "^blk", true), &[], None).expect("the anchor row retires");
     assert!(rows(&root, "plan.md").is_empty());
 }
