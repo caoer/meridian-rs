@@ -4096,8 +4096,9 @@ fn retire_guard(args: &SpliceArgs) -> Result<(), Box<ErrorBody>> {
         "retiring a pin row in {file} changes existing content with no fingerprint — a wire \
          retire carries a premise covering the page (`if_root`, or a scoped premise at the \
          page or an ancestor), or an explicit `force`. {} Fix: the token is the read you \
-         already did — send that read's fingerprint of {file} as the premise (`mrd read \
-         {file} --json` mints one).",
+         already did — send that read's fingerprint of {file} as the premise (MCP `put`: \
+         the read's `mint {{path}}` token as `if_fingerprint`, that path as `scope`; CLI: \
+         `mrd read {file} --json` mints one).",
         crate::NO_PARTIAL_WRITE_CLAUSE
     ));
     Err(Box::new(e))
