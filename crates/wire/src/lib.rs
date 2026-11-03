@@ -1718,16 +1718,6 @@ pub struct Response {
 /// error envelope under the `error` key. `ok` mirrors which arm rides.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "both arms are large by construction and the lint's own remedy provably \
-              relocates it: measured on this tree, ErrorBody is 520 bytes and ResponseBody \
-              288, so boxing the error arm leaves 288 vs 8 — a WIDER gap, warning the other \
-              way. Only boxing both silences it, at every response construction site, to \
-              trade one pointer chase for another. The §8 extras set is flat and frozen \
-              (extras beside `code`, never nested), so the struct's width is contract shape, \
-              not a layout accident"
-)]
 pub enum ResponsePayload {
     Body { body: ResponseBody },
     Error { error: ErrorBody },

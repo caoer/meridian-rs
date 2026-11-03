@@ -519,7 +519,7 @@ fn a_whole_section_rewrite_that_would_delete_the_lock_refuses() {
         "WHAT THIS WOULD DESTROY",
         "WHAT TO DO INSTEAD",
         "put at:end",
-        "does not exist yet",
+        "retire: true",
     ] {
         assert!(
             taught.contains(clause),
