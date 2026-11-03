@@ -99,8 +99,14 @@ fn a_retire_drops_the_row_of_a_renamed_section_and_keeps_its_sibling() {
     let guide = read(&root, "guide.md").replace("## Source", "## Source renamed");
     std::fs::write(root.0.join("guide.md"), guide).expect("rename");
 
-    let out = splice(&root, None, &args("plan.md", "Guide/Source", true), &[], None)
-        .expect("the retire commits");
+    let out = splice(
+        &root,
+        None,
+        &args("plan.md", "Guide/Source", true),
+        &[],
+        None,
+    )
+    .expect("the retire commits");
     let ResponseBody::Splice {
         pin, pin_retired, ..
     } = out.body
@@ -111,7 +117,10 @@ fn a_retire_drops_the_row_of_a_renamed_section_and_keeps_its_sibling() {
     let retired = pin_retired.expect("a retire answers with what it dropped");
     assert_eq!(retired.fingerprint, source_fp);
     assert_eq!(retired.target, WPath("guide.md".into()));
-    assert_eq!(rows(&root, "plan.md"), vec!["guide §Guide/Other".to_owned()]);
+    assert_eq!(
+        rows(&root, "plan.md"),
+        vec!["guide §Guide/Other".to_owned()]
+    );
     assert!(
         read(&root, "guide.md").contains("## Source renamed"),
         "the target is never written"
@@ -128,14 +137,24 @@ fn a_retire_of_a_row_this_page_does_not_hold_refuses_and_names_its_rows() {
     let plan = read(&root, "plan.md");
     let notes = read(&root, "notes.md");
 
-    let e = splice(&root, None, &args("plan.md", "Guide/Other", true), &[], None)
-        .expect_err("plan.md holds no Guide/Other row");
+    let e = splice(
+        &root,
+        None,
+        &args("plan.md", "Guide/Other", true),
+        &[],
+        None,
+    )
+    .expect_err("plan.md holds no Guide/Other row");
     assert_eq!(e.code, ErrorCode::PinTargetMissing);
     let message = e.message.unwrap_or_default();
     assert!(message.contains("guide §Guide/Source"), "{message}");
     assert!(message.contains("another page"), "{message}");
     assert_eq!(read(&root, "plan.md"), plan, "nothing written");
-    assert_eq!(read(&root, "notes.md"), notes, "the other page's row is untouched");
+    assert_eq!(
+        read(&root, "notes.md"),
+        notes,
+        "the other page's row is untouched"
+    );
 }
 
 /// The target is never loaded: rows over a deleted file retire, and the

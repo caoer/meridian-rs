@@ -4178,7 +4178,12 @@ fn retire_engine_edit(
 /// The retire miss's teaching: the rows this page's lock DOES hold on the
 /// object, else every row it holds, each in the `object §path` form a walk
 /// prints, so the right one can be copied.
-fn retire_miss(pinning_path: &Path, object: &str, asked: &lock::Selector, lock: &lock::Lock) -> String {
+fn retire_miss(
+    pinning_path: &Path,
+    object: &str,
+    asked: &lock::Selector,
+    lock: &lock::Lock,
+) -> String {
     const SHOWN: usize = 20;
     let row_text = |p: &lock::PinEntry| match &p.selector {
         lock::Selector::Path(e) => format!("{} §{}", p.object, e.join("/")),
@@ -4191,7 +4196,10 @@ fn retire_miss(pinning_path: &Path, object: &str, asked: &lock::Selector, lock: 
             lock.pins.iter().collect(),
         )
     } else {
-        (format!("holds {} row(s) on {object}", on_object.len()), on_object)
+        (
+            format!("holds {} row(s) on {object}", on_object.len()),
+            on_object,
+        )
     };
     let mut listed: Vec<String> = rows.iter().take(SHOWN).map(|p| row_text(p)).collect();
     if rows.len() > SHOWN {

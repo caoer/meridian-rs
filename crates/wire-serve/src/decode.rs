@@ -1377,7 +1377,14 @@ fn decode_pin(v: &Value) -> Result<wire::PinSpec, Box<ErrorBody>> {
     check_fields(
         obj,
         "pin",
-        &["target", "selector", "vibe", "fingerprint", "sec_rev", "retire"],
+        &[
+            "target",
+            "selector",
+            "vibe",
+            "fingerprint",
+            "sec_rev",
+            "retire",
+        ],
     )?;
     // The pin selector is tagged on the wire: a joined string re-creates the
     // `/` delimiter collision, so the string form is refused by name.

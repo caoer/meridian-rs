@@ -205,7 +205,11 @@ fn print_retired(parsed: &Pin, body: &Value) {
         .and_then(|r| r.get("fingerprint"))
         .and_then(Value::as_str)
         .unwrap_or("?");
-    let verb = if parsed.dry { "would retire" } else { "retired" };
+    let verb = if parsed.dry {
+        "would retire"
+    } else {
+        "retired"
+    };
     println!(
         "{verb} {}#{} from {}",
         parsed.target,
