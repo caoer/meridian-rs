@@ -11,7 +11,8 @@ use wire_serve::write::{SpliceArgs, scope_token, splice};
 
 const PLAN: &str = "---\ntitle: Plan\n---\n\n# Plan\n\ndraws from the guide.\n";
 const NOTES: &str = "# Notes\n\nalso draws from the guide.\n";
-const GUIDE: &str = "# Guide\n\n## Source\n\nthe claim.\n\n## Other\n\nunrelated.\n\n## In/Out\n\na block. ^blk\n";
+const GUIDE: &str =
+    "# Guide\n\n## Source\n\nthe claim.\n\n## Other\n\nunrelated.\n\n## In/Out\n\na block. ^blk\n";
 
 fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -235,11 +236,24 @@ fn anchor_and_slash_heading_rows_retire_and_a_dry_retire_writes_nothing() {
     let ResponseBody::Splice { pin_retired, .. } = out.body else {
         panic!("splice body");
     };
-    assert!(pin_retired.is_some(), "a dry retire reports the row it would drop");
-    assert_eq!(read(&root, "plan.md"), before, "a dry retire writes nothing");
+    assert!(
+        pin_retired.is_some(),
+        "a dry retire reports the row it would drop"
+    );
+    assert_eq!(
+        read(&root, "plan.md"),
+        before,
+        "a dry retire writes nothing"
+    );
 
-    splice(&root, None, &args("plan.md", "Guide/In/Out", true), &[], None)
-        .expect("the walk's joined text retires the slash heading");
+    splice(
+        &root,
+        None,
+        &args("plan.md", "Guide/In/Out", true),
+        &[],
+        None,
+    )
+    .expect("the walk's joined text retires the slash heading");
     splice(&root, None, &args("plan.md", "^blk", true), &[], None).expect("the anchor row retires");
     assert!(rows(&root, "plan.md").is_empty());
 }
