@@ -49,6 +49,7 @@ fn splice_response(effects: Vec<EffectEnvelope>) -> Response {
                 dry: None,
                 verdicts: vec![],
                 pin: None,
+                pin_retired: None,
             },
         },
     }

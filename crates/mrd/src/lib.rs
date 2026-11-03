@@ -393,6 +393,7 @@ usage:
 ! mrd pin <PAGE> <TARGET>#<SELECTOR> [--fingerprint TOKEN] [--vibe] [--dry]
           [--json]
           mrd pin --refresh <PAGE> [--accept] [--dry] [--json]
+          mrd pin --retire <PAGE> <TARGET>#<SELECTOR> [--dry] [--json]
                            attest: record in PAGE's meridian-lock that it draws
                            from TARGET#SELECTOR at that section's content
                            fingerprint, and mint a stable ^block-id on the
@@ -420,6 +421,13 @@ usage:
                            again, so every hash names the file's final blob.
                            --dry stops after the rehearsal. Exits: 0 every
                            row pinned|dry clean / 1 refused|drifted / 2 bad
+                           invocation.
+                           --retire drops the one row of PAGE's lock that
+                           TARGET#SELECTOR names as stored — the § path mrd
+                           walk PAGE prints — without reading the target, so
+                           a row over a renamed or deleted section retires.
+                           No such row exits 1 naming the rows PAGE holds.
+                           Exits: 0 retired|dry / 1 refused / 2 bad
                            invocation.
 ! mrd repair [PAGE] [--dry] [--json]
                            lost-pin repair via git history. LOST = live target

@@ -92,6 +92,7 @@ fn pin_args(pinner: &str, selector: &str, proof: &str) -> SpliceArgs {
             vibe: None,
             fingerprint: Some(proof.to_owned()),
             sec_rev: None,
+            retire: None,
         }),
         fields: BTreeMap::default(),
     }

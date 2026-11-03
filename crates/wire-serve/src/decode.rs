@@ -1377,7 +1377,14 @@ fn decode_pin(v: &Value) -> Result<wire::PinSpec, Box<ErrorBody>> {
     check_fields(
         obj,
         "pin",
-        &["target", "selector", "vibe", "fingerprint", "sec_rev"],
+        &[
+            "target",
+            "selector",
+            "vibe",
+            "fingerprint",
+            "sec_rev",
+            "retire",
+        ],
     )?;
     // The pin selector is tagged on the wire: a joined string re-creates the
     // `/` delimiter collision, so the string form is refused by name.
@@ -1408,13 +1415,51 @@ fn decode_pin(v: &Value) -> Result<wire::PinSpec, Box<ErrorBody>> {
              ordinal) — no segment may be blank",
         ));
     }
-    Ok(wire::PinSpec {
+    let spec = wire::PinSpec {
         target: req_path(obj, "pin", "target")?,
         selector,
         vibe: opt_bool(obj, "pin", "vibe")?,
         fingerprint: opt_str(obj, "pin", "fingerprint")?,
         sec_rev: opt_str(obj, "pin", "sec_rev")?,
-    })
+        retire: opt_bool(obj, "pin", "retire")?,
+    };
+    if spec.retire == Some(true) {
+        retire_shape(&spec)?;
+    }
+    Ok(spec)
+}
+
+/// The § A.3 retire law's shape rung: a retire names a stored row and
+/// attests nothing.
+fn retire_shape(spec: &wire::PinSpec) -> Result<(), Box<ErrorBody>> {
+    let extra: Vec<&str> = [
+        ("fingerprint", spec.fingerprint.is_some()),
+        ("sec_rev", spec.sec_rev.is_some()),
+        ("vibe", spec.vibe.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(name, present)| present.then_some(name))
+    .collect();
+    if !extra.is_empty() {
+        return Err(bad_request(format!(
+            "`pin.retire` drops a lock row and attests nothing, so it carries no proof — \
+             drop {} from the pin and send `target`, `selector` and `retire` alone",
+            extra
+                .iter()
+                .map(|f| format!("`{f}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    if matches!(spec.selector, wire::ReadSel::Dewey { .. }) {
+        return Err(bad_request(
+            "`pin.retire` names the row as the lock stores it, and a dewey ordinal is a \
+             position in the live target — a stale row has none. Send the row's recorded \
+             heading chain as `{\"hpath\":[…]}` (the `§` path a walk of this page prints) \
+             or its `{\"anchor\":\"id\"}`",
+        ));
+    }
+    Ok(())
 }
 
 /// `plan_edits`: externally tagged, one tag each, strict field wall per shape.

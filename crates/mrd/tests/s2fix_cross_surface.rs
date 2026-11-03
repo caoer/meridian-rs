@@ -749,6 +749,7 @@ fn vibe_pin_args(actor: &str, selector: &str, vibe: bool) -> SpliceArgs {
             vibe: vibe.then_some(true),
             fingerprint: None,
             sec_rev: None,
+            retire: None,
         }),
         fields: BTreeMap::default(),
     }

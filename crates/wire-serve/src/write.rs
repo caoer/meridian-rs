@@ -428,7 +428,13 @@ pub fn splice(
     // It runs inside the flock this splice already holds, so the receipt's
     // rev-recheck reads the same pre-image the batch will validate against,
     // and the promotion needs no second flock.
-    let mut pin = match &args.pin {
+    // A retire (§ A.3 retire law) drops a stored row and mints nothing, so it
+    // never enters the mint prologue: no target load, no proof, no promotion.
+    let retiring = args.pin.as_ref().filter(|spec| spec.retire == Some(true));
+    if retiring.is_some() {
+        retire_guard(args)?;
+    }
+    let mut pin = match args.pin.as_ref().filter(|spec| spec.retire != Some(true)) {
         Some(spec) => Some(mint_pin(root, spec, args.actor.as_deref(), args.force)?),
         None => None,
     };
@@ -462,12 +468,18 @@ pub fn splice(
     // `workspace_busy` (the flock is non-reentrant per open-file-description).
     // `pin_block` is the canonical block this call minted — the one byte form
     // the artifact guard below admits as a lock change.
-    let (pin_engine, pin_block) = match &pin {
-        Some(p) => {
+    let mut pin_retired = None;
+    let (pin_engine, pin_block) = match (&pin, retiring) {
+        (Some(p), _) => {
             let (edit, block) = lock_engine_edit(&doc, &args.path, p)?;
             (Some(edit), Some(block))
         }
-        None => (None, None),
+        (None, Some(spec)) => {
+            let (edit, block, fact) = retire_engine_edit(root, &doc, &args.path, spec)?;
+            pin_retired = Some(Box::new(fact));
+            (Some(edit), Some(block))
+        }
+        (None, None) => (None, None),
     };
 
     // The plan-lowering intake — plan_edits become native edits here, under the
@@ -736,6 +748,7 @@ pub fn splice(
                 // A dry pin reports the plan it rehearsed: `promoted` reads as
                 // what a real run would do.
                 pin: pin.map(|p| Box::new(p.fact)),
+                pin_retired,
             },
             committed: None,
         });
@@ -936,6 +949,7 @@ pub fn splice(
             dry: None,
             verdicts,
             pin: pin.map(|p| Box::new(p.fact)),
+            pin_retired,
         },
         committed: Some(frame),
         candidate: None,
@@ -4060,6 +4074,177 @@ fn lock_engine_edit(
     Ok((edit, lock::render(&lock)))
 }
 
+/// The § A.3 retire law's requiredness rung: a retire changes existing
+/// content, so a wire splice carries a premise covering the pinning page, or
+/// `force`. A supplied premise is checked later, as on every splice.
+///
+/// # Errors
+/// `guard_required` — a wire retire with no `if_root`, no premise covering
+/// the page, and no `force`.
+fn retire_guard(args: &SpliceArgs) -> Result<(), Box<ErrorBody>> {
+    if args.origin != crate::guard::Origin::Wire
+        || args.force
+        || args.if_root.is_some()
+        || args.premises.iter().any(|p| p.covers(&args.path))
+    {
+        return Ok(());
+    }
+    let file = args.path.0.as_str();
+    let mut e = ErrorBody::new(ErrorCode::GuardRequired);
+    e.path = Some(args.path.clone());
+    e.message = Some(format!(
+        "retiring a pin row in {file} changes existing content with no fingerprint — a wire \
+         retire carries a premise covering the page (`if_root`, or a scoped premise at the \
+         page or an ancestor), or an explicit `force`. {} Fix: the token is the read you \
+         already did — send that read's fingerprint of {file} as the premise (MCP `put`: \
+         the read's `mint {{path}}` token as `if_fingerprint`, that path as `scope`; CLI: \
+         `mrd read {file} --json` mints one).",
+        crate::NO_PARTIAL_WRITE_CLAUSE
+    ));
+    Err(Box::new(e))
+}
+
+/// Compose the pinning page's lock with one row retired (§ A.3 retire law):
+/// the row `spec` names AS STORED — `object` from the target spelling a pin
+/// of it would record, `path` from the selector's segments in the R4
+/// occurrence spelling — is removed, every sibling keeps its place, and the
+/// canonical block is re-rendered. The target is never loaded, so a row over
+/// a renamed section, a deleted section or a deleted file retires alike.
+///
+/// # Errors
+/// `bad_path` (the target spelling escapes or names an unbound root),
+/// `bad_request` (a dewey selector, or a corrupt lock), `pin_target_missing`
+/// (this page's lock holds no such row — the refusal names the rows it does
+/// hold).
+fn retire_engine_edit(
+    root: &fs::WorkspaceRoot,
+    doc: &model::Document,
+    pinning_path: &Path,
+    spec: &wire::PinSpec,
+) -> Result<(model::EngineEdit, String, wire::PinRetired), Box<ErrorBody>> {
+    // The object spelling `pin_row` records, from the mount table — and, for a
+    // rooted spelling, the caller's literal bytes too: the target is never
+    // loaded, so a row whose root this machine no longer binds (or whose name
+    // now normalizes to the pinning root) still retires by the spelling it
+    // was stored under.
+    let rooted = addr::head_carries_root_separator(&spec.target.0);
+    let spelled: Path = match resolve_pin_target(root, &spec.target) {
+        Ok(target) => match &target.mount {
+            Some(name) => Path(format!("{name}:{}", target.rel.0)),
+            None => target.rel.clone(),
+        },
+        Err(_) if rooted => spec.target.clone(),
+        Err(e) => return Err(e),
+    };
+    let object = spelled.0.trim_end_matches(".md");
+    let literal = spec.target.0.trim_end_matches(".md");
+    let names_object = |o: &str| o == object || (rooted && o == literal);
+    let elements: Vec<String> = match &spec.selector {
+        wire::ReadSel::Hpath { hpath } => hpath
+            .iter()
+            .map(|s| lock::render_occurrence(&s.h, s.n))
+            .collect(),
+        wire::ReadSel::Anchor { anchor } => vec![format!("^{anchor}")],
+        wire::ReadSel::Dewey { .. } => {
+            return Err(bad_request(
+                "`pin.retire` names the row as the lock stores it; a dewey ordinal is a \
+                 position in the live target, and a stale row has none. Nothing was written.",
+            ));
+        }
+    };
+    let selector = lock::Selector::Path(elements);
+    let found = find_lock(doc)?;
+    let Some(found) = found else {
+        return Err(pin_target_missing(
+            &spelled,
+            format!(
+                "{} has no meridian-lock block, so it holds no pin row to retire. Nothing \
+                 was written. A row lives in the lock of the page that minted it; retire it \
+                 by a write to that page.",
+                pinning_path.0
+            ),
+        ));
+    };
+    let mut lock = found.lock.clone();
+    // Exact segments first. Failing that, the `§` text a walk prints — the
+    // elements joined by `/` — when exactly one row carries it: a heading that
+    // holds `/` is one element, which a `/`-split spelling cannot name.
+    let exact = lock
+        .pins
+        .iter()
+        .position(|p| names_object(&p.object) && p.selector == selector);
+    let joined = || {
+        let text = selector.elements().join("/");
+        let mut hits = lock.pins.iter().enumerate().filter(|(_, p)| {
+            names_object(&p.object)
+                && matches!(&p.selector, lock::Selector::Path(e) if e.join("/") == text)
+        });
+        match (hits.next(), hits.next()) {
+            (Some((i, _)), None) => Some(i),
+            _ => None,
+        }
+    };
+    let Some(at) = exact.or_else(joined) else {
+        return Err(pin_target_missing(
+            &spelled,
+            retire_miss(pinning_path, object, &selector, &lock),
+        ));
+    };
+    let row = lock.pins.remove(at);
+    let edit = lock_block_splice(doc, Some(found.span), &lock).0;
+    let fact = wire::PinRetired {
+        target: spelled,
+        selector: spec.selector.clone(),
+        fingerprint: row.fingerprint,
+    };
+    Ok((edit, lock::render(&lock), fact))
+}
+
+/// The retire miss's teaching: the rows this page's lock DOES hold on the
+/// object, else every row it holds, each in the `object §path` form a walk
+/// prints, so the right one can be copied.
+fn retire_miss(
+    pinning_path: &Path,
+    object: &str,
+    asked: &lock::Selector,
+    lock: &lock::Lock,
+) -> String {
+    const SHOWN: usize = 20;
+    let row_text = |p: &lock::PinEntry| match &p.selector {
+        lock::Selector::Path(e) => format!("{} §{}", p.object, e.join("/")),
+        lock::Selector::Properties(k) => format!("{} properties [{}]", p.object, k.join(", ")),
+    };
+    let on_object: Vec<&lock::PinEntry> = lock.pins_for(object).collect();
+    let (scope, rows): (String, Vec<&lock::PinEntry>) = if on_object.is_empty() {
+        (
+            format!("holds no row on {object}; its {} row(s)", lock.pins.len()),
+            lock.pins.iter().collect(),
+        )
+    } else {
+        (
+            format!("holds {} row(s) on {object}", on_object.len()),
+            on_object,
+        )
+    };
+    let mut listed: Vec<String> = rows.iter().take(SHOWN).map(|p| row_text(p)).collect();
+    if rows.len() > SHOWN {
+        listed.push(format!("… {} more", rows.len() - SHOWN));
+    }
+    format!(
+        "{}'s lock has no row {object} §{} to retire. Nothing was written. This page {scope}: \
+         {}. A retire names the row exactly as stored — copy the `§` path of the row from a \
+         walk of this page. A row lives in the lock of the page that minted it; a row of \
+         another page retires only by a write to that page.",
+        pinning_path.0,
+        asked.elements().join("/"),
+        if listed.is_empty() {
+            "none".to_owned()
+        } else {
+            listed.join("; ")
+        }
+    )
+}
+
 /// The `meridian-lock` block's byte form and its placement law, in one place —
 /// shared by the pin path and [`lock_write`] so the two cannot drift.
 ///
@@ -5755,9 +5940,8 @@ fn lock_artifact_guard(
          inside the section being written. When you meant to keep the claims, append with `put \
          at:end` or write a section that does not hold the block; when the legacy block is in \
          the way, move it by hand to the file preamble (after the frontmatter, before the first \
-         heading) and re-issue the write. Retiring a claim on purpose needs an unpin verb, \
-         which does not exist yet (stage 3) — until it does, remove the block by hand and \
-         re-mint",
+         heading) and re-issue the write. To retire one claim on purpose, send a pin with \
+         `retire: true` naming its row (`mrd pin --retire`; wire-contract § A.3 retire law)",
         path.0,
         before_blocks.len()
     )))

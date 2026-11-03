@@ -403,6 +403,22 @@ mod tests {
                 json!({"op": "splice", "path": "p.md", "pin": []}),
                 "`pin` must be an object on `splice`",
             ),
+            (
+                json!({"op": "splice", "path": "p.md",
+                       "pin": {"target": "g.md", "selector": {"hpath": [{"h": "Q3"}]},
+                               "retire": true, "fingerprint": "fp1.x", "vibe": true}}),
+                "`pin.retire` drops a lock row and attests nothing, so it carries no proof — \
+                 drop `fingerprint`, `vibe` from the pin and send `target`, `selector` and \
+                 `retire` alone",
+            ),
+            (
+                json!({"op": "splice", "path": "p.md",
+                       "pin": {"target": "g.md", "selector": {"n": "1.2"}, "retire": true}}),
+                "`pin.retire` names the row as the lock stores it, and a dewey ordinal is a \
+                 position in the live target — a stale row has none. Send the row's recorded \
+                 heading chain as `{\"hpath\":[…]}` (the `§` path a walk of this page prints) \
+                 or its `{\"anchor\":\"id\"}`",
+            ),
         ] {
             let e = super::decode::decode(&obj(frame), super::rev::Rev::V3)
                 .expect_err("strict pin decode");

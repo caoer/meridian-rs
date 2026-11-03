@@ -115,6 +115,9 @@ pub fn project_response(frame: &mut Value) {
                 // optional `sec_rev`, sections reads serve a `fingerprint`
                 // per row, and no server-side read state exists.
                 caps.push(Value::String("splice.pin.proof".to_string()));
+                // The retire law (§ A.3): `splice.pin.retire: true` drops one row
+                // of the pinning page's own lock, named as stored.
+                caps.push(Value::String("splice.pin.retire".to_string()));
                 // The §4.4 set form: `files[]` on `splice`, sealed across the
                 // set (validate-all-then-apply, one fingerprint advance).
                 caps.push(Value::String("splice.set".to_string()));
@@ -447,6 +450,7 @@ mod tests {
                 "splice.pin",
                 "pin-cross-root",
                 "splice.pin.proof",
+                "splice.pin.retire",
                 "splice.set",
                 "splice.fields",
                 "splice.create_rev",

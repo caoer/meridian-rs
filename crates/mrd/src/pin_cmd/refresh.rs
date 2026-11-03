@@ -365,6 +365,7 @@ fn splice_pin(
         vibe: None,
         fingerprint: proof.map(str::to_owned),
         sec_rev: None,
+        retire: None,
     };
     let body = write_ipc::call(door, &pin_request(page, &pin, dry))?;
     let body = write_ipc::project_body(&body);

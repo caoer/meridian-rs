@@ -215,7 +215,7 @@ A connection opens with `hello`: the client names the proto it speaks and itself
   "fingerprint":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9"}}
 ```
 
-`caps` is the complete set; no version sniffing. **v2** and **v3** name two served cap sets, never two constitutions: a frozen v2 session keeps its caps byte-identical, and a negotiated v3 session is pushed the additions this document marks v3-only. Shown: the sixteen-cap core; the daemon's base set (`crates/registry/src/server.rs` `CAPS`) adds `splice.fields`, `run.fields`, `run.ambient` — nineteen (v2 spelling identical minus the fingerprint renames). A negotiated v3 session is pushed twenty-three more: `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `pin-cross-root`, `splice.pin.proof`, `splice.set`, `splice.fields`, `splice.create_rev`, `create`, `remove`, `mounts`, `mounts.primary`, `mounts.alias`, `hello.identity`, `script`, `run`, `run.mode`, `run.input`, `walk`, `sql`, `splice.remove`, `scoped-guards` (§A.3/§A.5/§A.6.6/§A.7/§A.8/§A.10/§A.11/§5.4). `wire-serve/src/rev.rs` is the authority; a count here that disagrees is this sentence's defect.
+`caps` is the complete set; no version sniffing. **v2** and **v3** name two served cap sets, never two constitutions: a frozen v2 session keeps its caps byte-identical, and a negotiated v3 session is pushed the additions this document marks v3-only. Shown: the sixteen-cap core; the daemon's base set (`crates/registry/src/server.rs` `CAPS`) adds `splice.fields`, `run.fields`, `run.ambient` — nineteen (v2 spelling identical minus the fingerprint renames). A negotiated v3 session is pushed twenty-four more: `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `pin-cross-root`, `splice.pin.proof`, `splice.pin.retire`, `splice.set`, `splice.fields`, `splice.create_rev`, `create`, `remove`, `mounts`, `mounts.primary`, `mounts.alias`, `hello.identity`, `script`, `run`, `run.mode`, `run.input`, `walk`, `sql`, `splice.remove`, `scoped-guards` (§A.3/§A.5/§A.6.6/§A.7/§A.8/§A.10/§A.11/§5.4). `wire-serve/src/rev.rs` is the authority; a count here that disagrees is this sentence's defect.
 
 Field-only amendments are dotted `op.field` strings: `mounts.primary`/`mounts.alias` (the mounts row's primary designation and root alias, §A.5), `splice.fields` (the §A.2.1 middleware passthrough). `pin-cross-root` is a behavior cap on the existing `splice.pin` field (§A.3). `scoped-guards` (a behavior cap, same pattern) covers the whole scoped-premise family: `guards[]` entries' `scope`/`scope_bytes` pairs, the singular `scope` on `splice` (single and set form) and `script`, and the `fingerprint` op's mint arm with its own pair (§4.7, §5.4–§5.7). It is never pushed to a frozen v2 session, and un-negotiated use of any guard-family field refuses `bad_request` at the strict wall. Hello-body `fingerprint` is optional; when present it is the first ambient fingerprint.
 
@@ -1340,6 +1340,7 @@ the wire shape is ruled here.)*
 | `splice.pin` | Pin rides the write choke-point; selector is segments/anchor. |
 | `pin-cross-root` | `splice.pin.target` admits the ruled `name:rel` rooted spelling (`address-grammar.md`): target loaded, gated, promoted and blob-written in the named mounted root under that root's own `LOCK_NB` write flock; the lock row's `object` = `name:rel` minus `.md`, verbatim; the proof compare (`splice.pin.proof`) runs on the target root's live bytes under that flock. Without the cap a face keeps its own taught refusal, not `pin_target_missing`. |
 | `splice.pin.proof` | Pin proof rides the request — the proof law, below. |
+| `splice.pin.retire` | `splice.pin.retire: true` drops one row from the pinning page's own lock — the retire law, below. |
 | `create` | File birth through the guarded door; full body bytes, no `props` field (the starlark birth lane's `props=` dict rides this door, § A.8). `bad_path` on an engine machinery segment in the landing — `.git`, `.meridian`, `meridian` — at any depth, ASCII-case-insensitively, whatever the caps admit; the hash-domain config `meridian/domain.md` is the one carve-out (`run-plane.md` § the machinery floor). |
 | `remove` | File death through the guarded door; `remove_refused` while anything in the corpus references the record (below). |
 | `hello.identity` | Optional `{build: sha \| sha-dirty \| unknown}` for deploy identity. `-dirty` rides the sha token (git-describe): `sha` = a whole commit, `sha-dirty` = a worktree diverging from it, `unknown` = nothing attributable. Match the whole token, never a substring — a decorated sha is a different build and must refuse (`docs/release.md` §5.1). Optional, v3-only |
@@ -1410,6 +1411,41 @@ side-effect-free: the composed `read` op has no `actor` field.
   is the engine-computed touch set (§ A.7).
 - **Proof is content-bound, not identity-bound:** identity decides only whether
   proof is required, never whose read satisfies it.
+
+**Retiring a pin: `splice.pin.retire: true` drops one row of the pinning
+page's own lock.** It is how a claim leaves on purpose — a pinned section was
+renamed, split or deleted, and the row walks red with nothing left to re-pin.
+
+- **The row is named as the lock stores it, never resolved in the target.**
+  `target` spells the row's `object` (the same spelling a pin of it takes,
+  cross-root `name:rel` included) and `selector` its `path`: an `hpath` is the
+  recorded heading chain, each segment's `n` rendered as the R4 occurrence
+  (`"Dup#2"`), an `anchor` is the sole-`^id` row. The target is never loaded,
+  so a renamed section, a deleted section or a deleted file retires alike. A
+  `dewey` selector refuses `bad_request`: an ordinal is positional in the live
+  target, and a stale row has no live position. When no row matches segment
+  for segment, the one row whose elements joined by `/` equal the selector's
+  joined text matches — so the `§` text a walk prints names a heading that
+  holds `/` (two such rows refuse as a miss). A rooted `target` matches by the
+  mount table's canonical spelling or by its literal bytes, so a row whose root
+  this machine no longer binds retires.
+- **Only this page's own rows.** The match is exact on `object` and `path`
+  inside the splice `path`'s lock; no other file's lock is reachable. No match
+  refuses `pin_target_missing`, nothing written, naming the rows this page's
+  lock holds on that object (or that it holds none) — a row lives in the lock
+  of the page that minted it, and only a write to that page retires it.
+- **The retire is a guarded write.** It changes existing content, so a wire
+  splice carries a premise covering the page (`if_root`, or a scoped premise
+  at the page or an ancestor), or `force`; absent → `guard_required`. A
+  supplied premise is checked as on every splice. It carries no proof:
+  `fingerprint`, `sec_rev` and `vibe` beside `retire` refuse `bad_request` — a
+  retire attests nothing.
+- **What lands.** The lock re-renders without the row, every sibling row in
+  its place; a lock left with no rows stays as the canonical empty block
+  (`version: 2`). The target's promoted `^anchor` stays: it is a stable block
+  id other pins may share. The response carries `pin_retired`: `target`,
+  `selector` and the retired row's recorded `fingerprint`. It may ride a splice
+  with `edits`, as a pin does — one commit.
 
 **Composed-`read` selector resolution:**
 

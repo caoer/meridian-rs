@@ -437,6 +437,25 @@ pub struct PinSpec {
     /// moved world the caller gave no rev to tell apart).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sec_rev: Option<String>,
+    /// `splice.pin.retire` (§ A.3 retire law): `true` drops the row of the
+    /// pinning page's own lock that `target` + `selector` name AS STORED —
+    /// the target is never loaded, so a row over a renamed or deleted section
+    /// retires. Carries no proof: `fingerprint`, `sec_rev` and `vibe` beside
+    /// it refuse at decode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retire: Option<bool>,
+}
+
+/// What a retire dropped — the response half of a [`PinSpec`] carrying
+/// `retire: true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinRetired {
+    /// The retired row's target, as the lock spelled it plus `.md`.
+    pub target: Path,
+    /// The retired row's selector, in the tagged read grammar.
+    pub selector: ReadSel,
+    /// The `fp1.…` fingerprint the retired row recorded.
+    pub fingerprint: String,
 }
 
 /// What a pin actually minted — the response half of [`PinSpec`], present
@@ -1699,16 +1718,6 @@ pub struct Response {
 /// error envelope under the `error` key. `ok` mirrors which arm rides.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "both arms are large by construction and the lint's own remedy provably \
-              relocates it: measured on this tree, ErrorBody is 520 bytes and ResponseBody \
-              288, so boxing the error arm leaves 288 vs 8 — a WIDER gap, warning the other \
-              way. Only boxing both silences it, at every response construction site, to \
-              trade one pointer chase for another. The §8 extras set is flat and frozen \
-              (extras beside `code`, never nested), so the struct's width is contract shape, \
-              not a layout accident"
-)]
 pub enum ResponsePayload {
     Body { body: ResponseBody },
     Error { error: ErrorBody },
@@ -1958,6 +1967,10 @@ pub enum ResponseBody {
         /// passed by value on every reply.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pin: Option<Box<PinFact>>,
+        /// What the request's `pin.retire` dropped. Absent unless the request
+        /// retired a row.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pin_retired: Option<Box<PinRetired>>,
     },
     /// The birth reply (the `create` op, v3-only): what the birth landed —
     /// the born path, its whole-file rev, and the root transition. Never a
