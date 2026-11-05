@@ -5688,7 +5688,11 @@ mod engine_tests {
         assert_eq!(store.rung(), Some(32 << 20));
         assert_eq!(escalation.counters().steps, 1, "a rung start is no step");
         assert_eq!(controller.report().reserved, 0);
-        assert_eq!(store_limit(&store).unwrap(), "16.0 MiB", "the steady limit is back");
+        assert_eq!(
+            store_limit(&store).unwrap(),
+            "16.0 MiB",
+            "the steady limit is back"
+        );
 
         // A rung the append outgrows escalates from the rung, and moves.
         let mut limits = Vec::new();
