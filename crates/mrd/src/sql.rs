@@ -697,7 +697,7 @@ fn load_corpus(workspace: &Path) -> Result<Loaded, String> {
 /// Which projection answers this invocation (module docs § Lanes).
 enum Lane {
     /// The drawer's `sql.duckdb`, open read-write — this process appends.
-    Cache(SqlStore),
+    Cache(Box<SqlStore>),
     /// The ephemeral `:memory:` build.
     Memory,
 }
@@ -731,7 +731,7 @@ fn open_lane(canonical: &Path, rebuild: bool) -> Result<Lane, Fail> {
         SqlStore::open(&file)
     };
     match opened {
-        Ok(store) => Ok(Lane::Cache(store)),
+        Ok(store) => Ok(Lane::Cache(Box::new(store))),
         Err(e) if rebuild => Err(rebuild_blocked(&file, canonical, &e)),
         Err(e) => {
             eprintln!("mrd sql: cache file unavailable ({e}); answering from :memory:");
