@@ -342,6 +342,14 @@ impl SqlEscalation {
     /// Run `append` on `store`; escalate when its steady limit refuses it for
     /// memory. A store with no limit runs `append` once.
     ///
+    /// A store whose last escalated append succeeded under a raised limit —
+    /// its rung ([`view::store::SqlStore::rung`]) — starts there, the excess
+    /// over L reserved as a step's is, instead of paying the refused attempts
+    /// below it on every append (on a 5.8 GB sessions root under a 256 MiB L
+    /// every append ran three times, 8–14 s each). A reservation the
+    /// controller refuses starts at L as before. The rung start is no step:
+    /// nothing was refused, so the counters do not count it.
+    ///
     /// # Errors
     /// `append`'s own error under the limit it ran under; a refused
     /// reservation as [`view::ViewError::Busy`], which the door answers
@@ -355,8 +363,34 @@ impl SqlEscalation {
             return append(store).map_err(|error| AppendFailure { limit: None, error });
         };
         let mut limit = steady;
-        let mut error = match append(store) {
-            Ok(done) => return Ok(done),
+        let mut first = None;
+        if let Some(rung) = store
+            .rung()
+            .map(|rung| rung.min(self.cap))
+            .filter(|rung| *rung > steady)
+        {
+            let extra = usize::try_from(rung - steady).unwrap_or(usize::MAX);
+            // `None` is a refused reservation under a host, and no reservation
+            // without one — the step's own spelling.
+            let reservation = self
+                .controller
+                .as_ref()
+                .and_then(|controller| controller.reserve(extra).ok());
+            if self.controller.is_none() || reservation.is_some() {
+                limit = rung;
+                first = Some(
+                    store
+                        .raise_memory_limit(rung, reservation)
+                        .and_then(|mut raised| append(&mut raised)),
+                );
+            }
+        }
+        let first = first.unwrap_or_else(|| append(store));
+        let mut error = match first {
+            Ok(done) => {
+                store.set_rung((limit > steady).then_some(limit));
+                return Ok(done);
+            }
             Err(error) if error.is_memory_limit() => error,
             Err(error) => {
                 return Err(AppendFailure {
@@ -402,7 +436,10 @@ impl SqlEscalation {
                 .raise_memory_limit(limit, reservation)
                 .and_then(|mut raised| append(&mut raised));
             error = match attempt {
-                Ok(done) => return Ok(done),
+                Ok(done) => {
+                    store.set_rung(Some(limit));
+                    return Ok(done);
+                }
                 Err(error) if error.is_memory_limit() => error,
                 Err(error) => {
                     return Err(AppendFailure {

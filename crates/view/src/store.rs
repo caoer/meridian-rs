@@ -1143,6 +1143,11 @@ pub struct SqlStore {
     /// `DuckDB`'s default (merkle-spec §6.4, the SQL memory policy). Every
     /// reopen of this store's file sets it again.
     memory_limit: Option<u64>,
+    /// The rung: the raised `memory_limit` this instance's last escalated
+    /// append succeeded under, in bytes (merkle-spec §6.4, the SQL memory
+    /// policy). `None` while every append has fit the steady limit, and on
+    /// every reopen of the file.
+    rung: Option<u64>,
     /// The file's `doc(path, file_rev)` map as of its last append (module
     /// docs § Delta grain); `None` until a sync reads it.
     manifest: Option<Box<Manifest>>,
@@ -1387,6 +1392,7 @@ impl SqlStore {
             baseline: Arc::new(Vec::new()),
             policy: Arc::default(),
             memory_limit,
+            rung: None,
             manifest: None,
         };
         apply_spill_containment(&store.conn, &store.spill_dir())?;
@@ -2415,6 +2421,20 @@ impl SqlStore {
     #[must_use]
     pub fn memory_limit(&self) -> Option<u64> {
         self.memory_limit
+    }
+
+    /// The rung: the raised `memory_limit` this instance's last escalated
+    /// append succeeded under, in bytes; `None` while every append has fit
+    /// the steady limit (merkle-spec §6.4, the SQL memory policy).
+    #[must_use]
+    pub fn rung(&self) -> Option<u64> {
+        self.rung
+    }
+
+    /// Record the rung ([`SqlStore::rung`]): `Some(limit)` after an append
+    /// succeeded under a raised limit, `None` after one fit the steady limit.
+    pub fn set_rung(&mut self, rung: Option<u64>) {
+        self.rung = rung;
     }
 
     /// Run this instance under a `memory_limit` of `limit` bytes while the
