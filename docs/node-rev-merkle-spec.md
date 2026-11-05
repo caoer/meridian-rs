@@ -636,7 +636,16 @@ the controller (`Controller::reserve`, which sheds bodies to make room),
 raises that instance's `memory_limit` to it, and runs the append again: 2L,
 then 4L, and so on, never past B/2 (a step that would pass it is cut to
 B/2; when B/2 is not above L there is no step). Without a host there is no
-controller, and a step raises the limit with no reservation. The raise also moves what a
+controller, and a step raises the limit with no reservation. The limit an
+escalated append succeeds under is the instance's **rung**: its next append
+starts there, the excess over L reserved as a step's is, rather than paying
+the refused attempts below it again (an append's need grows with the store,
+so a store that outgrew L once outgrows it on every append; on a 5.8 GB
+sessions root under a 256 MiB L every append ran three times). A reservation
+the controller refuses starts that append at L as before; an append that
+fits L again forgets the rung; a reopen of the file forgets it too. The rung
+start is no step: nothing was refused, and the counters below do not count
+it. The raise also moves what a
 read ending meanwhile restores, so a concurrent read cannot put L back
 under the running append. Each step ends, on success, refusal, error or
 unwind, by putting the instance's open-time configuration back and only

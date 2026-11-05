@@ -5641,6 +5641,72 @@ mod engine_tests {
         assert_eq!(controller.report().reserved, 0);
     }
 
+    /// A store whose append escalated remembers the limit it succeeded under
+    /// as its rung, and its next append starts there under a reservation —
+    /// no refused attempt at the steady limit, no step counted; an append
+    /// that then fits the steady limit forgets the rung (merkle-spec §6.4,
+    /// the SQL memory policy).
+    #[test]
+    fn an_append_that_escalated_starts_the_next_at_its_rung() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store_at_16_mib(&dir);
+        assert_eq!(store.rung(), None, "a fresh instance has no rung");
+        let controller = crate::residency::controller::Controller::new(1 << 30);
+        let escalation = crate::residency::SqlEscalation::new(Some(controller.clone()), 64 << 20);
+        let refuse = |store: &view::store::SqlStore| {
+            store
+                .connection()
+                .execute_batch("SELECT error('failed to pin block of size 256.0 KiB')")
+                .map_err(view::ViewError::from)
+        };
+
+        // The first append: refused at L, answered at 2L — the rung.
+        let mut limits = Vec::new();
+        escalation
+            .run(&mut store, |store| {
+                limits.push(store_limit(store)?);
+                if limits.len() == 1 {
+                    return refuse(store);
+                }
+                Ok(())
+            })
+            .expect("the raised attempt answers");
+        assert_eq!(limits, ["16.0 MiB", "32.0 MiB"]);
+        assert_eq!(store.rung(), Some(32 << 20));
+        assert_eq!(escalation.counters().steps, 1);
+
+        // The next append starts at the rung: one attempt, no step, the
+        // reservation released with it, the rung kept.
+        let mut limits = Vec::new();
+        escalation
+            .run(&mut store, |store| {
+                limits.push(store_limit(store)?);
+                Ok(())
+            })
+            .expect("the rung attempt answers");
+        assert_eq!(limits, ["32.0 MiB"], "started at the rung, no attempt at L");
+        assert_eq!(store.rung(), Some(32 << 20));
+        assert_eq!(escalation.counters().steps, 1, "a rung start is no step");
+        assert_eq!(controller.report().reserved, 0);
+        assert_eq!(store_limit(&store).unwrap(), "16.0 MiB", "the steady limit is back");
+
+        // A rung the append outgrows escalates from the rung, and moves.
+        let mut limits = Vec::new();
+        escalation
+            .run(&mut store, |store| {
+                limits.push(store_limit(store)?);
+                if limits.len() == 1 {
+                    return refuse(store);
+                }
+                Ok(())
+            })
+            .expect("the step past the rung answers");
+        assert_eq!(limits, ["32.0 MiB", "64.0 MiB"]);
+        assert_eq!(store.rung(), Some(64 << 20));
+        assert_eq!(escalation.counters().steps, 2);
+        assert_eq!(controller.report().reserved, 0);
+    }
+
     /// An escalated attempt that fails for another reason than memory ends
     /// the escalation: its error passes through, the step's reservation is
     /// released and the steady limit is back (merkle-spec §6.4, rv-372

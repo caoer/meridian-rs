@@ -1254,6 +1254,8 @@ reservation under a host, with the largest raise past L in bytes and the UTC
 time of the last step (the parenthesis is absent before the first);
 `sql-refused` counts the appends still refused for memory, because the
 controller refused a step's reservation or the append was refused at B/2.
+An append that starts at its cache's rung (§6.4: the limit the last
+escalated append succeeded under) was refused nothing and counts in neither.
 Both count since the daemon started, with a host or without one. A daemon
 that answers the request without them (a build before escalation, or one
 that cannot read the machine's memory) leaves both fields off the line.
