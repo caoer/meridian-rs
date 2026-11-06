@@ -1293,6 +1293,23 @@ impl std::fmt::Debug for SqlStore {
     }
 }
 
+/// The `memory_limit` each SQL thread is given (merkle-spec §6.4, the SQL
+/// memory policy): a cache under L runs at most ⌊L / this⌋ threads.
+pub const SQL_THREAD_MEMORY: u64 = 64 << 20;
+
+/// The steady thread count T of a cache under `memory_limit` (merkle-spec
+/// §6.4): the process's available parallelism — its CPU affinity and cgroup
+/// quota, where `DuckDB`'s default is the machine's core count — held to
+/// [`SQL_THREAD_MEMORY`] per thread under a limit.
+#[must_use]
+pub fn sql_threads(memory_limit: Option<u64>) -> u64 {
+    let parallelism = std::thread::available_parallelism()
+        .map_or(1, |n| u64::try_from(n.get()).unwrap_or(u64::MAX));
+    memory_limit.map_or(parallelism, |limit| {
+        parallelism.min((limit / SQL_THREAD_MEMORY).max(1))
+    })
+}
+
 // The prior direct-file opener exposed `current_database() = 'sql'`; keep that
 // operator-visible name when the file becomes an attached catalog.
 const SQL_CACHE_CATALOG: &str = "sql";
@@ -1408,6 +1425,9 @@ impl SqlStore {
                 .conn
                 .execute_batch(&format!("SET memory_limit='{}KiB';", bytes.div_ceil(1024)))?;
         }
+        store
+            .conn
+            .execute_batch(&format!("SET threads={};", sql_threads(memory_limit)))?;
         store.baseline = Arc::new(global_config_snapshot(&store.conn)?);
         Ok(store)
     }
@@ -4806,6 +4826,32 @@ mod config_scope_tests {
         assert_eq!(
             next_caller_sees(&store, "memory_limit"),
             "256.0 MiB",
+            "the caller's SET outlived its call"
+        );
+    }
+
+    /// A store under L runs ⌊L / 64 MiB⌋ threads at most, never more than the
+    /// process may run on, and a caller's `SET threads` lasts only that call
+    /// (merkle-spec §6.4, the SQL memory policy).
+    #[test]
+    fn a_limited_store_runs_its_thread_count_past_a_callers_set() {
+        let parallelism = std::thread::available_parallelism()
+            .map_or(1, |n| u64::try_from(n.get()).expect("usize fits u64"));
+        assert_eq!(sql_threads(Some(256 << 20)), parallelism.min(4));
+        assert_eq!(sql_threads(Some(1 << 20)), 1, "a tiny limit still runs one thread");
+        assert_eq!(sql_threads(None), parallelism);
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open_limited(&tmp_store(&dir), Some(256 << 20)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        let steady = parallelism.min(4).to_string();
+        assert_eq!(next_caller_sees(&store, "threads"), steady);
+        store
+            .query("SET threads=64")
+            .expect("lane")
+            .expect("the caller's own SET still succeeds");
+        assert_eq!(
+            next_caller_sees(&store, "threads"),
+            steady,
             "the caller's SET outlived its call"
         );
     }

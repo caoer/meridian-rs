@@ -608,6 +608,23 @@ falls between censuses, and shedding `DuckDB`'s cache through the floor
 would evict a whole workspace where the limit lets `DuckDB` drop the same
 pages itself.
 
+L is shared by every thread a statement runs on, so each cache also runs
+under a steady thread count T = min(P, max(1, ⌊L / 64 MiB⌋)), where P is
+the process's available parallelism (`std::thread::available_parallelism`:
+its CPU affinity and cgroup quota, not the machine's core count); without
+an L, T is P. T is set with L when the cache opens, before the restore
+baseline, so a caller's own `SET threads` also lasts only that call; an
+escalation raises L and leaves T. `DuckDB`'s own default is the machine's
+core count whatever the process may run on, and a statement's working
+memory grows with its threads (below), so under the 256 MiB floor the
+default starved each thread instead of bounding the pool: on a 47 GiB,
+24-core host whose engine was pinned to 4 CPUs, a 175,000-page sessions
+root's task snapshot (a `record` join over 4.8 M `hist.frontmatter` rows)
+was refused at 24 threads under 256, 320 and 384 MiB alike, in every run,
+and at 8 threads under 256 MiB; at 64 MiB per thread (4 under 256 MiB, 8
+under 512 MiB, 16 under 1 GiB) it and a full `body` scan answered in
+every run, in 1.1 to 2.1 s.
+
 L is a steady limit, not a bound on what an append needs. The append that
 brings a cache to the generation a call answers from runs before the
 caller's statement, and it reads the whole store: the manifest over every
