@@ -583,7 +583,8 @@ block a query has read until it holds the whole store: on a 112,800-page
 sessions root it held 1.80 GiB of a 1.93 GiB store on a 55 GiB host and
 1.68 GiB of 1.75 GiB on a 47 GiB one. B is the host's budget, or without a
 host the machine's physical memory (`sysconf(_SC_PHYS_PAGES)` pages; where
-that cannot be read, each cache keeps `DuckDB`'s default and nothing below
+that cannot be read, each cache keeps `DuckDB`'s default `memory_limit`,
+runs the thread count T below without an L, and nothing else below
 applies). Each cache runs under a steady `memory_limit` L of B/32, held
 between 256 MiB and 2 GiB: 256 MiB on an 8 GiB host, 1.7 GiB on a 55 GiB
 one. L is set when the cache opens and before its restore baseline is taken, so a
@@ -621,9 +622,9 @@ default starved each thread instead of bounding the pool: on a 47 GiB,
 24-core host whose engine was pinned to 4 CPUs, a 175,000-page sessions
 root's task snapshot (a `record` join over 4.8 M `hist.frontmatter` rows)
 was refused at 24 threads under 256, 320 and 384 MiB alike, in every run,
-and at 8 threads under 256 MiB; at 64 MiB per thread (4 under 256 MiB, 8
-under 512 MiB, 16 under 1 GiB) it and a full `body` scan answered in
-every run, in 1.1 to 2.1 s.
+and at 8 threads under 256 MiB; at 64 MiB per thread (4 under 256 MiB, and,
+set by hand on the same 4 CPUs, 8 under 512 MiB and 16 under 1 GiB) it
+and a full `body` scan answered in every run, in 1.1 to 2.1 s.
 
 L is a steady limit, not a bound on what an append needs. The append that
 brings a cache to the generation a call answers from runs before the
