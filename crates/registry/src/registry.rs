@@ -5389,9 +5389,10 @@ mod engine_tests {
     /// whole-store reads outgrow the steady limit escalates under controller
     /// reservations and the call answers, the steady limit and the
     /// reservations back after it. 20,000 pages of twelve links each at an
-    /// 8 MiB steady limit, then a replayed delta of 200 changed and 50 added
-    /// pages; without the escalation the door refuses the append, naming
-    /// the limit.
+    /// 8 MiB steady limit, so one thread: the cold build's append outgrows
+    /// the limit and escalates, and a replayed delta of 200 changed and 50
+    /// added pages starts at the rung it left and answers there; without the
+    /// escalation the door refuses the append, naming the limit.
     #[test]
     fn an_append_the_steady_limit_refuses_escalates_and_answers() {
         let controller = crate::residency::controller::Controller::new(1 << 30);
@@ -5468,6 +5469,13 @@ mod engine_tests {
             "the cold build answers"
         );
         let cold = escalation.counters();
+        assert!(
+            cold.steps > 0,
+            "the cold build's append escalated: {cold:?}"
+        );
+        assert!(cold.largest >= STEADY, "{cold:?}");
+        assert!(cold.last_unix_secs.is_some(), "{cold:?}");
+        assert_eq!(cold.refused, 0, "{cold:?}");
         for i in (0..PAGES).step_by(100) {
             fs::write(ws.join(format!("p{i:05}.md")), page(i, "two")).unwrap();
         }
@@ -5481,12 +5489,6 @@ mod engine_tests {
             "the replayed delta's append answers"
         );
         let delta = escalation.counters();
-        assert!(
-            delta.steps > cold.steps,
-            "the delta's append escalated: {cold:?} then {delta:?}"
-        );
-        assert!(delta.largest >= STEADY, "{delta:?}");
-        assert!(delta.last_unix_secs.is_some(), "{delta:?}");
         assert_eq!(delta.refused, 0, "{delta:?}");
         assert_eq!(
             sql_memory_limit(&reg, &canonical),
