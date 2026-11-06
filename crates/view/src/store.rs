@@ -4838,7 +4838,11 @@ mod config_scope_tests {
         let parallelism = std::thread::available_parallelism()
             .map_or(1, |n| u64::try_from(n.get()).expect("usize fits u64"));
         assert_eq!(sql_threads(Some(256 << 20)), parallelism.min(4));
-        assert_eq!(sql_threads(Some(1 << 20)), 1, "a tiny limit still runs one thread");
+        assert_eq!(
+            sql_threads(Some(1 << 20)),
+            1,
+            "a tiny limit still runs one thread"
+        );
         assert_eq!(sql_threads(None), parallelism);
         let dir = tempfile::tempdir().expect("tmpdir");
         let mut store = SqlStore::open_limited(&tmp_store(&dir), Some(256 << 20)).expect("open");
