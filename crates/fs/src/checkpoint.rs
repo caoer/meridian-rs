@@ -583,7 +583,12 @@ mod tests {
         let (_, bytes) = observed(tmp.path());
         let domain = Domain::load(&WorkspaceRoot(tmp.path().to_path_buf())).unwrap();
         assert!(matches!(
-            restore(&bytes, Path::new("/else/where"), &domain, stable::FeedGen::default()),
+            restore(
+                &bytes,
+                Path::new("/else/where"),
+                &domain,
+                stable::FeedGen::default()
+            ),
             Err(Discard::Workspace { .. })
         ));
         // Domain-version bump: the config declares a new version — the

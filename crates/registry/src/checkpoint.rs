@@ -473,8 +473,13 @@ mod tests {
         ring.advance(frame(1, "notes/b.md"));
 
         // Restart: restore and replay.
-        let (mut back, receipt) =
-            restore(&cache_root, &ws, Some(&ring), fs::stable::FeedGen::default()).expect("the checkpoint restores");
+        let (mut back, receipt) = restore(
+            &cache_root,
+            &ws,
+            Some(&ring),
+            fs::stable::FeedGen::default(),
+        )
+        .expect("the checkpoint restores");
 
         assert!(
             receipt.anchored,
@@ -541,8 +546,13 @@ mod tests {
         std::fs::write(ws.join("notes/b.md"), "# B moved while down\n").unwrap();
         let restarted = WorkspaceRing::new(&root);
 
-        let (mut back, receipt) =
-            restore(&cache_root, &ws, Some(&restarted), fs::stable::FeedGen::default()).expect("rows survive an unjournaled gap");
+        let (mut back, receipt) = restore(
+            &cache_root,
+            &ws,
+            Some(&restarted),
+            fs::stable::FeedGen::default(),
+        )
+        .expect("rows survive an unjournaled gap");
 
         // One labeled warm re-baseline on cursor no-anchor, object retained.
         assert!(!receipt.anchored);
@@ -611,8 +621,13 @@ mod tests {
         let restarted = WorkspaceRing::new(&root);
         assert_ne!(dead.instance(), restarted.instance());
 
-        let (back, receipt) = restore(&cache_root, &ws, Some(&restarted), fs::stable::FeedGen::default())
-            .expect("a cursor mismatch forfeits replay, never the object");
+        let (back, receipt) = restore(
+            &cache_root,
+            &ws,
+            Some(&restarted),
+            fs::stable::FeedGen::default(),
+        )
+        .expect("a cursor mismatch forfeits replay, never the object");
 
         assert_eq!(receipt.leaves, 3, "every row survives the warm re-baseline");
         assert!(receipt.warm_rebaseline.is_some(), "and it is labeled warm");
@@ -652,8 +667,13 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(10));
         std::fs::write(ws.join("notes/b.md"), "# B moved while down\n").unwrap();
 
-        let (mut back, receipt) =
-            restore(&cache_root, &ws, Some(&fresh), fs::stable::FeedGen::default()).expect("rows survive a dead cursor");
+        let (mut back, receipt) = restore(
+            &cache_root,
+            &ws,
+            Some(&fresh),
+            fs::stable::FeedGen::default(),
+        )
+        .expect("rows survive a dead cursor");
         assert!(!receipt.anchored);
         assert_eq!(receipt.replayed, 0, "nothing can be replayed");
         assert_eq!(receipt.leaves, 3, "the rows are adopted as evidence");
@@ -704,7 +724,13 @@ mod tests {
         std::fs::write(ws.join("meridian/domain.md"), "---\nversion: 3\n---\n").unwrap();
 
         assert!(
-            restore(&cache_root, &ws, Some(&ring), fs::stable::FeedGen::default()).is_none(),
+            restore(
+                &cache_root,
+                &ws,
+                Some(&ring),
+                fs::stable::FeedGen::default()
+            )
+            .is_none(),
             "a checkpoint may not outlive the domain version it was folded under"
         );
         assert!(

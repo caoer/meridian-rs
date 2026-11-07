@@ -522,7 +522,10 @@ impl ColdEntry {
 
 /// A workspace's published memo and the live feed behind it (`None`: its
 /// watcher start failed, the pre-feed semantics).
-type Resident = (Arc<Mutex<fs::DomainCache>>, Option<Arc<feed::WorkspaceFeed>>);
+type Resident = (
+    Arc<Mutex<fs::DomainCache>>,
+    Option<Arc<feed::WorkspaceFeed>>,
+);
 
 /// The leader's hold on its [`ColdEntry`]: however the leader leaves —
 /// published, cancelled, or unwinding — the entry leaves the map if it is
@@ -3875,7 +3878,10 @@ impl Registry {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         (
-            workspaces.iter().filter_map(|key| feeds.remove(key)).collect(),
+            workspaces
+                .iter()
+                .filter_map(|key| feeds.remove(key))
+                .collect(),
             workspaces
                 .iter()
                 .filter_map(|key| caches.remove(key))

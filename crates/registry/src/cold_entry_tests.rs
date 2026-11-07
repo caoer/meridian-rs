@@ -149,7 +149,10 @@ fn a_parked_watcher_arm_on_one_workspace_parks_nothing_on_another() {
         let _ = entering.join().unwrap();
     });
     assert!(reg.live_feed(a).is_some(), "A's entry lands its feed");
-    assert!(reg.live_feed(c).is_some(), "C's own entry armed its own feed");
+    assert!(
+        reg.live_feed(c).is_some(),
+        "C's own entry armed its own feed"
+    );
 }
 
 /// The same-workspace half: while A's arm is parked, the write door on A
@@ -192,7 +195,10 @@ fn a_borrower_of_an_entering_workspace_waits_and_the_door_refuses_past_its_budge
         let second = second.join().unwrap();
         assert!(Arc::ptr_eq(&first, &second), "both borrows hold one memo");
         let published = Arc::clone(reg.domain_caches.lock().unwrap().get(a).unwrap());
-        assert!(Arc::ptr_eq(&first, &published), "and it is the published one");
+        assert!(
+            Arc::ptr_eq(&first, &published),
+            "and it is the published one"
+        );
     });
     assert!(reg.live_feed(a).is_some(), "with a live feed behind it");
 }
@@ -335,7 +341,10 @@ fn an_unregister_or_eviction_during_an_entry_gets_nothing_published_back() {
                 !Arc::ptr_eq(&leader, &next),
                 "{case}: no later borrow sees the cancelled leader's memo"
             );
-            assert!(reg.live_feed(a).is_some(), "{case}: a later borrow has a feed");
+            assert!(
+                reg.live_feed(a).is_some(),
+                "{case}: a later borrow has a feed"
+            );
         }
     }
 }
