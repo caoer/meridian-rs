@@ -1031,9 +1031,9 @@ fn commit(
     let Ok(cache) = registry.domain_cache_within(ws, crate::registry::DOOR_COOKIE_TIMEOUT) else {
         return CommitLeg::Refused(Refusal::minted(
             Recovery::Retry,
-            "the workspace's shared domain memo stayed held for this door's whole budget, so NO \
-             splice was issued — nothing was sent, nothing landed, no fingerprint advanced. \
-             retry: re-run the entry",
+            "the workspace's shared domain memo stayed held, or the workspace was still entering \
+             cold, for this door's whole budget, so NO splice was issued — nothing was sent, \
+             nothing landed, no fingerprint advanced. retry: re-run the entry",
         ));
     };
     let plane = crate::ring::DoorPlane::new(registry, &ws_root, &ring, &cache);

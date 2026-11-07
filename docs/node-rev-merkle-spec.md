@@ -489,6 +489,23 @@ engine-side.
   from the document budget below. Whole-workspace budget eviction remains
   available for unsubscribed roots; their next warm pays a full walk and
   their registration survives.
+- **The cold entry.** A workspace with no resident memo enters cold at its
+  next borrow: the watcher is armed first, then the memo is restored from its
+  §6.5 checkpoint or created empty, and the two are published together. The
+  arm and the restore run outside every registry-map lock, since on inotify
+  the recursive arm adds one watch per directory and takes minutes on a large
+  root, and the restore's pre-serve pass stats every member. An operation on
+  another workspace never waits on them. A borrower of the same workspace
+  waits for its entry, so no operation observes a memo that has no feed
+  behind it. The write door waits within its budget and refuses
+  `workspace_busy` past it; a door that finds no entry running leads one, as
+  it led the cold fill before. One entry runs per workspace, so one watcher
+  is armed. An `unregister` or a budget eviction that lands during an entry
+  cancels it, and the entry then publishes neither the feed nor the memo.
+  After an `unregister`, a borrower that waited on the entry takes a private
+  memo; after an eviction the registration survives and it enters afresh,
+  except a write door, which refuses rather than lead the arm it waited on.
+  A sticky failed start arms nothing on a later entry.
 - **The currency barrier (the cookie).** A guard-grade currency question writes
   its own sentinel, `.meridian/cookies/<token>-<serial>`, and waits for it to
   return through the ordered event stream. `Seen` — ordered delivery of all
@@ -1377,7 +1394,11 @@ outside the hash domain (git-index class): the checkpoint.
   sound checkpoint restores every row **untrusted**: no row serves, and no
   answer derives from one, until one §6.2-governed pass has covered the full
   member set — a pre-serve barrier, so lazy, deferred or post-first-serve
-  verification is refused. The pass is one stat per member as the floor (the
+  verification is refused. The restore runs inside the workspace's §6.4 cold
+  entry, after the watcher is armed, so the pass is an observation with the
+  feed behind it: the pass sees what changed before the arm completed, and
+  the dirty set records what changes after it. The pass is one stat per
+  member as the floor (the
   160 ms figure at 29.7k members measures this stat pass alone) plus the
   watermark law's re-reads. A row racily clean at save — recorded mtime within
   one calibrated granularity unit of the checkpoint's saved watermark — is
