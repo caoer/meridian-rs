@@ -709,6 +709,21 @@ with a host or without one: how many steps were taken, the largest
 reservation (the largest raise past L, without a host), when the last one was taken, and how many
 appends were refused for memory after all (`status.md` § The residency line).
 
+History compaction bounds that growth (`wire-contract.md` § A.11, history
+compaction), and is off unless the host sets `MRD_SQL_COMPACTION`. Its
+rebuild is the cold build a deleted cache gets, made in a second instance
+beside the serving one, under the same L and the same escalation; it holds
+the serving cache open for its duration, so the open-cache count above can
+be passed by one while it runs. On a 144,915-page sessions root whose
+`hist.frontmatter` held 10.7 times its 1.08 M live rows, one rebuild took
+97 s and 106 CPU-seconds at 16 threads under a 1 GiB L, and raised the RSS
+of a daemon whose engine was warm but whose bodies had not been loaded from
+0.48 to 4.35 GiB, most of it the bodies leased to project the pages; the
+new file was 1.49 GB against 6.74 GB. The same queries over the rebuilt
+file ran in 29 to 37 percent of the time they took over the old one (a
+task board 0.43 s → 0.16 s, `frontmatter` by key 0.14 s → 0.04 s), and the
+querying process peaked at 0.41 GiB against 1.30 GiB.
+
 The `memory_limit` bounds what `DuckDB`'s buffer manager holds, cached
 pages and a query's working memory alike (a `count(DISTINCT text)` over the
 76,000-page corpus raises the daemon's RSS high-water mark by about 2.0 GiB

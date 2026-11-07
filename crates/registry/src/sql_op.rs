@@ -236,66 +236,7 @@ pub(crate) fn serve(
         // The dispatch warmed first; an absent engine here is a routing break.
         return Err(Box::new(ErrorBody::new(ErrorCode::Internal)));
     };
-    let root = fs::WorkspaceRoot(ws.to_path_buf());
 
-    // An unreadable domain config FAILS the door (decision 0034 — degrading
-    // to the default domain would claim every path is hashed).
-    let domain = fs::domain::Domain::load(&root)
-        .map_err(|e| io_error(format!("cannot read the hash domain: {e}")))?;
-
-    // The mount table, with a corpus for exactly the roots this corpus's own
-    // wikilink/embed targets name — the shared assembly, so this door and the
-    // CLI lane hand the projection the same resolver inputs. Each corpus is
-    // this daemon's resident engine for that root: warmed once, refreshed
-    // O(dirty), never rebuilt from disk per call — a workspace linking into a
-    // 61k-file root would otherwise pay that root's whole walk, hash and parse
-    // here on every statement.
-    //
-    // Both the ambient corpus and each mounted root are read as generation
-    // catalogs (merkle-spec §6.8): which roots are needed is a descriptor
-    // fact, name resolution reads membership and name indexes, and the append
-    // leases one ambient body at a time.
-    let generation: &dyn model::catalog::DocumentCatalog = &*engine;
-    let mounts =
-        wire_serve::mount_corpus::load_mounts_for_from(&generation.link_roots(), &|root| {
-            registry.mounted_corpus(root)
-        });
-    let corpus = mounts.rooted_catalog(generation);
-    let probe = fs::domain::LinkTargetProbe::new(&root, &domain);
-    let exclusion = |target: &str| {
-        probe
-            .resolution(target)
-            .map(|(path, why)| (path, why.word().to_owned()))
-    };
-
-    // The `.base` plane's own walk, under the SAME domain (`base-projection.md`
-    // §3). A walk that fails hands the build no members: the append then leaves
-    // every base row where it is and the stamp says NOT ASKED — an absent walk
-    // must never read as an empty one, or the next append would tombstone every
-    // member the workspace still has.
-    let walk = registry
-        .base_walk(ws, &domain, crate::registry::DOOR_COOKIE_TIMEOUT)
-        .ok();
-    let members: Vec<view::BaseMember> = walk
-        .iter()
-        .flat_map(|w| w.members.iter())
-        .map(|m| view::BaseMember {
-            path: m.path.clone(),
-            bytes: m.bytes.clone(),
-        })
-        .collect();
-    let base = walk.as_ref().map(|w| view::BaseWalk {
-        members: &members,
-        fold: &w.fold,
-    });
-
-    // The registry's least-recently-used close counts a query as holding the
-    // cache through this `Arc`. The read below takes its own clone of it
-    // (`begin_held_read`), so the cache stays held until the read ends
-    // (merkle-spec §6.4).
-    let store = registry
-        .sql_store(ws)
-        .map_err(|e| io_error(format!("cannot open the sql cache: {e}")))?;
     // THE HOLD, AND ITS END. The mutex covers the append and the opening of
     // this call's own read — nothing else. `begin_read` clones a connection off
     // the store's DuckDB instance and issues its `BEGIN` here, under the lock,
@@ -306,22 +247,20 @@ pub(crate) fn serve(
     // queued behind the slowest one (measured: 350.6 s against a 351.6 s
     // holder, while the same probe on a DIFFERENT workspace served in 70 ms
     // through the same daemon).
-    let read = {
+    let read = with_appender(registry, ws, &engine, |append| {
+        // The registry's least-recently-used close counts a query as holding
+        // the cache through this `Arc`. The read below takes its own clone of
+        // it (`begin_held_read`), so the cache stays held until the read ends
+        // (merkle-spec §6.4).
+        let store = registry
+            .sql_store(ws)
+            .map_err(|e| io_error(format!("cannot open the sql cache: {e}")))?;
         let mut guard = lock_store_bounded(&store, ws, SQL_STORE_WAIT)?;
-        append_escalating(registry, &mut guard, |store| {
-            store.sync_catalog(
-                generation,
-                &corpus,
-                Some(mounts.set()),
-                Some(&exclusion),
-                &engine.at_fingerprint.0,
-                base.as_ref(),
-            )
-        })?;
+        append_escalating(registry, &mut guard, append)?;
         guard
             .begin_held_read(&store)
-            .map_err(|e| store_error("cannot open a read on the sql cache", e))?
-    };
+            .map_err(|e| store_error("cannot open a read on the sql cache", e))
+    })?;
 
     let result = read
         .run(query)
@@ -374,6 +313,91 @@ pub(crate) fn serve(
     }
 }
 
+/// One append to a cache of `ws`, from `engine`'s generation.
+pub(crate) type Append<'a> = dyn FnMut(&mut view::store::SqlStore) -> Result<Option<view::store::AppendCounts>, view::ViewError>
+    + 'a;
+
+/// Assemble what an append to a cache of `ws` needs at `engine`'s
+/// generation, then run `body` with the append. The assembly runs before
+/// `body`, so a caller that takes a store's mutex inside `body` holds it for
+/// the append alone. [`serve`] and the history compaction
+/// ([`crate::sql_compact`]) both append through here, so a rebuilt cache is
+/// projected from exactly the inputs a served one is.
+///
+/// # Errors
+/// `io_error` when the hash domain cannot be read; `body`'s own error.
+pub(crate) fn with_appender<T>(
+    registry: &Registry,
+    ws: &Path,
+    engine: &crate::engine::WorkspaceEngine,
+    body: impl FnOnce(&mut Append<'_>) -> Result<T, Box<ErrorBody>>,
+) -> Result<T, Box<ErrorBody>> {
+    let root = fs::WorkspaceRoot(ws.to_path_buf());
+
+    // An unreadable domain config FAILS the door (decision 0034 — degrading
+    // to the default domain would claim every path is hashed).
+    let domain = fs::domain::Domain::load(&root)
+        .map_err(|e| io_error(format!("cannot read the hash domain: {e}")))?;
+
+    // The mount table, with a corpus for exactly the roots this corpus's own
+    // wikilink/embed targets name — the shared assembly, so this door and the
+    // CLI lane hand the projection the same resolver inputs. Each corpus is
+    // this daemon's resident engine for that root: warmed once, refreshed
+    // O(dirty), never rebuilt from disk per call — a workspace linking into a
+    // 61k-file root would otherwise pay that root's whole walk, hash and parse
+    // here on every statement.
+    //
+    // Both the ambient corpus and each mounted root are read as generation
+    // catalogs (merkle-spec §6.8): which roots are needed is a descriptor
+    // fact, name resolution reads membership and name indexes, and the append
+    // leases one ambient body at a time.
+    let generation: &dyn model::catalog::DocumentCatalog = engine;
+    let mounts =
+        wire_serve::mount_corpus::load_mounts_for_from(&generation.link_roots(), &|root| {
+            registry.mounted_corpus(root)
+        });
+    let corpus = mounts.rooted_catalog(generation);
+    let probe = fs::domain::LinkTargetProbe::new(&root, &domain);
+    let exclusion = |target: &str| {
+        probe
+            .resolution(target)
+            .map(|(path, why)| (path, why.word().to_owned()))
+    };
+
+    // The `.base` plane's own walk, under the SAME domain (`base-projection.md`
+    // §3). A walk that fails hands the build no members: the append then leaves
+    // every base row where it is and the stamp says NOT ASKED — an absent walk
+    // must never read as an empty one, or the next append would tombstone every
+    // member the workspace still has.
+    let walk = registry
+        .base_walk(ws, &domain, crate::registry::DOOR_COOKIE_TIMEOUT)
+        .ok();
+    let members: Vec<view::BaseMember> = walk
+        .iter()
+        .flat_map(|w| w.members.iter())
+        .map(|m| view::BaseMember {
+            path: m.path.clone(),
+            bytes: m.bytes.clone(),
+        })
+        .collect();
+    let base = walk.as_ref().map(|w| view::BaseWalk {
+        members: &members,
+        fold: &w.fold,
+    });
+
+    let mut append = |store: &mut view::store::SqlStore| {
+        store.sync_catalog(
+            generation,
+            &corpus,
+            Some(mounts.set()),
+            Some(&exclusion),
+            &engine.at_fingerprint.0,
+            base.as_ref(),
+        )
+    };
+    body(&mut append)
+}
+
 fn store_error(context: &str, error: view::ViewError) -> Box<ErrorBody> {
     let reason = match error {
         view::ViewError::Busy(reason) => reason,
@@ -391,7 +415,7 @@ fn store_error(context: &str, error: view::ViewError) -> Box<ErrorBody> {
 
 /// Run the cache's `append`; under the SQL memory policy an append the
 /// steady limit refuses escalates (merkle-spec §6.4).
-fn append_escalating<T>(
+pub(crate) fn append_escalating<T>(
     registry: &Registry,
     store: &mut view::store::SqlStore,
     mut append: impl FnMut(&mut view::store::SqlStore) -> Result<T, view::ViewError>,

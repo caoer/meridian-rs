@@ -32,9 +32,22 @@
 //! sql-information-schema-doubling).
 //!
 //! Only `INSERT` ever runs — no UPDATE, no DELETE, on any path including
-//! repair (`DuckDB` punishes edits). The only compaction is rebuild-and-swap:
-//! the cache is a pure function of the corpus, so deleting the file is always
-//! a correct repair.
+//! repair (`DuckDB` punishes edits). The only compaction is rebuild-and-swap
+//! (§ History compaction): the cache is a pure function of the corpus, so
+//! deleting the file is always a correct repair.
+//!
+//! # History compaction
+//!
+//! `hist` only grows: every append adds a whole new version of each page it
+//! re-projects, and every latest view first picks each path's newest version
+//! out of all of them. Compaction writes a fresh file beside the store — a
+//! cold build, so it holds each page's latest version alone, generations
+//! counted from 1 again — and [`SqlStore::swap_in`] renames it over the
+//! store's file once no read is open on the old instance. The latest views
+//! answer the same rows from either file, both being at the same corpus
+//! state; `hist.*` loses every superseded version. When to compact and the
+//! build itself are the daemon's (`wire-contract.md` § A.11, history
+//! compaction); this module only swaps.
 //!
 //! # Delta grain (append protocol)
 //!
@@ -2430,6 +2443,63 @@ impl SqlStore {
         Self::recreate(file, None)
     }
 
+    /// Wait up to `wait` for every read opened on this instance to end;
+    /// `true` once none is open. A caller holding this store's mutex — under
+    /// which reads begin — only ever sees the count fall meanwhile.
+    #[must_use]
+    pub fn wait_for_reads(&self, wait: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + wait;
+        while Arc::strong_count(&self.policy) != 1 {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        true
+    }
+
+    /// Swap in `built` — a complete cache file of this store's corpus whose
+    /// writer has closed it — for this store's file, and reopen (module docs
+    /// § History compaction). The rename is the swap: a read opened before it
+    /// answered from the old file whole, a read opened after it answers from
+    /// the new one whole.
+    ///
+    /// The old instance closes first, and no read may be open on it
+    /// ([`SqlStore::wait_for_reads`]): `DuckDB` names its WAL by the file's
+    /// path, so an instance still open when the new file takes that path
+    /// would checkpoint into the old inode and unlink the new file's WAL when
+    /// it closed.
+    ///
+    /// # Errors
+    /// [`ViewError::Busy`] while a read is open on this instance, or when
+    /// `built` still has a WAL beside it; the store then serves its own file,
+    /// untouched. A failed rename or reopen leaves the store retired, and the
+    /// next sync reopens whatever file stands at its path — the old one when
+    /// the rename failed.
+    pub fn swap_in(&mut self, built: &Path) -> Result<(), ViewError> {
+        if Arc::strong_count(&self.policy) != 1 {
+            return Err(policy_error(
+                "a read on the sql cache is still open; the swap waits for it to end",
+            ));
+        }
+        if wal_path(built).exists() {
+            return Err(policy_error(format!(
+                "the rebuilt cache {} has a WAL beside it; its writer has not closed it",
+                built.display()
+            )));
+        }
+        // Retired before the close, so a failure below leaves a store the
+        // next sync reopens ([`SqlStore::recover_retired`]).
+        self.policy.retired.store(true, Ordering::Release);
+        drop(std::mem::replace(
+            &mut self.conn,
+            Connection::open_in_memory()?,
+        ));
+        std::fs::rename(built, &self.file).map_err(ViewError::Io)?;
+        *self = Self::open_limited(&self.file.clone(), self.memory_limit)?;
+        Ok(())
+    }
+
     /// The cache file this store holds open.
     #[must_use]
     pub fn file(&self) -> &Path {
@@ -4162,6 +4232,152 @@ pub(crate) mod tests {
 
         // And it still answers correctly after the store has moved on.
         assert_eq!(count_docs(read), 3, "the read still serves its snapshot");
+    }
+
+    /// The card page at its `i`-th edit: four frontmatter rows a version.
+    fn card(i: usize) -> Arc<model::Document> {
+        let raw = format!(
+            "---\ntype: task\nstatus: s{i}\nowner: w1\nsession: s\n---\n# C\nbody [[a]] v{i}\n"
+        );
+        Arc::new(model::build(raw.clone(), syntax::parse(&raw)))
+    }
+
+    /// `fixture_v1` with its card edited `edits` times, each edit its own
+    /// append: a history `edits + 1` card versions deep. The last fingerprint
+    /// is `b3b:v{edits}`.
+    fn churned(store: &mut SqlStore, edits: usize) -> model::Docs {
+        let mut docs = fixture_v1();
+        sync_ambient(store, &docs, "b3b:v0").expect("cold");
+        for i in 1..=edits {
+            docs.insert("cards/c.md".to_owned(), card(i));
+            sync_ambient(store, &docs, &format!("b3b:v{i}")).expect("append");
+        }
+        docs
+    }
+
+    /// `(hist.frontmatter, main.frontmatter)` rows.
+    fn frontmatter_rows(conn: &Connection) -> (i64, i64) {
+        conn.query_row(
+            "SELECT (SELECT count(*) FROM hist.frontmatter), (SELECT count(*) FROM frontmatter)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("count")
+    }
+
+    /// A cold build of `docs` at `fingerprint` in a directory of its own
+    /// beside `dir`'s store, closed — what a compaction swaps in.
+    fn rebuilt(dir: &tempfile::TempDir, docs: &model::Docs, fingerprint: &str) -> PathBuf {
+        let side = dir.path().join("sql-compact");
+        std::fs::create_dir_all(&side).expect("side dir");
+        let file = side.join(SQL_CACHE_FILENAME);
+        let mut built = SqlStore::open(&file).expect("open the rebuild");
+        sync_ambient(&mut built, docs, fingerprint).expect("cold build");
+        drop(built);
+        file
+    }
+
+    /// § History compaction: the swapped-in rebuild answers every latest
+    /// view with exactly the rows the old file answered, keeps only the
+    /// latest version of each page, and appends on like any cache.
+    #[test]
+    fn a_swapped_in_rebuild_answers_every_latest_view_identically_without_the_history() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let mut docs = churned(&mut store, 6);
+        let before = surface_digests(store.connection());
+        let (hist, live) = frontmatter_rows(store.connection());
+        assert!(
+            hist >= 2 * live,
+            "the fixture has history: {hist} for {live}"
+        );
+
+        let built = rebuilt(&dir, &docs, "b3b:v6");
+        store.swap_in(&built).expect("swap");
+
+        assert_eq!(
+            surface_digests(store.connection()),
+            before,
+            "every latest view answers the same rows from the rebuilt file"
+        );
+        assert_eq!(
+            frontmatter_rows(store.connection()),
+            (live, live),
+            "the history is gone, the live rows are not"
+        );
+        assert_eq!(store.pin().expect("pin").expect("pinned").generation, 1);
+        assert!(!built.exists(), "the rebuild was renamed, not copied");
+
+        docs.insert("cards/c.md".to_owned(), card(7));
+        let counts = sync_ambient(&mut store, &docs, "b3b:v7").expect("append");
+        assert_eq!((counts.generation, counts.changed), (2, 1));
+        assert_surface_matches_fresh(&store, &docs);
+    }
+
+    /// § History compaction: a read open on the old instance holds the swap
+    /// off and keeps answering from the old file whole; the swap lands once
+    /// it ends.
+    #[test]
+    fn a_read_open_across_the_swap_answers_from_the_old_file_whole() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let docs = churned(&mut store, 6);
+        let (hist, live) = frontmatter_rows(store.connection());
+        let built = rebuilt(&dir, &docs, "b3b:v6");
+
+        let read = store.begin_read().expect("read");
+        assert!(!store.wait_for_reads(std::time::Duration::from_millis(20)));
+        assert!(
+            matches!(store.swap_in(&built), Err(ViewError::Busy(_))),
+            "the swap refuses while a read is open"
+        );
+        assert!(
+            built.exists(),
+            "a refused swap leaves the rebuild where it is"
+        );
+        let (_, rows) = read
+            .run("SELECT count(*) FROM hist.frontmatter")
+            .expect("run")
+            .expect("query");
+        assert_eq!(rows, vec![vec![Json::from(hist)]], "the old file, whole");
+
+        assert!(store.wait_for_reads(std::time::Duration::ZERO));
+        store
+            .swap_in(&built)
+            .expect("the swap lands once the read ended");
+        assert_eq!(frontmatter_rows(store.connection()), (live, live));
+    }
+
+    /// § History compaction: a rebuild that is still open (its WAL beside
+    /// it) is refused, and a rename that fails leaves the store to reopen
+    /// its own file on the next sync — the old file serving, unchanged.
+    #[test]
+    fn a_rebuild_that_cannot_land_leaves_the_old_file_serving() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let docs = churned(&mut store, 6);
+        let before = surface_digests(store.connection());
+        let history = frontmatter_rows(store.connection());
+
+        let side = dir.path().join("sql-compact");
+        std::fs::create_dir_all(&side).expect("side dir");
+        let file = side.join(SQL_CACHE_FILENAME);
+        let mut open = SqlStore::open(&file).expect("open the rebuild");
+        sync_ambient(&mut open, &docs, "b3b:v6").expect("cold build");
+        assert!(wal_path(&file).exists(), "the open rebuild has its WAL");
+        assert!(matches!(store.swap_in(&file), Err(ViewError::Busy(_))));
+        assert_eq!(surface_digests(store.connection()), before);
+
+        drop(open);
+        std::fs::remove_file(&file).expect("the rebuild goes");
+        assert!(matches!(store.swap_in(&file), Err(ViewError::Io(_))));
+        assert_eq!(
+            sync_ambient(&mut store, &docs, "b3b:v6").map(|c| c.generation),
+            None,
+            "the next sync reopens the old file at its pin"
+        );
+        assert_eq!(surface_digests(store.connection()), before);
+        assert_eq!(frontmatter_rows(store.connection()), history);
     }
 
     /// A caller's GLOBAL `SET` is put back to the value the ENGINE set at
