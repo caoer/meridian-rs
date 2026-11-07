@@ -236,12 +236,28 @@ fn a_parked_checkpoint_restore_on_one_workspace_parks_nothing_on_another() {
         "A's entry adopted its checkpoint"
     );
     assert!(reg.live_feed(a).is_some(), "with a live feed behind it");
+
+    // The restored memo reports into the cell its watcher was armed with: an
+    // event the watcher accepts advances the memo's own generation.
+    let memo = reg.domain_cache(a);
+    let before = memo.lock().unwrap().feed_gen().generation();
+    std::fs::write(a.join("a.md"), "# A moved\n").unwrap();
+    let deadline = Instant::now() + ANSWERS_WITHIN;
+    while memo.lock().unwrap().feed_gen().generation() == before && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        memo.lock().unwrap().feed_gen().generation() > before,
+        "the watcher armed for A's entry advances the restored memo's feed-generation cell"
+    );
 }
 
 /// An `unregister` or a budget eviction that lands while A's entry is
 /// parked — in its watcher arm or in its restore — runs to completion
-/// without waiting on it, and the entry publishes nothing back: no feed, no
-/// memo, no checkpoint receipt. The next borrow enters afresh.
+/// without waiting on it, and the parked leader publishes nothing back: no
+/// feed, no memo, no checkpoint receipt. A borrower that was waiting on the
+/// entry gets nothing published back after an `unregister` either; after an
+/// eviction the registration survives, so it enters afresh.
 #[test]
 fn an_unregister_or_eviction_during_an_entry_gets_nothing_published_back() {
     for parked_in in ["arm", "restore"] {
@@ -256,9 +272,16 @@ fn an_unregister_or_eviction_during_an_entry_gets_nothing_published_back() {
                 &reg.pause_in_restore
             };
             let (arrived, mut release) = arm(gate, a);
-            let private = std::thread::scope(|s| {
+            let (leader, waiter) = std::thread::scope(|s| {
                 let entering = s.spawn(move || reg.domain_cache(a));
                 arrived.recv().expect("A's cold entry parks");
+                let (waiting_tx, waiting_rx) = mpsc::channel();
+                let waiting = s.spawn(move || {
+                    let memo = reg.domain_cache(a);
+                    let _ = waiting_tx.send(());
+                    memo
+                });
+                let early = waiting_rx.recv_timeout(Duration::from_millis(300));
                 let (gone_tx, gone) = mpsc::channel();
                 s.spawn(move || {
                     if removal == "unregister" {
@@ -271,29 +294,48 @@ fn an_unregister_or_eviction_during_an_entry_gets_nothing_published_back() {
                 let removed = gone.recv_timeout(ANSWERS_WITHIN);
                 release.now();
                 assert!(
+                    early.is_err(),
+                    "{case}: the second borrower waits on the entry"
+                );
+                assert!(
                     removed.is_ok(),
                     "{case}: the removal must not wait behind the parked entry"
                 );
-                entering.join().unwrap()
+                (entering.join().unwrap(), waiting.join().unwrap())
             });
+            let published = reg.domain_caches.lock().unwrap().get(a).cloned();
             assert!(
-                !reg.feeds.lock().unwrap().contains_key(a),
-                "{case}: no feed published back"
+                published.as_ref().is_none_or(|p| !Arc::ptr_eq(p, &leader)),
+                "{case}: the cancelled leader's memo is never published"
             );
-            assert!(
-                !reg.domain_caches.lock().unwrap().contains_key(a),
-                "{case}: no memo published back"
-            );
-            assert!(
-                reg.checkpoint_receipt(a).is_none(),
-                "{case}: no checkpoint receipt published back"
-            );
+            if removal == "unregister" {
+                assert!(published.is_none(), "{case}: no memo published back");
+                assert!(
+                    !reg.feeds.lock().unwrap().contains_key(a),
+                    "{case}: no feed published back"
+                );
+                assert!(
+                    reg.checkpoint_receipt(a).is_none(),
+                    "{case}: no checkpoint receipt published back"
+                );
+                assert!(
+                    !Arc::ptr_eq(&leader, &waiter),
+                    "{case}: the waiter holds a private memo of its own"
+                );
+            } else {
+                let published = published.expect("the waiter's own entry published");
+                assert!(
+                    Arc::ptr_eq(&published, &waiter),
+                    "{case}: the waiter entered afresh and published its own entry"
+                );
+                assert!(reg.live_feed(a).is_some(), "{case}: with its own feed");
+            }
             let next = reg.domain_cache(a);
             assert!(
-                !Arc::ptr_eq(&private, &next),
-                "{case}: the next borrow enters afresh"
+                !Arc::ptr_eq(&leader, &next),
+                "{case}: no later borrow sees the cancelled leader's memo"
             );
-            assert!(reg.live_feed(a).is_some(), "{case}: and arms its own feed");
+            assert!(reg.live_feed(a).is_some(), "{case}: a later borrow has a feed");
         }
     }
 }

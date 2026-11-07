@@ -175,8 +175,10 @@ fn observed_root(
 /// The door-entry observation's typed refusal (card
 /// `engine-splice-timeout-hits-rotation-seals`).
 ///
-/// A [`ErrorKind::WouldBlock`] means the shared domain memo stayed held for
-/// the door's whole budget — the SAME contention shape the workspace flock
+/// A [`ErrorKind::WouldBlock`] means the shared domain memo stayed held, or
+/// the workspace's cold entry (its watcher arm and checkpoint restore) was
+/// still running, for the door's whole budget — the SAME contention shape the
+/// workspace flock
 /// already refuses with, so it gets the same code: `workspace_busy`,
 /// transient, retry. Callers need no new vocabulary.
 ///
@@ -192,8 +194,8 @@ pub fn door_memo_refusal(e: &std::io::Error) -> Box<ErrorBody> {
     }
     let mut w = ErrorBody::new(ErrorCode::WorkspaceBusy);
     w.message = Some(
-        "the workspace's shared domain memo stayed held for this door's whole budget — \
-         nothing was committed; transient, retry"
+        "the workspace's shared domain memo stayed held, or the workspace was still entering \
+         cold, for this door's whole budget — nothing was committed; transient, retry"
             .into(),
     );
     Box::new(w)

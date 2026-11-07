@@ -451,17 +451,33 @@ struct ColdEntry {
     /// the leader's publish also takes — so the two are linearized, and a
     /// cancelled entry publishes nothing.
     cancelled: AtomicBool,
+    /// Set by an `unregister` alongside [`Self::cancelled`]. A borrower that
+    /// waited on such an entry does not enter afresh: the workspace is gone,
+    /// so it takes a private memo, as the leader does. After an eviction the
+    /// registration survives, and a waiter enters afresh.
+    unregistered: AtomicBool,
 }
 
 impl ColdEntry {
-    /// Cancel the entry's publish. The caller holds the entries lock.
-    fn cancel(&self) {
+    /// Cancel the entry's publish — for an `unregister` when `unregistered`.
+    /// The caller holds the entries lock.
+    fn cancel(&self, unregistered: bool) {
         self.cancelled.store(true, Ordering::Relaxed);
+        if unregistered {
+            self.unregistered.store(true, Ordering::Relaxed);
+        }
     }
 
     /// Whether the entry was cancelled. The caller holds the entries lock.
     fn cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Relaxed)
+    }
+
+    /// Whether an `unregister` cancelled the entry. Read after [`Self::wait`]
+    /// returned: the cancel happened before the leader finished, and the
+    /// wait observed the finish.
+    fn unregistered(&self) -> bool {
+        self.unregistered.load(Ordering::Relaxed)
     }
 
     /// The leader is done: published, cancelled, or unwound.
@@ -2176,7 +2192,8 @@ impl Registry {
     /// no byte has moved at this point in the door.
     ///
     /// # Errors
-    /// [`io::ErrorKind::WouldBlock`] when the memo stayed held for `budget`.
+    /// [`io::ErrorKind::WouldBlock`] when the memo stayed held, or the
+    /// workspace's cold entry was still running, for `budget`.
     pub fn domain_cache_within(
         &self,
         workspace: &Path,
@@ -2294,10 +2311,12 @@ impl Registry {
     ///
     /// A borrower that finds another borrower's entry running waits on that
     /// entry — within `left()` on the write door — and then reads the maps
-    /// again: the entry published, or it was cancelled and this borrower
-    /// enters afresh. A borrower that finds none leads one; the arm and the
-    /// restore are then its own work rather than a wait, as the cold fill
-    /// under the memo always was.
+    /// again: the entry published, or an eviction cancelled it and this
+    /// borrower enters afresh. An entry an `unregister` cancelled leaves this
+    /// borrower a private memo with no feed, so nothing is published back for
+    /// the removed workspace. A borrower that finds no entry leads one; the
+    /// arm and the restore are then its own work rather than a wait, as the
+    /// cold fill under the memo always was.
     ///
     /// # Errors
     /// [`io::ErrorKind::WouldBlock`] when `left()` ran out with another
@@ -2336,6 +2355,9 @@ impl Registry {
                 }
             };
             running.wait(left())?;
+            if running.unregistered() {
+                return Ok((Arc::new(Mutex::new(fs::DomainCache::default())), None));
+            }
         }
     }
 
@@ -2424,12 +2446,12 @@ impl Registry {
             }
             drop(entries);
         }
-        // Wake the waiters, then release any watcher the publish did not
-        // take — outside every lock, as the kernel stream's release always
-        // runs.
-        drop(leading);
+        // Release any watcher the publish did not take, outside every lock
+        // as the kernel stream's release always runs, and only then wake the
+        // waiters: one that enters afresh arms after this watch set is gone.
         drop(slot);
         drop(replaced);
+        drop(leading);
         (cache, feed)
     }
 
@@ -3393,7 +3415,7 @@ impl Registry {
         if removed {
             self.persist();
         }
-        let (feed, cache) = self.end_resident(std::slice::from_ref(&key));
+        let (feed, cache) = self.end_resident(std::slice::from_ref(&key), true);
         self.checkpoints
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -3817,14 +3839,15 @@ impl Registry {
         Some(victim)
     }
 
-    /// End `workspaces`' feeds and memos — `unregister` and the budget
-    /// eviction. A cold entry in flight for one of them is cancelled under
-    /// the entries lock its publish takes, so it publishes nothing back; feed
-    /// and memo leave together under one hold of both maps. The caller drops
-    /// what this returns outside every lock.
+    /// End `workspaces`' feeds and memos — `unregister` (`unregistered`) and
+    /// the budget eviction. A cold entry in flight for one of them is
+    /// cancelled under the entries lock its publish takes, so it publishes
+    /// nothing back; feed and memo leave together under one hold of both
+    /// maps. The caller drops what this returns outside every lock.
     fn end_resident(
         &self,
         workspaces: &[PathBuf],
+        unregistered: bool,
     ) -> (Vec<FeedSlot>, Vec<Arc<Mutex<fs::DomainCache>>>) {
         let entries = self
             .cold_entries
@@ -3832,7 +3855,7 @@ impl Registry {
             .unwrap_or_else(PoisonError::into_inner);
         for key in workspaces {
             if let Some(entry) = entries.get(key) {
-                entry.cancel();
+                entry.cancel(unregistered);
             }
         }
         let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
@@ -3864,7 +3887,7 @@ impl Registry {
         // them: the feed's Drop releases a kernel stream, and unbinding a
         // memo's stamps takes the memo lock — no path takes a memo lock
         // while holding a map lock (the patched_cache discipline).
-        let (feeds, caches) = self.end_resident(victims);
+        let (feeds, caches) = self.end_resident(victims, false);
         for cache in &caches {
             // The stamp plane names the ring this sweep killed, and an
             // in-flight holder may still borrow the memo privately: no
