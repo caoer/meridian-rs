@@ -3175,8 +3175,9 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
   superseded version is read from git instead. A rebuild that fails before the
   rename, or a close of the old instance that leaves its WAL behind, leaves the
   old file serving, and that cache is not picked again for an hour. A workspace
-  reaped, evicted or unregistered during its rebuild drops the new file with
-  no pause. A daemon that dies in a rebuild leaves the old file and
+  that was unregistered during its rebuild, or whose engine is gone at the swap,
+  drops the new file with no pause; one re-warmed by then takes the swap. A
+  daemon that dies in a rebuild leaves the old file and
   `sql-compact/` behind: a later look finds the directory on the open cache,
   clears it and counts that as a failure. Query forms, relation names and the
   append protocol do not change.

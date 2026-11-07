@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 use view::store::SqlStore;
 
 use crate::Registry;
+use crate::engine::WorkspaceEngine;
 
 /// The drawer subdirectory a rebuild writes its file in.
 pub(crate) const COMPACT_DIR: &str = "sql-compact";
@@ -233,8 +234,8 @@ pub(crate) struct Compacted {
 /// Why a rebuild did not land. Either way the old file still serves.
 #[derive(Debug)]
 pub(crate) enum Stopped {
-    /// The workspace's cache or engine left the daemon: nothing failed, and a
-    /// look may pick the cache again once it is back.
+    /// The workspace left the daemon, unregistered or no longer warm: nothing
+    /// failed, and a look may pick the cache again once it is back.
     Gone(&'static str),
     /// The rebuild failed or could not land: [`FAILED_PAUSE`].
     Failed(String),
@@ -279,15 +280,24 @@ pub(crate) fn compact(registry: &Registry, ws: &Path) -> Result<Compacted, Stopp
     })
 }
 
+/// `ws`'s engine, while the daemon still serves it. Checked before each step,
+/// so a workspace that left is neither appended for nor reopened by the swap.
+fn still_served(registry: &Registry, ws: &Path) -> Result<Arc<WorkspaceEngine>, Stopped> {
+    if !registry.is_registered(ws) {
+        return Err(Stopped::Gone("the workspace was unregistered"));
+    }
+    registry
+        .engine_snapshot(ws)
+        .ok_or(Stopped::Gone("the workspace is no longer warm"))
+}
+
 /// Cold-build `file` at the newest generation, then catch up, then close it.
 fn build(registry: &Registry, ws: &Path, file: &Path) -> Result<(), Stopped> {
     let mut built = SqlStore::open_limited(file, registry.sql_cache_limit())
         .map_err(|e| Stopped::Failed(format!("cannot open the rebuild file: {e}")))?;
     let mut at = None;
     for _ in 0..=CATCH_UP {
-        let engine = registry
-            .engine_snapshot(ws)
-            .ok_or(Stopped::Gone("the workspace is no longer warm"))?;
+        let engine = still_served(registry, ws)?;
         if at.as_deref() == Some(engine.at_fingerprint.0.as_str()) {
             break;
         }
@@ -320,9 +330,7 @@ fn build(registry: &Registry, ws: &Path, file: &Path) -> Result<(), Stopped> {
 fn swap(registry: &Registry, ws: &Path, file: &Path) -> Result<Duration, Stopped> {
     let give_up = Instant::now() + SWAP_GIVE_UP;
     loop {
-        registry
-            .engine_snapshot(ws)
-            .ok_or(Stopped::Gone("the workspace is no longer warm"))?;
+        still_served(registry, ws)?;
         let live = registry
             .sql_store(ws)
             .map_err(|e| Stopped::Failed(format!("cannot open the sql cache: {e}")))?;
@@ -595,20 +603,24 @@ mod tests {
 
         let done = AtomicBool::new(false);
         let served = AtomicUsize::new(0);
+        // Ends the queries if a panic below leaves `done` unset.
+        let deadline = Instant::now() + Duration::from_mins(5);
         thread::scope(|scope| {
             let queries = scope.spawn(|| {
-                while !done.load(Ordering::Acquire) {
+                while !done.load(Ordering::Acquire) && Instant::now() < deadline {
                     assert_eq!(surface(&reg, &ws), before, "through the rebuild");
                     served.fetch_add(1, Ordering::Relaxed);
                 }
             });
-            compact(&reg, &ws).expect("rebuilt");
+            let rebuilt = compact(&reg, &ws);
+            // At least one answer from the swapped-in file.
             let at_swap = served.load(Ordering::Relaxed);
-            while served.load(Ordering::Relaxed) == at_swap {
+            while served.load(Ordering::Relaxed) == at_swap && !queries.is_finished() {
                 thread::yield_now();
             }
             done.store(true, Ordering::Release);
             queries.join().expect("no query failed or was refused");
+            rebuilt.expect("rebuilt");
         });
         assert_eq!(
             read_answer.recv().unwrap(),
@@ -703,6 +715,27 @@ mod tests {
         assert_eq!(counts(&reg, &ws), history, "the old file, whole");
     }
 
+    /// An unregister during a rebuild ends it: nothing reopens the cache of
+    /// a workspace the daemon no longer serves, though its engine stays.
+    #[test]
+    fn a_workspace_unregistered_during_its_rebuild_gets_no_handle_back() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = churned(&reg, home.path(), 6);
+        let (hooked_reg, hooked_ws) = (Arc::clone(&reg), ws.clone());
+        hook(move || {
+            assert!(hooked_reg.unregister(&hooked_ws));
+            Ok(())
+        });
+
+        look(&reg, 2);
+
+        assert!(reg.engine_snapshot(&ws).is_some(), "its engine stays");
+        assert!(reg.open_sql_store(&ws).is_none(), "no handle came back");
+        assert!(!reg.sql_compaction().is_paused(&ws));
+        assert!(!reg.drawer(&ws).join(COMPACT_DIR).exists());
+    }
+
     /// A failed rebuild leaves its own cache out of the looks and no other;
     /// the pause over, it is picked again.
     #[test]
@@ -759,7 +792,7 @@ mod tests {
 
         tick(&reg, 2);
 
-        let deadline = Instant::now() + Duration::from_secs(120);
+        let deadline = Instant::now() + Duration::from_mins(2);
         while reg.sql_compaction().running.load(Ordering::Acquire) {
             assert!(Instant::now() < deadline, "the rebuild never ended");
             thread::sleep(Duration::from_millis(10));

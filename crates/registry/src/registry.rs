@@ -1918,6 +1918,15 @@ impl Registry {
             .map(|handle| Arc::clone(&handle.store))
     }
 
+    /// Whether `workspace` is registered: an unregister leaves its engine
+    /// resident, so the engine alone does not say it is still served.
+    pub(crate) fn is_registered(&self, workspace: &Path) -> bool {
+        self.inner
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(workspace)
+    }
+
     /// Run `f` under the sql handle map's lock, if `store` is still
     /// `workspace`'s open handle — no unregister, idle reap, eviction or
     /// close replaced it — so no second instance can open the file meanwhile.
