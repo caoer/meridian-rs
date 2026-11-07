@@ -3156,8 +3156,8 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
   stays `io_error` / `env`.
 - **History compaction** (off unless the daemon's environment sets
   `MRD_SQL_COMPACTION` to a whole number m ≥ 2; `0` or unset never compacts):
-  once a reap interval the daemon counts, on a read of each open cache,
-  `hist.frontmatter` rows against the rows `main.frontmatter` serves, and
+  once a reap interval the daemon counts, on a read of each open cache of a
+  registered workspace, `hist.frontmatter` rows against the rows `main.frontmatter` serves, and
   rebuilds the cache whose history is the largest multiple of its live rows,
   if that is at least m — one rebuild at a time per daemon, on a thread of its
   own. The rebuild is a cold build of a fresh file in the drawer's
