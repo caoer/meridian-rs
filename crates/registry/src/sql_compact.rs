@@ -197,14 +197,15 @@ fn clear_leftovers(registry: &Registry) {
 }
 
 /// The open cache whose history is the largest multiple of its live rows,
-/// among those due at `multiple` and not paused, with its counts. Each handle
-/// is held for its own count alone, so the rest stay free for a close.
+/// among those due at `multiple` of workspaces still registered and not
+/// paused, with its counts. Each handle is held for its own count alone, so
+/// the rest stay free for a close.
 fn most_due(registry: &Registry, multiple: u64) -> Option<(PathBuf, u64, u64)> {
     let state = registry.sql_compaction();
     registry
         .open_sql_workspaces()
         .into_iter()
-        .filter(|ws| !state.is_paused(ws))
+        .filter(|ws| !state.is_paused(ws) && registry.is_registered(ws))
         .filter_map(|ws| {
             let store = registry.open_sql_store(&ws)?;
             match frontmatter_rows(&store) {
@@ -734,6 +735,59 @@ mod tests {
         assert!(reg.open_sql_store(&ws).is_none(), "no handle came back");
         assert!(!reg.sql_compaction().is_paused(&ws));
         assert!(!reg.drawer(&ws).join(COMPACT_DIR).exists());
+    }
+
+    /// An unregister during the swap's wait for a long read ends it too: the
+    /// next attempt reopens nothing.
+    #[test]
+    fn a_workspace_unregistered_during_the_swaps_wait_gets_no_handle_back() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = churned(&reg, home.path(), 6);
+        let (read_over, wait_for_read) = std::sync::mpsc::channel();
+        let (hooked_reg, hooked_ws) = (Arc::clone(&reg), ws.clone());
+        hook(move || {
+            let store = store_of(&hooked_reg, &hooked_ws);
+            let read = store
+                .lock()
+                .unwrap()
+                .begin_held_read(&store)
+                .map_err(|e| e.to_string())?;
+            thread::spawn(move || {
+                // Past the first attempt's drain, and into the second attempt.
+                thread::sleep(Duration::from_secs(1));
+                assert!(hooked_reg.unregister(&hooked_ws));
+                thread::sleep(Duration::from_millis(2500));
+                drop(read);
+                let _ = read_over.send(());
+            });
+            Ok(())
+        });
+
+        let stopped = compact(&reg, &ws).expect_err("the unregister ends it");
+
+        assert!(matches!(stopped, Stopped::Gone(_)), "{stopped}");
+        wait_for_read.recv().unwrap();
+        assert!(reg.open_sql_store(&ws).is_none(), "no handle came back");
+    }
+
+    /// A due cache a connection still bound to an unregistered workspace
+    /// keeps open takes no look from a due cache the daemon serves.
+    #[test]
+    fn an_unregistered_cache_takes_no_look_from_a_served_one() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let gone = churned_named(&reg, home.path(), "gone", 8);
+        let kept = churned_named(&reg, home.path(), "kept", 4);
+        let gone_history = counts(&reg, &gone);
+        let (_, kept_live) = counts(&reg, &kept);
+        assert!(reg.unregister(&gone));
+        rows(&reg, &gone, "SELECT 1");
+
+        look(&reg, 2);
+
+        assert_eq!(counts(&reg, &kept), (kept_live, kept_live));
+        assert_eq!(counts(&reg, &gone), gone_history);
     }
 
     /// A failed rebuild leaves its own cache out of the looks and no other;
