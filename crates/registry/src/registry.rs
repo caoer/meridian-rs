@@ -182,7 +182,17 @@ pub struct Registry {
     /// feed covers the cold gap. A slot that failed to start is
     /// sticky-Failed, loud once; that workspace keeps the pre-feed
     /// semantics (memo drops on reap).
+    ///
+    /// Published together with the workspace's memo by its cold entry
+    /// ([`Self::cold_entries`]), and removed together with it, both maps
+    /// locked in the order `feeds` → `domain_caches`.
     feeds: Mutex<HashMap<PathBuf, FeedSlot>>,
+    /// The cold entries in flight, one per workspace (merkle-spec §6.4, the
+    /// cold entry). The lock is held for map transitions only, never across
+    /// a watcher arm or a checkpoint restore. Lock order: `cold_entries` →
+    /// `feeds` → `domain_caches`; an `unregister` or a budget eviction
+    /// cancels an entry under it, and the entry's publish checks under it.
+    cold_entries: Mutex<HashMap<PathBuf, Arc<ColdEntry>>>,
     /// § A.11 resident sql caches: the open `sql.duckdb` handle per
     /// workspace, this daemon being each file's single owner. The CONNECTION
     /// dies on idle-reap with the engine; the FILE deliberately survives —
@@ -421,6 +431,108 @@ impl FeedSlot {
                 FeedSlot::Failed
             }
         }
+    }
+}
+
+/// One workspace's cold entry in flight (merkle-spec §6.4, the cold entry):
+/// its leader arms the watcher and restores or creates the memo outside every
+/// registry-map lock, then publishes both. Every other borrower of that
+/// workspace parks HERE, on the entry, never on a map lock — so another
+/// workspace's operation never waits on the arm or the restore.
+///
+/// The entry stays in [`Registry::cold_entries`] until its leader is done,
+/// cancelled or not, so a workspace never has two arms in flight: a borrower
+/// arriving after a cancel waits for the cancelled leader, then enters afresh.
+#[derive(Debug, Default)]
+struct ColdEntry {
+    done: Mutex<bool>,
+    landed: Condvar,
+    /// Set by an `unregister` or a budget eviction, under the entries lock
+    /// the leader's publish also takes — so the two are linearized, and a
+    /// cancelled entry publishes nothing.
+    cancelled: AtomicBool,
+}
+
+impl ColdEntry {
+    /// Cancel the entry's publish. The caller holds the entries lock.
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether the entry was cancelled. The caller holds the entries lock.
+    fn cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+
+    /// The leader is done: published, cancelled, or unwound.
+    fn finish(&self) {
+        *self.done.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        self.landed.notify_all();
+    }
+
+    /// Wait for the leader, within `budget` when there is one.
+    ///
+    /// # Errors
+    /// [`io::ErrorKind::WouldBlock`] when the entry is still running once
+    /// `budget` has elapsed — the write door's `workspace_busy`.
+    fn wait(&self, budget: Option<Duration>) -> io::Result<()> {
+        let deadline = budget.map(|budget| Instant::now() + budget);
+        let mut done = self.done.lock().unwrap_or_else(PoisonError::into_inner);
+        while !*done {
+            done = match deadline {
+                None => self
+                    .landed
+                    .wait(done)
+                    .unwrap_or_else(PoisonError::into_inner),
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "the workspace's cold entry (watcher arm and checkpoint restore) \
+                             is still running",
+                        ));
+                    }
+                    self.landed
+                        .wait_timeout(done, left)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0
+                }
+            };
+        }
+        Ok(())
+    }
+}
+
+/// A workspace's published memo and the live feed behind it (`None`: its
+/// watcher start failed, the pre-feed semantics).
+type Resident = (Arc<Mutex<fs::DomainCache>>, Option<Arc<feed::WorkspaceFeed>>);
+
+/// The leader's hold on its [`ColdEntry`]: however the leader leaves —
+/// published, cancelled, or unwinding — the entry leaves the map if it is
+/// still this one, and its waiters wake.
+struct Leading<'a> {
+    registry: &'a Registry,
+    workspace: &'a Path,
+    entry: Arc<ColdEntry>,
+}
+
+impl Drop for Leading<'_> {
+    fn drop(&mut self) {
+        {
+            let mut entries = self
+                .registry
+                .cold_entries
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if entries
+                .get(self.workspace)
+                .is_some_and(|entry| Arc::ptr_eq(entry, &self.entry))
+            {
+                entries.remove(self.workspace);
+            }
+        }
+        self.entry.finish();
     }
 }
 
@@ -1054,6 +1166,7 @@ impl Registry {
             domain_caches: Mutex::new(HashMap::new()),
             // Cold: feeds start with the first resident state per workspace.
             feeds: Mutex::new(HashMap::new()),
+            cold_entries: Mutex::new(HashMap::new()),
             // Cold: no open sql handles; first `sql` op opens (or cold-builds)
             // each workspace's file.
             sql_stores: Mutex::new(HashMap::new()),
@@ -2042,7 +2155,10 @@ impl Registry {
     /// must predate the first observation — no observation may land without
     /// gap coverage behind it) and applies its pending dirty set, so every
     /// consumer — currency pass, warm rebuild, run-plane bracket, script
-    /// door — reads through a memo the feed has already patched.
+    /// door — reads through a memo the feed has already patched. A workspace
+    /// with no memo is entered cold by one borrower, outside every map lock,
+    /// while its other borrowers wait for that entry
+    /// ([`Self::resident_memo`]).
     #[must_use]
     pub fn domain_cache(&self, workspace: &Path) -> Arc<Mutex<fs::DomainCache>> {
         self.patched_cache(workspace).0
@@ -2125,49 +2241,19 @@ impl Registry {
     ///
     /// # Errors
     /// [`io::ErrorKind::WouldBlock`] when `budget` elapsed with the memo still
-    /// held — mapped at the wire edge to the same `workspace_busy` refusal a
-    /// contended flock already produces.
+    /// held, or with the workspace's cold entry still running — mapped at the
+    /// wire edge to the same `workspace_busy` refusal a contended flock
+    /// already produces.
     fn patched_cache_within(
         &self,
         workspace: &Path,
         budget: Option<Duration>,
     ) -> io::Result<(Arc<Mutex<fs::DomainCache>>, Option<feed::Applied>)> {
-        // ONE deadline for the whole call: two acquisitions that each got the
-        // full budget would let the door wait twice over it.
+        // ONE deadline for the whole call: two waits that each got the full
+        // budget would let the door wait twice over it.
         let started = Instant::now();
         let left = || budget.map(|b| b.saturating_sub(started.elapsed()));
-        let cache = {
-            let mut caches = self
-                .domain_caches
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            if let Some(cache) = caches.get(workspace) {
-                Arc::clone(cache)
-            } else {
-                // Cold entry — the one door a §6.5 checkpoint can enter
-                // through. A restore that discards, or finds no file, yields
-                // the same empty memo this map always defaulted to, so the
-                // cold path is unchanged by construction.
-                let restored = self.restore_checkpoint(workspace);
-                let cache = Arc::new(Mutex::new(restored.unwrap_or_default()));
-                caches.insert(workspace.to_path_buf(), Arc::clone(&cache));
-                cache
-            }
-        };
-        // The feed reports into the memo's generation cell so the §6.2 fence
-        // and the rescan-loss ledger are one instrument.
-        let feed_cell = fs::lock_within(&cache, left())?.feed_gen();
-        let feed = {
-            let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
-            match feeds.entry(workspace.to_path_buf()).or_insert_with(|| {
-                #[cfg(test)]
-                park_at(&self.pause_in_feed_start, workspace);
-                FeedSlot::start(workspace, feed_cell)
-            }) {
-                FeedSlot::Live(feed) => Some(Arc::clone(feed)),
-                FeedSlot::Failed => None,
-            }
-        };
+        let (cache, feed) = self.resident_memo(workspace, &left)?;
         let ring = {
             let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
             rings.get(workspace).cloned()
@@ -2201,6 +2287,150 @@ impl Registry {
             }
         }
         Ok((cache, applied))
+    }
+
+    /// The workspace's published memo and its live feed, entering the
+    /// workspace cold when it has no memo (merkle-spec §6.4, the cold entry).
+    ///
+    /// A borrower that finds another borrower's entry running waits on that
+    /// entry — within `left()` on the write door — and then reads the maps
+    /// again: the entry published, or it was cancelled and this borrower
+    /// enters afresh. A borrower that finds none leads one; the arm and the
+    /// restore are then its own work rather than a wait, as the cold fill
+    /// under the memo always was.
+    ///
+    /// # Errors
+    /// [`io::ErrorKind::WouldBlock`] when `left()` ran out with another
+    /// borrower's entry still running.
+    fn resident_memo(
+        &self,
+        workspace: &Path,
+        left: &dyn Fn() -> Option<Duration>,
+    ) -> io::Result<Resident> {
+        loop {
+            if let Some(published) = self.published_memo(workspace) {
+                return Ok(published);
+            }
+            let running = {
+                let mut entries = self
+                    .cold_entries
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                // Again under the entries lock, which every publish takes: a
+                // memo still missing here was published by no entry, so the
+                // entry found next is the one to wait on.
+                if let Some(published) = self.published_memo(workspace) {
+                    return Ok(published);
+                }
+                if let Some(entry) = entries.get(workspace) {
+                    Arc::clone(entry)
+                } else {
+                    let entry = Arc::new(ColdEntry::default());
+                    entries.insert(workspace.to_path_buf(), Arc::clone(&entry));
+                    drop(entries);
+                    return Ok(self.enter_cold(Leading {
+                        registry: self,
+                        workspace,
+                        entry,
+                    }));
+                }
+            };
+            running.wait(left())?;
+        }
+    }
+
+    /// The workspace's published memo and its live feed, when it has a memo.
+    /// Both maps are read under one hold, in the `feeds` → `domain_caches`
+    /// order every path holding both takes, so the pair is one published
+    /// state. A memo with no live feed belongs to a workspace whose watcher
+    /// start failed, which keeps the pre-feed semantics.
+    fn published_memo(&self, workspace: &Path) -> Option<Resident> {
+        let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+        let caches = self
+            .domain_caches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let cache = Arc::clone(caches.get(workspace)?);
+        let feed = match feeds.get(workspace) {
+            Some(FeedSlot::Live(feed)) => Some(Arc::clone(feed)),
+            _ => None,
+        };
+        Some((cache, feed))
+    }
+
+    /// Lead the workspace's cold entry with no registry-map lock held across
+    /// its work. The watcher is armed first, unless a start already failed
+    /// (sticky). Then the memo is restored from its §6.5 checkpoint or
+    /// created empty. Both report into one feed-generation cell, so the §6.2
+    /// fence and the rescan-loss ledger stay one instrument, and arming first
+    /// makes the restore's pre-serve pass an observation with the feed behind
+    /// it.
+    ///
+    /// The publish takes the entries lock, then both maps. An `unregister` or
+    /// a budget eviction that cancelled the entry meanwhile gets nothing
+    /// published back. The borrower then keeps a private memo with no feed,
+    /// which dies with it (the in-flight holder of [`Self::domain_cache`]),
+    /// and the watcher is released outside every lock.
+    fn enter_cold(&self, leading: Leading<'_>) -> Resident {
+        let workspace = leading.workspace;
+        let failed = matches!(
+            self.feeds
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(workspace),
+            Some(FeedSlot::Failed)
+        );
+        let cell = fs::stable::FeedGen::default();
+        let mut slot = (!failed).then(|| {
+            #[cfg(test)]
+            park_at(&self.pause_in_feed_start, workspace);
+            FeedSlot::start(workspace, cell.clone())
+        });
+        // A restore that discards, or finds no file, yields the empty memo
+        // the cold path always started from.
+        let (memo, receipt) = match self.restore_checkpoint(workspace, cell.clone()) {
+            Some((memo, receipt)) => (memo, Some(receipt)),
+            None => (fs::DomainCache::with_feed(cell), None),
+        };
+        let cache = Arc::new(Mutex::new(memo));
+        let mut feed = None;
+        let mut replaced = None;
+        {
+            let entries = self
+                .cold_entries
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if !leading.entry.cancelled() {
+                let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut caches = self
+                    .domain_caches
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if let Some(slot) = slot.take() {
+                    if let FeedSlot::Live(live) = &slot {
+                        feed = Some(Arc::clone(live));
+                    }
+                    replaced = feeds.insert(workspace.to_path_buf(), slot);
+                }
+                caches.insert(workspace.to_path_buf(), Arc::clone(&cache));
+                drop(caches);
+                drop(feeds);
+                if let Some(receipt) = receipt {
+                    self.checkpoints
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .insert(workspace.to_path_buf(), receipt);
+                }
+            }
+            drop(entries);
+        }
+        // Wake the waiters, then release any watcher the publish did not
+        // take — outside every lock, as the kernel stream's release always
+        // runs.
+        drop(leading);
+        drop(slot);
+        drop(replaced);
+        (cache, feed)
     }
 
     /// The workspace's current root at the cheapest lawful grain (merged
@@ -2616,12 +2846,21 @@ impl Registry {
     /// ring is no journal and no cursor can anchor against a journal that
     /// does not exist. `None` when there is no file or it was discarded (the
     /// discard is loud and labeled at the source).
-    fn restore_checkpoint(&self, workspace: &Path) -> Option<fs::DomainCache> {
+    ///
+    /// The memo reports into `feed`, the cell the workspace's watcher was
+    /// armed with. The receipt is the caller's to publish with the memo
+    /// ([`Self::enter_cold`]), so a cancelled entry records none.
+    fn restore_checkpoint(
+        &self,
+        workspace: &Path,
+        feed: fs::stable::FeedGen,
+    ) -> Option<(fs::DomainCache, crate::checkpoint::CheckpointReceipt)> {
         let ring = {
             let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
             rings.get(workspace).map(Arc::clone)
         };
-        let restored = crate::checkpoint::restore(&self.cache_root, workspace, ring.as_deref());
+        let restored =
+            crate::checkpoint::restore(&self.cache_root, workspace, ring.as_deref(), feed);
         #[cfg(test)]
         park_at(&self.pause_in_restore, workspace);
         let (cache, receipt) = restored?;
@@ -2631,11 +2870,7 @@ impl Registry {
             receipt.leaves,
             receipt.replayed
         );
-        self.checkpoints
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(workspace.to_path_buf(), receipt);
-        Some(cache)
+        Some((cache, receipt))
     }
 
     /// What this workspace's last §6.5 checkpoint restore delivered — the
@@ -3158,17 +3393,7 @@ impl Registry {
         if removed {
             self.persist();
         }
-        let feed = {
-            let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
-            feeds.remove(&key)
-        };
-        let cache = {
-            let mut caches = self
-                .domain_caches
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            caches.remove(&key)
-        };
+        let (feed, cache) = self.end_resident(std::slice::from_ref(&key));
         self.checkpoints
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -3592,6 +3817,38 @@ impl Registry {
         Some(victim)
     }
 
+    /// End `workspaces`' feeds and memos — `unregister` and the budget
+    /// eviction. A cold entry in flight for one of them is cancelled under
+    /// the entries lock its publish takes, so it publishes nothing back; feed
+    /// and memo leave together under one hold of both maps. The caller drops
+    /// what this returns outside every lock.
+    fn end_resident(
+        &self,
+        workspaces: &[PathBuf],
+    ) -> (Vec<FeedSlot>, Vec<Arc<Mutex<fs::DomainCache>>>) {
+        let entries = self
+            .cold_entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for key in workspaces {
+            if let Some(entry) = entries.get(key) {
+                entry.cancel();
+            }
+        }
+        let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut caches = self
+            .domain_caches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        (
+            workspaces.iter().filter_map(|key| feeds.remove(key)).collect(),
+            workspaces
+                .iter()
+                .filter_map(|key| caches.remove(key))
+                .collect(),
+        )
+    }
+
     /// The total eviction of `victims`, whose rings the caller removed under
     /// its decision: engine, feed, memo (stamps unbound), sql handle, module
     /// cache and pre-warm signature all drop; the registration survives.
@@ -3607,17 +3864,7 @@ impl Registry {
         // them: the feed's Drop releases a kernel stream, and unbinding a
         // memo's stamps takes the memo lock — no path takes a memo lock
         // while holding a map lock (the patched_cache discipline).
-        let feeds: Vec<FeedSlot> = {
-            let mut map = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
-            victims.iter().filter_map(|key| map.remove(key)).collect()
-        };
-        let caches: Vec<Arc<Mutex<fs::DomainCache>>> = {
-            let mut map = self
-                .domain_caches
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            victims.iter().filter_map(|key| map.remove(key)).collect()
-        };
+        let (feeds, caches) = self.end_resident(victims);
         for cache in &caches {
             // The stamp plane names the ring this sweep killed, and an
             // in-flight holder may still borrow the memo privately: no

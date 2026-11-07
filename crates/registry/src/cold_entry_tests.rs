@@ -118,7 +118,7 @@ fn door<'scope, 'env>(
     door.recv_timeout(ANSWERS_WITHIN)
 }
 
-/// The 2026-11-07 stall: arming a cold root's recursive watch held the
+/// The stall this reproduces: arming a cold root's recursive watch held the
 /// registry-wide feed map for minutes, and every root's borrow and currency
 /// pass waited behind it. With A's arm parked, B (warm) and C (cold) are
 /// served, and A's entry still lands its feed once released.

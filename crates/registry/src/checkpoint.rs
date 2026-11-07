@@ -148,10 +148,13 @@ pub(crate) fn commit(cache_root: &Path, workspace: &Path, bytes: &[u8]) -> bool 
 ///
 /// `ring` is the workspace's LIVE delta ring, or `None` when it holds none —
 /// no ring is no journal, so no cursor can anchor and the evidence arm runs.
+/// `feed` is the feed-generation cell the restored memo reports into: the
+/// one the workspace's watcher was armed with.
 pub(crate) fn restore(
     cache_root: &Path,
     workspace: &Path,
     ring: Option<&WorkspaceRing>,
+    feed: fs::stable::FeedGen,
 ) -> Option<(fs::DomainCache, CheckpointReceipt)> {
     let file = path(cache_root, workspace);
     let bytes = match std::fs::read(&file) {
@@ -184,7 +187,7 @@ pub(crate) fn restore(
             return None;
         }
     };
-    let restored = match fs::checkpoint::restore(&bytes, workspace, &domain) {
+    let restored = match fs::checkpoint::restore(&bytes, workspace, &domain, feed) {
         Ok(restored) => restored,
         Err(discard) => {
             // COLD re-baseline: the rows are not lawful statements about this
@@ -471,7 +474,7 @@ mod tests {
 
         // Restart: restore and replay.
         let (mut back, receipt) =
-            restore(&cache_root, &ws, Some(&ring)).expect("the checkpoint restores");
+            restore(&cache_root, &ws, Some(&ring), fs::stable::FeedGen::default()).expect("the checkpoint restores");
 
         assert!(
             receipt.anchored,
@@ -539,7 +542,7 @@ mod tests {
         let restarted = WorkspaceRing::new(&root);
 
         let (mut back, receipt) =
-            restore(&cache_root, &ws, Some(&restarted)).expect("rows survive an unjournaled gap");
+            restore(&cache_root, &ws, Some(&restarted), fs::stable::FeedGen::default()).expect("rows survive an unjournaled gap");
 
         // One labeled warm re-baseline on cursor no-anchor, object retained.
         assert!(!receipt.anchored);
@@ -608,7 +611,7 @@ mod tests {
         let restarted = WorkspaceRing::new(&root);
         assert_ne!(dead.instance(), restarted.instance());
 
-        let (back, receipt) = restore(&cache_root, &ws, Some(&restarted))
+        let (back, receipt) = restore(&cache_root, &ws, Some(&restarted), fs::stable::FeedGen::default())
             .expect("a cursor mismatch forfeits replay, never the object");
 
         assert_eq!(receipt.leaves, 3, "every row survives the warm re-baseline");
@@ -650,7 +653,7 @@ mod tests {
         std::fs::write(ws.join("notes/b.md"), "# B moved while down\n").unwrap();
 
         let (mut back, receipt) =
-            restore(&cache_root, &ws, Some(&fresh)).expect("rows survive a dead cursor");
+            restore(&cache_root, &ws, Some(&fresh), fs::stable::FeedGen::default()).expect("rows survive a dead cursor");
         assert!(!receipt.anchored);
         assert_eq!(receipt.replayed, 0, "nothing can be replayed");
         assert_eq!(receipt.leaves, 3, "the rows are adopted as evidence");
@@ -701,7 +704,7 @@ mod tests {
         std::fs::write(ws.join("meridian/domain.md"), "---\nversion: 3\n---\n").unwrap();
 
         assert!(
-            restore(&cache_root, &ws, Some(&ring)).is_none(),
+            restore(&cache_root, &ws, Some(&ring), fs::stable::FeedGen::default()).is_none(),
             "a checkpoint may not outlive the domain version it was folded under"
         );
         assert!(

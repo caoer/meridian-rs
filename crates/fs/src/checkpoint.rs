@@ -113,7 +113,8 @@ pub struct Restored {
     /// The rebuilt resident memo: leaf rows, radix tree re-composed and
     /// verified against the stored `tree_root`, observed domain installed,
     /// marked unobserved so nothing serves before the §6.2 floor runs.
-    /// Calibration, feed generation, and counters start fresh.
+    /// It reports into the caller's feed-generation cell; calibration and
+    /// counters start fresh.
     pub cache: DomainCache,
     /// The epoch the cursor was numbered under. The caller compares it
     /// against the LIVE journal: equal ⇒ the cursor may anchor and replay is
@@ -297,7 +298,8 @@ impl Snapshot {
 /// current hash law is the resident encoding's constant). On success the
 /// rebuilt tree is verified against the stored `tree_root` and `domain` is
 /// installed as the observed generation, so the overlay doors are open for
-/// the caller's journal replay.
+/// the caller's journal replay. The memo reports into `feed`, so a watcher
+/// armed before the restore fences the restore's own reads.
 ///
 /// The stored journal pair rides out on [`Restored`] unjudged — replay
 /// authority is the caller's adjudication, never this module's (module docs,
@@ -306,7 +308,12 @@ impl Snapshot {
 /// # Errors
 /// [`Discard`] naming the refusing fact. The caller re-baselines loudly,
 /// exactly once — partial adoption does not exist.
-pub fn restore(bytes: &[u8], workspace: &Path, domain: &Domain) -> Result<Restored, Discard> {
+pub fn restore(
+    bytes: &[u8],
+    workspace: &Path,
+    domain: &Domain,
+    feed: stable::FeedGen,
+) -> Result<Restored, Discard> {
     let rest = bytes
         .strip_prefix(VERSION_LINE)
         .and_then(|r| r.strip_prefix(b"\n"))
@@ -347,7 +354,7 @@ pub fn restore(bytes: &[u8], workspace: &Path, domain: &Domain) -> Result<Restor
         parse_journal(journal_line).ok_or(Discard::Format("bad journal line"))?;
     let tree_root = parse_hex32(tree_root_hex).ok_or(Discard::Format("bad tree-root value"))?;
 
-    let mut cache = DomainCache::default();
+    let mut cache = DomainCache::with_feed(feed);
     let mut rows = 0usize;
     while !lines.is_empty() {
         let (line, rest) = split_line(lines).ok_or(Discard::Format("unterminated row"))?;
@@ -514,7 +521,7 @@ mod tests {
 
     fn restore_here(bytes: &[u8], dir: &Path) -> Result<Restored, Discard> {
         let domain = Domain::load(&WorkspaceRoot(dir.to_path_buf())).unwrap();
-        restore(bytes, dir, &domain)
+        restore(bytes, dir, &domain, stable::FeedGen::default())
     }
 
     /// Round trip: the restored memo carries the same leaves, binds the same
@@ -576,7 +583,7 @@ mod tests {
         let (_, bytes) = observed(tmp.path());
         let domain = Domain::load(&WorkspaceRoot(tmp.path().to_path_buf())).unwrap();
         assert!(matches!(
-            restore(&bytes, Path::new("/else/where"), &domain),
+            restore(&bytes, Path::new("/else/where"), &domain, stable::FeedGen::default()),
             Err(Discard::Workspace { .. })
         ));
         // Domain-version bump: the config declares a new version — the
@@ -590,7 +597,7 @@ mod tests {
         let bumped = Domain::load(&WorkspaceRoot(tmp.path().to_path_buf())).unwrap();
         assert_eq!(bumped.version(), 2);
         assert!(matches!(
-            restore(&bytes, tmp.path(), &bumped),
+            restore(&bytes, tmp.path(), &bumped, stable::FeedGen::default()),
             Err(Discard::Version {
                 stored: (0, model::HASH_LAW_RADIX),
                 current: (2, model::HASH_LAW_RADIX),
