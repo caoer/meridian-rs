@@ -51,6 +51,7 @@ mod run_modules;
 mod run_op;
 mod script_op;
 mod server;
+mod sql_compact;
 mod sql_op;
 mod state;
 // Fixture support, never on the production surface: `test-support` is enabled

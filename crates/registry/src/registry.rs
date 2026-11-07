@@ -189,6 +189,9 @@ pub struct Registry {
     sql_stores: Mutex<HashMap<PathBuf, SqlHandle>>,
     /// The tick [`Self::sql_store`] stamps a handle with.
     sql_clock: AtomicU64,
+    /// The sql caches' history compaction: one rebuild at a time, and the
+    /// caches a failed one left out of the looks ([`crate::sql_compact`]).
+    sql_compaction: crate::sql_compact::State,
     /// The SQL memory policy, set with or without a residency host; `None`
     /// (no host and no readable physical memory, or a registry built
     /// without [`Self::with_residency`]) keeps every cache open under
@@ -1011,6 +1014,7 @@ impl Registry {
             // each workspace's file.
             sql_stores: Mutex::new(HashMap::new()),
             sql_clock: AtomicU64::new(0),
+            sql_compaction: crate::sql_compact::State::default(),
             sql_budget: None,
             sql_escalation: None,
             // Cold: no restore has run; each workspace's first resident memo
@@ -1889,6 +1893,76 @@ impl Registry {
             },
         );
         Ok(store)
+    }
+
+    /// The workspaces with an open sql cache: what a history compaction looks
+    /// over ([`crate::sql_compact`]).
+    pub(crate) fn open_sql_workspaces(&self) -> Vec<PathBuf> {
+        self.sql_stores
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// `workspace`'s open sql cache handle, without stamping its last use.
+    pub(crate) fn open_sql_store(
+        &self,
+        workspace: &Path,
+    ) -> Option<Arc<Mutex<view::store::SqlStore>>> {
+        self.sql_stores
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(workspace)
+            .map(|handle| Arc::clone(&handle.store))
+    }
+
+    /// Whether `workspace` is registered: an unregister leaves its engine
+    /// resident, so the engine alone does not say it is still served.
+    pub(crate) fn is_registered(&self, workspace: &Path) -> bool {
+        self.inner
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(workspace)
+    }
+
+    /// Run `f` under the sql handle map's lock, if `store` is still
+    /// `workspace`'s open handle — no unregister, idle reap, eviction or
+    /// close replaced it — so no second instance can open the file meanwhile.
+    /// `None` when it is not.
+    pub(crate) fn while_open_sql_store<T>(
+        &self,
+        workspace: &Path,
+        store: &Arc<Mutex<view::store::SqlStore>>,
+        f: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let stores = self
+            .sql_stores
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        stores
+            .get(workspace)
+            .filter(|handle| Arc::ptr_eq(&handle.store, store))?;
+        let done = f();
+        drop(stores);
+        Some(done)
+    }
+
+    /// `workspace`'s storage drawer, where its `sql.duckdb` lives.
+    pub(crate) fn drawer(&self, workspace: &Path) -> PathBuf {
+        cache::drawer_dir(&self.cache_root, workspace)
+    }
+
+    /// The steady `memory_limit` each sql cache opens under (merkle-spec
+    /// §6.4); `None` keeps `DuckDB`'s default.
+    pub(crate) fn sql_cache_limit(&self) -> Option<u64> {
+        self.sql_budget.map(|budget| budget.cache_limit)
+    }
+
+    /// The sql caches' history compaction state ([`crate::sql_compact`]).
+    pub(crate) fn sql_compaction(&self) -> &crate::sql_compact::State {
+        &self.sql_compaction
     }
 
     /// The workspace's current corpus root through the §12.2 leaf memo — one

@@ -3154,6 +3154,36 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
   There is no read/append exclusion lease or preparation-wait loop. The existing
   bounded store-mutex wait still returns `lock_timeout` / `retry`; actual I/O
   stays `io_error` / `env`.
+- **History compaction** (off unless the daemon's environment sets
+  `MRD_SQL_COMPACTION` to a whole number m ≥ 2; `0` or unset never compacts):
+  once a reap interval the daemon counts, on a read of each open cache of a
+  registered workspace, `hist.frontmatter` rows against the rows `main.frontmatter` serves, and
+  rebuilds the cache whose history is the largest multiple of its live rows,
+  if that is at least m — one rebuild at a time per daemon, on a thread of its
+  own. The rebuild is a cold build of a fresh file in the drawer's
+  `sql-compact/` through the same append a call makes, then catch-up appends
+  to the newest generation; calls keep answering from the old file
+  throughout, and the rebuild holds no handle on the cache, so a close, reap or
+  eviction treats it like any other. The swap takes the handle open at that
+  moment, opening the file if a least-recently-used close took it, waits under
+  the store mutex for the reads open on that instance to end (2 s an attempt,
+  retried each second, dropped after 10 minutes), closes it, renames the new
+  file over the old one and reopens. A read opened before the rename answers
+  from the old file whole, one opened after it from the new one whole. The
+  latest views answer the same rows from either file, save where the old file
+  carried the cache lane's disclosed non-md exclusion approximation
+  (`base-projection.md` §7): the rebuild resolves every link against the tree
+  as it is, the rows a deleted cache's cold build answers; `hist.*` keeps each
+  page's latest version alone, generations counted from 1 again, and a
+  superseded version is read from git instead. A rebuild that fails before the
+  rename, or a close of the old instance that leaves its WAL behind, leaves the
+  old file serving, and that cache is not picked again for an hour. A workspace
+  that was unregistered during its rebuild, or whose engine is gone at the swap,
+  drops the new file with no pause; one re-warmed by then takes the swap. A
+  daemon that dies in a rebuild leaves the old file and
+  `sql-compact/` behind: a later look finds the directory on the open cache,
+  clears it and counts that as a failure. Query forms, relation names and the
+  append protocol do not change.
 - **CLI recovery**: a retry-class refusal produces `NO_VIEW` directly, without
   a local full-corpus projection or an automatic retry budget. The one extra
   `--fresh` attempt after a successful stale answer also stays on the resident

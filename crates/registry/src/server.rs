@@ -270,6 +270,11 @@ pub struct Config {
     /// has [`RunningServer::start`] install one with that controller limit
     /// when [`Config::residency`] is `None`.
     pub residency_host_bytes: u64,
+    /// History compaction of the sql caches ([`SQL_COMPACTION_ENV`],
+    /// `wire-contract.md` § A.11): `Some(m)` rebuilds a cache whose
+    /// `hist.frontmatter` holds at least `m` times the rows its latest view
+    /// serves; `None`, the default, never compacts.
+    pub sql_compaction: Option<u64>,
 }
 
 impl Config {
@@ -300,6 +305,7 @@ impl Config {
             max_resident_bytes: crate::DEFAULT_MAX_RESIDENT_BYTES,
             residency: None,
             residency_host_bytes: 0,
+            sql_compaction: None,
         }
     }
 
@@ -339,6 +345,9 @@ impl Config {
         }
         if let Some(raw) = std::env::var_os(RESIDENCY_HOST_BYTES_ENV) {
             config.residency_host_bytes = parse_residency_host_bytes(&raw)?;
+        }
+        if let Some(raw) = std::env::var_os(SQL_COMPACTION_ENV) {
+            config.sql_compaction = parse_sql_compaction(&raw)?;
         }
         Ok(config)
     }
@@ -507,6 +516,33 @@ fn parse_idle_exit(raw: &std::ffi::OsStr) -> io::Result<Option<Duration>> {
                 ),
             )
         })
+}
+
+/// The environment variable that sets [`Config::sql_compaction`]: the multiple
+/// of its live frontmatter rows at which a sql cache's history is compacted
+/// (`wire-contract.md` § A.11). Unset or `0` never compacts; the designed
+/// value is `2`.
+///
+/// Read at exactly one site, [`Config::resolve`].
+pub(crate) const SQL_COMPACTION_ENV: &str = "MRD_SQL_COMPACTION";
+
+/// Parse [`SQL_COMPACTION_ENV`]: `0` is off; a whole number of at least 2 is
+/// the multiple. `1` refuses with the rest: a cache whose history is one live
+/// version per row has nothing to drop, so it would rebuild on every reap
+/// interval once anything changed.
+#[allow(clippy::unnecessary_debug_formatting)]
+fn parse_sql_compaction(raw: &std::ffi::OsStr) -> io::Result<Option<u64>> {
+    match raw.to_str().and_then(|s| s.trim().parse::<u64>().ok()) {
+        Some(0) => Ok(None),
+        Some(multiple) if multiple >= 2 => Ok(Some(multiple)),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{SQL_COMPACTION_ENV} must be 0 (off) or a whole number of at least 2, got {raw:?} \
+                 — unset it to never compact"
+            ),
+        )),
+    }
 }
 
 /// The environment variable that sets [`Config::residency_host_bytes`]: the
@@ -860,10 +896,7 @@ impl RunningServer {
         let reaper = spawn_reaper(
             registry.clone(),
             shutdown.clone(),
-            config.idle_threshold,
-            config.reap_interval,
-            config.idle_exit,
-            config.max_resident_bytes,
+            &config,
             exit_requested.clone(),
         );
         let prewarm = spawn_prewarm(
@@ -1158,19 +1191,21 @@ fn accept_loop(
 /// Spawn the reaper: wake every [`REAP_TICK`], and once `reap_interval` has
 /// elapsed drop idle entries, then evict over the resident budget
 /// ([`Registry::reap_to_budget`] — the idle pass first, so the budget sweep
-/// only pays for what idleness alone could not shed). Exits promptly on the
-/// shutdown flag.
+/// only pays for what idleness alone could not shed), then, when
+/// `sql_compaction` is set, start a sql cache's history compaction
+/// ([`crate::sql_compact::tick`]). Exits promptly on the shutdown flag.
 fn spawn_reaper(
     registry: Arc<Registry>,
     shutdown: Arc<AtomicBool>,
-    idle_threshold: Duration,
-    reap_interval: Duration,
-    idle_exit: Option<Duration>,
-    max_resident_bytes: u64,
+    config: &Config,
     exit_requested: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
+    let threshold_secs = config.idle_threshold.as_secs();
+    let reap_interval = config.reap_interval;
+    let idle_exit = config.idle_exit;
+    let max_resident_bytes = config.max_resident_bytes;
+    let sql_compaction = config.sql_compaction;
     thread::spawn(move || {
-        let threshold_secs = idle_threshold.as_secs();
         let mut elapsed = Duration::ZERO;
         while !shutdown.load(Ordering::SeqCst) {
             thread::sleep(REAP_TICK);
@@ -1194,6 +1229,9 @@ fn spawn_reaper(
             // The host floor's tick: memo and ring growth since the last
             // publish or eviction reaches the floor here (merkle-spec §6.4).
             registry.charge_floor();
+            if let Some(multiple) = sql_compaction {
+                crate::sql_compact::tick(&registry, multiple);
+            }
             // G11 idle exit. The reaper raises the flag only; the process's own
             // loop owns the teardown, because shutting the threads down from
             // inside one of them would join this thread to itself.
@@ -3679,6 +3717,27 @@ mod socket_placement_tests {
             "0 is the disable spelling: Config::idle_exit = None, the immortal-daemon \
              opt-in a manager makes knowingly"
         );
+    }
+
+    /// History compaction is off unless the host sets the knob: `0` is off, a
+    /// whole number of at least 2 is the multiple, and anything else refuses
+    /// and names what it saw.
+    #[test]
+    fn the_sql_compaction_knob_is_off_unless_set_to_two_or_more() {
+        use super::{SQL_COMPACTION_ENV, parse_sql_compaction};
+        use std::ffi::OsStr;
+
+        assert_eq!(Config::for_cache_root("/c".into()).sql_compaction, None);
+        assert_eq!(parse_sql_compaction(OsStr::new("0")).unwrap(), None);
+        assert_eq!(parse_sql_compaction(OsStr::new("2")).unwrap(), Some(2));
+        assert_eq!(parse_sql_compaction(OsStr::new(" 10\n")).unwrap(), Some(10));
+        for bad in ["1", "", "off", "-2", "2.5"] {
+            let err = parse_sql_compaction(OsStr::new(bad)).expect_err(bad);
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+            let msg = err.to_string();
+            assert!(msg.contains(SQL_COMPACTION_ENV), "{msg}");
+            assert!(msg.contains(&format!("{bad:?}")), "{msg}");
+        }
     }
 
     /// A malformed idle-exit knob REFUSES; it never falls back to the default
