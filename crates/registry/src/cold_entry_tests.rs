@@ -1,0 +1,299 @@
+//! The cold entry's gates (merkle-spec §6.4, the cold entry). A workspace's
+//! watcher arm and its §6.5 restore are slow on a large root, and neither may
+//! park an operation on another workspace. A borrower of the same workspace
+//! waits for that entry, and the write door waits within its budget. One
+//! entry arms one watcher, and an `unregister` or a budget eviction that lands
+//! during an entry gets nothing published back.
+
+use super::*;
+use std::sync::mpsc;
+
+/// How long an operation may take while another workspace's entry is
+/// parked: far above a healthy operation on a two-member workspace, and the
+/// park itself lasts until the test releases it.
+const ANSWERS_WITHIN: Duration = Duration::from_secs(10);
+
+/// The write door's budget in these gates.
+const DOOR_BUDGET: Duration = Duration::from_millis(200);
+
+/// Releases a parked entry when dropped, so a failing assertion never leaves
+/// the parked thread, and the scope joining it, waiting forever.
+struct Release(Option<mpsc::Sender<()>>);
+
+impl Release {
+    fn now(&mut self) {
+        if let Some(release) = self.0.take() {
+            let _ = release.send(());
+        }
+    }
+}
+
+impl Drop for Release {
+    fn drop(&mut self) {
+        self.now();
+    }
+}
+
+fn registry_in(home: &Path) -> Registry {
+    let cache_root = home.join("cache");
+    std::fs::create_dir_all(&cache_root).unwrap();
+    Registry::new(
+        StateStore::new(home.join("state.json")),
+        cache_root,
+        Vec::new(),
+    )
+}
+
+/// `home/<name>` with two members, canonical and registered.
+fn workspace(reg: &Registry, home: &Path, name: &str) -> PathBuf {
+    let ws = home.join(name);
+    std::fs::create_dir_all(ws.join("notes")).unwrap();
+    std::fs::write(ws.join("a.md"), "# A\n").unwrap();
+    std::fs::write(ws.join("notes/b.md"), "# B\n").unwrap();
+    let ws = workspace::canonicalize(&ws).unwrap();
+    reg.register(&ws);
+    ws
+}
+
+/// Arm `gate` for `ws`: the arrival announcement and the release handle.
+fn arm(gate: &WorkspaceGate, ws: &Path) -> (mpsc::Receiver<()>, Release) {
+    let (arrived_tx, arrived) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    *gate.lock().unwrap() = Some((ws.to_path_buf(), arrived_tx, release_rx));
+    (arrived, Release(Some(release)))
+}
+
+/// A registry restarted over `home` in which workspace `name` has a
+/// checkpoint on disk: the first registry warmed it and saved it at
+/// shutdown.
+fn restarted_with_checkpoint(home: &Path, name: &str) -> (Registry, PathBuf) {
+    let ws = {
+        let reg = registry_in(home);
+        let ws = workspace(&reg, home, name);
+        reg.currency_refresh(&ws, DOOR_COOKIE_TIMEOUT).unwrap();
+        reg.save_checkpoints();
+        ws
+    };
+    assert!(
+        crate::checkpoint::path(&home.join("cache"), &ws).exists(),
+        "the shutdown hook persisted the checkpoint"
+    );
+    let reg = registry_in(home);
+    reg.register(&ws);
+    (reg, ws)
+}
+
+/// What another workspace runs through the memo maps — a borrow of a warm
+/// memo, a currency pass on it, and a third workspace's cold entry — run on
+/// its own thread. `Ok(true)` when all three answered within
+/// [`ANSWERS_WITHIN`] and the currency pass succeeded.
+fn others_answer<'scope, 'env>(
+    s: &'scope std::thread::Scope<'scope, 'env>,
+    reg: &'env Registry,
+    warm: &'env Path,
+    cold: &'env Path,
+) -> Result<bool, mpsc::RecvTimeoutError> {
+    let (done_tx, done) = mpsc::channel();
+    s.spawn(move || {
+        let _ = reg.domain_cache(warm);
+        let refreshed = reg.currency_refresh(warm, DOOR_COOKIE_TIMEOUT).is_ok();
+        let _ = reg.domain_cache(cold);
+        let _ = done_tx.send(refreshed);
+    });
+    done.recv_timeout(ANSWERS_WITHIN)
+}
+
+/// The write door on `ws`, run on its own thread: its outcome within
+/// [`ANSWERS_WITHIN`].
+fn door<'scope, 'env>(
+    s: &'scope std::thread::Scope<'scope, 'env>,
+    reg: &'env Registry,
+    ws: &'env Path,
+) -> Result<Result<(), io::ErrorKind>, mpsc::RecvTimeoutError> {
+    let (door_tx, door) = mpsc::channel();
+    s.spawn(move || {
+        let outcome = reg.domain_cache_within(ws, DOOR_BUDGET).map(|_| ());
+        let _ = door_tx.send(outcome.map_err(|e| e.kind()));
+    });
+    door.recv_timeout(ANSWERS_WITHIN)
+}
+
+/// The 2026-11-07 stall: arming a cold root's recursive watch held the
+/// registry-wide feed map for minutes, and every root's borrow and currency
+/// pass waited behind it. With A's arm parked, B (warm) and C (cold) are
+/// served, and A's entry still lands its feed once released.
+#[test]
+fn a_parked_watcher_arm_on_one_workspace_parks_nothing_on_another() {
+    let home = tempfile::tempdir().unwrap();
+    let reg = &registry_in(home.path());
+    let a = &workspace(reg, home.path(), "a");
+    let b = &workspace(reg, home.path(), "b");
+    let c = &workspace(reg, home.path(), "c");
+    reg.currency_refresh(b, DOOR_COOKIE_TIMEOUT).unwrap();
+    assert!(reg.live_feed(b).is_some(), "B is warm, its feed live");
+
+    let (arrived, mut release) = arm(&reg.pause_in_feed_start, a);
+    std::thread::scope(|s| {
+        let entering = s.spawn(move || reg.domain_cache(a));
+        arrived
+            .recv()
+            .expect("A's cold entry parks with its watcher about to arm");
+        let answered = others_answer(s, reg, b, c);
+        release.now();
+        assert_eq!(
+            answered,
+            Ok(true),
+            "B's borrow and currency pass and C's cold entry must answer while A's watcher \
+             arm is parked"
+        );
+        let _ = entering.join().unwrap();
+    });
+    assert!(reg.live_feed(a).is_some(), "A's entry lands its feed");
+    assert!(reg.live_feed(c).is_some(), "C's own entry armed its own feed");
+}
+
+/// The same-workspace half: while A's arm is parked, the write door on A
+/// refuses within its budget instead of waiting behind the arm, and a read
+/// borrow of A waits — it never answers with a memo that has no feed behind
+/// it. A second entry would have run past the one-shot gate and answered
+/// early, so the early silence is also the one-watcher proof; once released,
+/// both borrows hold the one published memo, and A has a live feed.
+#[test]
+fn a_borrower_of_an_entering_workspace_waits_and_the_door_refuses_past_its_budget() {
+    let home = tempfile::tempdir().unwrap();
+    let reg = &registry_in(home.path());
+    let a = &workspace(reg, home.path(), "a");
+
+    let (arrived, mut release) = arm(&reg.pause_in_feed_start, a);
+    std::thread::scope(|s| {
+        let first = s.spawn(move || reg.domain_cache(a));
+        arrived.recv().expect("A's cold entry parks");
+        let refused = door(s, reg, a);
+
+        let (read_tx, read) = mpsc::channel();
+        let second = s.spawn(move || {
+            let memo = reg.domain_cache(a);
+            let _ = read_tx.send(());
+            memo
+        });
+        let early = read.recv_timeout(Duration::from_millis(300));
+        release.now();
+
+        assert_eq!(
+            refused,
+            Ok(Err(io::ErrorKind::WouldBlock)),
+            "the write door refuses within its budget while A's watcher arm is parked"
+        );
+        assert!(
+            early.is_err(),
+            "a read borrow of A must not answer before A's entry lands its feed"
+        );
+        let first = first.join().unwrap();
+        let second = second.join().unwrap();
+        assert!(Arc::ptr_eq(&first, &second), "both borrows hold one memo");
+        let published = Arc::clone(reg.domain_caches.lock().unwrap().get(a).unwrap());
+        assert!(Arc::ptr_eq(&first, &published), "and it is the published one");
+    });
+    assert!(reg.live_feed(a).is_some(), "with a live feed behind it");
+}
+
+/// The restore half of the stall: a §6.5 restore's pre-serve pass stats
+/// every member, and it ran under the registry-wide memo map. With A's
+/// restore parked, B and C are served, the write door on A refuses within
+/// its budget, and A's entry adopts its checkpoint once released.
+#[test]
+fn a_parked_checkpoint_restore_on_one_workspace_parks_nothing_on_another() {
+    let home = tempfile::tempdir().unwrap();
+    let (reg, a) = restarted_with_checkpoint(home.path(), "a");
+    let (reg, a) = (&reg, &a);
+    let b = &workspace(reg, home.path(), "b");
+    let c = &workspace(reg, home.path(), "c");
+    reg.currency_refresh(b, DOOR_COOKIE_TIMEOUT).unwrap();
+
+    let (arrived, mut release) = arm(&reg.pause_in_restore, a);
+    std::thread::scope(|s| {
+        let entering = s.spawn(move || reg.domain_cache(a));
+        arrived.recv().expect("A's restore parks");
+        let answered = others_answer(s, reg, b, c);
+        let refused = door(s, reg, a);
+        release.now();
+
+        assert_eq!(
+            answered,
+            Ok(true),
+            "B's borrow and currency pass and C's cold entry must answer while A's restore is \
+             parked"
+        );
+        assert_eq!(
+            refused,
+            Ok(Err(io::ErrorKind::WouldBlock)),
+            "the write door refuses within its budget while A's restore is parked"
+        );
+        let _ = entering.join().unwrap();
+    });
+    assert!(
+        reg.checkpoint_receipt(a).is_some(),
+        "A's entry adopted its checkpoint"
+    );
+    assert!(reg.live_feed(a).is_some(), "with a live feed behind it");
+}
+
+/// An `unregister` or a budget eviction that lands while A's entry is
+/// parked — in its watcher arm or in its restore — runs to completion
+/// without waiting on it, and the entry publishes nothing back: no feed, no
+/// memo, no checkpoint receipt. The next borrow enters afresh.
+#[test]
+fn an_unregister_or_eviction_during_an_entry_gets_nothing_published_back() {
+    for parked_in in ["arm", "restore"] {
+        for removal in ["unregister", "evict"] {
+            let case = format!("{removal} during A's {parked_in}");
+            let home = tempfile::tempdir().unwrap();
+            let (reg, a) = restarted_with_checkpoint(home.path(), "a");
+            let (reg, a) = (&reg, &a);
+            let gate = if parked_in == "arm" {
+                &reg.pause_in_feed_start
+            } else {
+                &reg.pause_in_restore
+            };
+            let (arrived, mut release) = arm(gate, a);
+            let private = std::thread::scope(|s| {
+                let entering = s.spawn(move || reg.domain_cache(a));
+                arrived.recv().expect("A's cold entry parks");
+                let (gone_tx, gone) = mpsc::channel();
+                s.spawn(move || {
+                    if removal == "unregister" {
+                        reg.unregister(a);
+                    } else {
+                        reg.evict(std::slice::from_ref(a), true);
+                    }
+                    let _ = gone_tx.send(());
+                });
+                let removed = gone.recv_timeout(ANSWERS_WITHIN);
+                release.now();
+                assert!(
+                    removed.is_ok(),
+                    "{case}: the removal must not wait behind the parked entry"
+                );
+                entering.join().unwrap()
+            });
+            assert!(
+                !reg.feeds.lock().unwrap().contains_key(a),
+                "{case}: no feed published back"
+            );
+            assert!(
+                !reg.domain_caches.lock().unwrap().contains_key(a),
+                "{case}: no memo published back"
+            );
+            assert!(
+                reg.checkpoint_receipt(a).is_none(),
+                "{case}: no checkpoint receipt published back"
+            );
+            let next = reg.domain_cache(a);
+            assert!(
+                !Arc::ptr_eq(&private, &next),
+                "{case}: the next borrow enters afresh"
+            );
+            assert!(reg.live_feed(a).is_some(), "{case}: and arms its own feed");
+        }
+    }
+}

@@ -32,6 +32,10 @@ use crate::state::StateStore;
 #[path = "durable_cache_tests.rs"]
 mod durable_cache_tests;
 
+#[cfg(test)]
+#[path = "cold_entry_tests.rs"]
+mod cold_entry_tests;
+
 /// The outcome of a [`Registry::register`] call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegisterOutcome {
@@ -309,6 +313,46 @@ pub struct Registry {
     #[cfg(test)]
     pub(crate) pause_before_floor_eviction:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    /// Test-only gate: the named workspace's cold entry, its watcher about
+    /// to arm, announces itself on the first channel, then parks on the
+    /// second. One-shot, and for that workspace only, so another
+    /// workspace's entry runs past it. Same seam class as
+    /// `pause_in_reap_window`.
+    #[cfg(test)]
+    pub(crate) pause_in_feed_start: WorkspaceGate,
+    /// Test-only gate: the named workspace's §6.5 restore, its checkpoint
+    /// read and swept, announces itself and parks before it hands the memo
+    /// back. Same shape as `pause_in_feed_start`.
+    #[cfg(test)]
+    pub(crate) pause_in_restore: WorkspaceGate,
+}
+
+/// A one-shot test gate that parks one named workspace only.
+#[cfg(test)]
+pub(crate) type WorkspaceGate = Mutex<
+    Option<(
+        PathBuf,
+        std::sync::mpsc::Sender<()>,
+        std::sync::mpsc::Receiver<()>,
+    )>,
+>;
+
+/// Park on `gate` when it is armed for `workspace`: announce, then wait to
+/// be released. A gate armed for another workspace stays armed.
+#[cfg(test)]
+fn park_at(gate: &WorkspaceGate, workspace: &Path) {
+    let armed = {
+        let mut gate = gate.lock().unwrap_or_else(PoisonError::into_inner);
+        if gate.as_ref().is_some_and(|(at, _, _)| at == workspace) {
+            gate.take()
+        } else {
+            None
+        }
+    };
+    if let Some((_, arrived, release)) = armed {
+        let _ = arrived.send(());
+        let _ = release.recv();
+    }
 }
 
 /// §3.2: how long the READ THAT KICKED a cold rebuild absorbs it before
@@ -1053,6 +1097,10 @@ impl Registry {
             pause_in_census_generations: Mutex::new(None),
             #[cfg(test)]
             pause_before_floor_eviction: Mutex::new(None),
+            #[cfg(test)]
+            pause_in_feed_start: Mutex::new(None),
+            #[cfg(test)]
+            pause_in_restore: Mutex::new(None),
         }
     }
 
@@ -2111,10 +2159,11 @@ impl Registry {
         let feed_cell = fs::lock_within(&cache, left())?.feed_gen();
         let feed = {
             let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
-            match feeds
-                .entry(workspace.to_path_buf())
-                .or_insert_with(|| FeedSlot::start(workspace, feed_cell))
-            {
+            match feeds.entry(workspace.to_path_buf()).or_insert_with(|| {
+                #[cfg(test)]
+                park_at(&self.pause_in_feed_start, workspace);
+                FeedSlot::start(workspace, feed_cell)
+            }) {
                 FeedSlot::Live(feed) => Some(Arc::clone(feed)),
                 FeedSlot::Failed => None,
             }
@@ -2572,8 +2621,10 @@ impl Registry {
             let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
             rings.get(workspace).map(Arc::clone)
         };
-        let (cache, receipt) =
-            crate::checkpoint::restore(&self.cache_root, workspace, ring.as_deref())?;
+        let restored = crate::checkpoint::restore(&self.cache_root, workspace, ring.as_deref());
+        #[cfg(test)]
+        park_at(&self.pause_in_restore, workspace);
+        let (cache, receipt) = restored?;
         timing::say!(
             "checkpoint: {} — {} leaf row(s) adopted, {} member(s) replayed from the journal",
             workspace.display(),
