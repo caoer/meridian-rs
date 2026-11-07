@@ -3170,7 +3170,10 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
   retried each second, dropped after 10 minutes), closes it, renames the new
   file over the old one and reopens. A read opened before the rename answers
   from the old file whole, one opened after it from the new one whole. The
-  latest views answer the same rows from either file; `hist.*` keeps each
+  latest views answer the same rows from either file, save where the old file
+  carried the cache lane's disclosed non-md exclusion approximation
+  (`base-projection.md` §7): the rebuild resolves every link against the tree
+  as it is, the rows a deleted cache's cold build answers; `hist.*` keeps each
   page's latest version alone, generations counted from 1 again, and a
   superseded version is read from git instead. A rebuild that fails before the
   rename, or a close of the old instance that leaves its WAL behind, leaves the
