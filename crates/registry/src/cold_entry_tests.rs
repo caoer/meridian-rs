@@ -339,3 +339,80 @@ fn an_unregister_or_eviction_during_an_entry_gets_nothing_published_back() {
         }
     }
 }
+
+/// A write door that waited on A's entry, which an eviction then cancelled,
+/// refuses within its own call instead of leading the arm it waited on: the
+/// door's budget bounds its whole call, never a watcher arm it starts late.
+#[test]
+fn a_door_that_waited_on_an_evicted_entry_refuses_rather_than_leads() {
+    let home = tempfile::tempdir().unwrap();
+    let reg = &registry_in(home.path());
+    let a = &workspace(reg, home.path(), "a");
+
+    let (arrived, mut release) = arm(&reg.pause_in_feed_start, a);
+    let refused = std::thread::scope(|s| {
+        let entering = s.spawn(move || reg.domain_cache(a));
+        arrived.recv().expect("A's cold entry parks");
+        let (door_tx, door) = mpsc::channel();
+        s.spawn(move || {
+            // A budget far past the park: the door wakes on the cancelled
+            // entry, not on its own deadline.
+            let outcome = reg.domain_cache_within(a, ANSWERS_WITHIN).map(|_| ());
+            let _ = door_tx.send(outcome.map_err(|e| e.kind()));
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        reg.evict(std::slice::from_ref(a), true);
+        release.now();
+        let refused = door.recv_timeout(ANSWERS_WITHIN);
+        let _ = entering.join().unwrap();
+        refused
+    });
+    assert_eq!(
+        refused,
+        Ok(Err(io::ErrorKind::WouldBlock)),
+        "the door refuses after its entry was cancelled"
+    );
+    assert!(
+        !reg.domain_caches.lock().unwrap().contains_key(a),
+        "and nothing was published for A"
+    );
+}
+
+/// A sticky-failed watcher start stays failed through a later cold entry:
+/// after an idle reap drops the memo (no live feed covers the gap), the next
+/// borrow restores a memo and arms nothing.
+#[test]
+fn a_failed_start_arms_nothing_on_a_later_entry() {
+    let home = tempfile::tempdir().unwrap();
+    let reg = &registry_in(home.path());
+    let a = &workspace(reg, home.path(), "a");
+    let _ = reg.domain_cache(a);
+    reg.fail_feed(a);
+    reg.reap(u64::MAX, 0);
+    assert!(
+        !reg.domain_caches.lock().unwrap().contains_key(a),
+        "with no live feed the idle reap drops the memo"
+    );
+
+    let (arrived, _release) = arm(&reg.pause_in_feed_start, a);
+    let (done_tx, done) = mpsc::channel();
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            let _ = reg.domain_cache(a);
+            let _ = done_tx.send(());
+        });
+        assert!(
+            done.recv_timeout(ANSWERS_WITHIN).is_ok(),
+            "the entry runs without reaching a watcher arm"
+        );
+    });
+    assert!(arrived.try_recv().is_err(), "no watcher arm was attempted");
+    assert!(
+        matches!(reg.feeds.lock().unwrap().get(a), Some(FeedSlot::Failed)),
+        "the failed slot stays sticky"
+    );
+    assert!(
+        reg.domain_caches.lock().unwrap().contains_key(a),
+        "and the memo is published without a feed"
+    );
+}

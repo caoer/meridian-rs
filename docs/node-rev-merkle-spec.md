@@ -498,10 +498,14 @@ engine-side.
   another workspace never waits on them. A borrower of the same workspace
   waits for its entry, so no operation observes a memo that has no feed
   behind it. The write door waits within its budget and refuses
-  `workspace_busy` past it. One entry runs per workspace, so one watcher is
-  armed. An `unregister` or a budget eviction that lands during an entry
-  cancels it, and the entry then publishes neither the feed nor the memo. A
-  sticky failed start arms nothing on a later entry.
+  `workspace_busy` past it; a door that finds no entry running leads one, as
+  it led the cold fill before. One entry runs per workspace, so one watcher
+  is armed. An `unregister` or a budget eviction that lands during an entry
+  cancels it, and the entry then publishes neither the feed nor the memo.
+  After an `unregister`, a borrower that waited on the entry takes a private
+  memo; after an eviction the registration survives and it enters afresh,
+  except a write door, which refuses rather than lead the arm it waited on.
+  A sticky failed start arms nothing on a later entry.
 - **The currency barrier (the cookie).** A guard-grade currency question writes
   its own sentinel, `.meridian/cookies/<token>-<serial>`, and waits for it to
   return through the ordered event stream. `Seen` — ordered delivery of all

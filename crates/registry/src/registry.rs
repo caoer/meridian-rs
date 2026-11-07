@@ -2316,16 +2316,21 @@ impl Registry {
     /// borrower a private memo with no feed, so nothing is published back for
     /// the removed workspace. A borrower that finds no entry leads one; the
     /// arm and the restore are then its own work rather than a wait, as the
-    /// cold fill under the memo always was.
+    /// cold fill under the memo always was. The write door leads only when
+    /// it found no entry at all: a door that waited on an entry an eviction
+    /// cancelled refuses instead of starting the arm its budget was spent
+    /// waiting on.
     ///
     /// # Errors
     /// [`io::ErrorKind::WouldBlock`] when `left()` ran out with another
-    /// borrower's entry still running.
+    /// borrower's entry still running, or when a bounded borrower's wait
+    /// ended on a cancelled entry.
     fn resident_memo(
         &self,
         workspace: &Path,
         left: &dyn Fn() -> Option<Duration>,
     ) -> io::Result<Resident> {
+        let mut waited = false;
         loop {
             if let Some(published) = self.published_memo(workspace) {
                 return Ok(published);
@@ -2343,6 +2348,11 @@ impl Registry {
                 }
                 if let Some(entry) = entries.get(workspace) {
                     Arc::clone(entry)
+                } else if waited && left().is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "the workspace's cold entry was cancelled while this door waited on it",
+                    ));
                 } else {
                     let entry = Arc::new(ColdEntry::default());
                     entries.insert(workspace.to_path_buf(), Arc::clone(&entry));
@@ -2355,6 +2365,7 @@ impl Registry {
                 }
             };
             running.wait(left())?;
+            waited = true;
             if running.unregistered() {
                 return Ok((Arc::new(Mutex::new(fs::DomainCache::default())), None));
             }
