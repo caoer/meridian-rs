@@ -13,17 +13,20 @@
 //! [`COMPACT_DIR`] — its own directory, so its instance spills into its own
 //! `sql-spill` — through the same append a served `sql` call makes
 //! ([`crate::sql_op::with_appender`]), then appends to catch up with the
-//! generations published meanwhile. It holds no store mutex: `sql` calls keep
-//! answering from the old file throughout. The swap
-//! ([`view::store::SqlStore::swap_in`]) takes the store's mutex, waits for
-//! the reads open on the old instance to end, and renames the new file over
-//! the old one. Whatever fails before the rename — the build, the catch-up,
-//! the daemon itself — leaves the old file serving, and the look pauses for
-//! [`FAILED_PAUSE`]; the next rebuild clears what a failed one left in
-//! [`COMPACT_DIR`].
+//! generations published meanwhile. It holds neither the store's mutex nor a
+//! handle on the store: `sql` calls keep answering from the old file
+//! throughout, and a close, reap or eviction treats the cache like any other.
+//! The swap ([`view::store::SqlStore::swap_in`]) takes the handle open at that
+//! moment and its mutex, waits for the reads open on that instance to end, and
+//! renames the new file over the old one. Whatever fails before the rename —
+//! the build, the catch-up, the daemon itself — leaves the old file serving;
+//! a failure leaves that cache out of the looks for [`FAILED_PAUSE`], and a
+//! look clears what a dead daemon's rebuild left ([`clear_leftovers`]).
 
+use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -35,18 +38,34 @@ use crate::Registry;
 /// The drawer subdirectory a rebuild writes its file in.
 pub(crate) const COMPACT_DIR: &str = "sql-compact";
 
-/// How long the reaper's look pauses after a failed rebuild, so a rebuild
+/// How long a failed rebuild leaves its cache out of the looks, so a rebuild
 /// that cannot land is not paid for again every reap interval.
-const FAILED_PAUSE: Duration = Duration::from_secs(3600);
+const FAILED_PAUSE: Duration = Duration::from_hours(1);
 
 /// The daemon's compaction state, held by the registry.
 #[derive(Debug, Default)]
 pub(crate) struct State {
     /// Set while a look or a rebuild runs: one at a time per daemon.
     running: AtomicBool,
-    /// Unix seconds before which the look does not run: a failed rebuild's
-    /// [`FAILED_PAUSE`]; `0` never set.
-    resume_at: AtomicU64,
+    /// The caches a failed rebuild left out of the looks, each with the Unix
+    /// second it comes back.
+    paused: Mutex<HashMap<PathBuf, u64>>,
+}
+
+impl State {
+    fn pause(&self, ws: &Path) {
+        self.paused
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(ws.to_path_buf(), now_secs() + FAILED_PAUSE.as_secs());
+    }
+
+    fn is_paused(&self, ws: &Path) -> bool {
+        let now = now_secs();
+        let mut paused = self.paused.lock().unwrap_or_else(PoisonError::into_inner);
+        paused.retain(|_, until| *until > now);
+        paused.contains_key(ws)
+    }
 }
 
 fn now_secs() -> u64 {
@@ -64,7 +83,7 @@ const SWAP_WAIT: Duration = Duration::from_secs(2);
 const SWAP_RETRY: Duration = Duration::from_secs(1);
 
 /// How long a built file waits for its swap before it is dropped.
-const SWAP_GIVE_UP: Duration = Duration::from_secs(600);
+const SWAP_GIVE_UP: Duration = Duration::from_mins(10);
 
 /// Appends after the cold build that bring the file to the newest
 /// generation before the swap; whatever moves after the last one, the next
@@ -105,9 +124,7 @@ pub(crate) fn frontmatter_rows(store: &Arc<Mutex<SqlStore>>) -> Result<(u64, u64
 /// its own so the reaper stays prompt.
 pub(crate) fn tick(registry: &Arc<Registry>, multiple: u64) {
     let state = registry.sql_compaction();
-    if now_secs() < state.resume_at.load(Ordering::Acquire)
-        || state.running.swap(true, Ordering::AcqRel)
-    {
+    if state.running.swap(true, Ordering::AcqRel) {
         return;
     }
     let worker = Arc::clone(registry);
@@ -126,9 +143,10 @@ pub(crate) fn tick(registry: &Arc<Registry>, multiple: u64) {
     }
 }
 
-/// One look: rebuild the open cache most due at `multiple`, if any; after a
-/// failed rebuild, pause the looks for [`FAILED_PAUSE`].
+/// One look: rebuild the open cache most due at `multiple`, if any; a failed
+/// rebuild leaves its cache out of the looks for [`FAILED_PAUSE`].
 fn look(registry: &Registry, multiple: u64) {
+    clear_leftovers(registry);
     let Some((ws, hist, live)) = most_due(registry, multiple) else {
         return;
     };
@@ -138,36 +156,62 @@ fn look(registry: &Registry, multiple: u64) {
     );
     match compact(registry, &ws) {
         Ok(done) => timing::say!(
-            "sql compaction: {} rebuilt in {:.1}s, {} bytes",
+            "sql compaction: {} rebuilt in {:.1}s, the swap {:.3}s of it, {} bytes",
             ws.display(),
             done.took.as_secs_f64(),
+            done.swap.as_secs_f64(),
             done.bytes
         ),
-        Err(why) => {
+        Err(Stopped::Gone(why)) => {
+            timing::say!("sql compaction: {} keeps its cache: {why}", ws.display());
+        }
+        Err(Stopped::Failed(why)) => {
             timing::say!(
-                "sql compaction: {} keeps its cache: {why}; next look in {}s",
+                "sql compaction: {} keeps its cache: {why}; not picked again for {}s",
                 ws.display(),
                 FAILED_PAUSE.as_secs()
             );
-            registry
-                .sql_compaction()
-                .resume_at
-                .store(now_secs() + FAILED_PAUSE.as_secs(), Ordering::Release);
+            registry.sql_compaction().pause(&ws);
+        }
+    }
+}
+
+/// Clear what a daemon that died in a rebuild left in an open cache's drawer,
+/// and leave that cache out of the looks for [`FAILED_PAUSE`]: a rebuild that
+/// took the daemon with it is not started again as soon as the daemon is back.
+/// A look runs alone ([`State::running`]), so no rebuild owns those files.
+fn clear_leftovers(registry: &Registry) {
+    for ws in registry.open_sql_workspaces() {
+        let dir = registry.drawer(&ws).join(COMPACT_DIR);
+        if dir.exists() {
+            timing::say!(
+                "sql compaction: {} holds an unfinished rebuild; cleared, not picked again for {}s",
+                ws.display(),
+                FAILED_PAUSE.as_secs()
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+            registry.sql_compaction().pause(&ws);
         }
     }
 }
 
 /// The open cache whose history is the largest multiple of its live rows,
-/// among those due at `multiple`, with its counts.
+/// among those due at `multiple` and not paused, with its counts. Each handle
+/// is held for its own count alone, so the rest stay free for a close.
 fn most_due(registry: &Registry, multiple: u64) -> Option<(PathBuf, u64, u64)> {
+    let state = registry.sql_compaction();
     registry
-        .open_sql_stores()
+        .open_sql_workspaces()
         .into_iter()
-        .filter_map(|(ws, store)| match frontmatter_rows(&store) {
-            Ok((hist, live)) => due(hist, live, multiple).then_some((ws, hist, live)),
-            Err(why) => {
-                timing::say!("sql compaction: cannot count {}: {why}", ws.display());
-                None
+        .filter(|ws| !state.is_paused(ws))
+        .filter_map(|ws| {
+            let store = registry.open_sql_store(&ws)?;
+            match frontmatter_rows(&store) {
+                Ok((hist, live)) => due(hist, live, multiple).then_some((ws, hist, live)),
+                Err(why) => {
+                    timing::say!("sql compaction: cannot count {}: {why}", ws.display());
+                    None
+                }
             }
         })
         .max_by(|(_, h1, l1), (_, h2, l2)| {
@@ -178,96 +222,126 @@ fn most_due(registry: &Registry, multiple: u64) -> Option<(PathBuf, u64, u64)> {
 /// A finished rebuild.
 #[derive(Debug)]
 pub(crate) struct Compacted {
-    /// From the start of the build to the swap.
+    /// From the start of the build to the swap's end.
     pub(crate) took: Duration,
+    /// The swap alone, the handle map's lock held.
+    pub(crate) swap: Duration,
     /// The swapped-in file's size.
     pub(crate) bytes: u64,
+}
+
+/// Why a rebuild did not land. Either way the old file still serves.
+#[derive(Debug)]
+pub(crate) enum Stopped {
+    /// The workspace's cache or engine left the daemon: nothing failed, and a
+    /// look may pick the cache again once it is back.
+    Gone(&'static str),
+    /// The rebuild failed or could not land: [`FAILED_PAUSE`].
+    Failed(String),
+}
+
+impl fmt::Display for Stopped {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Gone(why) => f.write_str(why),
+            Self::Failed(why) => f.write_str(why),
+        }
+    }
 }
 
 /// Rebuild `ws`'s open sql cache and swap it in. Synchronous: [`tick`] runs
 /// it on its own thread; tests call it directly.
 ///
 /// # Errors
-/// Why the old file still serves: the cache is not open or the workspace not
-/// warm, the build or a catch-up append failed, or the swap could not take
-/// place. Nothing of the attempt is left in the drawer.
-pub(crate) fn compact(registry: &Registry, ws: &Path) -> Result<Compacted, String> {
-    let live = registry
-        .open_sql_stores()
-        .into_iter()
-        .find_map(|(open, store)| (open == ws).then_some(store))
-        .ok_or("the sql cache is not open")?;
-    let dir = registry.drawer(ws).join(COMPACT_DIR);
+/// Why the old file still serves ([`Stopped`]). Nothing of the attempt is left
+/// in the drawer.
+pub(crate) fn compact(registry: &Registry, ws: &Path) -> Result<Compacted, Stopped> {
+    if registry.open_sql_store(ws).is_none() {
+        return Err(Stopped::Gone("the sql cache is not open"));
+    }
+    let drawer = registry.drawer(ws);
+    let dir = drawer.join(COMPACT_DIR);
     // What a failed rebuild, or a daemon that died in one, left behind.
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| Stopped::Failed(format!("cannot make {}: {e}", dir.display())))?;
     let file = dir.join(view::store::SQL_CACHE_FILENAME);
     let started = Instant::now();
-    let swapped = build(registry, ws, &file).and_then(|()| swap(registry, ws, &live, &file));
+    let swapped = build(registry, ws, &file).and_then(|()| swap(registry, ws, &file));
     let _ = std::fs::remove_dir_all(&dir);
-    swapped?;
-    let bytes = std::fs::metadata(live.lock().unwrap_or_else(PoisonError::into_inner).file())
+    let swap_took = swapped?;
+    let bytes = std::fs::metadata(drawer.join(view::store::SQL_CACHE_FILENAME))
         .map_or(0, |meta| meta.len());
     Ok(Compacted {
         took: started.elapsed(),
+        swap: swap_took,
         bytes,
     })
 }
 
 /// Cold-build `file` at the newest generation, then catch up, then close it.
-fn build(registry: &Registry, ws: &Path, file: &Path) -> Result<(), String> {
+fn build(registry: &Registry, ws: &Path, file: &Path) -> Result<(), Stopped> {
     let mut built = SqlStore::open_limited(file, registry.sql_cache_limit())
-        .map_err(|e| format!("cannot open the rebuild file: {e}"))?;
+        .map_err(|e| Stopped::Failed(format!("cannot open the rebuild file: {e}")))?;
     let mut at = None;
     for _ in 0..=CATCH_UP {
         let engine = registry
             .engine_snapshot(ws)
-            .ok_or("the workspace is not warm")?;
+            .ok_or(Stopped::Gone("the workspace is no longer warm"))?;
         if at.as_deref() == Some(engine.at_fingerprint.0.as_str()) {
             break;
         }
         crate::sql_op::with_appender(registry, ws, &engine, |append| {
             crate::sql_op::append_escalating(registry, &mut built, append)
         })
-        .map_err(|e| format!("the rebuild's append failed: {}", describe(&e)))?;
+        .map_err(|e| Stopped::Failed(format!("the rebuild's append failed: {}", describe(&e))))?;
         at = Some(engine.at_fingerprint.0.clone());
         #[cfg(test)]
-        if FAIL_AFTER_BUILD.with(std::cell::Cell::take) {
-            return Err("test fault after the cold build".to_owned());
+        if let Some(hook) = AFTER_COLD_BUILD.take() {
+            hook().map_err(Stopped::Failed)?;
         }
     }
     drop(built);
     if std::fs::exists(format!("{}.wal", file.display())).unwrap_or(true) {
-        return Err("the rebuild file did not close cleanly".to_owned());
+        return Err(Stopped::Failed(
+            "the rebuild file did not close cleanly".to_owned(),
+        ));
     }
     Ok(())
 }
 
-/// Swap `file` in for `live`, which must still be `ws`'s open handle: the
-/// reads open on the old instance drain under its mutex, then the rename and
-/// reopen run under the handle map's lock as well, so the handle cannot be
-/// replaced, nor the file opened a second time, in between.
-fn swap(
-    registry: &Registry,
-    ws: &Path,
-    live: &Arc<Mutex<SqlStore>>,
-    file: &Path,
-) -> Result<(), String> {
+/// Swap `file` in for the handle open now, opening the cache if a
+/// least-recently-used close took it during the build. Each attempt takes the
+/// handle afresh and lets it go, so nothing keeps an instance open past its
+/// reads. The reads open on that instance drain under its mutex, then the
+/// rename and reopen run under the handle map's lock as well, so the handle
+/// cannot be replaced, nor the file opened a second time, in between. Returns
+/// how long the swap itself took.
+fn swap(registry: &Registry, ws: &Path, file: &Path) -> Result<Duration, Stopped> {
     let give_up = Instant::now() + SWAP_GIVE_UP;
     loop {
+        registry
+            .engine_snapshot(ws)
+            .ok_or(Stopped::Gone("the workspace is no longer warm"))?;
+        let live = registry
+            .sql_store(ws)
+            .map_err(|e| Stopped::Failed(format!("cannot open the sql cache: {e}")))?;
         let mut store = live.lock().unwrap_or_else(PoisonError::into_inner);
         if store.wait_for_reads(SWAP_WAIT) {
-            return match registry.while_open_sql_store(ws, live, || store.swap_in(file)) {
-                None => Err("the sql cache was closed during the rebuild".to_owned()),
-                Some(swapped) => swapped.map_err(|e| format!("the swap failed: {e}")),
+            let started = Instant::now();
+            return match registry.while_open_sql_store(ws, &live, || store.swap_in(file)) {
+                None => Err(Stopped::Gone("the sql cache closed as the swap began")),
+                Some(Err(e)) => Err(Stopped::Failed(format!("the swap failed: {e}"))),
+                Some(Ok(())) => Ok(started.elapsed()),
             };
         }
         drop(store);
+        drop(live);
         if Instant::now() >= give_up {
-            return Err(format!(
+            return Err(Stopped::Failed(format!(
                 "reads kept the old cache open past {}s",
                 SWAP_GIVE_UP.as_secs()
-            ));
+            )));
         }
         thread::sleep(SWAP_RETRY);
     }
@@ -283,10 +357,14 @@ fn describe(error: &wire::ErrorBody) -> String {
 }
 
 #[cfg(test)]
+/// What a test runs inside a rebuild; an `Err` fails the rebuild there.
+pub(crate) type RebuildHook = Box<dyn FnOnce() -> Result<(), String>>;
+
+#[cfg(test)]
 thread_local! {
-    /// Test-only, one shot: the next rebuild on this thread fails right
-    /// after its cold build, before the swap.
-    pub(crate) static FAIL_AFTER_BUILD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Test-only, one shot: runs on the rebuild's thread right after its cold
+    /// build, before the catch-up and the swap.
+    pub(crate) static AFTER_COLD_BUILD: std::cell::Cell<Option<RebuildHook>> = const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
@@ -294,6 +372,7 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
 
     use super::*;
     use crate::state::StateStore;
@@ -312,7 +391,7 @@ mod tests {
     /// stat signature mistakes one for the last.
     fn card(i: usize) -> String {
         format!(
-            "---\ntype: task\nstatus: s{i}\nowner: w1\nsession: s\n---\n# C\nbody [[a]] {}\n",
+            "---\ntype: task\nstatus: s{i}\nowner: w1\nsession: s\n---\n# C\n- [ ] do #t\nbody [[a]] {}\n",
             "v".repeat(i + 1)
         )
     }
@@ -327,28 +406,51 @@ mod tests {
         }
     }
 
-    /// What callers read, view by view.
-    const SURFACE: [&str; 5] = [
-        "SELECT path, file_rev FROM doc ORDER BY ALL",
-        "SELECT path, key, value, node_rev FROM frontmatter ORDER BY ALL",
-        "SELECT src_path, seq, target_raw, dest_path FROM link ORDER BY ALL",
-        "SELECT path, hpath, heading FROM section ORDER BY ALL",
-        "SELECT path, type, status, owner FROM record ORDER BY ALL",
+    /// What callers read: every latest view, whole.
+    const SURFACE: [&str; 18] = [
+        "doc",
+        "frontmatter",
+        "section",
+        "link",
+        "frontmatter_link",
+        "lock",
+        "tag",
+        "frontmatter_tag",
+        "frontmatter_fault",
+        "task",
+        "body",
+        "base",
+        "base_view",
+        "base_formula",
+        "backlink",
+        "dangling",
+        "record",
+        "tag_all",
     ];
 
     fn surface(reg: &Registry, ws: &Path) -> Vec<Vec<Vec<serde_json::Value>>> {
-        SURFACE.iter().map(|query| rows(reg, ws, query)).collect()
+        SURFACE
+            .iter()
+            .map(|view| rows(reg, ws, &format!("SELECT * FROM {view} ORDER BY ALL")))
+            .collect()
     }
 
-    /// A warm workspace whose card was edited `edits` times, each edit
+    /// A warm workspace `name` whose card was edited `edits` times, each edit
     /// served, so its cache holds `edits + 1` card versions.
-    fn churned(reg: &Registry, home: &Path, edits: usize) -> PathBuf {
-        let ws = home.join("ws");
+    fn churned_named(reg: &Registry, home: &Path, name: &str, edits: usize) -> PathBuf {
+        let ws = home.join(name);
         fs::create_dir_all(ws.join("cards")).unwrap();
+        fs::create_dir_all(ws.join("bases")).unwrap();
         fs::write(ws.join("a.md"), "---\ntitle: A\n---\n# A\nsee [[b]]\n").unwrap();
-        fs::write(ws.join("b.md"), "# B\nsee [[a]] and [[cards/c]]\n").unwrap();
+        fs::write(ws.join("b.md"), "# B\nsee [[a]] and [[cards/c]] [[gone]]\n").unwrap();
+        fs::write(
+            ws.join("bases/x.base"),
+            "views:\n  - type: table\n    name: T\nformulas:\n  f: \"1\"\n",
+        )
+        .unwrap();
         fs::write(ws.join("cards/c.md"), card(0)).unwrap();
         let ws = workspace::canonicalize(&ws).unwrap();
+        reg.register(&ws);
         reg.warm_or_build(&ws).unwrap();
         rows(reg, &ws, "SELECT 1");
         for i in 1..=edits {
@@ -363,11 +465,20 @@ mod tests {
         ws
     }
 
+    fn churned(reg: &Registry, home: &Path, edits: usize) -> PathBuf {
+        churned_named(reg, home, "ws", edits)
+    }
+
     fn store_of(reg: &Registry, ws: &Path) -> Arc<Mutex<SqlStore>> {
-        reg.open_sql_stores()
-            .into_iter()
-            .find_map(|(open, store)| (open == ws).then_some(store))
-            .expect("the cache is open")
+        reg.open_sql_store(ws).expect("the cache is open")
+    }
+
+    fn counts(reg: &Registry, ws: &Path) -> (u64, u64) {
+        frontmatter_rows(&store_of(reg, ws)).unwrap()
+    }
+
+    fn hook(run: impl FnOnce() -> Result<(), String> + 'static) {
+        AFTER_COLD_BUILD.set(Some(Box::new(run)));
     }
 
     #[test]
@@ -382,15 +493,14 @@ mod tests {
     }
 
     /// A cache below the multiple is left; one at it is picked, rebuilt to
-    /// its live rows alone, answers every query with the same rows, and
-    /// takes new edits on.
+    /// its live rows alone, answers every view with the same rows, and takes
+    /// new edits on.
     #[test]
     fn a_cache_at_the_multiple_is_rebuilt_and_answers_the_same_rows() {
         let home = tempfile::tempdir().unwrap();
         let reg = registry_in(home.path());
         let ws = churned(&reg, home.path(), 6);
-        let store = store_of(&reg, &ws);
-        let (hist, live) = frontmatter_rows(&store).unwrap();
+        let (hist, live) = counts(&reg, &ws);
         let multiple = hist / live;
         assert!(multiple >= 2, "{hist} rows for {live}");
         assert!(most_due(&reg, multiple + 1).is_none(), "below it: left");
@@ -400,10 +510,14 @@ mod tests {
             "at it: picked"
         );
         let before = surface(&reg, &ws);
+        assert!(
+            !before[SURFACE.iter().position(|v| *v == "base").unwrap()].is_empty(),
+            "the fixture has base rows"
+        );
 
         compact(&reg, &ws).expect("rebuilt");
 
-        assert_eq!(frontmatter_rows(&store).unwrap(), (live, live));
+        assert_eq!(counts(&reg, &ws), (live, live));
         assert_eq!(surface(&reg, &ws), before, "the same rows, view by view");
         assert!(!reg.drawer(&ws).join(COMPACT_DIR).exists());
         assert!(most_due(&reg, 2).is_none());
@@ -423,18 +537,13 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let reg = registry_in(home.path());
         let ws = churned(&reg, home.path(), 6);
-        let store = store_of(&reg, &ws);
-        let history = frontmatter_rows(&store).unwrap();
+        let history = counts(&reg, &ws);
         let before = surface(&reg, &ws);
 
-        FAIL_AFTER_BUILD.with(|fail| fail.set(true));
+        hook(|| Err("test fault".to_owned()));
         let failed = compact(&reg, &ws).expect_err("the fault fails it");
-        assert!(failed.contains("test fault"), "{failed}");
-        assert_eq!(
-            frontmatter_rows(&store).unwrap(),
-            history,
-            "the old file, whole"
-        );
+        assert!(matches!(failed, Stopped::Failed(_)), "{failed}");
+        assert_eq!(counts(&reg, &ws), history, "the old file, whole");
         assert_eq!(surface(&reg, &ws), before);
         let dir = reg.drawer(&ws).join(COMPACT_DIR);
         assert!(!dir.exists());
@@ -442,36 +551,220 @@ mod tests {
         fs::create_dir_all(dir.join("sql-spill")).unwrap();
         fs::write(dir.join(view::store::SQL_CACHE_FILENAME), b"torn").unwrap();
         compact(&reg, &ws).expect("the next rebuild lands");
-        assert_eq!(frontmatter_rows(&store).unwrap(), (history.1, history.1));
+        assert_eq!(counts(&reg, &ws), (history.1, history.1));
         assert_eq!(surface(&reg, &ws), before);
     }
 
-    /// Queries running all through a rebuild and its swap each answer whole
-    /// and the same, none refused.
+    /// Mid-rebuild, with the new file written, a query answers from the old
+    /// file whole; a read opened there keeps the old file across the swap's
+    /// wait, and the swap lands once it ends. Queries running all through
+    /// answer the same and none is refused.
     #[test]
     fn queries_through_a_rebuild_and_its_swap_answer_whole() {
         let home = tempfile::tempdir().unwrap();
         let reg = registry_in(home.path());
         let ws = churned(&reg, home.path(), 6);
         let before = surface(&reg, &ws);
+        let (hist, live) = counts(&reg, &ws);
+        let (read_done, read_answer) = std::sync::mpsc::channel();
+        let mid_rebuild = {
+            let (reg, ws, before) = (Arc::clone(&reg), ws.clone(), before.clone());
+            move || {
+                let built = reg
+                    .drawer(&ws)
+                    .join(COMPACT_DIR)
+                    .join(view::store::SQL_CACHE_FILENAME);
+                assert!(built.exists(), "the new file stands");
+                assert_eq!(surface(&reg, &ws), before, "mid-rebuild");
+                assert_eq!(counts(&reg, &ws), (hist, live), "the old file, whole");
+                let store = store_of(&reg, &ws);
+                let read = store
+                    .lock()
+                    .unwrap()
+                    .begin_held_read(&store)
+                    .map_err(|e| e.to_string())?;
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(500));
+                    let answer = read.run("SELECT count(*) FROM hist.frontmatter");
+                    let _ = read_done.send(answer.unwrap().unwrap().1);
+                });
+                Ok(())
+            }
+        };
+        hook(mid_rebuild);
+
         let done = AtomicBool::new(false);
-        let served = std::thread::scope(|scope| {
+        let served = AtomicUsize::new(0);
+        thread::scope(|scope| {
             let queries = scope.spawn(|| {
-                let mut served = 0usize;
                 while !done.load(Ordering::Acquire) {
-                    assert_eq!(surface(&reg, &ws), before, "answer {served}");
-                    served += 1;
+                    assert_eq!(surface(&reg, &ws), before, "through the rebuild");
+                    served.fetch_add(1, Ordering::Relaxed);
                 }
-                served
             });
             compact(&reg, &ws).expect("rebuilt");
-            // A few answers from the swapped-in file too.
-            std::thread::sleep(Duration::from_millis(200));
+            let at_swap = served.load(Ordering::Relaxed);
+            while served.load(Ordering::Relaxed) == at_swap {
+                thread::yield_now();
+            }
             done.store(true, Ordering::Release);
-            queries.join().expect("no query failed")
+            queries.join().expect("no query failed or was refused");
         });
-        assert!(served > 1, "the queries ran through it: {served}");
-        let (hist, live) = frontmatter_rows(&store_of(&reg, &ws)).unwrap();
-        assert_eq!(hist, live);
+        assert_eq!(
+            read_answer.recv().unwrap(),
+            vec![vec![serde_json::json!(hist)]],
+            "the read open across the swap's wait answered from the old file"
+        );
+        assert_eq!(counts(&reg, &ws), (live, live));
+    }
+
+    /// An edit published during the build reaches the new file through the
+    /// catch-up, before the swap: read here with no call's append between.
+    #[test]
+    fn an_edit_during_the_build_is_caught_up_before_the_swap() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = churned(&reg, home.path(), 6);
+        let (_, live) = counts(&reg, &ws);
+        let (hooked_reg, hooked_ws) = (Arc::clone(&reg), ws.clone());
+        hook(move || {
+            fs::write(hooked_ws.join("cards/c.md"), card(7)).unwrap();
+            hooked_reg.warm_or_build(&hooked_ws).unwrap();
+            Ok(())
+        });
+
+        compact(&reg, &ws).expect("rebuilt");
+
+        let (hist, after) = counts(&reg, &ws);
+        assert_eq!(after, live);
+        assert_eq!(hist, live + 4, "the card's edit appended on the new file");
+        assert_eq!(
+            rows(&reg, &ws, "SELECT status FROM record WHERE type = 'task'"),
+            vec![vec![serde_json::json!("s7")]]
+        );
+    }
+
+    /// The rebuild holds no handle, so a reap during it closes the old
+    /// instance; the swap lands on what is open then — a handle a query
+    /// reopened, or none, when it opens the cache itself.
+    #[test]
+    fn a_rebuild_holds_no_handle_and_lands_on_what_is_open_at_its_swap() {
+        for query_reopens in [true, false] {
+            let home = tempfile::tempdir().unwrap();
+            let reg = registry_in(home.path());
+            let ws = churned(&reg, home.path(), 6);
+            let before = surface(&reg, &ws);
+            let (_, live) = counts(&reg, &ws);
+            let (hooked_reg, hooked_ws) = (Arc::clone(&reg), ws.clone());
+            hook(move || {
+                let (reg, ws) = (hooked_reg, hooked_ws);
+                assert_eq!(
+                    Arc::strong_count(&store_of(&reg, &ws)),
+                    2,
+                    "the handle map's and this one: the rebuild holds none"
+                );
+                reg.reap(u64::MAX, 0);
+                assert!(reg.open_sql_store(&ws).is_none(), "the reap closed it");
+                reg.warm_or_build(&ws).unwrap();
+                if query_reopens {
+                    rows(&reg, &ws, "SELECT 1");
+                }
+                Ok(())
+            });
+
+            compact(&reg, &ws).expect("landed");
+
+            assert_eq!(counts(&reg, &ws), (live, live), "reopen: {query_reopens}");
+            assert_eq!(surface(&reg, &ws), before, "reopen: {query_reopens}");
+        }
+    }
+
+    /// A workspace that leaves the daemon during its rebuild keeps its old
+    /// file and costs no pause: nothing failed.
+    #[test]
+    fn a_workspace_that_leaves_during_its_rebuild_keeps_its_cache_with_no_pause() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = churned(&reg, home.path(), 6);
+        let before = surface(&reg, &ws);
+        let history = counts(&reg, &ws);
+        let hooked_reg = Arc::clone(&reg);
+        hook(move || {
+            hooked_reg.reap(u64::MAX, 0);
+            Ok(())
+        });
+
+        look(&reg, 2);
+
+        assert!(!reg.sql_compaction().is_paused(&ws));
+        assert!(!reg.drawer(&ws).join(COMPACT_DIR).exists());
+        reg.warm_or_build(&ws).unwrap();
+        assert_eq!(surface(&reg, &ws), before);
+        assert_eq!(counts(&reg, &ws), history, "the old file, whole");
+    }
+
+    /// A failed rebuild leaves its own cache out of the looks and no other;
+    /// the pause over, it is picked again.
+    #[test]
+    fn a_failed_rebuild_pauses_its_own_cache_alone() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let bad = churned_named(&reg, home.path(), "bad", 8);
+        let good = churned_named(&reg, home.path(), "good", 4);
+        let bad_history = counts(&reg, &bad);
+        let (_, good_live) = counts(&reg, &good);
+
+        hook(|| Err("test fault".to_owned()));
+        look(&reg, 2);
+        assert_eq!(counts(&reg, &bad), bad_history, "most due, and it failed");
+        assert!(reg.sql_compaction().is_paused(&bad));
+
+        look(&reg, 2);
+        assert_eq!(counts(&reg, &good), (good_live, good_live));
+        assert_eq!(counts(&reg, &bad), bad_history, "still out of the looks");
+        assert!(most_due(&reg, 2).is_none());
+
+        reg.sql_compaction().paused.lock().unwrap().clear();
+        look(&reg, 2);
+        assert_eq!(counts(&reg, &bad), (bad_history.1, bad_history.1));
+    }
+
+    /// What a dead daemon's rebuild left is cleared by a look, whichever cache
+    /// it picks, and that cache sits out the pause.
+    #[test]
+    fn a_look_clears_what_a_dead_rebuild_left_and_pauses_that_cache() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = churned(&reg, home.path(), 6);
+        let history = counts(&reg, &ws);
+        let dir = reg.drawer(&ws).join(COMPACT_DIR);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(view::store::SQL_CACHE_FILENAME), b"torn").unwrap();
+
+        look(&reg, 2);
+
+        assert!(!dir.exists());
+        assert!(reg.sql_compaction().is_paused(&ws));
+        assert_eq!(counts(&reg, &ws), history, "no rebuild in that look");
+    }
+
+    /// The reaper's tick rebuilds a due cache on its own thread.
+    #[test]
+    fn the_tick_rebuilds_a_due_cache_on_its_own_thread() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = churned(&reg, home.path(), 6);
+        let before = surface(&reg, &ws);
+        let (_, live) = counts(&reg, &ws);
+
+        tick(&reg, 2);
+
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while reg.sql_compaction().running.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "the rebuild never ended");
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(counts(&reg, &ws), (live, live));
+        assert_eq!(surface(&reg, &ws), before);
     }
 }

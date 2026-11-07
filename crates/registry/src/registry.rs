@@ -190,7 +190,7 @@ pub struct Registry {
     /// The tick [`Self::sql_store`] stamps a handle with.
     sql_clock: AtomicU64,
     /// The sql caches' history compaction: one rebuild at a time, and the
-    /// pause after a failed one ([`crate::sql_compact`]).
+    /// caches a failed one left out of the looks ([`crate::sql_compact`]).
     sql_compaction: crate::sql_compact::State,
     /// The SQL memory policy, set with or without a residency host; `None`
     /// (no host and no readable physical memory, or a registry built
@@ -1895,15 +1895,27 @@ impl Registry {
         Ok(store)
     }
 
-    /// Every open sql cache handle, without stamping its last use: what a
-    /// history compaction looks over ([`crate::sql_compact`]).
-    pub(crate) fn open_sql_stores(&self) -> Vec<(PathBuf, Arc<Mutex<view::store::SqlStore>>)> {
+    /// The workspaces with an open sql cache: what a history compaction looks
+    /// over ([`crate::sql_compact`]).
+    pub(crate) fn open_sql_workspaces(&self) -> Vec<PathBuf> {
         self.sql_stores
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .map(|(ws, handle)| (ws.clone(), Arc::clone(&handle.store)))
+            .keys()
+            .cloned()
             .collect()
+    }
+
+    /// `workspace`'s open sql cache handle, without stamping its last use.
+    pub(crate) fn open_sql_store(
+        &self,
+        workspace: &Path,
+    ) -> Option<Arc<Mutex<view::store::SqlStore>>> {
+        self.sql_stores
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(workspace)
+            .map(|handle| Arc::clone(&handle.store))
     }
 
     /// Run `f` under the sql handle map's lock, if `store` is still

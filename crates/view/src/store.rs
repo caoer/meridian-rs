@@ -2468,14 +2468,17 @@ impl SqlStore {
     /// ([`SqlStore::wait_for_reads`]): `DuckDB` names its WAL by the file's
     /// path, so an instance still open when the new file takes that path
     /// would checkpoint into the old inode and unlink the new file's WAL when
-    /// it closed.
+    /// it closed. An older instance a read still holds after its handle was
+    /// dropped is outside this count; merkle-spec §6.4 states what its close
+    /// costs.
     ///
     /// # Errors
     /// [`ViewError::Busy`] while a read is open on this instance, or when
     /// `built` still has a WAL beside it; the store then serves its own file,
-    /// untouched. A failed rename or reopen leaves the store retired, and the
-    /// next sync reopens whatever file stands at its path — the old one when
-    /// the rename failed.
+    /// untouched. [`ViewError::Busy`] too when closing this instance left its
+    /// WAL, and a failed rename or reopen: the store is then retired, and the
+    /// next sync reopens whatever file stands at its path — the old one, with
+    /// that WAL, in all but a failed reopen.
     pub fn swap_in(&mut self, built: &Path) -> Result<(), ViewError> {
         if Arc::strong_count(&self.policy) != 1 {
             return Err(policy_error(
@@ -2495,6 +2498,15 @@ impl SqlStore {
             &mut self.conn,
             Connection::open_in_memory()?,
         ));
+        // A checkpoint that fails on close is swallowed and leaves the WAL's
+        // entries. `DuckDB` refuses them beside another file, and the reopen
+        // would answer by recreating an empty cache.
+        if std::fs::metadata(wal_path(&self.file)).is_ok_and(|wal| wal.len() > 0) {
+            return Err(policy_error(format!(
+                "closing {} left its WAL; the old file stays",
+                self.file.display()
+            )));
+        }
         std::fs::rename(built, &self.file).map_err(ViewError::Io)?;
         *self = Self::open_limited(&self.file.clone(), self.memory_limit)?;
         Ok(())
@@ -4318,7 +4330,7 @@ pub(crate) mod tests {
     /// off and keeps answering from the old file whole; the swap lands once
     /// it ends.
     #[test]
-    fn a_read_open_across_the_swap_answers_from_the_old_file_whole() {
+    fn a_read_open_holds_the_swap_off_and_answers_from_the_old_file_whole() {
         let dir = tempfile::tempdir().expect("tmpdir");
         let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
         let docs = churned(&mut store, 6);
@@ -4371,6 +4383,37 @@ pub(crate) mod tests {
         drop(open);
         std::fs::remove_file(&file).expect("the rebuild goes");
         assert!(matches!(store.swap_in(&file), Err(ViewError::Io(_))));
+        assert_eq!(
+            sync_ambient(&mut store, &docs, "b3b:v6").map(|c| c.generation),
+            None,
+            "the next sync reopens the old file at its pin"
+        );
+        assert_eq!(surface_digests(store.connection()), before);
+        assert_eq!(frontmatter_rows(store.connection()), history);
+    }
+
+    /// § History compaction: a WAL the old instance's close left is never
+    /// paired with the rebuild: the swap refuses, the rebuild stays where it
+    /// is, and the next sync reopens the old file at its pin.
+    #[test]
+    fn a_wal_the_old_close_left_keeps_the_old_file() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let file = tmp_store(&dir);
+        let mut store = SqlStore::open(&file).expect("open");
+        let docs = churned(&mut store, 6);
+        let before = surface_digests(store.connection());
+        let history = frontmatter_rows(store.connection());
+        // Reopened clean, this instance has nothing to checkpoint, so its
+        // close leaves alone whatever stands at the WAL's path.
+        drop(store);
+        let mut store = SqlStore::open(&file).expect("reopen");
+        let built = rebuilt(&dir, &docs, "b3b:v6");
+        std::fs::write(wal_path(&file), b"left by the close").expect("plant");
+
+        assert!(matches!(store.swap_in(&built), Err(ViewError::Busy(_))));
+        assert!(built.exists(), "the rebuild was not paired with that WAL");
+
+        std::fs::remove_file(wal_path(&file)).expect("no WAL to replay here");
         assert_eq!(
             sync_ambient(&mut store, &docs, "b3b:v6").map(|c| c.generation),
             None,

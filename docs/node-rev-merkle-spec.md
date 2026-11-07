@@ -712,9 +712,15 @@ appends were refused for memory after all (`status.md` § The residency line).
 History compaction bounds that growth (`wire-contract.md` § A.11, history
 compaction), and is off unless the host sets `MRD_SQL_COMPACTION`. Its
 rebuild is the cold build a deleted cache gets, made in a second instance
-beside the serving one, under the same L and the same escalation; it holds
-the serving cache open for its duration, so the open-cache count above can
-be passed by one while it runs. On a 144,915-page sessions root whose
+beside the serving one, under the same L and the same escalation, so the
+steady limits' sum above is passed by one L while it runs; it holds no handle
+on the serving cache, which the close, the idle reap and an eviction treat as
+they would any other. Its swap drains the reads of the instance open at that
+moment and no older one: a query still running on an instance whose handle was
+dropped (above) removes the new file's WAL when it closes, so a crash before
+the new instance's next checkpoint loses the appends since that checkpoint. The
+pin rides in the same transaction, so the next append re-derives them. On a
+144,915-page sessions root whose
 `hist.frontmatter` held 10.7 times its 1.08 M live rows, one rebuild took
 97 s and 106 CPU-seconds at 16 threads under a 1 GiB L, and raised the RSS
 of a daemon whose engine was warm but whose bodies had not been loaded from
