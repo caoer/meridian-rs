@@ -1390,7 +1390,7 @@ mod help {
                 query_of(&["cache", "clean", "--help"].map(String::from)),
                 ["cache", "clean"]
             );
-            assert!(query_of(&["--help"].map(String::from)).is_empty());
+            assert_eq!(query_of(&["--help"].map(String::from)), [] as [String; 0]);
         }
 
         /// A `--` separator ends this CLI's own arguments.

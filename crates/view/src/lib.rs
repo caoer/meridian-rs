@@ -1279,7 +1279,7 @@ pub(crate) enum Dest {
 
 // B2's `tag`/`tags` parse lives in `model::fm_tags` — one parser for this
 // projection and for `policy`'s rule registration, which used to read the same
-// frontmatter through `serde_yaml` and disagree with it on the block-sequence
+// frontmatter through `yaml_serde` and disagree with it on the block-sequence
 // spelling (card `tag-all-block-form-blindness`).
 
 impl Rows {
@@ -1468,9 +1468,18 @@ mod tests {
     /// page with no `tags:` key at all.
     #[test]
     fn empty_and_absent_tag_values_project_no_rows() {
-        assert!(fm_tag_rows(&staged("---\ntags:\ntitle: x\n---\n")).is_empty());
-        assert!(fm_tag_rows(&staged("---\ntags: []\n---\n")).is_empty());
-        assert!(fm_tag_rows(&staged("---\ntitle: x\n---\n")).is_empty());
+        assert_eq!(
+            fm_tag_rows(&staged("---\ntags:\ntitle: x\n---\n")),
+            [] as [(String, String); 0]
+        );
+        assert_eq!(
+            fm_tag_rows(&staged("---\ntags: []\n---\n")),
+            [] as [(String, String); 0]
+        );
+        assert_eq!(
+            fm_tag_rows(&staged("---\ntitle: x\n---\n")),
+            [] as [(String, String); 0]
+        );
     }
 
     /// The body-projection worked gate (`docs/body-projection.md` §8) plus its

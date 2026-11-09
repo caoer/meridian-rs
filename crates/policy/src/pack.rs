@@ -36,7 +36,7 @@ pub(crate) struct Manifest {
 /// Parse the manifest YAML. Any parse or schema-validation failure is the loud
 /// `Malformed` path (taxonomy `compile_error` class).
 pub(crate) fn parse_manifest(source: &str) -> Result<Manifest, CompileError> {
-    serde_yaml::from_str::<Manifest>(source).map_err(|e| CompileError::Malformed {
+    yaml_serde::from_str::<Manifest>(source).map_err(|e| CompileError::Malformed {
         reason: format!("manifest parse: {e}"),
     })
 }
@@ -107,7 +107,7 @@ pub(crate) fn parse_fixture(name: &str, content: &str) -> Result<FixtureDoc, Com
 
     // Fixtures may carry arbitrary other frontmatter; only `expect` is read.
     let parsed: FixtureFrontmatter =
-        serde_yaml::from_str(frontmatter).map_err(|e| fail(format!("frontmatter parse: {e}")))?;
+        yaml_serde::from_str(frontmatter).map_err(|e| fail(format!("frontmatter parse: {e}")))?;
     let expect = match parsed.expect.as_str() {
         "pass" => Expect::Pass,
         "fail" => Expect::Fail,

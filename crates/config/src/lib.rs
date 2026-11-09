@@ -766,8 +766,8 @@ fn check_frontmatter(raw: &str, fm: &model::Node, path: &Path) -> Result<(), Con
     let (inner, inner_first_line) = frontmatter_inner(raw, fm);
 
     let inner_line_count = inner.lines().count().max(1);
-    let value: serde_yaml::Value = serde_yaml::from_str(&inner).map_err(|e| {
-        // serde_yaml locations are 1-based over the handed slice, and an
+    let value: yaml_serde::Value = yaml_serde::from_str(&inner).map_err(|e| {
+        // yaml_serde locations are 1-based over the handed slice, and an
         // unclosed construct is reported one line past it; clamp into the
         // block so the refusal points at a line the author can see.
         let line = e.location().map_or(1, |loc| {
@@ -787,7 +787,7 @@ fn check_frontmatter(raw: &str, fm: &model::Node, path: &Path) -> Result<(), Con
     // required, so a typo of either fails loud.
     let map = value.as_mapping();
 
-    let type_value = map.and_then(|m| m.get(serde_yaml::Value::from("type")));
+    let type_value = map.and_then(|m| m.get(yaml_serde::Value::from("type")));
     let Some(type_value) = type_value else {
         return Err(missing_key(path, "type"));
     };
@@ -802,7 +802,7 @@ fn check_frontmatter(raw: &str, fm: &model::Node, path: &Path) -> Result<(), Con
         ));
     }
 
-    let version_value = map.and_then(|m| m.get(serde_yaml::Value::from("version")));
+    let version_value = map.and_then(|m| m.get(yaml_serde::Value::from("version")));
     let Some(version_value) = version_value else {
         return Err(missing_key(path, "version"));
     };
@@ -884,15 +884,15 @@ fn key_line(inner: &str, inner_first_line: usize, key: &str) -> usize {
 
 /// A YAML value as the refusal should name it: a scalar verbatim, anything
 /// else by its shape.
-fn scalar_text(value: &serde_yaml::Value) -> String {
+fn scalar_text(value: &yaml_serde::Value) -> String {
     match value {
-        serde_yaml::Value::Null => "null".to_string(),
-        serde_yaml::Value::Bool(b) => b.to_string(),
-        serde_yaml::Value::Number(n) => n.to_string(),
-        serde_yaml::Value::String(s) => s.clone(),
-        serde_yaml::Value::Sequence(_) => "a sequence".to_string(),
-        serde_yaml::Value::Mapping(_) => "a mapping".to_string(),
-        serde_yaml::Value::Tagged(t) => format!("!{}", t.tag),
+        yaml_serde::Value::Null => "null".to_string(),
+        yaml_serde::Value::Bool(b) => b.to_string(),
+        yaml_serde::Value::Number(n) => n.to_string(),
+        yaml_serde::Value::String(s) => s.clone(),
+        yaml_serde::Value::Sequence(_) => "a sequence".to_string(),
+        yaml_serde::Value::Mapping(_) => "a mapping".to_string(),
+        yaml_serde::Value::Tagged(t) => format!("!{}", t.tag),
     }
 }
 

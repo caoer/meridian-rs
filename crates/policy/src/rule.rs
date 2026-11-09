@@ -294,7 +294,7 @@ impl std::error::Error for RuleLoadError {
 /// parsers or by registration.
 #[derive(serde::Deserialize, Default)]
 struct KindFrontmatter {
-    kind: Option<serde_yaml::Value>,
+    kind: Option<yaml_serde::Value>,
 }
 
 /// The `kind:` a page declares, or `None` when it declares none (the form the
@@ -308,7 +308,7 @@ struct KindFrontmatter {
 /// a `Registration` existed, and [`load_rule`] verified these bytes ARE those bytes.
 fn declared_kind(bytes: &str) -> Option<String> {
     let (frontmatter, _body) = crate::pack::split_frontmatter(bytes)?;
-    let parsed: KindFrontmatter = serde_yaml::from_str(frontmatter).unwrap_or_default();
+    let parsed: KindFrontmatter = yaml_serde::from_str(frontmatter).unwrap_or_default();
     let value = parsed.kind.filter(|v| !v.is_null())?;
     Some(value.as_str().unwrap_or_default().to_string())
 }

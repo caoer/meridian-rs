@@ -134,7 +134,7 @@ fn a_run_with_only_non_md_effects_is_unexecuted_no_capability() {
         false,
     ));
     assert_eq!(r.state, ReportState::UnexecutedNoCapability);
-    assert!(r.applied.is_empty());
+    assert_eq!(r.applied, [] as [run::EffectLine; 0]);
     assert_eq!(r.unexecuted.len(), 1);
 }
 
@@ -222,7 +222,7 @@ fn a_refused_commit_is_never_rendered_as_applied() {
     ));
     // Phase 1 committed, phase 2 refused → partial (unchanged).
     assert_eq!(r.state, ReportState::Partial);
-    assert!(r.applied.is_empty());
+    assert_eq!(r.applied, [] as [run::EffectLine; 0]);
     let text = r.to_text();
     assert!(text.contains("applied: 0 md descriptor(s)"), "{text}");
     // The refusal is named, with the executor's error.

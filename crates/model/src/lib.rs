@@ -3286,7 +3286,7 @@ pub fn parse_alias_list(value: &str) -> Vec<String> {
 ///   - topic/doc-system
 /// ```
 ///
-/// while `policy`'s independent `serde_yaml` parse saw it — 98 pages in the
+/// while `policy`'s independent `yaml_serde` parse saw it — 98 pages in the
 /// fleet corpus projected zero tag rows, and a block-form rule page registered
 /// and armed under `mrd rules` while `mrd sql` reported it did not exist (card
 /// `tag-all-block-form-blindness`).
@@ -3816,14 +3816,14 @@ fn tag_item(raw: &str) -> Option<String> {
 ///
 /// # Why it lives here, and why there is exactly one
 /// `caps:` had two readers and they disagreed in OPPOSITE directions, each
-/// measured in production: the policy plane's `serde_yaml` sequence accepted
+/// measured in production: the policy plane's `yaml_serde` sequence accepted
 /// the flow and block spellings and refused a plain scalar, while the run
 /// plane's `CapSet::parse` accepted a plain scalar, faulted `invalid
 /// capability '[md.create'` on a flow sequence (card
 /// `caps-flow-sequence-faults-at-run-plane`) and read a block sequence as the
 /// EMPTY STRING — silently replacing a page's declared caps with an explicit
 /// read-only grant. This is the same shape [`fm_tags`] was written for after
-/// `policy`'s independent `serde_yaml` parse and the sql projection disagreed
+/// `policy`'s independent `yaml_serde` parse and the sql projection disagreed
 /// about a block-form `tags:` (card `tag-all-block-form-blindness`): one key,
 /// one reader, or the two drift.
 ///
@@ -4204,10 +4204,10 @@ mod tests {
     /// Empty is empty, and only the named key answers.
     #[test]
     fn absent_empty_and_wrong_key_are_no_tags() {
-        assert!(fm_tags("---\ntitle: x\n---", "tags").is_empty());
-        assert!(fm_tags("---\ntags:\n---", "tags").is_empty());
-        assert!(fm_tags("---\ntags: []\n---", "tags").is_empty());
-        assert!(fm_tags("---\ntags: [a]\n---", "tag").is_empty());
+        assert_eq!(fm_tags("---\ntitle: x\n---", "tags"), [] as [String; 0]);
+        assert_eq!(fm_tags("---\ntags:\n---", "tags"), [] as [String; 0]);
+        assert_eq!(fm_tags("---\ntags: []\n---", "tags"), [] as [String; 0]);
+        assert_eq!(fm_tags("---\ntags: [a]\n---", "tag"), [] as [String; 0]);
         assert_eq!(fm_tags("---\ntag: a\ntags: [b]\n---", "tag"), vec!["a"]);
     }
 
@@ -4338,7 +4338,7 @@ mod tests {
 
         assert_eq!(fm_value("tags:\n  -\tx\n", "tags").as_deref(), Some(""));
         assert_eq!(fm_value("tags:\n  -foo\n", "tags").as_deref(), Some(""));
-        assert!(fm_tags("tags:\n-\tx\n", "tags").is_empty());
+        assert_eq!(fm_tags("tags:\n-\tx\n", "tags"), [] as [String; 0]);
     }
 
     /// A comment after `key:` is not the key's value: the value is the block
@@ -4349,7 +4349,7 @@ mod tests {
         assert_eq!(fm_value(block, "tags").as_deref(), Some("[a]"));
         assert_eq!(fm_tags(block, "tags"), vec!["a"]);
         assert_eq!(fm_value(block, "note").as_deref(), Some(""));
-        assert!(fm_tags(block, "note").is_empty());
+        assert_eq!(fm_tags(block, "note"), [] as [String; 0]);
     }
 
     /// Both spellings of the block reach the same answer: `view` holds the
@@ -4836,7 +4836,7 @@ mod tests {
             "candidates in document order"
         );
         let solo = resolve(&doc, &Ref::anchor("solo").unwrap()).expect("solo anchor");
-        assert!(!solo.node_rev.0.is_empty());
+        assert_ne!(solo.node_rev.0, "");
         assert_eq!(
             resolve(&doc, &Ref::anchor("absent").unwrap()),
             Err(ResolveError::NotFound)

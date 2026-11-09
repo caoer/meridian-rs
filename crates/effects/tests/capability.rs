@@ -22,14 +22,14 @@ fn full_capability_admits_everything() {
     let effects = mixed_effects();
     let (admitted, rejected) = CapabilitySet::all().route(effects.clone());
     assert_eq!(admitted.len(), effects.len());
-    assert!(rejected.is_empty());
+    assert_eq!(rejected, [] as [effects::Effect; 0]);
 }
 
 #[test]
 fn empty_capability_rejects_everything() {
     let effects = mixed_effects();
     let (admitted, rejected) = CapabilitySet::none().route(effects.clone());
-    assert!(admitted.is_empty());
+    assert_eq!(admitted, [] as [effects::Effect; 0]);
     assert_eq!(rejected.len(), effects.len());
 }
 

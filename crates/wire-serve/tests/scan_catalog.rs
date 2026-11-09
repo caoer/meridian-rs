@@ -179,7 +179,7 @@ fn the_edge_map_over_leases_equals_the_eager_map_and_holds_one_body() {
             .unwrap()
             .is_empty()
     );
-    assert!(absent.scanned().is_empty());
+    assert_eq!(absent.scanned(), [] as [String; 0]);
 }
 
 #[test]
@@ -227,7 +227,7 @@ fn the_links_frame_reads_membership_from_metadata_and_names_a_faulting_member() 
             None => assert_eq!(leased.scanned(), ["a.md", "b.md", "c.md"]),
             // A page outside the hash domain is read from disk; its edges
             // resolve from names alone.
-            Some(".hidden/out.md") => assert!(leased.scanned().is_empty()),
+            Some(".hidden/out.md") => assert_eq!(leased.scanned(), [] as [String; 0]),
             Some(member) => assert_eq!(leased.scanned(), [member]),
         }
     }
@@ -240,7 +240,7 @@ fn the_links_frame_reads_membership_from_metadata_and_names_a_faulting_member() 
         let refused = frame(&root, &index, &leased, &unserved, Some(path)).unwrap_err();
         assert_eq!(refused.code, code, "{path}");
     }
-    assert!(leased.scanned().is_empty());
+    assert_eq!(leased.scanned(), [] as [String; 0]);
 
     for path in [None, Some("b.md")] {
         let leased = Leased::new(&docs);
@@ -353,7 +353,7 @@ fn claim_link_colours_lease_the_lock_target_and_never_the_page() {
         page_decorations_in(&index, &own, &page, &docs["own.md"]).unwrap(),
         eager
     );
-    assert!(own.scanned().is_empty());
+    assert_eq!(own.scanned(), [] as [String; 0]);
 
     // A named page outside the generation decorates nothing and leases nothing.
     let outside = Leased::new(&docs);
@@ -363,7 +363,7 @@ fn claim_link_colours_lease_the_lock_target_and_never_the_page() {
             .unwrap()
             .is_empty()
     );
-    assert!(outside.scanned().is_empty());
+    assert_eq!(outside.scanned(), [] as [String; 0]);
 }
 
 #[test]

@@ -25,7 +25,7 @@ when:
 
 clone:
   - name: clone
-    image: docker.io/woodpeckerci/plugin-git:2.11.0
+    image: docker.io/woodpeckerci/plugin-git:2.12.1
     environment:
       PLUGIN_PARTIAL: "false" # every object local: the compare walks history
       PLUGIN_DEPTH: "0"

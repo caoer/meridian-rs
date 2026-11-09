@@ -1,12 +1,12 @@
-//! The `serde_yaml` confinement instrument.
+//! The `yaml_serde` confinement instrument.
 //!
 //! `crates/policy/Cargo.toml`, `crates/config/Cargo.toml` and
-//! `crates/view/Cargo.toml` each state one topology claim: `serde_yaml` is taken
+//! `crates/view/Cargo.toml` each state one topology claim: `yaml_serde` is taken
 //! as a direct production dependency by exactly these three crates.
 //!
 //! The taker set is derived from `cargo metadata --no-deps`, never hand-maintained.
 //! `--no-deps` reports each workspace member's own manifest edges, so the
-//! direct/transitive distinction is structural: `wire-serve` reaches `serde_yaml`
+//! direct/transitive distinction is structural: `wire-serve` reaches `yaml_serde`
 //! through `policy` and is absent from this data. `kind` carries the same split for
 //! dev and build edges: `null` is a production edge, `"dev"` and `"build"` are not.
 
@@ -88,19 +88,19 @@ fn declared_kinds(meta: &Value, pkg: &str, dep: &str) -> Vec<String> {
         .collect()
 }
 
-/// The assertion: exactly `{config, policy, view}` take `serde_yaml` as a direct
+/// The assertion: exactly `{config, policy, view}` take `yaml_serde` as a direct
 /// production dependency. Equality, not containment — any other crate taking it
 /// reddens and is named, and a permitted crate dropping it reddens too.
 #[test]
-fn serde_yaml_direct_production_takers_are_exactly_the_permitted_crates() {
+fn yaml_serde_direct_production_takers_are_exactly_the_permitted_crates() {
     let meta = workspace_metadata();
-    let takers = direct_production_takers(&meta, "serde_yaml");
+    let takers = direct_production_takers(&meta, "yaml_serde");
     let permitted: BTreeSet<String> = PERMITTED.iter().map(ToString::to_string).collect();
 
     let unpermitted: Vec<&String> = takers.difference(&permitted).collect();
     assert!(
         unpermitted.is_empty(),
-        "serde_yaml confinement broken: {unpermitted:?} take `serde_yaml` as a direct production \
+        "yaml_serde confinement broken: {unpermitted:?} take `yaml_serde` as a direct production \
          dependency, but the workspace's YAML decision permits only {PERMITTED:?}. Either the new \
          crate reuses `policy`/`config`, or the claim in crates/policy/Cargo.toml and \
          crates/config/Cargo.toml is amended together with this test."
@@ -109,18 +109,18 @@ fn serde_yaml_direct_production_takers_are_exactly_the_permitted_crates() {
     assert!(
         missing.is_empty(),
         "the confinement names {missing:?} as a permitted YAML taker, but it no longer takes \
-         `serde_yaml` — strike it from the claim rather than leaving a permission nobody uses"
+         `yaml_serde` — strike it from the claim rather than leaving a permission nobody uses"
     );
 }
 
-/// A crate reaching `serde_yaml` through another crate is not a taker:
-/// `wire-serve` depends on `policy` and so appears under `serde_yaml` in
+/// A crate reaching `yaml_serde` through another crate is not a taker:
+/// `wire-serve` depends on `policy` and so appears under `yaml_serde` in
 /// `cargo tree -i`. The control is kept live: the transitive path is asserted
 /// to still exist.
 #[test]
 fn transitive_dependents_are_not_reported_as_takers() {
     let meta = workspace_metadata();
-    let takers = direct_production_takers(&meta, "serde_yaml");
+    let takers = direct_production_takers(&meta, "yaml_serde");
 
     // `contains`, not equality: a crate may declare the same dependency twice
     // (`mrd` takes `policy` under both `[dependencies]` and
@@ -135,13 +135,13 @@ fn transitive_dependents_are_not_reported_as_takers() {
              transitive case below proves nothing"
         );
         assert!(
-            declared_kinds(&meta, crate_name, "serde_yaml").is_empty(),
-            "fixture drift: `{crate_name}` now declares serde_yaml itself, so it is no longer a \
+            declared_kinds(&meta, crate_name, "yaml_serde").is_empty(),
+            "fixture drift: `{crate_name}` now declares yaml_serde itself, so it is no longer a \
              purely transitive case"
         );
         assert!(
             !takers.contains(crate_name),
-            "`{crate_name}` reaches serde_yaml only through `{through}` and must NOT be reported \
+            "`{crate_name}` reaches yaml_serde only through `{through}` and must NOT be reported \
              as a direct taker — a false positive here is what gets this instrument deleted"
         );
     }

@@ -72,7 +72,7 @@ lock = { workspace = true }
 # argument the `lock` edge above is taken on. `config` reads; this crate
 # interprets only its OWN key namespace, so `config` stays ignorant that run
 # exists. Measured cost: `config` + `workspace` + `cache` enter the graph and NO
-# new external crate does — `serde_yaml` already arrives via `policy` and `addr`
+# new external crate does — `yaml_serde` already arrives via `policy` and `addr`
 # via `model`.
 config = { workspace = true }
 # Run-plane receipt line body (machine-re-readable — the decision-#26

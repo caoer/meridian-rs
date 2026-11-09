@@ -222,7 +222,7 @@ CREATE TABLE frontmatter_tag (                    -- B2: keys 'tag'/'tags', scal
 CREATE TABLE frontmatter_fault (                  -- one row per page whose frontmatter strict YAML refuses; absent = it parses
     path       TEXT     PRIMARY KEY REFERENCES doc(path),
     line       UBIGINT  NOT NULL,                 -- 1-based FILE line the parser points at, clamped into the block
-    error      TEXT     NOT NULL                  -- the pinned serde_yaml's own message
+    error      TEXT     NOT NULL                  -- the pinned yaml_serde's own message
 );
 CREATE TABLE task (
     path        TEXT     NOT NULL REFERENCES doc(path),

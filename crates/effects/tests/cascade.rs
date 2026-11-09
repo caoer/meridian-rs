@@ -74,7 +74,7 @@ fn above_cap_md_still_suppressed() {
 fn effects_are_stamped_with_event_depth() {
     let rules = [rule("task_conventions")];
     let effects = eval_with_limits(&rules, &status_event(3), limits(8)).unwrap();
-    assert!(!effects.is_empty());
+    assert_ne!(effects, [] as [effects::Effect; 0]);
     assert!(
         effects.iter().all(|e| e.depth == 3),
         "every effect carries the event depth"

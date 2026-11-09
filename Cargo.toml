@@ -111,7 +111,7 @@ starlark_syntax = "=0.14.2"
 # consumers surface it. Already in the lock via starlark's own tree.
 anyhow = "1"
 # sha256 over canonical-path bytes = the cache drawer key (crates/cache).
-sha2 = "0.10"
+sha2 = "0.11"
 # Linker-assembled registration, used by `lock` for the engine-emits property:
 # each canonical writer declares its own block language next to
 # itself, so the engine-emitted SET is collected by the linker and no list of
@@ -124,12 +124,14 @@ pulldown-cmark = "0.13"
 # version, never the host's libduckdb. Design validated on v1.5.2 (Variegata);
 # the crate's gate tests re-confirm the SQL behaviors against whatever the
 # resolved crate bundles.
-duckdb = { version = "1", features = ["bundled"] }
+# Held on the 1.x line (`~`): duckdb 1.20000.1 (DuckDB 2.0) panics in
+# `Row::get_ref` on any NULL-typed value, `SELECT NULL` included (duckdb-rs#933).
+duckdb = { version = "~1.10506", features = ["bundled"] }
 # criterion without plotters/html: critcmp reads estimates.json, reports come
 # from bench-report — the plotting stack is pure build-time cost here.
-criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
-toml = "0.8"
-rand_chacha = "0.9"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+toml = "1"
+rand_chacha = "0.10"
 hdrhistogram = "7"
 # The §6.4 event feed's kernel watcher (merkle-spec, "the engine owns its
 # senses"): FSEvents on macOS, inotify on Linux, one recursive watch per
@@ -165,7 +167,7 @@ pedantic = { level = "warn", priority = -1 }
 # plus one commit that pads a short table row with one item expanded into empty
 # cells as events (merkle-spec §6.4); fork-only, no upstream PR.
 pulldown-cmark = { git = "https://github.com/caoer/pulldown-cmark", rev = "164b2da10fed73f18e97910bb0f3477c50a92f50" }
-# notify 8.2.0 as published on crates.io (upstream a1d7c2d8), vendored with two
+# notify 8.2.2 as published on crates.io (upstream 603674a8), vendored with two
 # changes to its inotify backend, each marked by a `meridian-rs patch` comment.
 # 1. It no longer arms IN_OPEN (`add_single_watch`). Upstream arms it on every
 #    directory watch and has no mask knob, so every file read and directory

@@ -569,15 +569,13 @@ mod tests {
 
         // A verifiable verdict names nothing.
         let pin = fingerprint(&d, &d.root).expect("d has content").0;
-        assert!(
-            verify_content(&d, &d.root, &pin)
-                .unknown_members()
-                .is_empty()
+        assert_eq!(
+            verify_content(&d, &d.root, &pin).unknown_members(),
+            [] as [&str; 0]
         );
-        assert!(
-            verify_content(&d, &d.root, "not-a-token")
-                .unknown_members()
-                .is_empty()
+        assert_eq!(
+            verify_content(&d, &d.root, "not-a-token").unknown_members(),
+            [] as [&str; 0]
         );
     }
 

@@ -182,7 +182,10 @@ mod tests {
             "- run {\"task\":\"a\"} ^p-run-inv-1",
             "- run {\"task\":\"a\"} ^r-run-inv-1",
         ]);
-        assert!(orphans_on_page("receipts/run.md", &raw).is_empty());
+        assert_eq!(
+            orphans_on_page("receipts/run.md", &raw),
+            [] as [OrphanedRun; 0]
+        );
     }
 
     #[test]
@@ -287,6 +290,9 @@ mod tests {
             "prose about ^p-run- things",
             "- splice {} ^r-000001",
         ]);
-        assert!(orphans_on_page("receipts/run.md", &raw).is_empty());
+        assert_eq!(
+            orphans_on_page("receipts/run.md", &raw),
+            [] as [OrphanedRun; 0]
+        );
     }
 }

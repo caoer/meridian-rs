@@ -343,7 +343,7 @@ fn idle_reap_demotes_stale_entries_and_keeps_registrations() {
 
     // Only unregister ends the registration.
     assert!(client.unregister(&ws).unwrap());
-    assert!(client.list().unwrap().is_empty());
+    assert_eq!(client.list().unwrap(), [] as [registry::WorkspaceEntry; 0]);
 
     server.shutdown();
 }
@@ -417,7 +417,7 @@ fn unregister_removes_and_reports() {
 
     client.register(&ws).unwrap();
     assert!(client.unregister(&ws).unwrap(), "removes a present entry");
-    assert!(client.list().unwrap().is_empty());
+    assert_eq!(client.list().unwrap(), [] as [registry::WorkspaceEntry; 0]);
     assert!(
         !client.unregister(&ws).unwrap(),
         "unregister of an absent path reports false"
@@ -510,7 +510,7 @@ fn unregister_follows_a_symlink_while_it_resolves_and_stops_when_it_does_not() {
         client.unregister(&link).unwrap(),
         "a live symlink canonicalizes onto the stored key"
     );
-    assert!(client.list().unwrap().is_empty());
+    assert_eq!(client.list().unwrap(), [] as [registry::WorkspaceEntry; 0]);
 
     // Leg 2 — target gone: the fallback keys on the link path, which is not the
     // canonical key, so the row is NOT removed by that spelling.

@@ -360,7 +360,7 @@ fn is_safe_invocation_id(id: &str) -> bool {
 
 /// Lowercase-hex encode (no `hex` crate in the dep graph — the
 /// `crates/cache` pattern).
-fn to_hex(bytes: &[u8]) -> String {
+pub(crate) fn to_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {

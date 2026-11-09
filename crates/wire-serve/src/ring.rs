@@ -783,7 +783,7 @@ mod tests {
         let a = RootRing::new();
         let b = RootRing::new();
         assert_ne!(a.instance(), b.instance());
-        assert!(!a.instance().is_empty());
+        assert_ne!(a.instance(), "");
     }
 
     /// Backwards ranges are outside emission history (nothing was emitted

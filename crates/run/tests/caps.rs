@@ -36,7 +36,7 @@ fn undeclared_block_is_read_only_deny_by_default() {
     let r = resolve("anything", None, &Conventions::none());
     assert_eq!(r.source, CapSource::DenyDefault);
     assert_eq!(r.effective, CapSet::none());
-    assert!(r.narrowed.is_empty());
+    assert_eq!(r.narrowed, [] as [Cap; 0]);
     assert!(!r.effective.admits("md.edit", Some("page.md")));
 }
 
@@ -48,7 +48,7 @@ fn explicit_frontmatter_beats_convention_as_grant_source() {
     assert_eq!(r.source, CapSource::Explicit);
     // The explicit grant is inside the convention ceiling — survives intact.
     assert_eq!(r.effective, explicit);
-    assert!(r.narrowed.is_empty());
+    assert_eq!(r.narrowed, [] as [Cap; 0]);
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn a_strictly_narrower_scope_survives_a_differently_spelled_ceiling() {
     let explicit = set(&["md.edit:tasks/foo.md"]);
     let r = resolve("fix-x", Some(&explicit), &conv);
     assert_eq!(r.effective, explicit);
-    assert!(r.narrowed.is_empty());
+    assert_eq!(r.narrowed, [] as [Cap; 0]);
     assert!(r.effective.admits("md.edit", Some("tasks/foo.md")));
     assert!(!r.effective.admits("md.edit", Some("tasks/bar.md")));
 }
@@ -108,7 +108,7 @@ fn an_identically_spelled_scope_survives_intact() {
     let explicit = set(&["md.edit:tasks/*.md"]);
     let r = resolve("fix-x", Some(&explicit), &conv);
     assert_eq!(r.effective, explicit);
-    assert!(r.narrowed.is_empty());
+    assert_eq!(r.narrowed, [] as [Cap; 0]);
 }
 
 #[test]
@@ -153,7 +153,7 @@ fn a_deep_scope_survives_a_double_star_ceiling() {
     let explicit = set(&["md.edit:tasks/sub/*.md"]);
     let r = resolve("fix-x", Some(&explicit), &conv);
     assert_eq!(r.effective, explicit);
-    assert!(r.narrowed.is_empty());
+    assert_eq!(r.narrowed, [] as [Cap; 0]);
 }
 
 #[test]

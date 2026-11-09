@@ -18,7 +18,7 @@ pub struct PropSpec {
     #[serde(default)]
     pub required: bool,
     #[serde(default)]
-    pub default: Option<serde_yaml::Value>,
+    pub default: Option<yaml_serde::Value>,
     #[serde(default)]
     pub suggest: Vec<String>,
     #[serde(default)]
@@ -210,7 +210,7 @@ fn strict_yaml<T: serde::de::DeserializeOwned + Default>(src: &str) -> Result<T,
     if src.trim().is_empty() {
         return Ok(T::default());
     }
-    serde_yaml::from_str(src).map_err(|e| e.to_string())
+    yaml_serde::from_str(src).map_err(|e| e.to_string())
 }
 
 /// The inner lines of the fenced block a standalone `^id` line FOLLOWS —
