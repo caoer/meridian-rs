@@ -213,12 +213,11 @@ fn v2_session_answers_unknown_op_and_never_advertises_sql() {
 /// inside it. `DuckDB` has no `sleep`, so the spin is a recursive CTE.
 ///
 /// **This statement is far more expensive per row than its shape suggests, so
-/// size it by measurement and never by eye.** Measured on a 30-core Linux box,
-/// debug build: 40,000 rows ran 8.9 s, 300,000 ran 41.9 s, and 20,000,000 ran
-/// 6.5 minutes at 210% CPU. A recursive CTE re-materialises its working set
-/// each round, so the row count and the runtime are neither proportional nor
-/// guessable — 500× the rows cost 44× the time. Re-measure before changing it;
-/// do not interpolate.
+/// size it by measurement and never by eye.** Measured on `DuckDB` 2.0, debug
+/// build: 40,000 rows ran 1.2 s, 60,000 ran 1.6 s, 80,000 ran 2.2 s and 120,000
+/// ran 3.2 s. A recursive CTE re-materialises its working set each round, so
+/// the row count and the runtime are neither proportional nor guessable.
+/// Re-measure before changing it; do not interpolate.
 ///
 /// The gate's verdict is a happens-BEFORE fact, not a duration, so all this
 /// constant must buy is "long enough that a sibling's whole round trip fits
@@ -227,7 +226,7 @@ fn v2_session_answers_unknown_op_and_never_advertises_sql() {
 /// [`HOLDER_MUST_EXCEED`] with room, because this gate runs in CI and every
 /// second here is paid on every run.
 const SLOW_SQL: &str = "WITH RECURSIVE spin(i) AS (\
-     SELECT 1 UNION ALL SELECT i + 1 FROM spin WHERE i < 40000\
+     SELECT 1 UNION ALL SELECT i + 1 FROM spin WHERE i < 120000\
      ) SELECT count(*)::BIGINT FROM spin";
 
 /// The floor under [`SLOW_SQL`]'s own runtime. Below this the holder is not
