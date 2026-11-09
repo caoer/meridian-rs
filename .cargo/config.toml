@@ -1,0 +1,6 @@
+# Fetch git dependencies with the git CLI, not cargo's built-in client. Build
+# hosts that rewrite https://git.0xdao.app/ to ssh reach the forge only through
+# their ssh client configuration, which the built-in client does not read, so
+# the duckdb fork in [patch.crates-io] would hang on connect there.
+[net]
+git-fetch-with-cli = true

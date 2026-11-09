@@ -219,7 +219,8 @@ use crate::{BaseWalk, ExclusionProbe, Rows, ViewError, collect_doc, fill_exclusi
 /// `17`: the persistent file uses 2,048-row groups so completed groups can
 /// leave transaction-local memory before the one pin-last commit. A v16 file
 /// has the prior physical row-group layout and must be cold-rebuilt. No hist
-/// DDL or projection changed, so the drawer's `SCHEMA_SALT` stays at `s16`.
+/// DDL or projection changed, so that change alone left the drawer's
+/// `SCHEMA_SALT` where it stood.
 pub const CACHE_SCHEMA_VERSION: i64 = 17;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
@@ -846,9 +847,15 @@ pub struct ColMeta {
 /// of the face relations involved when it names a column that does not exist
 /// ([`column_lists`]).
 pub fn run_query(conn: &Connection, query: &str) -> Result<(Vec<ColMeta>, Vec<Vec<Json>>), String> {
+    // Read before the statement: a failed prepare leaves `conn`'s transaction
+    // aborted, and it answers nothing more.
+    let catalog: Option<String> = conn
+        .query_row("SELECT current_database()", [], |row| row.get(0))
+        .ok();
     let refuse = |e: duckdb::Error| {
         let error = e.to_string();
-        format!("{}{}", teach(&error), column_lists(conn, query, &error))
+        let lists = column_lists(conn, catalog.as_deref(), query, &error);
+        format!("{}{lists}", teach(&error))
     };
     let mut stmt = conn.prepare(query).map_err(refuse)?;
     let mut rows = stmt.query([]).map_err(refuse)?;
@@ -1003,13 +1010,16 @@ const FACE_SCHEMAS: &[&str] = &["main", "hist"];
 /// never from a constant, so a schema change cannot leave them stale. A
 /// relation outside the face (a CTE, a table function, a caller's temp table)
 /// adds nothing; any other error, or a catalog read that fails, adds nothing.
-fn column_lists(conn: &Connection, query: &str, error: &str) -> String {
+/// `DuckDB` aborts the transaction a failed prepare ran in, so the catalog is
+/// read on a clone of `conn`, in a transaction of its own; a clone does not
+/// inherit the current catalog, so the caller names it.
+fn column_lists(conn: &Connection, catalog: Option<&str>, query: &str, error: &str) -> String {
     use std::fmt::Write as _;
 
     if !is_column_miss(error) {
         return String::new();
     }
-    let Ok(face) = face_columns(conn) else {
+    let Some(face) = catalog.and_then(|catalog| face_columns_on_clone(conn, catalog)) else {
         return String::new();
     };
     let text = query.to_ascii_lowercase();
@@ -1072,6 +1082,17 @@ fn error_relation(error: &str) -> Option<&str> {
         .iter()
         .find_map(|p| head.rsplit_once(p).map(|(_, r)| r))?;
     rest.strip_suffix('"')
+}
+
+/// [`face_columns`] read on a clone of `conn` pointed at `catalog`.
+fn face_columns_on_clone(
+    conn: &Connection,
+    catalog: &str,
+) -> Option<BTreeMap<(String, String), Vec<String>>> {
+    let clone = conn.try_clone().ok()?;
+    let catalog = catalog.replace('"', "\"\"");
+    clone.execute_batch(&format!("USE \"{catalog}\"")).ok()?;
+    face_columns(&clone).ok()
 }
 
 /// Every face relation's columns in catalog order, keyed by
@@ -4554,10 +4575,7 @@ pub(crate) mod tests {
                 .generation,
             2
         );
-        assert_eq!(
-            global_setting(&store, "allocator_flush_threshold"),
-            "0 bytes"
-        );
+        assert_eq!(global_setting(&store, "allocator_flush_threshold"), "0B");
     }
 
     #[test]
@@ -5409,6 +5427,11 @@ mod escalation_tests {
 
     const STEADY: u64 = 64 << 20;
     const RAISED: u64 = 1 << 30;
+    /// The steady limit [`versions`]' heavy page is refused under. `DuckDB`
+    /// spills the page's rows to the temporary directory inside [`STEADY`],
+    /// so this fixture needs a lower one: measured, 8, 16 and 32 MiB refuse
+    /// the append and 64 MiB does not.
+    const REFUSING: u64 = 16 << 20;
 
     /// Sets its flag when dropped: a stand-in for the caller's reservation.
     struct Hold(Arc<AtomicBool>);
@@ -5474,8 +5497,8 @@ mod escalation_tests {
     }
 
     /// v1: the forty pages. v2: ten of them changed, five added, and last in
-    /// path order a long-heading page whose rows outgrow 64 MiB (a 32 KiB
-    /// heading over 64 KiB of sections, as `sql_op`'s named-limit test).
+    /// path order a long-heading page whose rows outgrow [`REFUSING`] (a
+    /// 32 KiB heading over 64 KiB of sections, as `sql_op`'s named-limit test).
     fn versions() -> (model::Docs, model::Docs) {
         let v1 = pages("one");
         let mut v2: Vec<(String, String)> = pages("one")
@@ -5558,7 +5581,7 @@ mod escalation_tests {
     fn a_refused_append_leaves_the_store_and_its_redo_equals_an_unconstrained_append() {
         let (v1, v2) = versions();
         let dir = tempfile::tempdir().expect("tmpdir");
-        let mut store = SqlStore::open_limited(&tmp_store(&dir), Some(STEADY)).expect("open");
+        let mut store = SqlStore::open_limited(&tmp_store(&dir), Some(REFUSING)).expect("open");
         sync_docs(&mut store, &v1, "b3b:v1").expect("v1 fits the steady limit");
         let before = hist_digest(&store);
 

@@ -124,9 +124,7 @@ pulldown-cmark = "0.13"
 # version, never the host's libduckdb. Design validated on v1.5.2 (Variegata);
 # the crate's gate tests re-confirm the SQL behaviors against whatever the
 # resolved crate bundles.
-# Held on the 1.x line (`~`): duckdb 1.20000.1 (DuckDB 2.0) panics in
-# `Row::get_ref` on any NULL-typed value, `SELECT NULL` included (duckdb-rs#933).
-duckdb = { version = "~1.10506", features = ["bundled"] }
+duckdb = { version = "1.20000", features = ["bundled"] }
 # criterion without plotters/html: critcmp reads estimates.json, reports come
 # from bench-report — the plotting stack is pure build-time cost here.
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
@@ -182,3 +180,9 @@ pulldown-cmark = { git = "https://github.com/caoer/pulldown-cmark", rev = "164b2
 #    instead (merkle-spec §6.4, the rescan ladder's new-directory row).
 # `diff -r` against the crates.io source shows these hunks alone.
 notify = { path = "vendor/notify" }
+# Tag `meridian-v1.20000.1-1`: duckdb-rs v1.20000.1 (upstream db918f65) plus one
+# commit, the `Row::get_ref` arm that answers a NULL-typed value where upstream
+# panics (duckdb-rs#933, upstream PR duckdb-rs#944). Drop this line with the
+# first release carrying the fix. libduckdb-sys comes from the same tree, so
+# `bundled` builds its tarball.
+duckdb = { git = "https://git.0xdao.app/caoer115/duckdb-rs", rev = "07e9ff1159c78da930269e49b6f3b0533e0b6016" }

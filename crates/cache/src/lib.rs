@@ -127,7 +127,12 @@ pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 ///
 /// `s16`: the `lock` relation (`wire-contract.md` § A.11) — an s15 drawer
 /// holds no rows of it for pages whose fingerprints will not move.
-pub const SCHEMA_SALT: &str = "s16";
+///
+/// `s17`: the bundled engine is `DuckDB` 2.0 (`duckdb` 1.20000). `DuckDB`
+/// before 2.0 cannot open a file in the 2.0 storage format, so a pre-2.0
+/// binary and a 2.0 binary sharing one drawer would cold-rebuild each other's
+/// `sql.duckdb` on every open. Their own drawers keep both builds warm.
+pub const SCHEMA_SALT: &str = "s17";
 
 /// Default GC threshold: a drawer whose last-use is older than this is reapable.
 /// 30 days, mirroring Cargo's registry auto-GC horizon. A path-keyed drawer store
