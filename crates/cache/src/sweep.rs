@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(report.removed, vec![stale.clone()], "stale drawer reaped");
         assert!(!stale.exists(), "stale drawer dir gone");
         assert!(fresh.exists(), "fresh drawer survives");
-        assert!(report.skipped_locked.is_empty());
+        assert_eq!(report.skipped_locked, [] as [PathBuf; 0]);
     }
 
     #[test]
@@ -332,7 +332,7 @@ mod tests {
         let missing = root.path().join("never-created");
         assert!(list_drawers(&missing).unwrap().is_empty());
         let report = gc_at(&missing, Duration::from_secs(DAY), now_secs()).unwrap();
-        assert!(report.removed.is_empty());
+        assert_eq!(report.removed, [] as [PathBuf; 0]);
     }
 
     // Rewrite a drawer's sentinel last_use to an explicit time (test seam for the

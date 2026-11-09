@@ -613,7 +613,7 @@ impl ScriptHost for LiveHost<'_> {
         if Instant::now() > self.deadline.get() {
             return Err(fault("the script entry's wall clock elapsed".to_owned()));
         }
-        let doc = self.load_live(path).map_err(&fault)?;
+        let doc = self.load_live(path).map_err(fault)?;
         self.reads_seen.set(self.reads_seen.get() + 1);
         Ok(toc_facts_of(&doc, path, &self.root))
     }
@@ -632,8 +632,8 @@ impl ScriptHost for LiveHost<'_> {
         if Instant::now() > self.deadline.get() {
             return Err(fault("the script entry's wall clock elapsed".to_owned()));
         }
-        let doc = self.load_live(path).map_err(&fault)?;
-        let sec = wire_serve::read::selector_to_secref(&doc, section).map_err(&fault)?;
+        let doc = self.load_live(path).map_err(fault)?;
+        let sec = wire_serve::read::selector_to_secref(&doc, section).map_err(fault)?;
         let facts = match wire_serve::read::cat(&doc, Some(sec)) {
             Ok(ResponseBody::Cat {
                 content, node_rev, ..
@@ -1494,7 +1494,7 @@ impl EntryWorldHost<'_> {
             .is_some_and(|(p, count, _)| p == path && *count == rows.len());
         if !cached {
             let doc = self.with_entry_doc(path, &fault, |base| {
-                overlay_doc(base, path, &rows).map_err(&fault)
+                overlay_doc(base, path, &rows).map_err(fault)
             })?;
             self.overlay = Some((path.to_owned(), rows.len(), doc));
         }
@@ -1568,7 +1568,7 @@ impl ScriptHost for EntryWorldHost<'_> {
         // here too, under the read-alignment law: one
         // `selector_matches` resolution, every door.
         self.with_doc(path, Some(&display), armed, |doc| {
-            let sec = wire_serve::read::selector_to_secref(doc, section).map_err(&fault)?;
+            let sec = wire_serve::read::selector_to_secref(doc, section).map_err(fault)?;
             match wire_serve::read::cat(doc, Some(sec)) {
                 Ok(ResponseBody::Cat {
                     content, node_rev, ..
@@ -1793,7 +1793,7 @@ mod tests {
         let PlanEdit::Append { rev: Some(rev), .. } = &threaded[0].edit else {
             panic!("a lendable member threads its entry rev");
         };
-        assert!(!rev.is_empty());
+        assert_ne!(rev, "");
 
         for (fault, recovery, code) in [
             (Fault::Backing, Recovery::Env, "io_error: "),

@@ -843,7 +843,7 @@ mod tests {
         let binary = store.retain(b"\xff\x00\xfe").unwrap();
         assert!(empty.is_empty());
         assert_eq!(empty.digest(), model::leaf_digest(b""));
-        assert!(empty.read().unwrap().is_empty());
+        assert_eq!(empty.read().unwrap(), [] as [u8; 0]);
         assert_eq!(&*binary.read().unwrap(), b"\xff\x00\xfe");
         let stored = files(home.path());
         OpenOptions::new()

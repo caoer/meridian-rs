@@ -15,10 +15,15 @@ workspace = true
 model = { workspace = true }
 # Ruleset YAML parsing is in-charter; the YAML library choice is a rung-6
 # implementation decision — deliberately not pinned by the skeleton.
-# DECIDED (P6-COMPILE): serde + serde_yaml. Rationale: the §11.3 manifest is a
+# DECIDED (P6-COMPILE): serde + yaml_serde. Rationale: the §11.3 manifest is a
 # tiny, rigid, well-typed schema — serde-derived deserialization is the fewest
-# lines that can be wrong; serde_yaml is stable, ubiquitous, and offline-present;
-# the wire boundary is trusted-local (§13), so YAML-parser CVE surface is bounded.
+# lines that can be wrong; the wire boundary is trusted-local (§13), so
+# YAML-parser CVE surface is bounded. The crate is `yaml_serde`, the YAML
+# organization's maintained continuation of `serde_yaml`: the same libyaml-derived
+# parser over a safe port (`libyaml-rs`), so the YAML 1.2 scalar resolution
+# `wire-contract.md` § A.6 measures and the `Value`/`Mapping`/`Tagged` surface
+# every taker uses carry over unchanged. `serde-saphyr` is a different parser
+# with its own resolution, and `serde_yml` is deprecated on crates.io.
 # CONFINEMENT (S3-R14(b)): this dependency (and its libyaml transitive) may appear
 # in `cargo tree` production edges under `policy` and `config` — and no other crate.
 # `config` is the second, STATED edge: user frontmatter is arbitrary YAML and schema
@@ -28,10 +33,10 @@ model = { workspace = true }
 # taker set from `cargo metadata` and reddens — naming the crate — when a third one
 # takes it. Amend that test in the same motion as this comment, or neither.
 serde = { workspace = true }
-serde_yaml = "0.9"
+yaml_serde = "0.10"
 # Content pin (§6.1 effect-style sha256): verify RulesetPin.sha256 over the
 # manifest bytes before compile; mismatch fails loud, never evaluates.
-sha2 = "0.10"
+sha2 = "0.11"
 # The attested INDEX pinned rev (U1.4): `blake3(CHECK.md)[:16]` — the SAME rev law
 # the world model mints (contract §1: blake3-256, first 16 hex), so a convention's
 # evidence rev speaks the one rev grammar the door already trusts. Version "1"

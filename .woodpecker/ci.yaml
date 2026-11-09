@@ -122,7 +122,7 @@ labels:
 #     silently stops working (compiler.go securityTrustedPipeline arm).
 clone:
   - name: git
-    image: docker.io/woodpeckerci/plugin-git:2.9.2
+    image: docker.io/woodpeckerci/plugin-git:2.12.1
     environment:
       PLUGIN_DEPTH: "0" # the server default clone's own setting — same fetch shape
       # ci now runs on tag events too (the v* gate); the default clone only fetched tags there, so
@@ -144,7 +144,7 @@ variables:
   # the verdict. The toolchain still tracks stable — parity with the GH lane's
   # dtolnay/rust-toolchain@stable — but moves by image rebuild + push + ref
   # bump here, not by a floating pull at CI time.
-  - &rust_image "git.0xdao.app/caoer115/meridian-ci:2026-08-10@sha256:0429856e13c866952e9af0e2efbcd3824f1c074ee6740ac216f7dd3abb7aba74"
+  - &rust_image "git.0xdao.app/caoer115/meridian-ci:2026-10-25@sha256:a90d95ee033608d591bc7a7cfa2239082f7c38a00bd364dfdd87a1dc0116fa6d"
   - &cargo_home /ci-cache/meridian-rs/cargo
   # Cap per-lane build parallelism. cargo's jobserver is shared with the cc
   # crate, so this also bounds the parallel cc1plus instances compiling the

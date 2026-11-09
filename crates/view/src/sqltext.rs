@@ -144,6 +144,7 @@ pub(crate) fn raw_text(v: &Value) -> String {
         Value::Int(n) => n.to_string(),
         Value::BigInt(n) => n.to_string(),
         Value::HugeInt(n) => n.to_string(),
+        Value::UHugeInt(n) => n.to_string(),
         Value::UTinyInt(n) => n.to_string(),
         Value::USmallInt(n) => n.to_string(),
         Value::UInt(n) => n.to_string(),
@@ -152,7 +153,10 @@ pub(crate) fn raw_text(v: &Value) -> String {
         Value::Double(f) => float64_text(*f),
         Value::Decimal(d) => d.to_string(),
         Value::Text(s) | Value::Enum(s) => s.clone(),
-        Value::Blob(b) => blob_text(b),
+        // GEOMETRY arrives as its WKB bytes and renders as BLOB does;
+        // `DuckDB`'s own `::VARCHAR` speaks WKT, which this module does not
+        // decode.
+        Value::Blob(b) | Value::Geometry(b) => blob_text(b),
         Value::Date32(d) => date_text(*d),
         Value::Time64(u, t) => time_text(*u, *t),
         Value::Timestamp(u, t) => timestamp_text(*u, *t, false),
@@ -180,6 +184,9 @@ pub(crate) fn raw_text(v: &Value) -> String {
             format!("{{{}}}", parts.join(", "))
         }
         Value::Union(member) => raw_text(member),
+        // `duckdb::types::Value` is `#[non_exhaustive]`: a variant newer than
+        // this match cannot fail the build, so it shows its `Debug` form.
+        other => format!("{other:?}"),
     }
 }
 

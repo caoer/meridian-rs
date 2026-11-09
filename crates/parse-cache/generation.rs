@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 pub(crate) const ROOTS: [&str; 4] = ["addr", "syntax", "model", "parse-cache"];
 
 pub(crate) fn dependency_bytes(lock: &str) -> Vec<u8> {
-    let lock: toml::Value = lock.parse().expect("valid Cargo.lock");
+    let lock: toml::Table = lock.parse().expect("valid Cargo.lock");
     let packages = lock["package"].as_array().expect("lock packages");
     let mut todo: Vec<usize> = packages
         .iter()

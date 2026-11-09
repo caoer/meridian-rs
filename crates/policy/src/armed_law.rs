@@ -604,6 +604,6 @@ mod tests {
             !law.rules()[0].rule().matches_path("notes/x.md"),
             "and the rule's own scope excludes it"
         );
-        assert!(law.faults().is_empty());
+        assert_eq!(law.faults(), []);
     }
 }

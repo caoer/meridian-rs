@@ -846,7 +846,7 @@ fn create_reply_bytes_stand_when_middleware_sets_nothing() {
         &[],
     )
     .expect("the birth lands");
-    assert!(out.self_set.is_empty());
+    assert_eq!(out.self_set, [] as [wire::MwSelfSet; 0]);
     let bytes = serde_json::to_string(&wire_serve::write::create_response(
         Path("tasks/plain.md".into()),
         &out,

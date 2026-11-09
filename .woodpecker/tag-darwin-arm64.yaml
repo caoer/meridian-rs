@@ -57,7 +57,7 @@ labels:
 
 clone:
   - name: git
-    image: docker.io/woodpeckerci/plugin-git:2.9.2
+    image: docker.io/woodpeckerci/plugin-git:2.12.1
     environment:
       PLUGIN_DEPTH: "0"
       PLUGIN_TAGS: "true"
@@ -68,7 +68,7 @@ clone:
 
 steps:
   - name: publish mrd (darwin-arm64, keyed by commit)
-    image: "meridian-ci:2026-08-10"
+    image: "meridian-ci:2026-10-25"
     pull: false
     environment:
       CARGO_HOME: /ci-cache/meridian-rs/cargo

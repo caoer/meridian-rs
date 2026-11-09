@@ -819,7 +819,7 @@ mod tests {
     fn anchor_rows_carry_no_heading_address() {
         let got = facts("# H\n\n- plain item ^p1\n");
         let anchor = resolve_selector(&got, &sel("^p1")).expect("anchor row");
-        assert!(anchor.hpath.is_empty());
+        assert_eq!(anchor.hpath, [] as [wire::HpathSeg; 0]);
         assert_eq!(
             addr(resolve_selector(&got, &sel("H")).expect("heading")),
             "H"

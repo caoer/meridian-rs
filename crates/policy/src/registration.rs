@@ -605,14 +605,14 @@ pub fn page_rev(bytes: &str) -> String {
 
 // ── Discovery ─────────────────────────────────────────────────────────────────
 
-/// The frontmatter key registration still reads through `serde_yaml`: `id:`,
+/// The frontmatter key registration still reads through `yaml_serde`: `id:`,
 /// whose § 2 grammar check needs a real YAML scalar. Every other key is
 /// permitted and ignored — a rule page carries ordinary page frontmatter too.
 /// Note what is NOT here: `kind:` (the engine consults it nowhere), and
 /// `tags:`, which now comes from `model::fm_tags` — see [`register_page`].
 #[derive(serde::Deserialize)]
 struct RegistrationFrontmatter {
-    id: Option<serde_yaml::Value>,
+    id: Option<yaml_serde::Value>,
 }
 
 /// One page the caller's walk offers to discovery. `page` is relative to `layer`'s
@@ -651,27 +651,27 @@ pub fn register_page(offered: PageRef<'_>) -> Result<Option<Registration>, Regis
     let Some((frontmatter, _body)) = crate::pack::split_frontmatter(bytes) else {
         return Ok(None); // no frontmatter block ⇒ no tags ⇒ not a rule page
     };
-    let parsed: RegistrationFrontmatter = serde_yaml::from_str(frontmatter).map_err(|e| {
+    let parsed: RegistrationFrontmatter = yaml_serde::from_str(frontmatter).map_err(|e| {
         refuse(RegisterFault::FrontmatterUnparsed {
             detail: e.to_string(),
         })
     })?;
 
     // Tags come from `model::fm_tags`, the ONE tag parser — not from a second
-    // `serde_yaml` reading of the same block. Two parsers over one frontmatter
+    // `yaml_serde` reading of the same block. Two parsers over one frontmatter
     // is what let `mrd rules` register a block-sequence rule page while the sql
     // projection reported it did not exist (card `tag-all-block-form-blindness`).
-    // The `serde_yaml` parse above stays exactly where it was: it still owns
+    // The `yaml_serde` parse above stays exactly where it was: it still owns
     // `id:` and still refuses an unparseable block before anything else is read.
     let tags = model::fm_tags(frontmatter, "tags");
-    let kinds = registration_kinds(&tags).map_err(&refuse)?;
+    let kinds = registration_kinds(&tags).map_err(refuse)?;
     if kinds.is_empty() {
         return Ok(None); // tagged, but not in the registration namespace
     }
 
-    let id = frontmatter_id(parsed.id.as_ref()).map_err(&refuse)?;
+    let id = frontmatter_id(parsed.id.as_ref()).map_err(refuse)?;
 
-    if let Some(declared) = block_declared_id(page, bytes).map_err(&refuse)?
+    if let Some(declared) = block_declared_id(page, bytes).map_err(refuse)?
         && declared != id.as_str()
     {
         return Err(refuse(RegisterFault::IdDisagrees {
@@ -707,7 +707,7 @@ fn registration_kinds(tags: &[String]) -> Result<Vec<RuleKind>, RegisterFault> {
 }
 
 /// The page's frontmatter `id:`, validated to the § 2 grammar.
-fn frontmatter_id(id: Option<&serde_yaml::Value>) -> Result<RuleId, RegisterFault> {
+fn frontmatter_id(id: Option<&yaml_serde::Value>) -> Result<RuleId, RegisterFault> {
     let value = id.filter(|v| !v.is_null()).ok_or(RegisterFault::IdAbsent)?;
     let Some(text) = value.as_str() else {
         return Err(RegisterFault::IdInvalid {
@@ -1048,11 +1048,11 @@ mod tests {
     // ── the one tag parser ────────────────────────────────────────────────────
 
     /// The oracle this crate used to read `tags:` with, kept ONLY as a test
-    /// instrument: `serde_yaml` is the widest reader of the three spellings, so
+    /// instrument: `yaml_serde` is the widest reader of the three spellings, so
     /// it is what `model::fm_tags` must not be narrower than. If this test ever
     /// fails, a rule page stopped registering — that is the regression class
     /// this whole seam is guarding.
-    fn serde_yaml_tags(frontmatter: &str) -> Vec<String> {
+    fn yaml_serde_tags(frontmatter: &str) -> Vec<String> {
         #[derive(serde::Deserialize)]
         #[serde(untagged)]
         enum Tags {
@@ -1063,7 +1063,7 @@ mod tests {
         struct Fm {
             tags: Option<Tags>,
         }
-        let Ok(fm) = serde_yaml::from_str::<Fm>(frontmatter) else {
+        let Ok(fm) = yaml_serde::from_str::<Fm>(frontmatter) else {
             return Vec::new();
         };
         match fm.tags {
@@ -1100,7 +1100,7 @@ mod tests {
         ] {
             assert_eq!(
                 model::fm_tags(frontmatter, "tags"),
-                serde_yaml_tags(frontmatter),
+                yaml_serde_tags(frontmatter),
                 "the two readings disagree on:\n{frontmatter}",
             );
         }
@@ -1431,7 +1431,7 @@ mod tests {
         assert_eq!(effective.winner().scope().depth(), 2);
         assert_eq!(effective.shadowed().len(), 1);
         assert_eq!(effective.shadowed()[0].page(), "rules.md");
-        assert!(set.collisions().is_empty());
+        assert_eq!(set.collisions(), []);
     }
 
     #[test]
@@ -1817,7 +1817,7 @@ mod tests {
     fn scoping_never_registers_a_refused_page() {
         use ScopeLayer::Workspace;
         let index = RuleIndex::discover([offer(Workspace, "sessions/s1/x.md", REFUSED_PAGE)]);
-        assert!(index.registered().is_empty());
+        assert_eq!(index.registered(), []);
         for at in ["", "sessions/s1", "sessions/s2"] {
             assert!(
                 index.narrowed_to(at).registered().is_empty(),

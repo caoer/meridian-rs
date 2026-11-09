@@ -4876,8 +4876,8 @@ mod engine_tests {
         }
 
         // Within budget: nothing to do. Zero: unbounded, never evicts.
-        assert!(reg.reap_to_budget(2 * WS_ESTIMATE).is_empty());
-        assert!(reg.reap_to_budget(0).is_empty());
+        assert_eq!(reg.reap_to_budget(2 * WS_ESTIMATE), [] as [PathBuf; 0]);
+        assert_eq!(reg.reap_to_budget(0), [] as [PathBuf; 0]);
     }
 
     /// The exemption is NARROW: only a live sub cursor spares a workspace

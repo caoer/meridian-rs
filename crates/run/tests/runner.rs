@@ -110,7 +110,7 @@ fn starlark_composes_end_to_end_and_labels_hermetic() {
     let text = std::fs::read_to_string(root.0.join("page.md")).unwrap();
     assert!(text.contains("status: done"), "{text}");
     assert_eq!(report.task, "fix-x");
-    assert!(!report.task_rev.is_empty());
+    assert_ne!(report.task_rev, "");
     assert_eq!(report.guarantee, GuaranteeClass::Hermetic);
     let TaskOutcome::Starlark(out) = &report.outcome else {
         panic!("starlark outcome expected");
@@ -301,5 +301,5 @@ fn the_caps_resolution_reaches_the_report() {
         .capabilities()
         .expect("starlark resolves a real capability grant");
     assert!(caps.effective.admits("md.edit", Some("page.md")));
-    assert!(caps.narrowed.is_empty());
+    assert_eq!(caps.narrowed, [] as [run::Cap; 0]);
 }

@@ -6,7 +6,7 @@
 //! A strict YAML parser (Obsidian's, for one) refuses the first, and a page whose
 //! frontmatter it refuses carries no properties in that reader. No query over
 //! the projected values can tell the two apart, so the verdict is computed here,
-//! by the same pinned `serde_yaml` the `.base` parse uses (`base.rs`), beside
+//! by the same pinned `yaml_serde` the `.base` parse uses (`base.rs`), beside
 //! its only consumer.
 
 /// One page's strict-YAML refusal: the FILE line (1-based) the parser points
@@ -34,14 +34,14 @@ pub(crate) fn judge(fenced: &str, open_line: u64) -> Option<Fault> {
     let interior = lines.join("\n");
     let first = open_line + 1;
     let line_count = u64::try_from(lines.len().max(1)).unwrap_or(u64::MAX);
-    match serde_yaml::from_str::<serde_yaml::Value>(&interior) {
-        Ok(serde_yaml::Value::Mapping(_) | serde_yaml::Value::Null) => None,
+    match yaml_serde::from_str::<yaml_serde::Value>(&interior) {
+        Ok(yaml_serde::Value::Mapping(_) | yaml_serde::Value::Null) => None,
         Ok(_) => Some(Fault {
             line: first,
             error: "the frontmatter is not a YAML mapping".to_owned(),
         }),
         Err(e) => {
-            // serde_yaml locations are 1-based over the handed slice, and an
+            // yaml_serde locations are 1-based over the handed slice, and an
             // unclosed construct is reported one line past it; clamp into the
             // block so the row points at a line the author can see.
             let at = e
@@ -83,7 +83,7 @@ mod tests {
             let fault = judge(&fenced(interior), 1)
                 .unwrap_or_else(|| panic!("strict YAML refuses {interior:?}"));
             assert_eq!(fault.line, line, "{interior:?}: {}", fault.error);
-            assert!(!fault.error.is_empty());
+            assert_ne!(fault.error, "");
         }
     }
 

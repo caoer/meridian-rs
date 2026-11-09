@@ -131,7 +131,7 @@ fn every_quote_trigger_round_trips() {
 ///
 /// `true` and `7` left this list on 2026-08-23 (card
 /// `all-digit-short-ids-read-as-int`) — `a_value_a_yaml_parser_reads_as_a_number_or_a_bool_is_quoted`
-/// is their new home. `2026-08-07` stays: `serde_yaml` reads a timestamp back
+/// is their new home. `2026-08-07` stays: `yaml_serde` reads a timestamp back
 /// as a string, so the plain emit already round-trips as the caller's string.
 #[test]
 fn one_level_flow_lists_still_emit_verbatim() {
@@ -150,7 +150,10 @@ fn one_level_flow_lists_still_emit_verbatim() {
     }
     let cand = set_property("status", "[a, b]");
     assert_eq!(line_for(&cand, "status"), "status: [a, b]");
-    assert!(scan_nested(&cand, "cand.md").is_empty());
+    assert_eq!(
+        scan_nested(&cand, "cand.md"),
+        [] as [policy::defs::Finding; 0]
+    );
 }
 
 /// A newline is still REFUSED, never sanitized, and never quoted away: the
@@ -283,7 +286,7 @@ fn plain_scalars_that_no_yaml_parser_can_read_are_quoted() {
         "!tag",
         ">fold",
         "|block",
-        // an INTERIOR tab: `serde_yaml` reads it, `PyYAML` dies on the whole
+        // an INTERIOR tab: `yaml_serde` reads it, `PyYAML` dies on the whole
         // block ("while scanning for the next token"), so the parser oracle
         // alone never flagged it (measured over a live root)
         "a\tb",
@@ -298,10 +301,10 @@ fn plain_scalars_that_no_yaml_parser_can_read_are_quoted() {
             value,
             "round trip for {value:?}"
         );
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&format!("k: {emitted}\n"))
+        let parsed: yaml_serde::Value = yaml_serde::from_str(&format!("k: {emitted}\n"))
             .unwrap_or_else(|e| panic!("the emit for {value:?} must parse as yaml: {e}"));
         assert_eq!(
-            parsed.get("k").and_then(serde_yaml::Value::as_str),
+            parsed.get("k").and_then(yaml_serde::Value::as_str),
             Some(value),
             "a real yaml parser reads the emit for {value:?} back as itself"
         );
@@ -350,13 +353,13 @@ const LIVE_ALL_DIGIT_IDS: [&str; 39] = [
     "77769434", "78267924", "81937540", "82525787", "83480721", "84956441", "88191010", "88877785",
     "92574281", "92829274", "94485806", "95253977", "98594329",
     // the review's two, kept even if they leave the live root
-    "00000042", // leading zeros: PyYAML reads YAML 1.1 octal, serde_yaml decimal 42
+    "00000042", // leading zeros: PyYAML reads YAML 1.1 octal, yaml_serde decimal 42
     "12345678",
 ];
 
 /// **The defect this pins** (PR 185 review finding F2, card
 /// `all-digit-short-ids-read-as-int`). `plain_reads_back` used to override
-/// `serde_yaml` for the Int/Float/Bool classes, so an all-digit short id was
+/// `yaml_serde` for the Int/Float/Bool classes, so an all-digit short id was
 /// emitted PLAIN: `19895504` read back as the integer 19 895 504, and
 /// `02146210` as 576 648 (YAML 1.1 octal, `PyYAML`) — 203 of 8 125 distinct 8-hex
 /// ids on the live root (2.5 %) are all-digit, and 8-hex git shas share the
@@ -368,10 +371,10 @@ fn an_all_digit_short_id_is_written_so_a_yaml_parser_reads_it_as_a_string() {
         let emitted = yaml_safe_value(id).expect("an id is single-line");
         assert_eq!(emitted, format!("\"{id}\""), "emit for id {id:?}");
         assert_eq!(model::scalar::text(&emitted), id, "round trip for {id:?}");
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&format!("owner: {emitted}\n"))
+        let parsed: yaml_serde::Value = yaml_serde::from_str(&format!("owner: {emitted}\n"))
             .unwrap_or_else(|e| panic!("the emit for {id:?} must parse as yaml: {e}"));
         assert_eq!(
-            parsed.get("owner").and_then(serde_yaml::Value::as_str),
+            parsed.get("owner").and_then(yaml_serde::Value::as_str),
             Some(id),
             "a real yaml parser must read the emit for {id:?} back as the string"
         );
@@ -379,7 +382,10 @@ fn an_all_digit_short_id_is_written_so_a_yaml_parser_reads_it_as_a_string() {
         let cand = set_property("owner", id);
         assert_eq!(line_for(&cand, "owner"), format!("owner: \"{id}\""));
         assert_eq!(reads_back_as(&cand, "owner"), id);
-        assert!(scan_nested(&cand, "cand.md").is_empty());
+        assert_eq!(
+            scan_nested(&cand, "cand.md"),
+            [] as [policy::defs::Finding; 0]
+        );
     }
 }
 
@@ -392,13 +398,13 @@ fn a_value_a_yaml_parser_reads_as_a_number_or_a_bool_is_quoted() {
     for value in [
         "7", "0", "-36", "+7", "0.5", "1e3", "0657e070", // int / float spellings
         "true", "false", "True", "FALSE", // bools
-        "0x1f", "0o17", "1_000", // yaml 1.2 int spellings serde_yaml resolves
+        "0x1f", "0o17", "1_000", // yaml 1.2 int spellings yaml_serde resolves
         ".inf", ".nan", // float specials
     ] {
         let emitted = yaml_safe_value(value).expect("single-line values encode");
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&format!("k: {emitted}\n"))
+        let parsed: yaml_serde::Value = yaml_serde::from_str(&format!("k: {emitted}\n"))
             .unwrap_or_else(|e| panic!("the emit for {value:?} must parse as yaml: {e}"));
-        let read = parsed.get("k").and_then(serde_yaml::Value::as_str);
+        let read = parsed.get("k").and_then(yaml_serde::Value::as_str);
         assert_eq!(
             read,
             Some(value),
@@ -427,14 +433,14 @@ fn an_id_already_stored_plain_is_still_preserved_on_a_no_op_write_back() {
     assert_eq!(line_for(&changed, "owner"), r#"owner: "02146210""#);
 }
 
-/// **The 1.1 blind spot, pinned.** `serde_yaml` resolves the YAML **1.2** core
+/// **The 1.1 blind spot, pinned.** `yaml_serde` resolves the YAML **1.2** core
 /// schema; `PyYAML` and go-yaml (`gopkg.in/yaml.v3`) resolve **1.1**, and both
 /// of them answer 576 648 for `02146210`. Deferring to the 1.2 parser alone
 /// left the WORSE half of the id defect standing: `02146210` is the string
 /// `"02146210"` to
-/// `serde_yaml` — a leading zero is not a 1.2 integer — and the integer 576 648
+/// `yaml_serde` — a leading zero is not a 1.2 integer — and the integer 576 648
 /// to `PyYAML`, which reads a leading-zero digit run as octal. The law is the
-/// union of the schemas, so these quote even though `serde_yaml` is content.
+/// union of the schemas, so these quote even though `yaml_serde` is content.
 #[test]
 fn the_yaml_1_1_only_typed_spellings_are_quoted_too() {
     for value in [
@@ -459,7 +465,7 @@ fn the_yaml_1_1_only_typed_spellings_are_quoted_too() {
         // The radix ints. `0x1f`/`0o17` are 1.2 integers the parser oracle
         // already catches; the UNDERSCORE spellings and every `0b…` are
         // 1.1-only — `0x1_f` is 31 and `0b1_010` is 10 to `PyYAML`, and plain
-        // strings to `serde_yaml` (measured).
+        // strings to `yaml_serde` (measured).
         "0b1010",
         "0b1_010",
         "0x1f",
@@ -468,7 +474,7 @@ fn the_yaml_1_1_only_typed_spellings_are_quoted_too() {
         "011",
         // The two 1.1 resolver TAGS, which are not types at all: emitted plain,
         // `PyYAML` refuses the WHOLE block — "could not determine a constructor
-        // for the tag …:merge / …:value" — while `serde_yaml` reads both back
+        // for the tag …:merge / …:value" — while `yaml_serde` reads both back
         // as strings, so only this arm catches them.
         "<<",
         "=",
@@ -495,7 +501,7 @@ fn near_misses_of_the_yaml_1_1_classes_stay_plain() {
         "yesterday",  // not the boolean `yes`
         "no-one",     //
         "on-call",    //
-        "2026-08-07", // a timestamp reads back as a string in serde_yaml
+        "2026-08-07", // a timestamp reads back as a string in yaml_serde
         "0657e070",   // an id, but this one already quotes as a 1.2 float
         "v1_000",     // digits with a letter: a plain string in both schemas
         "22-18-hook", // a session slug

@@ -1453,7 +1453,7 @@ mod tests {
         let down = walk(&docs, "sources/target.md", Direction::Down, None).expect("down");
         assert!(down.entries.is_empty(), "a refusal is nobody's dependent");
         let down_self = walk(&docs, "effect.md", Direction::Down, None).expect("down self");
-        assert!(down_self.entries.is_empty());
+        assert_eq!(down_self.entries, [] as [WalkEntry; 0]);
     }
 
     /// [`lock_objects`] dedupes by `(page, object, hash)` — whole-file lock
@@ -1505,7 +1505,7 @@ mod tests {
         // A page with no lock projects nothing at all.
         let only_plain =
             BTreeMap::from([("plain.md".to_string(), doc("# Plain\n\nno lock here\n"))]);
-        assert!(lock_objects(&only_plain).is_empty());
+        assert_eq!(lock_objects(&only_plain), [] as [LockObject; 0]);
     }
 
     /// A REFUSED lock projects no blobs — its plane is unreadable, and the

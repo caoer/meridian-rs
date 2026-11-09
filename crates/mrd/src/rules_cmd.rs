@@ -1884,7 +1884,7 @@ rules at sessions/s1
     /// A clean report exits 0 — an empty population is not a finding.
     #[test]
     fn an_empty_report_has_no_findings() {
-        assert!(report(Vec::new()).findings().is_empty());
+        assert_eq!(report(Vec::new()).findings(), [] as [String; 0]);
     }
 
     #[test]

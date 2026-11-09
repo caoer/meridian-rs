@@ -556,7 +556,7 @@ def middleware(ctx):
         send(to = [\"reviewer\"], body = \"t -> review\")
 ")
         .expect("evaluates");
-        assert!(out.refusals.is_empty());
+        assert_eq!(out.refusals, [] as [Refusal; 0]);
         assert_eq!(
             out.emits,
             vec![

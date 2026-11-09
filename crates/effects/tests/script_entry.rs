@@ -218,7 +218,7 @@ fn a_script_defining_def_run_is_legal_and_the_function_is_unused() {
         host.calls, 0,
         "an unused def never runs, so nothing is read"
     );
-    assert!(eval.recording.reads.is_empty());
+    assert_eq!(eval.recording.reads, [] as [effects::ReadRecord; 0]);
 }
 
 /// Acceptance 1 — `me()` is the injected actor; the engine mints no identity.

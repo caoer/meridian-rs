@@ -332,7 +332,10 @@ def on_change(event):
     fn a_never_armed_workspace_has_no_artifact_and_emits_nothing() {
         let temp = tempfile::tempdir().expect("temp workspace");
         let root = fs::WorkspaceRoot(temp.path().to_path_buf());
-        assert!(feed(&root, "tasks/x.md", "in-progress", "review").is_empty());
+        assert_eq!(
+            feed(&root, "tasks/x.md", "in-progress", "review"),
+            [] as [wire::EffectEnvelope; 0]
+        );
     }
 
     /// Unreadable-but-present artifact is a fault, never never-armed (silent-disarm).
@@ -351,13 +354,19 @@ def on_change(event):
     #[test]
     fn an_out_of_scope_path_emits_nothing() {
         let (_temp, root) = armed_root();
-        assert!(feed(&root, "notes/x.md", "in-progress", "review").is_empty());
+        assert_eq!(
+            feed(&root, "notes/x.md", "in-progress", "review"),
+            [] as [wire::EffectEnvelope; 0]
+        );
     }
 
     #[test]
     fn an_in_scope_change_that_arms_no_intent_is_empty() {
         let (_temp, root) = armed_root();
-        assert!(feed(&root, "tasks/x.md", "todo", "in-progress").is_empty());
+        assert_eq!(
+            feed(&root, "tasks/x.md", "todo", "in-progress"),
+            [] as [wire::EffectEnvelope; 0]
+        );
     }
 
     #[test]
@@ -529,7 +538,7 @@ def on_change(event):
         let (_temp, root) = armed_workspace(&faulting, Mode::Armed, ".", "task-review-notify.md");
 
         let outcomes = feed(&root, "tasks/x.md", "in-progress", "review");
-        assert!(reactions(&outcomes).is_empty());
+        assert_eq!(reactions(&outcomes), [] as [&wire::EffectEnvelope; 0]);
         assert_eq!(
             faults(&outcomes).len(),
             1,

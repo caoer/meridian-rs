@@ -1562,8 +1562,8 @@ mod tests {
     fn change_event_new_is_depth_zero_empty_payload() {
         let e = ChangeEvent::new("f.md", "a", "b");
         assert_eq!(e.depth, 0);
-        assert!(e.sections_changed.is_empty());
-        assert!(e.fields_changed.is_empty());
+        assert_eq!(e.sections_changed, [] as [String; 0]);
+        assert_eq!(e.fields_changed, [] as [String; 0]);
         assert_eq!(e.fingerprint_before, "a");
         assert_eq!(e.fingerprint_after, "b");
     }
@@ -1594,7 +1594,7 @@ mod tests {
         let tel = eval_telemetry(&[rule], &event, EvalLimits::default());
         // The dead-rule signal is `Ok(vec![])`, not fuel: Starlark tick
         // accounting is coarse, so a cheap false branch can read 0.
-        assert!(tel[0].outcome.as_ref().expect("ok").is_empty());
+        assert_eq!(tel[0].outcome.as_ref().expect("ok").as_slice(), []);
     }
 
     #[test]

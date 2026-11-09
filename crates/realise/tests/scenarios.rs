@@ -155,7 +155,7 @@ fn failing_check_no_apply_mints_pending_agent_and_board_card() {
         report.claims[0].applies, 0,
         "no apply ran for pending-agent"
     );
-    assert!(report.claims[0].receipts.is_empty());
+    assert_eq!(report.claims[0].receipts, [] as [String; 0]);
 
     // The board card is a real governed page with the pending-agent frontmatter.
     let card_body = std::fs::read_to_string(root.0.join("board/status-must-be-done.md")).unwrap();
@@ -280,7 +280,7 @@ fn no_apply_lands_unrecorded() {
     // The already-converged claim: zero applies, zero receipts.
     assert_eq!(report.claims[1].state, ClaimState::Converged);
     assert_eq!(report.claims[1].applies, 0);
-    assert!(report.claims[1].receipts.is_empty());
+    assert_eq!(report.claims[1].receipts, [] as [String; 0]);
 
     // The invariant, checked at the tree: committed applies == receipt lines.
     let total_receipts: usize = report.claims.iter().map(|c| c.receipts.len()).sum();
@@ -354,7 +354,7 @@ fn dry_run_uses_zero_caps_projects_blast_radius_and_writes_nothing() {
     // Blast radius names the drifted apply-capable claim; nothing applied.
     assert_eq!(report.projected_applies, vec!["converge-status".to_owned()]);
     assert_eq!(report.claims[0].applies, 0);
-    assert!(report.claims[0].receipts.is_empty());
+    assert_eq!(report.claims[0].receipts, [] as [String; 0]);
     // The declared caps are still reported (the union), but zero were used.
     assert!(report.caps_union.admits("md.edit", None));
     // No apply and no receipt touched the tree.

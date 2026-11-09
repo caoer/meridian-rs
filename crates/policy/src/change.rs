@@ -668,7 +668,7 @@ mod tests {
         assert!(!change.force);
         assert_eq!(change.before.path, "notes/plan.md");
         assert_eq!(change.doc.path, "notes/plan.md");
-        assert!(change.doc.edges.is_empty());
+        assert_eq!(change.doc.edges, [] as [Edge; 0]);
         assert_eq!(change.fields_changed, vec!["title".to_string()]);
         assert!(change.sections_changed.is_empty(), "no section rev moved");
 

@@ -846,7 +846,7 @@ mod tests {
 
         // Removing the FILE arm clears the key; the directory arm serves.
         assert!(tree.remove_leaf(&p("a.md")));
-        assert!(tree.collision_paths().is_empty());
+        assert_eq!(tree.collision_paths(), [] as [String; 0]);
         assert!(matches!(tree.fold_at(&p("a.md")), Ok(ScopeFold::Value(_))));
 
         // And the other direction: prune the directory arm out from under a
@@ -854,7 +854,7 @@ mod tests {
         tree.set_leaf(&p("a.md"), h(1));
         assert_eq!(tree.collision_paths(), vec!["a.md".to_owned()]);
         assert!(tree.remove_leaf(&p("a.md/inner.md")));
-        assert!(tree.collision_paths().is_empty());
+        assert_eq!(tree.collision_paths(), [] as [String; 0]);
         assert_eq!(tree.fold_at(&p("a.md")), Ok(ScopeFold::Value(h(1))));
     }
 

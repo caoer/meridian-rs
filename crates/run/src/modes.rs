@@ -1333,7 +1333,7 @@ impl ProcessSeam<'_> {
         let mut row = json!({
             "command": seen["command"].clone(),
             "exit": seen["exit"].clone(),
-            "stdout_sha256": format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(stdout.as_bytes())),
+            "stdout_sha256": crate::record::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(stdout.as_bytes())),
             "bytes": stdout.len(),
             "timed_out": seen["timed_out"].clone(),
             "dry": dry,

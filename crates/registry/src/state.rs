@@ -170,7 +170,7 @@ mod tests {
     fn absent_file_loads_empty() {
         let dir = tempfile::tempdir().unwrap();
         let store = StateStore::new(dir.path().join("nope.json"));
-        assert!(store.load().is_empty());
+        assert_eq!(store.load(), [] as [WorkspaceEntry; 0]);
     }
 
     #[test]

@@ -7,13 +7,13 @@
 //! and the view `type` vocabulary, are Obsidian's — unversioned and evolving —
 //! so they travel as verbatim text (§4.3).
 //!
-//! The parse is `serde_yaml` because Bases values nest arbitrarily; the
+//! The parse is `yaml_serde` because Bases values nest arbitrarily; the
 //! hand-rolled-scanner argument that admitted it into `config` for arbitrary
 //! user frontmatter applies verbatim (§9). The `yaml_confinement` instrument's
 //! permitted-taker set carries `view` with this paragraph as the stated
 //! deviation.
 
-use serde_yaml::Value as Yaml;
+use yaml_serde::Value as Yaml;
 
 /// One member's parse — the shape [`crate::Rows`] stages.
 ///
@@ -70,7 +70,7 @@ pub(crate) fn unreadable(message: &str) -> Parsed {
 /// message and no content: non-UTF-8 bytes, a shell script or markdown wearing
 /// `.base`, YAML whose root is not a mapping, and **duplicate mapping keys
 /// anywhere in the document** — the PINNED PARSER's rule, not YAML's:
-/// `serde_yaml` refuses the whole document, so one duplicate `groupBy:` makes
+/// `yaml_serde` refuses the whole document, so one duplicate `groupBy:` makes
 /// the file an alien rather than last-key-wins. That verdict is deliberate:
 /// tolerating duplicates would need a hand-rolled event-stream walk for a case
 /// the live corpus has not produced.
@@ -79,7 +79,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Parsed {
         Ok(text) => text,
         Err(e) => return unreadable(&e.to_string()),
     };
-    let doc: Yaml = match serde_yaml::from_str(text) {
+    let doc: Yaml = match yaml_serde::from_str(text) {
         Ok(doc) => doc,
         Err(e) => return unreadable(&e.to_string()),
     };
@@ -88,7 +88,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Parsed {
     };
 
     let mut parsed = Parsed::default();
-    let mut extra = serde_yaml::Mapping::new();
+    let mut extra = yaml_serde::Mapping::new();
     for (key, value) in map {
         match key.as_str() {
             Some("filters") => parsed.filters = Some(json_of(&value)),
@@ -146,7 +146,7 @@ fn parse_view(entry: &Yaml) -> ParsedView {
         filters: None,
         config: None,
     };
-    let mut config = serde_yaml::Mapping::new();
+    let mut config = yaml_serde::Mapping::new();
     for (key, value) in map {
         match (key.as_str(), value.as_str()) {
             (Some("name"), Some(text)) => view.name = Some(text.to_owned()),
@@ -280,7 +280,7 @@ mod tests {
     fn an_unmodeled_views_shape_carries_in_extra_and_makes_no_rows() {
         let parsed = parse(b"filters: file.hasTag(\"x\")\nviews: nope\n");
         assert!(parsed.error.is_none(), "not an alien — §4.5 carries it");
-        assert!(parsed.views.is_empty());
+        assert_eq!(parsed.views, [] as [ParsedView; 0]);
         assert_eq!(parsed.extra.as_deref(), Some(r#"{"views":"nope"}"#));
         assert_eq!(
             parsed.filters.as_deref(),

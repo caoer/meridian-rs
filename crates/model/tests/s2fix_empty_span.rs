@@ -280,8 +280,8 @@ fn two_unrelated_documents_share_one_empty_digest() {
     );
     assert_ne!(fa, fb, "the two fixture documents must differ");
 
-    assert!(canonical(a.0, &a.1).is_empty());
-    assert!(canonical(b.0, &b.1).is_empty());
+    assert_eq!(canonical(a.0, &a.1), [] as [u8; 0]);
+    assert_eq!(canonical(b.0, &b.1), [] as [u8; 0]);
     assert_eq!(mint(a.0, &a.1), Err(EmptySpan));
     assert_eq!(mint(b.0, &b.1), Err(EmptySpan));
 }

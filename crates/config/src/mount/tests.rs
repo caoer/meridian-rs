@@ -795,7 +795,7 @@ fn absent_and_zero_mount_configs_bind_to_the_same_empty_table() {
     .expect("state D binds");
 
     assert_eq!(absent, zero, "state A and state D are ONE table");
-    assert!(absent.mounts().is_empty());
+    assert_eq!(absent.mounts(), []);
     assert!(
         absent.is_clear(),
         "an empty table refuses nothing — it is a legitimate statement"
@@ -946,7 +946,7 @@ fn an_unscaffolded_default_is_suppressed_silently() {
     }
     .bind(&crate::Env::default())
     .expect("no home binds empty");
-    assert!(none.mounts().is_empty());
+    assert_eq!(none.mounts(), []);
 
     // A home with no default tree.
     let bare = tempfile::tempdir().expect("tempdir");
@@ -990,7 +990,7 @@ fn an_unscaffolded_default_is_suppressed_silently() {
     }
     .bind(&env)
     .expect("a disagreeing declaration suppresses, never refuses");
-    assert!(table.mounts().is_empty());
+    assert_eq!(table.mounts(), []);
 }
 
 /// A declared mount holding the default PATH (under any name) wins: the

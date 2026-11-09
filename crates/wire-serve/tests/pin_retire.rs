@@ -170,7 +170,7 @@ fn rows_over_a_deleted_target_retire_down_to_the_empty_block() {
     for selector in ["Guide/Source", "Guide/Other"] {
         splice(&root, None, &args("plan.md", selector, true), &[], None).expect("retire");
     }
-    assert!(rows(&root, "plan.md").is_empty());
+    assert_eq!(rows(&root, "plan.md"), [] as [String; 0]);
     assert!(
         read(&root, "plan.md").contains("```meridian-lock\nversion: 2\n```"),
         "{}",
@@ -200,7 +200,7 @@ fn a_wire_retire_is_a_guarded_write() {
         value: PremiseValue::Token(token),
     }];
     splice(&root, None, &wire_args, &[], None).expect("the covering premise admits it");
-    assert!(rows(&root, "plan.md").is_empty());
+    assert_eq!(rows(&root, "plan.md"), [] as [String; 0]);
 }
 
 /// The other row shapes `pin_row` mints retire by what a walk prints: a
@@ -255,5 +255,5 @@ fn anchor_and_slash_heading_rows_retire_and_a_dry_retire_writes_nothing() {
     )
     .expect("the walk's joined text retires the slash heading");
     splice(&root, None, &args("plan.md", "^blk", true), &[], None).expect("the anchor row retires");
-    assert!(rows(&root, "plan.md").is_empty());
+    assert_eq!(rows(&root, "plan.md"), [] as [String; 0]);
 }

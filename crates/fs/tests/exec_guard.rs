@@ -88,8 +88,8 @@ fn zero_descriptor_cheat_is_named() {
     match guard.close(&[]) {
         Err(GuardError::OutOfBand(delta)) => {
             assert_eq!(delta.altered, vec!["notes/plan.md".to_string()]);
-            assert!(delta.unexpected.is_empty());
-            assert!(delta.missing.is_empty());
+            assert_eq!(delta.unexpected, [] as [String; 0]);
+            assert_eq!(delta.missing, [] as [String; 0]);
         }
         other => panic!("expected OutOfBand, got {other:?}"),
     }
@@ -108,7 +108,7 @@ fn honest_edit_plus_rogue_write_is_caught() {
     match guard.close(&[edit("notes/plan.md", "# Plan v2\n")]) {
         Err(GuardError::OutOfBand(delta)) => {
             assert_eq!(delta.unexpected, vec!["notes/rogue.md".to_string()]);
-            assert!(delta.missing.is_empty());
+            assert_eq!(delta.missing, [] as [String; 0]);
             assert!(delta.altered.is_empty(), "the honest edit is not accused");
         }
         other => panic!("expected OutOfBand, got {other:?}"),
@@ -812,7 +812,7 @@ fn a_memoized_close_names_the_same_residual() {
         Err(GuardError::OutOfBand(delta)) => {
             assert_eq!(delta.unexpected, vec!["notes/rogue.md".to_owned()]);
             assert_eq!(delta.altered, vec!["notes/plan.md".to_owned()]);
-            assert!(delta.missing.is_empty());
+            assert_eq!(delta.missing, [] as [String; 0]);
         }
         other => panic!("expected OutOfBand, got {other:?}"),
     }
