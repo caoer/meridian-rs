@@ -350,7 +350,7 @@ fn a_row_under_retirement_is_not_taken_again_by_the_forced_walk() {
     assert!(shed, "the forced row is shed once");
     assert_eq!(forced.phase(), Phase::Cold);
     assert_eq!(other.phase(), Phase::Hot, "a body that is not forced stays");
-    assert!(lock(&budget.0.ledger).forced.is_empty());
+    assert_eq!(lock(&budget.0.ledger).forced, [] as [([u8; 32], u64); 0]);
     assert_eq!(budget.report().overage, 0);
 }
 
@@ -748,5 +748,5 @@ fn the_forced_list_matches_the_rows_under_concurrency() {
         budget.report().peak_overruns > 0,
         "probe invalid: no overrun"
     );
-    assert!(lock(&budget.0.ledger).forced.is_empty());
+    assert_eq!(lock(&budget.0.ledger).forced, [] as [([u8; 32], u64); 0]);
 }

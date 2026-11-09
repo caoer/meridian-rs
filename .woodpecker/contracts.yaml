@@ -24,7 +24,7 @@ when:
 # environment: (not settings:) is the mechanism.
 clone:
   - name: git
-    image: docker.io/woodpeckerci/plugin-git:2.9.2
+    image: docker.io/woodpeckerci/plugin-git:2.12.1
     environment:
       PLUGIN_PARTIAL: "false"
       PLUGIN_TAGS: "false"
@@ -36,7 +36,7 @@ clone:
 
 steps:
   - name: contracts
-    image: debian:bookworm-slim
+    image: debian:trixie-slim
     commands:
       - apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl git jq >/dev/null
       - git clone -q https://git.0xdao.app/caoer115/contracts /tmp/contracts

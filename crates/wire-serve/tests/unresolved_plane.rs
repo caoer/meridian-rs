@@ -210,7 +210,7 @@ fn anchorless_page_serves_empty_nearest_and_says_so() {
     );
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].reason, UnresolvedReason::NoMatch);
-    assert!(rows[0].nearest.is_empty());
+    assert_eq!(rows[0].nearest, [] as [wire::ReadNearestAnchor; 0]);
     assert!(
         notice
             .expect("notice")

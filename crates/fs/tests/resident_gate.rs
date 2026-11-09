@@ -269,7 +269,7 @@ fn collision_lints_and_refuses_scope_unresolved() {
 
     // Removing the file arm clears the key; the directory arm serves.
     cache.overlay_remove(Path::new("a.md")).expect("remove");
-    assert!(cache.collision_paths().is_empty());
+    assert_eq!(cache.collision_paths(), [] as [String; 0]);
     assert!(matches!(
         cache.fold_at(Path::new("a.md")),
         Ok(ScopeFold::Value(_))

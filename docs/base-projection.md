@@ -184,7 +184,7 @@ NULL. The classes:
 - a shell script or markdown wearing `.base`; non-UTF-8 bytes; YAML whose root
   is not a mapping — the parser's message;
 - **duplicate mapping keys anywhere in the document** — the pinned parser's
-  rule, not YAML's: serde_yaml refuses the whole document, so one duplicate
+  rule, not YAML's: yaml_serde refuses the whole document, so one duplicate
   `groupBy:` makes an alien, not last-key-wins; a §10.1 fixture pins the
   verdict;
 - **a member whose bytes could not be read** — `error` carries the I/O
@@ -424,7 +424,7 @@ other projection table:
 ## §9 Costs
 
 - **`:memory:` lane, per query:** one extra member walk (812 on the measuring
-  corpus) and one blake3 + serde_yaml parse per member; a small fraction of
+  corpus) and one blake3 + yaml_serde parse per member; a small fraction of
   the md fold, which already hashes the whole md corpus per query. `mrd sql`
   stays a slow operator tool (README standing correction C).
 - **Cache lane, per sync:** the map diff; only deltas append. Base-only
@@ -437,7 +437,7 @@ other projection table:
 - **Schema:** `SCHEMA_VERSION` 5 → 6 and `CACHE_SCHEMA_VERSION` 5 → 6;
   delete-don't-migrate (a mismatched cache file cold-rebuilds).
 - **Dependency:** the Bases parse needs real YAML (arbitrary nesting).
-  `serde_yaml` enters `view` as a leaf module and `view`'s charter gains it.
+  `yaml_serde` enters `view` as a leaf module and `view`'s charter gains it.
   The `yaml_confinement` permitted-taker set grows `config, policy` →
   `config, policy, view`, with this bullet as the stated deviation. `model`
   stays serde-free (Law 1); `fs` stays YAML-free by charter and hands raw
@@ -478,7 +478,7 @@ These doc changes land with the code, authorized by this spec (docs-first):
 `crates/view/src/schema.rs` DDL + both version consts;
 `crates/view/src/store.rs` module doc (hist tables, delta
 grain, the narrowed approximation paragraph); `laws.md` `view` charter row
-(+ serde_yaml, + base relations) and `fs` row (+ base walk); `status.md`
+(+ yaml_serde, + base relations) and `fs` row (+ base walk); `status.md`
 § operator SQL face (descriptive, after the binary changes); the sql face's
 table-teaching text (refusal/`SQL:` surface) gains the three relations.
 

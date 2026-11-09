@@ -7887,7 +7887,7 @@ mod guarded_create_remove {
             "dry create writes no file"
         );
         assert!(dry_born.root_after.is_none() && dry_born.committed.is_none());
-        assert!(dry_born.verdicts.is_empty());
+        assert_eq!(dry_born.verdicts, [] as [wire::Verdict; 0]);
 
         // A real file to dry-remove.
         let born = create(&root, None, &create_args("notes/new.md", "# New\n"), &[]).unwrap();

@@ -744,7 +744,7 @@ Widening the coat is a C2 change, reserved by ruling (`laws.md` D-1).
   freshness frame as a SECOND plane (`base_plane` in `--json`, its own banner
   line in human mode).
 - **`frontmatter_fault(path, line, error)`** — one row per page whose
-  frontmatter block strict YAML refuses (the pinned `serde_yaml`, the `.base`
+  frontmatter block strict YAML refuses (the pinned `yaml_serde`, the `.base`
   parser), or whose root is not a mapping: the 1-based file line the parser
   points at and its own message. The engine's own frontmatter scanner is
   lenient — `description: a: b` and `description: "a: b"` both project `a: b`
@@ -1496,7 +1496,7 @@ which checks the read count deterministically.
 
 `.github/workflows/perf.yml` runs on the standard GitHub-hosted
 `ubuntu-24.04` runner on main pushes, pull requests and manual dispatches.
-It pins Rust 1.97.1, limits measured commands to CPUs 0 and 1, and runs the
+It pins Rust 1.99.1, limits measured commands to CPUs 0 and 1, and runs the
 budgets serially after compilation. The runner class supplies 4 vCPUs and
 16 GB RAM; its CPU model and image revision are recorded with every result.
 GitHub does not promise identical physical hardware or an immutable OS image

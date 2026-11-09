@@ -4876,8 +4876,8 @@ mod engine_tests {
         }
 
         // Within budget: nothing to do. Zero: unbounded, never evicts.
-        assert!(reg.reap_to_budget(2 * WS_ESTIMATE).is_empty());
-        assert!(reg.reap_to_budget(0).is_empty());
+        assert_eq!(reg.reap_to_budget(2 * WS_ESTIMATE), [] as [PathBuf; 0]);
+        assert_eq!(reg.reap_to_budget(0), [] as [PathBuf; 0]);
     }
 
     /// The exemption is NARROW: only a live sub cursor spares a workspace
@@ -5800,11 +5800,13 @@ mod engine_tests {
     /// 16b4 (merkle-spec §6.4, the SQL memory policy): an append whose
     /// whole-store reads outgrow the steady limit escalates under controller
     /// reservations and the call answers, the steady limit and the
-    /// reservations back after it. 20,000 pages of twelve links each at an
+    /// reservations back after it. 60,000 pages of twelve links each at an
     /// 8 MiB steady limit, so one thread: the cold build's append outgrows
-    /// the limit and escalates, and a replayed delta of 200 changed and 50
-    /// added pages starts at the rung it left and answers there; without the
-    /// escalation the door refuses the append, naming the limit.
+    /// the limit and escalates (`DuckDB` 2.0 holds an append of about 30,000
+    /// such pages inside 8 MiB, so the corpus is twice that), and a replayed
+    /// delta of 600 changed and 50 added pages starts at the rung it left and
+    /// answers there; without the escalation the door refuses the append,
+    /// naming the limit.
     #[test]
     fn an_append_the_steady_limit_refuses_escalates_and_answers() {
         let controller = crate::residency::controller::Controller::new(1 << 30);
@@ -5828,7 +5830,7 @@ mod engine_tests {
     fn escalates_and_answers(controller: Option<&crate::residency::controller::Controller>) {
         use std::fmt::Write as _;
         const STEADY: u64 = 8 << 20;
-        const PAGES: usize = 20_000;
+        const PAGES: usize = 60_000;
         let home = tempfile::tempdir().unwrap();
         let cache_root = home.path().join("cache");
         fs::create_dir_all(&cache_root).unwrap();

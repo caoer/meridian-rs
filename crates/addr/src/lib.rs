@@ -832,7 +832,7 @@ mod tests {
             &[sessions],
             "duplicates collapse — the table is a set of names",
         );
-        assert!(MountSet::default().bound_names().is_empty());
+        assert_eq!(MountSet::default().bound_names(), []);
     }
 
     /// The vault axis, both directions; a root with no vault answers `None`.

@@ -910,10 +910,10 @@ pub fn read_declaration(path: &Path) -> Result<Declaration, DeclarationFault> {
         )
     })?;
     let (inner, inner_first_line) = frontmatter_inner(&raw, fm);
-    let value: serde_yaml::Value = serde_yaml::from_str(&inner)
+    let value: yaml_serde::Value = yaml_serde::from_str(&inner)
         .map_err(|e| DeclarationFault::Unreadable(format!("its frontmatter is not YAML: {e}")))?;
     let map = value.as_mapping();
-    let key = |name: &str| map.and_then(|m| m.get(serde_yaml::Value::from(name)));
+    let key = |name: &str| map.and_then(|m| m.get(yaml_serde::Value::from(name)));
 
     let declared_type = key("type").ok_or_else(|| {
         DeclarationFault::Unreadable(format!(

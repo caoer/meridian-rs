@@ -26,7 +26,7 @@ exceptions = [
     # via blake3/sha2 → digest
     { crate = "subtle", allow = ["BSD-3-Clause"] },
     # duckdb `bundled` view-organ compiler: libduckdb-sys pulls a BUILD-ONLY
-    # reqwest/rustls stack (non-optional build-dependency; never linked into the
+    # ureq/rustls stack (non-optional build-dependency; never linked into the
     # shipped binary). All OSI-permissive / public-domain, scoped per-crate.
     { crate = "ring", allow = ["ISC"] }, # ring = "Apache-2.0 AND ISC" (Apache allowed globally)
     { crate = "rustls-webpki", allow = ["ISC"] },
@@ -56,17 +56,6 @@ ignore = [
     { id = "RUSTSEC-2024-0388", reason = "derivative unmaintained; via starlark proc-macros" },
     { id = "RUSTSEC-2025-0057", reason = "fxhash unmaintained; via starlark_map" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; via starlark proc-macros" },
-    # Unmaintained, no fixed release: via serde_yaml 0.9 (config, policy, view).
-    # Revisit when serde_yaml is replaced.
-    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained, no safe upgrade; via serde_yaml" },
-    # zip 6 is a build-dependency of libduckdb-sys (pinned `zip = "6"`; both fixes are
-    # zip >= 9). Its build script extracts a zip only in the DUCKDB_DOWNLOAD_LIB
-    # mode, and then DuckDB's own release archive; this workspace builds duckdb
-    # `bundled`, from the crate's tarball. Revisit at any duckdb bump.
-    { id = "RUSTSEC-2026-0367", reason = "zip SUID/SGID on extract; build-dep of libduckdb-sys, extract path unused (bundled)" },
-    { id = "RUSTSEC-2026-0429", reason = "zip extract aborts on a large symlink entry; build-dep of libduckdb-sys, extract path unused (bundled)" },
-    { id = "RUSTSEC-2026-0368", reason = "zip symlink targets on extract; build-dep of libduckdb-sys, extract path unused (bundled)" },
-    { id = "RUSTSEC-2026-0369", reason = "zip permissions through symlinks on extract; build-dep of libduckdb-sys, extract path unused (bundled)" },
 ]
 
 [bans]

@@ -10,7 +10,7 @@
 //! opposite directions, and each direction was measured in production:
 //!
 //! * flow sequence (`caps: [md.create, md.edit]`) — accepted by the policy
-//!   plane's `serde_yaml` sequence, FAULTED `invalid capability '[md.create'`
+//!   plane's `yaml_serde` sequence, FAULTED `invalid capability '[md.create'`
 //!   at the run plane, whose `CapSet::parse` trimmed quotes off the whole
 //!   string and never brackets (card
 //!   `caps-flow-sequence-faults-at-run-plane`, pair-6 gate run).

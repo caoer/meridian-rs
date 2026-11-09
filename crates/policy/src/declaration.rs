@@ -126,7 +126,7 @@ pub(crate) fn parse_check(
 pub(crate) fn parse_query(page: &str) -> Result<(String, Option<String>), LoadError> {
     #[derive(serde::Deserialize, Default)]
     struct ControlFrontmatter {
-        control: Option<serde_yaml::Value>,
+        control: Option<yaml_serde::Value>,
     }
 
     let malformed = |reason: String| LoadError::QueryMalformed { reason };
@@ -148,7 +148,7 @@ pub(crate) fn parse_query(page: &str) -> Result<(String, Option<String>), LoadEr
 
     let control = match crate::pack::split_frontmatter(page) {
         None => None,
-        Some((frontmatter, _)) => serde_yaml::from_str::<ControlFrontmatter>(frontmatter)
+        Some((frontmatter, _)) => yaml_serde::from_str::<ControlFrontmatter>(frontmatter)
             .map_err(|e| malformed(format!("frontmatter parse: {e}")))?
             .control
             .filter(|value| !value.is_null()),
@@ -229,7 +229,7 @@ fn parse_scope(page: &str) -> Result<Vec<String>, LoadError> {
             reason: "no `---` frontmatter declaring `paths:`".to_string(),
         })?;
     let parsed: ScopeFrontmatter =
-        serde_yaml::from_str(frontmatter).map_err(|e| LoadError::Malformed {
+        yaml_serde::from_str(frontmatter).map_err(|e| LoadError::Malformed {
             reason: format!("frontmatter parse: {e}"),
         })?;
     let paths = parsed.paths.unwrap_or_default();
@@ -665,6 +665,6 @@ mod tests {
         let members = ["not/in/corpus.md".to_string()];
         let (expanded, rows) = expand_globs(&members, &corpus());
         assert_eq!(expanded, ["not/in/corpus.md"]);
-        assert!(rows.is_empty());
+        assert_eq!(rows, [] as [(String, Vec<String>); 0]);
     }
 }

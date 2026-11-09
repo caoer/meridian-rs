@@ -2111,7 +2111,7 @@ write the same bytes. A value is quoted when it:
   unterminated `[…]`);
 - carries `: ` unquoted, starts with `#`, or carries ` #`;
 - carries an interior TAB (`k: a<TAB>b` kills the whole block for PyYAML;
-  `serde_yaml` reads it);
+  `yaml_serde` reads it);
 - would be typed by a YAML **1.1** resolver even where 1.2 leaves it a string:
   a digit run (`19895504`; `02146210` is octal 576 648 to PyYAML), the
   underscore grouping `1_000`, the underscore radix forms (`0x1_f` is 31,
@@ -2119,11 +2119,11 @@ write the same bytes. A value is quoted when it:
   `1:02:03` is 3723, `1:30.5` the float; each group after the first is 0–59),
   and the word booleans `y`/`yes`/`no`/`on`/`off` in every case variant;
 - is a 1.1 resolver tag, `<<` (merge) or `=` (value): plain, PyYAML refuses
-  the whole block while serde_yaml reads both as strings.
+  the whole block while yaml_serde reads both as strings.
 
 Unchanged: a **one-level flow list** (`[a, b]`) emits verbatim — the only way
 this string plane authors a non-string value — and a **timestamp**
-(`2026-08-07`) emits plain, because `serde_yaml` reads it back as the caller's
+(`2026-08-07`) emits plain, because `yaml_serde` reads it back as the caller's
 string. A newline is refused, never sanitized: a single-line value cannot
 carry one, and an escaped-scalar workaround leaks.
 
@@ -2131,7 +2131,7 @@ carry one, and an escaped-scalar workaround leaks.
 all digits about 2.5 % of the time (203 of 8 125 distinct ids on one live
 root), and git shas share the shape: plain, `owner: 19895504` reads back as an
 integer everywhere and `session: 02146210` as 576 648 in PyYAML. A caller's
-string is written so that PyYAML, `serde_yaml` and `gopkg.in/yaml.v3` all read
+string is written so that PyYAML, `yaml_serde` and `gopkg.in/yaml.v3` all read
 it back. Residuals: no door authors the integer `7` through the value plane
 (`create(props=…)`'s `PropValue::List` is the one typed arm), so a
 def-declared `int`/`bool` property (`shape.rs` `SHAPE_INT`/`SHAPE_BOOL`) must
@@ -2139,7 +2139,7 @@ be born in the record's own body bytes; timestamps and dates are deliberately
 left plain (below).
 
 **The trigger list above is not closed.** The law is the bold sentence: the
-last trigger asks `serde_yaml` whether the plain line reads back as exactly
+last trigger asks `yaml_serde` whether the plain line reads back as exactly
 the caller's string, and a door adds no trigger of its own.
 The engine's classifier is more permissive than YAML: a value opening `- `,
 `? `, `,`, `*`, `&`, `%`, `@`, `` ` ``, `]`, `}`, or carrying an unterminated
@@ -2150,9 +2150,9 @@ classifier reads it as a one-level flow list. Measured churn: 14 of 29 377
 distinct plain-spelled values (0.048 %), all plain→quoted; a same-value
 write-back stays byte-identical (§ A.6.3c).
 
-**`serde_yaml` is not the whole oracle.** It resolves YAML **1.2**; PyYAML and
+**`yaml_serde` is not the whole oracle.** It resolves YAML **1.2**; PyYAML and
 go-yaml (`gopkg.in/yaml.v3`, what Go hosts link) resolve **1.1**, so
-`02146210` is the string `"02146210"` to `serde_yaml` and the integer 576 648
+`02146210` is the string `"02146210"` to `yaml_serde` and the integer 576 648
 to PyYAML. The law is the **union** of the schemas; the 1.1 classes are the
 trigger above. Measured churn for the union: 810 of 29 270 distinct
 plain-spelled values (2.767 %) — 515 ints, 245 floats, 37 all-digit short
@@ -2164,10 +2164,10 @@ move and 14 refuse with and without it, all under the § A.6.3c exclusions
 nesting).
 
 **The line is value corruption, not retyping.** Each reader run as a library
-into an untyped target (`serde_yaml::Value`, PyYAML `safe_load`,
+into an untyped target (`yaml_serde::Value`, PyYAML `safe_load`,
 `gopkg.in/yaml.v3` into `interface{}`):
 
-| plain value | serde_yaml (1.2) | PyYAML (1.1) | go-yaml `yaml.v3` (1.1) |
+| plain value | yaml_serde (1.2) | PyYAML (1.1) | go-yaml `yaml.v3` (1.1) |
 |---|---|---|---|
 | `owner: 19895504` | int | int | int |
 | `session: 02146210` | string `"02146210"` | **576648** (octal) | **576648** (octal) |
@@ -2175,7 +2175,7 @@ into an untyped target (`serde_yaml::Value`, PyYAML `safe_load`,
 | `stamp: 2026-08-23T02:09:32-04:00` | string | `datetime` object | `time.Time` |
 | `session: "02146210"` (the emit) | string | string | string |
 
-- **Ids: closed.** Both 1.1 readers agree on **576648** while `serde_yaml`
+- **Ids: closed.** Both 1.1 readers agree on **576648** while `yaml_serde`
   alone still sees the string: the join key is destroyed. § A.6.3c keeps the
   37 ids already on disk byte-stable until a write changes their value.
 - **Dates: left plain.** Every reader agrees on the instant; only the carrier
@@ -2186,7 +2186,7 @@ into an untyped target (`serde_yaml::Value`, PyYAML `safe_load`,
 - **Exposure: a date-object writer**, which reads a plain date into a
   `date` / `time.Time` value and re-emits it in its own formatting. None of
   the surveyed writers does: this engine through every § A.6.3a door
-  (`serde_yaml`: 1.2 core schema, no timestamp type), a Go host (`yaml.v3`
+  (`yaml_serde`: 1.2 core schema, no timestamp type), a Go host (`yaml.v3`
   into typed `string` struct fields returns the source text,
   `created="2026-08-23"`; plus its own line-level field setter) and the armed
   rules, which write through the engine. Safety comes from the target type,

@@ -219,7 +219,8 @@ use crate::{BaseWalk, ExclusionProbe, Rows, ViewError, collect_doc, fill_exclusi
 /// `17`: the persistent file uses 2,048-row groups so completed groups can
 /// leave transaction-local memory before the one pin-last commit. A v16 file
 /// has the prior physical row-group layout and must be cold-rebuilt. No hist
-/// DDL or projection changed, so the drawer's `SCHEMA_SALT` stays at `s16`.
+/// DDL or projection changed, so that change alone left the drawer's
+/// `SCHEMA_SALT` where it stood.
 pub const CACHE_SCHEMA_VERSION: i64 = 17;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
@@ -2862,9 +2863,10 @@ fn arrow_type_name(dt: &duckdb::arrow::datatypes::DataType) -> String {
 
 /// Render one result cell into JSON. Scalars are exact; the temporal,
 /// decimal, and container families speak `DuckDB`'s own SQL text
-/// ([`crate::sqltext`], card sql-scalar-type-render — no `Debug` fallback
-/// survives: the match is exhaustive so a new `ValueRef` variant fails the
-/// build instead of leaking a repr); list/array cells slice out their own
+/// ([`crate::sqltext`], card sql-scalar-type-render). `ValueRef` is
+/// `#[non_exhaustive]`, so a variant newer than this match cannot fail the
+/// build: it shows its `Debug` form, the one repr that survives, and only
+/// for a family this match has not learned; list/array cells slice out their own
 /// row's elements (F1) and stay JSON arrays for the face's ruled ` / ` join.
 /// `tz_col` marks a `TIMESTAMP WITH TIME ZONE` column ([`run_query`] reads
 /// it off the arrow schema): the value is UTC and renders with the `+00`
@@ -2885,6 +2887,9 @@ fn value_ref_to_json(v: duckdb::types::ValueRef<'_>, tz_col: bool) -> Json {
         ValueRef::USmallInt(n) => Json::from(u64::from(n)),
         ValueRef::UInt(n) => Json::from(u64::from(n)),
         ValueRef::UBigInt(n) => Json::from(n),
+        ValueRef::UHugeInt(n) => {
+            u64::try_from(n).map_or_else(|_| Json::String(n.to_string()), Json::from)
+        }
         ValueRef::Float(f) => json_f64(f64::from(f)),
         ValueRef::Double(f) => json_f64(f),
         ValueRef::Decimal(d) => Json::String(d.to_string()),
@@ -2897,7 +2902,7 @@ fn value_ref_to_json(v: duckdb::types::ValueRef<'_>, tz_col: bool) -> Json {
             nanos,
         } => Json::String(sqltext::interval_text(months, days, nanos)),
         ValueRef::Text(bytes) => Json::String(String::from_utf8_lossy(bytes).into_owned()),
-        ValueRef::Blob(bytes) => Json::String(hex(bytes)),
+        ValueRef::Blob(bytes) | ValueRef::Geometry(bytes) => Json::String(hex(bytes)),
         // A list cell's ValueRef carries the WHOLE column array + a row index;
         // converting per-cell would dump every row's values into every cell
         // (F1). The owned conversion slices out this row's elements — and the
@@ -2908,6 +2913,7 @@ fn value_ref_to_json(v: duckdb::types::ValueRef<'_>, tz_col: bool) -> Json {
         | ValueRef::Struct(..)
         | ValueRef::Map(..)
         | ValueRef::Union(..) => duck_value_to_json(&Value::from(v)),
+        other => Json::String(format!("{other:?}")),
     }
 }
 
@@ -2915,7 +2921,8 @@ fn value_ref_to_json(v: duckdb::types::ValueRef<'_>, tz_col: bool) -> Json {
 /// after the row slice. Scalars render in `DuckDB`'s RAW form (a nested
 /// timestamptz has lost its column's tz flag, so it renders unmarked — the
 /// one documented divergence); struct/map cells become their `DuckDB` text.
-/// Exhaustive for the same reason as [`value_ref_to_json`].
+/// A variant newer than this match shows its `Debug` form, as in
+/// [`value_ref_to_json`].
 fn duck_value_to_json(v: &Value) -> Json {
     match v {
         Value::Null => Json::Null,
@@ -2931,6 +2938,9 @@ fn duck_value_to_json(v: &Value) -> Json {
         Value::USmallInt(n) => Json::from(u64::from(*n)),
         Value::UInt(n) => Json::from(u64::from(*n)),
         Value::UBigInt(n) => Json::from(*n),
+        Value::UHugeInt(n) => {
+            u64::try_from(*n).map_or_else(|_| Json::String(n.to_string()), Json::from)
+        }
         Value::Float(f) => json_f64(f64::from(*f)),
         Value::Double(f) => json_f64(*f),
         Value::Decimal(d) => Json::String(d.to_string()),
@@ -2943,12 +2953,13 @@ fn duck_value_to_json(v: &Value) -> Json {
             nanos,
         } => Json::String(sqltext::interval_text(*months, *days, *nanos)),
         Value::Text(s) | Value::Enum(s) => Json::String(s.clone()),
-        Value::Blob(bytes) => Json::String(hex(bytes)),
+        Value::Blob(bytes) | Value::Geometry(bytes) => Json::String(hex(bytes)),
         Value::List(items) | Value::Array(items) => {
             Json::Array(items.iter().map(duck_value_to_json).collect())
         }
         Value::Struct(_) | Value::Map(_) => Json::String(sqltext::raw_text(v)),
         Value::Union(member) => duck_value_to_json(member),
+        other => Json::String(format!("{other:?}")),
     }
 }
 
@@ -4021,6 +4032,29 @@ pub(crate) mod tests {
             row[10],
             Json::Array(vec![Json::String("2026-08-14 12:00:00".into()), Json::Null]),
             "list elements are SQL text; the ruled ` / ` join stays with the face"
+        );
+    }
+
+    // UHUGEINT (its own value family since duckdb 1.20000): a number while it
+    // fits JSON's integer lane, its decimal text past it — never a repr.
+    #[test]
+    fn uhugeint_cells_render_as_numbers_or_decimal_text() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let (_, rows) = store
+            .query(
+                "SELECT 7::UHUGEINT AS small, \
+                        340282366920938463463374607431768211455::UHUGEINT AS max",
+            )
+            .expect("lane")
+            .expect("select");
+        assert_eq!(rows[0][0], Json::from(7_u64), "fits u64");
+        assert_eq!(
+            rows[0][1],
+            Json::String("340282366920938463463374607431768211455".into()),
+            "u128::MAX as decimal text"
         );
     }
 

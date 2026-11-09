@@ -245,7 +245,7 @@ mod tests {
             .map(policy::Registration::page)
             .collect();
         assert_eq!(pages, vec!["rules/notify.md"]);
-        assert!(walk.index().refused().is_empty());
+        assert_eq!(walk.index().refused(), []);
         assert!(walk.unreadable().is_empty());
     }
 

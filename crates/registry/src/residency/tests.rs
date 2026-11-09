@@ -642,7 +642,7 @@ fn a_floor_overage_shorter_than_one_tick_evicts_nothing() {
         "the first tick over the limit evicted"
     );
     drop(held);
-    assert!(registry.reap_to_budget(1).is_empty());
+    assert_eq!(registry.reap_to_budget(1), [] as [std::path::PathBuf; 0]);
     assert_eq!(host.controller.report().floor_overage, 0);
 
     // Over again after a tick under: that tick forgot the one before it.
@@ -655,7 +655,7 @@ fn a_floor_overage_shorter_than_one_tick_evicts_nothing() {
     assert_eq!(registry.reap_to_budget(1).len(), 1);
     assert_eq!(host.controller.report().floor_overage, 0);
     drop(held);
-    assert!(registry.reap_to_budget(1).is_empty());
+    assert_eq!(registry.reap_to_budget(1), [] as [std::path::PathBuf; 0]);
 }
 
 /// The verdict a sweep keeps is its own census's (merkle-spec §6.4, the
@@ -688,7 +688,7 @@ fn the_kept_verdict_is_the_sweeps_own_census() {
     let held = supersede(1);
     assert!(host.controller.report().floor_overage > 0);
     drop(held);
-    assert!(registry.reap_to_budget(1).is_empty());
+    assert_eq!(registry.reap_to_budget(1), [] as [std::path::PathBuf; 0]);
     assert_eq!(host.controller.report().floor_overage, 0);
 
     let held = supersede(2);

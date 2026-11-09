@@ -15,7 +15,7 @@
 use std::fmt::Write as _;
 
 use rand_chacha::ChaCha8Rng;
-use rand_chacha::rand_core::{RngCore, SeedableRng};
+use rand_chacha::rand_core::{Rng, SeedableRng};
 
 use crate::inventory::Inventory;
 use crate::profile::Recipe;

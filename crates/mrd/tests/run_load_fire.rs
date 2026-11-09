@@ -499,7 +499,7 @@ fn a_fire_births_through_the_create_door_and_reports_the_born_rev() {
         "hi"
     );
     let born_rev = applied["file_rev"].as_str().expect("a born rev");
-    assert!(!born_rev.is_empty());
+    assert_ne!(born_rev, "");
     assert_ne!(
         born_rev,
         row["rev"]["file"].as_str().expect("page rev"),

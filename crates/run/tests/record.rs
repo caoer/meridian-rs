@@ -402,5 +402,5 @@ fn exec_record_sink_seam_binds() {
     receipt.fill_exec(ExecRecord::new(0, stdout, [] as [(&str, &str); 0]));
     let exec = receipt.exec.expect("filled");
     assert_eq!(exec.stdout.invocation, "inv-sink");
-    assert!(exec.env_keys.is_empty());
+    assert_eq!(exec.env_keys, [] as [String; 0]);
 }

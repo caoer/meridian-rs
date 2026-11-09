@@ -44,7 +44,7 @@ lock = { workspace = true }
 # from `cargo metadata` and permits exactly `{policy, config}`. A third crate
 # reddens it by name; dropping this edge reddens it too.
 serde = { workspace = true }
-serde_yaml = "0.9"
+yaml_serde = "0.10"
 # THE CEILING. Every mount path passes `workspace::deny_reason` before it is
 # bound (`docs/address-grammar.md` §8 B-2), so this is a PRODUCTION edge as of
 # U7 — U6 held it as dev-only because nothing bound yet. The predicate is

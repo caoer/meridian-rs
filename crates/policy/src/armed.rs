@@ -1801,7 +1801,7 @@ mod tests {
 
         let verdict = artifact.verify(&ws);
         assert_eq!(verdict.firing().len(), 2, "both stand: {verdict:?}");
-        assert!(verdict.red().is_empty());
+        assert_eq!(verdict.red(), []);
     }
 
     // ── the § 4 shape ─────────────────────────────────────────────────────────
@@ -2186,7 +2186,7 @@ mod tests {
         ws.remove("c.md");
 
         let verdict = artifact.verify(&ws);
-        assert!(verdict.firing().is_empty());
+        assert_eq!(verdict.firing(), []);
         assert!(matches!(verdict.red()[0].why(), Redness::Missing { .. }));
         assert_eq!(
             verdict.refusing().count(),
@@ -2241,7 +2241,7 @@ mod tests {
             vec!["d"],
             "the off row is inert; the on row still reddens"
         );
-        assert!(verdict.firing().is_empty());
+        assert_eq!(verdict.firing(), []);
 
         ws.remove("c.md");
         let verdict = artifact.verify(&ws);
@@ -3190,7 +3190,7 @@ mod tests {
             .expect("the key was withdrawn, so the merge is no duplicate");
         let verdict = artifact.verify(&ws);
         assert_eq!(verdict.firing().len(), 1, "the fresh attestation fires");
-        assert!(verdict.red().is_empty());
+        assert_eq!(verdict.red(), []);
     }
 
     // ── reading an attested page back ─────────────────────────────────────────
@@ -3307,7 +3307,7 @@ mod tests {
         let artifact = ArmedArtifact::default();
         let page = artifact.render();
         assert_eq!(parse_artifact(&page).expect("parses"), artifact);
-        assert!(artifact.select_at("anything.md").is_empty());
+        assert_eq!(artifact.select_at("anything.md"), [] as [&ArmedRow; 0]);
     }
 
     // ── the query kind (armed-plane Part A3) ──────────────────────────────────

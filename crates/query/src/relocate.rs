@@ -1148,7 +1148,7 @@ mod tests {
             amb.candidates,
             vec!["a/y.md".to_owned(), "b/y.md".to_owned()]
         );
-        assert!(plan.rewrites.is_empty());
+        assert_eq!(plan.rewrites, [] as [FileRewrite; 0]);
     }
 
     /// A move that flips a bare link's pick to the twin is the same refusal:
@@ -1328,7 +1328,7 @@ mod tests {
     fn a_dangling_link_is_left_alone() {
         let (index, docs) = corpus(&[("a/x.md", "# X\n"), ("notes/fan.md", "see [[ghost]]\n")]);
         let plan = plan_md(&index, &docs, &spec("a/x.md", "b/x.md", false));
-        assert!(plan.rewrites.is_empty());
+        assert_eq!(plan.rewrites, [] as [FileRewrite; 0]);
         assert_eq!(plan.before.dangling, 1);
         assert_eq!(plan.after.dangling, 1);
     }

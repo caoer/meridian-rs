@@ -848,7 +848,7 @@ pub fn multi_line_value_refusal(key: &str) -> String {
 /// 576648 (YAML 1.1 octal, `PyYAML`) — on `owner`, `session`, `agent`, `from`,
 /// the join keys of the fleet's whole tree. A value the caller spelled as a
 /// string is now written so it reads back as that string; a timestamp still
-/// emits plain because `serde_yaml` reads it back as a string already.
+/// emits plain because `yaml_serde` reads it back as a string already.
 ///
 /// The double-quoted form is the fleet-canonical one (`ccc-cli task claim`
 /// writes it), so two writers on one tree stop churning each other's bytes.
@@ -890,7 +890,7 @@ pub fn yaml_safe_value(val: &str) -> Result<String, MultiLineValue> {
 /// **The former named residual is closed.** `"7"` and `"true"` used to land
 /// verbatim here and read back as int / bool; since 2026-08-23 (card
 /// `all-digit-short-ids-read-as-int`) [`yaml_safe_value`] quotes them, and this
-/// door inherits that. `"2026-08-07"` still lands verbatim — `serde_yaml` reads
+/// door inherits that. `"2026-08-07"` still lands verbatim — `yaml_serde` reads
 /// a timestamp back as a string, so the plain emit already round-trips.
 /// **Residual, named:** this door has no numeric or boolean typed arm, so a
 /// caller who MEANS the integer 7 can no longer author it through `props`
@@ -1031,7 +1031,7 @@ fn needs_quoting(val: &str) -> bool {
     // An INTERIOR tab (the trim above only catches the outer ones). Measured
     // 2026-08-23 with `PyYAML`: `k: a<TAB>b` is "while scanning for the next
     // token" — the whole frontmatter block dies, not one key — while
-    // `serde_yaml` reads the same bytes happily, so the parser oracle below
+    // `yaml_serde` reads the same bytes happily, so the parser oracle below
     // never flags it. Inside the double-quoted emit the tab is legal and reads
     // back verbatim.
     if val.contains('\t') {
@@ -1069,17 +1069,17 @@ fn needs_quoting(val: &str) -> bool {
         return true;
     }
     // …and finally the classes a YAML **1.1** resolver types and a 1.2 one does
-    // not, because `serde_yaml` is not the only parser that opens these files.
+    // not, because `yaml_serde` is not the only parser that opens these files.
     reads_typed_in_yaml_1_1(val)
 }
 
 /// The YAML **1.1** scalar classes that a 1.2 parser leaves as strings — the
-/// blind spot of the `serde_yaml` oracle above.
+/// blind spot of the `yaml_serde` oracle above.
 ///
 /// Foreign readers parse this frontmatter with `PyYAML` and with go-yaml
 /// (`gopkg.in/yaml.v3`) as well as with this engine, and both of those resolve
 /// the 1.1 schema. Measured, each library into an untyped target: the
-/// agent short id `02146210` is the STRING `"02146210"` to `serde_yaml` — a
+/// agent short id `02146210` is the STRING `"02146210"` to `yaml_serde` — a
 /// leading zero is not a 1.2 integer — and the INTEGER 576 648 to BOTH 1.1
 /// readers, which take a leading-zero digit run as octal. Deferring to the 1.2
 /// parser alone would have left the worse half of the defect standing: not a
@@ -1116,7 +1116,7 @@ fn reads_typed_in_yaml_1_1(val: &str) -> bool {
     // `tag:yaml.org,2002:merge` and `=` to `…:value`, and a plain emit of
     // either makes `PyYAML` refuse the whole block ("could not determine a
     // constructor for the tag") — the block dies, not one key. Measured
-    // 2026-08-23; `serde_yaml` reads both back as strings, so the oracle above
+    // 2026-08-23; `yaml_serde` reads both back as strings, so the oracle above
     // never flags them. Quoted, `PyYAML` reads both as the caller's string.
     if matches!(val, "<<" | "=") {
         return true;
@@ -1125,7 +1125,7 @@ fn reads_typed_in_yaml_1_1(val: &str) -> bool {
     // The radix-prefixed integers. `0x1f` and `0o17` are 1.2 integers the
     // oracle above already catches, but the UNDERSCORE forms are 1.1-only:
     // `0x1_f` is 31 and `0b1_010` is 10 to `PyYAML`, plain strings to
-    // `serde_yaml`. `0b…` is 1.1-only in every spelling. One arm covers all
+    // `yaml_serde`. `0b…` is 1.1-only in every spelling. One arm covers all
     // three radices, underscores included.
     if let Some(rest) = body
         .strip_prefix("0x")
@@ -1148,7 +1148,7 @@ fn reads_typed_in_yaml_1_1(val: &str) -> bool {
     if digit_run(body) {
         return true;
     }
-    // `1_000.5` — the 1.1 float spelling `serde_yaml` reads as a string.
+    // `1_000.5` — the 1.1 float spelling `yaml_serde` reads as a string.
     if let Some((int, frac)) = body.split_once('.')
         && (int.contains('_') || frac.contains('_'))
         && (int.is_empty() || digit_run(int))
@@ -1179,13 +1179,13 @@ fn reads_typed_in_yaml_1_1(val: &str) -> bool {
 }
 
 /// Would the PLAIN emit `key: {val}` read back as exactly `val`? Asked of
-/// `serde_yaml` — the enumerated triggers above are the fast, teachable ones;
+/// `yaml_serde` — the enumerated triggers above are the fast, teachable ones;
 /// this is the one that cannot be out-enumerated.
 ///
 /// ONE carve-out survives: a plain form that parses as a NON-string is legal
 /// only when the checker's classifier reads it as a one-level flow list — the
 /// single shape this string plane cannot otherwise author (§ A.6.3). Everything
-/// else quotes, `serde_yaml`'s verdict deciding.
+/// else quotes, `yaml_serde`'s verdict deciding.
 ///
 /// No `Bool | Int | Float | Timestamp` arm sits beside `List`: such an arm
 /// would let a value the caller spelled as a string be emitted as a number or a
@@ -1194,24 +1194,24 @@ fn reads_typed_in_yaml_1_1(val: &str) -> bool {
 /// and 37 of them already sit bare in frontmatter under `session`, `agent`,
 /// `from`, `owner`, `author` — read as integers by every foreign parser.
 ///
-/// This oracle is HALF the law: `serde_yaml` resolves YAML 1.2, and the 1.1
+/// This oracle is HALF the law: `yaml_serde` resolves YAML 1.2, and the 1.1
 /// classes it leaves as strings are [`reads_typed_in_yaml_1_1`]'s. Measured
 /// cost of the two together: 806 of 29 270 distinct plain-spelled values
 /// (2.754 %) change spelling on a CHANGED write — 515 ints, 245 floats, 37
 /// short ids, 7 bools, 1 sexagesimal, 1 interior tab — all plain→quoted, none
 /// quoted→plain, and `PyYAML` reads every changed emit back as the caller's
-/// string. The timestamp class does not move: `serde_yaml` answers `String`
+/// string. The timestamp class does not move: `yaml_serde` answers `String`
 /// for it, so the plain emit already round-trips here (`PyYAML` still reads a
 /// `datetime` — a named residual, § A.6.3).
 fn plain_reads_back(val: &str) -> bool {
-    let Ok(parsed) = serde_yaml::from_str::<serde_yaml::Value>(&format!("k: {val}\n")) else {
+    let Ok(parsed) = yaml_serde::from_str::<yaml_serde::Value>(&format!("k: {val}\n")) else {
         return false;
     };
     let Some(read_back) = parsed.get("k") else {
         return false;
     };
     match read_back {
-        serde_yaml::Value::String(s) => s == val,
+        yaml_serde::Value::String(s) => s == val,
         _ => matches!(
             super::fm::classify_scalar_or_flow(val),
             super::fm::FmValue::List(_)

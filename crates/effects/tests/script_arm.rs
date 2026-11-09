@@ -533,7 +533,7 @@ fn an_empty_segment_list_refuses_as_addressing_nothing() {
         reason.contains("section=[]") && reason.contains("{\"h\": …}"),
         "the refusal names the empty list and the segment shape: {reason}"
     );
-    assert!(eval.armed.is_empty());
+    assert_eq!(eval.armed, [] as [ArmedEdit; 0]);
 }
 
 /// Refuse what can never exist (D-1's line): occurrences are 1-based, so
@@ -548,7 +548,7 @@ fn a_zero_occurrence_refuses_as_outside_the_grammar() {
         reason.contains("1-based"),
         "the refusal names the 1-based law: {reason}"
     );
-    assert!(eval.armed.is_empty());
+    assert_eq!(eval.armed, [] as [ArmedEdit; 0]);
 }
 
 /// A key the segment shape does not carry refuses loud — a typo'd `"N"` must
@@ -563,7 +563,7 @@ fn an_unknown_segment_key_refuses_loud() {
         reason.contains("`N`") && reason.contains("{h, n?}"),
         "the unknown key and the lawful shape are both named: {reason}"
     );
-    assert!(eval.armed.is_empty());
+    assert_eq!(eval.armed, [] as [ArmedEdit; 0]);
 }
 
 /// An empty heading text addresses nothing any document carries — refused at
@@ -578,7 +578,7 @@ fn an_empty_heading_text_in_a_segment_refuses() {
         reason.contains("empty heading text"),
         "the refusal names the empty text: {reason}"
     );
-    assert!(eval.armed.is_empty());
+    assert_eq!(eval.armed, [] as [ArmedEdit; 0]);
 }
 
 /// A `section=` that is neither a string nor a list refuses naming BOTH
@@ -593,7 +593,7 @@ fn a_non_string_non_list_section_refuses_naming_both_forms() {
         reason.contains("joined heading path") && reason.contains("{h, n?}"),
         "both accepted forms named: {reason}"
     );
-    assert!(eval.armed.is_empty());
+    assert_eq!(eval.armed, [] as [ArmedEdit; 0]);
 }
 
 /// The string coat is UNTOUCHED (C2 stays reserved): the joined spelling still

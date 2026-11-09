@@ -6184,10 +6184,9 @@ mod tests {
     fn a_directory_where_the_anchor_should_be_is_not_an_anchor() {
         let dir = tempfile::tempdir().expect("tempdir");
         fs::create_dir_all(dir.path().join("MERIDIAN.md")).unwrap();
-        assert!(
-            user_rule_pages(&dir.path().join("MERIDIAN.md"))
-                .expect("an answer")
-                .is_empty()
+        assert_eq!(
+            user_rule_pages(&dir.path().join("MERIDIAN.md")).expect("an answer"),
+            [] as [(String, Vec<u8>); 0]
         );
     }
 
@@ -6198,7 +6197,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let anchor = dir.path().join("MERIDIAN.md");
         fs::write(&anchor, "---\ntype: meridian-config\n---\n").unwrap();
-        assert!(user_rule_pages(&anchor).expect("an answer").is_empty());
+        assert_eq!(
+            user_rule_pages(&anchor).expect("an answer"),
+            [] as [(String, Vec<u8>); 0]
+        );
     }
 
     /// The layer is `rules/**.md`, spelled relative to the user scope, sorted,

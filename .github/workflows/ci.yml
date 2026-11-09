@@ -22,7 +22,7 @@ jobs:
       # NOT a Cargo.toml [profile] edit — local dev builds keep full debug.
       CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Reclaim disk before the toolchain/cache/build steps. The `view` crate
       # pulls duckdb with the `bundled` feature, which compiles the full DuckDB
       # C++ amalgamation from source; V3 added the same bundled/static duckdb to

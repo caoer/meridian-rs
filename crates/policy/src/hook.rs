@@ -565,7 +565,7 @@ fn load_hook_with_caps(
 
     let (frontmatter, _body) = crate::pack::split_frontmatter(hook_md)
         .ok_or_else(|| malformed("no `---` frontmatter".to_string()))?;
-    let parsed: HookFrontmatter = serde_yaml::from_str(frontmatter)
+    let parsed: HookFrontmatter = yaml_serde::from_str(frontmatter)
         .map_err(|e| malformed(format!("frontmatter parse: {e}")))?;
 
     let severity = parsed
@@ -582,9 +582,9 @@ fn load_hook_with_caps(
     }
 
     // Caps come from `model::fm_caps`, the ONE capability grammar — not from a
-    // second `serde_yaml` reading of the same block, for the reason
+    // second `yaml_serde` reading of the same block, for the reason
     // `register_page` takes its tags from `model::fm_tags`: one key with two
-    // readers drifts, and this one had. The `serde_yaml` parse above keeps
+    // readers drifts, and this one had. The `yaml_serde` parse above keeps
     // `severity:`/`paths:`/`budget:`/`how:`; it no longer sees `caps:` at all.
     //
     // What the shared grammar buys the policy plane specifically: a PLAIN
@@ -668,7 +668,7 @@ struct HookFrontmatter {
     severity: Option<String>,
     paths: Option<Vec<String>>,
     budget: Option<EvalBudget>,
-    how: Option<serde_yaml::Value>,
+    how: Option<yaml_serde::Value>,
 }
 
 /// Resolve declared cap strings against the closed descriptor surface, then against
@@ -707,12 +707,12 @@ fn resolve_caps(
 /// mapping; the three keys slice 1 names must have the shapes slice 1 names, IF they
 /// are present. Every other key passes through untouched — see the module header:
 /// ruling on an unknown key would be interpreting data this engine does not own.
-fn validate_how(how: &serde_yaml::Value) -> Result<(), String> {
+fn validate_how(how: &yaml_serde::Value) -> Result<(), String> {
     let map = how
         .as_mapping()
         .ok_or_else(|| "`how:` must be a mapping of delivery data".to_string())?;
 
-    if let Some(route) = map.get(serde_yaml::Value::from("route")) {
+    if let Some(route) = map.get(yaml_serde::Value::from("route")) {
         let route = route
             .as_mapping()
             .ok_or_else(|| "`how: route:` must be a mapping of severity to channel".to_string())?;
@@ -726,7 +726,7 @@ fn validate_how(how: &serde_yaml::Value) -> Result<(), String> {
         }
     }
     for key in ["batching", "wake_policy"] {
-        if let Some(value) = map.get(serde_yaml::Value::from(key))
+        if let Some(value) = map.get(yaml_serde::Value::from(key))
             && !value.is_string()
         {
             return Err(format!("`how: {key}:` must be a string"));
@@ -1442,7 +1442,7 @@ def on_change(event):
         );
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].intents.len(), 1);
-        assert!(first[0].narrowed.is_empty());
+        assert_eq!(first[0].narrowed, [] as [Intent; 0]);
 
         let intent = &first[0].intents[0];
         assert_eq!(intent.action, "notify", "the alias is carried verbatim");
@@ -1585,10 +1585,10 @@ def on_change(event):
             }],
             "the exhausted HOOK names its budget_exceeded finding"
         );
-        assert!(outcomes[0].intents.is_empty());
+        assert_eq!(outcomes[0].intents, [] as [Intent; 0]);
         assert_eq!(outcomes[1].intents.len(), 1, "the later HOOK still arms");
         assert_eq!(outcomes[1].intents[0].rule_id, "valid-after-budget");
-        assert!(outcomes[1].findings.is_empty());
+        assert_eq!(outcomes[1].findings, [] as [HookFinding; 0]);
     }
 
     /// The load lint sees bare globals but deliberately does not inspect attribute
@@ -1658,10 +1658,10 @@ def on_change(event):
         let hook = load(&page_with_source(DESIGN_SOURCE)).expect("HOOK loads");
         let mut event = review_event();
         event.file = "notes/x.md".to_string();
-        assert!(
+        assert_eq!(
             evaluate_named([("task-only", &hook)], &event)
-                .expect("scope filtering does not evaluate")
-                .is_empty()
+                .expect("scope filtering does not evaluate"),
+            [] as [HookOutcome; 0]
         );
     }
 }
