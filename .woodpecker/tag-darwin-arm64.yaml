@@ -169,9 +169,17 @@ steps:
         # version, and zig ignores -mmacosx-version-min: every C/C++ object
         # would compile at zig's default (13.0) whatever the deployment target
         # says. This shim puts MACOSX_DEPLOYMENT_TARGET in zig's OS slot.
+        # It also rejoins `-Wl,-force_load <archive>`: cargo-zigbuild has made
+        # the operand a positional input, and zig would take the next linker
+        # argument as the archive (docs/release.md §5.4).
         mkdir -p /tmp/zigshim
         printf '%s\n' '#!/bin/sh' \
-          'for a do shift; [ "$$a" = aarch64-macos-none ] && a=aarch64-macos.'"$${MACOSX_DEPLOYMENT_TARGET}"'-none; set -- "$$@" "$$a"; done' \
+          'fl=' \
+          'for a do shift' \
+          '  [ "$$a" = aarch64-macos-none ] && a=aarch64-macos.'"$${MACOSX_DEPLOYMENT_TARGET}"'-none' \
+          '  if [ -n "$$fl" ]; then fl=; a=-Wl,-force_load,$$a; elif [ "$$a" = -Wl,-force_load ]; then fl=1; continue; fi' \
+          '  set -- "$$@" "$$a"' \
+          'done' \
           'exec /ci-cache/zig/'"$${ZIG_VERSION}"'/zig "$$@"' > /tmp/zigshim/zig
         chmod +x /tmp/zigshim/zig
         cat /tmp/zigshim/zig

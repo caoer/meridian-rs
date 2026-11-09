@@ -304,6 +304,13 @@ zig's default, 13.0. A native build records the deployment target it was given (
 for the zmax builds), so a pin bump to a cross-built commit drops arm64 hosts
 below macOS 15.4.
 
+**The force-load operand stays joined to its flag.** DuckDB's bundled build ships
+`duckdb_static_extension_autoregister` as a whole archive, which rustc passes on
+macOS as `-Wl,-force_load -Wl,<path>`. cargo-zigbuild turns any `-Wl,` value that
+names an existing file into a positional input, so zig reads the next linker
+argument as the archive and fails (`-dead_strip: unrecognized file extension`).
+The same shim rejoins the pair as `-Wl,-force_load,<path>`.
+
 **The darwin smoke.** The runner cannot exec a Mach-O, so the lane checks the
 artifact's bytes (the arm64 Mach-O header and the stamp) rather than asking
 it. Before a pin bump names the published binary, a mac runs it with an empty
