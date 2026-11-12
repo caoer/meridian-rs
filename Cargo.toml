@@ -165,7 +165,7 @@ pedantic = { level = "warn", priority = -1 }
 # plus one commit that pads a short table row with one item expanded into empty
 # cells as events (merkle-spec §6.4); fork-only, no upstream PR.
 pulldown-cmark = { git = "https://github.com/caoer/pulldown-cmark", rev = "164b2da10fed73f18e97910bb0f3477c50a92f50" }
-# notify 8.2.2 as published on crates.io (upstream 603674a8), vendored with two
+# notify 8.2.2 as published on crates.io (upstream 603674a8), vendored with three
 # changes to its inotify backend, each marked by a `meridian-rs patch` comment.
 # 1. It no longer arms IN_OPEN (`add_single_watch`). Upstream arms it on every
 #    directory watch and has no mask knob, so every file read and directory
@@ -178,6 +178,11 @@ pulldown-cmark = { git = "https://github.com/caoer/pulldown-cmark", rev = "164b2
 #    child written in between raised nothing and the feed had to collapse every
 #    `mkdir` into a full sweep; armed first, the feed enumerates the directory
 #    instead (merkle-spec §6.4, the rescan ladder's new-directory row).
+# 3. It keeps its path-to-watch map ordered and drops a removed directory's
+#    watches by a range over that directory's prefix (`remove_watch`).
+#    Upstream scans every watch per removed directory, so a repack pruning a
+#    few hundred object directories under 130k watches held the watcher thread
+#    for seconds, past the cookie bound (merkle-spec §6.4, watcher paragraph).
 # `diff -r` against the crates.io source shows these hunks alone.
 notify = { path = "vendor/notify" }
 # Tag `meridian-v1.20000.1-1`: duckdb-rs v1.20000.1 (upstream db918f65) plus one

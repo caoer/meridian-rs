@@ -469,9 +469,14 @@ engine-side.
   `git status`, a grep over the root) would overflow it into the full-sweep
   rung below without moving a byte. The upstream inotify backend arms opens
   unconditionally, so the workspace consumes it through `vendor/notify`, which
-  changes two things: it drops `IN_OPEN` from the watch mask, and it arms a
+  changes three things: it drops `IN_OPEN` from the watch mask; it arms a
   new directory before it delivers the directory's create (the new-directory
-  row of the rescan ladder below).
+  row of the rescan ladder below); and it drops a removed directory's watches
+  at the cost of that directory's own subtree, where upstream scans every
+  watch in the root per removed directory. A git repack that prunes a few
+  hundred object directories under a root of 130k watched directories
+  otherwise holds the watcher thread for seconds, past the cookie bound, into
+  the cookie-timeout collapse.
 - **A client daemon's journal is a legal additional feed** where it already
   watches — an opportunistic dirty-path hint, never an instrument a guard or
   currency answer depends on.
