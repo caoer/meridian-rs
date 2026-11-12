@@ -1770,9 +1770,15 @@ mod tests {
         }
         let kept = root.join("objects/000-kept/inner/after");
         std::fs::write(&kept, "").unwrap();
-        assert!(sees(&rx, &kept), "a sibling of a removed directory stays armed");
+        assert!(
+            sees(&rx, &kept),
+            "a sibling of a removed directory stays armed"
+        );
         let took = start.elapsed();
-        eprintln!("{REMOVED} removals under {} watches: {took:?}", SPREAD * FILL);
+        eprintln!(
+            "{REMOVED} removals under {} watches: {took:?}",
+            SPREAD * FILL
+        );
         assert!(
             took < BOUND,
             "{REMOVED} directory removals took {took:?} to reach the handler: \

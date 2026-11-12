@@ -12,6 +12,7 @@ use inotify_sys::{EventMask, Inotify, WatchDescriptor, WatchMask};
 use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::ffi::OsStr;
+use std::ops::Bound;
 use std::fs::metadata;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -511,7 +512,10 @@ impl EventLoop {
                     if is_recursive || remove_recursive {
                         let under: Vec<PathBuf> = self
                             .watches
-                            .range::<Path, _>(path.as_path()..)
+                            .range::<Path, _>((
+                                Bound::Excluded(path.as_path()),
+                                Bound::Unbounded,
+                            ))
                             .map(|(p, _)| p)
                             .take_while(|p| p.starts_with(&path))
                             .cloned()
