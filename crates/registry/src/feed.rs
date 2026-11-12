@@ -1710,6 +1710,85 @@ mod tests {
         );
     }
 
+    /// `vendor/notify` drops a removed directory's watches at the cost of that
+    /// directory's own subtree (merkle-spec §6.4, the watcher paragraph).
+    /// Upstream scans every watch per removed directory: a git repack pruning
+    /// 100-250 object directories under 133k watches held the watcher thread
+    /// ~9 s, past the 2 s cookie bound. Here 256 such removals under 40k
+    /// watched directories, and the write that follows them, reach the handler
+    /// within `BOUND`, and the watches beside them stay armed: a sibling whose
+    /// name extends a removed one's (`000-kept` beside `000`) and the filler.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn inotify_removing_directories_costs_their_subtree_not_the_watch_set() {
+        const SPREAD: usize = 200;
+        const FILL: usize = 200;
+        const REMOVED: usize = 256;
+        const BOUND: Duration = Duration::from_secs(1);
+        fn sees(
+            rx: &std::sync::mpsc::Receiver<notify::Result<notify::Event>>,
+            path: &Path,
+        ) -> bool {
+            let deadline = Instant::now() + Duration::from_secs(120);
+            while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+                match rx.recv_timeout(left) {
+                    Ok(Ok(event)) if event.paths.iter().any(|p| p == path) => return true,
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => panic!("watcher error: {error}"),
+                    Err(_) => break,
+                }
+            }
+            false
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for i in 0..SPREAD {
+            for j in 0..FILL {
+                std::fs::create_dir_all(root.join(format!("fill/{i}/{j}"))).unwrap();
+            }
+        }
+        for k in 0..REMOVED {
+            let pruned = root.join(format!("objects/{k:03x}/nested"));
+            std::fs::create_dir_all(&pruned).unwrap();
+            std::fs::write(pruned.join("pack"), "x").unwrap();
+        }
+        std::fs::create_dir_all(root.join("objects/000-kept/inner")).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher =
+            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                let _ = tx.send(event);
+            })
+            .expect("watcher");
+        watcher.watch(&root, RecursiveMode::Recursive).unwrap();
+        let armed = root.join("armed");
+        std::fs::write(&armed, "").unwrap();
+        assert!(sees(&rx, &armed), "the recursive watch is armed");
+
+        let start = Instant::now();
+        for k in 0..REMOVED {
+            std::fs::remove_dir_all(root.join(format!("objects/{k:03x}"))).unwrap();
+        }
+        let kept = root.join("objects/000-kept/inner/after");
+        std::fs::write(&kept, "").unwrap();
+        assert!(
+            sees(&rx, &kept),
+            "a sibling of a removed directory stays armed"
+        );
+        let took = start.elapsed();
+        eprintln!(
+            "{REMOVED} removals under {} watches: {took:?}",
+            SPREAD * FILL
+        );
+        assert!(
+            took < BOUND,
+            "{REMOVED} directory removals took {took:?} to reach the handler: \
+             watch removal scans the whole watch set"
+        );
+        let filler = root.join(format!("fill/{}/{}/after", SPREAD - 1, FILL - 1));
+        std::fs::write(&filler, "").unwrap();
+        assert!(sees(&rx, &filler), "the filler stays armed");
+    }
+
     /// A `mkdir` with a member written straight into it is a hint, never a
     /// collapse, where the backend enumerates (merkle-spec §6.4 ladder): the
     /// next barrier Sees, no rescan is marked, and the member is pending — so

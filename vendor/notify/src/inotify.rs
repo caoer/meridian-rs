@@ -9,9 +9,10 @@ use super::{Config, Error, ErrorKind, EventHandler, RecursiveMode, Result, Watch
 use crate::{bounded, unbounded, BoundSender, Receiver, Sender};
 use inotify as inotify_sys;
 use inotify_sys::{EventMask, Inotify, WatchDescriptor, WatchMask};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::ffi::OsStr;
+use std::ops::Bound;
 use std::fs::metadata;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -37,7 +38,7 @@ struct EventLoop {
     inotify: Option<Inotify>,
     event_handler: Box<dyn EventHandler>,
     /// PathBuf -> (WatchDescriptor, WatchMask, is_recursive, is_dir)
-    watches: HashMap<PathBuf, (WatchDescriptor, WatchMask, bool, bool)>,
+    watches: BTreeMap<PathBuf, (WatchDescriptor, WatchMask, bool, bool)>,
     paths: HashMap<WatchDescriptor, PathBuf>,
     rename_event: Option<Event>,
     follow_links: bool,
@@ -61,7 +62,7 @@ enum EventLoopMsg {
 fn add_watch_by_event(
     path: &PathBuf,
     event: &inotify_sys::Event<&OsStr>,
-    watches: &HashMap<PathBuf, (WatchDescriptor, WatchMask, bool, bool)>,
+    watches: &BTreeMap<PathBuf, (WatchDescriptor, WatchMask, bool, bool)>,
     add_watches: &mut Vec<PathBuf>,
 ) {
     if event.mask.contains(EventMask::ISDIR) {
@@ -78,7 +79,7 @@ fn add_watch_by_event(
 #[inline]
 fn remove_watch_by_event(
     path: &PathBuf,
-    watches: &HashMap<PathBuf, (WatchDescriptor, WatchMask, bool, bool)>,
+    watches: &BTreeMap<PathBuf, (WatchDescriptor, WatchMask, bool, bool)>,
     remove_watches: &mut Vec<PathBuf>,
 ) {
     if watches.contains_key(path) {
@@ -110,7 +111,7 @@ impl EventLoop {
             event_loop_rx,
             inotify: Some(inotify),
             event_handler,
-            watches: HashMap::new(),
+            watches: BTreeMap::new(),
             paths: HashMap::new(),
             rename_event: None,
             follow_links,
@@ -492,6 +493,11 @@ impl EventLoop {
         }
     }
 
+    // meridian-rs patch: a removed directory's descendants are the range of
+    // `watches` that follows it. `Path` orders component by component, so
+    // every path under `path` sorts after it and before any path outside it
+    // (`a/b/c` before `a/b-c`). Upstream scans every watch descriptor per
+    // removed directory, which costs the whole watch set each time.
     fn remove_watch(&mut self, path: PathBuf, remove_recursive: bool) -> Result<()> {
         match self.watches.remove(&path) {
             None => return Err(Error::watch_not_found().add_path(path)),
@@ -504,16 +510,26 @@ impl EventLoop {
                     self.paths.remove(&w);
 
                     if is_recursive || remove_recursive {
-                        let mut remove_list = Vec::new();
-                        for (w, p) in &self.paths {
-                            if p.starts_with(&path) {
+                        let under: Vec<PathBuf> = self
+                            .watches
+                            .range::<Path, _>((
+                                Bound::Excluded(path.as_path()),
+                                Bound::Unbounded,
+                            ))
+                            .map(|(p, _)| p)
+                            .take_while(|p| p.starts_with(&path))
+                            .cloned()
+                            .collect();
+                        for p in under {
+                            let Some((w, ..)) = self.watches.remove(&p) else {
+                                continue;
+                            };
+                            // A descriptor another path now owns (the same
+                            // directory reached twice) stays armed for it.
+                            if self.paths.get(&w) == Some(&p) {
                                 Self::remove_single_descriptor(&mut inotify_watches, w.clone());
-                                self.watches.remove(p);
-                                remove_list.push(w.clone());
+                                self.paths.remove(&w);
                             }
-                        }
-                        for w in remove_list {
-                            self.paths.remove(&w);
                         }
                     }
                 }
