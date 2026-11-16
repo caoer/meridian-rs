@@ -159,7 +159,9 @@ impl Repo {
     ) -> Result<bool, GitFail> {
         const WHAT: &str = "rev-list --objects";
         let mut cmd = self.command();
-        cmd.args(["rev-list", "--objects", "--stdin"]);
+        // A repository carrying a reachability bitmap answers from it; one
+        // without walks as it would unasked.
+        cmd.args(["rev-list", "--use-bitmap-index", "--objects", "--stdin"]);
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

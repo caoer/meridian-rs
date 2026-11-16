@@ -1230,7 +1230,7 @@ Debt never enters the findings verdict and never refuses a write; zero renders
   `refs/remotes/*/git-annex`, `refs/remotes/*/synced/git-annex` and
   `refs/annex/*`. Those branches hold annex location logs, never a pinned
   markdown file, and on a sessions root they carry about 40% of all objects.
-- **`HEAD:<path>` first (`mrd check`).** A pin whose file at `HEAD` is the
+- **`HEAD:<path>` first (`mrd check` and `vibe-debt`).** A pin whose file at `HEAD` is the
   pinned blob is anchored; one `git cat-file --batch-check` answers every pin.
   Only the pins it does not settle reach the reachable set.
 - **The reachable set is cached per repository** at
@@ -1242,6 +1242,9 @@ Debt never enters the findings verdict and never refuses a write; zero renders
   process updates at a time (an exclusive lock on `reach-v1.lock` beside it);
   the others wait, then read its result. An unwritable cache costs speed, never
   the answer: the set is then built in memory for the one call.
+- **Every walk passes `--use-bitmap-index`.** A repository that carries a
+  reachability bitmap answers from it; one without (a partial clone cannot
+  build one) walks as before.
 
 `--json` always-emits both axes: with no pins, `composed.lock.pins` is `0` and
 `composed.lock.color` is `null`, never an absent field.
