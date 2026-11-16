@@ -220,8 +220,16 @@ fn walk_refusal(response: &Value, workspace: &Path, cwd: &Path, parsed: &Walk) -
     match error.code {
         wire::ErrorCode::FileNotFound => {
             // Page grain, as `view::walk` names its root: a `#selector` tail is not the page.
-            let page = parsed.page.split_once('#').map_or(&*parsed.page, |(page, _)| page);
-            walk_error(WalkError::RootNotFound(page.to_owned()), workspace, cwd, parsed)
+            let page = parsed
+                .page
+                .split_once('#')
+                .map_or(&*parsed.page, |(page, _)| page);
+            walk_error(
+                WalkError::RootNotFound(page.to_owned()),
+                workspace,
+                cwd,
+                parsed,
+            )
         }
         wire::ErrorCode::WalkCycle if error.message.is_some() => {
             Fail::tool(error.message.unwrap_or_default())

@@ -197,7 +197,11 @@ fn a_warming_daemon_is_waited_on_and_serves_the_walk() {
         "walk built the corpus in-process beside a warming daemon: {}",
         stderr_of(&out)
     );
-    assert_eq!(asked.load(Ordering::SeqCst), 4, "three refusals, then the answer");
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        4,
+        "three refusals, then the answer"
+    );
 }
 
 /// A daemon that accepts the walk and closes without answering holds the
@@ -217,7 +221,10 @@ fn a_daemon_that_drops_the_walk_refuses_and_builds_nothing() {
         "the refusal does not name what happened: {stderr}"
     );
     assert!(!stderr.contains(DEGRADE_VOICE), "walk degraded: {stderr}");
-    assert!(stdout_of(&out).is_empty(), "a refused walk printed a listing");
+    assert!(
+        stdout_of(&out).is_empty(),
+        "a refused walk printed a listing"
+    );
 }
 
 /// The daemon's `file_not_found` is the answer, in the words the in-process
@@ -266,5 +273,9 @@ fn a_second_in_process_build_waits_for_the_first() {
         stderr.contains("waiting for it") && stderr.contains(DEGRADE_VOICE),
         "the wait was not voiced on the in-process lane: {stderr}"
     );
-    assert!(stdout_of(&out).contains("a.md"), "no listing: {}", stdout_of(&out));
+    assert!(
+        stdout_of(&out).contains("a.md"),
+        "no listing: {}",
+        stdout_of(&out)
+    );
 }

@@ -343,11 +343,11 @@ fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
         return Some(DaemonRead::Skew(message));
     }
 
-    let response =
-        match engine::call(&mut writer, &mut reader, client.socket_path(), &r.request()) {
-            Ok(response) => response,
-            Err(error) => return Some(lost(error)),
-        };
+    let response = match engine::call(&mut writer, &mut reader, client.socket_path(), &r.request())
+    {
+        Ok(response) => response,
+        Err(error) => return Some(lost(error)),
+    };
     if response.get("ok").and_then(Value::as_bool) == Some(true) {
         let body = response.get("body")?.clone();
         let mint = match mint_scoped_token(
