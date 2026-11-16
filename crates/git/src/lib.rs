@@ -61,6 +61,13 @@ const GIT: &str = "git";
 /// translated one.
 const NOT_A_REPO: &str = "not a git repository";
 
+/// Set on the anchoring questions ([`Repo::anchored_at_head`],
+/// [`Repo::object_info`]): git answers from the local object database alone. In
+/// a partial clone an absent object is otherwise asked of the promisor remote
+/// first — a network call per check, and minutes of CPU when the remote does
+/// not hold it — and "absent here" is the fact these questions report.
+const NO_LAZY_FETCH: &str = "GIT_NO_LAZY_FETCH";
+
 /// One path in an interval that is not the worktree's, as
 /// [`Repo::staged_divergence`] reports it: the path, and the content a commit will
 /// record for it — `Some(bytes)`, or `None` when the commit REMOVES the path.
@@ -235,7 +242,8 @@ impl Repo {
             return Ok(answers);
         }
         let mut cmd = self.command();
-        cmd.args(["cat-file", "--batch-check=%(objectname)"]);
+        cmd.args(["cat-file", "--batch-check=%(objectname)"])
+            .env(NO_LAZY_FETCH, "1");
         let stdout = self.run_with_stdin(cmd, WHAT, stdin)?;
         let mut lines = stdout.split(|b| *b == b'\n');
         for ((oid, _), ok) in asks.iter().zip(&sent) {
@@ -281,7 +289,8 @@ impl Repo {
         }
 
         let mut cmd = self.command();
-        cmd.args(["cat-file", "--batch-check"]);
+        cmd.args(["cat-file", "--batch-check"])
+            .env(NO_LAZY_FETCH, "1");
         let stdout = self.run_with_stdin(cmd, "cat-file --batch-check", query.into_bytes())?;
 
         let text = std::str::from_utf8(&stdout).map_err(|_| GitFail::Unexpected {

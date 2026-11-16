@@ -1251,6 +1251,12 @@ Debt never enters the findings verdict and never refuses a write; zero renders
 - **Every walk passes `--use-bitmap-index`.** A repository that carries a
   reachability bitmap answers from it; one without (a partial clone cannot
   build one) walks as before.
+- **The anchoring questions never fetch.** The `HEAD:<path>` lookup and the
+  presence query run with `GIT_NO_LAZY_FETCH=1`: in a partial clone an absent
+  object answers `missing` from the local object database, and is never asked
+  of the promisor remote. A blob the clone's filter left out is still
+  `anchored` when a commit reaches it — reachability decides, presence only
+  splits `pending-anchor` from `never-anchored`.
 
 `--json` always-emits both axes: with no pins, `composed.lock.pins` is `0` and
 `composed.lock.color` is `null`, never an absent field.

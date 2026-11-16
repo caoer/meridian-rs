@@ -361,6 +361,50 @@ fn anchored_at_head_matches_the_blob_at_head_in_input_order() {
     assert_eq!(answers, vec![false]);
 }
 
+/// **Gate — the presence query never fetches.** In a partial clone the remote
+/// holds a blob the clone's filter left out; asking about it answers "absent
+/// here" and leaves it absent, where git's default would fetch it first.
+#[test]
+fn object_info_in_a_partial_clone_answers_from_the_local_store_alone() {
+    let origin_dir = empty_repo();
+    let origin = origin_dir.path();
+    git_in(origin, &["config", "uploadpack.allowFilter", "true"]);
+    git_in(origin, &["config", "uploadpack.allowAnySHA1InWant", "true"]);
+    write(origin, "a.md", "held by the remote only\n");
+    commit(origin, "one file");
+    let oid = git_in(origin, &["rev-parse", "HEAD:a.md"]);
+
+    let clone_dir = tempfile::tempdir().expect("tmpdir");
+    let clone = clone_dir.path().join("clone");
+    git_in(
+        clone_dir.path(),
+        &[
+            "clone",
+            "-q",
+            "--no-checkout",
+            "--filter=blob:none",
+            &format!("file://{}", origin.display()),
+            "clone",
+        ],
+    );
+
+    let repo = Repo::at(&clone);
+    assert_eq!(
+        repo.object_info(&[&oid]).expect("presence"),
+        vec![None],
+        "the filtered blob is absent here"
+    );
+    // Had the query fetched, the blob would now be in the clone's database.
+    let still_absent = Command::new("git")
+        .arg("-C")
+        .arg(&clone)
+        .args(["cat-file", "-e", &oid])
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .output()
+        .expect("run git");
+    assert!(!still_absent.status.success(), "nothing was fetched");
+}
+
 /// The batched presence query answers in input order, and a repository with no
 /// commits has an empty reachable set (not a failure).
 #[test]
