@@ -45,6 +45,7 @@
 //! # }
 //! ```
 
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::{self, Write};
@@ -61,11 +62,11 @@ const GIT: &str = "git";
 /// translated one.
 const NOT_A_REPO: &str = "not a git repository";
 
-/// Set on the anchoring questions ([`Repo::anchored_at_head`],
-/// [`Repo::object_info`]): git answers from the local object database alone. In
-/// a partial clone an absent object is otherwise asked of the promisor remote
-/// first — a network call per check, and minutes of CPU when the remote does
-/// not hold it — and "absent here" is the fact these questions report.
+/// Set on the presence question ([`Repo::object_info`]): git answers from the
+/// local object database alone. In a partial clone an absent object is
+/// otherwise asked of the promisor remote first — a network call per check, and
+/// minutes of CPU when the remote does not hold it — and "absent here" is the
+/// fact that question reports.
 const NO_LAZY_FETCH: &str = "GIT_NO_LAZY_FETCH";
 
 /// One path in an interval that is not the worktree's, as
@@ -135,21 +136,36 @@ impl Repo {
         self.hash_object(path, false)
     }
 
-    /// [`Repo::blob_oid`] for each of `paths`, in input order — from ONE
-    /// `git hash-object --stdin-paths`, so a check over N files spawns git once,
-    /// not N times. Each path goes through its own filters, as it does alone.
+    /// [`Repo::blob_oid`] for each of `paths`, in input order, without a git
+    /// child per file.
     ///
-    /// The batch takes the paths that are files on disk and fit one line. Any
-    /// other path, and every path when the batch itself fails (one unreadable
-    /// file ends that child), is asked alone — so each entry is exactly what
+    /// **The index answers for an unchanged file.** A path the index holds at
+    /// stage 0, with neither the assume-unchanged nor the skip-worktree bit, and
+    /// that `git diff-files` does not report, hashes to its index entry — the
+    /// filtered blob git already computed. Two listings (`ls-files -s -v`,
+    /// `diff-files`) answer that for every path.
+    ///
+    /// **The rest are hashed in ONE `git hash-object --stdin-paths`** — changed,
+    /// flagged and untracked files, each through its own filters. That batch
+    /// takes the paths that are files on disk and fit one line. Any other path,
+    /// and every one of them when the batch itself fails (one unreadable file
+    /// ends that child), is asked alone — so each entry is exactly what
     /// [`Repo::blob_oid`] answers for it, the refusal included.
     #[must_use]
     pub fn blob_oids(&self, paths: &[&Path]) -> Vec<Result<String, GitFail>> {
+        let names: Vec<String> = paths
+            .iter()
+            .map(|path| self.relative(path).to_string_lossy().into_owned())
+            .collect();
+        let indexed = self.unchanged_index_oids(&names).unwrap_or_default();
         let batched: Vec<bool> = paths
             .iter()
-            .map(|path| {
-                let text = self.relative(path).to_string_lossy();
-                !text.contains('\n') && !text.contains('\r') && self.root.join(path).is_file()
+            .zip(&names)
+            .map(|(path, name)| {
+                !indexed.contains_key(name.as_str())
+                    && !name.contains('\n')
+                    && !name.contains('\r')
+                    && self.root.join(path).is_file()
             })
             .collect();
         let mut answers = self
@@ -158,12 +174,61 @@ impl Repo {
             .into_iter();
         paths
             .iter()
+            .zip(&names)
             .zip(&batched)
-            .map(|(path, batched)| match answers.next() {
-                Some(oid) if *batched => Ok(oid),
-                _ => self.blob_oid(path),
+            .map(|((path, name), batched)| {
+                let hashed = answers.next();
+                match (indexed.get(name.as_str()), hashed) {
+                    (Some(oid), _) => Ok(oid.clone()),
+                    (None, Some(oid)) if *batched => Ok(oid),
+                    _ => self.blob_oid(path),
+                }
             })
             .collect()
+    }
+
+    /// The index oid of each of `names` (root-relative) whose worktree file is
+    /// what the index records: a stage-0 entry tagged `H` by `ls-files -v` —
+    /// so neither assume-unchanged nor skip-worktree, bits under which git
+    /// stops looking at the file — that `diff-files` does not list. An
+    /// intent-to-add entry is one `diff-files` lists. `None` when git could not
+    /// be asked; the caller then hashes every file.
+    fn unchanged_index_oids<'n>(&self, names: &'n [String]) -> Option<HashMap<&'n str, String>> {
+        if names.is_empty() {
+            return None;
+        }
+        self.require_repo().ok()?;
+        let mut wanted: HashMap<&[u8], &'n str> =
+            names.iter().map(|n| (n.as_bytes(), n.as_str())).collect();
+
+        // Both listings are relative to the root and confined to it.
+        let mut cmd = self.command();
+        cmd.args(["diff-files", "--relative", "--name-only", "-z"]);
+        for changed in self.run(cmd, "diff-files").ok()?.split(|b| *b == 0) {
+            wanted.remove(changed);
+        }
+
+        let mut cmd = self.command();
+        cmd.args(["ls-files", "-s", "-v", "-z"]);
+        let stdout = self.run(cmd, "ls-files -s -v").ok()?;
+        let mut out = HashMap::new();
+        // An entry is `<tag> <mode> <oid> <stage>\t<path>`, NUL-terminated.
+        for entry in stdout.split(|b| *b == 0) {
+            let Some(tab) = entry.iter().position(|b| *b == b'\t') else {
+                continue;
+            };
+            let Some(name) = wanted.get(&entry[tab + 1..]) else {
+                continue;
+            };
+            let fields: Vec<&[u8]> = entry[..tab].split(|b| *b == b' ').collect();
+            if let [b"H", _, oid, b"0"] = fields[..]
+                && let Ok(oid) = std::str::from_utf8(oid)
+                && is_oid(oid)
+            {
+                out.insert(*name, oid.to_ascii_lowercase());
+            }
+        }
+        Some(out)
     }
 
     /// One `hash-object --stdin-paths` over the paths marked in `take`: their
@@ -276,51 +341,55 @@ impl Repo {
     }
 
     /// For each `(oid, path)`, whether the file at `HEAD:<path>` is that blob —
-    /// in input order, from ONE `git cat-file --batch-check`. `path` is
-    /// relative to [`Repo::root`]. A `true` is anchored (HEAD reaches it); a
-    /// `false` settles nothing, and only those need [`Repo::reachable_objects`].
-    /// An unborn HEAD, an absent path, or a path git cannot take on one line
-    /// answers `false`.
+    /// in input order, from ONE `git ls-tree -r HEAD`: the whole tree is listed
+    /// once and read against the asked paths, which costs less than a tree
+    /// descent per path once there are many. `path` is relative to
+    /// [`Repo::root`]. A `true` is anchored (HEAD reaches it); a `false` settles
+    /// nothing, and only those need [`Repo::reachable_objects`]. An unborn HEAD
+    /// or an absent path answers `false`. Only tree objects are read, so a blob
+    /// a partial clone's filter left out is still matched.
     ///
     /// # Errors
     /// As [`Repo::reachable_objects`].
     pub fn anchored_at_head(&self, asks: &[(&str, &Path)]) -> Result<Vec<bool>, GitFail> {
-        const WHAT: &str = "cat-file --batch-check HEAD:<path>";
-        let mut stdin = Vec::new();
-        let mut sent = Vec::with_capacity(asks.len());
-        for (_, path) in asks {
-            let text = path.to_string_lossy();
-            let ok = !text.contains('\n') && !text.contains('\r');
-            if ok {
-                stdin.extend_from_slice(b"HEAD:./");
-                stdin.extend_from_slice(text.as_bytes());
-                stdin.push(b'\n');
-            }
-            sent.push(ok);
+        const WHAT: &str = "ls-tree -r HEAD";
+        if asks.is_empty() {
+            return Ok(Vec::new());
         }
-        let mut answers = Vec::with_capacity(asks.len());
-        if !sent.iter().any(|ok| *ok) {
-            answers.resize(asks.len(), false);
-            return Ok(answers);
+        self.require_repo()?;
+        if !self.head_exists()? {
+            return Ok(vec![false; asks.len()]);
         }
+        let paths: Vec<String> = asks
+            .iter()
+            .map(|(_, path)| path.to_string_lossy().into_owned())
+            .collect();
+        let mut at_head: HashMap<&[u8], &[u8]> =
+            paths.iter().map(|p| (p.as_bytes(), &b""[..])).collect();
+
+        // From a nested root git lists the paths under it, relative to it.
         let mut cmd = self.command();
-        cmd.args(["cat-file", "--batch-check=%(objectname)"])
-            .env(NO_LAZY_FETCH, "1");
-        let stdout = self.run_with_stdin(cmd, WHAT, stdin)?;
-        let mut lines = stdout.split(|b| *b == b'\n');
-        for ((oid, _), ok) in asks.iter().zip(&sent) {
-            if !ok {
-                answers.push(false);
+        cmd.args(["ls-tree", "-r", "-z", "HEAD"]);
+        let stdout = self.run(cmd, WHAT)?;
+        // An entry is `<mode> <type> <oid>\t<path>`, NUL-terminated.
+        for entry in stdout.split(|b| *b == 0) {
+            let Some(tab) = entry.iter().position(|b| *b == b'\t') else {
                 continue;
+            };
+            if let Some(slot) = at_head.get_mut(&entry[tab + 1..]) {
+                let mut fields = entry[..tab].split(|b| *b == b' ');
+                if fields.nth(1) == Some(&b"blob"[..]) {
+                    *slot = fields.next().unwrap_or_default();
+                }
             }
-            let line = lines.next().ok_or_else(|| GitFail::Unexpected {
-                what: WHAT.to_owned(),
-                detail: "fewer answer lines than questions".to_owned(),
-            })?;
-            let head = std::str::from_utf8(line).unwrap_or_default().trim();
-            answers.push(is_oid(head) && head.eq_ignore_ascii_case(oid));
         }
-        Ok(answers)
+        Ok(asks
+            .iter()
+            .zip(&paths)
+            .map(|((oid, _), path)| {
+                is_oid(oid) && at_head[path.as_bytes()].eq_ignore_ascii_case(oid.as_bytes())
+            })
+            .collect())
     }
 
     /// Type and size for each of `oids`, in input order — `None` where the

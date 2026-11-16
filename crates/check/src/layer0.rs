@@ -412,8 +412,9 @@ fn objects_in(
 /// stale one.
 ///
 /// All three states are counted as a READING; only the ORPHAN is a finding.
-/// The orphan check hashes the non-anchored entries' files in one
-/// `git hash-object --stdin-paths` ([`git::Repo::blob_oids`]).
+/// The orphan check reads the non-anchored entries' files through
+/// [`git::Repo::blob_oids`]: the index for an unchanged file, one batched
+/// `git hash-object` for the rest.
 fn ask_store(store_root: &Path, objects: &[ObjectRef], plane: &mut PinPlane) -> Result<(), String> {
     let asked = |e: git::GitFail| format!("the object store could not be asked: {e}");
     let repo = git::Repo::at(store_root.to_path_buf());

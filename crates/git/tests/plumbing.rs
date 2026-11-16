@@ -405,6 +405,44 @@ fn blob_oids_hashes_every_file_in_one_child_in_input_order() {
     assert_eq!(hashes.len(), 2, "plus one for the absent path:\n{argv}");
 }
 
+/// **Gate — the index answers only for a file git still looks at.** An
+/// unchanged committed file costs no `hash-object`; a file changed under the
+/// assume-unchanged bit — which `diff-files` does not report — is hashed from
+/// disk, never answered with its stale index entry.
+#[cfg(unix)]
+#[test]
+fn blob_oids_reads_the_index_for_an_unchanged_file_and_never_under_assume_unchanged() {
+    let repo_dir = empty_repo();
+    let root = repo_dir.path();
+    write(root, "kept.md", "kept\n");
+    write(root, "flagged.md", "before\n");
+    commit(root, "two files");
+    let kept = git_in(root, &["rev-parse", "HEAD:kept.md"]);
+    let stale = git_in(root, &["rev-parse", "HEAD:flagged.md"]);
+    git_in(root, &["update-index", "--assume-unchanged", "flagged.md"]);
+    write(root, "flagged.md", "after, and longer\n");
+    assert_eq!(
+        git_in(root, &["diff-files", "--name-only"]),
+        "",
+        "git itself no longer reports the flagged file"
+    );
+    let live = git_in(root, &["hash-object", "--", "flagged.md"]);
+    assert_ne!(live, stale);
+
+    let shim = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("git-shim.sh");
+    let repo = Repo::at_with_program(root, &shim);
+    let got = repo.blob_oids(&["kept.md", "flagged.md"].map(Path::new));
+    assert_eq!(got[0].as_ref().expect("kept"), &kept);
+    assert_eq!(got[1].as_ref().expect("flagged"), &live);
+
+    let argv = fs::read_to_string(root.join("git-argv.log")).expect("shim log");
+    let hashes: Vec<&str> = argv.lines().filter(|l| l.contains("hash-object")).collect();
+    assert_eq!(hashes.len(), 1, "one child, for the flagged file:\n{argv}");
+}
+
 /// **Gate — the presence query never fetches.** In a partial clone the remote
 /// holds a blob the clone's filter left out; asking about it answers "absent
 /// here" and leaves it absent, where git's default would fetch it first.
