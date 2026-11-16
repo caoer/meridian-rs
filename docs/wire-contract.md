@@ -3411,14 +3411,16 @@ second copy of a corpus the daemon already holds. Workspace-bound, as § A.10
   a pinned target landing in the same timestamp quantum as the daemon's last
   observation turns its row red on the next `pins` call, on either arm.
 - **The CLI rides this door.** `mrd status` (its lock planes) and `mrd check`
-  on the pin plane alone — `--core`, and `--commit-gate` when the index
-  carries nothing the worktree does not — dial the resident daemon and follow
-  the § A.10 ladder: the in-process build serves a workspace no daemon serves
+  — every reading but the two below, `--commit-gate` included — dial the
+  resident daemon and follow the § A.10 ladder: the in-process build serves a workspace no daemon serves
   and is voiced on stderr; a daemon that accepted the connection is waited on
   or refuses, and no corpus is built beside it. Two readings stay in-process,
   because the resident corpus cannot answer them: a staged interval whose
   index bytes diverge from the worktree (the daemon holds worktree bytes), and
-  a `check` that runs the armed plane's queries.
+  a `check` in which an armed query fires. Both are decided before any corpus
+  is read: the first from git, the second from the armed artifact and its
+  pages. `mrd status` reads the rows of the holders the hash domain carries;
+  `mrd check` colours every row and asks git about those same holders' blobs.
 
 ```json
 {"id":14,"op":"pins"}
@@ -3437,9 +3439,10 @@ second copy of a corpus the daemon already holds. Workspace-bound, as § A.10
 | `excluded[]` | §12.1 enumerator clause: the markdown the hash domain left out (the custom-ignore class, as § A.10). Omitted when empty |
 
 **Doors and refusals.** A holder whose lock refuses to parse is one grey
-`lock-refused` row, never an absence. Unserved member → `invalid_utf8`;
-unreadable hash domain → `io_error`, never the default domain. `corpus_warming`
-and `corpus_race` are `retry`.
+`lock-refused` row, never an absence. A member the generation holds and
+cannot serve → `io_error` naming it, never a grey or red row; unreadable hash
+domain → `io_error`, never the default domain. `corpus_warming` and
+`corpus_race` are `retry`.
 
 **The staleness triple does not apply**, as § A.10: the rows are served at one
 borrow of the warmed engine, and each row's `hash` and `color` are what a
