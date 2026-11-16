@@ -62,10 +62,77 @@ fn install_signal_handlers() {
     }
 }
 
-/// Run `mrd daemon`: start the server (socket bound, pidfile written before
-/// the first request is served — the server owns that order and its mirror on
-/// shutdown), and block until a signal.
+/// Raise this process's soft open-file limit to its hard limit, and say both.
+/// The daemon holds a descriptor per connection, watch and open store, and
+/// whatever started it may hand it a soft limit far below the hard one: a
+/// spawner that restores the limit it was itself started under, or a shell's
+/// default.
+fn raise_open_file_limit() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `getrlimit` writes one `rlimit` through a pointer to a live one.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) } != 0 {
+        timing::say!(
+            "open-file limit: cannot be read ({})",
+            io::Error::last_os_error()
+        );
+        return;
+    }
+    let (soft, hard) = (limit.rlim_cur, limit.rlim_max);
+    let ceiling = open_file_ceiling(hard);
+    if ceiling <= soft {
+        timing::say!("open-file limit: soft {soft} (hard {hard})");
+        return;
+    }
+    limit.rlim_cur = ceiling;
+    // SAFETY: `setrlimit` reads one `rlimit` through a pointer to a live one.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) } == 0 {
+        timing::say!("open-file limit: soft {soft} -> {ceiling} (hard {hard})");
+    } else {
+        timing::say!(
+            "open-file limit: soft {soft} (hard {hard}); cannot raise it to {ceiling} ({})",
+            io::Error::last_os_error()
+        );
+    }
+}
+
+/// The highest soft open-file limit the kernel accepts under `hard`. Darwin
+/// refuses one above `kern.maxfilesperproc` with `EINVAL`, an unlimited hard
+/// limit included.
+#[cfg(target_os = "macos")]
+fn open_file_ceiling(hard: libc::rlim_t) -> libc::rlim_t {
+    let mut per_process: libc::c_int = 0;
+    let mut size = size_of::<libc::c_int>();
+    // SAFETY: `sysctlbyname` writes at most `size` bytes of one `c_int`
+    // through pointers to live values; the name is a NUL-terminated literal.
+    let read = unsafe {
+        libc::sysctlbyname(
+            c"kern.maxfilesperproc".as_ptr(),
+            (&raw mut per_process).cast(),
+            &raw mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    match libc::rlim_t::try_from(per_process) {
+        Ok(per_process) if read == 0 && per_process > 0 => hard.min(per_process),
+        _ => hard,
+    }
+}
+
+/// The highest soft open-file limit the kernel accepts under `hard`.
+#[cfg(not(target_os = "macos"))]
+fn open_file_ceiling(hard: libc::rlim_t) -> libc::rlim_t {
+    hard
+}
+
+/// Run `mrd daemon`: raise the open-file limit, start the server (socket
+/// bound, pidfile written before the first request is served — the server
+/// owns that order and its mirror on shutdown), and block until a signal.
 pub(crate) fn run() -> Result<(), Fail> {
+    raise_open_file_limit();
     let mut config = Config::resolve()
         .map_err(|e| Fail::tool(format!("cannot resolve the daemon layout: {e}")))?;
     // Only this crate can read the baked sha (`build.rs` bakes it into this crate's
